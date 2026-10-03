@@ -24,6 +24,9 @@ $migrations = @(
   # and referral binding publishes referral.bound in the same transaction.
   # Register both schemas before any acceptance account is allowed to exist.
   (Join-Path $root "scripts\migrations\20260717_a4_event_governance_closure.sql"),
+  # Reading or opening an inbox notification commits its governed event in the
+  # same transaction. Without these schemas, real APP writes roll back with 422.
+  (Join-Path $root "scripts\migrations\20260722_i3_a4_event_closure.sql"),
   (Join-Path $root "scripts\migrations\20260727_l1_kpi_event_chain_closure.sql"),
   (Join-Path $root "scripts\migrations\20260729_a1_admin_account_status_cas.sql"),
   (Join-Path $root "scripts\migrations\20260729_c2_account_list_event_schema.sql"),
@@ -281,6 +284,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260928_cregis_deposit.sql")
   # Maker/checker controls and reconciliation state must exist before PROVIDER mode starts.
   (Join-Path $root "scripts\migrations\20260928_cregis_controls_reconciliation.sql")
+  (Join-Path $root "scripts\migrations\20261002_app_business_notifications.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

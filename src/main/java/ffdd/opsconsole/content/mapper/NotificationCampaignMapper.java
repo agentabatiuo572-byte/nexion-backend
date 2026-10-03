@@ -80,11 +80,21 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    LOWER(#{priority}) = 'critical'
                    OR COALESCE(CASE LOWER(#{kind})
                        WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                        WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                        WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                        WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                        WHEN 'genesis' THEN pref.notify_genesis
-                       ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                       ELSE 1 END, 1) = 1
                )
                AND (#{language} = 'all' OR LOWER(u.language) LIKE CONCAT(#{language}, '%'))
                AND TIMESTAMPDIFF(DAY, u.created_at, #{now}) > #{registrationDaysMin}
@@ -119,11 +129,21 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    LOWER(COALESCE(n.priority, '')) = 'critical'
                    OR COALESCE(CASE LOWER(n.type)
                        WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                        WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                        WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                        WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                        WHEN 'genesis' THEN pref.notify_genesis
-                       ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                       ELSE 1 END, 1) = 1
                )
             """)
     int markCampaignNotificationsDelivered(@Param("bizNo") String bizNo, @Param("now") LocalDateTime now);
@@ -140,11 +160,21 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    LOWER(COALESCE(n.priority, '')) = 'critical'
                    OR COALESCE(CASE LOWER(n.type)
                        WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                        WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                        WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                        WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                        WHEN 'genesis' THEN pref.notify_genesis
-                       ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                       ELSE 1 END, 1) = 1
                )
             """)
     int countNotificationsByBizNo(@Param("bizNo") String bizNo);
@@ -165,11 +195,21 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    LOWER(COALESCE(n.priority, '')) = 'critical'
                    OR COALESCE(CASE LOWER(n.type)
                        WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                        WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                        WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                        WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                        WHEN 'genesis' THEN pref.notify_genesis
-                       ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                       ELSE 1 END, 1) = 1
                )
              ORDER BY n.id
             """)
@@ -331,11 +371,21 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    LOWER(COALESCE(n.priority, '')) = 'critical'
                    OR COALESCE(CASE LOWER(n.type)
                        WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                        WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                        WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                        WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                        WHEN 'genesis' THEN pref.notify_genesis
-                       ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                       ELSE 1 END, 1) = 1
                )
                <if test='cursorId != null'>AND n.id &lt; #{cursorId}</if>
                <if test='priority != null and priority != ""'>AND LOWER(n.priority) = #{priority}</if>
@@ -362,11 +412,21 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    LOWER(COALESCE(n.priority, '')) = 'critical'
                    OR COALESCE(CASE LOWER(n.type)
                        WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                        WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                        WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                        WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                        WHEN 'genesis' THEN pref.notify_genesis
-                       ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                       ELSE 1 END, 1) = 1
                )
             """)
     long countUnreadForUser(@Param("userId") Long userId);
@@ -396,11 +456,21 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    LOWER(COALESCE(n.priority, '')) = 'critical'
                    OR COALESCE(CASE LOWER(n.type)
                        WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                        WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                        WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                        WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                        WHEN 'genesis' THEN pref.notify_genesis
-                       ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                       ELSE 1 END, 1) = 1
                )
               LIMIT 1 FOR UPDATE
             """)
@@ -425,11 +495,21 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    LOWER(COALESCE(n.priority, '')) = 'critical'
                    OR COALESCE(CASE LOWER(n.type)
                        WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                        WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                        WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                        WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                        WHEN 'genesis' THEN pref.notify_genesis
-                       ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                       ELSE 1 END, 1) = 1
                )
              ORDER BY n.id FOR UPDATE
             """)
@@ -470,11 +550,21 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    LOWER(COALESCE(n.priority, '')) = 'critical'
                    OR COALESCE(CASE LOWER(n.type)
                        WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                        WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                        WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                        WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                        WHEN 'genesis' THEN pref.notify_genesis
-                       ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                       ELSE 1 END, 1) = 1
                )
                AND n.id IN
                <foreach item="id" collection="notificationIds" open="(" separator="," close=")">
@@ -490,6 +580,10 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
             UPDATE nx_notification
                SET is_deleted = 1, updated_at = NOW()
              WHERE user_id = #{userId} AND is_deleted = 0 AND read_flag = 1
+               AND LOWER(COALESCE(priority, '')) != 'critical'
+               AND NOT EXISTS (SELECT 1 FROM nx_notification_cap_rule cap
+                                WHERE LOWER(cap.tier)=LOWER(nx_notification.priority)
+                                  AND cap.locked=1 AND cap.status=1 AND cap.is_deleted=0)
             """)
     int clearReadUserNotifications(@Param("userId") Long userId);
 

@@ -4,6 +4,7 @@ import ffdd.opsconsole.finance.mapper.WithdrawalPayoutMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -23,6 +24,7 @@ public class WithdrawalPayoutFinalizer {
     private final AuditLogService audit;
     private final TreasuryLedgerPostingFacade ledger;
     private final Clock clock;
+    private final EventOutboxService outbox;
 
     @Transactional(rollbackFor = Exception.class)
     public boolean submitted(WithdrawalPayoutMapper.PayoutRow row, long providerCid, String source) {
@@ -41,6 +43,7 @@ public class WithdrawalPayoutFinalizer {
                 .riskLevel("CRITICAL").result("SUCCESS")
                 .detail(Map.of("providerCid", providerCid, "providerIdempotencyKey", row.providerIdempotencyKey(),
                         "source", source, "amount", row.netReceive())).build());
+        publishProgress(row, "withdraw.processing", "SENT");
         return true;
     }
 
@@ -74,6 +77,7 @@ public class WithdrawalPayoutFinalizer {
                 .actorType("SYSTEM").actorUsername("withdrawal-payout-executor")
                 .riskLevel("CRITICAL").result("FAILED")
                 .detail(Map.of("error", safeError(error), "providerCid", cid, "source", source)).build());
+        publishProgress(row, "withdraw.payout_held", "TX_ORPHANED");
         return true;
     }
 
@@ -144,6 +148,29 @@ public class WithdrawalPayoutFinalizer {
                 .riskLevel("CRITICAL").result("CONFIRMED".equals(status) ? "SUCCESS" : "FAILED")
                 .detail(Map.of("providerCid", providerCid, "source", source, "eventNo", eventNo,
                         "status", status, "txid", txid == null ? "" : txid)).build());
+        // HDPay emits its settlement fact after persisting bank-specific evidence in the same transaction.
+        if (!("BANK-VND".equals(row.chain()) && "hdpay".equals(source))) {
+            var payload = new java.util.LinkedHashMap<String, Object>();
+            payload.put("withdrawal_id", row.withdrawalNo());
+            payload.put("user_id", row.userId());
+            payload.put("amount", row.amount());
+            payload.put("currency", "USDT");
+            payload.put("state", status);
+            payload.put("operator", source);
+            payload.put("reason", "CONFIRMED".equals(status) ? "PAYOUT_CONFIRMED" : "PAYOUT_REFUNDED");
+            if ("CONFIRMED".equals(status)) {
+                payload.put("chain_tx_hash", txid);
+                payload.put("confirmed_at", now.toString());
+            } else {
+                payload.put("address_hash", sha(row.targetAddress()));
+                Integer riskScore = mapper.riskScore(row.withdrawalNo());
+                if (riskScore == null) payload.put("risk_score_status", "UNAVAILABLE");
+                else payload.put("risk_score", riskScore);
+            }
+            boolean confirmed = "CONFIRMED".equals(status);
+            outbox.publish("WITHDRAWAL", row.withdrawalNo(), confirmed
+                    ? "withdraw.confirmed" : "withdraw.refunded", payload);
+        }
         return true;
     }
 
@@ -192,7 +219,13 @@ public class WithdrawalPayoutFinalizer {
                 .actorType("PROVIDER").actorUsername("provider").riskLevel("CRITICAL").result("FAILED")
                 .detail(Map.of("providerCid", providerCid, "providerStatus", providerStatus,
                         "eventNo", eventNo, "txid", txid == null ? "" : txid)).build());
+        publishProgress(row, "withdraw.payout_held", "TX_ORPHANED");
         return true;
+    }
+
+    private void publishProgress(WithdrawalPayoutMapper.PayoutRow row, String event, String state) {
+        outbox.publish("WITHDRAWAL", row.withdrawalNo(), event, Map.of(
+                "withdrawal_id", row.withdrawalNo(), "user_id", row.userId(), "state", state));
     }
 
     private int attempts(WithdrawalPayoutMapper.PayoutRow row) {

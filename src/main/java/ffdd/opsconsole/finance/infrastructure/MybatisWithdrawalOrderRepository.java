@@ -134,6 +134,11 @@ public class MybatisWithdrawalOrderRepository implements WithdrawalOrderReposito
     }
 
     @Override
+    public List<String> lockUserStatusWithdrawalNos(Long userId, boolean restoring) {
+        return mapper.lockUserStatusWithdrawalNos(userId, restoring);
+    }
+
+    @Override
     public int freezePendingByUserId(Long userId, String reason) {
         return mapper.freezePendingByUserId(userId, reason);
     }

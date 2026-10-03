@@ -206,14 +206,23 @@ public interface UserPaymentMethodMapper extends BaseMapper<Object> {
     @Insert("""
             INSERT IGNORE INTO nx_notification (
               biz_no, user_id, type, priority, title, body, cta_label, cta_href,
-              read_flag, push_status, push_attempts, next_push_at, created_at, updated_at, is_deleted
-            ) SELECT #{bizNo}, u.id, 'PAYMENT_METHOD', 'high', #{title}, #{body},
-                      '查看支付方式', #{href}, 0, 'PENDING', 0, NOW(), NOW(), NOW(), 0
+              read_flag, push_status, push_attempts, pushed_at, created_at, updated_at, is_deleted
+            ) SELECT #{bizNo}, u.id, 'PAYMENT_METHOD', 'high',
+                      CASE WHEN LOWER(u.language) LIKE 'zh%' THEN #{title}
+                           WHEN LOWER(u.language) LIKE 'vi%' THEN
+                             CASE WHEN #{bizNo} LIKE 'PAYMENT_METHOD_UNBOUND:%' THEN 'Đã gỡ phương thức thanh toán' ELSE 'Cần thay phương thức thanh toán' END
+                           ELSE CASE WHEN #{bizNo} LIKE 'PAYMENT_METHOD_UNBOUND:%' THEN 'Payment method removed' ELSE 'Replace your payment method' END END,
+                      CASE WHEN LOWER(u.language) LIKE 'zh%' THEN #{body}
+                           WHEN LOWER(u.language) LIKE 'vi%' THEN
+                             CASE WHEN #{bizNo} LIKE 'PAYMENT_METHOD_UNBOUND:%' THEN 'Phương thức thanh toán đã được gỡ khỏi tài khoản.' ELSE 'Vui lòng thay phương thức thanh toán dùng cho phiên dùng thử.' END
+                           ELSE CASE WHEN #{bizNo} LIKE 'PAYMENT_METHOD_UNBOUND:%' THEN 'The payment method has been removed from your account.' ELSE 'Please replace the payment method used by your trial.' END END,
+                      CASE WHEN LOWER(u.language) LIKE 'zh%' THEN '查看支付方式' WHEN LOWER(u.language) LIKE 'vi%' THEN 'Xem phương thức thanh toán' ELSE 'View payment methods' END,
+                      #{href}, 0, 'DELIVERED', 0, NOW(), NOW(), NOW(), 0
                 FROM nx_user u
                LEFT JOIN nx_user_preference pref
                  ON pref.user_id = u.id AND pref.is_deleted = 0
                WHERE u.id = #{userId} AND u.is_deleted = 0
-                 AND COALESCE(pref.notify_system, 1) = 1
+
             """)
     int queueNotification(@Param("userId") Long userId, @Param("bizNo") String bizNo,
                           @Param("title") String title, @Param("body") String body,

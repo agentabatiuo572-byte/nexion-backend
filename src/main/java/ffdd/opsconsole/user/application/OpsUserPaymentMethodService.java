@@ -125,8 +125,8 @@ public class OpsUserPaymentMethodService {
             mapper.promoteFallbackDefault(userId, sourceEnvironment);
         }
         mapper.queueNotification(userId, "PAYMENT_METHOD_UNBOUND:" + methodId + ":" + key,
-                "支付方式已解绑", "尾号 " + row.last4() + " 的支付方式已从 NexGrid 账户解绑，不再用于后续扣款。",
-                "/pages/me/wallet/cards");
+                "支付方式已解绑", "尾号 " + row.last4() + " 的支付方式已从 账户解绑，不再用于后续扣款。",
+                "/pages/me/wallet-cards");
         audit("USER_PAYMENT_METHOD_UNBIND", "USER_PAYMENT_METHOD", String.valueOf(methodId), userId, request, key,
                 Map.of("last4", row.last4(), "provider", row.provider(),
                         "providerRevocation", providerRevocation,
@@ -149,11 +149,11 @@ public class OpsUserPaymentMethodService {
         }
         mapper.queueNotification(userId, "PAYMENT_METHOD_REBIND:" + methodId + ":" + key,
                 "请更换试用扣款支付方式", "尾号 " + row.last4() + " 的支付方式正在被试用会话占用，请先完成换绑。",
-                "/pages/me/wallet/cards/new");
+                "/pages/me/wallet-cards-new");
         audit("USER_PAYMENT_METHOD_REBIND_NOTICE", "USER_PAYMENT_METHOD", String.valueOf(methodId), userId, request, key,
                 Map.of("trialRefId", row.trialRefId() == null ? "" : row.trialRefId(), "last4", row.last4(),
-                        "notification", "QUEUED"));
-        return Map.of("id", methodId, "status", "NOTIFIED", "notification", "QUEUED");
+                        "notification", "DELIVERED"));
+        return Map.of("id", methodId, "status", "NOTIFIED", "notification", "DELIVERED");
     }
 
     private void validateCommand(String key, UserPaymentMethodCommandRequest request, boolean versionRequired) {

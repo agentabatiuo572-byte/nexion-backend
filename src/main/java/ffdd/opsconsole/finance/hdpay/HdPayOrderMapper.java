@@ -463,7 +463,7 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
             INSERT IGNORE INTO nx_notification (
                 biz_no, user_id, type, priority, title, body,
                 cta_label, cta_href, read_flag, push_status, push_attempts,
-                next_push_at, created_at, updated_at, is_deleted
+                pushed_at, created_at, updated_at, is_deleted
             )
             SELECT #{bizNo}, u.id, 'WALLET', 'high',
                    CASE
@@ -476,7 +476,10 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
                      WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN CONCAT(#{amountUsdt}, ' USDT 已到账。')
                      ELSE CONCAT(#{amountUsdt}, ' USDT has been credited to your wallet.')
                    END,
-                   NULL, NULL, 0, 'PENDING', 0, NOW(), NOW(), NOW(), 0
+                   CASE WHEN LOWER(COALESCE(u.language, '')) LIKE 'vi%' THEN 'Xem ví'
+                        WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN '查看钱包'
+                        ELSE 'View wallet' END,
+                   '/pages/me/wallet', 0, 'DELIVERED', 0, NOW(), NOW(), NOW(), 0
               FROM nx_user u
              WHERE u.id = #{userId} AND u.is_deleted = 0
             """)

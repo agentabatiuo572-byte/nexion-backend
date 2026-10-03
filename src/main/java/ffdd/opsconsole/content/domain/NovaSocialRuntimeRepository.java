@@ -11,6 +11,8 @@ public interface NovaSocialRuntimeRepository {
 
     boolean completeSlot(String slotKey, String leaseOwner, LocalDateTime now);
 
+    default Optional<String> notificationChannel(Long userId, Long notificationId) { return Optional.empty(); }
+
     Optional<LocalDateTime> latestNotificationAt();
 
     Optional<LocalDateTime> latestNotificationAt(String notificationType);

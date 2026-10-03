@@ -250,6 +250,9 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
     int retryCallbackInbox(@Param("eventNo") String eventNo, @Param("error") String error,
                            @Param("now") LocalDateTime now);
 
+    @Select("SELECT d2_k4_risk_score FROM nx_withdrawal_order WHERE withdrawal_no=#{withdrawalNo} AND is_deleted=0")
+    Integer riskScore(String withdrawalNo);
+
     record PayoutRow(String withdrawalNo, Long userId, String chain, String targetAddress,
                      BigDecimal amount, BigDecimal netReceive, BigDecimal nexBurned, String status,
                      LocalDateTime payoutDueAt, Long providerCid, String providerIdempotencyKey,

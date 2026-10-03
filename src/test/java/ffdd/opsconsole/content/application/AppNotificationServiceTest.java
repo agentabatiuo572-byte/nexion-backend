@@ -249,6 +249,19 @@ class AppNotificationServiceTest {
     }
 
     @Test
+    void businessKindDoesNotReplaceThePersistedNovaSourceChannel() {
+        when(repository.lockNotificationEventFact(7L,99L)).thenReturn(Optional.of(fact(false,"nova_commission","/pages/team/team")));
+        when(repository.findNotificationActionReceipt("nova-business-click")).thenReturn(Optional.empty());
+        when(repository.recordNotificationAction(7L,99L,"cta","/pages/team/team","nova-business-click")).thenReturn(true);
+        when(novaRuntime.notificationChannel(7L,99L)).thenReturn(Optional.of("team_event"));
+        assertThat(service.recordAction(7L,99L,"cta","nova-business-click").getCode()).isZero();
+        verify(outbox).publishUserEvent(org.mockito.ArgumentMatchers.eq("NOTIFICATION"),org.mockito.ArgumentMatchers.eq("99"),
+                org.mockito.ArgumentMatchers.eq("nova.push_clicked"),org.mockito.ArgumentMatchers.eq(7L),
+                org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyInt(),org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.argThat(payload -> payload.toString().contains("channel=team_event")));
+    }
+
+    @Test
     void reusedIdempotencyKeyCannotBeReboundToAnotherNotification() {
         when(repository.findNotificationActionReceipt("idem-action-003")).thenReturn(Optional.of(
                 new NotificationActionReceipt(8L, 100L, "cta", "/pages/team/team", "idem-action-003")));

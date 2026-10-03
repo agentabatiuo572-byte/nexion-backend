@@ -13,14 +13,15 @@ class NotificationPreferenceDeliveryContractTest {
         String nova = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/mapper/NovaSocialRuntimeMapper.java"));
         String payment = Files.readString(Path.of("src/main/java/ffdd/opsconsole/user/mapper/UserPaymentMethodMapper.java"));
         String preference = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/mapper/NotificationPreferenceMapper.java"));
-        for (String source : new String[] { campaign, nova, payment }) {
+        for (String source : new String[] { campaign, nova }) {
             assertThat(source).contains("nx_user_preference");
-            assertThat(source).contains("notify_system");
+            assertThat(source).contains("ELSE 1 END, 1)");
             assertThat(source).contains("COALESCE");
         }
         assertThat(campaign).contains("notify_commission", "notify_team", "notify_staking", "notify_market", "notify_genesis");
         assertThat(nova).contains("notify_commission", "notify_team", "notify_staking", "notify_market", "notify_genesis");
-        assertThat(campaign).contains("notificationIds", "<foreach", "n.id IN", "notify_system");
+        assertThat(campaign).contains("notificationIds", "<foreach", "n.id IN", "ELSE 1 END, 1)");
+        assertThat(payment).contains("\'DELIVERED\'").doesNotContain("COALESCE(pref.notify_system, 1) = 1");
         assertThat(preference).contains(
                 "notify_system AS `system`",
                 "ON DUPLICATE KEY UPDATE",

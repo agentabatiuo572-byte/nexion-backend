@@ -17,7 +17,7 @@ class NotificationPreferenceCriticalDeliveryContractTest {
                 .doesNotContain("COALESCE(pref.notify_system, 1) = 1");
         assertThat(method(campaign, "int insertCampaignNotifications"))
                 .contains("LOWER(#{priority}) = 'critical'")
-                .contains("ELSE pref.notify_system END, 1) = 1");
+                .contains("ELSE 1 END, 1) = 1");
 
         for (String signature : new String[] {
                 "int markCampaignNotificationsDelivered",
@@ -30,12 +30,12 @@ class NotificationPreferenceCriticalDeliveryContractTest {
                 "int markAllUserNotificationsRead" }) {
             assertThat(method(campaign, signature))
                     .contains("LOWER(COALESCE(n.priority, '')) = 'critical'")
-                    .contains("ELSE pref.notify_system END, 1) = 1");
+                    .contains("ELSE 1 END, 1) = 1");
         }
         for (String signature : new String[] { "int markNotificationsDelivered", "List<NotificationEventFact> notificationFacts" }) {
             assertThat(method(nova, signature))
                     .contains("LOWER(COALESCE(n.priority, '')) = 'critical'")
-                    .contains("ELSE pref.notify_system END, 1) = 1");
+                    .contains("ELSE 1 END, 1) = 1");
         }
     }
 

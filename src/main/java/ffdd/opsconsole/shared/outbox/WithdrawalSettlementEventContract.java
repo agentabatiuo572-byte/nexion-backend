@@ -16,7 +16,8 @@ final class WithdrawalSettlementEventContract {
             require(!payload.has("rail") && !payload.has("provider") && !payload.has("provider_order_id")
                     && !payload.has("amount_vnd"));
             if (confirmed) require(text(payload, "chain_tx_hash"));
-            else require(payload.path("risk_score").isNumber());
+            else require(payload.path("risk_score").isNumber()
+                    || (!payload.has("risk_score") && "UNAVAILABLE".equals(payload.path("risk_score_status").asText())));
             return;
         }
         require("HDPAY".equals(payload.path("provider").asText())

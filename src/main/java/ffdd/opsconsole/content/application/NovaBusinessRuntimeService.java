@@ -150,6 +150,7 @@ public class NovaBusinessRuntimeService {
                 continue;
             }
 
+            String eventNotificationType = businessNotificationType(adapter.channel(), fact.eventName());
             String bizNo = "NOVA-" + adapter.channel() + "-" + fact.sourceEventId();
             if (!adapter.targeted()) {
                 NovaBusinessFanoutProgress progress = existingFanout.orElse(new NovaBusinessFanoutProgress(0, 0));
@@ -164,7 +165,7 @@ public class NovaBusinessRuntimeService {
                 }
                 String batchBizNo = bizNo + "-B" + upper.get();
                 int inserted = runtimeRepository.enqueueBusinessNotificationBatch(
-                        adapter.channel(), notificationType, batchBizNo,
+                        adapter.channel(), eventNotificationType, batchBizNo,
                         progress.cursorUserId(), upper.get(),
                         template.titleZh(), template.bodyZh(), template.titleVi(), template.bodyVi(),
                         fallback(template.titleEn(), template.titleZh()),
@@ -192,7 +193,7 @@ public class NovaBusinessRuntimeService {
                         more ? "FANOUT_BATCH_COMMITTED_MORE_PENDING" : "FANOUT_COMPLETE");
             }
             int inserted = runtimeRepository.enqueueBusinessNotifications(
-                    adapter.channel(), notificationType, fact.sourceEventId(),
+                    adapter.channel(), eventNotificationType, fact.sourceEventId(),
                     adapter.targeted() ? fact.userId() : null,
                     bizNo,
                     template.titleZh(), template.bodyZh(),
@@ -306,6 +307,17 @@ public class NovaBusinessRuntimeService {
         } catch (ArithmeticException | NumberFormatException exception) {
             return null;
         }
+    }
+
+    static String businessNotificationType(String channel, String event) {
+        return switch (event) {
+            case "commission.paid" -> "NOVA_COMMISSION";
+            case "referral.bound" -> "NOVA_TEAM";
+            case "staking.opened", "staking.claimed", "staking.early_withdrawn" -> "NOVA_STAKING";
+            case "genesis.purchased" -> "NOVA_GENESIS";
+            case "market.curve_advanced" -> "NOVA_MARKET";
+            default -> "NOVA_" + channel.toUpperCase(Locale.ROOT);
+        };
     }
 
     private String notificationType(String channel) {

@@ -1779,8 +1779,9 @@ class OpsFinanceServiceTest {
                 org.mockito.ArgumentMatchers.eq("withdraw.approved"),
                 payload.capture());
         assertThat(payload.getValue()).containsOnlyKeys(
-                "withdrawal_id", "amount", "currency", "state", "reason",
+                "withdrawal_id", "user_id", "amount", "currency", "state", "reason",
                 "address_hash", "risk_score", "operator");
+        assertThat(payload.getValue()).containsEntry("user_id", 1001L);
         verify(treasuryLedgerRepository, org.mockito.Mockito.times(1)).recordWithdrawalReserve(
                 org.mockito.ArgumentMatchers.eq("WD-H1-FAST-1"),
                 org.mockito.ArgumentMatchers.eq(new BigDecimal("100.00")),

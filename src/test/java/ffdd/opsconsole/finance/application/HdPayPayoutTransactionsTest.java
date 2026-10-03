@@ -49,7 +49,8 @@ class HdPayPayoutTransactionsTest {
         verify(bank, never()).clientIp(anyString()); // Client IP is audit data, not provider routing.
         verify(bank,never()).processing(anyString(),any());
         verify(bank,never()).dispatch(anyString(),any());
-        verifyNoInteractions(finalizer, outbox);
+        verifyNoInteractions(finalizer);
+        verify(outbox).publish(eq("WITHDRAWAL"),eq(no),eq("withdraw.payout_held"),any());
     }
     HdPayPayoutGateway.Order response(int status) {
         return new HdPayPayoutGateway.Order(no, 123L, status, quote.amountVnd(), "0123456789", "NGUYEN VAN A", "2");

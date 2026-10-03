@@ -5,6 +5,8 @@ import ffdd.opsconsole.finance.facade.FinanceWithdrawalControlFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.util.Map;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -14,12 +16,15 @@ import org.springframework.util.StringUtils;
 public class FinanceWithdrawalControlFacadeAdapter implements FinanceWithdrawalControlFacade {
     private final WithdrawalOrderRepository withdrawalRepository;
     private final AuditLogService auditLogService;
+    private final EventOutboxService outbox;
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int freezePendingWithdrawalsForUser(Long userId, String reason, String operator) {
         if (userId == null || userId <= 0) {
             return 0;
         }
+        var affected = withdrawalRepository.lockUserStatusWithdrawalNos(userId, false);
         int updated = withdrawalRepository.freezePendingByUserId(userId, text(reason, "USER_STATUS_FROZEN"));
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("D2_WITHDRAWALS_FROZEN_BY_C2")
@@ -33,14 +38,19 @@ public class FinanceWithdrawalControlFacadeAdapter implements FinanceWithdrawalC
                 .riskLevel("HIGH")
                 .detail(Map.of("updatedWithdrawals", updated, "reason", text(reason, "")))
                 .build());
+        if (updated > 0) for (String withdrawalNo : affected)
+            outbox.publish("WITHDRAWAL", withdrawalNo, "withdraw.account_frozen", Map.of(
+                    "withdrawal_id", withdrawalNo, "user_id", userId, "state", "FROZEN"));
         return updated;
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int restoreWithdrawalsFrozenByUserStatus(Long userId, String reason, String operator) {
         if (userId == null || userId <= 0) {
             return 0;
         }
+        var affected = withdrawalRepository.lockUserStatusWithdrawalNos(userId, true);
         int updated = withdrawalRepository.restoreFrozenByUserStatus(userId);
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("D2_WITHDRAWALS_RESTORED_BY_C2")
@@ -54,6 +64,9 @@ public class FinanceWithdrawalControlFacadeAdapter implements FinanceWithdrawalC
                 .riskLevel("HIGH")
                 .detail(Map.of("restoredWithdrawals", updated, "reason", text(reason, "")))
                 .build());
+        if (updated > 0) for (String withdrawalNo : affected)
+            outbox.publish("WITHDRAWAL", withdrawalNo, "withdraw.account_restored", Map.of(
+                    "withdrawal_id", withdrawalNo, "user_id", userId, "state", "RESTORED"));
         return updated;
     }
 

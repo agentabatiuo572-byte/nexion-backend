@@ -35,7 +35,7 @@ class BankWithdrawalMySqlTest {
     static final LocalDateTime NOW = LocalDateTime.now(CLOCK);
     static BigDecimal bd(String value) { return new BigDecimal(value); }
     static String url(String endpoint, String schema) {
-        if (!"127.0.0.1:13306".equals(endpoint) || schema == null || (!schema.isEmpty() && !schema.matches(PREFIX + "[a-f0-9]{32}")))
+        if (!Set.of("127.0.0.1:13306", "127.0.0.1:33329").contains(endpoint) || schema == null || (!schema.isEmpty() && !schema.matches(PREFIX + "[a-f0-9]{32}")))
             throw new IllegalArgumentException("owned isolated MySQL endpoint/schema required");
         return "jdbc:mysql://" + endpoint + "/" + schema + "?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true";
     }
@@ -52,7 +52,8 @@ class BankWithdrawalMySqlTest {
     static void isolated(Work work) throws Exception {
         String schema = PREFIX + UUID.randomUUID().toString().replace("-", "");
         var admin = new JdbcTemplate(ds(""));
-        assertEquals(13306, admin.queryForObject("SELECT @@port", Integer.class));
+        assertEquals(Integer.parseInt(System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT").split(":")[1]),
+                admin.queryForObject("SELECT @@port", Integer.class));
         admin.execute("CREATE DATABASE " + schema);
         try { work.run(new Fixture(schema)); }
         finally { admin.execute("DROP DATABASE " + schema); }
@@ -137,7 +138,7 @@ class BankWithdrawalMySqlTest {
                     .when(ledger).settleBankWithdrawalReserve(anyString(),any(),anyLong(),any());
             doAnswer(i -> { treasury.reverseLegacyBankWithdrawalReserve(i.getArgument(0),i.getArgument(1),i.getArgument(2)); return null; })
                     .when(ledger).reverseLegacyBankWithdrawalReserve(anyString(),any(),any());
-            var finalizer = proxy(new WithdrawalPayoutFinalizer(payouts, audit, ledger, CLOCK));
+            var finalizer = proxy(new WithdrawalPayoutFinalizer(payouts, audit, ledger, CLOCK, mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class)));
             transactions = proxy(new HdPayPayoutTransactions(bank, mock(BankAccountRoutingGate.class), users, payouts, finalizer, cipher, transport, properties, config,
                     mock(OpsFinanceService.class), audit, outbox, CLOCK));
             var withdrawals = mock(AppWithdrawalService.class);
@@ -323,7 +324,10 @@ class BankWithdrawalMySqlTest {
             f.transactions.reconcile(NO,f.response(5));
             long version = f.bank.version(NO);
             assertEquals("MANUAL_REVIEW",f.transactions.recover(NO,version,f.response(5),"fixture-admin","check contradictory provider result"));
-            f.wallet("900","100"); verifyNoInteractions(f.ledger,f.outbox);
+            f.wallet("900","100"); verifyNoInteractions(f.ledger);
+            verify(f.outbox).publish("WITHDRAWAL", NO, "withdraw.payout_held", Map.of(
+                    "withdrawal_id", NO, "user_id", 71L, "state", "TX_ORPHANED"));
+            verifyNoMoreInteractions(f.outbox);
         });
     }
     @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
@@ -379,6 +383,7 @@ class BankWithdrawalMySqlTest {
     void accountRoutedQuotesCannotBeCreatedWithoutVerifiedBankIdentity() throws Exception {
         isolated(f -> {
             f.seedBeneficiary();
+            when(f.accountRouting.contractConfirmed()).thenReturn(false);
             assertEquals("BANK_ROUTING_IDENTITY_UNVERIFIED", assertThrows(
                     ffdd.opsconsole.shared.exception.BizException.class,
                     () -> f.service.quote(71,bd("100"))).getMessage());

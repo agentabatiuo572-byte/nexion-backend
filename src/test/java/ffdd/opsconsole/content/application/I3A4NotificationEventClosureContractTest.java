@@ -26,6 +26,10 @@ class I3A4NotificationEventClosureContractTest {
         Path migrationPath = Path.of("scripts/migrations/20260722_i3_a4_event_closure.sql");
         assertThat(migrationPath).exists();
         String migration = Files.readString(migrationPath, StandardCharsets.UTF_8);
+        String startup = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        assertThat(startup).contains("20260722_i3_a4_event_closure.sql");
+        assertThat(startup.indexOf("20260717_a4_event_governance_closure.sql"))
+                .isLessThan(startup.indexOf("20260722_i3_a4_event_closure.sql"));
         String dispatch = Files.readString(Path.of(
                 "src/main/java/ffdd/opsconsole/content/application/NotificationCampaignDispatchExecutor.java"));
         String app = Files.readString(Path.of(

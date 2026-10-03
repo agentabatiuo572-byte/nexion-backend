@@ -132,10 +132,24 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
     @Select("""
             SELECT MAX(n.created_at)
               FROM nx_notification n
-             WHERE n.is_deleted = 0
-               AND n.type = #{notificationType}
+              JOIN nx_nova_business_event_receipt r ON (n.biz_no = CONCAT('NOVA-', r.channel_key, '-', r.source_event_id)
+                   OR (LEFT(n.biz_no, CHAR_LENGTH(CONCAT('NOVA-', r.channel_key, '-', r.source_event_id, '-B')))
+                         = CONCAT('NOVA-', r.channel_key, '-', r.source_event_id, '-B')
+                       AND SUBSTRING(n.biz_no, CHAR_LENGTH(CONCAT('NOVA-', r.channel_key, '-', r.source_event_id, '-B')) + 1) REGEXP '^[0-9]+$'))
+             WHERE n.is_deleted = 0 AND LOWER(r.channel_key) = LOWER(SUBSTRING(#{notificationType}, 6))
             """)
     LocalDateTime latestNotificationAtByType(@Param("notificationType") String notificationType);
+
+    @Select("""
+            SELECT r.channel_key FROM nx_notification n
+              JOIN nx_nova_business_event_receipt r ON (n.biz_no = CONCAT('NOVA-', r.channel_key, '-', r.source_event_id)
+                   OR (LEFT(n.biz_no, CHAR_LENGTH(CONCAT('NOVA-', r.channel_key, '-', r.source_event_id, '-B')))
+                         = CONCAT('NOVA-', r.channel_key, '-', r.source_event_id, '-B')
+                       AND SUBSTRING(n.biz_no, CHAR_LENGTH(CONCAT('NOVA-', r.channel_key, '-', r.source_event_id, '-B')) + 1) REGEXP '^[0-9]+$'))
+             WHERE n.id=#{notificationId} AND n.user_id=#{userId} AND n.is_deleted=0
+             LIMIT 1
+            """)
+    String notificationChannel(@Param("userId") Long userId, @Param("notificationId") Long notificationId);
 
     @Select("""
             <script>
@@ -274,7 +288,6 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                AND t.status = 'PUBLISHED'
               WHERE u.is_deleted = 0
                 AND UPPER(u.status) = 'ACTIVE'
-                AND COALESCE(pref.notify_system, 1) = 1
                AND NOT EXISTS (
                    SELECT 1
                      FROM nx_notification previous
@@ -331,18 +344,29 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                 AND (#{userId} IS NULL OR u.id = #{userId})
                 AND COALESCE(CASE LOWER(#{notificationType})
                     WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                     WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                     WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                     WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                     WHEN 'genesis' THEN pref.notify_genesis
-                    ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                    ELSE 1 END, 1) = 1
                AND NOT EXISTS (
-                   SELECT 1
-                     FROM nx_notification previous
-                    WHERE previous.user_id = u.id
-                      AND previous.is_deleted = 0
-                      AND previous.type = #{notificationType}
-                      AND previous.created_at > #{cooldownSince}
+                   SELECT 1 FROM nx_notification n
+                     JOIN nx_nova_business_event_receipt r ON (n.biz_no = CONCAT('NOVA-', r.channel_key, '-', r.source_event_id)
+                   OR (LEFT(n.biz_no, CHAR_LENGTH(CONCAT('NOVA-', r.channel_key, '-', r.source_event_id, '-B')))
+                         = CONCAT('NOVA-', r.channel_key, '-', r.source_event_id, '-B')
+                       AND SUBSTRING(n.biz_no, CHAR_LENGTH(CONCAT('NOVA-', r.channel_key, '-', r.source_event_id, '-B')) + 1) REGEXP '^[0-9]+$'))
+                    WHERE n.user_id = u.id AND n.is_deleted = 0
+                      AND r.channel_key = #{channel} AND n.created_at > #{cooldownSince}
                )
             """)
     int enqueueBusinessNotifications(
@@ -383,16 +407,29 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                 AND u.id > #{afterUserId} AND NOT (u.id > #{upperUserId})
                 AND COALESCE(CASE LOWER(#{notificationType})
                     WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                     WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                     WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                     WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                     WHEN 'genesis' THEN pref.notify_genesis
-                    ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                    ELSE 1 END, 1) = 1
                AND NOT EXISTS (
-                   SELECT 1 FROM nx_notification previous
-                    WHERE previous.user_id = u.id AND previous.is_deleted = 0
-                      AND previous.type = #{notificationType}
-                      AND previous.created_at > #{cooldownSince})
+                   SELECT 1 FROM nx_notification n
+                     JOIN nx_nova_business_event_receipt r ON (n.biz_no = CONCAT('NOVA-', r.channel_key, '-', r.source_event_id)
+                   OR (LEFT(n.biz_no, CHAR_LENGTH(CONCAT('NOVA-', r.channel_key, '-', r.source_event_id, '-B')))
+                         = CONCAT('NOVA-', r.channel_key, '-', r.source_event_id, '-B')
+                       AND SUBSTRING(n.biz_no, CHAR_LENGTH(CONCAT('NOVA-', r.channel_key, '-', r.source_event_id, '-B')) + 1) REGEXP '^[0-9]+$'))
+                    WHERE n.user_id = u.id AND n.is_deleted = 0
+                      AND r.channel_key = #{channel} AND n.created_at > #{cooldownSince})
             """)
     int enqueueBusinessNotificationBatch(
             @Param("channel") String channel, @Param("notificationType") String notificationType,
@@ -419,11 +456,21 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                     LOWER(COALESCE(n.priority, '')) = 'critical'
                     OR COALESCE(CASE LOWER(n.type)
                         WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                         WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                         WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                         WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                         WHEN 'genesis' THEN pref.notify_genesis
-                        ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                        ELSE 1 END, 1) = 1
                 )
             """)
     int markNotificationsDelivered(@Param("bizNo") String bizNo, @Param("now") LocalDateTime now);
@@ -445,11 +492,21 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                     LOWER(COALESCE(n.priority, '')) = 'critical'
                     OR COALESCE(CASE LOWER(n.type)
                         WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'nova_commission' THEN pref.notify_commission
+                       WHEN 'nova_commission_event' THEN pref.notify_commission
                         WHEN 'team' THEN pref.notify_team
+                       WHEN 'nova_team' THEN pref.notify_team
+                       WHEN 'nova_team_event' THEN pref.notify_team
                         WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'nova_staking' THEN pref.notify_staking
+                       WHEN 'nova_staking_event' THEN pref.notify_staking
                         WHEN 'market' THEN pref.notify_market
+                       WHEN 'nova_market' THEN pref.notify_market
+                       WHEN 'nova_market_event' THEN pref.notify_market
                         WHEN 'genesis' THEN pref.notify_genesis
-                        ELSE pref.notify_system END, 1) = 1
+                       WHEN 'nova_genesis' THEN pref.notify_genesis
+                       WHEN 'nova_genesis_event' THEN pref.notify_genesis
+                        ELSE 1 END, 1) = 1
                 )
              ORDER BY n.id
             """)

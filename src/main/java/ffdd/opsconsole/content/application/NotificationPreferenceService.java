@@ -12,10 +12,14 @@ import org.springframework.transaction.annotation.Transactional;
 public class NotificationPreferenceService {
     private final NotificationPreferenceMapper mapper;
 
-    @Transactional(readOnly = true)
+    @Transactional
     public ApiResult<NotificationPreferenceView> get(Long userId) {
         if (!validUser(userId)) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         NotificationPreferenceView current = mapper.findByUserId(userId);
+        if (current != null && !current.system()) {
+            mapper.upsert(userId, null, null, null, null, null, true);
+            current = mandatory(current);
+        }
         return ApiResult.ok(current == null ? NotificationPreferenceView.allEnabled(userId) : current);
     }
 
@@ -28,11 +32,16 @@ public class NotificationPreferenceService {
         // Nullable fields are intentional: the mapper performs one SQL statement
         // and leaves omitted columns untouched in the duplicate-key branch.
         mapper.upsert(userId, request.commission(), request.team(), request.staking(),
-                request.market(), request.genesis(), request.system());
+                request.market(), request.genesis(), true);
         NotificationPreferenceView canonical = mapper.findByUserId(userId);
         return ApiResult.ok(canonical == null
                 ? NotificationPreferenceView.allEnabled(userId)
-                : canonical);
+                : mandatory(canonical));
+    }
+
+    private NotificationPreferenceView mandatory(NotificationPreferenceView row) {
+        return new NotificationPreferenceView(row.userId(), row.commission(), row.team(), row.staking(),
+                row.market(), row.genesis(), true);
     }
 
     private boolean validUser(Long userId) {

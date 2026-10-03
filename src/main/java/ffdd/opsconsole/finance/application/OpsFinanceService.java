@@ -1948,6 +1948,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("withdrawal_id", order.withdrawalNo());
+        payload.put("user_id", order.userId());
         payload.put("amount", order.amount());
         payload.put("currency", order.asset());
         payload.put("state", state);
@@ -1973,6 +1974,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("withdrawal_id", order.withdrawalNo());
+        payload.put("user_id", order.userId());
         payload.put("amount", order.amount());
         payload.put("currency", order.asset());
         payload.put("state", D2WithdrawalStateMachine.REVIEW_PASSED);

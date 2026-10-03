@@ -94,6 +94,8 @@ public interface WithdrawalOrderRepository {
         return false;
     }
 
+    default List<String> lockUserStatusWithdrawalNos(Long userId, boolean restoring) { return List.of(); }
+
     int freezePendingByUserId(Long userId, String reason);
 
     int restoreFrozenByUserStatus(Long userId);

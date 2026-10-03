@@ -38,8 +38,10 @@ public class HdPayPayoutTransactions {
         if (order == null || !"READY".equals(order.state())) return null;
         if (!accountRouting.contractConfirmed()) {
             String reason = "BANK_ROUTING_IDENTITY_UNVERIFIED";
-            if (bank.returnForReview(orderNo, LocalDateTime.now(clock), reason) == 1)
+            if (bank.returnForReview(orderNo, LocalDateTime.now(clock), reason) == 1) {
                 record(order, "BANK_PAYOUT_ROUTING_IDENTITY_UNVERIFIED", Map.of("reason", reason));
+                progressEvent(order, "withdraw.payout_held", "REVIEW_PENDING");
+            }
             return null;
         }
         if (!properties.ready(transport)) return null;
@@ -49,8 +51,10 @@ public class HdPayPayoutTransactions {
         String block = finance.bankPayoutDispatchBlockReason(orderNo);
         if (block != null) {
             if (block.equals("BANK_PAYOUT_RISK_REVIEW_REQUIRED")) {
-                if (bank.returnForReview(orderNo, LocalDateTime.now(clock), block) == 1)
+                if (bank.returnForReview(orderNo, LocalDateTime.now(clock), block) == 1) {
                     record(order, "BANK_PAYOUT_RISK_REVIEW_REQUIRED", Map.of("reason", block));
+                    progressEvent(order, "withdraw.payout_held", "REVIEW_PENDING");
+                }
             }
             return null;
         }
@@ -66,6 +70,7 @@ public class HdPayPayoutTransactions {
         if (bank.processing(orderNo, now) != 1 || bank.dispatch(orderNo, now) != 1) throw new BizException(409, "BANK_PAYOUT_CLAIM_CONFLICT");
         record(order, "BANK_PAYOUT_DISPATCH_INTENT", Map.of("amountVnd", quote.amountVnd(), "bankCode", "", "payType", HdPayPayoutProperties.PAY_TYPE,
                 "serverIp", properties.serverIp(transport)));
+        progressEvent(order, "withdraw.processing", "PROCESSING");
         return request;
     }
 
@@ -206,9 +211,16 @@ public class HdPayPayoutTransactions {
 
     private void hold(BankWithdrawalMapper.Order order, String reason) {
         bank.progress(order.withdrawalNo(), "MANUAL_REVIEW", null, order.providerStatus(), reason, LocalDateTime.now(clock));
-        bank.hold(order.withdrawalNo(), reason, LocalDateTime.now(clock));
+        int held = bank.hold(order.withdrawalNo(), reason, LocalDateTime.now(clock));
+        if (held == 1 && !"MANUAL_REVIEW".equals(order.state()))
+            progressEvent(order, "withdraw.payout_held", "TX_ORPHANED");
         record(order, "BANK_PAYOUT_MANUAL_REVIEW_REQUIRED", Map.of("reason", reason));
     }
+    private void progressEvent(BankWithdrawalMapper.Order order, String event, String state) {
+        outbox.publish("WITHDRAWAL", order.withdrawalNo(), event, Map.of(
+                "withdrawal_id", order.withdrawalNo(), "user_id", order.userId(), "state", state));
+    }
+
     private boolean snapshotMatches(BankWithdrawalMapper.Order order, BankWithdrawalMapper.Quote quote,
                                     WithdrawalPayoutMapper.PayoutRow withdrawal) {
         return quote != null && withdrawal != null && "BANK-VND".equals(withdrawal.chain())

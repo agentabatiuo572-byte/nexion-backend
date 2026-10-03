@@ -39,10 +39,19 @@ class NotificationPreferenceServiceTest {
         assertThat(result.getData().commission()).isFalse();
         assertThat(result.getData().team()).isTrue();
         InOrder order = inOrder(mapper);
-        order.verify(mapper).upsert(7L, false, null, null, null, null, null);
+        order.verify(mapper).upsert(7L, false, null, null, null, null, true);
         order.verify(mapper).findByUserId(7L);
         assertThat(reads).hasValue(1);
         verify(mapper, never()).upsert(eq(8L), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void historicalSystemMuteIsPersistentlyRepairedAndCannotBePatchedOff() {
+        when(mapper.findByUserId(7L)).thenReturn(new NotificationPreferenceView(7L, false, false, false, false, false, false));
+        assertThat(service.get(7L).getData().system()).isTrue();
+        verify(mapper).upsert(7L, null, null, null, null, null, true);
+        assertThat(service.patch(7L, new NotificationPreferenceService.PatchRequest(null,null,null,null,null,false)).getData().system()).isTrue();
+        verify(mapper, times(2)).upsert(7L, null, null, null, null, null, true);
     }
 
     @Test

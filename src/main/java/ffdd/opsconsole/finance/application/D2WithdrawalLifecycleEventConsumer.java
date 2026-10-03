@@ -22,7 +22,7 @@ public class D2WithdrawalLifecycleEventConsumer {
             "withdraw.unfrozen",
             "withdraw.refunded",
             "withdraw.review_due",
-            "withdraw.confirmed");
+            "withdraw.confirmed", "withdraw.processing", "withdraw.payout_held", "withdraw.account_frozen", "withdraw.account_restored");
 
     private final EventConsumerDeliveryService deliveryService;
 

@@ -92,7 +92,12 @@ public class EventOutboxDispatchScheduler {
             "withdraw.unfrozen",
             "withdraw.refunded",
             "withdraw.review_due",
-            "withdraw.confirmed");
+            "withdraw.confirmed",
+            "withdraw.processing",
+            "withdraw.payout_held", "withdraw.account_frozen", "withdraw.account_restored");
+    static final List<String> BUSINESS_NOTIFICATION_EVENT_TYPES = List.of(
+            "order.refunded", "device.activated", "device.deactivated", "quest.claimed",
+            "event.claimed", "daily.milestone_claimed", "auth.password_reset_completed");
     static final List<String> D3_TREASURY_LIFECYCLE_EVENT_TYPES = List.of(
             "admin.treasury_forecast_config_changed",
             "admin.treasury_reserve_injected");
@@ -148,6 +153,7 @@ public class EventOutboxDispatchScheduler {
         supportedEventTypes.addAll(C3_ASSET_ADJUSTMENT_EVENT_TYPES);
         supportedEventTypes.addAll(D1_TOPUP_LIFECYCLE_EVENT_TYPES);
         supportedEventTypes.addAll(D2_WITHDRAWAL_LIFECYCLE_EVENT_TYPES);
+        supportedEventTypes.addAll(BUSINESS_NOTIFICATION_EVENT_TYPES);
         supportedEventTypes.addAll(D3_TREASURY_LIFECYCLE_EVENT_TYPES);
         supportedEventTypes.addAll(H3_QUEST_FACT_EVENT_TYPES);
         supportedEventTypes.addAll(H3_WEEKLY_PARTICIPATION_SOURCE_EVENT_TYPES);

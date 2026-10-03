@@ -297,6 +297,7 @@ class OutboxDispatchCoverageTest {
         types.addAll(EventOutboxDispatchScheduler.C3_ASSET_ADJUSTMENT_EVENT_TYPES);
         types.addAll(EventOutboxDispatchScheduler.D1_TOPUP_LIFECYCLE_EVENT_TYPES);
         types.addAll(EventOutboxDispatchScheduler.D2_WITHDRAWAL_LIFECYCLE_EVENT_TYPES);
+        types.addAll(EventOutboxDispatchScheduler.BUSINESS_NOTIFICATION_EVENT_TYPES);
         types.addAll(EventOutboxDispatchScheduler.D3_TREASURY_LIFECYCLE_EVENT_TYPES);
         types.addAll(EventOutboxDispatchScheduler.H3_QUEST_FACT_EVENT_TYPES);
         types.addAll(EventOutboxDispatchScheduler.H3_WEEKLY_PARTICIPATION_SOURCE_EVENT_TYPES);

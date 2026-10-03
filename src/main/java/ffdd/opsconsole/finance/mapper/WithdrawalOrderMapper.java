@@ -650,6 +650,20 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
             """)
     Integer lockDevelopmentH1Hold(@Param("withdrawalNo") String withdrawalNo);
 
+    @Select("""
+            <script>
+            SELECT withdrawal_no FROM nx_withdrawal_order
+             WHERE user_id=#{userId} AND is_deleted=0
+             <choose>
+               <when test="restoring">AND status='FROZEN' AND c2_frozen_by_user_status=1</when>
+               <otherwise>AND status IN ('PENDING','SUBMITTED','REVIEWING','REVIEW_PENDING','DELAYED','EXTENDED_HOLD',
+                 'PENDING_CHAIN','REVIEW_PASSED','PROCESSING','CHAIN_SUBMITTED','SENT','DEAD','TX_ORPHANED')</otherwise>
+             </choose>
+             ORDER BY id FOR UPDATE
+            </script>
+            """)
+    List<String> lockUserStatusWithdrawalNos(@Param("userId") Long userId, @Param("restoring") boolean restoring);
+
     @Update("""
             UPDATE nx_withdrawal_order
                SET c2_previous_status = status,

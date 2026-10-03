@@ -110,6 +110,9 @@ public class AppNotificationService {
             return ApiResult.fail(422, "NOTIFICATION_ACTION_INVALID");
         }
         String key = idempotencyKey.trim();
+        // Bootstrap on its independent connection before this transaction has
+        // read a snapshot or acquired business locks (including the first CTA).
+        novaRuntimeRepository.ensureRuntimeTables();
         NotificationActionReceipt replay = repository.findNotificationActionReceipt(key).orElse(null);
         if (replay != null) {
             return matchesRequest(replay, userId, notificationId, normalizedAction)
@@ -143,7 +146,6 @@ public class AppNotificationService {
                 "action", normalizedAction,
                 "route", route));
         if (isNova(fact)) {
-            novaRuntimeRepository.ensureRuntimeTables();
             publishUserEvent(fact, "nova.push_clicked", Map.of(
                     "notification_id", fact.notificationId(),
                     "channel", novaChannel(fact),
@@ -224,6 +226,8 @@ public class AppNotificationService {
     }
 
     private String novaChannel(NotificationEventFact fact) {
+        var recorded = novaRuntimeRepository.notificationChannel(fact.userId(), fact.notificationId());
+        if (recorded.isPresent()) return recorded.get();
         String channel = fact.kind().trim().toLowerCase(Locale.ROOT).substring("nova_".length());
         return switch (channel) {
             case "dailysummary" -> "dailySummary";

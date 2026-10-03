@@ -11,6 +11,8 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 @RequiredArgsConstructor
@@ -19,7 +21,10 @@ public class MybatisNovaSocialRuntimeRepository implements NovaSocialRuntimeRepo
     private final AtomicBoolean runtimeTablesEnsured = new AtomicBoolean();
 
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public synchronized void ensureRuntimeTables() {
+        // MySQL DDL implicitly commits: bootstrap must never commit a caller's
+        // notification receipt or outbox transaction before it has succeeded.
         if (!runtimeTablesEnsured.get()) {
             mapper.createRuntimeSlotTable();
             mapper.createBusinessEventReceiptTable();
@@ -48,6 +53,11 @@ public class MybatisNovaSocialRuntimeRepository implements NovaSocialRuntimeRepo
     @Override
     public boolean completeSlot(String slotKey, String leaseOwner, LocalDateTime now) {
         return mapper.completeSlot(slotKey, leaseOwner, now) == 1;
+    }
+
+    @Override
+    public Optional<String> notificationChannel(Long userId, Long notificationId) {
+        return Optional.ofNullable(mapper.notificationChannel(userId, notificationId));
     }
 
     @Override
