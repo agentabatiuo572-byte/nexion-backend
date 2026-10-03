@@ -87,12 +87,12 @@ class TestComputeWorkerContinuousTest {
         verify(mapper, never()).markTestWorkerOnline(any(), any(), any(), any(), any(), any());
     }
 
-    @Test void absentTaskUsesTheOriginalRoutingCapacityNonceAndInsertRatherThanInventingAReceipt() {
+    private void prepareAbsentTask() {
         task.set(null);
         runtime.set(new TestWorkerRuntimeRow("OFFLINE", null, CLIENT, "", now.minusDays(1), null));
         when(mapper.lockAssignment(eq(CONTINUOUS_OWNER), anyString(), eq("PRODUCTION"))).thenAnswer(i -> task.get());
         when(mapper.eligibleTasks(8)).thenReturn(List.of(new TaskConfigRow(CONTINUOUS_CONFIG, "EM", "EM", "normal-model",
-                new BigDecimal("0.045"), new BigDecimal("0.04501"), 8, "ACTIVE", "pending")));
+                new BigDecimal("0.00001"), new BigDecimal("0.09"), 8, "active", "派发中")));
         Map<String, String> capacity = Map.ofEntries(Map.entry("capacityBand1DeltaPct", "-3"), Map.entry("capacityBand2DeltaPct", "-6"),
                 Map.entry("capacityBand3DeltaPct", "-23.7"), Map.entry("stageEarlyEnd", "3"), Map.entry("stageMidEnd", "8"),
                 Map.entry("cycleMonths", "13"), Map.entry("capacityFloorPct", "22"), Map.entry("capacitySubsidyDays", "30"),
@@ -113,12 +113,47 @@ class TestComputeWorkerContinuousTest {
                 .thenAnswer(i -> { AssignmentRow t = task.get(); task.set(new AssignmentRow(t.taskNo(), t.deviceId(), t.taskId(), TASK_NAME, t.taskClass(),
                         KIND, CLIENT, t.status(), t.rewardUsdt(), t.requiredSeconds(), t.taskLockMinutes(), t.startedAt(), t.leaseExpiresAt(), null, null,
                         t.completionNonce(), t.proofExpiresAt())); return 1; });
+    }
+
+    @Test void absentTaskUsesTheOriginalRoutingCapacityNonceAndInsertRatherThanInventingAReceipt() {
+        prepareAbsentTask();
         var data = app.continuousWorkerNext(identity, KEY).getData();
         assertThat((String) data.get("taskNo")).matches("CTA-TEST-[A-F0-9]{32}");
         assertThat((String) data.get("proofNonce")).matches("[a-f0-9]{64}");
         assertThat(task.get().rewardUsdt()).isEqualByComparingTo("0.045005");
         verify(mapper).eligibleTasks(8);
         verify(mapper, never()).insertReceipt(any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test void fractionalClockAndSecondPrecisionDatabaseDoNotRejectTheWorkersOwnHeartbeatOrTaskStart() {
+        prepareAbsentTask();
+        runtime.set(new TestWorkerRuntimeRow("OFFLINE", null, CLIENT, "test355-v1:previous", now.minusHours(1), null));
+        // MySQL DATETIME(0) can round a fractional write into the next second.
+        when(mapper.markTestWorkerOnline(eq(CONTINUOUS_OWNER), eq(CONTINUOUS_DEVICE), eq(CONTINUOUS_INSTANCE), anyString(), anyString(), any()))
+                .thenAnswer(i -> { runtime.set(new TestWorkerRuntimeRow("ONLINE", i.getArgument(3), CLIENT,
+                        i.getArgument(4), storedSecond(i.getArgument(5)), null)); return 1; });
+        when(mapper.insertAssignment(anyString(), eq(CONTINUOUS_OWNER), eq(CONTINUOUS_DEVICE), any(), any(), any(), any(), anyString(), any(), eq("PRODUCTION"), any(), any()))
+                .thenAnswer(i -> {
+                    task.set(new AssignmentRow(i.getArgument(0), CONTINUOUS_DEVICE, CONTINUOUS_CONFIG, "EM", "EM", "normal-model", "UVEL App",
+                            "RUNNING", i.getArgument(4), i.getArgument(5), i.getArgument(6), storedSecond(i.getArgument(10)),
+                            storedSecond(i.getArgument(11)), null, null, i.getArgument(7), storedSecond(i.getArgument(8)))); return 1;
+                });
+        Clock fractional = Clock.fixed(TestComputeWorkerServiceTest.INSTANT.plusMillis(750), ZoneOffset.UTC);
+        TestComputeWorkerService fractionalWorker = new TestComputeWorkerService(mapper, audit, fractional, environment);
+        AppTaskAssignmentService fractionalApp = new AppTaskAssignmentService(mapper, idempotency,
+                mock(EventOutboxService.class), audit, proof, environment, fractional, fractionalWorker);
+
+        var data = fractionalApp.continuousWorkerNext(identity, KEY).getData();
+        assertThat(data).containsEntry("deploymentScope", "TEST").containsEntry("serverCanonical", true);
+        assertThat(runtime.get().heartbeatAt()).isEqualTo(now);
+        assertThat(task.get().startedAt()).isEqualTo(now);
+        assertThat(data.get("jobIssuedAt")).isEqualTo(TestComputeWorkerServiceTest.INSTANT.toEpochMilli());
+        verify(mapper).eligibleTasks(8); // Physical0 SHARE still routes by effective8; no true config change.
+        verify(mapper, never()).insertReceipt(any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    private LocalDateTime storedSecond(LocalDateTime value) {
+        return value.plusNanos(500_000_000).withNano(0);
     }
 
     @Test void receiptReadbackIsRestrictedToTheActualTaskDeviceAndDeterministicKind() {

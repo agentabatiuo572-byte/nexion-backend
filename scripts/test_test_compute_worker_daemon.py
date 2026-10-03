@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -222,6 +223,39 @@ class DaemonTest(unittest.TestCase):
         self.assertEqual(self.journal.db.execute("SELECT phase FROM state").fetchone()[0], "REJECTED")
         self.assertEqual(self.journal.db.execute("SELECT outcome FROM calls WHERE operation='COMPLETE'").fetchone()[0], "REJECTED")
         self.assertIsNone(self.journal.db.execute("SELECT receipt_no FROM jobs").fetchone()[0])
+
+    def test_canonical_next_rejection_logs_only_status_and_whitelisted_code_without_replay(self):
+        for message, safe_code in (
+                ("TEST_COMPUTE_WORKER_RUNTIME_STALE", "TEST_COMPUTE_WORKER_RUNTIME_STALE"),
+                ("SYNTHETIC-NONCE-TOKEN-BODY", "UNRECOGNIZED_REJECTION"),
+                ({"nonce": "SYNTHETIC-NONCE-TOKEN-BODY"}, "UNRECOGNIZED_REJECTION")):
+            with self.subTest(message=message):
+                requests = []
+                pinned = SimpleNamespace(settimeout=lambda _: None, close=lambda: None)
+                raw = json.dumps(dict(code=409, message=message, data=None)).encode()
+
+                class Connection:
+                    def __init__(self, *_, **kwargs):
+                        self.sock = pinned
+                    def connect(self):
+                        pass
+                    def request(self, *args):
+                        requests.append(args)
+                    def getresponse(self):
+                        return SimpleNamespace(status=409, read=lambda _: raw)
+                    def close(self):
+                        pass
+
+                with patch.object(daemon.http.client, "HTTPConnection", Connection), patch("builtins.print") as printed:
+                    with self.assertRaisesRegex(daemon.Halt, "STOP_REJECTED"):
+                        daemon.process_one(daemon.Client("SYNTHETIC-NOT-A-TOKEN"), self.journal, "test355-continuous")
+                    printed.assert_called_once_with("TEST_COMPUTE_REJECTED status=409 code=" + safe_code)
+                self.assertEqual(len(requests), 1)
+                self.assertEqual(self.journal.db.execute("SELECT phase FROM state").fetchone()[0], "REJECTED")
+                self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0)
+                self.assertNotIn("SYNTHETIC-NONCE-TOKEN-BODY", repr(self.journal.db.execute("SELECT * FROM calls").fetchall()))
+                with self.assertRaisesRegex(daemon.Halt, "STOP_PENDING_RECONCILIATION"):
+                    self.journal.check_pending()
 
     def test_transport_has_one_attempt_total_deadline_and_closes_detached_body_socket(self):
         class Pinned:

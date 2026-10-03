@@ -551,7 +551,7 @@ public class AppTaskAssignmentService {
             testWorker.requireDevice(grant, device);
             AssignmentRow target = mapper.lockAssignment(userId, grant.taskNo(), sourceEnvironment);
             AssignmentRow activeTask = mapper.lockActiveAssignment(userId, deviceId, sourceEnvironment);
-            now = LocalDateTime.now(clock);
+            now = now();
             if (target != null) testWorker.requireTask(grant, target, now);
             else if (!testWorker.newTaskNo(grant).equals(grant.taskNo())) throw new BizException(404, "TEST_COMPUTE_WORKER_TASK_NOT_FOUND");
             if (activeTask != null && !activeTask.taskNo().equals(grant.taskNo())) {
@@ -563,7 +563,7 @@ public class AppTaskAssignmentService {
                 }
                 mapper.clearRuntimeTask(userId, deviceId, activeTask.taskNo(), now);
             }
-            now = LocalDateTime.now(clock);
+            now = now();
             if (target != null) testWorker.requireTask(grant, target, now);
             testWorker.markOnline(grant, now);
             if (target != null) testWorker.requireTask(grant, target, LocalDateTime.now(clock));

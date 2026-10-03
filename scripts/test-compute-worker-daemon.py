@@ -24,6 +24,15 @@ CONFIG = "E2-20260924-EM"
 PREFIX = "/api/test/compute-workers/v2"
 STOP = threading.Event()
 HALTED = 78
+SAFE_REJECTION_CODES = frozenset({
+    "TEST_COMPUTE_WORKER_RUNTIME_STALE", "TEST_COMPUTE_WORKER_RUNTIME_CONFLICT",
+    "TEST_COMPUTE_WORKER_AUTH_INVALID", "TEST_COMPUTE_WORKER_BINDING_INVALID",
+    "TEST_COMPUTE_WORKER_DEVICE_INVALID", "TEST_COMPUTE_WORKER_TASK_INVALID",
+    "TEST_COMPUTE_WORKER_ALREADY_CLAIMED", "TEST_COMPUTE_WORKER_OTHER_TASK_ACTIVE",
+    "TEST_COMPUTE_WORKER_TASK_CONFIG_INVALID", "TEST_COMPUTE_WORKER_REWARD_LIMIT",
+    "TEST_COMPUTE_WORKER_IDEMPOTENCY_INVALID", "TEST_COMPUTE_RESULT_INVALID",
+    "TEST_COMPUTE_CONTINUOUS_DISABLED",
+})
 
 # Reuse the finite worker's actual input parser/computation, never its retries or evidence writer.
 _spec = importlib.util.spec_from_file_location("finite_compute", Path(__file__).with_name("test-compute-worker.py"))
@@ -185,6 +194,9 @@ class Client:
                         and data.get("message") == "TASK_ASSIGNMENT_NO_ELIGIBLE_TASK":
                     return {"idle": True, "serverCanonical": True, "deploymentScope": "TEST"}
                 if response.status in (400, 401, 403, 404, 409, 413, 422, 428) and data["code"] == response.status:
+                    message = data.get("message")
+                    code = message if isinstance(message, str) and message in SAFE_REJECTION_CODES else "UNRECOGNIZED_REJECTION"
+                    print("TEST_COMPUTE_REJECTED status=" + str(response.status) + " code=" + code)
                     raise Rejected("HTTP_REJECTED")
                 raise Halt("HTTP_UNKNOWN")
             require(isinstance(data.get("data"), dict), "HTTP_UNKNOWN")

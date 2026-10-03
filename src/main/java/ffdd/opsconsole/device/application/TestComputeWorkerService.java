@@ -255,6 +255,7 @@ public class TestComputeWorkerService {
 
     public void markOnline(Grant grant, LocalDateTime now) {
         requireCurrent(grant);
+        now = now.withNano(0); // Match persisted DATETIME(0); never round our own heartbeat into the future.
         var previous = mapper.lockTestWorkerRuntime(grant.ownerId(), grant.deviceId(), grant.instanceNo());
         if (previous != null && (hasText(previous.pausedReason())
                 || !("ONLINE".equals(previous.onlineStatus()) || "OFFLINE".equals(previous.onlineStatus()))

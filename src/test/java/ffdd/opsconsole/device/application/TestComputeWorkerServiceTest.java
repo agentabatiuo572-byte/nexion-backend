@@ -17,6 +17,7 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.*;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -215,6 +216,37 @@ class TestComputeWorkerServiceTest {
                 "ONLINE", grant.taskNo(), CLIENT, "other-agent", NOW, null));
         assertThatThrownBy(() -> service.verify(grant, task(grant.taskNo()), validRequest(), NOW)).hasMessage("TEST_COMPUTE_WORKER_RUNTIME_STALE");
         assertThatThrownBy(() -> service.markOnline(grant, NOW)).hasMessage("TEST_COMPUTE_WORKER_RUNTIME_CONFLICT");
+        verify(mapper, never()).markTestWorkerOnline(any(), any(), any(), any(), any(), any());
+    }
+
+    @ParameterizedTest @ValueSource(booleans={false, true})
+    void secondPrecisionHeartbeatDoesNotBecomeFutureOnInsertOrUpdate(boolean missingRuntime) {
+        var runtime = new AtomicReference<TestWorkerRuntimeRow>(missingRuntime ? null : new TestWorkerRuntimeRow(
+                "OFFLINE", null, CLIENT, "", NOW.minusHours(1), null));
+        when(mapper.lockTestWorkerRuntime(7L, 11L, "NEX-TEST-INSTANCE")).thenAnswer(i -> runtime.get());
+        org.mockito.stubbing.Answer<Integer> persist = i -> {
+            LocalDateTime written = i.getArgument(5);
+            runtime.set(new TestWorkerRuntimeRow("ONLINE", grant.taskNo(), CLIENT, service.marker(grant),
+                    written.plusNanos(500_000_000).withNano(0), null));
+            return 1;
+        };
+        if (missingRuntime) when(mapper.insertTestWorkerRuntime(any(), any(), any(), any(), any(), any())).thenAnswer(persist);
+        else when(mapper.markTestWorkerOnline(any(), any(), any(), any(), any(), any())).thenAnswer(persist);
+
+        service.markOnline(grant, NOW.plusNanos(750_000_000));
+        assertThat(runtime.get().heartbeatAt()).isEqualTo(NOW);
+    }
+
+    @ParameterizedTest @ValueSource(longs={-121, -120, 0, 1})
+    void existingHeartbeatStillRejectsFutureAndExpiredValues(long secondsFromNow) {
+        when(mapper.lockTestWorkerRuntime(7L, 11L, "NEX-TEST-INSTANCE")).thenReturn(new TestWorkerRuntimeRow(
+                "ONLINE", grant.taskNo(), CLIENT, service.marker(grant), NOW.plusSeconds(secondsFromNow), null));
+        if (secondsFromNow < -120 || secondsFromNow > 0) {
+            assertThatThrownBy(() -> service.requireRuntime(grant, NOW)).hasMessage("TEST_COMPUTE_WORKER_RUNTIME_STALE");
+        } else {
+            service.requireRuntime(grant, NOW);
+        }
+        verify(mapper, never()).insertTestWorkerRuntime(any(), any(), any(), any(), any(), any());
         verify(mapper, never()).markTestWorkerOnline(any(), any(), any(), any(), any(), any());
     }
 
