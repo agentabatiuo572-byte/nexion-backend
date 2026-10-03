@@ -15,7 +15,9 @@ import ffdd.opsconsole.content.mapper.NotificationCampaignMapper;
 import ffdd.opsconsole.content.mapper.NotificationCapRuleMapper;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
@@ -240,7 +242,12 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
         String nextCursor = hasMore && !items.isEmpty()
                 ? String.valueOf(items.get(items.size() - 1).id())
                 : null;
-        return new AppNotificationPage(List.copyOf(items), nextCursor, campaignMapper.countUnreadForUser(userId));
+        // Both summaries cover every visible unread notification, regardless of this page's filters.
+        Map<String, Long> unreadByKind = new LinkedHashMap<>();
+        campaignMapper.countUnreadByKindForUser(userId)
+                .forEach(count -> unreadByKind.put(count.kind(), count.unread()));
+        long unread = unreadByKind.values().stream().mapToLong(Long::longValue).sum();
+        return new AppNotificationPage(List.copyOf(items), nextCursor, unread, Map.copyOf(unreadByKind));
     }
 
     @Override

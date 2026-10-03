@@ -775,7 +775,7 @@ class OpsNotificationCampaignServiceTest {
 
         @Override
         public AppNotificationPage pageUserNotifications(Long userId, Long cursorId, String priority, int limit) {
-            return new AppNotificationPage(List.of(), null, 0);
+            return new AppNotificationPage(List.of(), null, 0, java.util.Map.of());
         }
 
         @Override

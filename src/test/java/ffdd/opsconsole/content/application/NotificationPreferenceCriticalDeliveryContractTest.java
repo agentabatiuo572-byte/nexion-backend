@@ -24,7 +24,7 @@ class NotificationPreferenceCriticalDeliveryContractTest {
                 "int countNotificationsByBizNo",
                 "List<NotificationEventFact> selectNotificationEventFactsByBizNo",
                 "List<AppNotificationView> selectUserNotifications",
-                "long countUnreadForUser",
+                "List<AppNotificationUnreadCount> countUnreadByKindForUser",
                 "NotificationEventFact lockNotificationEventFact",
                 "List<NotificationEventFact> lockUnreadNotificationEventFacts",
                 "int markAllUserNotificationsRead" }) {

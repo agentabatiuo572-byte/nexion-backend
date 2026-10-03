@@ -38,14 +38,14 @@ class NotificationPreferenceCriticalDeliveryMySqlTest {
                 assertThat(campaign.countNotificationsByBizNo("DISCLOSURE-VN-20260911")).isEqualTo(1);
                 assertThat(campaign.selectUserNotifications(1L, null, null, 20)).extracting(view -> view.id()).hasSize(1);
                 assertThat(campaign.selectUserNotifications(2L, null, null, 20)).isEmpty();
-                assertThat(campaign.countUnreadForUser(1L)).isEqualTo(1L);
-                assertThat(campaign.countUnreadForUser(2L)).isZero();
+                assertThat(campaign.countUnreadByKindForUser(1L).stream().mapToLong(count -> count.unread()).sum()).isEqualTo(1L);
+                assertThat(campaign.countUnreadByKindForUser(2L).stream().mapToLong(count -> count.unread()).sum()).isZero();
 
                 long notificationId = scalar(connection, "SELECT id FROM nx_notification WHERE biz_no='DISCLOSURE-VN-20260911'");
                 assertThat(campaign.markUserNotificationRead(2L, notificationId)).isZero();
-                assertThat(campaign.countUnreadForUser(1L)).isEqualTo(1L);
+                assertThat(campaign.countUnreadByKindForUser(1L).stream().mapToLong(count -> count.unread()).sum()).isEqualTo(1L);
                 assertThat(campaign.markUserNotificationRead(1L, notificationId)).isEqualTo(1);
-                assertThat(campaign.countUnreadForUser(1L)).isZero();
+                assertThat(campaign.countUnreadByKindForUser(1L).stream().mapToLong(count -> count.unread()).sum()).isZero();
                 assertThat(campaign.selectUserNotifications(1L, null, null, 20)).singleElement()
                         .satisfies(view -> assertThat(view.readAt()).isNotNull());
             }
@@ -196,8 +196,8 @@ class NotificationPreferenceCriticalDeliveryMySqlTest {
                 notices.deliver("STATE-1",1L,"WITHDRAWAL","high","duplicate","safe","View details","/pages/me/wallet");
                 session.commit();
                 assertThat(rows(connection,"STATE-1")).isEqualTo(1);
-                assertThat(campaign.countUnreadForUser(1L)).isEqualTo(1);
-                assertThat(campaign.countUnreadForUser(2L)).isZero();
+                assertThat(campaign.countUnreadByKindForUser(1L).stream().mapToLong(count -> count.unread()).sum()).isEqualTo(1);
+                assertThat(campaign.countUnreadByKindForUser(2L).stream().mapToLong(count -> count.unread()).sum()).isZero();
                 assertThat(campaign.selectUserNotifications(1L,null,null,20)).singleElement()
                         .satisfies(n -> assertThat(n.title()).isEqualTo("Đã hoàn tất rút tiền"));
                 notices.deliver("ROLLED-BACK",1L,"WITHDRAWAL","high","failed","safe","View details","/pages/me/wallet");
@@ -228,7 +228,7 @@ class NotificationPreferenceCriticalDeliveryMySqlTest {
                 for (long userId : List.of(1L,2L,3L)) {
                     topup.insertDepositNotification("HDPAY:IT-"+userId,userId,new java.math.BigDecimal("12.50"));
                     card.queueNotification(userId,"PAYMENT_METHOD_UNBOUND:"+userId,"支付方式已解绑","支付方式已从账户解绑。","/pages/me/wallet-cards");
-                    assertThat(campaign.countUnreadForUser(userId)).isEqualTo(2);
+                    assertThat(campaign.countUnreadByKindForUser(userId).stream().mapToLong(count -> count.unread()).sum()).isEqualTo(2);
                     assertThat(campaign.selectUserNotifications(userId,null,null,20)).allSatisfy(n -> assertThat(n.ctaHref()).startsWith("/pages/me/"));
                 }
                 assertThat(campaign.selectUserNotifications(1L,null,null,20).get(0).title()).isEqualTo("Đã gỡ phương thức thanh toán");

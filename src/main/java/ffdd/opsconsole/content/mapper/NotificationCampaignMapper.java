@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.content.infrastructure.NotificationCampaignEntity;
 import ffdd.opsconsole.content.domain.AppNotificationView;
+import ffdd.opsconsole.content.domain.AppNotificationUnreadCount;
 import ffdd.opsconsole.content.domain.NotificationActionReceipt;
 import ffdd.opsconsole.content.domain.NotificationEventFact;
 import java.time.LocalDateTime;
@@ -400,7 +401,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
             @Param("limit") int limit);
 
     @Select("""
-            SELECT COUNT(*)
+            SELECT LOWER(n.type) AS kind, COUNT(*) AS unread
               FROM nx_notification n
               LEFT JOIN nx_user_preference pref
                 ON pref.user_id = n.user_id AND pref.is_deleted = 0
@@ -428,8 +429,9 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                        WHEN 'nova_genesis_event' THEN pref.notify_genesis
                        ELSE 1 END, 1) = 1
                )
+             GROUP BY LOWER(n.type)
             """)
-    long countUnreadForUser(@Param("userId") Long userId);
+    List<AppNotificationUnreadCount> countUnreadByKindForUser(@Param("userId") Long userId);
 
     @Update("""
             UPDATE nx_notification

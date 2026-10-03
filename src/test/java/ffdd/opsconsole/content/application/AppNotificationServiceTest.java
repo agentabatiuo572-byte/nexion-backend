@@ -15,6 +15,7 @@ import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.content.domain.NovaSocialRuntimeRepository;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
@@ -27,11 +28,13 @@ class AppNotificationServiceTest {
     @Test
     void pageIsServerCanonicalAndAppliesRetentionBeforeReading() {
         when(repository.pageUserNotifications(7L, null, "high", 20))
-                .thenReturn(new AppNotificationPage(List.of(), null, 0));
+                .thenReturn(new AppNotificationPage(List.of(), null, 152, Map.of("wallet", 150L, "device", 2L)));
 
         var result = service.page(7L, null, "high", 20);
 
         assertThat(result.getCode()).isZero();
+        assertThat(result.getData().unread()).isEqualTo(152);
+        assertThat(result.getData().unreadByKind()).containsExactlyInAnyOrderEntriesOf(Map.of("wallet", 150L, "device", 2L));
         verify(repository).applyRetentionForUser(7L);
         verify(repository).pageUserNotifications(7L, null, "high", 20);
     }
