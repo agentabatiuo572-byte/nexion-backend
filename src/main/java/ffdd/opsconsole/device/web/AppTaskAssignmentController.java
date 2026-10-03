@@ -25,7 +25,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AppTaskAssignmentController {
     private final AppTaskAssignmentService service;
-    private final ffdd.opsconsole.onboarding.application.PhoneNativeSessionService nativeSessions;
+    private final ffdd.opsconsole.onboarding.application.PhoneInstallationService installations;
 
     @GetMapping("/api/tasks/assignments")
     public ApiResult<AppTaskAssignmentsResponse> assignments(Authentication authentication) {
@@ -38,9 +38,10 @@ public class AppTaskAssignmentController {
     public ApiResult<AppTaskAssignmentView> claim(
             @RequestBody(required = false) AppTaskClaimRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestHeader(name = "X-Phone-Installation-Id", required = false) String installationId,
             Authentication authentication) {
         Long userId = userId(authentication);
-        if (userId != null && request != null) nativeSessions.requireForDevice(authentication, request.deviceId());
+        if (userId != null && request != null) installations.requireForDevice(authentication, request.deviceId(), installationId);
         return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
                 : service.claim(userId, idempotencyKey, request);
     }
@@ -51,7 +52,7 @@ public class AppTaskAssignmentController {
             @RequestBody(required = false) AppPhoneRuntimeRequest request,
             Authentication authentication) {
         Long userId = userId(authentication);
-        if (userId != null && request != null) nativeSessions.requireRuntime(authentication, request.calibrationDeviceId());
+        if (userId != null && request != null) installations.requireRuntime(authentication, request.calibrationDeviceId());
         return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
                 : service.phoneRuntime(userId, request);
     }
@@ -82,9 +83,10 @@ public class AppTaskAssignmentController {
             @PathVariable String taskNo,
             @RequestBody(required = false) AppTaskCompleteRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestHeader(name = "X-Phone-Installation-Id", required = false) String installationId,
             Authentication authentication) {
         Long userId = userId(authentication);
-        if (userId != null) nativeSessions.requireForTask(authentication, taskNo);
+        if (userId != null) installations.requireForTask(authentication, taskNo, installationId);
         return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
                 : service.complete(userId, taskNo, idempotencyKey, request);
     }

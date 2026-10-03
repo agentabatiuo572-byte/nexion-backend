@@ -36,10 +36,6 @@ spring:
       password: ${NEXION_REDIS_PASSWORD:}
 
 nexion:
-  phone:
-    attestation:
-      package-name: ${NEXION_PHONE_PACKAGE_NAME:}
-      signer-sha256: ${NEXION_PHONE_SIGNER_SHA256:}
   developer:
     webhooks:
       # Production must explicitly configure exact hosts or parent domains.

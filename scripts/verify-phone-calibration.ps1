@@ -8,8 +8,8 @@ if (-not (Test-Path -LiteralPath $taskMaven)) { $taskMaven = (Get-Command mvn -E
 $testSet = switch ($Suite) {
   'Guard' { 'OpsDeviceServiceTest' }
   'Catalog' { 'PhoneCalibrationPolicyTest,PhoneCalibrationConfigServiceTest' }
-  'Activation' { 'Onboarding*Test,PhoneCalibration*Test,PhoneNative*Test,AndroidPhoneAttestation*Test,AppTaskAssignmentControllerTest,AppCanonicalBoundaryServiceTest' }
-  'Integration' { 'OpsDeviceServiceTest,Onboarding*Test,PhoneCalibration*Test,PhoneNative*Test,AndroidPhoneAttestation*Test,AppTaskAssignmentControllerTest,AppCanonicalBoundaryServiceTest,AuditReplayBusinessPermissionGuardTest,OpsPlatformParamRegistryServiceTest,OpsAuditCenter*Test,OpsAuditControllerTest' }
+  'Activation' { 'Onboarding*Test,PhoneCalibration*Test,PhoneInstallation*Test,AppTaskAssignmentControllerTest,AppCanonicalBoundaryServiceTest' }
+  'Integration' { 'OpsDeviceServiceTest,Onboarding*Test,PhoneCalibration*Test,PhoneInstallation*Test,AppTaskAssignmentControllerTest,AppCanonicalBoundaryServiceTest,AuditReplayBusinessPermissionGuardTest,OpsPlatformParamRegistryServiceTest,OpsAuditCenter*Test,OpsAuditControllerTest' }
 }
 Push-Location (Join-Path $PSScriptRoot '..')
 try {

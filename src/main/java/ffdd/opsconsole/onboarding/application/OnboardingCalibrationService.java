@@ -146,21 +146,15 @@ public class OnboardingCalibrationService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> activate(Long userId, ActionRequest request) {
-        return transition(userId, request, "ACTIVE", false);
+        return transition(userId, request, "ACTIVE");
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> defer(Long userId, ActionRequest request) {
-        return transition(userId, request, "DEFERRED", false);
+        return transition(userId, request, "DEFERRED");
     }
 
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> deferWithoutProof(Long userId, ActionRequest request) {
-        return transition(userId, request, "DEFERRED", true);
-    }
-
-    private ApiResult<Map<String, Object>> transition(Long userId, ActionRequest request, String target,
-            boolean proofFree) {
+    private ApiResult<Map<String, Object>> transition(Long userId, ActionRequest request, String target) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         if (!validAction(request)) return ApiResult.fail(422, "ONBOARDING_ACTIVATION_REQUEST_INVALID");
         Scope scope = scope(userId);
@@ -176,17 +170,6 @@ public class OnboardingCalibrationService {
                 : mapper.findForUpdate(userId, deviceId);
         if (current != null && !deviceId.equals(current.deviceId())) {
             throw new BizException(409, "PHONE_INSTALLATION_ID_MISMATCH");
-        }
-        // The account lock serializes this decision with calibration. A login
-        // session without native proof may only create the first empty defer
-        // record or replay that exact request; it cannot change a phone row.
-        if (proofFree && current != null) {
-            if ("DEFERRED".equals(current.activationStatus())
-                    && key.equals(current.activationIdempotencyKey())
-                    && hash.equals(current.activationRequestHash())) {
-                return ApiResult.ok(project(current));
-            }
-            return ApiResult.fail(403, "PHONE_NATIVE_SESSION_REQUIRED");
         }
         if (current == null) {
             if (!"DEFERRED".equals(target)) {
@@ -331,7 +314,7 @@ public class OnboardingCalibrationService {
         }
     }
 
-    /** A proved native login changes execution ownership, never activation or the replacement clock. */
+    /** An authenticated installation login changes execution ownership, never activation or the replacement clock. */
     @Transactional(rollbackFor = Exception.class)
     public Map<String,Object> phoneLogin(Long userId, String deviceId) {
         if (deviceId == null || !deviceId.matches("[A-Za-z0-9._:-]{1,128}")) throw new BizException(422,"ONBOARDING_DEVICE_INVALID");

@@ -323,7 +323,7 @@ class OnboardingCalibrationServiceTest {
         when(mapper.insertDeferred(any())).thenReturn(1);
         when(mapper.find(9L, "dev-new")).thenReturn(deferred);
 
-        ApiResult<Map<String, Object>> result = service.deferWithoutProof(9L,
+        ApiResult<Map<String, Object>> result = service.defer(9L,
                 new OnboardingCalibrationService.ActionRequest("dev-new", 0L, "phone-defer-new"));
 
         assertThat(result.getCode()).isZero();
@@ -344,21 +344,21 @@ class OnboardingCalibrationServiceTest {
     }
 
     @Test
-    void proofFreeDeferCannotChangeExistingCalibratedOrActivePhone() {
+    void deferCannotChangeExistingCalibratedOrActivePhoneWithAStaleRevision() {
         var command = new OnboardingCalibrationService.ActionRequest("dev-phone", 0L, "skip-001");
         when(mapper.findForUpdate(9L, "dev-phone"))
-                .thenReturn(actionRow(9L, "dev-phone", null, 0L, "CALIBRATED", null, null))
-                .thenReturn(actionRow(9L, "dev-phone", 44L, 0L, "ACTIVE", null, null));
+                .thenReturn(actionRow(9L, "dev-phone", null, 1L, "CALIBRATED", null, null))
+                .thenReturn(actionRow(9L, "dev-phone", 44L, 1L, "ACTIVE", null, null));
 
-        assertThat(service.deferWithoutProof(9L, command).getCode()).isEqualTo(403);
-        assertThat(service.deferWithoutProof(9L, command).getCode()).isEqualTo(403);
+        assertThat(service.defer(9L, command).getCode()).isEqualTo(409);
+        assertThat(service.defer(9L, command).getCode()).isEqualTo(409);
         verify(mapper, never()).deactivatePhoneDevice(any(), any(), any(), any());
         verify(mapper, never()).insertDeferred(any());
         verify(mapper, never()).updateActivation(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void proofFreeDeferCanReplayOnlyItsExactCommittedRequest() {
+    void deferReplaysItsCommittedRequestAndRejectsIdempotencyOrRevisionConflicts() {
         var command = new OnboardingCalibrationService.ActionRequest("dev-new", 0L, "skip-001");
         // Capture the real action hash from the first transaction, then replay
         // the row the database would have stored.
@@ -367,7 +367,7 @@ class OnboardingCalibrationServiceTest {
                 "server", true, 0L, 0L, "deferred:placeholder", "placeholder-hash",
                 "DEFERRED", "skip-001", "first-hash", "PRODUCTION", "");
         when(mapper.find(9L, "dev-new")).thenReturn(first);
-        assertThat(service.deferWithoutProof(9L, command).getCode()).isZero();
+        assertThat(service.defer(9L, command).getCode()).isZero();
         ArgumentCaptor<OnboardingCalibrationMapper.DeferredWrite> captured =
                 ArgumentCaptor.forClass(OnboardingCalibrationMapper.DeferredWrite.class);
         verify(mapper).insertDeferred(captured.capture());
@@ -376,9 +376,11 @@ class OnboardingCalibrationServiceTest {
                 "server", true, 0L, 0L, "deferred:placeholder", "placeholder-hash",
                 "DEFERRED", "skip-001", saved.activationRequestHash(), "PRODUCTION", "");
         when(mapper.findForUpdate(9L, "dev-new")).thenReturn(replay);
-        assertThat(service.deferWithoutProof(9L, command).getCode()).isZero();
-        assertThat(service.deferWithoutProof(9L,
-                new OnboardingCalibrationService.ActionRequest("dev-new", 0L, "different-key")).getCode()).isEqualTo(403);
+        assertThat(service.defer(9L, command).getCode()).isZero();
+        assertThat(service.defer(9L,
+                new OnboardingCalibrationService.ActionRequest("dev-new", 1L, "skip-001")).getCode()).isEqualTo(409);
+        assertThat(service.defer(9L,
+                new OnboardingCalibrationService.ActionRequest("dev-new", 1L, "different-key")).getCode()).isEqualTo(409);
         verify(mapper, never()).deactivatePhoneDevice(any(), any(), any(), any());
     }
 
