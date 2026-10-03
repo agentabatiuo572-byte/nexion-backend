@@ -27,6 +27,7 @@ public class SupportBindingService {
     private final AuditLogService audit;
     private final ApplicationEventPublisher events;
     private final ffdd.opsconsole.content.domain.SupportAgentRepository agents;
+    private final SupportTicketOwnerService ticketOwners;
 
     public SupportRules rules() { ownership.requireSupervisor(); return mapper.rules(); }
 
@@ -125,6 +126,7 @@ public class SupportBindingService {
             mapper.insertAssignment(r.targetAgentAdminId(),c.id(),String.valueOf(ownership.actorId()),r.reason().trim(),"MANUAL",c.id(),0,null,null,key.trim());
             mapper.leavePool(c.id());
             var current=mapper.current(c.id());
+            ticketOwners.synchronizeCurrentOwner(c.id());
             // S4 must handle this synchronous event in the same transaction (never AFTER_COMMIT).
             // Exceptions roll back assignment/history/audit together; no maintenance completion is claimed by S3.
             events.publishEvent(new SupportAssignmentChanged(c.id(),old,current));
@@ -152,6 +154,7 @@ public class SupportBindingService {
         else if("LIMITED".equals(rules.inheritanceMode()) && parent.depth()+1>rules.maxInheritanceDepth()) reason="DEPTH_LIMIT";
         else {
             mapper.insertAssignment(parent.agentAdminId(),customer,"registration","Registration invitation inheritance","INHERITED",parent.segmentRootId(),parent.depth()+1,parent.id(),rules.version(),"registration:"+customer);
+            ticketOwners.synchronizeCurrentOwner(customer);
             return;
         }
         mapper.enterPool(customer,reason);

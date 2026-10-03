@@ -824,7 +824,7 @@ public class OpsConversationService {
         return List.of(); // Human assignment changes only through the formal customer transfer transaction.
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<ConversationTicketResult> convertToTicket(
             String conversationNo,
             String idempotencyKey,
@@ -853,10 +853,6 @@ public class OpsConversationService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_TICKET_PRIORITY_UNSUPPORTED");
         }
         String actor = operator(request.operator());
-        if (request.assignedAdminId() != null && request.assignedAdminId() > 0
-                && supportAgentService.assignableSupportAgent(request.assignedAdminId()).isEmpty()) {
-            return ApiResult.fail(404, "SUPPORT_AGENT_NOT_ASSIGNABLE");
-        }
         LocalDateTime now = LocalDateTime.now(clock);
         List<ContentConversationMessageView> messages = conversationRepository.messages(conversation.conversationNo());
         String ticketNo = "TK-" + now.format(TICKET_NO_TIME);
@@ -871,8 +867,8 @@ public class OpsConversationService {
                 priority,
                 titleOrDefault(request.title(), conversation),
                 transcriptBody(conversation, messages),
-                request.assignedAdminId() != null && request.assignedAdminId() > 0 ? request.assignedAdminId() : null,
-                request.assignedAdminId() != null && request.assignedAdminId() > 0 ? assignedName(request.assignedAdminName(), actor) : "Unassigned",
+                request.assignedAdminId(),
+                null, // Responsibility and its display name come from the formal customer binding.
                 actor,
                 now);
         ticketRepository.markConversationSource(created.ticketNo(),conversation.conversationNo());

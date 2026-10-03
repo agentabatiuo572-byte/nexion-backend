@@ -10,6 +10,24 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
+    @Select("""
+            SELECT x.agent_admin_id AS adminId,
+                   COALESCE(NULLIF(TRIM(a.nickname),''),NULLIF(TRIM(a.username),''),CAST(x.agent_admin_id AS CHAR)) AS name
+              FROM nx_support_agent_user_assignment x LEFT JOIN nx_admin a ON a.id=x.agent_admin_id
+             WHERE x.user_id=#{customerId} AND x.status='ACTIVE' AND x.is_deleted=0
+             FOR SHARE
+            """)
+    ffdd.opsconsole.content.domain.DedicatedAdvisorBindingView currentOwner(Long customerId);
+
+    @Update("""
+            UPDATE nx_support_ticket
+               SET assigned_admin_id=#{adminId},assigned_admin_name=#{name},version=version+1,updated_at=#{now}
+             WHERE user_id=#{customerId} AND is_deleted=0
+               AND NOT (assigned_admin_id <=> #{adminId} AND assigned_admin_name <=> #{name})
+            """)
+    int synchronizeOwner(@Param("customerId") Long customerId, @Param("adminId") Long adminId,
+                         @Param("name") String name, @Param("now") LocalDateTime now);
+
     record Visibility(Long adminId, Long customerId, boolean privateRead, boolean supervisor) {}
     String VISIBLE = " COALESCE((t.source_conversation_no='DIRECT' OR t.user_id=#{visibility.customerId} OR (#{visibility.privateRead} AND (#{visibility.supervisor} OR EXISTS(SELECT 1 FROM nx_support_agent_user_assignment a WHERE a.user_id=t.user_id AND a.agent_admin_id=#{visibility.adminId} AND a.status='ACTIVE' AND a.is_deleted=0)))),0) ";
 
