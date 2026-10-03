@@ -39,6 +39,7 @@ import ffdd.opsconsole.content.web.OpsConversationController;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.finance.application.OpsFinanceService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
 import ffdd.opsconsole.risk.application.OpsRiskService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -380,6 +381,8 @@ class SupportTicketCreationMySqlTest {
                         SupportTicketMessageMapper.class, SupportBindingMapper.class, AdminIdempotencyRecordMapper.class,
                         ConversationMapper.class, ConversationMessageMapper.class)) configuration.addMapper(mapper);
                 var template = new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(configuration));
+                assertEmptyMessageProjections(template.getMapper(ConversationMessageMapper.class));
+                seedFixtureData();
                 manager = new DataSourceTransactionManager(jdbc.getDataSource());
                 var interceptor = new TransactionInterceptor(manager, new AnnotationTransactionAttributeSource());
                 bindingMapper = template.getMapper(SupportBindingMapper.class);
@@ -513,9 +516,10 @@ class SupportTicketCreationMySqlTest {
 
         void createSchema() throws Exception {
             String schema = Files.readString(Path.of("scripts/schema.sql"));
-            for (String table : List.of("nx_user", "nx_admin", "nx_admin_role", "nx_admin_role_relation", "nx_admin_idempotency_record", "nx_support_ticket",
+            for (String table : List.of("nx_user", "nx_admin", "nx_product", "nx_admin_role", "nx_admin_role_relation", "nx_admin_idempotency_record", "nx_support_ticket",
                     "nx_support_ticket_message", "nx_conversation", "nx_conversation_transfer", "nx_conversation_message",
                     "nx_conversation_message_receipt")) createTable(schema, table);
+            jdbc.execute(String.join("\n", AdminAccountStateMapper.class.getMethod("createAccountStateTable").getAnnotation(Update.class).value()));
             jdbc.execute("ALTER TABLE nx_support_ticket ADD COLUMN source_conversation_no VARCHAR(100) NULL");
             jdbc.execute("ALTER TABLE nx_conversation ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE");
             jdbc.execute(String.join("\n", SupportAgentMapper.class.getMethod("createAssignmentTable").getAnnotation(Update.class).value()));
@@ -532,6 +536,22 @@ class SupportTicketCreationMySqlTest {
                     + "ADD COLUMN auto_rule_version BIGINT NULL, ADD COLUMN auto_attempt_state VARCHAR(24) NOT NULL DEFAULT 'NONE', "
                     + "ADD COLUMN attempts INT NOT NULL DEFAULT 0, ADD COLUMN last_attempt_at DATETIME(6) NULL, "
                     + "ADD COLUMN last_outcome VARCHAR(64) NULL, ADD COLUMN operation_id VARCHAR(128) NULL");
+            createTable(Files.readString(Path.of("scripts/migrations/20260929_support_message_s4.sql")), "nx_support_human_message");
+            jdbc.execute("ALTER TABLE nx_support_human_message ADD COLUMN sku_id VARCHAR(64) NULL, "
+                    + "ADD COLUMN sku_name VARCHAR(255) NULL, ADD COLUMN link_target_json JSON NULL");
+            createTable(Files.readString(Path.of("scripts/migrations/20260725_m3_conversation_idle_timeout.sql")), "nx_conversation_timeout_event");
+        }
+
+        void assertEmptyMessageProjections(ConversationMessageMapper messages) {
+            String absentConversation = "fixture-schema-probe";
+            assertThat(messages.listByConversationNo(absentConversation)).isEmpty();
+            assertThat(messages.listUserVisibleByConversationNo(absentConversation)).isEmpty();
+            assertThat(messages.listRecentUserVisibleByConversationNo(absentConversation, 1)).isEmpty();
+            assertThat(messages.listRecentUserVisibleByConversationNoBefore(absentConversation, 1L, 1)).isEmpty();
+            assertThat(messages.listCurrentRecentUserVisibleByConversationNo(absentConversation, 1)).isEmpty();
+        }
+
+        void seedFixtureData() {
             jdbc.update("INSERT INTO nx_support_rules(id,inheritance_mode) VALUES(1,'UNLIMITED')");
             jdbc.update("INSERT INTO nx_admin_role(id,role_code,role_name) VALUES(1,'SUPPORT','Support')");
             for (long actor : List.of(99L, 100L, 101L)) {
@@ -541,8 +561,6 @@ class SupportTicketCreationMySqlTest {
                 jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags) VALUES(?,?,?,'advisor,support','test')",
                         actor, actor == 101 ? "MANAGER" : "DEDICATED", "test");
             }
-            createTable(Files.readString(Path.of("scripts/migrations/20260929_support_message_s4.sql")), "nx_support_human_message");
-            createTable(Files.readString(Path.of("scripts/migrations/20260725_m3_conversation_idle_timeout.sql")), "nx_conversation_timeout_event");
             for (long account : List.of(1L, 2L)) jdbc.update("INSERT INTO nx_user(id,country_code,phone,client_ip,password_hash,nickname,referral_code) VALUES(?,'+0',?,'127.0.0.1','test','test',?)",
                     account, String.valueOf(account), "test-" + account);
         }
