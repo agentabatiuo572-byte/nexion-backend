@@ -343,15 +343,45 @@ class SupportTicketOwnerMySqlTest {
             bind(runtime, 1, 99);
             runtime.seed(1, "old-bound", "CLOSED", true, false, 7200);
             runtime.seed(2, "old-unbound", "OPEN", false, false, 7300);
+            runtime.seed(1, "old-active", "OPEN", false, false, 7400);
+            runtime.seed(1, "old-closed", "CLOSED", false, false, 7500);
+            runtime.seed(1, "old-correct", "OPEN", false, false, 7600);
+            runtime.seed(1, "old-deleted", "CLOSED", false, true, 7700);
             runtime.jdbc.update("UPDATE nx_support_ticket SET assigned_admin_id=100,assigned_admin_name='Stale name',version=8");
+            runtime.jdbc.update("UPDATE nx_support_ticket SET assigned_admin_id=99,assigned_admin_name='Advisor 99' WHERE ticket_no='old-correct'");
+            runtime.jdbc.update("UPDATE nx_support_ticket SET created_at=DATE_ADD('2024-01-01 08:00:00',INTERVAL id DAY),"
+                    + "updated_at=DATE_ADD('2024-01-02 09:00:00',INTERVAL id DAY),"
+                    + "last_message_at=IF(ticket_no='old-unbound',NULL,DATE_ADD('2024-01-02 08:30:00',INTERVAL id DAY)),"
+                    + "closed_at=IF(status='CLOSED',DATE_ADD('2024-01-02 08:45:00',INTERVAL id DAY),NULL),"
+                    + "archived_at=IF(archived=1,DATE_ADD('2024-01-02 08:50:00',INTERVAL id DAY),NULL),"
+                    + "last_message='Historical activity',message_count=1,user_unread_count=2,ops_unread_count=3");
+            runtime.jdbc.update("UPDATE nx_support_ticket_message m JOIN nx_support_ticket t ON t.id=m.ticket_id "
+                    + "SET m.created_at=t.created_at,m.updated_at=t.updated_at");
+            var history = ticketFieldsExceptOwner(runtime);
+            var activityOrder = runtime.jdbc.queryForList("SELECT ticket_no FROM nx_support_ticket ORDER BY updated_at DESC,id DESC", String.class);
             var messages = allMessages(runtime);
             var migration = new FileSystemResource("scripts/migrations/20261003_support_ticket_binding_owner.sql");
             try (Connection connection = runtime.jdbc.getDataSource().getConnection()) {
+                try (var statement = connection.createStatement()) {
+                    statement.execute("SET SESSION time_zone='+00:00'");
+                    try (var result = statement.executeQuery("SELECT @@session.time_zone")) {
+                        assertThat(result.next()).isTrue();
+                        assertThat(result.getString(1)).isEqualTo("+00:00");
+                    }
+                }
                 ScriptUtils.executeSqlScript(connection, migration);
-                assertThat(runtime.jdbc.queryForMap("SELECT assigned_admin_id,assigned_admin_name,version FROM nx_support_ticket WHERE user_id=1"))
-                        .containsEntry("assigned_admin_id", 99L).containsEntry("assigned_admin_name", "Advisor 99").containsEntry("version", 9L);
+                assertThat(ticketFieldsExceptOwner(runtime)).as("technical backfill preserves all activity timestamps and ticket content").isEqualTo(history);
+                assertThat(runtime.jdbc.queryForList("SELECT ticket_no FROM nx_support_ticket ORDER BY updated_at DESC,id DESC", String.class))
+                        .isEqualTo(activityOrder);
+                for (String number : List.of("old-bound", "old-active", "old-closed", "old-correct")) {
+                    assertThat(runtime.jdbc.queryForMap("SELECT assigned_admin_id,assigned_admin_name,version FROM nx_support_ticket WHERE ticket_no=?", number))
+                            .containsEntry("assigned_admin_id", 99L).containsEntry("assigned_admin_name", "Advisor 99")
+                            .containsEntry("version", number.equals("old-correct") ? 8L : 9L);
+                }
                 assertThat(runtime.jdbc.queryForMap("SELECT assigned_admin_id,assigned_admin_name,version FROM nx_support_ticket WHERE user_id=2"))
                         .containsEntry("assigned_admin_id", null).containsEntry("assigned_admin_name", "Unassigned").containsEntry("version", 9L);
+                assertThat(runtime.jdbc.queryForMap("SELECT assigned_admin_id,assigned_admin_name,version FROM nx_support_ticket WHERE ticket_no='old-deleted'"))
+                        .containsEntry("assigned_admin_id", 100L).containsEntry("assigned_admin_name", "Stale name").containsEntry("version", 8L);
                 assertThat(runtime.jdbc.queryForObject("SELECT reason FROM nx_support_binding_pool WHERE customer_id=2", String.class))
                         .isEqualTo("MIGRATION_REVIEW");
                 runtime.jdbc.update("UPDATE nx_support_binding_pool SET reason='DEPTH_LIMIT',version=4 WHERE customer_id=2");
@@ -363,6 +393,12 @@ class SupportTicketOwnerMySqlTest {
             assertThat(runtime.jdbc.queryForMap("SELECT reason,version FROM nx_support_binding_pool WHERE customer_id=2"))
                     .containsEntry("reason", "DEPTH_LIMIT").containsEntry("version", 4L);
         }
+    }
+
+    private static List<Map<String, Object>> ticketFieldsExceptOwner(SupportTicketCreationMySqlTest.Runtime runtime) {
+        var headers = runtime.jdbc.queryForList("SELECT * FROM nx_support_ticket ORDER BY id");
+        headers.forEach(header -> List.of("assigned_admin_id", "assigned_admin_name", "version").forEach(header::remove));
+        return headers;
     }
 
     private static void bind(SupportTicketCreationMySqlTest.Runtime runtime, long customer, long agent) {

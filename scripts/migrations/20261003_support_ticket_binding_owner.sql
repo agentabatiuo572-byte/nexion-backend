@@ -26,7 +26,8 @@ LEFT JOIN nx_admin a ON a.id=x.agent_admin_id
        t.assigned_admin_name=CASE WHEN x.agent_admin_id IS NULL THEN 'Unassigned'
            ELSE COALESCE(NULLIF(TRIM(a.nickname),''),NULLIF(TRIM(a.username),''),CAST(x.agent_admin_id AS CHAR)) END,
        t.version=t.version+1,
-       t.updated_at=UTC_TIMESTAMP(6)
+       -- Technical owner repair is not ticket activity; suppress the column's ON UPDATE behavior.
+       t.updated_at=t.updated_at
  WHERE @ticket_owner_first AND t.is_deleted=0
    AND NOT (t.assigned_admin_id <=> x.agent_admin_id AND t.assigned_admin_name <=>
        CASE WHEN x.agent_admin_id IS NULL THEN 'Unassigned'
