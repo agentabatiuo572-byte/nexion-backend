@@ -29,6 +29,15 @@ import org.springframework.web.bind.annotation.RestController;
 public class AppSupportController {
     private final AppSupportService service;
     private final ProductionSupportPathGuard productionPathGuard;
+    private final ffdd.opsconsole.content.application.SupportTicketCreationPolicyService creationPolicy;
+
+    @GetMapping("/tickets/creation-policy")
+    public ApiResult<ffdd.opsconsole.content.application.SupportTicketCreationPolicyService.CreationPolicy> ticketCreationPolicy(
+            Authentication authentication, jakarta.servlet.http.HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        Long userId = userId(authentication);
+        return guarded(userId) ? ApiResult.ok(creationPolicy.policy(userId)) : forbidden();
+    }
 
     @GetMapping("/advisor")
     public ApiResult<ffdd.opsconsole.content.domain.AppSupportAdvisorView> advisor(

@@ -16,7 +16,7 @@ class AppSupportControllerProductionPathContractTest {
                 "service.conversationCursor", "service.conversation",
                 "service.markConversationRead", "service.startConversation", "service.replyConversation",
                 "service.convertConversationToTicket", "service.faqs", "service.faqPage", "service.slaTargets",
-                "service.commandResult", "service.advisor"};
+                "service.commandResult", "service.advisor", "creationPolicy.policy"};
         assertThat(occurrences(source, "guarded(userId)")).isEqualTo(guardedServiceCalls.length);
         for (String serviceCall : guardedServiceCalls) {
             if (serviceCall.equals("service.advisor")) {

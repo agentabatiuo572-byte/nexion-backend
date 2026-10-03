@@ -23,6 +23,8 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
     private static final int LAST_MESSAGE_MAX_CODE_POINTS = 512;
     private final SupportTicketMapper ticketMapper;
     private final SupportTicketMessageMapper messageMapper;
+    private final ffdd.opsconsole.content.application.SupportTicketCreationPolicyService creationPolicy;
+    private final ffdd.opsconsole.content.application.SupportTicketOwnerService ticketOwners;
 
     @Override
     public void ensureSeedData(LocalDateTime now) {
@@ -126,6 +128,8 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
             String assignedAdminName,
             String operator,
             LocalDateTime now) {
+        var owner = ticketOwners.resolveForCreate(userId, assignedAdminId);
+        LocalDateTime admittedAt = creationPolicy.requireAllowed(userId, category, title, body);
         var auth=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
         boolean admin=auth!=null && auth.getDetails() instanceof java.util.Map<?,?> details && "ADMIN".equals(details.get("subjectType"));
         SupportTicketEntity entity = new SupportTicketEntity();
@@ -137,24 +141,24 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
         entity.setStatus("OPEN");
         entity.setTitle(title);
         entity.setLastMessage(headerSummary(body));
-        entity.setAssignedAdminId(assignedAdminId);
-        entity.setAssignedAdminName(assignedAdminName);
+        entity.setAssignedAdminId(owner.adminId());
+        entity.setAssignedAdminName(owner.name());
         entity.setUserUnreadCount(admin?1:0);
         entity.setOpsUnreadCount(admin?0:1);
         entity.setMessageCount(1);
-        entity.setLastMessageAt(now);
+        entity.setLastMessageAt(admittedAt);
         entity.setArchived(false);
         entity.setArchivedAt(null);
         entity.setVersion(0L);
-        entity.setCreatedAt(now);
-        entity.setUpdatedAt(now);
+        entity.setCreatedAt(admittedAt);
+        entity.setUpdatedAt(admittedAt);
         entity.setIsDeleted(0);
         ticketMapper.insert(entity);
         insertMessage(entity.getId(), ticketNo, admin?ownership.actorId():userId, admin?"agent":"user",
-                admin?ffdd.opsconsole.shared.security.AdminActorResolver.resolve("system"):"用户",body,now);
+                admin?ffdd.opsconsole.shared.security.AdminActorResolver.resolve("system"):"用户",body,admittedAt);
         return findByTicketNo(ticketNo).orElseGet(() -> new SupportTicketView(
                 entity.getId(), ticketNo, entity.getUserId(), category, priority, "OPEN", title, headerSummary(body),
-                assignedAdminId, assignedAdminName, admin?1:0, admin?0:1, 1, now, null, now, now, false, null,
+                owner.adminId(), owner.name(), admin?1:0, admin?0:1, 1, admittedAt, null, admittedAt, admittedAt, false, null,
                 0L, false));
     }
 
@@ -213,9 +217,7 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
 
     @Override
     public void assign(SupportTicketView ticket, Long assignedAdminId, String assignedAdminName, LocalDateTime now) {
-        ticketMapper.assign(
-                ticket.ticketNo(), assignedAdminId, assignedAdminName,
-                ticket.status(), safeVersion(ticket), now);
+        throw new ffdd.opsconsole.shared.exception.BizException(409, "SUPPORT_TICKET_OWNER_MANAGED_BY_BINDING");
     }
 
     @Override
@@ -224,9 +226,7 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
             Long assignedAdminId,
             String assignedAdminName,
             LocalDateTime now) {
-        return ticketMapper.assign(
-                ticket.ticketNo(), assignedAdminId, assignedAdminName,
-                ticket.status(), safeVersion(ticket), now) == 1;
+        throw new ffdd.opsconsole.shared.exception.BizException(409, "SUPPORT_TICKET_OWNER_MANAGED_BY_BINDING");
     }
 
     @Override

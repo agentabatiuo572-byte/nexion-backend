@@ -82,12 +82,9 @@ public class OpsSupportAgentService {
                 List.of("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment")));
     }
 
-    /**
-     * Returns only the identity fields M2 needs to submit an assignee command.
-     * M1 profile, capacity, service-type and assignment details never cross this boundary.
-     */
+    /** Individual tickets inherit their owner's formal advisor binding; independent assignment is retired. */
     public ApiResult<List<SupportTicketAssigneeCandidateView>> ticketAssigneeCandidates() {
-        return ApiResult.ok(repository.listTicketAssigneeCandidates());
+        return ApiResult.ok(List.of());
     }
 
     public ApiResult<SupportAgentPageView> agents(SupportAgentQueryRequest request) {

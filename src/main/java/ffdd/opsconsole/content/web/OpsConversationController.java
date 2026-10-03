@@ -215,6 +215,8 @@ public class OpsConversationController {
     // 会话转工单 — M3 即时会话台 写
     @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping("/{conversationNo}/ticket")
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class,
+            isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<ConversationTicketResult> convertToTicket(
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
