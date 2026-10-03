@@ -55,7 +55,7 @@ class SupportEnhancementCoreRuntimeTest {
     @Autowired ffdd.opsconsole.onboarding.application.OnboardingCalibrationService onboarding;
     private final String run="enhance_"+UUID.randomUUID().toString().substring(0,8);
     private final List<Long> createdAdmins=new ArrayList<>();
-    private List<Long> originallyEnabled;
+    private SupportOriginalProfiles originalProfiles;
     private ffdd.opsconsole.content.domain.SupportRules oldRules;
     private long boss,first,second;
     private final Map<String,Object> proofs=new LinkedHashMap<>();
@@ -64,17 +64,22 @@ class SupportEnhancementCoreRuntimeTest {
         events.events.clear();
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_enhance_20261001");
         oldRules=mapper.rules();
-        originallyEnabled=jdbc.queryForList("SELECT admin_id FROM nx_support_agent_profile WHERE enabled=1 AND is_deleted=0",Long.class);
-        jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE enabled=1 AND is_deleted=0");
+        originalProfiles=SupportOriginalProfiles.suspend(jdbc,transactions);
         boss=admin("boss","SUPER_ADMIN","MANAGER");first=admin("first","SUPPORT","DEDICATED");second=admin("second","SUPPORT","DEDICATED");
         as(boss);
     }
     @AfterEach void restore() {
-        if(originallyEnabled!=null) originallyEnabled.forEach(id->jdbc.update("UPDATE nx_support_agent_profile SET enabled=1 WHERE admin_id=?",id));
-        createdAdmins.forEach(id->{jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",id);jdbc.update("UPDATE nx_admin SET status=0 WHERE id=?",id);sessions.revokeSessions(id);permissions.evict(id);});
-        if(oldRules!=null) jdbc.update("UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1 WHERE id=1",
-            oldRules.dormantDays(),oldRules.maintenanceDays(),oldRules.activityWindowDays(),oldRules.inheritanceMode(),oldRules.maxInheritanceDepth(),oldRules.unboundAssignmentMode(),oldRules.modeEffectiveAt());
-        SecurityContextHolder.clearContext();
+        var cleanup=new ArrayList<Runnable>();
+        createdAdmins.forEach(id->{
+            cleanup.add(()->jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",id));
+            cleanup.add(()->jdbc.update("UPDATE nx_admin SET status=0 WHERE id=?",id));
+            cleanup.add(()->sessions.revokeSessions(id));cleanup.add(()->permissions.evict(id));
+        });
+        cleanup.add(()->{if(oldRules!=null) jdbc.update("UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1 WHERE id=1",
+            oldRules.dormantDays(),oldRules.maintenanceDays(),oldRules.activityWindowDays(),oldRules.inheritanceMode(),oldRules.maxInheritanceDepth(),oldRules.unboundAssignmentMode(),oldRules.modeEffectiveAt());});
+        cleanup.add(()->{if(originalProfiles!=null) originalProfiles.restoreAndVerify();});
+        cleanup.add(SecurityContextHolder::clearContext);
+        SupportOriginalProfiles.cleanup(cleanup.toArray(Runnable[]::new));
     }
 
     @Test void randomAllocationUsesFrozenDurableResultsAndOnlyNewAutomaticPool() throws Exception {
