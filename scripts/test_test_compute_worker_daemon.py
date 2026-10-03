@@ -5,6 +5,7 @@ import importlib.util
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import tempfile
 import time
 import unittest
@@ -279,6 +280,62 @@ class DaemonTest(unittest.TestCase):
             self.assertEqual(attempts, [("127.0.0.1", 8110, 10)])
             self.assertEqual(timers[0].delay, 7)
             self.assertTrue(pinned.closed)
+
+
+class CredentialTest(unittest.TestCase):
+    def read_credential(self, *, mode=0o440, owner=0, group=0, links=1, regular=True,
+                        directory="/run/credentials/uvel-test-compute-worker.service",
+                        directory_mode=0o550, directory_owner=0, directory_group=0,
+                        directory_type=stat.S_IFDIR, raw=None):
+        # Synthetic bytes only; no real credential file or Linux namespace is accessed.
+        token = b"tc1_" + base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=")
+        file_info = SimpleNamespace(st_mode=(stat.S_IFREG if regular else stat.S_IFIFO) | mode,
+                                    st_uid=owner, st_gid=group, st_nlink=links)
+        directory_info = SimpleNamespace(st_mode=directory_type | directory_mode,
+                                         st_uid=directory_owner, st_gid=directory_group)
+        with patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": directory}, clear=True), \
+                patch.object(daemon.os, "getuid", return_value=62412, create=True), \
+                patch.object(daemon.os, "O_NOFOLLOW", 0x20000, create=True), \
+                patch.object(daemon.os, "open", return_value=123) as opened, \
+                patch.object(daemon.os, "fstat", return_value=file_info), \
+                patch.object(daemon.os, "read", return_value=token + b"\n" if raw is None else raw), \
+                patch.object(daemon.os, "close") as closed, \
+                patch.object(daemon.Path, "lstat", return_value=directory_info) as parent:
+            try:
+                return daemon.credential(), opened, parent
+            finally:
+                closed.assert_called_once_with(123)
+                opened.assert_called_once_with(Path(directory) / "test-worker-token", os.O_RDONLY | os.O_NOFOLLOW)
+
+    def test_systemd_root_idmapped_0440_in_private_0550_directory_is_accepted(self):
+        token, _, parent = self.read_credential()
+        self.assertTrue(token.startswith("tc1_"))
+        parent.assert_called_once()
+
+    def test_previous_owner_only_modes_do_not_require_the_systemd_directory_exception(self):
+        for owner in (0, 62412):
+            for mode in (0o400, 0o600):
+                with self.subTest(owner=owner, mode=mode):
+                    _, _, parent = self.read_credential(mode=mode, owner=owner, directory="/private/old-credential")
+                    parent.assert_not_called()
+
+    def test_group_read_exception_rejects_wrong_file_or_nonprivate_directory(self):
+        cases = (
+            dict(group=62412), dict(owner=62412), dict(owner=42, mode=0o400),
+            dict(links=2), dict(regular=False), dict(mode=0o444), dict(mode=0o460), dict(mode=0o640),
+            dict(directory="/other/credentials"), dict(directory_mode=0o555), dict(directory_mode=0o570),
+            dict(directory_owner=62412), dict(directory_group=62412), dict(directory_type=stat.S_IFLNK),
+        )
+        for attributes in cases:
+            with self.subTest(attributes=attributes), self.assertRaisesRegex(daemon.Halt, "CREDENTIAL_SOURCE_INVALID"):
+                self.read_credential(**attributes)
+
+    def test_file_and_format_guards_still_reject_links_nonregular_and_invalid_tokens(self):
+        for attributes in (dict(mode=0o400, links=2), dict(mode=0o400, regular=False),
+                           dict(raw=b"not-a-token"), dict(raw=b"tc1_" + b"A" * 42 + b"B"),
+                           dict(raw=b"tc1_" + b"A" * 43 + b"\nEXTRA")):
+            with self.subTest(attributes=attributes), self.assertRaises(daemon.Halt):
+                self.read_credential(**attributes)
 
 
 if __name__ == "__main__":

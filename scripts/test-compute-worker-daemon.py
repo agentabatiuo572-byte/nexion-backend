@@ -289,7 +289,14 @@ def credential():
     fd = os.open(Path(directory) / "test-worker-token", os.O_RDONLY | os.O_NOFOLLOW)
     try:
         info = os.fstat(fd)
-        require(stat.S_ISREG(info.st_mode) and info.st_mode & 0o077 == 0 and info.st_nlink == 1
+        private_group_read = False
+        if info.st_uid == 0 and info.st_gid == 0 and stat.S_IMODE(info.st_mode) == 0o440:
+            parent = Path(directory).lstat()
+            # LoadCredential's private idmapped mount can expose root:root 0440 to DynamicUser.
+            private_group_read = (directory == "/run/credentials/uvel-test-compute-worker.service"
+                                  and stat.S_ISDIR(parent.st_mode) and parent.st_uid == 0 and parent.st_gid == 0
+                                  and parent.st_mode & 0o027 == 0)
+        require(stat.S_ISREG(info.st_mode) and (info.st_mode & 0o077 == 0 or private_group_read) and info.st_nlink == 1
                 and info.st_uid in (0, os.getuid()), "CREDENTIAL_SOURCE_INVALID")
         raw = os.read(fd, 81)
         require(re.fullmatch(rb"tc1_[A-Za-z0-9_-]{43}\n?", raw) is not None, "CREDENTIAL_INVALID")
