@@ -119,7 +119,8 @@ public class D1BankOrderService {
         if (block != null) throw new BizException(409, block);
         long intentVersion = number(intent.get("version"));
         long providerVersion = number(provider.get("version"));
-        if (intentVersion != request.expectedVersion() || providerVersion != request.providerVersion()) {
+        // Query attempts rotate provider version; settlement CAS uses the locked current value.
+        if (intentVersion != request.expectedVersion()) {
             throw new BizException(409, "HDPAY_MANUAL_VERSION_CONFLICT");
         }
         if (orders.countSettlementFacts(intentNo) != 0) throw new BizException(409, "HDPAY_LOCAL_SETTLEMENT_CONFLICT");

@@ -91,7 +91,8 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
             HdPayCallbackSettlementService automatic = proxiedService(template, outbox, tx);
             for (String mode : List.of("MANUAL_FIRST", "AUTO_FIRST", "RACE", "MANUAL_RACE",
                     "CREATE_PENDING", "CREATE_UNKNOWN", "EXPIRED_REVIEW", "CANCELLED",
-                    "QUERY_OUTSTANDING", "CALLBACK_QUERY_OUTSTANDING")) {
+                    "QUERY_OUTSTANDING", "CALLBACK_QUERY_OUTSTANDING", "QUERY_PENDING_VERSION_DRIFT",
+                    "QUERY_PENDING_AUTO_FIRST", "QUERY_PENDING_INTENT_CHANGED")) {
                 authenticate();
                 String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
                 String intentNo = "VQR-HP-" + suffix;
@@ -126,10 +127,41 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                 }
                 HdPayManualCreditRequest request = manualRequest(assetId, providerVersion, suffix);
                 String key = "manual-" + suffix;
-                if (mode.equals("AUTO_FIRST")) {
-                    automatic.settleConfirmed(callback(intentNo, providerId), query(intentNo, providerId));
+                if (mode.startsWith("QUERY_PENDING_")) {
+                    // Freeze the original form before a real pending-query claim and finish.
+                    jdbc.update("UPDATE nx_hdpay_payin_order SET updated_at=DATE_SUB(NOW(),INTERVAL 1 MINUTE) WHERE merchant_order_id=?", intentNo);
+                    assertThat(template.getMapper(HdPayOrderMapper.class).claimOrderQuery(intentNo, 0L,
+                            java.time.LocalDateTime.now(ZoneOffset.UTC).minusSeconds(30))).isOne();
+                    HdPayGateway.PayOrder pending = new HdPayGateway.PayOrder(intentNo, providerId, 1,
+                            new BigDecimal("200000"), "BANKQR", "");
+                    assertThat(automatic.settleOrderQuery(intentNo, 1L, pending)).isEqualTo("success");
+                    assertThat(jdbc.queryForObject("SELECT version FROM nx_hdpay_payin_order WHERE merchant_order_id=?",
+                            Long.class, intentNo)).isEqualTo(2L);
+                    assertThat(text(jdbc, "SELECT last_error_code FROM nx_hdpay_payin_order WHERE merchant_order_id=?", intentNo))
+                            .isEqualTo("HDPAY_ORDER_QUERY_PENDING");
+                    assertThat(jdbc.queryForObject("SELECT version FROM nx_vietqr_intent WHERE intent_no=?", Long.class, intentNo)).isZero();
+                    assertThat(request.providerVersion()).isZero();
+                }
+                if (mode.equals("QUERY_PENDING_INTENT_CHANGED")) {
+                    assertThat(jdbc.update("UPDATE nx_vietqr_intent SET version=version+1 WHERE intent_no=?", intentNo)).isOne();
+                    String financial = financialSnapshot(jdbc);
+                    assertThatThrownBy(() -> manual.manualCredit(intentNo, key, request))
+                            .isInstanceOf(BizException.class).hasMessage("HDPAY_MANUAL_VERSION_CONFLICT");
+                    assertThat(financialSnapshot(jdbc)).isEqualTo(financial);
+                    assertUnchanged(jdbc, intentNo, 41L, before, cumulative);
+                    continue;
+                }
+                if (mode.equals("AUTO_FIRST") || mode.equals("QUERY_PENDING_AUTO_FIRST")) {
+                    if (mode.equals("QUERY_PENDING_AUTO_FIRST")) {
+                        jdbc.update("UPDATE nx_hdpay_payin_order SET updated_at=DATE_SUB(NOW(),INTERVAL 1 MINUTE) WHERE merchant_order_id=?", intentNo);
+                        assertThat(template.getMapper(HdPayOrderMapper.class).claimOrderQuery(intentNo, 2L,
+                                java.time.LocalDateTime.now(ZoneOffset.UTC).minusSeconds(30))).isOne();
+                        assertThat(automatic.settleOrderQuery(intentNo, 3L, query(intentNo, providerId))).isEqualTo("success");
+                    } else automatic.settleConfirmed(callback(intentNo, providerId), query(intentNo, providerId));
+                    String financial = financialSnapshot(jdbc);
                     assertThatThrownBy(() -> manual.manualCredit(intentNo, key, request))
                             .isInstanceOf(BizException.class).hasMessage("HDPAY_ORDER_ALREADY_CREDITED");
+                    assertThat(financialSnapshot(jdbc)).isEqualTo(financial);
                     assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_hdpay_manual_confirmation WHERE merchant_order_id=?", intentNo)).isZero();
                     assertThat(text(jdbc, "SELECT status FROM nx_vietqr_receipt_evidence WHERE asset_id=?", assetId)).isEqualTo("AVAILABLE");
                 } else if (mode.equals("RACE") || mode.equals("MANUAL_RACE")) {
@@ -160,12 +192,29 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                 } else {
                     Map<String, Object> result = manual.manualCredit(intentNo, key, request).getData();
                     assertThat(result).containsEntry("confirmationSource", "ADMIN_MANUAL");
+                    if (mode.equals("QUERY_PENDING_VERSION_DRIFT")) {
+                        assertThat(result).containsEntry("providerVersion", 3L);
+                        assertThat(jdbc.queryForObject("SELECT version FROM nx_hdpay_payin_order WHERE merchant_order_id=?",
+                                Long.class, intentNo)).isEqualTo(3L);
+                        assertThat(jdbc.queryForObject("SELECT provider_status FROM nx_hdpay_payin_order WHERE merchant_order_id=?",
+                                Integer.class, intentNo)).isEqualTo(1);
+                    }
                     if (mode.equals("CANCELLED")) assertThat(jdbc.queryForObject(
                             "SELECT provider_status FROM nx_hdpay_payin_order WHERE merchant_order_id=?", Integer.class, intentNo)).isEqualTo(1);
                     assertThat(text(jdbc, "SELECT operator FROM nx_hdpay_manual_confirmation WHERE merchant_order_id=?", intentNo)).isEqualTo("test-finance");
                     assertThat(text(jdbc, "SELECT operator FROM nx_treasury_reserve_ledger WHERE voucher_no=?", intentNo)).isEqualTo("test-finance");
                     assertThat(text(jdbc, "SELECT bound_resource_type FROM nx_vietqr_receipt_evidence WHERE asset_id=?", assetId)).isEqualTo("HDPAY_MANUAL_CONFIRMATION");
                     String financial = financialSnapshot(jdbc);
+                    if (mode.equals("QUERY_PENDING_VERSION_DRIFT")) {
+                        assertThat(automatic.settleOrderQuery(intentNo, 1L, query(intentNo, providerId))).isEqualTo("success");
+                        assertThat(financialSnapshot(jdbc)).isEqualTo(financial);
+                        HdPayManualCreditRequest refreshed = new HdPayManualCreditRequest(request.expectedVersion(), 2L,
+                                request.receivedVnd(), request.paymentReference(), request.receivedAt(),
+                                request.evidenceRef(), request.reason(), request.operator());
+                        assertThatThrownBy(() -> manual.manualCredit(intentNo, key, refreshed)).isInstanceOf(BizException.class)
+                                .hasMessage("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+                        assertThat(financialSnapshot(jdbc)).isEqualTo(financial);
+                    }
                     jdbc.update("UPDATE nx_admin_idempotency_record SET expires_at=DATE_SUB(NOW(),INTERVAL 2 DAY) WHERE idempotency_key=?", key);
                     assertThat(manual.manualCredit(intentNo, key, request).getData())
                             .containsEntry("manualConfirmationNo", result.get("manualConfirmationNo"));
