@@ -87,6 +87,69 @@ class TestComputeWorkerContinuousTest {
         verify(mapper, never()).markTestWorkerOnline(any(), any(), any(), any(), any(), any());
     }
 
+    private void prepareOwnedRelease(String onlineStatus) {
+        task.set(row(KIND, CLIENT));
+        var grant = worker.continuousGrant(identity, TASK, now.minusHours(1).toInstant(ZoneOffset.UTC).toEpochMilli(),
+                now.plusHours(23).toInstant(ZoneOffset.UTC).toEpochMilli());
+        runtime.set(new TestWorkerRuntimeRow(onlineStatus, TASK, CLIENT, worker.marker(grant), now.minusMinutes(5), null));
+        when(mapper.cancelTestWorkerAssignment(eq(CONTINUOUS_OWNER), eq(CONTINUOUS_DEVICE), eq(CONTINUOUS_INSTANCE),
+                eq(TASK), eq(CONTINUOUS_CONFIG), eq(worker.marker(grant)), any())).thenReturn(1);
+        when(mapper.closeTestWorkerRuntime(eq(CONTINUOUS_OWNER), eq(CONTINUOUS_DEVICE), eq(CONTINUOUS_INSTANCE),
+                eq(TASK), eq(worker.marker(grant)), any())).thenReturn(1);
+        when(mapper.clearRuntimeTask(eq(CONTINUOUS_OWNER), eq(CONTINUOUS_DEVICE), eq(TASK), any())).thenReturn(1);
+    }
+
+    private String releaseKey() { return "TEST355-RELEASE-" + sha256(TASK.getBytes(java.nio.charset.StandardCharsets.UTF_8)); }
+
+    @Test void explicitContinuousReleaseCancelsOwnedUnsettledTaskAndClearsRuntimeWithCanonicalConfirmation() {
+        prepareOwnedRelease("ONLINE");
+        var data = app.continuousWorkerRelease(identity, TASK, releaseKey()).getData();
+        assertThat(data).containsEntry("taskNo", TASK).containsEntry("released", true).containsEntry("taskStatus", "CANCELLED")
+                .containsEntry("serverCanonical", true).containsEntry("deploymentScope", "TEST");
+        var order = inOrder(mapper);
+        order.verify(mapper).cancelTestWorkerAssignment(eq(CONTINUOUS_OWNER), eq(CONTINUOUS_DEVICE), eq(CONTINUOUS_INSTANCE),
+                eq(TASK), eq(CONTINUOUS_CONFIG), anyString(), eq(now));
+        order.verify(mapper).closeTestWorkerRuntime(eq(CONTINUOUS_OWNER), eq(CONTINUOUS_DEVICE), eq(CONTINUOUS_INSTANCE), eq(TASK), anyString(), eq(now));
+        order.verify(mapper).clearRuntimeTask(CONTINUOUS_OWNER, CONTINUOUS_DEVICE, TASK, now);
+        verify(mapper, never()).completeAssignment(any(), any(), any(), any(), any());
+        verify(mapper, never()).expireAssignment(any(), any(), any(), any());
+        verify(mapper, never()).creditWallet(any(), any(), any(), any());
+        verify(audit).recordRequiredForTrustedActor(any());
+    }
+
+    @Test void previouslyClosedOwnRuntimeStillAllowsExplicitCancellationWithoutRemintingOrCompletingProof() {
+        prepareOwnedRelease("OFFLINE");
+        assertThat(app.continuousWorkerRelease(identity, TASK, releaseKey()).getData()).containsEntry("taskStatus", "CANCELLED");
+        verify(mapper, never()).closeTestWorkerRuntime(any(), any(), any(), any(), any(), any());
+        verify(mapper).clearRuntimeTask(CONTINUOUS_OWNER, CONTINUOUS_DEVICE, TASK, now);
+        verify(mapper, never()).markTestWorkerOnline(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test void foreignRuntimeOrCommercialTaskCannotBeCancelledByContinuousRelease() {
+        prepareOwnedRelease("OFFLINE");
+        runtime.set(new TestWorkerRuntimeRow("OFFLINE", TASK, CLIENT, "foreign-marker", now, null));
+        assertThatThrownBy(() -> app.continuousWorkerRelease(identity, TASK, releaseKey())).hasMessage("TEST_COMPUTE_WORKER_RUNTIME_STALE");
+        verify(mapper, never()).cancelTestWorkerAssignment(any(), any(), any(), any(), any(), any(), any());
+        prepareOwnedRelease("OFFLINE");
+        task.set(row("commercial-model", "UVEL App"));
+        assertThatThrownBy(() -> app.continuousWorkerRelease(identity, TASK, releaseKey())).hasMessage("TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
+        verify(mapper, never()).cancelTestWorkerAssignment(any(), any(), any(), any(), any(), any(), any());
+        verify(mapper, never()).clearRuntimeTask(any(), any(), any(), any());
+    }
+
+    @Test void cancellationAndRuntimeClearRequireCasSuccessBeforeAnySuccessConfirmation() {
+        prepareOwnedRelease("OFFLINE");
+        when(mapper.cancelTestWorkerAssignment(any(), any(), any(), any(), any(), any(), any())).thenReturn(0);
+        assertThatThrownBy(() -> app.continuousWorkerRelease(identity, TASK, releaseKey())).hasMessage("TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
+        verify(mapper, never()).clearRuntimeTask(any(), any(), any(), any());
+        verifyNoInteractions(audit);
+        prepareOwnedRelease("OFFLINE");
+        when(mapper.cancelTestWorkerAssignment(any(), any(), any(), any(), any(), any(), any())).thenReturn(1);
+        when(mapper.clearRuntimeTask(any(), any(), any(), any())).thenReturn(0);
+        assertThatThrownBy(() -> app.continuousWorkerRelease(identity, TASK, releaseKey())).hasMessage("TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
+        verifyNoInteractions(audit);
+    }
+
     private void prepareAbsentTask() {
         task.set(null);
         runtime.set(new TestWorkerRuntimeRow("OFFLINE", null, CLIENT, "", now.minusDays(1), null));

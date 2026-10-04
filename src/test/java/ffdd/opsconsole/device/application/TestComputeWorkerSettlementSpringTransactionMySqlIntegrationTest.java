@@ -150,6 +150,7 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
                 .allSatisfy(row -> { assertThat(row.get("actor_type")).isEqualTo("TEST_COMPUTE_WORKER"); assertThat(row.get("actor_username")).isEqualTo(grant.getName()); });
         // New service/transaction wrappers replay the persisted envelope; no process-local cache or first-key state.
         configure(grant.taskNo());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_admin_idempotency_record WHERE expires_at <= NOW()",Integer.class)).isZero();
         var replay=app.testWorkerComplete(grant,grant.taskNo(),"complete-one",request);
         assertThat(replay.getData()).containsEntry("receiptNo",completed.getData().get("receiptNo"));
         assertBalances("10.25","23");
@@ -361,6 +362,7 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT online_status FROM nx_user_device_runtime",String.class)).isEqualTo("OFFLINE");
         assertThat(jdbc.queryForObject("SELECT active_task_no FROM nx_user_device_runtime",String.class)).isEqualTo(grant.taskNo());
         assertThat(jdbc.queryForObject("SELECT status FROM nx_compute_task",String.class)).isEqualTo("RUNNING");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_admin_idempotency_record WHERE expires_at <= NOW()",Integer.class)).isZero();
         assertThat(app.testWorkerRelease(grant,grant.taskNo(),fixed("RELEASE")).getData()).containsEntry("released",true);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log WHERE action='TEST_COMPUTE_WORKER_RELEASED'",Integer.class)).isEqualTo(1);
         assertThatThrownBy(() -> app.testWorkerComplete(grant,grant.taskNo(),"after-release",result())).isInstanceOf(RuntimeException.class);
@@ -383,13 +385,137 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         assertThatThrownBy(() -> app.testWorkerComplete(grant,grant.taskNo(),"after-revoke",result())).hasMessage("TEST_COMPUTE_WORKER_DISABLED");
     }
 
+    @ParameterizedTest @ValueSource(strings={"ONLINE","OFFLINE"})
+    void continuousNormalReleaseCancelsOnlyOwnUnsettledTaskAndNextUsesFreshOriginalRail(String online) {
+        continuousFixture();
+        var originalProof=result();
+        var lease=jdbc.queryForObject("SELECT lease_expires_at FROM nx_compute_task",LocalDateTime.class);
+        if(online.equals("OFFLINE")) {
+            jdbc.update("UPDATE nx_user_device_runtime SET heartbeat_at=?",NOW.minusSeconds(121));
+            worker.cleanupExpiredRuntime();
+        }
+        assertThat(jdbc.queryForObject("SELECT online_status FROM nx_user_device_runtime",String.class)).isEqualTo(online);
+        var released=app.continuousWorkerRelease(continuousIdentity(),grant.taskNo(),fixed("RELEASE"));
+        assertThat(released.getData()).containsEntry("released",true).containsEntry("taskStatus","CANCELLED")
+                .containsEntry("serverCanonical",true).containsEntry("deploymentScope","TEST");
+        assertThat(jdbc.queryForObject("SELECT status FROM nx_compute_task",String.class)).isEqualTo("CANCELLED");
+        assertThat(jdbc.queryForObject("SELECT proof_consumed_at IS NOT NULL FROM nx_compute_task",Boolean.class)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT completed_at FROM nx_compute_task",LocalDateTime.class)).isNull();
+        assertThat(jdbc.queryForObject("SELECT lease_expires_at FROM nx_compute_task",LocalDateTime.class)).isEqualTo(lease);
+        assertThat(jdbc.queryForObject("SELECT online_status FROM nx_user_device_runtime",String.class)).isEqualTo("OFFLINE");
+        assertThat(jdbc.queryForObject("SELECT active_task_no FROM nx_user_device_runtime",String.class)).isNull();
+        assertNoRewards();
+        assertThatThrownBy(() -> app.testWorkerComplete(grant,grant.taskNo(),"after-v2-release",originalProof))
+                .hasMessage("TASK_ASSIGNMENT_STATE_INVALID");
+        var next=app.continuousWorkerNext(continuousIdentity(),"TEST355-NEXT-"+UUID.randomUUID().toString().replace("-","")).getData();
+        assertThat(next.get("taskNo")).isNotEqualTo(grant.taskNo());
+        assertThat(next.get("proofNonce")).isNotEqualTo(originalProof.proofNonce());
+        assertThat(jdbc.queryForObject("SELECT status FROM nx_compute_task WHERE task_no=?",String.class,grant.taskNo())).isEqualTo("CANCELLED");
+        assertThat(count("nx_compute_receipt")).isZero(); assertThat(count("nx_wallet_ledger")).isZero();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"proofConsumed","receipt","ledger","foreignMarker","foreignClient","commercialTask",
+            "foreignOwner","foreignInstance","foreignConfig","foreignRuntimeTask","unownedDevice","otherLedger"})
+    void continuousReleaseFencesProofFundsAndForeignBindingsWithoutCancelling(String change) {
+        continuousFixture();
+        switch(change) {
+            case "proofConsumed" -> jdbc.update("UPDATE nx_compute_task SET proof_consumed_at=?",NOW);
+            case "receipt" -> jdbc.update("INSERT INTO nx_compute_receipt(receipt_no,user_id,user_device_id,task_no,task_type,client_name,reward_usdt,reward_nex,earning_status,proof_hash,completed_at) VALUES(?,?,?,?,'EM',?,0.045005,0,'CREDITED','synthetic-hash',?)",
+                    "CTR-"+grant.taskNo(),grant.ownerId(),grant.deviceId(),grant.taskNo(),TestComputeWorkerService.CLIENT,NOW);
+            case "ledger" -> jdbc.update("INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,balance_after,status) VALUES(?,?,'COMPUTE_TASK_REWARD','USDT','IN',0.045005,10.045005,'SUCCESS')",grant.ownerId(),grant.taskNo());
+            case "foreignMarker" -> jdbc.update("UPDATE nx_user_device_runtime SET agent_version='foreign-marker'");
+            case "foreignClient" -> jdbc.update("UPDATE nx_user_device_runtime SET client_name='foreign-client'");
+            case "commercialTask" -> jdbc.update("UPDATE nx_compute_task SET model_name='commercial-model',client_name='UVEL App'");
+            case "foreignOwner" -> jdbc.update("UPDATE nx_user_device SET user_id=8");
+            case "foreignInstance" -> jdbc.update("UPDATE nx_user_device SET instance_no='FOREIGN-INSTANCE'");
+            case "foreignConfig" -> jdbc.update("UPDATE nx_compute_task SET task_config_id='FOREIGN-CONFIG'");
+            case "foreignRuntimeTask" -> jdbc.update("UPDATE nx_user_device_runtime SET active_task_no='CTA-FOREIGN'");
+            case "unownedDevice" -> jdbc.update("UPDATE nx_user_device SET ownership_status='TRANSFERRED'");
+            case "otherLedger" -> jdbc.update("INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,balance_after,status) VALUES(?,?,'WITHDRAW','USDT','OUT',0.045005,10.045005,'SUCCESS')",grant.ownerId(),grant.taskNo());
+        }
+        var beforeTask=jdbc.queryForMap("SELECT * FROM nx_compute_task");
+        var beforeRuntime=jdbc.queryForMap("SELECT * FROM nx_user_device_runtime");
+        int receipts=count("nx_compute_receipt"),ledger=count("nx_wallet_ledger");
+        assertThatThrownBy(() -> app.continuousWorkerRelease(continuousIdentity(),grant.taskNo(),fixed("RELEASE")))
+                .isInstanceOf(RuntimeException.class);
+        assertThat(jdbc.queryForMap("SELECT * FROM nx_compute_task")).isEqualTo(beforeTask);
+        assertThat(jdbc.queryForMap("SELECT * FROM nx_user_device_runtime")).isEqualTo(beforeRuntime);
+        assertBalances("10","20");
+        assertThat(count("nx_compute_receipt")).isEqualTo(receipts); assertThat(count("nx_wallet_ledger")).isEqualTo(ledger);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log WHERE action='TEST_COMPUTE_WORKER_RELEASED'",Integer.class)).isZero();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"cancelTestWorkerAssignment","closeTestWorkerRuntime","clearRuntimeTask","audit"})
+    void continuousReleaseCasOrAuditFailureRollsBackCancellationAndRuntime(String point) {
+        continuousFixture();
+        var beforeTask=jdbc.queryForMap("SELECT * FROM nx_compute_task");
+        var beforeRuntime=jdbc.queryForMap("SELECT * FROM nx_user_device_runtime");
+        failure=point;
+        assertThatThrownBy(() -> app.continuousWorkerRelease(continuousIdentity(),grant.taskNo(),fixed("RELEASE")))
+                .isInstanceOf(RuntimeException.class);
+        assertThat(jdbc.queryForMap("SELECT * FROM nx_compute_task")).isEqualTo(beforeTask);
+        assertThat(jdbc.queryForMap("SELECT * FROM nx_user_device_runtime")).isEqualTo(beforeRuntime);
+        assertNoRewards();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log WHERE action='TEST_COMPUTE_WORKER_RELEASED'",Integer.class)).isZero();
+    }
+
+    @Test void continuousReleaseCannotCancelAnAlreadySettledTaskOrChangeItsActualFunds() {
+        continuousFixture();
+        app.continuousWorkerComplete(continuousIdentity(),grant.taskNo(),"v2-before-release",result());
+        var beforeTask=jdbc.queryForMap("SELECT * FROM nx_compute_task");
+        assertThatThrownBy(() -> app.continuousWorkerRelease(continuousIdentity(),grant.taskNo(),fixed("RELEASE")))
+                .isInstanceOf(RuntimeException.class);
+        assertThat(jdbc.queryForMap("SELECT * FROM nx_compute_task")).isEqualTo(beforeTask);
+        assertBalances("10.045005","23");
+        assertThat(count("nx_compute_receipt")).isEqualTo(1); assertThat(count("nx_wallet_ledger")).isEqualTo(2);
+    }
+
+    @Test void continuousCompleteVersusReleaseRaceHasOnlySettlementOrCancellation() throws Exception {
+        continuousFixture(); var request=result();
+        var ready=new CountDownLatch(2); var start=new CountDownLatch(1);
+        var pool=Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Object>> results=new ArrayList<>();
+            for(boolean cancel:List.of(false,true)) results.add(pool.submit(() -> {
+                ready.countDown(); if(!start.await(5,TimeUnit.SECONDS)) throw new AssertionError("local start timeout");
+                try { return cancel ? app.continuousWorkerRelease(continuousIdentity(),grant.taskNo(),fixed("RELEASE"))
+                        : app.continuousWorkerComplete(continuousIdentity(),grant.taskNo(),"v2-release-race",request); }
+                catch(RuntimeException failed) { return failed; }
+            }));
+            assertThat(ready.await(5,TimeUnit.SECONDS)).isTrue(); start.countDown();
+            for(var result:results) result.get(15,TimeUnit.SECONDS);
+            String status=jdbc.queryForObject("SELECT status FROM nx_compute_task",String.class);
+            assertThat(status).isIn("CANCELLED","COMPLETED");
+            boolean settled=status.equals("COMPLETED");
+            assertThat(count("nx_compute_receipt")).isEqualTo(settled ? 1 : 0);
+            assertThat(count("nx_wallet_ledger")).isEqualTo(settled ? 2 : 0);
+            assertBalances(settled ? "10.045005" : "10",settled ? "23" : "20");
+            assertThat(jdbc.queryForObject("SELECT active_task_no FROM nx_user_device_runtime",String.class)).isNull();
+        } finally { pool.shutdownNow(); }
+    }
+
+    private ContinuousIdentity continuousIdentity() { return new ContinuousIdentity("test355-continuous"); }
+
+    private void continuousFixture() {
+        jdbc.update("UPDATE nx_user SET id=? WHERE id=7",TestComputeWorkerService.CONTINUOUS_OWNER);
+        jdbc.update("UPDATE nx_order SET user_id=?",TestComputeWorkerService.CONTINUOUS_OWNER);
+        jdbc.update("UPDATE nx_user_wallet SET user_id=?",TestComputeWorkerService.CONTINUOUS_OWNER);
+        jdbc.update("UPDATE nx_user_device SET id=?,user_id=?,instance_no=?,vram_total_gb=0",TestComputeWorkerService.CONTINUOUS_DEVICE,TestComputeWorkerService.CONTINUOUS_OWNER,TestComputeWorkerService.CONTINUOUS_INSTANCE);
+        jdbc.update("UPDATE nx_user_device_runtime SET user_device_id=?",TestComputeWorkerService.CONTINUOUS_DEVICE);
+        jdbc.update("UPDATE nx_admin_device_task SET task_id=?,min_reward=0.045005,max_reward=0.045005",TestComputeWorkerService.CONTINUOUS_CONFIG);
+        jdbc.update("UPDATE nx_compute_task SET user_id=?,user_device_id=?,task_config_id=?,reward_usdt=0.045005",TestComputeWorkerService.CONTINUOUS_OWNER,TestComputeWorkerService.CONTINUOUS_DEVICE,TestComputeWorkerService.CONTINUOUS_CONFIG);
+        configure("CTA-TEST-ONE",true);
+        app.continuousWorkerNext(continuousIdentity(),"TEST355-NEXT-"+UUID.randomUUID().toString().replace("-",""));
+        grant=worker.continuousTaskGrant(continuousIdentity(),"CTA-TEST-ONE");
+    }
+
     private ffdd.opsconsole.shared.api.ApiResult<Map<String,Object>> claim() { return app.testWorkerClaim(grant,grant.taskNo(),fixed("CLAIM")); }
     private String fixed(String op) { return "TEST355-"+op+"-"+TestComputeWorkerService.sha256(grant.taskNo().getBytes(StandardCharsets.UTF_8)); }
     private CompleteRequest result() {
-        var task=mapper.lockAssignment(7L,grant.taskNo(),"PRODUCTION");
+        var task=mapper.lockAssignment(grant.ownerId(),grant.taskNo(),"PRODUCTION");
         var input=worker.input(grant,task); byte[] bytes=worker.expectedResult(input);
         // The fixed original fixture matches an independently executed Python oracle, not just Java self-comparison.
-        if(grant.taskNo().equals("CTA-TEST-ONE")) assertThat(TestComputeWorkerService.sha256(bytes)).isEqualTo("08848de76d730b47d5cde8e594d6f58e0a6eae32dd3200ffa4206a5c8df621cc");
+        if(!grant.continuous() && grant.taskNo().equals("CTA-TEST-ONE")) assertThat(TestComputeWorkerService.sha256(bytes)).isEqualTo("08848de76d730b47d5cde8e594d6f58e0a6eae32dd3200ffa4206a5c8df621cc");
         return new CompleteRequest(TestComputeWorkerService.SPEC,input.hash(),TestComputeWorkerService.sha256(bytes),Base64.getEncoder().encodeToString(bytes),task.completionNonce(),INSTANT.toEpochMilli());
     }
     private int count(String table) { return jdbc.queryForObject("SELECT COUNT(*) FROM "+table,Integer.class); }
@@ -400,7 +526,11 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
     private void assertNoRewards() { assertBalances("10","20"); for(String table:List.of("nx_compute_receipt","nx_earning_event","nx_event_outbox")) assertThat(count(table)).as(table).isZero(); assertThat(count("nx_wallet_ledger")).isZero(); }
 
     private void configure(String taskNo) {
-        env=TestComputeWorkerServiceTest.environment(taskNo); env.setActiveProfiles("prod");
+        configure(taskNo,false);
+    }
+    private void configure(String taskNo,boolean continuous) {
+        env=continuous ? TestComputeWorkerServiceTest.continuousEnvironment() : TestComputeWorkerServiceTest.environment(taskNo);
+        if(!continuous) env.setActiveProfiles("prod");
         MybatisConfiguration config=new MybatisConfiguration(new Environment("bug355-local",new SpringManagedTransactionFactory(),source));
         var global=new GlobalConfig();global.setDbConfig(new GlobalConfig.DbConfig());
         global.setMetaObjectHandler(new ffdd.opsconsole.shared.config.MybatisMetaObjectHandler(businessClock));
@@ -414,13 +544,16 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         var audit=new AuditLogService(auditMapper,new AuditLogSanitizer(json),new ApplicationNameProperties(),new AuditProperties(),mock(AdminMapper.class),policy);
         var expiry=transactional(new AdminIdempotencyExpiryTransitionExecutor(session.getMapper(AdminIdempotencyRecordMapper.class)));
         var executor=transactional(new AdminIdempotencyTransactionExecutor(session.getMapper(AdminIdempotencyRecordMapper.class),json,expiry));
-        var idempotency=new AdminIdempotencyService(executor,businessClock);
+        // Idempotency SQL uses MySQL NOW(); the fixed artifact/proof clock must not pre-expire replay receipts.
+        LocalDateTime idempotencyNow=jdbc.queryForObject("SELECT NOW()",LocalDateTime.class);
+        var idempotency=new AdminIdempotencyService(executor,Clock.fixed(idempotencyNow.toInstant(ZoneOffset.UTC),ZoneOffset.UTC));
         var outbox=new EventOutboxService(controlled(EventOutboxMapper.class,session.getMapper(EventOutboxMapper.class)),json,new OutboxProperties(),mock(A4RuntimePolicyService.class));
         var proof=mock(ComputeTaskProofVerifier.class);when(proof.sourceEnvironment()).thenReturn("PRODUCTION");
         worker=transactional(new TestComputeWorkerService(mapper,audit,businessClock,env));
         var target=new AppTaskAssignmentService(mapper,idempotency,outbox,audit,proof,env,businessClock,worker);
         app=transactional(target);
-        grant=worker.authenticate("Bearer "+TestComputeWorkerServiceTest.TOKEN);
+        grant=continuous ? worker.continuousGrant(continuousIdentity(),taskNo,INSTANT.minusSeconds(10).toEpochMilli(),INSTANT.plusSeconds(86400).toEpochMilli())
+                : worker.authenticate("Bearer "+TestComputeWorkerServiceTest.TOKEN);
     }
     @SuppressWarnings("unchecked") private <T>T transactional(T target) {
         var factory=new ProxyFactory(target);factory.setProxyTargetClass(true);

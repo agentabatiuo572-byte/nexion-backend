@@ -69,6 +69,36 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                @Param("instanceNo") String instanceNo, @Param("taskNo") String taskNo,
                                @Param("marker") String marker, @Param("now") LocalDateTime now);
 
+    /** Explicit v2 release cancels only its own unconsumed TEST task; never expires a lease or settles funds. */
+    @Update("""
+            UPDATE nx_compute_task t
+              JOIN nx_user_device d ON d.id=t.user_device_id AND d.user_id=t.user_id
+              JOIN nx_user_device_runtime r ON r.user_device_id=d.id
+              JOIN nx_user u ON u.id=t.user_id
+               SET t.status='CANCELLED',t.proof_consumed_at=#{now},
+                   t.last_error='TEST_COMPUTE_WORKER_RELEASED',t.updated_at=#{now}
+             WHERE t.task_no=#{taskNo} AND t.user_id=#{userId} AND t.user_device_id=#{deviceId}
+               AND t.task_config_id=#{taskConfigId} AND t.model_name='TEST_DETERMINISTIC_V1'
+               AND t.client_name='UVEL TEST deterministic' AND t.source_environment='PRODUCTION'
+               AND t.is_deleted=0 AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               AND t.proof_consumed_at IS NULL AND t.completed_at IS NULL
+               AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=0
+               AND d.instance_no=#{instanceNo} AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND d.is_deleted=0 AND UPPER(d.ownership_status)='OWNED'
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE') AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
+               AND r.is_deleted=0 AND r.active_task_no=#{taskNo} AND r.agent_version=#{marker}
+               AND r.client_name='UVEL TEST deterministic' AND r.online_status IN ('ONLINE','OFFLINE')
+               AND COALESCE(r.paused_reason,'')=''
+               AND NOT EXISTS (SELECT 1 FROM nx_compute_receipt receipt
+                                WHERE receipt.task_no=t.task_no)
+               AND NOT EXISTS (SELECT 1 FROM nx_wallet_ledger ledger
+                                WHERE ledger.biz_no=t.task_no)
+            """)
+    int cancelTestWorkerAssignment(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                                   @Param("instanceNo") String instanceNo, @Param("taskNo") String taskNo,
+                                   @Param("taskConfigId") String taskConfigId, @Param("marker") String marker,
+                                   @Param("now") LocalDateTime now);
+
     @Update("""
             UPDATE nx_compute_task SET task_name='UVEL TEST vector statistics v1',
               model_name='TEST_DETERMINISTIC_V1',client_name='UVEL TEST deterministic',updated_at=#{now}

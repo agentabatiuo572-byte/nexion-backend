@@ -50,9 +50,14 @@ class MemoryClient:
                 raise daemon.Halt("HTTP_UNKNOWN")
             return self.claim
         if path.endswith("release"):
+            if self.failure == "complete-release-not-sent":
+                raise daemon.NotSent("HTTP_NOT_SENT")
             if self.failure == "release":
                 raise daemon.Halt("HTTP_UNKNOWN")
-            return dict(taskNo=self.claim["taskNo"], executionKind=daemon.compute.KIND, released=True)
+            return dict(taskNo=self.claim["taskNo"], executionKind=daemon.compute.KIND, released=True,
+                        taskStatus="CANCELLED", serverCanonical=True, deploymentScope="TEST")
+        if self.failure in ("complete-not-sent", "complete-release-not-sent"):
+            raise daemon.NotSent("HTTP_NOT_SENT")
         if self.failure in ("complete", "release"):
             raise daemon.Halt("HTTP_UNKNOWN")
         require = unittest.TestCase().assertEqual
@@ -130,6 +135,188 @@ class DaemonTest(unittest.TestCase):
         self.assertEqual(self.journal.db.execute("SELECT outcome FROM calls").fetchone()[0], "NOT_SENT")
         self.assertTrue(daemon.process_one(MemoryClient(), self.journal, "test355-continuous"))
 
+    def unsent_claim(self):
+        client = MemoryClient("complete-release-not-sent")
+        self.assertFalse(daemon.process_one(client, self.journal, "test355-continuous"))
+        self.assertEqual(self.journal.not_sent_task(), client.claim["taskNo"])
+        return client
+
+    def test_unsent_complete_and_confirmed_own_release_abandon_only_local_job_without_receipt(self):
+        client = MemoryClient("complete-not-sent")
+        self.assertFalse(daemon.process_one(client, self.journal, "test355-continuous"))
+        self.journal.check_pending()
+        self.assertIsNone(self.journal.not_sent_task())
+        self.assertEqual(self.journal.db.execute("SELECT status,receipt_no FROM jobs").fetchone(), ("RELEASED_NOT_SENT", None))
+        self.assertEqual(self.journal.db.execute("SELECT operation,outcome FROM calls ORDER BY rowid").fetchall(),
+                         [("NEXT", "CLAIMED"), ("COMPLETE", "NOT_SENT"), ("RELEASE", "RELEASED_CANCELLED")])
+        self.assertEqual(sum(path.endswith("complete") for path, _, _ in client.calls), 1)
+
+    def test_persisted_unsent_complete_resumes_only_release_after_backend_returns(self):
+        client = self.unsent_claim()
+        self.journal.db.close()
+        self.journal = local_journal(self.path)
+        task = self.journal.not_sent_task()
+        client.failure = None
+        self.journal.finish_not_sent_release(task, daemon.release_claim(client, self.journal, task))
+        self.journal.check_pending()
+        self.assertEqual(sum(path.endswith("next-task") for path, _, _ in client.calls), 1)
+        self.assertEqual(sum(path.endswith("complete") for path, _, _ in client.calls), 1)
+        keys = [key for path, _, key in client.calls if path.endswith("release")]
+        self.assertEqual(keys, [daemon.release_key(task), daemon.release_key(task)])
+        self.assertEqual(self.journal.db.execute("SELECT status,receipt_no FROM jobs").fetchone(), ("RELEASED_NOT_SENT", None))
+
+    def test_release_intent_crash_or_non_owned_runtime_cannot_resume_or_clear_unsent_job(self):
+        for outcome in ("PENDING", "NOT_OWNED", "RELEASED"):
+            with self.subTest(outcome=outcome):
+                client = self.unsent_claim()
+                with self.journal.db:
+                    self.journal.db.execute("UPDATE calls SET outcome=? WHERE operation='RELEASE'", (outcome,))
+                self.journal.db.close()
+                self.journal = local_journal(self.path)
+                with self.assertRaisesRegex(daemon.Halt, "STOP_PENDING_RECONCILIATION"):
+                    self.journal.not_sent_task()
+                with self.journal.db:
+                    self.journal.db.execute("DELETE FROM calls")
+                    self.journal.db.execute("DELETE FROM jobs")
+                    self.journal.db.execute("UPDATE state SET phase='IDLE'")
+
+    def test_unsent_recovery_unknown_or_rejected_release_stops_without_complete_or_new_claim(self):
+        for rejected in (False, True):
+            with self.subTest(rejected=rejected):
+                client = self.unsent_claim()
+                client.failure = "release"
+                if rejected:
+                    original = client.post
+                    def post(path, body, key):
+                        if path.endswith("release"):
+                            client.calls.append((path, body, key))
+                            raise daemon.Rejected("HTTP_REJECTED")
+                        return original(path, body, key)
+                    client.post = post
+                with self.assertRaisesRegex(daemon.Halt, "STOP_REJECTED" if rejected else "STOP_PENDING_RECONCILIATION"):
+                    daemon.release_claim(client, self.journal, self.journal.not_sent_task())
+                self.assertEqual(self.journal.db.execute("SELECT phase FROM state").fetchone()[0], "REJECTED" if rejected else "UNKNOWN")
+                with self.assertRaises(daemon.Halt):
+                    self.journal.not_sent_task()
+                self.assertEqual(sum(path.endswith("complete") for path, _, _ in client.calls), 1)
+                self.assertEqual(sum(path.endswith("next-task") for path, _, _ in client.calls), 1)
+                with self.journal.db:
+                    self.journal.db.execute("DELETE FROM calls")
+                    self.journal.db.execute("DELETE FROM jobs")
+                    self.journal.db.execute("UPDATE state SET phase='IDLE'")
+
+    def test_unsent_recovery_canonical_release_false_is_not_a_cleanup_confirmation(self):
+        client = self.unsent_claim()
+        task = self.journal.not_sent_task()
+        client.post = lambda *_: dict(taskNo=task, executionKind=daemon.compute.KIND, released=False)
+        outcome = daemon.release_claim(client, self.journal, task)
+        with self.assertRaisesRegex(daemon.Halt, "STOP_PENDING_RECONCILIATION"):
+            self.journal.finish_not_sent_release(task, outcome)
+        with self.assertRaises(daemon.Halt):
+            self.journal.not_sent_task()
+        self.assertEqual(self.journal.db.execute("SELECT status,receipt_no FROM jobs").fetchone(), ("NOT_SENT", None))
+
+    def test_unsent_recovery_requires_exact_claim_complete_and_release_history(self):
+        changes = (
+            "UPDATE calls SET outcome='UNKNOWN' WHERE operation='COMPLETE'",
+            "UPDATE calls SET outcome='REJECTED' WHERE operation='COMPLETE'",
+            "UPDATE calls SET outcome='PENDING' WHERE operation='NEXT'",
+            "UPDATE calls SET request_key='foreign-key' WHERE operation='RELEASE'",
+            "UPDATE jobs SET receipt_no='CTR-SYNTHETIC'",
+            "UPDATE jobs SET status='UNKNOWN'",
+            "INSERT INTO jobs VALUES('CTA-FOREIGN','CLAIMED',NULL,NULL,NULL)",
+        )
+        for change in changes:
+            with self.subTest(change=change):
+                self.unsent_claim()
+                with self.journal.db:
+                    self.journal.db.execute(change)
+                with self.assertRaisesRegex(daemon.Halt, "STOP_PENDING_RECONCILIATION"):
+                    self.journal.not_sent_task()
+                with self.journal.db:
+                    self.journal.db.execute("DELETE FROM calls")
+                    self.journal.db.execute("DELETE FROM jobs")
+                    self.journal.db.execute("UPDATE state SET phase='IDLE'")
+
+    def test_death_before_release_intent_allows_only_first_release_not_complete(self):
+        client = self.unsent_claim()
+        with self.journal.db:
+            self.journal.db.execute("DELETE FROM calls WHERE operation='RELEASE'")
+        task = self.journal.not_sent_task()
+        client.failure = None
+        self.journal.finish_not_sent_release(task, daemon.release_claim(client, self.journal, task))
+        self.journal.check_pending()
+        self.assertEqual(sum(path.endswith("complete") for path, _, _ in client.calls), 1)
+
+    def test_main_waits_at_configured_interval_and_performs_only_known_unsent_cleanup(self):
+        client = self.unsent_claim()
+        waits = []
+        class Stop:
+            def is_set(self):
+                return len(waits) == 2
+            def wait(self, interval):
+                waits.append(interval)
+                client.failure = None
+            def set(self):
+                pass
+        with patch.dict(os.environ, {"UVEL_TEST_WORKER_ENABLED": "true", "UVEL_TEST_WORKER_SCOPE": "TEST"}, clear=True), \
+                patch.object(daemon, "STOP", Stop()), patch.object(daemon, "credential", return_value="SYNTHETIC-NOT-A-TOKEN"), \
+                patch.object(daemon, "Journal", return_value=self.journal), patch.object(self.journal, "close"), \
+                patch.object(daemon, "Client", return_value=client), patch.object(daemon.sys, "argv", ["worker", "--interval", "17"]), \
+                patch.object(daemon.signal, "signal"), patch.object(daemon, "process_one", side_effect=AssertionError), \
+                patch("builtins.print") as printed:
+            self.assertEqual(daemon.main(), 0)
+        self.assertEqual(waits, [17, 17])
+        self.assertEqual([entry.args[0] for entry in printed.call_args_list], ["TEST_COMPUTE_WAIT_UNSENT_RELEASE", "TEST_COMPUTE_IDLE"])
+        self.assertEqual(sum(path.endswith("complete") for path, _, _ in client.calls), 1)
+        self.assertEqual(sum(path.endswith("next-task") for path, _, _ in client.calls), 1)
+        self.journal.check_pending()
+
+    def test_confirmed_cancellation_before_local_finish_crash_resumes_local_only(self):
+        client = self.unsent_claim()
+        task = self.journal.not_sent_task()
+        client.failure = None
+        self.assertEqual(daemon.release_claim(client, self.journal, task), "RELEASED_CANCELLED")
+        self.journal.db.close()
+        self.journal = local_journal(self.path)
+        self.assertEqual(self.journal.not_sent_task(), task)
+        calls = list(client.calls)
+        waits = []
+        stop = SimpleNamespace(is_set=lambda: bool(waits), wait=lambda interval: waits.append(interval))
+        with patch.dict(os.environ, {"UVEL_TEST_WORKER_ENABLED": "true", "UVEL_TEST_WORKER_SCOPE": "TEST"}, clear=True), \
+                patch.object(daemon, "STOP", stop), patch.object(daemon, "credential", return_value="SYNTHETIC-NOT-A-TOKEN"), \
+                patch.object(daemon, "Journal", return_value=self.journal), patch.object(self.journal, "close"), \
+                patch.object(daemon, "Client", return_value=client), patch.object(client, "post", side_effect=AssertionError), \
+                patch.object(daemon.sys, "argv", ["worker"]), patch.object(daemon.signal, "signal"), patch("builtins.print"):
+            self.assertEqual(daemon.main(), 0)
+        self.journal.check_pending()
+        self.assertEqual(client.calls, calls)
+        self.assertEqual(self.journal.db.execute("SELECT status,receipt_no FROM jobs").fetchone(), ("RELEASED_NOT_SENT", None))
+
+    def test_legacy_liveness_success_cannot_be_recorded_as_terminal_cleanup(self):
+        client = self.unsent_claim()
+        task = self.journal.not_sent_task()
+        client.post = lambda *_: dict(taskNo=task, executionKind=daemon.compute.KIND, released=True)
+        with self.assertRaisesRegex(daemon.Halt, "STOP_PENDING_RECONCILIATION"):
+            daemon.release_claim(client, self.journal, task)
+        self.assertEqual(self.journal.db.execute("SELECT phase FROM state").fetchone()[0], "UNKNOWN")
+        self.assertEqual(self.journal.db.execute("SELECT outcome FROM calls WHERE operation='RELEASE'").fetchone()[0], "UNKNOWN")
+
+    def test_release_rejection_does_not_erase_previously_unknown_complete(self):
+        client = MemoryClient("complete")
+        original = client.post
+        def post(path, body, key):
+            if path.endswith("release"):
+                client.calls.append((path, body, key))
+                raise daemon.Rejected("HTTP_REJECTED")
+            return original(path, body, key)
+        client.post = post
+        with self.assertRaisesRegex(daemon.Halt, "STOP_PENDING_RECONCILIATION"):
+            daemon.process_one(client, self.journal, "test355-continuous")
+        self.assertEqual(self.journal.db.execute("SELECT phase FROM state").fetchone()[0], "UNKNOWN")
+        self.assertEqual(self.journal.db.execute("SELECT outcome FROM calls WHERE operation='COMPLETE'").fetchone()[0], "UNKNOWN")
+        self.assertEqual(self.journal.db.execute("SELECT outcome FROM calls WHERE operation='RELEASE'").fetchone()[0], "REJECTED")
+
     def test_transport_connect_failure_is_not_sent_but_request_started_failure_is_unknown(self):
         for connect_failure in (True, False):
             requests = []
@@ -188,7 +375,7 @@ class DaemonTest(unittest.TestCase):
             self.assertEqual(daemon.main(), 0)
 
     def test_clean_idle_process_failure_allows_restart_but_pending_intent_prevents_it(self):
-        holder = SimpleNamespace(check_pending=self.journal.check_pending, close=lambda: None)
+        holder = SimpleNamespace(check_pending=self.journal.check_pending, not_sent_task=self.journal.not_sent_task, close=lambda: None)
         for pending, expected in ((False, 1), (True, daemon.HALTED)):
             if pending:
                 self.journal.begin("NEXT", "restart-protection")

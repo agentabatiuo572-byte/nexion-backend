@@ -1263,7 +1263,7 @@ public class OpsTreasuryService {
                     .append(csvCell(row.amount())).append(',')
                     .append(csvCell(row.balanceAfter())).append(',')
                     .append(csvCell(row.status())).append(',')
-                    .append(csvCell(row.bizNo())).append(',')
+                    .append(csvCell(maskBillReference(row))).append(',')
                     .append(csvCell(row.createdAt())).append("\r\n");
         }
         auditRequired("admin.report_exported", "D4_BILLS", type == null ? "all" : type,
@@ -2175,6 +2175,20 @@ public class OpsTreasuryService {
         Set<Object> keys = new java.util.HashSet<>(beforeMap.keySet());
         keys.addAll(afterMap.keySet());
         return (int) keys.stream().filter(key -> !java.util.Objects.equals(beforeMap.get(key), afterMap.get(key))).count();
+    }
+
+    private String maskBillReference(TreasuryLedgerBillView row) {
+        if (row.bizNo() == null) return null;
+        String userId = row.userId() == null ? null : row.userId().toString();
+        String userNo = trimToNull(row.userNo());
+        String[] segments = row.bizNo().split(":", -1);
+        // Account tokens are separate from dates, course IDs and other reference metadata.
+        for (int index = 0; index < segments.length; index++) {
+            if (segments[index].equals(userId) || segments[index].equals(userNo)) {
+                segments[index] = maskUserNo(userNo);
+            }
+        }
+        return String.join(":", segments);
     }
 
     private String csvCell(Object value) {

@@ -31,7 +31,7 @@ SAFE_REJECTION_CODES = frozenset({
     "TEST_COMPUTE_WORKER_ALREADY_CLAIMED", "TEST_COMPUTE_WORKER_OTHER_TASK_ACTIVE",
     "TEST_COMPUTE_WORKER_TASK_CONFIG_INVALID", "TEST_COMPUTE_WORKER_REWARD_LIMIT",
     "TEST_COMPUTE_WORKER_IDEMPOTENCY_INVALID", "TEST_COMPUTE_RESULT_INVALID",
-    "TEST_COMPUTE_CONTINUOUS_DISABLED",
+    "TEST_COMPUTE_CONTINUOUS_DISABLED", "TEST_COMPUTE_WORKER_RELEASE_CONFLICT",
 })
 
 # Reuse the finite worker's actual input parser/computation, never its retries or evidence writer.
@@ -95,10 +95,44 @@ class Journal:
                 input_hash TEXT, result_hash TEXT, receipt_no TEXT);
         """)
         self.db.commit()
-        self.check_pending()
+        self.not_sent_task()  # Only proven-unsent cleanup may resume; never claim/complete replay.
 
     def check_pending(self):
         require(self.db.execute("SELECT phase FROM state WHERE id=1").fetchone()[0] == "IDLE", "STOP_PENDING_RECONCILIATION")
+
+    def not_sent_task(self):
+        phase = self.db.execute("SELECT phase FROM state WHERE id=1").fetchone()[0]
+        if phase == "IDLE":
+            return None
+        require(phase == "NOT_SENT_AFTER_CLAIM", "STOP_PENDING_RECONCILIATION")
+        jobs = self.db.execute("SELECT task_no,status,receipt_no FROM jobs WHERE status NOT IN ('CONFIRMED','RELEASED_NOT_SENT')").fetchall()
+        require(len(jobs) == 1 and jobs[0][1:] == ("NOT_SENT", None), "STOP_PENDING_RECONCILIATION")
+        task = jobs[0][0]
+        require(isinstance(task, str) and re.fullmatch(r"CTA-[A-Za-z0-9._:-]{1,92}", task), "STOP_PENDING_RECONCILIATION")
+        calls = self.db.execute("SELECT operation,outcome,request_key FROM calls WHERE task_no=? ORDER BY rowid", (task,)).fetchall()
+        require(len(calls) in (2, 3) and calls[0][:2] == ("NEXT", "CLAIMED")
+                and calls[1][:2] == ("COMPLETE", "NOT_SENT")
+                and re.fullmatch(r"TEST355-NEXT-[a-f0-9]{32}", calls[0][2])
+                and re.fullmatch(r"TEST355-COMPLETE-[a-f0-9]{64}", calls[1][2])
+                and (len(calls) == 2 or (calls[2][0] == "RELEASE" and calls[2][1] in ("NOT_SENT", "RELEASED_CANCELLED")
+                                       and calls[2][2] == release_key(task))), "STOP_PENDING_RECONCILIATION")
+        require(self.db.execute("SELECT COUNT(*) FROM calls WHERE outcome IN ('PENDING','UNKNOWN','REJECTED')").fetchone()[0] == 0,
+                "STOP_PENDING_RECONCILIATION")
+        return task
+
+    def finish_not_sent_release(self, task, outcome):
+        if outcome == "NOT_SENT":
+            return
+        require(outcome == "RELEASED_CANCELLED", "STOP_PENDING_RECONCILIATION")
+        with self.db:
+            require(self.db.execute("SELECT phase FROM state WHERE id=1").fetchone()[0] == "NOT_SENT_AFTER_CLAIM",
+                    "STOP_PENDING_RECONCILIATION")
+            require(self.db.execute("SELECT COUNT(*) FROM calls WHERE task_no=? AND operation='COMPLETE' AND outcome='NOT_SENT'", (task,)).fetchone()[0] == 1
+                    and self.db.execute("SELECT outcome FROM calls WHERE request_key=?", (release_key(task),)).fetchone() == ("RELEASED_CANCELLED",),
+                    "STOP_PENDING_RECONCILIATION")
+            updated = self.db.execute("UPDATE jobs SET status='RELEASED_NOT_SENT' WHERE task_no=? AND status='NOT_SENT' AND receipt_no IS NULL", (task,))
+            require(updated.rowcount == 1, "STOP_PENDING_RECONCILIATION")
+            self.db.execute("UPDATE state SET phase='IDLE' WHERE id=1")
 
     def begin(self, operation, key, task=None):
         with self.db:
@@ -144,7 +178,12 @@ class Journal:
 
     def release_result(self, key, task, outcome):
         with self.db:
-            self.db.execute("INSERT INTO calls VALUES(?,'RELEASE',?,?)", (key, task, outcome))
+            existing = self.db.execute("SELECT operation,task_no,outcome FROM calls WHERE request_key=?", (key,)).fetchone()
+            if existing is None:
+                self.db.execute("INSERT INTO calls VALUES(?,'RELEASE',?,?)", (key, task, outcome))
+            else:
+                require(existing == ("RELEASE", task, "NOT_SENT") and outcome == "PENDING", "STOP_PENDING_RECONCILIATION")
+                self.db.execute("UPDATE calls SET outcome='PENDING' WHERE request_key=?", (key,))
 
     def close(self):
         self.db.close()
@@ -230,9 +269,44 @@ def validate_claim(data, executor):
     return claim, raw
 
 
+def release_key(task):
+    return "TEST355-RELEASE-" + hashlib.sha256(task.encode("ascii")).hexdigest()
+
+
+def release_claim(client, journal, task):
+    key = release_key(task)
+    journal.release_result(key, task, "PENDING")  # Crash after intent still blocks restart.
+    try:
+        released = client.post(PREFIX + "/tasks/" + task + "/release", b"{}", key)
+        require(released.get("taskNo") == task and released.get("executionKind") == compute.KIND
+                and type(released.get("released")) is bool, "RELEASE_UNKNOWN")
+        if released["released"]:
+            require(released.get("taskStatus") == "CANCELLED" and released.get("serverCanonical") is True
+                    and released.get("deploymentScope") == "TEST", "RELEASE_UNKNOWN")
+        outcome = "RELEASED_CANCELLED" if released["released"] else "NOT_OWNED"
+    except NotSent:
+        outcome = "NOT_SENT"
+    except Rejected:
+        outcome = "REJECTED"
+    except Exception:
+        outcome = "UNKNOWN"
+    with journal.db:
+        journal.db.execute("UPDATE calls SET outcome=? WHERE request_key=?", (outcome, key))
+    if outcome == "REJECTED":
+        if journal.db.execute("SELECT phase FROM state WHERE id=1").fetchone()[0] == "UNKNOWN":
+            raise Halt("STOP_PENDING_RECONCILIATION") from None
+        journal.rejected()
+        raise Halt("STOP_REJECTED") from None
+    if outcome == "UNKNOWN":
+        journal.unknown()
+        raise Halt("STOP_PENDING_RECONCILIATION") from None
+    return outcome
+
+
 def process_one(client, journal, executor):
     claim = None
     confirmed = False
+    complete_not_sent = False
     key = "TEST355-NEXT-" + uuid.uuid4().hex
     deadline = time.monotonic() + 75  # One bounded calculation/wait; not a service-credential lifetime.
     journal.begin("NEXT", key)
@@ -267,7 +341,8 @@ def process_one(client, journal, executor):
         journal.not_sent(key if claim is None else complete_key, idle=claim is None)
         if claim is None:
             return False  # No HTTP request was started; normal next-task polling may continue.
-        raise Halt("STOP_NOT_SENT_AFTER_CLAIM") from None
+        complete_not_sent = True
+        return False  # Abandon this computation; only its own release may resume.
     except Rejected:
         journal.rejected()
         raise Halt("STOP_REJECTED") from None
@@ -276,22 +351,9 @@ def process_one(client, journal, executor):
         raise Halt("STOP_PENDING_RECONCILIATION") from None
     finally:
         if claim is not None and not confirmed:
-            release_key = "TEST355-RELEASE-" + hashlib.sha256(claim["taskNo"].encode("ascii")).hexdigest()
-            journal.release_result(release_key, claim["taskNo"], "PENDING")
-            try:
-                released = client.post(PREFIX + "/tasks/" + claim["taskNo"] + "/release", b"{}", release_key)
-                require(released.get("taskNo") == claim["taskNo"] and released.get("executionKind") == compute.KIND
-                        and type(released.get("released")) is bool, "RELEASE_UNKNOWN")
-                outcome = "RELEASED" if released["released"] else "NOT_OWNED"
-            except NotSent:
-                outcome = "NOT_SENT"
-            except Exception:
-                outcome = "UNKNOWN"
-            with journal.db:
-                journal.db.execute("UPDATE calls SET outcome=? WHERE request_key=?", (outcome, release_key))
-            if outcome == "UNKNOWN":
-                journal.unknown()
-                raise Halt("STOP_PENDING_RECONCILIATION") from None
+            outcome = release_claim(client, journal, claim["taskNo"])
+            if complete_not_sent:
+                journal.finish_not_sent_release(claim["taskNo"], outcome)
             # Release never clears UNKNOWN or authorizes another claim/complete.
 
 
@@ -338,8 +400,17 @@ def main():
         signal.signal(signal.SIGTERM, lambda *_: STOP.set())
         signal.signal(signal.SIGINT, lambda *_: STOP.set())
         while not STOP.is_set():
-            confirmed = process_one(client, journal, args.executor)
-            print("TEST_COMPUTE_CONFIRMED" if confirmed else "TEST_COMPUTE_IDLE", flush=True)
+            task = journal.not_sent_task()
+            if task is None:
+                confirmed = process_one(client, journal, args.executor)
+            else:
+                previous = journal.db.execute("SELECT outcome FROM calls WHERE request_key=?", (release_key(task),)).fetchone()
+                outcome = "RELEASED_CANCELLED" if previous == ("RELEASED_CANCELLED",) else release_claim(client, journal, task)
+                journal.finish_not_sent_release(task, outcome)
+                confirmed = False
+            status = "TEST_COMPUTE_WAIT_UNSENT_RELEASE" if journal.not_sent_task() else (
+                "TEST_COMPUTE_CONFIRMED" if confirmed else "TEST_COMPUTE_IDLE")
+            print(status, flush=True)
             STOP.wait(args.interval)
         return 0
     except Halt as failure:

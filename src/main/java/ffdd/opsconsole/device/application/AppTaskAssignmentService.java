@@ -215,7 +215,38 @@ public class AppTaskAssignmentService {
             lockProductionUser(grant.ownerId());
             DeviceRow device = mapper.lockOwnedDevice(grant.ownerId(), grant.deviceId());
             if (device == null || !grant.instanceNo().equals(device.instanceNo())) throw new BizException(403, "TEST_COMPUTE_WORKER_BINDING_INVALID");
-            mapper.lockTestWorkerRuntime(grant.ownerId(), grant.deviceId(), grant.instanceNo());
+            var runtime = mapper.lockTestWorkerRuntime(grant.ownerId(), grant.deviceId(), grant.instanceNo());
+            if (testWorker.continuous(grant)) {
+                testWorker.requireDevice(grant, device);
+                LocalDateTime now = now();
+                AssignmentRow task = mapper.lockAssignment(grant.ownerId(), taskNo, "PRODUCTION");
+                testWorker.requireTask(grant, task, now);
+                if (!TestComputeWorkerService.KIND.equals(task.modelName()) || !TestComputeWorkerService.CLIENT.equals(task.clientName())
+                        || task.completedAt() != null || task.receiptNo() != null
+                        || runtime == null || !taskNo.equals(runtime.activeTaskNo())
+                        || !TestComputeWorkerService.CLIENT.equals(runtime.clientName())
+                        || !testWorker.marker(grant).equals(runtime.agentVersion())
+                        || !("ONLINE".equals(runtime.onlineStatus()) || "OFFLINE".equals(runtime.onlineStatus()))
+                        || StringUtils.hasText(runtime.pausedReason())) {
+                    throw new BizException(409, "TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
+                }
+                if (mapper.cancelTestWorkerAssignment(grant.ownerId(), grant.deviceId(), grant.instanceNo(), taskNo,
+                        grant.taskConfigId(), testWorker.marker(grant), now) != 1) {
+                    throw new BizException(409, "TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
+                }
+                if ("ONLINE".equals(runtime.onlineStatus()) && !testWorker.close(grant, now)) {
+                    throw new BizException(409, "TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
+                }
+                if (mapper.clearRuntimeTask(grant.ownerId(), grant.deviceId(), taskNo, now) != 1) {
+                    throw new BizException(409, "TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
+                }
+                Map<String, Object> detail = testWorker.bindings(grant);
+                detail.put("taskStatus", "CANCELLED");
+                testWorker.record(grant, "TEST_COMPUTE_WORKER_RELEASED", taskNo, detail);
+                testWorker.requireCurrent(grant);
+                return ApiResult.ok(linked("executionKind", TestComputeWorkerService.KIND, "taskNo", taskNo,
+                        "released", true, "taskStatus", "CANCELLED", "serverCanonical", true, "deploymentScope", "TEST"));
+            }
             boolean released = testWorker.close(grant, now());
             if (released) testWorker.record(grant, "TEST_COMPUTE_WORKER_RELEASED", taskNo, testWorker.bindings(grant));
             testWorker.requireCurrent(grant);

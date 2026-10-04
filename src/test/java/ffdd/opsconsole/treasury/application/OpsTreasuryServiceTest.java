@@ -1098,6 +1098,74 @@ class OpsTreasuryServiceTest {
     }
 
     @Test
+    void ledgerBillsCsvMasksAccountTokensInRewardReferencesOnlyInExport() {
+        long userId = 76543210007L;
+        String userNo = "U76543210007";
+        List<String> refs = List.of(
+                "DAILY:76543210007:2026-10-03",
+                "LEARN:76543210007:account-safety:v1",
+                "LEARN:RUN-66:76543210007:task-learning:v2",
+                "QUEST:weekly_learning:76543210007:WEEK:2026-W40",
+                "EVENT:launch:76543210007",
+                "DAILY-MS:76543210007:milestone-3",
+                "REF:U76543210007:trace-1");
+        for (int index = 0; index < refs.size(); index++) {
+            ledgerRepository.bills.add(new TreasuryLedgerBillView(
+                    (long) index + 1, userId, userNo, "user", refs.get(index), "QUEST_REWARD", "NEX", "IN",
+                    BigDecimal.ONE, BigDecimal.valueOf(index + 1), "POSTED", "reward",
+                    LocalDateTime.now(CLOCK), LocalDateTime.now(CLOCK)));
+        }
+        List<TreasuryLedgerBillView> originalRows = List.copyOf(ledgerRepository.bills);
+
+        String csv = new String(service.ledgerBillsCsv(
+                new TreasuryLedgerQueryRequest(null, userId, null, 1, 20),
+                "D4 W66 account reference masking"), java.nio.charset.StandardCharsets.UTF_8);
+
+        assertThat(csv).doesNotContain("76543210007");
+        assertThat(csv).contains(
+                "\"DAILY:U*********07:2026-10-03\"",
+                "\"LEARN:U*********07:account-safety:v1\"",
+                "\"LEARN:RUN-66:U*********07:task-learning:v2\"",
+                "\"QUEST:weekly_learning:U*********07:WEEK:2026-W40\"",
+                "\"EVENT:launch:U*********07\"",
+                "\"DAILY-MS:U*********07:milestone-3\"",
+                "\"REF:U*********07:trace-1\"");
+        assertThat(service.ledgerBills(new TreasuryLedgerQueryRequest(null, userId, null, 1, 20))
+                .getData().getRecords()).extracting(TreasuryLedgerBillView::bizNo).containsExactlyElementsOf(refs);
+        assertThat(ledgerRepository.bills).containsExactlyElementsOf(originalRows);
+    }
+
+    @Test
+    void ledgerBillsCsvKeepsNonAccountReferenceSegmentsAndCsvEscaping() {
+        List<String> refs = java.util.Arrays.asList(
+                "DAILY:7:2026-07-07",
+                "LEARN:RUN-7:7:course-7:v7",
+                "ORDER:700:7b:abc7:07",
+                "REF:U00000007:trace-7",
+                "  =SUM(1,2):7:quote\"x\r\nnext",
+                "+7:other", "-7:other", "@7:other", null, "");
+        for (int index = 0; index < refs.size(); index++) {
+            ledgerRepository.bills.add(new TreasuryLedgerBillView(
+                    (long) index + 1, 7L, "U00000007", "user", refs.get(index), "QUEST_REWARD", "NEX", "IN",
+                    BigDecimal.ONE, BigDecimal.ONE, "SUCCESS", "reward",
+                    LocalDateTime.now(CLOCK), LocalDateTime.now(CLOCK)));
+        }
+
+        String csv = new String(service.ledgerBillsCsv(
+                new TreasuryLedgerQueryRequest(null, null, null, 1, 20),
+                "D4 W66 reference boundaries and CSV escaping"), java.nio.charset.StandardCharsets.UTF_8);
+
+        assertThat(csv).startsWith("\uFEFFbill_id,user_masked,")
+                .contains("\"DAILY:U******07:2026-07-07\"", "\"LEARN:RUN-7:U******07:course-7:v7\"")
+                .contains("\"ORDER:700:7b:abc7:07\"", "\"REF:U******07:trace-7\"")
+                .contains("\"'  =SUM(1,2):U******07:quote\"\"x  next\"")
+                .contains("\"'+7:other\"", "\"'-7:other\"", "\"'@7:other\"")
+                .doesNotContain("DAILY:7:", "RUN-7:7:", "REF:U00000007:");
+        assertThat(csv.split("\r\n")).hasSize(refs.size() + 1);
+        assertThat(ledgerRepository.bills).extracting(TreasuryLedgerBillView::bizNo).containsExactlyElementsOf(refs);
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void d4RunningBalanceDetectsInternalBreakAndReconcilesAgainstWalletTruth() {
         ledgerRepository.bills.add(new TreasuryLedgerBillView(
