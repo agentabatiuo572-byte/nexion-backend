@@ -232,6 +232,9 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
                    version = version + 1, updated_at = NOW()
              WHERE merchant_order_id = #{merchantOrderId}
                AND submission_status = 'SUBMIT_UNKNOWN'
+               AND (#{errorCode} <> 'HDPAY_CREATE_EXPLICIT_REJECTED'
+                    OR (settlement_status = 'UNSETTLED'
+                        AND provider_order_id IS NULL AND provider_status IS NULL))
             """)
     int markRejected(
             @Param("merchantOrderId") String merchantOrderId,
@@ -248,6 +251,34 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
             """)
     int resolveSubmitUnknown(
             @Param("merchantOrderId") String merchantOrderId,
+            @Param("providerOrderId") String providerOrderId,
+            @Param("providerStatus") Integer providerStatus,
+            @Param("paymentUrl") String paymentUrl);
+
+    @Update("""
+            UPDATE nx_hdpay_payin_order o
+              JOIN nx_vietqr_intent i
+                ON i.intent_no = o.merchant_order_id AND i.is_deleted = 0
+               SET o.submission_status = 'CREATED', o.payment_url = #{paymentUrl},
+                   o.provider_order_id = #{providerOrderId}, o.provider_status = #{providerStatus},
+                   o.last_error_code = NULL, o.version = o.version + 1, o.updated_at = NOW()
+             WHERE o.merchant_order_id = #{merchantOrderId}
+               AND o.submission_status = 'REJECTED'
+               AND COALESCE(o.last_error_code, '') = #{expectedErrorCode}
+               AND COALESCE(o.last_error_code, '') <> 'HDPAY_CREATE_EXPLICIT_REJECTED'
+               AND o.version = #{expectedVersion} AND o.amount_vnd = #{amountVnd}
+               AND #{providerStatus} = 1
+               AND o.settlement_status = 'UNSETTLED'
+               AND (o.provider_order_id IS NULL OR o.provider_order_id = #{providerOrderId})
+               AND (o.provider_status IS NULL OR o.provider_status = 1)
+               AND i.payable_vnd = o.amount_vnd AND i.payment_rail = 'HDPAY'
+               AND i.status = 'AWAITING_PAYMENT' AND i.expires_at > NOW()
+            """)
+    int resolveRejectedByQuery(
+            @Param("merchantOrderId") String merchantOrderId,
+            @Param("expectedVersion") Long expectedVersion,
+            @Param("expectedErrorCode") String expectedErrorCode,
+            @Param("amountVnd") BigDecimal amountVnd,
             @Param("providerOrderId") String providerOrderId,
             @Param("providerStatus") Integer providerStatus,
             @Param("paymentUrl") String paymentUrl);

@@ -92,7 +92,7 @@ public class HdPayHostedDepositService {
         if (inserted != 1) {
             Map<String, Object> concurrent = mapper.findByMerchantOrderId(merchantOrderId);
             if (concurrent == null) throw new BizException(503, "HDPAY_ORDER_READ_AFTER_WRITE_FAILED");
-            return ApiResult.ok(overlay(view, concurrent, true));
+            return ApiResult.ok(resolveOrOverlay(view, concurrent));
         }
         if (mapper.authorizeSubmissionIfIntentPayable(merchantOrderId) != 1) {
             throw new BizException(503, "HDPAY_ORDER_SUBMISSION_STATE_CONFLICT");
@@ -121,7 +121,11 @@ public class HdPayHostedDepositService {
                 mapper.markSubmitUnknown(merchantOrderId, error);
                 throw new BizException(503, "HDPAY_ORDER_SUBMISSION_UNKNOWN");
             }
-            mapper.markRejected(merchantOrderId, error);
+            int rejected = mapper.markRejected(merchantOrderId, error);
+            if ("HDPAY_CREATE_EXPLICIT_REJECTED".equals(error)) {
+                if (rejected != 1) throw new BizException(503, "HDPAY_ORDER_STATE_CONFLICT");
+                throw new BizException(422, "HDPAY_ORDER_CREATE_REJECTED");
+            }
             throw new BizException(502, "HDPAY_ORDER_CREATE_REJECTED");
         }
     }
@@ -203,12 +207,14 @@ public class HdPayHostedDepositService {
             throw new BizException(409, "HDPAY_ORDER_SUBMISSION_IN_PROGRESS");
         }
         if ("REJECTED".equals(status)) {
-            // Legacy rejection lost response shape; only a recorded explicit
-            // provider rejection can retire an expired command safely.
-            if ("expired".equals(text(canonical.get("status")))
-                    && "HDPAY_CREATE_EXPLICIT_REJECTED".equals(text(provider.get("lastErrorCode")))) {
-                result.remove("paymentUrl");
-                return result;
+            // A trusted rejection is settled immediately. A later callback or
+            // settlement observation must not be hidden by the earlier marker.
+            if ("HDPAY_CREATE_EXPLICIT_REJECTED".equals(text(provider.get("lastErrorCode")))) {
+                if (!"UNSETTLED".equals(text(provider.get("settlementStatus")))
+                        || provider.get("providerOrderId") != null || provider.get("providerStatus") != null) {
+                    throw new BizException(503, "HDPAY_ORDER_STATE_CONFLICT");
+                }
+                throw new BizException(422, "HDPAY_ORDER_CREATE_REJECTED");
             }
             throw new BizException(502, "HDPAY_ORDER_CREATE_REJECTED");
         }
@@ -217,31 +223,57 @@ public class HdPayHostedDepositService {
 
     private Map<String, Object> resolveOrOverlay(
             Map<String, Object> canonical, Map<String, Object> provider) {
-        if (!"SUBMIT_UNKNOWN".equals(text(provider.get("submissionStatus")))) {
+        boolean unconfirmedRejection = "REJECTED".equals(text(provider.get("submissionStatus")))
+                && !"HDPAY_CREATE_EXPLICIT_REJECTED".equals(text(provider.get("lastErrorCode")));
+        if (!"SUBMIT_UNKNOWN".equals(text(provider.get("submissionStatus"))) && !unconfirmedRejection) {
             return overlay(canonical, provider, true);
         }
         try {
-            HdPayGateway.PayOrder resolved = gateway.queryPayOrder(text(provider.get("merchantOrderId")));
+            String merchantOrderId = text(canonical.get("intentNo"));
+            if (!merchantOrderId.equals(text(provider.get("merchantOrderId")))) {
+                throw new BizException(503, "HDPAY_ORDER_SUBMISSION_UNKNOWN");
+            }
+            HdPayGateway.PayOrder resolved = gateway.queryPayOrder(merchantOrderId);
             BigDecimal expected = decimal(provider.get("amountVnd"));
-            if (resolved.transAmt().compareTo(expected) != 0) {
+            String observedProviderId = text(provider.get("providerOrderId"));
+            if (resolved == null || resolved.transAmt() == null
+                    || !merchantOrderId.equals(resolved.merchantOrderId())
+                    || text(resolved.providerOrderId()).isEmpty()
+                    || !properties.getPayType().equalsIgnoreCase(resolved.payType())
+                    || (!observedProviderId.isEmpty() && !observedProviderId.equals(resolved.providerOrderId()))
+                    || expected.compareTo(decimal(canonical.get("vndAmount"))) != 0
+                    || resolved.transAmt().compareTo(expected) != 0) {
                 throw new BizException(503, "HDPAY_ORDER_SUBMISSION_UNKNOWN");
             }
             if (resolved.orderStatus() != 1) {
-                mapper.observeSubmitUnknownTerminal(
-                        resolved.merchantOrderId(),
-                        resolved.providerOrderId(),
-                        resolved.orderStatus(),
-                        "HDPAY_QUERY_STATUS_" + resolved.orderStatus());
+                if (!unconfirmedRejection) {
+                    mapper.observeSubmitUnknownTerminal(
+                            resolved.merchantOrderId(),
+                            resolved.providerOrderId(),
+                            resolved.orderStatus(),
+                            "HDPAY_QUERY_STATUS_" + resolved.orderStatus());
+                }
                 throw new BizException(409, "HDPAY_ORDER_NOT_PAYABLE");
             }
-            if (resolved.appLink().isEmpty()) {
+            if (!properties.isTrustedPaymentPage(resolved.appLink())) {
                 throw new BizException(503, "HDPAY_ORDER_SUBMISSION_UNKNOWN");
             }
-            if (mapper.resolveSubmitUnknown(
-                    resolved.merchantOrderId(),
-                    resolved.providerOrderId(),
-                    resolved.orderStatus(),
-                    resolved.appLink()) != 1) {
+            int updated;
+            if (unconfirmedRejection) {
+                if (!"awaiting_payment".equals(text(canonical.get("status")))) {
+                    throw new BizException(409, "HDPAY_ORDER_NOT_PAYABLE");
+                }
+                long version = provider.get("version") instanceof Number number ? number.longValue() : -1;
+                if (version < 0) throw new BizException(503, "HDPAY_ORDER_STATE_CONFLICT");
+                updated = mapper.resolveRejectedByQuery(merchantOrderId, version,
+                        text(provider.get("lastErrorCode")), expected, resolved.providerOrderId(),
+                        resolved.orderStatus(), resolved.appLink());
+            } else {
+                updated = mapper.resolveSubmitUnknown(
+                        resolved.merchantOrderId(), resolved.providerOrderId(),
+                        resolved.orderStatus(), resolved.appLink());
+            }
+            if (updated != 1) {
                 throw new BizException(503, "HDPAY_ORDER_STATE_CONFLICT");
             }
             return overlay(canonical, Map.of(

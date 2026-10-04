@@ -240,6 +240,114 @@ class HdPayHostedRailMySqlTest {
         });
     }
 
+    @Test
+    @EnabledIfEnvironmentVariable(named = "NEXION_HOSTED_RAIL_IT", matches = "true")
+    void rejectedOrderRecoveryUsesVersionAndCallbackGuardsWithoutChangingCanonicalExpiry() throws Exception {
+        inSchema(f -> {
+            f.base(); f.providerSchema(); f.bank();
+            f.legacyIntent("VQR-RETRY", "retry-key");
+            assertThat(f.orders.insertPending("VQR-RETRY", new BigDecimal("659750"), "a".repeat(64))).isEqualTo(1);
+            f.migrate(MIGRATION);
+            assertThat(f.orders.authorizeSubmissionIfIntentPayable("VQR-RETRY")).isEqualTo(1);
+            assertThat(f.orders.markRejected("VQR-RETRY", "HDPAY_CREATE_REJECTED")).isEqualTo(1);
+            Map<String, Object> before = f.orders.findByMerchantOrderId("VQR-RETRY");
+            long version = ((Number) before.get("version")).longValue();
+            var canonical = f.jdbc.queryForMap("SELECT status,expires_at,payable_vnd FROM nx_vietqr_intent WHERE intent_no='VQR-RETRY'");
+            String page = "https://api.hdpayadmin.com/pay?id=retry";
+
+            assertThat(f.orders.resolveRejectedByQuery("VQR-RETRY", version - 1, "HDPAY_CREATE_REJECTED",
+                    new BigDecimal("659750"), "P-RETRY", 1, page)).isZero();
+            assertThat(f.orders.resolveRejectedByQuery("VQR-RETRY", version, "HDPAY_HTTP_500",
+                    new BigDecimal("659750"), "P-RETRY", 1, page)).isZero();
+            assertThat(f.orders.resolveRejectedByQuery("VQR-RETRY", version, "HDPAY_CREATE_REJECTED",
+                    new BigDecimal("659751"), "P-RETRY", 1, page)).isZero();
+            assertThat(f.orders.resolveRejectedByQuery("VQR-RETRY", version, "HDPAY_CREATE_REJECTED",
+                    new BigDecimal("659750"), "P-RETRY", 3, page)).isZero();
+            assertThat(f.orders.findByMerchantOrderId("VQR-RETRY")).isEqualTo(before);
+
+            assertThat(f.orders.updateCallbackObservation("VQR-RETRY", "P-RETRY", 3)).isEqualTo(1);
+            long observedVersion = ((Number) f.orders.findByMerchantOrderId("VQR-RETRY").get("version")).longValue();
+            assertThat(f.orders.resolveRejectedByQuery("VQR-RETRY", version, "HDPAY_CREATE_REJECTED",
+                    new BigDecimal("659750"), "P-RETRY", 1, page)).isZero();
+            assertThat(f.orders.resolveRejectedByQuery("VQR-RETRY", observedVersion, "HDPAY_CREATE_REJECTED",
+                    new BigDecimal("659750"), "P-RETRY", 1, page)).isZero();
+            assertThat(f.orders.findByMerchantOrderId("VQR-RETRY"))
+                    .containsEntry("providerStatus", 3).containsEntry("submissionStatus", "REJECTED");
+
+            f.legacyIntent("VQR-RETRY-OK", "retry-ok-key");
+            f.jdbc.update("UPDATE nx_vietqr_intent SET payment_rail='HDPAY',bank_account_id=NULL WHERE intent_no='VQR-RETRY-OK'");
+            assertThat(f.orders.insertPending("VQR-RETRY-OK", new BigDecimal("659750"), "b".repeat(64))).isEqualTo(1);
+            assertThat(f.orders.authorizeSubmissionIfIntentPayable("VQR-RETRY-OK")).isEqualTo(1);
+            assertThat(f.orders.markRejected("VQR-RETRY-OK", "HDPAY_CREATE_REJECTED")).isEqualTo(1);
+            var originalExpiry = f.jdbc.queryForObject("SELECT expires_at FROM nx_vietqr_intent WHERE intent_no='VQR-RETRY-OK'", java.sql.Timestamp.class);
+            HdPayGateway gateway = mock(HdPayGateway.class);
+            when(gateway.queryPayOrder("VQR-RETRY-OK")).thenReturn(new HdPayGateway.PayOrder(
+                    "VQR-RETRY-OK", "P-OK", 1, new BigDecimal("659750"), "BANKQR", page));
+            HdPayHostedDepositService hosted = new HdPayHostedDepositService(f.service(), properties(), gateway, f.orders);
+
+            assertThat(hosted.create(41L, "retry-ok-key", new BigDecimal("25"), "203.0.113.9").getData())
+                    .containsEntry("intentNo", "VQR-RETRY-OK").containsEntry("providerStatus", "created")
+                    .containsEntry("paymentUrl", page);
+            assertThat(f.orders.findByMerchantOrderId("VQR-RETRY-OK"))
+                    .containsEntry("submissionStatus", "CREATED").containsEntry("providerOrderId", "P-OK")
+                    .containsEntry("providerStatus", 1).containsEntry("settlementStatus", "UNSETTLED");
+            assertThat(f.jdbc.queryForObject("SELECT expires_at FROM nx_vietqr_intent WHERE intent_no='VQR-RETRY-OK'", java.sql.Timestamp.class))
+                    .isEqualTo(originalExpiry);
+            assertThat(f.jdbc.queryForMap("SELECT status,expires_at,payable_vnd FROM nx_vietqr_intent WHERE intent_no='VQR-RETRY'"))
+                    .isEqualTo(canonical);
+            assertThat(f.count("nx_hdpay_payin_order")).isEqualTo(2);
+            verify(gateway).queryPayOrder("VQR-RETRY-OK");
+            verify(gateway, never()).createPayOrder(any());
+        });
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "NEXION_HOSTED_RAIL_IT", matches = "true")
+    void explicitRejectionAndLegacyRecoveryCannotOverwriteCallbackSettlementOrExpiredIntents() throws Exception {
+        inSchema(f -> {
+            f.base(); f.providerSchema(); f.bank();
+            f.legacyIntent("VQR-GUARD", "guard-key");
+            assertThat(f.orders.insertPending("VQR-GUARD", new BigDecimal("659750"), "c".repeat(64))).isEqualTo(1);
+            f.migrate(MIGRATION);
+            assertThat(f.orders.authorizeSubmissionIfIntentPayable("VQR-GUARD")).isEqualTo(1);
+            assertThat(f.orders.updateCallbackObservation("VQR-GUARD", "P-GUARD", 3)).isEqualTo(1);
+            assertThat(f.orders.markRejected("VQR-GUARD", "HDPAY_CREATE_EXPLICIT_REJECTED")).isZero();
+            assertThat(f.orders.findByMerchantOrderId("VQR-GUARD"))
+                    .containsEntry("submissionStatus", "SUBMIT_UNKNOWN").containsEntry("providerStatus", 3);
+
+            for (String settlement : java.util.List.of("CREDITED", "MANUAL_REVIEW")) {
+                f.jdbc.update("UPDATE nx_hdpay_payin_order SET provider_order_id=NULL,provider_status=NULL,settlement_status=? WHERE merchant_order_id='VQR-GUARD'", settlement);
+                assertThat(f.orders.markRejected("VQR-GUARD", "HDPAY_CREATE_EXPLICIT_REJECTED")).isZero();
+            }
+            f.jdbc.update("UPDATE nx_hdpay_payin_order SET settlement_status='UNSETTLED' WHERE merchant_order_id='VQR-GUARD'");
+            assertThat(f.orders.markRejected("VQR-GUARD", "HDPAY_CREATE_EXPLICIT_REJECTED")).isEqualTo(1);
+            long version = ((Number) f.orders.findByMerchantOrderId("VQR-GUARD").get("version")).longValue();
+            String page = "https://api.hdpayadmin.com/pay?id=guard";
+            assertThat(f.orders.resolveRejectedByQuery("VQR-GUARD", version, "HDPAY_CREATE_EXPLICIT_REJECTED",
+                    new BigDecimal("659750"), "P-GUARD", 1, page)).isZero();
+
+            f.jdbc.update("UPDATE nx_hdpay_payin_order SET last_error_code='HDPAY_CREATE_REJECTED' WHERE merchant_order_id='VQR-GUARD'");
+            for (String settlement : java.util.List.of("CREDITED", "MANUAL_REVIEW")) {
+                f.jdbc.update("UPDATE nx_hdpay_payin_order SET settlement_status=? WHERE merchant_order_id='VQR-GUARD'", settlement);
+                assertThat(f.orders.resolveRejectedByQuery("VQR-GUARD", version, "HDPAY_CREATE_REJECTED",
+                        new BigDecimal("659750"), "P-GUARD", 1, page)).isZero();
+            }
+            f.jdbc.update("UPDATE nx_hdpay_payin_order SET settlement_status='UNSETTLED',provider_order_id='P-OTHER' WHERE merchant_order_id='VQR-GUARD'");
+            assertThat(f.orders.resolveRejectedByQuery("VQR-GUARD", version, "HDPAY_CREATE_REJECTED",
+                    new BigDecimal("659750"), "P-GUARD", 1, page)).isZero();
+            f.jdbc.update("UPDATE nx_hdpay_payin_order SET provider_order_id=NULL WHERE merchant_order_id='VQR-GUARD'");
+            f.jdbc.update("UPDATE nx_vietqr_intent SET expires_at=UTC_TIMESTAMP()-INTERVAL 1 SECOND WHERE intent_no='VQR-GUARD'");
+            assertThat(f.orders.resolveRejectedByQuery("VQR-GUARD", version, "HDPAY_CREATE_REJECTED",
+                    new BigDecimal("659750"), "P-GUARD", 1, page)).isZero();
+            f.jdbc.update("UPDATE nx_vietqr_intent SET expires_at=UTC_TIMESTAMP()+INTERVAL 1 DAY,status='CREDITED' WHERE intent_no='VQR-GUARD'");
+            assertThat(f.orders.resolveRejectedByQuery("VQR-GUARD", version, "HDPAY_CREATE_REJECTED",
+                    new BigDecimal("659750"), "P-GUARD", 1, page)).isZero();
+            assertThat(f.orders.findByMerchantOrderId("VQR-GUARD"))
+                    .containsEntry("submissionStatus", "REJECTED").containsEntry("lastErrorCode", "HDPAY_CREATE_REJECTED")
+                    .containsEntry("settlementStatus", "UNSETTLED");
+        });
+    }
+
     private static class Fixture {
         final DriverManagerDataSource dataSource;
         final JdbcTemplate jdbc;
