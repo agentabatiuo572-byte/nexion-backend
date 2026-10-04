@@ -203,6 +203,13 @@ public class HdPayHostedDepositService {
             throw new BizException(409, "HDPAY_ORDER_SUBMISSION_IN_PROGRESS");
         }
         if ("REJECTED".equals(status)) {
+            // Legacy rejection lost response shape; only a recorded explicit
+            // provider rejection can retire an expired command safely.
+            if ("expired".equals(text(canonical.get("status")))
+                    && "HDPAY_CREATE_EXPLICIT_REJECTED".equals(text(provider.get("lastErrorCode")))) {
+                result.remove("paymentUrl");
+                return result;
+            }
             throw new BizException(502, "HDPAY_ORDER_CREATE_REJECTED");
         }
         throw new BizException(503, "HDPAY_ORDER_STATE_INVALID");

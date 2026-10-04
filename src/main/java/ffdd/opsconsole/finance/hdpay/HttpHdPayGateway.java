@@ -10,13 +10,19 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
+@Slf4j
 public final class HttpHdPayGateway implements HdPayGateway {
     private static final String CREATE_PATH = "/api/payOrder/publicCreatePayOrder";
     private static final String QUERY_PATH = "/api/payOrder/queryPayOrder";
@@ -71,18 +77,50 @@ public final class HttpHdPayGateway implements HdPayGateway {
                     .POST(HttpRequest.BodyPublishers.ofByteArray(objectMapper.writeValueAsBytes(requestBody)))
                     .build();
             HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new HdPayGatewayException("HDPAY_HTTP_" + response.statusCode(), false);
+            byte[] body = response.body();
+            JsonNode root = null;
+            boolean parsed = false;
+            String reason = "UNCONFIRMED_RESPONSE";
+            try {
+                try {
+                    root = objectMapper.readTree(body);
+                    parsed = true;
+                } catch (IOException ex) {
+                    reason = "INVALID_JSON";
+                    // Preserve HTTP rejection for non-2xx even when its body is not JSON.
+                    if (response.statusCode() >= 200 && response.statusCode() < 300) throw ex;
+                }
+                if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                    reason = "HTTP_REJECTED";
+                    throw new HdPayGatewayException("HDPAY_HTTP_" + response.statusCode(), false);
+                }
+                if (root == null || !root.isObject()) {
+                    throw new HdPayGatewayException("HDPAY_CREATE_REJECTED", true);
+                }
+                JsonNode code = root.path("code");
+                boolean numericCode = code.isIntegralNumber() && code.canConvertToInt();
+                if (!numericCode && !(code.isTextual() && "200".equals(code.textValue()))) {
+                    throw new HdPayGatewayException("HDPAY_CREATE_REJECTED", true);
+                }
+                if (numericCode && code.intValue() != 200) {
+                    reason = safeRejectionReason(root);
+                    throw new HdPayGatewayException("HDPAY_CREATE_EXPLICIT_REJECTED", false);
+                }
+                String page = root.path("data").isTextual() ? root.path("data").asText().trim() : "";
+                if (!properties.isTrustedPaymentPage(page)) {
+                    throw new HdPayGatewayException("HDPAY_PAYMENT_PAGE_UNTRUSTED", true);
+                }
+                reason = "ACCEPTED";
+                return new PayPage(page);
+            } finally {
+                log.info("HDPay pay-in create response orderRef={} httpStatus={} providerCode={} codeType={} rootType={} dataType={} msgType={} bodySha256={} reason={}",
+                        "sha256:" + sha256(requestBody.get("merchantOrderId").toString()
+                                .getBytes(StandardCharsets.UTF_8)).substring(0, 16),
+                        response.statusCode(), safeProviderCode(root), responseFieldType(root, "code"),
+                        parsed ? (root == null ? "EMPTY" : root.getNodeType().name()) : "INVALID_JSON",
+                        responseFieldType(root, "data"), responseFieldType(root, "msg"), sha256(body),
+                        reason);
             }
-            JsonNode root = objectMapper.readTree(response.body());
-            if (root == null || root.path("code").asInt(Integer.MIN_VALUE) != 200) {
-                throw new HdPayGatewayException("HDPAY_CREATE_REJECTED", false);
-            }
-            String page = root.path("data").isTextual() ? root.path("data").asText().trim() : "";
-            if (!properties.isTrustedPaymentPage(page)) {
-                throw new HdPayGatewayException("HDPAY_PAYMENT_PAGE_UNTRUSTED", false);
-            }
-            return new PayPage(page);
         } catch (java.net.http.HttpTimeoutException ex) {
             throw new HdPayGatewayException("HDPAY_CREATE_TIMEOUT", true, ex);
         } catch (InterruptedException ex) {
@@ -91,6 +129,31 @@ public final class HttpHdPayGateway implements HdPayGateway {
         } catch (IOException ex) {
             throw new HdPayGatewayException("HDPAY_CREATE_IO_ERROR", true, ex);
         }
+    }
+
+    // Diagnostics never emit arbitrary provider text, URLs, request fields or signatures.
+    private static String safeProviderCode(JsonNode root) {
+        JsonNode code = root == null ? null : root.get("code");
+        if (code == null) return "MISSING";
+        if (code.isIntegralNumber() && code.canConvertToInt()) return code.asText();
+        if (code.isTextual() && code.asText().matches("-?[0-9]{1,10}")) return code.asText();
+        return "INVALID";
+    }
+
+    private static String responseFieldType(JsonNode root, String field) {
+        return root == null ? "MISSING" : root.path(field).getNodeType().name();
+    }
+
+    private static String safeRejectionReason(JsonNode root) {
+        return switch (root.path("msg").asText("")) {
+            case "该ip禁止访问" -> "IP_NOT_ALLOWED";
+            default -> "UNCLASSIFIED_REJECTION";
+        };
+    }
+
+    private static String sha256(byte[] body) {
+        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body)); }
+        catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
 
     @Override

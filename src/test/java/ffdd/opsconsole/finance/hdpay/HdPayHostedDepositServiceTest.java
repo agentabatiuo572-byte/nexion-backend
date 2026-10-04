@@ -67,6 +67,145 @@ class HdPayHostedDepositServiceTest {
     }
 
     @Test
+    void replaysExpiredExplicitlyRejectedCanonicalWithoutAnyProviderCall() {
+        Map<String, Object> terminal = intent();
+        terminal.put("status", "expired");
+        terminal.put("paymentUrl", "https://api.hdpayadmin.com/pay?id=stale");
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(terminal));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(Map.of(
+                "merchantOrderId", "VQR-1", "submissionStatus", "REJECTED",
+                "lastErrorCode", "HDPAY_CREATE_EXPLICIT_REJECTED"));
+
+        ApiResult<Map<String, Object>> result = service.create(
+                7L, "idem", new BigDecimal("25"), "203.0.113.9");
+
+        assertThat(result.getData()).containsEntry("intentNo", "VQR-1")
+                .containsEntry("status", "expired")
+                .containsEntry("providerStatus", "rejected")
+                .containsEntry("vndAmount", new BigDecimal("659750"))
+                .doesNotContainKeys("paymentUrl", "bankAccount", "memoCode", "qrPayload");
+        verifyNoInteractions(gateway);
+        verify(mapper, never()).insertPending(any(), any(), any());
+        verify(mapper, never()).authorizeSubmissionIfIntentPayable(any());
+        verify(mapper, never()).markRejected(any(), any());
+    }
+
+    @Test
+    void expiredLegacyHttpOrUnclassifiedRejectionCannotRetireTheCommand() {
+        Map<String, Object> terminal = intent();
+        terminal.put("status", "expired");
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(terminal));
+        for (String errorCode : new String[]{"HDPAY_CREATE_REJECTED", "HDPAY_HTTP_503", ""}) {
+            when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(Map.of(
+                    "merchantOrderId", "VQR-1", "submissionStatus", "REJECTED", "lastErrorCode", errorCode));
+            assertThatThrownBy(() -> service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9"))
+                    .isInstanceOf(BizException.class)
+                    .hasMessage("HDPAY_ORDER_CREATE_REJECTED")
+                    .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(502));
+        }
+        verifyNoInteractions(gateway);
+        verify(mapper, never()).insertPending(any(), any(), any());
+        verify(mapper, never()).markRejected(any(), any());
+    }
+
+    @Test
+    void awaitingRejectedReplayStillFailsWithoutAnyProviderCall() {
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(Map.of(
+                "merchantOrderId", "VQR-1", "submissionStatus", "REJECTED",
+                "lastErrorCode", "HDPAY_CREATE_EXPLICIT_REJECTED"));
+
+        assertThatThrownBy(() -> service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("HDPAY_ORDER_CREATE_REJECTED")
+                .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(502));
+        verifyNoInteractions(gateway);
+        verify(mapper, never()).insertPending(any(), any(), any());
+    }
+
+    @Test
+    void unconfirmedCreateIsStoredUnknownAndItsReplayOnlyQueries() {
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null, Map.of(
+                "merchantOrderId", "VQR-1", "submissionStatus", "SUBMIT_UNKNOWN",
+                "amountVnd", new BigDecimal("659750"), "lastErrorCode", "HDPAY_CREATE_REJECTED"));
+        when(mapper.insertPending(eq("VQR-1"), eq(new BigDecimal("659750")), any())).thenReturn(1);
+        when(gateway.createPayOrder(any())).thenThrow(new HdPayGatewayException("HDPAY_CREATE_REJECTED", true));
+        when(gateway.queryPayOrder("VQR-1")).thenThrow(new HdPayGatewayException("HDPAY_HTTP_503", false));
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            assertThatThrownBy(() -> service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9"))
+                    .isInstanceOf(BizException.class)
+                    .hasMessage("HDPAY_ORDER_SUBMISSION_UNKNOWN")
+                    .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(503));
+        }
+        verify(mapper).markSubmitUnknown("VQR-1", "HDPAY_CREATE_REJECTED");
+        verify(mapper, never()).markRejected(any(), any());
+        verify(mapper).insertPending(eq("VQR-1"), eq(new BigDecimal("659750")), any());
+        verify(gateway).createPayOrder(any());
+        verify(gateway).queryPayOrder("VQR-1");
+    }
+
+    @Test
+    void explicitProviderRejectionPersistsTheNewMarkerWithoutRetry() {
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null);
+        when(mapper.insertPending(eq("VQR-1"), eq(new BigDecimal("659750")), any())).thenReturn(1);
+        when(gateway.createPayOrder(any())).thenThrow(
+                new HdPayGatewayException("HDPAY_CREATE_EXPLICIT_REJECTED", false));
+
+        assertThatThrownBy(() -> service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("HDPAY_ORDER_CREATE_REJECTED")
+                .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(502));
+        verify(mapper).markRejected("VQR-1", "HDPAY_CREATE_EXPLICIT_REJECTED");
+        verify(mapper, never()).markSubmitUnknown(any(), any());
+        verify(gateway).createPayOrder(any());
+        verify(gateway, never()).queryPayOrder(any());
+    }
+
+    @Test
+    void expiredUnknownWithQueryHttpFailureRemainsUnknownAndNeverResubmits() {
+        Map<String, Object> terminal = intent();
+        terminal.put("status", "expired");
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(terminal));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(Map.of(
+                "merchantOrderId", "VQR-1", "submissionStatus", "SUBMIT_UNKNOWN",
+                "amountVnd", new BigDecimal("659750")));
+        when(gateway.queryPayOrder("VQR-1")).thenThrow(new HdPayGatewayException("HDPAY_HTTP_503", false));
+
+        assertThatThrownBy(() -> service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("HDPAY_ORDER_SUBMISSION_UNKNOWN")
+                .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(503));
+        verify(gateway).queryPayOrder("VQR-1");
+        verify(gateway, never()).createPayOrder(any());
+        verify(mapper, never()).insertPending(any(), any(), any());
+        verify(mapper, never()).resolveSubmitUnknown(any(), any(), any(), any());
+        verify(mapper, never()).markRejected(any(), any());
+    }
+
+    @Test
+    void providerHttpFailureRemainsRejectedAndItsAwaitingReplayNeverResubmits() {
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null, Map.of(
+                "merchantOrderId", "VQR-1", "submissionStatus", "REJECTED"));
+        when(mapper.insertPending(eq("VQR-1"), eq(new BigDecimal("659750")), any())).thenReturn(1);
+        when(gateway.createPayOrder(any())).thenThrow(new HdPayGatewayException("HDPAY_HTTP_503", false));
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            assertThatThrownBy(() -> service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9"))
+                    .isInstanceOf(BizException.class)
+                    .hasMessage("HDPAY_ORDER_CREATE_REJECTED")
+                    .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(502));
+        }
+        verify(gateway).createPayOrder(any());
+        verify(gateway, never()).queryPayOrder(any());
+        verify(mapper).markRejected("VQR-1", "HDPAY_HTTP_503");
+        verify(mapper, never()).markSubmitUnknown(any(), any());
+    }
+
+    @Test
     void ambiguousProviderOutcomeIsStoredAndNeverAutomaticallyResubmitted() {
         when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
         when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null, Map.of(
@@ -79,6 +218,8 @@ class HdPayHostedDepositServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("HDPAY_ORDER_SUBMISSION_UNKNOWN");
         verify(mapper).markSubmitUnknown("VQR-1", "HDPAY_CREATE_TIMEOUT");
+        verify(mapper, never()).markRejected(any(), any());
+        verify(gateway).createPayOrder(any());
     }
 
     @Test
