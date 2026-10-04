@@ -84,7 +84,7 @@ public final class SharedMutationJournal {
         return rows.get(0);
     }
     private static Map<String,Object> databaseTime(JdbcTemplate jdbc) {
-        return jdbc.queryForObject("SELECT UTC_TIMESTAMP(6) AS utc_time, NOW(6) AS session_time, @@session.time_zone AS session_zone, CONNECTION_ID() AS connection_id", (rs, ordinal) -> {
+        return jdbc.queryForObject("SELECT UTC_TIMESTAMP(6) AS `utc_time`, NOW(6) AS session_time, @@session.time_zone AS session_zone, CONNECTION_ID() AS connection_id", (rs, ordinal) -> {
             var result = new LinkedHashMap<String,Object>();
             result.put("utc", rs.getString("utc_time")); result.put("session", rs.getString("session_time"));
             result.put("sessionZone", rs.getString("session_zone")); result.put("connectionId", rs.getString("connection_id"));
