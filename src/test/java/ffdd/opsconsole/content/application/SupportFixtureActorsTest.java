@@ -126,7 +126,8 @@ class SupportFixtureActorsTest {
     @Test @SuppressWarnings({"unchecked","rawtypes"}) void selfDisabledActorWithAbsentIndexStillDeletesOwnedOrphanAndScansAgain() throws Exception {
         var actors=actors();create(actors);cleanupSqlAndEmptyKeys();
         String orphan="ops:admin:session:offline-orphan";HashOperations<String,Object,Object> hashes=mock(HashOperations.class);when(redis.opsForHash()).thenReturn(hashes);when(hashes.get(orphan,"adminId")).thenReturn("100");
-        when(redis.scan(any(ScanOptions.class))).thenReturn(cursor(orphan),cursor());when(redis.execute(any(RedisScript.class),eq(List.of(orphan)),eq("100"))).thenReturn(1L);
+        Cursor<String> orphanCursor=cursor(orphan);Cursor<String> emptyCursor=cursor();
+        when(redis.scan(any(ScanOptions.class))).thenReturn(orphanCursor,emptyCursor);when(redis.execute(any(RedisScript.class),eq(List.of(orphan)),eq("100"))).thenReturn(1L);
         actors.cleanup(100L);var cleanup=only("fixture-actor-cleanup");assertThat(cleanup.path("verdict").asText()).isEqualTo("pass");
         assertThat(cleanup.path("actualRedis").path("sessionNamespaceScanComplete").asBoolean()).isTrue();verify(redis,times(2)).scan(any(ScanOptions.class));
         verify(redis).execute(any(RedisScript.class),eq(List.of(orphan)),eq("100"));
