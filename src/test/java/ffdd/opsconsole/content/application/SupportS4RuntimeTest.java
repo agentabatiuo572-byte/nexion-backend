@@ -27,7 +27,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import static org.assertj.core.api.Assertions.*;
 
 /** Actual isolated HTTP, SQL, login, multipart and private object storage; never fixture HTTP stubs. */
-@org.springframework.context.annotation.Import(SupportIsolatedRuntime.class)
+@org.springframework.context.annotation.Import({SupportIsolatedRuntime.class,SupportObjectEvidenceLedger.Configuration.class})
 @SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties={"server.port=${S4_HTTP_PORT:18129}",
     "nexion.support.attachments.allowed-mime-types=image/png,image/jpeg","nexion.support.attachments.max-bytes=1048576",
     "nexion.support.attachments.max-pixels=1000000","nexion.support.attachments.ttl-seconds=300"})
@@ -39,6 +39,7 @@ class SupportS4RuntimeTest {
         if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))SupportEnhancementPreparationTest.isolatedBoundary(registry);
     }
     @Autowired JdbcTemplate jdbc;
+    @Autowired SupportObjectEvidenceLedger objects;
     @Autowired org.springframework.data.redis.core.StringRedisTemplate actorRedis;
     private SupportFixtureActors actorEvidence;
     private SupportFixtureActors fixtureActors() {
@@ -61,17 +62,21 @@ class SupportS4RuntimeTest {
     private final HttpClient client=HttpClient.newHttpClient();
     private long boss,g1,g2,customer;
     private String adminToken,otherToken,bossToken,customerToken;
+    private String objectTestcase;
+    private final Set<String> objectTestcases=new LinkedHashSet<>();
 
-    @BeforeEach void fixture() throws Exception {
+    @BeforeEach void fixture(TestInfo info) throws Exception {
+        objectTestcase=info.getTestMethod().orElseThrow().getName();
         fixtureActors().assertBusinessEntry();
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportIsolatedRuntime.database());
         assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(33329);
         boss=admin("SUPER_ADMIN","MANAGER");g1=admin("SUPPORT","DEDICATED");g2=admin("SUPPORT","DEDICATED");
-        as(boss);customer=customer();transfer(customer,g1);
+        as(boss);customer="realPrivateImagesHaveSeparateUploadSendAndRevocation".equals(objectTestcase)?objectCustomer():customer();transfer(customer,g1);
         adminToken=token(g1);otherToken=token(g2);bossToken=token(boss);customerToken=userToken(customer);
     }
     @AfterEach void clear(){SecurityContextHolder.clearContext();}
     @AfterAll void evidence() throws Exception {
+        Throwable originalFailure=null;
         try {
         Set<String> required=Set.of("s4-ac01","s4-ac07","s4-ac08","s4-ac09","s4-ac10","s4-ac13","s4-supplement");
         assertThat(checks.keySet()).containsAll(required);
@@ -93,9 +98,15 @@ class SupportS4RuntimeTest {
         identities.put("password",System.getenv("S3_FIXTURE_PASSWORD"));identities.put("at",Instant.now().toString());
         Files.writeString(dir.resolve("runtime-identities.json"),json.writerWithDefaultPrettyPrinter().writeValueAsString(identities));
 
+        } catch(Exception|Error failure) {
+            originalFailure=failure;throw failure;
         } finally {
-            try {if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());}
-            finally {SecurityContextHolder.clearContext();}
+            try {
+                SupportObjectEvidenceLedger.cleanupIndependently(this::cleanupObjectEvidence,
+                    ()->{if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());},SecurityContextHolder::clearContext);
+            } catch(RuntimeException|Error cleanupFailure) {
+                if(originalFailure!=null)originalFailure.addSuppressed(cleanupFailure);else throw cleanupFailure;
+            }
         }
     }
 
@@ -411,11 +422,11 @@ class SupportS4RuntimeTest {
     }
 
     @Test void unboundCustomerCanUploadAndSendPrivateImage() throws Exception {
-        as(boss);long unbound=customer();assertThat(mapper.current(unbound)).isNull();
+        as(boss);long unbound=objectCustomer();assertThat(mapper.current(unbound)).isNull();
         String user=userToken(unbound),uploadId=key();byte[] png=image("png");
-        JsonNode uploaded=ok(upload(user,png,"image/png","camera.png",uploadId,key(),true));
+        JsonNode uploaded=ok(upload(user,png,"image/png","camera.png",uploadId,key(),unbound,true));
         String attachment=uploaded.path("id").asText();
-        assertThat(ok(upload(user,png,"image/png","camera.png",uploadId,key(),true)).path("id").asText()).isEqualTo(attachment);
+        assertThat(ok(upload(user,png,"image/png","camera.png",uploadId,key(),unbound,true)).path("id").asText()).isEqualTo(attachment);
         String path="/api/app/support/attachments/"+attachment+"/content";
         assertThat(download(path,user,null).statusCode()).isEqualTo(200);
         assertCode(json.readTree(download(path,customerToken,null).body()),404);
@@ -480,6 +491,27 @@ class SupportS4RuntimeTest {
             long id=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,ref);bindings.register(id,null);return id;
         });
     }
+    private long objectCustomer(){
+        String ref=UUID.randomUUID().toString().replace("-","").substring(0,20);
+        String phone="198"+String.format("%08d",Math.abs((long)ref.hashCode())%100000000);
+        String password=new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(System.getenv("S3_FIXTURE_PASSWORD"));
+        return objects.createCustomer(getClass().getSimpleName(),objectTestcase,ref,()->{
+            var generated=new org.springframework.jdbc.support.GeneratedKeyHolder();
+            int affected=jdbc.update(connection->{
+                var statement=connection.prepareStatement("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox) VALUES('+86',?,'127.0.0.1',?,?,?,'ACTIVE',0)",java.sql.Statement.RETURN_GENERATED_KEYS);
+                statement.setString(1,phone);statement.setString(2,password);statement.setString(3,run);statement.setString(4,ref);return statement;
+            },generated);
+            long id=Objects.requireNonNull(generated.getKey(),"Exact INSERT generated customer ID").longValue();
+            long lookup=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,ref);
+            assertThat(affected).isEqualTo(1);assertThat(lookup).isEqualTo(id);
+            bindings.register(id,null);
+            return new SupportObjectEvidenceLedger.CustomerInsert(id,affected,lookup);
+        });
+    }
+    private void cleanupObjectEvidence() {
+        SupportObjectEvidenceLedger.cleanupIndependently(objectTestcases.stream()
+            .<Runnable>map(testcase->()->objects.cleanup(getClass().getSimpleName(),testcase)).toArray(Runnable[]::new));
+    }
     private void as(long id){
         var auth=new UsernamePasswordAuthenticationToken(String.valueOf(id),null,List.of(new SimpleGrantedAuthority("service_m3_write"),new SimpleGrantedAuthority("service_m3_read")));
         auth.setDetails(Map.of("subjectType","ADMIN","username",run));SecurityContextHolder.getContext().setAuthentication(auth);
@@ -507,12 +539,18 @@ class SupportS4RuntimeTest {
     private void assertCode(JsonNode value,int code){assertThat(value.path("code").asInt()).as("HTTP result: %s",value.path("message").asText()).isEqualTo(code);}
     private byte[] image(String format) throws Exception {var image=new BufferedImage(4,4,BufferedImage.TYPE_INT_RGB);image.setRGB(1,1,0xff8844);var out=new ByteArrayOutputStream();ImageIO.write(image,format,out);return out.toByteArray();}
     private JsonNode upload(String token,byte[] bytes,String mime,String name,String uploadId,String key) throws Exception {
-        return upload(token,bytes,mime,name,uploadId,key,false);
+        return upload(token,bytes,mime,name,uploadId,key,g1,false);
     }
-    private JsonNode upload(String token,byte[] bytes,String mime,String name,String uploadId,String key,boolean app) throws Exception {
+    private JsonNode upload(String token,byte[] bytes,String mime,String name,String uploadId,String key,long uploader,boolean app) throws Exception {
+        long exactCustomer=app?uploader:customer;
+        Long assignment=app?null:mapper.current(exactCustomer).id();
+        objectTestcases.add(objectTestcase);
+        var intent=objects.request(new SupportObjectEvidenceLedger.Request(getClass().getSimpleName(),objectTestcase,
+            SupportObjectEvidenceLedger.Kind.ATTACHMENT,app?"USER":"ADMIN",uploader,exactCustomer,assignment,
+            uploadId,key,null,storageProperties.getBucket(),false));
         String boundary="s4boundary"+UUID.randomUUID();var out=new ByteArrayOutputStream();
         var fields=new LinkedHashMap<String,String>();fields.put("clientUploadId",uploadId);
-        if(!app){fields.put("customerId",String.valueOf(customer));fields.put("expectedAssignmentId",String.valueOf(mapper.current(customer).id()));}
+        if(!app){fields.put("customerId",String.valueOf(exactCustomer));fields.put("expectedAssignmentId",String.valueOf(assignment));}
         for(var field:fields.entrySet())
             out.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\""+field.getKey()+"\"\r\n\r\n"+field.getValue()+"\r\n").getBytes());
         out.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\""+name+"\"\r\nContent-Type: "+mime+"\r\n\r\n").getBytes());
@@ -520,7 +558,20 @@ class SupportS4RuntimeTest {
         var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+(app?"/api/app/support/attachments":"/api/admin/content/conversations/attachments"))).timeout(Duration.ofSeconds(20))
             .header("Authorization","Bearer "+token).header("Idempotency-Key",key).header("Content-Type","multipart/form-data; boundary="+boundary)
             .POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray())).build();
-        return json.readTree(client.send(request,HttpResponse.BodyHandlers.ofString()).body());
+        try {
+            var response=client.send(request,HttpResponse.BodyHandlers.ofString());
+            JsonNode body;
+            try {body=json.readTree(response.body());}
+            catch(Exception parseFailure) {
+                try {objects.httpOutcome(intent,response.statusCode(),json.getNodeFactory().textNode(response.body()));}
+                catch(Throwable evidenceFailure) {parseFailure.addSuppressed(evidenceFailure);}
+                throw parseFailure;
+            }
+            objects.httpOutcome(intent,response.statusCode(),body);return body;
+        } catch(Exception|Error failure) {
+            try {objects.requestFailure(intent,failure);} catch(Throwable evidenceFailure) {failure.addSuppressed(evidenceFailure);}
+            throw failure;
+        }
     }
     private HttpResponse<byte[]> download(String path,String token,String range) throws Exception {
         var b=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+path)).timeout(Duration.ofSeconds(20));

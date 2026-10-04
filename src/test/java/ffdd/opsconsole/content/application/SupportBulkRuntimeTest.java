@@ -28,7 +28,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @EnabledIfEnvironmentVariable(named="CS_ENHANCE_BULK_ENABLED",matches="true")
 @SpringBootTest(classes=NexionOpsConsoleApplication.class,webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT)
-@Import({SupportEnhancementPreparationTest.IsolatedConfiguration.class,SupportBulkRuntimeFixture.EventCapture.class})
+@Import({SupportEnhancementPreparationTest.IsolatedConfiguration.class,SupportBulkRuntimeFixture.EventCapture.class,SupportObjectEvidenceLedger.Configuration.class})
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
@@ -267,18 +267,22 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
     }
 
     @Test @Order(7) void oneImageOwnsIsolatedPrivateReferencesAndRetainsCommittedBytes() throws Exception {
-        long c=customer(first),d=customer(first),unsent=customer(first);byte[] image=png(0xCC5500);String uploadId=key(),uploadKey=key();
+        long c=objectCustomer(first),d=objectCustomer(first),unsent=objectCustomer(first);byte[] image=png(0xCC5500);String uploadId=key(),uploadKey=key();
         var uploaded=upload(first,image,uploadId,uploadKey);assertThat(uploaded.path("code").asInt()).isZero();String asset=uploaded.path("data").path("assetId").asText();assertThat(asset).isNotBlank();
         assertThat(upload(first,image,uploadId,uploadKey).path("data").path("assetId").asText()).isEqualTo(asset);
         assertThat(upload(first,image,uploadId,key()).path("code").asInt()).isEqualTo(409);
         assertThat(upload(first,png(0x112233),uploadId,uploadKey).path("code").asInt()).isEqualTo(409);
         String unknownUpload=key(),unknownKey=key();var callbacks=new java.util.concurrent.atomic.AtomicReference<List<org.springframework.transaction.support.TransactionSynchronization>>();
-        var committedAsset=new TransactionTemplate(transactions).execute(status->{
+        var committedIntent=objectRequest(SupportObjectEvidenceLedger.Kind.BULK_ASSET,first,null,null,unknownUpload,unknownKey,null,storageProperties.getBucket(),false);
+        var committedAsset=objects().direct(committedIntent,()->new TransactionTemplate(transactions).execute(status->{
             as(first);var value=attachments.uploadBulk(first,unknownKey,unknownUpload,new org.springframework.mock.web.MockMultipartFile("file","actual.png","image/png",image));
             callbacks.set(org.springframework.transaction.support.TransactionSynchronizationManager.getSynchronizations().stream().filter(sync->sync.getClass().getEnclosingClass()==SupportAttachmentService.class).toList());return value;
-        });
+        }));
         assertThat(callbacks.get()).hasSize(1);String committedAssetId=committedAsset.get("assetId").toString();String committedObject=json.readTree(jdbc.queryForObject("SELECT asset_json FROM nx_support_bulk_job WHERE id=?",String.class,committedAssetId)).path("objectKey").asText();assertThat(storage.exists(committedObject)).isTrue();
-        callbacks.get().forEach(sync->sync.afterCompletion(org.springframework.transaction.support.TransactionSynchronization.STATUS_UNKNOWN));assertThat(storage.exists(committedObject)).isTrue();assertThat(upload(first,image,unknownUpload,unknownKey).path("data").path("assetId").asText()).isEqualTo(committedAssetId);
+        callbacks.get().forEach(sync->sync.afterCompletion(org.springframework.transaction.support.TransactionSynchronization.STATUS_UNKNOWN));
+        objects().callbackObservation(committedIntent,org.springframework.transaction.support.TransactionSynchronization.STATUS_UNKNOWN,
+            "Actual bulk upload callback explicitly replayed after the real transaction committed; not a JDBC outage");
+        assertThat(storage.exists(committedObject)).isTrue();assertThat(upload(first,image,unknownUpload,unknownKey).path("data").path("assetId").asText()).isEqualTo(committedAssetId);
         assertThat(executions(c)).isZero();assertThat(executions(d)).isZero();assertThat(executions(unsent)).isZero();
         String batch=batch(first,List.of(c,d,unsent),"SERVICE","IMAGE","Shared private image caption",null,null,asset);send(batch,c);send(batch,d);cancel(first,batch);counts(batch,2,0,0,1,0);
         String cAttachment=row(batch,c).get("attachment_id").toString(),dAttachment=row(batch,d).get("attachment_id").toString();assertThat(cAttachment).isNotEqualTo(dAttachment);
@@ -300,8 +304,9 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
         assertThat(expiredImage.path("code").asInt()).as("Near-now asset expiry: %s",expiredImage.path("message")).isEqualTo(409);assertThat(messageCount(unsent)).isZero();
         jdbc.update("UPDATE nx_support_bulk_job SET expires_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 SECOND) WHERE id=?",asset);attachments.cleanupExpiredBulkAssets();
         assertThat(jdbc.queryForObject("SELECT state FROM nx_support_bulk_job WHERE id=?",String.class,asset)).isEqualTo("EXPIRED");assertThat(storage.exists(object)).isTrue();assertThat(download(privateApp+cAttachment+"/content",cToken).body()).isEqualTo(cBytes.body());
-        String originalBucket=storageProperties.getBucket(),failedUpload=key();
-        try {storageProperties.setBucket("bulk-unavailable-"+run.replace('_','-'));assertThat(upload(first,image,failedUpload,key()).path("code").asInt()).isNotZero();}
+        String originalBucket=storageProperties.getBucket(),failedUpload=key(),failedCommand=key(),missingBucket="bulk-unavailable-"+run.replace('_','-');
+        var missingBucketIntent=objectRequest(SupportObjectEvidenceLedger.Kind.BULK_ASSET,first,null,null,failedUpload,failedCommand,null,missingBucket,true);
+        try {storageProperties.setBucket(missingBucket);assertThat(upload(first,image,failedUpload,failedCommand,missingBucketIntent).path("code").asInt()).isNotZero();}
         finally {storageProperties.setBucket(originalBucket);}
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_bulk_job WHERE record_type='ASSET' AND actor_id=? AND client_upload_id=?",Long.class,first,failedUpload)).isZero();
         assertThat(executions(c)).isZero();assertThat(executions(d)).isZero();assertThat(executions(unsent)).isZero();assertThat(messageCount(unsent)).isZero();

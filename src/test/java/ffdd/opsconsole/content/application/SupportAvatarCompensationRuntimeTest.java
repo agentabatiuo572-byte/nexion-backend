@@ -22,7 +22,7 @@ import org.springframework.transaction.support.*;
 
 @EnabledIfEnvironmentVariable(named="CS_ENHANCE_AVATAR_READ_ENABLED",matches="true")
 @SpringBootTest(classes=NexionOpsConsoleApplication.class,webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT)
-@Import(SupportEnhancementPreparationTest.IsolatedConfiguration.class)
+@Import({SupportEnhancementPreparationTest.IsolatedConfiguration.class,SupportObjectEvidenceLedger.Configuration.class})
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
 class SupportAvatarCompensationRuntimeTest extends SupportBulkRuntimeFixture {
     @DynamicPropertySource static void isolated(DynamicPropertyRegistry registry) {SupportEnhancementPreparationTest.isolatedBoundary(registry);}
@@ -34,14 +34,15 @@ class SupportAvatarCompensationRuntimeTest extends SupportBulkRuntimeFixture {
         as(boss);
         int color=0x3355cc;byte[] image=png(color);
         String client=key(),command=key();var callback=new AtomicReference<TransactionSynchronization>();
-        var uploaded=new TransactionTemplate(transactions).execute(status->{
+        var committedIntent=objectRequest(SupportObjectEvidenceLedger.Kind.AVATAR,boss,null,null,client,command,null,storageProperties.getBucket(),false);
+        var uploaded=objects().direct(committedIntent,()->new TransactionTemplate(transactions).execute(status->{
             var before=TransactionSynchronizationManager.getSynchronizations();
             var result=avatars.upload(client,command,new MockMultipartFile("file","avatar.png","image/png",image));
             var registered=TransactionSynchronizationManager.getSynchronizations().stream()
                 .filter(sync->!before.contains(sync) && sync.getClass().getEnclosingClass()==SupportAdminAvatarService.class).toList();
             assertThat(registered).as("actual synchronization registered by avatar upload").hasSize(1);
             callback.set(registered.get(0));return result;
-        });
+        }));
         assertThat(uploaded).isNotNull();assertThat(callback.get()).isNotNull();
         String assetId=uploaded.get("assetId").toString();
         String objectKey=jdbc.queryForObject("SELECT object_key FROM nx_support_admin_avatar_asset WHERE id=?",String.class,assetId);
@@ -51,12 +52,15 @@ class SupportAvatarCompensationRuntimeTest extends SupportBulkRuntimeFixture {
 
         // Fault injection replays the actual upload callback; it does not simulate a physical JDBC outage.
         callback.get().afterCompletion(TransactionSynchronization.STATUS_UNKNOWN);
+        objects().callbackObservation(committedIntent,TransactionSynchronization.STATUS_UNKNOWN,
+            "Actual avatar callback explicitly replayed after the real transaction committed; not a JDBC outage");
         boolean existsAfter=storage.exists(objectKey);
         writeUnknownObservation(assetId,"AFTER_CALLBACK",existedBefore,existsAfter);
         assertThat(jdbc.queryForObject("SELECT state FROM nx_support_admin_avatar_asset WHERE id=?",String.class,assetId)).isEqualTo("READY");
         assertThat(existsAfter).as("STATUS_UNKNOWN must preserve an actually committed avatar object").isTrue();
 
-        var retried=avatars.upload(client,command,new MockMultipartFile("file","avatar.png","image/png",image));
+        var retryIntent=objectRequest(SupportObjectEvidenceLedger.Kind.AVATAR,boss,null,null,client,command,null,storageProperties.getBucket(),false);
+        var retried=objects().direct(retryIntent,()->avatars.upload(client,command,new MockMultipartFile("file","avatar.png","image/png",image)));
         assertThat(retried.get("assetId")).isEqualTo(assetId);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_admin_avatar_asset WHERE uploader_id=? AND client_upload_id=?",Long.class,boss,client)).isEqualTo(1L);
         String superToken=token(boss);
@@ -78,15 +82,17 @@ class SupportAvatarCompensationRuntimeTest extends SupportBulkRuntimeFixture {
         assertImage("/api/admin/platform/accounts/"+first+"/avatar",superToken,color);
 
         var rolledBackAsset=new AtomicReference<String>();var rolledBackObject=new AtomicReference<String>();
-        new TransactionTemplate(transactions).executeWithoutResult(status->{
-            var staged=avatars.upload(key(),key(),new MockMultipartFile("file","avatar.png","image/png",image));
+        String rollbackClient=key(),rollbackCommand=key();
+        var rollbackIntent=objectRequest(SupportObjectEvidenceLedger.Kind.AVATAR,boss,null,null,rollbackClient,rollbackCommand,null,storageProperties.getBucket(),false);
+        objects().direct(rollbackIntent,()->{new TransactionTemplate(transactions).executeWithoutResult(status->{
+            var staged=avatars.upload(rollbackClient,rollbackCommand,new MockMultipartFile("file","avatar.png","image/png",image));
             String id=staged.get("assetId").toString();rolledBackAsset.set(id);
             String location=jdbc.queryForObject("SELECT object_key FROM nx_support_admin_avatar_asset WHERE id=?",String.class,id);
             rolledBackObject.set(location);
             assertThat(jdbc.queryForObject("SELECT state FROM nx_support_admin_avatar_asset WHERE id=?",String.class,id)).isEqualTo("READY");
             assertThat(storage.exists(location)).as("real rollback candidate object exists before rollback").isTrue();
             status.setRollbackOnly();
-        });
+        });return null;});
         assertThat(rolledBackAsset.get()).isNotNull();assertThat(rolledBackObject.get()).isNotNull();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_admin_avatar_asset WHERE id=?",Long.class,rolledBackAsset.get())).isZero();
         assertThat(storage.exists(rolledBackObject.get())).as("explicit real transaction rollback compensates its staged object").isFalse();

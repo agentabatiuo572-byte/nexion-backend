@@ -36,7 +36,7 @@ import org.springframework.test.context.DynamicPropertySource;
 /** Real private bytes and DB-grant HTTP checks on the leased isolated boundary. */
 @EnabledIfEnvironmentVariable(named="CS_ENHANCE_AVATAR_READ_ENABLED",matches="true")
 @SpringBootTest(classes=NexionOpsConsoleApplication.class,webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT)
-@Import(SupportEnhancementPreparationTest.IsolatedConfiguration.class)
+@Import({SupportEnhancementPreparationTest.IsolatedConfiguration.class,SupportObjectEvidenceLedger.Configuration.class})
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
 class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
     private static final String METHOD="controlledAvatarReadScopesAndReplacement";
@@ -56,20 +56,15 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
     }
 
     @AfterEach void restoreAvatarFixture() {
-        try {
-            for(var grant:originalSupportGrants)
-                SharedMutationJournal.restorePermission(jdbc,run,"SupportAdminAvatarReadRuntimeTest",boss,"restoreAvatarFixture#originalGrant",((Number)grant.get("id")).longValue());
-        } finally {
-            try {
-                for(long message:forgedMessageIds) {
-                    jdbc.update("DELETE FROM nx_support_human_message WHERE message_id=?",message);
-                    jdbc.update("DELETE FROM nx_conversation_message WHERE id=?",message);
-                }
-            } finally {
-                try {restoreFixture();}
-                finally {permissions.evictAll();SecurityContextHolder.clearContext();}
-            }
+        var cleanup=new ArrayList<Runnable>();
+        for(var grant:originalSupportGrants)
+            cleanup.add(()->SharedMutationJournal.restorePermission(jdbc,run,"SupportAdminAvatarReadRuntimeTest",boss,"restoreAvatarFixture#originalGrant",((Number)grant.get("id")).longValue()));
+        for(long message:forgedMessageIds) {
+            cleanup.add(()->jdbc.update("DELETE FROM nx_support_human_message WHERE message_id=?",message));
+            cleanup.add(()->jdbc.update("DELETE FROM nx_conversation_message WHERE id=?",message));
         }
+        cleanup.add(this::restoreFixture);cleanup.add(permissions::evictAll);cleanup.add(SecurityContextHolder::clearContext);
+        SupportObjectEvidenceLedger.cleanupIndependently(cleanup.toArray(Runnable[]::new));
     }
 
     @Test void controlledAvatarReadScopesAndReplacement() throws Exception {
@@ -87,7 +82,7 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
         long content=admin("avatar_content","CONTENT","GENERAL");
         for(long actor:admins)
             assertThat(jdbc.update("UPDATE nx_admin SET username=?,email=? WHERE id=?","avatar_"+actor,"avatar_"+actor+"@example.invalid",actor)).isEqualTo(1);
-        long customer=customer(first),otherCustomer=customer(first);
+        long customer=objectCustomer(first),otherCustomer=objectCustomer(first);
         String superToken=token(boss),firstToken=token(first),secondToken=token(second),managerToken=token(manager),unrelatedToken=token(unrelated);
         var placeholder=http("GET","/api/admin/content/support-workbench/customers/"+customer+"/360",firstToken,null,null);
         assertThat(placeholder.path("code").asInt()).isZero();
@@ -161,7 +156,7 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
         restrictSupportGrants(Set.of("service_m1_read","service_m3_read"));
 
         denied("/api/admin/platform/accounts/"+first+"/avatar",firstToken,403);
-        assertThat(uploadAvatar(firstToken,png(otherColor)).path("code").asInt()).isEqualTo(403);
+        assertThat(uploadAvatar(first,firstToken,png(otherColor)).path("code").asInt()).isEqualTo(403);
         var currentAccount=account(first,superToken);
         assertThat(http("PATCH","/api/admin/platform/accounts/"+first+"/profile",firstToken,profileEdit(currentAccount,original.path("avatarAssetId").asText()),key()).path("code").asInt()).isEqualTo(403);
         String user=userToken(customer);
@@ -207,7 +202,7 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
     private JsonNode attachAvatar(long target,String superToken,int color) throws Exception {
         var before=account(target,superToken);
         var identity=jdbc.queryForMap("SELECT username,nickname,email,status,super_admin,version FROM nx_admin WHERE id=?",target);
-        var upload=uploadAvatar(superToken,png(color));assertThat(upload.path("code").asInt()).as("Real avatar upload: %s",upload.path("message")).isZero();assertThat(upload.toString()).doesNotContain("objectKey","bucket");
+        var upload=uploadAvatar(boss,superToken,png(color));assertThat(upload.path("code").asInt()).as("Real avatar upload: %s",upload.path("message")).isZero();assertThat(upload.toString()).doesNotContain("objectKey","bucket");
         var changed=http("PATCH","/api/admin/platform/accounts/"+target+"/profile",superToken,profileEdit(before,upload.path("data").path("assetId").asText()),key());assertThat(changed.path("code").asInt()).as("Original full identity avatar CAS: %s",changed.path("message")).isZero();
         var after=jdbc.queryForMap("SELECT username,nickname,email,status,super_admin,version FROM nx_admin WHERE id=?",target);
         for(String field:List.of("username","nickname","email","status","super_admin"))assertThat(after.get(field)).as("Preserved account %s",field).isEqualTo(identity.get(field));
@@ -240,11 +235,12 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
         permissions.evict(target);
     }
 
-    private JsonNode uploadAvatar(String actor,byte[] image) throws Exception {
-        String multipart="avatar-read-"+UUID.randomUUID();var body=new ByteArrayOutputStream();
-        body.write(("--"+multipart+"\r\nContent-Disposition: form-data; name=\"clientUploadId\"\r\n\r\n"+key()+"\r\n--"+multipart+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));body.write(image);body.write(("\r\n--"+multipart+"--\r\n").getBytes(StandardCharsets.UTF_8));
-        var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141/api/admin/platform/accounts/avatar-assets")).timeout(Duration.ofSeconds(25)).header("Authorization","Bearer "+actor).header("Idempotency-Key",key()).header("Content-Type","multipart/form-data; boundary="+multipart).POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray())).build();
-        return json.readTree(HttpClient.newHttpClient().send(request,HttpResponse.BodyHandlers.ofString()).body());
+    private JsonNode uploadAvatar(long uploader,String actor,byte[] image) throws Exception {
+        String multipart="avatar-read-"+UUID.randomUUID(),client=key(),command=key();var body=new ByteArrayOutputStream();
+        var intent=objectRequest(SupportObjectEvidenceLedger.Kind.AVATAR,uploader,null,null,client,command,null,storageProperties.getBucket(),false);
+        body.write(("--"+multipart+"\r\nContent-Disposition: form-data; name=\"clientUploadId\"\r\n\r\n"+client+"\r\n--"+multipart+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));body.write(image);body.write(("\r\n--"+multipart+"--\r\n").getBytes(StandardCharsets.UTF_8));
+        var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141/api/admin/platform/accounts/avatar-assets")).timeout(Duration.ofSeconds(25)).header("Authorization","Bearer "+actor).header("Idempotency-Key",command).header("Content-Type","multipart/form-data; boundary="+multipart).POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray())).build();
+        return json.readTree(sendObjectRequest(intent,request).body());
     }
 
     private static String path(long target,Long customer) {return AVATAR+target+"/avatar"+(customer==null?"":"?customerId="+customer);}

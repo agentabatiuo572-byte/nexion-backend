@@ -49,7 +49,7 @@ import org.springframework.test.context.DynamicPropertySource;
 @EnabledIfEnvironmentVariable(named = "CS_ENHANCE_AVATAR_A2_ENABLED", matches = "true")
 @EnabledIfEnvironmentVariable(named = "CS_ENHANCE_BULK_ENABLED", matches = "true")
 @SpringBootTest(classes = NexionOpsConsoleApplication.class, webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT)
-@Import(SupportEnhancementPreparationTest.IsolatedConfiguration.class)
+@Import({SupportEnhancementPreparationTest.IsolatedConfiguration.class,SupportObjectEvidenceLedger.Configuration.class})
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
     private static final String ACCOUNTS = "/api/admin/platform/accounts";
@@ -387,6 +387,7 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
 
     private String uploadAvatar(long uploader, int color) throws Exception {
         String multipart = "avatar-a2-" + UUID.randomUUID(), client = key(), command = key();
+        var intent = objectRequest(SupportObjectEvidenceLedger.Kind.AVATAR,uploader,null,null,client,command,null,storageProperties.getBucket(),false);
         ByteArrayOutputStream body = new ByteArrayOutputStream();
         body.write(("--" + multipart + "\r\nContent-Disposition: form-data; name=\"clientUploadId\"\r\n\r\n" + client
                 + "\r\n--" + multipart + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));
@@ -396,7 +397,7 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
                 .timeout(Duration.ofSeconds(25)).header("Authorization", "Bearer " + actorTokens.get(uploader))
                 .header("Idempotency-Key", command).header("Content-Type", "multipart/form-data; boundary=" + multipart)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray())).build();
-        HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = sendObjectRequest(intent,request);
         assertThat(response.statusCode()).isEqualTo(200);
         JsonNode uploaded = json.readTree(response.body());
         success(uploaded);
@@ -448,7 +449,8 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
     void cleanOnlyOwnFixture() throws Exception {
         if (!boundaryReady) return;
         List<Throwable> failures = new ArrayList<>();
-        Set<Long> ownAdmins = new LinkedHashSet<>(fixtureActors().ownedIds());
+        Set<Long> ownAdmins = new LinkedHashSet<>();
+        try { ownAdmins.addAll(fixtureActors().ownedIds()); } catch (Throwable failure) { failures.add(failure); }
         try {
             // Ownership comes only from the already-durable exact creation documents.
             if (maker > 0 && actorTokens.containsKey(maker)) {
@@ -476,6 +478,7 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
         } catch (Throwable failure) {
             failures.add(failure);
         } finally {
+            try { cleanupObjectEvidence(); } catch (Throwable failure) { failures.add(failure); }
             for (long actor : ownAdmins) {
                 try {
                     fixtureActors().cleanup(actor);

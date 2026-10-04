@@ -29,11 +29,12 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @EnabledIfEnvironmentVariable(named="CS_ENHANCE_CORE_ENABLED",matches="true")
 @SpringBootTest(classes=NexionOpsConsoleApplication.class,webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT)
-@Import({SupportEnhancementPreparationTest.IsolatedConfiguration.class,SupportEnhancementCoreRuntimeTest.EventCapture.class})
+@Import({SupportEnhancementPreparationTest.IsolatedConfiguration.class,SupportEnhancementCoreRuntimeTest.EventCapture.class,SupportObjectEvidenceLedger.Configuration.class})
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
 class SupportEnhancementCoreRuntimeTest {
     @DynamicPropertySource static void boundary(DynamicPropertyRegistry registry) {SupportEnhancementPreparationTest.isolatedBoundary(registry);}
     @Autowired JdbcTemplate jdbc;
+    @Autowired SupportObjectEvidenceLedger objects;
     @Autowired org.springframework.data.redis.core.StringRedisTemplate actorRedis;
     private SupportFixtureActors actorEvidence;
     private SupportFixtureActors fixtureActors() {
@@ -65,8 +66,10 @@ class SupportEnhancementCoreRuntimeTest {
     private ffdd.opsconsole.content.domain.SupportRules oldRules;
     private long boss,first,second;
     private final Map<String,Object> proofs=new LinkedHashMap<>();
+    private String objectTestcase;
 
-    @BeforeEach void prepare() {
+    @BeforeEach void prepare(TestInfo info) {
+        objectTestcase=info.getTestMethod().orElseThrow().getName();
         fixtureActors().assertBusinessEntry();
         events.events.clear();
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_enhance_20261001");
@@ -77,12 +80,13 @@ class SupportEnhancementCoreRuntimeTest {
     }
     @AfterEach void restore() {
         var cleanup=new ArrayList<Runnable>();
+        cleanup.add(()->objects.cleanup(getClass().getSimpleName(),objectTestcase));
         cleanup.add(()->{if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());});
         cleanup.add(()->{if(oldRules!=null && boss>0) SharedMutationJournal.cleanupSql(jdbc,run,"SupportEnhancementCoreRuntimeTest",boss,"SupportEnhancementCoreRuntimeTest#rules-sql-1","UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",
             oldRules.dormantDays(),oldRules.maintenanceDays(),oldRules.activityWindowDays(),oldRules.inheritanceMode(),oldRules.maxInheritanceDepth(),oldRules.unboundAssignmentMode(),oldRules.modeEffectiveAt(),boss);});
         cleanup.add(()->{if(originalProfiles!=null) originalProfiles.restoreAndVerify();});
         cleanup.add(SecurityContextHolder::clearContext);
-        SupportOriginalProfiles.cleanup(cleanup.toArray(Runnable[]::new));
+        SupportObjectEvidenceLedger.cleanupIndependently(cleanup.toArray(Runnable[]::new));
     }
 
     @Test void randomAllocationUsesFrozenDurableResultsAndOnlyNewAutomaticPool() throws Exception {
@@ -387,20 +391,21 @@ class SupportEnhancementCoreRuntimeTest {
     }
     private com.fasterxml.jackson.databind.JsonNode findCurrency(com.fasterxml.jackson.databind.JsonNode rows,String currency) {for(var row:rows)if(currency.equals(row.path("currency").asText()))return row;throw new AssertionError("currency missing "+currency);}
     @Test void adminAvatarUsesRealStorageAndAccountCasAcrossEveryProjection() throws Exception {
-        String superToken=token(boss),managerToken=token(admin("avatar_manager","SUPPORT","MANAGER"));
+        long avatarManager=admin("avatar_manager","SUPPORT","MANAGER");
+        String superToken=token(boss),managerToken=token(avatarManager);
         byte[] original=png(0xff3344),replacement=png(0x2244ff);
-        assertThat(uploadAvatar(managerToken,original,"image/png",key(),key()).path("code").asInt()).isEqualTo(403);
-        assertThat(uploadAvatar(superToken,"<svg/>".getBytes(),"image/svg+xml",key(),key()).path("code").asInt()).isEqualTo(415);
-        String upload=key(),uploadKey=key();var asset=uploadAvatar(superToken,original,"image/png",upload,uploadKey);
+        assertThat(uploadAvatar(avatarManager,managerToken,original,"image/png",key(),key()).path("code").asInt()).isEqualTo(403);
+        assertThat(uploadAvatar(boss,superToken,"<svg/>".getBytes(),"image/svg+xml",key(),key()).path("code").asInt()).isEqualTo(415);
+        String upload=key(),uploadKey=key();var asset=uploadAvatar(boss,superToken,original,"image/png",upload,uploadKey);
         assertThat(asset.path("code").asInt()).isZero();assertThat(asset.toString()).doesNotContain("objectKey","bucket");
-        String assetId=asset.path("data").path("assetId").asText();assertThat(uploadAvatar(superToken,original,"image/png",upload,uploadKey).path("data").path("assetId").asText()).isEqualTo(assetId);
+        String assetId=asset.path("data").path("assetId").asText();assertThat(uploadAvatar(boss,superToken,original,"image/png",upload,uploadKey).path("data").path("assetId").asText()).isEqualTo(assetId);
         assertThat(download("/api/admin/platform/accounts/avatar-assets/"+assetId,superToken).statusCode()).isEqualTo(200);
-        assertThat(uploadAvatar(superToken,original,"image/jpeg",key(),key()).path("code").asInt()).isEqualTo(415);
+        assertThat(uploadAvatar(boss,superToken,original,"image/jpeg",key(),key()).path("code").asInt()).isEqualTo(415);
         long maxBytes=attachmentPolicy.getMaxBytes(),maxPixels=attachmentPolicy.getMaxPixels();
-        try {attachmentPolicy.setMaxBytes(16L);assertThat(uploadAvatar(superToken,original,"image/png",key(),key()).path("code").asInt()).isEqualTo(413);
-            attachmentPolicy.setMaxBytes(maxBytes);attachmentPolicy.setMaxPixels(1L);assertThat(uploadAvatar(superToken,original,"image/png",key(),key()).path("code").asInt()).isEqualTo(413);
+        try {attachmentPolicy.setMaxBytes(16L);assertThat(uploadAvatar(boss,superToken,original,"image/png",key(),key()).path("code").asInt()).isEqualTo(413);
+            attachmentPolicy.setMaxBytes(maxBytes);attachmentPolicy.setMaxPixels(1L);assertThat(uploadAvatar(boss,superToken,original,"image/png",key(),key()).path("code").asInt()).isEqualTo(413);
         }finally{attachmentPolicy.setMaxBytes(maxBytes);attachmentPolicy.setMaxPixels(maxPixels);}
-        long otherSuper=admin("foreign_asset_super","SUPER_ADMIN","MANAGER");String foreignAsset=uploadAvatar(token(otherSuper),original,"image/png",key(),key()).path("data").path("assetId").asText();
+        long otherSuper=admin("foreign_asset_super","SUPER_ADMIN","MANAGER");String foreignAsset=uploadAvatar(otherSuper,token(otherSuper),original,"image/png",key(),key()).path("data").path("assetId").asText();
         assertThat(download("/api/admin/platform/accounts/avatar-assets/"+foreignAsset,superToken).statusCode()).isEqualTo(404);
         var createBody=Map.of("username",run+"_avatar_created","displayName","Avatar creator","email",run+"@example.invalid","role","support","reason","Create optional avatar proof","operator",run,"avatarAssetId",assetId);String createKey=key();
         var created=fixtureActors().createHttp(run+"_avatar_created",createKey,()->http("POST","/api/admin/platform/accounts",superToken,createBody,createKey));
@@ -414,8 +419,9 @@ class SupportEnhancementCoreRuntimeTest {
         assertThat(account.path("avatarAssetId").asText()).isEqualTo(assetId);assertThat(account.path("avatarVersion").asLong()).isEqualTo(1);
         var foreignEdit=Map.of("username",account.path("username").asText(),"displayName",account.path("name").asText(),"email",account.path("email").asText(),"reason","Foreign staged asset must fail","operator",run,"expectedVersion",account.path("version").asText(),"avatarAssetId",foreignAsset);
         assertThat(http("PATCH","/api/admin/platform/accounts/"+target+"/profile",superToken,foreignEdit,key()).path("code").asInt()).isEqualTo(404);
-        String badUpload=key(),bucket=storageProperties.getBucket();
-        try {storageProperties.setBucket("unavailable-"+run.replace('_','-'));assertThat(uploadAvatar(superToken,original,"image/png",badUpload,key()).path("code").asInt()).isNotZero();}
+        String badUpload=key(),bucket=storageProperties.getBucket(),badCommand=key(),missingBucket="unavailable-"+run.replace('_','-');
+        var missingBucketIntent=avatarIntent(boss,badUpload,badCommand,missingBucket,true);
+        try {storageProperties.setBucket(missingBucket);assertThat(uploadAvatar(superToken,original,"image/png",badUpload,badCommand,missingBucketIntent).path("code").asInt()).isNotZero();}
         finally{storageProperties.setBucket(bucket);}
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_admin_avatar_asset WHERE uploader_id=? AND client_upload_id=?",Long.class,boss,badUpload)).isZero();
         assertThat(jdbc.queryForObject("SELECT avatar_asset_id FROM nx_admin_account_state WHERE admin_id=?",String.class,target)).isEqualTo(assetId);
@@ -426,7 +432,7 @@ class SupportEnhancementCoreRuntimeTest {
 
         assertThat(noAvatar.path("data").path("avatarAssetId").isNull()).isTrue();
         var before=jdbc.queryForMap("SELECT username,nickname,email,password_hash,status,super_admin,version FROM nx_admin WHERE id=?",target);
-        String nextAsset=uploadAvatar(superToken,replacement,"image/png",key(),key()).path("data").path("assetId").asText();
+        String nextAsset=uploadAvatar(boss,superToken,replacement,"image/png",key(),key()).path("data").path("assetId").asText();
         var edit=new LinkedHashMap<String,Object>();edit.put("username",account.path("username").asText());edit.put("displayName",account.path("name").asText());edit.put("email",account.path("email").asText());
         edit.put("expectedVersion",account.path("version").asText());edit.put("reason","Replace avatar only without changing identity");edit.put("operator",run);edit.put("avatarAssetId",nextAsset);
         var changed=http("PATCH","/api/admin/platform/accounts/"+target+"/profile",superToken,edit,key());assertThat(changed.path("code").asInt()).isZero();
@@ -437,18 +443,18 @@ class SupportEnhancementCoreRuntimeTest {
         assertThat(http("PATCH","/api/admin/platform/accounts/"+target+"/profile",superToken,edit,key()).path("code").asInt()).isEqualTo(409);
         var bytes=download("/api/admin/platform/accounts/"+target+"/avatar",superToken);assertThat(bytes.statusCode()).isEqualTo(200);assertThat(bytes.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
         assertThat(bytes.headers().firstValue("X-Content-Type-Options").orElse("")).isEqualTo("nosniff");assertThat(javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(bytes.body()))).isNotNull();
-        String missingAsset=uploadAvatar(superToken,original,"image/png",key(),key()).path("data").path("assetId").asText();
+        String missingAsset=uploadAvatar(boss,superToken,original,"image/png",key(),key()).path("data").path("assetId").asText();
         storage.remove(jdbc.queryForObject("SELECT object_key FROM nx_support_admin_avatar_asset WHERE id=?",String.class,missingAsset));
         edit.put("expectedVersion",changed.path("data").path("version").asText());edit.put("avatarAssetId",missingAsset);
         assertThat(http("PATCH","/api/admin/platform/accounts/"+target+"/profile",superToken,edit,key()).path("code").asInt()).isEqualTo(503);
         assertThat(jdbc.queryForObject("SELECT version FROM nx_admin WHERE id=?",Long.class,target)).isEqualTo(((Number)after.get("version")).longValue());
         assertThat(jdbc.queryForObject("SELECT avatar_asset_id FROM nx_admin_account_state WHERE admin_id=?",String.class,target)).isEqualTo(nextAsset);
-        String cancelled=uploadAvatar(superToken,original,"image/png",key(),key()).path("data").path("assetId").asText();
+        String cancelled=uploadAvatar(boss,superToken,original,"image/png",key(),key()).path("data").path("assetId").asText();
         assertThat(http("DELETE","/api/admin/platform/accounts/avatar-assets/"+cancelled,superToken,null,key()).path("code").asInt()).isZero();
         edit.put("avatarAssetId",cancelled);assertThat(http("PATCH","/api/admin/platform/accounts/"+target+"/profile",superToken,edit,key()).path("code").asInt()).isEqualTo(409);
-        String expired=uploadAvatar(superToken,original,"image/png",key(),key()).path("data").path("assetId").asText();jdbc.update("UPDATE nx_support_admin_avatar_asset SET expires_at=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 SECOND) WHERE id=?",expired);
+        String expired=uploadAvatar(boss,superToken,original,"image/png",key(),key()).path("data").path("assetId").asText();jdbc.update("UPDATE nx_support_admin_avatar_asset SET expires_at=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 SECOND) WHERE id=?",expired);
         edit.put("avatarAssetId",expired);assertThat(http("PATCH","/api/admin/platform/accounts/"+target+"/profile",superToken,edit,key()).path("code").asInt()).isEqualTo(409);
-        rules("UNCONFIGURED",null,"SUPERVISOR");long customer=customer(null);as(boss);transfer(target,customer);
+        rules("UNCONFIGURED",null,"SUPERVISOR");long customer=objectCustomer(null);as(boss);transfer(target,customer);
         String user=userToken(customer);var advisor=http("GET","/api/app/support/advisor",user,null,null);assertThat(advisor.path("code").asInt()).isZero();
         assertThat(advisor.toString()).contains(nextAsset);assertThat(download("/api/app/support/advisor/avatar/"+target,user).statusCode()).isEqualTo(200);
         long outsider=customer(null);assertThat(download("/api/app/support/advisor/avatar/"+target,userToken(outsider)).statusCode()).isEqualTo(404);
@@ -457,7 +463,7 @@ class SupportEnhancementCoreRuntimeTest {
         assertThat(started.path("code").asInt()).isZero();String no=started.path("data").path("conversationNo").asText();
         long authored=jdbc.queryForObject("SELECT message_id FROM nx_support_human_message WHERE actor_id=? AND client_message_id=?",Long.class,target,clientMessage);
         jdbc.update("INSERT INTO nx_conversation_message(conversation_id,conversation_no,sender_id,sender_type,sender_name,content) SELECT id,conversation_no,?,'agent','Unknown historical author','Legacy unknown author' FROM nx_conversation WHERE conversation_no=?",target,no);
-        String refreshedAsset=uploadAvatar(superToken,original,"image/png",key(),key()).path("data").path("assetId").asText();edit.put("avatarAssetId",refreshedAsset);
+        String refreshedAsset=uploadAvatar(boss,superToken,original,"image/png",key(),key()).path("data").path("assetId").asText();edit.put("avatarAssetId",refreshedAsset);
         var changedAgain=http("PATCH","/api/admin/platform/accounts/"+target+"/profile",superToken,edit,key());assertThat(changedAgain.path("code").asInt()).isZero();assertThat(changedAgain.path("data").path("avatarVersion").asLong()).isEqualTo(3);
         var agentList=http("GET","/api/admin/content/support-agents?pageSize=100",superToken,null,null);assertThat(agentList.path("code").asInt()).isZero();assertThat(agentList.toString()).contains(refreshedAsset);
         transfer(second,customer);
@@ -469,7 +475,10 @@ class SupportEnhancementCoreRuntimeTest {
         assertThat(download("/api/app/support/advisor/avatar/"+target,user).statusCode()).isEqualTo(200);
         assertThat(http("GET","/api/admin/content/conversations/"+no,targetToken,null,null).path("code").asInt()).isEqualTo(404);
         assertThat(findMessage(http("GET","/api/admin/content/conversations/"+no,token(second),null,null).path("data").path("messages"),authored).path("senderAvatar").path("assetId").asText()).isEqualTo(refreshedAsset);
-        String customerKey="users/"+customer+"/avatar/"+UUID.randomUUID();storage.put(customerKey,"image/png",new java.io.ByteArrayInputStream(original),original.length);
+        String customerKey="users/"+customer+"/avatar/"+UUID.randomUUID();
+        var customerIntent=objects.request(new SupportObjectEvidenceLedger.Request(getClass().getSimpleName(),objectTestcase,
+            SupportObjectEvidenceLedger.Kind.CUSTOMER_AVATAR,"USER",customer,customer,null,key(),key(),customerKey,storageProperties.getBucket(),false));
+        objects.direct(customerIntent,()->{storage.put(customerKey,"image/png",new java.io.ByteArrayInputStream(original),original.length);return null;});
         jdbc.update("UPDATE nx_user SET avatar_url=? WHERE id=?",customerKey,customer);
         var profile=http("GET","/api/admin/content/support-workbench/customers/"+customer+"/360",token(second),null,null);
         assertThat(profile.path("code").asInt()).as("customer avatar profile: %s",profile.path("message").asText()).isZero();
@@ -730,12 +739,32 @@ class SupportEnhancementCoreRuntimeTest {
         assertThat(events.events).containsExactly(event);proof("X01","Shared publisher emits no client event on real JDBC rollback and exactly one after commit");writeProof("publisher-runtime.json");
     }
     private byte[] png(int color) throws Exception {var image=new java.awt.image.BufferedImage(4,4,java.awt.image.BufferedImage.TYPE_INT_RGB);image.setRGB(1,1,color);var output=new java.io.ByteArrayOutputStream();javax.imageio.ImageIO.write(image,"png",output);return output.toByteArray();}
-    private com.fasterxml.jackson.databind.JsonNode uploadAvatar(String token,byte[] bytes,String mime,String client,String key) throws Exception {
+    private SupportObjectEvidenceLedger.Intent avatarIntent(long uploader,String client,String command,String bucket,boolean missingBucket) {
+        return objects.request(new SupportObjectEvidenceLedger.Request(getClass().getSimpleName(),objectTestcase,
+            SupportObjectEvidenceLedger.Kind.AVATAR,"ADMIN",uploader,null,null,client,command,null,bucket,missingBucket));
+    }
+    private com.fasterxml.jackson.databind.JsonNode uploadAvatar(long uploader,String token,byte[] bytes,String mime,String client,String key) throws Exception {
+        return uploadAvatar(token,bytes,mime,client,key,avatarIntent(uploader,client,key,storageProperties.getBucket(),false));
+    }
+    private com.fasterxml.jackson.databind.JsonNode uploadAvatar(String token,byte[] bytes,String mime,String client,String key,SupportObjectEvidenceLedger.Intent intent) throws Exception {
         String boundary="enhance"+UUID.randomUUID();var output=new java.io.ByteArrayOutputStream();
         output.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"clientUploadId\"\r\n\r\n"+client+"\r\n--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: "+mime+"\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
         output.write(bytes);output.write(("\r\n--"+boundary+"--\r\n").getBytes());
         var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141/api/admin/platform/accounts/avatar-assets")).header("Authorization","Bearer "+token).header("Idempotency-Key",key).header("Content-Type","multipart/form-data; boundary="+boundary).POST(HttpRequest.BodyPublishers.ofByteArray(output.toByteArray())).build();
-        return json.readTree(HttpClient.newHttpClient().send(request,HttpResponse.BodyHandlers.ofString()).body());
+        try {
+            var response=HttpClient.newHttpClient().send(request,HttpResponse.BodyHandlers.ofString());
+            com.fasterxml.jackson.databind.JsonNode body;
+            try {body=json.readTree(response.body());}
+            catch(Exception parseFailure) {
+                try {objects.httpOutcome(intent,response.statusCode(),json.getNodeFactory().textNode(response.body()));}
+                catch(Throwable evidenceFailure) {parseFailure.addSuppressed(evidenceFailure);}
+                throw parseFailure;
+            }
+            objects.httpOutcome(intent,response.statusCode(),body);return body;
+        } catch(Exception|Error failure) {
+            try {objects.requestFailure(intent,failure);} catch(Throwable evidenceFailure) {failure.addSuppressed(evidenceFailure);}
+            throw failure;
+        }
     }
     private HttpResponse<byte[]> download(String path,String token) throws Exception {var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141"+path)).header("Authorization","Bearer "+token).GET().build();return HttpClient.newHttpClient().send(request,HttpResponse.BodyHandlers.ofByteArray());}
     private String userToken(long customer) throws Exception {
@@ -891,6 +920,23 @@ class SupportEnhancementCoreRuntimeTest {
             String phone="198"+String.format("%08d",Math.abs((long)referral.hashCode())%100000000);
             jdbc.update("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,sponsor_user_id,status,sandbox) VALUES('+86',?,'127.0.0.1','fixture-disabled-password',?,?,?,'ACTIVE',0)",phone,run,referral,inviter);
             long id=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,referral);bindings.register(id,inviter);return id;
+        });
+    }
+    private long objectCustomer(Long inviter) {
+        String referral=UUID.randomUUID().toString().replace("-","").substring(0,20).toUpperCase();
+        String phone="198"+String.format("%08d",Math.abs((long)referral.hashCode())%100000000);
+        return objects.createCustomer(getClass().getSimpleName(),objectTestcase,referral,()->{
+            if(inviter!=null)mapper.lockCustomer(inviter);
+            var generated=new org.springframework.jdbc.support.GeneratedKeyHolder();
+            int affected=jdbc.update(connection->{
+                var statement=connection.prepareStatement("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,sponsor_user_id,status,sandbox) VALUES('+86',?,'127.0.0.1','fixture-disabled-password',?,?,?,'ACTIVE',0)",java.sql.Statement.RETURN_GENERATED_KEYS);
+                statement.setString(1,phone);statement.setString(2,run);statement.setString(3,referral);statement.setObject(4,inviter);return statement;
+            },generated);
+            long id=Objects.requireNonNull(generated.getKey(),"Exact INSERT generated customer ID").longValue();
+            long lookup=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,referral);
+            assertThat(affected).isEqualTo(1);assertThat(lookup).isEqualTo(id);
+            bindings.register(id,inviter);
+            return new SupportObjectEvidenceLedger.CustomerInsert(id,affected,lookup);
         });
     }
     private void rules(String inheritance,Integer depth,String mode) {as(boss);var rules=mapper.rules();assertThat(bindings.updateRules(key(),new SupportRulesRequest(null,null,null,inheritance,depth,rules.version(),"Core isolated rules proof",mode)).getCode()).isZero();}

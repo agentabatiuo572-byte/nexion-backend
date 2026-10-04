@@ -17,6 +17,9 @@ import java.nio.file.*;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestInfo;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -29,6 +32,46 @@ import org.springframework.transaction.support.TransactionTemplate;
 /** Real isolated fixture shared by two separate JVM suites; no worker authentication is synthesized. */
 abstract class SupportBulkRuntimeFixture {
     static final String BASE="/api/admin/content/support-workbench/bulk";
+    private static final Set<String> OBJECT_CONTEXTS=Set.of("SupportAdminAvatarA2RuntimeTest","SupportAdminAvatarReadRuntimeTest",
+        "SupportAvatarCompensationRuntimeTest","SupportBulkRuntimeTest");
+    @Autowired ObjectProvider<SupportObjectEvidenceLedger> objectEvidenceProvider;
+    private String objectTestcase;
+    private final Set<String> objectTestcases=new LinkedHashSet<>();
+    @BeforeEach void identifyObjectTestcase(TestInfo info) {
+        objectTestcase=info.getTestMethod().orElseThrow().getName();
+    }
+    SupportObjectEvidenceLedger objects() {
+        return Objects.requireNonNull(objectEvidenceProvider.getIfAvailable(),"Object-producing business context must import its evidence ledger");
+    }
+    SupportObjectEvidenceLedger.Intent objectRequest(SupportObjectEvidenceLedger.Kind kind,long actor,Long customer,
+            Long assignment,String client,String command,String exactKey,String expectedBucket,boolean missingBucket) {
+        objectTestcases.add(Objects.requireNonNull(objectTestcase,"Actual JUnit testcase is required"));
+        return objects().request(new SupportObjectEvidenceLedger.Request(getClass().getSimpleName(),objectTestcase,kind,
+            "ADMIN",actor,customer,assignment,client,command,exactKey,expectedBucket,missingBucket));
+    }
+    void cleanupObjectEvidence() {
+        if(!OBJECT_CONTEXTS.contains(getClass().getSimpleName()))return;
+        var ledger=objects();
+        SupportObjectEvidenceLedger.cleanupIndependently(objectTestcases.stream()
+            .<Runnable>map(testcase->()->ledger.cleanup(getClass().getSimpleName(),testcase)).toArray(Runnable[]::new));
+    }
+    HttpResponse<String> sendObjectRequest(SupportObjectEvidenceLedger.Intent intent,HttpRequest request) throws Exception {
+        try {
+            var response=HttpClient.newHttpClient().send(request,HttpResponse.BodyHandlers.ofString());
+            JsonNode body;
+            try {body=json.readTree(response.body());}
+            catch(Exception parseFailure) {
+                try {objects().httpOutcome(intent,response.statusCode(),json.getNodeFactory().textNode(response.body()));}
+                catch(Throwable evidenceFailure) {parseFailure.addSuppressed(evidenceFailure);}
+                throw parseFailure;
+            }
+            objects().httpOutcome(intent,response.statusCode(),body);
+            return response;
+        } catch(Exception|Error failure) {
+            try {objects().requestFailure(intent,failure);} catch(Throwable evidenceFailure) {failure.addSuppressed(evidenceFailure);}
+            throw failure;
+        }
+    }
     @Autowired JdbcTemplate jdbc;
     @Autowired org.springframework.data.redis.core.StringRedisTemplate actorRedis;
     private SupportFixtureActors actorEvidence;
@@ -78,12 +121,13 @@ abstract class SupportBulkRuntimeFixture {
     }
     void restoreFixture() {
         var cleanup=new ArrayList<Runnable>();
+        cleanup.add(this::cleanupObjectEvidence);
         cleanup.add(()->{if(actorEvidence!=null)actorEvidence.cleanupAll(retainedAdmins);});
         cleanup.add(()->{if(oldRules!=null && boss>0) SharedMutationJournal.cleanupSql(jdbc,run,"SupportBulkRuntimeFixture",boss,"SupportBulkRuntimeFixture#rules-sql-1","UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",
             oldRules.dormantDays(),oldRules.maintenanceDays(),oldRules.activityWindowDays(),oldRules.inheritanceMode(),oldRules.maxInheritanceDepth(),oldRules.unboundAssignmentMode(),oldRules.modeEffectiveAt(),boss);});
         cleanup.add(()->{if(originalProfiles!=null) originalProfiles.restoreAndVerify();});
         cleanup.add(SecurityContextHolder::clearContext);
-        SupportOriginalProfiles.cleanup(cleanup.toArray(Runnable[]::new));
+        SupportObjectEvidenceLedger.cleanupIndependently(cleanup.toArray(Runnable[]::new));
     }
     long admin(String label,String role,String seat) {
         String username=run+"_"+label+"_"+admins.size();
@@ -97,6 +141,23 @@ abstract class SupportBulkRuntimeFixture {
             String phone="198"+String.format("%08d",Math.abs((long)referral.hashCode())%100000000);
             jdbc.update("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox) VALUES('+86',?,'127.0.0.1','fixture-disabled-password',?,?,'ACTIVE',0)",phone,run,referral);
             long id=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,referral);bindings.register(id,null);return id;
+        });
+        transfer(actor,customer);return customer;
+    }
+    long objectCustomer(long actor) {
+        String referral=UUID.randomUUID().toString().replace("-","").substring(0,20).toUpperCase();
+        String phone="198"+String.format("%08d",Math.abs((long)referral.hashCode())%100000000);
+        long customer=objects().createCustomer(getClass().getSimpleName(),Objects.requireNonNull(objectTestcase),referral,()->{
+            var generated=new org.springframework.jdbc.support.GeneratedKeyHolder();
+            int affected=jdbc.update(connection->{
+                var statement=connection.prepareStatement("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox) VALUES('+86',?,'127.0.0.1','fixture-disabled-password',?,?,'ACTIVE',0)",java.sql.Statement.RETURN_GENERATED_KEYS);
+                statement.setString(1,phone);statement.setString(2,run);statement.setString(3,referral);return statement;
+            },generated);
+            long id=Objects.requireNonNull(generated.getKey(),"Exact INSERT generated customer ID").longValue();
+            long lookup=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,referral);
+            assertThat(affected).isEqualTo(1);assertThat(lookup).isEqualTo(id);
+            bindings.register(id,null);
+            return new SupportObjectEvidenceLedger.CustomerInsert(id,affected,lookup);
         });
         transfer(actor,customer);return customer;
     }
@@ -152,10 +213,14 @@ abstract class SupportBulkRuntimeFixture {
     }
     byte[] png(int color) throws Exception {var image=new java.awt.image.BufferedImage(4,4,java.awt.image.BufferedImage.TYPE_INT_RGB);image.setRGB(1,1,color);var out=new ByteArrayOutputStream();javax.imageio.ImageIO.write(image,"png",out);return out.toByteArray();}
     JsonNode upload(long actor,byte[] bytes,String upload,String command) throws Exception {
+        var intent=objectRequest(SupportObjectEvidenceLedger.Kind.BULK_ASSET,actor,null,null,upload,command,null,storageProperties.getBucket(),false);
+        return upload(actor,bytes,upload,command,intent);
+    }
+    JsonNode upload(long actor,byte[] bytes,String upload,String command,SupportObjectEvidenceLedger.Intent intent) throws Exception {
         String boundary="bulk"+UUID.randomUUID();var out=new ByteArrayOutputStream();
         out.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"clientUploadId\"\r\n\r\n"+upload+"\r\n--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"bulk.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));out.write(bytes);out.write(("\r\n--"+boundary+"--\r\n").getBytes(StandardCharsets.UTF_8));
         var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141"+BASE+"/attachments")).timeout(Duration.ofSeconds(25)).header("Authorization","Bearer "+token(actor)).header("Idempotency-Key",command).header("Content-Type","multipart/form-data; boundary="+boundary).POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray())).build();
-        return json.readTree(HttpClient.newHttpClient().send(request,HttpResponse.BodyHandlers.ofString()).body());
+        return json.readTree(sendObjectRequest(intent,request).body());
     }
     HttpResponse<byte[]> download(String path,String token) throws Exception {return HttpClient.newHttpClient().send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141"+path)).timeout(Duration.ofSeconds(25)).header("Authorization","Bearer "+token).GET().build(),HttpResponse.BodyHandlers.ofByteArray());}
     void proof(String id,String method,String evidence) {proofs.put("bulk-"+id,Map.of("status","pass","testcase",method,"suite",getClass().getSimpleName(),"evidence",evidence));}
