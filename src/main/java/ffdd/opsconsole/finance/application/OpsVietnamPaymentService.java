@@ -605,6 +605,11 @@ public class OpsVietnamPaymentService {
         } catch (DuplicateKeyException ex) {
             throw new BizException(409, "VIETQR_PAYMENT_REFERENCE_ALREADY_REGISTERED");
         }
+        // Current read after the bank-reference insert has acquired its unique-key lock.
+        // A concurrent ADMIN HDPay confirmation must not become another bank receipt.
+        if (mapper.findHdPayManualConfirmationByReferenceForUpdate(paymentReference) != null) {
+            conflict("VIETQR_PAYMENT_REFERENCE_ALREADY_REGISTERED");
+        }
         if (mapper.addVietQrBankReceivedToday(
                 request.bankAccountId(),
                 request.receivedVnd(),

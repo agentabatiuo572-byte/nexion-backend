@@ -145,6 +145,10 @@ public interface TreasuryLedgerRepository {
         throw new UnsupportedOperationException("TOPUP_RESERVE_WRITER_NOT_IMPLEMENTED");
     }
 
+    default void recordManualTopupReserve(String paymentNo, BigDecimal amountUsd, String eventId, String operator) {
+        throw new UnsupportedOperationException("MANUAL_TOPUP_RESERVE_WRITER_NOT_IMPLEMENTED");
+    }
+
     default void reverseTopupReserve(String paymentNo, BigDecimal amountUsd, String idempotencyKey) {
         throw new UnsupportedOperationException("TOPUP_RESERVE_REVERSAL_NOT_IMPLEMENTED");
     }

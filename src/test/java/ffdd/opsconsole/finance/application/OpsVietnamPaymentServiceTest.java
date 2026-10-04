@@ -56,6 +56,8 @@ class OpsVietnamPaymentServiceTest {
         when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
         when(mapper.findVietQrConfig()).thenReturn(vietQrConfig(new BigDecimal("5000")));
+        // SELECT without an existing independent ADMIN confirmation returns SQL null.
+        when(mapper.findHdPayManualConfirmationByReferenceForUpdate(anyString())).thenReturn(null);
         when(mapper.findVietQrBankAccountForUpdate(anyLong())).thenReturn(Map.of(
                 "id", 8L, "dailyCapVnd", new BigDecimal("100000000"),
                 "receivedTodayVnd", BigDecimal.ZERO, "version", 0L));
@@ -789,6 +791,42 @@ class OpsVietnamPaymentServiceTest {
 
         verify(mapper, never()).updateVietQrBankAccount(
                 any(), anyString(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void consumedAdminReferenceRejectsBeforeBankTotalsOrIntentAndWalletWrites() {
+        LocalDateTime receivedAt = LocalDateTime.of(2026, 7, 25, 0, 0);
+        when(mapper.findFxQuoteConfig()).thenReturn(Map.of(
+                "baseRateVndPerUsdt", new BigDecimal("26000"),
+                "buySpreadPct", new BigDecimal("1.5")));
+        when(mapper.insertVietQrReceipt(
+                anyString(), eq(null), eq(null), eq(8L), eq("ORPHAN"),
+                eq(null), eq(new BigDecimal("659750")),
+                eq(new BigDecimal("26390")), eq("BANK-ADMIN-20"), anyString(),
+                eq(null), eq(receivedAt), eq(false))).thenReturn(1);
+        when(mapper.findHdPayManualConfirmationByReferenceForUpdate("BANK-ADMIN-20")).thenReturn(21L);
+
+        assertThatThrownBy(() -> service.registerVietQrReceipt(
+                "receipt-consumed-admin-20",
+                new VietQrReceiptRegistrationRequest(
+                        8L, "BANK-ADMIN-20", null, new BigDecimal("659750"),
+                        receivedAt.atOffset(ZoneOffset.UTC), null,
+                        "reject previously consumed actual reference", "finance-admin")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_PAYMENT_REFERENCE_ALREADY_REGISTERED");
+
+        verify(mapper).insertVietQrReceipt(
+                anyString(), eq(null), eq(null), eq(8L), eq("ORPHAN"),
+                eq(null), eq(new BigDecimal("659750")),
+                eq(new BigDecimal("26390")), eq("BANK-ADMIN-20"), anyString(),
+                eq(null), eq(receivedAt), eq(false));
+        verify(mapper, never()).addVietQrBankReceivedToday(anyLong(), any(), any());
+        verify(appIntentMapper, never()).transitionIntent(
+                anyString(), anyLong(), anyString(), anyString(), any(), any(), any());
+        verify(mapper, never()).findUsdtWalletForUpdate(anyLong());
+        verify(mapper, never()).creditUsdtWallet(anyLong(), any(), anyLong());
+        verify(mapper, never()).insertVietQrWalletLedger(anyString(), anyLong(), any(), any(), anyString());
+        org.mockito.Mockito.verifyNoInteractions(receiptEvidence, outbox);
     }
 
     @Test

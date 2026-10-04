@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $runner = Join-Path $root "scripts\apply_startup_schema_migrations.ps1"
-$fakeMySql = Join-Path $PSScriptRoot "fake_mysql_index_count.cmd"
+$fakeMySql = Join-Path $PSScriptRoot "fake_mysql_index_count.ps1"
 $previousUrl = $env:NEXION_DB_URL
 $previousUsername = $env:NEXION_DB_USERNAME
 $previousPassword = $env:NEXION_DB_PASSWORD
@@ -18,13 +18,18 @@ function Invoke-RunnerCase {
 
   $env:NEXION_FAKE_INDEX_COUNT = $IndexCount
   $failed = $false
+  $failureMessage = $null
   try {
     & $runner -MySql $fakeMySql -Confirm:$false
   } catch {
     $failed = $true
+    $failureMessage = $_.Exception.Message
   }
   if ($failed -ne $ExpectFailure) {
     throw "Unexpected startup-runner result for required-index count $IndexCount."
+  }
+  if ($ExpectFailure -and $failureMessage -notlike 'Both required idempotency expiry-recovery indexes*') {
+    throw "Required-index count $IndexCount must fail at the actual index postcondition, not an earlier fixture error."
   }
 }
 
@@ -38,6 +43,13 @@ try {
   Invoke-RunnerCase -IndexCount "2" -ExpectFailure $false
   Invoke-RunnerCase -IndexCount "1" -ExpectFailure $true
   Invoke-RunnerCase -IndexCount "0" -ExpectFailure $true
+  $unknownRejected = $false
+  try {
+    & $fakeMySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h 127.0.0.1 -P 3306 -u contract idempotency_runner_contract -e 'SELECT 1'
+  } catch {
+    $unknownRejected = $_.Exception.Message -eq 'Unknown SQL for the startup MySQL contract fixture.'
+  }
+  if (-not $unknownRejected) { throw "Startup MySQL fixture accepted an unknown SQL statement." }
   "admin idempotency startup migration contract: PASS"
 } finally {
   if ($null -eq $previousPassword) {

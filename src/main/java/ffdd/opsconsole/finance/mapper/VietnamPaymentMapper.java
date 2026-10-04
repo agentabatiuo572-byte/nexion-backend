@@ -15,6 +15,11 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
+    @Select("""
+            SELECT id FROM nx_hdpay_manual_confirmation
+             WHERE payment_reference=#{paymentReference} FOR UPDATE
+            """)
+    Long findHdPayManualConfirmationByReferenceForUpdate(@Param("paymentReference") String paymentReference);
 
     /** Bank rows and verified legacy HDPay credits; shared by count and list. */
     String RECONCILIATION_RAIL_PREDICATE = """

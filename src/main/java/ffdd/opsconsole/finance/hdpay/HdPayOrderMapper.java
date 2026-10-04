@@ -13,6 +13,14 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface HdPayOrderMapper extends BaseMapper<Object> {
+    // Preserve receipt -> intent lock order before any automatic financial write.
+    @Select("""
+            SELECT id FROM nx_vietqr_reconciliation
+             WHERE intent_no=#{intentNo} AND received_vnd > 0 AND is_deleted=0
+             ORDER BY id FOR UPDATE
+            """)
+    List<Long> lockPositiveBankReceiptIds(@Param("intentNo") String intentNo);
+
     // Drive recovery from durable orders, including orders with no callback at all.
     // updated_at rotates attempted orders to the back of the queue; version fences
     // concurrent workers and any callback arriving while the network query runs.
@@ -150,6 +158,18 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
              LIMIT 1
             """)
     Map<String, Object> findByMerchantOrderId(@Param("merchantOrderId") String merchantOrderId);
+
+    @Select("""
+            SELECT i.status, i.credited_usdt AS creditedUsdt, i.received_vnd AS receivedVnd,
+                   i.version, i.matched_at AS matchedAt
+              FROM nx_hdpay_payin_order h
+              JOIN nx_vietqr_intent i ON i.intent_no=h.merchant_order_id
+             WHERE h.merchant_order_id=#{merchantOrderId} AND h.settlement_status='CREDITED'
+               AND i.payment_rail='HDPAY' AND i.status='CREDITED' AND i.is_deleted=0
+               AND i.settlement_target_type='WALLET_TOPUP'
+               AND i.credited_usdt=h.settled_usdt AND h.wallet_ledger_biz_no=i.intent_no
+            """)
+    Map<String, Object> findCreditedIntentForHostedResponse(@Param("merchantOrderId") String merchantOrderId);
 
     @Select("""
             SELECT merchant_order_id AS merchantOrderId,

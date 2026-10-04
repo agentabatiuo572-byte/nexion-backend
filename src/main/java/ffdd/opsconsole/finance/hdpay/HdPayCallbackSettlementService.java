@@ -90,7 +90,9 @@ public class HdPayCallbackSettlementService {
                     fact.merchantOrderId(), fact.providerOrderId(), fact.orderStatus()),
                     "HDPAY_CALLBACK_ORDER_CONFLICT");
             if ("CREDITED".equals(code(order.get("settlementStatus")))) {
-                acknowledgeCreditedOrReview(order, fact, claimToken);
+                // An ADMIN confirmation can precede the first genuine provider ID.
+                // Observe that signed callback, then compare its committed identity.
+                acknowledgeCreditedOrReview(lockOrder(fact.merchantOrderId()), fact, claimToken);
                 return new QueryClaim(ClaimDisposition.ACKNOWLEDGED, fact, null);
             }
             if ("MANUAL_REVIEW".equals(code(order.get("settlementStatus")))) {
@@ -264,6 +266,12 @@ public class HdPayCallbackSettlementService {
         String submissionStatus = code(order.get("submissionStatus"));
         if (!"CREATED".equals(submissionStatus) && !"SUBMIT_UNKNOWN".equals(submissionStatus)) {
             return manualReview(fact, claimToken, "HDPAY_ORDER_NOT_SUBMITTED", orderQuery);
+        }
+
+        // Real receipts already contribute D3 held reserve. Automatic settlement
+        // cannot add a second reserve; the explicit ADMIN command can reconcile one.
+        if (!hdPayMapper.lockPositiveBankReceiptIds(fact.merchantOrderId()).isEmpty()) {
+            return manualReview(fact, claimToken, "HDPAY_BANK_RECEIPT_REQUIRES_REVIEW", orderQuery);
         }
 
         Map<String, Object> intent = intentMapper.findIntentForUpdate(fact.merchantOrderId());

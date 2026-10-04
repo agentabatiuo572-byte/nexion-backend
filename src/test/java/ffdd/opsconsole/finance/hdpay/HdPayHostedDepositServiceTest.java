@@ -65,6 +65,80 @@ class HdPayHostedDepositServiceTest {
     }
 
     @Test
+    void manualConfirmationDuringCreateReturnsCanonicalCreditWithoutAnotherPayUrl() {
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null);
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.insertPending(eq("VQR-1"), any(), any())).thenReturn(1);
+        when(mapper.markCreated(eq("VQR-1"), any())).thenReturn(1);
+        when(gateway.createPayOrder(any())).thenReturn(new HdPayGateway.PayPage("https://api.hdpayadmin.com/pay?id=1"));
+        when(mapper.findCreditedIntentForHostedResponse("VQR-1")).thenReturn(Map.of(
+                "status", "CREDITED", "creditedUsdt", new BigDecimal("25"),
+                "receivedVnd", new BigDecimal("659750"), "version", 1L));
+        assertThat(service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9").getData())
+                .containsEntry("status", "credited").containsEntry("creditedUsdt", new BigDecimal("25"))
+                .containsEntry("version", 1L).doesNotContainKey("paymentUrl");
+        verify(gateway, times(1)).createPayOrder(any());
+    }
+
+    @Test
+    void manualConfirmationWinsEvenWhenTheOutstandingCreateResponseIsAmbiguous() {
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null);
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.insertPending(eq("VQR-1"), any(), any())).thenReturn(1);
+        when(gateway.createPayOrder(any())).thenThrow(new HdPayGatewayException("HDPAY_HTTP_503", true));
+        when(mapper.findCreditedIntentForHostedResponse("VQR-1")).thenReturn(Map.of(
+                "status", "CREDITED", "creditedUsdt", new BigDecimal("25"),
+                "receivedVnd", new BigDecimal("659750"), "version", 1L));
+        assertThat(service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9").getData())
+                .containsEntry("status", "credited").doesNotContainKey("paymentUrl");
+        verify(gateway, times(1)).createPayOrder(any());
+    }
+
+    @Test
+    void manualCreditBeforeSubmissionAuthorizationDoesNotCallTheProvider() {
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null);
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.insertPending(eq("VQR-1"), any(), any())).thenReturn(1);
+        when(mapper.authorizeSubmissionIfIntentPayable("VQR-1")).thenReturn(0);
+        when(mapper.findCreditedIntentForHostedResponse("VQR-1")).thenReturn(Map.of(
+                "status", "CREDITED", "creditedUsdt", new BigDecimal("25"),
+                "receivedVnd", new BigDecimal("659750"), "version", 1L));
+        assertThat(service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9").getData())
+                .containsEntry("status", "credited").doesNotContainKey("paymentUrl");
+        verifyNoInteractions(gateway);
+    }
+
+    @Test
+    void manualCreditDuringUnknownQueryReturnsCanonicalCreditWithoutRecoveringAPaymentPage() {
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(Map.of(
+                "merchantOrderId", "VQR-1", "submissionStatus", "SUBMIT_UNKNOWN", "settlementStatus", "UNSETTLED"));
+        when(gateway.queryPayOrder("VQR-1")).thenReturn(queryPage());
+        when(mapper.findCreditedIntentForHostedResponse("VQR-1")).thenReturn(Map.of(
+                "status", "CREDITED", "creditedUsdt", new BigDecimal("25"),
+                "receivedVnd", new BigDecimal("659750"), "version", 1L));
+        assertThat(service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9").getData())
+                .containsEntry("status", "credited").doesNotContainKey("paymentUrl");
+        verify(gateway, times(1)).queryPayOrder("VQR-1");
+        verify(gateway, never()).createPayOrder(any());
+        verify(mapper, never()).resolveSubmitUnknown(any(), any(), any(), any());
+    }
+
+    @Test
+    void staleAwaitingReplayOfLocallyCreditedOrderCannotOfferAnotherPaymentPage() {
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(Map.of(
+                "merchantOrderId", "VQR-1", "submissionStatus", "CREATED", "settlementStatus", "CREDITED",
+                "paymentUrl", "https://api.hdpayadmin.com/pay?id=1"));
+        when(mapper.findCreditedIntentForHostedResponse("VQR-1")).thenReturn(Map.of(
+                "status", "CREDITED", "creditedUsdt", new BigDecimal("25"),
+                "receivedVnd", new BigDecimal("659750"), "version", 1L));
+        assertThat(service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9").getData())
+                .containsEntry("status", "credited").doesNotContainKey("paymentUrl");
+        verifyNoInteractions(gateway);
+    }
+
+    @Test
     void replaysStoredPageWithoutSubmittingTheProviderOrderAgain() {
         when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
         when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(Map.of(

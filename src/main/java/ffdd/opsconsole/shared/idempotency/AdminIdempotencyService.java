@@ -35,6 +35,11 @@ public class AdminIdempotencyService {
         return execute(scope, idempotencyKey, requestHash, responseType, action, true);
     }
 
+    /** Retain the financial result while fencing a bounded, shared evidence range. */
+    public <T> T executeRetainedRepeatableRead(String scope, String idempotencyKey, String requestHash, Class<T> responseType, Supplier<T> action) {
+        return execute(scope, idempotencyKey, requestHash, responseType, action, true, true);
+    }
+
     /** Read-only recovery information. Callers must derive the scope from the authenticated actor. */
     public RecoveryStatus recoveryStatus(String scope, String idempotencyKey, String requestHash) {
         return transactionExecutor.recoveryStatus(normalizeScope(scope), normalizeIdempotencyKey(idempotencyKey),

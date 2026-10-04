@@ -95,6 +95,8 @@ public class HdPayHostedDepositService {
             return ApiResult.ok(resolveOrOverlay(view, concurrent));
         }
         if (mapper.authorizeSubmissionIfIntentPayable(merchantOrderId) != 1) {
+            Map<String, Object> refreshed = refreshCredited(view, merchantOrderId);
+            if ("credited".equals(text(refreshed.get("status")))) return ApiResult.ok(refreshed);
             throw new BizException(503, "HDPAY_ORDER_SUBMISSION_STATE_CONFLICT");
         }
         return submitPending(view, merchantOrderId, amountVnd, clientIp);
@@ -114,20 +116,42 @@ public class HdPayHostedDepositService {
             view.put("paymentMode", "hosted");
             view.put("paymentUrl", page.url());
             view.put("providerStatus", "created");
-            return ApiResult.ok(view);
+            return ApiResult.ok(refreshCredited(view, merchantOrderId));
         } catch (HdPayGatewayException ex) {
             String error = safeError(ex.getMessage());
             if (ex.ambiguous()) {
                 mapper.markSubmitUnknown(merchantOrderId, error);
+                Map<String, Object> refreshed = refreshCredited(view, merchantOrderId);
+                if ("credited".equals(text(refreshed.get("status")))) return ApiResult.ok(refreshed);
                 throw new BizException(503, "HDPAY_ORDER_SUBMISSION_UNKNOWN");
             }
             int rejected = mapper.markRejected(merchantOrderId, error);
+            Map<String, Object> refreshed = refreshCredited(view, merchantOrderId);
+            if ("credited".equals(text(refreshed.get("status")))) return ApiResult.ok(refreshed);
             if ("HDPAY_CREATE_EXPLICIT_REJECTED".equals(error)) {
                 if (rejected != 1) throw new BizException(503, "HDPAY_ORDER_STATE_CONFLICT");
                 throw new BizException(422, "HDPAY_ORDER_CREATE_REJECTED");
             }
             throw new BizException(502, "HDPAY_ORDER_CREATE_REJECTED");
         }
+    }
+
+    private Map<String, Object> refreshCredited(Map<String, Object> view, String intentNo) {
+        Map<String, Object> settled = mapper.findCreditedIntentForHostedResponse(intentNo);
+        if (settled == null || settled.isEmpty()) return view;
+        Map<String, Object> result = copy(view);
+        result.put("status", "credited");
+        result.put("creditedUsdt", settled.get("creditedUsdt"));
+        result.put("receivedVnd", settled.get("receivedVnd"));
+        result.put("version", settled.get("version"));
+        Object matchedAt = settled.get("matchedAt");
+        if (matchedAt instanceof java.sql.Timestamp timestamp) {
+            result.put("matchedAt", timestamp.toInstant().toString());
+        } else if (matchedAt instanceof java.time.LocalDateTime local) {
+            result.put("matchedAt", local.toInstant(java.time.ZoneOffset.UTC).toString());
+        }
+        result.remove("paymentUrl");
+        return result;
     }
 
     public ApiResult<Map<String, Object>> get(Long userId, String intentNo) {
@@ -187,6 +211,11 @@ public class HdPayHostedDepositService {
         }
         String status = text(provider.get("submissionStatus"));
         result.put("providerStatus", status.toLowerCase(Locale.ROOT));
+        if ("CREDITED".equals(text(provider.get("settlementStatus")))) {
+            Map<String, Object> refreshed = refreshCredited(result, text(canonical.get("intentNo")));
+            refreshed.remove("paymentUrl");
+            return refreshed;
+        }
         String url = text(provider.get("paymentUrl"));
         if ("CREATED".equals(status)
                 && "awaiting_payment".equals(text(canonical.get("status")))
@@ -223,6 +252,11 @@ public class HdPayHostedDepositService {
 
     private Map<String, Object> resolveOrOverlay(
             Map<String, Object> canonical, Map<String, Object> provider) {
+        if ("CREDITED".equals(text(provider.get("settlementStatus")))) {
+            Map<String,Object> refreshed = refreshCredited(canonical, text(canonical.get("intentNo")));
+            if (!"credited".equals(text(refreshed.get("status")))) throw new BizException(503, "HDPAY_ORDER_STATE_CONFLICT");
+            return overlay(refreshed, provider, false);
+        }
         boolean unconfirmedRejection = "REJECTED".equals(text(provider.get("submissionStatus")))
                 && !"HDPAY_CREATE_EXPLICIT_REJECTED".equals(text(provider.get("lastErrorCode")));
         if (!"SUBMIT_UNKNOWN".equals(text(provider.get("submissionStatus"))) && !unconfirmedRejection) {
@@ -234,6 +268,9 @@ public class HdPayHostedDepositService {
                 throw new BizException(503, "HDPAY_ORDER_SUBMISSION_UNKNOWN");
             }
             HdPayGateway.PayOrder resolved = gateway.queryPayOrder(merchantOrderId);
+            Map<String,Object> refreshed = refreshCredited(canonical, merchantOrderId);
+            if ("credited".equals(text(refreshed.get("status")))) return overlay(refreshed,
+                    mapper.findByMerchantOrderId(merchantOrderId), false);
             BigDecimal expected = decimal(provider.get("amountVnd"));
             String observedProviderId = text(provider.get("providerOrderId"));
             if (resolved == null || resolved.transAmt() == null
@@ -274,13 +311,17 @@ public class HdPayHostedDepositService {
                         resolved.orderStatus(), resolved.appLink());
             }
             if (updated != 1) {
+                Map<String,Object> settled = refreshCredited(canonical, merchantOrderId);
+                if ("credited".equals(text(settled.get("status")))) return settled;
                 throw new BizException(503, "HDPAY_ORDER_STATE_CONFLICT");
             }
-            return overlay(canonical, Map.of(
+            return refreshCredited(overlay(canonical, Map.of(
                     "merchantOrderId", resolved.merchantOrderId(),
                     "submissionStatus", "CREATED",
-                    "paymentUrl", resolved.appLink()), true);
+                    "paymentUrl", resolved.appLink()), true), merchantOrderId);
         } catch (HdPayGatewayException ex) {
+            Map<String,Object> settled = refreshCredited(canonical, text(canonical.get("intentNo")));
+            if ("credited".equals(text(settled.get("status")))) return settled;
             throw new BizException(503, "HDPAY_ORDER_SUBMISSION_UNKNOWN");
         }
     }

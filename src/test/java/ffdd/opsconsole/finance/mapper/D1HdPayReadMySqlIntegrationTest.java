@@ -6,6 +6,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 import org.apache.ibatis.mapping.Environment;
@@ -14,6 +16,8 @@ import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.jdbc.datasource.init.ScriptUtils;
 
 /** Real mapper SQL against disposable UUID schemas, never the business database or payment gateway. */
 class D1HdPayReadMySqlIntegrationTest {
@@ -40,6 +44,56 @@ class D1HdPayReadMySqlIntegrationTest {
                     .isEqualByComparingTo("10");
             assertThat(mapper.aggregateToday()).isEqualTo(rows);
             assertThat(count(connection, "nx_wallet_ledger")).isEqualTo(10);
+        });
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "NEXION_D1_HDPAY_IT", matches = "true")
+    void manualHistoryAndLedgerTotalsRequireIndependentConfirmationAndRealReserveSource() throws Exception {
+        fixture((connection, session) -> {
+            var bank = session.getMapper(VietnamPaymentMapper.class);
+            var deposits = session.getMapper(DepositOrderMapper.class);
+            var providerBefore = deposits.aggregateToday().stream().filter(row -> "HDPAY".equals(row.channel())).findFirst().orElseThrow().providerCount();
+            insertManualCredit(connection, 13, false);
+            insertManualCredit(connection, 14, true);
+            session.commit(true); // End the read snapshot and local cache after the other connection's fixture write.
+            assertThat(bank.countVietQrReconciliations("MATCHED")).isEqualTo(5);
+            assertThat(bank.listVietQrReconciliations("MATCHED", 50, 0))
+                    .filteredOn(row -> List.of("VQR-13", "VQR-14").contains(row.get("intentNo")))
+                    .hasSize(2).allSatisfy(row -> {
+                        assertThat(row.get("note").toString()).contains("人工核实入账").doesNotContain("自动入账");
+                        assertThat(((Number) row.get("id")).longValue()).isNegative();
+                    });
+            var totals = deposits.aggregateToday().stream().filter(row -> "HDPAY".equals(row.channel())).findFirst().orElseThrow();
+            assertThat(totals.ledgerCount()).isEqualTo(3);
+            assertThat(totals.ledgerAmount()).isEqualByComparingTo("99");
+            assertThat(totals.providerCount()).isEqualTo(providerBefore);
+            long ledgers = count(connection, "nx_wallet_ledger");
+            long receipts = count(connection, "nx_vietqr_reconciliation");
+            // A CREDITED intent and manual row alone do not constitute a reserve-backed confirmation.
+            exec(connection, "UPDATE nx_treasury_reserve_ledger SET is_deleted=1 WHERE voucher_no='VQR-13'");
+            exec(connection, "UPDATE nx_vietqr_reconciliation SET status='RETURNED' WHERE id=14");
+            session.commit(true); // End the read snapshot and local cache after the other connection's fixture write.
+            assertThat(bank.countVietQrReconciliations("MATCHED")).isEqualTo(3);
+            assertThat(deposits.aggregateToday().stream().filter(row -> "HDPAY".equals(row.channel())).findFirst().orElseThrow().ledgerCount()).isEqualTo(1);
+            exec(connection, "UPDATE nx_treasury_reserve_ledger SET is_deleted=0 WHERE voucher_no='VQR-13'");
+            exec(connection, "UPDATE nx_vietqr_reconciliation SET status='CREDITED' WHERE id=14");
+            exec(connection, "UPDATE nx_wallet_ledger SET user_id=8 WHERE id=13");
+            session.commit(true); // End the read snapshot and local cache after the other connection's fixture write.
+            assertThat(bank.countVietQrReconciliations("MATCHED")).isEqualTo(4);
+            exec(connection, "UPDATE nx_wallet_ledger SET user_id=7 WHERE id=13");
+            // A later genuine provider observation must keep the independent manual credit attribution.
+            exec(connection, "UPDATE nx_hdpay_payin_order SET provider_status=3 WHERE id=13");
+            session.commit(true); // End the read snapshot and local cache after the other connection's fixture write.
+            assertThat(bank.listVietQrReconciliations("MATCHED", 50, 0))
+                    .filteredOn(row -> "VQR-13".equals(row.get("intentNo"))).singleElement()
+                    .satisfies(row -> assertThat(row.get("note").toString()).contains("人工核实入账").doesNotContain("自动入账"));
+            exec(connection, "UPDATE nx_treasury_reserve_ledger SET is_deleted=1 WHERE voucher_no='VQR-13'");
+            session.commit(true);
+            assertThat(bank.listVietQrReconciliations("MATCHED", 50, 0))
+                    .noneMatch(row -> "VQR-13".equals(row.get("intentNo")));
+            assertThat(count(connection, "nx_wallet_ledger")).isEqualTo(ledgers);
+            assertThat(count(connection, "nx_vietqr_reconciliation")).isEqualTo(receipts);
         });
     }
 
@@ -182,6 +236,23 @@ class D1HdPayReadMySqlIntegrationTest {
         exec(c, "CREATE TABLE nx_deposit_order (id BIGINT PRIMARY KEY,ledger_id BIGINT,user_id BIGINT,deposit_no VARCHAR(64),chain_name VARCHAR(32),asset VARCHAR(16),amount DECIMAL(18,6),is_deleted TINYINT)");
         exec(c, "CREATE TABLE nx_payment_record (id BIGINT PRIMARY KEY,wallet_ledger_id BIGINT,user_id BIGINT,payment_no VARCHAR(64),provider VARCHAR(64),amount_usdt DECIMAL(18,6),fee_amount_usdt DECIMAL(18,6),is_deleted TINYINT)");
         exec(c, "CREATE TABLE nx_topup_provider_statement (channel_code VARCHAR(32),amount_usdt DECIMAL(18,6),ingestion_event_id VARCHAR(64),payload_hash VARCHAR(64),observed_at DATETIME,statement_status VARCHAR(24),is_deleted TINYINT)");
+        String ddl = Files.readString(Path.of("scripts/schema.sql"));
+        var reserve = java.util.regex.Pattern.compile("(?s)CREATE TABLE IF NOT EXISTS nx_treasury_reserve_ledger \\(.*?;").matcher(ddl);
+        assertThat(reserve.find()).isTrue();
+        exec(c, reserve.group());
+        ScriptUtils.executeSqlScript(c, new FileSystemResource("scripts/migrations/20261004_hdpay_manual_confirmation.sql"));
+    }
+
+    private static void insertManualCredit(Connection c, int id, boolean existingReceipt) throws Exception {
+        exec(c, "INSERT INTO nx_hdpay_payin_order VALUES (" + id + ",'VQR-" + id + "',870870,'PSP-" + id + "',1,'CREDITED',33,'VQR-" + id + "',NOW(),NOW(),NOW())");
+        exec(c, "INSERT INTO nx_vietqr_intent VALUES (" + id + ",'VQR-" + id + "',7,'HDPAY','WALLET_TOPUP','CREDITED',33,870870,870870,33,26390,NULL,NULL,NOW(),1,0)");
+        exec(c, "INSERT INTO nx_wallet_ledger VALUES (" + id + ",'VQR-" + id + "','VIETQR_DEPOSIT',7,'USDT','IN',33,'SUCCESS',NOW(),0)");
+        if (existingReceipt) exec(c, "INSERT INTO nx_vietqr_reconciliation VALUES (" + id + ",'BANK-MANUAL-" + id + "','VQR-" + id + "',7,1,'MISMATCH','CREDITED',870870,870870,26390,33,'REF-" + id + "','registered proof',NOW(),NOW(),1,1,NOW(),NOW(),0)");
+        else exec(c, "INSERT INTO nx_treasury_reserve_ledger(reserve_no,voucher_no,direction,amount_usd,status) VALUES('RESERVE-" + id + "','VQR-" + id + "','IN',33,'CONFIRMED')");
+        exec(c, "INSERT INTO nx_hdpay_manual_confirmation(confirmation_no,merchant_order_id,user_id,received_vnd,credited_usdt,payment_reference,received_at,evidence_ref,reason,operator,idempotency_key,reserve_source,bank_receipt_id,bank_receipt_version,bank_reconciliation_no,previous_intent_status) VALUES('HPM-" + id + "','VQR-" + id + "',7,870870,33,'REF-" + id + "',"
+                + (existingReceipt ? "(SELECT received_at FROM nx_vietqr_reconciliation WHERE id=" + id + ")" : "NOW()")
+                + ",'media:vqr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','actual independent manual fixture','test-finance','manual-" + id + "','"
+                + (existingReceipt ? "EXISTING_BANK_RECEIPT'," + id + ",0,'BANK-MANUAL-" + id + "'" : "RESERVE_LEDGER',NULL,NULL,NULL") + ",'EXPIRED')");
     }
 
     private static void data(Connection c) throws Exception {

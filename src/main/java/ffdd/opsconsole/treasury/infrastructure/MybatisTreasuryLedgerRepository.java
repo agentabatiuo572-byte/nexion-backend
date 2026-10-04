@@ -340,14 +340,24 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
 
     @Override
     public void recordTopupReserve(String paymentNo, BigDecimal amountUsd, String eventId) {
+        recordTopupReserve(paymentNo, amountUsd, eventId, "D1 topup confirmed", "payment-gateway");
+    }
+
+    @Override
+    public void recordManualTopupReserve(String paymentNo, BigDecimal amountUsd, String eventId, String operator) {
+        recordTopupReserve(paymentNo, amountUsd, eventId, "D1 ADMIN manual topup confirmed", trim(operator));
+    }
+
+    private void recordTopupReserve(String paymentNo, BigDecimal amountUsd, String eventId,
+                                   String reason, String operator) {
         String safePaymentNo = safeBiz(paymentNo);
         if (mapper.insertTopupReserveEntry(
                 compactKey("RSV-TOPUP-", safePaymentNo, 64),
                 safePaymentNo,
                 "IN",
                 nz(amountUsd).setScale(6, java.math.RoundingMode.UNNECESSARY),
-                "D1 topup confirmed",
-                "payment-gateway",
+                reason,
+                operator,
                 trim(eventId)) != 1) {
             throw new IllegalStateException("TOPUP_RESERVE_WRITE_FAILED");
         }

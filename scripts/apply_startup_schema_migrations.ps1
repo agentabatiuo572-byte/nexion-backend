@@ -171,6 +171,8 @@ $migrations = @(
   # PENDING rows are query-only recovery candidates and are never resubmitted.
   (Join-Path $root "scripts\migrations\20260904_hdpay_submission_unknown_before_network.sql"),
   (Join-Path $root "scripts\migrations\20260907_hdpay_optional_manual_bank.sql"),
+  # D1 orders and bank registration require the independent ADMIN confirmation fact.
+  (Join-Path $root "scripts\migrations\20261004_hdpay_manual_confirmation.sql"),
   (Join-Path $root "scripts\migrations\20260915_hdpay_bank_withdrawal.sql"),
   (Join-Path $root "scripts\migrations\20260916_hdpay_shared_config_request_ip.sql"),
   (Join-Path $root "scripts\migrations\20260915_l6_bank_withdrawal_route.sql"),

@@ -71,13 +71,22 @@ public class VietQrReceiptEvidenceService {
 
     @Transactional
     public void claim(String evidenceRef, String reconciliationNo, String boundBy) {
+        claim(evidenceRef, "VIETQR_RECONCILIATION", reconciliationNo, boundBy);
+    }
+
+    @Transactional
+    public void claimForHdPayManualCredit(String evidenceRef, String intentNo, String boundBy) {
+        claim(evidenceRef, "HDPAY_MANUAL_CONFIRMATION", intentNo, boundBy);
+    }
+
+    private void claim(String evidenceRef, String resourceType, String reconciliationNo, String boundBy) {
         String assetId = assetId(evidenceRef);
         if (!StringUtils.hasText(reconciliationNo)) {
             validation("VIETQR_RECONCILIATION_NUMBER_REQUIRED");
         }
         String actor = StringUtils.hasText(boundBy) ? boundBy.trim() : actor();
         if (mapper.bindAvailableEvidence(
-                assetId, PURPOSE, "VIETQR_RECONCILIATION", reconciliationNo.trim(), actor) != 1) {
+                assetId, PURPOSE, resourceType, reconciliationNo.trim(), actor) != 1) {
             throw new BizException(409, "VIETQR_RECEIPT_EVIDENCE_NOT_AVAILABLE");
         }
     }

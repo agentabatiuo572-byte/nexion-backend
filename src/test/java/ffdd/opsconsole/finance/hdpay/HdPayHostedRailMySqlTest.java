@@ -374,6 +374,7 @@ class HdPayHostedRailMySqlTest {
             migrate("20260725_vietnam_payment_real_tables.sql");
             migrate("20260725_vietqr_intent_app.sql");
             migrate("20260903_hdpay_commerce_direct_purchase.sql");
+            migrate("20261004_hdpay_manual_confirmation.sql");
         }
         void providerSchema() throws Exception { migrate("20260901_hdpay_hosted_payin.sql"); }
         void migrate(String name) throws Exception {
