@@ -16,6 +16,21 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
 
+    /** Bank rows and verified legacy HDPay credits; shared by count and list. */
+    String RECONCILIATION_RAIL_PREDICATE = """
+            (NOT EXISTS (
+                SELECT 1 FROM nx_vietqr_intent rail
+                 WHERE rail.intent_no = r.intent_no AND rail.payment_rail = 'HDPAY'
+            ) OR (
+                r.view_type = 'MATCHED' AND r.status = 'CREDITED'
+                AND EXISTS (
+                    SELECT 1 FROM hdpay_credited h
+                     WHERE h.intent_no = r.intent_no AND h.user_id = r.user_id
+                       AND h.settled_usdt = r.credited_usdt
+                )
+            ))
+            """;
+
     @Select("""
             SELECT id, tolerance_vnd AS toleranceVnd, grace_minutes AS graceMinutes,
                    per_tx_limit_usd AS perTxLimitUsd,
@@ -54,7 +69,9 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
 
     @Select("WITH " + D1HdPayReadSql.CTES + ", hdpay_matched AS (" + D1HdPayReadSql.MATCHED_ROWS + """
             ), visible_rows AS (
-                SELECT view_type AS viewType FROM nx_vietqr_reconciliation WHERE is_deleted = 0
+                SELECT r.view_type AS viewType FROM nx_vietqr_reconciliation r
+                 WHERE r.is_deleted = 0 AND
+            """ + RECONCILIATION_RAIL_PREDICATE + """
                 UNION ALL SELECT viewType FROM hdpay_matched
             )
             SELECT COUNT(1) FROM visible_rows
@@ -82,7 +99,8 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
                    r.version, r.created_at AS createdAt, r.updated_at AS updatedAt
               FROM nx_vietqr_reconciliation r
               LEFT JOIN nx_vietqr_intent i ON i.intent_no = r.intent_no AND i.is_deleted = 0
-             WHERE r.is_deleted = 0
+             WHERE r.is_deleted = 0 AND
+            """ + RECONCILIATION_RAIL_PREDICATE + """
             UNION ALL
             """ + D1HdPayReadSql.MATCHED_ROWS + """
             )

@@ -365,11 +365,12 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
             """)
     Map<String, Object> findIntentForUpdate(@Param("intentNo") String intentNo);
 
+    /** Preserve active and soft-deleted hosted rails so registration rejects them before ORPHAN classification. */
     @Select("SELECT " + INTENT_COLUMNS + """
               FROM nx_vietqr_intent i
               LEFT JOIN nx_vietqr_bank_account b ON b.id = i.bank_account_id
-             WHERE i.memo_code = #{memoCode} AND i.is_deleted = 0
-               AND i.payment_rail = 'MANUAL'
+             WHERE i.memo_code = #{memoCode}
+               AND (i.is_deleted = 0 OR i.payment_rail = 'HDPAY')
              LIMIT 1
              FOR UPDATE
             """)

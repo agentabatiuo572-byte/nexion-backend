@@ -8,17 +8,27 @@ import static org.mockito.Mockito.*;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import ffdd.opsconsole.finance.application.AppVietQrIntentService;
 import ffdd.opsconsole.finance.application.FinanceSensitiveDataCipher;
+import ffdd.opsconsole.finance.application.OpsVietnamPaymentService;
+import ffdd.opsconsole.finance.application.VietQrReceiptEvidenceService;
+import ffdd.opsconsole.finance.dto.VietQrReceiptRegistrationRequest;
 import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
+import ffdd.opsconsole.finance.mapper.VietnamPaymentMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.sql.Connection;
 import java.time.Clock;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.apache.ibatis.mapping.Environment;
 import org.apache.ibatis.session.Configuration;
 import org.junit.jupiter.api.Test;
@@ -141,8 +151,11 @@ class HdPayHostedRailMySqlTest {
                     .doesNotContainKeys("bankAccount", "memoCode");
             assertThatThrownBy(() -> hosted.create(41L, "manual-key", new BigDecimal("25"), "127.0.0.1"))
                     .hasMessage("VIETQR_PAYMENT_RAIL_CONFLICT");
-            assertThat(f.intents.findIntentByMemoForUpdate("NX-hosted-key")).isNull();
-            assertThat(f.intents.findIntentByMemoForUpdate("NX-manual-key")).isNotNull();
+            assertThat(f.intents.findIntentByMemoForUpdate("NX-hosted-key"))
+                    .containsEntry("paymentRail", "HDPAY").containsEntry("intentNo", "VQR-HOSTED001");
+            assertThat(f.intents.findIntentByMemoForUpdate("NX-manual-key")).containsEntry("paymentRail", "MANUAL");
+            assertThat(f.intents.findIntentByMemoForUpdate("NX-UNKNOWN")).isNull();
+            assertThat(f.intents.findIntentByMemoForUpdate("")).isNull();
             assertThat(f.intents.sumActiveReservedVnd(8L)).isEqualByComparingTo("659750");
             assertThat(f.intents.findMaxAvailableBankCapacityVnd()).isEqualByComparingTo("9340250");
             assertThat(f.intents.cancelAwaitingIntentsForFusedAccount(8L, null)).isEqualTo(1);
@@ -153,18 +166,97 @@ class HdPayHostedRailMySqlTest {
         });
     }
 
+    @Test
+    @EnabledIfEnvironmentVariable(named = "NEXION_HOSTED_RAIL_IT", matches = "true")
+    void knownHdPayMemoIsRejectedBeforeAnyBankSideEffectWhileManualAndUnknownMemosStillRegister() throws Exception {
+        inSchema(f -> {
+            f.base(); f.providerSchema(); f.bank();
+            f.legacyIntent("VQR-HOSTED001", "hosted-key");
+            f.legacyIntent("VQR-MANUAL001", "manual-key");
+            assertThat(f.orders.insertPending("VQR-HOSTED001", new BigDecimal("659750"), "a".repeat(64))).isEqualTo(1);
+            f.migrate(MIGRATION);
+            f.jdbc.update("UPDATE nx_vietqr_intent SET memo_code=UPPER(memo_code)");
+            f.jdbc.execute("CREATE TABLE nx_user_wallet (user_id BIGINT PRIMARY KEY,usdt_available DECIMAL(24,6),cumulative_deposit_usdt DECIMAL(24,6),version BIGINT,updated_at DATETIME,is_deleted TINYINT)");
+            f.jdbc.update("INSERT INTO nx_user_wallet VALUES (41,17,19,0,NOW(),0)");
+            f.jdbc.execute("CREATE TABLE nx_wallet_ledger (id BIGINT AUTO_INCREMENT PRIMARY KEY,biz_no VARCHAR(96) UNIQUE,user_id BIGINT,biz_type VARCHAR(32),asset VARCHAR(16),direction VARCHAR(8),amount DECIMAL(24,6),balance_after DECIMAL(24,6),status VARCHAR(24),remark VARCHAR(255),created_at DATETIME,updated_at DATETIME,is_deleted TINYINT)");
+            assertThat(f.intents.ensureInFlightReconciliation("VQR-HOSTED001")).isEqualTo(1);
+            assertThat(f.intents.ensureInFlightReconciliation("VQR-MANUAL001")).isEqualTo(1);
+            var receiptsBefore = f.jdbc.queryForList("SELECT * FROM nx_vietqr_reconciliation ORDER BY id");
+            var bankBefore = f.jdbc.queryForMap("SELECT * FROM nx_vietqr_bank_account WHERE id=8");
+            var walletBefore = f.jdbc.queryForMap("SELECT * FROM nx_user_wallet WHERE user_id=41");
+            var providerBefore = f.jdbc.queryForList("SELECT * FROM nx_hdpay_payin_order ORDER BY id");
+            BigDecimal pendingBefore = f.bankMapper.sumPendingUnverifiedDepositUsdt();
+            var service = f.registrationService();
+            var receivedAt = OffsetDateTime.now(ZoneOffset.UTC);
+            var hostedReceipt = new VietQrReceiptRegistrationRequest(8L, "BANK-HOSTED-REF", "NX-HOSTED-KEY",
+                    new BigDecimal("659750"), receivedAt, null, "reject hosted bank registration", "integration-admin");
+            for (int deleted = 0; deleted <= 1; deleted++) {
+                assertThat(f.jdbc.update("UPDATE nx_vietqr_intent SET is_deleted=? WHERE intent_no='VQR-HOSTED001'", deleted))
+                        .isEqualTo(1);
+                assertThat(f.intents.findIntentByMemoForUpdate("NX-HOSTED-KEY"))
+                        .containsEntry("paymentRail", "HDPAY").containsEntry("intentNo", "VQR-HOSTED001");
+                var intentBefore = f.jdbc.queryForList("SELECT * FROM nx_vietqr_intent ORDER BY id");
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    assertThatThrownBy(() -> service.registerVietQrReceipt("reject-hosted-memo", hostedReceipt))
+                            .hasMessage("VIETQR_PAYMENT_RAIL_CONFLICT");
+                }
+                assertThat(f.jdbc.queryForList("SELECT * FROM nx_vietqr_intent ORDER BY id")).isEqualTo(intentBefore);
+                assertThat(f.jdbc.queryForList("SELECT * FROM nx_vietqr_reconciliation ORDER BY id")).isEqualTo(receiptsBefore);
+                assertThat(f.jdbc.queryForMap("SELECT * FROM nx_vietqr_bank_account WHERE id=8")).isEqualTo(bankBefore);
+                assertThat(f.jdbc.queryForMap("SELECT * FROM nx_user_wallet WHERE user_id=41")).isEqualTo(walletBefore);
+                assertThat(f.jdbc.queryForList("SELECT * FROM nx_hdpay_payin_order ORDER BY id")).isEqualTo(providerBefore);
+                assertThat(f.bankMapper.sumPendingUnverifiedDepositUsdt()).isEqualByComparingTo(pendingBefore);
+                assertThat(f.count("nx_wallet_ledger")).isZero();
+                verifyNoInteractions(f.audit, f.outbox, f.receiptEvidence);
+            }
+            assertThat(f.jdbc.update("UPDATE nx_vietqr_intent SET is_deleted=0 WHERE intent_no='VQR-HOSTED001'"))
+                    .isEqualTo(1);
+            assertThat(f.jdbc.update("UPDATE nx_vietqr_intent SET is_deleted=1 WHERE intent_no='VQR-MANUAL001'"))
+                    .isEqualTo(1);
+            assertThat(f.intents.findIntentByMemoForUpdate("NX-MANUAL-KEY")).isNull();
+            assertThat(f.jdbc.update("UPDATE nx_vietqr_intent SET is_deleted=0 WHERE intent_no='VQR-MANUAL001'"))
+                    .isEqualTo(1);
+
+            assertThat(service.registerVietQrReceipt("register-manual-memo",
+                    new VietQrReceiptRegistrationRequest(8L, "BANK-MANUAL-REF", "NX-MANUAL-KEY",
+                            new BigDecimal("659750"), receivedAt, null, "register known manual bank receipt", "integration-admin"))
+                    .getData()).containsEntry("viewType", "MATCHED").containsEntry("intentNo", "VQR-MANUAL001");
+            assertThat(service.registerVietQrReceipt("register-unknown-memo",
+                    new VietQrReceiptRegistrationRequest(8L, "BANK-UNKNOWN-REF", "NX-UNKNOWN",
+                            new BigDecimal("10000"), receivedAt, null, "register unmatched real bank receipt", "integration-admin"))
+                    .getData()).containsEntry("viewType", "ORPHAN");
+            assertThat(f.jdbc.queryForMap("SELECT intent_no,user_id FROM nx_vietqr_reconciliation WHERE payment_reference='BANK-UNKNOWN-REF'"))
+                    .containsEntry("intent_no", null).containsEntry("user_id", null);
+            assertThat(f.intents.findIntentForUpdate("VQR-MANUAL001")).containsEntry("status", "RECEIPT_REVIEW");
+            assertThat(f.intents.findIntentForUpdate("VQR-HOSTED001")).containsEntry("status", "AWAITING_PAYMENT");
+            assertThat(f.jdbc.queryForObject("SELECT received_today_vnd FROM nx_vietqr_bank_account WHERE id=8", BigDecimal.class))
+                    .isEqualByComparingTo("669750");
+            assertThat(f.bankMapper.sumPendingUnverifiedDepositUsdt()).isGreaterThan(pendingBefore);
+            assertThat(f.jdbc.queryForMap("SELECT * FROM nx_user_wallet WHERE user_id=41")).isEqualTo(walletBefore);
+            assertThat(f.count("nx_wallet_ledger")).isZero();
+            assertThat(f.jdbc.queryForList("SELECT * FROM nx_hdpay_payin_order ORDER BY id")).isEqualTo(providerBefore);
+            verify(f.audit, times(2)).recordRequired(any());
+            verifyNoInteractions(f.outbox, f.receiptEvidence);
+        });
+    }
+
     private static class Fixture {
         final DriverManagerDataSource dataSource;
         final JdbcTemplate jdbc;
         final AppVietQrIntentMapper intents;
+        final VietnamPaymentMapper bankMapper;
         final HdPayOrderMapper orders;
         final FinanceSensitiveDataCipher cipher = mock(FinanceSensitiveDataCipher.class);
+        final AuditLogService audit = mock(AuditLogService.class);
+        final EventOutboxService outbox = mock(EventOutboxService.class);
+        final VietQrReceiptEvidenceService receiptEvidence = mock(VietQrReceiptEvidenceService.class);
         Fixture(String schema) {
             dataSource = dataSource(schema); jdbc = new JdbcTemplate(dataSource);
             Configuration c = new Configuration(new Environment("isolated-hosted-rail", new SpringManagedTransactionFactory(), dataSource));
-            c.addMapper(AppVietQrIntentMapper.class); c.addMapper(HdPayOrderMapper.class);
+            c.addMapper(AppVietQrIntentMapper.class); c.addMapper(HdPayOrderMapper.class); c.addMapper(VietnamPaymentMapper.class);
             SqlSessionTemplate session = new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(c));
             intents = session.getMapper(AppVietQrIntentMapper.class); orders = session.getMapper(HdPayOrderMapper.class);
+            bankMapper = session.getMapper(VietnamPaymentMapper.class);
             assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(schema);
         }
         void base() throws Exception {
@@ -197,6 +289,16 @@ class HdPayHostedRailMySqlTest {
             ProxyFactory proxy = new ProxyFactory(target);
             proxy.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(dataSource), new AnnotationTransactionAttributeSource()));
             return (AppVietQrIntentService) proxy.getProxy();
+        }
+        OpsVietnamPaymentService registrationService() {
+            AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
+            when(idempotency.execute(any(), any(), any(), any(), any()))
+                    .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
+            var target = new OpsVietnamPaymentService(bankMapper, audit, idempotency, cipher,
+                    intents, outbox, receiptEvidence, Clock.systemUTC());
+            ProxyFactory proxy = new ProxyFactory(target);
+            proxy.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(dataSource), new AnnotationTransactionAttributeSource()));
+            return (OpsVietnamPaymentService) proxy.getProxy();
         }
         int count(String table) { return jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class); }
     }

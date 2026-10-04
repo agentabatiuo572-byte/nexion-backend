@@ -1168,7 +1168,7 @@ class OpsVietnamPaymentServiceTest {
     }
 
     @Test
-    void hostedIntentCannotBeBoundByManualReceiptEvenIfAMapperReturnsIt() {
+    void knownHostedMemoCannotBeRegisteredAsAnOrphanOrBoundByManualReceipt() {
         when(appIntentMapper.findIntentByMemoForUpdate("NX-HOSTED")).thenReturn(hostedIntent());
         assertThatThrownBy(() -> service.registerVietQrReceipt("receipt-hosted",
                 new VietQrReceiptRegistrationRequest(8L, "BANK-HOSTED", "NX-HOSTED",
@@ -1178,6 +1178,11 @@ class OpsVietnamPaymentServiceTest {
         verify(receiptEvidence, never()).claim(anyString(), anyString(), anyString());
         verify(appIntentMapper, never()).transitionIntent(anyString(), anyLong(), anyString(), anyString(), any(), any(), any());
         verify(mapper, never()).addVietQrBankReceivedToday(anyLong(), any(), any());
+        verify(mapper, never()).insertVietQrReceipt(anyString(), any(), any(), anyLong(), anyString(),
+                any(), any(), any(), anyString(), anyString(), any(), any(), anyBoolean());
+        verify(mapper, never()).creditUsdtWallet(anyLong(), any(), anyLong());
+        verify(mapper, never()).insertVietQrWalletLedger(anyString(), anyLong(), any(), any(), anyString());
+        org.mockito.Mockito.verifyNoInteractions(audit, outbox);
     }
 
     @Test

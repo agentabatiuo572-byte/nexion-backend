@@ -11,6 +11,19 @@ import org.junit.jupiter.api.Test;
 class VietnamPaymentMapperSqlContractTest {
 
     @Test
+    void bankViewCountAndListShareTheRailPredicateAndRequireVerifiedHdPayLegacyCredits() throws Exception {
+        for (Method method : new Method[]{
+                VietnamPaymentMapper.class.getMethod("countVietQrReconciliations", String.class),
+                VietnamPaymentMapper.class.getMethod("listVietQrReconciliations", String.class, int.class, int.class)}) {
+            String sql = String.join("\n", method.getAnnotation(Select.class).value());
+            assertThat(sql).contains(VietnamPaymentMapper.RECONCILIATION_RAIL_PREDICATE)
+                    .contains("rail.payment_rail = 'HDPAY'", "FROM hdpay_credited h",
+                            "r.view_type = 'MATCHED' AND r.status = 'CREDITED'",
+                            "h.user_id = r.user_id", "h.settled_usdt = r.credited_usdt");
+        }
+    }
+
+    @Test
     void creditMovesSuspenseToWalletAndLifetimeDepositUsingTheWalletCas() throws Exception {
         Method method = VietnamPaymentMapper.class.getMethod(
                 "creditUsdtWallet", Long.class, java.math.BigDecimal.class, Long.class);

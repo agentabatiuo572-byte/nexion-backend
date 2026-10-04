@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.util.List;
 import java.util.UUID;
 import org.apache.ibatis.mapping.Environment;
 import org.apache.ibatis.session.Configuration;
@@ -94,6 +95,56 @@ class D1HdPayReadMySqlIntegrationTest {
             assertThat(mapper.listVietQrReconciliations("ORPHAN", 50, 0)).hasSize(1);
             assertThat(mapper.countVietQrReconciliations(null)).isEqualTo(5);
             assertThat(count(connection, "nx_vietqr_reconciliation")).isEqualTo(4);
+            assertThat(count(connection, "nx_wallet_ledger")).isEqualTo(10);
+        });
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "NEXION_D1_HDPAY_IT", matches = "true")
+    void positiveHdPayAppPlaceholdersAndUnverifiedLegacyRowsNeverEnterBankViews() throws Exception {
+        fixture((connection, session) -> {
+            exec(connection, "ALTER TABLE nx_hdpay_payin_order ADD submission_status VARCHAR(24) DEFAULT 'CREATED'");
+            for (int n = 11; n <= 12; n++) {
+                exec(connection, "INSERT INTO nx_hdpay_payin_order (id,merchant_order_id,amount_vnd,provider_order_id,provider_status,settlement_status,settled_usdt,wallet_ledger_biz_no,settled_at,created_at,updated_at,submission_status) VALUES (" + n + ",'VQR-" + n + "',870870,NULL,1,'UNSETTLED',NULL,NULL,NULL,NOW(),NOW(),'" + (n == 12 ? "REJECTED" : "CREATED") + "')");
+                exec(connection, "INSERT INTO nx_vietqr_intent VALUES (" + n + ",'VQR-" + n + "',7,'HDPAY','WALLET_TOPUP','AWAITING_PAYMENT',33,870870,NULL,0,26390,NULL,'NX-HD-" + n + "',NOW()+INTERVAL 1 DAY,0,0)");
+                // Same positive-ID shape as ensureInFlightReconciliation, including rejected hosted orders.
+                exec(connection, "INSERT INTO nx_vietqr_reconciliation SELECT " + (n + 388) + ",CONCAT('APP-',intent_no),intent_no,user_id,bank_account_id,'INFLIGHT','OPEN',payable_vnd,NULL,locked_fx_rate_vnd_per_usdt,0,NULL,'APP_INTENT_CREATED',expires_at,NULL,1,0,NOW(),NOW(),0 FROM nx_vietqr_intent WHERE id=" + n);
+            }
+            exec(connection, "INSERT INTO nx_vietqr_reconciliation VALUES (401,'APP-VQR-1','VQR-1',7,NULL,'INFLIGHT','OPEN',870870,NULL,26390,0,NULL,'APP_INTENT_CREATED',NOW(),NULL,1,0,NOW(),NOW(),0)");
+            exec(connection, "INSERT INTO nx_vietqr_reconciliation VALUES (402,'UNVERIFIED-LEGACY','VQR-3',7,NULL,'MATCHED','CREDITED',870870,870870,26390,33,'PSP-3','missing ledger',NOW(),NOW(),0,1,NOW(),NOW(),0)");
+            exec(connection, "INSERT INTO nx_vietqr_reconciliation VALUES (403,'WRONG-AMOUNT-LEGACY','VQR-1',7,NULL,'MATCHED','CREDITED',870870,870870,26390,32,'PSP-1','wrong credit',NOW(),NOW(),0,1,NOW(),NOW(),0)");
+            exec(connection, "INSERT INTO nx_vietqr_reconciliation VALUES (404,'DELETED-HD-INTENT','VQR-10',7,NULL,'INFLIGHT','OPEN',870870,NULL,26390,0,NULL,'deleted intent',NOW(),NULL,1,0,NOW(),NOW(),0)");
+            int id = 405;
+            for (String view : List.of("MATCHED", "ORPHAN", "MISMATCH", "LATE")) {
+                exec(connection, "INSERT INTO nx_vietqr_reconciliation VALUES (" + id++ + ",'HD-" + view + "','VQR-12',7,NULL,'" + view + "','OPEN',870870,870870,26390,0,NULL,'rejected provider',NOW(),NOW(),0,0,NOW(),NOW(),0)");
+            }
+            exec(connection, "INSERT INTO nx_vietqr_intent VALUES (20,'MANUAL-20',7,'MANUAL','WALLET_TOPUP','AWAITING_PAYMENT',33,870870,NULL,0,26390,1,'NX-MANUAL-20',NOW()+INTERVAL 1 DAY,0,0)");
+            exec(connection, "INSERT INTO nx_vietqr_reconciliation VALUES (410,'APP-MANUAL-20','MANUAL-20',7,1,'INFLIGHT','OPEN',870870,NULL,26390,0,NULL,'APP_INTENT_CREATED',NOW(),NULL,1,0,NOW(),NOW(),0)");
+            exec(connection, "INSERT INTO nx_vietqr_reconciliation VALUES (411,'UNKNOWN-BANK-MEMO',NULL,NULL,1,'ORPHAN','OPEN',NULL,10000,25000,0,'BANK-UNKNOWN','unmatched',NULL,NOW(),0,0,NOW(),NOW(),0)");
+            long receiptsBefore = count(connection, "nx_vietqr_reconciliation");
+            var mapper = session.getMapper(VietnamPaymentMapper.class);
+            for (String view : List.of("INFLIGHT", "MATCHED", "ORPHAN", "MISMATCH", "LATE")) {
+                var rows = mapper.listVietQrReconciliations(view, 50, 0);
+                assertThat(mapper.countVietQrReconciliations(view)).isEqualTo(rows.size());
+                assertThat(rows).allSatisfy(row -> {
+                    if ("HDPAY".equals(row.get("paymentRail"))) {
+                        assertThat(row).containsEntry("viewType", "MATCHED").containsEntry("status", "CREDITED");
+                    }
+                });
+            }
+            assertThat(mapper.listVietQrReconciliations("INFLIGHT", 50, 0))
+                    .extracting(row -> row.get("intentNo")).containsExactly("MANUAL-20");
+            assertThat(mapper.listVietQrReconciliations("ORPHAN", 50, 0))
+                    .extracting(row -> row.get("reconciliationNo")).containsExactly("UNKNOWN-BANK-MEMO");
+            assertThat(mapper.listVietQrReconciliations("MATCHED", 50, 0))
+                    .extracting(row -> row.get("intentNo")).containsExactlyInAnyOrder("VQR-1", "VQR-2", "MANUAL-1");
+            assertThat(mapper.countVietQrReconciliations(null)).isEqualTo(5);
+            var all = mapper.listVietQrReconciliations(null, 50, 0);
+            for (int offset = 0; offset < all.size(); offset++) {
+                assertThat(mapper.listVietQrReconciliations(null, 1, offset)).containsExactly(all.get(offset));
+            }
+            assertThat(mapper.listVietQrReconciliations(null, 1, all.size())).isEmpty();
+            assertThat(count(connection, "nx_vietqr_reconciliation")).isEqualTo(receiptsBefore);
             assertThat(count(connection, "nx_wallet_ledger")).isEqualTo(10);
         });
     }
