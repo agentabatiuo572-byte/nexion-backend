@@ -4,7 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.lang.reflect.Method;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.scripting.xmltags.XMLLanguageDriver;
+import org.apache.ibatis.session.Configuration;
 import org.junit.jupiter.api.Test;
 
 class TreasuryLedgerMapperSqlContractTest {
@@ -35,6 +39,51 @@ class TreasuryLedgerMapperSqlContractTest {
         String pageSql = String.join("\n", page.getAnnotation(Select.class).value());
         assertThat(countSql).contains("AND l.biz_no = #{bizNo}", "l.created_at", "UPPER(l.status)");
         assertThat(pageSql).contains("AND l.biz_no = #{bizNo}", "l.created_at", "UPPER(l.status)");
+    }
+
+    @Test
+    void d4CountAndPageRenderTheSameCanonicalCategoryAndScopePredicates() throws Exception {
+        Method count = TreasuryLedgerMapper.class.getMethod(
+                "countLedgerBills", String.class, Long.class, String.class, String.class,
+                String.class, LocalDateTime.class, LocalDateTime.class);
+        Method page = TreasuryLedgerMapper.class.getMethod(
+                "pageLedgerBills", String.class, Long.class, String.class, String.class,
+                String.class, LocalDateTime.class, LocalDateTime.class, int.class, int.class);
+        Configuration configuration = new Configuration();
+        XMLLanguageDriver driver = new XMLLanguageDriver();
+        var countSource = driver.createSqlSource(configuration,
+                String.join("\n", count.getAnnotation(Select.class).value()), Map.class);
+        var pageSource = driver.createSqlSource(configuration,
+                String.join("\n", page.getAnnotation(Select.class).value()), Map.class);
+
+        for (String type : List.of("swap", "topup", "withdraw", "earning", "commission", "refund", "bonus")) {
+            Map<String, Object> parameters = Map.of(
+                    "type", type, "userId", 10001L, "keyword", "task", "bizNo", "TASK-1", "status", "SUCCESS",
+                    "from", LocalDateTime.parse("2026-10-01T00:00:00"),
+                    "to", LocalDateTime.parse("2026-10-05T00:00:00"), "pageSize", 20, "offset", 0);
+            String countSql = countSource.getBoundSql(parameters).getSql().replaceAll("\\s+", " ").trim();
+            String pageSql = pageSource.getBoundSql(parameters).getSql().replaceAll("\\s+", " ").trim();
+            String countWhere = countSql.substring(countSql.indexOf("WHERE l.is_deleted"));
+            String pageWhere = pageSql.substring(pageSql.indexOf("WHERE l.is_deleted"), pageSql.indexOf(" ORDER BY"));
+
+            assertThat(pageWhere).as("count/page scope for %s", type).isEqualTo(countWhere);
+            assertThat(countWhere)
+                    .contains("WHEN UPPER(TRIM(l.biz_type)) = 'COMPUTE_TASK_REWARD' THEN 'earning'")
+                    .contains("WHEN UPPER(TRIM(l.biz_type)) = 'DAILY_CHECK_IN' THEN 'bonus'")
+                    .contains("AND l.user_id = ?", "AND l.biz_no = ?", "AND UPPER(l.status) = ?",
+                            "AND l.created_at >= ?", "AND l.created_at < ?")
+                    .doesNotContain("l.direction =");
+            assertThat(countWhere.indexOf("= 'COMPUTE_TASK_REWARD'"))
+                    .isLessThan(countWhere.indexOf("LIKE '%REWARD%'"));
+            assertThat(countWhere.indexOf("= 'DAILY_CHECK_IN'"))
+                    .isLessThan(countWhere.indexOf("LIKE '%REWARD%'"));
+        }
+
+        Map<String, Object> rawType = Map.of("type", "COMPUTE_TASK_REWARD", "pageSize", 20, "offset", 0);
+        assertThat(countSource.getBoundSql(rawType).getSql())
+                .contains("AND UPPER(l.biz_type) = UPPER(?)").doesNotContain("CASE");
+        assertThat(pageSource.getBoundSql(rawType).getSql())
+                .contains("AND UPPER(l.biz_type) = UPPER(?)").doesNotContain("CASE");
     }
 
     @Test

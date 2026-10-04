@@ -675,6 +675,8 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                  <when test="type == 'swap' or type == 'topup' or type == 'withdraw' or type == 'earning' or type == 'commission' or type == 'refund' or type == 'bonus'">
                    AND (CASE
                      WHEN UPPER(l.biz_type) LIKE '%REFUND%' OR UPPER(l.biz_type) LIKE '%CHARGEBACK%' OR UPPER(l.biz_type) LIKE '%REVERSAL%' THEN 'refund'
+                     WHEN UPPER(TRIM(l.biz_type)) = 'COMPUTE_TASK_REWARD' THEN 'earning'
+                     WHEN UPPER(TRIM(l.biz_type)) = 'DAILY_CHECK_IN' THEN 'bonus'
                      WHEN UPPER(l.biz_type) LIKE '%BONUS%' OR UPPER(l.biz_type) LIKE '%TRIAL%' OR UPPER(l.biz_type) LIKE '%REWARD%' THEN 'bonus'
                      WHEN UPPER(l.biz_type) LIKE '%TOPUP%' OR UPPER(l.biz_type) LIKE '%DEPOSIT%' OR UPPER(l.biz_type) LIKE '%RECHARGE%' THEN 'topup'
                      WHEN UPPER(l.biz_type) LIKE '%WITHDRAW%' OR UPPER(l.biz_type) LIKE '%PAYOUT%' THEN 'withdraw'
@@ -728,6 +730,8 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                  <when test="type == 'swap' or type == 'topup' or type == 'withdraw' or type == 'earning' or type == 'commission' or type == 'refund' or type == 'bonus'">
                    AND (CASE
                      WHEN UPPER(l.biz_type) LIKE '%REFUND%' OR UPPER(l.biz_type) LIKE '%CHARGEBACK%' OR UPPER(l.biz_type) LIKE '%REVERSAL%' THEN 'refund'
+                     WHEN UPPER(TRIM(l.biz_type)) = 'COMPUTE_TASK_REWARD' THEN 'earning'
+                     WHEN UPPER(TRIM(l.biz_type)) = 'DAILY_CHECK_IN' THEN 'bonus'
                      WHEN UPPER(l.biz_type) LIKE '%BONUS%' OR UPPER(l.biz_type) LIKE '%TRIAL%' OR UPPER(l.biz_type) LIKE '%REWARD%' THEN 'bonus'
                      WHEN UPPER(l.biz_type) LIKE '%TOPUP%' OR UPPER(l.biz_type) LIKE '%DEPOSIT%' OR UPPER(l.biz_type) LIKE '%RECHARGE%' THEN 'topup'
                      WHEN UPPER(l.biz_type) LIKE '%WITHDRAW%' OR UPPER(l.biz_type) LIKE '%PAYOUT%' THEN 'withdraw'

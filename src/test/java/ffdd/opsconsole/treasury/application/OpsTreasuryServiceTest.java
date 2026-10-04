@@ -1192,6 +1192,59 @@ class OpsTreasuryServiceTest {
                 .containsEntry("bonus:USDT", BigDecimal.ZERO);
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void d4ComputeAndCheckInCategoriesReachRowsSumsAndCsvWithoutChangingAmountsOrContinuity() {
+        LocalDateTime time = LocalDateTime.now(CLOCK);
+        ledgerRepository.bills.addAll(List.of(
+                new TreasuryLedgerBillView(1L, 10001L, "U00010001", "user", "TASK-USDT", "COMPUTE_TASK_REWARD",
+                        "USDT", "IN", new BigDecimal("0.045005"), new BigDecimal("100.045005"), "SUCCESS", "task", time, time),
+                new TreasuryLedgerBillView(2L, 10001L, "U00010001", "user", "TASK-NEX", "COMPUTE_TASK_REWARD",
+                        "NEX", "IN", new BigDecimal("3"), new BigDecimal("13"), "SUCCESS", "task", time, time),
+                new TreasuryLedgerBillView(3L, 10001L, "U00010001", "user", "CHECK-IN", "DAILY_CHECK_IN",
+                        "NEX", "IN", BigDecimal.ONE, new BigDecimal("14"), "SUCCESS", "check-in", time, time),
+                new TreasuryLedgerBillView(4L, 10001L, "U00010001", "user", "REFERRAL", "REFERRAL_REWARD",
+                        "USDT", "IN", new BigDecimal("2"), new BigDecimal("102.045005"), "SUCCESS", "referral", time, time),
+                new TreasuryLedgerBillView(5L, 10001L, "U00010001", "user", "PURCHASE", "ORDER_PURCHASE",
+                        "USDT", "OUT", BigDecimal.ONE, new BigDecimal("101.045005"), "SUCCESS", "purchase", time, time)));
+        List<TreasuryLedgerBillView> originalRows = List.copyOf(ledgerRepository.bills);
+        ledgerRepository.actualBalances.put("10001:USDT", new BigDecimal("101.045005"));
+        ledgerRepository.actualBalances.put("10001:NEX", new BigDecimal("14"));
+
+        var page = service.ledgerBills(new TreasuryLedgerQueryRequest(null, 10001L, null, 1, 20)).getData();
+        assertThat(page.getTotal()).isEqualTo(5);
+        assertThat(page.getRecords()).extracting(TreasuryLedgerBillView::billType)
+                .containsExactly("earning", "earning", "bonus", "bonus", "earning");
+        Map<String, Object> userLedger = service.userLedger(10001L).getData();
+        assertThat((Map<String, BigDecimal>) userLedger.get("categorySums")).hasSize(14)
+                .containsEntry("earning:USDT", new BigDecimal("-0.954995"))
+                .containsEntry("earning:NEX", new BigDecimal("3"))
+                .containsEntry("bonus:USDT", new BigDecimal("2"))
+                .containsEntry("bonus:NEX", BigDecimal.ONE);
+        assertThat((Map<String, BigDecimal>) userLedger.get("sums"))
+                .containsEntry("USDT", new BigDecimal("1.045005"))
+                .containsEntry("NEX", new BigDecimal("4"));
+        assertThat(userLedger).containsEntry("currentUsdtBalance", new BigDecimal("101.045005"))
+                .containsEntry("currentNexBalance", new BigDecimal("14"));
+        assertThat(service.runningBalance(10001L).getData())
+                .containsEntry("balanced", true).containsEntry("breakCount", 0);
+        verifyNoInteractions(auditLogService, eventOutboxService);
+
+        String csv = new String(service.ledgerBillsCsv(
+                new TreasuryLedgerQueryRequest(null, 10001L, null, 1, 20),
+                "D4 W65 category regression"), java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(csv)
+                .contains("\"earning\",\"compute_task_reward\",\"USDT\",\"IN\",\"0.045005\",\"100.045005\"")
+                .contains("\"earning\",\"compute_task_reward\",\"NEX\",\"IN\",\"3\",\"13\"")
+                .contains("\"bonus\",\"daily_check_in\",\"NEX\",\"IN\",\"1\",\"14\"")
+                .contains("\"bonus\",\"referral_reward\"")
+                .contains("\"earning\",\"order_purchase\",\"USDT\",\"OUT\",\"1\",\"101.045005\"")
+                .doesNotContain("U00010001");
+        assertThat(ledgerRepository.bills).containsExactlyElementsOf(originalRows);
+        assertThat(ledgerRepository.actualBalances).containsExactlyInAnyOrderEntriesOf(Map.of(
+                "10001:USDT", new BigDecimal("101.045005"), "10001:NEX", new BigDecimal("14")));
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> detailMap(Object detail) {
         return (Map<String, Object>) detail;

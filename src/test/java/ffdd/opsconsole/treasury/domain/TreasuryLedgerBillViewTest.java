@@ -39,6 +39,23 @@ class TreasuryLedgerBillViewTest {
         assertThat(refund.billType()).isEqualTo("refund");
         assertThat(referralReward.billType()).isEqualTo("bonus");
         assertThat(questReward.billType()).isEqualTo("bonus");
+        assertThat(row("LEARNING_REWARD").billType()).isEqualTo("bonus");
+    }
+
+    @Test
+    void classifiesComputeIncomeAndDailyCheckInWithExactNormalizedTypes() {
+        assertThat(row("COMPUTE_TASK_REWARD").billType()).isEqualTo("earning");
+        assertThat(row(" compute_task_reward ").billType()).isEqualTo("earning");
+        assertThat(row("DAILY_CHECK_IN").billType()).isEqualTo("bonus");
+        assertThat(row(" daily_check_in ").billType()).isEqualTo("bonus");
+
+        assertThat(row("COMPUTE_TASK_REWARD_REVERSAL").billType()).isEqualTo("refund");
+        assertThat(row("COMPUTE_TASK_REWARD_BONUS").billType()).isEqualTo("bonus");
+        assertThat(row("DAILY_CHECK_IN_REVERSAL").billType()).isEqualTo("refund");
+        assertThat(row("ORDER_PURCHASE").billType()).isEqualTo("earning");
+        assertThat(row(null).billType()).isEqualTo("earning");
+        assertThat(row("COMPUTE_TASK_REWARD").subtype()).isEqualTo("compute_task_reward");
+        assertThat(row("DAILY_CHECK_IN").subtype()).isEqualTo("daily_check_in");
     }
 
     private static TreasuryLedgerBillView row(String bizType) {
