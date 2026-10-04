@@ -10,6 +10,10 @@ import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 @TestConfiguration(proxyBeanMethods = false)
 @ConditionalOnProperty(name = "support.patch.isolated", havingValue = "true")
 class SupportIsolatedRuntime {
+    @Bean static org.springframework.beans.factory.config.BeanPostProcessor journalSharedMutations(javax.sql.DataSource dataSource) {
+        if (!"cs_enhance_20261001".equals(database())) return new org.springframework.beans.factory.config.BeanPostProcessor() {};
+        return SharedMutationJournal.bootstrapJournal(dataSource);
+    }
     static String database() {
         if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))return "cs_enhance_20261001";
         return "true".equals(System.getenv("SUPPORT_PATCH_ISOLATED")) ? "cs_advisor_patch" : "cs_redesign";

@@ -58,7 +58,7 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
     @AfterEach void restoreAvatarFixture() {
         try {
             for(var grant:originalSupportGrants)
-                jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=? WHERE id=?",grant.get("is_deleted"),grant.get("id"));
+                SharedMutationJournal.restorePermission(jdbc,run,"SupportAdminAvatarReadRuntimeTest",boss,"restoreAvatarFixture#originalGrant",((Number)grant.get("id")).longValue());
         } finally {
             try {
                 for(long message:forgedMessageIds) {
@@ -200,7 +200,7 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
     private void restrictSupportGrants(Set<String> keep) {
         for(String required:keep)assertThat(originalSupportGrants.stream().anyMatch(row->required.equals(row.get("permission_code")))).as("Registered SUPPORT grant %s",required).isTrue();
         for(var grant:originalSupportGrants)
-            jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=? WHERE id=?",keep.contains(grant.get("permission_code"))?0:1,grant.get("id"));
+            SharedMutationJournal.sql(jdbc,run,"SupportAdminAvatarReadRuntimeTest",boss,"restrictSupportGrants#exactGrant","UPDATE nx_admin_role_permission SET is_deleted=? WHERE id=?",keep.contains(grant.get("permission_code"))?0:1,grant.get("id"));
         permissions.evictAll();SecurityContextHolder.clearContext();
     }
 

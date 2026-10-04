@@ -39,6 +39,12 @@ class SupportS4RuntimeTest {
         if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))SupportEnhancementPreparationTest.isolatedBoundary(registry);
     }
     @Autowired JdbcTemplate jdbc;
+    @Autowired org.springframework.data.redis.core.StringRedisTemplate actorRedis;
+    private SupportFixtureActors actorEvidence;
+    private SupportFixtureActors fixtureActors() {
+        if (actorEvidence == null) actorEvidence = new SupportFixtureActors(jdbc, actorRedis, json, transactions, run, getClass().getSimpleName());
+        return actorEvidence;
+    }
     @Autowired ObjectMapper json;
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingMapper mapper;
@@ -57,6 +63,7 @@ class SupportS4RuntimeTest {
     private String adminToken,otherToken,bossToken,customerToken;
 
     @BeforeEach void fixture() throws Exception {
+        fixtureActors().assertBusinessEntry();
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportIsolatedRuntime.database());
         assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(33329);
         boss=admin("SUPER_ADMIN","MANAGER");g1=admin("SUPPORT","DEDICATED");g2=admin("SUPPORT","DEDICATED");
@@ -65,6 +72,7 @@ class SupportS4RuntimeTest {
     }
     @AfterEach void clear(){SecurityContextHolder.clearContext();}
     @AfterAll void evidence() throws Exception {
+        try {
         Set<String> required=Set.of("s4-ac01","s4-ac07","s4-ac08","s4-ac09","s4-ac10","s4-ac13","s4-supplement");
         assertThat(checks.keySet()).containsAll(required);
         Path dir=Path.of(System.getenv("S4_EVIDENCE_DIR"));Files.createDirectories(dir);
@@ -84,6 +92,11 @@ class SupportS4RuntimeTest {
         }
         identities.put("password",System.getenv("S3_FIXTURE_PASSWORD"));identities.put("at",Instant.now().toString());
         Files.writeString(dir.resolve("runtime-identities.json"),json.writerWithDefaultPrettyPrinter().writeValueAsString(identities));
+
+        } finally {
+            try {if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());}
+            finally {SecurityContextHolder.clearContext();}
+        }
     }
 
     @Test void maintenanceHttpNeedsNewInteractiveLoginAndKeepsExecutionSeparate() throws Exception {
@@ -456,12 +469,7 @@ class SupportS4RuntimeTest {
     private long admin(String role,String seat){
         String name=run+"_"+UUID.randomUUID().toString().substring(0,8);
         String password=new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(System.getenv("S3_FIXTURE_PASSWORD"));
-        jdbc.update("INSERT INTO nx_admin(username,password_hash,nickname,super_admin,status) VALUES(?,?,?,?,1)",name,password,name,"SUPER_ADMIN".equals(role)?1:0);
-        long id=jdbc.queryForObject("SELECT id FROM nx_admin WHERE username=?",Long.class,name);
-        SupportEnhancementPreparationTest.recordFixtureActor(jdbc,json,run,getClass().getSimpleName(),id,name);
-        jdbc.update("INSERT INTO nx_admin_role_relation(admin_id,role_id) SELECT ?,id FROM nx_admin_role WHERE role_code=? AND is_deleted=0",id,role);
-        jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,?,?,'support,advisor','',0,1,1,0)",id,seat,seat);
-        return id;
+        return fixtureActors().createSql(name,password,name,role,seat);
     }
     private long customer(){
         return new TransactionTemplate(transactions).execute(status->{

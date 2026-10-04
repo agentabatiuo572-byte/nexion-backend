@@ -30,22 +30,28 @@ class SupportBindingRuntimeTest {
         if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))SupportEnhancementPreparationTest.isolatedBoundary(registry);
     }
     private ffdd.opsconsole.content.domain.SupportRules originalRules;
+    private long rulesOwner;
     @org.junit.jupiter.api.BeforeEach void legacyMode() {
+        fixtureActors().assertBusinessEntry();
         if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED"))) {
             assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_enhance_20261001");
-            originalRules=mapper.rules();jdbc.update("UPDATE nx_support_rules SET unbound_assignment_mode='SUPERVISOR',version=version+1 WHERE id=1");
+            originalRules=mapper.rules();
         }
     }
     @org.junit.jupiter.api.AfterEach void restoreCoreRules() {
-        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED"))) createdAdmins.forEach(id->{
-            jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",id);
-            jdbc.update("UPDATE nx_admin SET status=0 WHERE id=?",id);sessions.revokeSessions(id);permissions.evict(id);
-        });
-        if(originalRules!=null)jdbc.update("UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1 WHERE id=1",
-                originalRules.dormantDays(),originalRules.maintenanceDays(),originalRules.activityWindowDays(),originalRules.inheritanceMode(),originalRules.maxInheritanceDepth(),originalRules.unboundAssignmentMode(),originalRules.modeEffectiveAt());
-        SecurityContextHolder.clearContext();
+        SupportOriginalProfiles.cleanup(
+            () -> {if(originalRules!=null && rulesOwner>0)SharedMutationJournal.cleanupSql(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#rules-sql-1","UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",
+                originalRules.dormantDays(),originalRules.maintenanceDays(),originalRules.activityWindowDays(),originalRules.inheritanceMode(),originalRules.maxInheritanceDepth(),originalRules.unboundAssignmentMode(),originalRules.modeEffectiveAt(),rulesOwner);},
+            () -> {if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());},
+            SecurityContextHolder::clearContext);
     }
     @Autowired JdbcTemplate jdbc;
+    @Autowired org.springframework.data.redis.core.StringRedisTemplate actorRedis;
+    private SupportFixtureActors actorEvidence;
+    private SupportFixtureActors fixtureActors() {
+        if (actorEvidence == null) actorEvidence = new SupportFixtureActors(jdbc, actorRedis, json, transactions, run, getClass().getSimpleName());
+        return actorEvidence;
+    }
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingMapper mapper;
     @Autowired SupportOwnershipService ownership;
@@ -75,10 +81,10 @@ class SupportBindingRuntimeTest {
         assertThat(http("GET",path,token,null,null).toString()).contains(c.conversationNo());
         var ids=jdbc.queryForList("SELECT rp.id FROM nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE r.role_code='SUPER_ADMIN' AND p.permission_code='service_m3_read' AND rp.is_deleted=0",Long.class);
         try {
-            ids.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(boss);
+            ids.forEach(id->SharedMutationJournal.sql(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-disable-1","UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(boss);
             assertThat(http("GET","/api/admin/content/conversations/"+c.conversationNo(),token,null,null).path("code").asInt()).isEqualTo(403);
             var search=http("GET",path,token,null,null);assertThat(search.path("code").asInt()).isZero();assertThat(search.toString()).doesNotContain(c.conversationNo());
-        } finally {ids.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=0 WHERE id=?",id));permissions.evict(boss);}
+        } finally {ids.forEach(id->SharedMutationJournal.restorePermission(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-restore-2",id));permissions.evict(boss);}
         var profile=new LinkedHashMap<String,Object>(Map.of("position","专属客服","serviceTypes",List.of("support","advisor"),"tags",List.of(),"enabled",true,"busy",true,"maxConcurrent",0,"expectedVersion",1,"reason","Manager profile authority probe"));
         profile.put("operator","spoofed");
         String update="/api/admin/content/support-agents/"+agent+"/profile",profileKey=key();
@@ -181,7 +187,7 @@ class SupportBindingRuntimeTest {
             if(!appConversion)assertThat(http("POST",endpoint+"/escalate",two,escalation,escalationKey).path("code").asInt()).isZero();
             var grants=jdbc.queryForList("SELECT rp.id FROM nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE r.role_code='SUPPORT' AND p.permission_code='service_m3_read' AND rp.is_deleted=0",Long.class);
             try {
-                grants.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(second);
+                grants.forEach(id->SharedMutationJournal.sql(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-disable-3","UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(second);
                 assertThat(http("GET",endpoint,two,null,null).toString()).doesNotContain(marker);
                 var receipt=http("GET","/api/admin/content/support-workbench/commands/"+privateKey,two,null,null);
                 assertThat(receipt.path("code").asInt()).isZero();assertThat(receipt.toString()).doesNotContain(marker);
@@ -214,7 +220,7 @@ class SupportBindingRuntimeTest {
                 var afterReplay=escalationFacts(customer,no,escalatedNo,second,escalationKey);
                 assertThat(afterReplay.get("successAudits")).isEqualTo(1L);
                 assertThat(afterReplay).as("Same-key escalation must not duplicate persisted facts").isEqualTo(beforeReplay);
-            } finally {grants.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=0 WHERE id=?",id));permissions.evict(second);}
+            } finally {grants.forEach(id->SharedMutationJournal.restorePermission(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-restore-4",id));permissions.evict(second);}
             jdbc.update("UPDATE nx_support_ticket SET source_conversation_no=NULL WHERE ticket_no=?",no);
             assertThat(http("GET",endpoint,one,null,null).toString()).doesNotContain(marker);
             assertThat(http("GET",endpoint,two,null,null).toString()).contains(marker);
@@ -542,11 +548,12 @@ class SupportBindingRuntimeTest {
     private long admin(String label,String role,String seat) {
         String username=run+"_"+label;
         String hash=new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(System.getenv("S3_FIXTURE_PASSWORD"));
-        jdbc.update("INSERT INTO nx_admin(username,password_hash,nickname,super_admin,status) VALUES(?,?,?,?,1)",username,hash,label,"SUPER_ADMIN".equals(role)?1:0);
-        Long id=jdbc.queryForObject("SELECT id FROM nx_admin WHERE username=?",Long.class,username);
-        createdAdmins.add(id);SupportEnhancementPreparationTest.recordFixtureActor(jdbc,json,run,getClass().getSimpleName(),id,username);
-        jdbc.update("INSERT INTO nx_admin_role_relation(admin_id,role_id) SELECT ?,id FROM nx_admin_role WHERE role_code=? AND is_deleted=0",id,role);
-        jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,?,?,'support,advisor','',0,1,1,0)",id,seat,seat);
+        long id=fixtureActors().createSql(username,hash,label,role,seat);
+        createdAdmins.add(id);
+        if(originalRules!=null && rulesOwner==0) {
+            rulesOwner=id;
+            SharedMutationJournal.sql(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#rules-sql-2","UPDATE nx_support_rules SET unbound_assignment_mode='SUPERVISOR',version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",rulesOwner);
+        }
         fixture.put(label,Map.of("id",id,"username",username));return id;
     }
     private long register(String label,Long inviter) {
@@ -585,9 +592,9 @@ class SupportBindingRuntimeTest {
         var ids=jdbc.queryForList("SELECT rp.id FROM nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE r.role_code=? AND p.permission_code=? AND rp.is_deleted=0",Long.class,role,permission);
         assertThat(ids).isNotEmpty();
         try {
-            ids.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(actor);
+            ids.forEach(id->SharedMutationJournal.sql(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-disable-5","UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(actor);
             assertThat(http("GET","/api/admin/content/support-workbench/commands/"+commandKey,token,null,null).path("code").asInt()).as("module grant revoked: %s",permission).isEqualTo(403);
-        } finally {ids.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=0 WHERE id=?",id));permissions.evict(actor);}
+        } finally {ids.forEach(id->SharedMutationJournal.restorePermission(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-restore-6",id));permissions.evict(actor);}
         assertThat(http("GET","/api/admin/content/support-workbench/commands/"+commandKey,token,null,null).path("code").asInt()).isZero();
     }
     private String key(){return "s3-"+UUID.randomUUID();}

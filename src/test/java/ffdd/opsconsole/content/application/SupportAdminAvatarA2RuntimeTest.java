@@ -121,7 +121,8 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_operation_ticket WHERE operation_id=?",
                 Long.class, createdTicket)).isEqualTo(1L);
 
-        JsonNode self = approve(createdTicket, maker, key());
+        String selfKey = key();
+        JsonNode self = fixtureActors().createApproval(username, createdTicket, maker, selfKey, () -> approve(createdTicket, maker, selfKey));
         assertCode(self, 403);
         assertPending(createdTicket);
         assertThat(accountCount(username)).isZero();
@@ -129,9 +130,9 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
         passed("self-approval", createdTicket);
 
         String approveKey = key();
-        JsonNode created = approve(createdTicket, checker, approveKey);
+        JsonNode created = fixtureActors().createApproval(username, createdTicket, checker, approveKey, () -> approve(createdTicket, checker, approveKey));
         success(created);
-        long target = jdbc.queryForObject("SELECT id FROM nx_admin WHERE username=?", Long.class, username);
+        long target = fixtureActors().actorForCommand(approveKey);
         admins.add(target);
         JsonNode account = account(target);
         assertThat(account.path("avatarAssetId").asText()).isEqualTo(staged);
@@ -315,7 +316,7 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
                 + "LEFT JOIN nx_admin a ON a.id=s.admin_id WHERE a.id IS NULL ORDER BY s.admin_id", Long.class);
         String ticket = propose(proposal("a1_account_create", createParams(username, asset)), key());
         String approveKey = key();
-        assertCode(approve(ticket, checker, approveKey), code);
+        assertCode(fixtureActors().createApproval(username, ticket, checker, approveKey, () -> approve(ticket, checker, approveKey)), code);
         assertPending(ticket);
         assertThat(accountCount(username)).as("Actual inserted account must roll back").isZero();
         assertThat(jdbc.queryForList("SELECT DISTINCT rr.admin_id FROM nx_admin_role_relation rr "
@@ -447,12 +448,9 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
     void cleanOnlyOwnFixture() throws Exception {
         if (!boundaryReady) return;
         List<Throwable> failures = new ArrayList<>();
-        Set<Long> ownAdmins = new LinkedHashSet<>(admins);
+        Set<Long> ownAdmins = new LinkedHashSet<>(fixtureActors().ownedIds());
         try {
-            // Discover partial helper/unknown-response commits only within this freshly generated fixture namespace.
-            ownAdmins.addAll(jdbc.queryForList("SELECT id FROM nx_admin WHERE LEFT(username,?)=?", Long.class,
-                    run.length() + 1, run + "_"));
-            for (String name : accountNames) ownAdmins.addAll(jdbc.queryForList("SELECT id FROM nx_admin WHERE username=?", Long.class, name));
+            // Ownership comes only from the already-durable exact creation documents.
             if (maker > 0 && actorTokens.containsKey(maker)) {
                 for (String ticket : jdbc.queryForList("SELECT operation_id FROM nx_audit_operation_ticket WHERE operator_name=? AND status='pending' AND is_deleted=0",
                         String.class, username(maker))) {
@@ -480,11 +478,7 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
         } finally {
             for (long actor : ownAdmins) {
                 try {
-                    jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?", actor);
-                    jdbc.update("UPDATE nx_admin SET status=0 WHERE id=?", actor);
-                    sessions.revokeSessions(actor);
-                    permissions.evict(actor);
-                    assertThat(jdbc.queryForObject("SELECT status FROM nx_admin WHERE id=?", Integer.class, actor)).isZero();
+                    fixtureActors().cleanup(actor);
                 } catch (Throwable failure) { failures.add(failure); }
             }
             SecurityContextHolder.clearContext();
@@ -512,6 +506,8 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
             evidence.put("checks", proofs);
             evidence.put("ownedAssetIds", assetIds);
             evidence.put("ownedAccountsDisabled", ownAdmins);
+            evidence.put("actorEvidenceSchemaVersion", 3);
+            evidence.put("creationProofs", ownAdmins.stream().map(id -> fixtureActors().creationReference(id)).toList());
             evidence.put("cleanup", "pass");
             evidence.put("authentication", "isolated JWT sessions with real DB roles and grants; MFA login not exercised");
             evidence.put("workflowRunId", System.getenv("WORKFLOW_RUN_ID"));

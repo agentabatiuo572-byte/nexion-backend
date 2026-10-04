@@ -53,24 +53,7 @@ class SupportEnhancementPreparationTest {
     @Autowired ObjectMapper json;
     @Autowired HealthEndpoint healthEndpoint;
 
-    static void recordFixtureActor(JdbcTemplate jdbc, ObjectMapper json, String run, String suite, long id, String expectedUsername) {
-        if (!"true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED"))) return;
-        var actor = jdbc.queryForMap("SELECT username,nickname,created_at,super_admin,status,is_deleted,CASE WHEN password_hash='fixture-disabled-password' THEN 'placeholder' WHEN password_hash='NO_LOGIN' THEN 'no-login' WHEN password_hash LIKE '$2%' THEN 'bcrypt' ELSE 'other' END credential_kind FROM nx_admin WHERE id=?", id);
-        assertThat(actor.get("username")).isEqualTo(expectedUsername);
-        var proof = new java.util.LinkedHashMap<String, Object>();
-        proof.put("owner", OWNER); proof.put("run", run); proof.put("suite", suite); proof.put("adminId", id);
-        proof.put("originalUsername", expectedUsername); proof.put("nickname", actor.get("nickname"));
-        proof.put("createdAt", String.valueOf(actor.get("created_at"))); proof.put("credentialKind", actor.get("credential_kind"));
-        proof.put("roleCodes", jdbc.queryForList("SELECT r.role_code FROM nx_admin_role_relation ar JOIN nx_admin_role r ON r.id=ar.role_id WHERE ar.admin_id=? AND ar.is_deleted=0 AND r.is_deleted=0 ORDER BY r.role_code", String.class, id));
-        proof.put("profiles", jdbc.queryForList("SELECT seat_type,position,enabled,is_deleted FROM nx_support_agent_profile WHERE admin_id=?", id));
-        proof.put("at", Instant.now().toString());
-        for (String name : java.util.List.of("WORKFLOW_RUN_ID", "WORKFLOW_SNAPSHOT_HASH", "WORKFLOW_STEP_ID"))
-            proof.put(name, java.util.Objects.requireNonNull(System.getenv(name), name));
-        try {
-            Path directory = Path.of(System.getenv("CS_ENHANCE_EVIDENCE_DIR"), "fixture-actors"); Files.createDirectories(directory);
-            Files.writeString(directory.resolve(run + "-" + id + ".json"), json.writeValueAsString(proof), StandardOpenOption.CREATE_NEW);
-        } catch (java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
-    }
+
 
     @DynamicPropertySource static void isolatedBoundary(DynamicPropertyRegistry registry) {
         registry.add("logging.level.org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration",()->"ERROR");
@@ -104,6 +87,9 @@ class SupportEnhancementPreparationTest {
 
     @TestConfiguration(proxyBeanMethods=false)
     static class IsolatedConfiguration {
+        @Bean static org.springframework.beans.factory.config.BeanPostProcessor journalSharedMutations(javax.sql.DataSource dataSource) {
+            return SharedMutationJournal.bootstrapJournal(dataSource);
+        }
         @Bean static BeanFactoryPostProcessor disableScheduledJobs(Environment environment) {
             return factory -> {
                 rejectAlternativeConnections(environment);

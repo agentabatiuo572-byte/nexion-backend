@@ -27,6 +27,7 @@ class SupportBulkRestartRuntimeTest extends SupportBulkRuntimeFixture {
         assertThat(seed.path("workflowRunId").asText()).isEqualTo(System.getenv("WORKFLOW_RUN_ID"));assertThat(seed.path("snapshotHash").asText()).isEqualTo(System.getenv("WORKFLOW_SNAPSHOT_HASH"));
         assertThat(seed.path("firstJvmPid").asLong()).isPositive().isNotEqualTo(ProcessHandle.current().pid());
         long actor=seed.path("actorId").asLong(),one=seed.path("customerIds").get(0).asLong(),two=seed.path("customerIds").get(1).asLong(),prepared=seed.path("preparedCustomerId").asLong();String batch=seed.path("batchId").asText(),preparedBatch=seed.path("preparedBatchId").asText();
+        fixtureActors().importCreation(actor,seed.path("actorCreationProof"));
         try {
             // These reads occur before any claim or processing in this new application process.
             assertThat(jdbc.queryForObject("SELECT state FROM nx_support_bulk_job WHERE id=?",String.class,batch)).isEqualTo("QUEUED");counts(batch,0,0,0,0,2);counts(preparedBatch,0,0,0,0,1);
@@ -44,6 +45,6 @@ class SupportBulkRestartRuntimeTest extends SupportBulkRuntimeFixture {
             for(long customer:List.of(one,two,prepared)) {assertThat(messageCount(customer)).isEqualTo(1);assertThat(executions(customer)).isEqualTo(1);}
             var refreshed=http("GET",BASE+"/"+batch,token(actor),null,null);assertThat(refreshed.path("code").asInt()).isZero();assertThat(refreshed.path("data").path("counts").path("sent").asLong()).isEqualTo(2);assertThat(refreshed.path("data").path("frozenCount").asLong()).isEqualTo(2);
             proof("B09","newJvmReadsFrozenQueuedAndPreparedRowsAndSendsExactlyOnceWithoutAuthentication","Actual first/second JVM PIDs differ; before processing, same isolated DB retains QUEUED batch, exact frozen IDs/client IDs/content and another first-actual prepared DTO. New application scan with no authentication/tokens commits three original messages/executions; second scan and individual reentry preserve exact durable result rows/counts, and authenticated HTTP refresh reads original completed batch. Separate runtime suite proves rollback interruption; no SIGKILL is claimed.");writeProof("bulk-restart-runtime.json");
-        } finally {SecurityContextHolder.clearContext();jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",actor);jdbc.update("UPDATE nx_admin SET status=0 WHERE id=?",actor);permissions.evict(actor);}
+        } finally {try {fixtureActors().cleanup(actor);} finally {SecurityContextHolder.clearContext();}}
     }
 }

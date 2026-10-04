@@ -136,10 +136,10 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
             finally {reset(finance);}
             Integer days=bindingMapper.rules().maintenanceDays();
             try {
-                jdbc.update("UPDATE nx_support_rules SET maintenance_days=NULL,version=version+1 WHERE id=1");
+                SharedMutationJournal.sql(jdbc,run,"SupportBulkRuntimeTest",boss,"SupportBulkRuntimeTest#rules-sql-1","UPDATE nx_support_rules SET maintenance_days=NULL,version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",boss);
                 var missing=preview(first,List.of(known),List.of(),"EXPLICIT",filter(null,"DUE",null,null,null,null,null,null,null,null,null,null,false,null));assertThat(missing.path("count").asInt()).isZero();assertThat(missing.path("excluded").toString()).contains("MAINTENANCE_UNKNOWN");
                 assertThat(preview(first,List.of(known),List.of(),"EXPLICIT",filter(null,"DUE",null,null,null,null,null,null,null,null,null,null,true,null)).path("count").asInt()).isEqualTo(1);
-            } finally {jdbc.update("UPDATE nx_support_rules SET maintenance_days=?,version=version+1 WHERE id=1",days);}
+            } finally {SharedMutationJournal.cleanupSql(jdbc,run,"SupportBulkRuntimeTest",boss,"SupportBulkRuntimeTest#rules-sql-2","UPDATE nx_support_rules SET maintenance_days=?,version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",days,boss);}
             assertThat(preview(first,List.of(known),List.of(),"EXPLICIT",filter(null,"DUE",null,null,null,null,null,null,null,null,null,null,false,null)).path("count").asInt()).isEqualTo(1);
         } finally {jdbc.update("UPDATE nx_support_activity_coverage SET coverage_start_at=? WHERE id=1",coverage);}
         proof("B03","filtersKeepUtcMoneyPrecisionAndUnknownSeparateFromZero","Real activity projection distinguishes ACTIVE/DORMANT/UNKNOWN; exact UTC registration/activity bounds, DUE, V3, stored string tag and currency-specific decimal sums match. Actual deposit/ledger/withdrawal amount columns retain six decimal places; raw persisted USDT 0.1+0.2=0.3, withdrawal 0.125001 and NEX 99.000001 exactly match the authoritative source and identical inclusive amount bounds. Unlinked successful deposit stays UNKNOWN and only explicit includeUnknown admits it; injected authoritative-source failure yields FINANCE_ERROR rather than zero. Real unset maintenanceDays makes DUE unknown, excluded by default and included only explicitly; restored configuration returns known DUE.");writeProof("bulk-runtime.json");
@@ -185,8 +185,8 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
         finally {jdbc.update("UPDATE nx_admin SET status=1 WHERE id=?",first);permissions.evict(first);}
         String revokeBatch=batch(first,List.of(revoked),"SERVICE","TEXT","Grant revoked before send",null,null,null);
         var grants=jdbc.queryForList("SELECT rp.id FROM nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE r.role_code='SUPPORT' AND p.permission_code='service_m3_write' AND rp.is_deleted=0",Long.class);assertThat(grants).isNotEmpty();
-        try {grants.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));send(revokeBatch,revoked);counts(revokeBatch,0,0,1,0,0);assertThat(messageCount(revoked)).isZero();}
-        finally {grants.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=0 WHERE id=?",id));permissions.evict(first);permissions.evict(second);}
+        try {grants.forEach(id->SharedMutationJournal.sql(jdbc,run,"SupportBulkRuntimeTest",boss,"SupportBulkRuntimeTest#grant-disable-1","UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));send(revokeBatch,revoked);counts(revokeBatch,0,0,1,0,0);assertThat(messageCount(revoked)).isZero();}
+        finally {grants.forEach(id->SharedMutationJournal.restorePermission(jdbc,run,"SupportBulkRuntimeTest",boss,"SupportBulkRuntimeTest#grant-restore-2",id));permissions.evict(first);permissions.evict(second);}
         String noAuth=batch(first,List.of(none),"MAINTENANCE","TEXT","Worker has no identity",null,null,null);send(noAuth,none);assertAuthor(noAuth,none,first);assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
         String staleAuth=batch(first,List.of(stale),"MAINTENANCE","TEXT","Worker holds other advisor identity",null,null,null);as(second);bulk.processRecipient(staleAuth,stale);assertAuthor(staleAuth,stale,first);assertThat(SecurityContextHolder.getContext().getAuthentication().getName()).isEqualTo(String.valueOf(second));
         assertThat(executions(none)).isEqualTo(1);assertThat(executions(stale)).isEqualTo(1);
@@ -418,6 +418,8 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
         counts(batch,0,0,0,0,2);counts(preparedBatch,0,0,0,0,1);assertThat(jdbc.queryForObject("SELECT state FROM nx_support_bulk_job WHERE id=?",String.class,batch)).isEqualTo("QUEUED");assertThat(row(preparedBatch,prepared).get("request_json")).isNotNull();
         var seed=new LinkedHashMap<String,Object>();seed.put("checkedAt",Instant.now().toString());seed.put("database","cs_enhance_20261001");seed.put("port",18141);seed.put("workflowRunId",System.getenv("WORKFLOW_RUN_ID"));seed.put("snapshotHash",System.getenv("WORKFLOW_SNAPSHOT_HASH"));seed.put("firstJvmPid",ProcessHandle.current().pid());seed.put("actorId",actor);seed.put("batchId",batch);seed.put("customerIds",List.of(one,two));seed.put("clientMessageIds",List.of(row(batch,one).get("client_message_id"),row(batch,two).get("client_message_id")));seed.put("frozenContent",jdbc.queryForObject("SELECT content_json FROM nx_support_bulk_job WHERE id=?",String.class,batch));seed.put("preparedBatchId",preparedBatch);seed.put("preparedCustomerId",prepared);seed.put("preparedClientMessageId",row(preparedBatch,prepared).get("client_message_id"));seed.put("preparedRequestJson",row(preparedBatch,prepared).get("request_json"));
         assertThat(messageCount(one)+messageCount(two)+messageCount(prepared)).isZero();
+        fixtureActors().deferCleanup(actor,"SupportBulkRestartRuntimeTest");
+        seed.put("actorCreationProof",fixtureActors().creationReference(actor));
         Files.writeString(Path.of(System.getenv("CS_ENHANCE_EVIDENCE_DIR"),"bulk-restart-seed.json"),json.writeValueAsString(seed));writeProof("bulk-runtime.json");
     }
 
