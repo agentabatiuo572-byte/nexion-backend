@@ -1038,6 +1038,7 @@ public final class SupportObjectEvidenceLedger {
     private static Map<String,Object> map(Object... values) { Map<String,Object> result=new LinkedHashMap<>(); for(int i=0;i<values.length;i+=2) result.put((String)values[i],values[i+1]); return result; }
     private static Object normalize(Object value) {
         if (value instanceof java.util.Date || value instanceof java.time.temporal.TemporalAccessor) return value.toString();
+        if (value instanceof JsonNode) return value;
         if (value instanceof Map<?,?> source) { Map<String,Object> result=new LinkedHashMap<>(); source.forEach((key,item)->result.put(String.valueOf(key),normalize(item))); return result; }
         if (value instanceof Iterable<?> source) { List<Object> result=new ArrayList<>(); for(Object item:source)result.add(normalize(item)); return result; }
         return value;

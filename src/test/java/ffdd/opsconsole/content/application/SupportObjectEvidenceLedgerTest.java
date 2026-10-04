@@ -213,6 +213,8 @@ class SupportObjectEvidenceLedgerTest {
         request();avatars.clear();assertThatThrownBy(()->new TransactionTemplate(transactions).execute(status->put())).hasMessageContaining("Exactly one actual inserting row");
         verify(minio,never()).putObject(any(PutObjectArgs.class));
         JsonNode event=events("PUT_UNKNOWN").get(0);assertThat(event.path("requestId").isNull()).isTrue();assertThat(event.path("payload").path("delegated").asBoolean()).isFalse();
+        assertThat(event.path("payload").path("failure").path("type").asText()).isEqualTo(IllegalStateException.class.getName());
+        assertThat(event.path("payload").path("ownership").asText()).isEqualTo("UNPROVEN");assertThat(events("PUT_RETURNED")).isEmpty();
     }
 
     @Test void multirowAndMultipleOpenRequestsFailClosedAtPutNotAtRegistration() throws Exception {
@@ -345,6 +347,21 @@ class SupportObjectEvidenceLedgerTest {
         assertThatThrownBy(()->ledger.createCustomer("LedgerTest","customer","referral",()->new SupportObjectEvidenceLedger.CustomerInsert(201L,0,201L)))
                 .hasMessageContaining("Actual single INSERT");
         assertThat(events("CUSTOMER_CREATED")).isEmpty();assertThat(events("CUSTOMER_CREATE_UNKNOWN")).hasSize(1);
+        JsonNode unknown=events("CUSTOMER_CREATE_UNKNOWN").get(0);
+        assertThat(unknown.path("payload").path("failure").path("type").asText()).isEqualTo(IllegalStateException.class.getName());
+        assertThat(unknown.path("payload").path("ownership").asText()).isEqualTo("UNPROVEN");
+        assertThat(unknown.path("requestRef")).isEqualTo(unknown.path("payload").path("intentRef"));
+    }
+
+    @Test void customerCreationUnknownKeepsExactOriginalCauseAndUnprovenOwnership() throws Exception {
+        IllegalStateException original=new IllegalStateException("isolated customer insertion failure");
+        Throwable propagated=catchThrowable(()->ledger.createCustomer("LedgerTest","customer-exception","referral",()->{throw original;}));
+        assertThat(propagated).isInstanceOf(IllegalStateException.class).hasMessage("Customer insertion failed");
+        assertThat(propagated.getCause()).isSameAs(original);
+        assertThat(events("CUSTOMER_CREATED")).isEmpty();
+        JsonNode unknown=events("CUSTOMER_CREATE_UNKNOWN").get(0);
+        assertThat(unknown.path("payload").path("failure").path("type").asText()).isEqualTo(propagated.getClass().getName());
+        assertThat(unknown.path("payload").path("ownership").asText()).isEqualTo("UNPROVEN");
     }
 
     @Test void independentlyCommittedCustomerSupportsPutBeforeAvatarUrlUpdate() throws Exception {
@@ -360,6 +377,84 @@ class SupportObjectEvidenceLedgerTest {
         request();var second=new SupportObjectEvidenceLedger(jdbc,json,transactions,properties,minio,environment);
         second.request(new SupportObjectEvidenceLedger.Request("SecondContext","case",SupportObjectEvidenceLedger.Kind.AVATAR,"UNKNOWN",null,null,null,null,null,null,BUCKET,false));
         assertThat(events("REQUEST_INTENT")).hasSize(2);assertThat(events("REQUEST_INTENT").get(1).path("previous").path("sha256").asText()).hasSize(64);
+    }
+
+    @Test void persistedJsonNodeShapesAndExactReferencesSurviveFreshReaderThenSecondAppend() throws Exception {
+        request();JsonNode first=events("REQUEST_INTENT").get(0);Path firstPath=eventPath(first);byte[] firstBytes=Files.readAllBytes(firstPath);
+        assertThat(first.path("identity")).isEqualTo(json.valueToTree(context.get("identity")));
+        assertThat(first.path("resourceIdentity")).isEqualTo(json.valueToTree(context.get("resourceIdentity")));
+        assertThat(first.path("context").isObject()).isTrue();
+        assertThat(first.path("context").path("path").asText()).isEqualTo(environment.get("CS_ENHANCE_ACTOR_CONTEXT"));
+        assertThat(first.path("context").path("sha256").asText()).isEqualTo(environment.get("CS_ENHANCE_ACTOR_CONTEXT_SHA256"));
+        assertThat(first.path("objectBefore")).isEqualTo(json.valueToTree(context.get("objectBefore")));
+        for(String field:List.of("previous","requestRef","creatorRef","object"))assertThat(first.path(field).isNull()).as(field).isTrue();
+        assertThat(first.path("candidate").isTextual()).isTrue();
+        assertThat(first.path("payload").path("request").isObject()).isTrue();
+        assertThat(first.path("payload").path("request").path("actorId").asLong()).isEqualTo(100L);
+        assertThat(first.path("payload").path("request").path("customerId").isNull()).isTrue();
+        assertThat(first.path("payload").path("ownership").asText()).isEqualTo("UNPROVEN");
+        var reopened=new SupportObjectEvidenceLedger(jdbc,json,transactions,properties,minio,environment);
+        reopened.request(new SupportObjectEvidenceLedger.Request("FreshReader","second",SupportObjectEvidenceLedger.Kind.AVATAR,
+                "UNKNOWN",null,null,null,null,null,null,BUCKET,false));
+        JsonNode second=events("REQUEST_INTENT").get(1);
+        assertThat(second.path("previous")).isEqualTo(json.valueToTree(map("path",firstPath.toAbsolutePath().normalize().toString(),
+                "sha256",sha(firstBytes),"bytes",firstBytes.length)));
+        assertThat(second.path("identity")).isEqualTo(first.path("identity"));
+        assertThat(second.path("context")).isEqualTo(first.path("context"));
+        assertThat(second.path("objectBefore")).isEqualTo(first.path("objectBefore"));
+        assertThat(second.path("payload").path("request").path("actorId").isNull()).isTrue();
+        assertThat(events("REQUEST_INTENT")).hasSize(2);
+    }
+
+    @Test void nestedPutEvidenceKeepsNodesMapsNullsBooleansAndPersistedNumbers() throws Exception {
+        var intent=request();ledger.direct(intent,()->new TransactionTemplate(transactions).execute(status->put()));
+        JsonNode event=events("PUT_INTENT").get(0),payload=event.path("payload");
+        assertThat(event.path("requestRef")).isEqualTo(intent.reference());
+        assertThat(event.path("creatorRef").isObject()).isTrue();assertThat(event.path("object").isObject()).isTrue();
+        assertThat(event.path("object").path("key").asText()).isEqualTo(currentKey);
+        assertThat(payload.path("before").path("beforeRef")).isEqualTo(json.valueToTree(context.get("objectBefore")));
+        assertThat(payload.path("before").path("currentIdentity").isObject()).isTrue();
+        assertThat(payload.path("before").path("customerCreatorRef").isNull()).isTrue();
+        assertThat(payload.path("transactionActive").isBoolean()).isTrue();
+        assertThat(payload.path("exactRow").path("byte_count").isIntegralNumber()).isTrue();
+        assertThat(payload.path("exactRow").path("byte_count").asLong()).isEqualTo((long)BYTES.length);
+        assertThat(payload.path("databaseIdentity").path("port").asInt()).isEqualTo(33329);
+        assertThat(payload.path("ownership").asText()).isEqualTo("UNPROVEN");
+        new SupportObjectEvidenceLedger(jdbc,json,transactions,properties,minio,environment);
+    }
+
+    @Test void nestedMixedNormalizationPreservesJsonNodesAndOrdinaryDateContracts() throws Exception {
+        var node=json.createObjectNode().put("exact",true);
+        var array=json.createArrayNode().add(7).add(node);
+        var date=java.sql.Timestamp.valueOf("2026-01-01 00:00:00.123456");
+        var temporal=java.time.LocalDateTime.parse("2026-01-01T00:00:00.123456");
+        Map<String,Object> mixed=map("nodeObject",node,"nodeArray",array,"nodeText",json.getNodeFactory().textNode("exact"),
+                "nodeBoolean",json.getNodeFactory().booleanNode(false),"nodeInt",json.getNodeFactory().numberNode(7),
+                "nodeLong",json.getNodeFactory().numberNode(100L),"nodeNull",json.getNodeFactory().nullNode(),
+                "ordinary",map("list",List.of(map("node",node),array)),"plainNull",null,"date",date,"temporal",temporal);
+        var method=SupportObjectEvidenceLedger.class.getDeclaredMethod("normalize",Object.class);method.setAccessible(true);
+        JsonNode persisted=json.readTree(json.writeValueAsBytes(method.invoke(null,mixed)));
+        assertThat(persisted.path("nodeObject")).isEqualTo(node);assertThat(persisted.path("nodeArray")).isEqualTo(array);
+        assertThat(persisted.path("nodeText").asText()).isEqualTo("exact");
+        assertThat(persisted.path("nodeBoolean").isBoolean()).isTrue();assertThat(persisted.path("nodeBoolean").asBoolean()).isFalse();
+        assertThat(persisted.path("nodeInt").asInt()).isEqualTo(7);
+        assertThat(json.valueToTree(100L)).isNotEqualTo(persisted.path("nodeLong"));
+        assertThat(persisted.path("nodeLong")).isEqualTo(json.readTree("100"));
+        assertThat(persisted.path("nodeNull").isNull()).isTrue();assertThat(persisted.path("plainNull").isNull()).isTrue();
+        assertThat(persisted.path("ordinary").path("list").isArray()).isTrue();
+        assertThat(persisted.path("ordinary").path("list").get(0).path("node")).isEqualTo(node);
+        assertThat(persisted.path("ordinary").path("list").get(1)).isEqualTo(array);
+        assertThat(persisted.path("date").asText()).isEqualTo(date.toString());
+        assertThat(persisted.path("temporal").asText()).isEqualTo(temporal.toString());
+    }
+
+    @Test void changedPersistedIdentityShapeRejectsFreshReaderWithoutAppendingOrDelegating() throws Exception {
+        request();JsonNode first=events("REQUEST_INTENT").get(0);Path path=eventPath(first);
+        var changed=(com.fasterxml.jackson.databind.node.ObjectNode)first.deepCopy();
+        changed.set("identity",json.createArrayNode().add("wrong shape"));Files.write(path,json.writeValueAsBytes(changed));
+        assertThatThrownBy(()->new SupportObjectEvidenceLedger(jdbc,json,transactions,properties,minio,environment))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("Object event current context mismatch: identity");
+        assertThat(events("REQUEST_INTENT")).hasSize(1);verify(minio,never()).putObject(any(PutObjectArgs.class));
     }
 
     @Test void persistedRequestSqlAndContentIntegersSurviveJacksonNumericNodeWidthRoundTrip() throws Exception {
@@ -592,6 +687,8 @@ class SupportObjectEvidenceLedgerTest {
     }
     private JsonNode save(Path path,Object value) throws Exception {Files.createDirectories(path.getParent());byte[] bytes=json.writeValueAsBytes(value);Files.write(path,bytes);return json.valueToTree(map("path",path.toAbsolutePath().normalize().toString(),"sha256",sha(bytes),"bytes",bytes.length));}
     private List<JsonNode> events(String type) throws Exception {List<JsonNode> result=new ArrayList<>();try(var files=Files.list(temporary.resolve("evidence/object-ledger"))){for(Path path:files.sorted().toList())if(path.getFileName().toString().endsWith(".json")){JsonNode body=json.readTree(Files.readAllBytes(path));if(type.equals(body.path("eventType").asText()))result.add(body);}}return result;}
+    private Path eventPath(JsonNode event) {return temporary.resolve("evidence/object-ledger").resolve(String.format(java.util.Locale.ROOT,
+            "%08d-%s.json",event.path("sequence").asInt(),event.path("eventId").asText()));}
     private static Map<String,Object> map(Object... fields){Map<String,Object> map=new LinkedHashMap<>();for(int i=0;i<fields.length;i+=2)map.put((String)fields[i],fields[i+1]);return map;}
     private static String sha(byte[] bytes)throws Exception{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));}
     private static class TestTransactions extends AbstractPlatformTransactionManager {
