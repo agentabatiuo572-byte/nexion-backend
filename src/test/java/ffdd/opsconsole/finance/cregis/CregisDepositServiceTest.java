@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -23,6 +24,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
@@ -247,8 +251,9 @@ class CregisDepositServiceTest {
         verify(gateway, never()).createAddress(any(), any(), any(), any());
     }
 
-    @Test
-    void alreadyBoundAddressRemainsReadableWithoutProviderWrite() {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void alreadyBoundAddressRemainsReadableWithoutProviderWrite(boolean creditEnabled) {
         CregisProperties props = properties();
         props.setDepositEnabled(true);
         props.setDepositPilotUserIds("42");
@@ -256,13 +261,38 @@ class CregisDepositServiceTest {
         riskReady(db);
         when(db.addressForUser(42, CregisConstants.BSC_CHAIN_ID)).thenReturn(List.of(Map.of(
                 "projectId", 88L, "state", "READY", "address", ADDRESS)));
-        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1));
+        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1,
+                "creditEnabled", creditEnabled ? 1 : 0));
         CregisGatewayRouter router = mock(CregisGatewayRouter.class);
         CregisDepositService service = new CregisDepositService(props, router, mock(BscDepositProof.class),
                 new CregisSigner(), new ObjectMapper(), db, mock(PlatformTransactionManager.class),
                 mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
-        assertThat(service.address(42)).containsEntry("address", ADDRESS).containsEntry("enabled", true);
+        assertThat(service.address(42)).isEqualTo(Map.of("enabled", true, "creditEnabled", creditEnabled,
+                "network", "BEP20", "address", ADDRESS, "confirmations", 15,
+                "feeUsdt", 1, "minDepositUsdt", 10));
         verify(router, never()).provider();
+        verify(db, never()).creditWallet(any(), anyLong(), anyLong());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"PROVIDER, true, true, 7", "PROVIDER, true, false, 42",
+            "PROVIDER, false, true, 42", "DISABLED, true, true, 42"})
+    void unavailableDepositAddressReportsCreditDisabledWithoutAccessingDatabase(
+            CregisProperties.Mode mode, boolean depositEnabled, boolean creditEnabled, String pilotUserIds) {
+        CregisProperties props = properties();
+        props.setMode(mode);
+        props.setDepositEnabled(depositEnabled);
+        props.setDepositCreditEnabled(creditEnabled);
+        props.setDepositPilotUserIds(pilotUserIds);
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        CregisGatewayRouter router = mock(CregisGatewayRouter.class);
+        BscDepositProof chain = mock(BscDepositProof.class);
+        CregisDepositService service = new CregisDepositService(props, router, chain,
+                new CregisSigner(), new ObjectMapper(), db, mock(PlatformTransactionManager.class),
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
+        assertThat(service.address(42)).isEqualTo(Map.of(
+                "enabled", false, "creditEnabled", false, "network", "BEP20"));
+        verifyNoInteractions(db, router, chain);
     }
 
     @Test
@@ -272,7 +302,7 @@ class CregisDepositServiceTest {
         props.setDepositPilotUserIds("42");
         CregisDepositMapper db = mock(CregisDepositMapper.class);
         riskReady(db);
-        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 0));
+        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 0, "creditEnabled", 1));
         BscDepositProof chain = mock(BscDepositProof.class);
         CregisGatewayRouter router = mock(CregisGatewayRouter.class);
         CregisDepositService service = new CregisDepositService(props, router, chain,
@@ -280,14 +310,18 @@ class CregisDepositServiceTest {
                 mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
 
         assertThat(service.address(42)).containsEntry("enabled", false)
+                .containsEntry("creditEnabled", false)
                 .containsEntry("reason", "CREGIS_DEPOSIT_PAUSED");
         verify(chain, never()).head();
         verify(router, never()).provider();
         verify(db, never()).allocatedAddressCount(anyLong(), any());
     }
 
-    @Test
-    void poolAssignmentAnchorsAtCurrentHeadBeyondUnfinalizedPreAllocationTransfers() {
+    @ParameterizedTest
+    @CsvSource({"IDLE, 1, 1, true", "IDLE, 1, 0, false", "BLOCKED, 1, 1, false",
+            "MISSING, 1, 1, false", "IDLE, 0, 1, false"})
+    void poolAssignmentAnchorsAtCurrentHeadAndReportsCurrentCreditGate(
+            String finalState, int finalAssignEnabled, int finalCreditEnabled, boolean expectedCreditEnabled) {
         CregisProperties props = properties();
         props.setDepositEnabled(true);
         props.setDepositPilotUserIds("42");
@@ -304,6 +338,10 @@ class CregisDepositServiceTest {
         when(db.cursor()).thenReturn(107L);
         when(db.lockCursor()).thenReturn(107L);
         when(db.lockProvisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1, "creditEnabled", 1));
+        Map<String, Object> currentGate = "MISSING".equals(finalState) ? null
+                : Map.of("state", finalState, "assignEnabled", finalAssignEnabled, "creditEnabled", finalCreditEnabled);
+        when(db.provisionGate()).thenReturn(
+                Map.of("state", "IDLE", "assignEnabled", 1, "creditEnabled", 1), currentGate);
         when(db.lockUnassignedAddress(88, CregisConstants.BSC_CHAIN_ID))
                 .thenReturn(Map.of("id", 1L, "address", ADDRESS));
         when(router.provider()).thenReturn(provider);
@@ -314,9 +352,13 @@ class CregisDepositServiceTest {
         CregisDepositService service = new CregisDepositService(props, router, chain,
                 new CregisSigner(), new ObjectMapper(), db, manager,
                 mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
-        assertThat(service.address(42)).containsEntry("address", ADDRESS);
+        assertThat(service.address(42)).isEqualTo(Map.of("enabled", true, "creditEnabled", expectedCreditEnabled,
+                "network", "BEP20", "address", ADDRESS, "confirmations", 15,
+                "feeUsdt", 1, "minDepositUsdt", 10));
         verify(db).assignPoolAddress(1, 42, 120, BLOCK);
         verify(db, never()).assignPoolAddress(1, 42, 106, BLOCK);
+        verify(db, never()).creditWallet(any(), anyLong(), anyLong());
+        verify(provider, never()).createAddress(any(), any(), any(), any());
     }
 
     @Test
@@ -367,8 +409,9 @@ class CregisDepositServiceTest {
                 eq("UNRESOLVED_EXPOSURE"), any());
     }
 
-    @Test
-    void disabledDatabaseAssignmentSwitchHidesExistingAddress() {
+    @ParameterizedTest
+    @CsvSource({"IDLE, 0", "BLOCKED, 1", "MISSING, 1"})
+    void unavailableDatabaseAssignmentGateHidesExistingAddressAndCredit(String state, int assignEnabled) {
         CregisProperties props = properties();
         props.setDepositEnabled(true);
         props.setDepositPilotUserIds("42");
@@ -376,12 +419,15 @@ class CregisDepositServiceTest {
         riskReady(db);
         when(db.addressForUser(42, CregisConstants.BSC_CHAIN_ID)).thenReturn(List.of(Map.of(
                 "projectId", 88L, "state", "READY", "address", ADDRESS)));
-        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 0));
+        when(db.provisionGate()).thenReturn("MISSING".equals(state) ? null
+                : Map.of("state", state, "assignEnabled", assignEnabled, "creditEnabled", 1));
         CregisDepositService service = new CregisDepositService(props,
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, mock(PlatformTransactionManager.class),
                 mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
-        assertThat(service.address(42)).containsEntry("enabled", false);
+        assertThat(service.address(42)).isEqualTo(Map.of("enabled", false, "creditEnabled", false,
+                "network", "BEP20", "reason", "CREGIS_DEPOSIT_PAUSED"));
+        verify(db, never()).creditWallet(any(), anyLong(), anyLong());
     }
 
     private static CregisProperties properties() {

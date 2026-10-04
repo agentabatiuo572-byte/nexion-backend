@@ -53,7 +53,7 @@ public class CregisDepositService {
 
     public Map<String, Object> address(long userId) {
         if (userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
-        if (!pilot(userId)) return Map.of("enabled", false, "network", "BEP20");
+        if (!pilot(userId)) return Map.of("enabled", false, "creditEnabled", false, "network", "BEP20");
         tripIfNeeded();
         if (config.getDepositConfirmations() < 15) throw new BizException(503, "CREGIS_CONFIRMATIONS_INVALID");
         List<Map<String, Object>> rows = db.addressForUser(userId, CHAIN);
@@ -63,9 +63,11 @@ public class CregisDepositService {
                 throw new BizException(409, "CREGIS_PROJECT_ADDRESS_CONFLICT");
             Map<String, Object> gate = db.provisionGate();
             if (gate == null || !"IDLE".equals(gate.get("state")) || !on(gate, "assignEnabled"))
-                return Map.of("enabled", false, "network", "BEP20", "reason", "CREGIS_DEPOSIT_PAUSED");
+                return Map.of("enabled", false, "creditEnabled", false,
+                        "network", "BEP20", "reason", "CREGIS_DEPOSIT_PAUSED");
             if ("READY".equals(row.get("state"))) return Map.of(
-                    "enabled", true, "network", "BEP20", "address", row.get("address"),
+                    "enabled", true, "creditEnabled", config.isDepositCreditEnabled() && on(gate, "creditEnabled"),
+                    "network", "BEP20", "address", row.get("address"),
                     "confirmations", config.getDepositConfirmations(), "feeUsdt", 1,
                     "minDepositUsdt", 10);
             throw new BizException(409, "CREGIS_ADDRESS_REQUIRES_REVIEW");
@@ -73,7 +75,8 @@ public class CregisDepositService {
         Map<String, Object> visibleGate = db.provisionGate();
         if (visibleGate == null || !"IDLE".equals(visibleGate.get("state"))
                 || !on(visibleGate, "assignEnabled"))
-            return Map.of("enabled", false, "network", "BEP20", "reason", "CREGIS_DEPOSIT_PAUSED");
+            return Map.of("enabled", false, "creditEnabled", false,
+                    "network", "BEP20", "reason", "CREGIS_DEPOSIT_PAUSED");
         if (db.allocatedAddressCount(config.getProjectId(), CHAIN) == 0)
             throw new BizException(503, "CREGIS_ADDRESS_POOL_EMPTY");
         long finalized = chain.head().number() - config.getDepositConfirmations() + 1;
@@ -113,7 +116,12 @@ public class CregisDepositService {
         if (assigned == null) throw new BizException(409, "CREGIS_ADDRESS_REQUIRES_REVIEW");
         if (!"READY".equals(assigned.get("state")))
             throw new BizException(409, "CREGIS_ADDRESS_REQUIRES_REVIEW");
-        return Map.of("enabled", true, "network", "BEP20", "address", assigned.get("address"),
+        Map<String, Object> currentGate = db.provisionGate();
+        boolean creditEnabled = config.isDepositCreditEnabled() && currentGate != null
+                && "IDLE".equals(currentGate.get("state")) && on(currentGate, "assignEnabled")
+                && on(currentGate, "creditEnabled");
+        return Map.of("enabled", true, "creditEnabled", creditEnabled,
+                "network", "BEP20", "address", assigned.get("address"),
                 "confirmations", config.getDepositConfirmations(), "feeUsdt", 1, "minDepositUsdt", 10);
     }
 
