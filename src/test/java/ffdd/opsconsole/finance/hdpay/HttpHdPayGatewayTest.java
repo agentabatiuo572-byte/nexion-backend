@@ -84,6 +84,24 @@ class HttpHdPayGatewayTest {
     }
 
     @Test
+    void publicReasonFilteringKeepsItsExistingOutputBeforePrivateEchoChecks() {
+        assertThat(HttpHdPayGateway.publicBusinessReason(null)).isEmpty();
+        assertThat(HttpHdPayGateway.publicBusinessReason(" \t\r\n ")).isEmpty();
+        assertThat(HttpHdPayGateway.publicBusinessReason(" 金额必须为整数 ")).isEqualTo("金额必须为整数");
+        assertThat(HttpHdPayGateway.publicBusinessReason(" Số tiền không hợp lệ ")).isEqualTo("Số tiền không hợp lệ");
+        assertThat(HttpHdPayGateway.publicBusinessReason("Invalid VQR-1")).isEqualTo("Invalid VQR-1");
+        assertThat(HttpHdPayGateway.publicBusinessReason("Minimum amount is 246810")).isEqualTo("Minimum amount is 246810");
+        assertThat(HttpHdPayGateway.publicBusinessReason("Invalid abcdefghijklmnop")).isEqualTo("Invalid abcdefghijklmnop");
+        assertThat(HttpHdPayGateway.publicBusinessReason("额".repeat(256))).isEqualTo("额".repeat(256));
+        for (String value : List.of("额".repeat(257), "金额必须为整数、且大于零", "Số tiền tối thiểu là 100000₫",
+                "Authorization: Bearer abc123abc123", "Invalid api-key abcd1234abcd1234",
+                "Please visit www.private.example.com", "Invalid 0123456789abcdef0123456789abcdef",
+                "Invalid 123456789012", "Invalid 203.0.113.9")) {
+            assertThat(HttpHdPayGateway.publicBusinessReason(value)).isEmpty();
+        }
+    }
+
+    @Test
     void usesTheExplicitProviderProxyWithoutChangingOtherJvmNetworking() {
         HdPayProperties properties = new HdPayProperties();
         properties.setProxyHost("127.0.0.1");
@@ -204,6 +222,8 @@ class HttpHdPayGatewayTest {
         server.start();
         try {
             HdPayProperties properties = properties(server.getAddress().getPort());
+            properties.setMerchantId("246810");
+            properties.setMd5Key("abcdefghijklmnop");
             HttpHdPayGateway gateway = new HttpHdPayGateway(properties, objectMapper,
                     HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build());
             String paymentUrl = "https://api.hdpayadmin.com/placeAnOrder?orderId=private-fixture";
@@ -212,54 +232,120 @@ class HttpHdPayGatewayTest {
                     + properties.getMerchantId() + " " + properties.getMd5Key() + "\nunsafe-message";
             String unsafeCode = "provider-code-secret\nunsafe-code";
             record Scenario(int status, String body, String error, boolean ambiguous,
-                            String shape, String reason) {}
+                            String shape, String reason, String disposition, String publicReason) {}
             List<Scenario> scenarios = List.of(
                     new Scenario(200, objectMapper.writeValueAsString(Map.of(
                             "code", 408, "msg", "该ip禁止访问", "data", Map.of("echo", unsafeMessage))),
                             "HDPAY_CREATE_EXPLICIT_REJECTED", false,
-                            "providerCode=408 codeType=NUMBER rootType=OBJECT dataType=OBJECT msgType=STRING", "IP_NOT_ALLOWED"),
+                            "providerCode=408 codeType=NUMBER rootType=OBJECT dataType=OBJECT msgType=STRING", "IP_NOT_ALLOWED", "SAFE", "该ip禁止访问"),
+                    new Scenario(200, "{\"code\":500,\"data\":null}",
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "dataType=NULL msgType=MISSING", "UNCLASSIFIED_REJECTION", "MISSING", ""),
+                    new Scenario(200, "{\"code\":500,\"data\":null,\"msg\":null}",
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "dataType=NULL msgType=NULL", "UNCLASSIFIED_REJECTION", "NON_TEXT", ""),
+                    new Scenario(200, "{\"code\":500,\"msg\":{\"private\":\"hidden\"}}",
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=OBJECT", "UNCLASSIFIED_REJECTION", "NON_TEXT", ""),
+                    new Scenario(200, "{\"code\":500,\"msg\":[\"hidden\"]}",
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=ARRAY", "UNCLASSIFIED_REJECTION", "NON_TEXT", ""),
+                    new Scenario(200, "{\"code\":500,\"msg\":500}",
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=NUMBER", "UNCLASSIFIED_REJECTION", "NON_TEXT", ""),
+                    new Scenario(200, "{\"code\":500,\"msg\":false}",
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=BOOLEAN", "UNCLASSIFIED_REJECTION", "NON_TEXT", ""),
+                    new Scenario(200, "{\"code\":500,\"msg\":\"\"}",
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "EMPTY", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", " \t\r\n ")),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "EMPTY", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", unsafeMessage)),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "FILTERED", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", "a".repeat(257))),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "FILTERED", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", "金额必须为整数、且大于零")),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "FILTERED", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", "Số tiền tối thiểu là 100000₫")),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "FILTERED", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", "Authorization: Bearer abc123abc123")),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "FILTERED", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", "Please visit www.private.example.com")),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "FILTERED", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", "Invalid 0123456789abcdef0123456789abcdef")),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "FILTERED", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", "Invalid 123456789012")),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "FILTERED", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", "Invalid 203.0.113.9")),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "FILTERED", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", "Invalid VQR-1")),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "PRIVATE_ECHO", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", "Minimum amount is " + properties.getMerchantId())),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "PRIVATE_ECHO", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", "Invalid " + properties.getMd5Key())),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "PRIVATE_ECHO", ""),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", " 金额必须为整数 ")),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "SAFE", "金额必须为整数"),
+                    new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 500, "msg", " Số tiền không hợp lệ ")),
+                            "HDPAY_CREATE_EXPLICIT_REJECTED", false,
+                            "msgType=STRING", "UNCLASSIFIED_REJECTION", "SAFE", "Số tiền không hợp lệ"),
                     new Scenario(200, objectMapper.writeValueAsString(Map.of(
                             "code", unsafeCode, "msg", unsafeMessage, "data", paymentUrl)),
                             "HDPAY_CREATE_REJECTED", true,
-                            "providerCode=INVALID codeType=STRING rootType=OBJECT dataType=STRING msgType=STRING", "UNCONFIRMED_RESPONSE"),
+                            "providerCode=INVALID codeType=STRING rootType=OBJECT dataType=STRING msgType=STRING", "UNCONFIRMED_RESPONSE", "NOT_APPLICABLE", ""),
                     new Scenario(200, objectMapper.writeValueAsString(Map.of(
                             "code", "408", "msg", "该ip禁止访问", "data", paymentUrl)),
                             "HDPAY_CREATE_REJECTED", true,
-                            "providerCode=408 codeType=STRING rootType=OBJECT dataType=STRING msgType=STRING", "UNCONFIRMED_RESPONSE"),
+                            "providerCode=408 codeType=STRING rootType=OBJECT dataType=STRING msgType=STRING", "UNCONFIRMED_RESPONSE", "NOT_APPLICABLE", ""),
                     new Scenario(503, objectMapper.writeValueAsString(Map.of(
                             "code", 429, "msg", unsafeMessage, "data", paymentUrl)),
                             "HDPAY_HTTP_503", false,
-                            "providerCode=429 codeType=NUMBER rootType=OBJECT dataType=STRING msgType=STRING", "HTTP_REJECTED"),
+                            "providerCode=429 codeType=NUMBER rootType=OBJECT dataType=STRING msgType=STRING", "HTTP_REJECTED", "NOT_APPLICABLE", ""),
                     new Scenario(503, objectMapper.writeValueAsString(Map.of(
                             "code", 200, "msg", unsafeMessage, "data", paymentUrl)),
                             "HDPAY_HTTP_503", false,
-                            "providerCode=200 codeType=NUMBER rootType=OBJECT dataType=STRING msgType=STRING", "HTTP_REJECTED"),
+                            "providerCode=200 codeType=NUMBER rootType=OBJECT dataType=STRING msgType=STRING", "HTTP_REJECTED", "NOT_APPLICABLE", ""),
                     new Scenario(503, unsafeMessage, "HDPAY_HTTP_503", false,
-                            "providerCode=MISSING codeType=MISSING rootType=INVALID_JSON dataType=MISSING msgType=MISSING", "HTTP_REJECTED"),
+                            "providerCode=MISSING codeType=MISSING rootType=INVALID_JSON dataType=MISSING msgType=MISSING", "HTTP_REJECTED", "NOT_APPLICABLE", ""),
                     new Scenario(200, unsafeMessage, "HDPAY_CREATE_IO_ERROR", true,
-                            "providerCode=MISSING codeType=MISSING rootType=INVALID_JSON dataType=MISSING msgType=MISSING", "INVALID_JSON"),
+                            "providerCode=MISSING codeType=MISSING rootType=INVALID_JSON dataType=MISSING msgType=MISSING", "INVALID_JSON", "NOT_APPLICABLE", ""),
                     new Scenario(200, "[408]", "HDPAY_CREATE_REJECTED", true,
-                            "providerCode=MISSING codeType=MISSING rootType=ARRAY dataType=MISSING msgType=MISSING", "UNCONFIRMED_RESPONSE"),
+                            "providerCode=MISSING codeType=MISSING rootType=ARRAY dataType=MISSING msgType=MISSING", "UNCONFIRMED_RESPONSE", "NOT_APPLICABLE", ""),
                     new Scenario(200, objectMapper.writeValueAsString(Map.of("msg", unsafeMessage, "data", paymentUrl)),
                             "HDPAY_CREATE_REJECTED", true,
-                            "providerCode=MISSING codeType=MISSING rootType=OBJECT dataType=STRING msgType=STRING", "UNCONFIRMED_RESPONSE"),
+                            "providerCode=MISSING codeType=MISSING rootType=OBJECT dataType=STRING msgType=STRING", "UNCONFIRMED_RESPONSE", "NOT_APPLICABLE", ""),
                     new Scenario(200, objectMapper.writeValueAsString(Map.of("code", 200.7, "msg", unsafeMessage, "data", paymentUrl)),
                             "HDPAY_CREATE_REJECTED", true,
-                            "providerCode=INVALID codeType=NUMBER rootType=OBJECT dataType=STRING msgType=STRING", "UNCONFIRMED_RESPONSE"),
+                            "providerCode=INVALID codeType=NUMBER rootType=OBJECT dataType=STRING msgType=STRING", "UNCONFIRMED_RESPONSE", "NOT_APPLICABLE", ""),
                     new Scenario(200, objectMapper.writeValueAsString(Map.of(
                             "code", 200, "msg", unsafeMessage, "data", Map.of("url", paymentUrl))),
                             "HDPAY_PAYMENT_PAGE_UNTRUSTED", true,
-                            "providerCode=200 codeType=NUMBER rootType=OBJECT dataType=OBJECT msgType=STRING", "UNCONFIRMED_RESPONSE"),
+                            "providerCode=200 codeType=NUMBER rootType=OBJECT dataType=OBJECT msgType=STRING", "UNCONFIRMED_RESPONSE", "NOT_APPLICABLE", ""),
                     new Scenario(200, objectMapper.writeValueAsString(Map.of(
                             "code", 200, "msg", unsafeMessage, "data", untrustedUrl)),
                             "HDPAY_PAYMENT_PAGE_UNTRUSTED", true,
-                            "providerCode=200 codeType=NUMBER rootType=OBJECT dataType=STRING msgType=STRING", "UNCONFIRMED_RESPONSE"),
+                            "providerCode=200 codeType=NUMBER rootType=OBJECT dataType=STRING msgType=STRING", "UNCONFIRMED_RESPONSE", "NOT_APPLICABLE", ""),
                     new Scenario(200, objectMapper.writeValueAsString(Map.of(
                             "code", 200, "msg", unsafeMessage, "data", paymentUrl)), null, false,
-                            "providerCode=200 codeType=NUMBER rootType=OBJECT dataType=STRING msgType=STRING", "ACCEPTED"),
+                            "providerCode=200 codeType=NUMBER rootType=OBJECT dataType=STRING msgType=STRING", "ACCEPTED", "NOT_APPLICABLE", ""),
                     new Scenario(200, objectMapper.writeValueAsString(Map.of(
                             "code", "200", "msg", unsafeMessage, "data", paymentUrl)), null, false,
-                            "providerCode=200 codeType=STRING rootType=OBJECT dataType=STRING msgType=STRING", "ACCEPTED"));
+                            "providerCode=200 codeType=STRING rootType=OBJECT dataType=STRING msgType=STRING", "ACCEPTED", "NOT_APPLICABLE", ""));
             int index = 0;
             for (Scenario scenario : scenarios) {
                 responseStatus.set(scenario.status());
@@ -272,8 +358,10 @@ class HttpHdPayGatewayTest {
                     assertThatThrownBy(() -> gateway.createPayOrder(order))
                             .isInstanceOf(HdPayGatewayException.class)
                             .hasMessage(scenario.error())
-                            .satisfies(ex -> assertThat(((HdPayGatewayException) ex).ambiguous())
-                                    .isEqualTo(scenario.ambiguous()));
+                            .satisfies(ex -> {
+                                assertThat(((HdPayGatewayException) ex).ambiguous()).isEqualTo(scenario.ambiguous());
+                                assertThat(((HdPayGatewayException) ex).providerReason()).isEqualTo(scenario.publicReason());
+                            });
                 }
                 assertThat(requestCount.get()).isEqualTo(index + 1);
                 assertThat(logs.list).hasSize(index + 1);
@@ -284,10 +372,13 @@ class HttpHdPayGatewayTest {
                         .digest(scenario.body().getBytes(StandardCharsets.UTF_8)));
                 assertThat(output).contains("orderRef=sha256:" + orderHash.substring(0, 16),
                         "httpStatus=" + scenario.status(), scenario.shape(),
-                        "bodySha256=" + bodyHash, "reason=" + scenario.reason());
+                        "bodySha256=" + bodyHash, "reason=" + scenario.reason(),
+                        "publicReasonDisposition=" + scenario.disposition());
+                if (!scenario.publicReason().isEmpty()) assertThat(output).doesNotContain(scenario.publicReason());
                 assertThat(output).doesNotContain("VQR-1", unsafeCode, unsafeMessage, "unsafe-code", "unsafe-message",
                         "FAKE HOLDER", "0123456789012345", "203.0.113.9", properties.getMerchantId(),
-                        properties.getMd5Key(), signature.get(), paymentUrl, "private-fixture", untrustedUrl, "untrusted-fixture");
+                        properties.getMd5Key(), signature.get(), paymentUrl, "private-fixture", untrustedUrl, "untrusted-fixture",
+                        "hidden", "abc123abc123", "www.private.example.com", "金额必须为整数、且大于零", "100000₫", "a".repeat(257));
                 index++;
             }
         } finally {

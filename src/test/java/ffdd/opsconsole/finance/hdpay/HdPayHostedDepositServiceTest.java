@@ -12,6 +12,8 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.spy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -30,11 +32,18 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.exception.GlobalExceptionHandler;
 import ffdd.opsconsole.shared.security.GatewaySecurityProperties;
 import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.test.web.servlet.MockMvc;
@@ -240,6 +249,49 @@ class HdPayHostedDepositServiceTest {
                 .containsEntry("paymentUrl", "https://api.hdpayadmin.com/pay?id=1")
                 .containsEntry("providerStatus", "created")
                 .doesNotContainKeys("bankAccount", "memoCode", "qrPayload");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"LocalDateTime", "Timestamp"})
+    void creditedGetAndListKeepTheCanonicalBusinessMatchedTime(String matchedAtType) {
+        AppVietQrIntentService canonical = businessClockLegacy();
+        Map<String, Object> original = intent();
+        original.put("vndAmount", new BigDecimal("527800"));
+        original.put("createdAt", "2026-10-05T11:33:28Z");
+        original.put("matchedAt", "2026-10-05T11:38:07Z");
+        original.put("paymentUrl", "https://api.hdpayadmin.com/pay?id=stale");
+        doReturn(ApiResult.ok(original)).when(canonical).get(7L, "VQR-1");
+        doReturn(ApiResult.ok(Map.of("items", List.of(original)))).when(canonical).list(7L, null);
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(Map.of(
+                "merchantOrderId", "VQR-1", "submissionStatus", "REJECTED", "settlementStatus", "CREDITED"));
+        when(mapper.findCreditedIntentForHostedResponse("VQR-1")).thenReturn(creditedAt(matchedAtType));
+
+        assertCreditedBusinessTime(service.get(7L, "VQR-1").getData());
+        Map<String, Object> listed = (Map<String, Object>) ((List<?>) service.list(7L, null).getData().get("items")).get(0);
+        assertCreditedBusinessTime(listed);
+        assertThat(original).containsEntry("matchedAt", "2026-10-05T11:38:07Z")
+                .containsKey("paymentUrl").containsEntry("status", "awaiting_payment");
+        verifyNoInteractions(gateway, audit);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"LocalDateTime", "Timestamp"})
+    void concurrentCreditBeforeCreateReplayKeepsTheBusinessMatchedTime(String matchedAtType) {
+        AppVietQrIntentService canonical = businessClockLegacy();
+        Map<String, Object> stale = intent();
+        stale.put("vndAmount", new BigDecimal("527800"));
+        stale.put("createdAt", "2026-10-05T11:33:28Z");
+        stale.put("paymentUrl", "https://api.hdpayadmin.com/pay?id=stale");
+        doReturn(ApiResult.ok(stale)).when(canonical).createHosted(7L, "idem", new BigDecimal("20"));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(Map.of(
+                "merchantOrderId", "VQR-1", "submissionStatus", "REJECTED", "settlementStatus", "CREDITED"));
+        when(mapper.findCreditedIntentForHostedResponse("VQR-1")).thenReturn(creditedAt(matchedAtType));
+
+        assertCreditedBusinessTime(service.create(7L, "idem", new BigDecimal("20"), "203.0.113.9").getData());
+        verifyNoInteractions(gateway, audit);
+        verify(mapper, never()).insertPending(any(), any(), any());
+        verify(mapper, never()).authorizeSubmissionIfIntentPayable(any());
+        verify(mapper, never()).markRejected(any(), any());
     }
 
     @Test
@@ -807,6 +859,29 @@ class HdPayHostedDepositServiceTest {
         value.put("version", 7L);
         value.put("createdAt", "2026-10-05T01:00:00");
         return value;
+    }
+
+    private AppVietQrIntentService businessClockLegacy() {
+        AppVietQrIntentService canonical = spy(new AppVietQrIntentService(null, null,
+                Clock.fixed(Instant.parse("2026-10-05T11:39:00Z"), ZoneId.of("Asia/Shanghai")), null, null));
+        service = new HdPayHostedDepositService(canonical, properties, gateway, mapper, audit, new ObjectMapper());
+        return canonical;
+    }
+
+    private Map<String, Object> creditedAt(String matchedAtType) {
+        LocalDateTime local = LocalDateTime.parse("2026-10-05T19:38:07");
+        return Map.of("status", "CREDITED", "creditedUsdt", new BigDecimal("20"),
+                "receivedVnd", new BigDecimal("527800"), "version", 1L,
+                "matchedAt", "Timestamp".equals(matchedAtType) ? Timestamp.valueOf(local) : local);
+    }
+
+    private void assertCreditedBusinessTime(Map<String, Object> result) {
+        assertThat(result).containsEntry("status", "credited")
+                .containsEntry("paymentMode", "hosted").containsEntry("providerStatus", "rejected")
+                .containsEntry("creditedUsdt", new BigDecimal("20"))
+                .containsEntry("receivedVnd", new BigDecimal("527800")).containsEntry("version", 1L)
+                .containsEntry("createdAt", "2026-10-05T11:33:28Z")
+                .containsEntry("matchedAt", "2026-10-05T11:38:07Z").doesNotContainKey("paymentUrl");
     }
 
     private AuditLogRecord rejectionAudit() {

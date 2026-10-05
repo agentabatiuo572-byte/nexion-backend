@@ -168,10 +168,8 @@ public class HdPayHostedDepositService {
         result.put("receivedVnd", settled.get("receivedVnd"));
         result.put("version", settled.get("version"));
         Object matchedAt = settled.get("matchedAt");
-        if (matchedAt instanceof java.sql.Timestamp timestamp) {
-            result.put("matchedAt", timestamp.toInstant().toString());
-        } else if (matchedAt instanceof java.time.LocalDateTime local) {
-            result.put("matchedAt", local.toInstant(java.time.ZoneOffset.UTC).toString());
+        if (matchedAt instanceof java.sql.Timestamp || matchedAt instanceof java.time.LocalDateTime) {
+            result.put("matchedAt", legacy.isoInstant(matchedAt));
         }
         result.remove("paymentUrl");
         return result;

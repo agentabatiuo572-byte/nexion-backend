@@ -466,7 +466,7 @@ public class AppVietQrIntentService {
         }
     }
 
-    private String isoInstant(Object value) {
+    public String isoInstant(Object value) {
         LocalDateTime local = null;
         if (value instanceof LocalDateTime localDateTime) local = localDateTime;
         if (value instanceof java.sql.Timestamp timestamp) local = timestamp.toLocalDateTime();
