@@ -81,10 +81,13 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT ce.id,ce.commission_type commissionType,ce.source_user_id sourceUserId,
-                   ce.source_user_name sourceUserName,ce.layer_no layerNo,ce.order_no orderNo,
+                   COALESCE(CASE WHEN ce.source_user_name REGEXP '[^[:space:]]' THEN ce.source_user_name END,
+                            source.nickname) sourceUserName,ce.layer_no layerNo,ce.order_no orderNo,
                    ce.order_amount_usd orderAmountUsd,ce.amount_usdt amountUsdt,ce.amount_nex amountNex,
                    ce.status,ce.created_at createdAt,ce.unlock_at unlockAt
               FROM nx_commission_event ce
+              LEFT JOIN nx_user u ON u.id=ce.user_id
+              LEFT JOIN nx_user source ON source.id=ce.source_user_id AND source.sandbox=u.sandbox AND source.is_deleted=0
              WHERE ce.user_id=#{userId} AND ce.is_deleted=0 AND ce.created_at <= #{snapshotAt}
              ORDER BY ce.created_at DESC,ce.id DESC LIMIT #{offset},#{limit}
             """)

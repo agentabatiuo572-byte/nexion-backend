@@ -39,6 +39,58 @@ class AppTeamInsightsServiceTest {
         return new AppTeamInsightsService(mapper, poolConfig, config, environment);
     }
     @Test
+    void genericCommissionNamesPreferTheSnapshotAndOnlyJoinVisibleSourcesInTheBeneficiaryNamespace() throws Exception {
+        var method = AppTeamInsightsMapper.class.getMethod("commissionEvents", Long.class, LocalDateTime.class, long.class, long.class);
+        String sql = String.join(" ", method.getAnnotation(org.apache.ibatis.annotations.Select.class).value())
+                .replaceAll("\\s+", " ");
+
+        assertThat(sql).contains("CASE WHEN ce.source_user_name REGEXP '[^[:space:]]' THEN ce.source_user_name END",
+                "source.nickname) sourceUserName", "LEFT JOIN nx_user u ON u.id=ce.user_id",
+                "LEFT JOIN nx_user source ON source.id=ce.source_user_id",
+                "source.sandbox=u.sandbox", "source.is_deleted=0",
+                "WHERE ce.user_id=#{userId} AND ce.is_deleted=0 AND ce.created_at <= #{snapshotAt}",
+                "ORDER BY ce.created_at DESC,ce.id DESC LIMIT #{offset},#{limit}");
+        assertThat(sql).doesNotContain("WHERE source.", "AND source.status=", "NOW()", "CURDATE()");
+    }
+
+    @Test
+    void genericCommissionPresentationKeepsResolvedNamesAndTheTrueSystemFallbackWithoutChangingThePage() {
+        var mapper = mock(AppTeamInsightsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0, "V0"));
+        var snapshot = LocalDateTime.of(2026, 10, 5, 19, 48, 21);
+        when(mapper.commissionEventCount(7L, snapshot)).thenReturn(12L);
+        List<String> names = java.util.Arrays.asList("NexGrid1051", " Snapshot at purchase ", null, "", " \t\n");
+        List<AppTeamInsightsMapper.CommissionRow> rows = new java.util.ArrayList<>();
+        for (int index = 0; index < names.size(); index++) {
+            rows.add(new AppTeamInsightsMapper.CommissionRow((long) index + 1, "network", index < 2 ? 8L : null,
+                    names.get(index), 1, "ORD-SOURCE", new BigDecimal("19.9"), new BigDecimal("1.99"),
+                    BigDecimal.ZERO, "COOLING", snapshot, snapshot.plusDays(30)));
+        }
+        when(mapper.commissionEvents(7L, snapshot, 5L, 5L)).thenReturn(rows);
+        when(mapper.commissionBuckets(eq(7L), any(), any(), any(), any(), any())).thenReturn(List.of());
+
+        var data = service(mapper, new MockEnvironment()).commissions(7L, 2, 5, "2026-10-05T11:48:21Z").getData();
+        assertThat(data).containsEntry("page", 2L).containsEntry("pageSize", 5L).containsEntry("totalRows", 12L);
+        @SuppressWarnings("unchecked") var events = (List<Map<String, Object>>) data.get("events");
+        assertThat(events).extracting(event -> event.get("sourceUserName"))
+                .containsExactly("NexGrid1051", " Snapshot at purchase ", "System", "System", "System");
+        assertThat(events).allSatisfy(event -> assertThat(event).containsEntry("amountUSDT", new BigDecimal("1.99"))
+                .containsEntry("amountNEX", BigDecimal.ZERO).containsEntry("status", "cooling")
+                .containsEntry("withdrawable", false));
+        verify(mapper).commissionEvents(7L, snapshot, 5L, 5L);
+        verify(mapper).commissionEventCount(7L, snapshot);
+    }
+
+    @Test
+    void missingBeneficiaryIsRejectedBeforeTheCommissionNameProjection() {
+        var mapper = mock(AppTeamInsightsMapper.class);
+        assertThatThrownBy(() -> service(mapper, new MockEnvironment()).commissions(7L))
+                .isInstanceOf(BizException.class).hasMessage("TEAM_USER_REQUIRED");
+        verify(mapper).userScope(7L);
+        verifyNoMoreInteractions(mapper);
+    }
+
+    @Test
     void leadershipRankDistributionGroupsByTheSelectedSourceColumnForOnlyFullGroupBy() throws Exception {
         var method = AppTeamInsightsMapper.class.getMethod("rankDistribution", Integer.class, int.class);
         var select = method.getAnnotation(org.apache.ibatis.annotations.Select.class);

@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 import org.apache.ibatis.mapping.Environment;
 import org.apache.ibatis.session.Configuration;
@@ -71,6 +73,61 @@ class TeamReadModelsMySqlTest {
                     assertThat(mapper.voucherDisplayName(id)).isNull();
                     assertThat(mapper.skuDisplayName(id)).isNull();
                 }
+            }
+        });
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "NEXION_TEAM_READ_IT", matches = "true")
+    void genericCommissionSourceNamesPreserveSnapshotsRowsNamespaceAndPagination() throws Exception {
+        inSchema((jdbc, configuration) -> {
+            jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,nickname VARCHAR(120),sandbox TINYINT,status VARCHAR(16),is_deleted TINYINT)");
+            jdbc.execute("CREATE TABLE nx_commission_event(id BIGINT PRIMARY KEY,user_id BIGINT,commission_type VARCHAR(32),source_user_id BIGINT,source_user_name VARCHAR(120),layer_no INT,order_no VARCHAR(80),order_amount_usd DECIMAL(20,6),amount_usdt DECIMAL(20,6),amount_nex DECIMAL(20,6),status VARCHAR(32),created_at DATETIME,unlock_at DATETIME,is_deleted TINYINT)");
+            jdbc.update("INSERT INTO nx_user VALUES(7,'Beneficiary',0,'ACTIVE',0),(8,'NexGrid 1051',0,'ACTIVE',0),(9,'Deleted source',0,'ACTIVE',1),(10,'Other namespace',1,'ACTIVE',0),(11,'',0,'ACTIVE',0),(12,NULL,0,'ACTIVE',0),(13,'Former source',0,'INACTIVE',0),(17,'Sandbox beneficiary',1,'ACTIVE',0),(18,'Sandbox source',1,'ACTIVE',0)");
+            var cutoff = LocalDateTime.of(2026, 10, 5, 19, 48, 21);
+            record SourceCase(long id, Long sourceId, String snapshot, String expected) { }
+            var cases = List.of(
+                    new SourceCase(1, 8L, null, "NexGrid 1051"),
+                    new SourceCase(2, 8L, "", "NexGrid 1051"),
+                    new SourceCase(3, 8L, " \t\n", "NexGrid 1051"),
+                    new SourceCase(4, 8L, " Original snapshot ", " Original snapshot "),
+                    new SourceCase(5, 9L, null, null),
+                    new SourceCase(6, 10L, null, null),
+                    new SourceCase(7, null, null, null),
+                    new SourceCase(8, 999L, null, null),
+                    new SourceCase(9, 11L, null, ""),
+                    new SourceCase(10, 12L, null, null),
+                    new SourceCase(11, 9L, "Saved before deletion", "Saved before deletion"),
+                    new SourceCase(12, 13L, null, "Former source"));
+            String insert = "INSERT INTO nx_commission_event VALUES(?,?,'network',?,?,1,?,19.9,1.99,0,'COOLING',?,?,?)";
+            for (var sample : cases) {
+                jdbc.update(insert, sample.id(), 7L, sample.sourceId(), sample.snapshot(), "ORD-" + sample.id(),
+                        cutoff, cutoff.plusDays(30), 0);
+            }
+            jdbc.update(insert, 50L, 17L, 18L, null, "SANDBOX-ORDER", cutoff, cutoff.plusDays(30), 0);
+            jdbc.update(insert, 60L, 7L, 8L, null, "DELETED-EVENT", cutoff, cutoff.plusDays(30), 1);
+            jdbc.update(insert, 61L, 7L, 8L, null, "AFTER-SNAPSHOT", cutoff.plusSeconds(1), cutoff.plusDays(30), 0);
+            jdbc.update(insert, 62L, 99L, 8L, null, "MISSING-BENEFICIARY", cutoff, cutoff.plusDays(30), 0);
+            configuration.addMapper(AppTeamInsightsMapper.class);
+            try (var session = new MybatisSqlSessionFactoryBuilder().build(configuration).openSession(true)) {
+                var mapper = session.getMapper(AppTeamInsightsMapper.class);
+                var rows = mapper.commissionEvents(7L, cutoff, 0, 100);
+                assertThat(rows).hasSize(cases.size());
+                for (var sample : cases) {
+                    var row = rows.stream().filter(item -> item.id() == sample.id()).findFirst().orElseThrow();
+                    assertThat(row.sourceUserName()).as("source name for event %s", sample.id()).isEqualTo(sample.expected());
+                    assertThat(row.amountUsdt()).isEqualByComparingTo("1.99");
+                    assertThat(row.amountNex()).isZero();
+                    assertThat(row.status()).isEqualTo("COOLING");
+                    assertThat(row.unlockAt()).isEqualTo(cutoff.plusDays(30));
+                }
+                assertThat(mapper.commissionEventCount(7L, cutoff)).isEqualTo(cases.size());
+                assertThat(mapper.commissionEvents(7L, cutoff, 1, 2))
+                        .extracting(AppTeamInsightsMapper.CommissionRow::id).containsExactly(11L, 10L);
+                assertThat(mapper.commissionEvents(17L, cutoff, 0, 100))
+                        .extracting(AppTeamInsightsMapper.CommissionRow::sourceUserName).containsExactly("Sandbox source");
+                assertThat(mapper.commissionEvents(99L, cutoff, 0, 100)).hasSize(1)
+                        .allSatisfy(row -> assertThat(row.sourceUserName()).isNull());
             }
         });
     }
