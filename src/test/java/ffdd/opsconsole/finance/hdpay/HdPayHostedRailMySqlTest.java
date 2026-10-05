@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.finance.application.AppVietQrIntentService;
 import ffdd.opsconsole.finance.application.FinanceSensitiveDataCipher;
 import ffdd.opsconsole.finance.application.OpsVietnamPaymentService;
@@ -90,7 +91,8 @@ class HdPayHostedRailMySqlTest {
             AppVietQrIntentService canonical = f.service();
             HdPayGateway gateway = mock(HdPayGateway.class);
             when(gateway.createPayOrder(any())).thenReturn(new HdPayGateway.PayPage("https://api.hdpayadmin.com/pay?id=isolated"));
-            HdPayHostedDepositService hosted = new HdPayHostedDepositService(canonical, properties, gateway, f.orders);
+            HdPayHostedDepositService hosted = new HdPayHostedDepositService(canonical, properties, gateway, f.orders,
+                    mock(AuditLogService.class), new ObjectMapper());
             Map<?, ?> config = (Map<?, ?>) hosted.paymentConfig().getData().get("vietQr");
             assertThat(config.get("enabled")).isEqualTo(true);
             assertThat(config.get("dailyCapacityKnown")).isEqualTo(false);
@@ -145,7 +147,8 @@ class HdPayHostedRailMySqlTest {
                     .containsEntry("paymentRail", "HDPAY").containsEntry("bankAccountId", 8L);
             assertThat(f.intents.findIntentByCreateKey(41L, "manual-key")).containsEntry("paymentRail", "MANUAL");
             HdPayGateway gateway = mock(HdPayGateway.class);
-            var hosted = new HdPayHostedDepositService(f.service(), properties(), gateway, f.orders);
+            var hosted = new HdPayHostedDepositService(f.service(), properties(), gateway, f.orders,
+                    mock(AuditLogService.class), new ObjectMapper());
             assertThat(hosted.create(41L, "hosted-key", new BigDecimal("25"), "127.0.0.1").getData())
                     .containsEntry("paymentUrl", "https://api.hdpayadmin.com/pay?id=history")
                     .doesNotContainKeys("bankAccount", "memoCode");
@@ -283,7 +286,8 @@ class HdPayHostedRailMySqlTest {
             HdPayGateway gateway = mock(HdPayGateway.class);
             when(gateway.queryPayOrder("VQR-RETRY-OK")).thenReturn(new HdPayGateway.PayOrder(
                     "VQR-RETRY-OK", "P-OK", 1, new BigDecimal("659750"), "BANKQR", page));
-            HdPayHostedDepositService hosted = new HdPayHostedDepositService(f.service(), properties(), gateway, f.orders);
+            HdPayHostedDepositService hosted = new HdPayHostedDepositService(f.service(), properties(), gateway, f.orders,
+                    mock(AuditLogService.class), new ObjectMapper());
 
             assertThat(hosted.create(41L, "retry-ok-key", new BigDecimal("25"), "203.0.113.9").getData())
                     .containsEntry("intentNo", "VQR-RETRY-OK").containsEntry("providerStatus", "created")

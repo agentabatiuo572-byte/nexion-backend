@@ -1,15 +1,18 @@
 package ffdd.opsconsole.finance.web;
 
 import ffdd.opsconsole.finance.hdpay.HdPayHostedDepositService;
+import ffdd.opsconsole.finance.hdpay.HdPayCreateRejectedException;
 import ffdd.opsconsole.finance.dto.AppVietQrIntentCancelRequest;
 import ffdd.opsconsole.finance.dto.AppVietQrIntentCreateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.security.GatewaySecurityProperties;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -24,6 +27,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class AppVietQrIntentController {
     private final HdPayHostedDepositService service;
     private final GatewaySecurityProperties gatewaySecurity;
+
+    @ExceptionHandler(HdPayCreateRejectedException.class)
+    public ApiResult<Map<String, Object>> createRejected(
+            HdPayCreateRejectedException ex, HttpServletResponse response) {
+        response.setStatus(ex.getCode());
+        return ApiResult.fail(ex.getCode(), ex.getMessage(), Map.of("providerReason", ex.providerReason()));
+    }
 
     @GetMapping("/payments/config")
     public ApiResult<Map<String, Object>> paymentConfig(Authentication authentication) {

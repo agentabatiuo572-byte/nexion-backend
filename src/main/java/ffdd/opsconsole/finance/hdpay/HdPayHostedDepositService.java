@@ -1,7 +1,11 @@
 package ffdd.opsconsole.finance.hdpay;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.finance.application.AppVietQrIntentService;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -14,16 +18,23 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class HdPayHostedDepositService {
     static final String SUBMISSION_RESERVED_MARKER = "_hdpaySubmissionReserved";
+    private static final String CREATE_REJECTION_ACTION = "HDPAY_CREATE_REJECTED";
+    private static final String CREATE_REJECTION_RESOURCE = "HDPAY_ORDER";
+    private static final String EXPLICIT_REJECTION = "HDPAY_CREATE_EXPLICIT_REJECTED";
     private final AppVietQrIntentService legacy;
     private final HdPayProperties properties;
     private final HdPayGateway gateway;
     private final HdPayOrderMapper mapper;
+    private final AuditLogService audit;
+    private final ObjectMapper json;
 
     public ApiResult<Map<String, Object>> paymentConfig() {
         if (!properties.providerMode()) return legacy.paymentConfig();
@@ -130,7 +141,19 @@ public class HdPayHostedDepositService {
             if ("credited".equals(text(refreshed.get("status")))) return ApiResult.ok(refreshed);
             if ("HDPAY_CREATE_EXPLICIT_REJECTED".equals(error)) {
                 if (rejected != 1) throw new BizException(503, "HDPAY_ORDER_STATE_CONFLICT");
-                throw new BizException(422, "HDPAY_ORDER_CREATE_REJECTED");
+                String reason = HttpHdPayGateway.publicBusinessReason(ex.providerReason());
+                if (!reason.isEmpty()) {
+                    try {
+                        Map<String, Object> provider = mapper.findByMerchantOrderId(merchantOrderId);
+                        recordCreateRejection(merchantOrderId, reason, provider);
+                        String savedReason = readCreateRejectionReason(audit, json, merchantOrderId, provider);
+                        reason = reason.equals(savedReason) ? savedReason : "";
+                    } catch (RuntimeException unavailable) {
+                        log.warn("HDPay create rejection reason could not be confirmed");
+                        reason = "";
+                    }
+                }
+                throw createRejected(reason);
             }
             throw new BizException(502, "HDPAY_ORDER_CREATE_REJECTED");
         }
@@ -211,6 +234,10 @@ public class HdPayHostedDepositService {
         }
         String status = text(provider.get("submissionStatus"));
         result.put("providerStatus", status.toLowerCase(Locale.ROOT));
+        String reason = "REJECTED".equals(status)
+                && "HDPAY_CREATE_EXPLICIT_REJECTED".equals(text(provider.get("lastErrorCode")))
+                ? readCreateRejectionReason(audit, json, text(canonical.get("intentNo")), provider) : "";
+        if (!reason.isEmpty()) result.put("providerReason", reason);
         if ("CREDITED".equals(text(provider.get("settlementStatus")))) {
             Map<String, Object> refreshed = refreshCredited(result, text(canonical.get("intentNo")));
             refreshed.remove("paymentUrl");
@@ -243,7 +270,7 @@ public class HdPayHostedDepositService {
                         || provider.get("providerOrderId") != null || provider.get("providerStatus") != null) {
                     throw new BizException(503, "HDPAY_ORDER_STATE_CONFLICT");
                 }
-                throw new BizException(422, "HDPAY_ORDER_CREATE_REJECTED");
+                throw createRejected(reason);
             }
             throw new BizException(502, "HDPAY_ORDER_CREATE_REJECTED");
         }
@@ -330,6 +357,65 @@ public class HdPayHostedDepositService {
         if (!properties.ready()) throw new BizException(503, "HDPAY_CONFIGURATION_INCOMPLETE");
     }
 
+    private void recordCreateRejection(String intentNo, String reason, Map<String, Object> provider) {
+        String createdAt = explicitRejectionCreatedAt(intentNo, provider);
+        if (createdAt.isEmpty()) return;
+        try {
+            audit.record(AuditLogWriteRequest.builder()
+                    .action(CREATE_REJECTION_ACTION).resourceType(CREATE_REJECTION_RESOURCE)
+                    .resourceId(intentNo).bizNo(intentNo).actorType("USER").result("REJECTED")
+                    .detail(Map.of("providerReason", reason, "rejectionCode", EXPLICIT_REJECTION,
+                            "providerCreatedAt", createdAt)).build());
+        } catch (RuntimeException ex) {
+            // Optional diagnostics must not change the already recorded provider outcome.
+            log.warn("HDPay create rejection reason could not be recorded");
+        }
+    }
+
+    public static String readCreateRejectionReason(
+            AuditLogService audit, ObjectMapper json, String intentNo, Map<String, Object> provider) {
+        String createdAt = explicitRejectionCreatedAt(intentNo, provider);
+        if (createdAt.isEmpty()) return "";
+        AuditLogQueryRequest query = new AuditLogQueryRequest();
+        query.setAction(CREATE_REJECTION_ACTION);
+        query.setResourceType(CREATE_REJECTION_RESOURCE);
+        query.setResourceId(intentNo);
+        query.setBizNo(intentNo);
+        query.setResult("REJECTED");
+        query.setLimit(1);
+        try {
+            var records = audit.list(query);
+            if (records == null || records.isEmpty()) return "";
+            var record = records.get(0);
+            if (!CREATE_REJECTION_ACTION.equals(record.getAction())
+                    || !CREATE_REJECTION_RESOURCE.equals(record.getResourceType())
+                    || !intentNo.equals(record.getResourceId()) || !intentNo.equals(record.getBizNo())
+                    || !"REJECTED".equals(record.getResult())) return "";
+            var detail = json.readTree(record.getDetailJson());
+            return detail != null && EXPLICIT_REJECTION.equals(detail.path("rejectionCode").asText(""))
+                    && createdAt.equals(detail.path("providerCreatedAt").asText(""))
+                    && detail.path("providerReason").isTextual()
+                    ? HttpHdPayGateway.publicBusinessReason(detail.path("providerReason").textValue()) : "";
+        } catch (Exception ex) {
+            log.warn("HDPay create rejection reason could not be read");
+            return "";
+        }
+    }
+
+    private static String explicitRejectionCreatedAt(String intentNo, Map<String, Object> provider) {
+        if (intentNo == null || intentNo.isBlank() || provider == null
+                || !intentNo.equals(provider.get("merchantOrderId"))
+                || !"REJECTED".equals(provider.get("submissionStatus"))
+                || !EXPLICIT_REJECTION.equals(provider.get("lastErrorCode"))) return "";
+        Object createdAt = provider.get("createdAt");
+        return createdAt == null ? "" : createdAt.toString().trim();
+    }
+
+    private BizException createRejected(String reason) {
+        return reason.isEmpty() ? new BizException(422, "HDPAY_ORDER_CREATE_REJECTED")
+                : new HdPayCreateRejectedException(reason);
+    }
+
     private Map<String, Object> copy(Map<String, Object> value) {
         return value == null ? new LinkedHashMap<>() : new LinkedHashMap<>(value);
     }
@@ -342,6 +428,7 @@ public class HdPayHostedDepositService {
         result.remove("bankAccount");
         result.remove("memoCode");
         result.remove("qrPayload");
+        result.remove("providerReason");
         return result;
     }
 

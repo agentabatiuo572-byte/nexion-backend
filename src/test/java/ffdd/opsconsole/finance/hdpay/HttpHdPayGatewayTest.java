@@ -25,6 +25,65 @@ class HttpHdPayGatewayTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
+    void retainsOnlyPlainNonPrivateReasonsForExplicitBusinessRejection() throws Exception {
+        AtomicReference<byte[]> response = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/order/api/payOrder/publicCreatePayOrder", exchange -> {
+            byte[] bytes = response.get();
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.start();
+        try {
+            HdPayProperties config = properties(server.getAddress().getPort());
+            HttpHdPayGateway gateway = new HttpHdPayGateway(config, objectMapper);
+            record Case(Object msg, String expected) {}
+            for (Case test : List.of(
+                    new Case("金额必须为整数", "金额必须为整数"),
+                    new Case("充值金额不正确：请输入整数", "充值金额不正确：请输入整数"),
+                    new Case("该ip禁止访问", "该ip禁止访问"),
+                    new Case("Amount must be between 10000 and 5000000 VND.", "Amount must be between 10000 and 5000000 VND."),
+                    new Case("Invalid 1234567890123456789", ""),
+                    new Case("Invalid VQR-1", ""),
+                    new Case("Invalid 0123456789abcdef0123456789abcdef", ""),
+                    new Case("Invalid 203.0.113.9", ""),
+                    new Case("sign 0123456789abcdef0123456789abcdef", ""),
+                    new Case("account 123456789012", ""),
+                    new Case("password shortvalue", ""),
+                    new Case("Authorization: Bearer abc123abc123", ""),
+                    new Case("Invalid api-key abcd1234abcd1234", ""),
+                    new Case("Invalid apiKey abcd1234abcd1234", ""),
+                    new Case("Please visit www.private.example.com", ""),
+                    new Case("Please visit private.example.com", ""),
+                    new Case("https://private.example.com/failure", ""),
+                    new Case("<script>alert(1)</script>", ""),
+                    new Case("amount\nprivate", ""),
+                    new Case("a".repeat(257), ""),
+                    new Case(Map.of("private", "hidden"), ""),
+                    new Case(500, ""), new Case("", ""))) {
+                response.set(objectMapper.writeValueAsBytes(Map.of("code", 500, "msg", test.msg())));
+                assertThatThrownBy(() -> gateway.createPayOrder(new HdPayGateway.CreatePayOrder(
+                        "VQR-1", new BigDecimal("100000"), "203.0.113.9")))
+                        .isInstanceOf(HdPayGatewayException.class).hasMessage("HDPAY_CREATE_EXPLICIT_REJECTED")
+                        .satisfies(ex -> {
+                            assertThat(((HdPayGatewayException) ex).ambiguous()).isFalse();
+                            assertThat(((HdPayGatewayException) ex).providerReason()).isEqualTo(test.expected());
+                        });
+            }
+            response.set(objectMapper.writeValueAsBytes(Map.of("code", "500", "msg", "金额必须为整数")));
+            assertThatThrownBy(() -> gateway.createPayOrder(new HdPayGateway.CreatePayOrder(
+                    "VQR-1", new BigDecimal("100000"), "203.0.113.9")))
+                    .hasMessage("HDPAY_CREATE_REJECTED").satisfies(ex -> {
+                        assertThat(((HdPayGatewayException) ex).ambiguous()).isTrue();
+                        assertThat(((HdPayGatewayException) ex).providerReason()).isEmpty();
+                    });
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void usesTheExplicitProviderProxyWithoutChangingOtherJvmNetworking() {
         HdPayProperties properties = new HdPayProperties();
         properties.setProxyHost("127.0.0.1");

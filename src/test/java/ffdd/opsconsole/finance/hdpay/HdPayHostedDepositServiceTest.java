@@ -10,15 +10,22 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup;
 
 import ffdd.opsconsole.finance.application.AppVietQrIntentService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.finance.web.AppVietQrIntentController;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogRecord;
+import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.exception.GlobalExceptionHandler;
 import ffdd.opsconsole.shared.security.GatewaySecurityProperties;
@@ -36,13 +43,184 @@ class HdPayHostedDepositServiceTest {
     private final AppVietQrIntentService legacy = mock(AppVietQrIntentService.class);
     private final HdPayGateway gateway = mock(HdPayGateway.class);
     private final HdPayOrderMapper mapper = mock(HdPayOrderMapper.class);
+    private final AuditLogService audit = mock(AuditLogService.class);
     private final HdPayProperties properties = properties();
     private HdPayHostedDepositService service;
 
     @BeforeEach
     void setUp() {
-        service = new HdPayHostedDepositService(legacy, properties, gateway, mapper);
+        service = new HdPayHostedDepositService(legacy, properties, gateway, mapper, audit, new ObjectMapper());
         when(mapper.authorizeSubmissionIfIntentPayable(any())).thenReturn(1);
+    }
+
+    @Test
+    void explicitReasonSurvivesCreateReplayGetAndListWithoutAnotherProviderCall() throws Exception {
+        ObjectMapper json = new ObjectMapper();
+        AuditLogRecord saved = rejectionAudit();
+        doAnswer(call -> {
+            AuditLogWriteRequest write = call.getArgument(0);
+            assertThat(write.getAction()).isEqualTo("HDPAY_CREATE_REJECTED");
+            assertThat(write.getResourceType()).isEqualTo("HDPAY_ORDER");
+            assertThat(write.getResourceId()).isEqualTo("VQR-1");
+            assertThat(write.getBizNo()).isEqualTo("VQR-1");
+            assertThat(write.getResult()).isEqualTo("REJECTED");
+            assertThat(write.getDetail()).isEqualTo(Map.of("providerReason", "金额必须为整数",
+                    "rejectionCode", "HDPAY_CREATE_EXPLICIT_REJECTED", "providerCreatedAt", "2026-10-05T01:00:00"));
+            saved.setDetailJson(json.writeValueAsString(write.getDetail()));
+            return null;
+        }).when(audit).record(any());
+        when(audit.list(any())).thenAnswer(call -> {
+            AuditLogQueryRequest query = call.getArgument(0);
+            assertThat(query.getAction()).isEqualTo("HDPAY_CREATE_REJECTED");
+            assertThat(query.getResourceType()).isEqualTo("HDPAY_ORDER");
+            assertThat(query.getResourceId()).isEqualTo("VQR-1");
+            assertThat(query.getBizNo()).isEqualTo("VQR-1");
+            assertThat(query.getResult()).isEqualTo("REJECTED");
+            assertThat(query.getLimit()).isEqualTo(1);
+            return List.of(saved);
+        });
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null, savedRejection("HDPAY_CREATE_EXPLICIT_REJECTED"));
+        when(mapper.insertPending(any(), any(), any())).thenReturn(1);
+        when(mapper.markRejected("VQR-1", "HDPAY_CREATE_EXPLICIT_REJECTED")).thenReturn(1);
+        when(gateway.createPayOrder(any())).thenThrow(new HdPayGatewayException(
+                "HDPAY_CREATE_EXPLICIT_REJECTED", false, null, "金额必须为整数"));
+        when(legacy.get(7L, "VQR-1")).thenReturn(ApiResult.ok(intent()));
+        when(legacy.list(7L, null)).thenReturn(ApiResult.ok(Map.of("items", List.of(intent()))));
+        MockMvc http = httpClient();
+        http.perform(post("/api/app/deposits/vietqr/intents").principal(user())
+                        .header("Idempotency-Key", "idem").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"usdtAmount\":25}"))
+                .andExpect(status().is(422)).andExpect(jsonPath("$.code").value(422))
+                .andExpect(jsonPath("$.message").value("HDPAY_ORDER_CREATE_REJECTED"))
+                .andExpect(jsonPath("$.data.providerReason").value("金额必须为整数"));
+        // A new service instance reads the saved audit record, with no in-memory reason cache.
+        service = new HdPayHostedDepositService(legacy, properties, gateway, mapper, audit, json);
+        http = httpClient();
+        http.perform(post("/api/app/deposits/vietqr/intents").principal(user())
+                        .header("Idempotency-Key", "idem").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"usdtAmount\":25}"))
+                .andExpect(status().is(422)).andExpect(jsonPath("$.data.providerReason").value("金额必须为整数"));
+        http.perform(get("/api/app/deposits/vietqr/intents/VQR-1").principal(user()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.providerReason").value("金额必须为整数"))
+                .andExpect(jsonPath("$.data.providerStatus").value("rejected"));
+        http.perform(get("/api/app/deposits/vietqr/intents").principal(user()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].providerReason").value("金额必须为整数"));
+        verify(audit, times(1)).record(any());
+        verify(gateway, times(1)).createPayOrder(any());
+        verify(gateway, never()).queryPayOrder(any());
+        verify(mapper, never()).markSubmitUnknown(any(), any());
+    }
+
+    @Test
+    void diagnosticWriteFailureFallsBackToTheSameGeneric422AsReload() throws Exception {
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null, savedRejection("HDPAY_CREATE_EXPLICIT_REJECTED"));
+        when(mapper.insertPending(any(), any(), any())).thenReturn(1);
+        when(mapper.markRejected(any(), any())).thenReturn(1);
+        when(gateway.createPayOrder(any())).thenThrow(new HdPayGatewayException(
+                "HDPAY_CREATE_EXPLICIT_REJECTED", false, null, "金额必须为整数"));
+        doThrow(new IllegalStateException("private failure detail")).when(audit).record(any());
+        httpClient().perform(post("/api/app/deposits/vietqr/intents").principal(user())
+                        .header("Idempotency-Key", "idem").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"usdtAmount\":25}"))
+                .andExpect(status().is(422)).andExpect(jsonPath("$.code").value(422))
+                .andExpect(jsonPath("$.message").value("HDPAY_ORDER_CREATE_REJECTED"))
+                .andExpect(jsonPath("$.data").isEmpty());
+        when(legacy.get(7L, "VQR-1")).thenReturn(ApiResult.ok(intent()));
+        assertThat(service.get(7L, "VQR-1").getData()).doesNotContainKey("providerReason");
+        verify(mapper).markRejected("VQR-1", "HDPAY_CREATE_EXPLICIT_REJECTED");
+        verify(audit).record(any());
+    }
+
+    @Test
+    void disabledOrSilentlyFailedAuditWriteAndReadFailureUseGeneric422() {
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null, savedRejection("HDPAY_CREATE_EXPLICIT_REJECTED"));
+        when(mapper.insertPending(any(), any(), any())).thenReturn(1);
+        when(mapper.markRejected(any(), any())).thenReturn(1);
+        when(gateway.createPayOrder(any())).thenThrow(new HdPayGatewayException(
+                "HDPAY_CREATE_EXPLICIT_REJECTED", false, null, "金额必须为整数"));
+        // record() returns normally when auditing is disabled or its internal write is swallowed.
+        when(audit.list(any())).thenReturn(List.of());
+        assertThatThrownBy(() -> service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9"))
+                .isInstanceOf(BizException.class).isNotInstanceOf(HdPayCreateRejectedException.class)
+                .hasMessage("HDPAY_ORDER_CREATE_REJECTED")
+                .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(422));
+        doThrow(new IllegalStateException("private audit read detail")).when(audit).list(any());
+        when(legacy.get(7L, "VQR-1")).thenReturn(ApiResult.ok(intent()));
+        assertThat(service.get(7L, "VQR-1").getData()).doesNotContainKey("providerReason");
+    }
+
+    @Test
+    void unboundOldAuditAndDifferentProviderCreationCannotSupplyTheCurrentReason() throws Exception {
+        Map<String, Object> provider = savedRejection("HDPAY_CREATE_EXPLICIT_REJECTED");
+        when(legacy.get(7L, "VQR-1")).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(provider);
+        ObjectMapper json = new ObjectMapper();
+        AuditLogRecord old = rejectionAudit();
+        when(audit.list(any())).thenReturn(List.of(old));
+        for (Map<String, Object> detail : List.<Map<String, Object>>of(
+                Map.of("providerReason", "金额必须为整数"),
+                Map.of("providerReason", "金额必须为整数", "rejectionCode", "HDPAY_CREATE_EXPLICIT_REJECTED"),
+                Map.of("providerReason", "金额必须为整数", "rejectionCode", "HDPAY_CREATE_EXPLICIT_REJECTED",
+                        "providerCreatedAt", "2026-10-04T01:00:00"))) {
+            old.setDetailJson(json.writeValueAsString(detail));
+            assertThat(service.get(7L, "VQR-1").getData()).doesNotContainKey("providerReason");
+        }
+        provider.remove("createdAt");
+        assertThat(service.get(7L, "VQR-1").getData()).doesNotContainKey("providerReason");
+        verify(audit, times(3)).list(any());
+    }
+
+    @Test
+    void nearbyActionOrMismatchedAuditMetadataCannotSupplyTheCurrentReason() throws Exception {
+        when(legacy.get(7L, "VQR-1")).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(savedRejection("HDPAY_CREATE_EXPLICIT_REJECTED"));
+        AuditLogRecord record = rejectionAudit();
+        record.setDetailJson("{\"providerReason\":\"金额必须为整数\","
+                + "\"rejectionCode\":\"HDPAY_CREATE_EXPLICIT_REJECTED\",\"providerCreatedAt\":\"2026-10-05T01:00:00\"}");
+        when(audit.list(any())).thenReturn(List.of(record));
+        record.setAction("HDPAY_CREATE_REJECTED_OTHER");
+        assertThat(service.get(7L, "VQR-1").getData()).doesNotContainKey("providerReason");
+        record.setAction("HDPAY_CREATE_REJECTED");
+        record.setResourceId("VQR-OTHER");
+        assertThat(service.get(7L, "VQR-1").getData()).doesNotContainKey("providerReason");
+        record.setResourceId("VQR-1");
+        record.setResult("SUCCESS");
+        assertThat(service.get(7L, "VQR-1").getData()).doesNotContainKey("providerReason");
+    }
+
+    @Test
+    void stateConflictAndUnknownOutcomeNeverRecordARejectionReason() {
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null);
+        when(mapper.insertPending(any(), any(), any())).thenReturn(1);
+        when(gateway.createPayOrder(any())).thenThrow(new HdPayGatewayException(
+                "HDPAY_CREATE_EXPLICIT_REJECTED", false, null, "金额必须为整数"));
+        assertThatThrownBy(() -> service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9"))
+                .hasMessage("HDPAY_ORDER_STATE_CONFLICT");
+        doThrow(new HdPayGatewayException("HDPAY_CREATE_REJECTED", true, null, "金额必须为整数"))
+                .when(gateway).createPayOrder(any());
+        assertThatThrownBy(() -> service.create(7L, "idem", new BigDecimal("25"), "203.0.113.9"))
+                .hasMessage("HDPAY_ORDER_SUBMISSION_UNKNOWN");
+        verifyNoInteractions(audit);
+    }
+
+    @Test
+    void unsafeOrMissingAuditReasonFallsBackAndOwnershipIsCheckedBeforeAuditRead() {
+        when(legacy.get(7L, "VQR-1")).thenReturn(ApiResult.ok(intent()));
+        when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(savedRejection("HDPAY_CREATE_EXPLICIT_REJECTED"));
+        AuditLogRecord saved = rejectionAudit();
+        saved.setDetailJson("{\"providerReason\":\"https://private.example.com\","
+                + "\"rejectionCode\":\"HDPAY_CREATE_EXPLICIT_REJECTED\",\"providerCreatedAt\":\"2026-10-05T01:00:00\"}");
+        when(audit.list(any())).thenReturn(List.of(saved));
+        assertThat(service.get(7L, "VQR-1").getData()).doesNotContainKey("providerReason");
+        saved.setDetailJson("invalid-json");
+        assertThat(service.get(7L, "VQR-1").getData()).doesNotContainKey("providerReason");
+        when(legacy.get(8L, "VQR-1")).thenThrow(new BizException(404, "INTENT_NOT_FOUND"));
+        assertThatThrownBy(() -> service.get(8L, "VQR-1")).hasMessage("INTENT_NOT_FOUND");
+        verify(audit, times(2)).list(any());
     }
 
     @Test
@@ -627,7 +805,18 @@ class HdPayHostedDepositServiceTest {
         value.put("amountVnd", new BigDecimal("659750"));
         value.put("settlementStatus", "UNSETTLED");
         value.put("version", 7L);
+        value.put("createdAt", "2026-10-05T01:00:00");
         return value;
+    }
+
+    private AuditLogRecord rejectionAudit() {
+        AuditLogRecord record = new AuditLogRecord();
+        record.setAction("HDPAY_CREATE_REJECTED");
+        record.setResourceType("HDPAY_ORDER");
+        record.setResourceId("VQR-1");
+        record.setBizNo("VQR-1");
+        record.setResult("REJECTED");
+        return record;
     }
 
     private HdPayGateway.PayOrder queryPage() {

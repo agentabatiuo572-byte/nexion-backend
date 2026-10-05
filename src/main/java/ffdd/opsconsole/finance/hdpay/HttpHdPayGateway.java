@@ -104,7 +104,8 @@ public final class HttpHdPayGateway implements HdPayGateway {
                 }
                 if (numericCode && code.intValue() != 200) {
                     reason = safeRejectionReason(root);
-                    throw new HdPayGatewayException("HDPAY_CREATE_EXPLICIT_REJECTED", false);
+                    throw new HdPayGatewayException("HDPAY_CREATE_EXPLICIT_REJECTED", false, null,
+                            createRejectionReason(root, requestBody));
                 }
                 String page = root.path("data").isTextual() ? root.path("data").asText().trim() : "";
                 if (!properties.isTrustedPaymentPage(page)) {
@@ -149,6 +150,31 @@ public final class HttpHdPayGateway implements HdPayGateway {
             case "该ip禁止访问" -> "IP_NOT_ALLOWED";
             default -> "UNCLASSIFIED_REJECTION";
         };
+    }
+
+    private String createRejectionReason(JsonNode root, Map<String, Object> request) {
+        String reason = root.path("msg").isTextual() ? publicBusinessReason(root.path("msg").textValue()) : "";
+        if (reason.isEmpty()) return "";
+        String lower = reason.toLowerCase(java.util.Locale.ROOT);
+        for (String field : java.util.List.of("ip", "merchantId", "merchantOrderId", "callbackUrl", "sign")) {
+            String value = String.valueOf(request.get(field)).toLowerCase(java.util.Locale.ROOT);
+            if (!value.isBlank() && lower.contains(value)) return "";
+        }
+        String key = properties.getMd5Key().toLowerCase(java.util.Locale.ROOT);
+        return !key.isBlank() && lower.contains(key) ? "" : reason;
+    }
+
+    // Only short ordinary business prose may reach a public order response or audit detail.
+    public static String publicBusinessReason(String value) {
+        String reason = value == null ? "" : value.trim();
+        if (reason.isEmpty() || reason.length() > 256
+                || !reason.matches("[\\p{L}\\p{M}\\p{N} .,，。!！?？;；:：'’()（）%+\\-·]+")
+                || reason.matches("(?i).*(password|secret|token|credential|authorization|bearer|signature|api[ -]?key|md5[ -]?key|private[ -]?key|account number|account name|holder|密钥|密码|令牌|账号|卡号|户名).*")
+                || reason.matches("(?i).*\\b[\\p{L}\\p{N}-]+(?:\\.[\\p{L}\\p{N}-]+)*\\.[a-z]{2,}\\b.*")
+                || reason.matches(".*[A-Za-z0-9]{32,}.*")
+                || reason.matches(".*[0-9]{10,}.*")
+                || reason.matches(".*[0-9]{1,3}(\\.[0-9]{1,3}){3}.*")) return "";
+        return reason;
     }
 
     private static String sha256(byte[] body) {

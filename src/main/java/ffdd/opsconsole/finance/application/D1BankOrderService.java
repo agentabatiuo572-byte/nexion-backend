@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.finance.dto.HdPayManualCreditRequest;
 import ffdd.opsconsole.finance.hdpay.HdPayOrderMapper;
+import ffdd.opsconsole.finance.hdpay.HdPayHostedDepositService;
 import ffdd.opsconsole.finance.hdpay.HdPayProperties;
 import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
 import ffdd.opsconsole.finance.mapper.D1BankOrderMapper;
@@ -212,6 +213,16 @@ public class D1BankOrderService {
                 && (row.get("providerStatus") == null || number(row.get("providerStatus")) == 1)
                 && properties.isTrustedPaymentPage(url);
         row.put("paymentUrl", usable ? url : null);
+        if ("HDPAY".equals(row.get("paymentRail")) && "REJECTED".equals(row.get("submissionStatus"))) {
+            try {
+                String intentNo = text(row.get("intentNo"));
+                String reason = HdPayHostedDepositService.readCreateRejectionReason(
+                        audit, json, intentNo, hdPay.findByMerchantOrderId(intentNo));
+                if (!reason.isEmpty()) row.put("providerReason", reason);
+            } catch (RuntimeException unavailable) {
+                // An optional diagnostic read must not hide the canonical order or change its actions.
+            }
+        }
         for (String field : List.of("receivedVnd", "receivedAt", "providerVersion", "submissionStatus",
                 "providerStatus", "settlementStatus", "bankAccountId", "memoCode", "targetOrderNo", "manualConfirmationNo",
                 "reserveSource", "bankReceiptId")) {
