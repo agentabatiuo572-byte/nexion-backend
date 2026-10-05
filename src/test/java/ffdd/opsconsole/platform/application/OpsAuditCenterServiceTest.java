@@ -447,6 +447,95 @@ class OpsAuditCenterServiceTest {
     }
 
     @Test
+    void coolingProposalRechecksCurrentB1AtReplayAndKeepsPendingTicketAndLockOnFailure() {
+        var config = mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
+        Map<String, String> configValues = new LinkedHashMap<>(Map.of("commission/cooling-days", "30"));
+        when(config.activeValue(any())).thenAnswer(invocation -> Optional.ofNullable(configValues.get(invocation.getArgument(0))));
+        doAnswer(invocation -> {
+            configValues.put(invocation.getArgument(0), invocation.getArgument(1));
+            return null;
+        }).when(config).upsertAdminValue(any(), any(), any(), any(), any());
+        var coverage = mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class);
+        when(coverage.snapshot()).thenReturn(new ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot(
+                new java.math.BigDecimal("110"), new java.math.BigDecimal("100")));
+        var ledger = mock(ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade.class);
+        var commissions = mock(ffdd.opsconsole.team.domain.TeamCommissionRepository.class);
+        var domainAudit = mock(AuditLogService.class);
+        var outbox = mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class);
+        var team = new ffdd.opsconsole.team.application.OpsTeamService(
+                config, coverage, ledger, domainAudit,
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
+                mock(ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository.class), commissions,
+                mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class), lockMapper,
+                mock(ffdd.opsconsole.team.application.VRankPromotionEngine.class),
+                mock(ffdd.opsconsole.team.application.VRankRewardDispatcher.class), outbox,
+                mock(ffdd.opsconsole.team.application.LeadershipPoolService.class),
+                mock(ffdd.opsconsole.team.application.F5CommissionService.class), idempotencyService);
+        var dispatcher = new AuditReplayDispatcher(List.of(team));
+        doAnswer(invocation -> dispatcher.dispatch(invocation.getArgument(0), invocation.getArgument(1)))
+                .when(replayDispatcher).dispatch(any(), any());
+        var command = new AuditReplayCommand("F", "f_ui_config", Map.of("key", "F.cooldown", "value", "0"));
+        var target = new ffdd.opsconsole.platform.domain.AuditLockTarget("F", "ui_config", "F.cooldown");
+        authenticate("41", "cooling.maker");
+        var proposed = service.createProposal("idem-cooling-propose", new AuditOperationProposalRequest(
+                "佣金冷却调整", "F.cooldown", "30", "0", "spoofed-client", "运营", "fund", true, false,
+                "TWO_PERSON", "缩短未来新计提佣金冷却", "F2", command, target, null));
+        assertThat(proposed.getCode()).isZero();
+        String operationId = proposed.getData().id();
+        var ticket = ticketRows.get(operationId);
+        assertThat(ticket.getStatus()).isEqualTo("pending");
+        verify(config, never()).upsertAdminValue(any(), any(), any(), any(), any());
+
+        var selfApproval = service.approve("idem-cooling-self", operationId,
+                new AuditOperationDecisionRequest("正常独立批准前验证发起者权限", "cooling.checker"));
+        assertThat(selfApproval.getCode()).isEqualTo(403);
+        assertThat(selfApproval.getMessage()).isEqualTo("A2_MAKER_CHECKER_REQUIRED");
+        verify(replayDispatcher, never()).dispatch(any(), any());
+
+        when(coverage.snapshot()).thenReturn(new ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot(
+                new java.math.BigDecimal("98.62"), new java.math.BigDecimal("100")));
+        authenticate("52", "cooling.checker");
+        var result = service.approve("idem-cooling-checker", operationId,
+                new AuditOperationDecisionRequest("资金覆盖率变化后独立批准执行", "cooling.maker"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("COVERAGE_BELOW_REDLINE");
+        assertThat(ticket.getStatus()).isEqualTo("pending");
+        assertThat(ticket.getDecidedAt()).isNull();
+        assertThat(A2ReplayContext.isReplaying()).isFalse();
+        verify(replayDispatcher).dispatch(any(), any());
+        var lock = ArgumentCaptor.forClass(ffdd.opsconsole.platform.infrastructure.AuditObjectLockEntity.class);
+        verify(lockMapper).insert(lock.capture());
+        verify(lockMapper, never()).selectActiveByTicketId(any());
+        verify(lockMapper, never()).deleteById(org.mockito.ArgumentMatchers.any(java.io.Serializable.class));
+        verify(ticketMapper, never()).updateById(any(AuditOperationTicketEntity.class));
+        verify(config, never()).upsertAdminValue(any(), any(), any(), any(), any());
+        org.mockito.Mockito.verifyNoInteractions(ledger, commissions, domainAudit, outbox);
+        assertThat(config.activeValue("commission/cooling-days")).contains("30");
+
+        // The same pending ticket remains retryable when real coverage recovers to the redline.
+        when(coverage.snapshot()).thenReturn(new ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot(
+                new java.math.BigDecimal("100"), new java.math.BigDecimal("100")));
+        lock.getValue().setId(445L);
+        when(lockMapper.selectActiveByTicketId(operationId)).thenReturn(List.of(lock.getValue()));
+        var retried = service.approve("idem-cooling-recovered", operationId,
+                new AuditOperationDecisionRequest("资金覆盖率恢复红线后独立批准执行", "cooling.maker"));
+
+        assertThat(retried.getCode()).isZero();
+        assertThat(ticket.getStatus()).isEqualTo("approved");
+        assertThat(ticket.getDecidedAt()).isNotNull();
+        assertThat(configValues).containsOnlyKeys("commission/cooling-days").containsEntry("commission/cooling-days", "0");
+        verify(lockMapper).deleteById(445L);
+        verify(config).upsertAdminValue(org.mockito.ArgumentMatchers.eq("commission/cooling-days"),
+                org.mockito.ArgumentMatchers.eq("0"), any(), any(), any());
+        verify(outbox).publish(org.mockito.ArgumentMatchers.eq("A2_OPERATION"), org.mockito.ArgumentMatchers.eq(operationId),
+                org.mockito.ArgumentMatchers.eq("F_TEAM_UI_CONFIG_APPROVED"), any());
+        verify(domainAudit).record(any(AuditLogWriteRequest.class));
+        org.mockito.Mockito.verifyNoInteractions(ledger);
+        assertThat(A2ReplayContext.isReplaying()).isFalse();
+    }
+
+    @Test
     void proposerMayRejectButAuditUsesAuthenticatedActor() {
         putTicket("WO-REJECT", "A6 role grants", "pending", "HIGH", true, false);
         ticketRows.get("WO-REJECT").setOperatorName("alice.admin");

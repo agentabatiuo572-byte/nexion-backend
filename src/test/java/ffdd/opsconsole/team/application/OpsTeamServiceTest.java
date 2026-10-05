@@ -45,6 +45,9 @@ import java.util.Optional;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
 class OpsTeamServiceTest {
@@ -751,6 +754,71 @@ class OpsTeamServiceTest {
         assertThat(configFacade.values)
                 .containsEntry("commission/cooling-days", "30")
                 .doesNotContainKey("team.ui.F.cooldown");
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {"30", "invalid", "-1", "0.5"})
+    void shorteningF2CooldownBelowRedlineRejectsBeforeAnyBusinessWrite(String oldValue) {
+        coverageFacade.setSnapshot(new TreasuryCoverageSnapshot(new BigDecimal("98.62"), new BigDecimal("100")));
+        commissionRepository.commissionEvents.add(new LinkedHashMap<>(Map.of(
+                "id", "CM-445", "status", "COOLING", "unlockAt", "2026-11-04")));
+        List<Map<String, Object>> existingEvents = commissionRepository.commissionEvents.stream().map(Map::copyOf).toList();
+        // Missing/invalid canonical values mean the existing 30-day default, never the UI mirror's zero.
+        configFacade.values.put("team.ui.F.cooldown", "0");
+        if (oldValue != null) configFacade.values.put("commission/cooling-days", oldValue);
+        Map<String, String> before = new LinkedHashMap<>(configFacade.values);
+
+        var result = service.updateConfig("idem-cooling-445-" + oldValue,
+                new TeamCommissionConfigUpdateRequest("F.cooldown", "0", "shorten commission cooling", "maker"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("COVERAGE_BELOW_REDLINE");
+        assertThat(configFacade.values).isEqualTo(before);
+        assertThat(commissionRepository.commissionEvents).isEqualTo(existingEvents);
+        assertThat(ledgerPostingFacade.entries).isEmpty();
+        assertThat(ledgerPostingFacade.releasedCommissionIds).isEmpty();
+        assertThat(ledgerPostingFacade.reversedCommissionIds).isEmpty();
+        org.mockito.Mockito.verifyNoInteractions(auditLogService, eventOutboxService, f5CommissionService);
+    }
+
+    @Test
+    void sameLongerAndRestoredF2CooldownRemainAllowedBelowRedline() {
+        coverageFacade.setSnapshot(new TreasuryCoverageSnapshot(new BigDecimal("98.62"), new BigDecimal("100")));
+        for (String[] change : new String[][] {{"30", "30"}, {"30", "45"}, {"0", "30"}, {"0", "0"}}) {
+            configFacade.values.put("commission/cooling-days", change[0]);
+            var result = service.updateConfig("idem-cooling-safe-" + change[0] + "-" + change[1],
+                    new TeamCommissionConfigUpdateRequest("F.cooldown", change[1], "retain or restore cooling", "maker"));
+
+            assertThat(result.getCode()).isZero();
+            assertThat(configFacade.values).containsEntry("commission/cooling-days", change[1])
+                    .doesNotContainKey("team.ui.F.cooldown");
+        }
+        verify(auditLogService, times(4)).record(org.mockito.ArgumentMatchers.any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void zeroF2CooldownAtOrAboveRedlineUsesOnlyTheCanonicalKey() {
+        for (String ratio : List.of("100", "110")) {
+            configFacade.values.put("commission/cooling-days", "30");
+            coverageFacade.setSnapshot(new TreasuryCoverageSnapshot(new BigDecimal(ratio), new BigDecimal("100")));
+            var result = service.updateConfig("idem-cooling-zero-" + ratio,
+                    new TeamCommissionConfigUpdateRequest("F.cooldown", "0", "valid zero commission cooling", "maker"));
+
+            assertThat(result.getCode()).isZero();
+            assertThat(configFacade.values).containsEntry("commission/cooling-days", "0")
+                    .doesNotContainKey("team.ui.F.cooldown");
+            assertThat(ledgerPostingFacade.entries).isEmpty();
+            assertThat(ledgerPostingFacade.releasedCommissionIds).isEmpty();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void f2CoolingPolicySeedShowsItsExistingFundAmplificationCategory() {
+        var rows = (List<Map<String, Object>>) service.rates().getData().get("policyParams");
+        assertThat(rows).filteredOn(row -> "F.cooldown".equals(row.get("key"))).singleElement()
+                .satisfies(row -> assertThat(row).containsEntry("amplifies", true).containsEntry("visualAmplify", true));
     }
 
     @Test

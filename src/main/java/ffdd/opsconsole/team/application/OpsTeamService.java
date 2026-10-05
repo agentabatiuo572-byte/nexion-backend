@@ -221,7 +221,7 @@ public class OpsTeamService implements AuditReplayable {
     private static final List<F2PolicyParamSeed> F2_POLICY_PARAM_SEEDS = List.of(
             new F2PolicyParamSeed("clampMin", "影响分下限", "F.influence.clampMin", "1.0", "", "InfluenceScore 下限;clamp 后参与版税权重计算。", false, false, ""),
             new F2PolicyParamSeed("clampMax", "影响分上限", "F.influence.clampMax", "5.0", "", "InfluenceScore 上限;clamp 后参与版税权重计算。", false, false, ""),
-            new F2PolicyParamSeed("cool", "佣金冷却", "F.cooldown", "30d", "", "计提后冷却期;期满才进入可提余额。改后对新计提佣金生效。", false, false, "天"),
+            new F2PolicyParamSeed("cool", "佣金冷却", "F.cooldown", "30d", "", "计提后冷却期;期满才进入可提余额。改后对新计提佣金生效。", true, true, "天"),
             new F2PolicyParamSeed("promo", "promo 周倍率", "F.promo.weekMultiplier", "1.0×", "warn", "活动周对网络版税的倍率放大。放大佣金流出,受 B1 覆盖率约束。", true, true, "×"),
             new F2PolicyParamSeed("min", "版税支付阈值", "F.royalty.minPayout", "$10", "", "最小可提金额。调高 = 凑不够提不出。", false, false, ""),
             new F2PolicyParamSeed("peer", "peer 平级比例", "F.peer.rate", "5%", "brand", "同 V 级平级奖励比例(V3+)。放大佣金流出。", true, true, "%"),
@@ -1343,6 +1343,8 @@ public class OpsTeamService implements AuditReplayable {
                 return percentRatio(newValue, BigDecimal.ZERO).compareTo(percentRatio(oldValue, BigDecimal.ZERO)) > 0;
             }
             return switch (key) {
+                case "F.cooldown" -> parseDecimal(newValue.replaceAll("[^0-9].*$", ""), BigDecimal.ZERO)
+                        .intValueExact() < resolveCommissionCoolingDays();
                 case "F.promo.weekMultiplier", "F.peer.rate", "F.pool.periodPrize" ->
                         parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
                 case "F.pool.ratio" -> LeadershipPoolConfigGuard.isConfiguredRateIncrease(oldValue, newValue);

@@ -1114,6 +1114,7 @@ public class AuditReplayBusinessPermissionGuard {
 
     private boolean fUiConfigAmplifies(String key) {
         return Set.of(
+                "F.cooldown",
                 "F.binary.matchRate", "F.binary.threshold",
                 "F.pool.ratio", "F.pool.top1MaxPct", "F.pool.top5MaxPct",
                 "F.pool.periodPrize", "F.promo.weekMultiplier", "F.peer.rate")

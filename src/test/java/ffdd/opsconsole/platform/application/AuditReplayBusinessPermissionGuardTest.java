@@ -36,6 +36,32 @@ class AuditReplayBusinessPermissionGuardTest {
     }
 
     @Test
+    void f2CoolingProposalAndApprovalRequireExactPermissionAndCanonicalFundCategory() {
+        var command = new AuditReplayCommand("F", "f_ui_config", Map.of("key", "F.cooldown", "value", "0"));
+        authenticate("platform_a2_proposal_create", "network_f1_write");
+        assertThat(guard.validateProposal(command).getCode()).isEqualTo(403);
+        assertThat(guard.validateApproval(command).getCode()).isEqualTo(403);
+        assertThat(guard.validateApproval(command).getMessage()).endsWith("network_f2_policy_amplify");
+
+        authenticate("platform_a2_proposal_create", "network_f2_policy_amplify");
+        assertThat(guard.validateProposal(command).getCode()).isZero();
+        assertThat(guard.validateApproval(command).getCode()).isZero();
+        var request = new AuditOperationProposalRequest(
+                "client copy", "F.cooldown", "30", "0", "maker", "growth", "param", false, false,
+                "client gate", "shorten commission cooling", "F2", command,
+                new AuditLockTarget("F", "ui_config", "F.cooldown"), null);
+        var canonical = guard.validateProposalContext(request);
+
+        assertThat(canonical.getCode()).isZero();
+        assertThat(canonical.getData()).extracting(
+                AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::sourceDomain,
+                AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::operationType,
+                AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::amplifies)
+                .containsExactly("F2", "fund", true);
+        assertThat(canonical.getData().target()).isEqualTo(new AuditLockTarget("F", "ui_config", "F.cooldown"));
+    }
+
+    @Test
     void standardSectionProposalRejectsUserWithoutStandardPublishPermission() {
         when(repository.listTrustSections()).thenReturn(List.of(
                 new TrustSectionView("leadership", "团队", "卡片", "v1", "published", "today", "内容", false)));
