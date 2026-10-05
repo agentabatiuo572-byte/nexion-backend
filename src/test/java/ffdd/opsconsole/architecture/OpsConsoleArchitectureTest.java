@@ -52,7 +52,7 @@ class OpsConsoleArchitectureTest {
             Pattern.compile("\\b(?:JdbcTemplate|NamedParameterJdbcTemplate|SimpleJdbcInsert)\\b|org\\.springframework\\.jdbc");
     private static final Pattern LEGACY_ADMIN_ROUTE_PATTERN =
             Pattern.compile("/auth/admin\\b|/api/config(?!/(?:platform|referral-rewards|task-pricing|phone-tiers"
-                    + "|staking/pools|v-ranks|v-rank-policy|commission/(?:rates|guide)|exchange/caps|market/nex|market/external|repurchase)\\b)");
+                    + "|staking/pools|v-ranks|v-rank-policy|commission/(?:rates|guide|direct-referral)|exchange/caps|market/nex|market/external|repurchase)\\b)");
     private static final Pattern LEGACY_DISTRIBUTED_PERMISSION_PATTERN =
             Pattern.compile("(?m)^.*PERM_[A-Z0-9_]+.*'/(?:auth/admins|auth/access-control|bff|compute|commerce|genesis|wallet|earnings|team|notifications|missions|compliance|openapi)(?:/|\\*|').*$");
     private static final Pattern LOMBOK_VALUE_COPYABLE_PATTERN =

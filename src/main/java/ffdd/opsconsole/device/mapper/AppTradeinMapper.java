@@ -455,7 +455,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                amount_usdt,payment_status,order_status,activation_status,paid_at,created_at,updated_at,is_deleted)
             VALUES
               (#{row.userId},#{row.orderNo},#{row.productId},1,'TRADE_IN',1,#{row.targetPriceUsdt},
-               #{row.discountUsdt},#{row.walletDebitUsdt},'PAID','COMPLETED','ACTIVATED',NOW(),NOW(),NOW(),0)
+               #{row.discountUsdt},#{row.walletDebitUsdt},'PAID','COMPLETED','ACTIVATED',NOW(6),NOW(),NOW(),0)
             """)
     int insertPaidOrder(@Param("row") PaidOrderWrite row);
 
@@ -465,7 +465,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                amount_usdt,payment_status,order_status,activation_status,paid_at,created_at,updated_at,is_deleted)
             VALUES
               (#{row.userId},#{row.orderNo},#{row.productId},1,'CAPACITY_KEEP',1,#{row.targetPriceUsdt},
-               #{row.discountUsdt},#{row.walletDebitUsdt},'PAID','PAID','WAITING_PROVISIONING',NOW(),NOW(),NOW(),0)
+               #{row.discountUsdt},#{row.walletDebitUsdt},'PAID','PAID','WAITING_PROVISIONING',NOW(6),NOW(),NOW(),0)
             """)
     int insertCapacityKeepOrder(@Param("row") PaidOrderWrite row);
 

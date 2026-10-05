@@ -367,6 +367,8 @@ public class AppTrialLifecycleService {
                 "earlyPurchase", false, "sourceEnvironment", "PRODUCTION");
         putCanonicalProvenance(detail, TRIAL_CONVERSION_SOURCE);
         publish("TRIAL", row.claimNo(), "trial.redeemed", userId, attr, detail);
+        publish("ORDER", orderNo, "checkout.completed", userId, attr,
+                linked("order_no", orderNo, "order_subtotal_usdt", amount, "amount_usdt", amount));
         record("H2_TRIAL_CONVERTED", row.claimNo(), userId, detail);
         return ApiResult.ok(detail);
     }

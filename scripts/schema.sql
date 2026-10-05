@@ -1462,7 +1462,7 @@ CREATE TABLE IF NOT EXISTS nx_order (
   payment_status VARCHAR(32) NOT NULL,
   order_status VARCHAR(32) NOT NULL,
   activation_status VARCHAR(32) NOT NULL DEFAULT 'WAITING_PAYMENT',
-  paid_at DATETIME NULL,
+  paid_at DATETIME(6) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -1773,7 +1773,7 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_order' AND COLUMN_NAME = 'paid_at') = 0,
-  'ALTER TABLE nx_order ADD COLUMN paid_at DATETIME NULL AFTER activation_status',
+  'ALTER TABLE nx_order ADD COLUMN paid_at DATETIME(6) NULL AFTER activation_status',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -2394,8 +2394,8 @@ CREATE TABLE IF NOT EXISTS nx_audit_operation_ticket (
   operation_id VARCHAR(64) NOT NULL,
   action VARCHAR(160) NOT NULL,
   object_text VARCHAR(255) NOT NULL,
-  before_value VARCHAR(128) NOT NULL,
-  after_value VARCHAR(128) NOT NULL,
+  before_value VARCHAR(1024) NOT NULL,
+  after_value VARCHAR(1024) NOT NULL,
   operator_name VARCHAR(128) NOT NULL,
   operator_role VARCHAR(32) NOT NULL,
   operation_type VARCHAR(32) NOT NULL,
@@ -2986,7 +2986,7 @@ CREATE TABLE IF NOT EXISTS nx_compute_task (
   max_attempts INT NOT NULL DEFAULT 3,
   next_retry_at DATETIME NULL,
   last_error VARCHAR(512) NULL,
-  completed_at DATETIME NULL,
+  completed_at DATETIME(6) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -3056,7 +3056,7 @@ CREATE TABLE IF NOT EXISTS nx_compute_receipt (
   earning_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
   source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
   proof_hash VARCHAR(128) NOT NULL,
-  completed_at DATETIME NOT NULL,
+  completed_at DATETIME(6) NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -7310,3 +7310,60 @@ CREATE TABLE IF NOT EXISTS nx_phone_installation_key (
   key_hash CHAR(64) NOT NULL,
   PRIMARY KEY (user_id,installation_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_direct_referral_policy (
+  policy_version BIGINT NOT NULL PRIMARY KEY,
+  effective_at DATETIME(6) NOT NULL,
+  purchase_json JSON NOT NULL,
+  device_earning_json JSON NOT NULL,
+  operation_id VARCHAR(96) NOT NULL,
+  reason VARCHAR(200) NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  KEY idx_direct_policy_effective (effective_at, policy_version),
+  UNIQUE KEY uk_direct_policy_operation (operation_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_direct_referral_settlement (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  settlement_no VARCHAR(64) NOT NULL,
+  source_environment VARCHAR(16) NOT NULL,
+  run_id VARCHAR(96) NOT NULL DEFAULT '',
+  source_type VARCHAR(32) NOT NULL,
+  source_ref VARCHAR(96) COLLATE utf8mb4_bin NOT NULL,
+  source_user_id BIGINT NOT NULL,
+  beneficiary_user_id BIGINT NULL,
+  source_user_name VARCHAR(64) NULL,
+  source_device_id BIGINT NULL,
+  source_occurred_at DATETIME(6) NOT NULL,
+  policy_version BIGINT NOT NULL,
+  policy_snapshot JSON NOT NULL,
+  basis_usdt DECIMAL(24,12) NOT NULL DEFAULT 0,
+  nex_usdt_price DECIMAL(24,12) NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  amount_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
+  usdt_event_id BIGINT NULL,
+  nex_event_id BIGINT NULL,
+  status VARCHAR(32) NOT NULL,
+  release_at DATETIME(6) NOT NULL,
+  credited_at DATETIME(3) NULL,
+  reversal_recorded TINYINT NOT NULL DEFAULT 0,
+  refund_ratio DECIMAL(18,12) NOT NULL DEFAULT 0,
+  recovered_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  recovered_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
+  recovery_pending_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  recovery_pending_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
+  reason VARCHAR(200) NOT NULL DEFAULT '',
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uk_direct_source (source_environment,run_id,source_type,source_ref),
+  UNIQUE KEY uk_direct_settlement (settlement_no),
+  UNIQUE KEY uk_direct_usdt_event (usdt_event_id),
+  UNIQUE KEY uk_direct_nex_event (nex_event_id),
+  KEY idx_direct_recipient (beneficiary_user_id,source_environment,created_at),
+  KEY idx_direct_status (status,release_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ALTER TABLE nx_commission_event MODIFY COLUMN order_no VARCHAR(128) NULL;
+
+INSERT IGNORE INTO nx_config_item(config_key,config_value,value_type,config_group,visibility,remark,status,is_deleted)
+VALUES('team.direct-referral.policy-version','0','NUMBER','team','ADMIN','直属分成版本锁',1,0);

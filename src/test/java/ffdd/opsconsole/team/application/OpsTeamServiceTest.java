@@ -93,7 +93,7 @@ class OpsTeamServiceTest {
             eventOutboxService,
             leadershipPoolService,
             f5CommissionService,
-            idempotencyService);
+            idempotencyService, null, null);
 
     @BeforeEach
     void seedPermissionContext() {
@@ -288,7 +288,7 @@ class OpsTeamServiceTest {
                 mock(EventOutboxService.class),
                 mock(LeadershipPoolService.class),
                 mock(F5CommissionService.class),
-                idempotencyService);
+                idempotencyService, null, null);
 
         ApiResult<Map<String, Object>> rates = realOnlyService.rates();
         ApiResult<Map<String, Object>> pool = realOnlyService.leadershipPool();
@@ -2562,7 +2562,7 @@ class OpsTeamServiceTest {
                 eventOutboxService,
                 leadershipPoolService,
                 f5CommissionService,
-                idempotencyService);
+                idempotencyService, null, null);
         commissionRepository.memberVRanks.put(7106L, "V1");
 
         ApiResult<Map<String, Object>> result = lockedService.overrideVRank(7106L, "idem-7106",

@@ -152,7 +152,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
               subtotal_usdt,discount_usdt,amount_usdt,payment_status,order_status,activation_status,
               paid_at,created_at,updated_at,is_deleted)
             VALUES(#{userId},#{orderNo},#{productId},1,'TRIAL_CONVERT',1,
-              #{subtotalUsdt},#{discountUsdt},#{amountUsdt},'PAID','PAID','ACTIVE',NOW(),NOW(),NOW(),0)
+              #{subtotalUsdt},#{discountUsdt},#{amountUsdt},'PAID','PAID','ACTIVE',NOW(6),NOW(),NOW(),0)
             """)
     int insertConversionOrder(@Param("userId") Long userId, @Param("orderNo") String orderNo,
                               @Param("productId") Long productId, @Param("subtotalUsdt") BigDecimal subtotalUsdt,

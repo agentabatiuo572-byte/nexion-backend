@@ -48,7 +48,7 @@ class F5CommissionReadVersionTest {
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(BigDecimal.ONE, BigDecimal.ZERO));
         F5CommissionService service = new F5CommissionService(mapper, config, coverage,
                 mock(TreasuryLedgerPostingFacade.class), mock(AuditLogService.class),
-                mock(EventOutboxService.class), mock(AdminIdempotencyService.class));
+                mock(EventOutboxService.class), mock(AdminIdempotencyService.class), null);
 
         Map<String, Object> result = service.overview(
                 new F5CommissionQuery(null, null, null, null, null, null, 20)).getData();
@@ -131,6 +131,6 @@ class F5CommissionReadVersionTest {
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(BigDecimal.ONE, BigDecimal.ZERO));
         return new F5CommissionService(mapper, config, coverage,
                 mock(TreasuryLedgerPostingFacade.class), mock(AuditLogService.class),
-                mock(EventOutboxService.class), mock(AdminIdempotencyService.class));
+                mock(EventOutboxService.class), mock(AdminIdempotencyService.class), null);
     }
 }

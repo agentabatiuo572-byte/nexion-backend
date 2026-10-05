@@ -125,7 +125,7 @@ class F5CommissionUnlockMySqlAcceptanceTest {
         F5CommissionMapper mapper = new SqlSessionTemplate(sessionFactory()).getMapper(F5CommissionMapper.class);
         // This fixture exercises event CAS/audit only; wallet SQL is covered separately.
         CommissionEventUnlockProcessor target = new CommissionEventUnlockProcessor(mapper, outbox, audit,
-                mock(ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade.class));
+                mock(ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade.class), null);
         ProxyFactory factory = new ProxyFactory(target);
         factory.setProxyTargetClass(true);
         factory.addAdvice(new TransactionInterceptor(

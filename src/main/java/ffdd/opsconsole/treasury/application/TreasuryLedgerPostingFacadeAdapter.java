@@ -11,14 +11,21 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class TreasuryLedgerPostingFacadeAdapter implements TreasuryLedgerPostingFacade {
     private final TreasuryLedgerRepository ledgerRepository;
+    private final org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.team.application.DirectReferralService> directReferrals;
 
     @Override
     public void releaseCommissionFunds(Long eventId) {
+        var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
+        String group = direct == null ? null : direct.groupForEvent(eventId);
+        if (group != null) { direct.release(group); return; }
         ledgerRepository.releaseCommissionFunds(eventId);
     }
 
     @Override
     public boolean reverseCommissionFunds(Long eventId) {
+        var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
+        String group = direct == null ? null : direct.groupForEvent(eventId);
+        if (group != null) { direct.reverse(group, BigDecimal.ONE); return true; }
         return ledgerRepository.reverseCommissionFunds(eventId);
     }
 

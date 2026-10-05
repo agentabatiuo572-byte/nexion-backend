@@ -33,26 +33,33 @@ public class DevelopmentCommissionHowInitializer implements ApplicationRunner {
         Map<String, Object> before;
         try { before = JSON.readValue(existing.get(), new TypeReference<>() {}); }
         catch (Exception malformed) { return; }
-        var baseline = baseline();
+        var baseline = baseline("/policies/commissions-how-2026.10.05.json");
+        var legacy = baseline("/policies/commissions-how-2026.08.31.json");
+        var previous = baseline.get("previousVersion").equals(before.get("version")) ? baseline : legacy;
         var contents = map(before.get("contents"));
         Object rawRevision = before.get("revision");
         if (!"PUBLISHED".equals(before.get("status"))
-                || !baseline.get("previousVersion").equals(before.get("version"))
+                || !previous.get("previousVersion").equals(before.get("version"))
                 || !"PRODUCTION".equals(before.get("sourceEnvironment"))
                 || !"".equals(before.get("runId"))
                 || !(rawRevision instanceof Number revision) || revision.longValue() < 0
                 || revision.doubleValue() != revision.longValue()
-                || !contents.keySet().equals(PublishedHowContentService.CONTENT_KEYS)
-                || !baseline.get("previousEntry").equals(contents.get(CONTENT_KEY))) return;
+                || !PublishedHowContentService.CONTENT_KEYS.containsAll(contents.keySet())
+                || !contents.keySet().containsAll(PublishedHowContentService.CONTENT_KEYS.stream()
+                    .filter(key -> !key.equals("team-unilevel-how")).toList())
+                || !previous.get("previousEntry").equals(contents.get(CONTENT_KEY))) return;
         var updated = new LinkedHashMap<>(contents);
         updated.put(CONTENT_KEY, baseline.get("entry"));
+        // A missing page has no operator publication to preserve. Existing entries,
+        // including custom drafts, are never replaced by the system template.
+        if (!updated.containsKey("team-unilevel-how")) updated.put("team-unilevel-how", baseline.get("unilevelEntry"));
         var result = publications.update((String) baseline.get("version"), "PUBLISHED", updated,
-                revision.longValue(), "Upgrade exact development commissions guide baseline; preserve all other published pages");
+                revision.longValue(), "Upgrade exact development direct-referral guide baseline; preserve operator publications");
         if (result.getCode() != 0) throw new IllegalStateException("COMMISSION_HOW_BASELINE_UPGRADE_FAILED");
     }
 
-    private Map<String, Object> baseline() {
-        try (var stream = getClass().getResourceAsStream("/policies/commissions-how-2026.08.31.json")) {
+    private Map<String, Object> baseline(String resource) {
+        try (var stream = getClass().getResourceAsStream(resource)) {
             if (stream == null) throw new IllegalStateException("RESOURCE_MISSING");
             return JSON.readValue(stream, new TypeReference<>() {});
         } catch (Exception invalid) { throw new IllegalStateException("COMMISSION_HOW_BASELINE_INVALID", invalid); }

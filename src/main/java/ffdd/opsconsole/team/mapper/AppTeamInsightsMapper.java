@@ -10,6 +10,8 @@ import org.apache.ibatis.annotations.Select;
 
 @Mapper
 public interface AppTeamInsightsMapper extends BaseMapper<Object> {
+    @Select("SELECT source_ref sourceRef,CAST(source_device_id AS CHAR) sourceDeviceId,recovery_pending_usdt recoveryPendingUSDT,recovery_pending_nex recoveryPendingNEX FROM nx_direct_referral_settlement WHERE usdt_event_id=#{id} OR nex_event_id=#{id}")
+    java.util.Map<String,Object> directReferralSnapshot(Long id);
     @Select("SELECT voucher_name FROM nx_growth_voucher WHERE voucher_id=#{id} AND is_deleted=0 LIMIT 1")
     String voucherDisplayName(@Param("id") String id);
 
@@ -46,7 +48,7 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
                  AND UPPER(ce.status)='UNLOCKED'
                  AND ce.created_at &lt;= #{snapshotAt}
                  AND LOWER(ce.commission_type) IN
-                   ('unilevel','network','binary','peer','cultivation','leadership','genesis')
+                   ('unilevel','network','binary','peer','cultivation','leadership','genesis','direct_purchase','direct_device_earning')
                  <if test="fromInclusive != null">AND ce.created_at &gt;= #{fromInclusive}</if>
                  <if test="toExclusive != null">AND ce.created_at &lt; #{toExclusive}</if>
                  AND NOT EXISTS (

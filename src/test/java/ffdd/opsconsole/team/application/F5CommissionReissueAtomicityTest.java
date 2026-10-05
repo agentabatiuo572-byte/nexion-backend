@@ -60,7 +60,7 @@ class F5CommissionReissueAtomicityTest {
                 mock(TreasuryLedgerPostingFacade.class),
                 mock(AuditLogService.class),
                 mock(EventOutboxService.class),
-                idempotencyService);
+                idempotencyService, null);
         A2ReplayContext.enterReplay("A2-F5-ATOMIC-TEST");
     }
 

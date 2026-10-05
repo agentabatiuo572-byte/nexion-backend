@@ -470,7 +470,7 @@ class OpsAuditCenterServiceTest {
                 mock(ffdd.opsconsole.team.application.VRankPromotionEngine.class),
                 mock(ffdd.opsconsole.team.application.VRankRewardDispatcher.class), outbox,
                 mock(ffdd.opsconsole.team.application.LeadershipPoolService.class),
-                mock(ffdd.opsconsole.team.application.F5CommissionService.class), idempotencyService);
+                mock(ffdd.opsconsole.team.application.F5CommissionService.class), idempotencyService, null, null);
         var dispatcher = new AuditReplayDispatcher(List.of(team));
         doAnswer(invocation -> dispatcher.dispatch(invocation.getArgument(0), invocation.getArgument(1)))
                 .when(replayDispatcher).dispatch(any(), any());
@@ -623,6 +623,44 @@ class OpsAuditCenterServiceTest {
                 .containsEntry("operationId", result.getData().id())
                 .containsEntry("sourceDomain", "H1")
                 .containsEntry("idempotencyKey", "idem-proposal-1");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void directReferralApprovalKeepsBothCanonicalRulesAndOriginalReason() {
+        var policies = mock(ffdd.opsconsole.team.application.DirectReferralPolicyService.class);
+        var provider = mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(provider.getObject()).thenReturn(policies);
+        var beforePurchase = new ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule(true,
+                new java.math.BigDecimal("10"), new java.math.BigDecimal("60"), 30);
+        var beforeEarning = new ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule(true,
+                new java.math.BigDecimal("5"), new java.math.BigDecimal("55"), 7);
+        when(policies.current()).thenReturn(Map.of("policyVersion", 3L,
+                "purchase", beforePurchase, "deviceEarning", beforeEarning));
+        var canonicalGuard = new AuditReplayBusinessPermissionGuard(
+                mock(ffdd.opsconsole.content.domain.TrustDisclosureRepository.class),
+                mock(ffdd.opsconsole.shared.security.AdminOperatorRoleResolver.class),
+                mock(ffdd.opsconsole.emergency.domain.EmergencyControlRepository.class), provider);
+        when(replayBusinessPermissionGuard.validateProposalContext(any()))
+                .thenAnswer(invocation -> canonicalGuard.validateProposalContext(invocation.getArgument(0)));
+        var command = new AuditReplayCommand("F", "f_direct_referral_policy", Map.of(
+                "expectedVersion", 3,
+                "purchase", Map.of("enabled", true, "totalRatePct", 8, "usdtSharePct", 60, "coolingDays", 31),
+                "deviceEarning", Map.of("enabled", true, "totalRatePct", 4, "usdtSharePct", 50, "coolingDays", 9)));
+        String reason = "同时降低两类分成并保留完整审批依据";
+        var result = service.createProposal("idem-direct-policy-snapshot", new AuditOperationProposalRequest(
+                "untrusted title", "current", "untrusted before", "untrusted after", "maker", "growth", "fund", true, false,
+                "gate", reason, "F2", command,
+                new ffdd.opsconsole.platform.domain.AuditLockTarget("F", "direct_referral_policy", "current"), null));
+        assertThat(result.getCode()).isZero();
+        var stored = ticketRows.get(result.getData().id());
+        assertThat(stored.getBeforeValue()).contains("版本 3", "购买：启用，总比例 10%", "USDT 60% / NEX 40%", "等待 30 天",
+                "设备收益：启用，总比例 5%", "USDT 55% / NEX 45%", "等待 7 天");
+        assertThat(stored.getAfterValue()).contains("版本 4", "购买：启用，总比例 8%", "等待 31 天",
+                "设备收益：启用，总比例 4%", "USDT 50% / NEX 50%", "等待 9 天");
+        assertThat(stored.getReason()).isEqualTo(reason);
+        assertThat(stored.getAmplifies()).isZero();
+        assertThat(stored.getCommandJson()).contains("\"expectedVersion\":3", "\"purchase\"", "\"deviceEarning\"");
     }
 
     @Test

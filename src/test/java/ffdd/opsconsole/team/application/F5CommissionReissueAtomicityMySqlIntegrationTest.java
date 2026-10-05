@@ -224,7 +224,7 @@ class F5CommissionReissueAtomicityMySqlIntegrationTest {
         };
         return new F5CommissionService(
                 commissionMapper, config, coverage, ledger,
-                mock(AuditLogService.class), mock(EventOutboxService.class), idempotency);
+                mock(AuditLogService.class), mock(EventOutboxService.class), idempotency, null);
     }
 
     private ApiResult<Map<String, Object>> invoke(F5CommissionService service, String key, long... sourceIds) {

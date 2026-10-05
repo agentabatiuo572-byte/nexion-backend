@@ -863,6 +863,40 @@ class AppTrialLifecycleServiceTest {
                 eq(7L), eq("P2"), eq(2), eq("2026-W30"), any());
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void explicitConversionPublishesOnePaidOrderWithNetAmountForDirectRewards() {
+        Clock fixed = Clock.fixed(Instant.parse("2026-10-05T00:00:00Z"), ZoneId.of("Asia/Shanghai"));
+        LocalDateTime now = LocalDateTime.now(fixed);
+        when(mapper.policies()).thenReturn(List.of(new PolicyRow("discountRate", "15"), new PolicyRow("discountCapUSD", "20")));
+        when(mapper.lockTrial(7L)).thenReturn(new TrialRow(1L, 7L, "TRIAL-1", "ACTIVE", null, null, "Trial",
+                3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"), new BigDecimal("1299"),
+                "productCode=stellarbox-s1", now.minusDays(1), now.plusDays(2), BigDecimal.ZERO, BigDecimal.ZERO,
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, null, 0L));
+        when(mapper.lockHardwarePurchaseTiers("stellarbox-s1")).thenReturn(List.of());
+        when(mapper.lockWallet(7L)).thenReturn(new WalletRow(new BigDecimal("2000"), BigDecimal.ZERO));
+        when(mapper.settleWallet(eq(7L), any(), eq(BigDecimal.ZERO), eq(BigDecimal.ZERO))).thenReturn(1);
+        when(mapper.decrementProductStock(9L)).thenReturn(1);
+        when(mapper.insertConversionOrder(eq(7L), anyString(), eq(9L), any(), any(), any())).thenReturn(1);
+        when(mapper.insertConversionOrderItem(anyString(), eq(9L), eq("stellarbox-s1"), anyString(), any())).thenReturn(1);
+        when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(9L), eq("stellarbox-s1"), eq("Entry"), eq("DEVICE"), anyString(), eq("Trial"), any())).thenReturn(1);
+        when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
+        when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
+        var fixedService = new AppTrialLifecycleService(mapper, earningsRelease, idempotency, coverage, audit, outbox,
+                productReleasePolicy, canonicalStateMapper, environment, fixed);
+        var result = fixedService.convert(7L, "stellarbox-s1", new BigDecimal("1239.00"), "direct-reward-conversion");
+        assertThat(result.getCode()).isZero();
+        String orderNo = (String) result.getData().get("orderNo");
+        assertThat((BigDecimal) result.getData().get("amountUsdt")).isEqualByComparingTo("1239");
+        var payload = org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(outbox).publishUserEvent(eq("ORDER"), eq(orderNo), eq("checkout.completed"),
+                eq(7L), eq("P2"), eq(2), eq("2026-W30"), payload.capture());
+        assertThat(payload.getValue()).containsEntry("order_no", orderNo);
+        assertThat((BigDecimal) payload.getValue().get("amount_usdt")).isEqualByComparingTo("1239");
+        verify(mapper).insertConversionOrder(eq(7L), eq(orderNo), eq(9L), eq(new BigDecimal("1299")),
+                eq(new BigDecimal("60.000000")), eq(new BigDecimal("1239.000000")));
+    }
+
     private TrialRow activeTrial() {
         LocalDateTime now = LocalDateTime.now();
         return new TrialRow(1L, 7L, "TRIAL-1", "ACTIVE", null, null, "Trial",

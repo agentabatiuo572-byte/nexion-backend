@@ -70,10 +70,7 @@ public class VRankPassiveEvaluationConsumer {
                     VRankPromotionContext.TriggerType.SYSTEM_EVALUATION,
                     message.getEventId(),
                     "ENGINE"));
-            // F2 unilevel 佣金结算(仅 checkout.completed,需 envelope 携带订单金额/号)
-            if (CHECKOUT_COMPLETED.equals(message.getEventType())) {
-                settleUnilevelIfOrderPresent(userId, node, message.getEventId());
-            }
+            // Purchase commissions have one durable direct-referral consumer. Never fall back to L1-L7.
         } catch (Exception ex) {
             log.warn("Passive eval/settle failed (scheduler backfills): type={} eventId={} err={}",
                     message.getEventType(), message.getEventId(), ex.getMessage());

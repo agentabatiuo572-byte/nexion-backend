@@ -153,7 +153,7 @@ public class AppTeamInsightsService {
         LocalDateTime nextUnlock = null;
         Map<String, Map<String, Object>> byKind = new LinkedHashMap<>();
         int eventCount = 0;
-        for (String kind : List.of("unilevel", "binary", "peer", "cultivation", "leadership", "genesis")) {
+        for (String kind : List.of("unilevel", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning")) {
             byKind.put(kind, new LinkedHashMap<>(Map.of("usdt", BigDecimal.ZERO, "nex", BigDecimal.ZERO, "count", 0)));
         }
         for (var bucket : buckets) {
@@ -317,6 +317,11 @@ public class AppTeamInsightsService {
         item.put("sourceUserName", row.sourceUserName() == null || row.sourceUserName().isBlank() ? "System" : row.sourceUserName());
         item.put("layer", row.layerNo()); item.put("orderId", row.orderNo()); item.put("orderAmountUSD", row.orderAmountUsd());
         item.put("amountUSDT", zero(row.amountUsdt())); item.put("amountNEX", zero(row.amountNex()));
+        if (DirectReferralService.KINDS.contains(row.commissionType())) {
+            var snapshot = mapper.directReferralSnapshot(row.id());
+            if (snapshot == null) throw new BizException(503, "DIRECT_REFERRAL_GROUP_NOT_FOUND");
+            item.putAll(snapshot);
+        }
         item.put("ts", row.createdAt().atZone(BUSINESS_ZONE).toInstant().toEpochMilli());
         item.put("unlockAt", row.unlockAt() == null ? row.createdAt().atZone(BUSINESS_ZONE).toInstant().toEpochMilli()
                 : row.unlockAt().atZone(BUSINESS_ZONE).toInstant().toEpochMilli());
@@ -452,6 +457,7 @@ public class AppTeamInsightsService {
         }
     }
     private String kind(String value) { String normalized=value==null?"":value.toLowerCase(); return switch(normalized){
+        case "direct_purchase", "direct_device_earning" -> normalized;
         case "direct","network","unilevel" -> "unilevel"; case "binary" -> "binary"; case "peer" -> "peer";
         case "cultivation" -> "cultivation"; case "leadership","leaderboard_prize" -> "leadership"; default -> "genesis"; }; }
     private String status(String value) { String normalized=value==null?"":value.toUpperCase(); return switch(normalized){
@@ -461,6 +467,7 @@ public class AppTeamInsightsService {
         case "FROZEN" -> "frozen";
         case "REVERSED","ROLLBACK" -> "reversed";
         case "REJECTED" -> "rejected";
+        case "RECOVERY_PENDING" -> "recovery_pending";
         default -> throw new BizException(503, "COMMISSION_STATUS_INVALID"); }; }
     private String mask(String value, Long userId) { String name=value==null||value.isBlank()?"User"+userId:value.trim(); return name.length()<3?name:name.substring(0,Math.min(3,name.length()))+"***"; }
     private BigDecimal zero(BigDecimal value) { return value==null||value.signum()<0?BigDecimal.ZERO:value; }

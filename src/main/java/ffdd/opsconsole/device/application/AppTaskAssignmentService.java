@@ -688,7 +688,7 @@ public class AppTaskAssignmentService {
             String sourceEnvironment, Grant grant, CompleteRequest testRequest) {
         if (grant != null) testWorker.requireCurrent(grant);
         Instant completedAt = clock.instant();
-        LocalDateTime now = LocalDateTime.ofInstant(completedAt, clock.getZone()).withNano(0);
+        LocalDateTime now = LocalDateTime.ofInstant(completedAt, clock.getZone()).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         LocalDate utcDay = completedAt.atZone(ZoneOffset.UTC).toLocalDate();
         // Match activation/deactivation and claim: user -> device -> task.
         // The initial unlocked lookup is only for routing; recheck under lock.

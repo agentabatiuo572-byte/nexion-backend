@@ -28,7 +28,7 @@ class AuditReplayBusinessPermissionGuardTest {
     private final AdminOperatorRoleResolver roleResolver = mock(AdminOperatorRoleResolver.class);
     private final EmergencyControlRepository emergencyRepository = mock(EmergencyControlRepository.class);
     private final AuditReplayBusinessPermissionGuard guard =
-            new AuditReplayBusinessPermissionGuard(repository, roleResolver, emergencyRepository);
+            new AuditReplayBusinessPermissionGuard(repository, roleResolver, emergencyRepository, null);
 
     @AfterEach
     void clearContext() {

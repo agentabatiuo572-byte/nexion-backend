@@ -940,7 +940,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND u.is_deleted = 0 AND u.status = 'ACTIVE' AND u.sandbox = 0
                AND UPPER(e.status) = 'UNLOCKED'
                AND LOWER(e.commission_type) IN
-                   ('unilevel','network','binary','peer','cultivation','leadership','genesis')
+                   ('unilevel','network','binary','peer','cultivation','leadership','genesis','direct_purchase','direct_device_earning')
                <if test="fromInclusive != null">AND e.created_at &gt;= #{fromInclusive}</if>
                <if test="toExclusive != null">AND e.created_at &lt; #{toExclusive}</if>
                AND NOT EXISTS (

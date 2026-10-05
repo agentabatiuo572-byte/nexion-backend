@@ -18,6 +18,7 @@ public class CommissionEventUnlockProcessor {
     private final EventOutboxService eventOutboxService;
     private final AuditLogService auditLogService;
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
+    private final org.springframework.beans.factory.ObjectProvider<DirectReferralService> directReferrals;
 
     @Transactional(rollbackFor = Exception.class)
     public boolean unlock(Map<String, Object> row) {
@@ -27,6 +28,9 @@ public class CommissionEventUnlockProcessor {
         if (eventId == null || userId == null || expectedVersion == null || expectedVersion < 0) {
             return false;
         }
+        var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
+        String group = direct == null ? null : direct.groupForEvent(eventId);
+        if (group != null) return direct.release(group);
         if (mapper.unlockCoolingEventCas(eventId, expectedVersion) != 1) {
             return false;
         }

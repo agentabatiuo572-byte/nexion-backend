@@ -34,7 +34,7 @@ class CommissionGuideRuleServiceTest {
                 .containsEntry("sourceEnvironment", "PRODUCTION")
                 .containsEntry("runId", null)
                 .containsEntry("coolingDays", 9);
-        assertThat(group(guide, "network")).containsEntry("depthGateLayer", 6)
+        assertThat(group(guide, "network")).containsEntry("historicalOnly", true).containsEntry("depthGateLayer", 6)
                 .containsEntry("depthGateRank", 7)
                 .containsEntry("exitCapRate", new BigDecimal("0.15"));
         assertThat(group(guide, "binary")).containsEntry("threshold", new BigDecimal("2500"))

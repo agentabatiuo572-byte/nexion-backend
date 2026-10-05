@@ -492,9 +492,11 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
             return;
         }
         boolean commissionAccrual = "TEAM_COMMISSION".equals(normalizedBizType) && "PENDING".equals(normalizedStatus);
-        BigDecimal current = (commissionAccrual ? actualUserBalance(safeUserId, normalizedAsset)
+        boolean directWalletAlreadyPosted = "TEAM_COMMISSION".equals(normalizedBizType)
+                && normalizedBizNo.startsWith("DR-") && "SUCCESS".equals(normalizedStatus);
+        BigDecimal current = (commissionAccrual || directWalletAlreadyPosted ? actualUserBalance(safeUserId, normalizedAsset)
                 : currentUserBalance(safeUserId, normalizedAsset)).orElse(BigDecimal.ZERO);
-        BigDecimal balanceAfter = commissionAccrual ? current : "OUT".equals(normalizedDirection)
+        BigDecimal balanceAfter = commissionAccrual || directWalletAlreadyPosted ? current : "OUT".equals(normalizedDirection)
                 ? current.subtract(safeAmount)
                 : current.add(safeAmount);
         if (balanceAfter.signum() < 0) {

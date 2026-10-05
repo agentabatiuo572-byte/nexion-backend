@@ -47,9 +47,9 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class F5CommissionService {
     private static final Set<String> KINDS =
-            Set.of("network", "binary", "peer", "cultivation", "leadership", "genesis");
+            Set.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning");
     private static final Set<String> STATUSES =
-            Set.of("cooling", "unlocked", "withdrawn", "reversed", "frozen");
+            Set.of("cooling", "unlocked", "withdrawn", "reversed", "frozen", "rejected", "recovery_pending");
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 100;
     private static final int EXPORT_PAGE_SIZE = 1000;
@@ -66,6 +66,7 @@ public class F5CommissionService {
     private final AuditLogService auditLogService;
     private final EventOutboxService eventOutboxService;
     private final AdminIdempotencyService idempotencyService;
+    private final org.springframework.beans.factory.ObjectProvider<DirectReferralService> directReferrals;
 
     public ApiResult<Map<String, Object>> overview(F5CommissionQuery query) {
         NormalizedQuery normalized = normalizeQuery(query);
@@ -111,7 +112,9 @@ public class F5CommissionService {
                 Map.of("key", "unlocked", "label", "已解锁可提"),
                 Map.of("key", "withdrawn", "label", "已提现"),
                 Map.of("key", "reversed", "label", "已撤销"),
-                Map.of("key", "frozen", "label", "已冻结")));
+                Map.of("key", "frozen", "label", "已冻结"),
+                Map.of("key", "rejected", "label", "已拒绝"),
+                Map.of("key", "recovery_pending", "label", "待追回")));
         response.put("commissionEvents", items);
         response.put("items", items);
         response.put("nextCursor", nextCursor == null ? "" : String.valueOf(nextCursor));
@@ -140,7 +143,8 @@ public class F5CommissionService {
                         + ",\"layerRatioAnomalyPct\":" + layerRatioThreshold().toPlainString() + "}"));
         response.put("commissionPolicy", Map.of(
                 "coolingAuthority", COOLING_DAYS_KEY,
-                "coolingKinds", List.of("network", "binary"),
+                "coolingKinds", List.of("network", "binary", "direct_purchase", "direct_device_earning"),
+                "directCoolingAuthority", "/api/config/commission/direct-referral",
                 "immediateKinds", List.of("peer", "cultivation", "leadership", "genesis")));
         response.put("guardrails", List.of(
                 "F5 writes require Idempotency-Key and an 8-200 character reason",
@@ -449,6 +453,21 @@ public class F5CommissionService {
             String reason,
             String operator,
             String idempotencyKey) {
+        var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
+        if (direct != null && direct.groupForEvent(eventId) != null) {
+            if (mapper.countEvidenceReference(eventId, refundRef) < 1) return ApiResult.fail(422, "REFUND_REF_NOT_FOUND");
+            Map<String,Object> result = direct.reverseEvent(eventId);
+            Long userId = longValue(result.get("userId"));
+            String operationNo = operationNo("REV");
+            mapper.insertOperation(operationNo, "REVERSE", eventId, null, userId, text(result.get("kind")),
+                    null, null, refundRef, reason, operator, idempotencyKey);
+            Map<String,Object> detail = new LinkedHashMap<>(result);
+            detail.putAll(linked("operationNo", operationNo, "commissionId", commissionId,
+                    "refundRef", refundRef, "operator", operator, "reason", reason));
+            audit("ADMIN_COMMISSION_REVERSED", commissionId, userId, operator, detail);
+            eventOutboxService.publish("ADMIN_COMMISSION", commissionId, "admin.commission_reversed", detail);
+            return ApiResult.ok(detail);
+        }
         Map<String, Object> event = mapper.findEventForUpdate(eventId);
         if (event == null) {
             return ApiResult.fail(404, "COMMISSION_EVENT_NOT_FOUND");
@@ -516,6 +535,9 @@ public class F5CommissionService {
             }
             if (mapper.findReissueOperationForUpdate(eventId) != null) {
                 throw new BizException(409, "COMMISSION_REISSUE_ALREADY_CONSUMED:CM-" + eventId);
+            }
+            if (DirectReferralService.KINDS.contains(text(original.get("kind")))) {
+                throw new BizException(409, "DIRECT_REFERRAL_REISSUE_REQUIRES_SOURCE_RECONCILIATION");
             }
             sources.add(new ReissueSource(eventId, original));
         }
@@ -600,7 +622,12 @@ public class F5CommissionService {
                     ? mapper.suspendUserKind(userId, kind, reason, operator)
                     : mapper.resumeUserKind(userId, kind, reason, operator);
             changed += rows;
-            if (suspended) {
+            var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
+            if (DirectReferralService.KINDS.contains(kind)) {
+                if (direct == null) throw new ffdd.opsconsole.shared.exception.BizException(503, "DIRECT_REFERRAL_UNAVAILABLE");
+                int directChanged = direct.suspend(userId, kind, suspended);
+                if (suspended) frozen += directChanged;
+            } else if (suspended) {
                 frozen += mapper.freezeOpenEventsForSuspension(userId, kind);
             }
         }
@@ -762,9 +789,11 @@ public class F5CommissionService {
 
     private Map<String, Object> eventView(Map<String, Object> raw) {
         Map<String, Object> row = new LinkedHashMap<>(raw);
+        var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
+        if (direct != null && DirectReferralService.KINDS.contains(text(raw.get("kind")))) row.putAll(direct.eventSnapshot(longValue(raw.get("eventId"))));
         String commissionId = text(raw.get("commissionId"));
         Long userId = longValue(raw.get("userId"));
-        String status = text(raw.get("status"));
+        String status = text(row.get("status"));
         row.put("id", commissionId);
         row.put("user", userId == null ? "" : "U" + String.format("%08d", userId));
         row.put("cooldownPercent", "cooling".equals(status) ? 0 : 100);
@@ -824,8 +853,10 @@ public class F5CommissionService {
                 "peer", "平级奖",
                 "cultivation", "培育奖",
                 "leadership", "领导奖池",
-                "genesis", "创世排放");
-        return List.of("network", "binary", "peer", "cultivation", "leadership", "genesis")
+                "genesis", "创世排放",
+                "direct_purchase", "直属购买分成",
+                "direct_device_earning", "直属设备收益分成");
+        return List.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning")
                 .stream()
                 .map(kind -> {
                     List<Map<String, Object>> aggregateRows = grouped.getOrDefault(kind, List.of());
@@ -866,7 +897,9 @@ public class F5CommissionService {
                 linked("name", "冷却计提中", "color", "var(--warning)", "count", counts.getOrDefault("cooling", 0L)),
                 linked("name", "已提现", "color", "var(--cyan)", "count", counts.getOrDefault("withdrawn", 0L)),
                 linked("name", "已撤销", "color", "var(--danger)", "count", counts.getOrDefault("reversed", 0L)),
-                linked("name", "已冻结", "color", "var(--ink-4)", "count", counts.getOrDefault("frozen", 0L)));
+                linked("name", "已冻结", "color", "var(--ink-4)", "count", counts.getOrDefault("frozen", 0L)),
+                linked("name", "已拒绝", "color", "var(--danger)", "count", counts.getOrDefault("rejected", 0L)),
+                linked("name", "待追回", "color", "var(--warning)", "count", counts.getOrDefault("recovery_pending", 0L)));
     }
 
     private String currencyLabel(List<Map<String, Object>> rows) {

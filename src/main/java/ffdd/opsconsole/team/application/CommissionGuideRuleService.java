@@ -83,6 +83,9 @@ public class CommissionGuideRuleService {
         Integer depthGateRank = active(DEPTH_GATE_RANK_KEY).flatMap(this::depthGateRank).orElse(null);
         BigDecimal exitCapRate = active(MERGE_EXIT_MAX_PCT_KEY).flatMap(this::percentPointsAsRate).orElse(null);
         Map<String, Object> network = new LinkedHashMap<>();
+        // Historical interpretation only. Current purchase/device rules are served
+        // by /api/config/commission/direct-referral and never use these factors.
+        network.put("historicalOnly", true);
         network.put("depthGateLayer", depthGateLayer);
         network.put("depthGateRank", depthGateRank);
         network.put("exitCapRate", exitCapRate);

@@ -56,17 +56,19 @@ public interface F5CommissionMapper {
                    ) AS ledgerBizNo,
                    DATE_FORMAT(COALESCE(e.updated_at, e.created_at), '%Y-%m-%d %H:%i:%s') AS settledAt,
                    CASE
-                     WHEN LOWER(e.commission_type) IN ('network', 'binary')
+                     WHEN LOWER(e.commission_type) IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
                        THEN GREATEST(0, DATEDIFF(e.unlock_at, NOW()))
                      ELSE 0
                    END AS coolingDaysLeft,
                    CASE
-                     WHEN UPPER(e.status) IN ('REVERSED', 'ROLLBACK', 'REJECTED') THEN 'reversed'
+                     WHEN UPPER(e.status) IN ('REVERSED', 'ROLLBACK') THEN 'reversed'
+                     WHEN UPPER(e.status) = 'REJECTED' THEN 'rejected'
+                     WHEN UPPER(e.status) = 'RECOVERY_PENDING' THEN 'recovery_pending'
                      WHEN UPPER(e.status) = 'FROZEN' THEN 'frozen'
                       WHEN UPPER(e.status) IN ('PAID', 'WITHDRAWN', 'SETTLED') THEN 'withdrawn'
                       WHEN UPPER(e.status) IN ('UNLOCKED', 'AVAILABLE') THEN 'unlocked'
                       WHEN UPPER(e.status) IN ('PENDING', 'COOLING')
-                        AND LOWER(e.commission_type) NOT IN ('network', 'binary') THEN 'unlocked'
+                        AND LOWER(e.commission_type) NOT IN ('network', 'binary', 'direct_purchase', 'direct_device_earning') THEN 'unlocked'
                       WHEN UPPER(e.status) IN ('PENDING', 'COOLING') THEN 'cooling'
                       ELSE 'unknown'
                    END AS status,
@@ -75,7 +77,7 @@ public interface F5CommissionMapper {
               LEFT JOIN nx_user u ON u.id = e.user_id AND u.is_deleted = 0
              WHERE e.is_deleted = 0
                AND LOWER(e.commission_type) IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis')
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
              <if test="kind != null and kind != ''">
                AND LOWER(e.commission_type) = LOWER(#{kind})
              </if>
@@ -91,16 +93,18 @@ public interface F5CommissionMapper {
              <if test="status != null and status != ''">
                AND (
                  (LOWER(#{status}) = 'cooling'
-                   AND LOWER(e.commission_type) IN ('network', 'binary')
+                   AND LOWER(e.commission_type) IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
                    AND UPPER(e.status) IN ('PENDING', 'COOLING'))
                  OR (LOWER(#{status}) = 'unlocked'
                    AND (UPPER(e.status) IN ('UNLOCKED', 'AVAILABLE')
-                     OR (LOWER(e.commission_type) NOT IN ('network', 'binary')
+                     OR (LOWER(e.commission_type) NOT IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
                        AND UPPER(e.status) IN ('PENDING', 'COOLING'))))
                  OR (LOWER(#{status}) = 'withdrawn'
                    AND UPPER(e.status) IN ('PAID', 'WITHDRAWN', 'SETTLED'))
                  OR (LOWER(#{status}) = 'reversed'
-                   AND UPPER(e.status) IN ('REVERSED', 'ROLLBACK', 'REJECTED'))
+                   AND UPPER(e.status) IN ('REVERSED', 'ROLLBACK'))
+                 OR (LOWER(#{status}) = 'rejected' AND UPPER(e.status) = 'REJECTED')
+                 OR (LOWER(#{status}) = 'recovery_pending' AND UPPER(e.status) = 'RECOVERY_PENDING')
                  OR (LOWER(#{status}) = 'frozen' AND UPPER(e.status) = 'FROZEN')
                )
              </if>
@@ -136,12 +140,14 @@ public interface F5CommissionMapper {
                    e.layer_no AS layer,
                    DATE_FORMAT(COALESCE(e.updated_at, e.created_at), '%Y-%m-%d %H:%i:%s') AS settledAt,
                    CASE
-                     WHEN UPPER(e.status) IN ('REVERSED', 'ROLLBACK', 'REJECTED') THEN 'reversed'
+                     WHEN UPPER(e.status) IN ('REVERSED', 'ROLLBACK') THEN 'reversed'
+                     WHEN UPPER(e.status) = 'REJECTED' THEN 'rejected'
+                     WHEN UPPER(e.status) = 'RECOVERY_PENDING' THEN 'recovery_pending'
                      WHEN UPPER(e.status) = 'FROZEN' THEN 'frozen'
                      WHEN UPPER(e.status) IN ('PAID', 'WITHDRAWN', 'SETTLED') THEN 'withdrawn'
                      WHEN UPPER(e.status) IN ('UNLOCKED', 'AVAILABLE') THEN 'unlocked'
                      WHEN UPPER(e.status) IN ('PENDING', 'COOLING')
-                       AND LOWER(e.commission_type) NOT IN ('network', 'binary') THEN 'unlocked'
+                       AND LOWER(e.commission_type) NOT IN ('network', 'binary', 'direct_purchase', 'direct_device_earning') THEN 'unlocked'
                      WHEN UPPER(e.status) IN ('PENDING', 'COOLING') THEN 'cooling'
                      ELSE 'unknown'
                    END AS status
@@ -149,7 +155,7 @@ public interface F5CommissionMapper {
               LEFT JOIN nx_user u ON u.id = e.user_id AND u.is_deleted = 0
              WHERE e.is_deleted = 0
                AND LOWER(e.commission_type) IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis')
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
              <if test="kind != null and kind != ''">
                AND LOWER(e.commission_type) = LOWER(#{kind})
              </if>
@@ -165,16 +171,18 @@ public interface F5CommissionMapper {
              <if test="status != null and status != ''">
                AND (
                  (LOWER(#{status}) = 'cooling'
-                   AND LOWER(e.commission_type) IN ('network', 'binary')
+                   AND LOWER(e.commission_type) IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
                    AND UPPER(e.status) IN ('PENDING', 'COOLING'))
                  OR (LOWER(#{status}) = 'unlocked'
                    AND (UPPER(e.status) IN ('UNLOCKED', 'AVAILABLE')
-                     OR (LOWER(e.commission_type) NOT IN ('network', 'binary')
+                     OR (LOWER(e.commission_type) NOT IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
                        AND UPPER(e.status) IN ('PENDING', 'COOLING'))))
                  OR (LOWER(#{status}) = 'withdrawn'
                    AND UPPER(e.status) IN ('PAID', 'WITHDRAWN', 'SETTLED'))
                  OR (LOWER(#{status}) = 'reversed'
-                   AND UPPER(e.status) IN ('REVERSED', 'ROLLBACK', 'REJECTED'))
+                   AND UPPER(e.status) IN ('REVERSED', 'ROLLBACK'))
+                 OR (LOWER(#{status}) = 'rejected' AND UPPER(e.status) = 'REJECTED')
+                 OR (LOWER(#{status}) = 'recovery_pending' AND UPPER(e.status) = 'RECOVERY_PENDING')
                  OR (LOWER(#{status}) = 'frozen' AND UPPER(e.status) = 'FROZEN')
                )
              </if>
@@ -201,7 +209,7 @@ public interface F5CommissionMapper {
               LEFT JOIN nx_user u ON u.id = e.user_id AND u.is_deleted = 0
              WHERE e.is_deleted = 0
                AND LOWER(e.commission_type) IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis')
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
              <if test="kind != null and kind != ''">
                AND LOWER(e.commission_type) = LOWER(#{kind})
              </if>
@@ -217,16 +225,18 @@ public interface F5CommissionMapper {
              <if test="status != null and status != ''">
                AND (
                  (LOWER(#{status}) = 'cooling'
-                   AND LOWER(e.commission_type) IN ('network', 'binary')
+                   AND LOWER(e.commission_type) IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
                    AND UPPER(e.status) IN ('PENDING', 'COOLING'))
                  OR (LOWER(#{status}) = 'unlocked'
                    AND (UPPER(e.status) IN ('UNLOCKED', 'AVAILABLE')
-                     OR (LOWER(e.commission_type) NOT IN ('network', 'binary')
+                     OR (LOWER(e.commission_type) NOT IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
                        AND UPPER(e.status) IN ('PENDING', 'COOLING'))))
                  OR (LOWER(#{status}) = 'withdrawn'
                    AND UPPER(e.status) IN ('PAID', 'WITHDRAWN', 'SETTLED'))
                  OR (LOWER(#{status}) = 'reversed'
-                   AND UPPER(e.status) IN ('REVERSED', 'ROLLBACK', 'REJECTED'))
+                   AND UPPER(e.status) IN ('REVERSED', 'ROLLBACK'))
+                 OR (LOWER(#{status}) = 'rejected' AND UPPER(e.status) = 'REJECTED')
+                 OR (LOWER(#{status}) = 'recovery_pending' AND UPPER(e.status) = 'RECOVERY_PENDING')
                  OR (LOWER(#{status}) = 'frozen' AND UPPER(e.status) = 'FROZEN')
                )
              </if>
@@ -247,10 +257,10 @@ public interface F5CommissionMapper {
               FROM nx_commission_event e
              WHERE e.is_deleted=0
                AND LOWER(e.commission_type) IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis')
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
              GROUP BY LOWER(e.commission_type), UPPER(e.currency)
              ORDER BY FIELD(kind,
-                       'network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis'),
+                       'network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning'),
                       currency
             """)
     List<Map<String, Object>> aggregateCommissionKinds();
@@ -262,12 +272,14 @@ public interface F5CommissionMapper {
                    COUNT(1) AS count
               FROM (
                     SELECT CASE
-                             WHEN UPPER(e.status) IN ('REVERSED', 'ROLLBACK', 'REJECTED') THEN 'reversed'
+                             WHEN UPPER(e.status) IN ('REVERSED', 'ROLLBACK') THEN 'reversed'
+                             WHEN UPPER(e.status)='REJECTED' THEN 'rejected'
+                             WHEN UPPER(e.status)='RECOVERY_PENDING' THEN 'recovery_pending'
                              WHEN UPPER(e.status)='FROZEN' THEN 'frozen'
                               WHEN UPPER(e.status) IN ('PAID', 'WITHDRAWN', 'SETTLED') THEN 'withdrawn'
                               WHEN UPPER(e.status) IN ('UNLOCKED', 'AVAILABLE') THEN 'unlocked'
                               WHEN UPPER(e.status) IN ('PENDING', 'COOLING')
-                                AND LOWER(e.commission_type) NOT IN ('network', 'binary') THEN 'unlocked'
+                                AND LOWER(e.commission_type) NOT IN ('network', 'binary', 'direct_purchase', 'direct_device_earning') THEN 'unlocked'
                               WHEN UPPER(e.status) IN ('PENDING', 'COOLING') THEN 'cooling'
                               ELSE 'unknown'
                            END AS status,
@@ -276,7 +288,7 @@ public interface F5CommissionMapper {
                       FROM nx_commission_event e
                      WHERE e.is_deleted=0
                        AND LOWER(e.commission_type) IN
-                           ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis')
+                           ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
               ) normalized
              GROUP BY normalized.status, normalized.currency
              ORDER BY FIELD(normalized.status, 'unlocked', 'cooling', 'withdrawn', 'reversed', 'frozen'),
@@ -289,7 +301,7 @@ public interface F5CommissionMapper {
               FROM nx_commission_event
              WHERE is_deleted=0
                AND (commission_type IS NULL OR LOWER(commission_type) NOT IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis',
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning',
                     'vrank_reward'))
             """)
     // vrank_reward is the authoritative F1 self-reward event, not one of F5's six commission classes.
@@ -365,9 +377,9 @@ public interface F5CommissionMapper {
             SELECT e.user_id, e.commission_type, e.source_user_id, e.source_user_name,
                    e.layer_no, CONCAT('F5-REISSUE-', e.id, '-', #{operationNo}), e.order_amount_usd,
                    e.amount_usdt, e.amount_nex, e.currency,
-                   CASE WHEN LOWER(e.commission_type) IN ('network', 'binary')
+                   CASE WHEN LOWER(e.commission_type) IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
                         THEN 'COOLING' ELSE 'UNLOCKED' END,
-                   CASE WHEN LOWER(e.commission_type) IN ('network', 'binary')
+                   CASE WHEN LOWER(e.commission_type) IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
                         THEN DATE_ADD(NOW(), INTERVAL #{coolingDays} DAY) ELSE NOW() END,
                    CONCAT('F5 reissue from CM-', e.id, ' | ', #{reason})
               FROM nx_commission_event e

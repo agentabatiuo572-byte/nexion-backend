@@ -251,6 +251,8 @@ public class OpsTeamService implements AuditReplayable {
     private final LeadershipPoolService leadershipPoolService;
     private final F5CommissionService f5CommissionService;
     private final AdminIdempotencyService idempotencyService;
+    private final org.springframework.beans.factory.ObjectProvider<DirectReferralPolicyService> directPolicies;
+    private final org.springframework.beans.factory.ObjectProvider<DirectReferralService> directReferrals;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> binarySummary = binarySettlementSummary();
@@ -1220,6 +1222,13 @@ public class OpsTeamService implements AuditReplayable {
             if (!permissionCache.getPermissionCodes(adminId).contains(f5Required)) {
                 return ApiResult.fail(403, "PERMISSION_DENIED");
             }
+        }
+        var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
+        Long directEventId = Long.valueOf(eventId.replaceFirst("^CM-", ""));
+        if (direct != null && direct.groupForEvent(directEventId) != null) {
+            direct.changeStatus(directEventId, toCanonical, request.expectedVersion());
+            if (!commissionRepository.recordCommissionOperation(eventId, fromCanonical+"_TO_"+toCanonical, idempotencyKey.trim(), request.expectedVersion(), actor(request.operator()), request.reason().trim())) throw new IllegalStateException("F5_OPERATION_AUDIT_CONFLICT");
+            return ApiResult.ok(Map.of("updated", direct.eventSnapshot(directEventId)));
         }
         if (!commissionRepository.updateCommissionStatusCas(eventId,fromCanonical,toCanonical,request.expectedVersion())) {
             return ApiResult.fail(409, "F5_COMMISSION_VERSION_CONFLICT");
@@ -3671,6 +3680,13 @@ public class OpsTeamService implements AuditReplayable {
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
+            case "f_direct_referral_policy" -> {
+                var params = new java.util.LinkedHashMap<String, Object>(p);
+                params.put("reason", reason);
+                var request = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules()
+                        .convertValue(params, ffdd.opsconsole.team.dto.DirectReferralPolicyRequest.class);
+                return ApiResult.ok(directPolicies.getObject().publish(idem, request));
+            }
             // f_config: polymorphic ACTIVE_KEYS,key 分发(directRoyaltyPct/binary-rate/pool-ratio 等数值政策)。
             // amplifies true: royalty/match/pool 放大佣金流出。
             case "f_config" -> {

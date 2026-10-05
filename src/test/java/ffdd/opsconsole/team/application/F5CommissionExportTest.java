@@ -63,7 +63,7 @@ class F5CommissionExportTest {
                 mock(TreasuryLedgerPostingFacade.class),
                 audit,
                 outbox,
-                idempotency);
+                idempotency, null);
     }
 
     @Test
@@ -142,7 +142,7 @@ class F5CommissionExportTest {
                 mock(TreasuryLedgerPostingFacade.class),
                 audit,
                 outbox,
-                durableIdempotency);
+                durableIdempotency, null);
 
         F5CommissionExportRequest request = new F5CommissionExportRequest(
                 "network", "USDT", null, "unlocked", "2026-08", "同一请求二进制持久重放核验");

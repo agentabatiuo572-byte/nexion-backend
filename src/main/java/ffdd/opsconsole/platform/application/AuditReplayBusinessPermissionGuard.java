@@ -33,6 +33,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 @ApplicationService
 @RequiredArgsConstructor
 public class AuditReplayBusinessPermissionGuard {
+
     private static final Set<String> SENSITIVE_TRUST_SECTIONS = Set.of(
             "financials", "nexnarrative", "nexstory", "auditsreserves", "compliancebadges");
     private static final Set<String> I3_CAP_TIERS = Set.of("critical", "high", "normal", "low");
@@ -96,6 +97,7 @@ public class AuditReplayBusinessPermissionGuard {
     private final TrustDisclosureRepository trustDisclosureRepository;
     private final AdminOperatorRoleResolver roleResolver;
     private final EmergencyControlRepository emergencyControlRepository;
+    private final org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.team.application.DirectReferralPolicyService> directPolicies;
 
     public record DelegatedProposalDescriptor(
             String action,
@@ -361,6 +363,10 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
+        if (command != null && "f_direct_referral_policy".equals(command.op())
+                && (request.reason() == null || request.reason().trim().length() < 8 || request.reason().trim().length() > 200)) {
+            return ApiResult.fail(422, "DIRECT_REFERRAL_POLICY_REQUEST_INVALID");
+        }
         DelegatedProposalDescriptor descriptor = delegatedDescriptor(command);
         if (descriptor == null) {
             return delegated
@@ -502,6 +508,26 @@ public class AuditReplayBusinessPermissionGuard {
 
     private DelegatedProposalDescriptor delegatedFDescriptor(
             String operation, Map<String, Object> params) {
+        if ("f_direct_referral_policy".equals(operation)) {
+            var values = new LinkedHashMap<String,Object>(params);
+            values.put("reason", "A2 policy proposal");
+            var request = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules()
+                    .convertValue(values, ffdd.opsconsole.team.dto.DirectReferralPolicyRequest.class);
+            ffdd.opsconsole.team.application.DirectReferralPolicyService.validate(request, java.time.Instant.now());
+            var service = directPolicies.getObject();
+            var current = service.current();
+            if (((Number)current.get("policyVersion")).longValue() != request.expectedVersion())
+                throw new ffdd.opsconsole.shared.exception.BizException(409,"DIRECT_REFERRAL_VERSION_CONFLICT");
+            boolean amplifies = request.purchase().amplifies((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase"))
+                    || request.deviceEarning().amplifies((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning"));
+            return new DelegatedProposalDescriptor("直属双币分成政策", "current",
+                    directPolicySummary(((Number) current.get("policyVersion")).longValue(),
+                            (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("purchase"),
+                            (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("deviceEarning")),
+                    directPolicySummary(request.expectedVersion()+1, request.purchase(), request.deviceEarning()),
+                    "F2", amplifies?"fund":"param", amplifies,
+                    new AuditLockTarget("F","direct_referral_policy","current"));
+        }
         if ("f5_commission_reverse".equals(operation)) {
             String commissionId = value(params, "commissionId");
             String refundRef = value(params, "refundRef");
@@ -980,6 +1006,7 @@ public class AuditReplayBusinessPermissionGuard {
             // A1 批1a 修复3:F5 佣金事件 A2 越权守卫(原无 F 域 case → 持 platform_a2_proposal_create/approve 可任意处置佣金)。
             // 按 params.value 目标状态分流 dispose/reject;细分由 OpsTeamService.updateCommissionEventStatus 二次校验兜底。
             case "F" -> switch (operation) {
+                case "f_direct_referral_policy" -> "network_f2_royalty_rate";
                 case "f_config", "f_ui_config", "f_unilevel_rule" ->
                         fConfigAuthority(operation, command.params());
                 case "f_commission_status" -> f5CommissionAuthority(command.params());
@@ -992,6 +1019,21 @@ public class AuditReplayBusinessPermissionGuard {
             };
             default -> null;
         };
+    }
+
+    private static String directPolicySummary(long version,
+            ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule purchase,
+            ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule earning) {
+        return "版本 " + version + "；购买：" + directRuleSummary(purchase)
+                + "；设备收益：" + directRuleSummary(earning);
+    }
+
+    private static String directRuleSummary(ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule rule) {
+        return (rule.enabled() ? "启用" : "停用")
+                + "，总比例 " + rule.totalRatePct().stripTrailingZeros().toPlainString() + "%"
+                + "，USDT " + rule.usdtSharePct().stripTrailingZeros().toPlainString() + "%"
+                + " / NEX " + new java.math.BigDecimal("100").subtract(rule.usdtSharePct()).stripTrailingZeros().toPlainString() + "%"
+                + "，等待 " + rule.coolingDays() + " 天";
     }
 
     private String approvalAuthority(AuditReplayCommand command, String operation) {

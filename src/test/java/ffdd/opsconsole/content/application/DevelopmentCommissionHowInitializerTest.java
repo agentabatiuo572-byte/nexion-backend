@@ -21,7 +21,11 @@ class DevelopmentCommissionHowInitializerTest {
     private final AuditLogService audit = mock(AuditLogService.class);
 
     private Map<String, Object> baseline() throws Exception {
-        try (var stream = getClass().getResourceAsStream("/policies/commissions-how-2026.08.31.json")) {
+        return baseline("2026.10.05");
+    }
+
+    private Map<String, Object> baseline(String date) throws Exception {
+        try (var stream = getClass().getResourceAsStream("/policies/commissions-how-" + date + ".json")) {
             return JSON.readValue(stream, new TypeReference<>() {});
         }
     }
@@ -64,6 +68,44 @@ class DevelopmentCommissionHowInitializerTest {
         assertThat(request.getValue().getActorType()).isEqualTo("SYSTEM");
         assertThat(request.getValue().getActorUsername()).isEqualTo("development-baseline");
         assertThat(request.getValue().getAction()).isEqualTo("HOW_CONTENT_PUBLISHED_CHANGED");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void initializesMissingDirectGuideButOnlyDuringAnExactSystemTemplateUpgrade() throws Exception {
+        var before = original();
+        ((Map<String, Object>) before.get("contents")).remove("team-unilevel-how");
+        run(before);
+        var serialized = ArgumentCaptor.forClass(String.class);
+        verify(config).upsertAdminValue(eq(PublishedHowContentService.CONFIG_KEY), serialized.capture(), eq("JSON"), eq("published_content"), anyString());
+        var after = JSON.readTree(serialized.getValue());
+        assertThat(after.path("contents").path("team-unilevel-how")).isEqualTo(JSON.valueToTree(baseline().get("unilevelEntry")));
+        assertThat(after.path("revision").asLong()).isEqualTo(8);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void upgradesTheEarlierKnownSystemTemplateWithoutOverwritingCustomDirectGuide() throws Exception {
+        var before = original();
+        var legacy = baseline("2026.08.31");
+        before.put("version", legacy.get("previousVersion"));
+        ((Map<String, Object>) before.get("contents")).put("team-commissions-how", legacy.get("previousEntry"));
+        run(before);
+        var serialized = ArgumentCaptor.forClass(String.class);
+        verify(config).upsertAdminValue(eq(PublishedHowContentService.CONFIG_KEY), serialized.capture(), eq("JSON"), eq("published_content"), anyString());
+        var after = JSON.readTree(serialized.getValue());
+        assertThat(after.path("contents").path("team-commissions-how")).isEqualTo(JSON.valueToTree(baseline().get("entry")));
+        assertThat(after.path("contents").path("team-unilevel-how")).isEqualTo(JSON.valueToTree(before).path("contents").path("team-unilevel-how"));
+    }
+
+    @Test
+    void directGuideHasThreePlainPublishedLocalesAndACurrentPolicyMarker() throws Exception {
+        var entry = JSON.valueToTree(baseline().get("unilevelEntry"));
+        for (String locale : List.of("zh", "en", "vi")) {
+            var blocks = entry.path("locales").path(locale).path("blocks");
+            assertThat(blocks.findValuesAsText("id")).contains("direct-referral-scope");
+            assertThat(String.join(" ", blocks.findValuesAsText("body"))).contains("USDT", "NEX").doesNotContain("L1", "L2", "L7", "{", "}");
+        }
     }
 
     @Test
@@ -117,7 +159,7 @@ class DevelopmentCommissionHowInitializerTest {
         for (String locale : List.of("zh", "en", "vi")) {
             var blocks = entry.path("locales").path(locale).path("blocks");
             assertThat(blocks.findValuesAsText("id")).containsExactlyElementsOf(ids);
-            assertThat(blocks.toString()).contains("{networkRates}", "{binaryRules}", "{coolingDays}", "{leadershipRules}")
+            assertThat(blocks.toString()).contains("{directPurchaseRules}", "{directDeviceRules}", "{binaryRules}", "{coolingDays}", "{leadershipRules}")
                     .doesNotContain("$79", "2,000", "30天", "13%", "10%");
         }
     }

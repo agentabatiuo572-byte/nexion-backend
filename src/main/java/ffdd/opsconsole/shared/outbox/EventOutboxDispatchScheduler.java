@@ -153,6 +153,7 @@ public class EventOutboxDispatchScheduler {
         supportedEventTypes.addAll(H3_WEEKLY_PARTICIPATION_SOURCE_EVENT_TYPES);
         supportedEventTypes.addAll(H3_WEEKLY_EXCHANGE_REFERRAL_SOURCE_EVENT_TYPES);
         supportedEventTypes.addAll(F1_PASSIVE_EVAL_EVENT_TYPES);
+        supportedEventTypes.addAll(List.of("earnings.credited", "order.refunded"));
         // A PC binding may be created after the fact reached its threshold.
         // Requeue only durable H3 waits; ordinary published facts stay immutable.
         for (String eventType : H3_BINDING_WAIT_EVENT_TYPES) {
