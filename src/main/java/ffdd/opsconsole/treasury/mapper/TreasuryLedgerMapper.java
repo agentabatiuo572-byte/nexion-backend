@@ -809,6 +809,56 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     BigDecimal actualUserBalance(@Param("userId") Long userId, @Param("asset") String asset);
 
+    @org.apache.ibatis.annotations.Update("""
+            UPDATE nx_wallet_ledger
+               SET status='CANCELLED', updated_at=NOW(6)
+             WHERE user_id=#{userId} AND asset=#{asset} AND direction='IN'
+               AND biz_type='TEAM_COMMISSION' AND status='PENDING' AND is_deleted=0
+               AND (biz_no IN (CONCAT('F2-NETWORK-', #{eventId}),
+                              CONCAT('F2-NETWORK-NEX-', #{eventId}),
+                              CONCAT('F1-VRANKREWARD-', #{eventId}),
+                              CONCAT('F1-VRANKREWARD-REISSUE-', #{eventId}),
+                              CONCAT('F5-REISSUE-', #{eventId}))
+                    OR biz_no IN (SELECT CONCAT('F3-BINARY-', user_id, '-',
+                                                DATE_FORMAT(settlement_date, '%Y%m%d'))
+                                    FROM nx_binary_commission_settlement
+                                   WHERE commission_event_id=#{eventId} AND is_deleted=0))
+            """)
+    int closeCommissionAccrual(@Param("eventId") Long eventId, @Param("userId") Long userId,
+                               @Param("asset") String asset);
+
+    record CommissionFundsRow(Long userId, String asset, BigDecimal amount, String status) { }
+
+    @Select("""
+            SELECT user_id AS userId, UPPER(currency) AS asset,
+                   CASE WHEN UPPER(currency)='NEX' THEN amount_nex ELSE amount_usdt END AS amount,
+                   UPPER(status) AS status
+              FROM nx_commission_event
+             WHERE id=#{eventId} AND is_deleted=0
+             FOR UPDATE
+            """)
+    CommissionFundsRow lockCommissionFundsEvent(@Param("eventId") Long eventId);
+
+    @Select("""
+            SELECT CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'NEX' THEN nex_available END
+              FROM nx_user_wallet
+             WHERE user_id=#{userId} AND is_deleted=0
+             FOR UPDATE
+            """)
+    BigDecimal lockCommissionWallet(@Param("userId") Long userId, @Param("asset") String asset);
+
+    @org.apache.ibatis.annotations.Update("""
+            UPDATE nx_user_wallet
+               SET usdt_available=usdt_available+CASE WHEN #{asset}='USDT' THEN #{delta} ELSE 0 END,
+                   nex_available=nex_available+CASE WHEN #{asset}='NEX' THEN #{delta} ELSE 0 END,
+                   version=version+1, updated_at=NOW(6)
+             WHERE user_id=#{userId} AND is_deleted=0
+               AND CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'NEX' THEN nex_available END
+                   + #{delta} >= 0
+            """)
+    int adjustCommissionWallet(@Param("userId") Long userId, @Param("asset") String asset,
+                               @Param("delta") BigDecimal delta);
+
     @Select("SELECT COUNT(1) FROM nx_user WHERE id = #{userId} AND is_deleted = 0")
     long countActiveUser(@Param("userId") Long userId);
 

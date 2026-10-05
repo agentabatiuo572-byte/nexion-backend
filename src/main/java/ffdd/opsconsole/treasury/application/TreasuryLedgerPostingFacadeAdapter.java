@@ -13,6 +13,16 @@ public class TreasuryLedgerPostingFacadeAdapter implements TreasuryLedgerPosting
     private final TreasuryLedgerRepository ledgerRepository;
 
     @Override
+    public void releaseCommissionFunds(Long eventId) {
+        ledgerRepository.releaseCommissionFunds(eventId);
+    }
+
+    @Override
+    public boolean reverseCommissionFunds(Long eventId) {
+        return ledgerRepository.reverseCommissionFunds(eventId);
+    }
+
+    @Override
     public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
                                 BigDecimal amount, String status, String remark) {
         ledgerRepository.postLedgerEntry(bizNo, userId, bizType, asset, direction, amount, status, remark);

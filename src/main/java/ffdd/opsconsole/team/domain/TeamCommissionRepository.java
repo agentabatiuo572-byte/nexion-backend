@@ -286,4 +286,8 @@ public interface TeamCommissionRepository {
      * @return 影响行数(0=事件不存在或已软删,调用方按需处理)
      */
     int reverseCommissionEvent(Long commissionEventId);
+
+    default boolean linkReissuedRewardCommission(String payoutId, Long eventId, String billId) {
+        throw new UnsupportedOperationException("PAYOUT_COMMISSION_LINK_NOT_IMPLEMENTED");
+    }
 }

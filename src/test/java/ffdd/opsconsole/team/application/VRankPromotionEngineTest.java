@@ -395,8 +395,9 @@ class VRankPromotionEngineTest {
         assertThat(payout.userId()).isEqualTo(5003L);
         assertThat(payout.sponsorUserId()).isEqualTo(5004L);
         assertThat(payout.rewardType()).isEqualTo("nex");
-        assertThat(ledgerPostingFacade.entries).hasSize(1);
-        assertThat(ledgerPostingFacade.entries.get(0)).containsEntry("userId", 5004L);
+        assertThat(ledgerPostingFacade.releasedCommissionIds).containsExactly(payout.commissionEventId());
+        assertThat(payout.billId()).isEqualTo("F5-COMMISSION-" + payout.commissionEventId() + "-RELEASE");
+        assertThat(ledgerPostingFacade.entries).isEmpty();
     }
 
     /** 培育类 NEX 无 sponsor → fallback 派本人(commission_type=vrank_reward,sponsorUserId=null)。 */
@@ -889,6 +890,12 @@ class VRankPromotionEngineTest {
 
     static final class FakeTreasuryLedgerPostingFacade implements TreasuryLedgerPostingFacade {
         final List<Map<String, Object>> entries = new java.util.ArrayList<>();
+        final List<Long> releasedCommissionIds = new java.util.ArrayList<>();
+
+        @Override
+        public void releaseCommissionFunds(Long eventId) {
+            releasedCommissionIds.add(eventId);
+        }
 
         @Override
         public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,

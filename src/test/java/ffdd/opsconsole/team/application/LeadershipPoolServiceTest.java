@@ -115,9 +115,8 @@ class LeadershipPoolServiceTest {
         verify(commissionRepository).insertCommissionEvent(eq(1002L), eq("leadership"), eq(null),
                 eq("USDT"), eq(new BigDecimal("300.000000")), any(BigDecimal.class),
                 eq("UNLOCKED"), eq(0), anyString());
-        verify(ledgerPostingFacade, org.mockito.Mockito.times(2)).postLedgerEntry(anyString(),
-                anyLong(), anyString(), anyString(), anyString(), any(BigDecimal.class),
-                anyString(), anyString());
+        verify(ledgerPostingFacade).releaseCommissionFunds(11L);
+        verify(ledgerPostingFacade).releaseCommissionFunds(12L);
     }
 
     @Test

@@ -5,6 +5,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.mapper.F5CommissionMapper;
+import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -16,6 +17,7 @@ public class CommissionEventUnlockProcessor {
     private final F5CommissionMapper mapper;
     private final EventOutboxService eventOutboxService;
     private final AuditLogService auditLogService;
+    private final TreasuryLedgerPostingFacade ledgerPostingFacade;
 
     @Transactional(rollbackFor = Exception.class)
     public boolean unlock(Map<String, Object> row) {
@@ -31,6 +33,7 @@ public class CommissionEventUnlockProcessor {
         if (mapper.insertAutoUnlockOperation(eventId, expectedVersion) != 1) {
             throw new BizException(409, "F5_AUTO_UNLOCK_OPERATION_CONFLICT");
         }
+        ledgerPostingFacade.releaseCommissionFunds(eventId);
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("F5_COMMISSION_AUTO_UNLOCKED")
                 .resourceType("COMMISSION_EVENT")

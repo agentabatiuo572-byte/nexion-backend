@@ -259,8 +259,12 @@ public class VRankRewardDispatcher {
         }
 
         // ④ D4 台账 postLedgerEntry(对齐 OpsTeamService.postCommissionLedgerIfStatusChanged)
-        String billId = buildBillId(commissionEventId);
-        ledgerPostingFacade.postLedgerEntry(
+        String billId = immediateCultivation ? "F5-COMMISSION-" + commissionEventId + "-RELEASE"
+                : buildBillId(commissionEventId);
+        if (immediateCultivation) {
+            ledgerPostingFacade.releaseCommissionFunds(commissionEventId);
+        } else {
+            ledgerPostingFacade.postLedgerEntry(
                 billId,
                 recipientUserId,
                 LEDGER_BIZ_TYPE,
@@ -269,6 +273,7 @@ public class VRankRewardDispatcher {
                 amount,
                 ledgerStatus,
                 "F1 V-Rank reward payout | " + remark);
+        }
 
         // ⑤ INSERT nx_v_rank_reward_payout(status='GRANTED', commission_event_id, bill_id)
         VRankRewardPayout payout = new VRankRewardPayout(

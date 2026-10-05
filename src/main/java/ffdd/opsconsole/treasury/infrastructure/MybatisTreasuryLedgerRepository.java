@@ -491,8 +491,10 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
                     existing, safeUserId, normalizedBizType, safeAmount, normalizedStatus, trim(remark));
             return;
         }
-        BigDecimal current = currentUserBalance(safeUserId, normalizedAsset).orElse(BigDecimal.ZERO);
-        BigDecimal balanceAfter = "OUT".equals(normalizedDirection)
+        boolean commissionAccrual = "TEAM_COMMISSION".equals(normalizedBizType) && "PENDING".equals(normalizedStatus);
+        BigDecimal current = (commissionAccrual ? actualUserBalance(safeUserId, normalizedAsset)
+                : currentUserBalance(safeUserId, normalizedAsset)).orElse(BigDecimal.ZERO);
+        BigDecimal balanceAfter = commissionAccrual ? current : "OUT".equals(normalizedDirection)
                 ? current.subtract(safeAmount)
                 : current.add(safeAmount);
         if (balanceAfter.signum() < 0) {
@@ -508,6 +510,67 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
                 balanceAfter,
                 normalizedStatus,
                 trim(remark));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void releaseCommissionFunds(Long eventId) {
+        postCommissionFunds(eventId, false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean reverseCommissionFunds(Long eventId) {
+        return postCommissionFunds(eventId, true);
+    }
+
+    private boolean postCommissionFunds(Long eventId, boolean reverse) {
+        if (eventId == null || eventId <= 0) {
+            throw new IllegalArgumentException("COMMISSION_EVENT_ID_REQUIRED");
+        }
+        TreasuryLedgerMapper.CommissionFundsRow event = mapper.lockCommissionFundsEvent(eventId);
+        if (event == null || event.userId() == null || event.userId() <= 0
+                || event.asset() == null || !java.util.Set.of("USDT", "NEX").contains(event.asset())
+                || event.amount() == null || event.amount().signum() <= 0) {
+            throw new IllegalStateException("COMMISSION_FUNDS_EVENT_INVALID");
+        }
+        if (event.status() == null || !(reverse ? java.util.Set.of("REVERSED", "REJECTED", "ROLLBACK")
+                : java.util.Set.of("UNLOCKED", "AVAILABLE")).contains(event.status())) {
+            throw new IllegalStateException("COMMISSION_FUNDS_STATE_CONFLICT");
+        }
+        String releaseNo = "F5-COMMISSION-" + eventId + "-RELEASE";
+        String releaseRemark = "Commission wallet release | eventId=" + eventId;
+        WalletLedgerEntity release = mapper.findLedgerEntry(releaseNo, event.asset(), "IN");
+        if (release != null) {
+            assertSameLedgerFingerprint(release, event.userId(), "TEAM_COMMISSION",
+                    event.amount(), "SUCCESS", releaseRemark);
+            if (!reverse) return true;
+        } else if (reverse) {
+            // Cooling/frozen accrual was never spendable, so cancellation cannot debit the wallet.
+            mapper.closeCommissionAccrual(eventId, event.userId(), event.asset());
+            return false;
+        }
+        String bizNo = reverse ? "F5-COMMISSION-" + eventId + "-REVERSE" : releaseNo;
+        String direction = reverse ? "OUT" : "IN";
+        String remark = reverse ? "Commission wallet reversal | eventId=" + eventId : releaseRemark;
+        WalletLedgerEntity existing = mapper.findLedgerEntry(bizNo, event.asset(), direction);
+        if (existing != null) {
+            assertSameLedgerFingerprint(existing, event.userId(), "TEAM_COMMISSION",
+                    event.amount(), "SUCCESS", remark);
+            return true;
+        }
+        BigDecimal before = mapper.lockCommissionWallet(event.userId(), event.asset());
+        if (before == null) throw new IllegalStateException("COMMISSION_WALLET_UNAVAILABLE");
+        BigDecimal delta = reverse ? event.amount().negate() : event.amount();
+        BigDecimal after = before.add(delta);
+        if (after.signum() < 0) throw new IllegalStateException("COMMISSION_WALLET_INSUFFICIENT_BALANCE");
+        if (mapper.adjustCommissionWallet(event.userId(), event.asset(), delta) != 1) {
+            throw new IllegalStateException("COMMISSION_WALLET_WRITE_CONFLICT");
+        }
+        insertImmutableLedgerEntry(bizNo, event.userId(), "TEAM_COMMISSION", event.asset(), direction,
+                event.amount(), after, "SUCCESS", remark);
+        mapper.closeCommissionAccrual(eventId, event.userId(), event.asset());
+        return true;
     }
 
     private void insertImmutableLedgerEntry(

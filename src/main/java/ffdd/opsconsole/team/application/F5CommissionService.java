@@ -466,17 +466,7 @@ public class F5CommissionService {
         BigDecimal amount = decimal(event.get("amount"));
         Long userId = longValue(event.get("userId"));
         String currency = text(event.get("currency")).toUpperCase(Locale.ROOT);
-        if (amount.signum() > 0) {
-            ledgerPostingFacade.postLedgerEntry(
-                    "F5-REVERSE-" + eventId,
-                    userId,
-                    "TEAM_COMMISSION",
-                    currency,
-                    "OUT",
-                    amount,
-                    "SUCCESS",
-                    "F5 commission reverse | commissionId=" + commissionId + " | refundRef=" + refundRef);
-        }
+        boolean reversedFunds = ledgerPostingFacade.reverseCommissionFunds(eventId);
         String operationNo = operationNo("REV");
         mapper.insertOperation(
                 operationNo, "REVERSE", eventId, null, userId, text(event.get("kind")), amount,
@@ -496,7 +486,7 @@ public class F5CommissionService {
                 "operationNo", operationNo,
                 "commissionId", commissionId,
                 "status", "reversed",
-                "ledgerBizNo", "F5-REVERSE-" + eventId));
+                "ledgerBizNo", reversedFunds ? "F5-COMMISSION-" + eventId + "-REVERSE" : ""));
     }
 
     private ApiResult<Map<String, Object>> reissueInternal(
@@ -548,7 +538,9 @@ public class F5CommissionService {
             String currency = text(original.get("currency")).toUpperCase(Locale.ROOT);
             String kind = text(original.get("kind")).toLowerCase(Locale.ROOT);
             String ledgerStatus = Set.of("network", "binary").contains(kind) ? "PENDING" : "SUCCESS";
-            if (amount.signum() > 0) {
+            if ("SUCCESS".equals(ledgerStatus)) {
+                ledgerPostingFacade.releaseCommissionFunds(newEventId);
+            } else if (amount.signum() > 0) {
                 ledgerPostingFacade.postLedgerEntry(
                         "F5-REISSUE-" + newEventId,
                         userId,

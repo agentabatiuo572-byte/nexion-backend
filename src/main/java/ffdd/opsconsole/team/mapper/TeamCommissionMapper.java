@@ -802,7 +802,9 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    unlock_at=CASE WHEN #{nextStatus}='UNLOCKED' THEN COALESCE(unlock_at,NOW()) ELSE unlock_at END,
                    version=version+1,updated_at=NOW()
              WHERE is_deleted=0 AND (CONCAT('CM-',id)=#{eventId} OR order_no=#{eventId})
-               AND UPPER(status)=#{expectedStatus} AND version=#{expectedVersion}
+               AND (UPPER(status)=#{expectedStatus}
+                    OR (#{expectedStatus}='COOLING' AND UPPER(status)='PENDING'))
+               AND version=#{expectedVersion}
             """)
     int updateCommissionStatusCas(@Param("eventId") String eventId,@Param("expectedStatus") String expectedStatus,
                                   @Param("nextStatus") String nextStatus,@Param("expectedVersion") long expectedVersion);
@@ -1244,7 +1246,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    END AS amount,
                    currency
               FROM nx_commission_event
-             WHERE UPPER(status) = 'COOLING'
+             WHERE UPPER(status) IN ('COOLING', 'PENDING')
                AND unlock_at IS NOT NULL
                AND unlock_at <= NOW()
                AND is_deleted = 0
@@ -1519,9 +1521,19 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    DATE_FORMAT(reversed_at, '%Y-%m-%d %H:%i:%s') AS reversedAt
               FROM nx_v_rank_reward_payout
              WHERE payout_id = #{payoutId}
+               AND is_deleted = 0
              LIMIT 1
+             FOR UPDATE
             """)
     Map<String, Object> findRewardPayoutByPayoutId(@Param("payoutId") String payoutId);
+
+    @Update("""
+            UPDATE nx_v_rank_reward_payout
+               SET commission_event_id=#{eventId}, bill_id=#{billId}, updated_at=NOW(6)
+             WHERE payout_id=#{payoutId} AND is_deleted=0 AND UPPER(status)='REVERSED'
+            """)
+    int linkReissuedRewardCommission(@Param("payoutId") String payoutId,
+                                     @Param("eventId") Long eventId, @Param("billId") String billId);
 
     /**
      * UPDATE payout 状态 + operator + reason + 时间戳。
@@ -1550,9 +1562,11 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Update("""
             UPDATE nx_commission_event
                SET status = 'REVERSED',
+                   version = version + 1,
                    updated_at = NOW()
              WHERE id = #{commissionEventId}
                AND is_deleted = 0
+               AND UPPER(status) IN ('PENDING', 'COOLING', 'UNLOCKED', 'AVAILABLE', 'FROZEN')
             """)
     int reverseCommissionEvent(@Param("commissionEventId") Long commissionEventId);
 }

@@ -145,6 +145,25 @@ class AppWalletBillsMySqlIntegrationTest {
     }
 
     @Test
+    void replacedCommissionAccrualDoesNotDoubleCountRewardTotalsOrLatestRewardTime() {
+        ledger(USER, "F2-NETWORK-71", "TEAM_COMMISSION", "USDT", "IN", "2", "10", "PENDING", DAY, 0);
+        ledger(USER, "F2-NETWORK-NEX-72", "TEAM_COMMISSION", "NEX", "IN", "3", "20", "PENDING", DAY, 0);
+        var pending = mapper.summary(USER, DAY, DAY.plusDays(1), DAY.withDayOfMonth(1), DAY.plusMonths(1));
+        assertThat(pending.rewardsUsdt()).isEqualByComparingTo("2");
+        assertThat(pending.rewardsNex()).isEqualByComparingTo("3");
+        jdbc.update("UPDATE nx_wallet_ledger SET status='CANCELLED',created_at=? WHERE user_id=?",
+                DAY.plusHours(2), USER);
+        ledger(USER, "F5-COMMISSION-71-RELEASE", "TEAM_COMMISSION", "USDT", "IN", "2", "12", "SUCCESS",
+                DAY.plusHours(1), 0);
+        ledger(USER, "F5-COMMISSION-72-RELEASE", "TEAM_COMMISSION", "NEX", "IN", "3", "23", "SUCCESS",
+                DAY.plusHours(1), 0);
+        var released = mapper.summary(USER, DAY, DAY.plusDays(1), DAY.withDayOfMonth(1), DAY.plusMonths(1));
+        assertThat(released.rewardsUsdt()).isEqualByComparingTo("2");
+        assertThat(released.rewardsNex()).isEqualByComparingTo("3");
+        assertThat(released.latestRewardAt()).isEqualTo(DAY.plusHours(1));
+    }
+
+    @Test
     void keysetFiltersAndSummaryStayScopedAndExactAcrossMoreThanOneThousandRows() {
         for (int index = 0; index < 1_100; index++) {
             ledger(USER, "BULK-" + index, "EARN", "NEX", "IN", "1", "100", "SUCCESS",

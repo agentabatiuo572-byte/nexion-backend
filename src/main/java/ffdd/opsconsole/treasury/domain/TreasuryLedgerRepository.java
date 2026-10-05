@@ -127,6 +127,14 @@ public interface TreasuryLedgerRepository {
         throw new UnsupportedOperationException("BANK_RESERVE_REVERSAL_NOT_IMPLEMENTED");
     }
 
+    default void releaseCommissionFunds(Long eventId) {
+        throw new UnsupportedOperationException("COMMISSION_FUNDS_RELEASE_NOT_IMPLEMENTED");
+    }
+
+    default boolean reverseCommissionFunds(Long eventId) {
+        throw new UnsupportedOperationException("COMMISSION_FUNDS_REVERSAL_NOT_IMPLEMENTED");
+    }
+
     default void refundWithdrawal(String withdrawalNo, Long userId, BigDecimal amount, String asset, String reason) {
         throw new UnsupportedOperationException("WITHDRAWAL_REFUND_WRITER_NOT_IMPLEMENTED");
     }

@@ -126,10 +126,13 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
     @Select("""
             SELECT /*+ NO_MERGE(scoped) */
               COALESCE(SUM(CASE WHEN bill_category IN ('refer','achievement','reward') AND UPPER(direction)='IN'
+                AND NOT (UPPER(biz_type)='TEAM_COMMISSION' AND UPPER(status)='CANCELLED')
                 AND COALESCE(amount,0)>0 AND UPPER(asset)='USDT' THEN GREATEST(COALESCE(amount,0),0) ELSE 0 END),0) rewardsUsdt,
               COALESCE(SUM(CASE WHEN bill_category IN ('refer','achievement','reward') AND UPPER(direction)='IN'
+                AND NOT (UPPER(biz_type)='TEAM_COMMISSION' AND UPPER(status)='CANCELLED')
                 AND COALESCE(amount,0)>0 AND UPPER(asset)='NEX' THEN GREATEST(COALESCE(amount,0),0) ELSE 0 END),0) rewardsNex,
               MAX(CASE WHEN bill_category IN ('refer','achievement','reward') AND UPPER(direction)='IN'
+                AND NOT (UPPER(biz_type)='TEAM_COMMISSION' AND UPPER(status)='CANCELLED')
                 AND COALESCE(amount,0)>0 THEN created_at END) latestRewardAt,
               COALESCE(SUM(CASE WHEN created_at >= #{dayStart} AND created_at < #{nextDay}
                 AND UPPER(asset)='NEX' AND UPPER(status) IN ('SUCCESS','POSTED','COMPLETED','CONFIRMED','PENDING')

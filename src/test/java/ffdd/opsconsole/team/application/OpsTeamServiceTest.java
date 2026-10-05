@@ -1169,13 +1169,8 @@ class OpsTeamServiceTest {
                 "idem-f-commission-status",
                 new TeamCommissionConfigUpdateRequest("F.commission.CM-7781.status", "rejected", "reverse abnormal commission", "risk-ops", 0L));
 
-        assertThat(ledgerPostingFacade.entries).hasSize(1);
-        assertThat(ledgerPostingFacade.entries.get(0))
-                .containsEntry("bizNo", "F5-COMMISSION-CM-7781-REJECTED")
-                .containsEntry("bizType", "TEAM_COMMISSION")
-                .containsEntry("asset", "USDT")
-                .containsEntry("direction", "OUT")
-                .containsEntry("status", "SUCCESS");
+        assertThat(ledgerPostingFacade.reversedCommissionIds).containsExactly(7781L);
+        assertThat(ledgerPostingFacade.entries).isEmpty();
 
         ApiResult<Map<String, Object>> result = service.commissions();
 
@@ -1268,6 +1263,7 @@ class OpsTeamServiceTest {
                         "F.commission.CM-4201.status", "unlocked", "cooldown completed", "risk-ops", 0L));
 
         assertThat(result.getCode()).isZero();
+        assertThat(ledgerPostingFacade.releasedCommissionIds).containsExactly(4201L);
         verify(eventOutboxService).publish(
                 "COMMISSION",
                 "CM-4201",
@@ -1299,6 +1295,22 @@ class OpsTeamServiceTest {
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.eq("COMMISSION_UNLOCKED"),
                 org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void dueCoolingAndPendingDisplayLabelsCannotPreventManualWalletRelease() {
+        for (String rawStatus : List.of("COOLING", "PENDING")) {
+            String eventId = "COOLING".equals(rawStatus) ? "CM-4210" : "CM-4211";
+            commissionRepository.commissionEvents.add(new LinkedHashMap<>(Map.of(
+                    "id", eventId, "kind", "network", "user", "U00004201",
+                    "amount", new BigDecimal("5"), "currency", "USDT",
+                    "state", "可提", "rawStatus", rawStatus, "version", 0L)));
+            ApiResult<Map<String, Object>> result = service.updateConfig("manual-due-" + rawStatus,
+                    new TeamCommissionConfigUpdateRequest("F.commission." + eventId + ".status",
+                            "unlocked", "release due commission", "risk-ops", 0L));
+            assertThat(result.getCode()).isZero();
+        }
+        assertThat(ledgerPostingFacade.releasedCommissionIds).containsExactly(4210L, 4211L);
     }
 
     @Test
@@ -1735,6 +1747,19 @@ class OpsTeamServiceTest {
 
     private static final class FakeTreasuryLedgerPostingFacade implements TreasuryLedgerPostingFacade {
         private final List<Map<String, Object>> entries = new ArrayList<>();
+        private final List<Long> releasedCommissionIds = new ArrayList<>();
+        private final List<Long> reversedCommissionIds = new ArrayList<>();
+
+        @Override
+        public void releaseCommissionFunds(Long eventId) {
+            releasedCommissionIds.add(eventId);
+        }
+
+        @Override
+        public boolean reverseCommissionFunds(Long eventId) {
+            reversedCommissionIds.add(eventId);
+            return true;
+        }
 
         @Override
         public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
@@ -2122,12 +2147,14 @@ class OpsTeamServiceTest {
         public boolean updateCommissionStatusCas(String eventId, String expectedStatus, String status, long expectedVersion) {
             for (Map<String, Object> event : commissionEvents) {
                 if (!eventId.equals(event.get("id"))) continue;
-                String currentStatus = canonicalCommissionTestState(String.valueOf(event.get("state")));
+                String currentStatus = canonicalCommissionTestState(String.valueOf(
+                        event.getOrDefault("rawStatus", event.get("state"))));
                 long currentVersion = ((Number) event.getOrDefault("version", -1L)).longValue();
                 if (!expectedStatus.equals(currentStatus) || currentVersion != expectedVersion) return false;
                 if ("FROZEN".equals(status)) event.put("frozenFromStatus", expectedStatus);
                 if ("FROZEN".equals(expectedStatus)) event.put("frozenFromStatus", "");
                 event.put("state", status.toLowerCase(java.util.Locale.ROOT));
+                event.put("rawStatus", status);
                 event.put("version", currentVersion + 1);
                 return true;
             }
@@ -2140,9 +2167,21 @@ class OpsTeamServiceTest {
             return commissionOperationKeys.add(eventId + "|" + operationType + "|" + idempotencyKey);
         }
 
+        @Override
+        public boolean linkReissuedRewardCommission(String payoutId, Long eventId, String billId) {
+            for (Map<String, Object> row : rewardPayouts) {
+                if (payoutId.equals(row.get("payoutId")) && "REVERSED".equals(row.get("status"))) {
+                    row.put("commissionEventId", eventId);
+                    row.put("billId", billId);
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private static String canonicalCommissionTestState(String value) {
             return switch (value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT)) {
-                case "计提", "cooling" -> "COOLING";
+                case "计提", "cooling", "pending" -> "COOLING";
                 case "可提", "可提现", "unlocked" -> "UNLOCKED";
                 case "冻结", "frozen" -> "FROZEN";
                 case "异常回退", "rejected", "reversed", "驳回", "红冲" -> "REJECTED";
@@ -2644,6 +2683,17 @@ class OpsTeamServiceTest {
         // payout 已 UPDATE 为 REISSUED
         Map<String, Object> updated = commissionRepository.findRewardPayoutByPayoutId("pay-reissue-1");
         assertThat(updated.get("status")).isEqualTo("REISSUED");
+        Long reissuedEvent = (Long) updated.get("commissionEventId");
+        assertThat(reissuedEvent).isNotEqualTo(1234L);
+        assertThat(updated.get("billId")).isEqualTo(entry.get("bizNo"));
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+        try {
+            assertThat(service.reverseRewardPayout("pay-reissue-1", "idem-reverse-reissue",
+                    new VRankRewardPayoutActionRequest("reverse reissued payout", "risk-admin")).getCode()).isZero();
+        } finally {
+            ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+        }
+        assertThat(ledgerPostingFacade.reversedCommissionIds).containsExactly(reissuedEvent);
     }
 
     /** 端点 5:reissue 状态机 — GRANTED 已派发 → INVALID_STATE_TRANSITION 拒(防重复补发)。 */
@@ -2679,12 +2729,8 @@ class OpsTeamServiceTest {
         assertThat(result.getData()).containsEntry("previousStatus", "GRANTED");
         // commission_event 已被 reverseCommissionEvent 标 REVERSED
         assertThat(commissionRepository.reversedCommissionEventIds).contains(5678L);
-        // postLedgerEntry 被调用(OUT/SUCCESS 反向冲正)
-        assertThat(ledgerPostingFacade.entries).hasSize(1);
-        Map<String, Object> entry = ledgerPostingFacade.entries.get(0);
-        assertThat(entry).containsEntry("direction", "OUT");
-        assertThat(entry).containsEntry("status", "SUCCESS");
-        assertThat(entry).containsEntry("amount", new BigDecimal("80"));
+        assertThat(ledgerPostingFacade.reversedCommissionIds).containsExactly(5678L);
+        assertThat(ledgerPostingFacade.entries).isEmpty();
         // payout 已 UPDATE 为 REVERSED
         Map<String, Object> updated = commissionRepository.findRewardPayoutByPayoutId("pay-reverse-1");
         assertThat(updated.get("status")).isEqualTo("REVERSED");

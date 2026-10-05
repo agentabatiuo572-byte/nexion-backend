@@ -1196,7 +1196,7 @@ public class OpsTeamService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COMMISSION_EVENT_NOT_FOUND");
         }
         // A1 批1a 修复1:F5 佣金事件状态机校验(原接受任意 status,REJECTED→UNLOCKED 静默复活=资金漏洞)。
-        String fromCanonical = canonicalCommissionState(String.valueOf(oldEvent.get("state")));
+        String fromCanonical = canonicalCommissionState(String.valueOf(oldEvent.get("status")));
         String toCanonical = canonicalCommissionState(value);
         if (request.expectedVersion() == null || request.expectedVersion() < 0) {
             return ApiResult.fail(400,"F5_EXPECTED_VERSION_REQUIRED");
@@ -1227,8 +1227,8 @@ public class OpsTeamService implements AuditReplayable {
         if(!commissionRepository.recordCommissionOperation(eventId,fromCanonical+"_TO_"+toCanonical,idempotencyKey.trim(),request.expectedVersion(),actor(request.operator()),request.reason().trim())){
             throw new IllegalStateException("F5_OPERATION_AUDIT_CONFLICT");
         }
-        publishCommissionUnlockedIfEligible(fromCanonical, toCanonical, eventId, oldEvent);
         postCommissionLedgerIfStatusChanged(key, value);
+        publishCommissionUnlockedIfEligible(fromCanonical, toCanonical, eventId, oldEvent);
         audit("F_TEAM_COMMISSION_STATUS_CHANGED", "nx_commission_event:" + eventId, actor(request.operator()), Map.of(
                 "key", key,
                 "eventId", eventId,
@@ -1274,7 +1274,7 @@ public class OpsTeamService implements AuditReplayable {
     private String canonicalCommissionState(String raw) {
         String normalized = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
         return switch (normalized) {
-            case "计提", "cooling" -> "COOLING";
+            case "计提", "cooling", "pending" -> "COOLING";
             case "可提", "可提现", "unlocked" -> "UNLOCKED";
             case "frozen", "冻结" -> "FROZEN";
             case "异常回退", "rejected", "reversed", "驳回", "红冲" -> "REJECTED";
@@ -1311,35 +1311,14 @@ public class OpsTeamService implements AuditReplayable {
         if (eventId.isEmpty()) {
             return;
         }
-        Map<String, Object> event = commissionEvents().stream()
-                .filter(row -> eventId.get().equals(row.get("id")))
-                .findFirst()
-                .orElse(null);
-        if (event == null) {
-            return;
+        Long numericId = Long.valueOf(eventId.get().replaceFirst("^CM-", ""));
+        String canonical = canonicalCommissionState(normalizeUiValue(value));
+        if ("UNLOCKED".equals(canonical)) {
+            ledgerPostingFacade.releaseCommissionFunds(numericId);
+        } else if ("REJECTED".equals(canonical)) {
+            ledgerPostingFacade.reverseCommissionFunds(numericId);
         }
-        BigDecimal amount = decimalValue(event.get("amount"), BigDecimal.ZERO);
-        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
-            return;
-        }
-        String state = normalizeUiValue(value);
-        String canonical = canonicalCommissionState(state);
-        // A1 批1a 修复1b:台账对冲修正。
-        // COOLING/UNLOCKED 是前置态(COOLING 仍在冷却、UNLOCKED 已可提为 IN/PENDING 应付),FROZEN 是运营冻结(不动余额),
-        // 这三类不重复 post 流出条目;仅 REJECTED(红冲对冲)/SETTLED(结算流出)/PAID(支付流出)写 OUT/SUCCESS。
-        // 防 frozen 被误标 OUT(任务原文"frozen 不应标 OUT,冻结不动余额")与重复台账(原每次状态变化都 post 一条)。
-        if ("COOLING".equals(canonical) || "UNLOCKED".equals(canonical) || "FROZEN".equals(canonical)) {
-            return;
-        }
-        ledgerPostingFacade.postLedgerEntry(
-                "F5-COMMISSION-" + eventId.get() + "-" + ledgerStateCode(state),
-                userIdFromText(String.valueOf(event.get("user"))),
-                "TEAM_COMMISSION",
-                String.valueOf(event.getOrDefault("currency", "USDT")),
-                commissionLedgerDirection(state),
-                amount,
-                commissionLedgerStatus(state),
-                "F5 commission status disposition | eventId=" + eventId.get() + " | state=" + state + " | canonical=" + canonical);
+        // Freezing and settlement/payment markers do not transfer the wallet funds again.
     }
 
     /**
@@ -1488,23 +1467,6 @@ public class OpsTeamService implements AuditReplayable {
         } catch (NumberFormatException ex) {
             throw new IllegalArgumentException("Unsupported F2 unilevel layer", ex);
         }
-    }
-
-    private String ledgerStateCode(String state) {
-        return normalizeUiValue(state).toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]+", "_");
-    }
-
-    private String commissionLedgerDirection(String state) {
-        // A1 批1a 修复1b:UNLOCKED=IN(用户可提应付入账);REJECTED/SETTLED/PAID=OUT(对冲/结算/支付流出)。
-        // FROZEN/COOLING 由 postCommissionLedgerIfStatusChanged 提前 return,不进入此分支。
-        String canonical = canonicalCommissionState(state);
-        return "UNLOCKED".equals(canonical) ? "IN" : "OUT";
-    }
-
-    private String commissionLedgerStatus(String state) {
-        // UNLOCKED=PENDING(应付待提);其余=SUCCESS(已对冲/结算/支付)。
-        String canonical = canonicalCommissionState(state);
-        return "UNLOCKED".equals(canonical) ? "PENDING" : "SUCCESS";
     }
 
     private Long userIdFromText(String value) {
@@ -3486,19 +3448,29 @@ public class OpsTeamService implements AuditReplayable {
             String remark = "F1 V-Rank reward REISSUE | rank=" + rankCode + " type=" + rewardType + " operator=" + operator;
             Long newCommissionEventId = commissionRepository.insertCommissionEvent(
                     recipientUserId, commissionType, sourceUserId, currency,
-                    amountUsdt, amountNex, "PENDING", resolveCommissionCoolingDays(), remark);
-            if (newCommissionEventId != null) {
-                String billId = "F1-VRANKREWARD-REISSUE-" + newCommissionEventId;
+                    amountUsdt, amountNex, sponsorUserId != null ? "UNLOCKED" : "COOLING",
+                    sponsorUserId != null ? 0 : resolveCommissionCoolingDays(), remark);
+            if (newCommissionEventId == null) {
+                throw new IllegalStateException("COMMISSION_EVENT_INSERT_FAILED");
+            }
+            String billId = sponsorUserId != null ? "F5-COMMISSION-" + newCommissionEventId + "-RELEASE"
+                    : "F1-VRANKREWARD-REISSUE-" + newCommissionEventId;
+            if (sponsorUserId != null) {
+                ledgerPostingFacade.releaseCommissionFunds(newCommissionEventId);
+            } else {
                 ledgerPostingFacade.postLedgerEntry(
                         billId, recipientUserId, "TEAM_COMMISSION", currency,
                         "IN", amount, "PENDING", remark);
+            }
+            if (!commissionRepository.linkReissuedRewardCommission(payoutId.trim(), newCommissionEventId, billId)) {
+                throw new IllegalStateException("PAYOUT_COMMISSION_LINK_CONFLICT");
             }
         }
 
         boolean updated = commissionRepository.updateRewardPayoutStatus(
                 payoutId.trim(), "REISSUED", operator, "[REISSUE] " + reason);
         if (!updated) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PAYOUT_UPDATE_FAILED");
+            throw new IllegalStateException("PAYOUT_UPDATE_FAILED");
         }
         audit("F_TEAM_REWARD_REISSUED", "nx_v_rank_reward_payout:" + payoutId, operator, Map.of(
                 "payoutId", payoutId,
@@ -3582,24 +3554,16 @@ public class OpsTeamService implements AuditReplayable {
         // 权益类(voucher/sku/custom)无 commission_event_id,跳过 D4
         if (("usdt".equals(rewardType) || "nex".equals(rewardType)) && commissionEventId != null) {
             int reversed = commissionRepository.reverseCommissionEvent(commissionEventId);
-            if (reversed == 0) {
-                log.warn("Payout reverse: commission_event {} not found or already reversed, payout={}",
-                        commissionEventId, payoutId);
+            if (reversed != 1) {
+                throw new IllegalStateException("PAYOUT_COMMISSION_REVERSE_CONFLICT");
             }
-            String currency = "usdt".equals(rewardType) ? "USDT" : "NEX";
-            Long recipientUserId = sponsorUserId != null ? sponsorUserId : userId;
-            String billId = "F1-VRANKREWARD-REVERSE-" + commissionEventId;
-            // OUT/SUCCESS 反向冲正(对齐 postCommissionLedgerIfStatusChanged 的 REJECTED 路径)
-            ledgerPostingFacade.postLedgerEntry(
-                    billId, recipientUserId, "TEAM_COMMISSION", currency,
-                    "OUT", amount, "SUCCESS",
-                    "F1 V-Rank reward REVERSE | payout=" + payoutId + " eventId=" + commissionEventId);
+            ledgerPostingFacade.reverseCommissionFunds(commissionEventId);
         }
 
         boolean updated = commissionRepository.updateRewardPayoutStatus(
                 payoutId.trim(), "REVERSED", operator, "[REVERSE] " + reason);
         if (!updated) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PAYOUT_UPDATE_FAILED");
+            throw new IllegalStateException("PAYOUT_UPDATE_FAILED");
         }
         audit("F_TEAM_REWARD_REVERSED", "nx_v_rank_reward_payout:" + payoutId, operator, Map.of(
                 "payoutId", payoutId,

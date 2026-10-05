@@ -497,6 +497,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
         return mapper.reverseCommissionEvent(commissionEventId);
     }
 
+    @Override
+    public boolean linkReissuedRewardCommission(String payoutId, Long eventId, String billId) {
+        return mapper.linkReissuedRewardCommission(payoutId, eventId, billId) == 1;
+    }
+
     private String text(Map<String, Object> row, String key) {
         Object value = row.get(key);
         return value == null ? null : String.valueOf(value);

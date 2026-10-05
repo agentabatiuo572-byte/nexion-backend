@@ -46,6 +46,8 @@ public interface F5CommissionMapper {
                           OR (LOWER(e.commission_type) = 'cultivation'
                             AND l.biz_no = CONCAT('F1-VRANKREWARD-', e.id))
                           OR l.biz_no = CONCAT('F5-REISSUE-', e.id)
+                          OR l.biz_no IN (CONCAT('F5-COMMISSION-', e.id, '-RELEASE'),
+                                         CONCAT('F5-COMMISSION-', e.id, '-REVERSE'))
                           OR l.remark LIKE CONCAT('%commissionId=CM-', e.id, '%')
                           OR l.remark LIKE CONCAT('%eventId=', e.id, '%')
                         )
@@ -347,6 +349,7 @@ public interface F5CommissionMapper {
     @Update("""
             UPDATE nx_commission_event
                SET status = 'REVERSED',
+                   version = version + 1,
                    updated_at = NOW()
              WHERE id = #{eventId}
                AND is_deleted = 0
@@ -497,7 +500,7 @@ public interface F5CommissionMapper {
                    updated_at = NOW()
              WHERE id = #{eventId}
                AND version = #{expectedVersion}
-               AND UPPER(status) = 'COOLING'
+               AND UPPER(status) IN ('COOLING', 'PENDING')
                AND unlock_at IS NOT NULL
                AND unlock_at <= NOW()
                AND is_deleted = 0

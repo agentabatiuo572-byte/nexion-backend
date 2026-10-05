@@ -319,8 +319,7 @@ public class LeadershipPoolService {
                     userId, COMMISSION_LEADERBOARD_PRIZE, null, CURRENCY_USDT,
                     share, ZERO, STATUS_UNLOCKED, 0, remark);
             if (eventId == null) throw new IllegalStateException("F4_LEADERBOARD_EVENT_INSERT_FAILED");
-            ledgerPostingFacade.postLedgerEntry("F4-LB-" + settlementKey + "-" + eventId, userId,
-                    "TEAM_COMMISSION", CURRENCY_USDT, "IN", share, "SUCCESS", remark);
+            ledgerPostingFacade.releaseCommissionFunds(eventId);
             eventOutboxService.publish("LEADERBOARD_PRIZE", "F4-LB-" + settlementKey + "-" + eventId,
                     "commission.paid", linked("userId", userId, "amount", share,
                             "period", period, "settlementKey", settlementKey));
@@ -434,9 +433,7 @@ public class LeadershipPoolService {
             if (eventId == null) {
                 throw new IllegalStateException("F4_COMMISSION_EVENT_INSERT_FAILED");
             }
-            ledgerPostingFacade.postLedgerEntry(
-                    "F4-POOL-" + weekKey + "-" + eventId, voter.userId(), "TEAM_COMMISSION", CURRENCY_USDT,
-                    "IN", share, "SUCCESS", "F4 leadership pool settle | " + remark);
+            ledgerPostingFacade.releaseCommissionFunds(eventId);
             eventOutboxService.publish(
                     "LEADERSHIP_COMMISSION",
                     "F4-POOL-" + weekKey + "-" + eventId,
