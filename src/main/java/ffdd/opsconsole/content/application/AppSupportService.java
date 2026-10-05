@@ -163,6 +163,13 @@ public class AppSupportService {
         });
     }
 
+    /** The delivered basic POST capability; no draft admission or enhanced limits. */
+    public ApiResult<Map<String, String>> ticketCreationPolicy(Long userId) {
+        productionPathGuard.requireAllowed(userId);
+        if (!validUser(userId)) return forbidden();
+        return ApiResult.ok(Map.of("mode", "BASIC"));
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<SupportTicketDetail> replyTicket(
             Long userId, String ticketNo, String idempotencyKey, ReplyRequest request) {

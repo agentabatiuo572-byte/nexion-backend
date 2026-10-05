@@ -21,6 +21,44 @@ class AppSupportControllerTest {
     private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
     private final AppSupportController controller = new AppSupportController(service, productionPathGuard);
 
+    @Test
+    void exactCreationPolicyRouteReturnsBasicInsteadOfLookingUpATicketNumber() throws Exception {
+        var auth = new UsernamePasswordAuthenticationToken("42", null, List.of());
+        auth.setDetails(Map.of("subjectType", "USER"));
+        when(service.ticketCreationPolicy(42L)).thenReturn(ApiResult.ok(Map.of("mode", "BASIC")));
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/api/app/support/tickets/creation-policy").principal(auth))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Cache-Control", "no-store"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").value(0))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.mode").value("BASIC"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.allowed").doesNotExist())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.cooldownSeconds").doesNotExist());
+        verify(productionPathGuard).requireAllowed(42L);
+        verify(service).ticketCreationPolicy(42L);
+        verify(service, never()).ticket(org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void basicCapabilityRequiresAUserAndTheProductionGuardBeforeTheService() {
+        var response = new org.springframework.mock.web.MockHttpServletResponse();
+        var admin = new UsernamePasswordAuthenticationToken("42", null, List.of());
+        admin.setDetails(Map.of("subjectType", "ADMIN"));
+        assertThat(controller.ticketCreationPolicy(admin, response).getCode()).isEqualTo(403);
+        assertThat(controller.ticketCreationPolicy(null, response).getCode()).isEqualTo(403);
+        org.mockito.Mockito.verifyNoInteractions(service, productionPathGuard);
+
+        var user = new UsernamePasswordAuthenticationToken("42", null, List.of());
+        user.setDetails(Map.of("subjectType", "USER"));
+        org.mockito.Mockito.doThrow(new BizException(409, "SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
+                .when(productionPathGuard).requireAllowed(42L);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.ticketCreationPolicy(user, response))
+                .isInstanceOf(BizException.class);
+        org.mockito.Mockito.verifyNoInteractions(service);
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(strings={"test","unknown"})
     void advisorHonorsTheRealEnvironmentGuardBeforeAnyProjection(String profile) {

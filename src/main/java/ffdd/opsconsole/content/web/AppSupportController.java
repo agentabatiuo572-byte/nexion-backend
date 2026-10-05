@@ -51,6 +51,14 @@ public class AppSupportController {
         return guarded(userId) ? service.tickets(userId, status, pageNum, pageSize) : forbidden();
     }
 
+    @GetMapping("/tickets/creation-policy")
+    public ApiResult<Map<String, String>> ticketCreationPolicy(Authentication authentication,
+            jakarta.servlet.http.HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        Long userId = userId(authentication);
+        return guarded(userId) ? service.ticketCreationPolicy(userId) : forbidden();
+    }
+
     @GetMapping("/tickets/cursor")
     public ApiResult<PageResult<SupportTicketView>> ticketCursor(
             @RequestParam(required = false) String status,

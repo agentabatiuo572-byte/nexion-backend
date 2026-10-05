@@ -28,6 +28,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -85,6 +86,71 @@ class AppSupportServiceTest {
         verify(tickets).pageTickets(query.capture());
         assertThat(query.getValue().userId()).isEqualTo(42L);
         assertThat(query.getValue().pageSize()).isEqualTo(100L);
+    }
+
+    @Test
+    void basicCapabilityHasNoAdmissionLimitsReadsOrWrites() {
+        var result = service.ticketCreationPolicy(42L);
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsExactlyEntriesOf(java.util.Map.of("mode", "BASIC"));
+        verify(productionPathGuard).requireAllowed(42L);
+        verifyNoInteractions(tickets, conversations, knowledge, supportAgents, configFacade,
+                idempotency, idempotencyRecords, audit, eventPublisher);
+    }
+
+    @Test
+    void directBasicCapabilityStillRequiresUserAndProductionContext() {
+        assertThat(service.ticketCreationPolicy(null).getCode()).isEqualTo(403);
+        assertThat(service.ticketCreationPolicy(0L).getCode()).isEqualTo(403);
+        doThrow(new BizException(409, "SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
+                .when(productionPathGuard).requireAllowed(42L);
+        assertThatThrownBy(() -> service.ticketCreationPolicy(42L)).isInstanceOf(BizException.class);
+        verifyNoInteractions(tickets, conversations, knowledge, supportAgents, configFacade,
+                idempotency, idempotencyRecords, audit, eventPublisher);
+    }
+
+    @Test
+    void basicPreReadDoesNotBypassExistingPostInputOrIdempotencyValidation() {
+        assertThat(service.ticketCreationPolicy(42L).getCode()).isZero();
+        var valid = new AppSupportService.CreateTicketRequest("technical", "Title", "Body");
+        assertThat(service.createTicket(42L, null, valid).getCode()).isEqualTo(400);
+        assertThat(service.createTicket(42L, "basic-create-key", null).getCode()).isEqualTo(422);
+        for (var request : List.of(
+                new AppSupportService.CreateTicketRequest("unknown", "Title", "Body"),
+                new AppSupportService.CreateTicketRequest("technical", " ", "Body"),
+                new AppSupportService.CreateTicketRequest("technical", "Title", " "),
+                new AppSupportService.CreateTicketRequest("technical", "x".repeat(161), "Body"),
+                new AppSupportService.CreateTicketRequest("technical", "Title", "x".repeat(2001)))) {
+            assertThat(service.createTicket(42L, "basic-create-key", request).getCode()).isEqualTo(422);
+        }
+        verifyNoInteractions(tickets, conversations, idempotency, audit, eventPublisher);
+    }
+
+    @Test
+    void basicPreReadKeepsPostRetainedKeyAndSameTicketResult() {
+        var results = new java.util.HashMap<String, Object>();
+        org.mockito.Mockito.doAnswer(invocation ->
+                results.computeIfAbsent(invocation.getArgument(0) + ":" + invocation.getArgument(1),
+                        key -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get()))
+                .when(idempotency).executeRetained(any(), any(), any(), any(), any());
+        when(tickets.createTicket(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(ticket(42L, "OPEN", 1L));
+        when(tickets.messages("TK-1")).thenReturn(List.of());
+        var request = new AppSupportService.CreateTicketRequest(" Technical ", " Title ", " Body ");
+
+        service.ticketCreationPolicy(42L);
+        var first = service.createTicket(42L, " basic-create-key ", request);
+        var replay = service.createTicket(42L, " basic-create-key ", request);
+
+        assertThat(first.getCode()).isZero(); assertThat(replay).isSameAs(first);
+        assertThat(replay.getData().ticket().ticketNo()).isEqualTo("TK-1");
+        verify(idempotency, times(2)).executeRetained(org.mockito.ArgumentMatchers.eq("APP_SUPPORT_TICKET_CREATE:42"),
+                org.mockito.ArgumentMatchers.eq("basic-create-key"), anyString(), org.mockito.ArgumentMatchers.eq(ApiResult.class), any());
+        verify(tickets).createTicket(anyString(), org.mockito.ArgumentMatchers.eq(42L), org.mockito.ArgumentMatchers.eq("technical"),
+                org.mockito.ArgumentMatchers.eq("NORMAL"), org.mockito.ArgumentMatchers.eq("Title"), org.mockito.ArgumentMatchers.eq("Body"),
+                org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.eq("Unassigned"), org.mockito.ArgumentMatchers.eq("user:42"), any());
+        verify(audit).recordRequired(any());
+        verifyNoInteractions(conversations, eventPublisher);
     }
 
     @Test
