@@ -49,10 +49,17 @@ public interface AppTeamNetworkMapper extends BaseMapper<Object> {
                      ELSE NULL
                    END leg,
                    n.sponsor_user_id sponsorUserId,u.created_at joinedAt,
-                   COALESCE(tm.volume,0) monthVolumeUsdt,NULL lifetimeVolumeUsdt,
+                   (SELECT COALESCE(SUM(o.subtotal_usdt),0) FROM nx_order o
+                     WHERE o.user_id=u.id
+                       AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
+                       AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
+                       AND o.is_deleted=0
+                       AND COALESCE(o.paid_at,o.created_at)>=DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 8 HOUR)
+                       AND COALESCE(o.paid_at,o.created_at)<DATE_ADD(
+                            DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 1 MONTH),INTERVAL 8 HOUR)
+                   ) monthVolumeUsdt,NULL lifetimeVolumeUsdt,
                    CASE WHEN u.status='ACTIVE' THEN 'ACTIVE' ELSE 'OFFLINE' END status,u.region
               FROM network n JOIN nx_user u ON u.id=n.member_user_id
-              LEFT JOIN nx_team_member tm ON tm.user_id=#{userId} AND tm.member_user_id=u.id AND tm.is_deleted=0
               LEFT JOIN nx_binary_leg_assignment a ON a.owner_user_id=#{userId} AND a.member_user_id=n.root_user_id
              WHERE u.id>#{afterId}
              ORDER BY u.id

@@ -4,8 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
+import ffdd.opsconsole.team.application.AppTeamNetworkService;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.apache.ibatis.mapping.Environment;
@@ -16,6 +19,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import org.springframework.mock.env.MockEnvironment;
 
 /** Real mapper projections in one explicitly disposable UUID schema, never the business database. */
 class TeamReadModelsMySqlTest {
@@ -130,6 +134,127 @@ class TeamReadModelsMySqlTest {
                         .allSatisfy(row -> assertThat(row.sourceUserName()).isNull());
             }
         });
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "NEXION_TEAM_READ_IT", matches = "true")
+    void networkMonthlyVolumeReadsOwnQualifyingOrderSubtotalInsteadOfStaleProjection() throws Exception {
+        inSchema((jdbc, configuration) -> {
+            networkTables(jdbc);
+            jdbc.update("INSERT INTO nx_user(id,sponsor_user_id) VALUES(7,NULL),(18,7),(19,7)");
+            jdbc.update("INSERT INTO nx_team_member VALUES(1,7,18,0,0),(2,7,19,0,0)");
+            jdbc.update("INSERT INTO nx_binary_leg_assignment VALUES(7,18,'A'),(7,19,'B')");
+            jdbc.update("INSERT INTO nx_order VALUES(1,18,19.9,9.9,'PAID','COMPLETED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(2,7,4995,4995,'PAID','COMPLETED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00')");
+            configuration.addMapper(AppTeamNetworkMapper.class);
+            try (var session = new MybatisSqlSessionFactoryBuilder().build(configuration).openSession(true)) {
+                var mapper = session.getMapper(AppTeamNetworkMapper.class);
+                var rows = mapper.membersPage(7L, 0, 501);
+                assertThat(rows).extracting(AppTeamNetworkMapper.MemberRow::memberUserId).containsExactly(18L, 19L);
+                assertThat(rows.get(0).monthVolumeUsdt()).isEqualByComparingTo("19.9");
+                assertThat(rows.get(1).monthVolumeUsdt()).isZero();
+                assertThat(rows).allSatisfy(row -> assertThat(row.lifetimeVolumeUsdt()).isNull());
+                jdbc.update("INSERT INTO nx_order VALUES(3,18,100,100,'PENDING','CREATED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(4,18,100,100,'FAILED','CREATED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(5,18,100,100,'PAID','REFUNDED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(6,18,100,100,'PAID','CHARGEBACK',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(7,18,100,100,'PAID','COMPLETED',1,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(8,18,100,100,'PAID','COMPLETED',0,'2026-09-30 08:00:00','2026-09-30 08:00:00'),(9,19,100,100,'PAID','REFUNDED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00')");
+                // Bypass the session query cache after changing the real SQL fixture.
+                session.clearCache();
+                var data = new AppTeamNetworkService(mapper, new MockEnvironment()).snapshot(7L).getData();
+                assertThat(data).containsEntry("totalMembers", 2).containsEntry("directMembers", 2);
+                assertThat(new BigDecimal(data.get("monthVolumeUsdt").toString())).isEqualByComparingTo("19.9");
+                assertThat(mapper.membersPage(7L, 18, 501)).hasSize(1)
+                        .allSatisfy(row -> assertThat(row.monthVolumeUsdt()).isZero());
+            }
+        });
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "NEXION_TEAM_READ_IT", matches = "true")
+    void networkMonthIsHalfOpenUtcWithBusinessDatetimeAndPaidAtFallbackOnNonUtcSessions() throws Exception {
+        inSchema((jdbc, configuration) -> {
+            networkTables(jdbc);
+            jdbc.update("INSERT INTO nx_user(id,sponsor_user_id) VALUES(7,NULL),(18,7)");
+            jdbc.update("INSERT INTO nx_order VALUES(1,18,2,1,'PAID','COMPLETED',0,'2026-10-01 08:00:00','2026-09-01 08:00:00'),(2,18,3,1,'PAID','COMPLETED',0,'2026-11-01 07:59:59','2026-10-05 08:00:00'),(3,18,100,1,'PAID','COMPLETED',0,'2026-10-01 07:59:59','2026-10-05 08:00:00'),(4,18,100,1,'PAID','COMPLETED',0,'2026-11-01 08:00:00','2026-10-05 08:00:00'),(5,18,5,1,'SUCCESS','COMPLETED',0,NULL,'2026-10-01 08:00:00'),(6,18,100,1,'PAID','COMPLETED',0,NULL,'2026-10-01 07:59:59'),(7,18,100,1,'PAID','COMPLETED',0,NULL,'2026-11-01 08:00:00'),(8,18,7,1,'CONFIRMED','COMPLETED',0,'2026-10-05 08:00:00','2026-09-01 08:00:00'),(9,18,100,1,'PAID','COMPLETED',0,'2026-09-30 08:00:00','2026-10-05 08:00:00')");
+            configuration.addMapper(AppTeamNetworkMapper.class);
+            try (var session = new MybatisSqlSessionFactoryBuilder().build(configuration).openSession(true)) {
+                var mapper = session.getMapper(AppTeamNetworkMapper.class);
+                for (String zone : List.of("+07:00", "-05:00")) {
+                    jdbc.execute("SET time_zone = '" + zone + "'");
+                    jdbc.execute("SET timestamp = " + Instant.parse("2026-10-01T00:00:00Z").getEpochSecond());
+                    assertThat(jdbc.queryForObject("SELECT DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-%d %H:%i:%s')", String.class))
+                            .isEqualTo("2026-10-01 00:00:00");
+                    session.clearCache();
+                    assertThat(mapper.membersPage(7L, 0, 501)).hasSize(1)
+                            .allSatisfy(row -> assertThat(row.monthVolumeUsdt()).as("session %s", zone).isEqualByComparingTo("17"));
+                }
+            }
+        });
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "NEXION_TEAM_READ_IT", matches = "true")
+    void networkPreservesOwnerNamespaceDepthCycleAndPaginationWithoutProjectionDuplicates() throws Exception {
+        inSchema((jdbc, configuration) -> {
+            networkTables(jdbc);
+            jdbc.update("INSERT INTO nx_user(id,sponsor_user_id) VALUES(7,18),(18,7),(19,7),(20,18),(21,20),(22,21),(23,22),(24,23),(25,24),(26,25),(50,NULL),(51,50),(40,7),(41,40),(42,7),(43,42),(70,NULL),(71,70),(72,7)");
+            jdbc.update("UPDATE nx_user SET is_deleted=1 WHERE id=40");
+            jdbc.update("UPDATE nx_user SET status='INACTIVE' WHERE id=42");
+            jdbc.update("UPDATE nx_user SET sandbox=1 WHERE id IN (70,71,72)");
+            // Stale and duplicate team projections must not duplicate canonical user/order rows.
+            jdbc.update("INSERT INTO nx_team_member VALUES(1,7,18,888,0),(2,7,18,999,0),(3,50,18,777,0),(4,7,19,666,1)");
+            jdbc.update("INSERT INTO nx_binary_leg_assignment VALUES(7,18,'A'),(7,19,'B'),(50,18,'B'),(70,71,'A')");
+            jdbc.update("INSERT INTO nx_order VALUES(1,18,19.9,19.9,'PAID','COMPLETED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(2,20,3,3,'PAID','COMPLETED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(3,25,5,5,'PAID','COMPLETED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(4,26,100,100,'PAID','COMPLETED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(5,51,100,100,'PAID','COMPLETED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(6,40,100,100,'PAID','COMPLETED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(7,42,100,100,'PAID','COMPLETED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(8,71,11,11,'PAID','COMPLETED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00'),(9,72,100,100,'PAID','COMPLETED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00')");
+            configuration.addMapper(AppTeamNetworkMapper.class);
+            try (var session = new MybatisSqlSessionFactoryBuilder().build(configuration).openSession(true)) {
+                var mapper = session.getMapper(AppTeamNetworkMapper.class);
+                var rows = mapper.membersPage(7L, 0, 501);
+                assertThat(rows).extracting(AppTeamNetworkMapper.MemberRow::memberUserId)
+                        .containsExactly(18L, 19L, 20L, 21L, 22L, 23L, 24L, 25L);
+                assertThat(rows.get(0).monthVolumeUsdt()).isEqualByComparingTo("19.9");
+                assertThat(rows.get(2).monthVolumeUsdt()).isEqualByComparingTo("3");
+                assertThat(rows.get(7).monthVolumeUsdt()).isEqualByComparingTo("5");
+                assertThat(rows.get(7).level()).isEqualTo(7);
+                assertThat(rows).filteredOn(row -> row.memberUserId() != 19L)
+                        .allSatisfy(row -> assertThat(row.leg()).isEqualTo("A"));
+                assertThat(rows.get(1).leg()).isEqualTo("B");
+                List<AppTeamNetworkMapper.MemberRow> paged = new ArrayList<>();
+                for (long cursor = 0; ; ) {
+                    var page = mapper.membersPage(7L, cursor, 2);
+                    if (page.isEmpty()) break;
+                    paged.addAll(page);
+                    cursor = page.get(page.size() - 1).memberUserId();
+                }
+                assertThat(paged).isEqualTo(rows);
+                assertThat(mapper.membersPage(50L, 0, 501)).hasSize(1)
+                        .allSatisfy(row -> assertThat(row.memberUserId()).isEqualTo(51L));
+                assertThat(mapper.membersPage(70L, 0, 501)).hasSize(1)
+                        .allSatisfy(row -> assertThat(row.monthVolumeUsdt()).isEqualByComparingTo("11"));
+                for (long owner : new long[]{40, 42, 999}) assertThat(mapper.membersPage(owner, 0, 501)).isEmpty();
+                var service = new AppTeamNetworkService(mapper, new MockEnvironment());
+                assertThat(new BigDecimal(service.snapshot(7L).getData().get("monthVolumeUsdt").toString()))
+                        .isEqualByComparingTo("27.9");
+                for (long id = 1000; id < 1510; id++) {
+                    jdbc.update("INSERT INTO nx_user(id,sponsor_user_id) VALUES(?,7)", id);
+                    jdbc.update("INSERT INTO nx_order VALUES(?,?,0.01,0.01,'PAID','COMPLETED',0,'2026-10-05 08:00:00','2026-10-05 08:00:00')", id, id);
+                }
+                session.clearCache();
+                var first = service.snapshot(7L).getData();
+                assertThat(first).containsEntry("totalMembers", 500).containsEntry("directMembers", 494)
+                        .containsEntry("nextCursor", "1491");
+                assertThat(new BigDecimal(first.get("monthVolumeUsdt").toString())).isEqualByComparingTo("32.82");
+                var second = service.snapshot(7L, 1491).getData();
+                assertThat(second).containsEntry("totalMembers", 18).containsEntry("directMembers", 18)
+                        .containsEntry("nextCursor", null);
+                assertThat(new BigDecimal(second.get("monthVolumeUsdt").toString())).isEqualByComparingTo("0.18");
+                assertThat(mapper.membersPage(7L, 1510, 501)).isEmpty();
+            }
+        });
+    }
+
+    private static void networkTables(JdbcTemplate jdbc) {
+        jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,sponsor_user_id BIGINT,nickname VARCHAR(120),avatar_url VARCHAR(255),v_rank VARCHAR(8),created_at DATETIME DEFAULT '2026-10-05 08:00:00',region VARCHAR(32),sandbox TINYINT DEFAULT 0,status VARCHAR(16) DEFAULT 'ACTIVE',is_deleted TINYINT DEFAULT 0)");
+        jdbc.execute("CREATE TABLE nx_team_member(id BIGINT PRIMARY KEY,user_id BIGINT,member_user_id BIGINT,volume DECIMAL(20,6),is_deleted TINYINT)");
+        jdbc.execute("CREATE TABLE nx_binary_leg_assignment(owner_user_id BIGINT,member_user_id BIGINT,leg CHAR(1),UNIQUE KEY uk_binary_leg_owner_member(owner_user_id,member_user_id))");
+        jdbc.execute("CREATE TABLE nx_order(id BIGINT PRIMARY KEY,user_id BIGINT,subtotal_usdt DECIMAL(18,6),amount_usdt DECIMAL(18,6),payment_status VARCHAR(32),order_status VARCHAR(32),is_deleted TINYINT,paid_at DATETIME,created_at DATETIME,KEY idx_order_user_time(user_id,created_at))");
+        jdbc.execute("SET time_zone = '+07:00'");
+        jdbc.execute("SET timestamp = " + Instant.parse("2026-10-05T00:00:00Z").getEpochSecond());
     }
 
     private static String url(String endpoint, String schema) {
