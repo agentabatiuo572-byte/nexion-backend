@@ -438,7 +438,8 @@ class SupportObjectEvidenceLedgerTest {
         assertThat(persisted.path("nodeText").asText()).isEqualTo("exact");
         assertThat(persisted.path("nodeBoolean").isBoolean()).isTrue();assertThat(persisted.path("nodeBoolean").asBoolean()).isFalse();
         assertThat(persisted.path("nodeInt").asInt()).isEqualTo(7);
-        assertThat(json.valueToTree(100L)).isNotEqualTo(persisted.path("nodeLong"));
+        JsonNode longNode=json.valueToTree(100L);
+        assertThat(longNode).isNotEqualTo(persisted.path("nodeLong"));
         assertThat(persisted.path("nodeLong")).isEqualTo(json.readTree("100"));
         assertThat(persisted.path("nodeNull").isNull()).isTrue();assertThat(persisted.path("plainNull").isNull()).isTrue();
         assertThat(persisted.path("ordinary").path("list").isArray()).isTrue();
