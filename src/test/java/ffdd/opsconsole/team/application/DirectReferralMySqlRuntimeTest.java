@@ -459,7 +459,7 @@ class DirectReferralMySqlRuntimeTest {
         long legacy=jdbc.queryForObject("SELECT id FROM nx_commission_event WHERE order_no=?",Long.class,ref("LEGACY"));treasury.releaseCommissionFunds(legacy);
         assertWallet(a,"3","0");treasury.releaseCommissionFunds(legacy);assertWallet(a,"3","0");
         var oldNetwork=mock(UnilevelCommissionService.class);
-        var legacyConsumer=new VRankPassiveEvaluationConsumer(json,mock(VRankPromotionEngine.class),oldNetwork);
+        var legacyConsumer=new VRankPassiveEvaluationConsumer(json,mock(VRankPromotionEngine.class),oldNetwork,mock(ffdd.opsconsole.team.mapper.TeamCommissionMapper.class));
         var message=new ffdd.opsconsole.shared.outbox.EventOutboxMessage();message.setEventType("checkout.completed");message.setEventId(marker);message.setPayload("{\"user_id\":"+b+",\"order_no\":\""+ref("DISABLED")+"\",\"amount_usdt\":100}");
         legacyConsumer.onPassiveEvalTrigger(message);
         verifyNoInteractions(oldNetwork);

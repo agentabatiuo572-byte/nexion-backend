@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
 import ffdd.opsconsole.team.domain.VRankPromotionContext;
+import ffdd.opsconsole.team.mapper.TeamCommissionMapper;
 import java.math.BigDecimal;
+import java.util.HashSet;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -16,7 +18,7 @@ import org.springframework.stereotype.Component;
  *
  * <p>订阅 outbox 分发的 A4 漏斗事件:
  * <ul>
- *   <li>checkout.completed → F1 evaluate(buyer 升阶) + F2 settle(L1-L7 上级 unilevel 佣金);</li>
+ *   <li>checkout.completed → F1 evaluate(买家及受团队订单影响的 L1-L7 上级);</li>
  *   <li>auth.register_completed → F1 evaluate(初始评估)。</li>
  * </ul>
  *
@@ -43,10 +45,12 @@ public class VRankPassiveEvaluationConsumer {
             "checkout.completed",
             "auth.register_completed");
     private static final String CHECKOUT_COMPLETED = "checkout.completed";
+    private static final int MAX_UPLINE_DEPTH = 7;
 
     private final ObjectMapper objectMapper;
     private final VRankPromotionEngine vRankPromotionEngine;
     private final UnilevelCommissionService unilevelCommissionService;
+    private final TeamCommissionMapper teamCommissionMapper;
 
     @EventListener
     public void onPassiveEvalTrigger(EventOutboxMessage message) {
@@ -61,19 +65,36 @@ public class VRankPassiveEvaluationConsumer {
                         message.getEventType(), message.getEventId());
                 return;
             }
-            // F1 被动评估(checkout/register → 用户 V-Rank 升阶)
-            // P2 traceability 修复:传 outbox eventId 作 sourceEventId → nx_user_level_log.trigger_event_id
-            // (原 systemEvaluation(userId) 不带 sourceEventId → trigger_event_id 恒 NULL,可追溯性断)
-            log.info("F1 passive eval trigger: type={} user={} eventId={} → evaluate", message.getEventType(), userId, message.getEventId());
-            vRankPromotionEngine.evaluate(new VRankPromotionContext(
-                    userId,
-                    VRankPromotionContext.TriggerType.SYSTEM_EVALUATION,
-                    message.getEventId(),
-                    "ENGINE"));
+            evaluateUser(userId, message);
+            if (CHECKOUT_COMPLETED.equals(message.getEventType())) {
+                // Same L1-L7 relationship/depth as VRankPerformanceMapper.teamVolumeUSD.
+                // A paid order changes ancestors' eligibility even if its buyer never promotes.
+                Set<Long> evaluated = new HashSet<>();
+                evaluated.add(userId);
+                for (var row : teamCommissionMapper.listUplineChain(userId, MAX_UPLINE_DEPTH)) {
+                    if (row.get("userId") instanceof Number ancestor && row.get("layer") instanceof Number layer
+                            && ancestor.longValue() > 0 && layer.intValue() >= 1 && layer.intValue() <= MAX_UPLINE_DEPTH
+                            && evaluated.add(ancestor.longValue())) {
+                        evaluateUser(ancestor.longValue(), message);
+                    }
+                }
+            }
             // Purchase commissions have one durable direct-referral consumer. Never fall back to L1-L7.
         } catch (Exception ex) {
             log.warn("Passive eval/settle failed (scheduler backfills): type={} eventId={} err={}",
                     message.getEventType(), message.getEventId(), ex.getMessage());
+        }
+    }
+
+    private void evaluateUser(long userId, EventOutboxMessage message) {
+        try {
+            log.info("F1 passive eval trigger: type={} user={} eventId={} → evaluate", message.getEventType(), userId, message.getEventId());
+            vRankPromotionEngine.evaluate(new VRankPromotionContext(
+                    userId, VRankPromotionContext.TriggerType.SYSTEM_EVALUATION, message.getEventId(), "ENGINE"));
+        } catch (Exception ex) {
+            // Each engine call keeps its own transaction; one rollback must not stop other affected users.
+            log.warn("Passive eval failed (scheduler backfills): type={} user={} eventId={} err={}",
+                    message.getEventType(), userId, message.getEventId(), ex.getMessage());
         }
     }
 
