@@ -69,7 +69,8 @@ public final class SupportObjectEvidenceLedger {
     private static final Object FILE_LOCK = new Object();
     private static final Set<String> EVENTS = Set.of("REQUEST_INTENT", "PUT_INTENT", "PUT_RETURNED", "PUT_UNKNOWN",
             "TX_OUTCOME", "HTTP_OUTCOME", "DIRECT_OUTCOME", "REQUEST_UNKNOWN", "CALLBACK_OBSERVATION", "REMOVE_INTENT",
-            "REMOVE_RETURNED", "REMOVE_UNKNOWN", "EXACT_HEAD", "CUSTOMER_CREATE_INTENT", "CUSTOMER_CREATED", "CUSTOMER_CREATE_UNKNOWN");
+            "REMOVE_RETURNED", "REMOVE_UNKNOWN", "EXACT_HEAD", "CUSTOMER_CREATE_INTENT", "CUSTOMER_CREATED", "CUSTOMER_CREATE_UNKNOWN",
+            "READY_RETIRE_INTENT", "READY_RETIRED", "READY_RETIRE_SKIPPED");
     private static final List<String> TABLES = List.of("nx_admin", "nx_user", "nx_support_admin_avatar_asset",
             "nx_support_attachment", "nx_support_attachment_command", "nx_support_bulk_job", "nx_admin_account_state");
     private static final String USER_COLUMNS = "id,referral_code,created_at,avatar_url";
@@ -585,6 +586,57 @@ public final class SupportObjectEvidenceLedger {
             remove(key, false, "CLEANUP", delegate);
         } else append("EXACT_HEAD", intent, body.path("creatorRef"), object,
                 map("exists", false, "reason", "CLEANUP_ALREADY_ABSENT", "content", null, "ownership", ownership(attempt,entries)));
+        retireUnreferencedReadyFixture(attempt);
+    }
+
+    private void retireUnreferencedReadyFixture(Entry attempt) {
+        JsonNode object=attempt.body().path("object"); String kind=object.path("kind").asText();
+        if (!Set.of("ATTACHMENT","BULK_ASSET").contains(kind)) return;
+        String id=object.path("id").asText(),key=object.path("key").asText();
+        Intent intent=intent(attempt.body());
+        List<Entry> prior=readEntries();
+        for (Entry retirement:forRequest(prior,intent.id(),"READY_RETIRE_INTENT")) {
+            long completed=forRequest(prior,intent.id(),"READY_RETIRED").stream().filter(entry ->
+                    entry.body().path("payload").path("intent").equals(retirement.reference())
+                    && "COMMITTED".equals(entry.body().path("payload").path("transactionOutcome").asText())).count();
+            require(completed==1,"Previous READY fixture retirement is unresolved");
+        }
+        Map<String,Object> retired=new TransactionTemplate(transactions).execute(status -> {
+            resourceBoundary(NORMAL_BUCKET);
+            String table="ATTACHMENT".equals(kind)?"nx_support_attachment":"nx_support_bulk_job";
+            String columns="ATTACHMENT".equals(kind)?ATTACHMENT_COLUMNS:BULK_COLUMNS;
+            List<Map<String,Object>> locked=jdbc.queryForList("SELECT "+columns+" FROM "+table+" WHERE id=? FOR UPDATE",id);
+            currentCreation(attempt,readEntries());
+            if (locked.isEmpty() || !"READY".equals(locked.get(0).get("state"))) return null;
+            Map<String,Object> beforeRow=locked.get(0);
+            require(!delegate.exists(key),"Fixture metadata cannot retire while exact object still exists");
+            Map<String,Object> references=new LinkedHashMap<>();
+            references.put("attachments",jdbc.queryForList("SELECT id,state,message_id FROM nx_support_attachment WHERE object_key=? AND id<>?",key,"ATTACHMENT".equals(kind)?id:""));
+            references.put("messages",jdbc.queryForList("SELECT message_id FROM nx_support_human_message WHERE attachment_id=?",id));
+            references.put("bulkJobs",jdbc.queryForList("SELECT id,state FROM nx_support_bulk_job WHERE record_type='JOB' AND (asset_id=? OR JSON_UNQUOTE(JSON_EXTRACT(content_json,'$.attachmentId'))=?)",id,id));
+            references.put("bulkAssets",jdbc.queryForList("SELECT id,state FROM nx_support_bulk_job WHERE record_type='ASSET' AND JSON_UNQUOTE(JSON_EXTRACT(asset_json,'$.objectKey'))=? AND id<>?",key,"BULK_ASSET".equals(kind)?id:""));
+            references.put("avatars",jdbc.queryForList("SELECT id FROM nx_support_admin_avatar_asset WHERE object_key=?",key));
+            references.put("customerAvatars",jdbc.queryForList("SELECT id FROM nx_user WHERE avatar_url=?",key));
+            boolean referenced=beforeRow.get("message_id")!=null || references.values().stream().anyMatch(value -> !((List<?>)value).isEmpty());
+            if (referenced) {
+                append("READY_RETIRE_SKIPPED",intent,attempt.body().path("creatorRef"),object,map("reason","REFERENCED_FIXTURE","row",beforeRow,"references",references));
+                return null;
+            }
+            JsonNode retirement=append("READY_RETIRE_INTENT",intent,attempt.body().path("creatorRef"),object,
+                    map("creationRef",attempt.reference(),"before",beforeRow,"references",references,"exactObjectAbsent",true));
+            beforeResource();
+            int changed;
+            if ("ATTACHMENT".equals(kind)) changed=jdbc.update("UPDATE nx_support_attachment SET state='REJECTED' WHERE id=? AND object_key=? AND state='READY' AND message_id IS NULL AND customer_id=? AND uploader_type=? AND uploader_id=? AND client_upload_id=? AND request_hash=?",
+                    id,key,beforeRow.get("customer_id"),beforeRow.get("uploader_type"),beforeRow.get("uploader_id"),beforeRow.get("client_upload_id"),beforeRow.get("request_hash"));
+            else changed=jdbc.update("UPDATE nx_support_bulk_job SET state='REJECTED',version=version+1,updated_at=UTC_TIMESTAMP(6) WHERE record_type='ASSET' AND id=? AND state='READY' AND actor_id=? AND command_key=? AND client_upload_id=? AND request_hash=? AND asset_json=?",
+                    id,beforeRow.get("actor_id"),beforeRow.get("command_key"),beforeRow.get("client_upload_id"),beforeRow.get("request_hash"),beforeRow.get("asset_json"));
+            require(changed==1,"Exact owned READY metadata CAS failed");
+            Map<String,Object> after=one(currentRows(table,id),"retired fixture readback");
+            require("REJECTED".equals(after.get("state")),"Retired fixture readback mismatch");
+            compareImmutable(table,after,canonical(beforeRow));
+            return map("intent",retirement,"after",after,"transactionOutcome","COMMITTED");
+        });
+        if (retired!=null) append("READY_RETIRED",intent,attempt.body().path("creatorRef"),object,retired);
     }
 
     private void remove(String key, boolean quietly, String reason, ObjectStorageService original) {

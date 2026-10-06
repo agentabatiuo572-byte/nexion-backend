@@ -101,7 +101,18 @@ class SupportObjectEvidenceLedgerTest {
         for(var entry:Map.of("taskId","WORKFLOW_TASK_ID","stepId","WORKFLOW_STEP_ID","checkId","WORKFLOW_CHECK_ID","runId","WORKFLOW_RUN_ID","repo","WORKFLOW_REPO","snapshotHash","WORKFLOW_SNAPSHOT_HASH").entrySet())environment.put(entry.getValue(),identity.get(entry.getKey()).toString());
         jdbc=mock(JdbcTemplate.class,invocation->{
             if(invocation.getMethod().getName().equals("queryForList"))return rows(invocation.getArgument(0),invocation.getArguments());
-            if(invocation.getMethod().getName().equals("update"))return 1;
+            if(invocation.getMethod().getName().equals("update")) {
+                String sql=invocation.getArgument(0);Object[] args=invocation.getArguments();
+                if(sql.startsWith("UPDATE nx_support_attachment SET state='REJECTED'")) {
+                    var found=attachments.stream().filter(row->same(row.get("id"),argument(args,1))&&same(row.get("object_key"),argument(args,2))&&"READY".equals(row.get("state"))&&row.get("message_id")==null).toList();
+                    found.forEach(row->row.put("state","REJECTED"));return found.size();
+                }
+                if(sql.startsWith("UPDATE nx_support_bulk_job SET state='REJECTED'")) {
+                    var found=bulkAssets.stream().filter(row->same(row.get("id"),argument(args,1))&&"READY".equals(row.get("state"))).toList();
+                    found.forEach(row->row.put("state","REJECTED"));return found.size();
+                }
+                return 1;
+            }
             return RETURNS_DEFAULTS.answer(invocation);
         });
         minio=mock(MinioClient.class);properties=new StorageProperties();properties.setEndpoint("http://127.0.0.1:19041");properties.setBucket(BUCKET);
@@ -480,6 +491,10 @@ class SupportObjectEvidenceLedgerTest {
         assertThat(put.path("payload").path("before").path("customerCreatorRef").path("sha256").asText()).hasSize(64);
         assertThat(put.path("creatorRef").path("path").asText()).contains("fixture-actors");
         ledger.cleanup("LedgerTest","admin-attachment");assertThat(stored).doesNotContainKey(currentKey);assertThat(delegateRemoves).hasValue(1);
+        ledger.cleanup("LedgerTest","admin-attachment");
+        assertThat(attachments.get(0).get("state")).isEqualTo("REJECTED");
+        assertThat(events("READY_RETIRED")).hasSize(1);
+        assertThat(events("READY_RETIRED").get(0).path("payload").path("transactionOutcome").asText()).isEqualTo("COMMITTED");
     }
 
     @Test void userAttachmentUsesIndependentUserCreatorAndSameClientNewCommandReplay() throws Exception {
@@ -534,6 +549,39 @@ class SupportObjectEvidenceLedgerTest {
         assertThat(delegatePuts).hasValue(1);assertThat(delegateRemoves).hasValue(1);assertThat(stored).doesNotContainKey(currentKey);
         assertThat(events("REMOVE_INTENT").get(0).path("payload").path("current").path("references")).hasSize(2);
         assertThat(attachments).allSatisfy(row->assertThat(row.get("state")).isEqualTo("ATTACHED"));
+        assertThat(bulkAssets.get(0).get("state")).isEqualTo("READY");
+        assertThat(events("READY_RETIRED")).isEmpty();
+    }
+
+    @Test void unreferencedBulkFixtureRetiresOnceAfterProvenAbsence() throws Exception {
+        prepareBulk();var intent=bulkRequest("bulk-unused");
+        ledger.direct(intent,()->new TransactionTemplate(transactions).execute(status->put()));
+        ledger.cleanup("LedgerTest","bulk-unused");ledger.cleanup("LedgerTest","bulk-unused");
+        assertThat(bulkAssets.get(0).get("state")).isEqualTo("REJECTED");
+        assertThat(events("READY_RETIRED")).hasSize(1);
+        assertThat(delegateRemoves).hasValue(1);
+    }
+
+    @Test void retirementCasFailureKeepsCleanupFailedAndDoesNotClaimCommittedRetirement() throws Exception {
+        prepareBulk();var intent=bulkRequest("bulk-retire-race");
+        ledger.direct(intent,()->new TransactionTemplate(transactions).execute(status->put()));
+        doReturn(0).when(jdbc).update(startsWith("UPDATE nx_support_bulk_job SET state='REJECTED'"),any(Object[].class));
+        assertThatThrownBy(()->ledger.cleanup("LedgerTest","bulk-retire-race")).isInstanceOf(AssertionError.class);
+        assertThat(bulkAssets.get(0).get("state")).isEqualTo("READY");
+        assertThat(events("READY_RETIRE_INTENT")).hasSize(1);
+        assertThat(events("READY_RETIRED")).isEmpty();
+        assertThatThrownBy(()->ledger.cleanup("LedgerTest","bulk-retire-race")).isInstanceOf(AssertionError.class);
+        assertThat(events("READY_RETIRE_INTENT")).hasSize(1);
+    }
+
+    @Test void exactObjectStillPresentCannotBeHiddenByRetiringItsMetadata() throws Exception {
+        prepareBulk();var intent=bulkRequest("bulk-retire-present");
+        ledger.direct(intent,()->new TransactionTemplate(transactions).execute(status->put()));
+        doNothing().when(minio).removeObject(any(RemoveObjectArgs.class));
+        assertThatThrownBy(()->ledger.cleanup("LedgerTest","bulk-retire-present")).isInstanceOf(AssertionError.class);
+        assertThat(stored).containsKey(currentKey);
+        assertThat(bulkAssets.get(0).get("state")).isEqualTo("READY");
+        assertThat(events("READY_RETIRE_INTENT")).isEmpty();
     }
 
     @Test void bulkSharedKeyWithOneUnprovenCustomerRefIsNotDeleted() throws Exception {
@@ -658,15 +706,18 @@ class SupportObjectEvidenceLedgerTest {
                 ?List.of(map("id",currentAdmin.get("id"),"created_at",currentAdmin.get("created_at"))):List.of();
         if(sql.startsWith("SELECT username FROM nx_admin"))return List.of(map("username",currentAdmin.get("username")));
         if(sql.contains(" FROM nx_support_admin_avatar_asset "))return matching(avatars,sql.contains("object_key=?")?"object_key":"id",argument(arguments,1));
-        if(sql.contains(" FROM nx_user "))return matching(users,sql.contains("referral_code=?")?"referral_code":"id",argument(arguments,1));
+        if(sql.contains(" FROM nx_user "))return matching(users,sql.contains("avatar_url=?")?"avatar_url":sql.contains("referral_code=?")?"referral_code":"id",argument(arguments,1));
         if(sql.contains(" FROM nx_support_attachment_command "))return attachmentCommands.stream()
                 .filter(row->"UPLOAD".equals(row.get("operation"))&&same(row.get("actor_type"),argument(arguments,1))
                         &&same(row.get("actor_id"),argument(arguments,2))&&same(row.get("command_key"),argument(arguments,3)))
                 .map(row->new LinkedHashMap<>(row)).toList();
-        if(sql.contains(" FROM nx_support_attachment "))return matching(attachments,sql.contains("object_key=?")?"object_key":"id",argument(arguments,1));
+        if(sql.contains(" FROM nx_support_attachment "))return matching(attachments,sql.contains("object_key=?")?"object_key":"id",argument(arguments,1)).stream()
+                .filter(row->!sql.contains("id<>?")||!same(row.get("id"),argument(arguments,2))).toList();
         if(sql.contains(" FROM nx_support_bulk_job ")) {
+            if(sql.contains("record_type='JOB'"))return List.of();
             List<Map<String,Object>> found=new ArrayList<>();
             for(Map<String,Object> row:bulkAssets)if("ASSET".equals(row.get("record_type"))&&
+                    (!sql.contains("id<>?")||!same(row.get("id"),argument(arguments,2)))&&
                     (sql.contains("JSON_EXTRACT")?same(json.readTree(row.get("asset_json").toString()).path("objectKey").asText(),argument(arguments,1)):same(row.get("id"),argument(arguments,1))))found.add(new LinkedHashMap<>(row));
             return found;
         }

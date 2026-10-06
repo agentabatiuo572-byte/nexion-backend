@@ -509,8 +509,13 @@ class SupportS4RuntimeTest {
         });
     }
     private void cleanupObjectEvidence() {
-        SupportObjectEvidenceLedger.cleanupIndependently(objectTestcases.stream()
+        Runnable exactCleanup=()->SupportObjectEvidenceLedger.cleanupIndependently(objectTestcases.stream()
             .<Runnable>map(testcase->()->objects.cleanup(getClass().getSimpleName(),testcase)).toArray(Runnable[]::new));
+        exactCleanup.run();
+        exactCleanup.run();
+        // Exercise the actual global selector after fixture retirement, without masking foreign writes.
+        attachments.cleanupExpired();
+        exactCleanup.run();
     }
     private void as(long id){
         var auth=new UsernamePasswordAuthenticationToken(String.valueOf(id),null,List.of(new SimpleGrantedAuthority("service_m3_write"),new SimpleGrantedAuthority("service_m3_read")));
