@@ -23,7 +23,7 @@ class SupportBulkRestartRuntimeTest extends SupportBulkRuntimeFixture {
     @DynamicPropertySource static void isolated(DynamicPropertyRegistry registry) {SupportEnhancementPreparationTest.isolatedBoundary(registry);}
     @Test void newJvmReadsFrozenQueuedAndPreparedRowsAndSendsExactlyOnceWithoutAuthentication() throws Exception {
         boundary();var seed=json.readTree(Files.readString(Path.of(System.getenv("CS_ENHANCE_EVIDENCE_DIR"),"bulk-restart-seed.json")));
-        assertThat(seed.path("database").asText()).isEqualTo("cs_enhance_20261001");assertThat(seed.path("port").asInt()).isEqualTo(18141);assertThat(seed.path("checkedAt").asText()).isNotBlank();
+        assertThat(seed.path("database").asText()).isEqualTo(SupportRuntimeTarget.current().database());assertThat(seed.path("port").asInt()).isEqualTo(SupportRuntimeTarget.current().httpPort());assertThat(seed.path("checkedAt").asText()).isNotBlank();
         assertThat(seed.path("workflowRunId").asText()).isEqualTo(System.getenv("WORKFLOW_RUN_ID"));assertThat(seed.path("snapshotHash").asText()).isEqualTo(System.getenv("WORKFLOW_SNAPSHOT_HASH"));
         assertThat(seed.path("firstJvmPid").asLong()).isPositive().isNotEqualTo(ProcessHandle.current().pid());
         long actor=seed.path("actorId").asLong(),one=seed.path("customerIds").get(0).asLong(),two=seed.path("customerIds").get(1).asLong(),prepared=seed.path("preparedCustomerId").asLong();String batch=seed.path("batchId").asText(),preparedBatch=seed.path("preparedBatchId").asText();

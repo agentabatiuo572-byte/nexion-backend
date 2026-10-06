@@ -43,7 +43,8 @@ import static org.assertj.core.api.Assertions.*;
 @Import(SupportEnhancementPreparationTest.IsolatedConfiguration.class)
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
 class SupportEnhancementPreparationTest {
-    private static final String OWNER = "cs_enhance_20261001|codex/cs-enhance-core-20261001";
+    private static final SupportRuntimeTarget TARGET = SupportRuntimeTarget.current();
+    private static final String OWNER = TARGET.owner();
     @Autowired JdbcTemplate jdbc;
     @Autowired StringRedisTemplate redis;
     @Autowired MinioClient minio;
@@ -58,29 +59,21 @@ class SupportEnhancementPreparationTest {
     @DynamicPropertySource static void isolatedBoundary(DynamicPropertyRegistry registry) {
         registry.add("logging.level.org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration",()->"ERROR");
         String url = System.getenv("NEXION_DB_URL");
-        if (url == null || !url.startsWith("jdbc:mysql://127.0.0.1:33329/cs_enhance_20261001?"))
-            throw new IllegalStateException("Independent local database required before boot");
-        for (var expected : java.util.Map.of("NEXION_DB_USERNAME", "cs_enhance_runner",
-                "NEXION_REDIS_HOST", "127.0.0.1", "NEXION_REDIS_PORT", "16341",
-                "NEXION_MINIO_ENDPOINT", "http://127.0.0.1:19041",
-                "NEXION_MINIO_BUCKET", "cs-enhance-20261001-private").entrySet()) {
-            if (!expected.getValue().equals(System.getenv(expected.getKey())))
-                throw new IllegalStateException("Independent runtime setting required: " + expected.getKey());
-        }
+        TARGET.requireEnvironment(System.getenv());
         registry.add("server.address", () -> "127.0.0.1");
-        registry.add("server.port", () -> 18141);
+        registry.add("server.port", TARGET::httpPort);
         registry.add("spring.data.redis.database", () -> 0);
         registry.add("spring.datasource.url", () -> url);
         registry.add("spring.datasource.hikari.jdbc-url", () -> url);
-        registry.add("spring.datasource.username", () -> "cs_enhance_runner");
+        registry.add("spring.datasource.username", TARGET::username);
         registry.add("spring.datasource.password", () -> System.getenv("NEXION_DB_PASSWORD"));
-        registry.add("spring.datasource.hikari.username", () -> "cs_enhance_runner");
+        registry.add("spring.datasource.hikari.username", TARGET::username);
         registry.add("spring.datasource.hikari.password", () -> System.getenv("NEXION_DB_PASSWORD"));
         registry.add("spring.data.redis.host", () -> "127.0.0.1");
-        registry.add("spring.data.redis.port", () -> 16341);
+        registry.add("spring.data.redis.port", TARGET::redisPort);
         registry.add("spring.data.redis.password", () -> System.getenv("NEXION_REDIS_PASSWORD"));
-        registry.add("nexion.storage.endpoint", () -> "http://127.0.0.1:19041");
-        registry.add("nexion.storage.bucket", () -> "cs-enhance-20261001-private");
+        registry.add("nexion.storage.endpoint", TARGET::storageEndpoint);
+        registry.add("nexion.storage.bucket", TARGET::bucket);
         registry.add("nexion.storage.access-key", () -> System.getenv("NEXION_MINIO_ACCESS_KEY"));
         registry.add("nexion.storage.secret-key", () -> System.getenv("NEXION_MINIO_SECRET_KEY"));
     }
@@ -121,11 +114,20 @@ class SupportEnhancementPreparationTest {
     }
 
     @Test void isolatedDependenciesPersistAndReadBack() throws Exception {
+        if (TARGET.analytics()) SupportExclusiveRuntimeOwnership.requireActual(
+                json.readTree(Path.of(System.getenv("CS_ENHANCE_ACTOR_CONTEXT")).toFile()), TARGET, jdbc);
         assertThat(context.containsBean("org.springframework.context.annotation.internalScheduledAnnotationProcessor")).isFalse();
-        assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo("cs_enhance_20261001");
-        assertThat(jdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(33329);
+        assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(TARGET.database());
+        assertThat(jdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(TARGET.databasePort());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user", Long.class)).isPositive();
-        String probe = "cs-enhance:20261001:preparation:" + UUID.randomUUID();
+        String probe = (TARGET.analytics() ? "cs-analytics:20261007:preparation:" : "cs-enhance:20261001:preparation:") + UUID.randomUUID();
+        String object = "preparation/" + UUID.randomUUID() + ".txt";
+        boolean ownProbeTable = TARGET.analytics() && jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_cs_enhance_preparation_probe'", Integer.class) == 0;
+        Throwable operationFailure = null;
+        if (TARGET.analytics()) Files.writeString(Path.of(System.getenv("CS_ENHANCE_EVIDENCE_DIR"), "preparation-intent.json"),
+                json.writeValueAsString(java.util.Map.of("probe", probe, "object", object, "owner", OWNER, "ownProbeTable", ownProbeTable,
+                        "contextSha256", System.getenv("CS_ENHANCE_ACTOR_CONTEXT_SHA256"))));
+        try {
         jdbc.execute("CREATE TABLE IF NOT EXISTS nx_cs_enhance_preparation_probe (id VARCHAR(100) PRIMARY KEY, value VARCHAR(100) NOT NULL)");
         jdbc.update("INSERT INTO nx_cs_enhance_preparation_probe VALUES (?,?)", probe, OWNER);
         try (var readback = DriverManager.getConnection(System.getenv("NEXION_DB_URL"),
@@ -139,7 +141,7 @@ class SupportEnhancementPreparationTest {
         redis.opsForValue().set(probe, OWNER, java.time.Duration.ofDays(7));
         assertThat(redis.opsForValue().get(probe)).isEqualTo(OWNER);
         assertThat(jdbc.queryForList("SELECT DISTINCT DEFINER FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE()", String.class))
-                .containsExactly("cs_enhance_runner@127.0.0.1");
+                .containsExactly(TARGET.username() + "@127.0.0.1");
         long customer = jdbc.queryForObject("SELECT MIN(id) FROM nx_user", Long.class);
         try (var triggerWrite = DriverManager.getConnection(System.getenv("NEXION_DB_URL"),
                 System.getenv("NEXION_DB_USERNAME"), System.getenv("NEXION_DB_PASSWORD"))) {
@@ -172,6 +174,23 @@ class SupportEnhancementPreparationTest {
             storage.put(marker, "text/plain", new ByteArrayInputStream(owner), owner.length);
         }
         try (var owner = storage.get(marker)) { assertThat(new String(owner.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo(OWNER); }
+        if (TARGET.analytics()) {
+            var manifest = json.readTree(Path.of(System.getenv("SUPPORT_STORAGE_BASELINE_MANIFEST")).toFile());
+            assertThat(manifest.isArray()).isTrue();
+            assertThat(manifest.size()).isPositive();
+            var keys = new java.util.HashSet<String>();
+            for (var item : manifest) {
+                String key = item.path("key").asText();
+                assertThat(key).isNotBlank();
+                assertThat(keys.add(key)).isTrue();
+                try (var current = storage.get(key)) {
+                    byte[] actual = current.readAllBytes();
+                    assertThat(actual.length).isEqualTo(item.path("size").asInt(-1));
+                    assertThat(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(actual)))
+                            .isEqualTo(item.path("sha256").asText());
+                }
+            }
+        } else {
         MinioClient source = MinioClient.builder().endpoint("http://127.0.0.1:19029")
                 .credentials(System.getenv("CS_ENHANCE_SOURCE_STORAGE_ACCESS_KEY"), System.getenv("CS_ENHANCE_SOURCE_STORAGE_SECRET_KEY")).build();
         String complete = "preparation/copy-complete.txt";
@@ -195,29 +214,74 @@ class SupportEnhancementPreparationTest {
             try (var old = source.getObject(GetObjectArgs.builder().bucket("cs-redesign-private").object(key).build());
                     var current = storage.get(key)) { assertThat(current.readAllBytes()).isEqualTo(old.readAllBytes()); }
         }
+        }
         byte[] bytes = probe.getBytes(StandardCharsets.UTF_8);
-        String object = "preparation/" + UUID.randomUUID() + ".txt";
         storage.put(object, "text/plain", new ByteArrayInputStream(bytes), bytes.length);
         try (var readback = storage.get(object)) { assertThat(readback.readAllBytes()).isEqualTo(bytes); }
         var http = HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(10)).build();
         assertThat(healthEndpoint.health().getStatus()).isEqualTo(Status.UP);
-        var publicRead = http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141/api/config/platform"))
+        var publicRead = http.send(HttpRequest.newBuilder(URI.create(TARGET.httpBase() + "/api/config/platform"))
                 .timeout(java.time.Duration.ofSeconds(10)).GET().build(), HttpResponse.BodyHandlers.ofString());
         assertThat(publicRead.statusCode()).isEqualTo(200);
         assertThat(json.readTree(publicRead.body()).path("code").asInt()).isZero();
-        var unauthorized = http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141/api/admin/content/support-agents/rules"))
+        var unauthorized = http.send(HttpRequest.newBuilder(URI.create(TARGET.httpBase() + "/api/admin/content/support-agents/rules"))
                 .timeout(java.time.Duration.ofSeconds(10)).GET().build(), HttpResponse.BodyHandlers.ofString());
         assertThat(json.readTree(unauthorized.body()).path("code").asInt()).isEqualTo(401);
-        var privateObject = http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:19041/" + bucket + "/" + marker))
+        var privateObject = http.send(HttpRequest.newBuilder(URI.create(TARGET.storageEndpoint() + "/" + bucket + "/" + marker))
                 .timeout(java.time.Duration.ofSeconds(10)).GET().build(), HttpResponse.BodyHandlers.ofString());
         assertThat(privateObject.statusCode()).isEqualTo(403);
         Files.writeString(evidence.resolve("preparation-runtime.json"),
-                "{\"timestamp\":\"" + Instant.now() + "\",\"stage\":\"preparation-only\",\"database\":\"cs_enhance_20261001\","
-                + "\"httpPort\":18141,\"redisPort\":16341,\"bucket\":\"" + bucket + "\",\"copiedObjects\":" + copied
+                "{\"timestamp\":\"" + Instant.now() + "\",\"stage\":\"preparation-only\",\"database\":\"" + TARGET.database() + "\","
+                + "\"httpPort\":" + TARGET.httpPort() + ",\"redisPort\":" + TARGET.redisPort() + ",\"bucket\":\"" + bucket + "\",\"copiedObjects\":" + copied
                 + ",\"sqlReadback\":true,\"sourceDatabaseDenied\":true,\"redisReadback\":true,\"storageReadback\":true,"
                 + "\"anonymousStorageDenied\":true,"
                 + "\"triggerWritesRolledBack\":3,"
                 + "\"baselineAttachmentReadback\":true,\"httpHealth\":true,\"anonymousAdminDenied\":true,\"scheduledJobs\":false,"
                 + "\"productImplementationReleased\":false}");
+        } catch (Exception | Error failure) { operationFailure = failure; throw failure; }
+        finally {
+            if (TARGET.analytics()) try { cleanupPreparation(probe, object, ownProbeTable); }
+            catch (Exception cleanup) { if (operationFailure != null) operationFailure.addSuppressed(cleanup); else throw cleanup; }
+        }
+    }
+
+    private void cleanupPreparation(String probe, String object, boolean ownProbeTable) throws Exception {
+        SupportExclusiveRuntimeOwnership.requireActual(json.readTree(Path.of(System.getenv("CS_ENHANCE_ACTOR_CONTEXT")).toFile()), TARGET, jdbc);
+        var failures = new java.util.ArrayList<Throwable>();
+        try {
+            if (storage.exists(object)) {
+                try (var bytes = storage.get(object)) { assertThat(bytes.readAllBytes()).isEqualTo(probe.getBytes(StandardCharsets.UTF_8)); }
+                minio.removeObject(RemoveObjectArgs.builder().bucket(TARGET.bucket()).object(object).build());
+            }
+            assertThat(storage.exists(object)).isFalse();
+        } catch (Exception | AssertionError failure) { failures.add(failure); }
+        try {
+            String value = redis.opsForValue().get(probe);
+            if (value != null) { assertThat(value).isEqualTo(OWNER); redis.delete(probe); }
+            assertThat(redis.opsForValue().get(probe)).isNull();
+        } catch (Exception | AssertionError failure) { failures.add(failure); }
+        try {
+            boolean exists = jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_cs_enhance_preparation_probe'", Integer.class) == 1;
+            if (exists) {
+                var values = jdbc.queryForList("SELECT value FROM nx_cs_enhance_preparation_probe WHERE id=?", String.class, probe);
+                if (!values.isEmpty()) {
+                    assertThat(values).containsExactly(OWNER);
+                    assertThat(jdbc.update("DELETE FROM nx_cs_enhance_preparation_probe WHERE id=? AND value=?", probe, OWNER)).isEqualTo(1);
+                }
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_cs_enhance_preparation_probe WHERE id=?", Integer.class, probe)).isZero();
+                if (ownProbeTable) {
+                    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_cs_enhance_preparation_probe", Integer.class)).isZero();
+                    jdbc.execute("DROP TABLE nx_cs_enhance_preparation_probe");
+                    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_cs_enhance_preparation_probe'", Integer.class)).isZero();
+                }
+            }
+        } catch (Exception | AssertionError failure) { failures.add(failure); }
+        Files.writeString(Path.of(System.getenv("CS_ENHANCE_EVIDENCE_DIR"), "preparation-cleanup.json"),
+                json.writeValueAsString(java.util.Map.of("probe", probe, "object", object, "ownProbeTable", ownProbeTable,
+                        "contextSha256", System.getenv("CS_ENHANCE_ACTOR_CONTEXT_SHA256"), "complete", failures.isEmpty(), "failures", failures.stream().map(Throwable::toString).toList())));
+        if (!failures.isEmpty()) {
+            var failure = new IllegalStateException("Preparation cleanup did not verify all owned resources");
+            failures.forEach(failure::addSuppressed); throw failure;
+        }
     }
 }

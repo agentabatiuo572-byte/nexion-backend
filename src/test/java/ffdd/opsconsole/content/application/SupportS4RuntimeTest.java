@@ -69,7 +69,7 @@ class SupportS4RuntimeTest {
         objectTestcase=info.getTestMethod().orElseThrow().getName();
         fixtureActors().assertBusinessEntry();
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportIsolatedRuntime.database());
-        assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(33329);
+        assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(SupportRuntimeTarget.current().databasePort());
         boss=admin("SUPER_ADMIN","MANAGER");g1=admin("SUPPORT","DEDICATED");g2=admin("SUPPORT","DEDICATED");
         as(boss);customer="realPrivateImagesHaveSeparateUploadSendAndRevocation".equals(objectTestcase)?objectCustomer():customer();transfer(customer,g1);
         adminToken=token(g1);otherToken=token(g2);bossToken=token(boss);customerToken=userToken(customer);

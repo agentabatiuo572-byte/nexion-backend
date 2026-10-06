@@ -36,7 +36,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /** Test-only, fail-closed fixture ownership. A DB lookup or cleanup claim can never create ownership. */
 final class SupportFixtureActors {
-    private static final String OWNER = "cs_enhance_20261001|codex/cs-enhance-core-20261001";
+    private final SupportRuntimeTarget target;
     private static final String HISTORICAL_UNPROVEN_RUN = "932129b0-d190-478a-9124-62b3e18a95fd";
     private static final Set<Long> HISTORICAL_UNPROVEN_IDS = Set.of(4275L, 4276L, 4277L, 4278L);
     private static final String SESSION_PREFIX = "ops:admin:session:";
@@ -75,6 +75,7 @@ final class SupportFixtureActors {
         this.run = requireText(run, "fixture run");
         this.suite = requireText(suite, "fixture suite");
         this.environment = Map.copyOf(environment);
+        this.target = SupportRuntimeTarget.select(environment);
         this.directory = Path.of(requiredEnv("CS_ENHANCE_EVIDENCE_DIR")).toAbsolutePath().normalize();
         Path contextPath = Path.of(requiredEnv("CS_ENHANCE_ACTOR_CONTEXT")).toAbsolutePath().normalize();
         this.contextSha256 = requiredEnv("CS_ENHANCE_ACTOR_CONTEXT_SHA256");
@@ -87,7 +88,7 @@ final class SupportFixtureActors {
     }
 
     private void validateContext() {
-        require(context.path("schemaVersion").asInt() == 1, "Actor context version required");
+        require(context.path("schemaVersion").asInt() == (target.analytics() ? 2 : 1), "Actor context version required");
         require("BUSINESS_PHASE".equals(context.path("purpose").asText())
                 && context.path("businessAuthorized").asBoolean(false), "Fresh business release context required");
         for (var key : Map.of("taskId", "WORKFLOW_TASK_ID", "stepId", "WORKFLOW_STEP_ID",
@@ -98,7 +99,8 @@ final class SupportFixtureActors {
         require(context.path("candidate").asText().matches("[a-f0-9]{40}"), "Frozen candidate required");
         require(context.path("identity").path("snapshotHash").asText().matches("[a-f0-9]{64}"), "Native snapshot required");
         requireText(context.path("windowId").asText(), "lease window");
-        for (String field : List.of("leaseSha256", "sourceHandoffSha256", "preflightManifestSha256",
+        if (target.analytics()) SupportExclusiveRuntimeOwnership.validate(context, target);
+        else for (String field : List.of("leaseSha256", "sourceHandoffSha256", "preflightManifestSha256",
                 "rootAcceptanceSha256", "businessReleaseSha256", "preCaptureContextSha256"))
             require(context.path(field).asText().matches("[a-f0-9]{64}"), "Actual authority hash missing: " + field);
         for (String field : List.of("rootSharedBefore", "phaseSharedBefore")) {
@@ -106,12 +108,12 @@ final class SupportFixtureActors {
             require(context.path(field).path("sha256").asText().matches("[a-f0-9]{64}"), "Full before hash missing: " + field);
         }
         var resource = context.path("resourceIdentity");
-        require("cs_enhance_20261001".equals(resource.path("database").asText())
-                && resource.path("databasePort").asInt() == 33329
+        require(target.database().equals(resource.path("database").asText())
+                && resource.path("databasePort").asInt() == target.databasePort()
                 && "127.0.0.1".equals(resource.path("redisHost").asText())
-                && resource.path("redisPort").asInt() == 16341 && resource.path("redisDatabase").asInt(-1) == 0
-                && "http://127.0.0.1:19041".equals(resource.path("storageEndpoint").asText())
-                && "cs-enhance-20261001-private".equals(resource.path("storageBucket").asText()), "Exact actor resource required");
+                && resource.path("redisPort").asInt() == target.redisPort() && resource.path("redisDatabase").asInt(-1) == 0
+                && target.storageEndpoint().equals(resource.path("storageEndpoint").asText())
+                && target.bucket().equals(resource.path("storageBucket").asText()), "Exact actor resource required");
         beforeResource();
     }
 
@@ -126,12 +128,13 @@ final class SupportFixtureActors {
 
     private void resourceBoundary() {
         beforeResource();
-        require("cs_enhance_20261001".equals(jdbc.queryForObject("SELECT DATABASE()", String.class)), "Actor DB mismatch");
+        if (target.analytics()) SupportExclusiveRuntimeOwnership.requireActual(context, target, jdbc);
+        require(target.database().equals(jdbc.queryForObject("SELECT DATABASE()", String.class)), "Actor DB mismatch");
         beforeResource();
-        require(Integer.valueOf(33329).equals(jdbc.queryForObject("SELECT @@port", Integer.class)), "Actor DB port mismatch");
+        require(Integer.valueOf(target.databasePort()).equals(jdbc.queryForObject("SELECT @@port", Integer.class)), "Actor DB port mismatch");
         require(redis.getConnectionFactory() instanceof LettuceConnectionFactory, "Known isolated Redis connection required");
         var factory = (LettuceConnectionFactory) redis.getConnectionFactory();
-        require("127.0.0.1".equals(factory.getHostName()) && factory.getPort() == 16341 && factory.getDatabase() == 0,
+        require("127.0.0.1".equals(factory.getHostName()) && factory.getPort() == target.redisPort() && factory.getDatabase() == 0,
                 "Actor Redis boundary mismatch");
     }
 
@@ -442,7 +445,7 @@ final class SupportFixtureActors {
                     && creation.username().equals(body.path("actor").path("username").asText())
                     && creation.createdAt().equals(body.path("actor").path("createdAt").asText())
                     && contextSha256.equals(body.path("contextSha256").asText()), "Exact current creator proof required");
-            for (String field : List.of("identity", "candidate", "windowId", "resourceIdentity", "businessDeadline", "hardDeadline", "leaseSha256", "businessReleaseSha256"))
+            for (String field : List.of("identity", "candidate", "windowId", "resourceIdentity", "businessDeadline", "hardDeadline", "leaseSha256", "businessReleaseSha256", "ownershipMode", "resourceOwnership"))
                 require(context.path(field).equals(body.path(field)), "Creator context mismatch: " + field);
             require(body.path("create").path("successfulExactResponse").asBoolean(false), "Exact successful create evidence required");
             require(body.path("create").path("committedReadback").path("id").asLong(-1) == creation.id()
@@ -634,10 +637,10 @@ final class SupportFixtureActors {
     private Map<String, Object> event(String type, String operation) {
         var body = new LinkedHashMap<String, Object>();
         body.put("schemaVersion", 3); body.put("event", type); body.put("operationId", operation); body.put("at", Instant.now().toString());
-        body.put("contextSha256", contextSha256); body.put("owner", OWNER); body.put("run", run); body.put("suite", suite);
+        body.put("contextSha256", contextSha256); body.put("owner", target.owner()); body.put("run", run); body.put("suite", suite);
         for (String field : List.of("identity", "candidate", "windowId", "resourceIdentity", "businessDeadline", "hardDeadline", "leaseSha256",
                 "sourceHandoffSha256", "preflightManifestSha256", "rootAcceptanceSha256", "businessReleaseSha256", "preCaptureContextSha256",
-                "rootSharedBefore", "phaseSharedBefore")) body.put(field, context.path(field));
+                "rootSharedBefore", "phaseSharedBefore", "ownershipMode", "resourceOwnership")) if (context.has(field)) body.put(field, context.path(field));
         body.put("runId", context.path("identity").path("runId").asText());
         body.put("snapshotHash", context.path("identity").path("snapshotHash").asText());
         body.put("WORKFLOW_RUN_ID", context.path("identity").path("runId").asText());

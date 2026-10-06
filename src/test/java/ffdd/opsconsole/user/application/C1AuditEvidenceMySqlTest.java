@@ -37,9 +37,10 @@ import org.springframework.transaction.interceptor.TransactionInterceptor;
 /** Opt-in, disposable schema on this task's isolated MySQL only; never uses application DB defaults. */
 @EnabledIfEnvironmentVariable(named = "NEXION_C1_AUDIT_MYSQL", matches = "true")
 class C1AuditEvidenceMySqlTest {
+    private static final ffdd.opsconsole.content.application.SupportRuntimeTarget TARGET = ffdd.opsconsole.content.application.SupportRuntimeTarget.current();
     private static final boolean CORE = "true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED"));
-    private static final String BASE = CORE ? "jdbc:mysql://127.0.0.1:33329/" : "jdbc:mysql://127.0.0.1:18362/";
-    private static final String SCHEMA = CORE ? "cs_enhance_20261001_c1_audit" : "bug4_c1_" + UUID.randomUUID().toString().replace("-", "");
+    private static final String BASE = CORE ? "jdbc:mysql://127.0.0.1:" + TARGET.databasePort() + "/" : "jdbc:mysql://127.0.0.1:18362/";
+    private static final String SCHEMA = CORE ? TARGET.database() + "_c1_audit" : "bug4_c1_" + UUID.randomUUID().toString().replace("-", "");
     private static DriverManagerDataSource source;
     private static JdbcTemplate jdbc;
     private static SqlSessionFactory factory;
@@ -76,13 +77,13 @@ class C1AuditEvidenceMySqlTest {
     }
 
     private static DriverManagerDataSource source(String schema) {
-        if(CORE && (!System.getenv("NEXION_DB_URL").startsWith("jdbc:mysql://127.0.0.1:33329/cs_enhance_20261001?") || !"cs_enhance_runner".equals(System.getenv("NEXION_DB_USERNAME"))))throw new IllegalStateException("Owned core MySQL required");
+        if(CORE && (!System.getenv("NEXION_DB_URL").startsWith(TARGET.jdbcPrefix()) || !TARGET.username().equals(System.getenv("NEXION_DB_USERNAME"))))throw new IllegalStateException("Owned core MySQL required");
         return new DriverManagerDataSource(BASE + schema + "?serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true",
-                CORE ? "cs_enhance_runner" : "root", System.getenv(CORE ? "NEXION_DB_PASSWORD" : "NEXION_C1_AUDIT_MYSQL_PASSWORD"));
+                CORE ? TARGET.username() : "root", System.getenv(CORE ? "NEXION_DB_PASSWORD" : "NEXION_C1_AUDIT_MYSQL_PASSWORD"));
     }
 
     @AfterAll static void dropOnlyOwnedSchema() {
-        if (ownsSchema && (SCHEMA.matches("bug4_c1_[a-f0-9]{32}") || CORE && SCHEMA.equals("cs_enhance_20261001_c1_audit"))) {
+        if (ownsSchema && (SCHEMA.matches("bug4_c1_[a-f0-9]{32}") || CORE && SCHEMA.equals(TARGET.database() + "_c1_audit"))) {
             new JdbcTemplate(source("")).execute("DROP DATABASE IF EXISTS " + SCHEMA);
             ownsSchema = false;
         }

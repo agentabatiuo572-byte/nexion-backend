@@ -8,6 +8,17 @@ import org.junit.jupiter.api.Test;
 
 class StartupSchemaMigrationContractTest {
     @Test
+    void supportEnhancementsAreInstalledInDependencyOrderWithoutResolvingLegacyAssignments() throws Exception {
+        String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        String core = "20261001_support_enhancements_core.sql";
+        String bulk = "20261001_support_enhancements_bulk.sql";
+        assertThat(runner).contains(core, bulk);
+        assertThat(runner.indexOf(bulk)).isGreaterThan(runner.indexOf(core));
+        assertThat(runner.indexOf("20261003_support_ticket_creation_policy.sql")).isGreaterThan(runner.indexOf(bulk));
+        assertThat(runner).contains("startup does not automatically resolve legacy assignment conflicts");
+        assertThat(runner).doesNotContain("(Join-Path $root \"scripts\\migrations\\20260929_support_binding_s3.sql\")");
+    }
+    @Test
     void startupNeverPublishesAGenesisFinancialSeries() throws Exception {
         String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
         for (Path migration : Files.list(Path.of("scripts/migrations")).toList()) {

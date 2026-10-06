@@ -111,7 +111,7 @@ class SupportMessageReplayMySqlS4Test {
     @BeforeEach void fixture() throws Exception {
         fixtureActors().assertBusinessEntry();
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportIsolatedRuntime.database());
-        assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(33329);
+        assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(SupportRuntimeTarget.current().databasePort());
         assertThat(System.getenv("S3_FIXTURE_PASSWORD")!=null && !System.getenv("S3_FIXTURE_PASSWORD").isBlank())
                 .as("The isolated fixture password must be configured").isTrue();
         boss=admin("SUPER_ADMIN","MANAGER");agent=admin("SUPPORT","DEDICATED");

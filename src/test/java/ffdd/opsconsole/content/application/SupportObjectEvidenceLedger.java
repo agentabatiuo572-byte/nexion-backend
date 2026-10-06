@@ -61,8 +61,9 @@ public final class SupportObjectEvidenceLedger {
     private record Located(Kind kind, String id, String key, String table, Map<String,Object> row) {}
     private record Creation(Intent intent, Located located, JsonNode creator, JsonNode putIntent,
             long threadId, boolean transactional) {}
-    private static final String NORMAL_BUCKET = "cs-enhance-20261001-private";
-    private static final String ENDPOINT = "http://127.0.0.1:19041";
+    private final SupportRuntimeTarget target;
+    private final String NORMAL_BUCKET;
+    private final String ENDPOINT;
     private static final int MAX_EVENTS = 10000, MAX_EVENT_BYTES = 2 * 1024 * 1024;
     private static final long MAX_TOTAL_BYTES = 64L * 1024 * 1024, MAX_OBJECT_BYTES = 16L * 1024 * 1024;
     private static final Object FILE_LOCK = new Object();
@@ -115,6 +116,8 @@ public final class SupportObjectEvidenceLedger {
         this.jdbc = Objects.requireNonNull(jdbc); this.json = Objects.requireNonNull(json);
         this.transactions = Objects.requireNonNull(transactions); this.properties = Objects.requireNonNull(properties);
         this.minio = Objects.requireNonNull(minio); this.environment = Map.copyOf(environment);
+        target = SupportRuntimeTarget.select(environment);
+        NORMAL_BUCKET = target.bucket(); ENDPOINT = target.storageEndpoint();
         phase = Path.of(env("CS_ENHANCE_EVIDENCE_DIR")).toAbsolutePath().normalize();
         directory = phase.resolve("object-ledger");
         contextPath = Path.of(env("CS_ENHANCE_ACTOR_CONTEXT")).toAbsolutePath().normalize();
@@ -442,7 +445,7 @@ public final class SupportObjectEvidenceLedger {
             require(body.path("schemaVersion").asInt() == 3 && "CREATED".equals(body.path("event").asText())
                     && body.path("ownsActor").asBoolean(false) && body.path("adminId").asLong(-1) == id
                     && body.path("actor").path("id").asLong(-1) == id && contextRef.path("sha256").asText().equals(body.path("contextSha256").asText()), "Exact current admin creation required");
-            for (String field : List.of("identity", "candidate", "windowId", "resourceIdentity", "businessDeadline", "hardDeadline", "leaseSha256", "businessReleaseSha256"))
+            for (String field : List.of("identity", "candidate", "windowId", "resourceIdentity", "businessDeadline", "hardDeadline", "leaseSha256", "businessReleaseSha256", "ownershipMode", "resourceOwnership"))
                 require(context.path(field).equals(body.path(field)), "Admin creator context mismatch: " + field);
             JsonNode create = body.path("create"); String mechanism = create.path("kind").asText();
             String username=text(body.path("actor").path("username").asText(),"original actor username");
@@ -505,7 +508,8 @@ public final class SupportObjectEvidenceLedger {
     public static void cleanupPersisted(java.sql.Connection connection, MinioClient minio, ObjectMapper json,
             Map<String,String> environment) {
         var dataSource = new org.springframework.jdbc.datasource.SingleConnectionDataSource(connection, true);
-        var properties = new StorageProperties(); properties.setEndpoint(ENDPOINT); properties.setBucket(NORMAL_BUCKET);
+        var target = SupportRuntimeTarget.select(environment);
+        var properties = new StorageProperties(); properties.setEndpoint(target.storageEndpoint()); properties.setBucket(target.bucket());
         var ledger = new SupportObjectEvidenceLedger(new JdbcTemplate(dataSource), json,
                 new org.springframework.jdbc.datasource.DataSourceTransactionManager(dataSource), properties, minio, environment);
         ledger.wrap(new ObjectStorageService(minio, properties));
@@ -795,10 +799,11 @@ public final class SupportObjectEvidenceLedger {
 
     private Map<String,Object> resourceBoundary(String expectedBucket) {
         beforeResource(); verifyImmutableInputs();
+        if (target.analytics()) SupportExclusiveRuntimeOwnership.requireActual(context, target, jdbc);
         require(ENDPOINT.equals(properties.getEndpoint()) && expectedBucket.equals(properties.getBucket()), "Actual storage properties no longer match this exact request");
         Map<String,Object> db = one(jdbc.queryForList("SELECT DATABASE() AS database_name,@@port AS database_port,@@server_uuid AS server_uuid,CONNECTION_ID() AS connection_id"), "database identity");
         JsonNode expected = before.path("databaseIdentity");
-        require("cs_enhance_20261001".equals(string(db,"database_name")) && number(db,"database_port") == 33329
+        require(target.database().equals(string(db,"database_name")) && number(db,"database_port") == target.databasePort()
                 && expected.path("database").asText().equals(string(db,"database_name")) && expected.path("port").asInt(-1) == number(db,"database_port")
                 && expected.path("serverUuid").asText().equals(string(db,"server_uuid")) && number(db,"connection_id") > 0, "Actual database identity changed");
         List<JsonNode> markers = new ArrayList<>();
@@ -815,19 +820,20 @@ public final class SupportObjectEvidenceLedger {
     }
 
     private void validateContext() {
-        require(context.path("schemaVersion").asInt(-1) == 1 && "BUSINESS_PHASE".equals(context.path("purpose").asText())
+        require(context.path("schemaVersion").asInt(-1) == (target.analytics() ? 2 : 1) && "BUSINESS_PHASE".equals(context.path("purpose").asText())
                 && context.path("businessAuthorized").asBoolean(false), "Current admitted business actor context required");
         for (var field : Map.of("taskId","WORKFLOW_TASK_ID","stepId","WORKFLOW_STEP_ID","checkId","WORKFLOW_CHECK_ID",
                 "runId","WORKFLOW_RUN_ID","repo","WORKFLOW_REPO","snapshotHash","WORKFLOW_SNAPSHOT_HASH").entrySet())
             require(env(field.getValue()).equals(context.path("identity").path(field.getKey()).asText()), "Raw Native context mismatch: " + field.getKey());
         require(context.path("candidate").asText().matches("[0-9a-f]{40}")
                 && context.path("identity").path("snapshotHash").asText().matches("[0-9a-f]{64}"), "Actual candidate and snapshot required");
-        for (String field : List.of("leaseSha256","sourceHandoffSha256","businessReleaseSha256","preflightManifestSha256","rootAcceptanceSha256","preCaptureContextSha256"))
+        if (target.analytics()) SupportExclusiveRuntimeOwnership.validate(context, target);
+        else for (String field : List.of("leaseSha256","sourceHandoffSha256","businessReleaseSha256","preflightManifestSha256","rootAcceptanceSha256","preCaptureContextSha256"))
             require(context.path(field).asText().matches("[0-9a-f]{64}"), "Missing authority binding: " + field);
         text(context.path("windowId").asText(), "lease window");
         JsonNode resource = context.path("resourceIdentity");
-        require("cs_enhance_20261001".equals(resource.path("database").asText()) && resource.path("databasePort").asInt(-1) == 33329
-                && "127.0.0.1".equals(resource.path("redisHost").asText()) && resource.path("redisPort").asInt(-1) == 16341
+        require(target.database().equals(resource.path("database").asText()) && resource.path("databasePort").asInt(-1) == target.databasePort()
+                && "127.0.0.1".equals(resource.path("redisHost").asText()) && resource.path("redisPort").asInt(-1) == target.redisPort()
                 && resource.path("redisDatabase").asInt(-1) == 0 && ENDPOINT.equals(resource.path("storageEndpoint").asText())
                 && NORMAL_BUCKET.equals(resource.path("storageBucket").asText()), "Exact isolated resource identity required");
         require(before.path("schemaVersion").asInt(-1) == 1 && "R20_OBJECT_BEFORE".equals(before.path("event").asText())
@@ -841,8 +847,8 @@ public final class SupportObjectEvidenceLedger {
                 && keys.add(text(object.path("key").asText(),"baseline key")) && object.path("size").canConvertToLong()
                 && object.path("size").asLong() >= 0 && object.path("sha256").asText().matches("[0-9a-f]{64}"), "Malformed/duplicate independent object before");
         for (String table : TABLES) require(before.path("tables").path(table).isArray(), "Missing independent table before: " + table);
-        require(before.path("databaseIdentity").path("database").asText().equals("cs_enhance_20261001")
-                && before.path("databaseIdentity").path("port").asInt(-1) == 33329
+        require(before.path("databaseIdentity").path("database").asText().equals(target.database())
+                && before.path("databaseIdentity").path("port").asInt(-1) == target.databasePort()
                 && !before.path("databaseIdentity").path("serverUuid").asText().isBlank(), "Independent database identity required");
         beforeResource();
     }
@@ -880,7 +886,7 @@ public final class SupportObjectEvidenceLedger {
                             "eventId",id,"previous",old.isEmpty()?null:old.get(old.size()-1).reference(),"at",Instant.now().toString(),
                             "context",contextRef,"objectBefore",context.path("objectBefore"),"suite",suite,"testcase",testcase,
                             "requestId",requestId,"requestRef",requestRef,"creatorRef",creatorRef,"object",object,"payload",payload);
-                    for (String field : List.of("identity","candidate","windowId","leaseSha256","sourceHandoffSha256","resourceIdentity","businessDeadline","hardDeadline")) body.put(field,context.path(field));
+                    for (String field : List.of("identity","candidate","windowId","leaseSha256","sourceHandoffSha256","resourceIdentity","businessDeadline","hardDeadline","ownershipMode","resourceOwnership")) if (context.has(field)) body.put(field,context.path(field));
                     byte[] bytes = json.writeValueAsBytes(normalize(body)); require(bytes.length <= MAX_EVENT_BYTES, "Object evidence event too large");
                     long total = bytes.length; for (Entry entry : old) total += entry.reference().path("bytes").asLong();
                     require(total <= MAX_TOTAL_BYTES, "Object evidence total bound reached");
@@ -918,7 +924,7 @@ public final class SupportObjectEvidenceLedger {
                         && EVENTS.contains(body.path("eventType").asText()) && body.path("sequence").asInt(-1) == sequence
                         && name.equals(String.format(java.util.Locale.ROOT,"%08d-%s.json",sequence,body.path("eventId").asText())), "Canonical ordered evidence event required");
                 require(previous == null ? body.path("previous").isNull() : previous.equals(body.path("previous")), "Object evidence chain broken");
-                for (String field : List.of("identity","candidate","windowId","leaseSha256","sourceHandoffSha256","resourceIdentity","businessDeadline","hardDeadline"))
+                for (String field : List.of("identity","candidate","windowId","leaseSha256","sourceHandoffSha256","resourceIdentity","businessDeadline","hardDeadline","ownershipMode","resourceOwnership"))
                     require(context.path(field).equals(body.path(field)),"Object event current context mismatch: "+field);
                 require(contextRef.equals(body.path("context")) && context.path("objectBefore").equals(body.path("objectBefore")), "Object event has another context/baseline");
                 require(!Instant.parse(body.path("at").asText()).isAfter(Instant.now())

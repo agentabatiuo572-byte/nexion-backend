@@ -11,20 +11,20 @@ import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 @ConditionalOnProperty(name = "support.patch.isolated", havingValue = "true")
 class SupportIsolatedRuntime {
     @Bean static org.springframework.beans.factory.config.BeanPostProcessor journalSharedMutations(javax.sql.DataSource dataSource) {
-        if (!"cs_enhance_20261001".equals(database())) return new org.springframework.beans.factory.config.BeanPostProcessor() {};
+        if (!SupportRuntimeTarget.current().database().equals(database())) return new org.springframework.beans.factory.config.BeanPostProcessor() {};
         return SharedMutationJournal.bootstrapJournal(dataSource);
     }
     static String database() {
-        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))return "cs_enhance_20261001";
+        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))return SupportRuntimeTarget.current().database();
         return "true".equals(System.getenv("SUPPORT_PATCH_ISOLATED")) ? "cs_advisor_patch" : "cs_redesign";
     }
     static int port() {
-        if("cs_enhance_20261001".equals(database()))return 18141;
+        if(SupportRuntimeTarget.current().database().equals(database()))return SupportRuntimeTarget.current().httpPort();
         return "cs_advisor_patch".equals(database()) ? 18130 : 18129;
     }
     @Bean static BeanFactoryPostProcessor disableScheduledJobs() {
         return factory -> {
-            if (!java.util.Set.of("cs_advisor_patch","cs_enhance_20261001").contains(database())) throw new IllegalStateException("Patch isolation required");
+            if (!java.util.Set.of("cs_advisor_patch",SupportRuntimeTarget.current().database()).contains(database())) throw new IllegalStateException("Patch isolation required");
             ((BeanDefinitionRegistry) factory).removeBeanDefinition(
                     "org.springframework.context.annotation.internalScheduledAnnotationProcessor");
         };

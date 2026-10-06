@@ -45,7 +45,7 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
         var oldIndexes=jdbc.queryForList("SELECT index_name,non_unique,seq_in_index,column_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='nx_support_attachment' AND index_name NOT IN ('uk_support_attachment_object','ix_support_attachment_object') ORDER BY index_name,seq_in_index");
         long users=jdbc.queryForObject("SELECT COUNT(*) FROM nx_user",Long.class),messages=jdbc.queryForObject("SELECT COUNT(*) FROM nx_conversation_message",Long.class);
         try(var connection=jdbc.getDataSource().getConnection()) {
-            assertThat(connection.getMetaData().getURL()).startsWith("jdbc:mysql://127.0.0.1:33329/cs_enhance_20261001");
+            assertThat(connection.getMetaData().getURL()).startsWith(SupportRuntimeTarget.current().jdbcPrefix().replace("?", ""));
             var migration=new FileSystemResource("scripts/migrations/20261001_support_enhancements_bulk.sql");
             ScriptUtils.executeSqlScript(connection,migration);ScriptUtils.executeSqlScript(connection,migration);
         }
@@ -421,7 +421,7 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
         String batch=batch(actor,List.of(one,two),"MAINTENANCE","TEXT","Second JVM durable frozen delivery",null,null,null);
         String preparedBatch=batch(actor,List.of(prepared),"MAINTENANCE","TEXT","Prepared DTO survives JVM exit",null,null,null);SecurityContextHolder.clearContext();bulk.prepareRecipient(preparedBatch,prepared);
         counts(batch,0,0,0,0,2);counts(preparedBatch,0,0,0,0,1);assertThat(jdbc.queryForObject("SELECT state FROM nx_support_bulk_job WHERE id=?",String.class,batch)).isEqualTo("QUEUED");assertThat(row(preparedBatch,prepared).get("request_json")).isNotNull();
-        var seed=new LinkedHashMap<String,Object>();seed.put("checkedAt",Instant.now().toString());seed.put("database","cs_enhance_20261001");seed.put("port",18141);seed.put("workflowRunId",System.getenv("WORKFLOW_RUN_ID"));seed.put("snapshotHash",System.getenv("WORKFLOW_SNAPSHOT_HASH"));seed.put("firstJvmPid",ProcessHandle.current().pid());seed.put("actorId",actor);seed.put("batchId",batch);seed.put("customerIds",List.of(one,two));seed.put("clientMessageIds",List.of(row(batch,one).get("client_message_id"),row(batch,two).get("client_message_id")));seed.put("frozenContent",jdbc.queryForObject("SELECT content_json FROM nx_support_bulk_job WHERE id=?",String.class,batch));seed.put("preparedBatchId",preparedBatch);seed.put("preparedCustomerId",prepared);seed.put("preparedClientMessageId",row(preparedBatch,prepared).get("client_message_id"));seed.put("preparedRequestJson",row(preparedBatch,prepared).get("request_json"));
+        var seed=new LinkedHashMap<String,Object>();seed.put("checkedAt",Instant.now().toString());seed.put("database",SupportRuntimeTarget.current().database());seed.put("port",SupportRuntimeTarget.current().httpPort());seed.put("workflowRunId",System.getenv("WORKFLOW_RUN_ID"));seed.put("snapshotHash",System.getenv("WORKFLOW_SNAPSHOT_HASH"));seed.put("firstJvmPid",ProcessHandle.current().pid());seed.put("actorId",actor);seed.put("batchId",batch);seed.put("customerIds",List.of(one,two));seed.put("clientMessageIds",List.of(row(batch,one).get("client_message_id"),row(batch,two).get("client_message_id")));seed.put("frozenContent",jdbc.queryForObject("SELECT content_json FROM nx_support_bulk_job WHERE id=?",String.class,batch));seed.put("preparedBatchId",preparedBatch);seed.put("preparedCustomerId",prepared);seed.put("preparedClientMessageId",row(preparedBatch,prepared).get("client_message_id"));seed.put("preparedRequestJson",row(preparedBatch,prepared).get("request_json"));
         assertThat(messageCount(one)+messageCount(two)+messageCount(prepared)).isZero();
         fixtureActors().deferCleanup(actor,"SupportBulkRestartRuntimeTest");
         seed.put("actorCreationProof",fixtureActors().creationReference(actor));
@@ -431,7 +431,7 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
     private com.fasterxml.jackson.databind.JsonNode message(com.fasterxml.jackson.databind.JsonNode rows,long id) {for(var row:rows)if(row.path("id").asLong()==id)return row;throw new AssertionError("Actual message missing "+id);}
     private SocketProbe socket(String token,boolean app) throws Exception {
         var ticket=http("POST",app?"/api/app/support/realtime-ticket":"/api/admin/content/conversations/realtime-ticket",token,null,null);assertThat(ticket.path("code").asInt()).isZero();var probe=new SocketProbe();
-        probe.socket=java.net.http.HttpClient.newHttpClient().newWebSocketBuilder().buildAsync(java.net.URI.create("ws://127.0.0.1:18141/ws/conversations"),probe).get(10,TimeUnit.SECONDS);probe.send(Map.of("type","auth","ticket",ticket.path("data").path("ticket").asText()));probe.await("ready");return probe;
+        probe.socket=java.net.http.HttpClient.newHttpClient().newWebSocketBuilder().buildAsync(java.net.URI.create(SupportRuntimeTarget.current().websocketBase()+"/ws/conversations"),probe).get(10,TimeUnit.SECONDS);probe.send(Map.of("type","auth","ticket",ticket.path("data").path("ticket").asText()));probe.await("ready");return probe;
     }
     private final class SocketProbe implements java.net.http.WebSocket.Listener,AutoCloseable {
         java.net.http.WebSocket socket;final BlockingQueue<String> frames=new LinkedBlockingQueue<>();final StringBuilder buffer=new StringBuilder();
@@ -442,7 +442,7 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
         public void close() {socket.abort();}
     }
     private StreamProbe stream(String token) throws Exception {
-        var response=java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:18141/api/admin/content/conversations/stream")).header("Authorization","Bearer "+token).GET().build(),java.net.http.HttpResponse.BodyHandlers.ofInputStream());assertThat(response.statusCode()).isEqualTo(200);return new StreamProbe(response.body());
+        var response=java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(SupportRuntimeTarget.current().httpBase()+"/api/admin/content/conversations/stream")).header("Authorization","Bearer "+token).GET().build(),java.net.http.HttpResponse.BodyHandlers.ofInputStream());assertThat(response.statusCode()).isEqualTo(200);return new StreamProbe(response.body());
     }
     private final class StreamProbe implements AutoCloseable {
         final java.io.InputStream input;final List<String> lines=new CopyOnWriteArrayList<>();

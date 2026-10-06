@@ -48,7 +48,7 @@ class AppSupportAdvisorRuntimeTest {
 
     @BeforeEach void fixture() throws Exception {
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_advisor_patch");
-        assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(33329);
+        assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(SupportRuntimeTarget.current().databasePort());
         assertThat(context.containsBean("org.springframework.context.annotation.internalScheduledAnnotationProcessor")).isFalse();
         assertThat(context.getEnvironment().getProperty("spring.data.redis.database")).isEqualTo("14");
         assertThat(context.getEnvironment().getProperty("nexion.storage.bucket")).isEqualTo("cs-advisor-patch-private");

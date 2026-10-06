@@ -107,8 +107,8 @@ abstract class SupportBulkRuntimeFixture {
 
     void boundary() {
         fixtureActors().assertBusinessEntry();
-        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_enhance_20261001");
-        assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(33329);
+        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportRuntimeTarget.current().database());
+        assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(SupportRuntimeTarget.current().databasePort());
         assertThat(context.containsBean("org.springframework.context.annotation.internalScheduledAnnotationProcessor")).isFalse();
         assertThat(System.getenv("CS_ENHANCE_BULK_ENABLED")).isEqualTo("true");
     }
@@ -181,7 +181,7 @@ abstract class SupportBulkRuntimeFixture {
     }
     String key() {return "bulk-test-"+UUID.randomUUID();}
     JsonNode http(String method,String path,String token,Object body,String command) throws Exception {
-        var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141"+path)).timeout(Duration.ofSeconds(25)).header("Content-Type","application/json");
+        var request=HttpRequest.newBuilder(URI.create(SupportRuntimeTarget.current().httpBase()+path)).timeout(Duration.ofSeconds(25)).header("Content-Type","application/json");
         if(token!=null)request.header("Authorization","Bearer "+token);if(command!=null)request.header("Idempotency-Key",command);
         request.method(method,body==null?HttpRequest.BodyPublishers.noBody():HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));
         var response=HttpClient.newHttpClient().send(request.build(),HttpResponse.BodyHandlers.ofString());return json.readTree(response.body());
@@ -219,14 +219,14 @@ abstract class SupportBulkRuntimeFixture {
     JsonNode upload(long actor,byte[] bytes,String upload,String command,SupportObjectEvidenceLedger.Intent intent) throws Exception {
         String boundary="bulk"+UUID.randomUUID();var out=new ByteArrayOutputStream();
         out.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"clientUploadId\"\r\n\r\n"+upload+"\r\n--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"bulk.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));out.write(bytes);out.write(("\r\n--"+boundary+"--\r\n").getBytes(StandardCharsets.UTF_8));
-        var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141"+BASE+"/attachments")).timeout(Duration.ofSeconds(25)).header("Authorization","Bearer "+token(actor)).header("Idempotency-Key",command).header("Content-Type","multipart/form-data; boundary="+boundary).POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray())).build();
+        var request=HttpRequest.newBuilder(URI.create(SupportRuntimeTarget.current().httpBase()+BASE+"/attachments")).timeout(Duration.ofSeconds(25)).header("Authorization","Bearer "+token(actor)).header("Idempotency-Key",command).header("Content-Type","multipart/form-data; boundary="+boundary).POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray())).build();
         return json.readTree(sendObjectRequest(intent,request).body());
     }
-    HttpResponse<byte[]> download(String path,String token) throws Exception {return HttpClient.newHttpClient().send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141"+path)).timeout(Duration.ofSeconds(25)).header("Authorization","Bearer "+token).GET().build(),HttpResponse.BodyHandlers.ofByteArray());}
+    HttpResponse<byte[]> download(String path,String token) throws Exception {return HttpClient.newHttpClient().send(HttpRequest.newBuilder(URI.create(SupportRuntimeTarget.current().httpBase()+path)).timeout(Duration.ofSeconds(25)).header("Authorization","Bearer "+token).GET().build(),HttpResponse.BodyHandlers.ofByteArray());}
     void proof(String id,String method,String evidence) {proofs.put("bulk-"+id,Map.of("status","pass","testcase",method,"suite",getClass().getSimpleName(),"evidence",evidence));}
     void writeProof(String filename) throws Exception {
         Path directory=Path.of(Objects.requireNonNull(System.getenv("CS_ENHANCE_EVIDENCE_DIR")));Files.createDirectories(directory);
-        Files.writeString(directory.resolve(filename),json.writeValueAsString(Map.of("run",run,"checkedAt",Instant.now().toString(),"database","cs_enhance_20261001","port",18141,"checks",proofs,"workflowRunId",Objects.requireNonNull(System.getenv("WORKFLOW_RUN_ID")),"snapshotHash",Objects.requireNonNull(System.getenv("WORKFLOW_SNAPSHOT_HASH")))));
+        Files.writeString(directory.resolve(filename),json.writeValueAsString(Map.of("run",run,"checkedAt",Instant.now().toString(),"database",SupportRuntimeTarget.current().database(),"port",SupportRuntimeTarget.current().httpPort(),"checks",proofs,"workflowRunId",Objects.requireNonNull(System.getenv("WORKFLOW_RUN_ID")),"snapshotHash",Objects.requireNonNull(System.getenv("WORKFLOW_SNAPSHOT_HASH")))));
     }
     static class EventCapture {
         final List<ConversationMessageEvent> events=new CopyOnWriteArrayList<>();

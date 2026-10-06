@@ -55,7 +55,7 @@ class SupportMaintenanceMySqlS4Test {
         run="s4m_"+UUID.randomUUID().toString().replace("-","").substring(0,10);
         fixtureActors().assertBusinessEntry();
         try(var connection=dataSource.getConnection()) {
-            assertThat(connection.getMetaData().getURL()).contains("127.0.0.1:33329/"+SupportIsolatedRuntime.database());
+            assertThat(connection.getMetaData().getURL()).contains("127.0.0.1:"+SupportRuntimeTarget.current().databasePort()+"/"+SupportIsolatedRuntime.database());
             assertThat(connection.getCatalog()).isEqualTo(SupportIsolatedRuntime.database());
         }
         boss=admin("boss","SUPER_ADMIN","MANAGER");g1=admin("g1","SUPPORT","DEDICATED");g2=admin("g2","SUPPORT","DEDICATED");

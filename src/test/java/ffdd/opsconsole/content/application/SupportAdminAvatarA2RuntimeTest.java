@@ -393,7 +393,7 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
                 + "\r\n--" + multipart + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));
         body.write(png(color));
         body.write(("\r\n--" + multipart + "--\r\n").getBytes(StandardCharsets.UTF_8));
-        HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141" + ACCOUNTS + "/avatar-assets"))
+        HttpRequest request = HttpRequest.newBuilder(URI.create(SupportRuntimeTarget.current().httpBase() + ACCOUNTS + "/avatar-assets"))
                 .timeout(Duration.ofSeconds(25)).header("Authorization", "Bearer " + actorTokens.get(uploader))
                 .header("Idempotency-Key", command).header("Content-Type", "multipart/form-data; boundary=" + multipart)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray())).build();
@@ -501,9 +501,9 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
             evidence.put("feature", "ADMIN_AVATAR_A2");
             evidence.put("capability", "runtime");
             evidence.put("checkedAt", Instant.now().toString());
-            evidence.put("database", "cs_enhance_20261001");
-            evidence.put("databasePort", 33329);
-            evidence.put("httpPort", 18141);
+            evidence.put("database", SupportRuntimeTarget.current().database());
+            evidence.put("databasePort", SupportRuntimeTarget.current().databasePort());
+            evidence.put("httpPort", SupportRuntimeTarget.current().httpPort());
             evidence.put("makerAdminId", maker);
             evidence.put("checkerAdminId", checker);
             evidence.put("checks", proofs);

@@ -72,7 +72,7 @@ class SupportEnhancementCoreRuntimeTest {
         objectTestcase=info.getTestMethod().orElseThrow().getName();
         fixtureActors().assertBusinessEntry();
         events.events.clear();
-        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_enhance_20261001");
+        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportRuntimeTarget.current().database());
         oldRules=mapper.rules();
         originalProfiles=SupportOriginalProfiles.suspend(jdbc,transactions);
         boss=admin("boss","SUPER_ADMIN","MANAGER");first=admin("first","SUPPORT","DEDICATED");second=admin("second","SUPPORT","DEDICATED");
@@ -556,7 +556,7 @@ class SupportEnhancementCoreRuntimeTest {
     }
     private SocketProbe socket(String token,boolean app) throws Exception {
         var ticket=http("POST",app?"/api/app/support/realtime-ticket":"/api/admin/content/conversations/realtime-ticket",token,null,null);assertThat(ticket.path("code").asInt()).isZero();var probe=new SocketProbe();
-        probe.socket=HttpClient.newHttpClient().newWebSocketBuilder().buildAsync(URI.create("ws://127.0.0.1:18141/ws/conversations"),probe).get(10,TimeUnit.SECONDS);
+        probe.socket=HttpClient.newHttpClient().newWebSocketBuilder().buildAsync(URI.create(SupportRuntimeTarget.current().websocketBase()+"/ws/conversations"),probe).get(10,TimeUnit.SECONDS);
         probe.send(Map.of("type","auth","ticket",ticket.path("data").path("ticket").asText()));probe.await("ready");return probe;
     }
     private final class SocketProbe implements java.net.http.WebSocket.Listener,AutoCloseable {
@@ -750,7 +750,7 @@ class SupportEnhancementCoreRuntimeTest {
         String boundary="enhance"+UUID.randomUUID();var output=new java.io.ByteArrayOutputStream();
         output.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"clientUploadId\"\r\n\r\n"+client+"\r\n--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: "+mime+"\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
         output.write(bytes);output.write(("\r\n--"+boundary+"--\r\n").getBytes());
-        var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141/api/admin/platform/accounts/avatar-assets")).header("Authorization","Bearer "+token).header("Idempotency-Key",key).header("Content-Type","multipart/form-data; boundary="+boundary).POST(HttpRequest.BodyPublishers.ofByteArray(output.toByteArray())).build();
+        var request=HttpRequest.newBuilder(URI.create(SupportRuntimeTarget.current().httpBase()+"/api/admin/platform/accounts/avatar-assets")).header("Authorization","Bearer "+token).header("Idempotency-Key",key).header("Content-Type","multipart/form-data; boundary="+boundary).POST(HttpRequest.BodyPublishers.ofByteArray(output.toByteArray())).build();
         try {
             var response=HttpClient.newHttpClient().send(request,HttpResponse.BodyHandlers.ofString());
             com.fasterxml.jackson.databind.JsonNode body;
@@ -766,7 +766,7 @@ class SupportEnhancementCoreRuntimeTest {
             throw failure;
         }
     }
-    private HttpResponse<byte[]> download(String path,String token) throws Exception {var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141"+path)).header("Authorization","Bearer "+token).GET().build();return HttpClient.newHttpClient().send(request,HttpResponse.BodyHandlers.ofByteArray());}
+    private HttpResponse<byte[]> download(String path,String token) throws Exception {var request=HttpRequest.newBuilder(URI.create(SupportRuntimeTarget.current().httpBase()+path)).header("Authorization","Bearer "+token).GET().build();return HttpClient.newHttpClient().send(request,HttpResponse.BodyHandlers.ofByteArray());}
     private String userToken(long customer) throws Exception {
         assertThat(onboarding.defer(customer,new ffdd.opsconsole.onboarding.application.OnboardingCalibrationService.ActionRequest("enhance-device-"+customer,0,key())).getCode()).isZero();
         String session=UUID.randomUUID().toString();jdbc.update("INSERT INTO nx_user_session(user_id,refresh_token_id,session_chain_id,expires_at,last_active_at) VALUES(?,?,?,DATE_ADD(NOW(),INTERVAL 1 DAY),NOW())",customer,session,session);
@@ -836,8 +836,8 @@ class SupportEnhancementCoreRuntimeTest {
         }finally{executor.shutdownNow();}
     }
     @Test void originalDuplicateAndOrphanMigrationAbortBeforeChangingRows() throws Exception {
-        String schema="cs_enhance_20261001_c1_audit";
-        String base="jdbc:mysql://127.0.0.1:33329/";
+        String schema=SupportRuntimeTarget.current().database()+"_c1_audit";
+        String base="jdbc:mysql://127.0.0.1:"+SupportRuntimeTarget.current().databasePort()+"/";
         String options="?serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true";
         var server=new org.springframework.jdbc.core.JdbcTemplate(new org.springframework.jdbc.datasource.DriverManagerDataSource(
                 base+options,System.getenv("NEXION_DB_USERNAME"),System.getenv("NEXION_DB_PASSWORD")));
@@ -905,7 +905,7 @@ class SupportEnhancementCoreRuntimeTest {
             });
         }
     }
-    private void writeProof(String filename) throws Exception {Files.writeString(Path.of(System.getenv("CS_ENHANCE_EVIDENCE_DIR"),filename),json.writeValueAsString(Map.of("run",run,"checkedAt",java.time.Instant.now().toString(),"database","cs_enhance_20261001","checks",proofs,"workflowRunId",System.getenv().getOrDefault("WORKFLOW_RUN_ID",""),"snapshotHash",System.getenv().getOrDefault("WORKFLOW_SNAPSHOT_HASH",""))));}
+    private void writeProof(String filename) throws Exception {Files.writeString(Path.of(System.getenv("CS_ENHANCE_EVIDENCE_DIR"),filename),json.writeValueAsString(Map.of("run",run,"checkedAt",java.time.Instant.now().toString(),"database",SupportRuntimeTarget.current().database(),"checks",proofs,"workflowRunId",System.getenv().getOrDefault("WORKFLOW_RUN_ID",""),"snapshotHash",System.getenv().getOrDefault("WORKFLOW_SNAPSHOT_HASH",""))));}
     private SupportRandom.Customer pool(long customer){return new SupportRandom.Customer(customer,mapper.poolVersion(customer));}
     private long admin(String label,String role,String seat) {
         String name=run+"_"+label;
@@ -947,7 +947,7 @@ class SupportEnhancementCoreRuntimeTest {
         return json.readTree(httpResponse(method,path,token,body,key).body());
     }
     private HttpResponse<String> httpResponse(String method,String path,String token,Object body,String key) throws Exception {
-        var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141"+path)).timeout(java.time.Duration.ofSeconds(20));
+        var request=HttpRequest.newBuilder(URI.create(SupportRuntimeTarget.current().httpBase()+path)).timeout(java.time.Duration.ofSeconds(20));
         if(token!=null)request.header("Authorization","Bearer "+token);if(key!=null)request.header("Idempotency-Key",key);
         request.header("Content-Type","application/json");request.method(method,body==null?HttpRequest.BodyPublishers.noBody():HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));
         return HttpClient.newHttpClient().send(request.build(),HttpResponse.BodyHandlers.ofString());

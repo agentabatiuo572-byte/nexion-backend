@@ -172,6 +172,7 @@ public final class SharedMutationJournal {
             String selector, Object selectorValue, Map<String,Object> source, String kind,
             Callable<T> operation, Predicate<T> success) throws Exception {
         JsonNode ctx = context();
+        if (SupportRuntimeTarget.current().analytics()) SupportExclusiveRuntimeOwnership.requireActual(ctx, SupportRuntimeTarget.current(), jdbc);
         if(!kind.equals("FIXTURE_PERMISSION_RESTORE")&&!kind.equals("CLEANUP_SQL"))require(Instant.now().isBefore(Instant.parse(ctx.path("businessDeadline").asText())),"New shared mutation after business deadline is forbidden");
         var record = envelope(ctx, run, suite, UUID.randomUUID().toString());
         record.put("table", table); record.put("kind", kind); record.put("source", source);

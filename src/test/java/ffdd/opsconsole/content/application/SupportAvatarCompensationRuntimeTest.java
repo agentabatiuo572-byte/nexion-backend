@@ -120,7 +120,7 @@ class SupportAvatarCompensationRuntimeTest extends SupportBulkRuntimeFixture {
         observation.put("testcase","committedAvatarSurvivesUnknownCallbackAndRollbackStillCompensates");
         observation.put("method","committedAvatarSurvivesUnknownCallbackAndRollbackStillCompensates");
         observation.put("run",run);observation.put("checkedAt",Instant.now().toString());
-        observation.put("database","cs_enhance_20261001");observation.put("port",18141);
+        observation.put("database",SupportRuntimeTarget.current().database());observation.put("port",SupportRuntimeTarget.current().httpPort());
         observation.put("workflowRunId",Objects.requireNonNull(System.getenv("WORKFLOW_RUN_ID")));
         observation.put("snapshotHash",Objects.requireNonNull(System.getenv("WORKFLOW_SNAPSHOT_HASH")));
         observation.put("assetId",assetId);observation.put("persistedState","READY");

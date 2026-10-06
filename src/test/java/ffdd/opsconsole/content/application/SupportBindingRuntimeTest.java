@@ -34,7 +34,7 @@ class SupportBindingRuntimeTest {
     @org.junit.jupiter.api.BeforeEach void legacyMode() {
         fixtureActors().assertBusinessEntry();
         if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED"))) {
-            assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_enhance_20261001");
+            assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportRuntimeTarget.current().database());
             originalRules=mapper.rules();
         }
     }
@@ -405,7 +405,7 @@ class SupportBindingRuntimeTest {
     }
 
     @Test void isolatedApplicationStartsWithBindingSchema() throws Exception {
-        assertThat(System.getenv("NEXION_DB_URL")).startsWith("jdbc:mysql://127.0.0.1:33329/"+SupportIsolatedRuntime.database()+"?");
+        assertThat(System.getenv("NEXION_DB_URL")).startsWith("jdbc:mysql://127.0.0.1:"+SupportRuntimeTarget.current().databasePort()+"/"+SupportIsolatedRuntime.database()+"?");
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportIsolatedRuntime.database());
         assertThat(mapper.rules()).isNotNull();
         superId=admin("SUPER","SUPER_ADMIN","MANAGER");manager=admin("MANAGER","SUPPORT","MANAGER");

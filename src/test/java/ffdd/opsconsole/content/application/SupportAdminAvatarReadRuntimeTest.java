@@ -239,7 +239,7 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
         String multipart="avatar-read-"+UUID.randomUUID(),client=key(),command=key();var body=new ByteArrayOutputStream();
         var intent=objectRequest(SupportObjectEvidenceLedger.Kind.AVATAR,uploader,null,null,client,command,null,storageProperties.getBucket(),false);
         body.write(("--"+multipart+"\r\nContent-Disposition: form-data; name=\"clientUploadId\"\r\n\r\n"+client+"\r\n--"+multipart+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.UTF_8));body.write(image);body.write(("\r\n--"+multipart+"--\r\n").getBytes(StandardCharsets.UTF_8));
-        var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141/api/admin/platform/accounts/avatar-assets")).timeout(Duration.ofSeconds(25)).header("Authorization","Bearer "+actor).header("Idempotency-Key",command).header("Content-Type","multipart/form-data; boundary="+multipart).POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray())).build();
+        var request=HttpRequest.newBuilder(URI.create(SupportRuntimeTarget.current().httpBase()+"/api/admin/platform/accounts/avatar-assets")).timeout(Duration.ofSeconds(25)).header("Authorization","Bearer "+actor).header("Idempotency-Key",command).header("Content-Type","multipart/form-data; boundary="+multipart).POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray())).build();
         return json.readTree(sendObjectRequest(intent,request).body());
     }
 
@@ -281,7 +281,7 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
         checks.put("avatar-version",check("Before upload, real customer/360 service advisorAvatar/ref are null; M1 missing-image metadata/ref stays null. Real PNG replacement increments authoritative avatar version and changes resource. HTTP M1 avatarRef, customer list/detail/360 advisorAvatarRef and VERIFIED message senderAvatar reload that exact version; decoded private bytes show replacement color with image/png, no-store and nosniff."));
         checks.put("avatar-subject",check("Real production USER JWT is denied on ADMIN avatar endpoint while original App current/history reads succeed. Reads create no messages or maintenance executions; private object key and bucket are absent from projections."));
         Path directory=Path.of(System.getenv("CS_ENHANCE_EVIDENCE_DIR"));Files.createDirectories(directory);
-        var scene=new LinkedHashMap<String,Object>();scene.put("checkedAt",Instant.now().toString());scene.put("workflowRunId",System.getenv("WORKFLOW_RUN_ID"));scene.put("snapshotHash",System.getenv("WORKFLOW_SNAPSHOT_HASH"));scene.put("database","cs_enhance_20261001");scene.put("port",18141);scene.put("pid",ProcessHandle.current().pid());scene.put("checks",checks);
+        var scene=new LinkedHashMap<String,Object>();scene.put("checkedAt",Instant.now().toString());scene.put("workflowRunId",System.getenv("WORKFLOW_RUN_ID"));scene.put("snapshotHash",System.getenv("WORKFLOW_SNAPSHOT_HASH"));scene.put("database",SupportRuntimeTarget.current().database());scene.put("port",SupportRuntimeTarget.current().httpPort());scene.put("pid",ProcessHandle.current().pid());scene.put("checks",checks);
         Files.writeString(directory.resolve("avatar-read-runtime.json"),json.writeValueAsString(scene));
     }
     private Map<String,Object> check(String evidence) {return Map.of("status","pass","suite",getClass().getSimpleName(),"method",METHOD,"testcase",METHOD,"evidence",evidence);}
