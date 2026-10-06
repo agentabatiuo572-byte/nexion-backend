@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.content.domain.SupportAgentAssignmentView;
 import ffdd.opsconsole.content.domain.DedicatedAdvisorBindingView;
 import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
+import ffdd.opsconsole.content.domain.SupportAgentRepository.SupportOperatorRecord;
+import ffdd.opsconsole.content.domain.SupportAgentRepository.SupportOperatorScope;
 import ffdd.opsconsole.content.infrastructure.SupportAgentProfileEntity;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -13,6 +15,75 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity> {
+    @Select("""
+            SELECT id, role_code AS roleCode FROM nx_admin_role
+             WHERE status = 1 AND is_deleted = 0 ORDER BY id ASC
+            """)
+    List<SupportRoleRow> listActiveSupportRoleRows();
+
+    record SupportRoleRow(Long id, String roleCode) {}
+
+    // Match A1's latest active primary relation; scope supplies its exact normalized dictionary/fallback rules.
+    String SUPPORT_OPERATOR_FROM = """
+              FROM nx_admin a
+              LEFT JOIN nx_admin_role primary_role ON primary_role.id =
+                   (SELECT rr.role_id
+                      FROM nx_admin_role_relation rr
+                      JOIN nx_admin_role r
+                        ON r.id = rr.role_id
+                       AND r.status = 1
+                       AND r.is_deleted = 0
+                     WHERE rr.admin_id = a.id
+                       AND rr.is_deleted = 0
+                     ORDER BY rr.updated_at DESC, rr.id DESC
+                     LIMIT 1)
+            """;
+
+    String SUPPORT_OPERATOR_WHERE = """
+             WHERE a.status = 1 AND a.is_deleted = 0
+               AND (
+                 <choose>
+                   <when test='scope.supportRoleIds != null and scope.supportRoleIds.size() > 0'>
+                     primary_role.id IN
+                     <foreach collection='scope.supportRoleIds' item='roleId' open='(' separator=',' close=')'>#{roleId}</foreach>
+                   </when>
+                   <otherwise>1=0</otherwise>
+                 </choose>
+                 <if test='scope.superFallbackToSupport'>
+                   OR (a.super_admin = 1 AND (primary_role.id IS NULL
+                     <if test='scope.unusablePrimaryRoleIds != null and scope.unusablePrimaryRoleIds.size() > 0'>
+                       OR primary_role.id IN
+                       <foreach collection='scope.unusablePrimaryRoleIds' item='roleId' open='(' separator=',' close=')'>#{roleId}</foreach>
+                     </if>
+                   ))
+                 </if>
+               )
+             <if test='scope.visibleAdminId != null'>
+               AND a.id = #{scope.visibleAdminId}
+             </if>
+            """;
+
+    @Select("<script>SELECT COUNT(1) " + SUPPORT_OPERATOR_FROM + SUPPORT_OPERATOR_WHERE + "</script>")
+    long countSupportOperators(@Param("scope") SupportOperatorScope scope);
+
+    @Select("""
+            <script>
+            SELECT a.id AS adminId,
+                   COALESCE(NULLIF(TRIM(a.nickname), ''), NULLIF(TRIM(a.username), ''), CAST(a.id AS CHAR)) AS name,
+                   COALESCE(TRIM(a.email), '') AS email,
+                   st.avatar_asset_id AS avatarAssetId,
+                   COALESCE(st.avatar_version, 0) AS avatarVersion
+            """ + SUPPORT_OPERATOR_FROM + """
+              LEFT JOIN nx_admin_account_state st ON st.admin_id = a.id AND st.is_deleted = 0
+            """ + SUPPORT_OPERATOR_WHERE + """
+             ORDER BY a.id ASC
+             LIMIT #{limit} OFFSET #{offset}
+            </script>
+            """)
+    List<SupportOperatorRecord> pageSupportOperators(@Param("scope") SupportOperatorScope scope,
+                                                   @Param("limit") long limit,
+                                                   @Param("offset") long offset);
+
     // One consistent SELECT: never mix current-read eligibility with a historical RR projection.
     @Select("""
         SELECT assignmentId,currentAdvisorId,currentAdvisorName,

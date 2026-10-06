@@ -7,10 +7,13 @@ import ffdd.opsconsole.content.domain.DedicatedAdvisorBindingView;
 import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.mapper.SupportAgentMapper;
 import ffdd.opsconsole.content.mapper.SupportAgentMapper.SupportAgentProfileRow;
+import ffdd.opsconsole.content.mapper.SupportAgentMapper.SupportRoleRow;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -56,6 +59,48 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
     public List<SupportTicketAssigneeCandidateView> listTicketAssigneeCandidates() {
         List<SupportTicketAssigneeCandidateView> candidates = mapper.listTicketAssigneeCandidates();
         return candidates == null ? List.of() : List.copyOf(candidates);
+    }
+
+    @Override
+    public SupportOperatorScope supportOperatorScope(Long visibleAdminId) {
+        List<SupportRoleRow> roles = mapper.listActiveSupportRoleRows();
+        List<String> orderedKeys = roles.stream().filter(row -> StringUtils.hasText(row.roleCode()))
+                .map(row -> rosterRoleKey(row.roleCode())).toList();
+        Set<String> keys = Set.copyOf(orderedKeys);
+        List<Long> supportRoleIds = roles.stream().filter(row -> "support".equals(rosterRoleKey(row.roleCode())))
+                .map(SupportRoleRow::id).toList();
+        List<Long> unusablePrimaryRoleIds = roles.stream()
+                .filter(row -> row.roleCode() == null || !keys.contains(rosterRoleKey(row.roleCode())))
+                .map(SupportRoleRow::id).toList();
+        boolean fallback = !keys.contains("super") && !orderedKeys.isEmpty() && "support".equals(orderedKeys.get(0));
+        return new SupportOperatorScope(visibleAdminId, supportRoleIds, unusablePrimaryRoleIds, fallback);
+    }
+
+    @Override
+    public long countSupportOperators(SupportOperatorScope scope) {
+        return mapper.countSupportOperators(scope);
+    }
+
+    @Override
+    public List<SupportOperatorRecord> pageSupportOperators(SupportOperatorScope scope, long limit, long offset) {
+        return mapper.pageSupportOperators(scope, limit, offset);
+    }
+
+    // Keep the M1 roster population equivalent to A1.roleKey; regression tests compare the real A1 resolver.
+    private String rosterRoleKey(String roleOrCode) {
+        if (!StringUtils.hasText(roleOrCode)) return "";
+        return switch (roleOrCode.trim().toUpperCase(Locale.ROOT).replace('-', '_')) {
+            case "SUPER_ADMIN" -> "super";
+            case "CONFIG_ADMIN" -> "config";
+            case "FINANCE" -> "finance";
+            case "RISK" -> "risk";
+            case "CONTENT" -> "content";
+            case "GROWTH" -> "growth";
+            case "SUPPORT" -> "support";
+            case "AUDITOR" -> "audit";
+            default -> roleOrCode.trim().toLowerCase(Locale.ROOT)
+                    .replaceAll("[^a-z0-9]+", "_").replaceAll("^_+|_+$", "");
+        };
     }
 
     @Override
