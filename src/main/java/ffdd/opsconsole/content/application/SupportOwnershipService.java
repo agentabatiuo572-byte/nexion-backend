@@ -38,6 +38,18 @@ public class SupportOwnershipService {
     public void requireSupervisor() {
         if (!supervisor(actorId())) throw new BizException(403, "SUPPORT_MANAGEMENT_FORBIDDEN");
     }
+    /** Preflight only; mutating callers recheck after their ordered customer/rules/admin locks. */
+    public void requireSupervisorSnapshot() {
+        Long actor=actorId();List<String> roles=mapper.rolesSnapshot(actor);
+        if(roles.stream().noneMatch(SupportOwnershipService::superRole)
+                && !(roles.stream().anyMatch("SUPPORT"::equalsIgnoreCase) && mapper.supervisorProfileSnapshot(actor)==1))
+            throw new BizException(403,"SUPPORT_MANAGEMENT_FORBIDDEN");
+    }
+    public void requireSuperAdminSnapshot() {
+        if(mapper.rolesSnapshot(actorId()).stream().noneMatch(SupportOwnershipService::superRole))
+            throw new BizException(403,"SUPPORT_RULES_FORBIDDEN");
+    }
+    private static boolean superRole(String role) {return "SUPER".equalsIgnoreCase(role) || "SUPERADMIN".equalsIgnoreCase(role) || "SUPER_ADMIN".equalsIgnoreCase(role);}
 
     public void requireSuperAdmin() {
         if (mapper.roles(actorId()).stream().noneMatch(r -> "SUPER".equalsIgnoreCase(r) || "SUPERADMIN".equalsIgnoreCase(r) || "SUPER_ADMIN".equalsIgnoreCase(r)))
@@ -106,6 +118,25 @@ public class SupportOwnershipService {
         SupportAssignment assignment = mapper.current(customer);
         if (assignment == null || !actor.equals(assignment.agentAdminId()) || mapper.eligibleAgent(actor) != 1)
             throw new BizException(404, "SUPPORT_CUSTOMER_NOT_FOUND");
+        return assignment;
+    }
+
+    /** Internal persisted-actor authorization; never derives permission from an ambient session. */
+    public void requireSendingActor(Long actor) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("SUPPORT_WRITER_TRANSACTION_REQUIRED");
+        if (actor == null || actor <= 0 || actor > 9007199254740991L
+                || mapper.lockAgent(actor) == null || mapper.eligibleAgent(actor) != 1)
+            throw new BizException(403,"SUPPORT_AGENT_UNAVAILABLE");
+        if (mapper.writerGrant(actor).isEmpty()) throw new BizException(403,"SUPPORT_WRITE_FORBIDDEN");
+    }
+
+    public SupportAssignment requireWriterForActor(Long actor, Long customer, boolean lock) {
+        if (lock) lockCustomer(customer);
+        requireSendingActor(actor);
+        SupportAssignment assignment = mapper.current(customer);
+        if (assignment == null || !actor.equals(assignment.agentAdminId()))
+            throw new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND");
         return assignment;
     }
 

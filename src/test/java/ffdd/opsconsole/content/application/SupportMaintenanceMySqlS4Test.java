@@ -27,7 +27,16 @@ import static org.assertj.core.api.Assertions.*;
 @EnabledIfEnvironmentVariable(named="S4_EVIDENCE_DIR",matches=".+")
 @org.springframework.test.annotation.DirtiesContext(classMode=org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 class SupportMaintenanceMySqlS4Test {
+    @org.springframework.test.context.DynamicPropertySource static void coreBoundary(org.springframework.test.context.DynamicPropertyRegistry registry) {
+        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))SupportEnhancementPreparationTest.isolatedBoundary(registry);
+    }
     @Autowired JdbcTemplate jdbc;
+    @Autowired org.springframework.data.redis.core.StringRedisTemplate actorRedis;
+    private SupportFixtureActors actorEvidence;
+    private SupportFixtureActors fixtureActors() {
+        if (actorEvidence == null) actorEvidence = new SupportFixtureActors(jdbc, actorRedis, json, transactions, run, getClass().getSimpleName());
+        return actorEvidence;
+    }
     @Autowired DataSource dataSource;
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingMapper bindingMapper;
@@ -43,11 +52,12 @@ class SupportMaintenanceMySqlS4Test {
     private String conversation;
 
     @BeforeEach void fixture() throws Exception {
+        run="s4m_"+UUID.randomUUID().toString().replace("-","").substring(0,10);
+        fixtureActors().assertBusinessEntry();
         try(var connection=dataSource.getConnection()) {
             assertThat(connection.getMetaData().getURL()).contains("127.0.0.1:33329/"+SupportIsolatedRuntime.database());
             assertThat(connection.getCatalog()).isEqualTo(SupportIsolatedRuntime.database());
         }
-        run="s4m_"+UUID.randomUUID().toString().replace("-","").substring(0,10);
         boss=admin("boss","SUPER_ADMIN","MANAGER");g1=admin("g1","SUPPORT","DEDICATED");g2=admin("g2","SUPPORT","DEDICATED");
         customer=tx(()->{
             String referral=UUID.randomUUID().toString().replace("-","").substring(0,20);
@@ -61,7 +71,7 @@ class SupportMaintenanceMySqlS4Test {
         jdbc.update("INSERT INTO nx_conversation(conversation_no,user_id,conversation_type,status,last_message,created_at,updated_at) VALUES(?,?,'support','OPEN','fixture',NOW(),NOW())",conversation,customer);
         as(g1);
     }
-    @AfterEach void clearActor(){SecurityContextHolder.clearContext();}
+    @AfterEach void clearActor(){try {if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());} finally {SecurityContextHolder.clearContext();}}
 
     @Test void executionReplayStopResumeTransferAndRollbackPersistCorrectly() throws Exception {
         String old=UUID.randomUUID().toString();login(old);
@@ -154,7 +164,9 @@ class SupportMaintenanceMySqlS4Test {
     }
     private void login(String source){tx(()->{activity.interactiveLogin(customer,source);return null;});}
     private void transfer(long target){as(boss);var old=bindingMapper.current(customer);assertThat(bindings.transfer(UUID.randomUUID().toString(),new SupportBindingRequest(target,List.of(new SupportBindingRequest.Customer(customer,old==null?null:old.id(),old==null?bindingMapper.poolVersion(customer):old.version())),"Runtime formal customer handover")).getCode()).isZero();}
-    private long admin(String label,String role,String seat){String username=run+label;jdbc.update("INSERT INTO nx_admin(username,password_hash,nickname,super_admin,status) VALUES(?,'NO_LOGIN',?,?,1)",username,label,"SUPER_ADMIN".equals(role)?1:0);long id=jdbc.queryForObject("SELECT id FROM nx_admin WHERE username=?",Long.class,username);jdbc.update("INSERT INTO nx_admin_role_relation(admin_id,role_id) SELECT ?,id FROM nx_admin_role WHERE role_code=? AND is_deleted=0",id,role);jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,?,?,'support,advisor','',0,1,1,0)",id,seat,seat);return id;}
+    private long admin(String label,String role,String seat){
+        return fixtureActors().createSql(run+label,"NO_LOGIN",label,role,seat);
+    }
     private void as(long actor){var auth=new UsernamePasswordAuthenticationToken(String.valueOf(actor),null,List.of(new SimpleGrantedAuthority("service_m3_write")));auth.setDetails(Map.of("subjectType","ADMIN","username",run));SecurityContextHolder.getContext().setAuthentication(auth);}
     private <T>T tx(java.util.function.Supplier<T> action){return new TransactionTemplate(transactions).execute(status->action.get());}
     private String status(long id){return jdbc.queryForObject("SELECT status FROM nx_support_maintenance_cycle WHERE id=?",String.class,id);}

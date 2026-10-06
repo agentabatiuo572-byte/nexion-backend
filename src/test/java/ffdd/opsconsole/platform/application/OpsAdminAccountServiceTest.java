@@ -1,6 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -11,14 +12,29 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
+import ffdd.opsconsole.content.application.SupportAdminAvatarService;
+import ffdd.opsconsole.content.application.SupportAttachmentPolicy;
+import ffdd.opsconsole.content.application.SupportAttachmentService;
+import ffdd.opsconsole.content.application.SupportOwnershipService;
+import ffdd.opsconsole.content.domain.SupportAvatarAsset;
+import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
+import ffdd.opsconsole.content.mapper.SupportAdminAvatarMapper;
+import ffdd.opsconsole.content.mapper.SupportAttachmentMapper;
+import ffdd.opsconsole.content.mapper.SupportBindingMapper;
+import ffdd.opsconsole.content.mapper.SupportBulkMapper;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.domain.AuditReplayable;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.dto.AdminAccountActionRequest;
@@ -32,23 +48,35 @@ import ffdd.opsconsole.platform.dto.AdminAccountStatusUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacActionCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
+import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import ffdd.opsconsole.platform.infrastructure.AdminAccountStateEntity;
 import ffdd.opsconsole.platform.infrastructure.AdminRbacActionEntity;
 import ffdd.opsconsole.platform.infrastructure.AdminRbacGrantEntity;
 import ffdd.opsconsole.platform.infrastructure.AdminRoleOptionEntity;
 import ffdd.opsconsole.platform.infrastructure.AdminSecurityBaselineEntity;
+import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
 import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
 import ffdd.opsconsole.platform.mapper.AdminRbacActionMapper;
 import ffdd.opsconsole.platform.mapper.AdminRbacGrantMapper;
 import ffdd.opsconsole.platform.mapper.AdminSecurityBaselineMapper;
+import ffdd.opsconsole.platform.mapper.AuditConfirmCategoryMapper;
+import ffdd.opsconsole.platform.mapper.AuditOperationHistoryMapper;
+import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
 import ffdd.opsconsole.platform.mapper.OpsOptionsMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.shared.security.AdminSessionRegistry;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.storage.ObjectStorageService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -56,14 +84,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.transaction.PlatformTransactionManager;
 
 class OpsAdminAccountServiceTest {
     private final InMemoryPlatformConfigRepository repository = new InMemoryPlatformConfigRepository();
@@ -94,7 +128,7 @@ class OpsAdminAccountServiceTest {
             new OpsAdminAccountService(auditLogService, adminMapper, roleRelationMapper, roleMapper,
                     accountStateMapper, rbacActionMapper, rbacGrantMapper, securityBaselineMapper, passwordEncoder,
                     adminSessionRegistry, permissionCache, auditCenterService, lockMapper, platformRoleService,
-                    configFacade);
+                    configFacade,mock(ffdd.opsconsole.content.application.SupportAdminAvatarService.class));
 
     @BeforeEach
     void setUp() {
@@ -310,6 +344,7 @@ class OpsAdminAccountServiceTest {
 
     @AfterEach
     void tearDown() {
+        A2ReplayContext.exitReplay();
         SecurityContextHolder.clearContext();
     }
 
@@ -1125,6 +1160,779 @@ class OpsAdminAccountServiceTest {
 
         assertThat(result.getCode()).isEqualTo(422);
         assertThat(result.getMessage()).isEqualTo("UNKNOWN_REPLAY_OP:a1_unknown_op");
+    }
+
+    @Test
+    void a2ApprovalCreatesAccountWithMakersAvatarAsDifferentChecker() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        AuditReplayCommand command = new AuditReplayCommand("A", "a1_account_create", Map.of(
+                "username", "avatar.new", "displayName", "New Support", "email", "avatar-new@example.test",
+                "role", "support", "avatarAssetId", fixture.assetId));
+        String operationId = fixture.propose(command);
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isZero();
+        assertThat(result.getData().status()).isEqualTo("approved");
+        AdminEntity created = admins.stream().filter(admin -> "avatar.new".equals(admin.getUsername()))
+                .findFirst().orElseThrow();
+        fixture.assertAttached(created.getId());
+        assertThat(fixture.accounts.overview().getData().operators())
+                .filteredOn(account -> String.valueOf(created.getId()).equals(account.id()))
+                .singleElement().satisfies(account -> assertThat(account.avatarAssetId()).isEqualTo(fixture.assetId));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Avatar.New", " avatar.new "})
+    void a2AvatarCreateKeepsOriginalUsernameNormalization(String username) {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        AuditReplayCommand command = new AuditReplayCommand("A", "a1_account_create", Map.of(
+                "username", username, "displayName", "New Support", "email", "avatar-new@example.test",
+                "role", "support", "avatarAssetId", fixture.assetId));
+        String operationId = fixture.propose(command);
+        assertThat(fixture.ticketRows.get(operationId).getObjectText()).isEqualTo("avatar.new");
+        assertThat(fixture.activeLocks.get(operationId).getTargetId()).isEqualTo("avatar.new");
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isZero();
+        AdminEntity created = admins.stream().filter(admin -> "avatar.new".equals(admin.getUsername()))
+                .findFirst().orElseThrow();
+        fixture.assertAttached(created.getId());
+    }
+
+    @Test
+    void a2ApprovalUpdatesAccountWithMakersAvatarAsDifferentChecker() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        AuditReplayCommand command = new AuditReplayCommand("A", "a1_account_update_profile", Map.of(
+                "accountId", "4", "username", "risk.lead", "displayName", "Updated Risk",
+                "email", "risk@nexion.io", "expectedVersion", "0", "avatarAssetId", fixture.assetId));
+        String operationId = fixture.propose(command);
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isZero();
+        assertThat(result.getData().status()).isEqualTo("approved");
+        fixture.assertAttached(4L);
+        assertThat(admins.get(3).getVersion()).isEqualTo(1L);
+        assertThat(fixture.accounts.overview().getData().operators()).filteredOn(account -> "4".equals(account.id()))
+                .singleElement().satisfies(account -> {
+                    assertThat(account.avatarAssetId()).isEqualTo(fixture.assetId);
+                    assertThat(account.name()).isEqualTo("Updated Risk");
+                });
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void a2ApprovalRejectsMakerAndRenamedMakerSelfReview(boolean renamed) {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        if (renamed) admins.get(0).setUsername("renamed.maker");
+        fixture.authenticate(1L);
+
+        var result = fixture.approveAuthenticated(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isEqualTo(403);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins.get(3).getVersion()).isZero();
+        assertThat(fixture.ticketRows.get(operationId).getStatus()).isEqualTo("pending");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"platform_a1_write", "platform_a2_operation_approve"})
+    void a2ApprovalRejectsCheckerWithoutOriginalPermissions(String missingAuthority) {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        fixture.authenticate(2L, AvatarApprovalFixture.AUTHORITIES.stream()
+                .filter(authority -> !authority.equals(missingAuthority)).toList());
+
+        var result = fixture.approveAuthenticated(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isEqualTo(403);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins.get(3).getVersion()).isZero();
+    }
+
+    @Test
+    void a2ApprovalRejectsNonSuperCheckerEvenWithA1AndA2Grants() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        fixture.authenticate(4L);
+
+        var result = fixture.approveAuthenticated(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isEqualTo(403);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {2L, 3L})
+    void a2ApprovalRejectsCheckerAndThirdPartyAvatar(long uploader) {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        fixture.replaceAsset(uploader, "READY", null, false);
+        String operationId = fixture.propose(fixture.updateCommand());
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isEqualTo(404);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(fixture.ticketRows.get(operationId).getStatus()).isEqualTo("pending");
+    }
+
+    @Test
+    void a2ProposalIgnoresForgedMakerFieldsInParams() throws Exception {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        Map<String, Object> params = new LinkedHashMap<>(fixture.updateCommand().params());
+        params.put("_avatarMakerAdminId", 3L);
+        params.put("avatarMakerAdminId", 2L);
+        String operationId = fixture.propose(new AuditReplayCommand("A", "a1_account_update_profile", params));
+        var stored = new ObjectMapper().readTree(fixture.ticketRows.get(operationId).getCommandJson());
+        assertThat(stored.path("avatarMakerAdminId").asLong()).isEqualTo(1L);
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isZero();
+        fixture.assertAttached(4L);
+    }
+
+    @Test
+    void a2ApprovalRejectsLegacyAvatarTicketWithoutServerMaker() throws Exception {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        var stored = (com.fasterxml.jackson.databind.node.ObjectNode) new ObjectMapper()
+                .readTree(fixture.ticketRows.get(operationId).getCommandJson());
+        stored.remove("avatarMakerAdminId");
+        fixture.ticketRows.get(operationId).setCommandJson(stored.toString());
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isIn(403, 422);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins.get(3).getVersion()).isZero();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"READY,true", "CANCELLED,false", "ATTACHED,false"})
+    void a2ApprovalPreservesAvatarExpiryAndStateChecks(String state, boolean expired) {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        fixture.replaceAsset(1L, state, "ATTACHED".equals(state) ? 4L : null, expired);
+        if ("ATTACHED".equals(state)) upsertAccountState(4L, account -> {
+            account.setAvatarAssetId("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            account.setAvatarVersion(2L);
+        });
+        String operationId = fixture.propose(fixture.updateCommand());
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isEqualTo(409);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(fixture.assets.get(fixture.assetId).state()).isEqualTo(state);
+    }
+
+    @Test
+    void a2ApprovalCasConflictDoesNotReadOrAttachAvatar() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        when(adminMapper.updateProfileIfVersion(anyLong(), anyLong(), anyString(), anyString(), anyString()))
+                .thenReturn(0);
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isEqualTo(409);
+        verify(fixture.avatarMapper, never()).lock(anyString());
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins.get(3).getVersion()).isZero();
+        assertThat(fixture.ticketRows.get(operationId).getStatus()).isEqualTo("pending");
+    }
+
+    @Test
+    void a2ApprovalStorageFailureDoesNotAttachOrLeakContext() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        when(fixture.storage.exists(anyString())).thenReturn(false);
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isEqualTo(503);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(SecurityContextHolder.getContext().getAuthentication().getName()).isEqualTo("2");
+        assertThat(fixture.ticketRows.get(operationId).getStatus()).isEqualTo("pending");
+    }
+
+    @Test
+    void a2ApprovalUncheckedExceptionDoesNotLeakContext() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        when(fixture.storage.exists(anyString())).thenThrow(new IllegalStateException("injected storage failure"));
+
+        assertThatThrownBy(() -> fixture.approve(operationId))
+                .isInstanceOf(IllegalStateException.class).hasMessage("injected storage failure");
+
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(SecurityContextHolder.getContext().getAuthentication().getName()).isEqualTo("2");
+    }
+
+    @Test
+    void a2ApprovalIdempotentRetryDoesNotAttachOrIncrementTwice() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+
+        var first = fixture.approve(operationId);
+        var retry = fixture.approve(operationId);
+
+        assertThat(first.getCode()).as(first.getMessage()).isZero();
+        assertThat(retry.getCode()).as(retry.getMessage()).isZero();
+        assertThat(retry.getData().id()).isEqualTo(first.getData().id());
+        fixture.assertAttached(4L);
+        assertThat(admins.get(3).getVersion()).isEqualTo(1L);
+        verify(fixture.avatarMapper, times(1)).attach(fixture.assetId, 4L);
+        verify(fixture.avatarMapper, times(1)).accountAvatar(4L, fixture.assetId);
+    }
+
+    @Test
+    void a2ApprovalDoesNotGiveCheckerMakerPreviewOrCancellationRights() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        assertThat(fixture.approve(operationId).getCode()).isZero();
+
+        assertThatThrownBy(() -> fixture.avatars.preview(fixture.assetId))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(404));
+        assertThatThrownBy(() -> fixture.avatars.cancel(fixture.assetId, "cancel-idem"))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(404));
+        fixture.assertAttached(4L);
+        verify(fixture.avatarMapper, never()).cancel(anyString());
+        verify(fixture.storage, never()).get(anyString());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"accountId,3", "displayName,Injected Name", "avatarAssetId,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"})
+    void a2ApprovalRejectsChangesToFrozenCommand(String field, String changedValue) {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture(accounts -> new AuditReplayable() {
+            public String domain() { return accounts.domain(); }
+            public ApiResult<?> replay(AuditReplayCommand command, AuditReplayContext context) {
+                Map<String, Object> changed = new LinkedHashMap<>(command.params());
+                changed.put(field, changedValue);
+                return accounts.replay(new AuditReplayCommand(command.domain(), command.op(), changed), context);
+            }
+        });
+        String operationId = fixture.propose(fixture.updateCommand());
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isEqualTo(403);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins.get(3).getVersion()).isZero();
+        verify(adminMapper, never()).updateProfileIfVersion(anyLong(), anyLong(), anyString(), anyString(), anyString());
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void a2ApprovalRejectsChangesToFrozenDomainOrOperation(boolean changeDomain) {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture(accounts -> new AuditReplayable() {
+            public String domain() { return accounts.domain(); }
+            public ApiResult<?> replay(AuditReplayCommand command, AuditReplayContext context) {
+                return accounts.replay(new AuditReplayCommand(changeDomain ? "B" : command.domain(),
+                        changeDomain ? command.op() : "a1_account_create", command.params()), context);
+            }
+        });
+        String operationId = fixture.propose(fixture.updateCommand());
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isEqualTo(403);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins).hasSize(4);
+        assertThat(admins.get(3).getVersion()).isZero();
+    }
+
+    @Test
+    void a2ApprovalRejectsReplayWithAnotherTicketId() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture(accounts -> new AuditReplayable() {
+            public String domain() { return accounts.domain(); }
+            public ApiResult<?> replay(AuditReplayCommand command, AuditReplayContext context) {
+                A2ReplayContext.enterReplay("WO-ANOTHER-TICKET");
+                return accounts.replay(command, context);
+            }
+        });
+        String operationId = fixture.propose(fixture.updateCommand());
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isEqualTo(403);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins.get(3).getVersion()).isZero();
+    }
+
+    @Test
+    void a2ApprovalCannotAttachAnotherTargetDuringItsRealAvatarRead() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        fixture.avatarReadProbe = () -> assertThatThrownBy(() -> fixture.avatars.attach(3L, fixture.assetId))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(403));
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isZero();
+        fixture.assertAttached(4L);
+        verify(fixture.avatarMapper, never()).attach(anyString(), eq(3L));
+        assertThat(accountStates.get(3L).getAvatarAssetId()).isNull();
+    }
+
+    @Test
+    void a2ApprovalCannotAttachAnotherMakerAssetDuringItsRealAvatarRead() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String other = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        SupportAvatarAsset original = fixture.assets.get(fixture.assetId);
+        fixture.assets.put(other, new SupportAvatarAsset(other, 1L, "other-upload", "other-upload-idem",
+                original.requestHash(), original.mime(), original.byteCount(), "private/admin-avatar/other",
+                "READY", null, original.expiresAt()));
+        String operationId = fixture.propose(fixture.updateCommand());
+        fixture.avatarReadProbe = () -> assertThatThrownBy(() -> fixture.avatars.attach(4L, other))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(403));
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isZero();
+        fixture.assertAttached(4L);
+        assertThat(fixture.assets.get(other).state()).isEqualTo("READY");
+        verify(fixture.avatarMapper, never()).attach(eq(other), anyLong());
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {1L, 2L})
+    void plainReplayFlagDoesNotAuthorizeMakerOrCheckerAvatar(long uploader) {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        fixture.replaceAsset(uploader, "READY", null, false);
+        fixture.authenticate(2L);
+        A2ReplayContext.enterReplay("WO-ORDINARY-REPLAY");
+        try {
+            assertThatThrownBy(() -> fixture.avatars.attach(4L, fixture.assetId))
+                    .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(403));
+            fixture.assertNoAvatarWrites();
+        } finally {
+            A2ReplayContext.exitReplay();
+        }
+        fixture.assertContextCleared();
+    }
+
+    @Test
+    void directMakerAttachAndSameTargetRetryKeepOriginalOwnershipGuard() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        fixture.authenticate(1L);
+
+        fixture.avatars.attach(4L, fixture.assetId);
+        fixture.avatars.attach(4L, fixture.assetId);
+
+        assertThat(fixture.assets.get(fixture.assetId).state()).isEqualTo("ATTACHED");
+        assertThat(fixture.assets.get(fixture.assetId).attachedAdminId()).isEqualTo(4L);
+        assertThat(accountStates.get(4L).getAvatarAssetId()).isEqualTo(fixture.assetId);
+        assertThat(accountStates.get(4L).getAvatarVersion()).isEqualTo(1L);
+        assertThat(SecurityContextHolder.getContext().getAuthentication().getName()).isEqualTo("1");
+        verify(fixture.avatarMapper, times(1)).attach(fixture.assetId, 4L);
+        fixture.assertContextCleared();
+    }
+
+    @Test
+    void a2ApprovalUsesCheckerIdWhenOldMakerUsernameIsReassigned() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        String oldName = admins.get(0).getUsername();
+        admins.get(0).setUsername("renamed.maker");
+        admins.get(1).setUsername(oldName);
+
+        assertThat(fixture.approve(operationId).getCode()).isZero();
+        fixture.assertAttached(4L);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"\"1\"", "1.5", "0", "-1", "9007199254740992", "9223372036854775808", "null"})
+    void a2ApprovalRejectsInvalidServerMakerId(String makerJson) throws Exception {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        var mapper = new ObjectMapper();
+        var stored = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(fixture.ticketRows.get(operationId).getCommandJson());
+        stored.set("avatarMakerAdminId", mapper.readTree(makerJson));
+        fixture.ticketRows.get(operationId).setCommandJson(stored.toString());
+
+        assertThat(fixture.approve(operationId).getCode()).isEqualTo(403);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins.get(3).getVersion()).isZero();
+    }
+
+    @Test
+    void a2ApprovalRejectsUserSubjectEvenWhenNumericIdAndGrantsOverlap() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        fixture.authenticate(2L);
+        ((UsernamePasswordAuthenticationToken) SecurityContextHolder.getContext().getAuthentication())
+                .setDetails(Map.of("subjectType", "USER", "username", "customer"));
+
+        assertThat(fixture.approveAuthenticated(operationId).getCode()).isEqualTo(403);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins.get(3).getVersion()).isZero();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"avatarAssetId", "expectedVersion"})
+    void a2ApprovalRejectsRemovingAnyFrozenField(String field) {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture(accounts -> new AuditReplayable() {
+            public String domain() { return accounts.domain(); }
+            public ApiResult<?> replay(AuditReplayCommand command, AuditReplayContext context) {
+                command.params().remove(field);
+                return accounts.replay(command, context);
+            }
+        });
+        String operationId = fixture.propose(fixture.updateCommand());
+
+        assertThat(fixture.approve(operationId).getCode()).isEqualTo(403);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins.get(3).getVersion()).isZero();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void a2ApprovalRejectsInPlaceMutationOfNestedFrozenPayload() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture(accounts -> new AuditReplayable() {
+            public String domain() { return accounts.domain(); }
+            public ApiResult<?> replay(AuditReplayCommand command, AuditReplayContext context) {
+                ((Map<String, Object>) command.params().get("extra")).put("nested", List.of("changed"));
+                return accounts.replay(command, context);
+            }
+        });
+        var params = new LinkedHashMap<>(fixture.updateCommand().params());
+        params.put("extra", Map.of("nested", List.of("original")));
+        String operationId = fixture.propose(new AuditReplayCommand("A", "a1_account_update_profile", params));
+
+        assertThat(fixture.approve(operationId).getCode()).isEqualTo(403);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins.get(3).getVersion()).isZero();
+    }
+
+    @Test
+    void a2AvatarCreateDoesNotFallBackToAnExistingAccountWhenGeneratedIdIsMissing() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(new AuditReplayCommand("A", "a1_account_create", Map.of(
+                "username", "avatar.new", "displayName", "New Support", "email", "avatar-new@example.test",
+                "role", "support", "avatarAssetId", fixture.assetId)));
+        when(adminMapper.insert(any(AdminEntity.class))).thenReturn(1);
+
+        assertThat(fixture.approve(operationId).getCode()).isEqualTo(500);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins).hasSize(4);
+        assertThat(fixture.ticketRows.get(operationId).getStatus()).isEqualTo("pending");
+    }
+
+    @Test
+    void directDispatcherDoesNotMintApprovedAvatarOwnership() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        fixture.authenticate(1L);
+
+        assertThatThrownBy(() -> new AuditReplayDispatcher(List.of(fixture.accounts)).dispatch(
+                fixture.updateCommand(), new AuditReplayContext("superadmin", "Direct dispatch is not approval", "direct-dispatch")))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(403));
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins.get(3).getVersion()).isZero();
+    }
+
+    @Test
+    void approvedAvatarContextIsNotInheritedByAnotherThread() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        fixture.avatarReadProbe = () -> java.util.concurrent.CompletableFuture.runAsync(() -> {
+            assertThat(A2ReplayContext.hasAvatarApproval()).isFalse();
+            assertThat(A2ReplayContext.isReplaying()).isFalse();
+            assertThatThrownBy(() -> A2ReplayContext.approvedAvatarUploader(2L, 4L, fixture.assetId))
+                    .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(403));
+            A2ReplayContext.exitReplay();
+        }).join();
+
+        assertThat(fixture.approve(operationId).getCode()).isZero();
+        fixture.assertAttached(4L);
+    }
+
+    @Test
+    void a2AvatarProposalRejectsAnObjectLockForAnotherAccount() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        fixture.authenticate(1L);
+        var result = fixture.audit.createProposal("mismatched-target", new AuditOperationProposalRequest(
+                "Account avatar", "3", "before", "after", "request-actor", "Super", "acct", false, false,
+                "Super", "Avatar request must use the actual account", "A", fixture.updateCommand(),
+                new AuditLockTarget("A", "account", "3"), null));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(fixture.ticketRows).isEmpty();
+        verify(lockMapper, never()).insert(any(ffdd.opsconsole.platform.infrastructure.AuditObjectLockEntity.class));
+        fixture.assertNoAvatarWrites();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"missing", "domain", "type", "extra"})
+    void a2AvatarProposalRequiresOneExactAccountTarget(String changed) {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        fixture.authenticate(1L);
+        AuditLockTarget target = switch (changed) {
+            case "missing" -> null;
+            case "domain" -> new AuditLockTarget("B", "account", "4");
+            case "type" -> new AuditLockTarget("A", "role", "4");
+            default -> new AuditLockTarget("A", "account", "4");
+        };
+        var result = fixture.audit.createProposal("mismatched-target", new AuditOperationProposalRequest(
+                "Account avatar", "4", "before", "after", "request-actor", "Super", "acct", false, false,
+                "Super", "Avatar request must use one account", "A", fixture.updateCommand(), target,
+                "extra".equals(changed) ? List.of(new AuditLockTarget("A", "account", "3")) : null));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(fixture.ticketRows).isEmpty();
+        verify(lockMapper, never()).insert(any(ffdd.opsconsole.platform.infrastructure.AuditObjectLockEntity.class));
+        fixture.assertNoAvatarWrites();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"object", "source", "lock", "ticket", "missing", "extra"})
+    void a2AvatarApprovalRejectsPersistedTicketTargetMismatch(String changed) {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        String operationId = fixture.propose(fixture.updateCommand());
+        var ticket = fixture.ticketRows.get(operationId);
+        var lock = fixture.activeLocks.get(operationId);
+        switch (changed) {
+            case "object" -> ticket.setObjectText("3");
+            case "source" -> ticket.setSourceDomain("B");
+            case "lock" -> lock.setTargetId("3");
+            case "ticket" -> lock.setTicketId("WO-ANOTHER-TICKET");
+            case "missing" -> fixture.activeLocks.clear();
+            case "extra" -> when(lockMapper.selectActiveByTicketId(operationId)).thenReturn(List.of(lock, lock));
+        }
+
+        assertThat(fixture.approve(operationId).getCode()).isIn(403, 422);
+        fixture.assertNoAvatarWrites();
+        fixture.assertContextCleared();
+        assertThat(admins.get(3).getVersion()).isZero();
+        assertThat(ticket.getStatus()).isEqualTo("pending");
+    }
+
+    @Test
+    void a2AvatarProposalUsesActualTargetDomainInTicketAndAudit() {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        fixture.authenticate(1L);
+        var result = fixture.audit.createProposal("forged-source", new AuditOperationProposalRequest(
+                "Account avatar", "Misleading display", "before", "after", "request-actor", "Super", "acct", false, false,
+                "Super", "Avatar request must use its actual audit domain", "D", fixture.updateCommand(),
+                new AuditLockTarget("A", "account", "4"), null));
+
+        assertThat(result.getCode()).isZero();
+        var ticket = fixture.ticketRows.get(result.getData().id());
+        assertThat(ticket.getSourceDomain()).isEqualTo("A");
+        assertThat(ticket.getObjectText()).isEqualTo("4");
+        var capture = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(capture.capture());
+        assertThat(capture.getValue().getAction()).isEqualTo("A2_OPERATION_PROPOSED");
+        assertThat(((Map<?, ?>) capture.getValue().getDetail()).get("sourceDomain")).isEqualTo("A");
+        fixture.assertNoAvatarWrites();
+    }
+
+    /** Reuses the A1 rows above; only persistence/storage are doubles in the approval and avatar path. */
+    private final class AvatarApprovalFixture {
+        static final List<String> AUTHORITIES = List.of("platform_a1_read", "platform_a1_write", "platform_a2_write",
+                "platform_a2_proposal_create", "platform_a2_operation_approve");
+        final String assetId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        final SupportAdminAvatarMapper avatarMapper = mock(SupportAdminAvatarMapper.class);
+        final ObjectStorageService storage = mock(ObjectStorageService.class);
+        final AuditOperationTicketMapper tickets = mock(AuditOperationTicketMapper.class);
+        final Map<String, AuditOperationTicketEntity> ticketRows = new LinkedHashMap<>();
+        final Map<String, ffdd.opsconsole.platform.infrastructure.AuditObjectLockEntity> activeLocks = new LinkedHashMap<>();
+        final Map<String, SupportAvatarAsset> assets = new LinkedHashMap<>();
+        final SupportAdminAvatarService avatars;
+        final OpsAdminAccountService accounts;
+        final OpsAuditCenterService audit;
+        String attachActor;
+        Runnable avatarReadProbe;
+
+        AvatarApprovalFixture() {
+            this(accounts -> accounts);
+        }
+
+        AvatarApprovalFixture(Function<OpsAdminAccountService, AuditReplayable> replayTarget) {
+            repository.put(A2RuntimePolicy.REASON_MIN_KEY, "8 字", "admin_a2");
+            when(adminMapper.selectById(anyLong())).thenAnswer(invocation -> admins.stream()
+                    .filter(admin -> admin.getId().equals(invocation.getArgument(0))).findFirst().orElse(null));
+            SupportBindingMapper bindings = mock(SupportBindingMapper.class);
+            when(bindings.rolesSnapshot(anyLong())).thenAnswer(invocation ->
+                    List.of(roleRelations.get(invocation.getArgument(0))));
+            SupportOwnershipService ownership = new SupportOwnershipService(bindings);
+            SupportAttachmentPolicy policy = mock(SupportAttachmentPolicy.class);
+            SupportAttachmentService attachments = new SupportAttachmentService(
+                    mock(SupportAttachmentMapper.class), bindings, ownership, storage, policy,
+                    mock(ProductionSupportPathGuard.class), mock(PlatformTransactionManager.class),
+                    mock(SupportBulkMapper.class), new ObjectMapper());
+            avatars = new SupportAdminAvatarService(avatarMapper, roleRelationMapper, ownership,
+                    attachments, policy, storage);
+            accounts = new OpsAdminAccountService(auditLogService, adminMapper, roleRelationMapper, roleMapper,
+                    accountStateMapper, rbacActionMapper, rbacGrantMapper, securityBaselineMapper, passwordEncoder,
+                    adminSessionRegistry, permissionCache, auditCenterService, lockMapper, platformRoleService,
+                    configFacade, avatars);
+            AdminOperatorRoleResolver roleResolver = new AdminOperatorRoleResolver(adminMapper, roleRelationMapper);
+            AuditReplayBusinessPermissionGuard permissions = new AuditReplayBusinessPermissionGuard(
+                    mock(TrustDisclosureRepository.class), roleResolver, mock(EmergencyControlRepository.class), null);
+            AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
+            Map<String, String> hashes = new LinkedHashMap<>();
+            Map<String, Object> responses = new LinkedHashMap<>();
+            when(idempotency.execute(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
+                String key = invocation.getArgument(0) + ":" + invocation.getArgument(1);
+                String hash = invocation.getArgument(2);
+                if (hashes.containsKey(key)) {
+                    if (!hashes.get(key).equals(hash)) throw new BizException(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+                    return responses.get(key);
+                }
+                java.util.function.Supplier<?> action = invocation.getArgument(4);
+                Object response = action.get();
+                hashes.put(key, hash);
+                responses.put(key, response);
+                return response;
+            });
+            audit = new OpsAuditCenterService(repository, auditLogService,
+                    OpsReadTimeSeedPolicy.disabledForDirectConstruction(), tickets,
+                    mock(AuditOperationHistoryMapper.class), mock(AuditConfirmCategoryMapper.class), lockMapper,
+                    permissions, new AuditReplayDispatcher(List.of(replayTarget.apply(accounts))), new A2AccessPolicy(roleResolver, tickets),
+                    new ObjectMapper(), idempotency);
+            when(tickets.insert(any(AuditOperationTicketEntity.class))).thenAnswer(invocation -> {
+                AuditOperationTicketEntity row = invocation.getArgument(0);
+                row.setId((long) ticketRows.size() + 1);
+                ticketRows.put(row.getOperationId(), row);
+                return 1;
+            });
+            when(tickets.selectActiveByOperationIdForUpdate(anyString()))
+                    .thenAnswer(invocation -> ticketRows.get(invocation.getArgument(0)));
+            when(tickets.updateById(any(AuditOperationTicketEntity.class))).thenReturn(1);
+            when(lockMapper.insert(any(ffdd.opsconsole.platform.infrastructure.AuditObjectLockEntity.class))).thenAnswer(invocation -> {
+                ffdd.opsconsole.platform.infrastructure.AuditObjectLockEntity row = invocation.getArgument(0);
+                activeLocks.put(row.getTicketId(), row);
+                return 1;
+            });
+            when(lockMapper.selectActiveByTicketId(anyString())).thenAnswer(invocation -> {
+                var row = activeLocks.get(invocation.getArgument(0));
+                return row == null ? List.of() : List.of(row);
+            });
+            assets.put(assetId, new SupportAvatarAsset(assetId, 1L, "upload-maker", "upload-idem",
+                    "image-hash", "image/png", 1L, "private/admin-avatar/test", "READY", null,
+                    LocalDateTime.now(ZoneOffset.UTC).plusHours(1)));
+            when(avatarMapper.lock(anyString())).thenAnswer(invocation -> {
+                Runnable probe = avatarReadProbe;
+                avatarReadProbe = null;
+                if (probe != null) probe.run();
+                attachActor = SecurityContextHolder.getContext().getAuthentication().getName();
+                return assets.get(invocation.getArgument(0));
+            });
+            when(avatarMapper.reference(anyLong())).thenAnswer(invocation -> {
+                AdminAccountStateEntity state = accountStates.get(invocation.getArgument(0));
+                return state == null || state.getAvatarAssetId() == null ? null
+                        : Map.of("assetId", state.getAvatarAssetId(), "version", state.getAvatarVersion());
+            });
+            when(storage.exists(anyString())).thenReturn(true);
+            when(avatarMapper.attach(anyString(), anyLong())).thenAnswer(invocation -> {
+                String id = invocation.getArgument(0);
+                SupportAvatarAsset row = assets.get(id);
+                if (row == null || !"READY".equals(row.state())
+                        || !row.expiresAt().isAfter(LocalDateTime.now(ZoneOffset.UTC))) return 0;
+                assets.put(id, new SupportAvatarAsset(row.id(), row.uploaderId(), row.clientUploadId(),
+                        row.idempotencyKey(), row.requestHash(), row.mime(), row.byteCount(), row.objectKey(),
+                        "ATTACHED", invocation.getArgument(1), row.expiresAt()));
+                return 1;
+            });
+            when(avatarMapper.accountAvatar(anyLong(), anyString())).thenAnswer(invocation -> {
+                upsertAccountState(invocation.getArgument(0), state -> {
+                    state.setAvatarAssetId(invocation.getArgument(1));
+                    state.setAvatarVersion(state.getAvatarVersion() == null ? 1L : state.getAvatarVersion() + 1);
+                });
+                return 1;
+            });
+        }
+
+        String propose(AuditReplayCommand command) {
+            authenticate(1L);
+            String target = String.valueOf(command.params().get(command.op().equals("a1_account_create")
+                    ? "username" : "accountId"));
+            var result = audit.createProposal("propose-avatar", new AuditOperationProposalRequest(
+                    "账号头像修改(A1)", target, "before", "after", "ignored-request-actor", "超管", "acct",
+                    false, false, "超管", "Maker requests account avatar", "A", command,
+                    new AuditLockTarget("A", "account", target), null));
+            assertThat(result.getCode()).as(result.getMessage()).isZero();
+            return result.getData().id();
+        }
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> approve(String operationId) {
+            authenticate(2L);
+            return approveAuthenticated(operationId);
+        }
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> approveAuthenticated(String operationId) {
+            return audit.approve("approve-avatar", operationId,
+                    new AuditOperationDecisionRequest("Checker verified account avatar", "ignored-request-actor"));
+        }
+
+        void authenticate(long adminId) {
+            authenticate(adminId, AUTHORITIES);
+        }
+
+        void authenticate(long adminId, List<String> authorities) {
+            var authentication = new UsernamePasswordAuthenticationToken(String.valueOf(adminId), null,
+                    authorities.stream()
+                            .map(SimpleGrantedAuthority::new).toList());
+            authentication.setDetails(Map.of("subjectType", "ADMIN", "username", admins.stream()
+                    .filter(admin -> admin.getId().equals(adminId)).findFirst().orElseThrow().getUsername()));
+            SecurityContextHolder.getContext().setAuthentication(authentication);
+        }
+
+        void assertAttached(long adminId) {
+            assertThat(assets.get(assetId).state()).isEqualTo("ATTACHED");
+            assertThat(assets.get(assetId).attachedAdminId()).isEqualTo(adminId);
+            assertThat(accountStates.get(adminId).getAvatarAssetId()).isEqualTo(assetId);
+            assertThat(accountStates.get(adminId).getAvatarVersion()).isEqualTo(1L);
+            assertThat(attachActor).isEqualTo("2");
+            assertThat(SecurityContextHolder.getContext().getAuthentication().getName()).isEqualTo("2");
+            assertContextCleared();
+        }
+
+        AuditReplayCommand updateCommand() {
+            return new AuditReplayCommand("A", "a1_account_update_profile", Map.of(
+                    "accountId", "4", "username", "risk.lead", "displayName", "Updated Risk",
+                    "email", "risk@nexion.io", "expectedVersion", "0", "avatarAssetId", assetId));
+        }
+
+        void replaceAsset(long uploader, String state, Long attachedAdmin, boolean expired) {
+            SupportAvatarAsset row = assets.get(assetId);
+            assets.put(assetId, new SupportAvatarAsset(row.id(), uploader, row.clientUploadId(), row.idempotencyKey(),
+                    row.requestHash(), row.mime(), row.byteCount(), row.objectKey(), state, attachedAdmin,
+                    LocalDateTime.now(ZoneOffset.UTC).plusHours(expired ? -1 : 1)));
+        }
+
+        void assertNoAvatarWrites() {
+            verify(avatarMapper, never()).attach(anyString(), anyLong());
+            verify(avatarMapper, never()).accountAvatar(anyLong(), anyString());
+        }
+
+        void assertContextCleared() {
+            assertThat(A2ReplayContext.isReplaying()).isFalse();
+            assertThat(A2ReplayContext.operationId()).isNull();
+            assertThat(A2ReplayContext.hasAvatarApproval()).isFalse();
+        }
     }
 
     private void registerTestRbacActions() {

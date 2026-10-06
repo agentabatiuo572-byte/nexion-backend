@@ -173,15 +173,14 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
-    void ticketAssigneeCandidatesUseOnlyTheNonMaterializingRepositoryProjection() {
+    void retiredTicketAssignmentReturnsNoIndependentCandidates() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
         fake.ticketAssigneeCandidates.add(new SupportTicketAssigneeCandidateView(2L, "Available Support"));
 
         ApiResult<List<SupportTicketAssigneeCandidateView>> result = service.ticketAssigneeCandidates();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData())
-                .containsExactly(new SupportTicketAssigneeCandidateView(2L, "Available Support"));
+        assertThat(result.getData()).isEmpty();
         assertThat(fake.seededAdminIds).isEmpty();
         assertThat(fake.ensureSchemaCalls).isZero();
         assertThat(fake.profiles).isEmpty();

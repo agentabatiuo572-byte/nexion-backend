@@ -70,8 +70,9 @@ public class OpsUser360Service {
     private final UserOpsRepository userRepository;
     private final AdminOperatorRoleResolver roleResolver;
     private final EventOutboxService outboxService;
+    private final ffdd.opsconsole.finance.application.FinanceSupportReadService financeSupport;
 
-    @Transactional
+    @Transactional(isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> detail(String userKey) {
         String lookupKey = trim(userKey);
         if (lookupKey == null) {
@@ -84,7 +85,7 @@ public class OpsUser360Service {
         return ApiResult.fail(404, "USER_NOT_FOUND");
     }
 
-    @Transactional
+    @Transactional(isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> detail(Long userId) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
@@ -154,9 +155,13 @@ public class OpsUser360Service {
                 : riskScoreRead.ready() && riskScore != null ? "READY" : "UNAVAILABLE");
         Map<String, Object> deviceSection = devices(devices);
         sourceStatus(deviceSection, deviceRead);
-        Map<String, Object> depositSection = deposits(deposits.getRecords());
+        Read<Map<String,Object>> totalsRead=canFinance?read(()->ApiResult.ok(financeSupport.totals(userId))):Read.hiddenRead();
+        Map<String,Object> totals=mapOrEmpty(totalsRead.value());
+        Map<String, Object> depositSection = deposits(deposits.getRecords(),totals);
+        depositSection.put("total",deposits.getTotal());
         sourceStatus(depositSection, depositRead);
-        Map<String, Object> withdrawalSection = withdrawals(withdrawals.getRecords());
+        Map<String, Object> withdrawalSection = withdrawals(withdrawals.getRecords(),totals);
+        withdrawalSection.put("total",withdrawals.getTotal());
         sourceStatus(withdrawalSection, withdrawalRead);
         Map<String, Object> teamSection = canGrowth
                 ? safeSection(() -> team(userId))
@@ -169,6 +174,8 @@ public class OpsUser360Service {
         Map<String, Object> referralSection = referral(teamSection, ledgerRows);
         Map<String, Object> vrankSection = vrank(profile, teamSection);
         Map<String, Object> financialSection = financial(profile, ledger, ledgerRows);
+        financialSection.put("byCurrency",totals.get("byCurrency"));
+        financialSection.put("totalsStatus",totalsRead.hidden()?"FORBIDDEN":totalsRead.ready()?"READY":"ERROR");
         Map<String, Object> engagementSection = engagement(notificationSection, audit);
         Map<String, Object> commerceSection = commerce(orders);
         sourceStatus(commerceSection, orderRead);
@@ -478,31 +485,26 @@ public class OpsUser360Service {
                 "sourceStatus", "READY");
     }
 
-    private Map<String, Object> deposits(List<DepositFlowView> rows) {
-        BigDecimal confirmedUsd = rows.stream()
-                .map(row -> firstAmount(row.providerReceived(), row.amount()))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    private Map<String, Object> deposits(List<DepositFlowView> rows,Map<String,Object> totals) {
         return section(
                 "total", rows.size(),
                 "records", rows,
-                "confirmedUsd", money(confirmedUsd),
+                "confirmedUsd", supportTotal(totals,"creditedDepositTotal"),
                 "sourceStatus", "READY");
     }
 
-    private Map<String, Object> withdrawals(List<WithdrawalOrderView> rows) {
-        BigDecimal completedUsd = rows.stream()
-                .filter(row -> "SUCCESS".equalsIgnoreCase(row.status()) || "COMPLETED".equalsIgnoreCase(row.status()))
-                .map(row -> safe(row.amount()))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal requestedUsd = rows.stream()
-                .map(row -> safe(row.amount()))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    private Map<String, Object> withdrawals(List<WithdrawalOrderView> rows,Map<String,Object> totals) {
         return section(
                 "total", rows.size(),
                 "records", rows,
-                "completedUsd", money(completedUsd),
-                "requestedUsd", money(requestedUsd),
+                "completedUsd", supportTotal(totals,"successfulWithdrawalPrincipalTotal"),
+                "requestedUsd", supportTotal(totals,"processingWithdrawalPrincipalTotal"),
                 "sourceStatus", "READY");
+    }
+    private static Object supportTotal(Map<String,Object> totals,String field) {
+        if(totals.get("byCurrency") instanceof List<?> rows)
+            for(Object value:rows) if(value instanceof Map<?,?> row && "USDT".equals(row.get("currency"))) return row.get(field);
+        return null;
     }
 
     private Map<String, Object> devices(List<DeviceOpsView> rows) {

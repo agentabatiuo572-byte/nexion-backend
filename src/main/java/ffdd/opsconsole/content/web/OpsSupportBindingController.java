@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.*;
 public class OpsSupportBindingController {
     private final SupportBindingService service;
     private final ProductionSupportPathGuard production;
+    private final SupportBindingRandomService random;
 
     @GetMapping("/rules") @PreAuthorize("hasAuthority('service_m1_read')")
     public ApiResult<SupportRules> rules(){return ApiResult.ok(service.rules());}
@@ -40,5 +41,15 @@ public class OpsSupportBindingController {
     @PostMapping("/assignments/transfer") @PreAuthorize("hasAuthority('service_m1_write')")
     public ApiResult<List<SupportAssignment>> transfer(@RequestHeader("Idempotency-Key") String key,@RequestBody SupportBindingRequest request){
         production.requireOpsWriteAllowed();return service.transfer(key,request);
+    }
+
+    @PostMapping("/assignments/random-preview") @PreAuthorize("hasAuthority('service_m1_write')")
+    public ApiResult<SupportRandom.Preview> randomPreview(@RequestBody SupportRandomRequest.Preview request) {
+        production.requireOpsWriteAllowed();return ApiResult.ok(random.preview(request));
+    }
+
+    @PostMapping("/assignments/random") @PreAuthorize("hasAuthority('service_m1_write')")
+    public ApiResult<SupportRandom.Result> random(@RequestHeader("Idempotency-Key") String key,@RequestBody SupportRandomRequest.Confirm request) {
+        production.requireOpsWriteAllowed();return random.confirm(key,request);
     }
 }

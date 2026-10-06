@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyString;
@@ -106,15 +107,23 @@ class OpsSupportTicketServiceTest {
     }
 
     @Test
-    void createRejectsUnknownAssignedSupportAgent() {
+    void createPropagatesTheSharedBindingRejectionInsteadOfSavingAFailedSuccess() {
+        var rejectingRepository = mock(SupportTicketRepository.class);
+        when(rejectingRepository.createTicket(anyString(), any(), anyString(), anyString(), anyString(), anyString(),
+                any(), any(), anyString(), any())).thenThrow(new ffdd.opsconsole.shared.exception.BizException(
+                        409, "SUPPORT_TICKET_OWNER_BINDING_MISMATCH"));
+        var rejectingService = new OpsSupportTicketService(rejectingRepository, conversationRepository,
+                knowledgeRepository, supportAgentService, configFacade, auditLogService, idempotencyService, clock,
+                ffdd.opsconsole.content.SupportTestDependencies.ownership(),
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
+                new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules());
         var request = new SupportTicketCreateRequest(
                 1001L, "withdrawal", "high", "Withdrawal pending", "Still pending.",
                 999999L, "Ghost Operator", "Marina K.", "invalid owner validation");
 
-        var result = service.create("idem-m2-create-ghost", request);
-
-        assertThat(result.getCode()).isEqualTo(404);
-        assertThat(result.getMessage()).isEqualTo("SUPPORT_AGENT_NOT_ASSIGNABLE");
+        assertThatThrownBy(() -> rejectingService.create("idem-m2-create-ghost", request))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage("SUPPORT_TICKET_OWNER_BINDING_MISMATCH");
     }
 
     @Test
@@ -297,30 +306,29 @@ class OpsSupportTicketServiceTest {
     }
 
     @Test
-    void assignChangesOwnerAndAudits() {
+    void independentTicketAssignmentIsRejectedWithoutChangingOwner() {
         ticketRepository.ticket = ticket("TK-1", "OPEN", "NORMAL");
 
-        var result = service.assign(
+        assertThatThrownBy(() -> service.assign(
                 "TK-1",
                 "idem-m2-assign",
                 new SupportTicketAssigneeRequest(
-                        7L, "Tomas R.", "Marina K.", "withdrawal specialist", "OPEN", 0L));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().ticket().assignedAdminId()).isEqualTo(7L);
-        assertThat(result.getData().ticket().assignedAdminName()).isEqualTo("Tomas R.");
+                        7L, "Tomas R.", "Marina K.", "withdrawal specialist", "OPEN", 0L)))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage("SUPPORT_TICKET_OWNER_MANAGED_BY_BINDING");
+        assertThat(ticketRepository.ticket.assignedAdminName()).isEqualTo("Marina K.");
+        org.mockito.Mockito.verifyNoInteractions(auditLogService);
     }
 
     @Test
     void assignRejectsUnknownSupportAgent() {
         ticketRepository.ticket = ticket("TK-1", "OPEN", "NORMAL");
 
-        var result = service.assign("TK-1", "idem-m2-assign-ghost",
+        assertThatThrownBy(() -> service.assign("TK-1", "idem-m2-assign-ghost",
                 new SupportTicketAssigneeRequest(
-                        999999L, "Ghost Operator", "Marina K.", "invalid owner validation", "OPEN", 0L));
-
-        assertThat(result.getCode()).isEqualTo(404);
-        assertThat(result.getMessage()).isEqualTo("SUPPORT_AGENT_NOT_ASSIGNABLE");
+                        999999L, "Ghost Operator", "Marina K.", "invalid owner validation", "OPEN", 0L)))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage("SUPPORT_TICKET_OWNER_MANAGED_BY_BINDING");
         assertThat(ticketRepository.ticket.assignedAdminName()).isEqualTo("Marina K.");
     }
 

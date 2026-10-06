@@ -29,6 +29,7 @@ import org.springframework.test.web.servlet.MockMvc;
 class AppSupportControllerSecurityTest {
     @Autowired private MockMvc mockMvc;
     @MockBean private AppSupportService service;
+    @MockBean private ffdd.opsconsole.content.application.SupportTicketCreationPolicyService creationPolicy;
     @MockBean private ProductionSupportPathGuard productionSupportPathGuard;
     @MockBean private JwtAuthenticationFilter jwtAuthenticationFilter;
     @MockBean private AdminRbacAuthorizationFilter adminRbacAuthorizationFilter;

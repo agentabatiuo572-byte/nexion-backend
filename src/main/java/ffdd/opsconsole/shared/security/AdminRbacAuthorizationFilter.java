@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -160,6 +161,16 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_PASSWORD_CHANGE_REQUIRED");
             return;
         }
+        if (HttpMethod.GET.matches(request.getMethod())
+                && "/api/admin/platform/audit/reason-policy".equals(path)) {
+            if (!isTrustedAuthenticatedAdmin(authentication)) {
+                auditDenial(request, authentication, "ADMIN_SUBJECT_REQUIRED", null);
+                reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_SUBJECT_REQUIRED");
+                return;
+            }
+            filterChain.doFilter(request, response);
+            return;
+        }
         if (matchesAnyAdminPath(path)) {
             filterChain.doFilter(request, response);
             return;
@@ -181,6 +192,23 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             return;
         }
         filterChain.doFilter(request, response);
+    }
+
+    private boolean isTrustedAuthenticatedAdmin(Authentication authentication) {
+        if (authentication instanceof AnonymousAuthenticationToken
+                || !authentication.isAuthenticated()
+                || !(authentication.getDetails() instanceof Map<?, ?> details)
+                || !(details.get("subjectType") instanceof String subjectType)
+                || !"ADMIN".equals(subjectType)
+                || !(authentication.getPrincipal() instanceof String principal)) {
+            return false;
+        }
+        try {
+            long adminId = Long.parseLong(principal);
+            return adminId > 0 && Long.toString(adminId).equals(principal);
+        } catch (NumberFormatException ex) {
+            return false;
+        }
     }
 
     private boolean matchesAnyAdminPath(String path) {

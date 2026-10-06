@@ -17,15 +17,17 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
     @Select("""
         SELECT assignmentId,currentAdvisorId,currentAdvisorName,
                CASE WHEN eligible THEN 'ASSIGNED' ELSE 'ADVISOR_DISABLED' END assignmentState,
-               CASE WHEN NOT eligible THEN 'DISABLED' WHEN busy=1 THEN 'BUSY' ELSE 'UNKNOWN' END availability
+               CASE WHEN NOT eligible THEN 'DISABLED' WHEN busy=1 THEN 'BUSY' ELSE 'UNKNOWN' END availability,avatarAssetId,avatarVersion
           FROM (SELECT x.id assignmentId,x.agent_admin_id currentAdvisorId,
                        COALESCE(NULLIF(a.nickname,''),a.username) currentAdvisorName,p.busy,
+                       st.avatar_asset_id AS avatarAssetId,COALESCE(st.avatar_version,0) AS avatarVersion,
                        EXISTS(SELECT 1
         """ + SupportBindingMapper.ELIGIBLE_AGENT_FROM + """
                           AND a.id=x.agent_admin_id) eligible
                   FROM nx_support_agent_user_assignment x
                   LEFT JOIN nx_admin a ON a.id=x.agent_admin_id
                   LEFT JOIN nx_support_agent_profile p ON p.admin_id=x.agent_admin_id
+                  LEFT JOIN nx_admin_account_state st ON st.admin_id=x.agent_admin_id AND st.is_deleted=0
                  WHERE x.user_id=#{userId} AND x.status='ACTIVE' AND x.is_deleted=0) projection
         """)
     ffdd.opsconsole.content.domain.AppSupportAdvisorView findAppAdvisor(Long userId);

@@ -53,7 +53,17 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 @Execution(ExecutionMode.SAME_THREAD)
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
 class SupportMessageReplayMySqlS4Test {
+    @org.springframework.test.context.DynamicPropertySource static void coreBoundary(org.springframework.test.context.DynamicPropertyRegistry registry) {
+        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))SupportEnhancementPreparationTest.isolatedBoundary(registry);
+    }
     @Autowired JdbcTemplate jdbc;
+    @Autowired org.springframework.data.redis.core.StringRedisTemplate actorRedis;
+    private final String fixtureActorRun="s4_replay_"+UUID.randomUUID();
+    private SupportFixtureActors actorEvidence;
+    private SupportFixtureActors fixtureActors() {
+        if (actorEvidence == null) actorEvidence = new SupportFixtureActors(jdbc, actorRedis, json, transactions, fixtureActorRun, getClass().getSimpleName());
+        return actorEvidence;
+    }
     @Autowired ObjectMapper json;
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingMapper assignments;
@@ -99,6 +109,7 @@ class SupportMessageReplayMySqlS4Test {
     }
 
     @BeforeEach void fixture() throws Exception {
+        fixtureActors().assertBusinessEntry();
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportIsolatedRuntime.database());
         assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(33329);
         assertThat(System.getenv("S3_FIXTURE_PASSWORD")!=null && !System.getenv("S3_FIXTURE_PASSWORD").isBlank())
@@ -183,7 +194,7 @@ class SupportMessageReplayMySqlS4Test {
     @AfterEach void release() {
         Gate current=gate.getAndSet(null);if(current!=null)current.release.countDown();
         MutexGate mutex=mutexGate.getAndSet(null);if(mutex!=null)mutex.release.countDown();
-        SecurityContextHolder.clearContext();
+        try {if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());} finally {SecurityContextHolder.clearContext();}
     }
 
     @ParameterizedTest(name="readFirst={0}: read and reply serialize at customer before header")
@@ -389,11 +400,7 @@ class SupportMessageReplayMySqlS4Test {
     private String passwordHash(){return new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(System.getenv("S3_FIXTURE_PASSWORD"));}
     private long admin(String role,String seat) {
         String name="s4_replay_"+UUID.randomUUID().toString().substring(0,8);
-        jdbc.update("INSERT INTO nx_admin(username,password_hash,nickname,super_admin,status) VALUES(?,?,?,?,1)",name,passwordHash(),name,"SUPER_ADMIN".equals(role)?1:0);
-        long id=jdbc.queryForObject("SELECT id FROM nx_admin WHERE username=?",Long.class,name);
-        jdbc.update("INSERT INTO nx_admin_role_relation(admin_id,role_id) SELECT ?,id FROM nx_admin_role WHERE role_code=? AND is_deleted=0",id,role);
-        jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,?,?,'support,advisor','',0,1,1,0)",id,seat,seat);
-        return id;
+        return fixtureActors().createSql(name,passwordHash(),name,role,seat);
     }
     private String adminToken(long id) {
         String name=jdbc.queryForObject("SELECT username FROM nx_admin WHERE id=?",String.class,id);

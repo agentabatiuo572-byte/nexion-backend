@@ -27,7 +27,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import static org.assertj.core.api.Assertions.*;
 
 /** Actual isolated HTTP, SQL, login, multipart and private object storage; never fixture HTTP stubs. */
-@org.springframework.context.annotation.Import(SupportIsolatedRuntime.class)
+@org.springframework.context.annotation.Import({SupportIsolatedRuntime.class,SupportObjectEvidenceLedger.Configuration.class})
 @SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties={"server.port=${S4_HTTP_PORT:18129}",
     "nexion.support.attachments.allowed-mime-types=image/png,image/jpeg","nexion.support.attachments.max-bytes=1048576",
     "nexion.support.attachments.max-pixels=1000000","nexion.support.attachments.ttl-seconds=300"})
@@ -35,7 +35,17 @@ import static org.assertj.core.api.Assertions.*;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @org.springframework.test.annotation.DirtiesContext(classMode=org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 class SupportS4RuntimeTest {
+    @org.springframework.test.context.DynamicPropertySource static void coreBoundary(org.springframework.test.context.DynamicPropertyRegistry registry) {
+        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))SupportEnhancementPreparationTest.isolatedBoundary(registry);
+    }
     @Autowired JdbcTemplate jdbc;
+    @Autowired SupportObjectEvidenceLedger objects;
+    @Autowired org.springframework.data.redis.core.StringRedisTemplate actorRedis;
+    private SupportFixtureActors actorEvidence;
+    private SupportFixtureActors fixtureActors() {
+        if (actorEvidence == null) actorEvidence = new SupportFixtureActors(jdbc, actorRedis, json, transactions, run, getClass().getSimpleName());
+        return actorEvidence;
+    }
     @Autowired ObjectMapper json;
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingMapper mapper;
@@ -52,16 +62,22 @@ class SupportS4RuntimeTest {
     private final HttpClient client=HttpClient.newHttpClient();
     private long boss,g1,g2,customer;
     private String adminToken,otherToken,bossToken,customerToken;
+    private String objectTestcase;
+    private final Set<String> objectTestcases=new LinkedHashSet<>();
 
-    @BeforeEach void fixture() throws Exception {
+    @BeforeEach void fixture(TestInfo info) throws Exception {
+        objectTestcase=info.getTestMethod().orElseThrow().getName();
+        fixtureActors().assertBusinessEntry();
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportIsolatedRuntime.database());
         assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(33329);
         boss=admin("SUPER_ADMIN","MANAGER");g1=admin("SUPPORT","DEDICATED");g2=admin("SUPPORT","DEDICATED");
-        as(boss);customer=customer();transfer(customer,g1);
+        as(boss);customer="realPrivateImagesHaveSeparateUploadSendAndRevocation".equals(objectTestcase)?objectCustomer():customer();transfer(customer,g1);
         adminToken=token(g1);otherToken=token(g2);bossToken=token(boss);customerToken=userToken(customer);
     }
     @AfterEach void clear(){SecurityContextHolder.clearContext();}
     @AfterAll void evidence() throws Exception {
+        Throwable originalFailure=null;
+        try {
         Set<String> required=Set.of("s4-ac01","s4-ac07","s4-ac08","s4-ac09","s4-ac10","s4-ac13","s4-supplement");
         assertThat(checks.keySet()).containsAll(required);
         Path dir=Path.of(System.getenv("S4_EVIDENCE_DIR"));Files.createDirectories(dir);
@@ -81,6 +97,17 @@ class SupportS4RuntimeTest {
         }
         identities.put("password",System.getenv("S3_FIXTURE_PASSWORD"));identities.put("at",Instant.now().toString());
         Files.writeString(dir.resolve("runtime-identities.json"),json.writerWithDefaultPrettyPrinter().writeValueAsString(identities));
+
+        } catch(Exception|Error failure) {
+            originalFailure=failure;throw failure;
+        } finally {
+            try {
+                SupportObjectEvidenceLedger.cleanupIndependently(this::cleanupObjectEvidence,
+                    ()->{if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());},SecurityContextHolder::clearContext);
+            } catch(RuntimeException|Error cleanupFailure) {
+                if(originalFailure!=null)originalFailure.addSuppressed(cleanupFailure);else throw cleanupFailure;
+            }
+        }
     }
 
     @Test void maintenanceHttpNeedsNewInteractiveLoginAndKeepsExecutionSeparate() throws Exception {
@@ -140,46 +167,102 @@ class SupportS4RuntimeTest {
     }
 
     @Test void snapshotPaginationUnknownAndTodoUnionAgree() throws Exception {
-        rules(10,2,3);
-        as(boss);long second=customer();transfer(second,g1);
-        long third=customer();transfer(third,g1);
-        ok(http("POST","/api/app/support/conversations",customerToken,Map.of("conversationType","support","openingText","One customer multiple reasons"),key()));
-        // Explicit historical fixture is isolated to this customer; never invent production history.
-        jdbc.update("INSERT INTO nx_support_activity_event(customer_id,seq,source_ref,occurred_at) VALUES(?,1,?,UTC_TIMESTAMP(6)-INTERVAL 5 DAY)",customer,"fixture:"+key());
-        var all=ok(http("GET","/api/admin/content/support-workbench/customers?filter=TODO&pageSize=1",adminToken,null,null));
-        assertThat(all.path("overview").path("boundTotal").asInt()).isEqualTo(3);
-        assertThat(all.path("overview").path("todoTotal").asInt()).isEqualTo(3);
-        assertThat(all.path("overview").path("waitingReplyTotal").asInt()).isEqualTo(1);
-        assertThat(all.path("customers").path("total").asInt()).isEqualTo(3);
-        assertThat(all.path("customers").path("records").size()).isEqualTo(1);
-        assertThat(all.path("overview").path("activeTotal").isNull()).isTrue();
-        var active=ok(http("GET","/api/admin/content/support-workbench/customers?filter=ACTIVE",adminToken,null,null));
-        assertThat(active.path("customers").path("total").asInt()).isEqualTo(1);
-        var window=ok(http("GET","/api/admin/content/support-workbench/customers?filter=WINDOW_ACTIVE",adminToken,null,null));
-        assertThat(window.path("customers").path("total").asInt()).isZero();
-        var seen=new HashSet<Long>();
-        for(int page=1;page<=3;page++) {
-            var response=ok(http("GET","/api/admin/content/support-workbench/customers?filter=TODO&pageSize=1&pageNum="+page,adminToken,null,null));
-            assertThat(response.path("overview").path("todoTotal").asInt()).isEqualTo(response.path("customers").path("total").asInt());
-            seen.add(response.path("customers").path("records").get(0).path("customerId").asLong());
+        var originalCoverageStart=jdbc.queryForObject("SELECT coverage_start_at FROM nx_support_activity_coverage WHERE id=1",java.sql.Timestamp.class);
+        assertThat(originalCoverageStart).isNotNull();
+        try {
+            rules(10,2,3);
+            as(boss);long second=customer();transfer(second,g1);
+            long third=customer();transfer(third,g1);
+            ok(http("POST","/api/app/support/conversations",customerToken,Map.of("conversationType","support","openingText","One customer multiple reasons"),key()));
+            // Explicit historical fixture is isolated to this customer; never invent production history.
+            jdbc.update("INSERT INTO nx_support_activity_event(customer_id,seq,source_ref,occurred_at) VALUES(?,1,?,UTC_TIMESTAMP(6)-INTERVAL 5 DAY)",customer,"fixture:"+key());
+            assertThat(jdbc.update("UPDATE nx_support_activity_coverage SET coverage_start_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 DAY) WHERE id=1")).isEqualTo(1);
+            var all=ok(http("GET","/api/admin/content/support-workbench/customers?filter=TODO&pageSize=1",adminToken,null,null));
+            assertThat(all.path("customers").path("total").isIntegralNumber()).isTrue();
+            assertThat(all.path("customers").path("total").longValue()).isEqualTo(3L);
+            assertThat(all.path("customers").path("records").isArray()).isTrue();
+            assertThat(all.path("customers").path("records")).hasSize(1);
+            assertThat(all.path("overview").path("activeTotal").isNull()).isTrue();
+            for(var expected:Map.of("boundTotal",3L,"todoTotal",3L,"waitingReplyTotal",1L,
+                    "knownActiveCount",0L,"unknownWindowCount",3L,"unknownCount",2L).entrySet()) {
+                var actual=all.path("overview").path(expected.getKey());
+                assertThat(actual.isIntegralNumber()).as("Partial coverage %s must be an integer",expected.getKey()).isTrue();
+                assertThat(actual.longValue()).isEqualTo(expected.getValue());
+            }
+            var active=ok(http("GET","/api/admin/content/support-workbench/customers?filter=ACTIVE",adminToken,null,null));
+            assertThat(active.path("customers").path("total").isIntegralNumber()).isTrue();
+            assertThat(active.path("customers").path("total").longValue()).isEqualTo(1L);
+            assertThat(active.path("customers").path("records").isArray()).isTrue();
+            assertThat(active.path("customers").path("records")).hasSize(1);
+            var activeCustomer=active.path("customers").path("records").get(0).path("customerId");
+            assertThat(activeCustomer.isIntegralNumber()).isTrue();assertThat(activeCustomer.longValue()).isEqualTo(customer);
+            var window=ok(http("GET","/api/admin/content/support-workbench/customers?filter=WINDOW_ACTIVE",adminToken,null,null));
+            assertThat(window.path("customers").path("total").isIntegralNumber()).isTrue();
+            assertThat(window.path("customers").path("total").longValue()).isZero();
+            assertThat(window.path("customers").path("records").isArray()).isTrue();
+            assertThat(window.path("customers").path("records")).isEmpty();
+            samples.put("partialWindowCoverage",Map.of("snapshot",all,"active",active,"windowActive",window));
+
+            assertThat(jdbc.update("UPDATE nx_support_activity_coverage SET coverage_start_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 4 DAY) WHERE id=1")).isEqualTo(1);
+            var covered=ok(http("GET","/api/admin/content/support-workbench/customers?filter=TODO&pageSize=1",adminToken,null,null));
+            for(var expected:Map.of("boundTotal",3L,"todoTotal",3L,"waitingReplyTotal",1L,
+                    "activeTotal",0L,"knownActiveCount",0L,"unknownWindowCount",0L,"unknownCount",2L).entrySet()) {
+                var actual=covered.path("overview").path(expected.getKey());
+                assertThat(actual.isIntegralNumber()).as("Complete coverage %s must be an integer",expected.getKey()).isTrue();
+                assertThat(actual.longValue()).isEqualTo(expected.getValue());
+            }
+            var coveredActive=ok(http("GET","/api/admin/content/support-workbench/customers?filter=ACTIVE",adminToken,null,null));
+            assertThat(coveredActive.path("customers").path("total").isIntegralNumber()).isTrue();
+            assertThat(coveredActive.path("customers").path("total").longValue()).isEqualTo(1L);
+            assertThat(coveredActive.path("customers").path("records").isArray()).isTrue();
+            assertThat(coveredActive.path("customers").path("records")).hasSize(1);
+            assertThat(coveredActive.path("customers").path("records").get(0).path("customerId")).isEqualTo(activeCustomer);
+            var coveredWindow=ok(http("GET","/api/admin/content/support-workbench/customers?filter=WINDOW_ACTIVE",adminToken,null,null));
+            assertThat(coveredWindow.path("customers").path("total").isIntegralNumber()).isTrue();
+            assertThat(coveredWindow.path("customers").path("total").longValue()).isZero();
+            assertThat(coveredWindow.path("customers").path("records").isArray()).isTrue();
+            assertThat(coveredWindow.path("customers").path("records")).isEmpty();
+            samples.put("completeWindowCoverage",Map.of("snapshot",covered,"active",coveredActive,"windowActive",coveredWindow));
+
+            var seen=new HashSet<Long>();
+            for(int page=1;page<=3;page++) {
+                var response=ok(http("GET","/api/admin/content/support-workbench/customers?filter=TODO&pageSize=1&pageNum="+page,adminToken,null,null));
+                var todoTotal=response.path("overview").path("todoTotal");var pageTotal=response.path("customers").path("total");
+                assertThat(todoTotal.isIntegralNumber()).isTrue();assertThat(pageTotal.isIntegralNumber()).isTrue();
+                assertThat(todoTotal.longValue()).isEqualTo(3L);assertThat(pageTotal.longValue()).isEqualTo(todoTotal.longValue());
+                assertThat(response.path("customers").path("records").isArray()).isTrue();
+                assertThat(response.path("customers").path("records")).hasSize(1);
+                var id=response.path("customers").path("records").get(0).path("customerId");
+                assertThat(id.isIntegralNumber()).isTrue();seen.add(id.longValue());
+            }
+            assertThat(seen).hasSize(3);
+            var preference=Map.of("enabled",false,"reason","Pause just proactive maintenance","expectedVersion",1,"expectedAssignmentId",mapper.current(customer).id());
+            ok(http("PATCH",maintenancePath(),adminToken,preference,key()));
+            var stopped=ok(http("GET","/api/admin/content/support-workbench/customers?filter=STOPPED",adminToken,null,null));
+            for(String field:List.of("stoppedTotal","waitingReplyTotal")) {
+                var total=stopped.path("overview").path(field);assertThat(total.isIntegralNumber()).isTrue();
+                assertThat(total.longValue()).isEqualTo(1L);
+            }
+            assertThat(stopped.path("customers").path("total").isIntegralNumber()).isTrue();
+            assertThat(stopped.path("customers").path("total").longValue()).isEqualTo(1L);
+            assertCode(http("GET","/api/admin/content/support-workbench/overview?agentId="+g2,adminToken,null,null),403);
+            assertCode(http("GET","/api/admin/content/support-workbench/customers/"+customer,otherToken,null,null),404);
+            rules(null,2,null);
+            var partial=ok(http("GET","/api/admin/content/support-workbench/overview",adminToken,null,null));
+            assertThat(partial.path("overview").path("activeTotal").isNull()).isTrue();
+            assertThat(partial.path("overview").path("dormantTotal").isNull()).isTrue();
+            assertThat(partial.path("overview").path("dueTotal").isIntegralNumber()).isTrue();
+            assertThat(partial.path("overview").path("dueTotal").longValue()).isEqualTo(2L);
+            assertThat(partial.path("performance").path("timeZone").asText()).isEqualTo("Asia/Shanghai");
+            assertThat(partial.path("evaluatedAt").asText()).endsWith("Z");
+            samples.put("workbenchSnapshot",all);samples.put("stoppedSnapshot",stopped);samples.put("independentRules",partial);
+        } finally {
+            jdbc.update("UPDATE nx_support_activity_coverage SET coverage_start_at=? WHERE id=1",originalCoverageStart);
+            var restoredCoverageStart=jdbc.queryForObject("SELECT coverage_start_at FROM nx_support_activity_coverage WHERE id=1",java.sql.Timestamp.class);
+            assertThat(restoredCoverageStart).as("Restore the original activity coverage start without changing its watermark").isEqualTo(originalCoverageStart);
+            samples.put("activityCoverageRestoration",Map.of("before",originalCoverageStart.toLocalDateTime().toString(),
+                    "after",restoredCoverageStart.toLocalDateTime().toString(),"restored",true));
         }
-        assertThat(seen).hasSize(3);
-        var preference=Map.of("enabled",false,"reason","Pause just proactive maintenance","expectedVersion",1,"expectedAssignmentId",mapper.current(customer).id());
-        ok(http("PATCH",maintenancePath(),adminToken,preference,key()));
-        var stopped=ok(http("GET","/api/admin/content/support-workbench/customers?filter=STOPPED",adminToken,null,null));
-        assertThat(stopped.path("overview").path("stoppedTotal").asInt()).isEqualTo(1);
-        assertThat(stopped.path("customers").path("total").asInt()).isEqualTo(1);
-        assertThat(stopped.path("overview").path("waitingReplyTotal").asInt()).isEqualTo(1);
-        assertCode(http("GET","/api/admin/content/support-workbench/overview?agentId="+g2,adminToken,null,null),403);
-        assertCode(http("GET","/api/admin/content/support-workbench/customers/"+customer,otherToken,null,null),404);
-        rules(null,2,null);
-        var partial=ok(http("GET","/api/admin/content/support-workbench/overview",adminToken,null,null));
-        assertThat(partial.path("overview").path("activeTotal").isNull()).isTrue();
-        assertThat(partial.path("overview").path("dormantTotal").isNull()).isTrue();
-        assertThat(partial.path("overview").path("dueTotal").asInt()).isEqualTo(2);
-        assertThat(partial.path("performance").path("timeZone").asText()).isEqualTo("Asia/Shanghai");
-        assertThat(partial.path("evaluatedAt").asText()).endsWith("Z");
-        samples.put("workbenchSnapshot",all);samples.put("stoppedSnapshot",stopped);samples.put("independentRules",partial);
         checks.put("s4-ac01",true);checks.put("s4-ac13",true);checks.put("s4-supplement",true);
     }
 
@@ -199,7 +282,7 @@ class SupportS4RuntimeTest {
         assertThat(pre.headers().firstValue("cache-control").orElse("")).contains("no-store");
         assertThat(ImageIO.read(new ByteArrayInputStream(pre.body())).getWidth()).isEqualTo(4);
         String object=jdbc.queryForObject("SELECT object_key FROM nx_support_attachment WHERE id=?",String.class,attachment);
-        var anonymous=client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:19029/"+storageProperties.getBucket()+"/"+object)).GET().build(),HttpResponse.BodyHandlers.ofByteArray());
+        var anonymous=client.send(HttpRequest.newBuilder(URI.create(storageProperties.getEndpoint()+"/"+storageProperties.getBucket()+"/"+object)).GET().build(),HttpResponse.BodyHandlers.ofByteArray());
         assertThat(anonymous.statusCode()).isEqualTo(403);
         var body=new LinkedHashMap<String,Object>();
         body.put("conversationType","support");body.put("userId",customer);body.put("openingText","");
@@ -339,11 +422,11 @@ class SupportS4RuntimeTest {
     }
 
     @Test void unboundCustomerCanUploadAndSendPrivateImage() throws Exception {
-        as(boss);long unbound=customer();assertThat(mapper.current(unbound)).isNull();
+        as(boss);long unbound=objectCustomer();assertThat(mapper.current(unbound)).isNull();
         String user=userToken(unbound),uploadId=key();byte[] png=image("png");
-        JsonNode uploaded=ok(upload(user,png,"image/png","camera.png",uploadId,key(),true));
+        JsonNode uploaded=ok(upload(user,png,"image/png","camera.png",uploadId,key(),unbound,true));
         String attachment=uploaded.path("id").asText();
-        assertThat(ok(upload(user,png,"image/png","camera.png",uploadId,key(),true)).path("id").asText()).isEqualTo(attachment);
+        assertThat(ok(upload(user,png,"image/png","camera.png",uploadId,key(),unbound,true)).path("id").asText()).isEqualTo(attachment);
         String path="/api/app/support/attachments/"+attachment+"/content";
         assertThat(download(path,user,null).statusCode()).isEqualTo(200);
         assertCode(json.readTree(download(path,customerToken,null).body()),404);
@@ -397,10 +480,7 @@ class SupportS4RuntimeTest {
     private long admin(String role,String seat){
         String name=run+"_"+UUID.randomUUID().toString().substring(0,8);
         String password=new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(System.getenv("S3_FIXTURE_PASSWORD"));
-        jdbc.update("INSERT INTO nx_admin(username,password_hash,nickname,super_admin,status) VALUES(?,?,?,?,1)",name,password,name,"SUPER_ADMIN".equals(role)?1:0);
-        long id=jdbc.queryForObject("SELECT id FROM nx_admin WHERE username=?",Long.class,name);
-        jdbc.update("INSERT INTO nx_admin_role_relation(admin_id,role_id) SELECT ?,id FROM nx_admin_role WHERE role_code=? AND is_deleted=0",id,role);
-        jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,?,?,'support,advisor','',0,1,1,0)",id,seat,seat);return id;
+        return fixtureActors().createSql(name,password,name,role,seat);
     }
     private long customer(){
         return new TransactionTemplate(transactions).execute(status->{
@@ -410,6 +490,27 @@ class SupportS4RuntimeTest {
             jdbc.update("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox) VALUES('+86',?,'127.0.0.1',?,?,?,'ACTIVE',0)",phone,password,run,ref);
             long id=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,ref);bindings.register(id,null);return id;
         });
+    }
+    private long objectCustomer(){
+        String ref=UUID.randomUUID().toString().replace("-","").substring(0,20);
+        String phone="198"+String.format("%08d",Math.abs((long)ref.hashCode())%100000000);
+        String password=new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(System.getenv("S3_FIXTURE_PASSWORD"));
+        return objects.createCustomer(getClass().getSimpleName(),objectTestcase,ref,()->{
+            var generated=new org.springframework.jdbc.support.GeneratedKeyHolder();
+            int affected=jdbc.update(connection->{
+                var statement=connection.prepareStatement("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox) VALUES('+86',?,'127.0.0.1',?,?,?,'ACTIVE',0)",java.sql.Statement.RETURN_GENERATED_KEYS);
+                statement.setString(1,phone);statement.setString(2,password);statement.setString(3,run);statement.setString(4,ref);return statement;
+            },generated);
+            long id=Objects.requireNonNull(generated.getKey(),"Exact INSERT generated customer ID").longValue();
+            long lookup=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,ref);
+            assertThat(affected).isEqualTo(1);assertThat(lookup).isEqualTo(id);
+            bindings.register(id,null);
+            return new SupportObjectEvidenceLedger.CustomerInsert(id,affected,lookup);
+        });
+    }
+    private void cleanupObjectEvidence() {
+        SupportObjectEvidenceLedger.cleanupIndependently(objectTestcases.stream()
+            .<Runnable>map(testcase->()->objects.cleanup(getClass().getSimpleName(),testcase)).toArray(Runnable[]::new));
     }
     private void as(long id){
         var auth=new UsernamePasswordAuthenticationToken(String.valueOf(id),null,List.of(new SimpleGrantedAuthority("service_m3_write"),new SimpleGrantedAuthority("service_m3_read")));
@@ -438,12 +539,18 @@ class SupportS4RuntimeTest {
     private void assertCode(JsonNode value,int code){assertThat(value.path("code").asInt()).as("HTTP result: %s",value.path("message").asText()).isEqualTo(code);}
     private byte[] image(String format) throws Exception {var image=new BufferedImage(4,4,BufferedImage.TYPE_INT_RGB);image.setRGB(1,1,0xff8844);var out=new ByteArrayOutputStream();ImageIO.write(image,format,out);return out.toByteArray();}
     private JsonNode upload(String token,byte[] bytes,String mime,String name,String uploadId,String key) throws Exception {
-        return upload(token,bytes,mime,name,uploadId,key,false);
+        return upload(token,bytes,mime,name,uploadId,key,g1,false);
     }
-    private JsonNode upload(String token,byte[] bytes,String mime,String name,String uploadId,String key,boolean app) throws Exception {
+    private JsonNode upload(String token,byte[] bytes,String mime,String name,String uploadId,String key,long uploader,boolean app) throws Exception {
+        long exactCustomer=app?uploader:customer;
+        Long assignment=app?null:mapper.current(exactCustomer).id();
+        objectTestcases.add(objectTestcase);
+        var intent=objects.request(new SupportObjectEvidenceLedger.Request(getClass().getSimpleName(),objectTestcase,
+            SupportObjectEvidenceLedger.Kind.ATTACHMENT,app?"USER":"ADMIN",uploader,exactCustomer,assignment,
+            uploadId,key,null,storageProperties.getBucket(),false));
         String boundary="s4boundary"+UUID.randomUUID();var out=new ByteArrayOutputStream();
         var fields=new LinkedHashMap<String,String>();fields.put("clientUploadId",uploadId);
-        if(!app){fields.put("customerId",String.valueOf(customer));fields.put("expectedAssignmentId",String.valueOf(mapper.current(customer).id()));}
+        if(!app){fields.put("customerId",String.valueOf(exactCustomer));fields.put("expectedAssignmentId",String.valueOf(assignment));}
         for(var field:fields.entrySet())
             out.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\""+field.getKey()+"\"\r\n\r\n"+field.getValue()+"\r\n").getBytes());
         out.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\""+name+"\"\r\nContent-Type: "+mime+"\r\n\r\n").getBytes());
@@ -451,7 +558,20 @@ class SupportS4RuntimeTest {
         var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+(app?"/api/app/support/attachments":"/api/admin/content/conversations/attachments"))).timeout(Duration.ofSeconds(20))
             .header("Authorization","Bearer "+token).header("Idempotency-Key",key).header("Content-Type","multipart/form-data; boundary="+boundary)
             .POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray())).build();
-        return json.readTree(client.send(request,HttpResponse.BodyHandlers.ofString()).body());
+        try {
+            var response=client.send(request,HttpResponse.BodyHandlers.ofString());
+            JsonNode body;
+            try {body=json.readTree(response.body());}
+            catch(Exception parseFailure) {
+                try {objects.httpOutcome(intent,response.statusCode(),json.getNodeFactory().textNode(response.body()));}
+                catch(Throwable evidenceFailure) {parseFailure.addSuppressed(evidenceFailure);}
+                throw parseFailure;
+            }
+            objects.httpOutcome(intent,response.statusCode(),body);return body;
+        } catch(Exception|Error failure) {
+            try {objects.requestFailure(intent,failure);} catch(Throwable evidenceFailure) {failure.addSuppressed(evidenceFailure);}
+            throw failure;
+        }
     }
     private HttpResponse<byte[]> download(String path,String token,String range) throws Exception {
         var b=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+path)).timeout(Duration.ofSeconds(20));

@@ -19,13 +19,15 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 class AppSupportControllerTest {
     private final AppSupportService service = mock(AppSupportService.class);
     private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
-    private final AppSupportController controller = new AppSupportController(service, productionPathGuard);
+    private final ffdd.opsconsole.content.application.SupportTicketCreationPolicyService creationPolicy = mock(ffdd.opsconsole.content.application.SupportTicketCreationPolicyService.class);
+    private final AppSupportController controller = new AppSupportController(service, productionPathGuard, creationPolicy);
 
     @Test
-    void exactCreationPolicyRouteReturnsBasicInsteadOfLookingUpATicketNumber() throws Exception {
+    void exactCreationPolicyRouteReturnsAdmissionInsteadOfLookingUpATicketNumber() throws Exception {
         var auth = new UsernamePasswordAuthenticationToken("42", null, List.of());
         auth.setDetails(Map.of("subjectType", "USER"));
-        when(service.ticketCreationPolicy(42L)).thenReturn(ApiResult.ok(Map.of("mode", "BASIC")));
+        when(creationPolicy.policy(42L)).thenReturn(new ffdd.opsconsole.content.application.SupportTicketCreationPolicyService.CreationPolicy(
+                true, null, 0, null, null, 60, 24, 10, 3, 0, 0));
         var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
 
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
@@ -33,22 +35,23 @@ class AppSupportControllerTest {
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Cache-Control", "no-store"))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").value(0))
-                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.mode").value("BASIC"))
-                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.allowed").doesNotExist())
-                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.cooldownSeconds").doesNotExist());
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.mode").doesNotExist())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.allowed").value(true))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.cooldownSeconds").value(60));
         verify(productionPathGuard).requireAllowed(42L);
-        verify(service).ticketCreationPolicy(42L);
+        verify(creationPolicy).policy(42L);
+        org.mockito.Mockito.verifyNoInteractions(service);
         verify(service, never()).ticket(org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
     }
 
     @Test
-    void basicCapabilityRequiresAUserAndTheProductionGuardBeforeTheService() {
+    void admissionPolicyRequiresAUserAndTheProductionGuardBeforeTheService() {
         var response = new org.springframework.mock.web.MockHttpServletResponse();
         var admin = new UsernamePasswordAuthenticationToken("42", null, List.of());
         admin.setDetails(Map.of("subjectType", "ADMIN"));
         assertThat(controller.ticketCreationPolicy(admin, response).getCode()).isEqualTo(403);
         assertThat(controller.ticketCreationPolicy(null, response).getCode()).isEqualTo(403);
-        org.mockito.Mockito.verifyNoInteractions(service, productionPathGuard);
+        org.mockito.Mockito.verifyNoInteractions(service, productionPathGuard, creationPolicy);
 
         var user = new UsernamePasswordAuthenticationToken("42", null, List.of());
         user.setDetails(Map.of("subjectType", "USER"));
@@ -56,7 +59,7 @@ class AppSupportControllerTest {
                 .when(productionPathGuard).requireAllowed(42L);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.ticketCreationPolicy(user, response))
                 .isInstanceOf(BizException.class);
-        org.mockito.Mockito.verifyNoInteractions(service);
+        org.mockito.Mockito.verifyNoInteractions(service, creationPolicy);
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -64,7 +67,7 @@ class AppSupportControllerTest {
     void advisorHonorsTheRealEnvironmentGuardBeforeAnyProjection(String profile) {
         var environment=new org.springframework.mock.env.MockEnvironment();environment.setActiveProfiles(profile);
         var mapper=mock(ffdd.opsconsole.content.mapper.SupportAcceptanceSandboxMapper.class);
-        var endpoint=new AppSupportController(service,new ProductionSupportPathGuard(environment,mapper));
+        var endpoint=new AppSupportController(service,new ProductionSupportPathGuard(environment,mapper),creationPolicy);
         var auth=new UsernamePasswordAuthenticationToken("42",null,List.of());
         auth.setDetails(Map.of("subjectType","USER"));
         org.assertj.core.api.Assertions.assertThatThrownBy(()->endpoint.advisor(Map.of(),auth,
@@ -76,7 +79,7 @@ class AppSupportControllerTest {
         var environment=new org.springframework.mock.env.MockEnvironment();environment.setActiveProfiles("prod");
         var mapper=mock(ffdd.opsconsole.content.mapper.SupportAcceptanceSandboxMapper.class);
         when(mapper.sandboxUser(42L)).thenReturn(1);
-        var endpoint=new AppSupportController(service,new ProductionSupportPathGuard(environment,mapper));
+        var endpoint=new AppSupportController(service,new ProductionSupportPathGuard(environment,mapper),creationPolicy);
         var auth=new UsernamePasswordAuthenticationToken("42",null,List.of());auth.setDetails(Map.of("subjectType","USER"));
         org.assertj.core.api.Assertions.assertThatThrownBy(()->endpoint.advisor(Map.of(),auth,
                 new org.springframework.mock.web.MockHttpServletResponse())).isInstanceOf(BizException.class);

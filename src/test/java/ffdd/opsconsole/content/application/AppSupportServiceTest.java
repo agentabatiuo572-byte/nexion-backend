@@ -89,29 +89,7 @@ class AppSupportServiceTest {
     }
 
     @Test
-    void basicCapabilityHasNoAdmissionLimitsReadsOrWrites() {
-        var result = service.ticketCreationPolicy(42L);
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsExactlyEntriesOf(java.util.Map.of("mode", "BASIC"));
-        verify(productionPathGuard).requireAllowed(42L);
-        verifyNoInteractions(tickets, conversations, knowledge, supportAgents, configFacade,
-                idempotency, idempotencyRecords, audit, eventPublisher);
-    }
-
-    @Test
-    void directBasicCapabilityStillRequiresUserAndProductionContext() {
-        assertThat(service.ticketCreationPolicy(null).getCode()).isEqualTo(403);
-        assertThat(service.ticketCreationPolicy(0L).getCode()).isEqualTo(403);
-        doThrow(new BizException(409, "SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
-                .when(productionPathGuard).requireAllowed(42L);
-        assertThatThrownBy(() -> service.ticketCreationPolicy(42L)).isInstanceOf(BizException.class);
-        verifyNoInteractions(tickets, conversations, knowledge, supportAgents, configFacade,
-                idempotency, idempotencyRecords, audit, eventPublisher);
-    }
-
-    @Test
-    void basicPreReadDoesNotBypassExistingPostInputOrIdempotencyValidation() {
-        assertThat(service.ticketCreationPolicy(42L).getCode()).isZero();
+    void ticketCreationRequiresExistingPostInputAndIdempotencyValidation() {
         var valid = new AppSupportService.CreateTicketRequest("technical", "Title", "Body");
         assertThat(service.createTicket(42L, null, valid).getCode()).isEqualTo(400);
         assertThat(service.createTicket(42L, "basic-create-key", null).getCode()).isEqualTo(422);
@@ -127,7 +105,7 @@ class AppSupportServiceTest {
     }
 
     @Test
-    void basicPreReadKeepsPostRetainedKeyAndSameTicketResult() {
+    void ticketCreationKeepsPostRetainedKeyAndSameTicketResult() {
         var results = new java.util.HashMap<String, Object>();
         org.mockito.Mockito.doAnswer(invocation ->
                 results.computeIfAbsent(invocation.getArgument(0) + ":" + invocation.getArgument(1),
@@ -138,7 +116,6 @@ class AppSupportServiceTest {
         when(tickets.messages("TK-1")).thenReturn(List.of());
         var request = new AppSupportService.CreateTicketRequest(" Technical ", " Title ", " Body ");
 
-        service.ticketCreationPolicy(42L);
         var first = service.createTicket(42L, " basic-create-key ", request);
         var replay = service.createTicket(42L, " basic-create-key ", request);
 

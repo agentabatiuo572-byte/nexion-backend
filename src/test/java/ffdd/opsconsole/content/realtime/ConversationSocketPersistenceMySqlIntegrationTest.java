@@ -714,7 +714,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
                 CustomerProfileRepository profiles,
                 ProductionSupportPathGuard guard) {
             return new OpsConversationService(conversations, tickets, agents, config, audit, clock, seeds,
-                    users, finance, devices, risks, profiles, guard, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class));
+                    users, finance, devices, risks, profiles, guard, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class), mock(ffdd.opsconsole.content.application.SupportCustomerProfileService.class));
         }
 
         @Bean
@@ -724,7 +724,8 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
 
         @Bean
         AppSupportController appSupportController(AppSupportService service, ProductionSupportPathGuard guard) {
-            return new AppSupportController(service, guard);
+            return new AppSupportController(service, guard,
+                    mock(ffdd.opsconsole.content.application.SupportTicketCreationPolicyService.class));
         }
 
         @Bean

@@ -53,6 +53,7 @@ class OpsUser360ServiceTest {
     private final UserOpsRepository userRepository = mock(UserOpsRepository.class);
     private final AdminOperatorRoleResolver roleResolver = mock(AdminOperatorRoleResolver.class);
     private final EventOutboxService outboxService = mock(EventOutboxService.class);
+    private final ffdd.opsconsole.finance.application.FinanceSupportReadService financeRead = mock(ffdd.opsconsole.finance.application.FinanceSupportReadService.class);
     private final OpsUser360Service service = service();
 
     private OpsUser360Service service() {
@@ -65,12 +66,13 @@ class OpsUser360ServiceTest {
                 auditLogService,
                 userRepository,
                 roleResolver,
-                outboxService);
+                outboxService, financeRead);
     }
 
     @BeforeEach
     void useFullC1ScopeByDefault() {
         when(roleResolver.resolveCode()).thenReturn("SUPER_ADMIN");
+        when(financeRead.totals(any())).thenReturn(Map.of("byCurrency",List.of(Map.of("currency","USDT","creditedDepositTotal","1200.5","successfulWithdrawalPrincipalTotal","75","processingWithdrawalPrincipalTotal","9"))));
     }
 
     @Test
@@ -421,8 +423,8 @@ class OpsUser360ServiceTest {
                 .containsEntry("activeSessionCount", 1)
                 .containsEntry("riskScore", 72)
                 .containsEntry("teamSize", 3L);
-        assertThat(summary.get("depositedUsd")).isEqualTo(new BigDecimal("199.50"));
-        assertThat(summary.get("withdrawnUsd")).isEqualTo(new BigDecimal("50.00"));
+        assertThat(summary.get("depositedUsd")).isEqualTo("1200.5");
+        assertThat(summary.get("withdrawnUsd")).isEqualTo("75");
         assertThat(summary.get("dailyUsdt")).isEqualTo(new BigDecimal("4.25"));
         assertThat(team)
                 .containsEntry("directCount", 1L)

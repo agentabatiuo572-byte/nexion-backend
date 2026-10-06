@@ -16,7 +16,7 @@ class AppSupportControllerProductionPathContractTest {
                 "service.conversationCursor", "service.conversation",
                 "service.markConversationRead", "service.startConversation", "service.replyConversation",
                 "service.convertConversationToTicket", "service.faqs", "service.faqPage", "service.slaTargets",
-                "service.commandResult", "service.advisor", "service.ticketCreationPolicy"};
+                "service.commandResult", "service.advisor", "creationPolicy.policy"};
         assertThat(occurrences(source, "guarded(userId)")).isEqualTo(guardedServiceCalls.length);
         for (String serviceCall : guardedServiceCalls) {
             if (serviceCall.equals("service.advisor")) {
@@ -40,7 +40,7 @@ class AppSupportControllerProductionPathContractTest {
         String source = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/web/AppSupportController.java"));
 
         assertThat(source).contains("@GetMapping(\"/conversation-categories\")", "service.conversationCategories(userId)",
-                "@GetMapping(\"/tickets/creation-policy\")", "service.ticketCreationPolicy(userId)",
+                "@GetMapping(\"/tickets/creation-policy\")", "creationPolicy.policy(userId)",
                 "@GetMapping(\"/sla-targets\")", "service.slaTargets(userId)",
                 "@GetMapping(\"/commands/{key}\")", "service.commandResult(userId, key)");
         assertThat(source).doesNotContain("@PostMapping(\"/commands")

@@ -23,9 +23,23 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
     int handled(@Param("no") String no,@Param("through") Long through,@Param("reply") Long reply);
     @Select("SELECT id FROM nx_user WHERE id=#{id} AND is_deleted=0 FOR UPDATE")
     Long lockCustomer(Long id);
+    @Select("SELECT COUNT(*) FROM nx_user WHERE id=#{id} AND is_deleted=0 AND sandbox=0")
+    int canonicalCustomer(Long id);
 
     @Select("SELECT id FROM nx_admin WHERE id=#{id} AND status=1 AND is_deleted=0 FOR UPDATE")
     Long lockAgent(Long id);
+
+    @Select("""
+        SELECT p.id FROM nx_admin a
+          JOIN nx_admin_role_relation rr ON rr.admin_id=a.id AND rr.is_deleted=0
+          JOIN nx_admin_role r ON r.id=rr.role_id AND r.status=1 AND r.is_deleted=0
+          JOIN nx_admin_role_permission rp ON rp.role_id=r.id AND rp.is_deleted=0
+          JOIN nx_admin_permission p ON p.id=rp.permission_id AND p.status=1 AND p.is_deleted=0
+         WHERE a.id=#{id} AND a.status=1 AND a.is_deleted=0
+           AND p.resource_type='API' AND p.permission_code='service_m3_write'
+         ORDER BY r.id,rp.id FOR SHARE
+        """)
+    List<Long> writerGrant(Long id);
 
     @Select("""
         SELECT id,user_id customerId,agent_admin_id agentAdminId,version,source,
@@ -34,17 +48,26 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
         """)
     SupportAssignment current(Long id);
 
-    @Select("SELECT version,dormant_days dormantDays,maintenance_days maintenanceDays,activity_window_days activityWindowDays,inheritance_mode inheritanceMode,max_inheritance_depth maxInheritanceDepth FROM nx_support_rules WHERE id=1 FOR SHARE")
+    @Select("SELECT id,sponsor_user_id sponsorUserId FROM nx_user WHERE id=#{id} AND is_deleted=0")
+    Map<String,Object> invitationSnapshot(Long id);
+    @Select("SELECT id,user_id customerId,agent_admin_id agentAdminId,version,source,segment_root_id segmentRootId,depth,parent_assignment_id parentAssignmentId,rule_version ruleVersion FROM nx_support_agent_user_assignment WHERE id=#{id} AND is_deleted=0")
+    SupportAssignment inheritanceSnapshot(Long id);
+
+    @Select("SELECT version,dormant_days dormantDays,maintenance_days maintenanceDays,activity_window_days activityWindowDays,inheritance_mode inheritanceMode,max_inheritance_depth maxInheritanceDepth,unbound_assignment_mode unboundAssignmentMode,mode_effective_at modeEffectiveAt FROM nx_support_rules WHERE id=1 FOR SHARE")
     SupportRules rules();
+    @Select("SELECT version FROM nx_support_rules WHERE id=1 FOR UPDATE")
+    Long lockRules();
 
     @Update("""
         UPDATE nx_support_rules SET dormant_days=#{d},maintenance_days=#{m},activity_window_days=#{w},
-          inheritance_mode=#{mode},max_inheritance_depth=#{depth},version=version+1,updated_by=#{actor},
+          inheritance_mode=#{mode},max_inheritance_depth=#{depth},
+          mode_effective_at=IF(#{unboundMode} IS NOT NULL AND unbound_assignment_mode<>#{unboundMode},UTC_TIMESTAMP(6),mode_effective_at),
+          unbound_assignment_mode=COALESCE(#{unboundMode},unbound_assignment_mode),version=version+1,updated_by=#{actor},
           reason=#{reason},updated_at=UTC_TIMESTAMP(6) WHERE id=1 AND version=#{version}
         """)
     int updateRules(@Param("d") Integer d,@Param("m") Integer m,@Param("w") Integer w,
         @Param("mode") String mode,@Param("depth") Integer depth,@Param("version") Long version,
-        @Param("actor") Long actor,@Param("reason") String reason);
+        @Param("actor") Long actor,@Param("reason") String reason,@Param("unboundMode") String unboundMode);
 
     String ELIGIBLE_AGENT_FROM = """
         FROM nx_admin a JOIN nx_support_agent_profile p ON p.admin_id=a.id
@@ -55,6 +78,11 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
         """;
     @Select("SELECT COUNT(DISTINCT a.id) " + ELIGIBLE_AGENT_FROM + " AND a.id=#{id} FOR SHARE")
     int eligibleAgent(Long id);
+    @Select("SELECT COUNT(DISTINCT a.id) " + ELIGIBLE_AGENT_FROM + " AND a.id=#{id}")
+    int eligibleAgentSnapshot(Long id);
+
+    @Select("SELECT DISTINCT a.id " + ELIGIBLE_AGENT_FROM + " ORDER BY a.id")
+    List<Long> eligibleAgents();
 
     @Select("""
         SELECT r.role_code FROM nx_admin a JOIN nx_admin_role_relation rr ON rr.admin_id=a.id
@@ -62,6 +90,10 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
          WHERE a.id=#{id} AND a.status=1 AND a.is_deleted=0 AND rr.is_deleted=0 AND r.is_deleted=0 AND r.status=1 FOR SHARE
         """)
     List<String> roles(Long id);
+    @Select("SELECT r.role_code FROM nx_admin a JOIN nx_admin_role_relation rr ON rr.admin_id=a.id JOIN nx_admin_role r ON r.id=rr.role_id WHERE a.id=#{id} AND a.status=1 AND a.is_deleted=0 AND rr.is_deleted=0 AND r.is_deleted=0 AND r.status=1")
+    List<String> rolesSnapshot(Long id);
+    @Select("SELECT COUNT(*) FROM nx_support_agent_profile WHERE admin_id=#{id} AND enabled=1 AND is_deleted=0 AND seat_type='MANAGER'")
+    int supervisorProfileSnapshot(Long id);
 
     @Select("SELECT COUNT(*) FROM nx_support_agent_profile WHERE admin_id=#{id} AND enabled=1 AND is_deleted=0 AND seat_type='MANAGER' FOR SHARE")
     int supervisorProfile(Long id);
@@ -89,12 +121,26 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
 
     @Insert("INSERT INTO nx_support_binding_pool(customer_id,reason,version,entered_at) VALUES(#{id},#{reason},1,UTC_TIMESTAMP(6))")
     int enterPool(@Param("id") Long id,@Param("reason") String reason);
+    @Update("UPDATE nx_support_binding_pool SET auto_eligible=1,auto_rule_version=#{version},auto_attempt_state='WAITING_CANDIDATE',operation_id=#{operation} WHERE customer_id=#{id}")
+    int eligiblePool(@Param("id") Long id,@Param("version") Long version,@Param("operation") String operation);
+    @Update("UPDATE nx_support_binding_pool SET auto_attempt_state=#{state},attempts=attempts+1,last_attempt_at=UTC_TIMESTAMP(6),last_outcome=#{outcome},version=version+1 WHERE customer_id=#{id}")
+    int attemptPool(@Param("id") Long id,@Param("state") String state,@Param("outcome") String outcome);
+    @Select("SELECT p.customer_id FROM nx_support_binding_pool p JOIN nx_user u ON u.id=p.customer_id AND u.is_deleted=0 AND u.sandbox=0 WHERE p.auto_eligible=1 ORDER BY COALESCE(p.last_attempt_at,p.entered_at),p.customer_id LIMIT 100")
+    List<Long> autoPending();
+    @Select("SELECT auto_eligible FROM nx_support_binding_pool WHERE customer_id=#{id} FOR SHARE")
+    Boolean autoEligible(Long id);
     @Select("SELECT version FROM nx_support_binding_pool WHERE customer_id=#{id} FOR SHARE")
     Long poolVersion(Long id);
+    @Select("SELECT reason FROM nx_support_binding_pool WHERE customer_id=#{id} FOR SHARE")
+    String poolReason(Long id);
+    @Select("SELECT customer_id customerId,reason,auto_eligible autoEligible,auto_rule_version autoRuleVersion,auto_attempt_state autoAttemptState,attempts,last_attempt_at lastAttemptAt,last_outcome lastOutcome,operation_id operationId FROM nx_support_binding_pool WHERE customer_id=#{id}")
+    Map<String,Object> poolAttempt(Long id);
     @Delete("DELETE FROM nx_support_binding_pool WHERE customer_id=#{id}")
     int leavePool(Long id);
     @Select("""
-        <script>SELECT p.customer_id customerId,p.reason,p.version,p.entered_at enteredAt,u.sponsor_user_id inviterId,
+        <script>SELECT p.customer_id customerId,p.reason,p.version,p.entered_at enteredAt,p.auto_eligible autoEligible,
+          p.auto_rule_version autoRuleVersion,p.auto_attempt_state autoAttemptState,p.attempts,p.last_attempt_at lastAttemptAt,
+          p.last_outcome lastOutcome,p.operation_id operationId,u.sponsor_user_id inviterId,
           u.nickname FROM nx_support_binding_pool p JOIN nx_user u ON u.id=p.customer_id AND u.is_deleted=0
           WHERE 1=1 <if test='reason != null'>AND p.reason=#{reason}</if>
           <if test='keyword != null'>AND (u.nickname LIKE CONCAT('%',#{keyword},'%') OR CAST(u.id AS CHAR)=#{keyword})</if>

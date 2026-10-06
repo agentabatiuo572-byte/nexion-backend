@@ -28,7 +28,7 @@ class SupportWorkbenchServiceTest {
     private final SupportOwnershipService ownership=mock(SupportOwnershipService.class);
     private final SupportActivityService activity=mock(SupportActivityService.class);
     private final PlatformTransactionManager transactions=mock(PlatformTransactionManager.class);
-    private final SupportWorkbenchService service=new SupportWorkbenchService(mapper,bindings,ownership,activity,transactions);
+    private final SupportWorkbenchService service=new SupportWorkbenchService(mapper,bindings,ownership,activity,transactions,mock(SupportCustomerProfileService.class));
 
     private void setup(SupportRules rules,long unknownWindow) {
         when(ownership.actorId()).thenReturn(7L);
@@ -54,7 +54,7 @@ class SupportWorkbenchServiceTest {
         assertThat(map(result.get("overview"))).containsEntry("activeTotal",null).containsEntry("dormantTotal",null)
                 .containsEntry("dueTotal",1L).containsEntry("todoTotal",1L);
         assertThat(map(result.get("customers"))).containsEntry("available",true).containsEntry("total",1L);
-        assertThat(result).containsEntry("rulesVersion",5L).containsEntry("evaluatedAt","2026-09-29T10:00Z");
+        assertThat(result).containsEntry("rulesVersion",5L).containsEntry("evaluatedAt","2026-09-29T10:00:00Z");
         var captor=ArgumentCaptor.forClass(TransactionDefinition.class); verify(transactions).getTransaction(captor.capture());
         assertThat(captor.getValue().getIsolationLevel()).isEqualTo(TransactionDefinition.ISOLATION_REPEATABLE_READ);
         @SuppressWarnings("rawtypes") var query=ArgumentCaptor.forClass(Map.class);

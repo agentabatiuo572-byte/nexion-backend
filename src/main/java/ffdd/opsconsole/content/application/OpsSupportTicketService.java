@@ -11,7 +11,6 @@ import ffdd.opsconsole.content.domain.SupportSlaView;
 import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.domain.SupportTicketEscalationResult;
 import ffdd.opsconsole.content.domain.SupportTicketView;
-import ffdd.opsconsole.content.domain.SupportAgentProfileView;
 import ffdd.opsconsole.content.dto.SupportTicketAssigneeRequest;
 import ffdd.opsconsole.content.dto.SupportTicketArchiveRequest;
 import ffdd.opsconsole.content.dto.SupportTicketCreateRequest;
@@ -246,7 +245,7 @@ public class OpsSupportTicketService {
                 c.ownerAgentId(),c.ownerAgentName(),c.unreadCount(),SupportTicketView.RESTRICTED_TEXT,c.lastMessageAt(),
                 c.transferFromAgentId(),c.transferFromAgentName(),c.transferToType(),c.transferToId(),c.transferToName(),
                 c.transferReason()==null?null:SupportTicketView.RESTRICTED_TEXT,c.transferredAt(),c.updatedAt(),
-                c.version(),c.lastPublicMessageId(),c.lastMessageKind());
+                c.version(),c.lastPublicMessageId(),c.lastMessageKind(),c.archived());
     }
 
     private String requestHash(String... values) {
@@ -324,7 +323,7 @@ public class OpsSupportTicketService {
                 evaluatedAt);
     }
 
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<SupportTicketDetail> create(String idempotencyKey, SupportTicketCreateRequest request) {
         ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requireCreateCommand(idempotencyKey, request);
@@ -340,13 +339,6 @@ public class OpsSupportTicketService {
     }
 
     private ApiResult<SupportTicketDetail> createOnce(String idempotencyKey, SupportTicketCreateRequest request) {
-        SupportAgentProfileView assignedAgent = null;
-        if (request.assignedAdminId() != null) {
-            assignedAgent = supportAgentService.assignableSupportAgent(request.assignedAdminId()).orElse(null);
-            if (assignedAgent == null) {
-                return ApiResult.fail(404, "SUPPORT_AGENT_NOT_ASSIGNABLE");
-            }
-        }
         LocalDateTime now = LocalDateTime.now(clock);
         String category = normalizeCategory(request.category());
         String priority = normalizePriority(request.priority());
@@ -359,7 +351,7 @@ public class OpsSupportTicketService {
                 request.title().trim(),
                 request.body().trim(),
                 request.assignedAdminId(),
-                assignedAgent == null ? "Unassigned" : assignedAgent.name(),
+                null, // The common creation boundary resolves the current dedicated advisor's name.
                 authenticatedOperator(request.operator()),
                 now);
         String actor = authenticatedOperator(request.operator());
@@ -508,43 +500,7 @@ public class OpsSupportTicketService {
         if (guard != null) {
             return guard;
         }
-        return idempotentCommand(
-                "M2_SUPPORT_TICKET_ASSIGN",
-                idempotencyKey,
-                requestHash(ticketNo, String.valueOf(request)),
-                () -> assignOnce(ticketNo, idempotencyKey, request));
-    }
-
-    private ApiResult<SupportTicketDetail> assignOnce(String ticketNo, String idempotencyKey, SupportTicketAssigneeRequest request) {
-        SupportTicketView ticket = find(ticketNo);
-        if (ticket == null) {
-            return ApiResult.fail(404, "SUPPORT_TICKET_NOT_FOUND");
-        }
-        ApiResult<SupportTicketDetail> precondition = requireTicketPrecondition(
-                ticket, request.expectedStatus(), request.expectedVersion());
-        if (precondition != null) {
-            return precondition;
-        }
-        if (Boolean.TRUE.equals(ticket.archived()) || "CLOSED".equalsIgnoreCase(ticket.status())) {
-            return invalidState();
-        }
-        SupportAgentProfileView targetAgent = supportAgentService.assignableSupportAgent(request.assignedAdminId()).orElse(null);
-        if (targetAgent == null) {
-            return ApiResult.fail(404, "SUPPORT_AGENT_NOT_ASSIGNABLE");
-        }
-        String actor = authenticatedOperator(request.operator());
-        String targetName = targetAgent.name();
-        LocalDateTime now = LocalDateTime.now(clock);
-        if (!ticketRepository.assignCas(ticket, request.assignedAdminId(), targetName, now)) {
-            return ticketConflict();
-        }
-        ticketRepository.appendSystemTrace(ticket, "负责人由 " + assignedName(ticket.assignedAdminName()) + " 转交给 " + targetName + "（" + actor + "）", now);
-        audit("M2_SUPPORT_TICKET_ASSIGNED", ticket.ticketNo(), actor, Map.of(
-                "assignedAdminId", request.assignedAdminId(),
-                "assignedAdminName", targetName,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return detail(ticket.ticketNo());
+        throw new ffdd.opsconsole.shared.exception.BizException(409, "SUPPORT_TICKET_OWNER_MANAGED_BY_BINDING");
     }
 
     @Transactional

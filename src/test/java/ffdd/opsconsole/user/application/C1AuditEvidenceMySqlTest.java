@@ -37,15 +37,18 @@ import org.springframework.transaction.interceptor.TransactionInterceptor;
 /** Opt-in, disposable schema on this task's isolated MySQL only; never uses application DB defaults. */
 @EnabledIfEnvironmentVariable(named = "NEXION_C1_AUDIT_MYSQL", matches = "true")
 class C1AuditEvidenceMySqlTest {
-    private static final String BASE = "jdbc:mysql://127.0.0.1:18362/";
-    private static final String SCHEMA = "bug4_c1_" + UUID.randomUUID().toString().replace("-", "");
+    private static final boolean CORE = "true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED"));
+    private static final String BASE = CORE ? "jdbc:mysql://127.0.0.1:33329/" : "jdbc:mysql://127.0.0.1:18362/";
+    private static final String SCHEMA = CORE ? "cs_enhance_20261001_c1_audit" : "bug4_c1_" + UUID.randomUUID().toString().replace("-", "");
     private static DriverManagerDataSource source;
     private static JdbcTemplate jdbc;
     private static SqlSessionFactory factory;
+    private static boolean ownsSchema;
 
     @BeforeAll static void createDisposableSchema() {
         JdbcTemplate server = new JdbcTemplate(source(""));
         server.execute("CREATE DATABASE " + SCHEMA + " CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+        ownsSchema = true;
         source = source(SCHEMA);
         jdbc = new JdbcTemplate(source);
         jdbc.execute("""
@@ -73,17 +76,34 @@ class C1AuditEvidenceMySqlTest {
     }
 
     private static DriverManagerDataSource source(String schema) {
+        if(CORE && (!System.getenv("NEXION_DB_URL").startsWith("jdbc:mysql://127.0.0.1:33329/cs_enhance_20261001?") || !"cs_enhance_runner".equals(System.getenv("NEXION_DB_USERNAME"))))throw new IllegalStateException("Owned core MySQL required");
         return new DriverManagerDataSource(BASE + schema + "?serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true",
-                "root", System.getenv("NEXION_C1_AUDIT_MYSQL_PASSWORD"));
+                CORE ? "cs_enhance_runner" : "root", System.getenv(CORE ? "NEXION_DB_PASSWORD" : "NEXION_C1_AUDIT_MYSQL_PASSWORD"));
     }
 
     @AfterAll static void dropOnlyOwnedSchema() {
-        if (SCHEMA.matches("bug4_c1_[a-f0-9]{32}")) new JdbcTemplate(source("")).execute("DROP DATABASE IF EXISTS " + SCHEMA);
+        if (ownsSchema && (SCHEMA.matches("bug4_c1_[a-f0-9]{32}") || CORE && SCHEMA.equals("cs_enhance_20261001_c1_audit"))) {
+            new JdbcTemplate(source("")).execute("DROP DATABASE IF EXISTS " + SCHEMA);
+            ownsSchema = false;
+        }
     }
 
     @BeforeEach void clearOwnedFixture() {
         jdbc.update("DELETE FROM nx_event_outbox");
         jdbc.update("DELETE FROM nx_audit_log");
+    }
+
+    @Test void failedCreateDoesNotDropAnExistingSchema() {
+        ownsSchema = false;
+        try {
+            assertThatThrownBy(C1AuditEvidenceMySqlTest::createDisposableSchema)
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class);
+            dropOnlyOwnedSchema();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=?", Long.class, SCHEMA))
+                    .isEqualTo(2L);
+        } finally {
+            ownsSchema = true;
+        }
     }
 
     @Test void unlinkedHeadCannotStarveLinkedProfileAndRemainsVisibleWithoutRetries() {
@@ -168,7 +188,8 @@ class C1AuditEvidenceMySqlTest {
             throw new IllegalStateException("AUDIT_REQUIRED_TEST_FAILURE");
         }).when(audit).recordRequired(any());
         var target = new OpsUser360Service(users, mock(OpsFinanceService.class), mock(OpsTreasuryService.class),
-                mock(OpsDeviceService.class), mock(OpsRiskService.class), audit, repository, roles, outbox);
+                mock(OpsDeviceService.class), mock(OpsRiskService.class), audit, repository, roles, outbox,
+                mock(ffdd.opsconsole.finance.application.FinanceSupportReadService.class));
         ProxyFactory proxyFactory = new ProxyFactory(target);
         proxyFactory.setProxyTargetClass(true);
         proxyFactory.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(source), new AnnotationTransactionAttributeSource()));

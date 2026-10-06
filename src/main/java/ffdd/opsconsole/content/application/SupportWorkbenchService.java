@@ -26,6 +26,7 @@ public class SupportWorkbenchService {
     private final SupportOwnershipService ownership;
     private final SupportActivityService activity;
     private final PlatformTransactionManager transactions;
+    private final SupportCustomerProfileService profiles;
 
     /**
      * Each response replaces BOTH cards and page. snapshotId is not a reusable snapshot token.
@@ -79,6 +80,7 @@ public class SupportWorkbenchService {
             if(rows.isEmpty()) throw new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND");
             var result=metadata(scopedAgent,rules,coverage);
             result.put("customer",customerView(rows.get(0),rules));
+            result.put("profile",profiles.profile(customer));
             return wire(result);
         });
     }
@@ -99,7 +101,7 @@ public class SupportWorkbenchService {
         return actor;
     }
 
-    private Map<String,Object> query(Long agent,Long customer,SupportRules rules,SupportActivityService.Coverage coverage) {
+    static Map<String,Object> query(Long agent,Long customer,SupportRules rules,SupportActivityService.Coverage coverage) {
         var q=new HashMap<String,Object>();
         q.put("agentId",agent); q.put("customerId",customer); q.put("evaluatedAt",coverage.observedThroughAt());
         q.put("coverageStartAt",coverage.coverageStartAt());
@@ -125,8 +127,16 @@ public class SupportWorkbenchService {
         return result;
     }
 
-    private Map<String,Object> customerView(Map<String,Object> source,SupportRules rules) {
+    static Map<String,Object> customerView(Map<String,Object> source,SupportRules rules) {
         var row=new LinkedHashMap<>(source);
+        var asset=row.remove("advisorAvatarAssetId");var avatarVersion=row.remove("advisorAvatarVersion");
+        if(asset==null || asset.toString().isBlank()) {
+            row.put("advisorAvatar",null);row.put("advisorAvatarRef",null);
+        } else {
+            var avatar=new LinkedHashMap<String,Object>();avatar.put("assetId",asset);avatar.put("version",avatarVersion);
+            row.put("advisorAvatar",avatar);
+            row.put("advisorAvatarRef","/api/admin/content/support-agents/"+row.get("agentAdminId")+"/avatar?customerId="+row.get("customerId"));
+        }
         for(String name:List.of("enabled","waitingReply","firstContact","due")) row.put(name,number(row.get(name))!=0);
         if(rules.maintenanceDays()==null) row.put("due",null);
         for(String name:List.of("lastEffectiveAt","lastExecutionAt","lastSucceededAt","nextDueAt","openCycleId","stoppedReason",
@@ -193,7 +203,7 @@ public class SupportWorkbenchService {
         return value==null?0:((Number)value).longValue();
     }
 
-    private static String utc(LocalDateTime value) { return value.atOffset(ZoneOffset.UTC).toString(); }
+    private static String utc(LocalDateTime value) { return value.toInstant(ZoneOffset.UTC).toString(); }
 
     @SuppressWarnings("unchecked")
     public static Map<String,Object> wire(Map<String,Object> source) { return (Map<String,Object>)wireValue(source); }
