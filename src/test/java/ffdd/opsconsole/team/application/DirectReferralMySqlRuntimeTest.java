@@ -665,7 +665,7 @@ class DirectReferralMySqlRuntimeTest {
         when(commissions.recordCommissionOperation(anyString(),anyString(),anyString(),anyLong(),anyString(),anyString())).thenReturn(true);
         var permissions=mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class);
         when(permissions.getPermissionCodes(anyLong())).thenReturn(Set.of("network_f5_commission_dispose","network_f5_commission_reject"));
-        ops=proxy(new OpsTeamService(platform,coverage,ledger,audit,ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),mock(ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository.class),commissions,permissions,mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),mock(VRankPromotionEngine.class),mock(VRankRewardDispatcher.class),outbox,mock(LeadershipPoolService.class),f5,idempotency,null,provider));
+        ops=proxy(new OpsTeamService(platform,coverage,ledger,audit,ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),mock(ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository.class),commissions,permissions,mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),mock(VRankPromotionEngine.class),mock(VRankRewardDispatcher.class),outbox,mock(LeadershipPoolService.class),f5,idempotency,null,provider,mock(VRankSkuFulfillmentService.class)));
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(1L,null,List.of()));
         long base=900000000L+System.currentTimeMillis()%100000000;a=base;b=base+1;c=base+2;d=base+3;
         user(a,null);user(b,a);user(c,b);user(d,c);

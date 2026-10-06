@@ -29,6 +29,8 @@ class VRankSkuFulfillmentServiceTest {
     @BeforeEach
     void transactionManager() {
         when(tx.getTransaction(any())).thenAnswer(ignored -> new SimpleTransactionStatus());
+        when(mapper.lockSkuPayoutStatus(21L, "V5", "rack-p1")).thenReturn("PENDING_GRANT");
+        when(mapper.lockSkuFulfillments(21L, "V5", "rack-p1")).thenReturn(java.util.List.of(row));
     }
 
     @Test
@@ -38,6 +40,9 @@ class VRankSkuFulfillmentServiceTest {
         when(mapper.reserveSkuStock("rack-p1")).thenReturn(1);
         when(mapper.insertSkuEntitlement(7L, 21L, "rack-p1", "V5")).thenReturn(1);
         when(mapper.countGrantedSkuEntitlement(7L, 21L, "rack-p1")).thenReturn(1);
+        when(mapper.lockSkuEntitlement(7L)).thenReturn(null, java.util.Map.of(
+                "userId", 21L, "rankCode", "V5", "skuId", "rack-p1", "status", "GRANTED",
+                "source", "VRANK_REWARD", "deleted", 0));
         when(mapper.grantSkuPayout(21L, "V5", "rack-p1")).thenReturn(1);
         when(mapper.completeSkuFulfillment(7L)).thenReturn(1);
 

@@ -253,6 +253,7 @@ public class OpsTeamService implements AuditReplayable {
     private final AdminIdempotencyService idempotencyService;
     private final org.springframework.beans.factory.ObjectProvider<DirectReferralPolicyService> directPolicies;
     private final org.springframework.beans.factory.ObjectProvider<DirectReferralService> directReferrals;
+    private final VRankSkuFulfillmentService skuFulfillmentService;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> binarySummary = binarySettlementSummary();
@@ -3455,7 +3456,7 @@ public class OpsTeamService implements AuditReplayable {
         String reason = request.reason().trim();
 
         // 资金类(usdt/nex)B1 预检 + 新 commission_event + ledgerPostingFacade.postLedgerEntry
-        // 权益类(voucher/sku/custom)不走 D4,仅 UPDATE payout 状态
+        // SKU 按原 payout 标的联动真实权益;券/custom 保留既有分支。
         if ("usdt".equals(rewardType) || "nex".equals(rewardType)) {
             if (amount.compareTo(BigDecimal.ZERO) > 0 && coverageBelowRedline()) {
                 return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
@@ -3489,6 +3490,9 @@ public class OpsTeamService implements AuditReplayable {
             }
         }
 
+        if ("sku".equals(rewardType)) {
+            skuFulfillmentService.reissueSkuReward(userId, rankCode, textValue(original, "skuId", ""), operator);
+        }
         boolean updated = commissionRepository.updateRewardPayoutStatus(
                 payoutId.trim(), "REISSUED", operator, "[REISSUE] " + reason);
         if (!updated) {
@@ -3521,7 +3525,9 @@ public class OpsTeamService implements AuditReplayable {
         response.put("rewardType", rewardType);
         response.put("rankCode", rankCode);
         response.put("amount", amount);
-        response.put("source", "nx_v_rank_reward_payout + nx_commission_event (reissue)");
+        response.put("source", "sku".equals(rewardType)
+                ? "nx_v_rank_reward_payout + nx_user_sku_entitlement + nx_v_rank_reward_fulfillment"
+                : "nx_v_rank_reward_payout + nx_commission_event (reissue)");
         return ApiResult.ok(response);
     }
 
@@ -3582,6 +3588,10 @@ public class OpsTeamService implements AuditReplayable {
             ledgerPostingFacade.reverseCommissionFunds(commissionEventId);
         }
 
+        if ("sku".equals(rewardType)) {
+            skuFulfillmentService.reverseSkuReward(userId, rankCode, textValue(original, "skuId", ""),
+                    currentStatus, operator, reason);
+        }
         boolean updated = commissionRepository.updateRewardPayoutStatus(
                 payoutId.trim(), "REVERSED", operator, "[REVERSE] " + reason);
         if (!updated) {
@@ -3616,7 +3626,9 @@ public class OpsTeamService implements AuditReplayable {
         response.put("rankCode", rankCode);
         response.put("commissionEventId", commissionEventId == null ? "" : commissionEventId);
         response.put("amount", amount);
-        response.put("source", "nx_v_rank_reward_payout + nx_commission_event (reverse)");
+        response.put("source", "sku".equals(rewardType)
+                ? "nx_v_rank_reward_payout + nx_user_sku_entitlement + nx_v_rank_reward_fulfillment"
+                : "nx_v_rank_reward_payout + nx_commission_event (reverse)");
         return ApiResult.ok(response);
     }
 

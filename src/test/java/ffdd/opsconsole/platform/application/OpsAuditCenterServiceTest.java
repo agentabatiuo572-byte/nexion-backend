@@ -470,7 +470,8 @@ class OpsAuditCenterServiceTest {
                 mock(ffdd.opsconsole.team.application.VRankPromotionEngine.class),
                 mock(ffdd.opsconsole.team.application.VRankRewardDispatcher.class), outbox,
                 mock(ffdd.opsconsole.team.application.LeadershipPoolService.class),
-                mock(ffdd.opsconsole.team.application.F5CommissionService.class), idempotencyService, null, null);
+                mock(ffdd.opsconsole.team.application.F5CommissionService.class), idempotencyService, null, null,
+                mock(ffdd.opsconsole.team.application.VRankSkuFulfillmentService.class));
         var dispatcher = new AuditReplayDispatcher(List.of(team));
         doAnswer(invocation -> dispatcher.dispatch(invocation.getArgument(0), invocation.getArgument(1)))
                 .when(replayDispatcher).dispatch(any(), any());
