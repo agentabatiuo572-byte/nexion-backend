@@ -55,6 +55,9 @@ public class E4OrderRefundSettlementFacadeAdapter implements E4OrderRefundSettle
         String billNo = "E4-BILL-" + orderNo;
         String remark = "E4 order refund | orderNo=" + orderNo + " | operator=" + operator
                 + " | reason=" + reason + " | key=" + idempotencyKey;
+        if (remark.codePointCount(0, remark.length()) > 255) {
+            remark = remark.substring(0, remark.offsetByCodePoints(0, 255));
+        }
         if (mapper.insertLedger(userId, ledgerBizNo, normalizedAmount, availableAfter, remark) != 1
                 || mapper.insertBill(userId, billNo, normalizedAmount) != 1) {
             throw new IllegalStateException("ORDER_REFUND_LEDGER_WRITE_FAILED");
