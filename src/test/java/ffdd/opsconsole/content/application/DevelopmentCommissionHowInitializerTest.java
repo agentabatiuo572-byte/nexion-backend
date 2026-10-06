@@ -21,7 +21,7 @@ class DevelopmentCommissionHowInitializerTest {
     private final AuditLogService audit = mock(AuditLogService.class);
 
     private Map<String, Object> baseline() throws Exception {
-        return baseline("2026.10.05");
+        return baseline("2026.10.06");
     }
 
     private Map<String, Object> baseline(String date) throws Exception {

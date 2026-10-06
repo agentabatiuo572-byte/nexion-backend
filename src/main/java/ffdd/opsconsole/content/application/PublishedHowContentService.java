@@ -22,7 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /** One server-owned publication document for all six How-it-works pages. */
 @Service
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_=@org.springframework.beans.factory.annotation.Autowired)
 public class PublishedHowContentService {
     static final String CONFIG_KEY = "how-it-works.published";
     static final Set<String> CONTENT_KEYS = Set.of(
@@ -30,6 +30,8 @@ public class PublishedHowContentService {
             "team-binary-how", "team-commissions-how", "team-unilevel-how");
     private final PlatformConfigFacade config;
     private final Environment environment;
+    private final ffdd.opsconsole.team.application.DirectReferralPolicyService directPolicies;
+    public PublishedHowContentService(PlatformConfigFacade config,Environment environment,AuditLogService audit){this(config,environment,null,audit);}
     private final AuditLogService audit;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -68,6 +70,16 @@ public class PublishedHowContentService {
         } catch (Exception ex) {
             return unavailable();
         }
+    }
+    public ApiResult<Map<String,Object>> publicContent(String key,String locale,Integer schemaVersion){
+        boolean affected=Set.of("team-commissions-how","team-unilevel-how").contains(key);
+        if(affected&&directPolicies!=null)directPolicies.requireSchema(schemaVersion);
+        var result=publicContent(key,locale);
+        if(affected&&Integer.valueOf(2).equals(schemaVersion)&&result.getCode()==0&&directPolicies!=null&&directPolicies.sevenLayerActive(java.time.LocalDateTime.now(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE))){
+            var value=result.getData();String expected="team-unilevel-how".equals(key)?"unilevel-v2":"commissions-v2";
+            if(!Integer.valueOf(2).equals(value.get("schemaVersion"))||!expected.equals(value.get("templateId")))return unavailable();
+        }
+        return result;
     }
 
     public ApiResult<Map<String, Object>> adminView() {

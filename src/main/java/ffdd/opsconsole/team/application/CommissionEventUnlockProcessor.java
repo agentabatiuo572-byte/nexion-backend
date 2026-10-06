@@ -30,7 +30,8 @@ public class CommissionEventUnlockProcessor {
         }
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
         String group = direct == null ? null : direct.groupForEvent(eventId);
-        if (group != null) return direct.release(group);
+        if (group != null) return direct.releaseEvent(eventId);
+        if (direct != null) direct.lockEventSource(eventId, true);
         if (mapper.unlockCoolingEventCas(eventId, expectedVersion) != 1) {
             return false;
         }

@@ -22,6 +22,7 @@ public interface F5CommissionMapper {
                    e.source_user_id AS sourceUserId,
                    e.layer_no AS layer,
                    e.order_no AS orderNo,
+                   (SELECT s.settlement_no FROM nx_direct_referral_settlement s WHERE s.usdt_event_id=e.id OR s.nex_event_id=e.id LIMIT 1) AS settlementNo,
                    e.status AS rawStatus,
                    e.version AS version,
                    e.frozen_from_status AS frozenFromStatus,
@@ -125,8 +126,7 @@ public interface F5CommissionMapper {
             @Param("limit") int limit);
 
     /**
-     * Bounded server-side export page. The projection intentionally omits order numbers,
-     * ledger references and every other field that is not part of the redacted CSV contract.
+     * Bounded export with redacted identities and canonical business source/group references.
      */
     @Select("""
             <script>
@@ -138,6 +138,8 @@ public interface F5CommissionMapper {
                    CASE WHEN UPPER(e.currency) = 'NEX' THEN e.amount_nex ELSE e.amount_usdt END AS amount,
                    e.source_user_id AS sourceUserId,
                    e.layer_no AS layer,
+                   e.order_no AS orderNo,
+                   (SELECT s.settlement_no FROM nx_direct_referral_settlement s WHERE s.usdt_event_id=e.id OR s.nex_event_id=e.id LIMIT 1) AS settlementNo,
                    DATE_FORMAT(COALESCE(e.updated_at, e.created_at), '%Y-%m-%d %H:%i:%s') AS settledAt,
                    CASE
                      WHEN UPPER(e.status) IN ('REVERSED', 'ROLLBACK') THEN 'reversed'
@@ -318,6 +320,7 @@ public interface F5CommissionMapper {
                    e.source_user_id AS sourceUserId,
                    e.layer_no AS layer,
                    e.order_no AS orderNo,
+                   (SELECT s.settlement_no FROM nx_direct_referral_settlement s WHERE s.usdt_event_id=e.id OR s.nex_event_id=e.id LIMIT 1) AS settlementNo,
                    e.status AS rawStatus,
                    e.version AS version,
                    e.frozen_from_status AS frozenFromStatus

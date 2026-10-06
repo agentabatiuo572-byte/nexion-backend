@@ -198,6 +198,7 @@ public class AppTeamInsightsService {
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> unilevel(
             Long userId, String requestedPeriod, long requestedPage, long requestedPageSize, String requestedSnapshotAt) {
+        if (sevenLayerEnabled()) return ApiResult.fail(422, "TEAM_SCHEMA_VERSION_UNSUPPORTED");
         String period = requestedPeriod == null ? "week" : requestedPeriod.trim().toLowerCase();
         if (!PERIODS.contains(period)) return ApiResult.fail(422, "TEAM_UNILEVEL_PERIOD_INVALID");
         if (!validPage(requestedPage, requestedPageSize)) return ApiResult.fail(422, "TEAM_UNILEVEL_PAGE_INVALID");
@@ -234,6 +235,93 @@ public class AppTeamInsightsService {
         result.put("snapshotAt", snapshotAt.toString());
         result.put("generatedAt", Instant.now().toString());
         return ApiResult.ok(result);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public ApiResult<Map<String, Object>> unilevel(Long userId, String requestedPeriod, long page, long pageSize,
+            String requestedSnapshotAt, String requestedFilter, int schemaVersion) {
+        if (schemaVersion != 1 && schemaVersion != 2) return ApiResult.fail(422, "TEAM_SCHEMA_VERSION_UNSUPPORTED");
+        String filter = requestedFilter == null ? "all" : requestedFilter.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!Set.of("all", "direct", "extended").contains(filter)) return ApiResult.fail(422, "TEAM_UNILEVEL_FILTER_INVALID");
+        if (schemaVersion == 1) {
+            if (!"all".equals(filter)) return ApiResult.fail(422, "TEAM_SCHEMA_VERSION_UNSUPPORTED");
+            return unilevel(userId, requestedPeriod, page, pageSize, requestedSnapshotAt);
+        }
+        String period = requestedPeriod == null ? "week" : requestedPeriod.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!PERIODS.contains(period)) return ApiResult.fail(422, "TEAM_UNILEVEL_PERIOD_INVALID");
+        if (!validPage(page, pageSize)) return ApiResult.fail(422, "TEAM_UNILEVEL_PAGE_INVALID");
+        Scope scope = scope(userId);
+        Instant snapshot = snapshotAt(requestedSnapshotAt);
+        LocalDateTime boundary = LocalDateTime.ofInstant(snapshot, BUSINESS_ZONE);
+        SettlementWindow window = settlementWindow(period, boundary.toLocalDate());
+        Map<String, Object> direct = purchaseSummary(null), extended = purchaseSummary(null);
+        for (var row : mapper.purchaseSummary(userId, scope.sandbox(), scope.sourceEnvironment(), scope.runId(),
+                boundary, window.fromInclusive(), window.toExclusive())) {
+            if ("direct".equals(row.rewardScope())) direct = purchaseSummary(row);
+            else if ("extended".equals(row.rewardScope())) extended = purchaseSummary(row);
+        }
+        Map<String, Object> summary = "direct".equals(filter) ? direct : "extended".equals(filter) ? extended
+                : combinedPurchaseSummary(direct, extended);
+        List<Map<String, Object>> events = mapper.purchaseRewards(userId, scope.sandbox(), scope.sourceEnvironment(),
+                scope.runId(), boundary, window.fromInclusive(), window.toExclusive(), filter,
+                (page - 1) * pageSize, pageSize).stream().map(this::purchaseReward).toList();
+        Map<String, Object> result = provenance(scope);
+        result.put("schemaVersion", 2);
+        result.put("settlementMode", sevenLayerEnabled() ? "SEVEN_V2" : "DIRECT_ONLY_V1");
+        result.put("period", period); result.put("filter", filter); result.put("events", events);
+        result.put("split", Map.of("direct", direct, "extended", extended)); result.put("summary", summary);
+        result.put("page", page); result.put("pageSize", pageSize); result.put("totalRows", summary.get("count"));
+        result.put("snapshotAt", snapshot.toString()); result.put("generatedAt", Instant.now().toString());
+        return ApiResult.ok(result);
+    }
+
+    private boolean sevenLayerEnabled() {
+        var configured = configFacade.activeValue("team.seven-layer.cutover-at");
+        if (configured.isEmpty() || configured.get().isBlank()) return false;
+        try { return !Instant.parse(configured.get().trim()).isAfter(Instant.now()); }
+        catch (RuntimeException ex) { throw new BizException(503, "SEVEN_LAYER_CUTOVER_INVALID"); }
+    }
+
+    private Map<String, Object> purchaseSummary(AppTeamInsightsMapper.PurchaseSummaryRow row) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("count", row == null ? 0L : row.rewardCount());
+        result.put("amountUSDT", zero(row == null ? null : row.amountUsdt()));
+        result.put("amountNEX", zero(row == null ? null : row.amountNex()));
+        result.put("creditedUSDT", zero(row == null ? null : row.creditedUsdt()));
+        result.put("creditedNEX", zero(row == null ? null : row.creditedNex()));
+        result.put("pendingUSDT", zero(row == null ? null : row.pendingUsdt()));
+        result.put("pendingNEX", zero(row == null ? null : row.pendingNex()));
+        return result;
+    }
+
+    private Map<String, Object> combinedPurchaseSummary(Map<String, Object> direct, Map<String, Object> extended) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("count", ((Number) direct.get("count")).longValue() + ((Number) extended.get("count")).longValue());
+        for (String key : List.of("amountUSDT", "amountNEX", "creditedUSDT", "creditedNEX", "pendingUSDT", "pendingNEX"))
+            result.put(key, ((BigDecimal) direct.get(key)).add((BigDecimal) extended.get(key)));
+        return result;
+    }
+
+    private Map<String, Object> purchaseReward(AppTeamInsightsMapper.PurchaseRewardRow row) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", row.rewardId()); item.put("source", "network"); item.put("kind", kind(row.kind()));
+        item.put("sourceRef", row.sourceRef()); item.put("policyVersion", row.policyVersion());
+        item.put("nexUsdtPrice", row.nexUsdtPrice());
+        item.put("recoveryPendingUSDT", zero(row.recoveryPendingUsdt())); item.put("recoveryPendingNEX", zero(row.recoveryPendingNex()));
+        item.put("sourceUserName", row.sourceUserName() == null || row.sourceUserName().isBlank() ? "System" : row.sourceUserName());
+        item.put("cycle", row.cycle()); item.put("layer", row.layerNo()); item.put("orderId", row.orderNo());
+        item.put("orderAmountUSD", zero(row.orderAmountUsd()));
+        item.put("amountUSDT", zero(row.amountUsdt())); item.put("amountNEX", zero(row.amountNex())); item.put("currency", row.currency());
+        long created = row.createdAt().atZone(BUSINESS_ZONE).toInstant().toEpochMilli();
+        item.put("ts", created); item.put("unlockAt", row.unlockAt() == null ? created : row.unlockAt().atZone(BUSINESS_ZONE).toInstant().toEpochMilli());
+        String state = status(row.status()); item.put("status", state); item.put("settlementState", "CANONICAL");
+        if (row.amountUsdt() != null && row.amountUsdt().signum() > 0)
+            item.put("statusUSDT", status(row.statusUsdt()));
+        if (row.amountNex() != null && row.amountNex().signum() > 0)
+            item.put("statusNEX", status(row.statusNex()));
+        // A credited historical reward is not the wallet's current withdrawable balance.
+        item.put("withdrawable", false);
+        return item;
     }
 
     private boolean validPage(long page, long pageSize) {
@@ -317,10 +405,11 @@ public class AppTeamInsightsService {
         item.put("sourceUserName", row.sourceUserName() == null || row.sourceUserName().isBlank() ? "System" : row.sourceUserName());
         item.put("layer", row.layerNo()); item.put("orderId", row.orderNo()); item.put("orderAmountUSD", row.orderAmountUsd());
         item.put("amountUSDT", zero(row.amountUsdt())); item.put("amountNEX", zero(row.amountNex()));
-        if (DirectReferralService.KINDS.contains(row.commissionType())) {
+        if (DirectReferralService.KINDS.contains(row.commissionType()) || "network".equalsIgnoreCase(row.commissionType())) {
             var snapshot = mapper.directReferralSnapshot(row.id());
-            if (snapshot == null) throw new BizException(503, "DIRECT_REFERRAL_GROUP_NOT_FOUND");
-            item.putAll(snapshot);
+            if (snapshot == null && DirectReferralService.KINDS.contains(row.commissionType()))
+                throw new BizException(503, "DIRECT_REFERRAL_GROUP_NOT_FOUND");
+            if (snapshot != null) item.putAll(snapshot);
         }
         item.put("ts", row.createdAt().atZone(BUSINESS_ZONE).toInstant().toEpochMilli());
         item.put("unlockAt", row.unlockAt() == null ? row.createdAt().atZone(BUSINESS_ZONE).toInstant().toEpochMilli()
@@ -464,6 +553,7 @@ public class AppTeamInsightsService {
         case "UNLOCKED","AVAILABLE" -> "unlocked";
         case "SETTLED","PAID","WITHDRAWN" -> "withdrawn";
         case "PENDING","COOLING","LOCKED" -> "cooling";
+        case "WAITING_CALCULATION" -> "waiting_calculation";
         case "FROZEN" -> "frozen";
         case "REVERSED","ROLLBACK" -> "reversed";
         case "REJECTED" -> "rejected";

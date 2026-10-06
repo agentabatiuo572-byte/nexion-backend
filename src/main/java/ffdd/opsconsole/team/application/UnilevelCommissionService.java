@@ -146,11 +146,6 @@ public class UnilevelCommissionService {
                     continue;
                 }
             }
-            // 幂等:同 orderNo + 上级 + network 已派发则跳过(防订单重复结算)
-            if (commissionRepository.countNetworkCommissionByOrder(ancestor, orderNo) > 0) {
-                skippedIdempotent++;
-                continue;
-            }
             BigDecimal usdtAmount = orderSubtotalUsdt.multiply(usdtPct)
                     .divide(HUNDRED, 6, RoundingMode.HALF_UP);
             if (usdtAmount.signum() <= 0) {
@@ -170,6 +165,11 @@ public class UnilevelCommissionService {
                         orderNo, mergeExitMaxPct, allocatedUsdt);
                 continue;
             }
+            allocatedUsdt = allocatedUsdt.add(finalUsdt);
+            if (commissionRepository.countNetworkCommissionByOrder(ancestor, orderNo) > 0) {
+                skippedIdempotent++;
+                continue;
+            }
             if (layer >= 2) {
                 log.info("F2 InfluenceScore applied: order={} ancestor={} layer={} score={} finalUsdt={}",
                         orderNo, ancestor, layer, influenceScore, finalUsdt);
@@ -182,7 +182,7 @@ public class UnilevelCommissionService {
             if (usdtEventId == null) {
                 log.warn("F2 unilevel USDT commission_event insert failed: ancestor={} layer={} order={}",
                         ancestor, layer, orderNo);
-                continue;
+                throw new BizException(409, "UNILEVEL_COMMISSION_WRITE_CONFLICT");
             }
             ledgerPostingFacade.postLedgerEntry(
                     "F2-NETWORK-" + usdtEventId, ancestor, "TEAM_COMMISSION", CURRENCY_USDT,
@@ -214,21 +214,71 @@ public class UnilevelCommissionService {
                                 "F2-NETWORK-NEX-" + nexEventId, ancestor, "TEAM_COMMISSION", CURRENCY_NEX,
                                 "IN", nexAmount, "PENDING", "F2 unilevel NEX commission | " + remark);
                     } else {
-                        log.warn("F2 unilevel NEX commission_event insert failed: ancestor={} layer={} order={}",
-                                ancestor, layer, orderNo);
+                        throw new BizException(409, "UNILEVEL_COMMISSION_WRITE_CONFLICT");
                     }
                 }
             }
             settled++;
-            allocatedUsdt = allocatedUsdt.add(finalUsdt);
         }
         log.info("F2 unilevel settled: buyer={} order={} subtotal={} settled={}/{} idempotentSkip={} depthGateSkip={}",
                 buyerUserId, orderNo, orderSubtotalUsdt, settled, upline.size(), skippedIdempotent, skippedDepthGate);
         return settled;
     }
 
-    private BigDecimal configDecimal(String key, BigDecimal fallback) {
-        return configFacade.activeValue(key)
+    /** Freeze every layer decision, including zero/paused/capped layers, before any asset is written. */
+    public Map<String, Object> prepareBudget(Long buyer, Long sponsor, BigDecimal subtotal) {
+        if(subtotal==null||subtotal.signum()<0||subtotal.stripTrailingZeros().scale()>6||subtotal.precision()-subtotal.scale()>12)throw new BizException(422,"UNILEVEL_ORDER_AMOUNT_INVALID");
+        var rates = loadUsdtPctByLevel(true);
+        var nexRates = loadNexPerUsdByLevel(true);
+        for (int layer = 1; layer <= MAX_DEPTH; layer++) {
+            BigDecimal rate = rates.get("L" + layer), nex = nexRates.get("L" + layer);
+            if (rate == null || rate.signum() < 0 || rate.compareTo(HUNDRED) > 0 || nex == null || nex.signum() < 0)
+                throw new BizException(503, "UNILEVEL_RULES_NOT_CONFIGURED");
+        }
+        if (rates.get("L1").compareTo(BigDecimal.TEN) != 0) throw new BizException(503, "F2_L1_DIRECT_RATE_FIXED_AT_10_PERCENT");
+        int gate = resolveDepthGateLayer(true), rank = resolveDepthGateRankNum(true), cooling = resolveCoolingDays(true);
+        BigDecimal promo = resolvePromoMultiplier(true), capPct = configDecimal(CONFIG_KEY_MERGE_EXIT_MAX_PCT, new BigDecimal("25"),true);
+        BigDecimal cap = subtotal.multiply(capPct).divide(HUNDRED, 6, RoundingMode.DOWN), allocated = ZERO;
+        List<Map<String,Object>> chain = teamCommissionMapper.listUplineChain(buyer, MAX_DEPTH);
+        if (chain == null) chain = List.of();
+        var members = new java.util.HashSet<Long>();
+        var byLayer = new java.util.TreeMap<Integer, Map<String,Object>>();
+        for (var row : chain) {
+            Long id = asLong(row.get("userId")); Integer layer = asInt(row.get("layer"));
+            if (id == null || layer == null || layer < 1 || layer > 7 || id.equals(buyer) || !members.add(id) || byLayer.put(layer,row) != null)
+                throw new BizException(409, "UNILEVEL_RELATIONSHIP_INVALID");
+        }
+        Long actualSponsor = byLayer.containsKey(1) ? asLong(byLayer.get(1).get("userId")) : null;
+        if (!java.util.Objects.equals(sponsor, actualSponsor)) throw new BizException(409, "UNILEVEL_DIRECT_SPONSOR_MISMATCH");
+        var decisions = new java.util.ArrayList<Map<String,Object>>();
+        for (int layer=1; layer<=MAX_DEPTH; layer++) {
+            var member=byLayer.get(layer); Long id=member==null?null:asLong(member.get("userId"));
+            BigDecimal pct=rates.get("L"+layer), coefficient=nexRates.get("L"+layer);
+            String reason=id==null?"NO_UPLINE":isLayerPaused(layer,true)?"LAYER_PAUSED":
+                    layer>=gate&&parseRankNum(asString(member.get("vRank")))<rank?"DEPTH_GATE_NOT_MET":"";
+            BigDecimal influence=id!=null&&layer>=2?resolveInfluenceScore(id,true):BigDecimal.ONE;
+            BigDecimal original=subtotal.multiply(pct).divide(HUNDRED,6,RoundingMode.HALF_UP)
+                    .multiply(influence).setScale(6,RoundingMode.HALF_UP).multiply(promo).setScale(6,RoundingMode.HALF_UP);
+            BigDecimal budget=reason.isEmpty()?original.min(cap.subtract(allocated).max(ZERO)).setScale(6,RoundingMode.DOWN):ZERO;
+            if (budget.signum()==0&&reason.isEmpty()) reason=original.signum()==0?"ZERO_PAID_SOURCE":"CHAIN_CAP_EXHAUSTED";
+            allocated=allocated.add(budget);
+            var item=new LinkedHashMap<String,Object>();
+            item.put("layer",layer);item.put("beneficiaryUserId",id);item.put("vRank",member==null?null:member.get("vRank"));
+            item.put("usdtPct",pct);item.put("nexPerUsd",coefficient);item.put("influence",influence);
+            item.put("originalBudgetUsdt",original);item.put("budgetUsdt",budget);
+            item.put("legacyNex",budget.multiply(coefficient).setScale(6,RoundingMode.HALF_UP));item.put("reason",reason);
+            decisions.add(item);
+        }
+        var result=new LinkedHashMap<String,Object>();result.put("formulaVersion","UNILEVEL_ORIGINAL_1");
+        result.put("layers",decisions);result.put("orderBasisUsdt",subtotal);result.put("allocatedBudgetUsdt",allocated);result.put("mergeExitCap",cap);
+        result.put("promoMultiplier",promo);result.put("depthGate",gate);result.put("depthGateRank",rank);result.put("coolingDays",cooling);
+        return result;
+    }
+
+    private java.util.Optional<String> configValue(String key,boolean currentRead){return currentRead?configFacade.activeValueForUpdate(key):configFacade.activeValue(key);}
+    private BigDecimal configDecimal(String key,BigDecimal fallback){return configDecimal(key,fallback,false);}
+    private BigDecimal configDecimal(String key, BigDecimal fallback,boolean currentRead) {
+        return configValue(key,currentRead)
                 .map(value -> {
                     try { return new BigDecimal(value.trim().replace("%", "")); }
                     catch (NumberFormatException ignored) { return null; }
@@ -239,8 +289,11 @@ public class UnilevelCommissionService {
 
     /** 加载 nx_commission_rule:UNILEVEL 的 level("L1"-"L7") → usdtPct 映射。 */
     private Map<String, BigDecimal> loadUsdtPctByLevel() {
+        return loadUsdtPctByLevel(false);
+    }
+    private Map<String,BigDecimal> loadUsdtPctByLevel(boolean currentRead) {
         Map<String, BigDecimal> map = new LinkedHashMap<>();
-        for (Map<String, Object> r : teamCommissionMapper.unilevelRates()) {
+        for (Map<String, Object> r : currentRead?teamCommissionMapper.unilevelRatesForUpdate():teamCommissionMapper.unilevelRates()) {
             Object level = r.get("level");
             BigDecimal pct = asBigDecimal(r.get("usdtPct"));
             if (level != null && pct != null) {
@@ -252,8 +305,11 @@ public class UnilevelCommissionService {
 
     /** 加载 nx_commission_rule:UNILEVEL 的 level("L1"-"L7") → nexPerUsd 映射(nexReward 字段)。 */
     private Map<String, BigDecimal> loadNexPerUsdByLevel() {
+        return loadNexPerUsdByLevel(false);
+    }
+    private Map<String,BigDecimal> loadNexPerUsdByLevel(boolean currentRead) {
         Map<String, BigDecimal> map = new LinkedHashMap<>();
-        for (Map<String, Object> r : teamCommissionMapper.unilevelRates()) {
+        for (Map<String, Object> r : currentRead?teamCommissionMapper.unilevelRatesForUpdate():teamCommissionMapper.unilevelRates()) {
             Object level = r.get("level");
             BigDecimal nexPerUsd = asBigDecimal(r.get("nexReward"));
             if (level != null && nexPerUsd != null) {
@@ -265,7 +321,10 @@ public class UnilevelCommissionService {
 
     /** F2 层暂停开关:读 operator canonical team.ui.F.unilevel.L{n}.paused。 */
     private boolean isLayerPaused(int layer) {
-        String value = configFacade.activeValue("team.ui.F.unilevel.L" + layer + ".paused").orElse("off");
+        return isLayerPaused(layer,false);
+    }
+    private boolean isLayerPaused(int layer,boolean currentRead) {
+        String value = configValue("team.ui.F.unilevel.L" + layer + ".paused",currentRead).orElse("off");
         return "true".equalsIgnoreCase(value)
                 || "on".equalsIgnoreCase(value)
                 || "1".equals(value.trim());
@@ -273,7 +332,10 @@ public class UnilevelCommissionService {
 
     /** F2 depthGate 层必须来自有效配置，缺失和非法值都阻断结算。 */
     private int resolveDepthGateLayer() {
-        String raw = configFacade.activeValue(CONFIG_KEY_DEPTH_GATE_LAYER).orElse("");
+        return resolveDepthGateLayer(false);
+    }
+    private int resolveDepthGateLayer(boolean currentRead) {
+        String raw = configValue(CONFIG_KEY_DEPTH_GATE_LAYER,currentRead).orElse("");
         String normalized = raw == null ? "" : raw.trim().toUpperCase();
         if (!normalized.matches("L?[1-7]")) {
             throw new BizException(503, "F_TEAM_DEPTH_GATE_CONFIG_INVALID");
@@ -288,7 +350,10 @@ public class UnilevelCommissionService {
 
     /** F2 depthGate 阶位必须来自有效配置，缺失和非法值都阻断结算。 */
     private int resolveDepthGateRankNum() {
-        String raw = configFacade.activeValue(CONFIG_KEY_DEPTH_GATE_RANK).orElse("");
+        return resolveDepthGateRankNum(false);
+    }
+    private int resolveDepthGateRankNum(boolean currentRead) {
+        String raw = configValue(CONFIG_KEY_DEPTH_GATE_RANK,currentRead).orElse("");
         String normalized = raw == null ? "" : raw.trim().toUpperCase();
         if (!normalized.matches("V(?:[0-9]|1[0-2])")) {
             throw new BizException(503, "F_TEAM_DEPTH_GATE_CONFIG_INVALID");
@@ -298,7 +363,10 @@ public class UnilevelCommissionService {
 
     /** F5 coolingDays(读 commission/cooling-days,默认30;PRD line231)。 */
     private int resolveCoolingDays() {
-        return configFacade.activeValue(CONFIG_KEY_COOLING_DAYS)
+        return resolveCoolingDays(false);
+    }
+    private int resolveCoolingDays(boolean currentRead) {
+        return configValue(CONFIG_KEY_COOLING_DAYS,currentRead)
                 .map(v -> {
                     try { return Integer.parseInt(v.trim()); }
                     catch (NumberFormatException e) { return null; }
@@ -312,7 +380,10 @@ public class UnilevelCommissionService {
      * to 1.0; the admin write side constrains the normal range to 1.0-3.0.
      */
     private BigDecimal resolvePromoMultiplier() {
-        return configFacade.activeValue(CONFIG_KEY_PROMO_WEEK_MULTIPLIER)
+        return resolvePromoMultiplier(false);
+    }
+    private BigDecimal resolvePromoMultiplier(boolean currentRead) {
+        return configValue(CONFIG_KEY_PROMO_WEEK_MULTIPLIER,currentRead)
                 .map(value -> {
                     try {
                         return new BigDecimal(value.trim().replace("×", ""));
@@ -331,9 +402,12 @@ public class UnilevelCommissionService {
      * volume<=0 直接返回 clampMin;clampMin/Max 读配置(默认 1.0/5.0),非法值容错回退默认;精度 6 位 HALF_UP。
      */
     private BigDecimal resolveInfluenceScore(Long userId) {
+        return resolveInfluenceScore(userId,false);
+    }
+    private BigDecimal resolveInfluenceScore(Long userId,boolean currentRead) {
         BigDecimal volume = teamCommissionMapper.monthlyNetworkVolume(userId);
-        double clampMin = parseInfluenceClamp(CONFIG_KEY_INFLUENCE_CLAMP_MIN, DEFAULT_INFLUENCE_CLAMP_MIN);
-        double clampMax = parseInfluenceClamp(CONFIG_KEY_INFLUENCE_CLAMP_MAX, DEFAULT_INFLUENCE_CLAMP_MAX);
+        double clampMin = parseInfluenceClamp(CONFIG_KEY_INFLUENCE_CLAMP_MIN, DEFAULT_INFLUENCE_CLAMP_MIN,currentRead);
+        double clampMax = parseInfluenceClamp(CONFIG_KEY_INFLUENCE_CLAMP_MAX, DEFAULT_INFLUENCE_CLAMP_MAX,currentRead);
         if (volume == null || volume.signum() <= 0) {
             return BigDecimal.valueOf(clampMin).setScale(6, RoundingMode.HALF_UP);
         }
@@ -343,8 +417,8 @@ public class UnilevelCommissionService {
     }
 
     /** 解析 InfluenceScore clamp 边界配置(容错:空/非法值回退 defaultValue)。 */
-    private double parseInfluenceClamp(String key, double defaultValue) {
-        String raw = configFacade.activeValue(key).orElse(null);
+    private double parseInfluenceClamp(String key, double defaultValue,boolean currentRead) {
+        String raw = configValue(key,currentRead).orElse(null);
         if (raw == null || raw.isBlank()) {
             return defaultValue;
         }

@@ -24,7 +24,8 @@ public class AppTeamInsightsController {
             @RequestParam(required=false) String snapshotAt, Authentication auth){Long id=userId(auth);return id==null?ApiResult.fail(403,"USER_AUTH_REQUIRED"):service.commissions(id,page,pageSize,snapshotAt);}
     @GetMapping("/unilevel") public ApiResult<Map<String,Object>> unilevel(@RequestParam(defaultValue="week") String period,
             @RequestParam(defaultValue="1") long page, @RequestParam(defaultValue="20") long pageSize,
-            @RequestParam(required=false) String snapshotAt, Authentication auth){Long id=userId(auth);return id==null?ApiResult.fail(403,"USER_AUTH_REQUIRED"):service.unilevel(id,period,page,pageSize,snapshotAt);}
+            @RequestParam(required=false) String snapshotAt, @RequestParam(defaultValue="all") String filter,
+            @RequestParam(defaultValue="1") int schemaVersion, Authentication auth){Long id=userId(auth);return id==null?ApiResult.fail(403,"USER_AUTH_REQUIRED"):service.unilevel(id,period,page,pageSize,snapshotAt,filter,schemaVersion);}
     @GetMapping("/leadership-pool") public ApiResult<Map<String,Object>> pool(Authentication auth){Long id=userId(auth);return id==null?ApiResult.fail(403,"USER_AUTH_REQUIRED"):service.leadershipPool(id);}
     private Long userId(Authentication authentication){if(authentication==null||!authentication.isAuthenticated()||authentication.getPrincipal()==null||!(authentication.getDetails() instanceof Map<?,?> details)||!"USER".equals(String.valueOf(details.get("subjectType"))))return null;try{long id=Long.parseLong(String.valueOf(authentication.getPrincipal()));return id>0?id:null;}catch(NumberFormatException ignored){return null;}}
 }

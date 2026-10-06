@@ -10,6 +10,86 @@ import org.apache.ibatis.annotations.Select;
 
 @Mapper
 public interface AppTeamInsightsMapper extends BaseMapper<Object> {
+    // Groups are authoritative when present, including before either currency event exists.
+    // Unlinked historical events keep their own IDs: an order number alone is not a group key.
+    String PURCHASE_REWARDS = """
+        WITH reward_sources AS (
+          SELECT g.settlement_no rewardId,g.source_user_id sourceUserId,
+                 COALESCE(NULLIF(TRIM(g.source_user_name),''),source.nickname) sourceUserName,
+                 g.layer_no layerNo,g.source_ref orderNo,DATE_FORMAT(g.created_at,'%x-W%v') cycle,
+                 o.subtotal_usdt orderAmountUsd,g.amount_usdt amountUsdt,g.amount_nex amountNex,
+                 'DUAL' currency,g.status,g.created_at createdAt,g.release_at unlockAt,
+                 g.source_type kind,g.source_ref sourceRef,g.policy_version policyVersion,
+                 g.nex_usdt_price nexUsdtPrice,g.recovery_pending_usdt recoveryPendingUsdt,
+                 g.recovery_pending_nex recoveryPendingNex,
+                 g.cancelled_usdt cancelledUsdt,g.cancelled_nex cancelledNex,
+                 COALESCE(g.credited_usdt_at,g.credited_at) creditedUsdtAt,
+                 COALESCE(g.credited_nex_at,g.credited_at) creditedNexAt,
+                 COALESCE(usdt_event.status,g.status) statusUsdt,COALESCE(nex_event.status,g.status) statusNex
+            FROM nx_direct_referral_settlement g JOIN nx_user u ON u.id=g.beneficiary_user_id
+            LEFT JOIN nx_commission_event usdt_event ON usdt_event.id=g.usdt_event_id AND usdt_event.is_deleted=0
+            LEFT JOIN nx_commission_event nex_event ON nex_event.id=g.nex_event_id AND nex_event.is_deleted=0
+            LEFT JOIN nx_user source ON source.id=g.source_user_id AND source.sandbox=u.sandbox AND source.is_deleted=0
+            LEFT JOIN nx_order o ON o.order_no=g.source_ref AND o.user_id=g.source_user_id AND o.is_deleted=0
+           WHERE g.beneficiary_user_id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=#{sandbox}
+             AND g.source_environment=#{sourceEnvironment} AND g.run_id=#{runId}
+             AND g.source_type IN ('network','direct_purchase') AND g.layer_no BETWEEN 1 AND 7 AND g.created_at &lt;= #{snapshotAt}
+             AND (#{fromInclusive} IS NULL OR g.created_at &gt;= #{fromInclusive})
+             AND (#{toExclusive} IS NULL OR g.created_at &lt; #{toExclusive})
+          UNION ALL
+          SELECT CONCAT('CM-',ce.id),ce.source_user_id,
+                 COALESCE(NULLIF(TRIM(ce.source_user_name),''),source.nickname),
+                 ce.layer_no,ce.order_no,DATE_FORMAT(ce.created_at,'%x-W%v'),
+                 ce.order_amount_usd,ce.amount_usdt,ce.amount_nex,ce.currency,ce.status,ce.created_at,ce.unlock_at,
+                 LOWER(ce.commission_type),ce.order_no,NULL,NULL,0,0,0,0,NULL,NULL,ce.status,ce.status
+            FROM nx_commission_event ce JOIN nx_user u ON u.id=ce.user_id
+            LEFT JOIN nx_user source ON source.id=ce.source_user_id AND source.sandbox=u.sandbox AND source.is_deleted=0
+           WHERE ce.user_id=#{userId} AND ce.is_deleted=0 AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=#{sandbox}
+             AND #{sourceEnvironment}='PRODUCTION' AND ce.layer_no BETWEEN 1 AND 7
+             AND ce.created_at &lt;= #{snapshotAt} AND LOWER(ce.commission_type) IN ('network','unilevel','direct','direct_purchase')
+             AND (#{fromInclusive} IS NULL OR ce.created_at &gt;= #{fromInclusive})
+             AND (#{toExclusive} IS NULL OR ce.created_at &lt; #{toExclusive})
+             AND NOT EXISTS(SELECT 1 FROM nx_direct_referral_settlement g
+                            WHERE g.usdt_event_id=ce.id OR g.nex_event_id=ce.id)
+        ), rewards AS (
+          SELECT reward_sources.*,
+                 CASE WHEN UPPER(statusUsdt) IN ('PENDING','LOCKED','COOLING','FROZEN','WAITING_CALCULATION','UNLOCKED','AVAILABLE','SETTLED','PAID','WITHDRAWN')
+                      THEN GREATEST(amountUsdt-cancelledUsdt,0) ELSE 0 END netUsdt,
+                 CASE WHEN UPPER(statusNex) IN ('PENDING','LOCKED','COOLING','FROZEN','WAITING_CALCULATION','UNLOCKED','AVAILABLE','SETTLED','PAID','WITHDRAWN')
+                      THEN GREATEST(amountNex-cancelledNex,0) ELSE 0 END netNex
+            FROM reward_sources
+        )
+        """;
+    String PURCHASE_FILTER = " WHERE (#{filter}='all' OR (#{filter}='direct' AND layerNo=1) OR (#{filter}='extended' AND layerNo BETWEEN 2 AND 7)) ";
+
+    @Select("<script>" + PURCHASE_REWARDS + """
+            SELECT rewardId,sourceUserId,sourceUserName,layerNo,orderNo,cycle,orderAmountUsd,
+                   amountUsdt,amountNex,currency,status,createdAt,unlockAt,kind,sourceRef,policyVersion,
+                   nexUsdtPrice,recoveryPendingUsdt,recoveryPendingNex,statusUsdt,statusNex FROM rewards
+            """ + PURCHASE_FILTER
+            + "ORDER BY createdAt DESC,rewardId DESC LIMIT #{offset},#{limit}</script>")
+    List<PurchaseRewardRow> purchaseRewards(@Param("userId") Long userId,@Param("sandbox") Integer sandbox,
+            @Param("sourceEnvironment") String sourceEnvironment,@Param("runId") String runId,
+            @Param("snapshotAt") LocalDateTime snapshotAt,@Param("fromInclusive") LocalDateTime fromInclusive,
+            @Param("toExclusive") LocalDateTime toExclusive,@Param("filter") String filter,
+            @Param("offset") long offset,@Param("limit") long limit);
+
+    @Select("<script>" + PURCHASE_REWARDS + """
+        SELECT CASE WHEN layerNo=1 THEN 'direct' ELSE 'extended' END rewardScope,
+               COUNT(*) rewardCount,
+               COALESCE(SUM(netUsdt),0) amountUsdt,COALESCE(SUM(netNex),0) amountNex,
+               COALESCE(SUM(CASE WHEN creditedUsdtAt IS NOT NULL OR UPPER(statusUsdt) IN ('UNLOCKED','AVAILABLE','SETTLED','PAID','WITHDRAWN') THEN netUsdt ELSE 0 END),0) creditedUsdt,
+               COALESCE(SUM(CASE WHEN creditedNexAt IS NOT NULL OR UPPER(statusNex) IN ('UNLOCKED','AVAILABLE','SETTLED','PAID','WITHDRAWN') THEN netNex ELSE 0 END),0) creditedNex,
+               COALESCE(SUM(CASE WHEN creditedUsdtAt IS NULL AND UPPER(statusUsdt) IN ('PENDING','LOCKED','COOLING','FROZEN','WAITING_CALCULATION') THEN netUsdt ELSE 0 END),0) pendingUsdt,
+               COALESCE(SUM(CASE WHEN creditedNexAt IS NULL AND UPPER(statusNex) IN ('PENDING','LOCKED','COOLING','FROZEN','WAITING_CALCULATION') THEN netNex ELSE 0 END),0) pendingNex
+          FROM rewards GROUP BY CASE WHEN layerNo=1 THEN 'direct' ELSE 'extended' END
+        </script>
+        """)
+    List<PurchaseSummaryRow> purchaseSummary(@Param("userId") Long userId,@Param("sandbox") Integer sandbox,
+            @Param("sourceEnvironment") String sourceEnvironment,@Param("runId") String runId,
+            @Param("snapshotAt") LocalDateTime snapshotAt,@Param("fromInclusive") LocalDateTime fromInclusive,
+            @Param("toExclusive") LocalDateTime toExclusive);
+
     @Select("SELECT source_ref sourceRef,CAST(source_device_id AS CHAR) sourceDeviceId,recovery_pending_usdt recoveryPendingUSDT,recovery_pending_nex recoveryPendingNEX FROM nx_direct_referral_settlement WHERE usdt_event_id=#{id} OR nex_event_id=#{id}")
     java.util.Map<String,Object> directReferralSnapshot(Long id);
     @Select("SELECT voucher_name FROM nx_growth_voucher WHERE voucher_id=#{id} AND is_deleted=0 LIMIT 1")
@@ -110,6 +190,7 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
                    COUNT(DISTINCT CASE WHEN ce.source_user_id IS NOT NULL THEN ce.source_user_id END) contributorCount
              FROM nx_commission_event ce
              WHERE ce.user_id=#{userId} AND ce.is_deleted=0 AND ce.created_at <= #{snapshotAt}
+               AND UPPER(ce.status) NOT IN ('REJECTED','REVERSED','ROLLBACK','RECOVERY_PENDING')
             """)
     CommissionSummaryRow commissionSummary(@Param("userId") Long userId,
                                            @Param("snapshotAt") LocalDateTime snapshotAt);
@@ -214,12 +295,13 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT ce.commission_type commissionType, ce.status, COUNT(*) eventCount,
-                   COALESCE(SUM(ce.amount_usdt),0) totalUsdt, COALESCE(SUM(ce.amount_nex),0) totalNex,
-                   COALESCE(SUM(CASE WHEN ce.created_at >= #{monthFrom} AND ce.created_at < #{monthTo}
+                   COALESCE(SUM(CASE WHEN UPPER(ce.status) NOT IN ('REJECTED','REVERSED','ROLLBACK','RECOVERY_PENDING') THEN ce.amount_usdt ELSE 0 END),0) totalUsdt,
+                   COALESCE(SUM(CASE WHEN UPPER(ce.status) NOT IN ('REJECTED','REVERSED','ROLLBACK','RECOVERY_PENDING') THEN ce.amount_nex ELSE 0 END),0) totalNex,
+                   COALESCE(SUM(CASE WHEN UPPER(ce.status) NOT IN ('REJECTED','REVERSED','ROLLBACK','RECOVERY_PENDING') AND ce.created_at >= #{monthFrom} AND ce.created_at < #{monthTo}
                      THEN ce.amount_usdt ELSE 0 END),0) monthUsdt,
-                   COALESCE(SUM(CASE WHEN ce.created_at >= #{monthFrom} AND ce.created_at < #{monthTo}
+                   COALESCE(SUM(CASE WHEN UPPER(ce.status) NOT IN ('REJECTED','REVERSED','ROLLBACK','RECOVERY_PENDING') AND ce.created_at >= #{monthFrom} AND ce.created_at < #{monthTo}
                      THEN ce.amount_nex ELSE 0 END),0) monthNex,
-                   COALESCE(SUM(CASE WHEN ce.created_at >= #{todayFrom} AND ce.created_at < #{todayTo}
+                   COALESCE(SUM(CASE WHEN UPPER(ce.status) NOT IN ('REJECTED','REVERSED','ROLLBACK','RECOVERY_PENDING') AND ce.created_at >= #{todayFrom} AND ce.created_at < #{todayTo}
                      THEN ce.amount_usdt ELSE 0 END),0) todayUsdt,
                    MIN(ce.unlock_at) nextUnlockAt
             FROM nx_commission_event ce WHERE ce.user_id=#{userId} AND ce.is_deleted=0
@@ -236,6 +318,13 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
             BigDecimal todayUsdt, LocalDateTime nextUnlockAt) {}
 
     record UserScope(Integer sandbox, String vRank) { }
+    record PurchaseRewardRow(String rewardId,Long sourceUserId,String sourceUserName,Integer layerNo,String orderNo,
+            String cycle,BigDecimal orderAmountUsd,BigDecimal amountUsdt,BigDecimal amountNex,String currency,
+            String status,LocalDateTime createdAt,LocalDateTime unlockAt,String kind,String sourceRef,Long policyVersion,
+            BigDecimal nexUsdtPrice,BigDecimal recoveryPendingUsdt,BigDecimal recoveryPendingNex,
+            String statusUsdt,String statusNex) { }
+    record PurchaseSummaryRow(String rewardScope,long rewardCount,BigDecimal amountUsdt,BigDecimal amountNex,
+            BigDecimal creditedUsdt,BigDecimal creditedNex,BigDecimal pendingUsdt,BigDecimal pendingNex) { }
     record LeaderboardRow(Integer rank, Long userId, String nickname, String vRank, BigDecimal earnedUsdt,
                           Integer directs, Integer teamSize, Integer hasDevice) { }
     record CommissionRow(Long id, String commissionType, Long sourceUserId, String sourceUserName,

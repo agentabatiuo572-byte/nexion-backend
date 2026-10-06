@@ -117,6 +117,9 @@ public class F5CommissionService {
                 Map.of("key", "recovery_pending", "label", "待追回")));
         response.put("commissionEvents", items);
         response.put("items", items);
+        var direct=directReferrals==null?null:directReferrals.getIfAvailable();
+        var waiting=direct==null||normalized.status()!=null&&!normalized.status().equals("waiting_calculation")?List.<Map<String,Object>>of():direct.pendingForOps(normalized.kind(),normalized.userId(),normalized.cohort());
+        response.put("pendingCalculations",waiting);response.put("pendingCalculationCount",waiting.size());
         response.put("nextCursor", nextCursor == null ? "" : String.valueOf(nextCursor));
         response.put("total", total);
         response.put("pagination", linked(
@@ -210,7 +213,7 @@ public class F5CommissionService {
         output.writeBytes(new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
         writeCsvLine(output, List.of(
                 "commissionId", "eventId", "user", "kind", "currency", "amount",
-                "sourceUser", "layer", "status", "settledAt"));
+                "sourceUser", "layer", "status", "settledAt", "sourceRef", "settlementNo"));
         long written = 0L;
         Long cursor = null;
         while (written < expectedRows) {
@@ -252,7 +255,7 @@ public class F5CommissionService {
                         redactUserId(longValue(row.get("sourceUserId"))),
                         Objects.toString(row.get("layer"), ""),
                         status,
-                        text(row.get("settledAt"))));
+                        text(row.get("settledAt")),text(row.get("orderNo")),text(row.get("settlementNo"))));
                 cursor = eventId;
                 written++;
                 if (written > expectedRows || written > EXPORT_MAX_ROWS) {
@@ -454,6 +457,7 @@ public class F5CommissionService {
             String operator,
             String idempotencyKey) {
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
+        if (direct != null) direct.lockEventSource(eventId, false);
         if (direct != null && direct.groupForEvent(eventId) != null) {
             if (mapper.countEvidenceReference(eventId, refundRef) < 1) return ApiResult.fail(422, "REFUND_REF_NOT_FOUND");
             Map<String,Object> result = direct.reverseEvent(eventId);
@@ -524,6 +528,8 @@ public class F5CommissionService {
         // event, ledger or operation write. Overlapping batches serialize on the
         // source rows; the database unique guard remains the final arbiter.
         List<ReissueSource> sources = new ArrayList<>(eventIds.size());
+        var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
+        if (direct != null) direct.lockEventSources(eventIds, true);
         for (Long eventId : eventIds) {
             Map<String, Object> original = mapper.findEventForUpdate(eventId);
             if (original == null) {
@@ -790,7 +796,7 @@ public class F5CommissionService {
     private Map<String, Object> eventView(Map<String, Object> raw) {
         Map<String, Object> row = new LinkedHashMap<>(raw);
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
-        if (direct != null && DirectReferralService.KINDS.contains(text(raw.get("kind")))) row.putAll(direct.eventSnapshot(longValue(raw.get("eventId"))));
+        if (direct != null && direct.groupForEvent(longValue(raw.get("eventId"))) != null) row.putAll(direct.eventSnapshot(longValue(raw.get("eventId"))));
         String commissionId = text(raw.get("commissionId"));
         Long userId = longValue(raw.get("userId"));
         String status = text(row.get("status"));

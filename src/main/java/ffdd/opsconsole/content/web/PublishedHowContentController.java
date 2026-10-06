@@ -20,9 +20,10 @@ public class PublishedHowContentController {
 
     @GetMapping("/api/content/how-it-works/{contentKey}")
     public ApiResult<Map<String, Object>> published(@PathVariable String contentKey,
-                                                     @RequestParam(defaultValue = "en") String locale) {
-        return service.publicContent(contentKey, locale);
+                                                     @RequestParam(defaultValue = "en") String locale,@RequestParam(required=false)Integer schemaVersion) {
+        return service.publicContent(contentKey, locale,schemaVersion);
     }
+    public ApiResult<Map<String,Object>> published(String key,String locale){return service.publicContent(key,locale);}
 
     @GetMapping(OpsAdminApi.ADMIN_PREFIX + "/content/how-it-works")
     @PreAuthorize("hasAuthority('platform_a3_read')")

@@ -156,6 +156,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              ORDER BY layer_no ASC, id ASC
             """)
     List<Map<String, Object>> unilevelRates();
+    @Select("SELECT CONCAT('L',layer_no) level,ROUND(usdt_rate*100,6) usdtPct,nex_per_usd nexReward FROM nx_commission_rule WHERE is_deleted=0 AND status=1 AND LOWER(commission_type)='unilevel' AND layer_no IS NOT NULL ORDER BY layer_no,id FOR UPDATE")
+    List<Map<String,Object>> unilevelRatesForUpdate();
 
     /** Serializes all F2 settlement attempts for one buyer before idempotency checks. */
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")

@@ -5,7 +5,8 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 
-public record DirectReferralPolicy(long policyVersion, Instant effectiveAt, Rule purchase, Rule deviceEarning) {
+public record DirectReferralPolicy(long policyVersion, Instant effectiveAt, Rule purchase, Rule deviceEarning, int schemaVersion) {
+    public DirectReferralPolicy(long version,Instant effective,Rule purchase,Rule earning){this(version,effective,purchase,earning,1);}
     public static final Rule DISABLED = new Rule(false, BigDecimal.ZERO, new BigDecimal("50"), 0);
     public record Amounts(BigDecimal usdt, BigDecimal nex) {
         public boolean payable() { return usdt.signum() > 0 && nex.signum() > 0; }

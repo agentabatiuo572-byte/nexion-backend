@@ -30,6 +30,8 @@ public interface NexMarketMapper extends BaseMapper<PriceIndexEntity> {
              LIMIT 1
             """)
     BigDecimal latestNexUsdtPrice();
+    @Select("SELECT price_usdt FROM nx_price_index WHERE is_deleted=0 AND status='ACTIVE' AND metric_code IN ('NEX','NEX_USDT') ORDER BY sampled_at DESC,id DESC LIMIT 1 FOR UPDATE")
+    BigDecimal latestNexUsdtPriceForUpdate();
 
     @Select("""
             SELECT CAST(sparkline AS CHAR)

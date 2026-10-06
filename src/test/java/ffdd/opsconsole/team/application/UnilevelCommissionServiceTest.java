@@ -80,6 +80,19 @@ class UnilevelCommissionServiceTest {
     }
 
     @Test
+    void replayKeepsAlreadyAllocatedBudgetInsteadOfFundingLaterLayersAgain() {
+        when(teamCommissionMapper.listUplineChain(9L, 7)).thenReturn(List.of(
+                upline(1, 1, "V12"), upline(2, 2, "V12"), upline(3, 3, "V12"), upline(4, 4, "V12")));
+        when(teamCommissionMapper.unilevelRates()).thenReturn(List.of(rate("L1", 10), rate("L2", 5), rate("L3", 3), rate("L4", 2)));
+        when(commissionRepository.countNetworkCommissionByOrder(1L, "REPLAY-CAP")).thenReturn(1);
+        when(commissionRepository.countNetworkCommissionByOrder(2L, "REPLAY-CAP")).thenReturn(1);
+        when(teamCommissionMapper.monthlyNetworkVolume(anyLong())).thenReturn(new BigDecimal("1000000"));
+        assertThat(service.settle(9L, new BigDecimal("1000"), "REPLAY-CAP")).isZero();
+        verify(commissionRepository, never()).insertNetworkCommissionEvent(anyLong(), anyString(), anyLong(),
+                any(), anyString(), any(), anyString(), any(), any(), anyString(), anyInt(), anyString());
+    }
+
+    @Test
     void settle_twoLayers_eachAncestorGetsUsdtCommissionEventAndLedger() {
         // buyer 990686 → L1=990685(10%) + L2=990684(5%);订单 subtotal=$1000,无 NEX 配置
         when(teamCommissionMapper.listUplineChain(990686L, 7))

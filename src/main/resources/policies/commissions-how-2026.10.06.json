@@ -1,0 +1,1165 @@
+{
+  "previousVersion": "2026.10.05-direct-referral",
+  "previousEntry": {
+    "locales": {
+      "zh": {
+        "blocks": [
+          {
+            "id": "hero",
+            "kind": "text",
+            "title": "团队协作，贡献有回报",
+            "body": "了解各类佣金的来源、结算状态和查看方式。以下规则随平台已发布配置更新，不构成收益承诺。"
+          },
+          {
+            "id": "overview",
+            "kind": "text",
+            "title": "什么是团队佣金？",
+            "body": "团队佣金是有效业务与团队贡献满足条件后形成的奖励。团队人数、页面示例或已配置权益都不等于已到账收益；请以佣金记录及对应钱包账单为准。"
+          },
+          {
+            "id": "channels",
+            "kind": "text",
+            "title": "奖励来源与历史记录",
+            "body": "直属购买和直属设备收益是两类独立来源，历史网络记录保留查询。对碰、等级、培育奖和领导池继续遵循各自规则。"
+          },
+          {
+            "id": "network",
+            "kind": "text",
+            "title": "直属分成",
+            "body": "直属购买：{directPurchaseRules}。直属设备收益：{directDeviceRules}。{directScope}。当前价格：{directPrice}。成员收到的邀请佣金不算设备收益，不再向上继续派发；历史网络奖励不产生新的多层购买分成。"
+          },
+          {
+            "id": "binary",
+            "kind": "text",
+            "title": "双轨对碰",
+            "body": "A、B 两侧有效业绩达到门槛后，以较小一侧可对碰业绩为基础计算；已消费业绩不能重复使用。当前规则：{binaryRules}。实际可结算状态还取决于业务有效性、风控检查及当期剩余额度。"
+          },
+          {
+            "id": "peer",
+            "kind": "text",
+            "title": "平级奖励",
+            "body": "平级权益配置：{peerRules}。当前能力状态：{peerStatus}。拥有相同比例或等级不代表触发奖励，只有真实事件才计入收入。"
+          },
+          {
+            "id": "cultivation",
+            "kind": "text",
+            "title": "培育奖励",
+            "body": "等级奖励配置中的 NEX 金额合计：{cultivationRules}。这些金额可能包含本人奖励和推荐人奖励，不能全部理解为推荐人所得；真实接收人由对应奖励规则及有效推荐关系决定。同一次晋升的同一奖励不能重复发放。"
+          },
+          {
+            "id": "leadership",
+            "kind": "text",
+            "title": "领导池分红",
+            "body": "按合格周期业务量形成奖池，并依据参与等级、票权及个人上限分配。当前规则：{leadershipRules}。票权：{leadershipVotes}。配置完整不等于已结算，最终份额须等待当期结算记录。"
+          },
+          {
+            "id": "genesis",
+            "kind": "text",
+            "title": "Genesis 相关奖励",
+            "body": "Genesis 资产权益与团队佣金不是同一笔收入。当前独立佣金能力：{genesisStatus}。请分别核对资产收益和佣金事件，不将资产余额直接当作团队佣金。"
+          },
+          {
+            "id": "lifecycle",
+            "kind": "text",
+            "title": "佣金的生命周期",
+            "body": "状态反映真实奖励处理结果，不是页面上的倒计时承诺。冻结、撤销等特殊状态会在对应记录中单独显示。"
+          },
+          {
+            "id": "cooling",
+            "kind": "text",
+            "title": "等待释放",
+            "body": "购买和设备收益分别采用各自配置的等待期。冷却或冻结期间，两币均不可消费。对碰等待规则：{coolingDays}。以每笔记录的释放时间与状态为准。"
+          },
+          {
+            "id": "unlocked",
+            "kind": "text",
+            "title": "已解锁",
+            "body": "该笔奖励已满足解锁条件。能否提现或使用还要检查对应资产的钱包可用余额、限额与渠道状态，不能仅凭佣金标签判断。"
+          },
+          {
+            "id": "withdrawn",
+            "kind": "text",
+            "title": "已提现",
+            "body": "表示记录已进入相应的完成状态。请打开钱包账单及提现记录核对处理结果；佣金状态不能替代链上或支付渠道的到账确认。"
+          },
+          {
+            "id": "cooling-note",
+            "kind": "text",
+            "title": "每笔记录保留原规则",
+            "body": "政策调整作用于对应生效时间的合格来源；历史记录保留原政策和价格快照。冷却或冻结奖励不是可用余额。"
+          },
+          {
+            "id": "example",
+            "kind": "text",
+            "title": "一组示例，理解如何看记录",
+            "body": "保留示例卡片，但不展示虚构的真实订单或每日收益。这里只解释当前配置的算术含义及渠道状态。"
+          },
+          {
+            "id": "example-day",
+            "kind": "text",
+            "title": "核对原始结算",
+            "body": "来源订单或设备收益凭证对应一组USDT与NEX结算。核对当笔政策、价格、金额和释放状态；说明不代表个人实际收入。"
+          },
+          {
+            "id": "example-network",
+            "kind": "text",
+            "title": "直属分成",
+            "body": "两币到账需要真实合格来源与实际结算"
+          },
+          {
+            "id": "example-cultivation",
+            "kind": "text",
+            "title": "培育奖励",
+            "body": "{exampleRank} 的 NEX 奖励配置合计（含不同接收人规则）"
+          },
+          {
+            "id": "example-peer",
+            "kind": "text",
+            "title": "平级奖励",
+            "body": "独立派发能力状态"
+          },
+          {
+            "id": "example-leadership",
+            "kind": "text",
+            "title": "领导池",
+            "body": "需要真实奖池、票权与当期结算"
+          },
+          {
+            "id": "example-total",
+            "kind": "text",
+            "title": "记录核对",
+            "body": "各类资产及未结算权益不能直接相加为实际收益。"
+          },
+          {
+            "id": "example-note",
+            "kind": "text",
+            "title": "示例边界",
+            "body": "本例不产生订单或奖励。NEX 与 USDT 不直接相加；未开放、未配置、未结算不记作已获得收益。真实金额、舍入及到账以事件和钱包账单为准。"
+          },
+          {
+            "id": "faq",
+            "kind": "text",
+            "title": "常见问题",
+            "body": "以下说明帮助你核对业务状态，不替代具体奖励记录。"
+          },
+          {
+            "id": "faq-order",
+            "kind": "text",
+            "title": "为什么还没有直属分成？",
+            "body": "仅直接成员有效实付设备订单或真实已入账设备收益参与，并适用来源发生时的政策。停用、价格缺失或金额精度不足都不能作为已付款。注册礼和邀请佣金不参与设备收益分成。"
+          },
+          {
+            "id": "faq-withdraw",
+            "kind": "text",
+            "title": "为什么已解锁还不能提现？",
+            "body": "佣金解锁与钱包提现是不同环节。请分别查看资产可用余额、单笔限额、当日剩余额度及渠道可用状态，并核对是否存在冻结或处理中记录。"
+          },
+          {
+            "id": "faq-reversal",
+            "kind": "text",
+            "title": "退款后奖励如何处理？",
+            "body": "未发放奖励取消；已发放奖励按原金额和原价格实际追回两币。余额不足时显示尚待追回金额，不以仅改状态冒充成功，也不阻止购买者应得退款。"
+          },
+          {
+            "id": "faq-cultivation",
+            "kind": "text",
+            "title": "为什么晋升后没有收到示例中的全部奖励？",
+            "body": "页面展示的是等级奖励配置合计，不是某个人的到账承诺。奖励可能分别发给晋升用户和有效推荐人；请核对规则适用对象、真实推荐关系以及该次晋升生成的奖励记录。"
+          },
+          {
+            "id": "footer",
+            "kind": "text",
+            "title": "明白了 · 查看我的佣金",
+            "body": "返回佣金页面查看服务端确认的个人记录。"
+          }
+        ]
+      },
+      "en": {
+        "blocks": [
+          {
+            "id": "hero",
+            "kind": "text",
+            "title": "Teamwork, with rewards for contribution",
+            "body": "Understand reward sources, settlement status and where to check them. Rules follow the platform's published configuration and are not an earnings promise."
+          },
+          {
+            "id": "overview",
+            "kind": "text",
+            "title": "What are team commissions?",
+            "body": "Team commissions are rewards created when valid business activity and contribution satisfy the rules. Member counts, examples and configured benefits are not paid income. Check commission events against wallet bills."
+          },
+          {
+            "id": "channels",
+            "kind": "text",
+            "title": "Reward sources and history",
+            "body": "Direct purchase and direct device earnings are separate reward sources. Historical network records remain queryable. Binary, rank, cultivation and leadership rewards retain their own rules."
+          },
+          {
+            "id": "network",
+            "kind": "text",
+            "title": "Direct referral rewards",
+            "body": "Direct purchases: {directPurchaseRules}. Direct device earnings: {directDeviceRules}. {directScope}. Current price: {directPrice}. A member's referral commissions do not count as device earnings. Historical network rewards do not create new multi-level purchase rewards."
+          },
+          {
+            "id": "binary",
+            "kind": "text",
+            "title": "Binary matching",
+            "body": "Both A and B must meet the qualifying-volume threshold. Matching uses the smaller available leg and never reuses consumed volume. Current rules: {binaryRules}. Settlement also depends on valid business activity, risk checks and the remaining allowance."
+          },
+          {
+            "id": "peer",
+            "kind": "text",
+            "title": "Peer rewards",
+            "body": "Configured peer benefits: {peerRules}. Current capability: {peerStatus}. A matching rank or configured rate does not itself trigger payment; only actual events count as income."
+          },
+          {
+            "id": "cultivation",
+            "kind": "text",
+            "title": "Cultivation rewards",
+            "body": "Total NEX amounts in rank-reward configuration: {cultivationRules}. Totals may combine self and sponsor rewards, not a sponsor-only entitlement. Each rule and the valid referral relationship determine the recipient. The same promotion reward cannot be issued twice."
+          },
+          {
+            "id": "leadership",
+            "kind": "text",
+            "title": "Leadership pool",
+            "body": "Qualifying period volume funds a pool distributed by eligibility, votes and individual caps. Current rules: {leadershipRules}. Votes: {leadershipVotes}. Complete configuration is not completed settlement; actual shares require the period's settlement records."
+          },
+          {
+            "id": "genesis",
+            "kind": "text",
+            "title": "Genesis-related rewards",
+            "body": "Genesis asset benefits and team commissions are different income sources. Current independent commission capability: {genesisStatus}. Reconcile asset earnings and commission events separately; an asset balance is not a team commission."
+          },
+          {
+            "id": "lifecycle",
+            "kind": "text",
+            "title": "The commission lifecycle",
+            "body": "Statuses reflect actual reward processing, not a countdown promise. Exceptional states such as frozen or reversed appear on the corresponding records."
+          },
+          {
+            "id": "cooling",
+            "kind": "text",
+            "title": "Waiting for release",
+            "body": "Direct purchase and device rewards each use their own configured waiting period. Both assets remain unavailable while cooling or frozen. Binary waiting policy: {coolingDays}. Each event's release time and state are authoritative."
+          },
+          {
+            "id": "unlocked",
+            "kind": "text",
+            "title": "Unlocked",
+            "body": "The event has met its unlock conditions. Withdrawal or use still requires the relevant wallet's available balance, limits and channel availability; the commission label alone is insufficient."
+          },
+          {
+            "id": "withdrawn",
+            "kind": "text",
+            "title": "Withdrawn",
+            "body": "The record has reached the relevant completion state. Check wallet bills and withdrawal records for the outcome; a commission status does not confirm arrival on-chain or at a payment channel."
+          },
+          {
+            "id": "cooling-note",
+            "kind": "text",
+            "title": "Each reward keeps its original policy",
+            "body": "Policy changes affect eligible future sources. Historical records retain their policy and price snapshots. A frozen or waiting reward is not available balance."
+          },
+          {
+            "id": "example",
+            "kind": "text",
+            "title": "An example of reading records",
+            "body": "The example card shows configuration arithmetic and channel availability, not fictional real orders or daily earnings."
+          },
+          {
+            "id": "example-day",
+            "kind": "text",
+            "title": "Read the original settlement",
+            "body": "A source order or device receipt identifies one paired USDT and NEX settlement. Check its original policy, price, amounts and release state; this illustration is not personal income."
+          },
+          {
+            "id": "example-network",
+            "kind": "text",
+            "title": "Direct referral rewards",
+            "body": "USDT and NEX require an actual eligible source and settlement"
+          },
+          {
+            "id": "example-cultivation",
+            "kind": "text",
+            "title": "Cultivation",
+            "body": "{exampleRank} NEX configuration total (rules may have different recipients)"
+          },
+          {
+            "id": "example-peer",
+            "kind": "text",
+            "title": "Peer rewards",
+            "body": "Independent payout availability"
+          },
+          {
+            "id": "example-leadership",
+            "kind": "text",
+            "title": "Leadership pool",
+            "body": "Requires an actual pool, votes and period settlement"
+          },
+          {
+            "id": "example-total",
+            "kind": "text",
+            "title": "Reconcile records",
+            "body": "Different assets and unsettled benefits cannot be added into actual earnings."
+          },
+          {
+            "id": "example-note",
+            "kind": "text",
+            "title": "Example limits",
+            "body": "This example creates no order or reward. Do not add NEX directly to USDT or treat unavailable, unconfigured or unsettled rewards as earned income. Actual amounts, rounding and payments follow events and wallet bills."
+          },
+          {
+            "id": "faq",
+            "kind": "text",
+            "title": "Frequently asked questions",
+            "body": "These explanations help reconcile business status; they do not replace individual reward records."
+          },
+          {
+            "id": "faq-order",
+            "kind": "text",
+            "title": "Why is a direct reward missing?",
+            "body": "Only a direct member's valid paid device order or real credited device earnings qualify. The source must meet its effective policy. A disabled rule, missing price or insufficient precision does not produce a payment. Registration gifts and referral commissions are excluded."
+          },
+          {
+            "id": "faq-withdraw",
+            "kind": "text",
+            "title": "Why can an unlocked reward still be unavailable for withdrawal?",
+            "body": "Commission unlocking and wallet withdrawal are separate stages. Check available asset balance, per-transaction limits, remaining daily allowance, channel status and any frozen or pending records."
+          },
+          {
+            "id": "faq-reversal",
+            "kind": "text",
+            "title": "What happens after a refund?",
+            "body": "An unissued reward is cancelled. An issued reward is recovered in both assets using the original amounts and price. If the recipient has insufficient funds, the remaining amounts are marked recovery pending. The purchaser's rightful refund is not blocked."
+          },
+          {
+            "id": "faq-cultivation",
+            "kind": "text",
+            "title": "Why did I not receive the entire promotion example?",
+            "body": "The page shows a configured rank-reward total, not a payment promise to one person. Rewards can have separate self and sponsor recipients. Check the applicable rule, valid referral relationship and events generated for that promotion."
+          },
+          {
+            "id": "footer",
+            "kind": "text",
+            "title": "Got it · View my commissions",
+            "body": "Return to server-confirmed personal commission records."
+          }
+        ]
+      },
+      "vi": {
+        "blocks": [
+          {
+            "id": "hero",
+            "kind": "text",
+            "title": "Cùng phát triển, ghi nhận đóng góp",
+            "body": "Tìm hiểu nguồn thưởng, trạng thái quyết toán và cách kiểm tra. Quy tắc theo cấu hình đã công bố, không phải cam kết thu nhập."
+          },
+          {
+            "id": "overview",
+            "kind": "text",
+            "title": "Hoa hồng đội nhóm là gì?",
+            "body": "Hoa hồng được tạo khi hoạt động kinh doanh hợp lệ và đóng góp đáp ứng điều kiện. Số thành viên, ví dụ và quyền lợi cấu hình không phải tiền đã nhận. Hãy đối chiếu sự kiện hoa hồng với hóa đơn ví."
+          },
+          {
+            "id": "channels",
+            "kind": "text",
+            "title": "Nguồn thưởng và lịch sử",
+            "body": "Mua trực tiếp và thu nhập thiết bị trực tiếp là hai nguồn riêng. Lịch sử mạng lưới vẫn tra cứu được. Đối ứng, hạng, bồi dưỡng và quỹ lãnh đạo giữ quy tắc riêng."
+          },
+          {
+            "id": "network",
+            "kind": "text",
+            "title": "Thưởng giới thiệu trực tiếp",
+            "body": "Mua trực tiếp: {directPurchaseRules}. Thu nhập thiết bị trực tiếp: {directDeviceRules}. {directScope}. Giá hiện tại: {directPrice}. Hoa hồng giới thiệu nhận được không phải thu nhập thiết bị và không tạo thưởng lên cấp trên. Lịch sử mạng lưới không tạo thưởng mua nhiều cấp mới."
+          },
+          {
+            "id": "binary",
+            "kind": "text",
+            "title": "Đối ứng hai nhánh",
+            "body": "Cả A và B phải đạt ngưỡng doanh số hợp lệ. Đối ứng dựa trên nhánh nhỏ hơn còn khả dụng; doanh số đã dùng không được dùng lại. Quy tắc hiện tại: {binaryRules}. Quyết toán còn cần nghiệp vụ hợp lệ, kiểm tra rủi ro và hạn mức còn lại."
+          },
+          {
+            "id": "peer",
+            "kind": "text",
+            "title": "Thưởng đồng cấp",
+            "body": "Quyền lợi đồng cấp được cấu hình: {peerRules}. Trạng thái hiện tại: {peerStatus}. Cùng hạng hoặc có tỷ lệ không tự tạo khoản trả; chỉ sự kiện thực tế mới tính là thu nhập."
+          },
+          {
+            "id": "cultivation",
+            "kind": "text",
+            "title": "Thưởng đào tạo",
+            "body": "Tổng NEX trong cấu hình thưởng theo hạng: {cultivationRules}. Tổng có thể gồm thưởng bản thân và người giới thiệu, không phải toàn bộ dành cho người giới thiệu. Người nhận phụ thuộc từng quy tắc và quan hệ giới thiệu hợp lệ. Cùng một thưởng thăng hạng không được phát hai lần."
+          },
+          {
+            "id": "leadership",
+            "kind": "text",
+            "title": "Quỹ lãnh đạo",
+            "body": "Doanh số hợp lệ theo kỳ tạo quỹ, chia theo điều kiện, phiếu và giới hạn cá nhân. Quy tắc: {leadershipRules}. Phiếu: {leadershipVotes}. Cấu hình đầy đủ không có nghĩa đã quyết toán; phần thực nhận cần bản ghi của kỳ."
+          },
+          {
+            "id": "genesis",
+            "kind": "text",
+            "title": "Thưởng liên quan Genesis",
+            "body": "Quyền lợi tài sản Genesis và hoa hồng đội nhóm là hai nguồn khác nhau. Khả năng phát hoa hồng độc lập hiện tại: {genesisStatus}. Đối chiếu thu nhập tài sản và sự kiện hoa hồng riêng; số dư tài sản không phải hoa hồng."
+          },
+          {
+            "id": "lifecycle",
+            "kind": "text",
+            "title": "Vòng đời hoa hồng",
+            "body": "Trạng thái phản ánh xử lý thực tế, không phải lời hứa đếm ngược. Trạng thái đóng băng hoặc thu hồi được thể hiện trên từng bản ghi."
+          },
+          {
+            "id": "cooling",
+            "kind": "text",
+            "title": "Chờ giải phóng",
+            "body": "Thưởng mua và thu nhập thiết bị có thời gian chờ riêng. Cả hai tài sản chưa dùng được khi đang chờ hoặc bị đóng băng. Quy tắc chờ đối ứng: {coolingDays}. Thời gian và trạng thái từng bản ghi là căn cứ."
+          },
+          {
+            "id": "unlocked",
+            "kind": "text",
+            "title": "Đã mở khóa",
+            "body": "Khoản thưởng đã đủ điều kiện mở khóa. Rút hoặc sử dụng còn phụ thuộc số dư ví khả dụng, hạn mức và trạng thái kênh; nhãn hoa hồng không đủ để xác nhận."
+          },
+          {
+            "id": "withdrawn",
+            "kind": "text",
+            "title": "Đã rút",
+            "body": "Bản ghi đã vào trạng thái hoàn tất tương ứng. Kiểm tra hóa đơn ví và lệnh rút; trạng thái hoa hồng không thay thế xác nhận tiền đến trên chuỗi hoặc kênh thanh toán."
+          },
+          {
+            "id": "cooling-note",
+            "kind": "text",
+            "title": "Mỗi bản ghi giữ quy tắc gốc",
+            "body": "Thay đổi chính sách áp dụng theo thời điểm nguồn hợp lệ. Lịch sử giữ chính sách và giá gốc. Thưởng đang chờ hoặc đóng băng không phải số dư khả dụng."
+          },
+          {
+            "id": "example",
+            "kind": "text",
+            "title": "Ví dụ đọc bản ghi",
+            "body": "Thẻ ví dụ thể hiện phép tính cấu hình và trạng thái kênh, không phải đơn hàng thật giả lập hay thu nhập hằng ngày."
+          },
+          {
+            "id": "example-day",
+            "kind": "text",
+            "title": "Đối chiếu quyết toán gốc",
+            "body": "Đơn hàng hoặc chứng từ thiết bị tương ứng một nhóm quyết toán USDT và NEX. Kiểm tra chính sách, giá, số tiền và trạng thái gốc; ví dụ không phải thu nhập cá nhân."
+          },
+          {
+            "id": "example-network",
+            "kind": "text",
+            "title": "Thưởng trực tiếp",
+            "body": "Cả hai tài sản cần nguồn hợp lệ và quyết toán thực tế"
+          },
+          {
+            "id": "example-cultivation",
+            "kind": "text",
+            "title": "Đào tạo",
+            "body": "Tổng NEX cấu hình {exampleRank} (có thể có nhiều người nhận)"
+          },
+          {
+            "id": "example-peer",
+            "kind": "text",
+            "title": "Đồng cấp",
+            "body": "Trạng thái phát thưởng độc lập"
+          },
+          {
+            "id": "example-leadership",
+            "kind": "text",
+            "title": "Quỹ lãnh đạo",
+            "body": "Cần quỹ, phiếu và quyết toán kỳ thực tế"
+          },
+          {
+            "id": "example-total",
+            "kind": "text",
+            "title": "Đối chiếu bản ghi",
+            "body": "Không cộng các tài sản khác nhau và quyền lợi chưa quyết toán thành thu nhập thực tế."
+          },
+          {
+            "id": "example-note",
+            "kind": "text",
+            "title": "Giới hạn ví dụ",
+            "body": "Ví dụ không tạo đơn hay thưởng. Không cộng trực tiếp NEX với USDT; chưa mở, chưa cấu hình, chưa quyết toán không phải thu nhập đã nhận. Số tiền, làm tròn và thanh toán theo sự kiện và hóa đơn ví."
+          },
+          {
+            "id": "faq",
+            "kind": "text",
+            "title": "Câu hỏi thường gặp",
+            "body": "Hướng dẫn giúp kiểm tra trạng thái nghiệp vụ, không thay thế bản ghi thưởng cụ thể."
+          },
+          {
+            "id": "faq-order",
+            "kind": "text",
+            "title": "Vì sao chưa có thưởng trực tiếp?",
+            "body": "Chỉ đơn thiết bị đã thanh toán hợp lệ hoặc thu nhập thiết bị đã ghi có thật của thành viên trực tiếp mới tham gia, theo chính sách tại thời điểm nguồn. Tạm dừng, thiếu giá hoặc thiếu độ chính xác không phải khoản đã trả. Quà đăng ký và hoa hồng giới thiệu bị loại trừ."
+          },
+          {
+            "id": "faq-withdraw",
+            "kind": "text",
+            "title": "Vì sao đã mở khóa mà chưa rút được?",
+            "body": "Mở khóa hoa hồng và rút ví là hai bước riêng. Kiểm tra số dư tài sản khả dụng, giới hạn mỗi giao dịch, hạn mức ngày còn lại, trạng thái kênh và bản ghi đóng băng hoặc đang xử lý."
+          },
+          {
+            "id": "faq-reversal",
+            "kind": "text",
+            "title": "Thưởng được xử lý thế nào khi hoàn tiền?",
+            "body": "Hủy thưởng chưa trả. Thưởng đã trả được thu hồi cả hai tài sản theo số tiền và giá gốc. Nếu số dư thiếu, giữ số tiền chờ thu hồi; không coi đổi trạng thái là thành công và không chặn hoàn tiền hợp lệ của người mua."
+          },
+          {
+            "id": "faq-cultivation",
+            "kind": "text",
+            "title": "Vì sao không nhận toàn bộ thưởng trong ví dụ thăng hạng?",
+            "body": "Trang hiển thị tổng thưởng hạng được cấu hình, không cam kết trả cho một người. Thưởng có thể dành riêng cho bản thân và người giới thiệu. Hãy kiểm tra đối tượng áp dụng, quan hệ hợp lệ và sự kiện của lần thăng hạng đó."
+          },
+          {
+            "id": "footer",
+            "kind": "text",
+            "title": "Đã hiểu · Xem hoa hồng của tôi",
+            "body": "Quay về bản ghi hoa hồng cá nhân do máy chủ xác nhận."
+          }
+        ]
+      }
+    },
+    "version": "2026.10.05-direct-referral"
+  },
+  "version": "2026.10.06-seven-layer-v2",
+  "entry": {
+    "locales": {
+      "zh": {
+        "blocks": [
+          {
+            "id": "hero",
+            "kind": "text",
+            "title": "团队协作，贡献有回报",
+            "body": "了解各类佣金的来源、结算状态和查看方式。以下规则随平台已发布配置更新，不构成收益承诺。"
+          },
+          {
+            "id": "overview",
+            "kind": "text",
+            "title": "什么是团队佣金？",
+            "body": "团队佣金是有效业务与团队贡献满足条件后形成的奖励。团队人数、页面示例或已配置权益都不等于已到账收益；请以佣金记录及对应钱包账单为准。"
+          },
+          {
+            "id": "channels",
+            "kind": "text",
+            "title": "奖励来源与历史记录",
+            "body": "购买奖励继续按七层关系和原资格、倍率及上限计算；直属拆分只改变第一层的两币构成。对碰、等级、培育、领导池和注册礼保持各自规则。"
+          },
+          {
+            "id": "network",
+            "kind": "text",
+            "title": "七层购买与直属设备分成",
+            "body": "直属购买拆分：{directPurchaseRules}。网络购买：{networkPurchaseRules}。直属设备收益：{directDeviceRules}。{directScope}。当笔价格：{directPrice}。设备本人原收益不减少，佣金和礼金不参与设备分成。"
+          },
+          {
+            "id": "binary",
+            "kind": "text",
+            "title": "双轨对碰",
+            "body": "A、B 两侧有效业绩达到门槛后，以较小一侧可对碰业绩为基础计算；已消费业绩不能重复使用。当前规则：{binaryRules}。实际可结算状态还取决于业务有效性、风控检查及当期剩余额度。"
+          },
+          {
+            "id": "peer",
+            "kind": "text",
+            "title": "平级奖励",
+            "body": "平级权益配置：{peerRules}。当前能力状态：{peerStatus}。拥有相同比例或等级不代表触发奖励，只有真实事件才计入收入。"
+          },
+          {
+            "id": "cultivation",
+            "kind": "text",
+            "title": "培育奖励",
+            "body": "等级奖励配置中的 NEX 金额合计：{cultivationRules}。这些金额可能包含本人奖励和推荐人奖励，不能全部理解为推荐人所得；真实接收人由对应奖励规则及有效推荐关系决定。同一次晋升的同一奖励不能重复发放。"
+          },
+          {
+            "id": "leadership",
+            "kind": "text",
+            "title": "领导池分红",
+            "body": "按合格周期业务量形成奖池，并依据参与等级、票权及个人上限分配。当前规则：{leadershipRules}。票权：{leadershipVotes}。配置完整不等于已结算，最终份额须等待当期结算记录。"
+          },
+          {
+            "id": "genesis",
+            "kind": "text",
+            "title": "Genesis 相关奖励",
+            "body": "Genesis 资产权益与团队佣金不是同一笔收入。当前独立佣金能力：{genesisStatus}。请分别核对资产收益和佣金事件，不将资产余额直接当作团队佣金。"
+          },
+          {
+            "id": "lifecycle",
+            "kind": "text",
+            "title": "佣金的生命周期",
+            "body": "状态反映真实奖励处理结果，不是页面上的倒计时承诺。冻结、撤销等特殊状态会在对应记录中单独显示。"
+          },
+          {
+            "id": "cooling",
+            "kind": "text",
+            "title": "等待释放",
+            "body": "购买统一冷却从整链首次准备时间起算，设备分成从凭证确认起算。全额购买退款整链取消未到账或追回原币数量，余额不足保留欠额；有效的过去设备收益不因退货自动撤销。冷却、冻结、待计算都不是可用余额。 当前七层冷却：{coolingDays}。"
+          },
+          {
+            "id": "unlocked",
+            "kind": "text",
+            "title": "已解锁",
+            "body": "该笔奖励已满足解锁条件。能否提现或使用还要检查对应资产的钱包可用余额、限额与渠道状态，不能仅凭佣金标签判断。"
+          },
+          {
+            "id": "withdrawn",
+            "kind": "text",
+            "title": "已提现",
+            "body": "表示记录已进入相应的完成状态。请打开钱包账单及提现记录核对处理结果；佣金状态不能替代链上或支付渠道的到账确认。"
+          },
+          {
+            "id": "cooling-note",
+            "kind": "text",
+            "title": "每笔记录保留原规则",
+            "body": "政策调整作用于对应生效时间的合格来源；历史记录保留原政策和价格快照。冷却或冻结奖励不是可用余额。"
+          },
+          {
+            "id": "example",
+            "kind": "text",
+            "title": "一组示例，理解如何看记录",
+            "body": "保留示例卡片，但不展示虚构的真实订单或每日收益。这里只解释当前配置的算术含义及渠道状态。"
+          },
+          {
+            "id": "example-day",
+            "kind": "text",
+            "title": "核对原始结算",
+            "body": "来源订单或设备收益凭证对应一组USDT与NEX结算。核对当笔政策、价格、金额和释放状态；说明不代表个人实际收入。"
+          },
+          {
+            "id": "example-network",
+            "kind": "text",
+            "title": "七层购买与直属设备分成",
+            "body": "两币到账需要真实合格来源与实际结算"
+          },
+          {
+            "id": "example-cultivation",
+            "kind": "text",
+            "title": "培育奖励",
+            "body": "{exampleRank} 的 NEX 奖励配置合计（含不同接收人规则）"
+          },
+          {
+            "id": "example-peer",
+            "kind": "text",
+            "title": "平级奖励",
+            "body": "独立派发能力状态"
+          },
+          {
+            "id": "example-leadership",
+            "kind": "text",
+            "title": "领导池",
+            "body": "需要真实奖池、票权与当期结算"
+          },
+          {
+            "id": "example-total",
+            "kind": "text",
+            "title": "记录核对",
+            "body": "各类资产及未结算权益不能直接相加为实际收益。"
+          },
+          {
+            "id": "example-note",
+            "kind": "text",
+            "title": "示例边界",
+            "body": "本例不产生订单或奖励。NEX 与 USDT 不直接相加；未开放、未配置、未结算不记作已获得收益。真实金额、舍入及到账以事件和钱包账单为准。"
+          },
+          {
+            "id": "faq",
+            "kind": "text",
+            "title": "常见问题",
+            "body": "以下说明帮助你核对业务状态，不替代具体奖励记录。"
+          },
+          {
+            "id": "faq-order",
+            "kind": "text",
+            "title": "为什么还没有直属分成？",
+            "body": "购买奖励继续按七层关系和原资格、倍率及上限计算；直属拆分只改变第一层的两币构成。对碰、等级、培育、领导池和注册礼保持各自规则。 设备收益只奖励直接邀请人。B的真实收益只给A，C的只给B。本人收益完整保留，佣金、礼金、影子及测试收益不再产生设备分成。"
+          },
+          {
+            "id": "faq-withdraw",
+            "kind": "text",
+            "title": "为什么已解锁还不能提现？",
+            "body": "佣金解锁与钱包提现是不同环节。请分别查看资产可用余额、单笔限额、当日剩余额度及渠道可用状态，并核对是否存在冻结或处理中记录。"
+          },
+          {
+            "id": "faq-reversal",
+            "kind": "text",
+            "title": "退款后奖励如何处理？",
+            "body": "购买统一冷却从整链首次准备时间起算，设备分成从凭证确认起算。全额购买退款整链取消未到账或追回原币数量，余额不足保留欠额；有效的过去设备收益不因退货自动撤销。冷却、冻结、待计算都不是可用余额。"
+          },
+          {
+            "id": "faq-cultivation",
+            "kind": "text",
+            "title": "为什么晋升后没有收到示例中的全部奖励？",
+            "body": "页面展示的是等级奖励配置合计，不是某个人的到账承诺。奖励可能分别发给晋升用户和有效推荐人；请核对规则适用对象、真实推荐关系以及该次晋升生成的奖励记录。"
+          },
+          {
+            "id": "footer",
+            "kind": "text",
+            "title": "明白了 · 查看我的佣金",
+            "body": "返回佣金页面查看服务端确认的个人记录。"
+          }
+        ],
+        "schemaVersion": 2,
+        "templateId": "commissions-v2"
+      },
+      "en": {
+        "blocks": [
+          {
+            "id": "hero",
+            "kind": "text",
+            "title": "Teamwork, with rewards for contribution",
+            "body": "Understand reward sources, settlement status and where to check them. Rules follow the platform's published configuration and are not an earnings promise."
+          },
+          {
+            "id": "overview",
+            "kind": "text",
+            "title": "What are team commissions?",
+            "body": "Team commissions are rewards created when valid business activity and contribution satisfy the rules. Member counts, examples and configured benefits are not paid income. Check commission events against wallet bills."
+          },
+          {
+            "id": "channels",
+            "kind": "text",
+            "title": "Reward sources and history",
+            "body": "Purchases keep their original seven-layer relationship, eligibility, multipliers and cap. Splitting changes only the first layer's assets. Binary, rank, cultivation, leadership and registration gifts keep their separate rules."
+          },
+          {
+            "id": "network",
+            "kind": "text",
+            "title": "Seven-layer purchases and direct device rewards",
+            "body": "Direct purchase split: {directPurchaseRules}. Network purchases: {networkPurchaseRules}. Direct device earnings: {directDeviceRules}. {directScope}. Locked price: {directPrice}. Members retain full device earnings; commissions and gifts do not qualify as device earnings."
+          },
+          {
+            "id": "binary",
+            "kind": "text",
+            "title": "Binary matching",
+            "body": "Both A and B must meet the qualifying-volume threshold. Matching uses the smaller available leg and never reuses consumed volume. Current rules: {binaryRules}. Settlement also depends on valid business activity, risk checks and the remaining allowance."
+          },
+          {
+            "id": "peer",
+            "kind": "text",
+            "title": "Peer rewards",
+            "body": "Configured peer benefits: {peerRules}. Current capability: {peerStatus}. A matching rank or configured rate does not itself trigger payment; only actual events count as income."
+          },
+          {
+            "id": "cultivation",
+            "kind": "text",
+            "title": "Cultivation rewards",
+            "body": "Total NEX amounts in rank-reward configuration: {cultivationRules}. Totals may combine self and sponsor rewards, not a sponsor-only entitlement. Each rule and the valid referral relationship determine the recipient. The same promotion reward cannot be issued twice."
+          },
+          {
+            "id": "leadership",
+            "kind": "text",
+            "title": "Leadership pool",
+            "body": "Qualifying period volume funds a pool distributed by eligibility, votes and individual caps. Current rules: {leadershipRules}. Votes: {leadershipVotes}. Complete configuration is not completed settlement; actual shares require the period's settlement records."
+          },
+          {
+            "id": "genesis",
+            "kind": "text",
+            "title": "Genesis-related rewards",
+            "body": "Genesis asset benefits and team commissions are different income sources. Current independent commission capability: {genesisStatus}. Reconcile asset earnings and commission events separately; an asset balance is not a team commission."
+          },
+          {
+            "id": "lifecycle",
+            "kind": "text",
+            "title": "The commission lifecycle",
+            "body": "Statuses reflect actual reward processing, not a countdown promise. Exceptional states such as frozen or reversed appear on the corresponding records."
+          },
+          {
+            "id": "cooling",
+            "kind": "text",
+            "title": "Waiting for release",
+            "body": "Purchase cooling starts at first chain preparation; device cooling starts at receipt confirmation. Full purchase refunds cancel unpaid chain rewards or recover original asset quantities, retaining any unpaid recovery. Returning a device does not automatically invalidate past real device earnings. Cooling, frozen and awaiting-calculation rewards are not available wallet balances. Current seven-layer cooling: {coolingDays}."
+          },
+          {
+            "id": "unlocked",
+            "kind": "text",
+            "title": "Unlocked",
+            "body": "The event has met its unlock conditions. Withdrawal or use still requires the relevant wallet's available balance, limits and channel availability; the commission label alone is insufficient."
+          },
+          {
+            "id": "withdrawn",
+            "kind": "text",
+            "title": "Withdrawn",
+            "body": "The record has reached the relevant completion state. Check wallet bills and withdrawal records for the outcome; a commission status does not confirm arrival on-chain or at a payment channel."
+          },
+          {
+            "id": "cooling-note",
+            "kind": "text",
+            "title": "Each reward keeps its original policy",
+            "body": "Policy changes affect eligible future sources. Historical records retain their policy and price snapshots. A frozen or waiting reward is not available balance."
+          },
+          {
+            "id": "example",
+            "kind": "text",
+            "title": "An example of reading records",
+            "body": "The example card shows configuration arithmetic and channel availability, not fictional real orders or daily earnings."
+          },
+          {
+            "id": "example-day",
+            "kind": "text",
+            "title": "Read the original settlement",
+            "body": "A source order or device receipt identifies one paired USDT and NEX settlement. Check its original policy, price, amounts and release state; this illustration is not personal income."
+          },
+          {
+            "id": "example-network",
+            "kind": "text",
+            "title": "Seven-layer purchases and direct device rewards",
+            "body": "USDT and NEX require an actual eligible source and settlement"
+          },
+          {
+            "id": "example-cultivation",
+            "kind": "text",
+            "title": "Cultivation",
+            "body": "{exampleRank} NEX configuration total (rules may have different recipients)"
+          },
+          {
+            "id": "example-peer",
+            "kind": "text",
+            "title": "Peer rewards",
+            "body": "Independent payout availability"
+          },
+          {
+            "id": "example-leadership",
+            "kind": "text",
+            "title": "Leadership pool",
+            "body": "Requires an actual pool, votes and period settlement"
+          },
+          {
+            "id": "example-total",
+            "kind": "text",
+            "title": "Reconcile records",
+            "body": "Different assets and unsettled benefits cannot be added into actual earnings."
+          },
+          {
+            "id": "example-note",
+            "kind": "text",
+            "title": "Example limits",
+            "body": "This example creates no order or reward. Do not add NEX directly to USDT or treat unavailable, unconfigured or unsettled rewards as earned income. Actual amounts, rounding and payments follow events and wallet bills."
+          },
+          {
+            "id": "faq",
+            "kind": "text",
+            "title": "Frequently asked questions",
+            "body": "These explanations help reconcile business status; they do not replace individual reward records."
+          },
+          {
+            "id": "faq-order",
+            "kind": "text",
+            "title": "Why is a direct reward missing?",
+            "body": "Purchases keep their original seven-layer relationship, eligibility, multipliers and cap. Splitting changes only the first layer's assets. Binary, rank, cultivation, leadership and registration gifts keep their separate rules. Device earnings reward only the direct inviter: B rewards A; C rewards B. Members retain full earnings. Commissions, gifts, shadow and test earnings never create another device share."
+          },
+          {
+            "id": "faq-withdraw",
+            "kind": "text",
+            "title": "Why can an unlocked reward still be unavailable for withdrawal?",
+            "body": "Commission unlocking and wallet withdrawal are separate stages. Check available asset balance, per-transaction limits, remaining daily allowance, channel status and any frozen or pending records."
+          },
+          {
+            "id": "faq-reversal",
+            "kind": "text",
+            "title": "What happens after a refund?",
+            "body": "Purchase cooling starts at first chain preparation; device cooling starts at receipt confirmation. Full purchase refunds cancel unpaid chain rewards or recover original asset quantities, retaining any unpaid recovery. Returning a device does not automatically invalidate past real device earnings. Cooling, frozen and awaiting-calculation rewards are not available wallet balances."
+          },
+          {
+            "id": "faq-cultivation",
+            "kind": "text",
+            "title": "Why did I not receive the entire promotion example?",
+            "body": "The page shows a configured rank-reward total, not a payment promise to one person. Rewards can have separate self and sponsor recipients. Check the applicable rule, valid referral relationship and events generated for that promotion."
+          },
+          {
+            "id": "footer",
+            "kind": "text",
+            "title": "Got it · View my commissions",
+            "body": "Return to server-confirmed personal commission records."
+          }
+        ],
+        "schemaVersion": 2,
+        "templateId": "commissions-v2"
+      },
+      "vi": {
+        "blocks": [
+          {
+            "id": "hero",
+            "kind": "text",
+            "title": "Cùng phát triển, ghi nhận đóng góp",
+            "body": "Tìm hiểu nguồn thưởng, trạng thái quyết toán và cách kiểm tra. Quy tắc theo cấu hình đã công bố, không phải cam kết thu nhập."
+          },
+          {
+            "id": "overview",
+            "kind": "text",
+            "title": "Hoa hồng đội nhóm là gì?",
+            "body": "Hoa hồng được tạo khi hoạt động kinh doanh hợp lệ và đóng góp đáp ứng điều kiện. Số thành viên, ví dụ và quyền lợi cấu hình không phải tiền đã nhận. Hãy đối chiếu sự kiện hoa hồng với hóa đơn ví."
+          },
+          {
+            "id": "channels",
+            "kind": "text",
+            "title": "Nguồn thưởng và lịch sử",
+            "body": "Mua tiếp tục theo quan hệ bảy tầng, điều kiện, hệ số và giới hạn gốc. Phân chia chỉ đổi tài sản ở tầng đầu. Đối ứng, hạng, bồi dưỡng, quỹ lãnh đạo và quà đăng ký giữ quy tắc riêng."
+          },
+          {
+            "id": "network",
+            "kind": "text",
+            "title": "Mua bảy tầng và thưởng thiết bị trực tiếp",
+            "body": "Phân chia mua trực tiếp: {directPurchaseRules}. Mua mạng lưới: {networkPurchaseRules}. Thu nhập thiết bị: {directDeviceRules}. {directScope}. Giá đã khóa: {directPrice}. Thành viên giữ đủ thu nhập; hoa hồng và quà không tham gia phần chia thiết bị."
+          },
+          {
+            "id": "binary",
+            "kind": "text",
+            "title": "Đối ứng hai nhánh",
+            "body": "Cả A và B phải đạt ngưỡng doanh số hợp lệ. Đối ứng dựa trên nhánh nhỏ hơn còn khả dụng; doanh số đã dùng không được dùng lại. Quy tắc hiện tại: {binaryRules}. Quyết toán còn cần nghiệp vụ hợp lệ, kiểm tra rủi ro và hạn mức còn lại."
+          },
+          {
+            "id": "peer",
+            "kind": "text",
+            "title": "Thưởng đồng cấp",
+            "body": "Quyền lợi đồng cấp được cấu hình: {peerRules}. Trạng thái hiện tại: {peerStatus}. Cùng hạng hoặc có tỷ lệ không tự tạo khoản trả; chỉ sự kiện thực tế mới tính là thu nhập."
+          },
+          {
+            "id": "cultivation",
+            "kind": "text",
+            "title": "Thưởng đào tạo",
+            "body": "Tổng NEX trong cấu hình thưởng theo hạng: {cultivationRules}. Tổng có thể gồm thưởng bản thân và người giới thiệu, không phải toàn bộ dành cho người giới thiệu. Người nhận phụ thuộc từng quy tắc và quan hệ giới thiệu hợp lệ. Cùng một thưởng thăng hạng không được phát hai lần."
+          },
+          {
+            "id": "leadership",
+            "kind": "text",
+            "title": "Quỹ lãnh đạo",
+            "body": "Doanh số hợp lệ theo kỳ tạo quỹ, chia theo điều kiện, phiếu và giới hạn cá nhân. Quy tắc: {leadershipRules}. Phiếu: {leadershipVotes}. Cấu hình đầy đủ không có nghĩa đã quyết toán; phần thực nhận cần bản ghi của kỳ."
+          },
+          {
+            "id": "genesis",
+            "kind": "text",
+            "title": "Thưởng liên quan Genesis",
+            "body": "Quyền lợi tài sản Genesis và hoa hồng đội nhóm là hai nguồn khác nhau. Khả năng phát hoa hồng độc lập hiện tại: {genesisStatus}. Đối chiếu thu nhập tài sản và sự kiện hoa hồng riêng; số dư tài sản không phải hoa hồng."
+          },
+          {
+            "id": "lifecycle",
+            "kind": "text",
+            "title": "Vòng đời hoa hồng",
+            "body": "Trạng thái phản ánh xử lý thực tế, không phải lời hứa đếm ngược. Trạng thái đóng băng hoặc thu hồi được thể hiện trên từng bản ghi."
+          },
+          {
+            "id": "cooling",
+            "kind": "text",
+            "title": "Chờ giải phóng",
+            "body": "Mua bắt đầu chờ từ lần chuẩn bị chuỗi đầu tiên; thiết bị từ xác nhận chứng từ. Hoàn mua toàn bộ hủy thưởng chưa trả hoặc thu hồi số tài sản gốc; số dư thiếu được lưu chờ thu hồi. Trả thiết bị không tự hủy thu nhập thật trước đây. Thưởng đang chờ, đóng băng hoặc chờ tính không phải số dư ví khả dụng. Thời gian chờ bảy tầng: {coolingDays}."
+          },
+          {
+            "id": "unlocked",
+            "kind": "text",
+            "title": "Đã mở khóa",
+            "body": "Khoản thưởng đã đủ điều kiện mở khóa. Rút hoặc sử dụng còn phụ thuộc số dư ví khả dụng, hạn mức và trạng thái kênh; nhãn hoa hồng không đủ để xác nhận."
+          },
+          {
+            "id": "withdrawn",
+            "kind": "text",
+            "title": "Đã rút",
+            "body": "Bản ghi đã vào trạng thái hoàn tất tương ứng. Kiểm tra hóa đơn ví và lệnh rút; trạng thái hoa hồng không thay thế xác nhận tiền đến trên chuỗi hoặc kênh thanh toán."
+          },
+          {
+            "id": "cooling-note",
+            "kind": "text",
+            "title": "Mỗi bản ghi giữ quy tắc gốc",
+            "body": "Thay đổi chính sách áp dụng theo thời điểm nguồn hợp lệ. Lịch sử giữ chính sách và giá gốc. Thưởng đang chờ hoặc đóng băng không phải số dư khả dụng."
+          },
+          {
+            "id": "example",
+            "kind": "text",
+            "title": "Ví dụ đọc bản ghi",
+            "body": "Thẻ ví dụ thể hiện phép tính cấu hình và trạng thái kênh, không phải đơn hàng thật giả lập hay thu nhập hằng ngày."
+          },
+          {
+            "id": "example-day",
+            "kind": "text",
+            "title": "Đối chiếu quyết toán gốc",
+            "body": "Đơn hàng hoặc chứng từ thiết bị tương ứng một nhóm quyết toán USDT và NEX. Kiểm tra chính sách, giá, số tiền và trạng thái gốc; ví dụ không phải thu nhập cá nhân."
+          },
+          {
+            "id": "example-network",
+            "kind": "text",
+            "title": "Mua bảy tầng và thưởng thiết bị trực tiếp",
+            "body": "Cả hai tài sản cần nguồn hợp lệ và quyết toán thực tế"
+          },
+          {
+            "id": "example-cultivation",
+            "kind": "text",
+            "title": "Đào tạo",
+            "body": "Tổng NEX cấu hình {exampleRank} (có thể có nhiều người nhận)"
+          },
+          {
+            "id": "example-peer",
+            "kind": "text",
+            "title": "Đồng cấp",
+            "body": "Trạng thái phát thưởng độc lập"
+          },
+          {
+            "id": "example-leadership",
+            "kind": "text",
+            "title": "Quỹ lãnh đạo",
+            "body": "Cần quỹ, phiếu và quyết toán kỳ thực tế"
+          },
+          {
+            "id": "example-total",
+            "kind": "text",
+            "title": "Đối chiếu bản ghi",
+            "body": "Không cộng các tài sản khác nhau và quyền lợi chưa quyết toán thành thu nhập thực tế."
+          },
+          {
+            "id": "example-note",
+            "kind": "text",
+            "title": "Giới hạn ví dụ",
+            "body": "Ví dụ không tạo đơn hay thưởng. Không cộng trực tiếp NEX với USDT; chưa mở, chưa cấu hình, chưa quyết toán không phải thu nhập đã nhận. Số tiền, làm tròn và thanh toán theo sự kiện và hóa đơn ví."
+          },
+          {
+            "id": "faq",
+            "kind": "text",
+            "title": "Câu hỏi thường gặp",
+            "body": "Hướng dẫn giúp kiểm tra trạng thái nghiệp vụ, không thay thế bản ghi thưởng cụ thể."
+          },
+          {
+            "id": "faq-order",
+            "kind": "text",
+            "title": "Vì sao chưa có thưởng trực tiếp?",
+            "body": "Mua tiếp tục theo quan hệ bảy tầng, điều kiện, hệ số và giới hạn gốc. Phân chia chỉ đổi tài sản ở tầng đầu. Đối ứng, hạng, bồi dưỡng, quỹ lãnh đạo và quà đăng ký giữ quy tắc riêng. Thu nhập thiết bị chỉ thưởng người mời trực tiếp: B thưởng A, C thưởng B. Thành viên giữ đủ thu nhập. Hoa hồng, quà, thu nhập ảo và kiểm thử không tạo phần chia mới."
+          },
+          {
+            "id": "faq-withdraw",
+            "kind": "text",
+            "title": "Vì sao đã mở khóa mà chưa rút được?",
+            "body": "Mở khóa hoa hồng và rút ví là hai bước riêng. Kiểm tra số dư tài sản khả dụng, giới hạn mỗi giao dịch, hạn mức ngày còn lại, trạng thái kênh và bản ghi đóng băng hoặc đang xử lý."
+          },
+          {
+            "id": "faq-reversal",
+            "kind": "text",
+            "title": "Thưởng được xử lý thế nào khi hoàn tiền?",
+            "body": "Mua bắt đầu chờ từ lần chuẩn bị chuỗi đầu tiên; thiết bị từ xác nhận chứng từ. Hoàn mua toàn bộ hủy thưởng chưa trả hoặc thu hồi số tài sản gốc; số dư thiếu được lưu chờ thu hồi. Trả thiết bị không tự hủy thu nhập thật trước đây. Thưởng đang chờ, đóng băng hoặc chờ tính không phải số dư ví khả dụng."
+          },
+          {
+            "id": "faq-cultivation",
+            "kind": "text",
+            "title": "Vì sao không nhận toàn bộ thưởng trong ví dụ thăng hạng?",
+            "body": "Trang hiển thị tổng thưởng hạng được cấu hình, không cam kết trả cho một người. Thưởng có thể dành riêng cho bản thân và người giới thiệu. Hãy kiểm tra đối tượng áp dụng, quan hệ hợp lệ và sự kiện của lần thăng hạng đó."
+          },
+          {
+            "id": "footer",
+            "kind": "text",
+            "title": "Đã hiểu · Xem hoa hồng của tôi",
+            "body": "Quay về bản ghi hoa hồng cá nhân do máy chủ xác nhận."
+          }
+        ],
+        "schemaVersion": 2,
+        "templateId": "commissions-v2"
+      }
+    },
+    "version": "2026.10.06-seven-layer-v2"
+  },
+  "unilevelEntry": {
+    "version": "2026.10.06-seven-layer-v2",
+    "locales": {
+      "en": {
+        "blocks": [
+          {
+            "id": "hero",
+            "kind": "text",
+            "title": "Seven-layer purchases and direct device rewards",
+            "body": "Purchases keep their original seven-layer relationship, eligibility, multipliers and cap. Splitting changes only the first layer's assets. Binary, rank, cultivation, leadership and registration gifts keep their separate rules."
+          },
+          {
+            "id": "seven-layer-scope",
+            "kind": "text",
+            "title": "Seven-layer purchases and direct device rewards",
+            "body": "If A invites B and B invites C, B's purchase rewards A at layer one. C's purchase rewards B at layer one and A at layer two, up to seven layers. Layers two through seven retain their assets, eligibility and cap; paused or ineligible members do not compress the chain."
+          },
+          {
+            "id": "direct-referral-scope",
+            "kind": "text",
+            "title": "Seven-layer purchases and direct device rewards",
+            "body": "Device earnings reward only the direct inviter: B rewards A; C rewards B. Members retain full earnings. Commissions, gifts, shadow and test earnings never create another device share."
+          },
+          {
+            "id": "split",
+            "kind": "text",
+            "title": "Seven-layer purchases and direct device rewards",
+            "body": "The original first-layer budget is split into USDT and NEX, replacing the old additional NEX. Disabling the split restores its original composition for future sources while seven layers continue. Sources and prices are locked; a missing price waits for calculation."
+          },
+          {
+            "id": "release",
+            "kind": "text",
+            "title": "Seven-layer purchases and direct device rewards",
+            "body": "Purchase cooling starts at first chain preparation; device cooling starts at receipt confirmation. Full purchase refunds cancel unpaid chain rewards or recover original asset quantities, retaining any unpaid recovery. Returning a device does not automatically invalidate past real device earnings. Cooling, frozen and awaiting-calculation rewards are not available wallet balances."
+          }
+        ],
+        "schemaVersion": 2,
+        "templateId": "unilevel-v2"
+      },
+      "zh": {
+        "blocks": [
+          {
+            "id": "hero",
+            "kind": "text",
+            "title": "七层购买与直属设备分成",
+            "body": "购买奖励继续按七层关系和原资格、倍率及上限计算；直属拆分只改变第一层的两币构成。对碰、等级、培育、领导池和注册礼保持各自规则。"
+          },
+          {
+            "id": "seven-layer-scope",
+            "kind": "text",
+            "title": "七层购买与直属设备分成",
+            "body": "A邀请B、B邀请C：B购买时A获第一层；C购买时B获第一层、A获第二层，最多七层。第二至七层保留原构成、资格和上限；暂停或不合格不压缩层位。"
+          },
+          {
+            "id": "direct-referral-scope",
+            "kind": "text",
+            "title": "七层购买与直属设备分成",
+            "body": "设备收益只奖励直接邀请人。B的真实收益只给A，C的只给B。本人收益完整保留，佣金、礼金、影子及测试收益不再产生设备分成。"
+          },
+          {
+            "id": "split",
+            "kind": "text",
+            "title": "七层购买与直属设备分成",
+            "body": "第一层原购买预算拆成USDT和NEX，拆分NEX替代旧额外NEX。关闭拆分只恢复未来第一层原构成，七层仍继续。来源和价格锁定；缺价保持待计算。"
+          },
+          {
+            "id": "release",
+            "kind": "text",
+            "title": "七层购买与直属设备分成",
+            "body": "购买统一冷却从整链首次准备时间起算，设备分成从凭证确认起算。全额购买退款整链取消未到账或追回原币数量，余额不足保留欠额；有效的过去设备收益不因退货自动撤销。冷却、冻结、待计算都不是可用余额。"
+          }
+        ],
+        "schemaVersion": 2,
+        "templateId": "unilevel-v2"
+      },
+      "vi": {
+        "blocks": [
+          {
+            "id": "hero",
+            "kind": "text",
+            "title": "Mua bảy tầng và thưởng thiết bị trực tiếp",
+            "body": "Mua tiếp tục theo quan hệ bảy tầng, điều kiện, hệ số và giới hạn gốc. Phân chia chỉ đổi tài sản ở tầng đầu. Đối ứng, hạng, bồi dưỡng, quỹ lãnh đạo và quà đăng ký giữ quy tắc riêng."
+          },
+          {
+            "id": "seven-layer-scope",
+            "kind": "text",
+            "title": "Mua bảy tầng và thưởng thiết bị trực tiếp",
+            "body": "A mời B, B mời C: B mua thì A nhận tầng một; C mua thì B nhận tầng một và A nhận tầng hai, tối đa bảy tầng. Tầng hai đến bảy giữ tài sản, điều kiện và giới hạn gốc; tầng tạm dừng hoặc không đủ điều kiện không bị nén."
+          },
+          {
+            "id": "direct-referral-scope",
+            "kind": "text",
+            "title": "Mua bảy tầng và thưởng thiết bị trực tiếp",
+            "body": "Thu nhập thiết bị chỉ thưởng người mời trực tiếp: B thưởng A, C thưởng B. Thành viên giữ đủ thu nhập. Hoa hồng, quà, thu nhập ảo và kiểm thử không tạo phần chia mới."
+          },
+          {
+            "id": "split",
+            "kind": "text",
+            "title": "Mua bảy tầng và thưởng thiết bị trực tiếp",
+            "body": "Ngân sách tầng đầu chia USDT và NEX, thay thế NEX cộng thêm cũ. Tắt phân chia chỉ khôi phục thành phần cho nguồn tương lai, bảy tầng vẫn tiếp tục. Nguồn và giá được khóa; thiếu giá phải chờ tính."
+          },
+          {
+            "id": "release",
+            "kind": "text",
+            "title": "Mua bảy tầng và thưởng thiết bị trực tiếp",
+            "body": "Mua bắt đầu chờ từ lần chuẩn bị chuỗi đầu tiên; thiết bị từ xác nhận chứng từ. Hoàn mua toàn bộ hủy thưởng chưa trả hoặc thu hồi số tài sản gốc; số dư thiếu được lưu chờ thu hồi. Trả thiết bị không tự hủy thu nhập thật trước đây. Thưởng đang chờ, đóng băng hoặc chờ tính không phải số dư ví khả dụng."
+          }
+        ],
+        "schemaVersion": 2,
+        "templateId": "unilevel-v2"
+      }
+    }
+  }
+}

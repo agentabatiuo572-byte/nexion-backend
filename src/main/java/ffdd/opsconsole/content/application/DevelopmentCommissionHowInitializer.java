@@ -33,9 +33,10 @@ public class DevelopmentCommissionHowInitializer implements ApplicationRunner {
         Map<String, Object> before;
         try { before = JSON.readValue(existing.get(), new TypeReference<>() {}); }
         catch (Exception malformed) { return; }
-        var baseline = baseline("/policies/commissions-how-2026.10.05.json");
+        var baseline = baseline("/policies/commissions-how-2026.10.06.json");
+        var prior = baseline("/policies/commissions-how-2026.10.05.json");
         var legacy = baseline("/policies/commissions-how-2026.08.31.json");
-        var previous = baseline.get("previousVersion").equals(before.get("version")) ? baseline : legacy;
+        var previous = baseline.get("previousVersion").equals(before.get("version")) ? baseline : prior.get("previousVersion").equals(before.get("version"))?prior:legacy;
         var contents = map(before.get("contents"));
         Object rawRevision = before.get("revision");
         if (!"PUBLISHED".equals(before.get("status"))
@@ -52,7 +53,7 @@ public class DevelopmentCommissionHowInitializer implements ApplicationRunner {
         updated.put(CONTENT_KEY, baseline.get("entry"));
         // A missing page has no operator publication to preserve. Existing entries,
         // including custom drafts, are never replaced by the system template.
-        if (!updated.containsKey("team-unilevel-how")) updated.put("team-unilevel-how", baseline.get("unilevelEntry"));
+        if (!updated.containsKey("team-unilevel-how")||prior.get("unilevelEntry").equals(updated.get("team-unilevel-how"))) updated.put("team-unilevel-how", baseline.get("unilevelEntry"));
         var result = publications.update((String) baseline.get("version"), "PUBLISHED", updated,
                 revision.longValue(), "Upgrade exact development direct-referral guide baseline; preserve operator publications");
         if (result.getCode() != 0) throw new IllegalStateException("COMMISSION_HOW_BASELINE_UPGRADE_FAILED");

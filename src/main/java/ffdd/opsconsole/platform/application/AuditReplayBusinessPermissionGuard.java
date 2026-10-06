@@ -515,16 +515,21 @@ public class AuditReplayBusinessPermissionGuard {
                     .convertValue(values, ffdd.opsconsole.team.dto.DirectReferralPolicyRequest.class);
             ffdd.opsconsole.team.application.DirectReferralPolicyService.validate(request, java.time.Instant.now());
             var service = directPolicies.getObject();
+            service.requireSchema(request.schemaVersion());
+            if(Integer.valueOf(2).equals(request.schemaVersion())&&service.sevenLayerRevision()!=request.expectedSevenLayerRevision())throw new ffdd.opsconsole.shared.exception.BizException(409,"SEVEN_LAYER_REVISION_CONFLICT");
             var current = service.current();
             if (((Number)current.get("policyVersion")).longValue() != request.expectedVersion())
                 throw new ffdd.opsconsole.shared.exception.BizException(409,"DIRECT_REFERRAL_VERSION_CONFLICT");
-            boolean amplifies = request.purchase().amplifies((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase"))
+            boolean amplifies = (Integer.valueOf(2).equals(request.schemaVersion())?service.purchaseAmplifies(request.effectivePurchase(),Integer.valueOf(2).equals(current.get("policySchemaVersion"))?(ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase"):ffdd.opsconsole.team.domain.DirectReferralPolicy.DISABLED):request.purchase().amplifies((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase")))
                     || request.deviceEarning().amplifies((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning"));
-            return new DelegatedProposalDescriptor("直属双币分成政策", "current",
+            boolean v2=Integer.valueOf(2).equals(request.schemaVersion());
+            var beforePurchase=Integer.valueOf(2).equals(current.get("policySchemaVersion"))?(ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase"):ffdd.opsconsole.team.domain.DirectReferralPolicy.DISABLED;
+            String beforeSummary=v2?"七层版本 "+request.expectedSevenLayerRevision()+"；L1原预算 "+service.sevenLayerReference().get("baseRatePct")+"%；统一冷却 "+service.sevenLayerReference().get("coolingDays")+" 天；"+(beforePurchase.enabled()?"购买拆分 USDT "+beforePurchase.usdtSharePct()+"%":"购买未拆分，全额USDT加旧NEX系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning")):
                     directPolicySummary(((Number) current.get("policyVersion")).longValue(),
                             (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("purchase"),
-                            (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("deviceEarning")),
-                    directPolicySummary(request.expectedVersion()+1, request.purchase(), request.deviceEarning()),
+                            (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("deviceEarning"));
+            String afterSummary=v2?"七层版本 "+request.expectedSevenLayerRevision()+"；L1原预算及冷却不变；"+(request.purchaseSplit().enabled()?"购买拆分 USDT "+request.purchaseSplit().usdtSharePct()+"%，拆分NEX替代旧额外NEX":"购买拆分关闭，恢复全额USDT和旧NEX系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary(request.deviceEarning()):directPolicySummary(request.expectedVersion()+1,request.effectivePurchase(),request.deviceEarning());
+            return new DelegatedProposalDescriptor("直属双币分成政策", "current",beforeSummary,afterSummary,
                     "F2", amplifies?"fund":"param", amplifies,
                     new AuditLockTarget("F","direct_referral_policy","current"));
         }

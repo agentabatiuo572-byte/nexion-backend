@@ -61,13 +61,198 @@ class DirectReferralMySqlRuntimeTest {
     private OpsTeamService ops;
     private MybatisTreasuryLedgerRepository treasury;
     private TreasuryCoverageFacade coverage;
+    private PlatformConfigFacade platform;
     private final ObjectMapper json=new ObjectMapper().findAndRegisterModules();
     private final MutableClock clock=new MutableClock(Instant.now().plusSeconds(5).truncatedTo(ChronoUnit.SECONDS));
     private final AtomicBoolean failNex=new AtomicBoolean();
     private final AtomicBoolean changeRisk=new AtomicBoolean();
+    private final AtomicBoolean failRecovery=new AtomicBoolean();
     private final String marker="DRTEST-"+UUID.randomUUID().toString().substring(0,8);
     private final Map<String,List<Map<String,Object>>> groups=new LinkedHashMap<>();
     private long a,b,c,d;
+
+    @Test void sevenLayerRuntimeAcceptance() throws Exception {
+        setUp();
+        List<String> keys=List.of(DirectReferralPolicyService.CUTOVER_KEY,DirectReferralPolicyService.SEVEN_REVISION_KEY,"commission/cooling-days","team.ui.F.unilevel.depthGate","team.ui.F.unilevel.depthGateRank","team.ui.F.unilevel.mergeExitMaxPct","team.ui.F.influence.clampMin","team.ui.F.influence.clampMax","team.ui.F.promo.weekMultiplier");
+        Map<String,String> previous=new LinkedHashMap<>();for(String key:keys)previous.put(key,platform.activeValue(key).orElse(null));
+        var originalRates=jdbc.queryForList("SELECT * FROM nx_commission_rule WHERE commission_type='UNILEVEL'");
+        try {
+            configured("commission/cooling-days","30");configured("team.ui.F.unilevel.depthGate","L4");configured("team.ui.F.unilevel.depthGateRank","V2");configured("team.ui.F.unilevel.mergeExitMaxPct","25");
+            configured("team.ui.F.influence.clampMin","1");configured("team.ui.F.influence.clampMax","1");configured("team.ui.F.promo.weekMultiplier","1");
+            var percentages=List.of("10","5","3","2","1","0.5","0.5");
+            for(int layer=1;layer<=7;layer++)jdbc.update("INSERT INTO nx_commission_rule(commission_type,layer_no,usdt_rate,nex_per_usd,status) VALUES('UNILEVEL',?,?,2,1) ON DUPLICATE KEY UPDATE usdt_rate=VALUES(usdt_rate),nex_per_usd=2,status=1,is_deleted=0",layer,new BigDecimal(percentages.get(layer-1)).movePointLeft(2));
+            long[] ancestors={c,b,a,a-1,a-2,a-3,a-4,a-5};
+            for(int n=3;n<ancestors.length;n++)user(ancestors[n],n+1<ancestors.length?ancestors[n+1]:null);
+            for(int n=0;n<ancestors.length;n++){
+                long child=n==0?d:ancestors[n-1];jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=?",ancestors[n],child);
+                jdbc.update("INSERT INTO nx_team_member(user_id,member_user_id,member_no,nickname,level,v_rank) VALUES(?,?,?,'acceptance',1,'V12')",ancestors[n],child,ref("EDGE-"+n));
+                jdbc.update("INSERT INTO nx_team_member(user_id,member_user_id,member_no,nickname,level,v_rank) VALUES(?,?,?,'acceptance',0,'V12')",ancestors[n],ancestors[n],ref("SELF-"+n));
+            }
+            var oldEngine=new UnilevelCommissionService(session.getMapper(ffdd.opsconsole.team.mapper.TeamCommissionMapper.class),mock(ffdd.opsconsole.team.domain.TeamCommissionRepository.class),mock(ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade.class),platform,mock(EventOutboxService.class));
+            org.springframework.test.util.ReflectionTestUtils.setField(service,"unilevel",oldEngine);
+            configured(DirectReferralPolicyService.CUTOVER_KEY,clock.instant().plusSeconds(1).toString());
+            publish(rule("20",30),rule("5",0));orderBasis("OLD-DIRECT",d,"1000");service.settle("direct_purchase",ref("OLD-DIRECT"),d);
+            orderBasis("OLD-NETWORK",d,"1000");jdbc.update("INSERT INTO nx_commission_event(user_id,commission_type,source_user_id,layer_no,order_no,amount_usdt,amount_nex,currency,status,unlock_at) VALUES(?,'network',?,1,?,100,0,'USDT','COOLING',DATE_ADD(NOW(),INTERVAL 30 DAY))",c,d,ref("OLD-NETWORK"));
+            assertThat(policies.current(2)).containsKey("purchase");assertThat(policies.current(2).get("purchaseSplitConfigured")).isEqualTo(false);
+            clock.advance();clock.advance();orderBasis("V1-AFTER-T",d,"1000");service.settle("direct_purchase",ref("V1-AFTER-T"),d);
+            var v1After=orderRow("V1-AFTER-T");assertThat(((Number)v1After.get("split_enabled")).intValue()).isZero();assertThat(v1After.get("settlement_mode")).isEqualTo("SEVEN_V2");
+            assertThat(layerRow("V1-AFTER-T",1).get("source_type")).isEqualTo("network");assertThat((BigDecimal)layerRow("V1-AFTER-T",1).get("amount_usdt")).isEqualByComparingTo("100");
+            service.settle("direct_purchase",ref("OLD-DIRECT"),d);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_direct_referral_settlement WHERE source_ref=?",Long.class,ref("OLD-DIRECT"))).isEqualTo(1);
+            service.settle("direct_purchase",ref("OLD-NETWORK"),d);assertThat(orderRow("OLD-NETWORK").get("settlement_mode")).isEqualTo("LEGACY_7");assertThat(layers("OLD-NETWORK")).isEmpty();assertThat(commissionRows("OLD-NETWORK")).hasSize(1);
+            record("funds-history","R25-R26-R41-v1-policy-is-not-v2-split",Map.of("old",groupRow("OLD-DIRECT"),"newOrder",v1After,"newL1",layerRow("V1-AFTER-T",1),"read",policies.current(2)));
+            publishV2(true,"60",0);
+            currentReadApprovalAndPreparation();
+            orderBasis("SEVEN",d,"1000");service.settle("direct_purchase",ref("SEVEN"),d);
+            var sevenRows=layers("SEVEN");assertThat(sevenRows).hasSize(7);
+            assertThat((BigDecimal)sevenRows.get(0).get("amount_usdt")).isEqualByComparingTo("60");assertThat((BigDecimal)sevenRows.get(0).get("amount_nex")).isEqualByComparingTo("4000");
+            for(int layer=2;layer<=7;layer++){assertThat((BigDecimal)sevenRows.get(layer-1).get("amount_usdt")).isEqualByComparingTo(new BigDecimal("1000").multiply(new BigDecimal(percentages.get(layer-1))).movePointLeft(2));assertThat((BigDecimal)sevenRows.get(layer-1).get("amount_nex")).isEqualByComparingTo(((BigDecimal)sevenRows.get(layer-1).get("amount_usdt")).multiply(new BigDecimal("2")));}
+            assertThat(sevenRows.stream().map(row->((Number)row.get("layer_no")).intValue()).toList()).doesNotContain(8);
+            assertThat(commissionRows("SEVEN")).allSatisfy(row->assertThat((BigDecimal)row.get("order_amount_usd")).isEqualByComparingTo("1000"));
+            record("funds-seven-layers","R01-R02-R05-R06-original-deep-layer-amounts",Map.of("order",orderRow("SEVEN"),"groups",sevenRows,"commissionEvents",commissionRows("SEVEN")));
+            var networkGroup=layerRow("SEVEN",2);String networkNo=(String)networkGroup.get("settlement_no");Long networkUsdt=((Number)networkGroup.get("usdt_event_id")).longValue(),networkNex=((Number)networkGroup.get("nex_event_id")).longValue();
+            var manualBefore=wallet(b);due(networkNo);service.changeStatus(networkUsdt,"UNLOCKED",0L);assertDelta(manualBefore,wallet(b),"50","0");
+            assertThat(mapper.eventView(networkNex).get("status")).isEqualTo("COOLING");
+            A2ReplayContext.enterReplay(ref("MANUAL-NETWORK"));try{assertThat(f5.reverse("CM-"+networkUsdt,ref("MANUAL-NETWORK"),new ffdd.opsconsole.team.dto.F5CommissionReverseRequest(ref("SEVEN"),"approved single USDT commission only","acceptance")).getCode()).isZero();}finally{A2ReplayContext.exitReplay();}
+            assertThat(wallet(b)).isEqualTo(manualBefore);var partial=layerRow("SEVEN",2);assertThat((BigDecimal)partial.get("cancelled_usdt")).isEqualByComparingTo("50");assertThat((BigDecimal)partial.get("cancelled_nex")).isEqualByComparingTo("0");
+            String migration=Files.readString(Path.of("scripts/schema.sql"));migration=migration.substring(migration.indexOf("-- One order owns one immutable generation"));
+            try(var connection=dataSource.getConnection();var statement=connection.createStatement()){for(String sql:migration.split(";"))if(!sql.isBlank())statement.execute(sql);}
+            var afterMigration=layerRow("SEVEN",2);assertThat(afterMigration.get("cancelled_nex")).isEqualTo(partial.get("cancelled_nex"));assertThat(afterMigration.get("credited_nex_at")).isNull();
+            assertThat(mapper.eventView(networkUsdt).get("status")).isEqualTo("REVERSED");assertThat(mapper.eventView(networkNex).get("status")).isEqualTo("COOLING");
+            service.releaseEvent(networkNex);assertDelta(manualBefore,wallet(b),"0","100");jdbc.update("UPDATE nx_order SET payment_status='REFUNDED',order_status='REFUNDED' WHERE order_no=?",ref("SEVEN"));
+            var delayedWallet=wallet(b);due((String)layerRow("SEVEN",1).get("settlement_no"));assertThatThrownBy(()->service.release((String)layerRow("SEVEN",1).get("settlement_no"))).hasMessage("DIRECT_REFERRAL_SOURCE_REFUNDED");assertThatThrownBy(()->service.releaseEvent(networkNex)).hasMessage("DIRECT_REFERRAL_SOURCE_REFUNDED");
+            A2ReplayContext.enterReplay(ref("DELAYED-REFUND-REISSUE"));try{assertThatThrownBy(()->f5.reissue(ref("DELAYED-REFUND-REISSUE"),new ffdd.opsconsole.team.dto.F5CommissionReissueRequest(List.of("CM-"+networkUsdt),"late refund notification must prohibit reissue","acceptance"))).hasMessage("COMMISSION_SOURCE_REFUNDED");}finally{A2ReplayContext.exitReplay();}
+            assertThat(wallet(b)).isEqualTo(delayedWallet);service.refund(ref("SEVEN"));assertThat(wallet(b)).isEqualTo(manualBefore);
+            record("funds-refund","R19-R21-network-manual-action-stays-one-asset-full-refund-stays-chain",Map.of("partial",partial,"final",layerRow("SEVEN",2),"walletBefore",manualBefore,"walletAfter",wallet(b),"events",commissionRows("SEVEN")));
+            orderBasis("PRE-CANCEL",d,"1000");service.settle("direct_purchase",ref("PRE-CANCEL"),d);var unpaid=layerRow("PRE-CANCEL",2);
+            Long unpaidUsdt=((Number)unpaid.get("usdt_event_id")).longValue(),unpaidNex=((Number)unpaid.get("nex_event_id")).longValue();var unpaidBefore=wallet(b);
+            A2ReplayContext.enterReplay(ref("UNPAID-CANCEL"));try{assertThat(f5.reverse("CM-"+unpaidUsdt,ref("UNPAID-CANCEL"),new ffdd.opsconsole.team.dto.F5CommissionReverseRequest(ref("PRE-CANCEL"),"approved unpaid single USDT cancellation","acceptance")).getCode()).isZero();}finally{A2ReplayContext.exitReplay();}
+            due((String)unpaid.get("settlement_no"));service.releaseEvent(unpaidNex);assertDelta(unpaidBefore,wallet(b),"0","100");
+            var onlyNex=layerRow("PRE-CANCEL",2);assertThat(onlyNex.get("credited_at")).isNotNull();assertThat(onlyNex.get("credited_usdt_at")).isNull();
+            try(var connection=dataSource.getConnection();var statement=connection.createStatement()){for(String sql:migration.split(";"))if(!sql.isBlank())statement.execute(sql);}
+            assertThat(layerRow("PRE-CANCEL",2).get("credited_usdt_at")).isNull();
+            jdbc.update("UPDATE nx_order SET payment_status='REFUNDED',order_status='REFUNDED' WHERE order_no=?",ref("PRE-CANCEL"));service.refund(ref("PRE-CANCEL"));assertThat(wallet(b)).isEqualTo(unpaidBefore);
+            assertThat((BigDecimal)layerRow("PRE-CANCEL",2).get("recovered_usdt")).isEqualByComparingTo("0");
+            record("funds-refund","R21-repeat-migration-never-credits-or-recovers-unpaid-cancelled-asset",Map.of("unpaid",unpaid,"onlyNex",onlyNex,"final",layerRow("PRE-CANCEL",2),"walletBefore",unpaidBefore,"walletAfter",wallet(b)));
+            orderBasis("RECOVERY-FAULT",d,"1000");service.settle("direct_purchase",ref("RECOVERY-FAULT"),d);var fault=layerRow("RECOVERY-FAULT",2);String faultNo=(String)fault.get("settlement_no");
+            Long faultUsdt=((Number)fault.get("usdt_event_id")).longValue(),faultNex=((Number)fault.get("nex_event_id")).longValue();var faultBefore=wallet(b);due(faultNo);service.releaseEvent(faultUsdt);assertDelta(faultBefore,wallet(b),"50","0");
+            assertThat(layerRow("RECOVERY-FAULT",2).get("credited_at")).isNull();jdbc.update("UPDATE nx_order SET payment_status='REFUNDED',order_status='REFUNDED' WHERE order_no=?",ref("RECOVERY-FAULT"));
+            failRecovery.set(true);try{assertThatThrownBy(()->service.refund(ref("RECOVERY-FAULT"))).hasMessageContaining("injected recovery ledger failure");}finally{failRecovery.set(false);}
+            var faultPending=layerRow("RECOVERY-FAULT",2);assertThat(faultPending.get("status")).isEqualTo("RECOVERY_PENDING");assertThat((BigDecimal)faultPending.get("recovery_pending_usdt")).isEqualByComparingTo("50");assertThat((BigDecimal)faultPending.get("recovery_pending_nex")).isZero();
+            assertThat(mapper.eventView(faultUsdt).get("status")).isEqualTo("RECOVERY_PENDING");assertThat(mapper.eventView(faultNex).get("status")).isEqualTo("REVERSED");assertDelta(faultBefore,wallet(b),"50","0");
+            service.refund(ref("RECOVERY-FAULT"));assertThat(wallet(b)).isEqualTo(faultBefore);assertThat(layerRow("RECOVERY-FAULT",2).get("status")).isEqualTo("REVERSED");
+            record("funds-refund","R20-R23-partial-credit-ledger-failure-keeps-only-paid-asset-debt",Map.of("pending",faultPending,"final",layerRow("RECOVERY-FAULT",2),"walletBefore",faultBefore,"walletAfter",wallet(b)));
+            String frozenCluster=ref("FROZEN-NETWORK");jdbc.update("INSERT INTO nx_admin_risk_multi_account_cluster(cluster_id,dedupe_key,layer_key,layer_label,account_count,strength,span_text,status,note_text,nodes_json) VALUES(?,?,'test','test',4,0,'test','FLAGGED','test',?)",frozenCluster,frozenCluster,json.writeValueAsString(List.of(Map.of("userNo","U"+b))));
+            orderBasis("FROZEN-NETWORK",d,"1000");service.settle("direct_purchase",ref("FROZEN-NETWORK"),d);var frozenNetwork=layerRow("FROZEN-NETWORK",2);assertThat(frozenNetwork.get("status")).isEqualTo("FROZEN");Long frozenUsdt=((Number)frozenNetwork.get("usdt_event_id")).longValue(),frozenNex=((Number)frozenNetwork.get("nex_event_id")).longValue();
+            assertThatThrownBy(()->service.changeStatus(frozenUsdt,"COOLING",0L)).hasMessage("DIRECT_REFERRAL_SPONSOR_FROZEN");jdbc.update("UPDATE nx_admin_risk_multi_account_cluster SET account_count=1,status='CLOSED' WHERE cluster_id=?",frozenCluster);
+            service.changeStatus(frozenUsdt,"COOLING",0L);due((String)frozenNetwork.get("settlement_no"));var frozenBefore=wallet(b);service.releaseEvent(frozenUsdt);assertDelta(frozenBefore,wallet(b),"50","0");assertThat(mapper.eventView(frozenNex).get("status")).isEqualTo("FROZEN");
+            record("funds-seven-layers","R18-R32-initially-held-network-recovers-one-approved-asset",Map.of("frozen",frozenNetwork,"final",layerRow("FROZEN-NETWORK",2),"events",commissionRows("FROZEN-NETWORK"),"walletBefore",frozenBefore,"walletAfter",wallet(b)));
+            orderBasis("REISSUE-LINEAGE",d,"1000");service.settle("direct_purchase",ref("REISSUE-LINEAGE"),d);long lineageSource=((Number)layerRow("REISSUE-LINEAGE",2).get("usdt_event_id")).longValue();
+            assertThat(f5Reverse(lineageSource,ref("REISSUE-LINEAGE"),"LINEAGE-CANCEL").getCode()).isZero();var lineageBefore=wallet(b);
+            Long reissued=null;A2ReplayContext.enterReplay(ref("LINEAGE-REISSUE"));try{var result=f5.reissue(ref("LINEAGE-REISSUE"),new ffdd.opsconsole.team.dto.F5CommissionReissueRequest(List.of("CM-"+lineageSource),"approved single network reissue for lineage acceptance","acceptance"));assertThat(result.getCode()).isZero();reissued=jdbc.queryForObject("SELECT result_commission_id FROM nx_commission_operation WHERE operation_type='REISSUE' AND source_commission_id=?",Long.class,lineageSource);}finally{A2ReplayContext.exitReplay();}
+            assertThat(mapper.sourceOrderForEvent(reissued)).isEqualTo(ref("REISSUE-LINEAGE"));jdbc.update("UPDATE nx_commission_event SET status='UNLOCKED' WHERE id=?",reissued);treasury.releaseCommissionFunds(reissued);assertDelta(lineageBefore,wallet(b),"50","0");
+            jdbc.update("UPDATE nx_order SET payment_status='REFUNDED',order_status='REFUNDED' WHERE order_no=?",ref("REISSUE-LINEAGE"));failRecovery.set(true);try{assertThatThrownBy(()->service.refund(ref("REISSUE-LINEAGE"))).hasMessageContaining("injected recovery ledger failure");}finally{failRecovery.set(false);}
+            assertThat(mapper.eventRecovery(reissued)).isNull();assertThat(mapper.reissueRecoveryOrders("PRODUCTION","","")).contains(ref("REISSUE-LINEAGE"));service.recoverOrderReissues(ref("REISSUE-LINEAGE"));assertThat(wallet(b)).isEqualTo(lineageBefore);service.refund(ref("REISSUE-LINEAGE"));assertThat(wallet(b)).isEqualTo(lineageBefore);
+            Long lockedReissue=reissued;assertThatThrownBy(()->service.lockEventSources(List.of(lockedReissue),true)).hasMessage("COMMISSION_SOURCE_REFUNDED");
+            record("funds-refund","R22-R23-reissue-lineage-source-lock-and-first-failure-recovery",Map.of("originalEvent",lineageSource,"reissuedEvent",reissued,"recovery",mapper.eventRecovery(reissued),"walletBefore",lineageBefore,"walletAfter",wallet(b)));
+            configured("team.ui.F.influence.clampMin","5");configured("team.ui.F.influence.clampMax","5");orderBasis("CAP",d,"1000");service.settle("direct_purchase",ref("CAP"),d);
+            for(int i=0;i<100;i++)assertThat(service.settle("direct_purchase",ref("CAP"),d)).isZero();
+            assertThat(layers("CAP")).hasSize(2);assertThat((BigDecimal)orderRow("CAP").get("allocated_budget_usdt")).isEqualByComparingTo("250");assertThat((BigDecimal)layerRow("CAP",2).get("amount_usdt")).isEqualByComparingTo("150");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_unilevel_order_settlement WHERE order_no=?",Long.class,ref("CAP"))).isEqualTo(1);
+            record("funds-seven-layers","R08-R09-100-source-replays-hold-cap",Map.of("order",orderRow("CAP"),"groups",layers("CAP"),"events",commissionRows("CAP")));
+            configured("team.ui.F.influence.clampMin","1");configured("team.ui.F.influence.clampMax","1");
+            jdbc.update("UPDATE nx_price_index SET status='INACTIVE' WHERE status='ACTIVE'");orderBasis("MISSING-PRICE",d,"1000");service.settle("direct_purchase",ref("MISSING-PRICE"),d);
+            var waiting=layerRow("MISSING-PRICE",1);assertThat(waiting.get("status")).isEqualTo("WAITING_CALCULATION");assertThat(waiting.get("nex_usdt_price")).isNull();assertThat(commissionRows("MISSING-PRICE")).hasSize(12);
+            jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=?",a,d);jdbc.update("UPDATE nx_commission_rule SET usdt_rate=0.01 WHERE commission_type='UNILEVEL' AND layer_no=2");
+            jdbc.update("UPDATE nx_price_index SET status='ACTIVE' WHERE metric_code='NEX_USDT' AND sampled_at='2099-01-01'");publishV2(true,"80",0);service.settle("direct_purchase",ref("MISSING-PRICE"),d);
+            var resolved=layerRow("MISSING-PRICE",1);assertThat(resolved.get("beneficiary_user_id")).isEqualTo(c);assertThat((BigDecimal)resolved.get("amount_usdt")).isEqualByComparingTo("60");assertThat((BigDecimal)resolved.get("amount_nex")).isEqualByComparingTo("4000");assertThat(resolved.get("release_at")).isEqualTo(waiting.get("release_at"));
+            assertThat((BigDecimal)layerRow("MISSING-PRICE",2).get("amount_usdt")).isEqualByComparingTo("50");jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=?",c,d);jdbc.update("UPDATE nx_commission_rule SET usdt_rate=0.05 WHERE commission_type='UNILEVEL' AND layer_no=2");
+            record("funds-direct-split","R13-R14-missing-price-persists-source-before-retry",Map.of("waiting",waiting,"resolved",resolved,"order",orderRow("MISSING-PRICE")));
+            configured("commission/cooling-days","0");publishV2(true,"60",0);orderBasis("ATOMIC",d,"1000");var cBefore=wallet(c);failNex.set(true);
+            assertThatThrownBy(()->service.settle("direct_purchase",ref("ATOMIC"),d)).hasMessageContaining("second currency failure");assertThat(wallet(c)).isEqualTo(cBefore);assertThat(orderRow("ATOMIC")).isNotEmpty();assertThat(layerRow("ATOMIC",1).get("usdt_event_id")).isNull();
+            failNex.set(false);service.settle("direct_purchase",ref("ATOMIC"),d);assertDelta(cBefore,wallet(c),"60","4000");
+            record("funds-direct-split","R18-second-asset-failure-keeps-snapshot-and-no-half-wallet",Map.of("before",cBefore,"after",wallet(c),"order",orderRow("ATOMIC"),"groups",layers("ATOMIC")));
+            receipt("DEVICE",b,"10","100",false);var bBefore=wallet(b);var aBefore=wallet(a);service.settle("direct_device_earning",ref("RECEIPT-DEVICE"),b);assertThat(wallet(b)).isEqualTo(bBefore);assertDelta(aBefore,wallet(a),"0.33","22");
+            record("funds-direct-split","R03-R04-R07-device-extra-share-only-direct",Map.of("ownerBefore",bBefore,"ownerAfter",wallet(b),"inviterBefore",aBefore,"inviterAfter",wallet(a),"group",groupRow("RECEIPT-DEVICE")));
+            var refundBefore=wallet(c);jdbc.update("UPDATE nx_user_wallet SET usdt_available=10,nex_available=100 WHERE user_id=?",c);jdbc.update("UPDATE nx_order SET payment_status='REFUNDED',order_status='REFUNDED' WHERE order_no=?",ref("ATOMIC"));service.refund(ref("ATOMIC"));
+            var pending=layerRow("ATOMIC",1);assertThat(pending.get("status")).isEqualTo("RECOVERY_PENDING");assertThat((BigDecimal)pending.get("recovery_pending_usdt")).isEqualByComparingTo("50");assertThat((BigDecimal)pending.get("recovery_pending_nex")).isEqualByComparingTo("3900");
+            assertThat(layers("ATOMIC").stream().skip(1).allMatch(row->"REVERSED".equals(row.get("status")))).isTrue();
+            assertThatThrownBy(()->service.release((String)pending.get("settlement_no"))).isInstanceOf(RuntimeException.class);service.refund(ref("ATOMIC"));assertWallet(c,"0","0");
+            jdbc.update("UPDATE nx_user_wallet SET usdt_available=50,nex_available=3900 WHERE user_id=?",c);service.refund(ref("ATOMIC"));assertWallet(c,"0","0");assertThat(layerRow("ATOMIC",1).get("status")).isEqualTo("REVERSED");service.refund(ref("ATOMIC"));assertWallet(c,"0","0");
+            record("funds-refund","R19-R20-R21-R23-full-chain-recovery-and-idempotent-debt",Map.of("before",refundBefore,"pending",pending,"final",layers("ATOMIC"),"order",orderRow("ATOMIC"),"ledger",ledgerRows((String)pending.get("settlement_no"))));
+            publishV2(false,"60",0);orderBasis("SPLIT-OFF",d,"1000");service.settle("direct_purchase",ref("SPLIT-OFF"),d);assertThat(orderRow("SPLIT-OFF").get("settlement_mode")).isEqualTo("SEVEN_V2");assertThat(layerRow("SPLIT-OFF",1).get("source_type")).isEqualTo("network");
+            assertThat((BigDecimal)layerRow("SPLIT-OFF",1).get("amount_usdt")).isEqualByComparingTo("100");assertThat((BigDecimal)layerRow("SPLIT-OFF",1).get("amount_nex")).isEqualByComparingTo("200");
+            jdbc.update("UPDATE nx_order SET payment_status='REFUNDED',order_status='REFUNDED' WHERE order_no=?",ref("SPLIT-OFF"));service.refund(ref("SPLIT-OFF"));assertThat(layers("SPLIT-OFF").stream().allMatch(row->Set.of("REVERSED","RECOVERY_PENDING").contains(row.get("status")))).isTrue();
+            assertThatThrownBy(()->policies.current(1)).hasMessage("TEAM_SCHEMA_UPDATE_REQUIRED");assertThatThrownBy(()->publish(rule("10",0),rule("5",0))).hasMessage("TEAM_SCHEMA_UPDATE_REQUIRED");
+            record("funds-history","R26-R41-split-off-retains-new-generation-and-refund",Map.of("order",orderRow("SPLIT-OFF"),"groups",layers("SPLIT-OFF"),"policy",policies.current(2)));
+            var request=new DirectReferralPolicyRequest(2,mapper.latestVersion(),policies.sevenLayerRevision()+1,new DirectReferralPolicyRequest.PurchaseSplit(true,new BigDecimal("60")),null,rule("5",0),"stale seven layer reference must reject");
+            A2ReplayContext.enterReplay(ref("STALE-SEVEN"));try{assertThatThrownBy(()->policies.publish(ref("STALE-SEVEN"),request)).hasMessage("SEVEN_LAYER_REVISION_CONFLICT");}finally{A2ReplayContext.exitReplay();}
+            record("funds-history","R27-R28-version-lock-and-v1-replay-rejection",Map.of("revision",policies.sevenLayerRevision(),"version",mapper.latestVersion(),"current",policies.current(2)));
+            Path evidence=Path.of(System.getenv().getOrDefault("DIRECT_REFERRAL_EVIDENCE_DIR","target/direct-referral-runtime"));Files.createDirectories(evidence);
+            json.writerWithDefaultPrettyPrinter().writeValue(evidence.resolve("seven-layer-funds.json").toFile(),Map.of("database",jdbc.queryForObject("SELECT DATABASE()",String.class),"port",33335,"groups",groups));
+        } finally {
+            failNex.set(false);
+            for(var entry:previous.entrySet())if(entry.getValue()==null)jdbc.update("DELETE FROM nx_config_item WHERE config_key=?",entry.getKey());else configured(entry.getKey(),entry.getValue());
+            jdbc.update("DELETE FROM nx_commission_rule WHERE commission_type='UNILEVEL'");
+            for(var row:originalRates)jdbc.update("INSERT INTO nx_commission_rule(id,commission_type,layer_no,usdt_rate,nex_per_usd,status,is_deleted) VALUES(?,'UNILEVEL',?,?,?,?,?)",row.get("id"),row.get("layer_no"),row.get("usdt_rate"),row.get("nex_per_usd"),row.get("status"),row.get("is_deleted"));
+        }
+    }
+    private void configured(String key,String value){jdbc.update("INSERT INTO nx_config_item(config_key,config_value,value_type,config_group,visibility,status,is_deleted) VALUES(?,?,'TEXT','team','ADMIN',1,0) ON DUPLICATE KEY UPDATE config_value=VALUES(config_value),status=1,is_deleted=0",key,value);}
+    private void publishV2(boolean enabled,String share,int deviceDays){clock.advance();long before=mapper.latestVersion();String op=ref("V2-"+before);A2ReplayContext.enterReplay(op);try{var approved=policies.publish(op,new DirectReferralPolicyRequest(2,before,policies.sevenLayerRevision(),new DirectReferralPolicyRequest.PurchaseSplit(enabled,new BigDecimal(share)),null,rule("5",deviceDays),"isolated seven layer funds acceptance"));assertThat(approved.get("approvedPolicyVersion")).isEqualTo(before+1);assertThat(policies.current(2).get("policyVersion")).isEqualTo(before+1);assertThat(policies.current(2).get("purchaseSplitConfigured")).isEqualTo(true);assertThat(policies.current(2).get("purchaseSplit")).isEqualTo(Map.of("enabled",enabled,"usdtSharePct",new BigDecimal(share)));}finally{A2ReplayContext.exitReplay();}}
+    private void orderBasis(String name,long user,String amount){order(name,user,amount);jdbc.update("UPDATE nx_order SET subtotal_usdt=? WHERE order_no=?",new BigDecimal(amount),ref(name));}
+    private Map<String,Object> orderRow(String name){return jdbc.queryForMap("SELECT * FROM nx_unilevel_order_settlement WHERE order_no=?",ref(name));}
+    private List<Map<String,Object>> layers(String name){return jdbc.queryForList("SELECT * FROM nx_direct_referral_settlement WHERE source_ref=? AND source_type IN ('network','direct_purchase') ORDER BY layer_no",ref(name));}
+    private Map<String,Object> layerRow(String name,int layer){return layers(name).stream().filter(row->((Number)row.get("layer_no")).intValue()==layer).findFirst().orElseThrow();}
+    private List<Map<String,Object>> commissionRows(String name){return jdbc.queryForList("SELECT id,user_id,commission_type,layer_no,order_no,order_amount_usd,currency,amount_usdt,amount_nex,status FROM nx_commission_event WHERE order_no=? ORDER BY layer_no,currency",ref(name));}
+    private void separately(Runnable action){var executor=Executors.newSingleThreadExecutor();try{executor.submit(()->new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(dataSource)).executeWithoutResult(tx->action.run())).get(30,TimeUnit.SECONDS);}catch(Exception e){throw new IllegalStateException("independent current-read fixture",e);}finally{executor.shutdownNow();}}
+    private void currentReadApprovalAndPreparation() {
+        var transaction=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        assertThatThrownBy(()->transaction.executeWithoutResult(tx->{
+            assertThat(policies.at(LocalDateTime.ofInstant(clock.instant(),ZoneId.of("Asia/Shanghai"))).purchase().enabled()).isTrue();
+            separately(()->publishV2(false,"60",0));when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(new BigDecimal("50"),new BigDecimal("100"),true));
+            long version=mapper.latestVersionForUpdate();String op=ref("RR-BASELINE");A2ReplayContext.enterReplay(op);try{policies.publish(op,new DirectReferralPolicyRequest(2,version,policies.lockSevenLayerRevision(),new DirectReferralPolicyRequest.PurchaseSplit(true,new BigDecimal("60")),null,rule("5",0),"current baseline must detect NEX amplification"));}finally{A2ReplayContext.exitReplay();}
+        })).hasMessage("COVERAGE_BELOW_REDLINE");
+        transaction.executeWithoutResult(tx->{
+            assertThat(policies.sevenLayerReference().get("legacyNexPerUsd")).isEqualTo(new BigDecimal("2.000000"));
+            separately(()->{policies.lockSevenLayerRevision();jdbc.update("UPDATE nx_commission_rule SET nex_per_usd=100 WHERE commission_type='UNILEVEL' AND layer_no=1");configured("commission/cooling-days","45");policies.bumpSevenLayerRevision();});
+            long revision=policies.lockSevenLayerRevision(),version=mapper.latestVersionForUpdate();String op=ref("RR-REFERENCE");A2ReplayContext.enterReplay(op);
+            try{var approved=policies.publish(op,new DirectReferralPolicyRequest(2,version,revision,new DirectReferralPolicyRequest.PurchaseSplit(true,new BigDecimal("60")),null,rule("5",0),"current seven reference permits actual contraction"));
+                assertThat(((Map<?,?>)approved.get("sevenLayerReference")).get("legacyNexPerUsd")).isEqualTo(new BigDecimal("100.000000"));assertThat(((Map<?,?>)approved.get("sevenLayerReference")).get("coolingDays")).isEqualTo(45);
+                var saved=json.readTree(jdbc.queryForObject("SELECT purchase_json FROM nx_direct_referral_policy WHERE policy_version=?",String.class,version+1));assertThat(saved.path("sevenLayerRevision").asLong()).isEqualTo(revision);assertThat(saved.path("sevenLayerReference").path("legacyNexPerUsd").decimalValue()).isEqualByComparingTo("100");
+            }catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new IllegalStateException(e);}finally{A2ReplayContext.exitReplay();}
+        });
+        when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(new BigDecimal("200"),new BigDecimal("100"),true));
+        separately(()->{policies.lockSevenLayerRevision();jdbc.update("UPDATE nx_commission_rule SET nex_per_usd=2 WHERE commission_type='UNILEVEL' AND layer_no=1");configured("commission/cooling-days","30");policies.bumpSevenLayerRevision();});
+        transaction.executeWithoutResult(tx->{
+            policies.sevenLayerActive(LocalDateTime.ofInstant(clock.instant(),ZoneId.of("Asia/Shanghai")));session.getMapper(ffdd.opsconsole.team.mapper.TeamCommissionMapper.class).unilevelRates();
+            separately(()->{policies.lockSevenLayerRevision();jdbc.update("UPDATE nx_commission_rule SET usdt_rate=0.07 WHERE commission_type='UNILEVEL' AND layer_no=2");configured("commission/cooling-days","40");policies.bumpSevenLayerRevision();publishV2(false,"60",0);});
+            orderBasis("RR-PREPARE",d,"1000");service.settle("direct_purchase",ref("RR-PREPARE"),d);var prepared=orderRow("RR-PREPARE");assertThat(((Number)prepared.get("split_enabled")).intValue()).isZero();assertThat(prepared.get("policy_version")).isEqualTo(mapper.latestVersionForUpdate());assertThat(prepared.get("seven_layer_revision")).isEqualTo(policies.lockSevenLayerRevision());
+            assertThat((BigDecimal)layerRow("RR-PREPARE",2).get("amount_usdt")).isEqualByComparingTo("70");try{assertThat(json.readTree((String)prepared.get("chain_and_rules")).path("coolingDays").asInt()).isEqualTo(40);}catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new IllegalStateException(e);}
+        });
+        record("funds-history","R27-R28-old-RR-view-cannot-change-approval-baseline-or-order-reference",Map.of("order",orderRow("RR-PREPARE"),"groups",layers("RR-PREPARE"),"policy",policies.current(2)));
+        separately(()->{policies.lockSevenLayerRevision();jdbc.update("UPDATE nx_commission_rule SET usdt_rate=0.05 WHERE commission_type='UNILEVEL' AND layer_no=2");configured("commission/cooling-days","30");policies.bumpSevenLayerRevision();});publishV2(true,"60",0);
+    }
+
+    @Test void realSqlCalculationAndReissueScansDeliverThe101stSourcePastPermanentFirstPageFailures() {
+        setUp();String run=ref("CURSOR");var delivery=mock(DirectReferralService.class);var scope=mock(DirectReferralPolicyService.class);
+        when(scope.scope()).thenReturn(new DirectReferralPolicyService.Scope("SANDBOX",run,1));
+        for(int index=1;index<=101;index++) {
+            String suffix=String.format("%03d",index),no=ref("WAIT-"+suffix),order=ref("CURSOR-ORDER-"+suffix);
+            jdbc.update("INSERT INTO nx_direct_referral_settlement(settlement_no,source_environment,run_id,source_type,source_ref,source_user_id,beneficiary_user_id,source_occurred_at,policy_version,policy_snapshot,status,release_at) VALUES(?,'SANDBOX',?,'direct_device_earning',?,?,?,NOW(),1,'{}','WAITING_CALCULATION',NOW())",no,run,ref("CURSOR-RECEIPT-"+suffix),d,a);
+            jdbc.update("INSERT INTO nx_unilevel_order_settlement(source_environment,run_id,order_no,source_user_id,source_occurred_at,prepared_at,settlement_mode,policy_version,seven_layer_revision,policy_snapshot,chain_and_rules,status,refund_confirmed) VALUES('SANDBOX',?,?,?,NOW(),NOW(),'SEVEN_V2',2,0,'{}','{}','REFUNDED',1)",run,order,d);
+            jdbc.update("INSERT INTO nx_commission_event(user_id,commission_type,source_user_id,layer_no,order_no,amount_usdt,amount_nex,currency,status,unlock_at) VALUES(?,'network',?,2,?,50,0,'USDT','REVERSED',NOW())",a,d,order);
+            long original=jdbc.queryForObject("SELECT id FROM nx_commission_event WHERE order_no=?",Long.class,order);
+            jdbc.update("INSERT INTO nx_commission_event(user_id,commission_type,source_user_id,layer_no,order_no,amount_usdt,amount_nex,currency,status,unlock_at) VALUES(?,'network',?,2,?,50,0,'USDT','UNLOCKED',NOW())",a,d,order+"-REISSUE");
+            long reissued=jdbc.queryForObject("SELECT id FROM nx_commission_event WHERE order_no=?",Long.class,order+"-REISSUE");
+            session.getMapper(F5CommissionMapper.class).insertOperation(ref("CURSOR-OP-"+suffix),"REISSUE",original,reissued,a,"network",new BigDecimal("50"),"USDT",null,"isolated scheduling fixture","acceptance",ref("CURSOR-IDEM-"+suffix));
+            mapper.saveEventRecovery(reissued,order,"SANDBOX",run,a,"USDT",new BigDecimal("50"),BigDecimal.ZERO,new BigDecimal("50"));
+            if(index<=100){doThrow(new IllegalStateException("permanent missing source fixture")).when(delivery).resumeGroup(no);doThrow(new IllegalStateException("permanent empty wallet fixture")).when(delivery).recoverOrderReissues(order);}
+        }
+        assertThat(mapper.waitingCalculation("SANDBOX",run,"")).hasSize(100);assertThat(mapper.waitingCalculation("SANDBOX",run,ref("WAIT-100"))).containsExactly(ref("WAIT-101"));
+        assertThat(mapper.reissueRecoveryOrders("SANDBOX",run,"")).hasSize(100);assertThat(mapper.reissueRecoveryOrders("SANDBOX",run,ref("CURSOR-ORDER-100"))).containsExactly(ref("CURSOR-ORDER-101"));
+        var scheduler=new DirectReferralRecoveryScheduler(mapper,delivery,scope);scheduler.recover();scheduler.recover();scheduler.recover();
+        verify(delivery).resumeGroup(ref("WAIT-101"));verify(delivery).recoverOrderReissues(ref("CURSOR-ORDER-101"));
+        verify(delivery,times(2)).resumeGroup(ref("WAIT-001"));verify(delivery,times(2)).recoverOrderReissues(ref("CURSOR-ORDER-001"));
+    }
 
     @Test void genericRejectCannotReverseEitherAssetInAnyGroupStateOrReplay() throws Exception {
         setUp();
@@ -182,7 +367,8 @@ class DirectReferralMySqlRuntimeTest {
         order("FAIL-NEX",b,"100");beforeA=wallet(a);failNex.set(true);
         assertThatThrownBy(()->service.settle("direct_purchase",ref("FAIL-NEX"),b)).hasMessageContaining("injected second currency failure");
         assertThat(wallet(a)).isEqualTo(beforeA);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_direct_referral_settlement WHERE source_ref=?",Long.class,ref("FAIL-NEX"))).isZero();
+        assertThat(groupRow("FAIL-NEX").get("status")).isEqualTo("COOLING");
+        assertThat(groupRow("FAIL-NEX").get("usdt_event_id")).isNull();
         failNex.set(false);service.settle("direct_purchase",ref("FAIL-NEX"),b);assertThat(ledgerCount(group("FAIL-NEX"))).isEqualTo(2);
         record("backend-funds","TC15-second-currency-rollback",Map.of("walletBefore",beforeA,"walletAfterRetry",wallet(a),"ledger",ledgerRows(group("FAIL-NEX"))));
         riskAndRefundConcurrency();
@@ -235,7 +421,7 @@ class DirectReferralMySqlRuntimeTest {
         service.reverse(cooling,BigDecimal.ONE);assertWallet(a,"0","0");assertThat(groupRow("COOL").get("status")).isEqualTo("REVERSED");
         A2ReplayContext.enterReplay(ref("F5-REISSUE"));
         try{assertThatThrownBy(()->f5.reissue(ref("F5-REISSUE"),new ffdd.opsconsole.team.dto.F5CommissionReissueRequest(List.of("CM-"+event),"isolated group cannot be copied","acceptance")))
-                .hasMessage("DIRECT_REFERRAL_REISSUE_REQUIRES_SOURCE_RECONCILIATION");}finally{A2ReplayContext.exitReplay();}
+                .hasMessage("COMMISSION_SOURCE_REFUNDED");}finally{A2ReplayContext.exitReplay();}
         assertWallet(a,"0","0");assertThat(ledgerCount(cooling)).isEqualTo(6);
         record("backend-funds","TC20-partial-actual-recovery-and-retry",Map.of("f5Response",reverseResponse.getData(),"pending",pending,"final",groupRow("COOL"),"wallet",wallet(a),"ledger",ledgerRows(cooling)));
 
@@ -294,8 +480,9 @@ class DirectReferralMySqlRuntimeTest {
         var before=wallet(a);
         order("NO-PRICE",b,"100");
         jdbc.update("UPDATE nx_price_index SET status='INACTIVE' WHERE status='ACTIVE'");
-        assertThatThrownBy(()->service.settle("direct_purchase",ref("NO-PRICE"),b)).hasMessage("DIRECT_REFERRAL_PRICE_UNAVAILABLE");
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_direct_referral_settlement WHERE source_ref=?",Long.class,ref("NO-PRICE"))).isZero();
+        service.settle("direct_purchase",ref("NO-PRICE"),b);
+        assertThat(groupRow("NO-PRICE").get("status")).isEqualTo("WAITING_CALCULATION");
+        assertThat(groupRow("NO-PRICE").get("beneficiary_user_id")).isEqualTo(a);
         assertThat(wallet(a)).isEqualTo(before);
         jdbc.update("UPDATE nx_price_index SET status='ACTIVE' WHERE metric_code='NEX_USDT' AND sampled_at='2099-01-01'");
         service.settle("direct_purchase",ref("NO-PRICE"),b);assertDelta(before,wallet(a),"6","400");
@@ -333,7 +520,9 @@ class DirectReferralMySqlRuntimeTest {
         assertThatThrownBy(()->service.settle("direct_purchase",ref("RISK"),b)).hasMessage("DIRECT_REFERRAL_SPONSOR_FROZEN");
         changeRisk.set(false);assertThat(wallet(a)).isEqualTo(before);
         assertThat(jdbc.queryForObject("SELECT account_count FROM nx_admin_risk_multi_account_cluster WHERE cluster_id=?",Integer.class,marker)).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_direct_referral_settlement WHERE source_ref=?",Long.class,ref("RISK"))).isZero();
+        assertThat(groupRow("RISK").get("status")).isEqualTo("COOLING");
+        assertThat(groupRow("RISK").get("usdt_event_id")).isNull();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_earnings_release_entry WHERE source_ref LIKE ?",Long.class,group("RISK")+"%")).isZero();
         service.settle("direct_purchase",ref("RISK"),b);
         record("backend-funds","TC17-risk-bucket-change-rollback",Map.of("walletBefore",before,"walletAfterRetry",wallet(a),"entries",jdbc.queryForList("SELECT asset,bucket,status,amount FROM nx_earnings_release_entry WHERE source_ref LIKE ?",group("RISK")+"%")));
 
@@ -436,12 +625,13 @@ class DirectReferralMySqlRuntimeTest {
         jdbc.update("DELETE FROM nx_direct_referral_policy");
         var config=new MybatisConfiguration(new Environment("direct-referral-runtime",new SpringManagedTransactionFactory(),dataSource));
         var global=new GlobalConfig();global.setDbConfig(new GlobalConfig.DbConfig());global.setMetaObjectHandler(new MybatisMetaObjectHandler(clock));GlobalConfigUtils.setGlobalConfig(config,global);config.setMapUnderscoreToCamelCase(true);
-        for(Class<?> type:List.of(DirectReferralMapper.class,EarningsReleaseMapper.class,TreasuryLedgerMapper.class,NexMarketMapper.class,F5CommissionMapper.class,ffdd.opsconsole.risk.mapper.RiskOpsMapper.class,ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper.class))config.addMapper(type);
+        for(Class<?> type:List.of(DirectReferralMapper.class,ffdd.opsconsole.team.mapper.TeamCommissionMapper.class,EarningsReleaseMapper.class,TreasuryLedgerMapper.class,NexMarketMapper.class,F5CommissionMapper.class,ffdd.opsconsole.risk.mapper.RiskOpsMapper.class,ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper.class))config.addMapper(type);
         session=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));mapper=session.getMapper(DirectReferralMapper.class);
         session.getMapper(ffdd.opsconsole.risk.mapper.RiskOpsMapper.class).createMultiAccountClusterTable();
-        var platform=mock(PlatformConfigFacade.class);
+        platform=mock(PlatformConfigFacade.class);
+        when(platform.activeValue(anyString())).thenAnswer(call->{var values=jdbc.queryForList("SELECT config_value FROM nx_config_item WHERE config_key=? AND status=1 AND is_deleted=0",String.class,(Object)call.getArgument(0));return values.isEmpty()?Optional.empty():Optional.of(values.get(0));});
         doAnswer(call->{return jdbc.update("INSERT IGNORE INTO nx_config_item(config_key,config_value) VALUES(?,?)",(String)call.getArgument(0),(String)call.getArgument(1)) == 1;}).when(platform).insertAdminValueIfMissing(anyString(),anyString(),anyString(),anyString(),anyString());
-        when(platform.activeValueForUpdate(anyString())).thenAnswer(call->Optional.of(jdbc.queryForObject("SELECT config_value FROM nx_config_item WHERE config_key=? FOR UPDATE",String.class,(Object)call.getArgument(0))));
+        when(platform.activeValueForUpdate(anyString())).thenAnswer(call->{var values=jdbc.queryForList("SELECT config_value FROM nx_config_item WHERE config_key=? AND status=1 AND is_deleted=0 FOR UPDATE",String.class,(Object)call.getArgument(0));return values.isEmpty()?Optional.empty():Optional.of(values.get(0));});
         doAnswer(call->{jdbc.update("UPDATE nx_config_item SET config_value=? WHERE config_key=?",(String)call.getArgument(1),(String)call.getArgument(0));return null;}).when(platform).upsertAdminValue(anyString(),anyString(),anyString(),anyString(),anyString());
         coverage=mock(TreasuryCoverageFacade.class);when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(new BigDecimal("200"),new BigDecimal("100"),true));
         var audit=mock(AuditLogService.class);var outbox=mock(EventOutboxService.class);var env=new MockEnvironment();env.setActiveProfiles("dev");
@@ -459,8 +649,11 @@ class DirectReferralMySqlRuntimeTest {
             return call.callRealMethod();})
                 .when(earnings).creditReward(anyLong(),anyString(),anyString(),anyString(),any(BigDecimal.class),anyString(),anyString());
         treasury=proxy(new MybatisTreasuryLedgerRepository(session.getMapper(TreasuryLedgerMapper.class),outbox));
-        var ledger=new TreasuryLedgerPostingFacadeAdapter(treasury, null);
+        var ledger=spy(new TreasuryLedgerPostingFacadeAdapter(treasury, null));
+        doAnswer(call->{if(failRecovery.get()&&call.<String>getArgument(0).contains("-RECOVER-"))throw new IllegalStateException("injected recovery ledger failure");call.callRealMethod();return null;})
+                .when(ledger).postLedgerEntry(anyString(),anyLong(),anyString(),anyString(),anyString(),any(BigDecimal.class),anyString(),anyString());
         service=proxy(new DirectReferralService(mapper,policies,earnings,releaseMapper,risk,ledger,outbox,json,clock));
+        var self=mock(org.springframework.beans.factory.ObjectProvider.class);when(self.getObject()).thenReturn(service);org.springframework.test.util.ReflectionTestUtils.setField(service,"self",self);
         var idempotencyMapper=session.getMapper(ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper.class);
         var expiry=proxy(new ffdd.opsconsole.shared.idempotency.AdminIdempotencyExpiryTransitionExecutor(idempotencyMapper));
         var executor=proxy(new ffdd.opsconsole.shared.idempotency.AdminIdempotencyTransactionExecutor(idempotencyMapper,json,expiry));
@@ -468,7 +661,7 @@ class DirectReferralMySqlRuntimeTest {
         var provider=mock(org.springframework.beans.factory.ObjectProvider.class);when(provider.getIfAvailable()).thenReturn(service);
         f5=new F5CommissionService(session.getMapper(F5CommissionMapper.class),platform,coverage,ledger,audit,outbox,idempotency,provider);
         var commissions=mock(ffdd.opsconsole.team.domain.TeamCommissionRepository.class);
-        when(commissions.commissionEvents(anyInt())).thenAnswer(call->jdbc.queryForList("SELECT CONCAT('CM-',id) id,commission_type kind,CONCAT('U',user_id) user,CASE WHEN currency='NEX' THEN amount_nex ELSE amount_usdt END amount,currency,status rawStatus,version FROM nx_commission_event WHERE remark LIKE ? ORDER BY id LIMIT 100","DR-%"));
+        when(commissions.commissionEvents(anyInt())).thenAnswer(call->jdbc.queryForList("SELECT CONCAT('CM-',id) id,commission_type kind,CONCAT('U',user_id) user,CASE WHEN currency='NEX' THEN amount_nex ELSE amount_usdt END amount,currency,status rawStatus,version FROM nx_commission_event WHERE order_no LIKE ? ORDER BY id LIMIT 100",marker+"%"));
         when(commissions.recordCommissionOperation(anyString(),anyString(),anyString(),anyLong(),anyString(),anyString())).thenReturn(true);
         var permissions=mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class);
         when(permissions.getPermissionCodes(anyLong())).thenReturn(Set.of("network_f5_commission_dispose","network_f5_commission_reject"));

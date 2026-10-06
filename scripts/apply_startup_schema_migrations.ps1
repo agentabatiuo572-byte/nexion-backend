@@ -279,7 +279,8 @@ $migrations = @(
   # Home's canonical E5 display row still carries the retired network brand.
   (Join-Path $root "scripts\migrations\20260928_home_mobile_network_brand.sql")
   (Join-Path $root "scripts\migrations\20260928_phone_calibration_policy.sql")
-  (Join-Path $root "scripts\migrations\20261005_direct_referral_rewards.sql")
+  (Join-Path $root "scripts\migrations\20261005_direct_referral_rewards.sql"),
+  (Join-Path $root "scripts\migrations\20261006_seven_layer_direct_split.sql")
   # Cregis pay-in tables and wallet risk hold must exist before PROVIDER mode starts.
   (Join-Path $root "scripts\migrations\20260928_cregis_deposit.sql")
   # Maker/checker controls and reconciliation state must exist before PROVIDER mode starts.

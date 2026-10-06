@@ -17,7 +17,8 @@ public class TreasuryLedgerPostingFacadeAdapter implements TreasuryLedgerPosting
     public void releaseCommissionFunds(Long eventId) {
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
         String group = direct == null ? null : direct.groupForEvent(eventId);
-        if (group != null) { direct.release(group); return; }
+        if (group != null) { direct.releaseEvent(eventId); return; }
+        if (direct != null) direct.lockEventSource(eventId, true);
         ledgerRepository.releaseCommissionFunds(eventId);
     }
 
@@ -25,7 +26,8 @@ public class TreasuryLedgerPostingFacadeAdapter implements TreasuryLedgerPosting
     public boolean reverseCommissionFunds(Long eventId) {
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
         String group = direct == null ? null : direct.groupForEvent(eventId);
-        if (group != null) { direct.reverse(group, BigDecimal.ONE); return true; }
+        if (group != null) { direct.reverseEvent(eventId); return true; }
+        if (direct != null) direct.lockEventSource(eventId, false);
         return ledgerRepository.reverseCommissionFunds(eventId);
     }
 

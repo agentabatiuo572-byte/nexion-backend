@@ -558,6 +558,8 @@ public class OpsTeamService implements AuditReplayable {
         response.put("domain", "F2");
         response.put("metrics", f2Metrics());
         response.put("unilevelRates", unilevelRates());
+        var directPolicy=directPolicies==null?null:directPolicies.getIfAvailable();
+        response.put("sevenLayerRevision",directPolicy==null?0L:directPolicy.sevenLayerRevision());
         response.put("rateTiers", rateTiers());
         response.put("policyParams", f2PolicyParams());
         response.put("commissionPolicy", commissionPolicy());
@@ -846,6 +848,9 @@ public class OpsTeamService implements AuditReplayable {
 
     private ApiResult<Map<String, Object>> updateUiConfig(
             String idempotencyKey, TeamCommissionConfigUpdateRequest request, String key) {
+        var sevenPolicy=directPolicies==null?null:directPolicies.getIfAvailable();
+        boolean affectsSeven=key.startsWith("F.unilevel.")||key.startsWith("F.influence.")||key.startsWith("F.promo.")||"F.cooldown".equals(key);
+        if(affectsSeven&&sevenPolicy!=null)sevenPolicy.lockSevenLayerRevision();
         if (Set.of("F.royalty.minPayout", "F.peer.rate").contains(key)) {
             return ApiResult.fail(409, "F2_PARAMETER_NOT_CONSUMED");
         }
@@ -918,6 +923,7 @@ public class OpsTeamService implements AuditReplayable {
             persistedValue = value;
         }
         configFacade.upsertAdminValue(configKey, persistedValue, "TEXT", "team", "F domain authoritative policy state");
+        if(affectsSeven&&sevenPolicy!=null)sevenPolicy.bumpSevenLayerRevision();
         // F4 发布即校验(简报 #48):F.pool.* 的 configVersion 是 LeadershipPoolConfigGuard 的
         // 生效信号,必须整组通过权威预检才允许推进。此前任一次 F.pool.* 写入都会 bump 版本,
         // 于是「版本已为 4 但比例缺失」的部分配置被读成已发布态。
@@ -995,6 +1001,8 @@ public class OpsTeamService implements AuditReplayable {
             TeamCommissionConfigUpdateRequest request,
             String key) {
         String value = normalizeUiValue(request.value());
+        var sevenPolicy=directPolicies==null?null:directPolicies.getIfAvailable();
+        if(sevenPolicy!=null)sevenPolicy.lockSevenLayerRevision();
         int layerNo = unilevelLayerNo(key);
         if (layerNo == 1 && !key.startsWith("F.unilevel.nex.")) {
             return ApiResult.fail(422, "F2_L1_DIRECT_RATE_FIXED_AT_10_PERCENT");
@@ -1004,6 +1012,7 @@ public class OpsTeamService implements AuditReplayable {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String field = key.startsWith("F.unilevel.nex.") ? "nexPerUsd" : "usdtRate";
+        if(layerNo==1&&"nexPerUsd".equals(field)&&sevenPolicy!=null&&sevenPolicy.sevenLayerActive(sevenPolicy.now())&&sevenPolicy.at(sevenPolicy.now()).schemaVersion()==2&&sevenPolicy.at(sevenPolicy.now()).purchase().enabled())return ApiResult.fail(409,"L1_LEGACY_NEX_READ_ONLY_DURING_SPLIT");
         Object businessValue = "usdtRate".equals(field)
                 ? percentRatio(value, BigDecimal.ZERO)
                 : parseDecimal(value, BigDecimal.ZERO);
@@ -1019,6 +1028,7 @@ public class OpsTeamService implements AuditReplayable {
         if (!commissionRepository.updateUnilevelRule(layerNo, field, businessValue)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "UNILEVEL_RULE_BUSINESS_TABLE_UPDATE_FAILED");
         }
+        if(sevenPolicy!=null)sevenPolicy.bumpSevenLayerRevision();
         String resourceId = "nx_commission_rule:UNILEVEL:L" + layerNo + "." + field;
         audit("F_TEAM_UNILEVEL_RULE_CHANGED", resourceId, actor(request.operator()), Map.of(
                 "key", key,
@@ -1230,6 +1240,7 @@ public class OpsTeamService implements AuditReplayable {
             if (!commissionRepository.recordCommissionOperation(eventId, fromCanonical+"_TO_"+toCanonical, idempotencyKey.trim(), request.expectedVersion(), actor(request.operator()), request.reason().trim())) throw new IllegalStateException("F5_OPERATION_AUDIT_CONFLICT");
             return ApiResult.ok(Map.of("updated", direct.eventSnapshot(directEventId)));
         }
+        if(direct!=null)direct.lockEventSource(directEventId,"UNLOCKED".equals(toCanonical));
         if (!commissionRepository.updateCommissionStatusCas(eventId,fromCanonical,toCanonical,request.expectedVersion())) {
             return ApiResult.fail(409, "F5_COMMISSION_VERSION_CONFLICT");
         }

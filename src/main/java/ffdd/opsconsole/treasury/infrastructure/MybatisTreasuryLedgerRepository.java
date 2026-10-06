@@ -470,6 +470,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
         if (amount == null || amount.signum() <= 0) {
             throw new IllegalArgumentException("D4_LEDGER_AMOUNT_MUST_BE_POSITIVE");
         }
+        if(amount.stripTrailingZeros().scale()>6||amount.precision()-amount.scale()>12)throw new IllegalArgumentException("D4_LEDGER_AMOUNT_PRECISION_OR_OVERFLOW");
         Long safeUserId = userId;
         BigDecimal safeAmount = amount.abs();
         String uniqueKey = "D4_BIZ_" + UUID.nameUUIDFromBytes(

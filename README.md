@@ -105,6 +105,8 @@ for both a fresh baseline and an upgraded database.
 
 `scripts/seed.sql` is limited to the local system baseline: admin login, RBAC, navigation, and platform configuration. It does not create business records.
 
+The current [seven-layer reward contract](docs/seven-layer-rewards-contract.md) defines the v2 policy and App queries. Deploy `20261006_seven_layer_direct_split.sql` through the canonical migration installer before deploying this API revision. Migration leaves the cutover time and live policy disabled until their approved publication.
+
 The schema keeps existing business tables and adds the Ops Console tables needed by the monolith, such as user impersonation sessions, risk signals, weekly market curves, emergency gates, and BI reports.
 
 For an existing database, run dated migrations in order before deploying the matching application revision. The rhythm-configurable and classic RBAC releases require UTF-8 input:

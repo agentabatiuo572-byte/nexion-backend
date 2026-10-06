@@ -17,14 +17,17 @@ import java.util.regex.Pattern;
  * settlement. Admin-only coverage, audit and mutation metadata are excluded.
  */
 @RestController
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_=@org.springframework.beans.factory.annotation.Autowired)
 public class AppCommissionConfigController {
     private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
     private final OpsTeamService teamService;
     private final Environment environment;
+    private final ffdd.opsconsole.team.application.DirectReferralPolicyService directPolicies;
+    public AppCommissionConfigController(OpsTeamService teamService,Environment environment){this(teamService,environment,null);}
 
     @GetMapping("/api/config/commission/rates")
-    public ApiResult<Map<String, Object>> rates() {
+    public ApiResult<Map<String, Object>> rates(@org.springframework.web.bind.annotation.RequestParam(required=false)Integer schemaVersion) {
+        if(directPolicies!=null)directPolicies.requireSchema(schemaVersion);
         ApiResult<Map<String, Object>> result = teamService.rates();
         if (result.getCode() != 0 || result.getData() == null) {
             return ApiResult.fail(result.getCode(), result.getMessage());
@@ -58,8 +61,10 @@ public class AppCommissionConfigController {
             pausedLayers.put("L" + layer, enabled(config.get("F.unilevel.L" + layer + ".paused")));
         }
         projection.put("unilevelPaused", pausedLayers);
+        if(Integer.valueOf(2).equals(schemaVersion)){projection.put("schemaVersion",2);projection.put("sevenLayerRevision",source.get("sevenLayerRevision"));}
         return ApiResult.ok(projection);
     }
+    public ApiResult<Map<String,Object>> rates(){return rates(null);}
 
     private Object value(Map<?, ?> config, String key, Object fallback) {
         Object value = config.get(key);
