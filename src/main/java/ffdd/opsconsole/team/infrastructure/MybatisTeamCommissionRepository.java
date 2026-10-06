@@ -18,6 +18,16 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     private final TeamCommissionMapper mapper;
 
     @Override
+    public List<Map<String, Object>> vRankVoucherOptions(long nowMillis) {
+        return mapper.vRankVoucherOptions(nowMillis);
+    }
+
+    @Override
+    public List<Map<String, Object>> vRankSkuOptions() {
+        return mapper.vRankSkuOptions();
+    }
+
+    @Override
     public List<Map<String, Object>> binarySettlements(int limit) {
         return mapper.binarySettlements(Math.max(1, Math.min(limit, 200)));
     }

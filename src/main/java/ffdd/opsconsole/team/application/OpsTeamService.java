@@ -531,10 +531,12 @@ public class OpsTeamService implements AuditReplayable {
         response.put("rankLadder", rankLadder());
         response.put("vrankRows", vrankRows());
         response.put("rewards", vRankRewards());
-        response.put("voucherOptions", voucherOptions());
-        response.put("voucherLabels", labelMap(voucherOptions()));
-        response.put("skuOptions", skuOptions());
-        response.put("skuLabels", labelMap(skuOptions()));
+        Map<String, String> voucherLabels = voucherLabels();
+        Map<String, String> skuLabels = skuLabels();
+        response.put("voucherOptions", new ArrayList<>(voucherLabels.keySet()));
+        response.put("voucherLabels", voucherLabels);
+        response.put("skuOptions", new ArrayList<>(skuLabels.keySet()));
+        response.put("skuLabels", skuLabels);
         response.put("leadership", leadershipSnapshot());
         response.put("promotionWindowDays", configDecimal("team.rank_window_days", BigDecimal.ZERO).intValue());
         response.put("quotaPolicy", quotaPolicy());
@@ -2616,11 +2618,19 @@ public class OpsTeamService implements AuditReplayable {
             return item;
         }
         if ("voucher".equals(type)) {
-            item.put("voucherId", requireText(request.voucherId(), "TEAM_VRANK_REWARD_VOUCHER_REQUIRED"));
+            String voucherId = requireText(request.voucherId(), "TEAM_VRANK_REWARD_VOUCHER_REQUIRED");
+            if (!voucherLabels().containsKey(voucherId)) {
+                throw new BizException(422, "TEAM_VRANK_REWARD_VOUCHER_NOT_GRANTABLE");
+            }
+            item.put("voucherId", voucherId);
             return item;
         }
         if ("sku".equals(type)) {
-            item.put("skuId", requireText(request.skuId(), "TEAM_VRANK_REWARD_SKU_REQUIRED"));
+            String skuId = requireText(request.skuId(), "TEAM_VRANK_REWARD_SKU_REQUIRED");
+            if (!skuLabels().containsKey(skuId)) {
+                throw new BizException(422, "TEAM_VRANK_REWARD_SKU_NOT_FULFILLABLE");
+            }
+            item.put("skuId", skuId);
             return item;
         }
         item.put("custom", requireText(request.custom(), "TEAM_VRANK_REWARD_CUSTOM_REQUIRED"));
@@ -2640,30 +2650,20 @@ public class OpsTeamService implements AuditReplayable {
         return "vr-" + level + "-" + UUID.randomUUID().toString().substring(0, 8);
     }
 
-    private List<String> voucherOptions() {
-        return vRankRewards().values().stream()
-                .flatMap(List::stream)
-                .filter(item -> "voucher".equals(item.get("type")))
-                .map(item -> String.valueOf(item.get("voucherId")))
-                .filter(StringUtils::hasText)
-                .distinct()
-                .toList();
+    private Map<String, String> voucherLabels() {
+        return rewardCatalogLabels(commissionRepository.vRankVoucherOptions(System.currentTimeMillis()));
     }
 
-    private List<String> skuOptions() {
-        return vRankRewards().values().stream()
-                .flatMap(List::stream)
-                .filter(item -> "sku".equals(item.get("type")))
-                .map(item -> String.valueOf(item.get("skuId")))
-                .filter(StringUtils::hasText)
-                .distinct()
-                .toList();
+    private Map<String, String> skuLabels() {
+        return rewardCatalogLabels(commissionRepository.vRankSkuOptions());
     }
 
-    private Map<String, String> labelMap(List<String> ids) {
+    private Map<String, String> rewardCatalogLabels(List<Map<String, Object>> rows) {
         Map<String, String> labels = new LinkedHashMap<>();
-        for (String id : ids) {
-            labels.put(id, id);
+        for (Map<String, Object> row : rows) {
+            String id = String.valueOf(row.get("id"));
+            String name = row.get("name") == null ? "" : String.valueOf(row.get("name"));
+            labels.put(id, StringUtils.hasText(name) ? name : id);
         }
         return labels;
     }

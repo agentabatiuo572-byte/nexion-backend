@@ -47,6 +47,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
@@ -587,6 +588,119 @@ class OpsTeamServiceTest {
         assertThat(removed.getCode()).isZero();
         Map<String, List<Map<String, Object>>> afterRemove = (Map<String, List<Map<String, Object>>>) removed.getData().get("rewards");
         assertThat(afterRemove.get("V3")).noneSatisfy(item -> assertThat(item).containsEntry("id", rewardId));
+    }
+
+    @Test
+    void vRankRewardOptionsComeFromRealCatalogEvenWhenNoRewardReferencesThem() {
+        commissionRepository.vRankRewards.put("V1", new ArrayList<>(List.of(
+                Map.of("id", "old-voucher", "type", "voucher", "voucherId", "VC-F1-001"),
+                Map.of("id", "old-sku", "type", "sku", "skuId", "SKU-F1-001"))));
+        commissionRepository.voucherCatalogOptions.add(Map.of("id", "VC-REAL-NEW", "name", "真实晋升券"));
+        commissionRepository.skuCatalogOptions.add(Map.of("id", "SKU-REAL-NEW", "name", "真实可履约商品"));
+
+        Map<String, Object> result = service.ranks().getData();
+
+        assertThat(result.get("voucherOptions")).isEqualTo(List.of("VC-REAL-NEW"));
+        assertThat(result.get("voucherLabels")).isEqualTo(Map.of("VC-REAL-NEW", "真实晋升券"));
+        assertThat(result.get("skuOptions")).isEqualTo(List.of("SKU-REAL-NEW"));
+        assertThat(result.get("skuLabels")).isEqualTo(Map.of("SKU-REAL-NEW", "真实可履约商品"));
+        assertThat(commissionRepository.vRankRewards.get("V1")).hasSize(2);
+        org.mockito.Mockito.verifyNoInteractions(auditLogService, eventOutboxService);
+    }
+
+    @Test
+    void emptyRealCatalogDoesNotPresentHistoricalReferencesAsSelectableOptions() {
+        commissionRepository.vRankRewards.put("V1", new ArrayList<>(List.of(
+                Map.of("id", "old-voucher", "type", "voucher", "voucherId", "VC-F1-001"),
+                Map.of("id", "old-sku", "type", "sku", "skuId", "SKU-F1-001"))));
+
+        Map<String, Object> result = service.ranks().getData();
+
+        assertThat(result.get("voucherOptions")).isEqualTo(List.of());
+        assertThat(result.get("voucherLabels")).isEqualTo(Map.of());
+        assertThat(result.get("skuOptions")).isEqualTo(List.of());
+        assertThat(result.get("skuLabels")).isEqualTo(Map.of());
+        assertThat(commissionRepository.vRankRewards.get("V1")).hasSize(2);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"voucher,VC-REAL-NEW", "sku,SKU-REAL-NEW"})
+    void realCatalogTargetCanBeAddedAndCanRepairAnOldInvalidReference(String type, String target) {
+        rewardCatalog(type).add(Map.of("id", target, "name", "真实目标"));
+        commissionRepository.vRankRewards.put("V1", new ArrayList<>(List.of(
+                Map.of("id", "repair-me", "type", type, rewardTargetKey(type), "MISSING-OLD"))));
+
+        ApiResult<Map<String, Object>> added = service.addVRankReward(
+                "V2", "real-add-" + type, catalogReward(type, target));
+        ApiResult<Map<String, Object>> updated = service.updateVRankReward(
+                "V1", "repair-me", "real-update-" + type, catalogReward(type, target));
+
+        assertThat(added.getCode()).isZero();
+        assertThat(updated.getCode()).isZero();
+        assertThat(commissionRepository.vRankRewards.get("V2")).singleElement()
+                .satisfies(row -> assertThat(row).containsEntry(rewardTargetKey(type), target));
+        assertThat(commissionRepository.vRankRewards.get("V1")).singleElement()
+                .satisfies(row -> assertThat(row).containsEntry("id", "repair-me")
+                        .containsEntry(rewardTargetKey(type), target));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"voucher,VC-F1-001", "voucher,VC-INACTIVE", "voucher,VC-EXPIRED",
+            "voucher,VC-EXHAUSTED", "sku,SKU-F1-001", "sku,SKU-INACTIVE", "sku,SKU-NO-STOCK"})
+    void absentOrUnavailableCatalogTargetIsRejectedBeforeAddOrUpdateWrites(String type, String target) {
+        rewardCatalog(type).add(Map.of("id", "REAL-AVAILABLE", "name", "可用目标"));
+        Map<String, Object> original = Map.of("id", "keep-me", "type", "usdt", "amount", new BigDecimal("100"));
+        commissionRepository.vRankRewards.put("V1", new ArrayList<>(List.of(original)));
+        String message = "voucher".equals(type)
+                ? "TEAM_VRANK_REWARD_VOUCHER_NOT_GRANTABLE" : "TEAM_VRANK_REWARD_SKU_NOT_FULFILLABLE";
+
+        assertCatalogRejected(() -> service.addVRankReward("V1", "invalid-add-" + target,
+                catalogReward(type, target)), message);
+        assertCatalogRejected(() -> service.updateVRankReward("V1", "keep-me", "invalid-update-" + target,
+                catalogReward(type, target)), message);
+
+        assertThat(commissionRepository.vRankRewards.get("V1")).containsExactly(original);
+        assertThat(configFacade.values).isEmpty();
+        assertThat(ledgerPostingFacade.entries).isEmpty();
+        assertThat(ledgerPostingFacade.releasedCommissionIds).isEmpty();
+        assertThat(ledgerPostingFacade.reversedCommissionIds).isEmpty();
+        org.mockito.Mockito.verifyNoInteractions(auditLogService, eventOutboxService);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"voucher,VC-REAL-NEW", "sku,SKU-REAL-NEW"})
+    void rewardWriteRechecksCatalogAfterOverviewBecomesStale(String type, String target) {
+        rewardCatalog(type).add(Map.of("id", target, "name", "真实目标"));
+        Map<String, Object> original = Map.of("id", "keep-me", "type", type, rewardTargetKey(type), target);
+        commissionRepository.vRankRewards.put("V1", new ArrayList<>(List.of(original)));
+        service.ranks();
+        rewardCatalog(type).clear();
+
+        assertCatalogRejected(() -> service.updateVRankReward("V1", "keep-me", "stale-" + type,
+                catalogReward(type, target)), "voucher".equals(type)
+                ? "TEAM_VRANK_REWARD_VOUCHER_NOT_GRANTABLE" : "TEAM_VRANK_REWARD_SKU_NOT_FULFILLABLE");
+
+        assertThat(commissionRepository.vRankRewards.get("V1")).containsExactly(original);
+        org.mockito.Mockito.verifyNoInteractions(auditLogService, eventOutboxService);
+    }
+
+    private List<Map<String, Object>> rewardCatalog(String type) {
+        return "voucher".equals(type) ? commissionRepository.voucherCatalogOptions : commissionRepository.skuCatalogOptions;
+    }
+
+    private String rewardTargetKey(String type) {
+        return "voucher".equals(type) ? "voucherId" : "skuId";
+    }
+
+    private VRankRewardRequest catalogReward(String type, String target) {
+        return new VRankRewardRequest(type, null, "voucher".equals(type) ? target : null,
+                "sku".equals(type) ? target : null, null, "select real catalog reward", "tester");
+    }
+
+    private void assertCatalogRejected(org.assertj.core.api.ThrowableAssert.ThrowingCallable action, String message) {
+        assertThatThrownBy(action).isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage(message).satisfies(error -> assertThat(
+                        ((ffdd.opsconsole.shared.exception.BizException) error).getCode()).isEqualTo(422));
     }
 
     @Test
@@ -1860,6 +1974,16 @@ class OpsTeamServiceTest {
         private final List<Map<String, Object>> unilevelRates = new ArrayList<>();
         private final List<Map<String, Object>> rateTiers = new ArrayList<>();
         private final Map<String, List<Map<String, Object>>> vRankRewards = new LinkedHashMap<>();
+        private final List<Map<String, Object>> voucherCatalogOptions = new ArrayList<>();
+        private final List<Map<String, Object>> skuCatalogOptions = new ArrayList<>();
+
+        public List<Map<String, Object>> vRankVoucherOptions(long nowMillis) {
+            return voucherCatalogOptions;
+        }
+
+        public List<Map<String, Object>> vRankSkuOptions() {
+            return skuCatalogOptions;
+        }
         private final Map<String, Object> leadershipPoolSummary = new LinkedHashMap<>();
         private final List<Map<String, Object>> leadershipRanks = new ArrayList<>();
         private final List<Map<String, Object>> quotaRows = new ArrayList<>();

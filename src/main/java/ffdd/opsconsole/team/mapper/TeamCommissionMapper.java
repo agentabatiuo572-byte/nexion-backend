@@ -11,6 +11,32 @@ import org.apache.ibatis.annotations.Update;
 
 public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Select("""
+            SELECT v.voucher_id AS id, v.voucher_name AS name
+              FROM nx_growth_voucher v
+             WHERE v.is_deleted = 0
+               AND v.status = 'active'
+               AND (v.start_at = 0 OR v.start_at <= #{nowMillis})
+               AND (v.end_at = 0 OR v.end_at >= #{nowMillis})
+               AND (COALESCE(v.issuance_limit, 0) <= 0 OR
+                    (SELECT COUNT(1) FROM nx_growth_voucher_grant g
+                      WHERE g.voucher_id = v.voucher_id AND g.is_deleted = 0) < v.issuance_limit)
+             ORDER BY v.updated_at DESC, v.id DESC
+            """)
+    List<Map<String, Object>> vRankVoucherOptions(@Param("nowMillis") long nowMillis);
+
+    @Select("""
+            SELECT product_no AS id, name
+              FROM nx_product
+             WHERE is_deleted = 0
+               AND store_visible = 1
+               AND UPPER(status) IN ('ACTIVE', 'ON_SALE')
+               AND (inventory_mode='FINITE' OR UPPER(product_type)='SHARE')
+               AND (inventory_mode='UNLIMITED' OR stock > 0)
+             ORDER BY updated_at DESC, id DESC
+            """)
+    List<Map<String, Object>> vRankSkuOptions();
+
+    @Select("""
             SELECT c.rank_code AS v,
                    c.title_cn AS label,
                    c.self_buy_usd AS selfBuyUsd,

@@ -23,6 +23,10 @@ public interface TeamCommissionRepository {
 
     List<Map<String, Object>> vRankRewards(String rank);
 
+    default List<Map<String, Object>> vRankVoucherOptions(long nowMillis) { return List.of(); }
+
+    default List<Map<String, Object>> vRankSkuOptions() { return List.of(); }
+
     boolean addVRankReward(String rank, Map<String, Object> reward);
 
     boolean updateVRankReward(String rank, String rewardId, Map<String, Object> reward);
