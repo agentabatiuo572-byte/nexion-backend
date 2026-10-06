@@ -156,18 +156,19 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             reject(response, HttpServletResponse.SC_UNAUTHORIZED, "ADMIN_AUTH_REQUIRED");
             return;
         }
+        boolean reasonPolicyRead = HttpMethod.GET.matches(request.getMethod())
+                && "/api/admin/platform/audit/reason-policy".equals(path);
+        if (reasonPolicyRead && !isTrustedAuthenticatedAdmin(authentication)) {
+            auditDenial(request, authentication, "ADMIN_SUBJECT_REQUIRED", null);
+            reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_SUBJECT_REQUIRED");
+            return;
+        }
         if (!matchesPasswordChangeAllowedPath(path) && passwordChangeRequired(authentication)) {
             auditDenial(request, authentication, "ADMIN_PASSWORD_CHANGE_REQUIRED", null);
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_PASSWORD_CHANGE_REQUIRED");
             return;
         }
-        if (HttpMethod.GET.matches(request.getMethod())
-                && "/api/admin/platform/audit/reason-policy".equals(path)) {
-            if (!isTrustedAuthenticatedAdmin(authentication)) {
-                auditDenial(request, authentication, "ADMIN_SUBJECT_REQUIRED", null);
-                reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_SUBJECT_REQUIRED");
-                return;
-            }
+        if (reasonPolicyRead) {
             filterChain.doFilter(request, response);
             return;
         }

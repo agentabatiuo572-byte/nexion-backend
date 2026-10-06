@@ -907,6 +907,41 @@ class AdminRbacAuthorizationFilterTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"PASSWORD_CHANGE_REQUIRED", "MAIL_DISPATCHED", "HANDOFF_PENDING"})
+    void reasonPolicyDoesNotReadCollidingAdminStateForUserIdentity(String status) throws Exception {
+        AdminAccountStateEntity state = new AdminAccountStateEntity();
+        state.setAdminId(2791L);
+        state.setCredentialDeliveryStatus(status);
+        when(accountStateMapper.selectActiveByAdminId(2791L)).thenReturn(state);
+        authenticateAs("2791", "platform_a1_read");
+        ((UsernamePasswordAuthenticationToken) SecurityContextHolder.getContext().getAuthentication())
+                .setDetails(Map.of("subjectType", "USER"));
+        AtomicBoolean userInvoked = new AtomicBoolean(false);
+        MockHttpServletResponse userResponse = new MockHttpServletResponse();
+
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), userResponse, mark(userInvoked));
+
+        assertThat(userInvoked).isFalse();
+        assertThat(userResponse.getStatus()).isEqualTo(403);
+        assertThat(userResponse.getContentAsString()).contains("ADMIN_SUBJECT_REQUIRED");
+        verify(accountStateMapper, org.mockito.Mockito.never()).selectActiveByAdminId(2791L);
+
+        authenticateTrustedAdmin("2791", "platform_a1_read");
+        AtomicBoolean adminInvoked = new AtomicBoolean(false);
+        MockHttpServletResponse adminResponse = new MockHttpServletResponse();
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), adminResponse, mark(adminInvoked));
+        assertThat(adminInvoked).isFalse();
+        assertThat(adminResponse.getStatus()).isEqualTo(403);
+        assertThat(adminResponse.getContentAsString()).contains("ADMIN_PASSWORD_CHANGE_REQUIRED");
+
+        state.setCredentialDeliveryStatus("ACTIVE");
+        MockHttpServletResponse activeResponse = new MockHttpServletResponse();
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), activeResponse, mark(adminInvoked));
+        assertThat(adminInvoked).isTrue();
+        assertThat(activeResponse.getStatus()).isEqualTo(200);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"PASSWORD_CHANGE_REQUIRED", "MAIL_DISPATCHED", "HANDOFF_PENDING"})
     void reasonPolicyDoesNotBypassAnyForcedPasswordChangeStatus(String status) throws Exception {
         authenticateTrustedAdmin("2791", "platform_a1_read", "service_m3_read");
         AdminAccountStateEntity state = new AdminAccountStateEntity();
