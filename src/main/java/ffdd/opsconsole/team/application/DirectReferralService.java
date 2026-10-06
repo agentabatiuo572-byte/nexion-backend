@@ -136,7 +136,7 @@ public class DirectReferralService {
         if(expectedVersion==null||!expectedVersion.equals(number(requested,"version")))throw new BizException(409,"F5_COMMISSION_VERSION_CONFLICT");
         String current=text(row,"status");
         if("UNLOCKED".equals(target)){release(no);return;}
-        if("REJECTED".equals(target)){reverse(no,BigDecimal.ONE);return;}
+        if("REJECTED".equals(target))throw new BizException(409,"DIRECT_REFERRAL_REVERSE_REQUIRES_F5_COMMAND");
         if(("FROZEN".equals(target)&&"COOLING".equals(current))||("COOLING".equals(target)&&"FROZEN".equals(current))){
             if("COOLING".equals(target)&&held(number(row,"beneficiary_user_id"),text(row,"source_type")))throw new BizException(409,"DIRECT_REFERRAL_SPONSOR_FROZEN");
             mapper.groupStatus(no,target,"F5_GROUP_STATUS");mapper.eventStatus(number(row,"usdt_event_id"),number(row,"nex_event_id"),target);return;

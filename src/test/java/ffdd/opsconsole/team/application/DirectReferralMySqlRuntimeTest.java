@@ -58,6 +58,7 @@ class DirectReferralMySqlRuntimeTest {
     private DirectReferralPolicyService policies;
     private DirectReferralService service;
     private F5CommissionService f5;
+    private OpsTeamService ops;
     private MybatisTreasuryLedgerRepository treasury;
     private TreasuryCoverageFacade coverage;
     private final ObjectMapper json=new ObjectMapper().findAndRegisterModules();
@@ -67,6 +68,73 @@ class DirectReferralMySqlRuntimeTest {
     private final String marker="DRTEST-"+UUID.randomUUID().toString().substring(0,8);
     private final Map<String,List<Map<String,Object>>> groups=new LinkedHashMap<>();
     private long a,b,c,d;
+
+    @Test void genericRejectCannotReverseEitherAssetInAnyGroupStateOrReplay() throws Exception {
+        setUp();
+        try {
+            for(String state:List.of("UNLOCKED","COOLING","FROZEN")) {
+                clock.advance();publish(rule("10",state.equals("UNLOCKED")?0:30),rule("5",state.equals("UNLOCKED")?0:30));
+                for(String kind:List.of("direct_purchase","direct_device_earning")) {
+                    String source=state+"-"+kind;
+                    if(kind.equals("direct_purchase"))order(source,b,"100");
+                    else {receipt(source,b,"10","100",false);source="RECEIPT-"+source;}
+                    service.settle(kind,ref(source),b);
+                    var row=groupRow(source);
+                    if(state.equals("FROZEN"))service.changeStatus(((Number)row.get("usdt_event_id")).longValue(),"FROZEN",0L);
+                    for(String eventKey:List.of("usdt_event_id","nex_event_id")) {
+                        long event=((Number)row.get(eventKey)).longValue();
+                        long version=jdbc.queryForObject("SELECT version FROM nx_commission_event WHERE id=?",Long.class,event);
+                        String key="F.commission.CM-"+event+".status";
+                        for(boolean replay:List.of(false,true)) {
+                            var before=rejectionSnapshot(source);
+                            if(replay)A2ReplayContext.enterReplay(ref("GENERIC-"+event));
+                            Throwable rejected;
+                            try {
+                                rejected=catchThrowable(()->{
+                                    if(replay)ops.replay(new ffdd.opsconsole.platform.domain.AuditReplayCommand("F","f_commission_status",Map.of("key",key,"value","REJECTED","expectedVersion",version)),new ffdd.opsconsole.platform.domain.AuditReplayContext("checker","isolated generic reject attempt",ref("GENERIC-REPLAY-"+event)));
+                                    else ops.updateConfig(ref("GENERIC-DIRECT-"+event),new ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest(key,"REJECTED","isolated generic reject attempt","admin",version));
+                                });
+                            } finally {A2ReplayContext.exitReplay();}
+                            var after=rejectionSnapshot(source);
+                            Path evidence=Path.of(System.getenv().getOrDefault("DIRECT_REFERRAL_EVIDENCE_DIR","target/direct-referral-runtime"));Files.createDirectories(evidence);
+                            json.writerWithDefaultPrettyPrinter().writeValue(evidence.resolve("generic-"+state+"-"+kind+"-"+eventKey+"-"+replay+".json").toFile(),Map.of("state",state,"kind",kind,"replay",replay,"denial",rejected==null?"ALLOWED":rejected.getMessage(),"before",before,"after",after));
+                            assertThat(rejected).isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class).hasMessage("DIRECT_REFERRAL_REVERSE_REQUIRES_F5_COMMAND");
+                            assertThat(((ffdd.opsconsole.shared.exception.BizException)rejected).getCode()).isEqualTo(409);
+                            assertThat(after).isEqualTo(before);
+                        }
+                    }
+                }
+            }
+            String source="UNLOCKED-direct_purchase";long event=((Number)groupRow(source).get("usdt_event_id")).longValue();
+            var before=rejectionSnapshot(source);
+            assertThat(f5.reverse("CM-"+event,ref("NO-APPROVAL"),new ffdd.opsconsole.team.dto.F5CommissionReverseRequest(ref(source),"isolated dedicated reversal","admin")).getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+            A2ReplayContext.enterReplay(ref("MISSING-EVIDENCE"));
+            try {assertThatThrownBy(()->f5.reverse("CM-"+event,ref("MISSING-EVIDENCE"),new ffdd.opsconsole.team.dto.F5CommissionReverseRequest("","isolated dedicated reversal","checker"))).hasMessage("REFUND_REF_REQUIRED");}
+            finally {A2ReplayContext.exitReplay();}
+            assertThat(f5Reverse(event,"not-an-evidence-reference","BAD-EVIDENCE").getMessage()).isEqualTo("REFUND_REF_NOT_FOUND");
+            assertThat(rejectionSnapshot(source)).isEqualTo(before);
+            var reversed=f5Reverse(event,ref(source),"VALID-DEDICATED");assertThat(reversed.getCode()).isZero();
+            assertThat(reversed.getData().get("status")).isEqualTo("reversed");
+            var after=rejectionSnapshot(source);
+            assertThat((BigDecimal)groupRow(source).get("recovered_usdt")).isEqualByComparingTo("6");
+            assertThat((BigDecimal)groupRow(source).get("recovered_nex")).isEqualByComparingTo("400");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no LIKE ? AND direction='OUT'",Long.class,group(source)+"%")).isEqualTo(2);
+            assertThat(f5Reverse(event,ref(source),"VALID-DEDICATED").getCode()).isZero();
+            assertThat(rejectionSnapshot(source)).isEqualTo(after);
+            record("generic-rejection","dedicated-approval-evidence-and-idempotency-preserved",Map.of("before",before,"after",after,"response",reversed.getData()));
+            Path evidence=Path.of(System.getenv().getOrDefault("DIRECT_REFERRAL_EVIDENCE_DIR","target/direct-referral-runtime"));Files.createDirectories(evidence);
+            json.writerWithDefaultPrettyPrinter().writeValue(evidence.resolve("dedicated-f5-evidence.json").toFile(),groups);
+        } finally {A2ReplayContext.exitReplay();org.springframework.security.core.context.SecurityContextHolder.clearContext();}
+    }
+
+    private Map<String,Object> rejectionSnapshot(String source) {
+        String no=group(source);
+        return Map.of("wallet",jdbc.queryForMap("SELECT * FROM nx_user_wallet WHERE user_id=?",a),"group",groupRow(source),
+                "events",jdbc.queryForList("SELECT * FROM nx_commission_event WHERE remark=? ORDER BY id",no),
+                "ledger",jdbc.queryForList("SELECT * FROM nx_wallet_ledger WHERE biz_no LIKE ? ORDER BY id",no+"%"),
+                "releaseEntries",jdbc.queryForList("SELECT * FROM nx_earnings_release_entry WHERE source_ref IN (?,?) ORDER BY id",no+":USDT",no+":NEX"),
+                "operations",jdbc.queryForList("SELECT * FROM nx_commission_operation ORDER BY id"));
+    }
 
     @Test void actualSourcePolicyWalletRollbackAndRecovery() throws Exception {
         setUp();
@@ -214,7 +282,7 @@ class DirectReferralMySqlRuntimeTest {
         subsecondPolicyBoundary();
         concurrentPolicyPublication();
         Path evidence=Path.of(System.getenv().getOrDefault("DIRECT_REFERRAL_EVIDENCE_DIR","target/direct-referral-runtime"));Files.createDirectories(evidence);
-        json.writerWithDefaultPrettyPrinter().writeValue(evidence.resolve("scenario-evidence.json").toFile(),Map.of("database","direct_referral_acceptance_20261005","port",33335,"groups",groups));
+        json.writerWithDefaultPrettyPrinter().writeValue(evidence.resolve("scenario-evidence.json").toFile(),Map.of("database",jdbc.queryForObject("SELECT DATABASE()",String.class),"port",jdbc.queryForObject("SELECT @@port",Integer.class),"groups",groups));
     }
 
     private void sourceRejections() {
@@ -359,9 +427,12 @@ class DirectReferralMySqlRuntimeTest {
 
     private void setUp(){
         String url=System.getenv().getOrDefault("DIRECT_REFERRAL_MYSQL_URL","jdbc:mysql://127.0.0.1:33335/direct_referral_acceptance_20261005?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai");
-        if(!url.startsWith("jdbc:mysql://127.0.0.1:33335/direct_referral_acceptance_20261005?"))throw new IllegalStateException("isolated database guard");
+        boolean ownedUuid=url.matches("jdbc:mysql://127\\.0\\.0\\.1:13306/direct_referral_it_[a-f0-9]{32}\\?.+");
+        if(!ownedUuid&&!url.startsWith("jdbc:mysql://127.0.0.1:33335/direct_referral_acceptance_20261005?"))throw new IllegalStateException("isolated database guard");
         dataSource=new DriverManagerDataSource(url,"root","");jdbc=new JdbcTemplate(dataSource);
-        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("direct_referral_acceptance_20261005");
+        String database=url.substring(url.indexOf('/',"jdbc:mysql://".length())+1,url.indexOf('?'));
+        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(database);
+        if(ownedUuid)assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(13306);
         jdbc.update("DELETE FROM nx_direct_referral_policy");
         var config=new MybatisConfiguration(new Environment("direct-referral-runtime",new SpringManagedTransactionFactory(),dataSource));
         var global=new GlobalConfig();global.setDbConfig(new GlobalConfig.DbConfig());global.setMetaObjectHandler(new MybatisMetaObjectHandler(clock));GlobalConfigUtils.setGlobalConfig(config,global);config.setMapUnderscoreToCamelCase(true);
@@ -396,6 +467,13 @@ class DirectReferralMySqlRuntimeTest {
         var idempotency=new AdminIdempotencyService(executor,clock);
         var provider=mock(org.springframework.beans.factory.ObjectProvider.class);when(provider.getIfAvailable()).thenReturn(service);
         f5=new F5CommissionService(session.getMapper(F5CommissionMapper.class),platform,coverage,ledger,audit,outbox,idempotency,provider);
+        var commissions=mock(ffdd.opsconsole.team.domain.TeamCommissionRepository.class);
+        when(commissions.commissionEvents(anyInt())).thenAnswer(call->jdbc.queryForList("SELECT CONCAT('CM-',id) id,commission_type kind,CONCAT('U',user_id) user,CASE WHEN currency='NEX' THEN amount_nex ELSE amount_usdt END amount,currency,status rawStatus,version FROM nx_commission_event WHERE remark LIKE ? ORDER BY id LIMIT 100","DR-%"));
+        when(commissions.recordCommissionOperation(anyString(),anyString(),anyString(),anyLong(),anyString(),anyString())).thenReturn(true);
+        var permissions=mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class);
+        when(permissions.getPermissionCodes(anyLong())).thenReturn(Set.of("network_f5_commission_dispose","network_f5_commission_reject"));
+        ops=proxy(new OpsTeamService(platform,coverage,ledger,audit,ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),mock(ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository.class),commissions,permissions,mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),mock(VRankPromotionEngine.class),mock(VRankRewardDispatcher.class),outbox,mock(LeadershipPoolService.class),f5,idempotency,null,provider));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(1L,null,List.of()));
         long base=900000000L+System.currentTimeMillis()%100000000;a=base;b=base+1;c=base+2;d=base+3;
         user(a,null);user(b,a);user(c,b);user(d,c);
         jdbc.update("INSERT INTO nx_price_index(metric_code,metric_label,unit_label,price_usdt,status,sampled_at) VALUES('NEX_USDT','acceptance','USDT',0.01,'ACTIVE','2099-01-01')");

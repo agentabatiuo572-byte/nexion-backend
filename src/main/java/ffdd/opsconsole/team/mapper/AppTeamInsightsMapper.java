@@ -102,10 +102,10 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
     @Select("""
             SELECT COALESCE(SUM(ce.amount_usdt),0) totalUsdt,
                    COALESCE(SUM(ce.amount_nex),0) totalNex,
-                   COALESCE(SUM(CASE WHEN LOWER(ce.commission_type) IN ('direct','network','unilevel')
+                   COALESCE(SUM(CASE WHEN LOWER(ce.commission_type) IN ('direct','network','unilevel','direct_purchase','direct_device_earning')
                                       AND ce.layer_no=1 THEN ce.amount_usdt ELSE 0 END),0) directUsdt,
                    COALESCE(SUM(ce.amount_usdt),0)
-                     - COALESCE(SUM(CASE WHEN LOWER(ce.commission_type) IN ('direct','network','unilevel')
+                     - COALESCE(SUM(CASE WHEN LOWER(ce.commission_type) IN ('direct','network','unilevel','direct_purchase','direct_device_earning')
                                           AND ce.layer_no=1 THEN ce.amount_usdt ELSE 0 END),0) extendedUsdt,
                    COUNT(DISTINCT CASE WHEN ce.source_user_id IS NOT NULL THEN ce.source_user_id END) contributorCount
              FROM nx_commission_event ce
