@@ -6,6 +6,8 @@ import java.util.Map;
 import org.apache.ibatis.annotations.*;
 
 /** Two durable records only: job/asset headers and frozen individual recipients. */
+// Job headers and composite-key recipients share guarded SQL, not a single BaseMapper CRUD entity.
+@SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportBulkMapper {
     String HEADER = "id,record_type recordType,actor_id actorId,state,version,command_key commandKey,"
         + "client_upload_id clientUploadId,request_hash requestHash,selection_mode selectionMode,filters_json filtersJson,"

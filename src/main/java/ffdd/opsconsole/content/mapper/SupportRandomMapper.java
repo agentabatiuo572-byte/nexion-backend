@@ -6,6 +6,8 @@ import java.util.Map;
 import java.time.LocalDateTime;
 import org.apache.ibatis.annotations.*;
 
+// Preview, operation and composite-key result statements have no single BaseMapper CRUD entity.
+@SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportRandomMapper {
     @Insert("INSERT IGNORE INTO nx_support_random_operation(actor_id,operation_id,preview_id,request_hash,created_at,updated_at) VALUES(#{actor},#{key},#{preview},#{hash},UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))")
     int insertOperation(@Param("actor") Long actor,@Param("key") String key,@Param("preview") String preview,@Param("hash") String hash);

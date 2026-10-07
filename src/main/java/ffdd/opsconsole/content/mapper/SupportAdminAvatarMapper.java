@@ -5,6 +5,8 @@ import org.apache.ibatis.annotations.*;
 import java.util.List;
 import java.util.Map;
 
+// Statement-only asset/account references; no single entity exposes these guarded transitions as CRUD.
+@SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportAdminAvatarMapper {
     String FIELDS="id,uploader_id AS uploaderId,client_upload_id AS clientUploadId,idempotency_key AS idempotencyKey,request_hash AS requestHash,mime,byte_count AS byteCount,object_key AS objectKey,state,attached_admin_id AS attachedAdminId,expires_at AS expiresAt";
     @Select("SELECT "+FIELDS+" FROM nx_support_admin_avatar_asset WHERE id=#{id} FOR UPDATE")

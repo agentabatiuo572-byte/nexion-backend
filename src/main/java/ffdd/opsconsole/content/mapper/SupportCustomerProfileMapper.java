@@ -4,6 +4,8 @@ import java.util.Map;
 import org.apache.ibatis.annotations.Select;
 
 /** Only service-visible identity and counts; no session, risk model or account security fields. */
+// Read-only cross-table projections; generic entity CRUD would widen this mapper's contract.
+@SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportCustomerProfileMapper {
     @Select("SELECT COUNT(*) total,COALESCE(SUM(CASE WHEN "+ffdd.opsconsole.device.mapper.DeviceOpsMapper.E5_ACTIVATED_OWNED+
         " AND "+ffdd.opsconsole.device.mapper.DeviceOpsMapper.E5_RUNTIME_ONLINE+" THEN 1 ELSE 0 END),0) observedOnlineCount,"+

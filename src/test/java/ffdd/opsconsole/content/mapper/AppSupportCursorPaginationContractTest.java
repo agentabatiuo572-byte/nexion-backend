@@ -14,7 +14,7 @@ class AppSupportCursorPaginationContractTest {
                 .getAnnotation(Select.class).value());
         String conversations = String.join(" ", ConversationMapper.class.getMethod("pageConversations",
                         String.class, String.class, String.class, String.class, Long.class, Boolean.class,
-                        Long.class, Boolean.class, long.class, long.class)
+                        Long.class, Boolean.class, long.class, long.class, Boolean.class)
                 .getAnnotation(Select.class).value());
 
         assertThat(tickets).contains("t.id &lt; #{beforeId}", "ORDER BY t.id DESC", "stableCursor");
