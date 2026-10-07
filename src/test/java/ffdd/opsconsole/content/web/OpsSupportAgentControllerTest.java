@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 class OpsSupportAgentControllerTest {
     private final OpsSupportAgentService service = mock(OpsSupportAgentService.class);
     private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
-    private final OpsSupportAgentController controller = new OpsSupportAgentController(service, productionPathGuard);
+    private final OpsSupportAgentController controller = new OpsSupportAgentController(service, productionPathGuard, mock(ffdd.opsconsole.content.application.SupportGroupService.class));
 
     @Test
     void isolatedProfileBlocksSeatMutationBeforeTheOfficialAgentService() {

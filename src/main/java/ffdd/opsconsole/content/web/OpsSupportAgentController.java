@@ -33,6 +33,16 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsSupportAgentController {
     private final OpsSupportAgentService supportAgentService;
     private final ProductionSupportPathGuard productionPathGuard;
+    private final ffdd.opsconsole.content.application.SupportGroupService groups;
+
+    @PreAuthorize("hasAuthority('platform_a1_write')")
+    @PatchMapping("/{adminId}/qualification")
+    public Object qualification(@PathVariable Long adminId,
+            @RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String key,
+            @RequestBody ffdd.opsconsole.content.dto.SupportGroupRequests.Qualification request) {
+        productionPathGuard.requireOpsWriteAllowed();
+        return groups.qualification(adminId,key,request);
+    }
 
     // 坐席总览（4KPI/坐席负载） — M1 客服总览 读
     @PreAuthorize("hasAuthority('service_m1_read')")

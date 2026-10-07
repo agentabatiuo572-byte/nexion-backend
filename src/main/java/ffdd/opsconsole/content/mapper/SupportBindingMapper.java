@@ -72,9 +72,13 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
     String ELIGIBLE_AGENT_FROM = """
         FROM nx_admin a JOIN nx_support_agent_profile p ON p.admin_id=a.id
           JOIN nx_admin_role_relation rr ON rr.admin_id=a.id AND rr.is_deleted=0
-          JOIN nx_admin_role r ON r.id=rr.role_id AND r.is_deleted=0 AND r.status=1 AND r.role_code='SUPPORT'
+          JOIN nx_admin_role r ON r.id=rr.role_id AND r.is_deleted=0 AND r.status=1 AND r.role_code IN ('SUPPORT','SUPER_ADMIN')
          WHERE a.status=1 AND a.is_deleted=0 AND p.is_deleted=0 AND p.enabled=1
-           AND p.seat_type='DEDICATED' AND FIND_IN_SET('advisor',REPLACE(LOWER(p.service_types),' ',''))>0
+           AND (EXISTS(SELECT 1 FROM nx_support_account_qualification_history q WHERE q.admin_id=a.id
+                AND q.qualification_kind='SERVICE' AND q.ends_at IS NULL AND q.state='ENABLED')
+             OR (r.role_code='SUPPORT' AND p.seat_type='DEDICATED' AND FIND_IN_SET('advisor',REPLACE(LOWER(p.service_types),' ',''))>0
+                AND NOT EXISTS(SELECT 1 FROM nx_support_migration WHERE id='support-groups-20261007')
+                AND NOT EXISTS(SELECT 1 FROM nx_support_account_qualification_history q WHERE q.admin_id=a.id AND q.qualification_kind='SERVICE' AND q.ends_at IS NULL)))
         """;
     @Select("SELECT COUNT(DISTINCT a.id) " + ELIGIBLE_AGENT_FROM + " AND a.id=#{id} FOR SHARE")
     int eligibleAgent(Long id);
@@ -92,10 +96,12 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
     List<String> roles(Long id);
     @Select("SELECT r.role_code FROM nx_admin a JOIN nx_admin_role_relation rr ON rr.admin_id=a.id JOIN nx_admin_role r ON r.id=rr.role_id WHERE a.id=#{id} AND a.status=1 AND a.is_deleted=0 AND rr.is_deleted=0 AND r.is_deleted=0 AND r.status=1")
     List<String> rolesSnapshot(Long id);
-    @Select("SELECT COUNT(*) FROM nx_support_agent_profile WHERE admin_id=#{id} AND enabled=1 AND is_deleted=0 AND seat_type='MANAGER'")
+    // Until object scopes are integrated, a new qualification may only narrow the legacy MANAGER ceiling.
+    String SUPERVISOR_PROFILE="SELECT COUNT(*) FROM nx_support_agent_profile p WHERE p.admin_id=#{id} AND p.enabled=1 AND p.is_deleted=0 AND p.seat_type='MANAGER' AND (EXISTS(SELECT 1 FROM nx_support_account_qualification_history q WHERE q.admin_id=p.admin_id AND q.qualification_kind='SUPERVISOR' AND q.ends_at IS NULL AND q.state='ENABLED') OR (NOT EXISTS(SELECT 1 FROM nx_support_migration WHERE id='support-groups-20261007') AND NOT EXISTS(SELECT 1 FROM nx_support_account_qualification_history q WHERE q.admin_id=p.admin_id AND q.qualification_kind='SUPERVISOR' AND q.ends_at IS NULL)))";
+    @Select(SUPERVISOR_PROFILE)
     int supervisorProfileSnapshot(Long id);
 
-    @Select("SELECT COUNT(*) FROM nx_support_agent_profile WHERE admin_id=#{id} AND enabled=1 AND is_deleted=0 AND seat_type='MANAGER' FOR SHARE")
+    @Select(SUPERVISOR_PROFILE+" FOR SHARE")
     int supervisorProfile(Long id);
 
     @Select("SELECT agent_admin_id FROM nx_support_agent_user_assignment WHERE user_id=#{id} AND status='ACTIVE' AND is_deleted=0 FOR SHARE")

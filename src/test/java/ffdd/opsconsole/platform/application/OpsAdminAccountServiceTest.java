@@ -1,5 +1,8 @@
 package ffdd.opsconsole.platform.application;
 
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.Mockito.doThrow;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -112,6 +115,7 @@ class OpsAdminAccountServiceTest {
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
     private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
     private final AdminPermissionCache permissionCache = mock(AdminPermissionCache.class);
+    private final ffdd.opsconsole.content.application.SupportGroupService supportGroups = mock(ffdd.opsconsole.content.application.SupportGroupService.class);
     private final OpsAuditCenterService auditCenterService = mock(OpsAuditCenterService.class);
     private final OpsPlatformRoleService platformRoleService = mock(OpsPlatformRoleService.class);
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
@@ -128,7 +132,7 @@ class OpsAdminAccountServiceTest {
             new OpsAdminAccountService(auditLogService, adminMapper, roleRelationMapper, roleMapper,
                     accountStateMapper, rbacActionMapper, rbacGrantMapper, securityBaselineMapper, passwordEncoder,
                     adminSessionRegistry, permissionCache, auditCenterService, lockMapper, platformRoleService,
-                    configFacade,mock(ffdd.opsconsole.content.application.SupportAdminAvatarService.class));
+                    configFacade,mock(ffdd.opsconsole.content.application.SupportAdminAvatarService.class),supportGroups);
 
     @BeforeEach
     void setUp() {
@@ -542,7 +546,30 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("ACCOUNT_VERSION_STALE");
         verify(adminSessionRegistry, never()).revokeSessions(4L);
+        verify(supportGroups, never()).accountChanged(anyLong(),any(),anyBoolean(),anyString(),anyString());
         verify(auditLogService, never()).record(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void legacyStatusCannotBypassGroupHandover() {
+        String version=versionOf("4");
+        doThrow(new ffdd.opsconsole.shared.exception.BizException(409,"SUPPORT_GROUP_OWNER_HANDOVER_REQUIRED"))
+                .when(supportGroups).accountChanging(4L,null,true,"group-status","required group handover");
+        assertThatThrownBy(()->service.updateStatus("group-status","4",new AdminAccountStatusUpdateRequest(
+                "disabled","required group handover","superadmin",version))).hasMessage("SUPPORT_GROUP_OWNER_HANDOVER_REQUIRED");
+        verify(adminMapper,never()).updateStatusIfVersion(anyLong(),anyLong(),anyInt());
+        verify(adminSessionRegistry,never()).revokeSessions(anyLong());
+    }
+
+    @Test
+    void legacyRoleCannotBypassGroupHandover() {
+        String version=versionOf("4");
+        doThrow(new ffdd.opsconsole.shared.exception.BizException(409,"SUPPORT_GROUP_OWNER_HANDOVER_REQUIRED"))
+                .when(supportGroups).accountChanging(4L,"unassigned",false,"group-role","required group handover");
+        assertThatThrownBy(()->service.changeRole("group-role","4",new AdminAccountRoleUpdateRequest(
+                "unassigned","required group handover","superadmin",version))).hasMessage("SUPPORT_GROUP_OWNER_HANDOVER_REQUIRED");
+        verify(adminMapper,never()).updateRoleIfVersion(anyLong(),anyLong(),anyInt());
+        verify(supportGroups,never()).accountChanged(anyLong(),any(),anyBoolean(),anyString(),anyString());
     }
 
     @Test
@@ -1787,7 +1814,7 @@ class OpsAdminAccountServiceTest {
             accounts = new OpsAdminAccountService(auditLogService, adminMapper, roleRelationMapper, roleMapper,
                     accountStateMapper, rbacActionMapper, rbacGrantMapper, securityBaselineMapper, passwordEncoder,
                     adminSessionRegistry, permissionCache, auditCenterService, lockMapper, platformRoleService,
-                    configFacade, avatars);
+                    configFacade, avatars,supportGroups);
             AdminOperatorRoleResolver roleResolver = new AdminOperatorRoleResolver(adminMapper, roleRelationMapper);
             AuditReplayBusinessPermissionGuard permissions = new AuditReplayBusinessPermissionGuard(
                     mock(TrustDisclosureRepository.class), roleResolver, mock(EmergencyControlRepository.class), null);

@@ -1,7 +1,8 @@
 [CmdletBinding()]
-param([ValidateSet('I0-B')][string]$Phase, [Parameter(Mandatory)][ValidateSet('core','bulk','avatar')][string]$SuiteGroup,
+param([ValidateSet('I0-B','I1-A','I2-A')][string]$Phase, [Alias('SuiteGroup')][ValidateSet('core','bulk','avatar')][string]$RequestedSuiteGroup,
     [Parameter(Mandatory)][string]$Report)
 $ErrorActionPreference = 'Stop'
+$SuiteGroup = $RequestedSuiteGroup
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $repo
 $root = 'C:/Users/jason/.codex/workflow-runs/support-analytics-20261007-r2'
@@ -9,7 +10,12 @@ $runtime = "$root/runtime"
 foreach ($name in @('TASK_ID','STEP_ID','CHECK_ID','RUN_ID','REPO','SNAPSHOT_HASH')) {
     if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("WORKFLOW_$name"))) { throw "Missing current workflow identity: $name" }
 }
-if ($env:WORKFLOW_STEP_ID -ne $Phase -or $env:WORKFLOW_RUN_ID -notmatch '^[a-zA-Z0-9_-]+$' -or $env:WORKFLOW_SNAPSHOT_HASH -notmatch '^[a-f0-9]{64}$') { throw 'Current I0-B workflow binding required' }
+if ($env:WORKFLOW_STEP_ID -ne $Phase -or $env:WORKFLOW_RUN_ID -notmatch '^[a-zA-Z0-9_-]+$' -or $env:WORKFLOW_SNAPSHOT_HASH -notmatch '^[a-f0-9]{64}$') { throw 'Current workflow binding required' }
+if ($Phase -eq 'I0-B' -and [string]::IsNullOrWhiteSpace($SuiteGroup)) { throw 'I0-B requires its original explicit suite group' }
+if ($Phase -ne 'I0-B') {
+    if (-not [string]::IsNullOrWhiteSpace($SuiteGroup)) { throw 'SuiteGroup is reserved for I0-B' }
+    $SuiteGroup = if ($Phase -eq 'I1-A') { 'groups' } else { 'payment-facts' }
+}
 if ([IO.Path]::GetFullPath($env:WORKFLOW_REPO) -ne [IO.Path]::GetFullPath($repo)) { throw 'Workflow repository mismatch' }
 function Hash([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Read-Private([string]$Name) { Get-Content -Raw -LiteralPath "$runtime/$Name" | ConvertFrom-Json }
@@ -52,6 +58,8 @@ $initialTree=(& git diff HEAD --binary | Out-String)
 $initialStatus=(& git status --porcelain=v1 | Out-String)
 $env:CS_ENHANCE_PREP_ENABLED='true'; $env:CS_ENHANCE_CORE_ENABLED='true'; $env:NEXION_C1_AUDIT_MYSQL='true'
 $env:SUPPORT_PATCH_ISOLATED='true'; $env:CS_ENHANCE_BULK_ENABLED='true'; $env:CS_ENHANCE_AVATAR_READ_ENABLED='true'; $env:CS_ENHANCE_AVATAR_A2_ENABLED='true'
+$env:CS_ANALYTICS_GROUPS_ENABLED=if($Phase -eq 'I1-A'){'true'}else{'false'}
+$env:CS_ANALYTICS_PAYMENT_FACTS_ENABLED=if($Phase -eq 'I2-A'){'true'}else{'false'}
 $env:S3_EVIDENCE_DIR="$evidence/legacy-s3"; $env:S4_EVIDENCE_DIR="$evidence/legacy-s4"
 $env:S3_FIXTURE_PASSWORD='Aa1!'+[Guid]::NewGuid().ToString('N')
 New-Item -ItemType Directory -Path $env:S3_EVIDENCE_DIR,$env:S4_EVIDENCE_DIR | Out-Null
@@ -89,6 +97,8 @@ try {
             Run-Suites 'bulk-restart' @('SupportBulkRestartRuntimeTest')
         }
         avatar { Run-Suites 'avatar' @('SupportAdminAvatarReadRuntimeTest','SupportAvatarCompensationRuntimeTest','SupportAdminAvatarA2RuntimeTest') }
+        groups { Run-Suites 'groups' @('SupportGroupServiceTest','SupportGroupMapperSqlTest','MybatisSupportAgentRepositoryTest','OpsSupportAgentControllerTest','OpsAdminAccountServiceTest','SupportGroupMigrationRuntimeTest','SupportGroupRuntimeTest') }
+        payment-facts { Run-Suites 'payment-facts' @('SupportPaymentFactServiceTest','SupportPaymentFactMapperSqlTest','SupportPaymentFactRuntimeTest') }
     }
 } finally {
     $env:SUPPORT_ANALYTICS_CAPTURE='after'
@@ -96,13 +106,15 @@ try {
     $env:SUPPORT_ANALYTICS_CAPTURE=''
 }
 if ($SuiteGroup -eq 'bulk') { $scenes=@('bulk-runtime.json','bulk-restart-runtime.json','bulk-restart-seed.json') }
+if ($Phase -eq 'I1-A') { $scenes=@('groups-runtime.json','groups-migration-runtime.json') }
+if ($Phase -eq 'I2-A') { $scenes=@('payment-facts-runtime.json') }
 if ($SuiteGroup -eq 'avatar') {
     $scenes=@('avatar-read-runtime.json','avatar-compensation-runtime.json')
     $a2=@(Get-ChildItem -LiteralPath $evidence -Filter 'avatar-a2-runtime-*.json' -File)
     if ($a2.Count -ne 1) { throw 'Exactly one current A2 runtime scene is required' }
     $scenes+=$a2[0].Name
 }
-$sceneEvidence=foreach($name in $scenes) {
+$sceneEvidence=@(foreach($name in $scenes) {
     $file=Get-Item -LiteralPath "$evidence/$name"
     if ($file.LastWriteTimeUtc -lt $started -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Stale or indirect runtime scene: $name" }
     $document=Get-Content -Raw -LiteralPath $file.FullName | ConvertFrom-Json -DateKind String
@@ -117,7 +129,7 @@ $sceneEvidence=foreach($name in $scenes) {
         if ($document.scheduledJobs -ne $false -or $document.productImplementationReleased -ne $false) { throw 'Preparation isolation mismatch' }
     }
     Reference $file.FullName
-}
+})
 $restored=Get-Content -Raw -LiteralPath "$evidence/shared-restoration.json" | ConvertFrom-Json
 if ($restored.complete -ne $true -or $restored.rulesBusinessValuesEqual -ne $true -or $restored.contextSha256 -cne $env:CS_ENHANCE_ACTOR_CONTEXT_SHA256) { throw 'Exact shared restoration was not verified' }
 $sceneEvidence+=Reference "$evidence/shared-restoration.json"
@@ -128,11 +140,30 @@ if ($SuiteGroup -eq 'core') {
 }
 $treeMoved=((& git rev-parse HEAD).Trim() -ne $env:SUPPORT_CANDIDATE -or (& git diff HEAD --binary | Out-String) -cne $initialTree -or (& git status --porcelain=v1 | Out-String) -cne $initialStatus)
 if ($treeMoved) { throw 'Candidate changed during runtime checks' }
+$acceptance=@('BE-BASELINE')
+if ($Phase -eq 'I1-A') {
+    $acceptance=@('BE-G05','BE-G06','BE-G07','BE-G21-FOUNDATION','BE-G23-FOUNDATION','BE-G24-FOUNDATION','BE-SUP-02','BE-SUP-03')
+    $groups=Get-Content -Raw "$evidence/groups-runtime.json" | ConvertFrom-Json
+    $migration=Get-Content -Raw "$evidence/groups-migration-runtime.json" | ConvertFrom-Json
+    if($groups.proofs.cleanupComplete -ne $true -or $groups.proofs.legacyBindingsUnchanged -ne $true -or $migration.ownedScratchRemoved -ne $true){throw 'Group preservation and cleanup proof missing'}
+    foreach($id in $acceptance){if($null -eq $groups.proofs.$id -and $null -eq $migration.$id){throw "Group acceptance proof missing: $id"}}
+}
+if ($Phase -eq 'I2-A') {
+    $acceptance=@('BE-FACT-SOURCES')
+    $facts=Get-Content -Raw "$evidence/payment-facts-runtime.json" | ConvertFrom-Json
+    if($facts.capability -ne 'runtime'){throw 'Payment facts runtime capability missing'}
+    foreach($id in @('deposit-rails','device-paid-free-trial','refund-lineage-and-missing-evidence')){
+        if($facts.checks.$id.status -ne 'pass' -or [string]::IsNullOrWhiteSpace($facts.checks.$id.testcase)){throw "Payment source proof missing: $id"}
+    }
+}
 $observed=switch ($SuiteGroup) {
     core { 'All existing 27 core suites and 24 core scenes executed on the verified exclusive resources; random assignment, finance/profile reads, messaging, and existing permission behavior were exercised.' }
     bulk { 'All existing 6 bulk suites executed; the queued batch was persisted then read and completed in a separate JVM, with duplicate delivery and refresh readback checked.' }
     avatar { 'Avatar read permissions, upload compensation, and A2 approval runtime suites executed with real private object storage and database readback.' }
+    groups { 'Group and independent qualification commands, old A1 handover guards, concurrent versions, required audit rollback, legacy preservation and real controlled migration replay executed. Foundation scope only; later object authorization and statistics are not signed here.' }
+    payment-facts { 'Canonical payment source fixtures were read through the source adapter and rolled back; deposit rails, paid/free/trial device settlement, original refund lineage and missing evidence were checked without executing financial settlement.' }
 }
-$result=[ordered]@{at=[DateTime]::UtcNow.ToString('o');taskId=$env:WORKFLOW_TASK_ID;stepId=$Phase;checkId=$env:WORKFLOW_CHECK_ID;runId=$env:WORKFLOW_RUN_ID;repo=$env:WORKFLOW_REPO;snapshotHash=$env:WORKFLOW_SNAPSHOT_HASH;candidate=$env:SUPPORT_CANDIDATE;verdict='pass';mode='full';treeMoved=$false;capability='runtime';suiteGroup=$SuiteGroup;steps=@(@{id='BE-BASELINE';status='pass';innerSkipped=0;evidence=@($observed,"Current zero-skip XML, scene, object and database before/after references: $evidence")});suites=@($suiteEvidence.ToArray());scenes=@($sceneEvidence);ownership=(Reference $env:SUPPORT_RESOURCE_OWNERSHIP);before=(Reference "$evidence/shared-before.json");after=(Reference "$evidence/shared-after.json");objectBefore=(Reference "$evidence/object-before.json");objectAfter=(Reference "$evidence/object-after.json")}
+$steps=@(foreach($id in $acceptance){@{id=$id;status='pass';innerSkipped=0;evidence=@($observed,"Current zero-skip XML, scene, object and database before/after references: $evidence")}})
+$result=[ordered]@{at=[DateTime]::UtcNow.ToString('o');taskId=$env:WORKFLOW_TASK_ID;stepId=$Phase;checkId=$env:WORKFLOW_CHECK_ID;runId=$env:WORKFLOW_RUN_ID;repo=$env:WORKFLOW_REPO;snapshotHash=$env:WORKFLOW_SNAPSHOT_HASH;candidate=$env:SUPPORT_CANDIDATE;verdict='pass';mode='full';treeMoved=$false;capability='runtime';suiteGroup=$SuiteGroup;steps=$steps;suites=@($suiteEvidence.ToArray());scenes=@($sceneEvidence);ownership=(Reference $env:SUPPORT_RESOURCE_OWNERSHIP);before=(Reference "$evidence/shared-before.json");after=(Reference "$evidence/shared-after.json");objectBefore=(Reference "$evidence/object-before.json");objectAfter=(Reference "$evidence/object-after.json")}
 $result | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Report -Encoding utf8
 Write-Output "step=$Phase status=pass report=$Report"

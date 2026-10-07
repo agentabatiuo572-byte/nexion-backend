@@ -54,6 +54,7 @@ class OpsSupportAgentServiceTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final SupportBindingService binding=mock(SupportBindingService.class);
+    private final SupportGroupService groups=mock(SupportGroupService.class);
     private final SupportOwnershipService ownership = ffdd.opsconsole.content.SupportTestDependencies.ownership();
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-27T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsSupportAgentService service = new OpsSupportAgentService(
@@ -62,10 +63,11 @@ class OpsSupportAgentServiceTest {
             auditLogService,
             idempotencyService,
             OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
-            clock, ownership, binding);
+            clock, ownership, binding, groups);
 
     @BeforeEach
     void setUp() {
+        when(groups.supervisorQualification(any())).thenReturn(null);
         ((FakeSupportAgentRepository) repository).reset();
         when(binding.transferLegacy(anyString(),any())).thenAnswer(invocation->{
             ffdd.opsconsole.content.dto.SupportBindingRequest r=invocation.getArgument(1);

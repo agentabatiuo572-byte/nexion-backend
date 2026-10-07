@@ -65,6 +65,7 @@ public class OpsSupportAgentService {
     private final Clock clock;
     private final SupportOwnershipService ownership;
     private final SupportBindingService binding;
+    private final SupportGroupService groups;
 
     public ApiResult<SupportAgentOverview> overview() {
         if(!ownership.supervisor(ownership.actorId())) ownership.requireEligibleAgent();
@@ -289,6 +290,7 @@ public class OpsSupportAgentService {
                 ? defaultSeatType()
                 : normalizeSeatType(currentProfile.seatType(), currentProfile.position());
         String position = positionForSeatType(seatType);
+        groups.validateLegacySeat(adminId,seatType);
         ApiResult<SupportAgentProfileView> authorization = requireSeatMutationAuthorization(adminId, seatType);
         if (authorization != null) {
             return authorization;
@@ -360,6 +362,7 @@ public class OpsSupportAgentService {
         }
         String position = canonicalPosition(request.position());
         String seatType = seatTypeForPosition(position);
+        groups.validateLegacySeat(adminId,seatType);
         ApiResult<SupportAgentProfileView> authorization = requireSeatMutationAuthorization(adminId, seatType);
         if (authorization != null) {
             return authorization;
@@ -669,6 +672,8 @@ public class OpsSupportAgentService {
         if (actorAdminId == null) {
             return false;
         }
+        Boolean qualified=groups.supervisorQualification(actorAdminId);
+        if(Boolean.FALSE.equals(qualified))return false;
         return repository.findProfile(actorAdminId)
                 .filter(profile -> Boolean.TRUE.equals(profile.enabled()))
                 .map(profile -> normalizeSeatType(profile.seatType(), profile.position()))

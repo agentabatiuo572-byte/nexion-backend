@@ -101,7 +101,7 @@ class M1SupportAvailabilitySpringTransactionMySqlIntegrationTest {
                 anyBoolean(), anyBoolean(), anyBoolean(), anyLong(), any());
         return new OpsSupportAgentService(repository, accounts, mock(AuditLogService.class),
                 mock(AdminIdempotencyService.class), OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
-                Clock.fixed(Instant.parse("2026-09-10T00:00:00Z"), ZoneOffset.UTC), ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportBindingService.class));
+                Clock.fixed(Instant.parse("2026-09-10T00:00:00Z"), ZoneOffset.UTC), ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportBindingService.class), mock(SupportGroupService.class));
     }
 
     private static SupportAgentProfileRecord profile(long id) {

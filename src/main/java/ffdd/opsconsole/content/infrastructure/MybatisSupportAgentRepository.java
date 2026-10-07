@@ -38,11 +38,8 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
             if (mapper.countProfileVersionColumn() == 0) {
                 mapper.addProfileVersionColumn();
             }
-            mapper.backfillSeatType();
+            // Qualification cutover owns legacy interpretation. Startup must preserve the original evidence.
             mapper.createAssignmentTable();
-            if (mapper.countAssignmentTypeColumn() > 0) {
-                mapper.dropAssignmentTypeColumn();
-            }
             if (mapper.countDuplicateActiveCustomers() > 0) {
                 throw new IllegalStateException("SUPPORT_ASSIGNMENT_MIGRATION_REVIEW_REQUIRED");
             }

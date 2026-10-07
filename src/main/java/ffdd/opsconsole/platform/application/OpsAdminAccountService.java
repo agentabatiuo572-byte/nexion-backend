@@ -127,6 +127,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     /** C6 登录风控阈值(auth.risk.*)的唯一权威读取口;A1 锁定基线只是它的只读投影。 */
     private final ffdd.opsconsole.platform.facade.PlatformConfigFacade configFacade;
     private final ffdd.opsconsole.content.application.SupportAdminAvatarService avatars;
+    private final ffdd.opsconsole.content.application.SupportGroupService supportGroups;
 
     public ApiResult<AdminAccountOverview> overview() {
         ensureA1BusinessTables();
@@ -373,10 +374,12 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         }
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
+        supportGroups.accountChanging(adminId,nextRole,false,idempotencyKey,request.reason());
         if (adminMapper.updateRoleIfVersion(adminId, accountVersionNumber(current.version()), "super".equals(nextRole) ? 1 : 0) != 1) {
             return ApiResult.fail(409, "ACCOUNT_VERSION_STALE");
         }
         syncPrimaryRoleRelation(adminId, nextRole);
+        supportGroups.accountChanged(adminId,nextRole,false,idempotencyKey,request.reason());
         // 改角色后立即失效该 admin 的 Redis 权限缓存，避免 30min TTL 窗口内仍用旧角色权限
         permissionCache.evict(adminId);
 
@@ -433,9 +436,11 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
         long expectedVersion = accountVersionNumber(current.version());
+        supportGroups.accountChanging(adminId,null,"disabled".equals(nextStatus),idempotencyKey,request.reason());
         if (adminMapper.updateStatusIfVersion(adminId, expectedVersion, "enabled".equals(nextStatus) ? 1 : 0) != 1) {
             return ApiResult.fail(409, "ACCOUNT_VERSION_STALE");
         }
+        supportGroups.accountChanged(adminId,null,"disabled".equals(nextStatus),idempotencyKey,request.reason());
 
         if ("disabled".equals(nextStatus)) {
             adminSessionRegistry.revokeSessions(adminId);

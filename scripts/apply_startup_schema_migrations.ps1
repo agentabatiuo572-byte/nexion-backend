@@ -288,6 +288,8 @@ $migrations = @(
   # Additive support capabilities require their schema before the current application boots.
   (Join-Path $root "scripts\migrations\20261001_support_enhancements_core.sql")
   (Join-Path $root "scripts\migrations\20261001_support_enhancements_bulk.sql")
+  # Group structure is safe to install; legacy qualification cutover remains an explicit reviewed operation.
+  (Join-Path $root "scripts\migrations\20261007_support_groups.sql")
   (Join-Path $root "scripts\migrations\20261003_support_ticket_creation_policy.sql")
   (Join-Path $root "scripts\migrations\20261003_support_ticket_binding_owner.sql")
 )

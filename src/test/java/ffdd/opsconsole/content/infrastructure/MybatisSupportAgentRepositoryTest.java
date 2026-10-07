@@ -144,7 +144,7 @@ class MybatisSupportAgentRepositoryTest {
     }
 
     @Test
-    void concurrentRequestsInitializeAndBackfillSchemaOnlyOnce() throws Exception {
+    void concurrentRequestsInitializeStructureOnceAndNeverRewriteLegacyEvidence() throws Exception {
         SupportAgentMapper mapper = Mockito.mock(SupportAgentMapper.class);
         when(mapper.countSeatTypeColumn()).thenReturn(1L);
         when(mapper.countAssignmentTypeColumn()).thenReturn(0L);
@@ -176,7 +176,8 @@ class MybatisSupportAgentRepositoryTest {
         }
 
         verify(mapper, times(1)).createProfileTable();
-        verify(mapper, times(1)).backfillSeatType();
+        verify(mapper, Mockito.never()).backfillSeatType();
+        verify(mapper, Mockito.never()).dropAssignmentTypeColumn();
         verify(mapper, times(1)).createAssignmentTable();
         verify(mapper, times(1)).countDuplicateActiveCustomers();
     }

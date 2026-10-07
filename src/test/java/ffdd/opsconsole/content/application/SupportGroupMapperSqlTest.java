@@ -1,0 +1,31 @@
+package ffdd.opsconsole.content.application;
+
+import static org.assertj.core.api.Assertions.*;
+import ffdd.opsconsole.content.mapper.SupportGroupMapper;
+import ffdd.opsconsole.content.mapper.SupportBindingMapper;
+import java.nio.file.*;
+import java.util.*;
+import org.apache.ibatis.session.Configuration;
+import org.junit.jupiter.api.Test;
+
+class SupportGroupMapperSqlTest {
+    @Test void allGroupStatementsCompileAndRemainParameterized(){
+        var configuration=new Configuration();configuration.addMapper(SupportGroupMapper.class);
+        var args=new HashMap<String,Object>();args.put("owner",7L);
+        for(var method:SupportGroupMapper.class.getDeclaredMethods()) {
+            var statement=configuration.getMappedStatement(SupportGroupMapper.class.getName()+"."+method.getName());
+            assertThat(statement.getBoundSql(args).getSql()).doesNotContain("${");
+        }
+    }
+    @Test void startupIncludesStructureButNeverQualificationAdjudication() throws Exception {
+        String installer=Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        assertThat(installer).contains("20261007_support_groups.sql").doesNotContain("20261007_support_groups_qualification_cutover.sql");
+        assertThat(installer.indexOf("20261007_support_groups.sql")).isGreaterThan(installer.indexOf("20261001_support_enhancements_bulk.sql"));
+        String schema=Files.readString(Path.of("scripts/migrations/20261007_support_groups.sql"));
+        assertThat(schema).contains("uk_support_group_member_current","uk_support_group_owner_current","uk_support_qualification_current","uk_support_customer_route_current").doesNotContain("UPDATE nx_support_agent_user_assignment","DROP COLUMN");
+    }
+    @Test void newSupervisorQualificationCannotExpandLegacyGlobalReadCeiling(){
+        assertThat(SupportBindingMapper.SUPERVISOR_PROFILE).contains("p.seat_type='MANAGER' AND (");
+        assertThat(SupportBindingMapper.ELIGIBLE_AGENT_FROM).contains("q.qualification_kind='SERVICE'");
+    }
+}
