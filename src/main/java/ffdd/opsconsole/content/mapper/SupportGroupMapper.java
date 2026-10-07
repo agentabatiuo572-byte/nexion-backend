@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.*;
 
+// Group, qualification and ownership histories use guarded cross-table statements, not generic entity CRUD.
+@SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportGroupMapper {
     String GROUP_COLUMNS="id,name,supervisor_admin_id supervisorAdminId,status,version";
     String QUALIFICATION_COLUMNS="id,admin_id adminId,qualification_kind qualificationKind,state,version,starts_at startsAt";

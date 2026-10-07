@@ -7,6 +7,8 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 /** Internal reader; its authorized caller supplies customer scope, never current support groups. */
+// Read-only payment and ledger projections span source tables; generic CRUD would broaden this contract.
+@SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportPaymentFactMapper {
     @Select(SupportPaymentFactSql.DEPOSITS) List<Map<String,Object>> deposits(@Param("customerIds") Collection<Long> ids);
     @Select(SupportPaymentFactSql.CARDS) List<Map<String,Object>> cards(@Param("customerIds") Collection<Long> ids);
