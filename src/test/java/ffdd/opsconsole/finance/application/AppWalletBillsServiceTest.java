@@ -125,6 +125,82 @@ class AppWalletBillsServiceTest {
     }
 
     @Test
+    void orderRefundUsesTheSameControlledProjectionOnLegacyOffsetAndCursorPages() {
+        AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+        String orderNo = "ORD-8EB83D7802F0458DA6CD797F2D99A746";
+        var refund = new AppWalletBillsMapper.LedgerRow(842924L, "E4-REFUND-" + orderNo,
+                "ORDER_REFUND", "USDT", "IN", new BigDecimal("1299"), new BigDecimal("1299"),
+                "SUCCESS", "internal operator/reason/key", LocalDateTime.of(2026, 10, 7, 12, 46));
+        when(mapper.count(7L)).thenReturn(1L);
+        when(mapper.rows(7L, 200)).thenReturn(List.of(refund));
+        when(mapper.rows(7L, 50, 0)).thenReturn(List.of(refund));
+        when(mapper.rowsAfter(7L, 51, null, null, null, null, null)).thenReturn(List.of(refund));
+        var service = new AppWalletBillsService(mapper, environment("dev"));
+
+        for (var result : List.of(service.list(7L).getData(), service.list(7L, 1, 50).getData(),
+                service.list(7L, 1, 50, null, null, null, "start").getData())) {
+            assertThat((List<?>) result.get("bills")).singleElement().isInstanceOfSatisfying(Map.class,
+                    bill -> assertThat(bill).containsEntry("id", "WL-842924")
+                            .containsEntry("bizNo", "E4-REFUND-" + orderNo)
+                            .containsEntry("bizType", "ORDER_REFUND")
+                            .containsEntry("category", "refund")
+                            .containsEntry("presentationCode", "orderRefund")
+                            .containsEntry("publicReference", orderNo)
+                            .containsEntry("asset", "USDT").containsEntry("direction", "IN")
+                            .containsEntry("amount", new BigDecimal("1299"))
+                            .containsEntry("balanceAfter", new BigDecimal("1299"))
+                            .containsEntry("status", "SUCCESS"));
+        }
+    }
+
+    @Test
+    void orderRefundNeverPublishesMalformedOrInternalLedgerReferences() {
+        AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+        String orderNo = "ORD-0123456789ABCDEF0123456789ABCDEF";
+        var invalid = java.util.Arrays.asList(null, "", "E4-REFUND-ORD-42", "E4-BILL-" + orderNo,
+                "PRIVATE-" + orderNo, "E4-REFUND-" + orderNo.toLowerCase(java.util.Locale.ROOT),
+                "E4-REFUND-" + orderNo + ":PRIVATE", "E4-REFUND-" + orderNo + " ",
+                "E4-REFUND-" + orderNo + "\n",
+                "E4-REFUND-ORD-Z123456789ABCDEF0123456789ABCDEF");
+        var ledgerRows = new java.util.ArrayList<AppWalletBillsMapper.LedgerRow>();
+        for (int index = 0; index < invalid.size(); index++) {
+            ledgerRows.add(new AppWalletBillsMapper.LedgerRow(50L + index, invalid.get(index), "ORDER_REFUND",
+                    "USDT", "IN", BigDecimal.ONE, BigDecimal.TEN, "SUCCESS", "private",
+                    LocalDateTime.of(2026, 10, 7, 12, 46)));
+        }
+        when(mapper.count(7L)).thenReturn((long) ledgerRows.size());
+        when(mapper.rows(7L, 50, 0)).thenReturn(ledgerRows);
+        var service = new AppWalletBillsService(mapper, environment("dev"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> bills = (List<Map<String, Object>>) service.list(7L, 1, 50).getData().get("bills");
+
+        assertThat(bills).allSatisfy(bill -> assertThat(bill).containsEntry("category", "refund")
+                .containsEntry("presentationCode", "orderRefund").containsEntry("publicReference", null));
+    }
+
+    @Test
+    void exactOrderRefundClassificationDoesNotChangeRealEarningsOrUnknownOrderTypes() {
+        AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+        when(mapper.count(7L)).thenReturn(3L);
+        when(mapper.rows(7L, 50, 0)).thenReturn(List.of(
+                ledgerRow(61L, "SUCCESS", "COMPUTE_TASK_REWARD", "NEX", "IN", LocalDateTime.now()),
+                ledgerRow(62L, "SUCCESS", "EARN", "USDT", "IN", LocalDateTime.now()),
+                ledgerRow(63L, "SUCCESS", "FUTURE_ORDER_REFUND", "USDT", "IN", LocalDateTime.now())));
+        var service = new AppWalletBillsService(mapper, environment("dev"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> bills = (List<Map<String, Object>>) service.list(7L, 1, 50).getData().get("bills");
+
+        assertThat(bills).extracting(bill -> bill.get("category")).containsExactly("bonus", "earn", "earn");
+        assertThat(bills).extracting(bill -> bill.get("presentationCode")).containsExactly("computeTaskReward", "earn", "earn");
+        assertThat(bills).extracting(bill -> bill.get("publicReference")).containsOnlyNulls();
+    }
+
+    @Test
     void unknownWithdrawalBusinessTypeKeepsTheGenericPresentationCode() {
         AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
         when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
