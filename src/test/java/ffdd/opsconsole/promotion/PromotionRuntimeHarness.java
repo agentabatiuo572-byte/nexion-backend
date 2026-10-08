@@ -112,12 +112,14 @@ public final class PromotionRuntimeHarness {
         var mybatis=new MybatisConfiguration(new Environment(run+"-payment-attribution",new SpringManagedTransactionFactory(),dataSource));
         mybatis.setMapUnderscoreToCamelCase(true);
         for(Class<?> mapper:List.of(ffdd.opsconsole.content.mapper.SupportPaymentAttributionMapper.class,
+                ffdd.opsconsole.content.mapper.SupportPaymentCaptureHistoryMapper.class,
                 ffdd.opsconsole.finance.mapper.SupportPaymentSourceMapper.class,
                 ffdd.opsconsole.finance.mapper.SupportPaymentFactMapper.class))mybatis.addMapper(mapper);
         var attributionSession=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(mybatis));
         var history=new ffdd.opsconsole.finance.application.SupportPaymentFactService(attributionSession.getMapper(ffdd.opsconsole.finance.mapper.SupportPaymentFactMapper.class));
+        var capturedHistory=new ffdd.opsconsole.content.application.SupportPaymentCaptureHistoryService(attributionSession.getMapper(ffdd.opsconsole.content.mapper.SupportPaymentCaptureHistoryMapper.class));
         var sources=proxy(new ffdd.opsconsole.finance.application.SupportPaymentSourceService(
-                attributionSession.getMapper(ffdd.opsconsole.finance.mapper.SupportPaymentSourceMapper.class),history,dataSource,json));
+                attributionSession.getMapper(ffdd.opsconsole.finance.mapper.SupportPaymentSourceMapper.class),history,dataSource,json,capturedHistory));
         return proxy(new ffdd.opsconsole.content.application.SupportPaymentAttributionService(
                 attributionSession.getMapper(ffdd.opsconsole.content.mapper.SupportPaymentAttributionMapper.class),sources,audit,dataSource,json));
     }
