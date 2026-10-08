@@ -6,22 +6,49 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
+import ffdd.opsconsole.content.facade.SupportPaymentCaptureHistoryFacade;
 import ffdd.opsconsole.content.mapper.SupportPaymentAttributionMapper;
+import ffdd.opsconsole.content.mapper.SupportPaymentCaptureHistoryMapper;
 import ffdd.opsconsole.content.mapper.SupportPaymentHistoryBirthMapper;
+import ffdd.opsconsole.content.mapper.SupportAnalyticsMapper;
+import ffdd.opsconsole.content.mapper.SupportBindingMapper;
+import ffdd.opsconsole.content.mapper.SupportGroupMapper;
+import ffdd.opsconsole.content.domain.SupportAnalyticsStats;
+import ffdd.opsconsole.content.domain.SupportAnalyticsStats.Basis;
+import ffdd.opsconsole.content.domain.SupportAnalyticsStats.Query;
+import ffdd.opsconsole.content.domain.SupportAnalyticsStats.Result;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.device.application.SupportDeviceReadService;
+import ffdd.opsconsole.device.facade.SupportDeviceReadFacade;
+import ffdd.opsconsole.device.facade.SupportDeviceReadFacade.ConnectionStatus;
+import ffdd.opsconsole.device.mapper.SupportDeviceReadMapper;
 import ffdd.opsconsole.finance.application.SupportPaymentFactService;
 import ffdd.opsconsole.finance.application.SupportPaymentSourceService;
 import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Fact;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Issue;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Kind;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Snapshot;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Status;
 import ffdd.opsconsole.finance.mapper.E4OrderRefundMapper;
+import ffdd.opsconsole.finance.mapper.SupportPaymentFactMapper;
 import ffdd.opsconsole.finance.mapper.SupportPaymentSourceMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.team.application.SupportInvitationReadService;
+import ffdd.opsconsole.team.facade.SupportInvitationReadFacade;
+import ffdd.opsconsole.team.facade.SupportInvitationReadFacade.Completeness;
+import ffdd.opsconsole.team.facade.SupportInvitationReadFacade.Reason;
+import ffdd.opsconsole.team.mapper.SupportInvitationReadMapper;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.Connection;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -56,6 +83,8 @@ import org.springframework.jdbc.datasource.ConnectionHolder;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 import org.springframework.transaction.interceptor.TransactionInterceptor;
@@ -84,8 +113,17 @@ class SupportPaymentCaptureMySqlIntegrationTest {
     private static final List<String> TABLES=List.of("nx_user","nx_user_wallet","nx_wallet_ledger",
         "nx_payment_record","nx_order","nx_wallet_bill","nx_deposit_order","nx_cregis_deposit_event",
         "nx_topup_card_settlement","nx_vietqr_intent","nx_vietqr_reconciliation","nx_hdpay_payin_order",
-        "nx_user_device","nx_trial_claim","nx_support_payment_attribution","nx_support_payment_history_birth");
+        "nx_user_device","nx_trial_claim","nx_support_payment_attribution","nx_support_payment_history_birth",
+        "nx_user_device_runtime","nx_admin","nx_admin_role_relation","nx_support_agent_profile",
+        "nx_support_agent_user_assignment","nx_support_group","nx_support_group_owner_history",
+        "nx_support_group_member_history","nx_support_account_qualification_history",
+        "nx_support_customer_route_history","nx_admin_role");
     private final ObjectMapper json=new ObjectMapper();
+    private final List<Long> readerFixtureDeviceIds=new ArrayList<>();
+    private final List<Long> readerFixtureRuntimeIds=new ArrayList<>();
+    private final List<Long> statsFixtureAdminIds=new ArrayList<>();
+    private final List<Long> statsFixtureGroupIds=new ArrayList<>();
+    private final List<Long> statsFixtureCustomerIds=new ArrayList<>();
     private DriverManagerDataSource dataSource;
     private JdbcTemplate jdbc;
     private JdbcTemplate outside;
@@ -97,6 +135,11 @@ class SupportPaymentCaptureMySqlIntegrationTest {
     private AuditLogService audit;
     private SupportPaymentSourceMapper sourceMapper;
     private E4OrderRefundMapper refundMapper;
+    private SupportPaymentFactService history;
+    private SupportPaymentCaptureHistoryMapper historyMapper;
+    private SupportInvitationReadFacade invitations;
+    private SupportDeviceReadFacade devices;
+    private SupportAnalyticsService statistics;
 
     @BeforeEach
     void exclusivelyOwnedDatabaseAndRealTransactionProxies() throws Exception {
@@ -126,9 +169,16 @@ class SupportPaymentCaptureMySqlIntegrationTest {
             new SpringManagedTransactionFactory(),dataSource));
         configuration.setMapUnderscoreToCamelCase(true);
         configuration.addMapper(SupportPaymentSourceMapper.class);
+        configuration.addMapper(SupportPaymentFactMapper.class);
+        configuration.addMapper(SupportPaymentCaptureHistoryMapper.class);
         configuration.addMapper(E4OrderRefundMapper.class);
         configuration.addMapper(SupportPaymentAttributionMapper.class);
         configuration.addMapper(SupportPaymentHistoryBirthMapper.class);
+        configuration.addMapper(SupportInvitationReadMapper.class);
+        configuration.addMapper(SupportDeviceReadMapper.class);
+        configuration.addMapper(SupportBindingMapper.class);
+        configuration.addMapper(SupportGroupMapper.class);
+        configuration.addMapper(SupportAnalyticsMapper.class);
         var factory=new MybatisSqlSessionFactoryBuilder().build(configuration);
         var template=new SqlSessionTemplate(factory);
         assertThat(factory.getConfiguration().getEnvironment().getDataSource()).isSameAs(dataSource);
@@ -140,10 +190,428 @@ class SupportPaymentCaptureMySqlIntegrationTest {
         audit=mock(AuditLogService.class);
         sourceMapper=template.getMapper(SupportPaymentSourceMapper.class);
         refundMapper=template.getMapper(E4OrderRefundMapper.class);
-        finance=proxy(new SupportPaymentSourceService(sourceMapper,mock(SupportPaymentFactService.class),dataSource,json));
+        history=proxy(new SupportPaymentFactService(template.getMapper(SupportPaymentFactMapper.class)));
+        historyMapper=template.getMapper(SupportPaymentCaptureHistoryMapper.class);
+        finance=historyReader(historyMapper);
         capture=proxy(new SupportPaymentAttributionService(template.getMapper(SupportPaymentAttributionMapper.class),
             finance,audit,dataSource,json));
         birth=proxy(new SupportPaymentHistoryBirthService(template.getMapper(SupportPaymentHistoryBirthMapper.class),dataSource));
+        invitations=proxy(new SupportInvitationReadService(template.getMapper(SupportInvitationReadMapper.class)));
+        devices=new SupportDeviceReadService(template.getMapper(SupportDeviceReadMapper.class));
+        var ownership=proxy(new SupportOwnershipService(template.getMapper(SupportBindingMapper.class),
+            template.getMapper(SupportGroupMapper.class)));
+        statistics=proxy(new SupportAnalyticsService(ownership,finance,template.getMapper(SupportAnalyticsMapper.class)));
+    }
+
+    @Test
+    void statsCurrentPlatformCategoriesAreExclusiveAndDisabledBindingRequiresHandover() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long baselineActor=statsActor("ALL"), actor=statsActor("ALL"), disabled=statsActor("SERVICE");
+            Query query=statsQuery(ReadMode.ALL,null,Basis.CURRENT_ASSET,null);
+            Result before=statsAs(baselineActor,query);
+            long bound=newAccount(accounts,0), pending=newAccount(accounts,0), anomaly=newAccount(accounts,0);
+            long sandbox=newAccount(accounts,1);
+            statsBind(bound,disabled,false);statsBind(anomaly,disabled,true);
+            assertThat(jdbc.update("UPDATE nx_admin SET status=0 WHERE id=?",disabled)).isEqualTo(1);
+            assertThat(jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",disabled)).isEqualTo(1);
+            // A distinct actor prevents the baseline SQL's session cache from hiding the fixture INSERTs.
+            Result result=statsAs(actor,query);
+            assertThat(result.currentScope().total()).isEqualTo(before.currentScope().total()+3);
+            assertThat(result.currentScope().bound()).isEqualTo(before.currentScope().bound()+1);
+            assertThat(result.currentScope().pending()).isEqualTo(before.currentScope().pending()+1);
+            assertThat(result.currentScope().anomaly()).isEqualTo(before.currentScope().anomaly()+1);
+            assertThat(result.currentScope().total()).isEqualTo(result.currentScope().bound()
+                +result.currentScope().pending()+result.currentScope().anomaly());
+            assertThat(result.currentCustomers()).filteredOn(c -> c.customerId()==bound).singleElement().satisfies(c -> {
+                assertThat(c.category()).isEqualTo(SupportAnalyticsStats.Category.BOUND);
+                assertThat(c.handoverRequired()).isTrue();
+            });
+            assertThat(result.currentCustomers()).filteredOn(c -> c.customerId()==pending).singleElement().satisfies(c -> {
+                assertThat(c.category()).isEqualTo(SupportAnalyticsStats.Category.PENDING);
+                assertThat(c.placement()).isEqualTo(SupportAnalyticsStats.Placement.GLOBAL_QUEUE);
+            });
+            assertThat(result.currentCustomers()).filteredOn(c -> c.customerId()==anomaly).singleElement()
+                .satisfies(c -> assertThat(c.category()).isEqualTo(SupportAnalyticsStats.Category.ANOMALY));
+            assertThat(result.currentCustomers()).noneMatch(c -> c.customerId()==sandbox);
+            assertThat(result.financialSummary().status()).isEqualTo(SupportAnalyticsStats.Status.UNAVAILABLE);
+            assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @Test
+    void statsManagedGroupFiltersAndOwnerlessSupervisorNeverFallbackOrReadOtherGroups() {
+        rollbackFixtures(accounts -> {
+            long owner=statsActor("SUPERVISOR"), otherOwner=statsActor("SUPERVISOR"), noGroup=statsActor("SUPERVISOR");
+            long agent=statsActor("SERVICE"), otherAgent=statsActor("SERVICE");
+            long group=statsGroup(owner), otherGroup=statsGroup(otherOwner);
+            statsMember(agent,group);statsMember(otherAgent,otherGroup);
+            long bound=newAccount(accounts,0), queue=newAccount(accounts,0), foreign=newAccount(accounts,0);
+            statsBind(bound,agent,false);statsBind(foreign,otherAgent,false);statsRoute(queue,group);
+            Result result=statsAs(owner,statsQuery(ReadMode.MANAGED,group,Basis.CURRENT_ASSET,null));
+            assertThat(result.currentCustomers()).extracting(c -> c.customerId()).containsExactlyInAnyOrder(bound,queue);
+            assertThat(result.currentScope().total()).isEqualTo(2L);
+            assertThat(result.currentScope().bound()).isEqualTo(1L);
+            assertThat(result.currentScope().pending()).isEqualTo(1L);
+            assertThat(result.currentScope().anomaly()).isZero();
+            assertThat(result.currentCustomers()).filteredOn(c -> c.customerId()==queue).singleElement()
+                .satisfies(c -> assertThat(c.placement()).isEqualTo(SupportAnalyticsStats.Placement.GROUP_QUEUE));
+            Result empty=statsAs(noGroup,statsQuery(ReadMode.MANAGED,null,Basis.CURRENT_ASSET,null));
+            assertThat(empty.currentScope().mode()).isEqualTo(ReadMode.MANAGED);
+            assertThat(empty.currentScope().total()).isZero();assertThat(empty.currentCustomers()).isEmpty();
+            // Authorization failure is last: its original transaction must remain rollback-only.
+            assertThatThrownBy(() -> statsAs(owner,statsQuery(ReadMode.MANAGED,otherGroup,Basis.CURRENT_ASSET,null)))
+                .isInstanceOf(BizException.class).hasMessage("SUPPORT_GROUP_NOT_FOUND")
+                .satisfies(ex -> assertThat(((BizException)ex).getCode()).isEqualTo(404));
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"PURCHASE_FIRST","DEPOSIT_FIRST"})
+    void statsObservedDepositAndPurchaseFirstCandidatesStaySeparated(String firstKind) {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long owner=statsActor("SUPERVISOR"), agent=statsActor("SERVICE"), group=statsGroup(owner);
+            statsMember(agent,group);long customer=newAccount(accounts,0);statsBind(customer,agent,false);
+            Source first=firstKind.equals("PURCHASE_FIRST")?Source.WALLET_ORDER:Source.HDPAY;
+            Fixture firstPayment=pending(first,customer);Prepared prepared=prepare(firstPayment);
+            settle(firstPayment,prepared,true);capture.record(prepared);
+            Fixture secondPayment=pending(first==Source.WALLET_ORDER?Source.HDPAY:Source.WALLET_ORDER,customer);
+            Prepared second=prepare(secondPayment);settle(secondPayment,second,true);capture.record(second);
+            Result result=statsAs(agent,statsQuery(ReadMode.PERSONAL,null,Basis.CURRENT_CUSTOMER_HISTORY,"USDT"));
+            assertThat(result.currentCustomers()).singleElement().satisfies(c -> {
+                assertThat(c.customerId()).isEqualTo(customer);
+                assertThat(c.first().observedCandidate().kind()).isEqualTo(firstKind.equals("PURCHASE_FIRST")?"DEVICE_PURCHASE":"DEPOSIT");
+                assertThat(c.first().observedCandidate().currency()).isEqualTo("USDT");
+                assertThat(c.first().observedCandidate().attribution().agent()).isEqualTo(SupportAnalyticsStats.AttributionStatus.KNOWN);
+                assertThat(c.first().observedCandidate().attribution().group()).isEqualTo(SupportAnalyticsStats.AttributionStatus.KNOWN);
+            });
+            var totals=statsCurrency(result,"USDT");
+            assertThat(totals.deposits().observedAmount()).isEqualByComparingTo("10.000000");
+            assertThat(totals.purchases().observedAmount()).isEqualByComparingTo("10.000000");
+            assertThat(totals.deposits().observedEvents()).isEqualTo(1L);
+            assertThat(totals.purchases().observedEvents()).isEqualTo(1L);
+            assertThat(result.financialSummary().firstCandidates().observedValue()).isEqualTo(1L);
+            assertStatsUncertified(result);assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @Test
+    void statsFirstSelectionPrecedesMonthCurrencyAndHalfOpenQueryZoneBoundaries() {
+        rollbackFixtures(accounts -> {
+            long owner=statsActor("SUPERVISOR"), agent=statsActor("SERVICE"), group=statsGroup(owner);
+            statsMember(agent,group);long customer=newAccount(accounts,0);statsBind(customer,agent,false);
+            LocalDateTime older=databaseLocalDateTime("SELECT NOW()").withDayOfMonth(1).minusDays(1).withNano(0);
+            String legacy=unique();
+            assertThat(jdbc.update("""
+                INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,balance_after,status,created_at)
+                VALUES(?,?,'CHAIN_TOPUP','NEX','IN',12.123456,12.123456,'SUCCESS',?)
+                """,customer,legacy,older)).isEqualTo(1);
+            long ledger=jdbc.queryForObject("SELECT id FROM nx_wallet_ledger WHERE user_id=? AND biz_no=? AND asset='NEX'",Long.class,customer,legacy);
+            assertThat(jdbc.update("""
+                INSERT INTO nx_deposit_order(user_id,deposit_no,chain_name,chain_tx_hash,asset,amount,status,ledger_id,credited_at,created_at)
+                VALUES(?,?,'BEP20',?,'NEX',12.123456,'CREDITED',?,?,?)
+                """,customer,legacy,legacy,ledger,older,older)).isEqualTo(1);
+            Fixture deposit=pending(Source.HDPAY,customer);Prepared dp=prepare(deposit);settle(deposit,dp,true);capture.record(dp);
+            Fixture purchase=pending(Source.WALLET_ORDER,customer);Prepared pp=prepare(purchase);settle(purchase,pp,true);capture.record(pp);
+            Snapshot money=finance.readHistory(List.of(customer));
+            assertThat(money.facts()).filteredOn(f -> f.ledgerId()==ledger).singleElement().satisfies(f -> {
+                assertThat(f.currency()).isEqualTo("NEX");assertThat(f.amount()).isEqualByComparingTo("12.123456");
+            });
+            Fact from=money.facts().stream().filter(f -> f.factId().equals(deposit.factId())).findFirst().orElseThrow();
+            Fact to=money.facts().stream().filter(f -> f.factId().equals(purchase.factId())).findFirst().orElseThrow();
+            LocalDateTime start=from.succeededAt().atZone(ZoneId.of(money.businessZone())).withZoneSameInstant(ZoneId.of("UTC")).toLocalDateTime();
+            LocalDateTime end=to.succeededAt().atZone(ZoneId.of(money.businessZone())).withZoneSameInstant(ZoneId.of("UTC")).toLocalDateTime();
+            assertThat(start).isBefore(end);
+            Result period=statsAs(agent,new Query(ReadMode.PERSONAL,null,null,Basis.PERIOD_EVENT,start,end,"UTC","USDT"));
+            assertThat(period.currentCustomers()).singleElement().satisfies(c -> {
+                assertThat(c.first().observedCandidate().currency()).isEqualTo("NEX");
+                assertThat(c.first().observedCandidate().succeededAt()).isEqualTo(older.atZone(ZoneId.of(money.businessZone()))
+                    .withZoneSameInstant(ZoneId.of("UTC")).toLocalDateTime());
+            });
+            assertThat(period.financialSummary().firstCandidates().observedValue()).isZero();
+            assertThat(period.financialSummary().currencies()).extracting(c -> c.currency()).containsExactly("USDT");
+            assertThat(statsCurrency(period,"USDT").deposits().observedAmount()).isEqualByComparingTo("10");
+            assertThat(statsCurrency(period,"USDT").purchases().observedAmount()).isEqualByComparingTo("0");
+            Result all=statsAs(agent,statsQuery(ReadMode.PERSONAL,null,Basis.CURRENT_CUSTOMER_HISTORY,null));
+            assertThat(all.financialSummary().currencies()).extracting(c -> c.currency()).containsExactly("NEX","USDT");
+            assertThat(statsCurrency(all,"NEX").deposits().observedAmount()).isEqualByComparingTo("12.123456");
+            assertThat(statsCurrency(all,"USDT").deposits().observedAmount()).isEqualByComparingTo("10");
+            assertThat(statsCurrency(all,"USDT").purchases().observedAmount()).isEqualByComparingTo("10");
+            assertStatsUncertified(period);assertStatsUncertified(all);
+        });
+    }
+
+    @Test
+    void statsTransferAndRegroupKeepHistoricalGroupMoneyWithoutCurrentCustomerIdentity() {
+        rollbackFixtures(accounts -> {
+            long owner=statsActor("SUPERVISOR"), otherOwner=statsActor("SUPERVISOR");
+            long agent=statsActor("SERVICE"), otherAgent=statsActor("SERVICE");
+            long group=statsGroup(owner), otherGroup=statsGroup(otherOwner);
+            statsMember(agent,group);statsMember(otherAgent,otherGroup);
+            long customer=newAccount(accounts,0);statsBind(customer,agent,false);
+            Fixture f=pending(Source.WALLET_ORDER,customer);Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+            Map<String,String> saved=evidence(f);
+            assertThat(saved.get("agent_status")).isEqualTo("KNOWN");assertThat(saved.get("group_status")).isEqualTo("KNOWN");
+            // Assignment DATETIME(0) follows production's UTC_TIMESTAMP(), not a rounded future microsecond.
+            // Advance past capture first so the shared transfer boundary cannot precede its saved UTC instant.
+            databasePause();
+            LocalDateTime transferAt=databaseLocalDateTime("SELECT UTC_TIMESTAMP()");
+            assertThat(transferAt).isAfter(databaseLocalDateTime("SELECT capture_db_utc FROM nx_support_payment_attribution WHERE fact_id=?",f.factId()));
+            assertThat(jdbc.update("UPDATE nx_support_agent_user_assignment SET status='INACTIVE',ends_at=?,version=version+1 WHERE user_id=? AND agent_admin_id=? AND status='ACTIVE'",transferAt,customer,agent)).isEqualTo(1);
+            statsBind(customer,otherAgent,transferAt);
+            assertThat(jdbc.update("UPDATE nx_support_group_member_history SET ends_at=? WHERE agent_admin_id=? AND ends_at IS NULL",transferAt,agent)).isEqualTo(1);
+            assertThat(jdbc.update("""
+                INSERT INTO nx_support_group_member_history(agent_admin_id,group_id,starts_at,version,reason,operation_id)
+                VALUES(?,?,?,1,'owned stats transfer fixture',?)
+                """,agent,otherGroup,transferAt,unique())).isEqualTo(1);
+            assertThat(databaseLocalDateTime("SELECT ends_at FROM nx_support_agent_user_assignment WHERE user_id=? AND agent_admin_id=? AND status='INACTIVE'",customer,agent)).isEqualTo(transferAt);
+            assertThat(databaseLocalDateTime("SELECT starts_at FROM nx_support_agent_user_assignment WHERE user_id=? AND agent_admin_id=? AND status='ACTIVE'",customer,otherAgent)).isEqualTo(transferAt);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_agent_user_assignment WHERE user_id=? AND is_deleted=0 AND starts_at<=UTC_TIMESTAMP(6) AND (ends_at IS NULL OR ends_at>UTC_TIMESTAMP(6))",Long.class,customer)).isEqualTo(1L);
+            assertThat(jdbc.queryForObject("SELECT group_id FROM nx_support_group_member_history WHERE agent_admin_id=? AND starts_at<=UTC_TIMESTAMP(6) AND ends_at IS NULL",Long.class,agent)).isEqualTo(otherGroup);
+            Result personal=statsAs(agent,statsPeriod(ReadMode.PERSONAL,null));
+            Result originalGroup=statsAs(owner,statsPeriod(ReadMode.MANAGED,group));
+            Result currentGroup=statsAs(otherOwner,statsPeriod(ReadMode.MANAGED,otherGroup));
+            for(Result historical:List.of(personal,originalGroup)) {
+                assertThat(historical.currentCustomers()).isEmpty();assertThat(historical.currentScope().total()).isZero();
+                assertThat(statsCurrency(historical,"USDT").purchases().observedAmount()).isEqualByComparingTo("10");
+                assertThat(historical.restrictedSummary().customers().observedValue()).isEqualTo(1L);
+                assertThat(historical.restrictedSummary().firstCandidates().observedValue()).isEqualTo(1L);
+                assertThat(historical.toString()).doesNotContain("customerId="+customer,f.order,f.factId());
+                assertStatsUncertified(historical);
+            }
+            assertThat(statsCurrency(currentGroup,"USDT").purchases().observedAmount()).isEqualByComparingTo("0");
+            assertThat(currentGroup.currentCustomers()).extracting(c -> c.customerId()).containsExactly(customer);
+            assertThat(evidence(f)).isEqualTo(saved);
+        });
+    }
+
+    @Test
+    void statsRejectedCanonicalCaptureCannotPoisonIndependentKnownLegacyEventAndMoney() {
+        rollbackFixtures(accounts -> {
+            long owner=statsActor("SUPERVISOR"), agent=statsActor("SERVICE"), group=statsGroup(owner);
+            statsMember(agent,group);long customer=newAccount(accounts,0);statsBind(customer,agent,false);
+            Fixture a=pending(Source.WALLET_ORDER,customer);Prepared ap=prepare(a);settle(a,ap,false);capture.record(ap);
+            databasePause();
+            Fixture b=pending(Source.WALLET_ORDER,customer);Prepared bp=prepare(b);settle(b,bp,false);capture.record(bp);
+            Map<String,String> savedB=evidence(b);
+            assertThat(savedB.get("agent_status")).isEqualTo("KNOWN");assertThat(savedB.get("group_status")).isEqualTo("KNOWN");
+            // B is a genuinely settled, canonical transaction. Only A's JSON is changed; its scalar identity stays A.
+            assertThat(jdbc.update("UPDATE nx_support_payment_attribution SET source_fact_json=? WHERE fact_id=? AND customer_id=?",
+                savedB.get("source_fact_json"),a.factId(),customer)).isEqualTo(1);
+            Snapshot history=finance.readHistory(List.of(customer));
+            assertThat(history.facts()).extracting(Fact::factId).containsExactlyInAnyOrder(a.factId(),b.factId());
+            assertThat(history.issues()).anyMatch(i -> i.source()==Source.WALLET_ORDER && a.factId().equals(i.sourceId())
+                && i.reason().equals("CAPTURED_SOURCE_PROOF_MISMATCH"));
+            assertThat(history.issues()).noneMatch(i -> b.factId().equals(i.sourceId()));
+            Result personal=statsAs(agent,statsQuery(ReadMode.PERSONAL,null,Basis.CURRENT_CUSTOMER_HISTORY,"USDT"));
+            assertThat(statsCurrency(personal,"USDT").purchases().observedAmount()).isEqualByComparingTo("20");
+            assertThat(personal.currentCustomers()).singleElement().satisfies(c ->
+                assertThat(c.first().observedCandidate().attribution().agent()).isEqualTo(SupportAnalyticsStats.AttributionStatus.UNKNOWN));
+            assertThat(personal.financialSummary().attribution()).anyMatch(p -> p.layer().equals("GROUP")
+                && p.status()==SupportAnalyticsStats.AttributionStatus.KNOWN && p.observedEvents()==1);
+            assertThat(personal.financialSummary().attribution()).anyMatch(p -> p.layer().equals("GROUP")
+                && p.status()==SupportAnalyticsStats.AttributionStatus.UNKNOWN && p.observedEvents()==1);
+            Result managed=statsAs(owner,statsPeriod(ReadMode.MANAGED,group));
+            assertThat(statsCurrency(managed,"USDT").purchases().observedAmount()).isEqualByComparingTo("10");
+            assertThat(statsCurrency(managed,"USDT").purchases().observedEvents()).isEqualTo(1L);
+            assertThat(managed.reasons()).contains("EVENT_ATTRIBUTION_UNVERIFIED","PERIOD_EVENT_COVERAGE_UNVERIFIED");
+            assertThat(evidence(b)).isEqualTo(savedB);
+            assertStatsUncertified(personal);assertStatsUncertified(managed);
+        });
+    }
+
+    @Test
+    void invitationReaderTraversesBeyondSevenLevelsAndKeepsInactiveOverlappingRoots() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            var chain=new ArrayList<Long>();
+            for(int depth=0;depth<=9;depth++) {
+                long customer=newAccount(accounts,0);
+                chain.add(customer);
+                if(depth>0) readerSponsor(customer,chain.get(depth-1));
+            }
+            assertThat(jdbc.update("UPDATE nx_user SET status='DISABLED' WHERE id=?",chain.get(3))).isEqualTo(1);
+            var results=invitations.readInvitations(List.of(chain.get(5),chain.get(0),chain.get(0)));
+            assertThat(results).extracting(r -> r.rootCustomerId()).containsExactly(chain.get(0),chain.get(5));
+            assertThat(results.get(0).directCustomerIds()).containsExactly(chain.get(1));
+            assertThat(results.get(0).descendantCustomerIds()).containsExactlyElementsOf(chain.subList(1,10));
+            assertThat(results.get(1).descendantCustomerIds()).containsExactlyElementsOf(chain.subList(6,10));
+            assertThat(results).allSatisfy(r -> {
+                assertThat(r.completeness()).isEqualTo(Completeness.COMPLETE);
+                assertThat(r.reasons()).isEmpty();
+            });
+            assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @Test
+    void invitationReaderTraversesDeletedBridgeAsPartialWithoutLosingRetainedDescendants() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long root=newAccount(accounts,0), bridge=newAccount(accounts,0);
+            long inactive=newAccount(accounts,0), leaf=newAccount(accounts,0);
+            readerSponsor(bridge,root);readerSponsor(inactive,bridge);readerSponsor(leaf,inactive);
+            assertThat(jdbc.update("UPDATE nx_user SET is_deleted=1 WHERE id=?",bridge)).isEqualTo(1);
+            assertThat(jdbc.update("UPDATE nx_user SET status='DISABLED' WHERE id=?",inactive)).isEqualTo(1);
+            var result=invitations.readInvitations(List.of(root)).get(0);
+            assertThat(result.directCustomerIds()).isEmpty();
+            assertThat(result.descendantCustomerIds()).containsExactly(inactive,leaf);
+            assertThat(result.completeness()).isEqualTo(Completeness.PARTIAL);
+            assertThat(result.reasons()).containsExactly(Reason.DELETED_NODE);
+            assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"CROSS_ENV","CYCLE"})
+    void invitationReaderMarksCrossEnvironmentOrCyclePartialWithoutFakeZero(String defect) {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long root=newAccount(accounts,0), clean=newAccount(accounts,0);
+            long bridge=newAccount(accounts,defect.equals("CROSS_ENV")?1:0), leaf=newAccount(accounts,0);
+            readerSponsor(clean,root);readerSponsor(bridge,root);readerSponsor(leaf,bridge);
+            if(defect.equals("CYCLE")) readerSponsor(root,leaf);
+            var result=invitations.readInvitations(List.of(root)).get(0);
+            assertThat(result.completeness()).isEqualTo(Completeness.PARTIAL);
+            if(defect.equals("CROSS_ENV")) {
+                assertThat(result.directCustomerIds()).containsExactly(clean);
+                assertThat(result.descendantCustomerIds()).containsExactly(clean);
+                assertThat(result.reasons()).containsExactly(Reason.ENVIRONMENT_CONFLICT);
+            } else {
+                assertThat(result.directCustomerIds()).containsExactly(clean,bridge);
+                assertThat(result.descendantCustomerIds()).containsExactly(clean,bridge,leaf);
+                assertThat(result.reasons()).containsExactly(Reason.CYCLE);
+            }
+            assertThat(result.descendantCustomerIds()).doesNotContain(root).doesNotHaveDuplicates();
+            assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @Test
+    void deviceReaderRetainsOwnedStoppedInventoryPendingAndRawTrialGiftSources() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long customer=newAccount(accounts,0);
+            Fixture paidTrial=pending(Source.TRIAL_CONVERT,customer);
+            Prepared prepared=prepare(paidTrial);settle(paidTrial,prepared,true,false);capture.record(prepared);
+            readerFixtureDeviceIds.add(paidTrial.device);
+            assertThat(jdbc.update("UPDATE nx_user_device SET source_channel='TRIAL',activated_at=NOW(),deactivated_at=NULL WHERE id=? AND user_id=?",
+                paidTrial.device,customer)).isEqualTo(1);
+            long freeTrial=readerDevice(customer,"OWNED","ACTIVE","TRIAL",null,"DEVICE");
+            long gift=readerDevice(customer,"OWNED","ACTIVE","GIFT",null,"DEVICE");
+            long stopped=readerDevice(customer,"OWNED","DEACTIVATED","ORDER",null,"DEVICE");
+            long inventory=readerDevice(customer,"OWNED","INVENTORY","ORDER",null,"DEVICE");
+            long pending=readerDevice(customer,"OWNED","PENDING_ACTIVATION","ORDER",null,"DEVICE");
+            long deferred=readerDevice(customer,"OWNED","RUNNING","ORDER",null,"DEVICE");
+            assertThat(jdbc.update("UPDATE nx_user_device SET pending_deactivate=1 WHERE id=?",deferred)).isEqualTo(1);
+            readerRuntime(deferred,"ONLINE",databaseLocalDateTime("SELECT NOW(6)").withNano(0),0);
+            var result=devices.readCurrent(List.of(customer,customer));
+            assertThat(result.devices()).extracting(d -> d.deviceId()).containsExactly(
+                paidTrial.device,freeTrial,gift,stopped,inventory,pending,deferred);
+            assertThat(result.unknownHoldingDevices()).isEmpty();
+            assertThat(result.devices().get(0).sourceChannel()).isEqualTo("TRIAL");
+            assertThat(result.devices().get(0).sourceOrderNo()).isEqualTo(paidTrial.order);
+            assertThat(result.devices().get(1).sourceChannel()).isEqualTo("TRIAL");
+            assertThat(result.devices().get(1).sourceOrderNo()).isNull();
+            assertThat(result.devices().get(2).sourceChannel()).isEqualTo("GIFT");
+            assertThat(result.devices().get(2).sourceOrderNo()).isNull();
+            assertThat(result.devices().get(3).deactivatedAt()).isNotNull();
+            assertThat(result.devices().subList(3,6)).allSatisfy(d ->
+                assertThat(d.connectionStatus()).isEqualTo(ConnectionStatus.NOT_APPLICABLE));
+            var running=result.devices().get(6);
+            assertThat(running.pendingDeactivate()).isEqualTo(1);
+            assertThat(running.connectionStatus()).isEqualTo(ConnectionStatus.ONLINE);
+            assertThat(running.runtime().pausedReason()).isEqualTo("maintenance");
+            assertThat(running.runtime().activeTaskNo()).isEqualTo("reader-task-"+deferred);
+            // The reader preserves a verified payment anchor; TRIAL alone does not assert paid ownership.
+            var financial=finance.readHistory(List.of(customer));
+            assertThat(financial.facts()).filteredOn(f -> f.factId().equals(paidTrial.factId())).hasSize(1);
+            assertUnknownCoverage(financial);
+            assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @Test
+    void deviceReaderUsesActualTenMinuteWindowForOnlineStaleFutureAndShare() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            try {
+                // Session-only integer DB time makes the DATETIME-second inclusive boundary exact; no global clock changes.
+                jdbc.execute("SET timestamp = UNIX_TIMESTAMP()");
+                LocalDateTime now=databaseLocalDateTime("SELECT NOW(6)");
+                assertThat(now.getNano()).isZero();
+                long customer=newAccount(accounts,0);
+                long boundary=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+                long stale=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+                long future=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+                long share=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"SHARE");
+                long reportedOffline=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+                readerRuntime(boundary,"ONLINE",now.minusMinutes(10),0);
+                readerRuntime(stale,"ONLINE",now.minusMinutes(10).minusSeconds(1),0);
+                readerRuntime(future,"OFFLINE",now.plusSeconds(1),0);
+                readerRuntime(share,"ONLINE",now,0);
+                readerRuntime(reportedOffline,"OFFLINE",now.minusMinutes(1),0);
+                var result=devices.readCurrent(List.of(customer));
+                assertThat(result.evaluatedDbAt()).isEqualTo(now);
+                assertThat(result.devices()).extracting(d -> d.deviceId()).containsExactly(boundary,stale,future,share,reportedOffline);
+                assertThat(result.devices()).extracting(d -> d.connectionStatus()).containsExactly(
+                    ConnectionStatus.ONLINE,ConnectionStatus.OFFLINE,ConnectionStatus.UNKNOWN,
+                    ConnectionStatus.ONLINE,ConnectionStatus.OFFLINE);
+                assertThat(result.devices().get(0).runtime().heartbeatAt()).isEqualTo(now.minusMinutes(10));
+                assertThat(result.devices().get(1).runtime().reportedStatus()).isEqualTo("ONLINE");
+                assertThat(result.devices().get(3).deviceType()).isEqualTo("SHARE");
+                assertThat(physicalResource()).isSameAs(resource);
+            } finally {
+                jdbc.execute("SET timestamp = 0");
+            }
+        });
+    }
+
+    @Test
+    void deviceReaderKeepsMissingOrDeletedRuntimeUnknown() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long customer=newAccount(accounts,0);
+            long missing=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+            long deletedRuntime=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+            // heartbeat_at is NOT NULL: absence is proved by no retained runtime row, not an illegal NULL fixture.
+            readerRuntime(deletedRuntime,"OFFLINE",databaseLocalDateTime("SELECT NOW(6)").withNano(0),1);
+            var result=devices.readCurrent(List.of(customer));
+            assertThat(result.devices()).extracting(d -> d.deviceId()).containsExactly(missing,deletedRuntime);
+            assertThat(result.devices()).allSatisfy(d -> {
+                assertThat(d.connectionStatus()).isEqualTo(ConnectionStatus.UNKNOWN);
+                assertThat(d.runtime().runtimeId()).isNull();
+                assertThat(d.runtime().heartbeatAt()).isNull();
+            });
+            assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @Test
+    void deviceReaderExcludesDisposedOwnedAndSeparatesUnknownHoldingWithinExactScope() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long customer=newAccount(accounts,0), other=newAccount(accounts,0);
+            long held=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+            readerDevice(customer,"OWNED","RECYCLED","ORDER",null,"DEVICE");
+            readerDevice(customer,"OWNED","RETIRED","ORDER",null,"DEVICE");
+            readerDevice(customer,"REFUNDED","DEACTIVATED","ORDER",null,"DEVICE");
+            readerDevice(customer,"UNBOUND","ACTIVE","ORDER",null,"DEVICE");
+            readerDevice(customer,"TRANSFERRED","ACTIVE","ORDER",null,"DEVICE");
+            long unknown=readerDevice(customer,"UNKNOWN","ACTIVE","ORDER",null,"DEVICE");
+            long otherDevice=readerDevice(other,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+            var result=devices.readCurrent(List.of(customer));
+            assertThat(result.devices()).extracting(d -> d.deviceId()).containsExactly(held);
+            assertThat(result.unknownHoldingDevices()).extracting(d -> d.deviceId()).containsExactly(unknown);
+            assertThat(result.devices()).allSatisfy(d -> assertThat(d.customerId()).isEqualTo(customer));
+            assertThat(result.unknownHoldingDevices()).allSatisfy(d -> {
+                assertThat(d.customerId()).isEqualTo(customer);
+                assertThat(d.connectionStatus()).isEqualTo(ConnectionStatus.UNKNOWN);
+            });
+            assertThat(result.devices()).extracting(d -> d.deviceId()).doesNotContain(otherDevice);
+            assertThat(physicalResource()).isSameAs(resource);
+        });
     }
 
     @ParameterizedTest
@@ -178,10 +646,419 @@ class SupportPaymentCaptureMySqlIntegrationTest {
                 assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_wallet_bill WHERE user_id=? AND bill_no=? AND type='ORDER_REFUND' AND token='USDT' AND direction='IN' AND amount=10 AND deleted=0",
                     Long.class,fixture.customer,"E4-BILL-"+fixture.order)).isEqualTo(1);
             }
+            Snapshot observed=finance.readHistory(List.of(fixture.customer));
+            assertCapturedHistory(fixture,original,observed);
+            assertThat(observed.facts()).hasSize(source==Source.ORDER_REFUND?2:1);
+            assertThat(observed.issues()).isEmpty();
+            assertThat(physicalResource()).isSameAs(resource); // The read joins the real writable RR transaction.
             Prepared old=prepare(fixture); // A fresh opaque token must now observe the successful source as OLD.
             capture.record(old);
             assertThat(evidence(fixture)).isEqualTo(original);
             assertThat(auditCalls()-auditBefore).isEqualTo(1);
+        });
+    }
+
+    @Test
+    void committedCrossSecondHistoryUsesOneRrSnapshotAndSurvivesSoftDeletedOrderWithFinancialAnchors() throws Exception {
+        Map<String,Long> before=outsideCounts();
+        List<Long> accounts=new ArrayList<>();
+        AtomicReference<Fixture> fixture=new AtomicReference<>();
+        ExecutorService writer=Executors.newSingleThreadExecutor();
+        try {
+            transaction.executeWithoutResult(status -> fixture.set(pending(Source.WALLET_ORDER,newAccount(accounts,0))));
+            Fixture f=fixture.get();
+            TransactionTemplate reader=new TransactionTemplate(manager);
+            reader.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+            reader.setReadOnly(true);reader.setTimeout(30);
+            reader.executeWithoutResult(status -> {
+                Object resource=physicalResource();
+                assertThat(finance.readHistory(List.of(f.customer)).facts()).isEmpty();
+                assertThat(countForCustomer("nx_support_payment_attribution",f.customer)).isZero();
+                Future<?> committed=writer.submit(() -> transaction.executeWithoutResult(write -> {
+                    Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+                }));
+                try { committed.get(20,TimeUnit.SECONDS); }
+                catch(InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Owned history writer interrupted",failure);
+                }
+                catch(Exception failure) { throw new IllegalStateException("Owned history writer did not commit",failure); }
+                assertThat(outsideEvidence(f).get("capture_mode")).isEqualTo("NEW_SUCCESS");
+                // This second JDBC SELECT also proves the old database view, independently of MyBatis query caches.
+                assertThat(countForCustomer("nx_support_payment_attribution",f.customer)).isZero();
+                assertThat(finance.readHistory(List.of(f.customer)).facts()).isEmpty();
+                assertThat(physicalResource()).isSameAs(resource);
+            });
+            Map<String,String> saved=outsideEvidence(f);
+            assertCapturedHistory(f,saved,finance.readHistory(List.of(f.customer)));
+            transaction.executeWithoutResult(status -> jdbc.update("UPDATE nx_order SET is_deleted=1 WHERE user_id=? AND order_no=?",f.customer,f.order));
+            Snapshot retained=finance.readHistory(List.of(f.customer));
+            assertCapturedHistory(f,saved,retained);
+            assertThat(retained.facts()).hasSize(1);assertThat(retained.issues()).isEmpty();
+            assertThat(outsideEvidence(f)).isEqualTo(saved);
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_payment_record WHERE user_id=? AND payment_no=? AND is_deleted=0",
+                Long.class,f.customer,f.payment)).isEqualTo(1);
+            // A semantic finance DTO has no captured attribution/proof field. This does not claim an HTTP permission test.
+            assertThat(java.util.Arrays.stream(Fact.class.getRecordComponents()).map(c -> c.getName()))
+                .doesNotContain("agentAdminId","groupId","ownerAdminId","sourceFactJson","beforeSourceJson","evidenceJson");
+            assertThat(java.util.Arrays.stream(Snapshot.class.getRecordComponents()).map(c -> c.getName()))
+                .doesNotContain("capturedHistory","envelopes","attributionEvidence");
+        } finally {
+            awaitCaptureWorkers(writer);
+            cleanupOwnAccounts(accounts);assertRollbackReadback(before,accounts);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"AMOUNT","CUSTOMER","PARTITION"})
+    void historicalNewProofCannotBorrowAnotherLedgerOrSelfAttestAChangedPartition(String corruption) {
+        rollbackFixtures(accounts -> {
+            Fixture f=pending("PARTITION".equals(corruption)?Source.DEPOSIT_ORDER:Source.WALLET_ORDER,newAccount(accounts,0));
+            Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+            if("AMOUNT".equals(corruption))
+                jdbc.update("UPDATE nx_wallet_ledger SET amount=11 WHERE id=? AND user_id=?",f.ledger,f.customer);
+            else if("CUSTOMER".equals(corruption))
+                jdbc.update("UPDATE nx_wallet_ledger SET user_id=? WHERE id=? AND user_id=?",newAccount(accounts,0),f.ledger,f.customer);
+            else {
+                String forged=Long.toString(Long.parseLong(f.partition)+1);
+                jdbc.update("UPDATE nx_support_payment_attribution SET source_partition=?,attribution_evidence_json=JSON_SET(attribution_evidence_json,'$.beforeSource.sourcePartition',?) WHERE fact_id=? AND customer_id=?",
+                    forged,forged,f.factId(),f.customer);
+            }
+            Snapshot result=finance.readHistory(List.of(f.customer));
+            assertThat(result.facts()).noneMatch(fact -> fact.factId().equals(f.factId()));
+            assertThat(result.issues()).isNotEmpty();
+            assertThat(result.coverage()).filteredOn(c -> c.source()==f.source)
+                .allSatisfy(c -> assertThat(c.observedStatus()).isEqualTo(Status.UNKNOWN));
+            assertUnknownCoverage(result);
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"FAILED","CANCELLED","OTHER_LEDGER"})
+    void actualFailedPaymentOrDifferentLedgerCannotBeReplacedByCapturedNewJson(String violation) {
+        rollbackFixtures(accounts -> {
+            Fixture f=pending(Source.WALLET_ORDER,newAccount(accounts,0));
+            Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+            if("OTHER_LEDGER".equals(violation)) {
+                String other="OTHER-"+f.name;
+                jdbc.update("INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,balance_after,status) VALUES(?,?,'ORDER_PURCHASE','USDT','OUT',1,0,'SUCCESS')",f.customer,other);
+                long otherLedger=jdbc.queryForObject("SELECT id FROM nx_wallet_ledger WHERE user_id=? AND biz_no=? AND asset='USDT' AND direction='OUT'",
+                    Long.class,f.customer,other);
+                assertThat(otherLedger).isNotEqualTo(f.ledger);
+                jdbc.update("UPDATE nx_payment_record SET wallet_ledger_id=? WHERE payment_no=? AND user_id=?",otherLedger,f.payment,f.customer);
+            } else jdbc.update("UPDATE nx_payment_record SET payment_status=? WHERE payment_no=? AND user_id=?",violation,f.payment,f.customer);
+            Snapshot result=finance.readHistory(List.of(f.customer));
+            assertThat(result.facts()).noneMatch(fact -> fact.factId().equals(f.factId()));
+            assertThat(result.issues()).anyMatch(issue -> issue.source()==Source.WALLET_ORDER);
+            assertThat(result.coverage()).filteredOn(c -> c.source()==Source.WALLET_ORDER)
+                .allSatisfy(c -> assertThat(c.observedStatus()).isEqualTo(Status.UNKNOWN));
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"NULL_LINK","REFUNDED"})
+    void actualNullableLegacyPaymentLinkAndRefundedOriginalRemainValid(String state) {
+        rollbackFixtures(accounts -> {
+            Fixture f=pending(Source.WALLET_ORDER,newAccount(accounts,0));
+            Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+            Map<String,String> saved=evidence(f);
+            if("NULL_LINK".equals(state))
+                jdbc.update("UPDATE nx_payment_record SET wallet_ledger_id=NULL WHERE payment_no=? AND user_id=?",f.payment,f.customer);
+            else {
+                jdbc.update("UPDATE nx_payment_record SET payment_status='REFUNDED' WHERE payment_no=? AND user_id=?",f.payment,f.customer);
+                jdbc.update("UPDATE nx_order SET payment_status='REFUNDED',order_status='REFUNDED' WHERE order_no=? AND user_id=?",f.order,f.customer);
+            }
+            Snapshot result=finance.readHistory(List.of(f.customer));
+            assertCapturedHistory(f,saved,result);
+            assertThat(result.facts()).hasSize(1);assertThat(result.issues()).isEmpty();
+            assertThat(evidence(f)).isEqualTo(saved);
+        });
+    }
+
+    @Test
+    void softDeletedOrderWithChangedAmountCannotBeRestoredFromCapturedJson() {
+        rollbackFixtures(accounts -> {
+            Fixture f=pending(Source.WALLET_ORDER,newAccount(accounts,0));
+            Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+            jdbc.update("UPDATE nx_order SET is_deleted=1,amount_usdt=11 WHERE order_no=? AND user_id=?",f.order,f.customer);
+            Snapshot result=finance.readHistory(List.of(f.customer));
+            assertThat(result.facts()).noneMatch(fact -> fact.factId().equals(f.factId()));
+            assertThat(result.issues()).anyMatch(issue -> issue.source()==Source.WALLET_ORDER && issue.reason().equals("SETTLEMENT_MISMATCH"));
+            assertThat(result.coverage()).filteredOn(c -> c.source()==Source.WALLET_ORDER)
+                .allSatisfy(c -> assertThat(c.observedStatus()).isEqualTo(Status.UNKNOWN));
+        });
+    }
+
+    @ParameterizedTest
+    @EnumSource(value=Source.class,names={"WALLET_ORDER","TRADE_IN","CAPACITY_KEEP"})
+    void selfConsistentSoftDeletedOrderAndSavedTypeCannotChangeTheFinancialSourceFamily(Source source) {
+        rollbackFixtures(accounts -> {
+            Fixture f=pending(source,newAccount(accounts,0));
+            Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+            String wrongType=source==Source.WALLET_ORDER?"CAPACITY_KEEP":"SINGLE";
+            jdbc.update("UPDATE nx_order SET is_deleted=1,order_type=? WHERE order_no=? AND user_id=?",wrongType,f.order,f.customer);
+            jdbc.update("UPDATE nx_support_payment_attribution SET order_type=?,source_fact_json=JSON_SET(source_fact_json,'$.orderType',?) WHERE fact_id=? AND customer_id=?",wrongType,wrongType,f.factId(),f.customer);
+            Map<String,String> saved=evidence(f);
+            Snapshot result=finance.readHistory(List.of(f.customer));
+            assertThat(result.facts()).noneMatch(fact -> fact.factId().equals(f.factId()));
+            assertThat(result.issues()).anyMatch(issue -> issue.source()==source && issue.reason().equals("SETTLEMENT_MISMATCH"));
+            assertThat(result.coverage()).filteredOn(c -> c.source()==source)
+                .allSatisfy(c -> assertThat(c.observedStatus()).isEqualTo(Status.UNKNOWN));
+            assertUnknownCoverage(result);
+            assertThat(evidence(f)).isEqualTo(saved);
+        });
+    }
+
+    @ParameterizedTest
+    @EnumSource(value=Source.class,names={"WALLET_ORDER","TRADE_IN","CAPACITY_KEEP"})
+    void hardDeletedPurchaseRootHasNoIndependentPaidTimeEvidenceEvenWithCapturedJson(Source source) {
+        rollbackFixtures(accounts -> {
+            Fixture f=pending(source,newAccount(accounts,0));
+            Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+            jdbc.update("DELETE FROM nx_order WHERE order_no=? AND user_id=?",f.order,f.customer);
+            Snapshot result=finance.readHistory(List.of(f.customer));
+            assertThat(result.facts()).noneMatch(fact -> fact.factId().equals(f.factId()));
+            assertThat(result.issues()).anyMatch(issue -> issue.source()==source && issue.reason().startsWith("MISSING_"));
+            assertThat(result.coverage()).filteredOn(c -> c.source()==source)
+                .allSatisfy(c -> assertThat(c.observedStatus()).isEqualTo(Status.UNKNOWN));
+        });
+    }
+
+    @ParameterizedTest
+    @EnumSource(value=Source.class,names={"WALLET_ORDER","TRADE_IN","CAPACITY_KEEP"})
+    void capturedCanonicalPurchaseCannotBorrowADifferentOrderNumberFromTheSameRealLedger(Source source) {
+        rollbackFixtures(accounts -> {
+            Fixture f=pending(source,newAccount(accounts,0));
+            Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+            jdbc.update("UPDATE nx_order SET is_deleted=1 WHERE order_no=? AND user_id=?",f.order,f.customer);
+            String wrongOrder="other-"+f.name;
+            String wrongFact="PURCHASE:"+wrongOrder;
+            jdbc.update("UPDATE nx_support_payment_attribution SET fact_id=?,order_no=?,source_fact_json=JSON_SET(source_fact_json,'$.factId',?,'$.orderNo',?) WHERE fact_id=? AND customer_id=?",wrongFact,wrongOrder,wrongFact,wrongOrder,f.factId(),f.customer);
+            Snapshot result=finance.readHistory(List.of(f.customer));
+            assertThat(result.facts()).isEmpty();
+            assertThat(result.issues()).anyMatch(issue -> issue.source()==source && issue.reason().equals("SETTLEMENT_MISMATCH"));
+            assertUnknownCoverage(result);
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans={false,true})
+    void softDeletedVietqrReceiptStillAnchorsItsActualProviderTime(boolean changedTime) {
+        rollbackFixtures(accounts -> {
+            Fixture f=pending(Source.VIETQR,newAccount(accounts,0));
+            Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+            Map<String,String> saved=evidence(f);
+            jdbc.update("UPDATE nx_vietqr_reconciliation SET is_deleted=1 WHERE reconciliation_no=? AND user_id=?",f.receipt,f.customer);
+            if(changedTime)jdbc.update("UPDATE nx_vietqr_reconciliation SET received_at=DATE_ADD(received_at,INTERVAL 1 SECOND) WHERE reconciliation_no=? AND user_id=?",f.receipt,f.customer);
+            Snapshot result=finance.readHistory(List.of(f.customer));
+            if(changedTime) {
+                assertThat(result.facts()).isEmpty();
+                assertThat(result.issues()).anyMatch(issue -> issue.source()==Source.VIETQR && issue.reason().equals("BROKEN_INTENT_IDENTITY"));
+                assertUnknownCoverage(result);
+            } else {
+                assertCapturedHistory(f,saved,result);
+                assertThat(result.facts()).hasSize(1);assertThat(result.issues()).isEmpty();
+            }
+            assertThat(evidence(f)).isEqualTo(saved);
+        });
+    }
+
+    @ParameterizedTest
+    @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER"},mode=EnumSource.Mode.EXCLUDE)
+    void capturedProofCannotInventFieldsAbsentFromItsRealFinancialSource(Source source) {
+        rollbackFixtures(accounts -> {
+            Fixture f=pending(source,newAccount(accounts,0));
+            Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+            switch(source) {
+                case DEPOSIT_ORDER -> jdbc.update("UPDATE nx_support_payment_attribution SET order_no='invented-order',source_fact_json=JSON_SET(source_fact_json,'$.orderNo','invented-order') WHERE fact_id=? AND customer_id=?",f.factId(),f.customer);
+                case CARD_TOPUP -> jdbc.update("UPDATE nx_support_payment_attribution SET order_type='SINGLE',source_fact_json=JSON_SET(source_fact_json,'$.orderType','SINGLE') WHERE fact_id=? AND customer_id=?",f.factId(),f.customer);
+                case VIETQR,TRADE_IN,ORDER_REFUND -> jdbc.update("UPDATE nx_support_payment_attribution SET source_fact_json=JSON_SET(source_fact_json,'$.sourceConfirmationAt',JSON_UNQUOTE(JSON_EXTRACT(source_fact_json,'$.ledgerRecordedAt'))) WHERE fact_id=? AND customer_id=?",f.factId(),f.customer);
+                default -> jdbc.update("UPDATE nx_support_payment_attribution SET source_fact_json=JSON_SET(source_fact_json,'$.providerPaidAt',JSON_UNQUOTE(JSON_EXTRACT(source_fact_json,'$.ledgerRecordedAt'))) WHERE fact_id=? AND customer_id=?",f.factId(),f.customer);
+            }
+            Map<String,String> saved=evidence(f);
+            Snapshot result=finance.readHistory(List.of(f.customer));
+            assertThat(result.issues()).anyMatch(issue -> issue.source()==source && issue.reason().equals("INVALID_PERSISTED_SOURCE_PROOF"));
+            // An independently valid legacy fact may survive; it must retain only fields its actual source produces.
+            assertThat(result.facts()).allSatisfy(fact -> {
+                if(fact.kind()==Kind.DEPOSIT) {assertThat(fact.orderNo()).isNull();assertThat(fact.orderType()).isNull();}
+                if(fact.source()!=Source.CARD_TOPUP && fact.source()!=Source.VIETQR)assertThat(fact.providerPaidAt()).isNull();
+                if(fact.source()!=Source.WALLET_ORDER && fact.source()!=Source.TRIAL_CONVERT)assertThat(fact.sourceConfirmationAt()).isNull();
+            });
+            assertUnknownCoverage(result);
+            assertThat(evidence(f)).isEqualTo(saved);
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"SOFT_DELETED","AMOUNT","TIME","MISSING","SAVED_ORDER_TYPE"})
+    void trialHistoryRequiresTheRetainedOrderAmountAndExactMicrosecondPaidTime(String state) {
+        rollbackFixtures(accounts -> {
+            Fixture f=pending(Source.TRIAL_CONVERT,newAccount(accounts,0));
+            Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+            Map<String,String> saved=evidence(f);
+            LocalDateTime paidAt=databaseLocalDateTime("SELECT paid_at FROM nx_order WHERE order_no=? AND user_id=?",f.order,f.customer);
+            jdbc.update("UPDATE nx_order SET is_deleted=1 WHERE order_no=? AND user_id=?",f.order,f.customer);
+            if(state.equals("AMOUNT"))
+                jdbc.update("UPDATE nx_order SET amount_usdt=11 WHERE order_no=? AND user_id=?",f.order,f.customer);
+            else if(state.equals("TIME"))
+                jdbc.update("UPDATE nx_order SET paid_at=DATE_ADD(paid_at,INTERVAL 1 MICROSECOND) WHERE order_no=? AND user_id=?",f.order,f.customer);
+            else if(state.equals("MISSING"))
+                jdbc.update("DELETE FROM nx_order WHERE order_no=? AND user_id=?",f.order,f.customer);
+            else if(state.equals("SAVED_ORDER_TYPE")) {
+                jdbc.update("UPDATE nx_support_payment_attribution SET order_type='SINGLE',source_fact_json=JSON_SET(source_fact_json,'$.orderType','SINGLE') WHERE fact_id=? AND customer_id=?",f.factId(),f.customer);
+                saved=evidence(f);
+            }
+            Snapshot result=finance.readHistory(List.of(f.customer));
+            if(state.equals("SOFT_DELETED")) {
+                assertCapturedHistory(f,saved,result);
+                assertThat(result.facts()).hasSize(1);assertThat(result.issues()).isEmpty();
+                assertThat(result.facts().get(0).succeededAt()).isEqualTo(paidAt);
+            } else {
+                assertThat(result.facts()).noneMatch(fact -> fact.factId().equals(f.factId()));
+                assertThat(result.issues()).anyMatch(issue -> issue.source()==Source.TRIAL_CONVERT
+                    && issue.reason().equals(state.equals("MISSING")?"MISSING_AUTHORITATIVE_SOURCE":"SETTLEMENT_MISMATCH"));
+                assertThat(result.coverage()).filteredOn(c -> c.source()==Source.TRIAL_CONVERT)
+                    .allSatisfy(c -> assertThat(c.observedStatus()).isEqualTo(Status.UNKNOWN));
+                assertUnknownCoverage(result);
+            }
+            assertThat(evidence(f)).isEqualTo(saved);
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans={false,true})
+    void cregisEventAndDepositOrderUseIndependentSqlTimesAndTheRetainedOrderRemainsRequired(boolean missingOrder) {
+        rollbackFixtures(accounts -> {
+            Fixture f=pending(Source.DEPOSIT_ORDER,newAccount(accounts,0));
+            Prepared prepared=prepare(f);settle(f,prepared,true,false,true);capture.record(prepared);
+            Map<String,String> saved=evidence(f);
+            LocalDateTime eventAt=databaseLocalDateTime("SELECT credited_at FROM nx_cregis_deposit_event WHERE project_id=? AND cid=?",Long.parseLong(f.partition),f.cid);
+            LocalDateTime orderAt=databaseLocalDateTime("SELECT credited_at FROM nx_deposit_order WHERE deposit_no=? AND user_id=?",f.key,f.customer);
+            assertThat(eventAt).isBefore(orderAt);
+            assertThat(LocalDateTime.parse(tree(saved.get("source_fact_json")).path("succeededAt").asText())).isEqualTo(orderAt);
+            if(missingOrder)jdbc.update("DELETE FROM nx_deposit_order WHERE deposit_no=? AND user_id=?",f.key,f.customer);
+            Snapshot result=finance.readHistory(List.of(f.customer));
+            if(missingOrder) {
+                assertThat(result.facts()).noneMatch(fact -> fact.factId().equals(f.factId()));
+                assertThat(result.issues()).anyMatch(issue -> issue.source()==Source.DEPOSIT_ORDER
+                    && issue.reason().equals("MISSING_AUTHORITATIVE_SOURCE"));
+                assertThat(result.coverage()).filteredOn(c -> c.source()==Source.DEPOSIT_ORDER)
+                    .allSatisfy(c -> assertThat(c.observedStatus()).isEqualTo(Status.UNKNOWN));
+                assertUnknownCoverage(result);
+            } else {
+                assertCapturedHistory(f,saved,result);
+                assertThat(result.facts()).hasSize(1);assertThat(result.issues()).isEmpty();
+                assertThat(result.facts().get(0).succeededAt()).isEqualTo(orderAt);
+            }
+            assertThat(evidence(f)).isEqualTo(saved);
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"MISSING","OLD"})
+    void ordinaryCrossSecondHistoryWithoutNewProofRemainsUnknown(String corruption) {
+        rollbackFixtures(accounts -> {
+            Fixture f=pending(Source.WALLET_ORDER,newAccount(accounts,0));
+            Prepared prepared=prepare(f);settle(f,prepared,true);capture.record(prepared);
+            corruptOwnProof(f,corruption);
+            Snapshot result=finance.readHistory(List.of(f.customer));
+            assertThat(result.facts()).isEmpty();
+            assertThat(result.issues()).extracting(Issue::reason).contains("CONFLICTING_SUCCESS_TIME");
+            assertThat(result.coverage()).filteredOn(c -> c.source()==Source.WALLET_ORDER)
+                .allSatisfy(c -> assertThat(c.observedStatus()).isEqualTo(Status.UNKNOWN));
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"JSON","SCHEMA","MISSING_BEFORE","EVIDENCE_MODE"})
+    void committedMalformedFinancialProofAndMetadataKeepIndependentLegacyWithoutRollbackOnly(String corruption) {
+        Map<String,Long> before=outsideCounts();
+        List<Long> accounts=new ArrayList<>();List<Fixture> fixtures=new ArrayList<>();
+        try {
+            transaction.executeWithoutResult(status -> {
+                long customer=newAccount(accounts,0);
+                Fixture bad=pending(Source.WALLET_ORDER,customer);fixtures.add(bad);
+                Prepared prepared=prepare(bad);settle(bad,prepared,true);capture.record(prepared);
+                Fixture legacy=pending(Source.CARD_TOPUP,customer);fixtures.add(legacy);
+                settle(legacy,prepare(legacy),false); // Valid ordinary legacy evidence, with no capture row.
+                switch(corruption) {
+                    // The column enforces syntactically valid JSON; this is a malformed financial object.
+                    case "JSON" -> jdbc.update("UPDATE nx_support_payment_attribution SET source_fact_json=JSON_SET(source_fact_json,'$.factId',123) WHERE fact_id=? AND customer_id=?",bad.factId(),customer);
+                    case "SCHEMA" -> jdbc.update("UPDATE nx_support_payment_attribution SET capture_schema_version='future-schema' WHERE fact_id=? AND customer_id=?",bad.factId(),customer);
+                    case "MISSING_BEFORE" -> jdbc.update("UPDATE nx_support_payment_attribution SET attribution_evidence_json=JSON_REMOVE(attribution_evidence_json,'$.beforeSource') WHERE fact_id=? AND customer_id=?",bad.factId(),customer);
+                    case "EVIDENCE_MODE" -> jdbc.update("UPDATE nx_support_payment_attribution SET attribution_evidence_json=JSON_SET(attribution_evidence_json,'$.captureMode','OLD_SOURCE') WHERE fact_id=? AND customer_id=?",bad.factId(),customer);
+                    default -> throw new AssertionError(corruption);
+                }
+            });
+            Fixture bad=fixtures.get(0),legacy=fixtures.get(1);
+            // Calling outside any transaction exercises the actual outer readonly RR proxy and its commit.
+            Snapshot result=finance.readHistory(List.of(bad.customer));
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            assertThat(result.facts()).extracting(Fact::factId).containsExactly(legacy.factId());
+            assertThat(result.issues()).extracting(Issue::reason).contains("INVALID_PERSISTED_SOURCE_PROOF");
+            assertThat(result.coverage()).filteredOn(c -> c.source()==Source.WALLET_ORDER)
+                .allSatisfy(c -> assertThat(c.observedStatus()).isEqualTo(Status.UNKNOWN));
+            assertUnknownCoverage(result);
+            assertThat(finance.readHistory(List.of(bad.customer)).facts()).isEqualTo(result.facts());
+        } finally {
+            cleanupOwnSourceFixtures(fixtures);cleanupOwnAccounts(accounts);assertRollbackReadback(before,accounts);
+        }
+    }
+
+    @Test
+    void actualHistorySelectFailureKeepsRealLegacyFactsAndReturnsUnknownWithoutRollbackOnly() {
+        Map<String,Long> before=outsideCounts();List<Long> accounts=new ArrayList<>();List<Fixture> fixtures=new ArrayList<>();
+        try {
+            transaction.executeWithoutResult(status -> {
+                Fixture legacy=pending(Source.CARD_TOPUP,newAccount(accounts,0));fixtures.add(legacy);
+                settle(legacy,prepare(legacy),false);
+            });
+            Fixture legacy=fixtures.get(0);
+            SupportPaymentCaptureHistoryMapper failed=ids -> {
+                // Real MySQL read-error injection on an owned scope; no shared schema, service or connection is changed.
+                jdbc.queryForList("SELECT support_capture_fixture_missing_column FROM nx_support_payment_attribution WHERE customer_id=?",legacy.customer);
+                throw new AssertionError("The intentional missing-column SELECT unexpectedly succeeded");
+            };
+            Snapshot result=historyReader(failed).readHistory(List.of(legacy.customer));
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            assertThat(result.facts()).extracting(Fact::factId).containsExactly(legacy.factId());
+            assertThat(result.issues()).extracting(Issue::reason).contains("SOURCE_READ_FAILED");
+            assertThat(result.toString()).doesNotContain("support_capture_fixture_missing_column");
+            assertUnknownCoverage(result);
+        } finally {
+            cleanupOwnSourceFixtures(fixtures);cleanupOwnAccounts(accounts);assertRollbackReadback(before,accounts);
+        }
+    }
+
+    @Test
+    void actualForeignCapturedRowCannotCrossTheRequestedCustomerScope() {
+        rollbackFixtures(accounts -> {
+            Fixture owned=pending(Source.CARD_TOPUP,newAccount(accounts,0));
+            settle(owned,prepare(owned),false);
+            Fixture foreign=pending(Source.WALLET_ORDER,newAccount(accounts,0));
+            Prepared prepared=prepare(foreign);settle(foreign,prepared,true);capture.record(prepared);
+            // Deliberately misroute this one test mapper to real persisted foreign rows, rather than synthesize an envelope.
+            SupportPaymentCaptureHistoryMapper misrouted=ids -> historyMapper.readNewFinancialProofs(List.of(foreign.customer));
+            assertThatThrownBy(() -> historyReader(misrouted).readHistory(List.of(owned.customer)))
+                .hasMessage("INVALID_CAPTURE_HISTORY_SCOPE");
+        });
+    }
+
+    @Test
+    void historyRefundCapRejectsSelfConsistentOverRefundAndRetainsOriginalPayment() {
+        rollbackFixtures(accounts -> {
+            Fixture refund=pending(Source.ORDER_REFUND,newAccount(accounts,0));
+            Prepared prepared=prepare(refund);settle(refund,prepared,true);capture.record(prepared);
+            // Adversarial changes affect only these fixture rows. Original capture/write guards remain unchanged.
+            jdbc.update("UPDATE nx_wallet_ledger SET amount=11 WHERE id=? AND user_id=?",refund.ledger,refund.customer);
+            jdbc.update("UPDATE nx_support_payment_attribution SET amount=11,source_fact_json=JSON_SET(source_fact_json,'$.amount',11) WHERE fact_id=? AND customer_id=?",
+                refund.factId(),refund.customer);
+            Snapshot result=finance.readHistory(List.of(refund.customer));
+            assertThat(result.facts()).extracting(Fact::factId).containsExactly(refund.original.factId());
+            assertThat(result.facts().get(0).amount()).isEqualByComparingTo("10");
+            assertThat(result.issues()).extracting(Issue::reason).contains("REFUND_EXCEEDS_ORIGINAL_AMOUNT");
+            assertThat(result.coverage()).filteredOn(c -> c.source()==Source.ORDER_REFUND)
+                .allSatisfy(c -> assertThat(c.observedStatus()).isEqualTo(Status.UNKNOWN));
         });
     }
 
@@ -688,6 +1565,46 @@ class SupportPaymentCaptureMySqlIntegrationTest {
         return (T)factory.getProxy();
     }
 
+    private FinanceSupportPaymentFactsFacade historyReader(SupportPaymentCaptureHistoryMapper mapper) {
+        SupportPaymentCaptureHistoryFacade reader=proxy(new SupportPaymentCaptureHistoryService(mapper));
+        return proxy(new SupportPaymentSourceService(sourceMapper,history,dataSource,json,reader));
+    }
+
+    private void assertCapturedHistory(Fixture fixture,Map<String,String> saved,Snapshot result) {
+        JsonNode financial=tree(saved.get("source_fact_json"));
+        var matches=result.facts().stream().filter(fact -> fact.factId().equals(fixture.factId())).toList();
+        assertThat(matches).hasSize(1);
+        Fact fact=matches.get(0);
+        assertThat(fact.customerId()).isEqualTo(fixture.customer);
+        assertThat(fact.source()).isEqualTo(fixture.source);
+        assertThat(fact.ledgerId()).isEqualTo(fixture.ledger);
+        assertThat(fact.sourceBusinessId()).isEqualTo(fixture.canonicalKey());
+        assertThat(fact.amount()).isEqualByComparingTo(new BigDecimal(saved.get("amount")));
+        assertThat(fact.currency()).isEqualTo(saved.get("currency"));
+        assertThat(fact.succeededAt()).isEqualTo(LocalDateTime.parse(financial.path("succeededAt").asText()));
+        assertThat(fact.ledgerRecordedAt()).isEqualTo(LocalDateTime.parse(financial.path("ledgerRecordedAt").asText()));
+        assertThat(fact.successTimeField()).isEqualTo(financial.path("successTimeField").asText());
+        assertThat(fact.fractionalSecondDigits()).isEqualTo(financial.path("fractionalSecondDigits").intValue());
+        if(financial.path("sourceConfirmationAt").isNull())assertThat(fact.sourceConfirmationAt()).isNull();
+        else assertThat(fact.sourceConfirmationAt()).isEqualTo(LocalDateTime.parse(financial.path("sourceConfirmationAt").asText()));
+        if(financial.path("providerPaidAt").isNull())assertThat(fact.providerPaidAt()).isNull();
+        else assertThat(fact.providerPaidAt()).isEqualTo(LocalDateTime.parse(financial.path("providerPaidAt").asText()));
+        if(fixture.source==Source.ORDER_REFUND)
+            assertThat(fact.originalFactId()).isEqualTo(fixture.original.factId());
+        assertThat(fact.historicalEnvironmentStatus()).isEqualTo(Status.UNKNOWN);
+        assertThat(result.businessZone()).isEqualTo("Asia/Shanghai");
+        assertUnknownCoverage(result);
+    }
+
+    private static void assertUnknownCoverage(Snapshot result) {
+        assertThat(result.coverage()).hasSize(Source.values().length).allSatisfy(coverage -> {
+            assertThat(coverage.historyStatus()).isEqualTo(Status.UNKNOWN);
+            assertThat(coverage.refundStatus()).isEqualTo(Status.UNKNOWN);
+            assertThat(coverage.historicalEnvironmentStatus()).isEqualTo(Status.UNKNOWN);
+            assertThat(coverage.supportedFrom()).isNull();
+        });
+    }
+
     private void rollbackFixtures(Consumer<List<Long>> body) {
         Map<String,Long> before=outsideCounts();
         List<Long> accounts=new ArrayList<>();
@@ -713,7 +1630,185 @@ class SupportPaymentCaptureMySqlIntegrationTest {
             assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_support_payment_history_birth WHERE customer_id=?",Long.class,customer)).isZero();
             assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_support_payment_attribution WHERE customer_id=?",Long.class,customer)).isZero();
             assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_wallet_bill WHERE user_id=?",Long.class,customer)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_support_agent_user_assignment WHERE user_id=?",Long.class,customer)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_support_customer_route_history WHERE customer_id=?",Long.class,customer)).isZero();
         }
+        for(long admin:statsFixtureAdminIds) {
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_admin WHERE id=?",Long.class,admin)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_admin_role_relation WHERE admin_id=?",Long.class,admin)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_support_agent_profile WHERE admin_id=?",Long.class,admin)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_support_account_qualification_history WHERE admin_id=?",Long.class,admin)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_support_group_member_history WHERE agent_admin_id=?",Long.class,admin)).isZero();
+        }
+        for(long group:statsFixtureGroupIds) {
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_support_group WHERE id=?",Long.class,group)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_support_group_owner_history WHERE group_id=?",Long.class,group)).isZero();
+        }
+        for(long customer:statsFixtureCustomerIds) {
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_user_wallet WHERE user_id=?",Long.class,customer)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_wallet_ledger WHERE user_id=?",Long.class,customer)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_payment_record WHERE user_id=?",Long.class,customer)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_order WHERE user_id=?",Long.class,customer)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_deposit_order WHERE user_id=?",Long.class,customer)).isZero();
+        }
+        for(long device:readerFixtureDeviceIds) {
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_user_device WHERE id=?",Long.class,device)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_user_device_runtime WHERE user_device_id=?",Long.class,device)).isZero();
+        }
+        for(long runtime:readerFixtureRuntimeIds)
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_user_device_runtime WHERE id=?",Long.class,runtime)).isZero();
+    }
+
+    private long statsActor(String qualification) {
+        String role=qualification.equals("ALL")?"SUPER_ADMIN":"SUPPORT";
+        List<Long> roles=jdbc.queryForList("SELECT id FROM nx_admin_role WHERE role_code=? AND status=1 AND is_deleted=0",Long.class,role);
+        assertThat(roles).as("Reuse the existing active canonical role; never seed or modify shared RBAC").hasSize(1);
+        String username="stats-"+unique();
+        assertThat(jdbc.update("INSERT INTO nx_admin(username,password_hash,nickname,status,version,is_deleted) VALUES(?,'fixture-only','support-stats-fixture',1,1,0)",username)).isEqualTo(1);
+        long actor=jdbc.queryForObject("SELECT id FROM nx_admin WHERE username=?",Long.class,username);
+        statsFixtureAdminIds.add(actor);
+        assertThat(jdbc.update("INSERT INTO nx_admin_role_relation(admin_id,role_id) VALUES(?,?)",actor,roles.get(0))).isEqualTo(1);
+        if(!qualification.equals("ALL")) {
+            assertThat(jdbc.update("""
+                INSERT INTO nx_support_account_qualification_history(admin_id,qualification_kind,state,starts_at,version,reason,operation_id)
+                VALUES(?,?,'ENABLED',DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 DAY),1,'owned stats fixture',?)
+                """,actor,qualification,unique())).isEqualTo(1);
+            if(qualification.equals("SERVICE"))
+                assertThat(jdbc.update("""
+                    INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,enabled,version)
+                    VALUES(?,'DEDICATED','owned stats fixture','advisor','',1,1)
+                    """,actor)).isEqualTo(1);
+        }
+        return actor;
+    }
+
+    private long statsGroup(long owner) {
+        assertThat(statsFixtureAdminIds).contains(owner);
+        String name="stats-"+unique();
+        assertThat(jdbc.update("""
+            INSERT INTO nx_support_group(name,supervisor_admin_id,status,version,created_at,updated_at)
+            VALUES(?,?,'ENABLED',1,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))
+            """,name,owner)).isEqualTo(1);
+        long group=jdbc.queryForObject("SELECT id FROM nx_support_group WHERE name=? AND supervisor_admin_id=?",Long.class,name,owner);
+        statsFixtureGroupIds.add(group);
+        assertThat(jdbc.update("""
+            INSERT INTO nx_support_group_owner_history(group_id,supervisor_admin_id,starts_at,version,reason,operation_id)
+            VALUES(?,?,DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 DAY),1,'owned stats fixture',?)
+            """,group,owner,unique())).isEqualTo(1);
+        return group;
+    }
+
+    private void statsMember(long agent,long group) {
+        assertThat(statsFixtureAdminIds).contains(agent);assertThat(statsFixtureGroupIds).contains(group);
+        boolean prior=jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_group_member_history WHERE agent_admin_id=?",Long.class,agent)>0;
+        assertThat(jdbc.update("""
+            INSERT INTO nx_support_group_member_history(agent_admin_id,group_id,starts_at,version,reason,operation_id)
+            VALUES(?,?,CASE WHEN ? THEN UTC_TIMESTAMP(6) ELSE DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 DAY) END,1,'owned stats fixture',?)
+            """,agent,group,prior,unique())).isEqualTo(1);
+    }
+
+    private void statsBind(long customer,long agent,boolean future) {
+        boolean prior=jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_agent_user_assignment WHERE user_id=?",Long.class,customer)>0;
+        LocalDateTime starts=databaseLocalDateTime(future?"SELECT DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 DAY)"
+            :prior?"SELECT UTC_TIMESTAMP()":"SELECT DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 DAY)");
+        statsBind(customer,agent,starts);
+    }
+
+    private void statsBind(long customer,long agent,LocalDateTime starts) {
+        assertThat(statsFixtureAdminIds).contains(agent);
+        assertThat(jdbc.queryForObject("SELECT nickname FROM nx_user WHERE id=?",String.class,customer)).isEqualTo("support-capture-fixture");
+        if(!statsFixtureCustomerIds.contains(customer))statsFixtureCustomerIds.add(customer);
+        assertThat(jdbc.update("""
+            INSERT INTO nx_support_agent_user_assignment(agent_admin_id,user_id,status,starts_at,version,source,segment_root_id,depth,operation_id)
+            VALUES(?,?,'ACTIVE',?,1,'MANUAL',?,0,?)
+            """,agent,customer,starts,customer,unique())).isEqualTo(1);
+    }
+
+    private void statsRoute(long customer,long group) {
+        assertThat(statsFixtureGroupIds).contains(group);
+        assertThat(jdbc.queryForObject("SELECT nickname FROM nx_user WHERE id=?",String.class,customer)).isEqualTo("support-capture-fixture");
+        if(!statsFixtureCustomerIds.contains(customer))statsFixtureCustomerIds.add(customer);
+        assertThat(jdbc.update("""
+            INSERT INTO nx_support_customer_route_history(customer_id,group_id,starts_at,version,reason,operation_id)
+            VALUES(?,?,DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 DAY),1,'owned stats fixture',?)
+            """,customer,group,unique())).isEqualTo(1);
+    }
+
+    private Result statsAs(long actor,Query query) {
+        var previous=SecurityContextHolder.getContext();
+        var context=SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(Long.toString(actor),"fixture-only",List.of()));
+        SecurityContextHolder.setContext(context);
+        try { return statistics.summarize(query); }
+        finally { SecurityContextHolder.setContext(previous); }
+    }
+
+    private static Query statsQuery(ReadMode mode,Long group,Basis basis,String currency) {
+        return new Query(mode,group,null,basis,null,null,"Asia/Shanghai",currency);
+    }
+
+    private Query statsPeriod(ReadMode mode,Long group) {
+        LocalDateTime now=databaseLocalDateTime("SELECT NOW(6)");
+        return new Query(mode,group,null,Basis.PERIOD_EVENT,now.minusDays(1),now.plusDays(1),"Asia/Shanghai","USDT");
+    }
+
+    private static SupportAnalyticsStats.CurrencyTotals statsCurrency(Result result,String currency) {
+        return result.financialSummary().currencies().stream().filter(c -> c.currency().equals(currency)).findFirst().orElseThrow();
+    }
+
+    private static void assertStatsUncertified(Result result) {
+        assertThat(result.financialSummary().firstCandidates().confirmedValue()).isNull();
+        assertThat(result.financialSummary().firstCandidates().status()).isEqualTo(SupportAnalyticsStats.Status.UNKNOWN);
+        assertThat(result.currentCustomers()).allSatisfy(c -> assertThat(c.first().status()).isEqualTo(SupportAnalyticsStats.Status.UNKNOWN));
+        assertThat(result.coverage()).hasSize(Source.values().length).allSatisfy(c -> {
+            assertThat(c.historyStatus()).isEqualTo("UNKNOWN");assertThat(c.refundStatus()).isEqualTo("UNKNOWN");
+            assertThat(c.historicalEnvironmentStatus()).isEqualTo("UNKNOWN");assertThat(c.supportedFrom()).isNull();
+        });
+        assertThat(result.financialSummary().currencies()).allSatisfy(c -> {
+            for(var money:List.of(c.deposits(),c.purchases(),c.purchaseRefunds(),c.net())) {
+                assertThat(money.confirmedAmount()).isNull();assertThat(money.confirmedEvents()).isNull();
+            }
+            assertThat(c.net().observedAmount()).isNull();assertThat(c.net().status()).isEqualTo(SupportAnalyticsStats.Status.UNKNOWN);
+        });
+    }
+
+    private Object readerRrResource() {
+        Object resource=physicalResource();
+        assertThat(jdbc.queryForObject("SELECT @@transaction_isolation",String.class)).isEqualTo("REPEATABLE-READ");
+        return resource;
+    }
+
+    private void readerSponsor(long customer,long sponsor) {
+        assertThat(jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=? AND nickname='support-capture-fixture'",
+            sponsor,customer)).isEqualTo(1);
+    }
+
+    private long readerDevice(long customer,String ownership,String lifecycle,String channel,String order,String type) {
+        String instance=unique();
+        assertThat(jdbc.queryForObject("SELECT nickname FROM nx_user WHERE id=?",String.class,customer))
+            .isEqualTo("support-capture-fixture");
+        assertThat(jdbc.update("""
+            INSERT INTO nx_user_device(user_id,instance_no,name,device_type,ownership_status,source_channel,
+                source_order_no,source_environment,run_id,status,hashrate,activated_at,deactivated_at,is_deleted)
+            VALUES(?,?,'support-reader-fixture',?,?,?,?, 'PRODUCTION','',?,12.345678,
+                CASE WHEN ? IN ('INVENTORY','PENDING','PENDING_ACTIVATION') THEN NULL ELSE DATE_SUB(NOW(),INTERVAL 1 DAY) END,
+                CASE WHEN ? IN ('DEACTIVATED','INACTIVE','INVENTORY','RECYCLED','RETIRED') THEN NOW() ELSE NULL END,0)
+            """,customer,instance,type,ownership,channel,order,lifecycle,lifecycle,lifecycle)).isEqualTo(1);
+        long device=jdbc.queryForObject("SELECT id FROM nx_user_device WHERE instance_no=? AND user_id=?",
+            Long.class,instance,customer);
+        readerFixtureDeviceIds.add(device);
+        return device;
+    }
+
+    private void readerRuntime(long device,String reported,LocalDateTime heartbeat,int deleted) {
+        assertThat(readerFixtureDeviceIds).contains(device);
+        assertThat(jdbc.update("""
+            INSERT INTO nx_user_device_runtime(user_device_id,online_status,heartbeat_at,paused_reason,
+                active_task_no,network_reachable,is_deleted)
+            VALUES(?,?,?,'maintenance',?,1,?)
+            """,device,reported,heartbeat,"reader-task-"+device,deleted)).isEqualTo(1);
+        long runtime=jdbc.queryForObject("SELECT id FROM nx_user_device_runtime WHERE user_device_id=?",Long.class,device);
+        readerFixtureRuntimeIds.add(runtime);
     }
 
     private long newAccount(List<Long> accounts,int sandbox) {
@@ -776,6 +1871,12 @@ class SupportPaymentCaptureMySqlIntegrationTest {
     }
 
     private void settle(Fixture f,Prepared prepared,boolean crossSecond,boolean waitForNextSecond) {
+        settle(f,prepared,crossSecond,waitForNextSecond,false);
+    }
+
+    private void settle(Fixture f,Prepared prepared,boolean crossSecond,boolean waitForNextSecond,boolean cregisEventBeforeOrder) {
+        if(cregisEventBeforeOrder && (f.source!=Source.DEPOSIT_ORDER || !crossSecond || waitForNextSecond))
+            throw new IllegalArgumentException("Cregis event-first fixture requires separate actual SQL times");
         // Normal cross-second fixtures deliberately separate the actual source statements.
         // The explicit same-second precision experiment opts out without editing either receipt tuple.
         if(f.source==Source.ORDER_REFUND && waitForNextSecond) databasePause();
@@ -793,10 +1894,17 @@ class SupportPaymentCaptureMySqlIntegrationTest {
         LocalDateTime successAt=crossSecond?databaseLocalDateTime(orderSource(f.source)?"SELECT NOW(6)":"SELECT NOW()"):ledgerAt;
         switch(f.source) {
             case DEPOSIT_ORDER -> {
+                // CregisDepositService links the event before inserting the deposit order; each uses its own NOW().
+                if(cregisEventBeforeOrder) {
+                    successTimeWrite(f,true,"UPDATE nx_cregis_deposit_event SET status='CREDITED',ledger_id=?,credited_at=/*SOURCE_TIME*/? WHERE project_id=? AND cid=?",1,
+                        f.ledger,successAt,Long.parseLong(f.partition),f.cid);
+                    databasePause();
+                }
                 successTimeWrite(f,crossSecond,"INSERT INTO nx_deposit_order(user_id,deposit_no,chain_name,chain_tx_hash,asset,amount,status,ledger_id,credited_at,created_at) VALUES(?,?,'BEP20',?,'USDT',10,'CREDITED',?,/*SOURCE_TIME*/?,?)",4,
                     f.customer,f.key,f.name,f.ledger,successAt,f.base);
-                successTimeWrite(f,crossSecond,"UPDATE nx_cregis_deposit_event SET status='CREDITED',ledger_id=?,credited_at=/*SOURCE_TIME*/? WHERE project_id=? AND cid=?",1,
-                    f.ledger,successAt,Long.parseLong(f.partition),f.cid);
+                if(!cregisEventBeforeOrder)
+                    successTimeWrite(f,crossSecond,"UPDATE nx_cregis_deposit_event SET status='CREDITED',ledger_id=?,credited_at=/*SOURCE_TIME*/? WHERE project_id=? AND cid=?",1,
+                        f.ledger,successAt,Long.parseLong(f.partition),f.cid);
                 jdbc.update("UPDATE nx_user_wallet SET cregis_risk_held=0 WHERE user_id=?",f.customer);
             }
             case CARD_TOPUP -> {

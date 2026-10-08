@@ -1,10 +1,9 @@
 package ffdd.opsconsole.finance.application;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.content.facade.SupportPaymentCaptureHistoryFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentCaptureHistoryFacade.Envelope;
 import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts;
 import ffdd.opsconsole.finance.mapper.SupportPaymentSourceMapper;
@@ -12,14 +11,17 @@ import ffdd.opsconsole.finance.mapper.SupportPaymentSourceSql;
 import static ffdd.opsconsole.finance.mapper.SupportPaymentSourceMapper.Marker.*;
 import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.datasource.ConnectionHolder;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -31,14 +33,258 @@ import static ffdd.opsconsole.finance.application.SupportPaymentFactService.*;
 @ApplicationService
 @RequiredArgsConstructor
 public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFacade {
-    private static final DateTimeFormatter ISO6=DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSSSSS");
     private final SupportPaymentSourceMapper mapper;
     private final SupportPaymentFactService history;
     private final DataSource dataSource;
     private final ObjectMapper json;
+    private final SupportPaymentCaptureHistoryFacade capturedHistory;
 
     @Override
-    public SupportPaymentFacts.Snapshot readHistory(Collection<Long> customers) { return history.read(customers); }
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
+    public SupportPaymentFacts.Snapshot readHistory(Collection<Long> customers) {
+        if(customers==null || customers.isEmpty() || customers.stream().anyMatch(id -> id==null || id<=0))
+            throw new IllegalArgumentException("Explicit positive customer scope required");
+        requireHistorySnapshot();
+        var ids=List.copyOf(new TreeSet<>(customers));
+        var candidates=new ArrayList<VerifiedCandidate>();
+        var issues=new ArrayList<Issue>();
+        var conflicts=new HashSet<String>();
+        List<Envelope> envelopes;
+        try { envelopes=capturedHistory.readNewFinancialProofs(ids); }
+        catch(DataAccessException ex) {
+            historyReadFailure(issues);
+            return history.readWithCapturedHistory(ids,new CapturedFinancialHistory(candidates,issues,conflicts));
+        } catch(IllegalStateException ex) {
+            if(!Set.of("INVALID_CAPTURE_HISTORY_SCHEMA","INVALID_CAPTURE_HISTORY_ROW").contains(Objects.toString(ex.getMessage(),"")))throw ex;
+            for(Source source:historySources())issues.add(new Issue(source,null,"INVALID_PERSISTED_SOURCE_PROOF"));
+            return history.readWithCapturedHistory(ids,new CapturedFinancialHistory(candidates,issues,conflicts));
+        }
+        // A returned out-of-scope actor remains a hard boundary failure, never partial financial data.
+        for(var envelope:envelopes)
+            if(envelope==null || envelope.identity()==null || !ids.contains(envelope.identity().customerId()))
+                throw failure("CAPTURED_CUSTOMER_OUTSIDE_SCOPE");
+        var decoded=new LinkedHashMap<Envelope,Fact>();
+        for(var envelope:envelopes) {
+            try {
+                var fact=SupportPaymentCapturedSourceProof.decodeSourceFact(envelope.sourceFactJson(),json);
+                if(!matchesIdentity(envelope,fact) || envelope.captureDbUtc()==null
+                    || !SupportPaymentCapturedSourceProof.matchesExpected(fact,envelope.sourcePartition(),proof(envelope),json)
+                    || !validBeforeTypes(envelope.beforeSourceJson())) {
+                    Source source=historySource(envelope.identity().source());
+                    if(source==null)throw failure("INVALID_PERSISTED_SOURCE_PROOF");
+                    issues.add(new Issue(source,envelope.identity().factId(),"CAPTURED_SOURCE_PROOF_MISMATCH"));continue;
+                }
+                validateKey(fact.customerId(),fact.source(),fact.sourceBusinessId());
+                if(fact.sourceBusinessId().startsWith("USER:") || !validHistoryPartition(fact.source(),envelope.sourcePartition()))
+                    throw failure("INVALID_PERSISTED_SOURCE_PROOF");
+                String successField=switch(fact.source()) {
+                    case DEPOSIT_ORDER -> "nx_deposit_order.credited_at";case HDPAY -> "nx_hdpay_payin_order.settled_at";
+                    case WALLET_ORDER,TRADE_IN,CAPACITY_KEEP,TRIAL_CONVERT -> "nx_order.paid_at";
+                    default -> "nx_wallet_ledger.created_at";
+                };
+                if(!successField.equals(fact.successTimeField()) || fact.fractionalSecondDigits()!=(fact.kind()==Kind.DEVICE_PURCHASE?6:0)
+                    || fact.historicalEnvironmentStatus()!=Status.UNKNOWN)throw failure("INVALID_PERSISTED_SOURCE_PROOF");
+                decoded.put(envelope,fact);
+            } catch(IllegalArgumentException | IllegalStateException ex) {
+                Source source=historySource(envelope.identity().source());
+                if(source==null) for(Source supported:historySources())issues.add(new Issue(supported,null,"INVALID_PERSISTED_SOURCE_PROOF"));
+                else issues.add(new Issue(source,envelope.identity().factId(),"INVALID_PERSISTED_SOURCE_PROOF"));
+            }
+        }
+        if(!decoded.isEmpty()) {
+            List<Map<String,Object>> ledgers;
+            try { ledgers=mapper.historyLedgers(ids,decoded.values().stream().map(Fact::ledgerId).distinct().sorted().toList()); }
+            catch(DataAccessException ex) {
+                historyReadFailure(issues);
+                return history.readWithCapturedHistory(ids,new CapturedFinancialHistory(candidates,issues,conflicts));
+            }
+            for(var entry:decoded.entrySet()) {
+                var fact=entry.getValue();
+                var matches=ledgers.stream().filter(row -> number(row,"id")==fact.ledgerId()).toList();
+                String problem=matches.isEmpty()?"MISSING_SETTLEMENT_LEDGER":matches.size()!=1?"SETTLEMENT_MISMATCH":ledgerProblem(matches.get(0),fact);
+                if(problem==null) {
+                    try { problem=historySourceProblem(fact,entry.getKey().sourcePartition()); }
+                    catch(DataAccessException ex) { problem="SOURCE_READ_FAILED"; }
+                }
+                if(problem!=null) {
+                    issues.add(new Issue(fact.source(),fact.factId(),problem));
+                    if(!Set.of("SOURCE_READ_FAILED","MISSING_SETTLEMENT_LEDGER","MISSING_AUTHORITATIVE_SOURCE",
+                        "MISSING_INTENT_IDENTITY","MISSING_CARD_SETTLEMENT","MISSING_SOURCE_CONFIRMATION_TIME").contains(problem))
+                        conflicts.add(fact.factId());
+                } else candidates.add(new VerifiedCandidate(fact,fact.source()==Source.VIETQR?entry.getKey().sourcePartition():fact.sourceBusinessId()));
+            }
+        }
+        return history.readWithCapturedHistory(ids,new CapturedFinancialHistory(candidates,issues,conflicts));
+    }
+
+    private void requireHistorySnapshot() {
+        Object resource=TransactionSynchronizationManager.getResource(dataSource);
+        if(!TransactionSynchronizationManager.isActualTransactionActive() || !TransactionSynchronizationManager.isSynchronizationActive()
+            || !(resource instanceof ConnectionHolder holder))throw failure("SUPPORT_PAYMENT_HISTORY_SNAPSHOT_REQUIRED");
+        try {
+            if(holder.getConnection().getTransactionIsolation()!=Connection.TRANSACTION_REPEATABLE_READ)
+                throw failure("SUPPORT_PAYMENT_HISTORY_SNAPSHOT_REQUIRED");
+        } catch(SQLException ex) { throw new IllegalStateException("SUPPORT_PAYMENT_HISTORY_SNAPSHOT_REQUIRED",ex); }
+    }
+    private static List<Source> historySources() {
+        return List.of(Source.DEPOSIT_ORDER,Source.CARD_TOPUP,Source.VIETQR,Source.HDPAY,Source.WALLET_ORDER,
+            Source.TRADE_IN,Source.CAPACITY_KEEP,Source.TRIAL_CONVERT,Source.ORDER_REFUND);
+    }
+    private static void historyReadFailure(List<Issue> issues) {
+        for(var source:historySources())issues.add(new Issue(source,null,"SOURCE_READ_FAILED"));
+    }
+    private static Source historySource(String source) {
+        try { Source value=Source.valueOf(source);return historySources().contains(value)?value:null; }
+        catch(IllegalArgumentException | NullPointerException ex) { return null; }
+    }
+    private static boolean validHistoryPartition(Source source,String partition) {
+        return source==Source.DEPOSIT_ORDER?partition!=null && partition.matches("[1-9][0-9]*")
+            :source==Source.VIETQR?partition!=null && !partition.isBlank() && partition.length()<=192:partition==null;
+    }
+    private static Map<String,Object> proof(Envelope e) {
+        var result=new HashMap<String,Object>();result.put("captureMode",e.captureMode());result.put("schemaVersion",e.captureSchemaVersion());
+        result.put("evidenceCaptureMode",e.evidenceCaptureMode());result.put("evidenceSchemaVersion",e.evidenceSchemaVersion());
+        result.put("sourcePartition",e.sourcePartition());result.put("sourceFactJson",e.sourceFactJson());result.put("beforeSourceJson",e.beforeSourceJson());
+        return result;
+    }
+    private boolean validBeforeTypes(String beforeJson) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode node=json.reader().with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                .with(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION).readTree(beforeJson);
+            var version=node.get("sourceVersion");var sourceIds=node.get("sourceIds");
+            if(version==null || !version.isNull() && !version.isTextual() || sourceIds==null || !sourceIds.isArray())return false;
+            for(var id:sourceIds)if(!id.isTextual() || id.textValue().isBlank())return false;
+            return true;
+        } catch(com.fasterxml.jackson.core.JsonProcessingException ex) {throw failure("INVALID_PERSISTED_SOURCE_PROOF");}
+    }
+    private static boolean matchesIdentity(Envelope e,Fact f) {
+        var i=e.identity();
+        return Objects.equals(i.factId(),f.factId()) && i.customerId()==f.customerId() && Objects.equals(i.kind(),f.kind().name())
+            && Objects.equals(i.source(),f.source().name()) && i.ledgerId()==f.ledgerId()
+            && Objects.equals(i.sourceBusinessId(),f.sourceBusinessId()) && Objects.equals(i.orderNo(),f.orderNo())
+            && Objects.equals(i.orderType(),f.orderType()) && Objects.equals(i.originalFactId(),f.originalFactId())
+            && Objects.equals(i.currency(),f.currency()) && i.amount()!=null && i.amount().compareTo(f.amount())==0
+            && Objects.equals(i.succeededAt(),f.succeededAt()) && Objects.equals(i.sourceBusinessZone(),DateTimeFormatConfig.BUSINESS_ZONE.getId())
+            && Objects.equals(i.successTimeField(),f.successTimeField()) && i.fractionalSecondDigits()==f.fractionalSecondDigits();
+    }
+    private static String ledgerProblem(Map<String,Object> row,Fact fact) {
+        if(number(row,"customerId")!=fact.customerId() || !Objects.equals(text(row,"businessId"),fact.sourceBusinessId())
+            || !"USDT".equals(text(row,"currency")) || !"USDT".equals(fact.currency()) || decimal(row,"amount")==null
+            || decimal(row,"amount").compareTo(fact.amount())!=0 || !Objects.equals(time(row,"successAt"),fact.ledgerRecordedAt()))
+            return "SETTLEMENT_MISMATCH";
+        if(!SupportPaymentSourceSql.ledgerType(fact.source()).equals(text(row,"ledgerType")))return "SETTLEMENT_TYPE_MISMATCH";
+        if(!SupportPaymentSourceSql.ledgerDirection(fact.source()).equals(text(row,"direction")) || number(row,"deleted")!=0
+            || !(fact.source()==Source.TRIAL_CONVERT?"POSTED":"SUCCESS").equals(text(row,"status")))return "UNSUCCESSFUL_SETTLEMENT";
+        return null;
+    }
+    private String historySourceProblem(Fact f,String partition) {
+        Source source=f.source();String key=f.sourceBusinessId();
+        var roots=mapper.before(source,f.customerId(),key);
+        if(roots.size()>1)return "CONFLICTING_CAPTURED_SOURCE_PROJECTION";
+        var root=roots.isEmpty()?Map.<String,Object>of():roots.get(0);
+        if(!root.isEmpty() && (number(root,"customerId")!=f.customerId()
+            || !Objects.equals(text(root,"businessId"),source==Source.ORDER_REFUND?f.orderNo():key)))return "SETTLEMENT_MISMATCH";
+        String prefix=switch(source) {
+            case DEPOSIT_ORDER -> "nx_deposit_order:";case CARD_TOPUP -> "nx_payment_record:";
+            case VIETQR -> "nx_vietqr_reconciliation:";case HDPAY -> "nx_hdpay_payin_order:";
+            case ORDER_REFUND -> "nx_wallet_ledger:";default -> "nx_order:";
+        };
+        if(f.sourceIds().size()!=1 || !f.sourceIds().get(0).matches(prefix+"[1-9][0-9]*"))return "MISSING_AUTHORITATIVE_SOURCE";
+        if(!root.isEmpty() && source!=Source.TRIAL_CONVERT && source!=Source.ORDER_REFUND
+            && !f.sourceIds().contains(prefix+number(root,"id")))return "SETTLEMENT_MISMATCH";
+        if(source==Source.WALLET_ORDER || source==Source.TRADE_IN || source==Source.CAPACITY_KEEP) {
+            if(root.isEmpty())return "MISSING_AUTHORITATIVE_SOURCE";
+            boolean eligibleType=source==Source.WALLET_ORDER
+                ? "SINGLE".equals(f.orderType()) || "BUNDLE".equals(f.orderType()) : source.name().equals(f.orderType());
+            if(!amountMatches(root,f) || !Objects.equals(time(root,"successAt"),f.succeededAt())
+                || !Objects.equals(text(root,"orderNo"),f.orderNo()) || !Objects.equals(f.sourceBusinessId(),f.orderNo())
+                || !Objects.equals(text(root,"orderType"),f.orderType()) || !eligibleType)return "SETTLEMENT_MISMATCH";
+        }
+        if(source==Source.DEPOSIT_ORDER) {
+            if(root.isEmpty())return "MISSING_AUTHORITATIVE_SOURCE";
+            if(!amountMatches(root,f) || !Objects.equals(text(root,"currency"),f.currency())
+                || number(root,"ledgerId")!=f.ledgerId() || !Objects.equals(time(root,"successAt"),f.succeededAt()))return "SETTLEMENT_MISMATCH";
+            long project,cid;
+            try {project=Long.parseLong(partition);cid=Long.parseLong(key.substring(3));}
+            catch(NumberFormatException ex) {return "BROKEN_CREGIS_EVENT_LINK";}
+            var events=mapper.cregisEvents(project,cid);
+            if(events.isEmpty())return "MISSING_AUTHORITATIVE_SOURCE";
+            if(events.size()!=1)return "BROKEN_CREGIS_EVENT_LINK";
+            var event=events.get(0);
+            if(number(event,"projectId")!=project || number(event,"cid")!=cid || number(event,"customerId")!=f.customerId()
+                || number(event,"ledgerId")!=f.ledgerId() || !"CREDITED".equals(text(event,"status"))
+                || !amountMatches(event,f))return "BROKEN_CREGIS_EVENT_LINK";
+        } else if(source==Source.VIETQR || source==Source.HDPAY) {
+            String intentKey=source==Source.VIETQR?partition:key;
+            var intents=mapper.intent(intentKey);
+            if(intents.isEmpty())return "MISSING_INTENT_IDENTITY";
+            if(intents.size()!=1 || root.isEmpty())return "BROKEN_INTENT_IDENTITY";
+            var intent=intents.get(0);
+            if(number(intent,"customerId")!=f.customerId() || !Objects.equals(text(intent,"businessId"),intentKey)
+                || number(intent,"deleted")!=0 || !"CREDITED".equals(text(intent,"status"))
+                || !(source==Source.VIETQR?"MANUAL":"HDPAY").equals(text(intent,"rail"))
+                || !"WALLET_TOPUP".equals(text(intent,"target")) || !amountMatches(intent,f)
+                || !amountMatches(root,f) || source==Source.VIETQR && (!Objects.equals(text(root,"intentNo"),partition)
+                    || !Objects.equals(time(root,"providerPaidAt"),f.providerPaidAt()))
+                || source==Source.HDPAY && (!Objects.equals(text(root,"ledgerBusinessId"),key)
+                    || !Objects.equals(time(root,"successAt"),f.succeededAt())))return "BROKEN_INTENT_IDENTITY";
+        } else if(source==Source.WALLET_ORDER) {
+            var payments=mapper.payments(f.orderNo());
+            var confirmations=payments.stream().filter(p -> walletConfirmation(p,f.customerId(),f.orderNo(),text(root,"paymentNo"),f.amount(),f.ledgerId())
+                && Objects.equals(time(p,"successAt"),f.sourceConfirmationAt()) && f.sourceConfirmationAt()!=null).toList();
+            if(confirmations.size()!=1)return payments.isEmpty()?"MISSING_SOURCE_CONFIRMATION_TIME":"SETTLEMENT_MISMATCH";
+        } else if(source==Source.CARD_TOPUP) {
+            var settlements=mapper.cardSettlements(key);
+            if(settlements.isEmpty())return "MISSING_CARD_SETTLEMENT";
+            if(root.isEmpty() || settlements.size()!=1)return "SETTLEMENT_MISMATCH";
+            var settlement=settlements.get(0);
+            if(number(settlement,"customerId")!=f.customerId() || number(settlement,"deleted")!=0
+                || !"SETTLED".equals(text(settlement,"status")) || !Objects.equals(text(settlement,"businessId"),key)
+                || !Objects.equals(text(settlement,"orderNo"),text(root,"orderNo")) || !amountMatches(settlement,f)
+                || !amountMatches(root,f) || !Objects.equals(text(root,"currency"),f.currency())
+                || text(root,"provider")==null || text(root,"providerPaymentId")==null
+                || !Objects.equals(text(settlement,"provider"),text(root,"provider"))
+                || !Objects.equals(text(settlement,"providerPaymentId"),text(root,"providerPaymentId"))
+                || number(root,"ledgerId")!=f.ledgerId() || !Objects.equals(time(root,"providerPaidAt"),f.providerPaidAt()))return "SETTLEMENT_MISMATCH";
+        } else if(source==Source.TRIAL_CONVERT) {
+            if(root.isEmpty())return "MISSING_AUTHORITATIVE_SOURCE";
+            var devices=mapper.device(number(root,"deviceId"));
+            if(devices==null || devices.isEmpty())return "MISSING_AUTHORITATIVE_SOURCE";
+            if(devices.size()!=1)return "BROKEN_SOURCE_LINK";
+            var device=devices.get(0);
+            if(!"REDEEMED".equals(text(root,"status")) || !amountMatches(root,f)
+                || !Objects.equals(time(root,"successAt"),f.sourceConfirmationAt()) || device==null
+                || number(root,"deviceId")<=0 || number(device,"id")!=number(root,"deviceId")
+                || number(device,"customerId")!=f.customerId() || !Objects.equals(text(device,"orderNo"),f.orderNo()))return "BROKEN_SOURCE_LINK";
+            var orders=mapper.before(Source.WALLET_ORDER,f.customerId(),f.orderNo());
+            if(orders.isEmpty())return "MISSING_AUTHORITATIVE_SOURCE";
+            if(orders.size()!=1)return "CONFLICTING_CAPTURED_SOURCE_PROJECTION";
+            var order=orders.get(0);
+            if(number(order,"customerId")!=f.customerId() || !Objects.equals(text(order,"businessId"),f.orderNo())
+                || !Objects.equals(text(order,"orderNo"),f.orderNo()) || !"TRIAL_CONVERT".equals(text(order,"orderType"))
+                || !Objects.equals(text(order,"orderType"),f.orderType())
+                || !f.sourceIds().contains("nx_order:"+number(order,"id")) || !amountMatches(order,f)
+                || !Objects.equals(time(order,"successAt"),f.succeededAt()))return "SETTLEMENT_MISMATCH";
+        }
+        // Ordinary projections add independent financial checks when retained. Their mutable version is not history.
+        var projections=mapper.settled(source,List.of(f.customerId()),key);
+        for(var input:projections) {
+            var row=new HashMap<>(input);
+            if(source==Source.WALLET_ORDER) {row.put("sourceLinked",1);row.put("sourceConfirmationAt",f.sourceConfirmationAt());}
+            String invalid=invalidNewSource(row,source);
+            if(invalid!=null)return invalid;
+            Fact actual=fact(row,source);
+            if(!samePayment(f,actual) || actual.source()!=f.source() || !actual.sourceIds().equals(f.sourceIds())
+                || !Objects.equals(actual.sourceBusinessId(),key) || !Objects.equals(actual.orderType(),f.orderType())
+                || !Objects.equals(actual.originalFactId(),f.originalFactId()) || !Objects.equals(actual.successTimeField(),f.successTimeField())
+                || actual.fractionalSecondDigits()!=f.fractionalSecondDigits() || !Objects.equals(actual.providerPaidAt(),f.providerPaidAt()))
+                return "CONFLICTING_CAPTURED_SOURCE_PROJECTION";
+        }
+        return null;
+    }
+    private static boolean amountMatches(Map<String,Object> row,Fact fact) {
+        return decimal(row,"amount")!=null && decimal(row,"amount").compareTo(fact.amount())==0;
+    }
 
     @Override
     @Transactional(propagation=Propagation.MANDATORY)
@@ -244,12 +490,19 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
 
     private void confirmPayment(Map<String,Object> row,long customer) {
         var all=currentMarkers(PAYMENT,mapper.payments(text(row,"orderNo")));checkOwners(all,customer);
-        var matches=all.stream().filter(p -> number(p,"deleted")==0 && "NEXGRID_WALLET".equals(text(p,"provider"))
-            && Objects.equals(text(p,"businessId"),text(row,"paymentNo"))
-            && "USDT".equals(text(p,"currency")) && decimal(p,"amount")!=null
-            && decimal(p,"amount").compareTo(decimal(row,"amount"))==0 && time(p,"successAt")!=null).toList();
+        var matches=all.stream().filter(p -> walletConfirmation(p,customer,text(row,"orderNo"),text(row,"paymentNo"),
+            decimal(row,"amount"),number(row,"ledgerId"))).toList();
         row.put("sourceLinked",matches.size()==1?1:0);
         row.put("sourceConfirmationAt",matches.size()==1?time(matches.get(0),"successAt"):null);
+    }
+    private static boolean walletConfirmation(Map<String,Object> payment,long customer,String order,String paymentNo,BigDecimal amount,long ledger) {
+        return number(payment,"customerId")==customer && number(payment,"deleted")==0
+            && "NEXGRID_WALLET".equals(text(payment,"provider")) && "USDT".equals(text(payment,"currency"))
+            && Objects.equals(text(payment,"orderNo"),order) && Objects.equals(text(payment,"businessId"),paymentNo)
+            && Set.of("PAID","CONFIRMED","SUCCESS","REFUNDED").contains(Objects.toString(payment.get("status"),""))
+            && (payment.get("ledgerId")==null || number(payment,"ledgerId")>0 && number(payment,"ledgerId")==ledger)
+            && amount!=null && decimal(payment,"amount")!=null && decimal(payment,"amount").compareTo(amount)==0
+            && time(payment,"successAt")!=null;
     }
     private void confirmCard(Map<String,Object> row,long customer) {
         var receipts=currentMarkers(CARD_SETTLEMENT,mapper.cardSettlements(text(row,"businessId")));checkOwners(receipts,customer);
@@ -319,51 +572,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
         Fact original=fact(originalRow,source);
         var candidate=mapper.originalSourceProof(original.factId());
         var stored=candidate==null?null:mapper.currentSourceProof(original.factId());
-        if(stored==null || !"NEW_SUCCESS".equals(text(stored,"captureMode"))
-            || !"NEW_SUCCESS".equals(text(stored,"evidenceCaptureMode"))
-            || !"support-payment-attribution-v1".equals(text(stored,"schemaVersion"))
-            || !"support-payment-attribution-v1".equals(text(stored,"evidenceSchemaVersion"))
-            || !Objects.equals(text(stored,"sourcePartition"),partition)) return false;
-        if(text(stored,"sourceFactJson")==null || text(stored,"beforeSourceJson")==null) return false;
-        JsonNode saved,before;
-        try {
-            var reader=json.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
-            saved=reader.readTree(text(stored,"sourceFactJson"));
-            before=reader.readTree(text(stored,"beforeSourceJson"));
-        } catch(JsonProcessingException ex) { throw new IllegalStateException("INVALID_PERSISTED_SOURCE_PROOF",ex); }
-        if(saved==null || before==null || !saved.isObject() || !before.isObject()) return false;
-        String zone=DateTimeFormatConfig.BUSINESS_ZONE.getId();
-        return equalText(saved,"factId",original.factId()) && equalText(saved,"kind",original.kind().name())
-            && equalText(saved,"source",original.source().name()) && equalLong(saved,"customerId",original.customerId())
-            && equalLong(saved,"ledgerId",original.ledgerId()) && equalText(saved,"sourceBusinessId",original.sourceBusinessId())
-            && equalText(saved,"orderNo",original.orderNo()) && equalText(saved,"orderType",original.orderType())
-            && equalText(saved,"originalFactId",original.originalFactId()) && equalText(saved,"currency",original.currency())
-            && saved.path("amount").isNumber() && saved.path("amount").decimalValue().compareTo(original.amount())==0
-            && equalTime(saved,"succeededAt",original.succeededAt()) && equalTime(saved,"ledgerRecordedAt",original.ledgerRecordedAt())
-            && equalTime(saved,"sourceConfirmationAt",original.sourceConfirmationAt()) && equalTime(saved,"providerPaidAt",original.providerPaidAt())
-            && equalText(saved,"successTimeField",original.successTimeField())
-            && equalText(saved,"historicalEnvironmentStatus",original.historicalEnvironmentStatus().name())
-            && equalLong(saved,"fractionalSecondDigits",original.fractionalSecondDigits()) && equalText(saved,"businessZone",zone)
-            && equalText(saved,"succeededAtInstant",ISO6.format(original.succeededAt().atZone(DateTimeFormatConfig.BUSINESS_ZONE)
-                .withZoneSameInstant(ZoneOffset.UTC).toLocalDateTime())+"Z")
-            && Objects.equals(saved.get("sourceIds"),json.valueToTree(original.sourceIds()))
-            && before.path("oldSource").isBoolean() && !before.path("oldSource").booleanValue()
-            && equalLong(before,"customerId",original.customerId()) && equalText(before,"source",source.name())
-            && equalText(before,"stableBusinessKey",original.sourceBusinessId()) && equalText(before,"sourcePartition",partition)
-            && equalText(before,"existingLedgerId",null) && equalText(before,"existingFactId",null) && equalText(before,"existingSuccessAt",null)
-            && equalText(before,"businessZone",zone) && equalText(before,"successTimeField",original.successTimeField())
-            && equalLong(before,"fractionalSecondDigits",original.fractionalSecondDigits());
-    }
-    private static boolean equalText(JsonNode node,String key,String expected) {
-        JsonNode value=node.get(key);
-        return value!=null && (expected==null?value.isNull():value.isTextual() && expected.equals(value.textValue()));
-    }
-    private static boolean equalLong(JsonNode node,String key,long expected) {
-        JsonNode value=node.get(key);
-        return value!=null && value.isIntegralNumber() && value.canConvertToLong() && value.longValue()==expected;
-    }
-    private static boolean equalTime(JsonNode node,String key,LocalDateTime expected) {
-        return equalText(node,key,expected==null?null:ISO6.format(expected));
+        return SupportPaymentCapturedSourceProof.matchesExpected(original,partition,stored,json);
     }
     // Nonlocking results only plan IDs; source tables retain physical rows through soft deletion.
     private List<Map<String,Object>> currentBefore(Source source,long customer,String key) {

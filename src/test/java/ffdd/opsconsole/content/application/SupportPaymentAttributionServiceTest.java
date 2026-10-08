@@ -233,6 +233,7 @@ class SupportPaymentAttributionServiceTest {
         var p=paidPrepared();Fact base=fact(BigDecimal.ONE);
         for(Fact f:List.of(fact(BigDecimal.ZERO),fact(new BigDecimal("0.0000001")),
                 new Fact(base.factId(),base.kind(),base.source(),base.sourceIds(),12,base.ledgerId(),base.sourceBusinessId(),base.orderNo(),base.orderType(),null,base.currency(),base.amount(),base.succeededAt(),base.successTimeField(),0,null,null,null,"v1",Status.UNKNOWN),
+                new Fact(base.factId(),base.kind(),Source.TRADE_IN,base.sourceIds(),11,base.ledgerId(),base.sourceBusinessId(),base.orderNo(),base.orderType(),null,base.currency(),base.amount(),base.succeededAt(),base.successTimeField(),0,null,null,null,"v1",Status.UNKNOWN),
                 new Fact("PURCHASE:wrong",base.kind(),base.source(),base.sourceIds(),11,base.ledgerId(),base.sourceBusinessId(),base.orderNo(),base.orderType(),null,base.currency(),base.amount(),base.succeededAt(),base.successTimeField(),0,null,null,null,"v1",Status.UNKNOWN))) {
             when(finance.readSettled(before,receipt)).thenReturn(Optional.of(f));assertThatThrownBy(()->service.record(p)).hasMessage("SUPPORT_PAYMENT_FACT_INVALID");
         }

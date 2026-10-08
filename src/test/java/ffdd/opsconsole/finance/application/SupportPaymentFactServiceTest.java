@@ -6,6 +6,9 @@ import java.time.LocalDateTime;
 import java.util.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.dao.DataAccessResourceFailureException;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -27,6 +30,145 @@ class SupportPaymentFactServiceTest {
         assertThatThrownBy(() -> service.read(List.of())).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.read(Arrays.asList(1L,null))).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.read(List.of(-1L))).isInstanceOf(IllegalArgumentException.class);
+    }
+    @Test void verifiedNewHistoryUsesItsOwnCausalProofWithoutAttestingLifetime() {
+        var order=row(Source.WALLET_ORDER,Kind.DEVICE_PURCHASE,201,"order-1","80");
+        order.put("orderNo","order-1");order.put("succeededAt",at.plusSeconds(1));
+        order.put("sourceConfirmationAt",at.plusSeconds(1));
+        when(mapper.orders(any())).thenReturn(List.of(order));
+        assertThat(service.read(List.of(7L)).facts()).isEmpty();
+        var result=service.readWithCapturedHistory(List.of(7L),captured(order,Source.WALLET_ORDER));
+        assertThat(result.facts()).hasSize(1);
+        assertThat(result.issues()).isEmpty();
+        assertThat(result.coverage()).allMatch(c -> c.historyStatus()==Status.UNKNOWN && c.refundStatus()==Status.UNKNOWN
+            && c.historicalEnvironmentStatus()==Status.UNKNOWN && c.supportedFrom()==null);
+    }
+    @Test void verifiedNewHistoryCannotOverrideConflictingLegacyIdentity() {
+        var saved=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");
+        var changed=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","11");
+        when(mapper.cards(any())).thenReturn(List.of(changed));
+        var result=service.readWithCapturedHistory(List.of(7L),captured(saved,Source.CARD_TOPUP));
+        assertThat(result.facts()).isEmpty();
+        assertThat(result.issues()).extracting(Issue::reason).contains("CONFLICTING_CAPTURED_SOURCE_PROJECTION");
+    }
+    @Test void sourceAndLedgerMismatchCannotBorrowNewTimingPermission() {
+        var saved=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");
+        var changed=new HashMap<>(saved);changed.put("ledgerAmount",new BigDecimal("9"));
+        when(mapper.cards(any())).thenReturn(List.of(changed));
+        var result=service.readWithCapturedHistory(List.of(7L),captured(saved,Source.CARD_TOPUP));
+        assertThat(result.facts()).isEmpty();
+        assertThat(result.issues()).extracting(Issue::reason).contains("SETTLEMENT_MISMATCH");
+    }
+    @Test void verifiedImmutableHistoryKeepsRefundLineageAndTotalCapInOnePipeline() {
+        var order=row(Source.WALLET_ORDER,Kind.DEVICE_PURCHASE,201,"order-1","80");order.put("orderNo","order-1");
+        var refund=row(Source.ORDER_REFUND,Kind.DEVICE_PURCHASE_REFUND,301,"E4-REFUND-order-1","81");refund.put("orderNo","order-1");
+        var saved=new SupportPaymentFactService.CapturedFinancialHistory(List.of(
+            new SupportPaymentFactService.VerifiedCandidate(SupportPaymentFactService.fact(order,Source.WALLET_ORDER),"order-1"),
+            new SupportPaymentFactService.VerifiedCandidate(SupportPaymentFactService.fact(refund,Source.ORDER_REFUND),"E4-REFUND-order-1")),List.of(),Set.of());
+        var result=service.readWithCapturedHistory(List.of(7L),saved);
+        assertThat(result.facts()).hasSize(1).allMatch(f -> f.kind()==Kind.DEVICE_PURCHASE);
+        assertThat(result.issues()).extracting(Issue::reason).contains("REFUND_EXCEEDS_ORIGINAL_AMOUNT");
+    }
+    @Test void verifiedSourceMirrorsCannotDoubleCountSameLogicalPayment() {
+        var viet=row(Source.VIETQR,Kind.DEPOSIT,101,"D1-VIETQR-rec-1","10");
+        var hosted=row(Source.HDPAY,Kind.DEPOSIT,102,"intent-1","10");
+        var saved=new SupportPaymentFactService.CapturedFinancialHistory(List.of(
+            new SupportPaymentFactService.VerifiedCandidate(SupportPaymentFactService.fact(viet,Source.VIETQR),"intent-1"),
+            new SupportPaymentFactService.VerifiedCandidate(SupportPaymentFactService.fact(hosted,Source.HDPAY),"intent-1")),List.of(),Set.of());
+        var result=service.readWithCapturedHistory(List.of(7L),saved);
+        assertThat(result.facts()).isEmpty();
+        assertThat(result.issues()).extracting(Issue::reason).contains("DUPLICATE_PAYMENT_SOURCE");
+    }
+    @Test void malformedCapturedProofCannotHideAValidLegacyObservation() {
+        var valid=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");when(mapper.cards(any())).thenReturn(List.of(valid));
+        var saved=new SupportPaymentFactService.CapturedFinancialHistory(List.of(),
+            List.of(new Issue(Source.CARD_TOPUP,"proof-1","INVALID_PERSISTED_SOURCE_PROOF")),Set.of());
+        var result=service.readWithCapturedHistory(List.of(7L),saved);
+        assertThat(result.facts()).hasSize(1);
+        assertThat(result.coverage()).filteredOn(c -> c.source()==Source.CARD_TOPUP)
+            .extracting(Coverage::observedStatus).containsExactly(Status.UNKNOWN);
+    }
+    @Test void conflictedCapturedIdentityRejectsItsLegacyProjectionToo() {
+        var valid=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");when(mapper.cards(any())).thenReturn(List.of(valid));
+        var saved=new SupportPaymentFactService.CapturedFinancialHistory(List.of(),
+            List.of(new Issue(Source.CARD_TOPUP,"proof-1","CAPTURED_SOURCE_PROOF_MISMATCH")),Set.of("DEPOSIT:101"));
+        assertThat(service.readWithCapturedHistory(List.of(7L),saved).facts()).isEmpty();
+    }
+    @Test void capturedHistoryCannotReadAnUnrequestedCustomer() {
+        var foreign=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");foreign.put("customerId",8L);
+        assertThatThrownBy(() -> service.readWithCapturedHistory(List.of(7L),captured(foreign,Source.CARD_TOPUP)))
+            .isInstanceOf(IllegalArgumentException.class).hasMessage("Captured customer outside explicit scope");
+    }
+    @ParameterizedTest
+    @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER","ORDER_REFUND"},mode=EnumSource.Mode.EXCLUDE)
+    void verifiedFinancialRootResolvesOnlyItsOwnUnmatchedLedger(Source source) {
+        Kind kind=Set.of(Source.DEPOSIT_ORDER,Source.CARD_TOPUP,Source.VIETQR,Source.HDPAY).contains(source)
+            ?Kind.DEPOSIT:Kind.DEVICE_PURCHASE;
+        var valid=row(source,kind,101,"payment-1","10");
+        if(kind==Kind.DEVICE_PURCHASE)valid.put("orderNo","order-1");
+        var unmatched=new HashMap<>(valid);unmatched.put("source","UNMATCHED_LEDGER");
+        unmatched.put("sourceId","nx_wallet_ledger:101");
+        when(mapper.unmatched(any())).thenReturn(List.of(unmatched));
+        var result=service.readWithCapturedHistory(List.of(7L),captured(valid,source));
+        assertThat(result.facts()).hasSize(1);
+        assertThat(result.issues()).isEmpty();
+        assertThat(result.coverage()).allMatch(c -> c.historyStatus()==Status.UNKNOWN && c.refundStatus()==Status.UNKNOWN);
+    }
+    @Test void independentlyValidLegacyRootAlsoResolvesItsMatchingLedger() {
+        var valid=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");
+        var unmatched=new HashMap<>(valid);unmatched.put("source","UNMATCHED_LEDGER");
+        when(mapper.cards(any())).thenReturn(List.of(valid));when(mapper.unmatched(any())).thenReturn(List.of(unmatched));
+        var result=service.read(List.of(7L));
+        assertThat(result.facts()).hasSize(1);assertThat(result.issues()).isEmpty();
+    }
+    @ParameterizedTest
+    @ValueSource(strings={"ledgerId","missingLedgerId","customerId","kind","businessId","currency","amount"})
+    void anUnmatchedLedgerWithAnyDifferentFinancialIdentityRemainsUnknown(String changed) {
+        var valid=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");
+        var unmatched=new HashMap<>(valid);unmatched.put("source","UNMATCHED_LEDGER");
+        switch(changed) {
+            case "ledgerId" -> unmatched.put(changed,102L);
+            case "missingLedgerId" -> unmatched.remove("ledgerId");
+            case "customerId" -> unmatched.put(changed,8L);
+            case "kind" -> unmatched.put(changed,"DEVICE_PURCHASE");
+            case "businessId" -> unmatched.put(changed,"other-payment");
+            case "currency" -> unmatched.put(changed,"NEX");
+            case "amount" -> unmatched.put(changed,new BigDecimal("10.000001"));
+            default -> throw new IllegalArgumentException(changed);
+        }
+        when(mapper.unmatched(any())).thenReturn(List.of(unmatched));
+        var result=service.readWithCapturedHistory(List.of(7L),captured(valid,Source.CARD_TOPUP));
+        assertThat(result.facts()).hasSize(1);
+        assertThat(result.issues()).extracting(Issue::reason).containsExactly("MISSING_AUTHORITATIVE_SOURCE");
+    }
+    @Test void aRejectedCapturedFactCannotHideAnUnmatchedLedgerOrAnotherRealLedger() {
+        var valid=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");
+        var unmatched=new HashMap<>(valid);unmatched.put("source","UNMATCHED_LEDGER");unmatched.put("sourceId","nx_wallet_ledger:101");
+        var other=new HashMap<>(unmatched);other.put("ledgerId",102L);other.put("sourceId","nx_wallet_ledger:102");
+        when(mapper.unmatched(any())).thenReturn(List.of(unmatched,other));
+        var rejected=new SupportPaymentFactService.CapturedFinancialHistory(captured(valid,Source.CARD_TOPUP).candidates(),
+            List.of(new Issue(Source.CARD_TOPUP,"proof-1","CAPTURED_SOURCE_PROOF_MISMATCH")),Set.of("DEPOSIT:101"));
+        var result=service.readWithCapturedHistory(List.of(7L),rejected);
+        assertThat(result.facts()).isEmpty();
+        assertThat(result.issues()).filteredOn(i -> i.source()==Source.UNMATCHED_LEDGER)
+            .extracting(Issue::sourceId).containsExactly("nx_wallet_ledger:101","nx_wallet_ledger:102");
+        var accepted=service.readWithCapturedHistory(List.of(7L),captured(valid,Source.CARD_TOPUP));
+        assertThat(accepted.facts()).hasSize(1);
+        assertThat(accepted.issues()).extracting(Issue::sourceId).containsExactly("nx_wallet_ledger:102");
+    }
+    @Test void aLaterDuplicatePaymentRejectionCannotHideItsMissingSource() {
+        var first=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");
+        var second=row(Source.CARD_TOPUP,Kind.DEPOSIT,102,"card-1","10");
+        var unmatched=new HashMap<>(first);unmatched.put("source","UNMATCHED_LEDGER");
+        when(mapper.cards(any())).thenReturn(List.of(second));when(mapper.unmatched(any())).thenReturn(List.of(unmatched));
+        var result=service.readWithCapturedHistory(List.of(7L),captured(first,Source.CARD_TOPUP));
+        assertThat(result.facts()).isEmpty();
+        assertThat(result.issues()).extracting(Issue::reason).contains("DUPLICATE_PAYMENT_SOURCE","MISSING_AUTHORITATIVE_SOURCE");
+    }
+    private SupportPaymentFactService.CapturedFinancialHistory captured(Map<String,Object> row,Source source) {
+        return new SupportPaymentFactService.CapturedFinancialHistory(
+            List.of(new SupportPaymentFactService.VerifiedCandidate(SupportPaymentFactService.fact(row,source),row.get("duplicateKey").toString())),
+            List.of(),Set.of());
     }
     @Test void usesActualSourceTimeExactDecimalsAndKeepsProviderTimeSeparate() {
         var row = row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","100.123456");

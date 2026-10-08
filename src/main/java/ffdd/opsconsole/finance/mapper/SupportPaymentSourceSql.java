@@ -5,6 +5,12 @@ import java.util.Map;
 
 /** Fixed query choices only. Keys are bound parameters, never SQL identifiers. */
 public final class SupportPaymentSourceSql {
+    static final String HISTORY_LEDGERS="""
+        <script>SELECT id,user_id customerId,biz_no businessId,biz_type ledgerType,asset currency,direction,status,
+        is_deleted deleted,amount,created_at successAt FROM nx_wallet_ledger WHERE user_id IN
+        <foreach collection='customerIds' item='customer' open='(' separator=',' close=')'>#{customer}</foreach>
+        AND id IN <foreach collection='ledgerIds' item='ledger' open='(' separator=',' close=')'>#{ledger}</foreach></script>
+        """;
     private SupportPaymentSourceSql() {}
     static final String PROOF="SELECT capture_mode captureMode,capture_schema_version schemaVersion,source_partition sourcePartition,source_fact_json sourceFactJson,JSON_EXTRACT(attribution_evidence_json,'$.beforeSource') beforeSourceJson,JSON_UNQUOTE(JSON_EXTRACT(attribution_evidence_json,'$.captureMode')) evidenceCaptureMode,JSON_UNQUOTE(JSON_EXTRACT(attribution_evidence_json,'$.schemaVersion')) evidenceSchemaVersion FROM nx_support_payment_attribution WHERE fact_id=#{factId}";
     static final String CREGIS_EVENT="SELECT id,CONCAT('nx_cregis_deposit_event:',id) sourceId,user_id customerId,project_id projectId,cid,status,net_amount amount,ledger_id ledgerId,credited_at successAt FROM nx_cregis_deposit_event WHERE project_id=#{partition} AND cid=#{cid}";
@@ -18,9 +24,9 @@ public final class SupportPaymentSourceSql {
     public static String before(Map<String,Object> p) {
         Source source=(Source)p.get("source");
         String sql=switch(source) {
-            case DEPOSIT_ORDER -> "SELECT d.id,d.user_id customerId,d.deposit_no businessId,d.status,d.credited_at successAt,d.ledger_id ledgerId,d.is_deleted deleted FROM nx_deposit_order d WHERE d.deposit_no=#{key}";
-            case CARD_TOPUP -> "SELECT id,user_id customerId,payment_no businessId,order_no orderNo,payment_status status,paid_at providerPaidAt,wallet_ledger_id ledgerId,is_deleted deleted FROM nx_payment_record WHERE payment_no=#{key}";
-            case VIETQR -> "SELECT id,user_id customerId,CONCAT('D1-VIETQR-',reconciliation_no) businessId,intent_no intentNo,view_type viewType,status,credited_usdt amount,CAST(version AS CHAR) sourceVersion,is_deleted deleted FROM nx_vietqr_reconciliation WHERE reconciliation_no=#{rawKey}";
+            case DEPOSIT_ORDER -> "SELECT d.id,d.user_id customerId,d.deposit_no businessId,d.status,d.credited_at successAt,d.ledger_id ledgerId,d.amount amount,d.asset currency,d.is_deleted deleted FROM nx_deposit_order d WHERE d.deposit_no=#{key}";
+            case CARD_TOPUP -> "SELECT id,user_id customerId,payment_no businessId,order_no orderNo,payment_status status,paid_at providerPaidAt,wallet_ledger_id ledgerId,amount_usdt amount,currency,provider,provider_payment_id providerPaymentId,is_deleted deleted FROM nx_payment_record WHERE payment_no=#{key}";
+            case VIETQR -> "SELECT id,user_id customerId,CONCAT('D1-VIETQR-',reconciliation_no) businessId,intent_no intentNo,view_type viewType,status,credited_usdt amount,received_at providerPaidAt,CAST(version AS CHAR) sourceVersion,is_deleted deleted FROM nx_vietqr_reconciliation WHERE reconciliation_no=#{rawKey}";
             case HDPAY -> "SELECT h.id,i.user_id customerId,h.merchant_order_id businessId,h.settlement_status status,h.settled_at successAt,h.settled_usdt amount,h.wallet_ledger_biz_no ledgerBusinessId,CAST(h.version AS CHAR) sourceVersion,i.is_deleted deleted FROM nx_hdpay_payin_order h JOIN nx_vietqr_intent i ON i.intent_no=h.merchant_order_id WHERE h.merchant_order_id=#{key}";
             case WALLET_ORDER,TRADE_IN,CAPACITY_KEEP,ORDER_REFUND -> order("#{rawKey}");
             case TRIAL_CONVERT -> "SELECT id,user_id customerId,CONCAT(claim_no,':CHARGE') businessId,status,settled_at successAt,settlement_amount_usdt amount,user_device_id deviceId,CAST(version AS CHAR) sourceVersion,is_deleted deleted FROM nx_trial_claim WHERE "+(((String)p.get("key")).startsWith("USER:")?"user_id=#{customerId}":"claim_no=#{rawKey}");
@@ -29,7 +35,7 @@ public final class SupportPaymentSourceSql {
         return bindRaw(sql,p);
     }
     private static String order(String key) {
-        return "SELECT id,CONCAT('nx_order:',id) sourceId,user_id customerId,order_no businessId,order_no orderNo,order_type orderType,payment_no paymentNo,payment_status status,paid_at successAt,is_deleted deleted FROM nx_order WHERE order_no="+key;
+        return "SELECT id,CONCAT('nx_order:',id) sourceId,user_id customerId,order_no businessId,order_no orderNo,order_type orderType,payment_no paymentNo,payment_status status,paid_at successAt,amount_usdt amount,is_deleted deleted FROM nx_order WHERE order_no="+key;
     }
     public static String settled(Map<String,Object> p) {
         Source source=(Source)p.get("source");

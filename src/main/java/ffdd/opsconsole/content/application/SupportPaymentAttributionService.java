@@ -9,8 +9,8 @@ import ffdd.opsconsole.content.mapper.SupportPaymentAttributionMapper.*;
 import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade;
 import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade.BeforeSource;
 import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade.FreshLedgerReceipt;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Fact;
-import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Kind;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -256,27 +256,9 @@ public class SupportPaymentAttributionService implements SupportPaymentAttributi
         return new Window<>(true,List.copyOf(current),"HISTORY_MISSING");
     }
     private void validate(Fact f,CaptureContext c) {
-        if(f.customerId()!=c.customer() || f.source()!=c.source() || f.kind()==null || !text(f.factId()) || !text(f.sourceBusinessId())
-                || f.ledgerId()<=0 || !text(f.currency()) || f.amount()==null || f.amount().signum()<=0 || f.amount().stripTrailingZeros().scale()>6
-                || f.amount().precision()-f.amount().scale()>12 || f.succeededAt()==null || !text(f.successTimeField())
-                || f.fractionalSecondDigits()<0 || f.fractionalSecondDigits()>6 || !text(c.before().businessZone()))throw new IllegalStateException("SUPPORT_PAYMENT_FACT_INVALID");
-        ZoneId.of(c.before().businessZone());
-        int quantum=1;for(int i=f.fractionalSecondDigits();i<9;i++)quantum*=10;
-        if(f.succeededAt().getNano()%quantum!=0)throw new IllegalStateException("SUPPORT_PAYMENT_FACT_INVALID");
-        String canonical=switch(f.kind()) {
-            case DEPOSIT -> "DEPOSIT:"+f.ledgerId();
-            case DEVICE_PURCHASE -> "PURCHASE:"+f.orderNo();
-            case DEVICE_PURCHASE_REFUND -> "ORDER_REFUND:"+f.ledgerId();
-        };
-        Kind expected=switch(f.source()) {
-            case DEPOSIT_ORDER,CARD_TOPUP,VIETQR,HDPAY -> Kind.DEPOSIT;
-            case WALLET_ORDER,TRADE_IN,CAPACITY_KEEP,TRIAL_CONVERT -> Kind.DEVICE_PURCHASE;
-            case ORDER_REFUND -> Kind.DEVICE_PURCHASE_REFUND;
-            case FREE_TRIAL,UNMATCHED_LEDGER -> null;
-        };
-        if(expected!=f.kind() || !canonical.equals(f.factId()) || (f.kind()!=Kind.DEPOSIT && !text(f.orderNo()))
-                || (f.kind()==Kind.DEVICE_PURCHASE_REFUND
-                    ? !Objects.equals(f.originalFactId(),"PURCHASE:"+f.orderNo()) : f.originalFactId()!=null))throw new IllegalStateException("SUPPORT_PAYMENT_FACT_INVALID");
+        if(f.customerId()!=c.customer() || f.source()!=c.source())throw new IllegalStateException("SUPPORT_PAYMENT_FACT_INVALID");
+        String problem=SupportPaymentFacts.validateCanonical(f,c.before().businessZone());
+        if(problem!=null)throw new IllegalStateException(problem);
     }
     private static boolean sameFact(StoredRow s,Fact f,String zone,String partition) {
         return Objects.equals(s.factId(),f.factId()) && s.customerId()==f.customerId() && s.ledgerId()==f.ledgerId() && s.kind().equals(f.kind().name()) && s.source().equals(f.source().name())
