@@ -13,6 +13,10 @@ class PromotionMapperBindingMySqlTest {
     @Test
     void preservesRawColumnsPrecisionAndSpringTransactionWithoutCachedLockReads() throws Exception {
         var harness=new PromotionRuntimeHarness();
+        var productionMapper=new ffdd.opsconsole.promotion.infrastructure.PromotionSqlConfiguration().promotionRawMapper(harness.dataSource);
+        assertThat(productionMapper.one("SELECT ? nullable_value",(Object)null))
+                .isNotNull().containsKey("nullable_value").containsEntry("nullable_value",null);
+        assertThat(productionMapper.one("SELECT ? nullable_value WHERE FALSE",(Object)null)).isNull();
         var raw=harness.db.requiredRow("SELECT ? nullable_value,CAST(? AS DECIMAL(18,6)) exact_amount,JSON_OBJECT('value',?) document,? label",
                 null,new BigDecimal("0.000001"),"quoted ? value","'; DROP TABLE nx_promotion; -- ?");
         assertThat(raw).containsKey("nullable_value");

@@ -62,7 +62,7 @@ public final class PromotionRuntimeHarness {
         assertEquals("growth_promotions_20261007",jdbc.queryForObject("SELECT DATABASE()",String.class));assertEquals(33339,jdbc.queryForObject("SELECT @@port",Integer.class));
         ObjectMapper json=new ObjectMapper().findAndRegisterModules();var mybatis=new MybatisConfiguration(new Environment(run,new SpringManagedTransactionFactory(),dataSource));
         var global=new GlobalConfig();global.setDbConfig(new GlobalConfig.DbConfig());global.setMetaObjectHandler(new MybatisMetaObjectHandler(Clock.systemUTC()));GlobalConfigUtils.setGlobalConfig(mybatis,global);mybatis.setMapUnderscoreToCamelCase(true);
-        mybatis.setCallSettersOnNulls(true);mybatis.setLocalCacheScope(org.apache.ibatis.session.LocalCacheScope.STATEMENT);
+        mybatis.setCallSettersOnNulls(true);mybatis.setReturnInstanceForEmptyRow(true);mybatis.setLocalCacheScope(org.apache.ibatis.session.LocalCacheScope.STATEMENT);
         for(Class<?> mapper:List.of(PlatformConfigItemMapper.class,AdminMapper.class,AdminIdempotencyRecordMapper.class,AuditLogMapper.class,
                 ffdd.opsconsole.finance.mapper.EarningsReleaseMapper.class,ffdd.opsconsole.treasury.mapper.TreasuryLedgerMapper.class,
                 ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.class,ffdd.opsconsole.growth.mapper.AppGrowthLifecycleMapper.class,PromotionMapper.class))mybatis.addMapper(mapper);

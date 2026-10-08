@@ -46,8 +46,10 @@ class PromotionMapperBindingTest {
                     var globalSession=context.getBean(SqlSessionTemplate.class);
                     assertThat(privateSession).isNotSameAs(globalSession);
                     assertThat(privateSession.getConfiguration().isCallSettersOnNulls()).isTrue();
+                    assertThat(privateSession.getConfiguration().isReturnInstanceForEmptyRow()).isTrue();
                     assertThat(privateSession.getConfiguration().getLocalCacheScope()).isEqualTo(LocalCacheScope.STATEMENT);
                     assertThat(globalSession.getConfiguration().isCallSettersOnNulls()).isFalse();
+                    assertThat(globalSession.getConfiguration().isReturnInstanceForEmptyRow()).isFalse();
                     assertThat(globalSession.getConfiguration().getLocalCacheScope()).isEqualTo(LocalCacheScope.SESSION);
                 });
     }
