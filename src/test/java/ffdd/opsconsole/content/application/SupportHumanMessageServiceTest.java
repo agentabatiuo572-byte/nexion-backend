@@ -38,7 +38,7 @@ class SupportHumanMessageServiceTest {
         when(bindings.eligibleAgent(1L)).thenReturn(1);
         when(bindings.writerGrant(1L)).thenReturn(java.util.List.of(9L));
         when(bindings.current(20L)).thenReturn(assignment);
-        var ownership=new SupportOwnershipService(bindings);
+        var ownership=new SupportOwnershipService(bindings,mock(SupportGroupMapper.class));
         boolean prior=org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive();
         org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
         try {

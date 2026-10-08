@@ -78,9 +78,16 @@ public class OpsSupportTicketService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final com.fasterxml.jackson.databind.ObjectMapper json;
 
+    @Transactional(readOnly=true)
     public ApiResult<Map<String, Object>> overview() {
+        return overview(null,null);
+    }
+
+    @Transactional(readOnly=true)
+    public ApiResult<Map<String, Object>> overview(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode mode,Long groupId) {
         ensureSeedData();
-        Map<String, Object> response = new LinkedHashMap<>(ticketRepository.counters());
+        var scope=mode==null?ownership.defaultQueryScope(groupId,null):ownership.queryScope(mode,groupId,null);
+        Map<String, Object> response = new LinkedHashMap<>(ticketRepository.counters(scope));
         response.put("domain", "M2");
         response.put("statuses", List.copyOf(STATUSES));
         response.put("priorities", List.copyOf(PRIORITIES));
@@ -90,6 +97,7 @@ public class OpsSupportTicketService {
         return ApiResult.ok(response);
     }
 
+    @Transactional(readOnly=true)
     public ApiResult<Map<String, Object>> loadConfig() {
         ensureSeedData();
         return ApiResult.ok(loadConfigView());
@@ -228,6 +236,7 @@ public class OpsSupportTicketService {
             boolean escalation="M2_SUPPORT_TICKET_ESCALATE".equals(scope);
             SupportTicketEscalationResult escalated=escalation?json.convertValue(result.getData(),SupportTicketEscalationResult.class):null;
             SupportTicketDetail stored=escalation?escalated.ticket():json.convertValue(result.getData(),SupportTicketDetail.class);
+            ownership.readTicket(stored.ticket().ticketNo());
             var current=ticketRepository.findByTicketNo(stored.ticket().ticketNo()).orElse(null);
             if(current==null || current.contentRestricted()) {
                 SupportTicketDetail protectedDetail=current==null?null:detail(current.ticketNo()).getData();
@@ -261,16 +270,21 @@ public class OpsSupportTicketService {
         }
     }
 
+    @Transactional(readOnly=true)
     public ApiResult<PageResult<SupportTicketView>> tickets(SupportTicketQueryRequest request) {
         ensureSeedData();
-        return ApiResult.ok(ticketRepository.pageTickets(request));
+        Long group=request==null?null:request.groupId(),agent=request==null?null:request.assignedAdminId();
+        var scope=request==null || request.readMode()==null?ownership.defaultQueryScope(group,agent):ownership.queryScope(request.readMode(),group,agent);
+        return ApiResult.ok(ticketRepository.pageTickets(request,scope));
     }
 
+    @Transactional(readOnly=true)
     public ApiResult<SupportTicketDetail> detail(String ticketNo) {
         ensureSeedData();
         if (!StringUtils.hasText(ticketNo)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TICKET_NO_REQUIRED");
         }
+        ownership.readTicket(ticketNo.trim());
         SupportTicketView ticket = ticketRepository.findByTicketNo(ticketNo.trim()).orElse(null);
         if (ticket == null) {
             return ApiResult.fail(404, "SUPPORT_TICKET_NOT_FOUND");
@@ -406,6 +420,7 @@ public class OpsSupportTicketService {
     @Transactional
     public ApiResult<SupportTicketDetail> updateStatus(String ticketNo, String idempotencyKey, SupportTicketStatusRequest request) {
         ownership.lockCustomer(ownership.ticketCustomer(ticketNo));
+        ownership.readTicket(ticketNo);
         ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requireStatusCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
@@ -452,6 +467,7 @@ public class OpsSupportTicketService {
     @Transactional
     public ApiResult<SupportTicketDetail> updatePriority(String ticketNo, String idempotencyKey, SupportTicketPriorityRequest request) {
         ownership.lockCustomer(ownership.ticketCustomer(ticketNo));
+        ownership.readTicket(ticketNo);
         ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requirePriorityCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
@@ -495,6 +511,7 @@ public class OpsSupportTicketService {
     @Transactional
     public ApiResult<SupportTicketDetail> assign(String ticketNo, String idempotencyKey, SupportTicketAssigneeRequest request) {
         ownership.lockCustomer(ownership.ticketCustomer(ticketNo));
+        ownership.requireManagingCustomer(ownership.ticketCustomer(ticketNo));
         ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requireAssignCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
@@ -506,6 +523,7 @@ public class OpsSupportTicketService {
     @Transactional
     public ApiResult<SupportTicketDetail> archive(String ticketNo, String idempotencyKey, SupportTicketArchiveRequest request) {
         ownership.lockCustomer(ownership.ticketCustomer(ticketNo));
+        ownership.readTicket(ticketNo);
         ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requireArchiveCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
@@ -626,6 +644,7 @@ public class OpsSupportTicketService {
             String idempotencyKey,
             SupportTicketNoteRequest request) {
         ownership.lockCustomer(ownership.ticketCustomer(ticketNo));
+        ownership.readTicket(ticketNo);
         ensureSeedData();
         if (!StringUtils.hasText(ticketNo)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TICKET_NO_REQUIRED");
@@ -712,6 +731,7 @@ public class OpsSupportTicketService {
     }
 
     private Map<String, Object> loadConfigView() {
+        var visibleAgents=supportAgentService.availabilityStates();
         Map<String, String> values = configFacade.activeValuesByGroup(LOAD_GROUP);
         int defaultCap = boundedInt(parseInt(values.get(LOAD_PREFIX + "defaultCap")), 0, 40, 8);
         Map<String, Object> loadConfig = new LinkedHashMap<>();
@@ -736,7 +756,7 @@ public class OpsSupportTicketService {
             }
             String agentId = suffix.substring(0, split);
             String field = suffix.substring(split + 1);
-            if (!isSafeAgentKey(agentId)) {
+            if (!isSafeAgentKey(agentId) || !visibleAgents.containsKey(agentId)) {
                 return;
             }
             Map<String, Object> state = agentState.computeIfAbsent(agentId, ignored -> new LinkedHashMap<>());
@@ -744,7 +764,7 @@ public class OpsSupportTicketService {
                 state.put("cap", boundedInt(parseInt(value), 0, 40, defaultCap));
             }
         });
-        supportAgentService.availabilityStates().forEach((id, state) ->
+        visibleAgents.forEach((id, state) ->
                 agentState.computeIfAbsent(id, ignored -> new LinkedHashMap<>()).putAll(state));
         agentState.values().forEach(state -> {
             state.putIfAbsent("cap", defaultCap);

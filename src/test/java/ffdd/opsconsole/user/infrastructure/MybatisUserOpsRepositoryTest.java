@@ -20,6 +20,17 @@ class MybatisUserOpsRepositoryTest {
     private final MybatisUserOpsRepository repository = new MybatisUserOpsRepository(mapper);
 
     @Test
+    void supportCountAndPageCarryTheSameManagedScopeIncludingLargeOffset() {
+        var scope=new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(7L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED,null,null);
+        when(mapper.countScopedUsersByQuery(any(),any(),eq("3775"),eq(scope))).thenReturn(4L);
+        var result=repository.pageSupportProfiles(UserQueryRequest.basic("3775",null,null,Integer.MAX_VALUE,200,null),scope);
+        assertThat(result.getTotal()).isEqualTo(4);
+        verify(mapper).pageScopedUsers(any(),any(),eq((long)(Integer.MAX_VALUE-1)*200),eq(200),eq("3775"),eq(scope));
+        org.mockito.Mockito.verify(mapper,org.mockito.Mockito.never()).countUsersByQuery(any(),any(),any());
+    }
+
+    @Test
     void passwordResetAcceptsMysqlDuplicateKeyUpdateAffectedRowCount() {
         when(mapper.markPasswordResetRequired(42L)).thenReturn(2);
 

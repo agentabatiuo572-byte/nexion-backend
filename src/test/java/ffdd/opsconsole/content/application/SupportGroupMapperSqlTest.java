@@ -24,8 +24,10 @@ class SupportGroupMapperSqlTest {
         String schema=Files.readString(Path.of("scripts/migrations/20261007_support_groups.sql"));
         assertThat(schema).contains("uk_support_group_member_current","uk_support_group_owner_current","uk_support_qualification_current","uk_support_customer_route_current").doesNotContain("UPDATE nx_support_agent_user_assignment","DROP COLUMN");
     }
-    @Test void newSupervisorQualificationCannotExpandLegacyGlobalReadCeiling(){
-        assertThat(SupportBindingMapper.SUPERVISOR_PROFILE).contains("p.seat_type='MANAGER' AND (");
-        assertThat(SupportBindingMapper.ELIGIBLE_AGENT_FROM).contains("q.qualification_kind='SERVICE'");
+    @Test void currentQualificationsReplaceLegacyPositionAndMigrationFallback(){
+        assertThat(SupportBindingMapper.SUPERVISOR_PROFILE).contains("scope_q.qualification_kind='SUPERVISOR'")
+                .doesNotContain("seat_type","nx_support_migration");
+        assertThat(SupportBindingMapper.ELIGIBLE_AGENT_FROM).contains("scope_q.qualification_kind='SERVICE'")
+                .doesNotContain("seat_type","nx_support_migration");
     }
 }

@@ -37,11 +37,13 @@ public interface SupportWorkbenchMapper extends BaseMapper<SupportAgentAssignmen
                 AND h.actor_id=a.agent_admin_id) firstContact
           FROM nx_user u JOIN nx_support_agent_user_assignment a
             ON a.user_id=u.id AND a.status='ACTIVE' AND a.is_deleted=0
+              AND a.ends_at IS NULL AND a.starts_at &lt;= UTC_TIMESTAMP(6)
+          JOIN nx_user scope_customer ON scope_customer.id=u.id
           JOIN nx_admin ad ON ad.id=a.agent_admin_id
           LEFT JOIN nx_admin_account_state av ON av.admin_id=a.agent_admin_id AND av.is_deleted=0
           LEFT JOIN nx_support_maintenance_preference p ON p.customer_id=u.id
           WHERE u.is_deleted=0
-          <if test='agentId != null'>AND a.agent_admin_id=#{agentId}</if>
+        """ + SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + """
           <if test='customerId != null'>AND u.id=#{customerId}</if>
         ), classified AS (
           SELECT facts.*,(pendingReplyCount&gt;0) waitingReply,
@@ -98,26 +100,31 @@ public interface SupportWorkbenchMapper extends BaseMapper<SupportAgentAssignmen
 
     @Select("""
         <script>SELECT DATE(CONVERT_TZ(executed_at,'+00:00',#{businessOffset})) day,COUNT(*) executionCount
-          FROM nx_support_maintenance_execution
+          FROM nx_support_maintenance_execution execution
+          JOIN nx_admin scope_agent ON scope_agent.id=execution.agent_admin_id
           WHERE executed_at &gt;= #{from} AND executed_at &lt; #{to} AND executed_at &lt;= #{evaluatedAt}
-          <if test='agentId != null'>AND agent_admin_id=#{agentId}</if>
+        """ + SupportGroupMapper.AGENT_SCOPE_PREDICATE + """
           GROUP BY day ORDER BY day</script>
         """)
     List<Map<String,Object>> executionDays(Map<String,Object> query);
 
     @Select("""
         <script>SELECT DATE(CONVERT_TZ(closed_at,'+00:00',#{businessOffset})) day,COUNT(*) successfulCycleCount
-          FROM nx_support_maintenance_cycle
-          WHERE status='SUCCEEDED' AND closed_at &gt;= #{from} AND closed_at &lt; #{to} AND closed_at &lt;= #{evaluatedAt}
-          <if test='agentId != null'>AND agent_admin_id=#{agentId}</if>
+          FROM nx_support_maintenance_cycle cycle
+          JOIN nx_admin scope_agent ON scope_agent.id=cycle.agent_admin_id
+          WHERE cycle.status='SUCCEEDED' AND closed_at &gt;= #{from} AND closed_at &lt; #{to} AND closed_at &lt;= #{evaluatedAt}
+        """ + SupportGroupMapper.AGENT_SCOPE_PREDICATE + """
           GROUP BY day ORDER BY day</script>
         """)
     List<Map<String,Object>> successDays(Map<String,Object> query);
 
     @Select("""
-        <script>SELECT COUNT(DISTINCT customer_id) FROM nx_support_maintenance_cycle
-          WHERE status='SUCCEEDED' AND closed_at &gt;= #{from} AND closed_at &lt; #{to} AND closed_at &lt;= #{evaluatedAt}
-          <if test='agentId != null'>AND agent_admin_id=#{agentId}</if></script>
-        """)
+        <script>SELECT COUNT(DISTINCT customer_id) FROM nx_support_maintenance_cycle cycle
+          JOIN nx_admin scope_agent ON scope_agent.id=cycle.agent_admin_id
+          WHERE cycle.status='SUCCEEDED' AND closed_at &gt;= #{from} AND closed_at &lt; #{to} AND closed_at &lt;= #{evaluatedAt}
+        """ + SupportGroupMapper.AGENT_SCOPE_PREDICATE + """
+          </script>
+        """
+        )
     long successfulCustomers(Map<String,Object> query);
 }

@@ -258,9 +258,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     private final EventOutboxService outboxService;
     private final JwtTokenProvider tokenProvider;
     private final Clock clock;
+    private final ffdd.opsconsole.content.application.SupportOwnershipService supportOwnership;
 
+    @Transactional
     public ApiResult<Map<String, Object>> overview() {
-        Map<String, Object> response = new LinkedHashMap<>(userRepository.overview());
+        Map<String, Object> response = new LinkedHashMap<>(supportReader()
+                ? userRepository.supportOverview(supportOwnership.defaultQueryScope(null,null)) : userRepository.overview());
         response.put("domain", "C");
         response.put("capabilities", List.of("UserProfile", "AccountSecurity", "ManualAssetAdjustment"));
         response.put("sunsetCompatibility", List.of("Premium history is read-only", "NEX v2 maturity is historical", "Points adjustments are rejected"));
@@ -268,29 +271,47 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<List<UserAccountView>> profiles(UserQueryRequest request) {
         int limit = normalizeLimit(request == null ? null : request.limit(), 50, 100);
+        if (supportReader()) {
+            UserQueryRequest query = UserQueryRequest.basic(request == null ? null : request.keyword(),
+                    request == null ? null : request.status(), null, 1, limit, null);
+            return ApiResult.ok(userRepository.pageSupportProfiles(query, supportOwnership.defaultQueryScope(null, null)).getRecords());
+        }
         return ApiResult.ok(userRepository.search(
                 request == null ? null : request.keyword(),
                 request == null ? null : request.status(),
                 limit));
     }
 
+    @Transactional
     public ApiResult<PageResult<UserAccountView>> profilePage(UserQueryRequest request) {
         return profilePage(request, false);
     }
 
+    @Transactional
     public ApiResult<PageResult<UserAccountView>> supportProfilePage(UserQueryRequest request) {
         return profilePage(request, true);
     }
 
+    @Transactional
+    public ApiResult<PageResult<UserAccountView>> supportWorkbenchProfilePage(UserQueryRequest request) {
+        return profilePage(request, false, true);
+    }
+
     private ApiResult<PageResult<UserAccountView>> profilePage(UserQueryRequest request, boolean supportPhoneSearch) {
+        return profilePage(request, supportPhoneSearch, false);
+    }
+
+    private ApiResult<PageResult<UserAccountView>> profilePage(UserQueryRequest request, boolean supportPhoneSearch, boolean forceSupportScope) {
         String validationError = validateProfileQuery(request, supportPhoneSearch);
         if (validationError != null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), validationError);
         }
-        PageResult<UserAccountView> page = supportPhoneSearch
-                ? userRepository.pageSupportProfiles(request) : userRepository.pageProfiles(request);
+        PageResult<UserAccountView> page = supportPhoneSearch || forceSupportScope || supportReader()
+                ? userRepository.pageSupportProfiles(request, supportOwnership.defaultQueryScope(null, null))
+                : userRepository.pageProfiles(request);
         requiredAudit(
                 "ADMIN.USER_PROFILE_SEARCHED",
                 "USER_PROFILE_SEARCH",
@@ -303,6 +324,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.ok(page);
     }
 
+    @Transactional
     public UserProfileExportFile exportProfileExcel(String idempotencyKey, UserProfileExportRequest request) {
         String normalizedKey = requireText(idempotencyKey, "IDEMPOTENCY_KEY_REQUIRED");
         String exportReason = request == null ? "" : text(request.reason()).trim();
@@ -314,20 +336,30 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (validationError != null) {
             throw new IllegalArgumentException(validationError);
         }
-        return idempotencyService.execute(
-                "C1_USER_LIST_EXPORT",
+        var scope=supportReader()?supportOwnership.defaultQueryScope(null,null):null;
+        UserProfileExportFile file=idempotencyService.execute(
+                scope==null?"C1_USER_LIST_EXPORT":"C1_USER_LIST_EXPORT:"+scope.actorId(),
                 normalizedKey,
                 // Idempotency persistence is CHAR(64): hash the complete semantic request
                 // (filter + reason) instead of storing the concatenated material itself.
                 filterHash(filterHash(query) + "|reason=" + exportReason),
                 UserProfileExportFile.class,
-                () -> buildProfileExport(normalizedKey, request));
+                () -> buildProfileExport(normalizedKey, request,scope));
+        if(scope!=null) {
+            List<Long> ids=file.customerIds();
+            if(ids==null || ids.size()!=file.rowCount() || ids.stream().distinct().count()!=ids.size()
+                    || ids.stream().anyMatch(id->id==null || id<1 || id>9007199254740991L)
+                    || userRepository.countReadableSupportCustomers(ids,scope)!=ids.size())
+                throw new ffdd.opsconsole.shared.exception.BizException(404,"SUPPORT_EXPORT_SCOPE_CHANGED");
+        }
+        return file;
     }
 
-    private UserProfileExportFile buildProfileExport(String idempotencyKey, UserProfileExportRequest request) {
+    private UserProfileExportFile buildProfileExport(String idempotencyKey, UserProfileExportRequest request,
+            ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
         int pageSize = 200;
         UserQueryRequest firstQuery = exportQuery(request, 1, pageSize);
-        PageResult<UserAccountView> first = userRepository.pageProfiles(firstQuery);
+        PageResult<UserAccountView> first = scope==null?userRepository.pageProfiles(firstQuery):userRepository.pageSupportProfiles(firstQuery,scope);
         List<UserAccountView> rows = new ArrayList<>();
         if (first.getRecords() != null) {
             rows.addAll(first.getRecords());
@@ -335,7 +367,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         long total = Math.max(first.getTotal(), rows.size());
         int totalPages = (int) Math.min(25, Math.max(1, (total + pageSize - 1) / pageSize));
         for (int pageNum = 2; pageNum <= totalPages; pageNum += 1) {
-            PageResult<UserAccountView> page = userRepository.pageProfiles(exportQuery(request, pageNum, pageSize));
+            PageResult<UserAccountView> page = scope==null?userRepository.pageProfiles(exportQuery(request, pageNum, pageSize))
+                    :userRepository.pageSupportProfiles(exportQuery(request,pageNum,pageSize),scope);
             if (page.getRecords() != null) {
                 rows.addAll(page.getRecords());
             }
@@ -345,7 +378,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 + DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS").format(createdAt)
                 + "-"
                 + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase(Locale.ROOT);
-        String role = text(roleResolver.resolveCode()).trim().toUpperCase(Locale.ROOT);
+        String role = scope==null?text(roleResolver.resolveCode()).trim().toUpperCase(Locale.ROOT):"SUPPORT";
         String exportFilterHash = filterHash(exportQuery(request, 1, pageSize));
         requiredAudit(
                 "ADMIN.USER_LIST_EXPORTED",
@@ -368,7 +401,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return new UserProfileExportFile(
                 jobNo + ".csv",
                 profileExportCsv(rows, role),
-                rows.size());
+                rows.size(),scope==null?null:rows.stream().map(UserAccountView::id).toList());
     }
 
     private byte[] profileExportCsv(List<UserAccountView> rows, String role) {
@@ -527,14 +560,27 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
     }
 
+    @Transactional
     public ApiResult<UserAccountView> profile(Long userId) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
-        return userRepository.findById(userId)
-                .map(ApiResult::ok)
-                .orElseGet(() -> ApiResult.fail(404, "USER_NOT_FOUND"));
+        boolean scoped = supportReader();
+        var scope = scoped ? supportOwnership.customerQueryScope(userId) : null;
+        try {
+            return (scoped ? userRepository.findById(userId, scope) : userRepository.findById(userId))
+                    .map(ApiResult::ok)
+                    .orElseGet(() -> ApiResult.fail(404, "USER_NOT_FOUND"));
+        } catch (org.springframework.jdbc.BadSqlGrammarException ex) {
+            // A broken read projection must not mark the enclosing partial-profile transaction rollback-only.
+            // Authorization above and lock/connection failures still propagate through the transaction boundary.
+            org.slf4j.LoggerFactory.getLogger(OpsUserService.class)
+                    .warn("User profile projection unavailable: {}", ex.getClass().getSimpleName());
+            return ApiResult.fail(503, "USER_PROFILE_UNAVAILABLE");
+        }
     }
+
+    private boolean supportReader() { return supportOwnership.currentSupportReader(); }
 
     public ApiResult<List<UserSessionView>> sessions(Long userId, Integer limit) {
         return ApiResult.ok(userRepository.sessions(userId, normalizeLimit(limit, 100, 200), sessionIdleDays()));

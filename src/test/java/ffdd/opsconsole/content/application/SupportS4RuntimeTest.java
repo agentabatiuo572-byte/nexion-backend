@@ -49,6 +49,10 @@ class SupportS4RuntimeTest {
     @Autowired ObjectMapper json;
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingMapper mapper;
+    @Autowired ffdd.opsconsole.content.mapper.SupportGroupMapper groupMapper;
+    @Autowired SupportGroupService groups;
+    private SupportGroupRuntimeFixtures groupFixtures;
+    private final Set<Long> createdCustomers=new LinkedHashSet<>();
     @Autowired PlatformTransactionManager transactions;
     @Autowired JwtTokenProvider tokens;
     @Autowired AdminSessionRegistry sessions;
@@ -71,6 +75,8 @@ class SupportS4RuntimeTest {
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportIsolatedRuntime.database());
         assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(SupportRuntimeTarget.current().databasePort());
         boss=admin("SUPER_ADMIN","MANAGER");g1=admin("SUPPORT","DEDICATED");g2=admin("SUPPORT","DEDICATED");
+        if(groupFixtures==null)groupFixtures=new SupportGroupRuntimeFixtures(fixtureActors(),jdbc,groupMapper,groups,()->Set.copyOf(createdCustomers));
+        groupFixtures.asSuper(boss,()->{groupFixtures.serviceMember(g1);groupFixtures.serviceMember(g2);});
         as(boss);customer="realPrivateImagesHaveSeparateUploadSendAndRevocation".equals(objectTestcase)?objectCustomer():customer();transfer(customer,g1);
         adminToken=token(g1);otherToken=token(g2);bossToken=token(boss);customerToken=userToken(customer);
     }
@@ -84,8 +90,10 @@ class SupportS4RuntimeTest {
         Files.writeString(dir.resolve("scenario-evidence.json"),json.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of("at",Instant.now().toString(),"checks",checks,"samples",samples)));
         // Handoff credentials stay outside Git, on the same restricted local evidence volume as S3.
         as(boss);long manager=admin("SUPPORT","MANAGER");
-        long bound=customer();transfer(bound,g1);long unbound=customer();
+        long[] handoffGroup=new long[1];groupFixtures.asSuper(boss,()->handoffGroup[0]=groupFixtures.create(manager,List.of(g1,g2),run+"_handoff").id());
+        long bound=customer();transfer(bound,g1);long unbound=objectCustomer();
         assertThat(mapper.current(unbound)).isNull();
+        groupFixtures.asSuper(boss,()->groupFixtures.route(unbound,handoffGroup[0]));
         Map<String,Object> identities=new LinkedHashMap<>();
         for(var entry:Map.of("SUPER",boss,"MANAGER",manager,"G1",g1,"G2",g2).entrySet()) {
             long id=entry.getValue();
@@ -103,6 +111,7 @@ class SupportS4RuntimeTest {
         } finally {
             try {
                 SupportObjectEvidenceLedger.cleanupIndependently(this::cleanupObjectEvidence,
+                    ()->{if(groupFixtures!=null)groupFixtures.cleanup();},
                     ()->{if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());},SecurityContextHolder::clearContext);
             } catch(RuntimeException|Error cleanupFailure) {
                 if(originalFailure!=null)originalFailure.addSuppressed(cleanupFailure);else throw cleanupFailure;
@@ -245,7 +254,9 @@ class SupportS4RuntimeTest {
             }
             assertThat(stopped.path("customers").path("total").isIntegralNumber()).isTrue();
             assertThat(stopped.path("customers").path("total").longValue()).isEqualTo(1L);
-            assertCode(http("GET","/api/admin/content/support-workbench/overview?agentId="+g2,adminToken,null,null),403);
+            var invalidScope=http("GET","/api/admin/content/support-workbench/overview?agentId="+g2,adminToken,null,null);
+            assertCode(invalidScope,422);assertThat(invalidScope.path("message").asText()).isEqualTo("SUPPORT_READ_SCOPE_INVALID");
+            assertThat(invalidScope.hasNonNull("data")).isFalse();
             assertCode(http("GET","/api/admin/content/support-workbench/customers/"+customer,otherToken,null,null),404);
             rules(null,2,null);
             var partial=ok(http("GET","/api/admin/content/support-workbench/overview",adminToken,null,null));
@@ -455,10 +466,13 @@ class SupportS4RuntimeTest {
         assertThat(ticket.toString()).contains("图片（在来源会话查看）");
         assertThat(ticket.path("ticket").path("sourceConversationNo").asText()).isEqualTo(no);
         assertThat(jdbc.queryForObject("SELECT source_conversation_no FROM nx_support_ticket WHERE ticket_no=?",String.class,ticketNo)).isEqualTo(no);
-        var restricted=ok(http("GET","/api/admin/content/tickets/"+ticketNo,otherToken,null,null));
-        assertThat(restricted.path("ticket").path("contentRestricted").asBoolean()).isTrue();
+        var restricted=http("GET","/api/admin/content/tickets/"+ticketNo,otherToken,null,null);
+        assertCode(restricted,404);assertThat(restricted.path("message").asText()).isEqualTo("SUPPORT_CUSTOMER_NOT_FOUND");
+        assertThat(restricted.hasNonNull("data")).isFalse();
         assertThat(restricted.toString()).doesNotContain("图片（在来源会话查看）");
-        samples.put("captionlessImageTicket","Actual App conversion preserves image marker and source conversation; unauthorized advisor receives R08 restricted projection.");
+        var ownedTicket=ok(http("GET","/api/admin/content/tickets/"+ticketNo,adminToken,null,null));
+        assertThat(ownedTicket.toString()).contains("图片（在来源会话查看）");assertThat(ownedTicket.path("ticket").path("sourceConversationNo").asText()).isEqualTo(no);
+        samples.put("captionlessImageTicket","Actual App conversion and current advisor read preserve image marker and source conversation; unrelated advisor receives exact 404 with no data.");
     }
 
     private String maintenancePath(){return "/api/admin/content/support-workbench/customers/"+customer+"/maintenance";}
@@ -501,7 +515,7 @@ class SupportS4RuntimeTest {
                 var statement=connection.prepareStatement("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox) VALUES('+86',?,'127.0.0.1',?,?,?,'ACTIVE',0)",java.sql.Statement.RETURN_GENERATED_KEYS);
                 statement.setString(1,phone);statement.setString(2,password);statement.setString(3,run);statement.setString(4,ref);return statement;
             },generated);
-            long id=Objects.requireNonNull(generated.getKey(),"Exact INSERT generated customer ID").longValue();
+            long id=Objects.requireNonNull(generated.getKey(),"Exact INSERT generated customer ID").longValue();createdCustomers.add(id);
             long lookup=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,ref);
             assertThat(affected).isEqualTo(1);assertThat(lookup).isEqualTo(id);
             bindings.register(id,null);

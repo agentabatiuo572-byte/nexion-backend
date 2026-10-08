@@ -71,6 +71,7 @@ public class OpsUser360Service {
     private final AdminOperatorRoleResolver roleResolver;
     private final EventOutboxService outboxService;
     private final ffdd.opsconsole.finance.application.FinanceSupportReadService financeSupport;
+    private final ffdd.opsconsole.content.application.SupportOwnershipService supportOwnership;
 
     @Transactional(isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> detail(String userKey) {
@@ -91,6 +92,10 @@ public class OpsUser360Service {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
         String role = text(roleResolver.resolveCode());
+        if (supportOwnership.currentSupportReader()) {
+            supportOwnership.requireRead(userId);
+            role = "SUPPORT";
+        }
         // The controller is the authorization boundary for C1: it requires user_c1hub_read.
         // A role code is only used below to choose the least-privilege projection, so a
         // valid custom role must not be rejected merely because it is not one of the

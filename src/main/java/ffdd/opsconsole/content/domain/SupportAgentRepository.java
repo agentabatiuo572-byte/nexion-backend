@@ -12,14 +12,32 @@ public interface SupportAgentRepository {
 
     SupportOperatorScope supportOperatorScope(Long visibleAdminId);
 
+    default SupportOperatorScope scopedSupportOperators(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        java.util.Objects.requireNonNull(scope, "SUPPORT_READ_SCOPE_REQUIRED");
+        SupportOperatorScope roles = supportOperatorScope(scope.mode() == SupportGroupFacts.ReadMode.PERSONAL ? scope.actorId() : null);
+        return new SupportOperatorScope(roles.visibleAdminId(), roles.supportRoleIds(), roles.unusablePrimaryRoleIds(), roles.superFallbackToSupport(), scope);
+    }
+
     long countSupportOperators(SupportOperatorScope scope);
 
     List<SupportOperatorRecord> pageSupportOperators(SupportOperatorScope scope, long limit, long offset);
 
-    record SupportOperatorRecord(Long adminId, String name, String email, String avatarAssetId, Long avatarVersion) {}
+    record SupportOperatorRecord(Long adminId, String name, String email, String avatarAssetId, Long avatarVersion, String status) {
+        public SupportOperatorRecord(Long adminId, String name, String email, String avatarAssetId, Long avatarVersion) {
+            this(adminId, name, email, avatarAssetId, avatarVersion, "enabled");
+        }
+    }
 
     record SupportOperatorScope(Long visibleAdminId, List<Long> supportRoleIds,
-                                List<Long> unusablePrimaryRoleIds, boolean superFallbackToSupport) {}
+                                List<Long> unusablePrimaryRoleIds, boolean superFallbackToSupport, SupportGroupFacts.ReadScope readScope) {
+        public SupportOperatorScope(Long visibleAdminId, List<Long> supportRoleIds, List<Long> unusablePrimaryRoleIds, boolean superFallbackToSupport) {
+            this(visibleAdminId, supportRoleIds, unusablePrimaryRoleIds, superFallbackToSupport, null);
+        }
+        public Long actorId() { return readScope == null ? null : readScope.actorId(); }
+        public SupportGroupFacts.ReadMode mode() { return readScope == null ? null : readScope.mode(); }
+        public Long requestedGroupId() { return readScope == null ? null : readScope.requestedGroupId(); }
+        public Long requestedAgentId() { return readScope == null ? null : readScope.requestedAgentId(); }
+    }
 
     List<SupportAgentProfileRecord> listProfiles(List<Long> adminIds);
 
@@ -67,11 +85,15 @@ public interface SupportAgentRepository {
 
     long countActiveAssignments(Long agentAdminId);
 
+    long countActiveAssignments(Long agentAdminId, SupportGroupFacts.ReadScope scope);
+
     boolean userExists(Long userId);
 
     List<Long> findExistingUserIds(List<Long> userIds);
 
     List<SupportAgentAssignmentView> listActiveAssignments(List<Long> agentAdminIds);
+
+    List<SupportAgentAssignmentView> listActiveAssignments(List<Long> agentAdminIds, SupportGroupFacts.ReadScope scope);
 
     SupportAgentAssignmentView upsertAssignment(
             Long agentAdminId,

@@ -21,6 +21,24 @@ import org.springframework.web.socket.handler.*;
 @RequiredArgsConstructor
 public class ConversationSocketHandler extends TextWebSocketHandler {
     @org.springframework.transaction.event.TransactionalEventListener(phase=org.springframework.transaction.event.TransactionPhase.AFTER_COMMIT)
+    public void scopeChanged(ffdd.opsconsole.content.domain.SupportGroupFacts.ScopeChanged event) {
+        enqueue(()-> {
+            for(Client c:clients.values()) {
+                if(c.auth==null || !"ADMIN".equals(c.grant.audience())
+                        || event.affectedAdminIds().stream().noneMatch(id->String.valueOf(id).equals(c.auth.getName()))) continue;
+                try {
+                    c.auth=access.authenticate(c.grant.token(),c.grant.audience());
+                    if(c.watching!=null && !access.canRead(c.auth,c.grant.audience(),c.watching)) {
+                        c.watching=null;c.typingUntil=0;
+                    }
+                    // A lost management group must not disconnect a still-authorized personal service.
+                    send(c,Map.of("type","scope-invalidated","reason",event.reason()));
+                } catch(Exception ex) {close(c,4401);}
+            }
+            requestPresence();
+        });
+    }
+    @org.springframework.transaction.event.TransactionalEventListener(phase=org.springframework.transaction.event.TransactionPhase.AFTER_COMMIT)
     public void assignmentChanged(ffdd.opsconsole.content.application.SupportBindingService.SupportAssignmentChanged event) {
         enqueue(()-> {
             for(Client c:clients.values()) {
@@ -174,7 +192,7 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
             try{
                 var scope=participants.computeIfAbsent(watching,access::participants).orElse(null);
                 if(scope==null || !scope.canRead(viewer.auth,viewer.grant.audience())){
-                    if(Objects.equals(viewer.watching,watching))viewer.watching=null;
+                    if(Objects.equals(viewer.watching,watching)){viewer.watching=null;viewer.typingUntil=0;}
                     continue;
                 }
                 List<Client> matching=peers.getOrDefault(scope.peerKey(viewer.grant.audience()),List.of());

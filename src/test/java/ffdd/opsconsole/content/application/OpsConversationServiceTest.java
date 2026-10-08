@@ -70,6 +70,8 @@ class OpsConversationServiceTest {
     private final OpsConversationService service = service();
 
     private OpsConversationService service() {
+        when(ownership.defaultQueryScope(null,null)).thenReturn(new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(
+                1L,ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.ALL,null,null));
         var assignable = new ffdd.opsconsole.content.domain.SupportAgentProfileView(
                 "agent-2", 11L, "Agent Two", "agent2@example.com", "support", "enabled",
                 "support", "客服", List.of("support"), List.of(), 8, true, true, false, 0L, "2026-06-17T00:00:00");
@@ -836,6 +838,23 @@ class OpsConversationServiceTest {
         assertThat(conversationRepository.lastQuery.pageSize()).isEqualTo(8L);
     }
 
+    @Test void explicitGroupReadModeAndAgentReachTheSameRepositoryScope() {
+        var scope=new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(1L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED,9L,7L);
+        when(ownership.queryScope(scope.mode(),9L,7L)).thenReturn(scope);
+        service.conversations(new ConversationQueryRequest(null,null,"7",null,"needle",null,1L,20L,null,scope.mode(),9L));
+        assertThat(conversationRepository.lastScope).isSameAs(scope);
+        verify(ownership).queryScope(scope.mode(),9L,7L);
+    }
+
+    @Test void deniedGroupQueryDoesNotReachACollectionRepository() {
+        doThrow(new ffdd.opsconsole.shared.exception.BizException(404,"SUPPORT_GROUP_NOT_FOUND"))
+                .when(ownership).defaultQueryScope(9L,null);
+        assertThatThrownBy(()->service.conversations(new ConversationQueryRequest(null,null,null,null,null,null,1L,20L,null,null,9L)))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+        assertThat(conversationRepository.lastScope).isNull();
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> detailMap(Object detail) {
         return (Map<String, Object>) detail;
@@ -906,6 +925,14 @@ class OpsConversationServiceTest {
         private int lockedReads;
         private final Map<String, ContentConversationView> conversations = new LinkedHashMap<>();
         private final List<String> lockOrder = new ArrayList<>();
+        private ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope lastScope;
+
+        @Override public Map<String,Object> counters(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+            lastScope=java.util.Objects.requireNonNull(scope);return counters();
+        }
+        @Override public PageResult<ContentConversationView> pageConversations(ConversationQueryRequest request,ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+            lastScope=java.util.Objects.requireNonNull(scope);return pageConversations(request);
+        }
 
         @Override
         public void ensureSeedData(LocalDateTime now) {

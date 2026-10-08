@@ -58,9 +58,12 @@ class OpsSupportTicketServiceTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC"));
+    private final SupportOwnershipService ownership=ffdd.opsconsole.content.SupportTestDependencies.ownership();
     private final OpsSupportTicketService service = service();
 
     private OpsSupportTicketService service() {
+        when(ownership.defaultQueryScope(null,null)).thenReturn(new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(
+                1L,ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.ALL,null,null));
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotencyService)
                 .executeRetained(anyString(), anyString(), anyString(), any(), any());
@@ -79,7 +82,7 @@ class OpsSupportTicketServiceTest {
                 configFacade,
                 auditLogService,
                 idempotencyService,
-                clock, ffdd.opsconsole.content.SupportTestDependencies.ownership(),
+                clock, ownership,
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules());
     }
 
@@ -361,8 +364,23 @@ class OpsSupportTicketServiceTest {
         assertThat(result.getData().get("sources")).asList().contains("nx_support_ticket", "nx_support_ticket_message");
     }
 
+    @Test void explicitGroupAndAssigneeOnlyNarrowTheTicketCollection() {
+        var scope=new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(1L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED,9L,7L);
+        when(ownership.queryScope(scope.mode(),9L,7L)).thenReturn(scope);
+        service.tickets(new SupportTicketQueryRequest("all",null,null,null,7L,null,"needle",1L,20L,scope.mode(),9L));
+        assertThat(ticketRepository.lastScope).isSameAs(scope);
+    }
+
+    @Test void oldTicketUrlReauthorizesBeforeReturningTranscript() {
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND"))
+                .when(ownership).readTicket("TK-1");
+        assertThatThrownBy(()->service.detail("TK-1")).isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+    }
+
     @Test
     void loadConfigUsesPersistedPlatformConfigAndAgentState() {
+        when(supportAgentService.availabilityStates()).thenReturn(Map.of("agent-1",Map.of("busy",false)));
         configFacade.values.put("content.support.load.autoBalance", "true");
         configFacade.values.put("content.support.load.defaultCap", "6");
         configFacade.values.put("content.support.load.burstCap", "10");
@@ -401,6 +419,16 @@ class OpsSupportTicketServiceTest {
                 .containsEntry("warnPct", 80)
                 .containsEntry("quietHourBalance", false)
                 .containsEntry("overflowQueue", "转人工备勤队列");
+    }
+
+    @Test void loadConfigCannotReintroduceOtherGroupAgentFromHistoricalConfigKeys() {
+        configFacade.values.put("content.support.load.agent.7.cap","5");
+        configFacade.values.put("content.support.load.agent.8.cap","20");
+        when(supportAgentService.availabilityStates()).thenReturn(Map.of("7",Map.of("busy",false)));
+        var visible=(Map<?,?>)service.loadConfig().getData().get("agentState");
+        assertThat(visible).hasSize(1);assertThat(visible.containsKey("7")).isTrue();
+        when(supportAgentService.availabilityStates()).thenReturn(Map.of());
+        assertThat((Map<?,?>)service.loadConfig().getData().get("agentState")).isEmpty();
     }
 
     @Test
@@ -444,6 +472,7 @@ class OpsSupportTicketServiceTest {
     }
     @Test
     void m1ZeroCapsRoundTripWithoutBeingRewrittenByTheReadProjection() {
+        when(supportAgentService.availabilityStates()).thenReturn(Map.of("agent-1",Map.of("busy",false)));
         var request = new SupportLoadConfigUpdateRequest(
                 1L, true, 0, 0, 75, true, "备勤队列",
                 Map.of("agent-1", new SupportAgentLoadStateRequest(0, null)),
@@ -563,6 +592,13 @@ class OpsSupportTicketServiceTest {
     }
 
     private static final class FakeSupportTicketRepository implements SupportTicketRepository {
+        private ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope lastScope;
+        @Override public Map<String,Object> counters(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+            lastScope=java.util.Objects.requireNonNull(scope);return counters();
+        }
+        @Override public PageResult<SupportTicketView> pageTickets(SupportTicketQueryRequest request,ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+            lastScope=java.util.Objects.requireNonNull(scope);return pageTickets(request);
+        }
         @Override public void markConversationSource(String ticketNo,String conversationNo) {}
         private SupportTicketView ticket = ticket("TK-1", "OPEN", "NORMAL");
         private int seedCalls;

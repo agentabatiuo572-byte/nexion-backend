@@ -31,6 +31,63 @@ class OpsSupportTicketControllerTest {
     private final OpsSupportTicketController controller = new OpsSupportTicketController(ticketService, supportAgentService, productionPathGuard);
 
     @Test
+    void ticketListWithoutParametersBindsThroughMvc() throws Exception {
+        when(ticketService.tickets(org.mockito.ArgumentMatchers.any())).thenReturn(ApiResult.ok(null));
+        ticketListMvc().perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/api/admin/content/tickets"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").value(0));
+        verify(ticketService).tickets(new ffdd.opsconsole.content.dto.SupportTicketQueryRequest(
+                null,null,null,null,null,null,null,null,null));
+    }
+
+    @Test
+    void legacyTicketFiltersAndPaginationBindThroughMvc() throws Exception {
+        when(ticketService.tickets(org.mockito.ArgumentMatchers.any())).thenReturn(ApiResult.ok(null));
+        ticketListMvc().perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/api/admin/content/tickets").param("scope","all").param("status","open")
+                .param("category","withdrawal").param("priority","high").param("assignedAdminId","7")
+                .param("userId","10").param("keyword","needle").param("pageNum","2").param("pageSize","20"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+        verify(ticketService).tickets(new ffdd.opsconsole.content.dto.SupportTicketQueryRequest(
+                "all","open","withdrawal","high",7L,10L,"needle",2L,20L));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.class)
+    void ticketReadModeAndRequestedTargetsBindThroughMvc(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode mode) throws Exception {
+        when(ticketService.tickets(org.mockito.ArgumentMatchers.any())).thenReturn(ApiResult.ok(null));
+        ticketListMvc().perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/api/admin/content/tickets").param("readMode",mode.name())
+                .param("groupId","9").param("assignedAdminId","7"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+        verify(ticketService).tickets(new ffdd.opsconsole.content.dto.SupportTicketQueryRequest(
+                null,null,null,null,7L,null,null,null,null,mode,9L));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"readMode,UNRECOGNIZED","groupId,not-a-number","assignedAdminId,not-a-number"})
+    void malformedTicketScopeParametersRejectBeforeTheService(String parameter,String value) throws Exception {
+        ticketListMvc().perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/api/admin/content/tickets").param(parameter,value))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest());
+        org.mockito.Mockito.verifyNoInteractions(ticketService,supportAgentService,productionPathGuard);
+    }
+
+    @Test
+    void mappedTicketListRetainsM2ReadAuthority() throws Exception {
+        assertThat(OpsSupportTicketController.class.getMethod("ticketsQuery",
+                String.class,String.class,String.class,String.class,Long.class,Long.class,String.class,Long.class,Long.class,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.class,Long.class)
+                .getAnnotation(org.springframework.security.access.prepost.PreAuthorize.class).value())
+                .isEqualTo("hasAuthority('service_m2_read')");
+    }
+
+    private org.springframework.test.web.servlet.MockMvc ticketListMvc() {
+        return org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+    }
+
+    @Test
     void overviewDelegatesToService() {
         when(ticketService.overview()).thenReturn(ApiResult.ok(Map.of("active", 1)));
 

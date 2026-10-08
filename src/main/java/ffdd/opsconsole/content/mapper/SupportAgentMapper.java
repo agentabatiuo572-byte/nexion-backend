@@ -25,7 +25,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
 
     // Match A1's latest active primary relation; scope supplies its exact normalized dictionary/fallback rules.
     String SUPPORT_OPERATOR_FROM = """
-              FROM nx_admin a
+              FROM nx_admin scope_agent
               LEFT JOIN nx_admin_role primary_role ON primary_role.id =
                    (SELECT rr.role_id
                       FROM nx_admin_role_relation rr
@@ -33,24 +33,24 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                         ON r.id = rr.role_id
                        AND r.status = 1
                        AND r.is_deleted = 0
-                     WHERE rr.admin_id = a.id
+                     WHERE rr.admin_id = scope_agent.id
                        AND rr.is_deleted = 0
                      ORDER BY rr.updated_at DESC, rr.id DESC
                      LIMIT 1)
             """;
 
     String SUPPORT_OPERATOR_WHERE = """
-             WHERE a.status = 1 AND a.is_deleted = 0
+             WHERE scope_agent.is_deleted = 0
                AND (
                  <choose>
-                   <when test='scope.supportRoleIds != null and scope.supportRoleIds.size() > 0'>
+                   <when test='scope != null and scope.supportRoleIds != null and scope.supportRoleIds.size() > 0'>
                      primary_role.id IN
                      <foreach collection='scope.supportRoleIds' item='roleId' open='(' separator=',' close=')'>#{roleId}</foreach>
                    </when>
                    <otherwise>1=0</otherwise>
                  </choose>
-                 <if test='scope.superFallbackToSupport'>
-                   OR (a.super_admin = 1 AND (primary_role.id IS NULL
+                 <if test='scope != null and scope.superFallbackToSupport'>
+                   OR (scope_agent.super_admin = 1 AND (primary_role.id IS NULL
                      <if test='scope.unusablePrimaryRoleIds != null and scope.unusablePrimaryRoleIds.size() > 0'>
                        OR primary_role.id IN
                        <foreach collection='scope.unusablePrimaryRoleIds' item='roleId' open='(' separator=',' close=')'>#{roleId}</foreach>
@@ -58,25 +58,26 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                    ))
                  </if>
                )
-             <if test='scope.visibleAdminId != null'>
-               AND a.id = #{scope.visibleAdminId}
+             <if test='scope != null and scope.visibleAdminId != null'>
+               AND scope_agent.id = #{scope.visibleAdminId}
              </if>
-            """;
+            """ + SupportGroupMapper.AGENT_SCOPE_PREDICATE;
 
     @Select("<script>SELECT COUNT(1) " + SUPPORT_OPERATOR_FROM + SUPPORT_OPERATOR_WHERE + "</script>")
     long countSupportOperators(@Param("scope") SupportOperatorScope scope);
 
     @Select("""
             <script>
-            SELECT a.id AS adminId,
-                   COALESCE(NULLIF(TRIM(a.nickname), ''), NULLIF(TRIM(a.username), ''), CAST(a.id AS CHAR)) AS name,
-                   COALESCE(TRIM(a.email), '') AS email,
+            SELECT scope_agent.id AS adminId,
+                   COALESCE(NULLIF(TRIM(scope_agent.nickname), ''), NULLIF(TRIM(scope_agent.username), ''), CAST(scope_agent.id AS CHAR)) AS name,
+                   COALESCE(TRIM(scope_agent.email), '') AS email,
                    st.avatar_asset_id AS avatarAssetId,
-                   COALESCE(st.avatar_version, 0) AS avatarVersion
+                   COALESCE(st.avatar_version, 0) AS avatarVersion,
+                   IF(scope_agent.status=1,'enabled','disabled') AS status
             """ + SUPPORT_OPERATOR_FROM + """
-              LEFT JOIN nx_admin_account_state st ON st.admin_id = a.id AND st.is_deleted = 0
+              LEFT JOIN nx_admin_account_state st ON st.admin_id = scope_agent.id AND st.is_deleted = 0
             """ + SUPPORT_OPERATOR_WHERE + """
-             ORDER BY a.id ASC
+             ORDER BY scope_agent.id ASC
              LIMIT #{limit} OFFSET #{offset}
             </script>
             """)
@@ -86,20 +87,20 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
 
     // One consistent SELECT: never mix current-read eligibility with a historical RR projection.
     @Select("""
-        SELECT assignmentId,currentAdvisorId,currentAdvisorName,
+        <script>SELECT assignmentId,currentAdvisorId,currentAdvisorName,
                CASE WHEN eligible THEN 'ASSIGNED' ELSE 'ADVISOR_DISABLED' END assignmentState,
                CASE WHEN NOT eligible THEN 'DISABLED' WHEN busy=1 THEN 'BUSY' ELSE 'UNKNOWN' END availability,avatarAssetId,avatarVersion
           FROM (SELECT x.id assignmentId,x.agent_admin_id currentAdvisorId,
                        COALESCE(NULLIF(a.nickname,''),a.username) currentAdvisorName,p.busy,
                        st.avatar_asset_id AS avatarAssetId,COALESCE(st.avatar_version,0) AS avatarVersion,
                        EXISTS(SELECT 1
-        """ + SupportBindingMapper.ELIGIBLE_AGENT_FROM + """
+        """ + SupportBindingMapper.ELIGIBLE_AGENT_BASE_FROM + SupportGroupMapper.UNIQUE_QUALIFICATION_SNAPSHOT + """
                           AND a.id=x.agent_admin_id) eligible
                   FROM nx_support_agent_user_assignment x
                   LEFT JOIN nx_admin a ON a.id=x.agent_admin_id
                   LEFT JOIN nx_support_agent_profile p ON p.admin_id=x.agent_admin_id
                   LEFT JOIN nx_admin_account_state st ON st.admin_id=x.agent_admin_id AND st.is_deleted=0
-                 WHERE x.user_id=#{userId} AND x.status='ACTIVE' AND x.is_deleted=0) projection
+                 WHERE x.user_id=#{userId} AND x.status='ACTIVE' AND x.is_deleted=0) projection</script>
         """)
     ffdd.opsconsole.content.domain.AppSupportAdvisorView findAppAdvisor(Long userId);
 
@@ -411,6 +412,14 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
             """)
     long countActiveAssignments(@Param("agentAdminId") Long agentAdminId);
 
+    @Select("<script>SELECT COUNT(*) FROM nx_support_agent_user_assignment assignment "
+            + "JOIN nx_user scope_customer ON scope_customer.id=assignment.user_id "
+            + "WHERE assignment.agent_admin_id=#{agentAdminId} AND assignment.status='ACTIVE' AND assignment.is_deleted=0 "
+            + "AND assignment.ends_at IS NULL AND assignment.starts_at &lt;= UTC_TIMESTAMP(6) "
+            + SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + "</script>")
+    long countScopedActiveAssignments(@Param("agentAdminId") Long agentAdminId,
+                                      @Param("scope") ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
+
     @Select("""
             SELECT COUNT(1)
               FROM nx_user
@@ -464,6 +473,41 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
             </script>
             """)
     List<SupportAgentAssignmentView> listActiveAssignments(@Param("agentAdminIds") List<Long> agentAdminIds);
+
+    @Select("""
+            <script>
+            SELECT a.id,
+                   a.agent_admin_id AS agentAdminId,
+                   a.user_id AS userId,
+                   CONCAT('U', LPAD(a.user_id, GREATEST(8, LENGTH(CAST(a.user_id AS CHAR))), '0')) AS userNo,
+                   COALESCE(NULLIF(u.nickname, ''), CONCAT('用户', a.user_id)) AS nickname,
+                   a.status,
+                   DATE_FORMAT(a.starts_at, '%Y-%m-%dT%H:%i:%s') AS startsAt,
+                   DATE_FORMAT(a.ends_at, '%Y-%m-%dT%H:%i:%s') AS endsAt,
+                   a.operator,
+                   a.reason,
+                   DATE_FORMAT(a.updated_at, '%Y-%m-%dT%H:%i:%s') AS updatedAt
+              FROM nx_support_agent_user_assignment a
+              JOIN nx_user u ON u.id=a.user_id AND u.is_deleted=0
+              JOIN nx_user scope_customer ON scope_customer.id=a.user_id
+             WHERE a.is_deleted=0
+               AND a.status='ACTIVE' AND a.ends_at IS NULL AND a.starts_at &lt;= UTC_TIMESTAMP(6)
+            """ + SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + """
+             <choose>
+               <when test='agentAdminIds != null and agentAdminIds.size() > 0'>
+                 AND a.agent_admin_id IN
+                 <foreach collection='agentAdminIds' item='agentAdminId' open='(' separator=',' close=')'>
+                   #{agentAdminId}
+                 </foreach>
+               </when>
+               <otherwise>
+                 AND 1=0
+               </otherwise>
+             </choose>
+             ORDER BY a.updated_at DESC, a.id DESC
+            </script>
+            """)
+    List<SupportAgentAssignmentView> listScopedActiveAssignments(@Param("agentAdminIds") List<Long> agentAdminIds, @Param("scope") ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
 
     @Update("""
             UPDATE nx_support_agent_user_assignment

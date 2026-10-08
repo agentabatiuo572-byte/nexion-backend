@@ -45,6 +45,8 @@ class SupportEnhancementCoreRuntimeTest {
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingRandomService random;
     @Autowired SupportBindingMapper mapper;
+    @Autowired ffdd.opsconsole.content.mapper.SupportGroupMapper groupMapper;
+    @Autowired SupportGroupService groups;
     @Autowired PlatformTransactionManager transactions;
     @Autowired JwtTokenProvider tokens;
     @Autowired AdminSessionRegistry sessions;
@@ -62,6 +64,9 @@ class SupportEnhancementCoreRuntimeTest {
     @Autowired ffdd.opsconsole.onboarding.application.OnboardingCalibrationService onboarding;
     private final String run="enhance_"+UUID.randomUUID().toString().substring(0,8);
     private final List<Long> createdAdmins=new ArrayList<>();
+    private final Set<Long> createdCustomers=new LinkedHashSet<>();
+    private SupportGroupRuntimeFixtures groupFixtures;
+    private long serviceGroup;
     private SupportOriginalProfiles originalProfiles;
     private ffdd.opsconsole.content.domain.SupportRules oldRules;
     private long boss,first,second;
@@ -77,10 +82,31 @@ class SupportEnhancementCoreRuntimeTest {
         originalProfiles=SupportOriginalProfiles.suspend(jdbc,transactions);
         boss=admin("boss","SUPER_ADMIN","MANAGER");first=admin("first","SUPPORT","DEDICATED");second=admin("second","SUPPORT","DEDICATED");
         as(boss);
+        groupFixtures=new SupportGroupRuntimeFixtures(fixtureActors(),jdbc,groupMapper,groups,()->Set.copyOf(createdCustomers));
+        serviceGroup=groupFixtures.create(boss,List.of(first,second),run+"_service").id();
     }
     @AfterEach void restore() {
         var cleanup=new ArrayList<Runnable>();
         cleanup.add(()->objects.cleanup(getClass().getSimpleName(),objectTestcase));
+        for(long id:createdCustomers) cleanup.add(()->{
+            jdbc.update("DELETE FROM nx_support_customer_route_history WHERE customer_id=?",id);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_customer_route_history WHERE customer_id=?",Long.class,id)).isZero();
+        });
+        if(groupFixtures!=null) {
+            for(long id:groupFixtures.participatingAdminIds()) cleanup.add(()->{
+                fixtureActors().creationReference(id);
+                jdbc.update("DELETE FROM nx_support_group_member_history WHERE agent_admin_id=?",id);
+                jdbc.update("DELETE FROM nx_support_account_qualification_history WHERE admin_id=?",id);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_group_member_history WHERE agent_admin_id=?",Long.class,id)).isZero();
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_account_qualification_history WHERE admin_id=?",Long.class,id)).isZero();
+            });
+            for(long id:groupFixtures.createdGroupIds()) cleanup.add(()->{
+                jdbc.update("DELETE FROM nx_support_group_owner_history WHERE group_id=?",id);
+                jdbc.update("DELETE FROM nx_support_group WHERE id=?",id);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_group_owner_history WHERE group_id=?",Long.class,id)).isZero();
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_group WHERE id=?",Long.class,id)).isZero();
+            });
+        }
         cleanup.add(()->{if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());});
         cleanup.add(()->{if(oldRules!=null && boss>0) SharedMutationJournal.cleanupSql(jdbc,run,"SupportEnhancementCoreRuntimeTest",boss,"SupportEnhancementCoreRuntimeTest#rules-sql-1","UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",
             oldRules.dormantDays(),oldRules.maintenanceDays(),oldRules.activityWindowDays(),oldRules.inheritanceMode(),oldRules.maxInheritanceDepth(),oldRules.unboundAssignmentMode(),oldRules.modeEffectiveAt(),boss);});
@@ -104,14 +130,14 @@ class SupportEnhancementCoreRuntimeTest {
         assertThat(mapper.current(oldPool)).isNull();assertThat(mapper.autoEligible(oldPool)).isFalse();
         proof("A01","HTTP write and refreshed version/mode; manager denied");proof("A05","Existing pool not adopted by mode change");
 
-        long root=customer(null);var rootAssignment=mapper.current(root);assertThat(rootAssignment.source()).isEqualTo("RANDOM");
-        long exceeded=customer(root);var newSegment=mapper.current(exceeded);
+        long root=routedCustomer(null);var rootAssignment=mapper.current(root);assertThat(rootAssignment.source()).isEqualTo("RANDOM");
+        long exceeded=routedCustomer(root);var newSegment=mapper.current(exceeded);
         assertThat(newSegment.segmentRootId()).isEqualTo(exceeded);assertThat(newSegment.depth()).isZero();assertThat(newSegment.parentAssignmentId()).isNull();
         assertThat(Set.of(first,second)).contains(newSegment.agentAdminId());
         jdbc.update("UPDATE nx_support_agent_profile SET busy=1,max_concurrent=0 WHERE admin_id IN (?,?)",first,second);
-        assertThat(mapper.current(customer(null))).isNotNull();proof("A03","Natural/depth-exceeded customers use deduplicated eligible advisors despite busy/maxConcurrent");
+        assertThat(mapper.current(routedCustomer(null))).isNotNull();proof("A03","Natural/depth-exceeded customers use deduplicated eligible advisors despite busy/maxConcurrent");
         jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",rootAssignment.agentAdminId().equals(first)?second:first);
-        long same=customer(root);var sameAssignment=mapper.current(same);
+        long same=routedCustomer(root);var sameAssignment=mapper.current(same);
         assertThat(sameAssignment.agentAdminId()).isEqualTo(rootAssignment.agentAdminId());assertThat(sameAssignment.segmentRootId()).isEqualTo(same);
         rules("LIMITED",1,"AUTO_RANDOM");long inherited=customer(same);
         assertThat(mapper.current(inherited).parentAssignmentId()).isEqualTo(sameAssignment.id());assertThat(mapper.current(inherited).depth()).isEqualTo(1);
@@ -119,9 +145,11 @@ class SupportEnhancementCoreRuntimeTest {
         assertThat(mapper.current(inheritedSupervisor).parentAssignmentId()).isEqualTo(mapper.current(inherited).id());
         assertThat(mapper.current(same).id()).isEqualTo(sameAssignment.id());proof("A02","L0/L1/unlimited inherit priority across allocation modes");proof("A04","Same advisor starts new root; new descendants inherit; previous rows unchanged");
 
-        rules("UNCONFIGURED",null,"AUTO_RANDOM");long unconfigured=customer(null);assertThat(mapper.current(unconfigured)).isNotNull();
+        rules("UNCONFIGURED",null,"AUTO_RANDOM");long unconfigured=routedCustomer(null);assertThat(mapper.current(unconfigured)).isNotNull();
         jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id IN (?,?)",first,second);
         long waiting=customer(null);assertThat(mapper.current(waiting)).isNull();assertThat(mapper.autoEligible(waiting)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT auto_attempt_state FROM nx_support_binding_pool WHERE customer_id=?",String.class,waiting)).isEqualTo("WAITING_ROUTE");
+        route(waiting);bindings.retryAutomatic(waiting);
         assertThat(jdbc.queryForObject("SELECT auto_attempt_state FROM nx_support_binding_pool WHERE customer_id=?",String.class,waiting)).isEqualTo("WAITING_CANDIDATE");
         long attempts=jdbc.queryForObject("SELECT attempts FROM nx_support_binding_pool WHERE customer_id=?",Long.class,waiting);
         bindings.retryAutomatic(waiting);assertThat(jdbc.queryForObject("SELECT attempts FROM nx_support_binding_pool WHERE customer_id=?",Long.class,waiting)).isGreaterThan(attempts);
@@ -133,6 +161,7 @@ class SupportEnhancementCoreRuntimeTest {
         assertThat(mapper.current(unconfigured)).isNotNull();
 
         rules("LIMITED",0,"SUPERVISOR");long manual=customer(null),stale=customer(null),unsafe=customer(null);
+        route(manual);route(stale);route(unsafe);
         jdbc.update("UPDATE nx_support_binding_pool SET reason='MIGRATION_REVIEW' WHERE customer_id=?",unsafe);
         var preview=random.preview(new SupportRandomRequest.Preview(List.of(pool(manual),pool(stale),pool(unsafe)),false,null,null));
         assertThat(preview.count()).isEqualTo(2);assertThat(preview.excluded()).extracting(SupportRandom.Excluded::customerId).containsExactly(unsafe);
@@ -148,7 +177,7 @@ class SupportEnhancementCoreRuntimeTest {
         assertThatThrownBy(()->random.confirm(operation,new SupportRandomRequest.Confirm(preview.id(),preview.rulesVersion(),"Different request must conflict")))
             .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
         proof("A10","Replay and UNKNOWN recover original assignment; changed payload denied");proof("A11","Review-required rows excluded without guessing");proof("A12","Frozen version conflict returns per-customer outcome, no descendant assignment");
-        long expiredCustomer=customer(null);var expired=random.preview(new SupportRandomRequest.Preview(List.of(pool(expiredCustomer)),false,null,null));
+        long expiredCustomer=customer(null);route(expiredCustomer);var expired=random.preview(new SupportRandomRequest.Preview(List.of(pool(expiredCustomer)),false,null,null));
         jdbc.update("UPDATE nx_support_random_preview SET expires_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 SECOND) WHERE id=?",expired.id());
         assertThatThrownBy(()->random.confirm(key(),new SupportRandomRequest.Confirm(expired.id(),expired.rulesVersion(),"Expired allocation confirmation proof"))).isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
         assertThat(mapper.current(expiredCustomer)).isNull();
@@ -171,9 +200,12 @@ class SupportEnhancementCoreRuntimeTest {
             assertThat(global.path("code").asInt()).isZero();assertThat(globalRows.path("code").asInt()).isZero();
             assertThat(global.path("data").path(filter.getKey()).asLong()).isEqualTo(globalRows.path("data").path("total").asLong());
         }
+        var foreignOwner=http("GET",base+"?ownerAgentId="+second,owner,null,null);
+        assertThat(foreignOwner.path("code").asInt()).isEqualTo(422);assertThat(foreignOwner.path("message").asText()).isEqualTo("SUPPORT_READ_SCOPE_INVALID");
+        assertThat(foreignOwner.hasNonNull("data")).isFalse();
         var seen=new LinkedHashSet<String>();
         for(int page=1;page<=8;page++) {
-            var rows=http("GET",base+"?keyword="+run+"&pageNum="+page+"&pageSize=5&ownerAgentId="+second,owner,null,null);
+            var rows=http("GET",base+"?keyword="+run+"&pageNum="+page+"&pageSize=5",owner,null,null);
             assertThat(rows.path("code").asInt()).isZero();assertThat(rows.path("data").path("total").asLong()).isEqualTo(37);
             for(var row:rows.path("data").path("records")) {
                 assertThat(seen.add(row.path("conversationNo").asText())).isTrue();assertThat(row.path("ownerAgentId").asLong()).isEqualTo(first);
@@ -296,7 +328,7 @@ class SupportEnhancementCoreRuntimeTest {
         proof("R35","Complete prior service lifecycle/assignment/activity/maintenance/count fields retained beside new grouped profile");writeProof("profile-device-runtime.json");
     }
     @Test void fullFinancialHistoryIsPrecisePaginatedAndSectionFailuresStayLocal() throws Exception {
-        rules("UNCONFIGURED",null,"AUTO_RANDOM");long customer=customer(null);long owner=mapper.current(customer).agentAdminId();
+        rules("UNCONFIGURED",null,"AUTO_RANDOM");long customer=routedCustomer(null);long owner=mapper.current(customer).agentAdminId();
         jdbc.update("INSERT INTO nx_user_wallet(user_id,usdt_available,nex_available) VALUES(?,12.123456,0) ON DUPLICATE KEY UPDATE usdt_available=12.123456,nex_available=0",customer);
         for(int i=0;i<31;i++) {
             deposit(customer,run+"_chain_"+i,"USDT","0.123456","CHAIN_TOPUP");
@@ -426,6 +458,7 @@ class SupportEnhancementCoreRuntimeTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_admin_avatar_asset WHERE uploader_id=? AND client_upload_id=?",Long.class,boss,badUpload)).isZero();
         assertThat(jdbc.queryForObject("SELECT avatar_asset_id FROM nx_admin_account_state WHERE admin_id=?",String.class,target)).isEqualTo(assetId);
         jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,'DEDICATED','DEDICATED','support,advisor','',0,1,1,0)",target);
+        as(boss);groupFixtures.create(boss,List.of(target),run+"_avatar");
         String noAvatarKey=key();
         var noAvatar=fixtureActors().createHttp(run+"_no_avatar",noAvatarKey,()->http("POST","/api/admin/platform/accounts",superToken,Map.of("username",run+"_no_avatar","displayName","No avatar allowed","email",run+"_empty@example.invalid","role","support","reason","Optional avatar remains optional","operator",run),noAvatarKey));
         assertThat(noAvatar.path("code").asInt()).isZero();long noAvatarAdmin=noAvatar.path("data").path("id").asLong();createdAdmins.add(noAvatarAdmin);
@@ -583,7 +616,7 @@ class SupportEnhancementCoreRuntimeTest {
         transfer(second,root);assertThat(mapper.current(root).agentAdminId()).isEqualTo(second);assertThat(mapper.current(child).agentAdminId()).isEqualTo(first);
         proof("A08","Actual client questions retain busy and disabled advisor assignment; explicit supervisor transfer changes selected root only, not its descendant");
         jdbc.update("UPDATE nx_support_agent_profile SET enabled=1 WHERE admin_id=?",first);
-        long contested=customer(null);var preview=random.preview(new SupportRandomRequest.Preview(List.of(pool(contested)),false,null,null));
+        long contested=customer(null);route(contested);var preview=random.preview(new SupportRandomRequest.Preview(List.of(pool(contested)),false,null,null));
         var randomCommand=new SupportRandomRequest.Confirm(preview.id(),preview.rulesVersion(),"Random versus explicit assignment race");
         var manualCommand=new SupportBindingRequest(second,List.of(new SupportBindingRequest.Customer(contested,null,mapper.poolVersion(contested))),"Manual versus random assignment race");
         var executor=Executors.newFixedThreadPool(2);var ready=new CountDownLatch(2);var go=new CountDownLatch(1);
@@ -595,14 +628,35 @@ class SupportEnhancementCoreRuntimeTest {
         }finally{executor.shutdownNow();}
         // Holding the admin lock lets a previously eligible snapshot wait behind a disable commit.
         jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",second);long waiting=customer(null);
+        route(waiting);
         var candidate=random.preview(new SupportRandomRequest.Preview(List.of(pool(waiting)),false,null,null));var locked=new CountDownLatch(1);var release=new CountDownLatch(1);executor=Executors.newFixedThreadPool(2);
+        var originalRoute=groupMapper.routeCurrent(waiting);var originalPool=pool(waiting);var originalAttempt=mapper.poolAttempt(waiting);
+        assertThat(groupMapper.candidates(serviceGroup)).extracting(ffdd.opsconsole.content.domain.SupportGroupFacts.Candidate::agentId).containsExactly(first);
+        String drawOperation=key();
         try {
             var disable=executor.submit(()->new TransactionTemplate(transactions).execute(status->{mapper.lockAgent(first);locked.countDown();try{release.await(10,TimeUnit.SECONDS);}catch(InterruptedException ex){throw new RuntimeException(ex);}jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",first);return true;}));
-            assertThat(locked.await(5,TimeUnit.SECONDS)).isTrue();var draw=executor.submit(()->{as(boss);return random.confirm(key(),new SupportRandomRequest.Confirm(candidate.id(),candidate.rulesVersion(),"Candidate disable current-read proof"));});
+            assertThat(locked.await(5,TimeUnit.SECONDS)).isTrue();var draw=executor.submit(()->{as(boss);return random.confirm(drawOperation,new SupportRandomRequest.Confirm(candidate.id(),candidate.rulesVersion(),"Candidate disable current-read proof"));});
             assertThatThrownBy(()->draw.get(1,TimeUnit.SECONDS)).isInstanceOf(TimeoutException.class);release.countDown();disable.get(10,TimeUnit.SECONDS);
-            assertThat(draw.get(10,TimeUnit.SECONDS).getCode()).isZero();assertThat(mapper.current(waiting)).isNull();
+            assertThatThrownBy(()->draw.get(10,TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class).satisfies(failure->{
+                assertThat(failure.getCause()).isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+                var rejection=(ffdd.opsconsole.shared.exception.BizException)failure.getCause();
+                assertThat(rejection.getCode()).isEqualTo(409);assertThat(rejection.getMessage()).isEqualTo("SUPPORT_RANDOM_SCOPE_CHANGED");
+                assertThat(rejection.getSuppressed()).isEmpty();
+            });
+            as(boss);assertThat(random.recover(drawOperation)).containsEntry("status","CONFLICT").containsEntry("customers",List.of());
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_random_result WHERE actor_id=? AND operation_id=?",Long.class,boss,drawOperation)).isZero();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log WHERE action='SUPPORT_RANDOM_ABORTED' AND actor_id=? AND resource_id=?",Long.class,boss,drawOperation)).isEqualTo(1L);
+            assertThat(mapper.current(waiting)).isNull();assertThat(pool(waiting)).isEqualTo(originalPool);assertThat(mapper.poolAttempt(waiting)).isEqualTo(originalAttempt);
+            assertThat(groupMapper.routeCurrent(waiting)).isEqualTo(originalRoute);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_agent_user_assignment WHERE user_id=? AND status='ACTIVE' AND is_deleted=0",Long.class,waiting)).isZero();
+            assertThat(groupMapper.candidates(serviceGroup)).isEmpty();
+            var refreshed=random.preview(new SupportRandomRequest.Preview(List.of(pool(waiting)),false,null,null));
+            var noCandidate=random.confirm(key(),new SupportRandomRequest.Confirm(refreshed.id(),refreshed.rulesVersion(),"Refreshed candidate-free scope proof"));
+            assertThat(noCandidate.getCode()).isZero();assertThat(noCandidate.getData().customers()).containsExactly(new SupportRandom.Recipient(waiting,"NO_CANDIDATE",null,null,"NO_CANDIDATE"));
+            assertThat(mapper.current(waiting)).isNull();assertThat(mapper.poolVersion(waiting)).isNotNull();assertThat(groupMapper.routeCurrent(waiting)).isEqualTo(originalRoute);
+            assertThat(jdbc.queryForObject("SELECT auto_attempt_state FROM nx_support_binding_pool WHERE customer_id=?",String.class,waiting)).isEqualTo("WAITING_CANDIDATE");
         }finally{release.countDown();executor.shutdownNow();}
-        proof("A09","Separate real connections race manual/random with one active binding; held selected advisor lock then committed disable yields no assignment and no deadlock");writeProof("binding-availability-runtime.json");
+        proof("A09","Separate real connections race manual/random with one active binding; held candidate lock then committed disable rejects frozen scope with exact 409, durable conflict and one abort audit, preserves pool/route and no binding; fresh scope records NO_CANDIDATE without deadlock");writeProof("binding-availability-runtime.json");
     }
     @Test void accountCommandReplayUsesCurrentActorAndLegacyReceiptsFailClosed() throws Exception {
         long otherSuper=admin("other_super","SUPER_ADMIN","MANAGER");String actorToken=token(boss),otherToken=token(otherSuper),operation=key();
@@ -787,6 +841,7 @@ class SupportEnhancementCoreRuntimeTest {
     }
     @Test void partialFailureResumesFrozenRecipientsWithoutRedrawingCommittedCustomer() throws Exception {
         rules("UNCONFIGURED",null,"SUPERVISOR");long one=customer(null),two=customer(null);
+        route(one);route(two);
         var preview=random.preview(new SupportRandomRequest.Preview(List.of(pool(one),pool(two)),false,null,null));
         var command=new SupportRandomRequest.Confirm(preview.id(),preview.rulesVersion(),"Recover actual partial recipient commits");
         String operation=key(),constraint="enhance_partial_"+run.substring(8);
@@ -810,6 +865,7 @@ class SupportEnhancementCoreRuntimeTest {
 
     @Test void competingAllocationsAndModePauseLinearizeAcrossSeparateConnections() throws Exception {
         rules("UNCONFIGURED",null,"SUPERVISOR");long customer=customer(null);
+        route(customer);
         var p=random.preview(new SupportRandomRequest.Preview(List.of(pool(customer)),false,null,null));
         var command=new SupportRandomRequest.Confirm(p.id(),p.rulesVersion(),"Competing frozen random confirmations");
         var executor=Executors.newFixedThreadPool(3);var started=new CountDownLatch(2);var go=new CountDownLatch(1);
@@ -823,6 +879,8 @@ class SupportEnhancementCoreRuntimeTest {
             proof("A09","Two actual connection transactions compete for same customer; exactly one active binding, second recipient conflict");
             jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id IN (?,?)",first,second);
             rules("UNCONFIGURED",null,"AUTO_RANDOM");long waiting=customer(null);assertThat(mapper.current(waiting)).isNull();
+            route(waiting);bindings.retryAutomatic(waiting);
+            assertThat(jdbc.queryForObject("SELECT auto_attempt_state FROM nx_support_binding_pool WHERE customer_id=?",String.class,waiting)).isEqualTo("WAITING_CANDIDATE");
             var locked=new CountDownLatch(1);var release=new CountDownLatch(1);
             var mode=executor.submit(()->new TransactionTemplate(transactions).execute(status->{as(boss);mapper.lockRules();
                 SharedMutationJournal.sql(jdbc,run,"SupportEnhancementCoreRuntimeTest",boss,"SupportEnhancementCoreRuntimeTest#rules-sql-2","UPDATE nx_support_rules SET unbound_assignment_mode='SUPERVISOR',version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",boss);locked.countDown();
@@ -880,19 +938,23 @@ class SupportEnhancementCoreRuntimeTest {
     @Test void originalOrphanCycleAndUnknownInheritanceRemainReviewRequired() {
         rules("UNLIMITED",null,"AUTO_RANDOM");
         for(String malformed:List.of("ORPHAN_ROOT","SPONSOR_CYCLE","UNKNOWN_DEPTH","UNKNOWN_PARENT")) {
-            new TransactionTemplate(transactions).executeWithoutResult(status -> {
-                status.setRollbackOnly();
-                long inviter=customer(null),other=customer(null);
+            var beforeCase=Set.copyOf(createdCustomers);
+            try {
+                long inviter=objectCustomer(null);
+                route(inviter);bindings.retryAutomatic(inviter);
+                long other=objectCustomer(null);
                 var assignment=mapper.current(inviter);
-                if("ORPHAN_ROOT".equals(malformed)) jdbc.update("UPDATE nx_support_agent_user_assignment SET segment_root_id=9007199254740991 WHERE id=?",assignment.id());
-                if("SPONSOR_CYCLE".equals(malformed)) {
-                    jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=?",other,inviter);
-                    jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=?",inviter,other);
-                }
-                if("UNKNOWN_DEPTH".equals(malformed)) jdbc.update("UPDATE nx_support_agent_user_assignment SET depth=NULL WHERE id=?",assignment.id());
-                if("UNKNOWN_PARENT".equals(malformed)) jdbc.update("UPDATE nx_support_agent_user_assignment SET depth=1,parent_assignment_id=9007199254740991 WHERE id=?",assignment.id());
+                new TransactionTemplate(transactions).executeWithoutResult(status -> {
+                    if("ORPHAN_ROOT".equals(malformed)) jdbc.update("UPDATE nx_support_agent_user_assignment SET segment_root_id=9007199254740991 WHERE id=?",assignment.id());
+                    if("SPONSOR_CYCLE".equals(malformed)) {
+                        jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=?",other,inviter);
+                        jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=?",inviter,other);
+                    }
+                    if("UNKNOWN_DEPTH".equals(malformed)) jdbc.update("UPDATE nx_support_agent_user_assignment SET depth=NULL WHERE id=?",assignment.id());
+                    if("UNKNOWN_PARENT".equals(malformed)) jdbc.update("UPDATE nx_support_agent_user_assignment SET depth=1,parent_assignment_id=9007199254740991 WHERE id=?",assignment.id());
+                });
                 mybatisSession.clearCache();
-                long child=customer(inviter);
+                long child=objectCustomer(inviter);
                 assertThat(mapper.current(child)).as(malformed).isNull();
                 assertThat(mapper.poolReason(child)).as(malformed).isEqualTo("MIGRATION_REVIEW");
                 assertThat(mapper.autoEligible(child)).as(malformed).isFalse();
@@ -902,7 +964,23 @@ class SupportEnhancementCoreRuntimeTest {
                 var preview=random.preview(new SupportRandomRequest.Preview(List.of(pool(child)),false,null,null));
                 assertThat(preview.count()).isZero();
                 assertThat(preview.excluded()).extracting(SupportRandom.Excluded::reason).containsExactly("REVIEW_REQUIRED");
-            });
+            } finally {
+                var cleanup=new ArrayList<Runnable>();
+                for(long id:createdCustomers.stream().filter(id->!beforeCase.contains(id)).toList())cleanup.add(()->{
+                    assertThat(createdCustomers).contains(id);
+                    var rows=jdbc.queryForList("SELECT nickname FROM nx_user WHERE id=?",String.class,id);
+                    if(rows.isEmpty())return;
+                    assertThat(rows).containsExactly(run);
+                    jdbc.update("DELETE FROM nx_support_customer_route_history WHERE customer_id=?",id);
+                    jdbc.update("DELETE FROM nx_support_agent_user_assignment WHERE user_id=?",id);
+                    jdbc.update("DELETE FROM nx_support_binding_pool WHERE customer_id=?",id);
+                    jdbc.update("UPDATE nx_user SET sponsor_user_id=NULL,status='DISABLED',is_deleted=1 WHERE id=? AND nickname=?",id,run);
+                    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_agent_user_assignment WHERE user_id=?",Long.class,id)).isZero();
+                    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_binding_pool WHERE customer_id=?",Long.class,id)).isZero();
+                    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user WHERE id=? AND sponsor_user_id IS NULL AND status='DISABLED' AND is_deleted=1",Long.class,id)).isEqualTo(1L);
+                });
+                SupportObjectEvidenceLedger.cleanupIndependently(cleanup.toArray(Runnable[]::new));
+            }
         }
     }
     private void writeProof(String filename) throws Exception {Files.writeString(Path.of(System.getenv("CS_ENHANCE_EVIDENCE_DIR"),filename),json.writeValueAsString(Map.of("run",run,"checkedAt",java.time.Instant.now().toString(),"database",SupportRuntimeTarget.current().database(),"checks",proofs,"workflowRunId",System.getenv().getOrDefault("WORKFLOW_RUN_ID",""),"snapshotHash",System.getenv().getOrDefault("WORKFLOW_SNAPSHOT_HASH",""))));}
@@ -914,13 +992,26 @@ class SupportEnhancementCoreRuntimeTest {
         return id;
     }
     private long customer(Long inviter) {
+        if(!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())return objectCustomer(inviter);
         return new TransactionTemplate(transactions).execute(status->{
             if(inviter!=null)mapper.lockCustomer(inviter);
             String referral=UUID.randomUUID().toString().replace("-","").substring(0,20).toUpperCase();
             String phone="198"+String.format("%08d",Math.abs((long)referral.hashCode())%100000000);
-            jdbc.update("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,sponsor_user_id,status,sandbox) VALUES('+86',?,'127.0.0.1','fixture-disabled-password',?,?,?,'ACTIVE',0)",phone,run,referral,inviter);
-            long id=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,referral);bindings.register(id,inviter);return id;
+            var generated=new org.springframework.jdbc.support.GeneratedKeyHolder();
+            int affected=jdbc.update(connection->{
+                var statement=connection.prepareStatement("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,sponsor_user_id,status,sandbox) VALUES('+86',?,'127.0.0.1','fixture-disabled-password',?,?,?,'ACTIVE',0)",java.sql.Statement.RETURN_GENERATED_KEYS);
+                statement.setString(1,phone);statement.setString(2,run);statement.setString(3,referral);statement.setObject(4,inviter);return statement;
+            },generated);
+            long id=Objects.requireNonNull(generated.getKey(),"Exact INSERT generated customer ID").longValue();createdCustomers.add(id);
+            assertThat(affected).isEqualTo(1);assertThat(jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,referral)).isEqualTo(id);
+            bindings.register(id,inviter);return id;
         });
+    }
+    private void route(long customer) {as(boss);groupFixtures.route(customer,serviceGroup);}
+    private long routedCustomer(Long inviter) {
+        long customer=customer(inviter);
+        if(mapper.current(customer)==null) {route(customer);bindings.retryAutomatic(customer);}
+        return customer;
     }
     private long objectCustomer(Long inviter) {
         String referral=UUID.randomUUID().toString().replace("-","").substring(0,20).toUpperCase();
@@ -932,7 +1023,7 @@ class SupportEnhancementCoreRuntimeTest {
                 var statement=connection.prepareStatement("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,sponsor_user_id,status,sandbox) VALUES('+86',?,'127.0.0.1','fixture-disabled-password',?,?,?,'ACTIVE',0)",java.sql.Statement.RETURN_GENERATED_KEYS);
                 statement.setString(1,phone);statement.setString(2,run);statement.setString(3,referral);statement.setObject(4,inviter);return statement;
             },generated);
-            long id=Objects.requireNonNull(generated.getKey(),"Exact INSERT generated customer ID").longValue();
+            long id=Objects.requireNonNull(generated.getKey(),"Exact INSERT generated customer ID").longValue();createdCustomers.add(id);
             long lookup=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,referral);
             assertThat(affected).isEqualTo(1);assertThat(lookup).isEqualTo(id);
             bindings.register(id,inviter);

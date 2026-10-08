@@ -386,7 +386,7 @@ class SupportTicketCreationMySqlTest {
                 manager = new DataSourceTransactionManager(jdbc.getDataSource());
                 var interceptor = new TransactionInterceptor(manager, new AnnotationTransactionAttributeSource());
                 bindingMapper = template.getMapper(SupportBindingMapper.class);
-                ownership = spy(new SupportOwnershipService(bindingMapper));
+                ownership = spy(new SupportOwnershipService(bindingMapper, mock(ffdd.opsconsole.content.mapper.SupportGroupMapper.class)));
                 // Authorization policy is outside this regression; the real customer lock is never mocked.
                 // Owner regressions explicitly opt into the real authorization implementation.
                 if (!enforceOwnership) {
@@ -431,7 +431,7 @@ class SupportTicketCreationMySqlTest {
                 var guard = mock(ProductionSupportPathGuard.class);
                 when(guard.productionSupportAutomationAllowed()).thenReturn(true);
                 bindings = proxied(new SupportBindingService(bindingMapper, ownership, idempotency, audit, events,
-                        mock(SupportAgentRepository.class), guard, ticketOwners), interceptor);
+                        mock(SupportAgentRepository.class), guard, ticketOwners, mock(ffdd.opsconsole.content.mapper.SupportGroupMapper.class)), interceptor);
                 var knowledge = mock(SupportKnowledgeRepository.class);
                 when(knowledge.listSla()).thenReturn(List.of(new SupportSlaView("other", 15, 24, "test", "test", 1L, now())));
                 var agents = mock(OpsSupportAgentService.class);

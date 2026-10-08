@@ -20,6 +20,8 @@ import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.domain.SupportAgentRepository.SupportOperatorRecord;
 import ffdd.opsconsole.content.domain.SupportAgentRepository.SupportOperatorScope;
 import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentBatchAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentQueryRequest;
@@ -69,6 +71,14 @@ class OpsSupportAgentServiceTest {
     void setUp() {
         when(groups.supervisorQualification(any())).thenReturn(null);
         ((FakeSupportAgentRepository) repository).reset();
+        // The default fixture is root; individual non-root tests declare their own scope.
+        when(ownership.defaultQueryScope(null,null)).thenReturn(new ReadScope(1L,ReadMode.ALL,null,null));
+        when(ownership.canReadAgent(any(),any())).thenReturn(true);
+        when(ownership.supervisor(any())).thenAnswer(call -> {
+            Long id=call.getArgument(0);
+            return id==1L || ((FakeSupportAgentRepository) repository).findProfile(id)
+                    .filter(p -> "MANAGER".equals(p.seatType()) && Boolean.TRUE.equals(p.enabled())).isPresent();
+        });
         when(binding.transferLegacy(anyString(),any())).thenAnswer(invocation->{
             ffdd.opsconsole.content.dto.SupportBindingRequest r=invocation.getArgument(1);
             return ApiResult.ok(r.customers().stream().map(c->new SupportAgentAssignmentView(7L,r.targetAgentAdminId(),c.id(),"U-"+c.id(),"Customer","ACTIVE",null,null,"actor",r.reason(),null)).toList());
@@ -106,6 +116,7 @@ class OpsSupportAgentServiceTest {
     @Test
     void overviewReadsExistingSupportProfilesOnly() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.operators.add(operator("2", "Support Agent", "support", "enabled"));
         fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
 
         ApiResult<SupportAgentOverview> result = service.overview();
@@ -113,7 +124,7 @@ class OpsSupportAgentServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().agents()).extracting("adminId").containsExactly(2L);
         assertThat(result.getData().agents().get(0).seatType()).isEqualTo("GENERAL");
-        assertThat(result.getData().agents().get(0).position()).isEqualTo("通用客服");
+        assertThat(result.getData().agents().get(0).position()).isEqualTo("专属客服");
         assertThat(result.getData().transferTargets())
                 .anySatisfy(target -> assertThat(target).containsEntry("targetType", "agent").containsEntry("targetId", "2"));
         assertThat(result.getData().sources()).contains("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment");
@@ -121,8 +132,55 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
+    void publicDirectoryUsesOneDedicatedServiceTypeWithoutChangingHistoricalAliases() {
+        var fake = (FakeSupportAgentRepository) repository;
+        fake.operators.addAll(List.of(operator("2","Legacy Support","support","enabled"),
+                operator("5","Legacy Advisor","support","enabled"),operator("6","Manager","support","enabled")));
+        fake.updateProfile(2L,"GENERAL","通用客服",List.of("support"),List.of(),12,true,true,false,now());
+        fake.updateProfile(5L,"DEDICATED","专属顾问",List.of("advisor"),List.of(),12,true,true,false,now());
+        fake.updateProfile(6L,"MANAGER","客服主管",List.of("support","advisor"),List.of(),12,true,true,false,now());
+
+        var overview = service.overview().getData();
+        var page = service.agents(new SupportAgentQueryRequest(1L,20L)).getData();
+        assertThat(overview.serviceTypes()).containsExactly("support");
+        assertThat(page.serviceTypes()).containsExactly("support");
+        assertThat(overview.positions()).containsExactly("客服主管","专属客服");
+        assertThat(page.positions()).isEqualTo(overview.positions());
+        assertThat(overview.agents()).allSatisfy(agent -> assertThat(agent.serviceTypes()).containsExactly("support"));
+        assertThat(page.records()).allSatisfy(agent -> assertThat(agent.serviceTypes()).containsExactly("support"));
+        assertThat(page.records()).extracting(agent -> agent.position()).containsExactly("专属客服","专属客服","客服主管");
+        assertThat(service.transferTargets()).allSatisfy(target ->
+                assertThat(target.get("serviceTypes")).isEqualTo(List.of("support")));
+        assertThat(overview.transferTargets()).allSatisfy(target ->
+                assertThat(target.get("position")).isIn("专属客服","客服主管"));
+        assertThat(fake.findProfile(2L).orElseThrow().position()).isEqualTo("通用客服");
+        assertThat(fake.findProfile(5L).orElseThrow().serviceTypes()).containsExactly("advisor");
+        assertThat(fake.findProfile(6L).orElseThrow().serviceTypes()).containsExactly("support","advisor");
+        // A public canonical label does not turn an old advisor-only profile into a legacy routing grant.
+        when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.copyOf(fake.operators))));
+        assertThat(service.assignableSupportAgent(5L)).isEmpty();
+    }
+
+    @Test
+    void oldAdvisorAliasRequestKeepsStorageCompatibilityAndReturnsCanonicalType() {
+        var fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L,"DEDICATED","专属顾问",List.of("advisor"),List.of(),12,true,true,false,now());
+        var request = new SupportAgentProfileUpdateRequest("通用客服",List.of(" advisor ","SUPPORT"),List.of(),
+                12,true,true,false,"superadmin","调整客服接派单配置");
+
+        var result = service.updateProfile(2L,"legacy-service-alias",request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().seatType()).isEqualTo("DEDICATED");
+        assertThat(result.getData().position()).isEqualTo("专属客服");
+        assertThat(result.getData().serviceTypes()).containsExactly("support");
+        assertThat(fake.findProfile(2L).orElseThrow().serviceTypes()).containsExactly("advisor","support");
+    }
+
+    @Test
     void m1AvailabilitySharesProfileVersionWithoutOverwritingSeatFields() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.operators.add(operator("2", "Support Agent", "support", "enabled"));
         fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of("keep-tag"),
                 17, true, true, false, now());
         var before = fake.findProfile(2L).orElseThrow();
@@ -154,6 +212,7 @@ class OpsSupportAgentServiceTest {
                 new ffdd.opsconsole.content.dto.SupportAgentLoadStateRequest(8, true))))
                 .hasMessageContaining("SUPPORT_AGENT_PROFILE_EXPECTED_VERSION_REQUIRED");
         when(accountService.currentOperator()).thenReturn(Optional.of(operator("4", "Finance Agent", "finance", "enabled")));
+        when(ownership.defaultQueryScope(null,null)).thenReturn(new ReadScope(4L,ReadMode.PERSONAL,null,null));
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.updateAvailabilityForLoad(Map.of("2",
                 new ffdd.opsconsole.content.dto.SupportAgentLoadStateRequest(8, true, 1L))))
                 .hasMessageContaining("SUPPORT_LOAD_MANAGEMENT_FORBIDDEN");
@@ -164,6 +223,7 @@ class OpsSupportAgentServiceTest {
     @Test
     void pausedAgentRemainsVisibleButCannotReceiveConversationTransfersUntilResumed() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.operators.add(operator("2", "Support Agent", "support", "enabled"));
         fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(),
                 12, true, true, true, now());
         assertThat(service.overview().getData().agents()).extracting("adminId").contains(2L);
@@ -196,6 +256,27 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
+    void managedDirectoryAndAvailabilityExcludeOtherGroupAndKeepDisabledMember() {
+        FakeSupportAgentRepository fake=(FakeSupportAgentRepository)repository;
+        fake.operators.addAll(List.of(operator("2","Paused member","support","disabled"),
+                operator("7","Other group","support","enabled"),operator("6","Dual role outside own group","support","enabled")));
+        fake.agentGroups.putAll(Map.of(2L,10L,7L,20L,6L,20L));fake.groupOwners.putAll(Map.of(10L,6L,20L,8L));
+        fake.updateProfile(2L,"GENERAL","通用客服",List.of("support"),List.of(),12,false,false,false,now());
+        fake.updateProfile(7L,"GENERAL","通用客服",List.of("support"),List.of(),12,true,true,false,now());
+        ReadScope managed=new ReadScope(6L,ReadMode.MANAGED,null,null);
+        when(ownership.defaultQueryScope(null,null)).thenReturn(managed);
+        var page=service.agents(new SupportAgentQueryRequest(1L,20L)).getData();
+        assertThat(page.total()).isEqualTo(1);assertThat(page.records()).extracting("adminId").containsExactly(2L);
+        assertThat(page.records().get(0).status()).isEqualTo("disabled");
+        assertThat(service.availabilityStates()).containsOnlyKeys("2");
+        assertThat(service.transferTargets()).isEmpty();
+        assertThat(fake.lastCountRoleScope.readScope()).isEqualTo(managed);
+        when(ownership.defaultQueryScope(null,null)).thenReturn(new ReadScope(9L,ReadMode.MANAGED,null,null));
+        assertThat(service.agents(new SupportAgentQueryRequest(1L,20L)).getData().total()).isZero();
+        assertThat(service.availabilityStates()).isEmpty();
+    }
+
+    @Test
     void agentsReturnPagedBackendRowsAndCurrentPageAssignments() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
         fake.operators.addAll(List.of(
@@ -214,7 +295,7 @@ class OpsSupportAgentServiceTest {
         ApiResult<SupportAgentPageView> result = service.agents(new SupportAgentQueryRequest(2L, 2L));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().total()).isEqualTo(4);
+        assertThat(result.getData().total()).isEqualTo(5);
         assertThat(result.getData().pageNum()).isEqualTo(2);
         assertThat(result.getData().pageSize()).isEqualTo(2);
         assertThat(result.getData().records()).extracting("adminId").containsExactly(6L, 7L);
@@ -244,7 +325,7 @@ class OpsSupportAgentServiceTest {
 
         var page = service.agents(new SupportAgentQueryRequest(1L, 5L)).getData();
 
-        assertThat(page.total()).isEqualTo(10_000);
+        assertThat(page.total()).isEqualTo(20_000);
         assertThat(page.records()).extracting("adminId").containsExactly(1L, 2L, 3L, 4L, 5L);
         assertThat(fake.countOperatorCalls).isEqualTo(1);
         assertThat(fake.pageOperatorCalls).isEqualTo(1);
@@ -290,6 +371,7 @@ class OpsSupportAgentServiceTest {
                 operator("7", "Other", "support", "enabled")));
         when(ownership.actorId()).thenReturn(6L);
         when(ownership.supervisor(6L)).thenReturn(false);
+        when(ownership.defaultQueryScope(null,null)).thenReturn(new ReadScope(6L,ReadMode.PERSONAL,null,null));
 
         var page = service.agents(new SupportAgentQueryRequest(1L, 5L)).getData();
 
@@ -298,7 +380,7 @@ class OpsSupportAgentServiceTest {
         assertThat(fake.lastCountScope).isEqualTo(6L);
         assertThat(fake.lastPageScope).isEqualTo(6L);
         assertThat(fake.defaultProfileAttempts).containsExactly(6L);
-        verify(ownership).requireEligibleAgent();
+        verify(ownership).defaultQueryScope(null,null);
         verifyNoInteractions(accountService);
     }
 
@@ -307,7 +389,7 @@ class OpsSupportAgentServiceTest {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
         when(ownership.actorId()).thenReturn(6L);
         when(ownership.supervisor(6L)).thenReturn(false);
-        doThrow(new BizException(403, "SUPPORT_AGENT_UNAVAILABLE")).when(ownership).requireEligibleAgent();
+        when(ownership.defaultQueryScope(null,null)).thenThrow(new BizException(403, "SUPPORT_AGENT_UNAVAILABLE"));
 
         assertThatThrownBy(() -> service.agents(new SupportAgentQueryRequest(1L, 5L)))
                 .isInstanceOf(BizException.class).hasMessage("SUPPORT_AGENT_UNAVAILABLE");
@@ -346,6 +428,20 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
+    void profileReplayRechecksCurrentTargetBeforeRetainedReceipt() {
+        when(ownership.canReadAgent(1L, 2L)).thenReturn(false);
+        var request = new SupportAgentProfileUpdateRequest("通用客服", List.of("support"), List.of(),
+                12, true, true, false, "superadmin", "调整客服接派单配置");
+
+        var result = service.updateProfile(2L, "old-profile-receipt", request);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        verifyNoInteractions(idempotencyService);
+        verify(ownership).lockAgent(1L);
+        verify(ownership).lockAgent(2L);
+    }
+
+    @Test
     void updateProfileRequiresStructuredFieldsAndAudits() {
         SupportAgentProfileUpdateRequest request = new SupportAgentProfileUpdateRequest(
                 "通用客服",
@@ -363,7 +459,7 @@ class OpsSupportAgentServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().adminId()).isEqualTo(2L);
         assertThat(result.getData().seatType()).isEqualTo("GENERAL");
-        assertThat(result.getData().position()).isEqualTo("通用客服");
+        assertThat(result.getData().position()).isEqualTo("专属客服");
         assertThat(result.getData().serviceTypes()).containsExactly("support");
         assertThat(result.getData().maxConcurrent()).isEqualTo(16);
 
@@ -394,8 +490,9 @@ class OpsSupportAgentServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().seatType()).isEqualTo("DEDICATED");
         assertThat(result.getData().position()).isEqualTo("专属客服");
-        assertThat(result.getData().serviceTypes()).contains("advisor");
+        assertThat(result.getData().serviceTypes()).containsExactly("support");
         assertThat(fake.findProfile(2L).orElseThrow().seatType()).isEqualTo("DEDICATED");
+        assertThat(fake.findProfile(2L).orElseThrow().serviceTypes()).contains("advisor");
     }
 
     @Test
@@ -465,8 +562,26 @@ class OpsSupportAgentServiceTest {
         var customers=List.of(new ffdd.opsconsole.content.dto.SupportBindingRequest.Customer(1001L,null,1L));
         var request=new SupportAgentSeatAssignmentRequest("专属客服",List.of("advisor"),List.of(),30,true,true,false,List.of(1001L),1L,"actor","formal seat assignment",customers);
         assertThat(service.assignSeat(2L,"seat-adapter-key",request).getCode()).isZero();
+        var lockOrder = org.mockito.Mockito.inOrder(ownership, binding);
+        lockOrder.verify(ownership).lockCustomer(1001L);
+        lockOrder.verify(binding).prepareTransferLocks(new ffdd.opsconsole.content.dto.SupportBindingRequest(2L,customers,"formal seat assignment"));
+        lockOrder.verify(ownership).lockAgent(1L);
+        lockOrder.verify(ownership).lockAgent(2L);
         verify(binding).transferInTransaction("seat-adapter-key",new ffdd.opsconsole.content.dto.SupportBindingRequest(2L,customers,"formal seat assignment"));
         org.mockito.Mockito.verify(binding,org.mockito.Mockito.never()).transfer(anyString(),any());
+    }
+
+    @Test void seatAssignmentRejectsUnprovableCompleteLockSetBeforeTargetMutation() {
+        var customers=List.of(new ffdd.opsconsole.content.dto.SupportBindingRequest.Customer(1001L,null,1L));
+        var transfer=new ffdd.opsconsole.content.dto.SupportBindingRequest(2L,customers,"formal seat assignment");
+        org.mockito.Mockito.doThrow(new BizException(404,"SUPPORT_AGENT_NOT_FOUND"))
+                .when(binding).prepareTransferLocks(transfer);
+        var request=new SupportAgentSeatAssignmentRequest("专属客服",List.of("advisor"),List.of(),30,true,true,false,
+                List.of(1001L),1L,"actor","formal seat assignment",customers);
+        assertThatThrownBy(()->service.assignSeat(2L,"unprovable-lock-set",request)).isInstanceOf(BizException.class);
+        org.mockito.Mockito.verify(ownership,org.mockito.Mockito.never()).lockAgent(any());
+        verifyNoInteractions(idempotencyService);
+        org.mockito.Mockito.verify(binding,org.mockito.Mockito.never()).transferInTransaction(anyString(),any());
     }
 
     @Test
@@ -548,6 +663,8 @@ class OpsSupportAgentServiceTest {
     void assignSeatRejectsNonSupervisorActor() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
         fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
+        when(ownership.actorId()).thenReturn(2L);
+        when(ownership.defaultQueryScope(null,null)).thenReturn(new ReadScope(2L,ReadMode.PERSONAL,null,null));
         when(accountService.currentOperator()).thenReturn(Optional.of(operator("2", "Support Agent", "support", "enabled")));
 
         var result = service.assignSeat(
@@ -562,8 +679,10 @@ class OpsSupportAgentServiceTest {
                         true,
                         false,
                         List.of(1001L),
+                        1L,
                         "support.agent",
-                        "尝试分配客服坐席"));
+                        "尝试分配客服坐席",
+                        List.of(new ffdd.opsconsole.content.dto.SupportBindingRequest.Customer(1001L,null,1L))));
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("SUPPORT_SEAT_ASSIGNMENT_FORBIDDEN");
@@ -698,6 +817,8 @@ class OpsSupportAgentServiceTest {
         private final List<Long> seededAdminIds = new ArrayList<>();
         private final List<SupportTicketAssigneeCandidateView> ticketAssigneeCandidates = new ArrayList<>();
         private final List<AdminAccountOverview.OperatorRecord> operators = new ArrayList<>();
+        private final Map<Long, Long> agentGroups = new LinkedHashMap<>();
+        private final Map<Long, Long> groupOwners = new LinkedHashMap<>();
         private final Map<Long, String> avatars = new LinkedHashMap<>();
         private final Map<Long, Long> avatarVersions = new LinkedHashMap<>();
         private final List<Long> defaultProfileAttempts = new ArrayList<>();
@@ -726,6 +847,8 @@ class OpsSupportAgentServiceTest {
             seededAdminIds.clear();
             ticketAssigneeCandidates.clear();
             operators.clear();
+            agentGroups.clear();
+            groupOwners.clear();
             avatars.clear();
             avatarVersions.clear();
             defaultProfileAttempts.clear();
@@ -789,7 +912,7 @@ class OpsSupportAgentServiceTest {
             countOperatorCalls++;
             lastCountRoleScope = scope;
             lastCountScope = scope.visibleAdminId();
-            return visibleOperators(scope.visibleAdminId()).size();
+            return visibleOperators(scope).size();
         }
 
         @Override
@@ -799,17 +922,29 @@ class OpsSupportAgentServiceTest {
             lastPageScope = scope.visibleAdminId();
             lastLimit = limit;
             lastOffset = offset;
-            return visibleOperators(scope.visibleAdminId()).stream().skip(offset).limit(limit)
+            return visibleOperators(scope).stream().skip(offset).limit(limit)
                     .map(row -> new SupportOperatorRecord(Long.valueOf(row.id()), row.name(), row.email(),
-                            avatars.get(Long.valueOf(row.id())), avatarVersions.getOrDefault(Long.valueOf(row.id()), 0L)))
+                            avatars.get(Long.valueOf(row.id())), avatarVersions.getOrDefault(Long.valueOf(row.id()), 0L),row.status()))
                     .toList();
         }
 
-        private List<AdminAccountOverview.OperatorRecord> visibleOperators(Long visibleAdminId) {
+        private List<AdminAccountOverview.OperatorRecord> visibleOperators(SupportOperatorScope scope) {
             return operators.stream().filter(row -> "support".equalsIgnoreCase(row.role()))
-                    .filter(row -> "enabled".equalsIgnoreCase(row.status()))
-                    .filter(row -> visibleAdminId == null || visibleAdminId.toString().equals(row.id()))
+                    .filter(row -> scope.visibleAdminId() == null || scope.visibleAdminId().toString().equals(row.id()))
+                    .filter(row -> visibleAgent(Long.valueOf(row.id()),scope.readScope()))
                     .sorted(java.util.Comparator.comparingLong(row -> Long.parseLong(row.id()))).toList();
+        }
+
+        private boolean visibleAgent(Long id, ReadScope scope) {
+            if(scope==null) return false;
+            Long group=agentGroups.get(id);
+            if(scope.requestedAgentId()!=null && !scope.requestedAgentId().equals(id)) return false;
+            if(scope.requestedGroupId()!=null && !scope.requestedGroupId().equals(group)) return false;
+            return switch(scope.mode()) {
+                case ALL -> scope.actorId()==1L;
+                case PERSONAL -> scope.actorId().equals(id);
+                case MANAGED -> group!=null && scope.actorId().equals(groupOwners.get(group));
+            };
         }
 
         @Override
@@ -890,6 +1025,18 @@ class OpsSupportAgentServiceTest {
             return assignments.stream()
                     .filter(row -> row.agentAdminId().equals(agentAdminId) && "ACTIVE".equals(row.status()))
                     .count();
+        }
+
+        @Override
+        public long countActiveAssignments(Long agentAdminId, ReadScope scope) {
+            java.util.Objects.requireNonNull(scope);
+            return visibleAgent(agentAdminId,scope)?countActiveAssignments(agentAdminId):0;
+        }
+
+        @Override
+        public List<SupportAgentAssignmentView> listActiveAssignments(List<Long> agentAdminIds, ReadScope scope) {
+            java.util.Objects.requireNonNull(scope);
+            return listActiveAssignments(agentAdminIds.stream().filter(id->visibleAgent(id,scope)).toList());
         }
 
         @Override

@@ -44,6 +44,18 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/content/conversations")
 public class OpsConversationStreamController {
     @org.springframework.transaction.event.TransactionalEventListener(phase=org.springframework.transaction.event.TransactionPhase.AFTER_COMMIT)
+    public void scopeChanged(ffdd.opsconsole.content.domain.SupportGroupFacts.ScopeChanged event) {
+        for(Long affected:event.affectedAdminIds()) {
+            String actor=String.valueOf(affected);
+            for(EmitterBinding binding:registry.getOrDefault(actor,List.of())) {
+                try {
+                    if(!active(binding)) continue;
+                    binding.emitter.send(SseEmitter.event().name("scope-invalidated").data(Map.of("reason",event.reason())));
+                } catch(IOException | IllegalStateException ex) {unregister(actor,binding);}
+            }
+        }
+    }
+    @org.springframework.transaction.event.TransactionalEventListener(phase=org.springframework.transaction.event.TransactionPhase.AFTER_COMMIT)
     public void assignmentChanged(ffdd.opsconsole.content.application.SupportBindingService.SupportAssignmentChanged event) {
         registry.forEach((actor,bindings)-> {
             if(!actor.equals(String.valueOf(event.current().agentAdminId()))

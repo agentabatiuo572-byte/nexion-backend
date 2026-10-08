@@ -165,6 +165,12 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
     }
 
     @Override
+    public long countActiveAssignments(Long agentAdminId, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        java.util.Objects.requireNonNull(scope, "SUPPORT_READ_SCOPE_REQUIRED");
+        return mapper.countScopedActiveAssignments(agentAdminId, scope);
+    }
+
+    @Override
     public boolean userExists(Long userId) {
         return userId != null && mapper.countActiveUser(userId) > 0;
     }
@@ -180,6 +186,12 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
     @Override
     public List<SupportAgentAssignmentView> listActiveAssignments(List<Long> agentAdminIds) {
         return mapper.listActiveAssignments(agentAdminIds == null ? List.of() : agentAdminIds);
+    }
+
+    @Override
+    public List<SupportAgentAssignmentView> listActiveAssignments(List<Long> agentAdminIds, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        java.util.Objects.requireNonNull(scope, "SUPPORT_READ_SCOPE_REQUIRED");
+        return mapper.listScopedActiveAssignments(agentAdminIds == null ? List.of() : agentAdminIds, scope);
     }
 
     @Override

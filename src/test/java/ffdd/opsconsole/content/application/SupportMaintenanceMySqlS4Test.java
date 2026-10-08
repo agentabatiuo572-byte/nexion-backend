@@ -40,6 +40,9 @@ class SupportMaintenanceMySqlS4Test {
     @Autowired DataSource dataSource;
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingMapper bindingMapper;
+    @Autowired ffdd.opsconsole.content.mapper.SupportGroupMapper groupMapper;
+    @Autowired SupportGroupService groups;
+    private SupportGroupRuntimeFixtures groupFixtures;
     @Autowired SupportMaintenanceMapper mapper;
     @Autowired SupportOwnershipService ownership;
     @Autowired SupportMaintenanceService maintenance;
@@ -59,6 +62,8 @@ class SupportMaintenanceMySqlS4Test {
             assertThat(connection.getCatalog()).isEqualTo(SupportIsolatedRuntime.database());
         }
         boss=admin("boss","SUPER_ADMIN","MANAGER");g1=admin("g1","SUPPORT","DEDICATED");g2=admin("g2","SUPPORT","DEDICATED");
+        groupFixtures=new SupportGroupRuntimeFixtures(fixtureActors(),jdbc,groupMapper,groups,Set::of);
+        groupFixtures.asSuper(boss,()->{groupFixtures.serviceMember(g1);groupFixtures.serviceMember(g2);});
         customer=tx(()->{
             String referral=UUID.randomUUID().toString().replace("-","").substring(0,20);
             jdbc.update("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox) VALUES('+86',?,'127.0.0.1','NO_LOGIN',?,?,'ACTIVE',0)",
@@ -71,7 +76,9 @@ class SupportMaintenanceMySqlS4Test {
         jdbc.update("INSERT INTO nx_conversation(conversation_no,user_id,conversation_type,status,last_message,created_at,updated_at) VALUES(?,?,'support','OPEN','fixture',NOW(),NOW())",conversation,customer);
         as(g1);
     }
-    @AfterEach void clearActor(){try {if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());} finally {SecurityContextHolder.clearContext();}}
+    @AfterEach void clearActor(){SupportObjectEvidenceLedger.cleanupIndependently(
+            ()->{if(groupFixtures!=null)groupFixtures.cleanup();},
+            ()->{if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());},SecurityContextHolder::clearContext);}
 
     @Test void executionReplayStopResumeTransferAndRollbackPersistCorrectly() throws Exception {
         String old=UUID.randomUUID().toString();login(old);

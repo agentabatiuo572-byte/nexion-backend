@@ -8,6 +8,15 @@ import java.util.Map;
 import java.util.Optional;
 
 public interface ConversationRepository {
+    default Map<String,Object> counters(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        throw new UnsupportedOperationException("SCOPED_CONVERSATION_COUNTERS_REQUIRED");
+    }
+    default PageResult<ContentConversationView> pageConversations(ConversationQueryRequest request, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        throw new UnsupportedOperationException("SCOPED_CONVERSATION_PAGE_REQUIRED");
+    }
+    default PageResult<ContentConversationView> pageConversationsBeforeId(ConversationQueryRequest request, Long beforeId, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        throw new UnsupportedOperationException("SCOPED_CONVERSATION_PAGE_REQUIRED");
+    }
     /** Used after durable replay wins under a pre-existing RR snapshot; caller holds the customer mutex. */
     default List<ContentConversationMessageView> currentRecentUserVisibleMessages(String no,int limit) {
         throw new UnsupportedOperationException("CURRENT_MESSAGE_READ_REQUIRED");

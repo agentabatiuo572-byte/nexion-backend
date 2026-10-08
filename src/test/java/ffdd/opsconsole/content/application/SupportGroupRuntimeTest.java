@@ -63,10 +63,14 @@ class SupportGroupRuntimeTest {
         originalBindings=jdbc.queryForList("SELECT * FROM nx_support_agent_user_assignment ORDER BY id");
         boss=actor("boss","SUPER_ADMIN","MANAGER");managerA=actor("managerA","SUPPORT","MANAGER");
         managerB=actor("managerB","SUPPORT","MANAGER");agent=actor("agent","SUPPORT","DEDICATED");dual=actor("dual","SUPPORT","DEDICATED");
-        as(boss);var originalDirectory=groups.supervisors();
+        as(boss);assertThat(ownership.currentSuperAdmin()).isTrue();var originalDirectory=groups.supervisors();
         qualify(managerA,"SUPERVISOR");qualify(managerB,"SUPERVISOR");qualify(agent,"SERVICE");qualify(dual,"SERVICE");qualify(dual,"SUPERVISOR");
         as(managerB);assertThat(groups.groups()).isEmpty();
         as(managerA);assertThatThrownBy(()->groups.create(key(),new Create(run+" forged",managerB,reason))).isInstanceOf(BizException.class);
+        new org.springframework.transaction.support.TransactionTemplate(transactions).executeWithoutResult(status->{
+            assertThat(ownership.currentSuperAdmin()).isFalse();assertThat(status.isRollbackOnly()).isFalse();
+        });
+        proofs.put("nonthrowingCurrentSuperAdminProbe",Map.of("bossIsSuper",true,"supervisorIsSuper",false,"supervisorTransactionCommitted",true));
         Group first=create("first",managerA),second=create("second",managerA);
         as(managerB);Group other=create("other",managerB);
         as(managerA);assertThatThrownBy(()->groups.rename(other.id(),key(),new Rename("forged",other.version(),reason))).hasMessage("SUPPORT_GROUP_NOT_FOUND");
@@ -96,7 +100,7 @@ class SupportGroupRuntimeTest {
         Long binding=jdbc.queryForObject("SELECT id FROM nx_support_agent_user_assignment WHERE user_id=? AND status='ACTIVE'",Long.class,customer);
         // New supervisor qualification must not enter the old all-customer MANAGER shortcut.
         assertThat(mapper.qualified(dual,"SUPERVISOR")).isEqualTo(1);
-        assertThat(ownership.supervisor(dual)).isFalse();
+        assertThat(ownership.supervisor(dual)).isTrue();
         assertThat(ownership.canRead(dual,customer)).isFalse();
         var member=mapper.member(agent);
         var disabled=accounts.updateStatus(key(),String.valueOf(agent),new AdminAccountStatusUpdateRequest("disabled",reason,run,accountVersion(agent)));

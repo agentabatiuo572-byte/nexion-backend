@@ -40,21 +40,7 @@ public class OpsSupportWorkbenchController {
     @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
     @GetMapping("/users")
     public ApiResult<PageResult<UserProfileListView>> users(UserQueryRequest request) {
-        Long actor=ownership.actorId();
-        if(!ownership.supervisor(actor)) {
-            if(bindings.eligibleAgent(actor)!=1) return ApiResult.fail(403,"SUPPORT_AGENT_UNAVAILABLE");
-            int page=request==null || request.pageNum()==null?1:Math.max(1,request.pageNum());
-            int size=request==null || request.pageSize()==null?20:Math.max(1,Math.min(100,request.pageSize()));
-            String keyword=request==null?null:request.keyword();
-            String status=request==null?null:request.status();
-            Long id=request==null?null:request.userId();
-            long count=bindings.ownedCustomerCount(actor,keyword,status,id);
-            var records=bindings.ownedCustomers(actor,keyword,status,id,size,(long)(page-1)*size).stream()
-                    .map(customer->userService.profile(customer).getData()).filter(java.util.Objects::nonNull)
-                    .map(record->UserProfileListView.from(record,"SUPPORT")).toList();
-            return ApiResult.ok(new PageResult<>(count,page,size,records));
-        }
-        ApiResult<PageResult<UserAccountView>> result = userService.profilePage(request);
+        ApiResult<PageResult<UserAccountView>> result = userService.supportWorkbenchProfilePage(request);
         if (result.getCode() != 0 || result.getData() == null) {
             return ApiResult.fail(result.getCode(), result.getMessage());
         }

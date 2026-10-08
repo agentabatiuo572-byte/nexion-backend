@@ -8,6 +8,8 @@ import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.SelectProvider;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import org.apache.ibatis.annotations.Update;
 
 public interface ConversationMapper extends BaseMapper<ConversationEntity> {
@@ -41,7 +43,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     @Update("UPDATE nx_conversation SET archived=#{archived},version=version+1,updated_at=#{now} WHERE conversation_no=#{no} AND is_deleted=0 AND archived=#{previous} AND version=#{version}")
     int updateArchived(@Param("no") String no,@Param("archived") boolean archived,@Param("previous") boolean previous,@Param("version") Long version,@Param("now") LocalDateTime now);
 
-    @Select("""
+    String SCOPED_COUNT_BASE = """
             <script>
             SELECT COUNT(*)
               FROM nx_conversation c
@@ -58,7 +60,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
              </if>
              <if test='unreadOnly != null and unreadOnly'>AND c.unread_count &gt; 0 AND c.status &lt;&gt; 'CLOSED' AND c.archived=0</if>
             </script>
-            """)
+            """;
+    @Select(SCOPED_COUNT_BASE)
     long countConversations(@Param("status") String status, @Param("type") String type,
                             @Param("ownerAgentId") String ownerAgentId, @Param("userId") Long userId,
                             @Param("keyword") String keyword, @Param("unreadOnly") Boolean unreadOnly,@Param("archived") Boolean archived);
@@ -66,7 +69,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
         return countConversations(status,type,owner,user,keyword,unread,null);
     }
 
-    @Select("""
+    String SCOPED_PAGE_BASE = """
             <script>
             SELECT
               c.id,
@@ -127,7 +130,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
              </choose>
             LIMIT #{pageSize} OFFSET #{offset}
             </script>
-            """)
+            """;
+    @Select(SCOPED_PAGE_BASE)
     List<ContentConversationView> pageConversations(@Param("status") String status, @Param("type") String type,
                                                      @Param("ownerAgentId") String ownerAgentId, @Param("keyword") String keyword,
                                                      @Param("userId") Long userId, @Param("unreadOnly") Boolean unreadOnly,
@@ -418,4 +422,24 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     int markConvertedToTicket(@Param("conversationNo") String conversationNo, @Param("message") String message,
                               @Param("expectedVersion") Long expectedVersion,
                               @Param("now") LocalDateTime now);
+
+    @SelectProvider(type=ScopedSql.class,method="count")
+    long countConversationsScoped(@Param("status") String status,@Param("type") String type,
+            @Param("ownerAgentId") String owner,@Param("userId") Long user,@Param("keyword") String keyword,
+            @Param("unreadOnly") Boolean unread,@Param("archived") Boolean archived,@Param("scope") ReadScope scope);
+    @SelectProvider(type=ScopedSql.class,method="page")
+    List<ContentConversationView> pageConversationsScoped(@Param("status") String status,@Param("type") String type,
+            @Param("ownerAgentId") String owner,@Param("keyword") String keyword,@Param("userId") Long user,
+            @Param("unreadOnly") Boolean unread,@Param("beforeId") Long before,@Param("stableCursor") Boolean stable,
+            @Param("pageSize") long size,@Param("offset") long offset,@Param("archived") Boolean archived,@Param("scope") ReadScope scope);
+    final class ScopedSql {
+        private ScopedSql() {}
+        public static String count(){return scoped(SCOPED_COUNT_BASE);}
+        public static String page(){return scoped(SCOPED_PAGE_BASE);}
+        private static String scoped(String sql) {
+            return sql.replace("WHERE c.is_deleted=0",
+                "JOIN nx_user scope_customer ON scope_customer.id=c.user_id WHERE c.is_deleted=0 "
+                    +SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE);
+        }
+    }
 }

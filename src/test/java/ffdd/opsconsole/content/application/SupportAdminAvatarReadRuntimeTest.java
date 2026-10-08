@@ -48,6 +48,10 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
         SupportEnhancementPreparationTest.isolatedBoundary(registry);
     }
 
+    @Override void initializeSupportGroups() {
+        // The actual manager below owns these actors; position text alone grants no scope.
+    }
+
     @BeforeEach void prepareAvatarFixture() {
         boundary();
         originalSupportGrants=jdbc.queryForList("SELECT rp.id,rp.is_deleted,p.permission_code FROM nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id LEFT JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE r.role_code='SUPPORT' AND r.status=1 AND r.is_deleted=0 ORDER BY rp.id");
@@ -74,12 +78,19 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
         long manager=admin("avatar_manager","SUPPORT","MANAGER");
         long general=admin("avatar_general","SUPPORT","GENERAL");
         long unrelated=admin("avatar_unrelated","SUPPORT","DEDICATED");
+        long unrelatedOwner=admin("avatar_unrelated_owner","SUPPORT","MANAGER");
         long legacy=admin("avatar_legacy","SUPPORT","GENERAL");
         long forged=admin("avatar_forged","SUPPORT","GENERAL");
         long changedRole=admin("avatar_changed_role","SUPPORT","GENERAL");
         long withoutProfile=admin("avatar_without_profile","SUPPORT","GENERAL");
         long noAvatar=admin("avatar_missing","SUPPORT","GENERAL");
         long content=admin("avatar_content","CONTENT","GENERAL");
+        var managedGroup=createSupportGroup(manager,List.of(first,second,general,noAvatar,withoutProfile,changedRole),"avatar_managed");
+        createSupportGroup(unrelatedOwner,List.of(unrelated),"avatar_unrelated");
+        assertThat(groupMapper.qualificationCurrent(manager,"SUPERVISOR")).isNotNull();
+        assertThat(groupMapper.group(managedGroup.id()).supervisorAdminId()).isEqualTo(manager);
+        for(long member:List.of(first,second,general,noAvatar,withoutProfile,changedRole))
+            assertThat(groupMapper.memberCurrent(member).groupId()).isEqualTo(managedGroup.id());
         for(long actor:admins)
             assertThat(jdbc.update("UPDATE nx_admin SET username=?,email=? WHERE id=?","avatar_"+actor,"avatar_"+actor+"@example.invalid",actor)).isEqualTo(1);
         long customer=objectCustomer(first),otherCustomer=objectCustomer(first);
@@ -140,6 +151,7 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
         readImage(path(general,null),managerToken,otherColor);
         readImage(path(first,null),managerToken,originalColor);
         readImage(path(first,customer),managerToken,originalColor);
+        denied(path(unrelated,null),managerToken,404);
         var ownRoster=http("GET","/api/admin/content/support-agents",firstToken,null,null);assertThat(ownRoster.path("code").asInt()).isZero();assertThat(ownRoster.path("data").path("agents")).hasSize(1);assertThat(ownRoster.path("data").path("agents").get(0).path("adminId").asLong()).isEqualTo(first);
         var rosterRows=roster(managerToken);var generalRow=record(rosterRows,general,"adminId");assertThat(generalRow.path("enabled").asBoolean()).isFalse();assertThat(generalRow.path("busy").asBoolean()).isTrue();assertThat(generalRow.path("seatType").asText()).isEqualTo("GENERAL");assertThat(generalRow.path("avatarRef").asText()).isEqualTo(path(general,null));
         var missingRow=record(rosterRows,noAvatar,"adminId");assertThat(missingRow.path("avatarAssetId").isNull()).isTrue();assertThat(missingRow.path("avatarRef").isNull()).isTrue();
@@ -274,7 +286,7 @@ class SupportAdminAvatarReadRuntimeTest extends SupportBulkRuntimeFixture {
     private void writeAvatarEvidence() throws Exception {
         var checks=new LinkedHashMap<String,Object>();
         checks.put("avatar-service-read",check("SUPPORT JWT has only actual DB service_m1_read/service_m3_read grants. Self and current customer read real PNG; equally permitted unrelated advisor receives 404 before and after transfer. m3-only requires customer context; m1-only supervisor reads roster and customer through the same private asset."));
-        checks.put("avatar-roster-scope",check("Ordinary M1 roster is self only; supervisor reads active SUPPORT roster including disabled/busy GENERAL profile. Other account, missing profile, missing image and newer primary CONTENT role are denied despite old SUPPORT relation and real attached images."));
+        checks.put("avatar-roster-scope",check("Ordinary M1 roster is self only; actual SUPERVISOR owner reads its explicitly grouped SUPPORT members including disabled/busy GENERAL profile. Same-group missing profile/image/newer primary CONTENT role keep their distinct negative branches; another owned group and unrelated accounts remain denied."));
         checks.put("avatar-history",check("Actual original HTTP message metadata and sender establish VERIFIED author. Legacy message without metadata and forged metadata with contradictory conversation ID/number cannot authorize images. History remains readable after author becomes inactive and changes current role."));
         checks.put("avatar-transfer",check("Formal transfer immediately returns 404 to prior advisor's customer-context requests. New advisor reads current advisor and actual historical first author; current customer projection changes while old message sender/avatar stays the original author."));
         checks.put("avatar-a1-boundary",check("Service-only JWT receives 403 on original A1 avatar GET, multipart upload and complete profile PATCH. Superadmin original upload/full identity CAS/read remains successful; all identity fields stay unchanged and version increments."));

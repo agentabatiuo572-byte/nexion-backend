@@ -7,6 +7,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.SelectProvider;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import org.apache.ibatis.annotations.Update;
 
 public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
@@ -57,7 +59,7 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
     @Select("SELECT COUNT(*) FROM nx_support_ticket WHERE is_deleted=0 AND archived=1")
     long countArchived();
 
-    @Select("""
+    String SCOPED_COUNT_BASE = """
             <script>
             SELECT COUNT(*)
              FROM nx_support_ticket t
@@ -81,12 +83,13 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
  AND t.last_message LIKE CONCAT('%', #{keyword}, '%')))
              </if>
             </script>
-            """)
+            """;
+    @Select(SCOPED_COUNT_BASE)
     long countTickets(@Param("scope") String scope, @Param("status") String status, @Param("category") String category,
                       @Param("priority") String priority, @Param("assignedAdminId") Long assignedAdminId,
                       @Param("userId") Long userId, @Param("keyword") String keyword,@Param("visibility") Visibility visibility);
 
-    @Select("""
+    String SCOPED_PAGE_BASE = """
             <script>
             SELECT
               t.id,
@@ -142,7 +145,8 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
              </choose>
             LIMIT #{pageSize} OFFSET #{offset}
             </script>
-            """)
+            """;
+    @Select(SCOPED_PAGE_BASE)
     List<SupportTicketView> pageTickets(@Param("scope") String scope, @Param("status") String status, @Param("category") String category,
                                         @Param("priority") String priority, @Param("assignedAdminId") Long assignedAdminId,
                                         @Param("userId") Long userId, @Param("keyword") String keyword,
@@ -322,4 +326,32 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
             @Param("expectedStatus") String expectedStatus,
             @Param("expectedVersion") long expectedVersion,
             @Param("now") LocalDateTime now);
+
+    @SelectProvider(type=ScopedSql.class,method="count")
+    long countTicketsScoped(@Param("ticketScope") String ticketScope,@Param("status") String status,@Param("category") String category,
+            @Param("priority") String priority,@Param("assignedAdminId") Long assigned,@Param("userId") Long user,
+            @Param("keyword") String keyword,@Param("visibility") Visibility visibility,@Param("scope") ReadScope scope);
+    @SelectProvider(type=ScopedSql.class,method="page")
+    List<SupportTicketView> pageTicketsScoped(@Param("ticketScope") String ticketScope,@Param("status") String status,@Param("category") String category,
+            @Param("priority") String priority,@Param("assignedAdminId") Long assigned,@Param("userId") Long user,
+            @Param("keyword") String keyword,@Param("beforeId") Long before,@Param("stableCursor") Boolean stable,
+            @Param("pageSize") long size,@Param("offset") long offset,@Param("visibility") Visibility visibility,@Param("scope") ReadScope scope);
+    @Select("<script>SELECT COALESCE(SUM(t.archived=0 AND t.status IN ('OPEN','IN_PROGRESS','PENDING_USER')),0) active,"
+        +"COALESCE(SUM(t.archived=0 AND t.status='PENDING_USER'),0) pendingUser,"
+        +"COALESCE(SUM(t.archived=0 AND t.ops_unread_count &gt; 0 AND t.status &lt;&gt; 'CLOSED'),0) opsUnread,"
+        +"COALESCE(SUM(t.archived=0 AND t.priority IN ('HIGH','URGENT') AND t.status IN ('OPEN','IN_PROGRESS','PENDING_USER')),0) highPriorityActive,"
+        +"COALESCE(SUM(t.archived=1),0) archived FROM nx_support_ticket t JOIN nx_user scope_customer ON scope_customer.id=t.user_id "
+        +"WHERE t.is_deleted=0 "+SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE+"</script>")
+    java.util.Map<String,Object> scopedCounters(@Param("scope") ReadScope scope);
+    final class ScopedSql {
+        private ScopedSql() {}
+        public static String count(){return scoped(SCOPED_COUNT_BASE);}
+        public static String page(){return scoped(SCOPED_PAGE_BASE);}
+        private static String scoped(String sql) {
+            return sql.replace("scope ==", "ticketScope ==")
+                .replace("WHERE t.is_deleted=0",
+                    "JOIN nx_user scope_customer ON scope_customer.id=t.user_id WHERE t.is_deleted=0 "
+                        +SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE);
+        }
+    }
 }

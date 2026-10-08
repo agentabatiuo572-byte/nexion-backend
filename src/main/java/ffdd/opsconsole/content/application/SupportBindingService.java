@@ -3,9 +3,12 @@ package ffdd.opsconsole.content.application;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.SupportAssignment;
 import ffdd.opsconsole.content.domain.SupportRules;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.*;
+import ffdd.opsconsole.content.domain.SupportRandom.*;
 import ffdd.opsconsole.content.dto.SupportBindingRequest;
 import ffdd.opsconsole.content.dto.SupportRulesRequest;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
+import ffdd.opsconsole.content.mapper.SupportGroupMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -29,21 +32,31 @@ public class SupportBindingService {
     private final ffdd.opsconsole.content.domain.SupportAgentRepository agents;
     private final ProductionSupportPathGuard production;
     private final SupportTicketOwnerService ticketOwners;
+    private final SupportGroupMapper groups;
 
-    public SupportRules rules() { var rules=mapper.rules();ownership.requireSupervisor();return rules; }
+    @Transactional
+    public SupportRules rules() { managementScope(null,null);return mapper.rules(); }
 
-    @Transactional(readOnly=true)
+    @Transactional
     public ffdd.opsconsole.shared.api.PageResult<Map<String,Object>> pool(String keyword, String reason, long page, int size) {
-        ownership.requireSupervisor();
+        return pool(keyword,reason,null,page,size);
+    }
+    @Transactional
+    public ffdd.opsconsole.shared.api.PageResult<Map<String,Object>> pool(String keyword,String reason,Long group,long page,int size) {
+        ReadScope scope=managementScope(group,null);
         if(page<1 || size<1 || size>100 || page>Long.MAX_VALUE/size) throw new BizException(422,"SUPPORT_PAGE_INVALID");
-        return new ffdd.opsconsole.shared.api.PageResult<>(mapper.poolCount(blank(reason),blank(keyword)),page,size,mapper.pool(blank(reason),blank(keyword),(page-1)*size,size));
+        return new ffdd.opsconsole.shared.api.PageResult<>(mapper.scopedPoolCount(scope,blank(reason),blank(keyword)),page,size,mapper.scopedPool(scope,blank(reason),blank(keyword),(page-1)*size,size));
     }
 
-    @Transactional(readOnly=true)
+    @Transactional
     public ffdd.opsconsole.shared.api.PageResult<Map<String,Object>> handover(Long agent,boolean unavailable,long page,int size) {
-        ownership.requireSupervisor();
+        return handover(agent,null,unavailable,page,size);
+    }
+    @Transactional
+    public ffdd.opsconsole.shared.api.PageResult<Map<String,Object>> handover(Long agent,Long group,boolean unavailable,long page,int size) {
+        ReadScope scope=managementScope(group,agent);
         if(page<1 || size<1 || size>100 || page>Long.MAX_VALUE/size) throw new BizException(422,"SUPPORT_PAGE_INVALID");
-        return new ffdd.opsconsole.shared.api.PageResult<>(mapper.handoverCount(agent,unavailable),page,size,mapper.handover(agent,unavailable,(page-1)*size,size));
+        return new ffdd.opsconsole.shared.api.PageResult<>(mapper.scopedHandoverCount(scope,unavailable),page,size,mapper.scopedHandover(scope,unavailable,(page-1)*size,size));
     }
 
     public ApiResult<SupportRules> updateRules(String key, SupportRulesRequest r) {
@@ -70,36 +83,42 @@ public class SupportBindingService {
 
     public ApiResult<List<SupportAssignment>> transfer(String key, SupportBindingRequest r) {
         validateTransfer(key,r);
-        return command("TRANSFER",key,r,()->transferOnce(key,r));
+        ApiResult<List<SupportAssignment>> result=command("TRANSFER",key,r,()->transferOnce(key,r));
+        r.customers().forEach(c->ownership.customerQueryScope(c.id()));return result;
     }
 
     public ApiResult<List<ffdd.opsconsole.content.domain.SupportAgentAssignmentView>> transferLegacy(String key,SupportBindingRequest r) {
         validateTransfer(key,r);
-        return command("LEGACY_TRANSFER",key,r,()-> {
+        ApiResult<List<ffdd.opsconsole.content.domain.SupportAgentAssignmentView>> result=command("LEGACY_TRANSFER",key,r,()-> {
             transferOnce(key,r);
             Set<Long> ids=r.customers().stream().map(SupportBindingRequest.Customer::id).collect(java.util.stream.Collectors.toSet());
             return ApiResult.ok(agents.listActiveAssignments(List.of(r.targetAgentAdminId())).stream().filter(a->ids.contains(a.userId())).toList());
         });
+        r.customers().forEach(c->ownership.customerQueryScope(c.id()));return result;
     }
 
     public ApiResult<ffdd.opsconsole.content.domain.SupportAgentAssignmentView> transferLegacySingle(String key,SupportBindingRequest r) {
         validateTransfer(key,r);
         if(r.customers().size()!=1)throw new BizException(422,"SUPPORT_BINDING_REQUEST_INVALID");
-        return command("LEGACY_SINGLE",key,r,()-> {
+        ApiResult<ffdd.opsconsole.content.domain.SupportAgentAssignmentView> result=command("LEGACY_SINGLE",key,r,()-> {
             transferOnce(key,r);
             return ApiResult.ok(agents.listActiveAssignments(List.of(r.targetAgentAdminId())).stream()
                 .filter(a->a.userId().equals(r.customers().get(0).id())).findFirst().orElseThrow());
         });
+        r.customers().forEach(c->ownership.customerQueryScope(c.id()));return result;
     }
 
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
     public ApiResult<List<SupportAssignment>> transferInTransaction(String key,SupportBindingRequest r) {
-        validateTransfer(key,r);
+        validateTransferInput(key,r);
         return transferOnce(key,r);
     }
 
     private void validateTransfer(String key,SupportBindingRequest r) {
-        ownership.requireSupervisorSnapshot();
+        managementScope(null,null);
+        validateTransferInput(key,r);
+    }
+    private void validateTransferInput(String key,SupportBindingRequest r) {
         if(r==null || r.targetAgentAdminId()==null || r.targetAgentAdminId()<1 || r.customers()==null || r.customers().isEmpty() || r.customers().size()>100)
             throw new BizException(422,"SUPPORT_BINDING_REQUEST_INVALID");
         validateCommand(key,r.reason());
@@ -108,16 +127,53 @@ public class SupportBindingService {
                 || (c.expectedAssignmentId()!=null && c.expectedAssignmentId()<1)) throw new BizException(422,"SUPPORT_BINDING_EXPECTATION_REQUIRED");
     }
 
-    private ApiResult<List<SupportAssignment>> transferOnce(String key, SupportBindingRequest r) {
+    /** Legacy profile+binding callers use this before their first admin lock or profile CAS. */
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void prepareTransferLocks(SupportBindingRequest request) {
+        if(request==null || request.customers()==null || request.customers().isEmpty() || request.targetAgentAdminId()==null)
+            throw new BizException(422,"SUPPORT_BINDING_REQUEST_INVALID");
+        transferLocks(request);
+    }
+    private Member transferLocks(SupportBindingRequest r) {
         List<SupportBindingRequest.Customer> customers=r.customers().stream().sorted(Comparator.comparing(SupportBindingRequest.Customer::id)).toList();
         customers.forEach(c->ownership.lockCustomer(c.id()));
-        new TreeSet<>(List.of(ownership.actorId(),r.targetAgentAdminId())).forEach(ownership::lockAgent);
-        ownership.requireSupervisor();
+        Member target=groups.memberSnapshot(r.targetAgentAdminId());
+        if(target==null) throw new BizException(422,"SUPPORT_GROUP_MEMBER_UNPROVEN");
+        TreeSet<Long> groupLocks=new TreeSet<>();if(target.groupId()!=null)groupLocks.add(target.groupId());
+        TreeSet<Long> accounts=new TreeSet<>(List.of(ownership.actorId(),r.targetAgentAdminId()));
+        Map<Long,Member> plannedMembers=new HashMap<>();plannedMembers.put(r.targetAgentAdminId(),target);
+        for(var c:customers) {
+            var assignment=mapper.current(c.id());
+            if(assignment!=null) {
+                accounts.add(assignment.agentAdminId());
+                Member source=groups.memberSnapshot(assignment.agentAdminId());plannedMembers.put(assignment.agentAdminId(),source);
+                if(source!=null && source.groupId()!=null)groupLocks.add(source.groupId());
+            } else {var route=groups.routeCurrent(c.id());if(route!=null && route.groupId()!=null)groupLocks.add(route.groupId());}
+        }
+        lockGroups(groupLocks,accounts);
+        for(var planned:plannedMembers.entrySet()) {
+            if(!Objects.equals(planned.getValue(),groups.memberCurrent(planned.getKey())))
+                throw new BizException(409,"SUPPORT_GROUP_SCOPE_CHANGED");
+        }
+        return target;
+    }
+    private ApiResult<List<SupportAssignment>> transferOnce(String key, SupportBindingRequest r) {
+        List<SupportBindingRequest.Customer> customers=r.customers().stream().sorted(Comparator.comparing(SupportBindingRequest.Customer::id)).toList();
+        Member target=transferLocks(r);
+        Map<Long,SupportAssignment> previous=new HashMap<>();
+        ReadScope scope=managementScope(null,null);
         if(mapper.lockAgent(r.targetAgentAdminId())==null || mapper.eligibleAgent(r.targetAgentAdminId())!=1)
             throw new BizException(422,"SUPPORT_AGENT_UNAVAILABLE");
-        Map<Long,SupportAssignment> previous=new HashMap<>();
+        ownership.requireTargetMember(r.targetAgentAdminId(),target.groupId());
         for(var c:customers) {
+            ownership.requireManagingCustomer(c.id());
             var old=mapper.current(c.id());
+            if(scope.mode()!=ReadMode.ALL) {
+                Long sourceGroup;
+                if(old!=null) {Member source=groups.memberCurrent(old.agentAdminId());sourceGroup=source==null?null:source.groupId();}
+                else {var route=groups.routeCurrent(c.id());sourceGroup=route==null?null:route.groupId();}
+                if(sourceGroup==null || !sourceGroup.equals(target.groupId())) throw new BizException(403,"SUPPORT_GROUP_TRANSFER_FORBIDDEN");
+            }
             Long version=old==null?mapper.poolVersion(c.id()):old.version();
             if(!Objects.equals(c.expectedAssignmentId(),old==null?null:old.id()) || !Objects.equals(c.expectedVersion(),version))
                 throw new BizException(409,"SUPPORT_BINDING_VERSION_CONFLICT");
@@ -130,6 +186,7 @@ public class SupportBindingService {
             if(old!=null && mapper.endAssignment(old.id(),old.version())!=1) throw new BizException(409,"SUPPORT_BINDING_VERSION_CONFLICT");
             mapper.insertAssignment(r.targetAgentAdminId(),c.id(),String.valueOf(ownership.actorId()),r.reason().trim(),"MANUAL",c.id(),0,null,null,key.trim());
             mapper.leavePool(c.id());
+            closeQueueRoute(c.id());
             var current=mapper.current(c.id());
             ticketOwners.synchronizeCurrentOwner(c.id());
             // S4 must handle this synchronous event in the same transaction (never AFTER_COMMIT).
@@ -210,19 +267,32 @@ public class SupportBindingService {
     /** The caller holds customer then rules locks. Candidate choice never uses presence or workload. */
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
     public SupportAssignment randomUnbound(Long customer,SupportRules rules,String operation,String actor,String reason,Long supervisor) {
+        return randomUnbound(customer,rules,operation,actor,reason,supervisor,null);
+    }
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public SupportAssignment randomUnbound(Long customer,SupportRules rules,String operation,String actor,String reason,Long supervisor,FrozenCustomer frozen) {
         production.requireAllowed(customer);
         ownership.lockCustomer(customer);
         if(mapper.current(customer)!=null) throw new BizException(409,"SUPPORT_BINDING_VERSION_CONFLICT");
-        List<Long> candidates=new ArrayList<>(mapper.eligibleAgents());
-        Long candidate=candidates.isEmpty()?null:candidates.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(candidates.size()));
-        var adminLocks=new TreeSet<Long>();if(supervisor!=null)adminLocks.add(supervisor);if(candidate!=null)adminLocks.add(candidate);
-        boolean candidateAvailable=true;
-        for(Long admin:adminLocks) {
-            if(mapper.lockAgent(admin)==null) {if(admin.equals(supervisor))throw new BizException(403,"SUPPORT_MANAGEMENT_FORBIDDEN");candidateAvailable=false;}
+        prepareRandomLocks(List.of(new Customer(customer,mapper.poolVersion(customer))),supervisor);
+        Route route=groups.routeCurrent(customer);
+        if(route==null || route.groupId()==null) {mapper.attemptPool(customer,"WAITING_ROUTE","GROUP_ROUTE_REQUIRED");return null;}
+        Group group=groups.group(route.groupId());Owner owner=groups.ownerCurrent(route.groupId());
+        if(group==null || !"ENABLED".equals(group.status()) || owner==null
+                || groups.qualificationCurrent(owner.supervisorAdminId(),"SUPERVISOR")==null) {
+            mapper.attemptPool(customer,"WAITING_ROUTE","GROUP_SCOPE_CHANGED");return null;
         }
-        if(supervisor!=null)ownership.requireSupervisor();
+        if(supervisor!=null)ownership.requireManagingCustomer(customer);
+        List<Candidate> facts=groups.candidates(group.id());
+        if(frozen!=null) {
+            ReadScope scope=managementScope(null,null);
+            FrozenCustomer current=freezeRandomScope(frozen.customer(),scope);
+            if(!frozen.equals(current)) throw new BizException(409,"SUPPORT_RANDOM_SCOPE_CHANGED");
+        }
+        List<Long> candidates=facts.stream().map(Candidate::agentId).toList();
+        Long candidate=candidates.isEmpty()?null:candidates.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(candidates.size()));
         if(!candidates.isEmpty()) {
-            if(!candidateAvailable || mapper.eligibleAgent(candidate)!=1) {
+            if(mapper.eligibleAgent(candidate)!=1) {
                 mapper.attemptPool(customer,"WAITING_CANDIDATE","CANDIDATE_CHANGED");return null;
             }
             mapper.insertAssignment(candidate,customer,actor,reason,"RANDOM",customer,0,null,rules.version(),operation);
@@ -234,6 +304,7 @@ public class SupportBindingService {
                 .actorType(supervisor==null?"SYSTEM":"ADMIN").actorUsername(actor).result("SUCCESS").riskLevel("HIGH")
                 .detail(Map.of("customerId",customer,"pool",attempt,"operationId",operation,"agentAdminId",candidate)).build());
             mapper.leavePool(customer);
+            closeQueueRoute(customer);
             var current=mapper.current(customer);
             events.publishEvent(new SupportAssignmentChanged(customer,null,current));
             return current;
@@ -255,6 +326,58 @@ public class SupportBindingService {
     }
 
     public record SupportAssignmentChanged(Long customerId, SupportAssignment previous, SupportAssignment current) {}
+
+    @Transactional
+    public ReadScope managementScope(Long group,Long agent) {
+        ReadScope scope=ownership.defaultQueryScope(group,agent);
+        if(scope.mode()==ReadMode.PERSONAL) throw new BizException(403,"SUPPORT_MANAGEMENT_FORBIDDEN");
+        return scope;
+    }
+
+    /** Customer/rules -> all relevant accounts by ID -> all groups by ID; snapshots only plan these locks. */
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void prepareRandomLocks(Collection<Customer> customers,Long actor) {
+        customers.stream().map(Customer::id).distinct().sorted().forEach(ownership::lockCustomer);
+        mapper.rules();
+        TreeSet<Long> groupIds=new TreeSet<>();TreeSet<Long> accounts=new TreeSet<>();if(actor!=null)accounts.add(actor);
+        for(Customer customer:customers) {var route=groups.routeSnapshot(customer.id());if(route!=null && route.groupId()!=null)groupIds.add(route.groupId());}
+        for(Long group:groupIds)accounts.addAll(groups.candidateIdsSnapshot(group));
+        lockGroups(groupIds,accounts);
+    }
+
+    private void lockGroups(SortedSet<Long> ids,SortedSet<Long> accounts) {
+        Map<Long,Group> seen=new HashMap<>();
+        for(Long id:ids) {Group g=groups.group(id);if(g==null)throw new BizException(409,"SUPPORT_GROUP_SCOPE_CHANGED");seen.put(id,g);accounts.add(g.supervisorAdminId());}
+        for(Long account:accounts) {if(groups.lockAccount(account)==null)throw new BizException(409,"SUPPORT_GROUP_SCOPE_CHANGED");}
+        for(Long id:ids) {
+            Group current=groups.lockGroup(id),previous=seen.get(id);
+            if(current==null || !Objects.equals(current.version(),previous.version())
+                    || !Objects.equals(current.supervisorAdminId(),previous.supervisorAdminId()))
+                throw new BizException(409,"SUPPORT_GROUP_SCOPE_CHANGED");
+        }
+    }
+
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public FrozenCustomer freezeRandomScope(Customer customer,ReadScope scope) {
+        ownership.requireManagingCustomer(customer.id());
+        Route route=groups.routeCurrent(customer.id());
+        if(route==null || route.groupId()==null)throw new BizException(409,"SUPPORT_GROUP_ROUTE_REQUIRED");
+        Group group=groups.readableGroup(scope,route.groupId());Owner owner=groups.ownerCurrent(route.groupId());
+        if(group==null || !"ENABLED".equals(group.status()) || owner==null
+                || groups.qualificationCurrent(group.supervisorAdminId(),"SUPERVISOR")==null)
+            throw new BizException(409,"SUPPORT_GROUP_SCOPE_CHANGED");
+        Qualification actor=scope.mode()==ReadMode.MANAGED?groups.qualificationCurrent(scope.actorId(),"SUPERVISOR"):null;
+        if(scope.mode()==ReadMode.MANAGED && actor==null)throw new BizException(403,"SUPPORT_MANAGEMENT_FORBIDDEN");
+        return new FrozenCustomer(customer,route.id(),route.version(),group.id(),group.version(),owner.supervisorAdminId(),
+                owner.id(),owner.version(),actor==null?null:actor.id(),actor==null?null:actor.version(),groups.candidates(group.id()));
+    }
+
+    private void closeQueueRoute(Long customer) {
+        Route route=groups.routeCurrent(customer);
+        if(route==null && groups.openRouteCount(customer)!=0)throw new BizException(409,"SUPPORT_GROUP_ROUTE_CONFLICT");
+        if(route!=null && groups.closeRoute(route.id(),route.version(),groups.now())!=1)
+            throw new BizException(409,"SUPPORT_GROUP_ROUTE_CONFLICT");
+    }
 
     private void record(String action,String id,String key,String reason,Map<String,Object> detail) {
         Map<String,Object> values=new LinkedHashMap<>(detail);values.put("reason",reason.trim());values.put("commandKey",key.trim());

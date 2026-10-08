@@ -4,6 +4,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.content.application.SupportMaintenanceService;
 import ffdd.opsconsole.content.application.SupportWorkbenchService;
 import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
 import ffdd.opsconsole.content.dto.SupportMaintenancePreferenceRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -26,9 +27,10 @@ public class SupportWorkbenchController {
     public ApiResult<Map<String,Object>> snapshot(@RequestParam(required=false) Long agentId,
             @RequestParam(defaultValue="ALL") String filter,@RequestParam(required=false) String keyword,
             @RequestParam(defaultValue="1") long pageNum,@RequestParam(defaultValue="20") int pageSize,
-            @RequestParam(required=false) String from,@RequestParam(required=false) String to) {
+            @RequestParam(required=false) String from,@RequestParam(required=false) String to,
+            @RequestParam(required=false) ReadMode mode,@RequestParam(required=false) Long groupId) {
         productionPathGuard.requireOpsWriteAllowed();
-        return ApiResult.ok(workbench.snapshot(agentId,filter,keyword,pageNum,pageSize,from,to));
+        return ApiResult.ok(workbench.snapshot(mode,groupId,agentId,filter,keyword,pageNum,pageSize,from,to));
     }
 
     @GetMapping({"/customers/{customerId}","/customers/{customerId}/360"})

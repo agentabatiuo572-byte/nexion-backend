@@ -190,7 +190,7 @@ class C1AuditEvidenceMySqlTest {
         }).when(audit).recordRequired(any());
         var target = new OpsUser360Service(users, mock(OpsFinanceService.class), mock(OpsTreasuryService.class),
                 mock(OpsDeviceService.class), mock(OpsRiskService.class), audit, repository, roles, outbox,
-                mock(ffdd.opsconsole.finance.application.FinanceSupportReadService.class));
+                mock(ffdd.opsconsole.finance.application.FinanceSupportReadService.class), mock(ffdd.opsconsole.content.application.SupportOwnershipService.class));
         ProxyFactory proxyFactory = new ProxyFactory(target);
         proxyFactory.setProxyTargetClass(true);
         proxyFactory.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(source), new AnnotationTransactionAttributeSource()));

@@ -6,6 +6,8 @@ import static org.mockito.Mockito.*;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.domain.SupportRules;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import ffdd.opsconsole.content.dto.SupportMaintenancePreferenceRequest;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.content.mapper.SupportWorkbenchMapper;
@@ -32,6 +34,7 @@ class SupportWorkbenchServiceTest {
 
     private void setup(SupportRules rules,long unknownWindow) {
         when(ownership.actorId()).thenReturn(7L);
+        when(ownership.defaultQueryScope(null,null)).thenReturn(new ReadScope(7L,ReadMode.PERSONAL,null,null));
         when(bindings.rules()).thenReturn(rules);
         when(activity.checkpoint()).thenReturn(new SupportActivityService.Coverage(NOW.minusDays(2),NOW));
         when(transactions.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
@@ -59,7 +62,7 @@ class SupportWorkbenchServiceTest {
         assertThat(captor.getValue().getIsolationLevel()).isEqualTo(TransactionDefinition.ISOLATION_REPEATABLE_READ);
         @SuppressWarnings("rawtypes") var query=ArgumentCaptor.forClass(Map.class);
         verify(mapper).overview(query.capture());
-        assertThat(query.getValue()).containsEntry("agentId",7L).containsEntry("maintenanceDays",2)
+        assertThat(query.getValue()).containsEntry("scope",new ReadScope(7L,ReadMode.PERSONAL,null,null)).containsEntry("maintenanceDays",2)
                 .containsEntry("dormantCutoff",null).containsEntry("windowCutoff",null);
     }
 
@@ -80,8 +83,32 @@ class SupportWorkbenchServiceTest {
 
     @Test void ordinaryAgentCannotSelectAnotherAgentAndNoCustomerQueryRuns() {
         setup(new SupportRules(1L,30,7,7,"UNCONFIGURED",null),0);
+        when(ownership.defaultQueryScope(null,8L)).thenThrow(new BizException(403,"SUPPORT_SCOPE_FORBIDDEN"));
         assertThatThrownBy(()->service.snapshot(8L,"ALL",null,1,20,null,null)).isInstanceOf(BizException.class);
         verifyNoInteractions(mapper);
+    }
+
+    @Test void managedCardsAndPageUseOneExplicitModeAndPersonalDetailUsesItsOwnMode() {
+        setup(new SupportRules(1L,30,7,7,"UNCONFIGURED",null),0);
+        var managed=new ReadScope(7L,ReadMode.MANAGED,10L,null);
+        when(ownership.queryScope(ReadMode.MANAGED,10L,null)).thenReturn(managed);
+        service.snapshot(ReadMode.MANAGED,10L,null,"ALL","Alice",1,20,null,null);
+        @SuppressWarnings("rawtypes") var queries=ArgumentCaptor.forClass(Map.class);
+        verify(mapper).overview(queries.capture());verify(mapper).count(queries.capture());verify(mapper).customers(queries.capture());
+        assertThat(queries.getAllValues()).allSatisfy(q->assertThat(q).containsEntry("scope",managed));
+        var personal=new ReadScope(7L,ReadMode.PERSONAL,null,null);
+        when(ownership.customerQueryScope(20L)).thenReturn(personal);
+        assertThat(map(service.detail(20L).get("scope"))).containsEntry("mode","PERSONAL");
+    }
+
+    @Test void historicalPerformanceUsesEventAgentScopeAndPreservesTransferredCustomerHistory() throws Exception {
+        for(String method:List.of("executionDays","successDays","successfulCustomers")) {
+            String source=String.join("\n",SupportWorkbenchMapper.class.getMethod(method,Map.class).getAnnotation(Select.class).value());
+            var q=new HashMap<String,Object>();q.put("scope",new ReadScope(7L,ReadMode.PERSONAL,null,null));
+            String sql=new XMLLanguageDriver().createSqlSource(new Configuration(),source,Map.class).getBoundSql(q).getSql();
+            assertThat(sql).contains("JOIN nx_admin scope_agent","scope_agent.id=?","FOR SHARE")
+                    .doesNotContain("scope_customer","nx_support_agent_user_assignment");
+        }
     }
 
     @Test void safeIntegerAndStrictBooleanWireValidationRejectsCoercion() throws Exception {
@@ -110,14 +137,14 @@ class SupportWorkbenchServiceTest {
         assertThat(active).contains("AND activityStatus='ACTIVE'");
         assertThat(window).contains("AND windowStatus='ACTIVE'").doesNotContain("AND activityStatus='ACTIVE'");
         assertThat(sql("customers","TODO")).contains("due=1 OR waitingReply=1 OR (firstContact=1 AND enabled=1)");
-        assertThat(active).contains("a.agent_admin_id=?","m.id>COALESCE(r.through_message_id,0)","h.assignment_id=a.id",
+        assertThat(active).contains("scope_binding.agent_admin_id=?","m.id>COALESCE(r.through_message_id,0)","h.assignment_id=a.id",
                 "h.actor_type='ADMIN'","h.actor_id=a.agent_admin_id","ORDER BY waitingReply DESC,nextDueAt IS NOT NULL,nextDueAt,customerId LIMIT ? OFFSET ?")
                 .doesNotContain("unread_count","status='CLOSED'");
     }
 
     private static String sql(String method,String filter) throws Exception {
         String source=String.join("\n",SupportWorkbenchMapper.class.getMethod(method,Map.class).getAnnotation(Select.class).value());
-        var query=new HashMap<String,Object>(); query.put("agentId",7L); query.put("filter",filter);
+        var query=new HashMap<String,Object>(); query.put("scope",new ReadScope(7L,ReadMode.PERSONAL,null,null)); query.put("filter",filter);
         return new XMLLanguageDriver().createSqlSource(new Configuration(),source,Map.class).getBoundSql(query).getSql();
     }
 

@@ -3,6 +3,8 @@ package ffdd.opsconsole.content.application;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.SupportBulk;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import ffdd.opsconsole.content.dto.*;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.content.mapper.SupportBulkMapper;
@@ -60,7 +62,7 @@ public class SupportBulkService {
         if(previewTtlSeconds<1 || previewTtlSeconds>3600) throw invalid("SUPPORT_BULK_PREVIEW_POLICY_INVALID");
         var coverage=activity.checkpoint();var rules=bindings.rules();
         if(rules==null || coverage==null) throw new BizException(503,"SUPPORT_BULK_SOURCE_UNAVAILABLE");
-        var query=SupportWorkbenchService.query(actor,null,rules,coverage);
+        var query=SupportWorkbenchService.query(ownership.queryScope(ReadMode.PERSONAL,null,null),null,rules,coverage);
         query.put("ids",all?null:List.copyOf(ids));
         var candidates=mapper.candidates(query);
         var accepted=new ArrayList<SupportBulk.Customer>();var excluded=new ArrayList<SupportBulk.Excluded>();
@@ -124,25 +126,32 @@ public class SupportBulkService {
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public PageResult<Map<String,Object>> page(long pageNum,int pageSize) {
         SupportWorkbenchService.validatePage(pageNum,pageSize);Long actor=authenticatedActor();boolean supervisor=reader(actor);
-        var records=mapper.jobs(actor,supervisor,(pageNum-1)*pageSize,pageSize).stream().map(job->jobView(job,actor,supervisor)).toList();
-        return new PageResult<>(mapper.jobCount(actor,supervisor),pageNum,pageSize,records);
+        var query=collectionQuery(actor,supervisor);query.put("offset",(pageNum-1)*pageSize);query.put("limit",pageSize);
+        var records=mapper.scopedJobs(query).stream().map(job->jobView(job,actor,query)).toList();
+        return new PageResult<>(mapper.scopedJobCount(query),pageNum,pageSize,records);
     }
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public Map<String,Object> detail(String batch) {
-        uuid(batch);Long actor=authenticatedActor();boolean supervisor=reader(actor);
-        var job=requireJob(mapper.job(batch));if(!supervisor)requireOwner(job,actor);
-        return jobView(job,actor,supervisor);
+        // Also covers retained-command self-invocation from create/retry/recover.
+        var read=new TransactionTemplate(transactions);
+        read.setReadOnly(true);
+        return read.execute(status-> {
+            uuid(batch);Long actor=authenticatedActor();reader(actor);
+            var query=objectQuery(actor);query.put("batch",batch);
+            var job=requireJob(mapper.job(batch));requireReadableJob(job,actor,query);
+            return jobView(job,actor,query);
+        });
     }
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public PageResult<Map<String,Object>> recipients(String batch,long pageNum,int pageSize) {
-        uuid(batch);SupportWorkbenchService.validatePage(pageNum,pageSize);Long actor=authenticatedActor();boolean supervisor=reader(actor);
-        var job=requireJob(mapper.job(batch));if(!supervisor)requireOwner(job,actor);
+        uuid(batch);SupportWorkbenchService.validatePage(pageNum,pageSize);Long actor=authenticatedActor();reader(actor);
+        var query=objectQuery(actor);query.put("batch",batch);query.put("offset",(pageNum-1)*pageSize);query.put("limit",pageSize);
+        var job=requireJob(mapper.job(batch));requireReadableJob(job,actor,query);
         // Never serialize request_json, which includes private content, operator metadata and attachment references.
-        boolean eligible=detailEligible(actor);
-        var rows=mapper.recipients(batch,actor,supervisor,eligible,(pageNum-1)*pageSize,pageSize).stream().map(this::recipientView).toList();
-        return new PageResult<>(mapper.recipientCount(batch,actor,supervisor,eligible),pageNum,pageSize,rows);
+        var rows=mapper.scopedRecipients(query).stream().map(this::recipientView).toList();
+        return new PageResult<>(mapper.scopedRecipientCount(query),pageNum,pageSize,rows);
     }
 
     public ApiResult<Map<String,Object>> cancel(String batch,String key,SupportBulkRequest.Mutation request) {
@@ -184,8 +193,9 @@ public class SupportBulkService {
     }
 
     /** Primary command recovery also resolves permanent creation facts after an UNKNOWN receipt. */
+    @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public Map<String,Object> recover(String key) {
-        SupportBindingService.validateCommand(key,"recover bulk result");Long actor=authenticatedActor();
+        SupportBindingService.validateCommand(key,"recover bulk result");Long actor=authenticatedActor();reader(actor);
         var job=mapper.jobByCommand(actor,key.trim());
         return job==null?Map.of("status","UNKNOWN"):Map.of("status","SUCCEEDED","result",detail(text(job,"id")));
     }
@@ -370,12 +380,18 @@ public class SupportBulkService {
         return result;
     }
 
-    private Map<String,Object> jobView(Map<String,Object> job,Long actor,boolean supervisor) {
+    private Map<String,Object> jobView(Map<String,Object> job,Long actor,Map<String,Object> query) {
         String batch=text(job,"id");var result=new LinkedHashMap<String,Object>();
+        var batchQuery=new HashMap<>(query);batchQuery.put("batch",batch);
         result.put("batchId",batch);result.put("selectionId",batch);result.put("actorId",job.get("actorId"));
         for(String name:List.of("state","version","createdAt","updatedAt","commandKey")) result.put("commandKey".equals(name)?"key":name,job.get(name));
-        result.put("counts",counts(batch));result.put("frozenCount",job.get("frozenCount"));
-        long visible=mapper.recipientCount(batch,actor,supervisor,detailEligible(actor));
+        long visible=mapper.scopedRecipientCount(batchQuery);
+        boolean sender=Objects.equals(actor,number(job,"actorId")) && (Boolean.TRUE.equals(query.get("senderSummary"))
+                || ((ReadScope)query.get("scope")).mode()==ReadMode.PERSONAL);
+        var row=mapper.scopedCounts(batchQuery);
+        result.put("counts",sender?counts(batch):new SupportBulk.Counts(number(row,"total"),number(row,"pending"),number(row,"sent"),
+                number(row,"failed"),number(row,"skipped"),number(row,"cancelled"),number(row,"unknown")));
+        result.put("frozenCount",sender?job.get("frozenCount"):visible);
         boolean restricted=number(job,"frozenCount")>visible;
         result.put("visibleCount",visible);result.put("contentRestricted",restricted);
         // The sender's shared draft contains no individual customer's identity or private attachment URL.
@@ -451,7 +467,27 @@ public class SupportBulkService {
         if(!"READY".equals(found.get("state")) || !time(found.get("expiresAt")).isAfter(utcNow())) throw conflict("ATTACHMENT_NOT_READY");
     }
     private Long authenticatedActor() {return attachments.actor("ADMIN");}
-    private boolean detailEligible(Long actor) {return bindings.eligibleAgentSnapshot(actor)==1 && mapper.writerGrantSnapshot(actor)>0;}
+    private Map<String,Object> collectionQuery(Long actor,boolean supervisor) {
+        var query=new HashMap<String,Object>();
+        // Former senders retain their own summary; customer rows still require current service qualification in SQL.
+        query.put("scope",supervisor?ownership.defaultQueryScope(null,null):new ReadScope(actor,ReadMode.PERSONAL,null,null));
+        query.put("managedScope",null);query.put("personalScope",null);
+        query.put("senderSummary",!supervisor);
+        return query;
+    }
+    private Map<String,Object> objectQuery(Long actor) {
+        var query=new HashMap<String,Object>();
+        // These are requested identities, not grants: every SQL arm checks current roles/qualification/ownership.
+        query.put("scope",new ReadScope(actor,ReadMode.ALL,null,null));
+        query.put("managedScope",new ReadScope(actor,ReadMode.MANAGED,null,null));
+        query.put("personalScope",new ReadScope(actor,ReadMode.PERSONAL,null,null));
+        query.put("senderSummary",true);
+        return query;
+    }
+    private void requireReadableJob(Map<String,Object> job,Long actor,Map<String,Object> query) {
+        if(!Objects.equals(actor,number(job,"actorId")) && mapper.scopedRecipientCount(query)==0)
+            throw new BizException(404,"SUPPORT_BULK_NOT_FOUND");
+    }
     private boolean reader(Long actor) {
         boolean supervisor=ownership.supervisor(actor);
         if(mapper.readerGrant(actor,supervisor)<1) throw new BizException(403,"SUPPORT_READ_FORBIDDEN");

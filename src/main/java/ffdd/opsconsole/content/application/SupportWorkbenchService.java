@@ -2,6 +2,8 @@ package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.SupportRules;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.content.mapper.SupportWorkbenchMapper;
 import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
@@ -34,13 +36,17 @@ public class SupportWorkbenchService {
      * not an AS OF promise for mutable assignments/preferences. Newer committed contact facts remain visible.
      */
     public Map<String,Object> snapshot(Long agentId,String filter,String keyword,long page,int size,String from,String to) {
+        return snapshot(null,null,agentId,filter,keyword,page,size,from,to);
+    }
+
+    public Map<String,Object> snapshot(ReadMode mode,Long groupId,Long agentId,String filter,String keyword,long page,int size,String from,String to) {
         validatePage(page,size);
         String selected=filter==null?"ALL":filter;
         if(!FILTERS.contains(selected)) throw new BizException(422,"SUPPORT_FILTER_INVALID");
         if(keyword!=null && keyword.length()>200) throw new BizException(422,"SUPPORT_KEYWORD_TOO_LONG");
         var coverage=activity.checkpoint();
         return transaction().execute(status -> {
-            Long scopedAgent=scope(agentId);
+            ReadScope scopedAgent=mode==null ? ownership.defaultQueryScope(groupId,agentId) : ownership.queryScope(mode,groupId,agentId);
             SupportRules rules=bindings.rules();
             var q=query(scopedAgent,null,rules,coverage);
             q.put("filter",selected); q.put("keyword",keyword==null || keyword.isBlank()?null:keyword.trim());
@@ -71,8 +77,7 @@ public class SupportWorkbenchService {
         requireSafeId(customer);
         var coverage=activity.checkpoint();
         return transaction().execute(status -> {
-            ownership.requireRead(customer);
-            Long scopedAgent=scope(null);
+            ReadScope scopedAgent=ownership.customerQueryScope(customer);
             var rules=bindings.rules();
             var q=query(scopedAgent,customer,rules,coverage);
             q.put("filter","ALL"); q.put("keyword",null); q.put("offset",0); q.put("limit",1);
@@ -87,23 +92,14 @@ public class SupportWorkbenchService {
 
     private TransactionTemplate transaction() {
         var template=new TransactionTemplate(transactions);
-        template.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        template.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
         template.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
         return template;
     }
 
-    private Long scope(Long requested) {
-        Long actor=ownership.actorId();
-        if(requested!=null) requireSafeId(requested);
-        if(ownership.supervisor(actor)) return requested;
-        ownership.requireEligibleAgent();
-        if(requested!=null && !requested.equals(actor)) throw new BizException(403,"SUPPORT_SCOPE_FORBIDDEN");
-        return actor;
-    }
-
-    static Map<String,Object> query(Long agent,Long customer,SupportRules rules,SupportActivityService.Coverage coverage) {
+    static Map<String,Object> query(ReadScope scope,Long customer,SupportRules rules,SupportActivityService.Coverage coverage) {
         var q=new HashMap<String,Object>();
-        q.put("agentId",agent); q.put("customerId",customer); q.put("evaluatedAt",coverage.observedThroughAt());
+        q.put("scope",Objects.requireNonNull(scope)); q.put("customerId",customer); q.put("evaluatedAt",coverage.observedThroughAt());
         q.put("coverageStartAt",coverage.coverageStartAt());
         q.put("dormantCutoff",cutoff(coverage.observedThroughAt(),rules.dormantDays()));
         q.put("windowCutoff",cutoff(coverage.observedThroughAt(),rules.activityWindowDays()));
@@ -111,12 +107,13 @@ public class SupportWorkbenchService {
         return q;
     }
 
-    private Map<String,Object> metadata(Long agent,SupportRules rules,SupportActivityService.Coverage coverage) {
+    private Map<String,Object> metadata(ReadScope readScope,SupportRules rules,SupportActivityService.Coverage coverage) {
         var result=new LinkedHashMap<String,Object>();
         result.put("snapshotId",UUID.randomUUID().toString()); result.put("evaluatedAt",utc(coverage.observedThroughAt()));
         result.put("rulesVersion",rules.version());
         var scope=new LinkedHashMap<String,Object>();
-        scope.put("actorId",ownership.actorId()); scope.put("agentAdminId",agent); scope.put("mode",agent==null?"SUPERVISOR_ALL":"AGENT");
+        scope.put("actorId",readScope.actorId()); scope.put("agentAdminId",readScope.requestedAgentId());
+        scope.put("groupId",readScope.requestedGroupId()); scope.put("mode",readScope.mode().name());
         result.put("scope",scope);
         var ruleView=new LinkedHashMap<String,Object>();
         ruleView.put("dormantDays",rules.dormantDays()); ruleView.put("maintenanceDays",rules.maintenanceDays());
@@ -145,7 +142,7 @@ public class SupportWorkbenchService {
         return row;
     }
 
-    private Map<String,Object> performance(Long agent,LocalDateTime evaluatedAt,String rawFrom,String rawTo) {
+    private Map<String,Object> performance(ReadScope scope,LocalDateTime evaluatedAt,String rawFrom,String rawTo) {
         var zone=DateTimeFormatConfig.BUSINESS_ZONE;
         Instant end=evaluatedAt.toInstant(ZoneOffset.UTC);
         Instant start=end.atZone(zone).toLocalDate().withDayOfMonth(1).atStartOfDay(zone).toInstant();
@@ -158,7 +155,7 @@ public class SupportWorkbenchService {
         if((rawFrom!=null && !start.isBefore(end)) || start.isAfter(end) || ChronoUnit.DAYS.between(start,end)>3660 || start.isBefore(Instant.parse("1000-01-01T00:00:00Z"))
                 || end.isAfter(Instant.parse("9999-12-31T00:00:00Z"))) throw new BizException(422,"SUPPORT_PERFORMANCE_RANGE_INVALID");
         var q=new HashMap<String,Object>();
-        q.put("agentId",agent); q.put("from",LocalDateTime.ofInstant(start,ZoneOffset.UTC)); q.put("evaluatedAt",evaluatedAt);
+        q.put("scope",scope); q.put("from",LocalDateTime.ofInstant(start,ZoneOffset.UTC)); q.put("evaluatedAt",evaluatedAt);
         q.put("to",LocalDateTime.ofInstant(end,ZoneOffset.UTC));
         q.put("businessOffset",zone.getRules().getOffset(start).toString());
         var days=new TreeMap<String,Map<String,Object>>();
@@ -168,7 +165,7 @@ public class SupportWorkbenchService {
         }
         for(var row:mapper.executionDays(q)) days.get(row.get("day").toString()).put("executionCount",number(row.get("executionCount")));
         for(var row:mapper.successDays(q)) days.get(row.get("day").toString()).put("successfulCycleCount",number(row.get("successfulCycleCount")));
-        return Map.of("from",start.toString(),"to",end.toString(),"timeZone",zone.toString(),"days",List.copyOf(days.values()),
+        return Map.of("from",start.toString(),"to",end.toString(),"timeZone",zone.toString(),"scopeBasis","CURRENT_AGENT_MEMBERSHIP","days",List.copyOf(days.values()),
                 "executionCount",days.values().stream().mapToLong(d->number(d.get("executionCount"))).sum(),
                 "successfulCycleCount",days.values().stream().mapToLong(d->number(d.get("successfulCycleCount"))).sum(),
                 "successfulCustomerCount",mapper.successfulCustomers(q));

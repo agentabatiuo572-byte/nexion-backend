@@ -105,11 +105,16 @@ public class OpsConversationService {
     private final SupportReplyService replies;
     private final SupportCustomerProfileService customerProfiles;
 
+    @Transactional(readOnly=true)
     public ApiResult<Map<String, Object>> overview() {
+        return overview(null,null);
+    }
+
+    @Transactional(readOnly=true)
+    public ApiResult<Map<String, Object>> overview(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode mode,Long groupId) {
         productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
-        Long actor=ownership.actorId(),scope=null;
-        if(!ownership.supervisor(actor)){ownership.requireEligibleAgent();scope=actor;}
+        var scope=mode==null?ownership.defaultQueryScope(groupId,null):ownership.queryScope(mode,groupId,null);
         Map<String, Object> response = new LinkedHashMap<>(conversationRepository.counters(scope));
         response.put("domain", "I9");
         response.put("statuses", List.of("OPEN", "TRANSFERRED", "RESOLVED", "CLOSED"));
@@ -120,16 +125,19 @@ public class OpsConversationService {
         return ApiResult.ok(response);
     }
 
+    @Transactional(readOnly=true)
     public ApiResult<PageResult<ContentConversationView>> conversations(ConversationQueryRequest request) {
         productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
-        Long actor=ownership.actorId();
-        if (!ownership.supervisor(actor)) {
-            ownership.requireEligibleAgent();
-            if (request == null) request=new ConversationQueryRequest(null,null,null,null,null,null,1L,20L);
-            request=new ConversationQueryRequest(request.status(),request.type(),String.valueOf(actor),request.userId(),request.keyword(),request.unreadOnly(),request.pageNum(),request.pageSize(),request.archived());
+        Long agent=null;
+        if(request!=null && StringUtils.hasText(request.ownerAgentId())) {
+            try {agent=Long.valueOf(request.ownerAgentId().trim());}
+            catch(NumberFormatException ex){throw new ffdd.opsconsole.shared.exception.BizException(422,"SUPPORT_AGENT_FILTER_INVALID");}
+            SupportWorkbenchService.requireSafeId(agent);
         }
-        return ApiResult.ok(conversationRepository.pageConversations(request));
+        Long group=request==null?null:request.groupId();
+        var scope=request==null || request.readMode()==null?ownership.defaultQueryScope(group,agent):ownership.queryScope(request.readMode(),group,agent);
+        return ApiResult.ok(conversationRepository.pageConversations(request,scope));
     }
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)

@@ -106,10 +106,7 @@ public class SupportAdminAvatarService {
             if(mapper.appVisible(customer,admin)!=1)throw missing();
         } else {
             if(!roster)throw new BizException(403,"AVATAR_READ_FORBIDDEN");
-            if(!ownership.supervisor(actor)) {
-                ownership.requireEligibleAgent();
-                if(!admin.equals(actor))throw missing();
-            }
+            if(!ownership.canReadAgent(actor,admin))throw missing();
             if(mapper.rosterAdminForShare(admin)==null || !"SUPPORT".equals(roles.activeRoleCode(admin)))throw missing();
         }
         return attachedContent(admin);
