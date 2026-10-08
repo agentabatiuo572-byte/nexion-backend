@@ -8,6 +8,26 @@ import org.junit.jupiter.api.Test;
 
 class StartupSchemaMigrationContractTest {
     @Test
+    void supportQualificationCutoverStaysOutsideTheAutomaticMigrationCatalog() throws Exception {
+        try (var migrations = Files.list(Path.of("scripts/migrations"))) {
+            assertThat(migrations.filter(Files::isRegularFile)
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.endsWith(".sql")).toList())
+                    .contains("20261007_support_groups.sql")
+                    .doesNotContain("20261007_support_groups_preflight.sql",
+                            "20261007_support_groups_qualification_cutover.sql");
+        }
+        assertThat(Files.readString(Path.of(
+                "scripts/manual_migrations/20261007_support_groups_qualification_cutover.sql")))
+                .contains("CALL support_groups_qualification_cutover()", "Explicit cutover only");
+        assertThat(Files.isRegularFile(Path.of(
+                "scripts/manual_migrations/20261007_support_groups_preflight.sql"))).isTrue();
+        assertThat(Files.readString(Path.of("scripts/migrations/20261007_support_groups.sql")))
+                .doesNotContain("CALL support_groups_qualification_cutover()",
+                        "INSERT INTO nx_support_account_qualification_history");
+    }
+
+    @Test
     void supportEnhancementsAreInstalledInDependencyOrderWithoutResolvingLegacyAssignments() throws Exception {
         String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
         String core = "20261001_support_enhancements_core.sql";
