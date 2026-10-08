@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidateSet('I0-B','I1-A','I1-B','I2-A')][string]$Phase, [Alias('SuiteGroup')][ValidateSet('core','bulk','avatar')][string]$RequestedSuiteGroup,
+param([ValidateSet('I0-B','I1-A','I1-B','I2-A')][string]$Phase, [Alias('SuiteGroup')][ValidateSet('core','core-runtime','core-remaining','bulk','avatar')][string]$RequestedSuiteGroup,
     [Parameter(Mandatory)][string]$Report)
 $ErrorActionPreference = 'Stop'
 $SuiteGroup = $RequestedSuiteGroup
@@ -11,13 +11,28 @@ foreach ($name in @('TASK_ID','STEP_ID','CHECK_ID','RUN_ID','REPO','SNAPSHOT_HAS
     if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("WORKFLOW_$name"))) { throw "Missing current workflow identity: $name" }
 }
 function Test-WorkflowBinding([string]$Step, [string]$Check, [string]$SourcePhase, [string]$Group) {
-    if ($Step -ceq $SourcePhase) { return $true }
+    foreach ($id in @($Step,$Check,$SourcePhase,$Group)) { if ([string]::IsNullOrWhiteSpace($id)) { return $false } }
+    if ($Step -ceq $SourcePhase) {
+        $nativeGroup = switch -CaseSensitive ("$Step/$Check") {
+            'I0-B/runtime-core' { 'core' }
+            'I0-B/runtime-core-runtime' { 'core-runtime' }
+            'I0-B/runtime-core-remaining' { 'core-remaining' }
+            'I0-B/runtime-bulk' { 'bulk' }
+            'I0-B/runtime-avatar' { 'avatar' }
+            'I1-A/runtime' { 'groups' }
+            'I1-B/runtime' { 'group-scope' }
+            'I2-A/runtime' { 'payment-facts' }
+            default { return $false }
+        }
+        return $nativeGroup -ceq $Group
+    }
     if ($Step -cne 'integration') { return $false }
     # The runner replays upstream checks with integration identity and positional check IDs.
     $replayed = switch ($Check) {
-        'step-0-check-1' { 'I0-B/core' }
-        'step-0-check-2' { 'I0-B/bulk' }
-        'step-0-check-3' { 'I0-B/avatar' }
+        'step-0-check-1' { 'I0-B/core-runtime' }
+        'step-0-check-2' { 'I0-B/core-remaining' }
+        'step-0-check-3' { 'I0-B/bulk' }
+        'step-0-check-4' { 'I0-B/avatar' }
         'step-1-check-1' { 'I1-A/groups' }
         'step-2-check-1' { 'I1-B/group-scope' }
         'step-3-check-1' { 'I2-A/payment-facts' }
@@ -44,6 +59,27 @@ function Inventory([string]$File, [string]$Variable) {
     $right=$matches[0].Right
     if (@($right.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst] -or $node -is [Management.Automation.Language.VariableExpressionAst]},$true)).Count) { throw 'Original inventory must contain only literal names' }
     @($right.FindAll({param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst]},$true) | ForEach-Object Value)
+}
+function Get-CorePartition([string[]]$Core, [string[]]$Scenes, [string]$Group) {
+    if ($Core.Count -ne 27 -or $Scenes.Count -ne 24 -or @($Core | Sort-Object -Unique).Count -ne 27 -or @($Scenes | Sort-Object -Unique).Count -ne 24) {
+        throw 'Complete original core inventory changed or contains duplicates'
+    }
+    # Reuse the original runtime/remaining partition; never maintain a second inventory.
+    $runtimeSuites=@($Core | Where-Object { $_ -ceq 'SupportEnhancementCoreRuntimeTest' })
+    $remainingSuites=@($Core | Where-Object { $_ -cne 'SupportEnhancementCoreRuntimeTest' })
+    $runtimeScenes=@($Scenes | Where-Object { $_ -notlike 'legacy-*/*' -and $_ -cne 'preparation-runtime.json' })
+    $remainingScenes=@($Scenes | Where-Object { $_ -like 'legacy-*/*' -or $_ -ceq 'preparation-runtime.json' })
+    if ($runtimeSuites.Count -ne 1 -or $remainingSuites.Count -ne 26 -or $runtimeScenes.Count -ne 14 -or $remainingScenes.Count -ne 10 -or
+        @(Compare-Object (@($runtimeSuites)+@($remainingSuites)) $Core -CaseSensitive).Count -or
+        @(Compare-Object (@($runtimeScenes)+@($remainingScenes)) $Scenes -CaseSensitive).Count) {
+        throw 'Original core partition is incomplete'
+    }
+    switch ($Group) {
+        core { return @{Suites=$Core;Scenes=$Scenes} }
+        core-runtime { return @{Suites=$runtimeSuites;Scenes=$runtimeScenes} }
+        core-remaining { return @{Suites=$remainingSuites;Scenes=$remainingScenes} }
+        default { throw 'Unknown core partition' }
+    }
 }
 $local=Read-Private 'local-runtime-private.json'; $storage=Read-Private 'local-storage-private.json'; $encryption=Read-Private 'local-encryption-private.json'
 if ($local.host -ne '127.0.0.1' -or $local.port -ne 33337 -or $local.database -ne 'cs_analytics_20261007' -or $local.username -ne 'cs_analytics_runner' -or $local.redisPort -ne 16343 -or $storage.endpoint -ne 'http://127.0.0.1:19043' -or $storage.bucket -ne 'cs-analytics-20261007-private') { throw 'Exclusive analytics resource mismatch' }
@@ -98,6 +134,7 @@ function Run-Suites([string]$Group,[string[]]$Suites) {
     $started=[DateTime]::UtcNow; $directory="$evidence/$Group-reports"; $log="$evidence/$Group.log"
     & $maven '-B' '-Dstyle.color=never' "-Dsupport.test.reportsDirectory=$directory" "-Dtest=$($Suites -join ',')" test *> $log
     if ($LASTEXITCODE -ne 0) { throw "Runtime group $Group failed; private log: $log" }
+    if ($Group -like 'core*' -and @(Get-ChildItem -LiteralPath $directory -Filter 'TEST-*.xml' -File).Count -ne $Suites.Count) { throw "Unexpected core suite report inventory: $Group" }
     foreach ($suite in $Suites) {
         $files=@(Get-ChildItem -LiteralPath $directory -Filter "TEST-*.$suite.xml" -File)
         if ($files.Count -ne 1 -or $files[0].LastWriteTimeUtc -lt $started) { throw "Current report missing: $suite" }
@@ -107,18 +144,21 @@ function Run-Suites([string]$Group,[string[]]$Suites) {
     }
     Write-Output "group=$Group status=pass suites=$($Suites.Count)"
 }
+$core=@(Inventory "$PSScriptRoot/support-enhancements-check.ps1" 'suites')
+$scenes=@(Inventory "$PSScriptRoot/support-enhancements-check.ps1" 'sceneNames')
+$corePartition=Get-CorePartition $core $scenes 'core'
+if ($SuiteGroup -like 'core*') { $corePartition=Get-CorePartition $core $scenes $SuiteGroup; $scenes=@($corePartition.Scenes) }
 $started=[DateTime]::UtcNow
 $env:SUPPORT_ANALYTICS_CAPTURE='before'
 Run-Suites 'before' @('SupportAnalyticsCaptureTest')
 $env:SUPPORT_ANALYTICS_CAPTURE=''
 $env:CS_ENHANCE_ACTOR_CONTEXT="$evidence/actor-context.json"
 $env:CS_ENHANCE_ACTOR_CONTEXT_SHA256=Hash $env:CS_ENHANCE_ACTOR_CONTEXT
-$core=@(Inventory "$PSScriptRoot/support-enhancements-check.ps1" 'suites')
-$scenes=@(Inventory "$PSScriptRoot/support-enhancements-check.ps1" 'sceneNames')
-if ($core.Count -ne 27 -or $scenes.Count -ne 24) { throw 'Complete original core inventory changed' }
 try {
     switch ($SuiteGroup) {
         core { Run-Suites 'core' $core }
+        core-runtime { Run-Suites 'core-runtime' @($corePartition.Suites) }
+        core-remaining { Run-Suites 'core-remaining' @($corePartition.Suites) }
         bulk {
             Run-Suites 'bulk' @('SupportHumanMessageServiceTest','OpsConversationServiceTest','SupportAttachmentServiceTest','SupportMaintenanceServiceTest','SupportBulkRuntimeTest')
             # The persisted queue is consumed in a genuinely different Surefire JVM.
@@ -163,7 +203,7 @@ $sceneEvidence=@(foreach($name in $scenes) {
 $restored=Get-Content -Raw -LiteralPath "$evidence/shared-restoration.json" | ConvertFrom-Json
 if ($restored.complete -ne $true -or $restored.rulesBusinessValuesEqual -ne $true -or $restored.contextSha256 -cne $env:CS_ENHANCE_ACTOR_CONTEXT_SHA256) { throw 'Exact shared restoration was not verified' }
 $sceneEvidence+=Reference "$evidence/shared-restoration.json"
-if ($SuiteGroup -eq 'core') {
+if ($SuiteGroup -in @('core','core-remaining')) {
     $cleaned=Get-Content -Raw -LiteralPath "$evidence/preparation-cleanup.json" | ConvertFrom-Json
     if ($cleaned.complete -ne $true -or $cleaned.contextSha256 -cne $env:CS_ENHANCE_ACTOR_CONTEXT_SHA256) { throw 'Exact preparation cleanup was not verified' }
     $sceneEvidence+=Reference "$evidence/preparation-cleanup.json"
@@ -203,6 +243,8 @@ if ($Phase -eq 'I1-B') {
 }
 $observed=switch ($SuiteGroup) {
     core { 'All existing 27 core suites and 24 core scenes executed on the verified exclusive resources; random assignment, finance/profile reads, messaging, and existing permission behavior were exercised.' }
+    core-runtime { 'Original core runtime partition executed: 1 of 27 suites and 14 of 24 scenes, with its own before/after database and object readback. Complete core acceptance also requires the current core-remaining partition.' }
+    core-remaining { 'Original core remaining partition executed: 26 of 27 suites and 10 of 24 scenes, with preparation cleanup and its own before/after database and object readback. Complete core acceptance also requires the current core-runtime partition.' }
     bulk { 'All existing 6 bulk suites executed; the queued batch was persisted then read and completed in a separate JVM, with duplicate delivery and refresh readback checked.' }
     avatar { 'Avatar read permissions, upload compensation, and A2 approval runtime suites executed with real private object storage and database readback.' }
     groups { 'Group and independent qualification commands, old A1 handover guards, concurrent versions, required audit rollback, legacy preservation and real controlled migration replay executed. Foundation scope only; later object authorization and statistics are not signed here.' }
@@ -211,5 +253,8 @@ $observed=switch ($SuiteGroup) {
 }
 $steps=@(foreach($id in $acceptance){@{id=$id;status='pass';innerSkipped=0;evidence=@($observed,"Current zero-skip XML, scene, object and database before/after references: $evidence")}})
 $result=[ordered]@{at=[DateTime]::UtcNow.ToString('o');taskId=$env:WORKFLOW_TASK_ID;stepId=$env:WORKFLOW_STEP_ID;sourcePhase=$Phase;checkId=$env:WORKFLOW_CHECK_ID;runId=$env:WORKFLOW_RUN_ID;repo=$env:WORKFLOW_REPO;snapshotHash=$env:WORKFLOW_SNAPSHOT_HASH;candidate=$env:SUPPORT_CANDIDATE;verdict='pass';mode='full';treeMoved=$false;capability='runtime';suiteGroup=$SuiteGroup;steps=$steps;suites=@($suiteEvidence.ToArray());scenes=@($sceneEvidence);ownership=(Reference $env:SUPPORT_RESOURCE_OWNERSHIP);before=(Reference "$evidence/shared-before.json");after=(Reference "$evidence/shared-after.json");objectBefore=(Reference "$evidence/object-before.json");objectAfter=(Reference "$evidence/object-after.json")}
+if ($SuiteGroup -like 'core*') {
+    $result.coreCoverage=@{inventory=(Reference "$PSScriptRoot/support-enhancements-check.ps1");suiteNames=@($corePartition.Suites);sceneNames=@($corePartition.Scenes);originalSuiteCount=27;originalSceneCount=24;wholeCoreExecuted=($SuiteGroup -eq 'core');requiredGroups=@('core-runtime','core-remaining')}
+}
 $result | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Report -Encoding utf8
 Write-Output "step=$Phase status=pass report=$Report"

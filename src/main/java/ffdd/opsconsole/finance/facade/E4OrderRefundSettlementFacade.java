@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.facade;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import java.math.BigDecimal;
 
 public interface E4OrderRefundSettlementFacade {
@@ -10,7 +11,8 @@ public interface E4OrderRefundSettlementFacade {
             String refundChannel,
             String reason,
             String operator,
-            String idempotencyKey);
+            String idempotencyKey,
+            SupportPaymentAttributionFacade.Prepared prepared);
 
     record Settlement(
             String channel,

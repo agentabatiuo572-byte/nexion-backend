@@ -1,5 +1,8 @@
 package ffdd.opsconsole.device.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -38,13 +41,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class AppTradeinServiceTest {
+    private final SupportPaymentAttributionFacade capture = paymentAttribution();
     private final AppTradeinMapper mapper = mock(AppTradeinMapper.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final StorefrontProductReleasePolicy releasePolicy = mock(StorefrontProductReleasePolicy.class);
     private final FundsSandboxProfileGuard sandboxGuard = mock(FundsSandboxProfileGuard.class);
-    private final AppTradeinService service = new AppTradeinService(
+    private final AppTradeinService service = new AppTradeinService(capture,
             mapper, idempotency, outbox, audit, releasePolicy, sandboxGuard);
 
     @BeforeEach
@@ -320,8 +324,9 @@ class AppTradeinServiceTest {
         verify(mapper).findTargetProduct(null, "stellarbox-pro-v2");
     }
 
-    @Test
-    void submitAtomicallyDebitsWalletPostsD4LedgerRecyclesAndDelivers() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void submitAtomicallyDebitsWalletPostsD4LedgerRecyclesAndDelivers(boolean failCapture) {
         configuredHardwareQuotaHasCapacity();
         when(mapper.purchaseGateJson("SKU-NEW"))
                 .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
@@ -329,7 +334,7 @@ class AppTradeinServiceTest {
                 .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
         when(mapper.consumePurchaseQuota("SKU-NEW", 1)).thenReturn(1);
         when(mapper.debitWalletUsdt(7L, new BigDecimal("900.000000"))).thenReturn(1);
-        when(mapper.insertWalletLedger(anyString(), any(), any(), any())).thenReturn(1);
+
         when(mapper.decrementTargetStock(22L)).thenReturn(1);
         when(mapper.recycleSourceDevice(7L, 11L)).thenReturn(1);
         when(mapper.insertTargetDevice(any())).thenReturn(1);
@@ -339,12 +344,21 @@ class AppTradeinServiceTest {
         when(mapper.insertPaidOrder(any())).thenReturn(1);
         when(mapper.insertPaidOrderItem(any())).thenReturn(1);
 
+        if (failCapture) {
+            org.mockito.Mockito.doThrow(new IllegalStateException("CAPTURE_WRITE_FAILED"))
+                    .when(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.submit(7L, "idem-7", new AppTradeinSubmitRequest(11L, 22L)))
+                    .isInstanceOf(IllegalStateException.class).hasMessage("CAPTURE_WRITE_FAILED");
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            return;
+        }
+
         ApiResult<?> result = service.submit(7L, "idem-7", new AppTradeinSubmitRequest(11L, 22L));
         verify(mapper).recordHardwarePurchase(any(), eq(7L), org.mockito.ArgumentMatchers.startsWith("TIO-"), any());
 
         assertThat(result.getCode()).isZero();
         verify(mapper).debitWalletUsdt(7L, new BigDecimal("900.000000"));
-        verify(mapper).insertWalletLedger(anyString(), any(), any(), any());
+        verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), any(), any(), eq("E3 trade-in upgrade wallet payment"));
         verify(mapper).recycleSourceDevice(7L, 11L);
         verify(mapper).insertTargetDevice(any());
         verify(mapper).insertTradeinApplication(any());
@@ -354,6 +368,15 @@ class AppTradeinServiceTest {
         verify(outbox, times(3)).publishUserEvent(
                 anyString(), anyString(), anyString(), any(), anyString(), any(), anyString(), any());
         verify(audit).recordRequiredForTrustedActor(any());
+        org.mockito.Mockito.verify(capture).prepare(eq(7L), eq(Source.TRADE_IN), org.mockito.ArgumentMatchers.startsWith("TIO-"));
+        org.mockito.Mockito.verify(mapper,org.mockito.Mockito.never()).insertWalletLedger(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.verify(mapper,org.mockito.Mockito.never()).insertCapacityKeepWalletLedger(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        var captureOrder = org.mockito.Mockito.inOrder(capture, mapper);
+        captureOrder.verify(capture).prepare(eq(7L), eq(Source.TRADE_IN), org.mockito.ArgumentMatchers.startsWith("TIO-"));
+        captureOrder.verify(mapper).lockSourceDevice(7L, 11L);
+        captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),anyString());
+        captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
     }
 
     @Test
@@ -389,6 +412,8 @@ class AppTradeinServiceTest {
         verify(mapper).insertWalletLedger(anyString(), any(),
                 org.mockito.ArgumentMatchers.argThat(amount -> new BigDecimal("0.000000").compareTo(amount) == 0),
                 org.mockito.ArgumentMatchers.argThat(balance -> new BigDecimal("1000.000000").compareTo(balance) == 0));
+        org.mockito.Mockito.verify(capture, org.mockito.Mockito.never()).insertLedger(any(),any(),any(),anyString());
+        org.mockito.Mockito.verify(capture, org.mockito.Mockito.never()).record(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
@@ -439,8 +464,9 @@ class AppTradeinServiceTest {
         assertThat(result.getData().sourceDeviceId()).isNull();
     }
 
-    @Test
-    void capacityReplacementCreatesARealOrderAndRefreshableSourceLinkWithoutTradeinCredit() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void capacityReplacementCreatesARealOrderAndRefreshableSourceLinkWithoutTradeinCredit(boolean failCapture) {
         configuredHardwareQuotaHasCapacity();
         when(mapper.purchaseGateJson("SKU-NEW"))
                 .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
@@ -450,7 +476,7 @@ class AppTradeinServiceTest {
         when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
         when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
         when(mapper.debitWalletUsdt(7L, new BigDecimal("1500.000000"))).thenReturn(1);
-        when(mapper.insertWalletLedger(anyString(), any(), any(), any())).thenReturn(1);
+
         when(mapper.decrementTargetStock(22L)).thenReturn(1);
         when(mapper.moveSourceDeviceToInventory(7L, 11L)).thenReturn(1);
         when(mapper.insertTargetDevice(any())).thenReturn(1);
@@ -459,6 +485,16 @@ class AppTradeinServiceTest {
         when(mapper.insertTradeinCompatibilityOrder(any())).thenReturn(1);
         when(mapper.insertPaidOrder(any())).thenReturn(1);
         when(mapper.insertPaidOrderItem(any())).thenReturn(1);
+
+        if (failCapture) {
+            org.mockito.Mockito.doThrow(new IllegalStateException("CAPTURE_WRITE_FAILED"))
+                    .when(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.capacityReplace(7L, "cap-idem-7",
+                new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", new BigDecimal("1500.000000"))))
+                    .isInstanceOf(IllegalStateException.class).hasMessage("CAPTURE_WRITE_FAILED");
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            return;
+        }
 
         var result = service.capacityReplace(7L, "cap-idem-7",
                 new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", new BigDecimal("1500.000000")));
@@ -478,6 +514,15 @@ class AppTradeinServiceTest {
         serialization.verify(mapper).lockActiveUser(7L);
         serialization.verify(idempotency).execute(eq("APP:E3_CAPACITY_REPLACE:USER:7"),
                 eq("cap-idem-7"), anyString(), eq(ApiResult.class), any());
+        org.mockito.Mockito.verify(capture).prepare(eq(7L), eq(Source.TRADE_IN), org.mockito.ArgumentMatchers.startsWith("CPO-"));
+        org.mockito.Mockito.verify(mapper,org.mockito.Mockito.never()).insertWalletLedger(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.verify(mapper,org.mockito.Mockito.never()).insertCapacityKeepWalletLedger(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        var captureOrder = org.mockito.Mockito.inOrder(capture, mapper);
+        captureOrder.verify(capture).prepare(eq(7L), eq(Source.TRADE_IN), org.mockito.ArgumentMatchers.startsWith("CPO-"));
+        captureOrder.verify(mapper).lockCapacityReplacementSource(7L);
+        captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),anyString());
+        captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
     }
 
     @Test
@@ -576,18 +621,29 @@ class AppTradeinServiceTest {
                 .hasMessageContaining("TRADEIN_PRODUCTION_USER_REQUIRED");
     }
 
-    @Test
-    void capacityKeepPurchasePaysAtomicallyAndDeliversAnInactiveInventoryDevice() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void capacityKeepPurchasePaysAtomicallyAndDeliversAnInactiveInventoryDevice(boolean failCapture) {
         configuredHardwareQuotaHasCapacity();
         when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
         when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
         when(mapper.debitWalletUsdt(7L, new BigDecimal("1500.000000"))).thenReturn(1);
-        when(mapper.insertCapacityKeepWalletLedger(anyString(), any(), any(), any())).thenReturn(1);
+
         when(mapper.decrementTargetStock(22L)).thenReturn(1);
         when(mapper.insertCapacityKeepOrder(any())).thenReturn(1);
         when(mapper.insertPaidOrderItem(any())).thenReturn(1);
         when(mapper.insertInventoryTargetDevice(any())).thenReturn(1);
         when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(44L);
+
+        if (failCapture) {
+            org.mockito.Mockito.doThrow(new IllegalStateException("CAPTURE_WRITE_FAILED"))
+                    .when(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.capacityKeep(7L, "keep-idem-7",
+                new AppCapacityKeepSubmitRequest("stellarbox-pro-v2", new BigDecimal("1500.000000"))))
+                    .isInstanceOf(IllegalStateException.class).hasMessage("CAPTURE_WRITE_FAILED");
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            return;
+        }
 
         var result = service.capacityKeep(7L, "keep-idem-7",
                 new AppCapacityKeepSubmitRequest("stellarbox-pro-v2", new BigDecimal("1500.000000")));
@@ -606,6 +662,15 @@ class AppTradeinServiceTest {
                 anyString(), eq(ApiResult.class), any());
         verify(idempotency, never()).execute(eq("APP:E3_CAPACITY_KEEP:USER:7"), anyString(),
                 anyString(), eq(ApiResult.class), any());
+        org.mockito.Mockito.verify(capture).prepare(eq(7L), eq(Source.CAPACITY_KEEP), org.mockito.ArgumentMatchers.startsWith("CKO-"));
+        org.mockito.Mockito.verify(mapper,org.mockito.Mockito.never()).insertWalletLedger(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.verify(mapper,org.mockito.Mockito.never()).insertCapacityKeepWalletLedger(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        var captureOrder = org.mockito.Mockito.inOrder(capture, mapper);
+        captureOrder.verify(capture).prepare(eq(7L), eq(Source.CAPACITY_KEEP), org.mockito.ArgumentMatchers.startsWith("CKO-"));
+        captureOrder.verify(mapper).lockTargetProduct(null, "stellarbox-pro-v2");
+        captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),anyString());
+        captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
     }
 
     @Test
@@ -643,5 +708,37 @@ class AppTradeinServiceTest {
         return new AppTradeinMapper.TargetProduct(
                 22L, "SKU-NEW", "New", "PRO", "ACTIVE", new BigDecimal("1500.00"), 3,
                 "BOX", 2, "GPU", 48, new BigDecimal("100"), new BigDecimal("2"), new BigDecimal("3"));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"TRADE,false","TRADE,true","REPLACE,false","REPLACE,true","KEEP,false","KEEP,true"})
+    void canonicalLedgerZeroOrFailureStopsAllThreePositivePurchases(String path,boolean thrown) {
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),anyString()))
+                .thenAnswer(invocation -> { if(thrown)throw new IllegalStateException("LEDGER_INSERT_FAILED"); return 0; });
+        assertThatThrownBy(() -> {
+            switch(path) {
+                case "TRADE" -> submitAtomicallyDebitsWalletPostsD4LedgerRecyclesAndDelivers(false);
+                case "REPLACE" -> capacityReplacementCreatesARealOrderAndRefreshableSourceLinkWithoutTradeinCredit(false);
+                case "KEEP" -> capacityKeepPurchasePaysAtomicallyAndDeliversAnInactiveInventoryDevice(false);
+                default -> throw new AssertionError(path);
+            }
+        }).hasMessage(thrown?"LEDGER_INSERT_FAILED":switch(path) {
+            case "TRADE" -> "TRADEIN_D4_LEDGER_CONFLICT";
+            case "REPLACE" -> "CAPACITY_REPLACEMENT_PAYMENT_CONFLICT";
+            default -> "CAPACITY_KEEP_PAYMENT_CONFLICT";
+        });
+        org.mockito.Mockito.verify(capture,org.mockito.Mockito.never()).record(any());
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution() {
+        var capture = org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString())).thenReturn(1);
+        return capture;
     }
 }

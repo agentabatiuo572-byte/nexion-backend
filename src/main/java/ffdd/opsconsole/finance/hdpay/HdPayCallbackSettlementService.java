@@ -1,5 +1,7 @@
 package ffdd.opsconsole.finance.hdpay;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
 import ffdd.opsconsole.finance.mapper.VietnamPaymentMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -52,6 +54,7 @@ public class HdPayCallbackSettlementService {
     private final AuditLogService audit;
     private final TreasuryLedgerRepository treasuryLedger;
     private final Clock clock;
+    private final SupportPaymentAttributionFacade paymentAttribution;
 
     @Autowired
     public HdPayCallbackSettlementService(
@@ -61,7 +64,8 @@ public class HdPayCallbackSettlementService {
             EventOutboxService outbox,
             AuditLogService audit,
             TreasuryLedgerRepository treasuryLedger,
-            Clock clock) {
+            Clock clock,
+            SupportPaymentAttributionFacade paymentAttribution) {
         this.hdPayMapper = hdPayMapper;
         this.intentMapper = intentMapper;
         this.paymentMapper = paymentMapper;
@@ -69,6 +73,7 @@ public class HdPayCallbackSettlementService {
         this.audit = audit;
         this.treasuryLedger = treasuryLedger;
         this.clock = clock;
+        this.paymentAttribution = java.util.Objects.requireNonNull(paymentAttribution);
     }
 
     /**
@@ -313,6 +318,7 @@ public class HdPayCallbackSettlementService {
         if (!"HDPAY".equals(code(intent.get("paymentRail")))) {
             return manualReview(fact, claimToken, "VIETQR_PAYMENT_RAIL_CONFLICT", orderQuery);
         }
+        var prepared = paymentAttribution.prepare(userId, Source.HDPAY, fact.merchantOrderId());
         Map<String, Object> wallet = paymentMapper.findUsdtWalletForUpdate(userId);
         if (wallet == null || wallet.isEmpty()) {
             throw new BizException(503, "HDPAY_TARGET_WALLET_NOT_FOUND");
@@ -325,9 +331,7 @@ public class HdPayCallbackSettlementService {
         requireOne(paymentMapper.creditUsdtWallet(userId, amountUsdt, walletVersion),
                 "HDPAY_WALLET_VERSION_CONFLICT");
         String ledgerBizNo = fact.merchantOrderId();
-        requireOne(paymentMapper.insertVietQrWalletLedger(
-                ledgerBizNo,
-                userId,
+        requireOne(paymentAttribution.insertLedger(prepared,
                 amountUsdt,
                 balanceAfter,
                 "HDPay BANKQR deposit " + fact.merchantOrderId()),
@@ -386,6 +390,7 @@ public class HdPayCallbackSettlementService {
                     payloadHash, claimToken, "CREDITED", confirmed.orderStatus(), "CREDITED"),
                     "HDPAY_CALLBACK_INBOX_UPDATE_FAILED");
         }
+        paymentAttribution.record(prepared);
         return SUCCESS;
     }
 

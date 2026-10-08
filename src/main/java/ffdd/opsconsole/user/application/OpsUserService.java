@@ -83,6 +83,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.dao.InvalidDataAccessResourceUsageException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.util.StringUtils;
 
@@ -571,7 +572,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return (scoped ? userRepository.findById(userId, scope) : userRepository.findById(userId))
                     .map(ApiResult::ok)
                     .orElseGet(() -> ApiResult.fail(404, "USER_NOT_FOUND"));
-        } catch (org.springframework.jdbc.BadSqlGrammarException ex) {
+        } catch (InvalidDataAccessResourceUsageException ex) {
             // A broken read projection must not mark the enclosing partial-profile transaction rollback-only.
             // Authorization above and lock/connection failures still propagate through the transaction boundary.
             org.slf4j.LoggerFactory.getLogger(OpsUserService.class)

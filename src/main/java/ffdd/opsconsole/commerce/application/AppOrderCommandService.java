@@ -1,5 +1,7 @@
 package ffdd.opsconsole.commerce.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper;
 import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
@@ -42,6 +44,7 @@ public class AppOrderCommandService {
     private final CommerceAcceptanceSandboxService sandboxService;
     private final CommerceAcceptanceRun acceptanceRun;
     private final EventOutboxService outbox;
+    private final SupportPaymentAttributionFacade paymentAttribution;
     @SuppressWarnings("ArchitectureConfigField") // Explicit constructor parameter carries the @Value binding.
     private final int pendingOrderTtlMinutes;
 
@@ -55,7 +58,8 @@ public class AppOrderCommandService {
             CommerceAcceptanceSandboxService sandboxService,
             CommerceAcceptanceRun acceptanceRun,
             EventOutboxService outbox,
-            @Value("${nexion.commerce.pending-order-ttl-minutes:30}") int pendingOrderTtlMinutes) {
+            @Value("${nexion.commerce.pending-order-ttl-minutes:30}") int pendingOrderTtlMinutes,
+            SupportPaymentAttributionFacade paymentAttribution) {
         this.mapper = mapper;
         this.idempotency = idempotency;
         this.audit = audit;
@@ -64,6 +68,7 @@ public class AppOrderCommandService {
         this.sandboxService = sandboxService;
         this.acceptanceRun = acceptanceRun;
         this.outbox = outbox;
+        this.paymentAttribution = java.util.Objects.requireNonNull(paymentAttribution);
         this.pendingOrderTtlMinutes = Math.max(1, pendingOrderTtlMinutes);
     }
 
@@ -75,9 +80,10 @@ public class AppOrderCommandService {
             CommerceAcceptanceSandboxMapper sandboxMapper,
             CommerceAcceptanceSandboxService sandboxService,
             CommerceAcceptanceRun acceptanceRun,
-            EventOutboxService outbox) {
+            EventOutboxService outbox,
+            SupportPaymentAttributionFacade paymentAttribution) {
         this(mapper, idempotency, audit, sandboxGuard, sandboxMapper, sandboxService,
-                acceptanceRun, outbox, 30);
+                acceptanceRun, outbox, 30, paymentAttribution);
     }
 
     AppOrderCommandService(
@@ -87,8 +93,9 @@ public class AppOrderCommandService {
             FundsSandboxProfileGuard sandboxGuard,
             CommerceAcceptanceSandboxMapper sandboxMapper,
             CommerceAcceptanceSandboxService sandboxService,
-            CommerceAcceptanceRun acceptanceRun) {
-        this(mapper, idempotency, audit, sandboxGuard, sandboxMapper, sandboxService, acceptanceRun, null);
+            CommerceAcceptanceRun acceptanceRun,
+            SupportPaymentAttributionFacade paymentAttribution) {
+        this(mapper, idempotency, audit, sandboxGuard, sandboxMapper, sandboxService, acceptanceRun, null, paymentAttribution);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -140,6 +147,9 @@ public class AppOrderCommandService {
     }
 
     private ApiResult<Map<String, Object>> payFromWallet(Long userId, String orderNo) {
+        Long owner=mapper.findDevelopmentPayOrderOwner(orderNo);
+        if (!userId.equals(owner)) return ApiResult.fail(403, "ORDER_FORBIDDEN");
+        var prepared = paymentAttribution.prepare(userId, Source.WALLET_ORDER, orderNo);
         AppOrderCommandMapper.DevelopmentPayOrder order = mapper.lockDevelopmentPayOrder(orderNo);
         if (order == null || !userId.equals(order.userId())) return ApiResult.fail(403, "ORDER_FORBIDDEN");
         if (order.amountUsdt() == null || order.amountUsdt().signum() < 0
@@ -277,8 +287,8 @@ public class AppOrderCommandService {
             if (mapper.debitDevelopmentWallet(userId, order.amountUsdt(), wallet.version()) != 1) {
                 throw new BizException(409, "ORDER_WALLET_CONFLICT");
             }
-            if (mapper.insertDevelopmentPurchaseLedger(
-                    orderNo, userId, order.amountUsdt(), balanceAfter) != 1) {
+            if (paymentAttribution.insertLedger(prepared, order.amountUsdt(), balanceAfter,
+                    "NexGrid wallet order settlement") != 1) {
                 throw new BizException(409, "ORDER_WALLET_LEDGER_CONFLICT");
             }
         }
@@ -334,6 +344,7 @@ public class AppOrderCommandService {
                 .actorType("USER").method("POST").path("/api/orders/" + orderNo + "/pay")
                 .result("SUCCESS").riskLevel("LOW")
                 .detail(auditDetail).build());
+        if (!fullyDiscounted) paymentAttribution.record(prepared);
         return developmentPaymentReceipt(order, paymentNo, balanceAfter, paymentRail, false);
     }
 

@@ -1,5 +1,7 @@
 package ffdd.opsconsole.finance.hdpay;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -33,7 +35,7 @@ class HdPayCallbackCommerceRoutingTest {
         var treasuryLedger = mock(TreasuryLedgerRepository.class);
         var clock = Clock.fixed(Instant.parse("2026-09-02T04:00:00Z"), ZoneOffset.UTC);
         var service = new HdPayCallbackSettlementService(
-                hdPayMapper, intentMapper, paymentMapper, outbox, audit, treasuryLedger, clock);
+                hdPayMapper, intentMapper, paymentMapper, outbox, audit, treasuryLedger, clock, paymentAttribution());
         var order = new LinkedHashMap<String, Object>();
         order.put("amountVnd", new BigDecimal("26000"));
         order.put("submissionStatus", "CREATED");
@@ -79,5 +81,14 @@ class HdPayCallbackCommerceRoutingTest {
         verify(hdPayMapper).markSettlementReview(
                 "VQR-COMMERCE-1", "PROVIDER-1", 3,
                 "HDPAY_COMMERCE_DIRECT_PAYMENT_RETIRED");
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution() {
+        var capture = org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        return capture;
     }
 }

@@ -1,5 +1,7 @@
 package ffdd.opsconsole.growth.web;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -129,7 +131,7 @@ class AppTrialLifecycleControllerIntegrationTest {
                                                    MockEnvironment environment) {
         StorefrontProductReleasePolicy releasePolicy = mock(StorefrontProductReleasePolicy.class);
         when(releasePolicy.evaluate(any(), any())).thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
-        AppTrialLifecycleService service = new AppTrialLifecycleService(
+        AppTrialLifecycleService service = new AppTrialLifecycleService(paymentAttribution(),
                 mapper,
                 mock(EarningsReleaseService.class),
                 mock(AdminIdempotencyService.class),
@@ -148,5 +150,14 @@ class AppTrialLifecycleControllerIntegrationTest {
                 new UsernamePasswordAuthenticationToken(id, null, List.of());
         authentication.setDetails(Map.of("subjectType", subjectType));
         return authentication;
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution() {
+        var capture = org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        return capture;
     }
 }

@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -292,6 +293,18 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
     int restoreVoucher(@Param("grantId") String grantId,
                        @Param("userId") Long userId,
                        @Param("orderNo") String orderNo);
+
+    /** Nonlocking preflight only; payment rechecks ownership under the original write lock. */
+    @Select("""
+            SELECT o.user_id
+              FROM nx_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.sandbox=0
+             WHERE o.order_no=#{orderNo} AND o.is_deleted=0
+               AND u.status='ACTIVE' AND u.is_deleted=0
+             LIMIT 1
+            """)
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    Long findDevelopmentPayOrderOwner(@Param("orderNo") String orderNo);
 
     @Select("""
             SELECT o.order_no orderNo,o.user_id userId,o.product_id productId,o.quantity,

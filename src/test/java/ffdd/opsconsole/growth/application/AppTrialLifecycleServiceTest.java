@@ -1,5 +1,8 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -40,6 +43,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
 class AppTrialLifecycleServiceTest {
+    private final SupportPaymentAttributionFacade capture = paymentAttribution();
     private final AppTrialLifecycleMapper mapper = mock(AppTrialLifecycleMapper.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final TreasuryCoverageFacade coverage = mock(TreasuryCoverageFacade.class);
@@ -49,7 +53,7 @@ class AppTrialLifecycleServiceTest {
     private final CanonicalStateMapper canonicalStateMapper = mock(CanonicalStateMapper.class);
     private final EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
     private final MockEnvironment environment = productionEnvironment();
-    private final AppTrialLifecycleService service = new AppTrialLifecycleService(
+    private final AppTrialLifecycleService service = new AppTrialLifecycleService(capture,
             mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment,
             Clock.system(ZoneId.of("Asia/Shanghai")));
 
@@ -106,7 +110,7 @@ class AppTrialLifecycleServiceTest {
         TrialRow extended = trialWithStatus("EXTENDED", null, 1L);
         when(mapper.lockTrial(7L)).thenReturn(extended);
         Instant deadline = extended.expiresAt().atZone(ZoneId.of("Asia/Shanghai")).toInstant();
-        var atDeadline = new AppTrialLifecycleService(mapper, earningsRelease, idempotency, coverage,
+        var atDeadline = new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
                 audit, outbox, productReleasePolicy, canonicalStateMapper, environment,
                 Clock.fixed(deadline, ZoneId.of("UTC")));
         assertThat(atDeadline.convert(7L, "stellarbox-s1", new BigDecimal("1249"), "deadline").getMessage())
@@ -114,7 +118,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).lockConversionProduct(anyString());
 
         when(mapper.lockConversionProduct("stellarbox-s1")).thenReturn(null);
-        var beforeDeadline = new AppTrialLifecycleService(mapper, earningsRelease, idempotency, coverage,
+        var beforeDeadline = new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
                 audit, outbox, productReleasePolicy, canonicalStateMapper, environment,
                 Clock.fixed(deadline.minusNanos(1), ZoneId.of("UTC")));
         assertThat(beforeDeadline.convert(7L, "stellarbox-s1", new BigDecimal("1249"), "before-deadline").getMessage())
@@ -466,7 +470,7 @@ class AppTrialLifecycleServiceTest {
     @Test
     void quotaDayUsesAsiaShanghaiEvenWhenInjectedClockHasAnotherZone() {
         Clock clock = Clock.fixed(Instant.parse("2026-08-20T16:30:00Z"), ZoneId.of("Pacific/Honolulu"));
-        AppTrialLifecycleService shanghaiService = new AppTrialLifecycleService(
+        AppTrialLifecycleService shanghaiService = new AppTrialLifecycleService(paymentAttribution(),
                 mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment, clock);
 
         ApiResult<Map<String, Object>> result = shanghaiService.state(7L);
@@ -482,7 +486,7 @@ class AppTrialLifecycleServiceTest {
         when(crossing.instant()).thenReturn(Instant.parse("2026-08-20T15:59:59Z"), Instant.parse("2026-08-20T16:00:01Z"));
         when(mapper.insertTrial(anyLong(), anyString(), anyString(), isNull(), anyString(), anyInt(),
                 any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
-        var crossingService = new AppTrialLifecycleService(mapper, earningsRelease, idempotency, coverage,
+        var crossingService = new AppTrialLifecycleService(paymentAttribution(), mapper, earningsRelease, idempotency, coverage,
                 audit, outbox, productReleasePolicy, canonicalStateMapper, environment, crossing);
         assertThat(crossingService.start(7L, null, "ignored", "midnight-start").getCode()).isZero();
         verify(mapper).ensureTrialQuotaDay(LocalDate.of(2026, 8, 20), 47);
@@ -496,7 +500,7 @@ class AppTrialLifecycleServiceTest {
             AppTrialLifecycleMapper isolatedMapper = mock(AppTrialLifecycleMapper.class);
             MockEnvironment forbidden = new MockEnvironment();
             forbidden.setActiveProfiles(profiles);
-            AppTrialLifecycleService denied = new AppTrialLifecycleService(
+            AppTrialLifecycleService denied = new AppTrialLifecycleService(paymentAttribution(),
                     isolatedMapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, forbidden,
                     Clock.systemUTC());
 
@@ -771,6 +775,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
                 anyString(), anyString(), anyString(), any());
         verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
+            org.mockito.Mockito.verifyNoInteractions(capture);
     }
 
     @Test
@@ -882,10 +887,17 @@ class AppTrialLifecycleServiceTest {
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(9L), eq("stellarbox-s1"), eq("Entry"), eq("DEVICE"), anyString(), eq("Trial"), any())).thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
-        var fixedService = new AppTrialLifecycleService(mapper, earningsRelease, idempotency, coverage, audit, outbox,
+        var fixedService = new AppTrialLifecycleService(capture, mapper, earningsRelease, idempotency, coverage, audit, outbox,
                 productReleasePolicy, canonicalStateMapper, environment, fixed);
         var result = fixedService.convert(7L, "stellarbox-s1", new BigDecimal("1239.00"), "direct-reward-conversion");
         assertThat(result.getCode()).isZero();
+        verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), eq(new BigDecimal("1239.000000")),
+                eq(new BigDecimal("761.000000")), eq("H2 conversion via NexGrid USDT wallet"));
+        verify(mapper,never()).insertLedger(anyLong(),anyString(),eq("TRIAL_CHARGE"),anyString(),anyString(),any(),any(),anyString());
+        var sequence=org.mockito.Mockito.inOrder(capture,mapper);
+        sequence.verify(capture).prepare(7L,Source.TRIAL_CONVERT,"USER:7");
+        sequence.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),anyString());
+        sequence.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
         String orderNo = (String) result.getData().get("orderNo");
         assertThat((BigDecimal) result.getData().get("amountUsdt")).isEqualByComparingTo("1239");
         var payload = org.mockito.ArgumentCaptor.forClass(Map.class);
@@ -915,5 +927,28 @@ class AppTrialLifecycleServiceTest {
                 active ? now.plusDays(2) : now.minusDays(1),
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, cooldownUntil, version);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans={false,true})
+    void canonicalLedgerZeroOrFailureStopsBeforeRecord(boolean thrown) {
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString()))
+                .thenAnswer(invocation -> { if(thrown)throw new IllegalStateException("LEDGER_INSERT_FAILED"); return 0; });
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> explicitConversionPublishesOnePaidOrderWithNetAmountForDirectRewards())
+                .hasMessage(thrown?"LEDGER_INSERT_FAILED":"TRIAL_CHARGE_LEDGER_CONFLICT");
+        org.mockito.Mockito.verify(capture,org.mockito.Mockito.never()).record(org.mockito.ArgumentMatchers.any());
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution() {
+        var capture = org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString())).thenReturn(1);
+        return capture;
     }
 }

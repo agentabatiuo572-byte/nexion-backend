@@ -1,5 +1,8 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
@@ -34,6 +37,7 @@ import org.springframework.transaction.interceptor.TransactionInterceptor;
 import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 
 class TrialConvertAndDeferredDeactivateTest {
+    private final SupportPaymentAttributionFacade capture = paymentAttribution();
     private static final Clock TEST_CLOCK = Clock.fixed(
             Instant.parse("2026-08-25T12:00:00Z"), ZoneOffset.UTC);
     private static final BigDecimal EXPECTED_AMOUNT = new BigDecimal("1277.33");
@@ -43,7 +47,7 @@ class TrialConvertAndDeferredDeactivateTest {
     private final TreasuryCoverageFacade coverage = mock(TreasuryCoverageFacade.class);
     private final StorefrontProductReleasePolicy productReleasePolicy = mock(StorefrontProductReleasePolicy.class);
     private final CanonicalStateMapper canonicalStateMapper = mock(CanonicalStateMapper.class);
-    private final AppTrialLifecycleService service = new AppTrialLifecycleService(
+    private final AppTrialLifecycleService service = new AppTrialLifecycleService(capture,
             mapper, earningsRelease, idempotency, coverage,
             mock(AuditLogService.class), mock(EventOutboxService.class), productReleasePolicy, canonicalStateMapper, productionEnvironment(),
             TEST_CLOCK);
@@ -75,8 +79,9 @@ class TrialConvertAndDeferredDeactivateTest {
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
     }
 
-    @Test
-    void convertLocksAuthoritativeProductCreatesOrderAndClosesActiveTrialAtomically() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void convertLocksAuthoritativeProductCreatesOrderAndClosesActiveTrialAtomically(boolean failCapture) {
         when(mapper.lockHardwarePurchaseTiers("stellarbox-s1")).thenReturn(List.of(
                 new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Tier(
                         1L, "S1", "stellarbox-s1", 0, BigDecimal.ZERO, 10, "ALL", 1)));
@@ -97,6 +102,16 @@ class TrialConvertAndDeferredDeactivateTest {
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString()))
                 .thenReturn(1);
+
+        if (failCapture) {
+            org.mockito.Mockito.doThrow(new IllegalStateException("CAPTURE_WRITE_FAILED"))
+                    .when(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.convert(
+                7L, "stellarbox-s1", new BigDecimal("1278.96"), "convert-1"))
+                    .isInstanceOf(IllegalStateException.class).hasMessage("CAPTURE_WRITE_FAILED");
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            return;
+        }
 
         ApiResult<java.util.Map<String, Object>> result = service.convert(
                 7L, "stellarbox-s1", new BigDecimal("1278.96"), "convert-1");
@@ -124,6 +139,14 @@ class TrialConvertAndDeferredDeactivateTest {
         verify(mapper).markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString());
         verify(mapper).insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
                 eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")));
+        org.mockito.Mockito.verify(capture).prepare(7L, Source.TRIAL_CONVERT, "USER:7");
+        var captureOrder = org.mockito.Mockito.inOrder(capture, mapper);
+        captureOrder.verify(capture).prepare(7L, Source.TRIAL_CONVERT, "USER:7");
+        captureOrder.verify(mapper).lockTrial(7L);
+        captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),anyString());
+        verify(mapper,never()).insertLedger(anyLong(),anyString(),eq("TRIAL_CHARGE"),anyString(),anyString(),any(),any(),anyString());
+        captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
     }
 
     @Test
@@ -319,5 +342,16 @@ class TrialConvertAndDeferredDeactivateTest {
                 new BigDecimal(dailyUsdt), new BigDecimal(dailyNex), new BigDecimal("50"), new BigDecimal("1299"),
                 "productCode=" + productNo, now.minusHours(1), now.plusDays(2), BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, BigDecimal.ZERO, null, 0L);
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution() {
+        var capture = org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString())).thenReturn(1);
+        return capture;
     }
 }

@@ -1,5 +1,7 @@
 package ffdd.opsconsole.device.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.device.dto.AppTradeinConfigResponse;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteRequest;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteResponse;
@@ -57,6 +59,8 @@ public class AppTradeinService {
             "earlyAccessEnabled", "earlyAccessLeadDays");
     private static final Set<Integer> EARLY_ACCESS_LEAD_DAY_OPTIONS = Set.of(7, 14, 30, 60, 90);
 
+    @lombok.NonNull
+    private final SupportPaymentAttributionFacade paymentAttribution;
     private final AppTradeinMapper mapper;
     private final AdminIdempotencyService idempotencyService;
     private final EventOutboxService outboxService;
@@ -200,6 +204,11 @@ public class AppTradeinService {
 
     private ApiResult<AppTradeinSubmitResponse> submitInternal(
             Long userId, String idempotencyKey, AppTradeinSubmitRequest request) {
+        String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        String tradeinNo = "TIN-" + nonce;
+        String orderNo = "TIO-" + nonce;
+        String instanceNo = "DEV-TI-" + nonce;
+        var prepared = paymentAttribution.prepare(userId, Source.TRADE_IN, orderNo);
         Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(), request.targetProductNo(), true);
         AppTradeinQuoteResponse quote = evaluation.response();
         if ((request.expectedPayableUsdt() != null
@@ -219,10 +228,6 @@ public class AppTradeinService {
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, evaluation.target().productNo(),
                 java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
 
-        String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        String tradeinNo = "TIN-" + nonce;
-        String orderNo = "TIO-" + nonce;
-        String instanceNo = "DEV-TI-" + nonce;
         BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(quote.payableUsdt()).setScale(6, RoundingMode.HALF_UP);
 
         if (quote.payableUsdt().signum() > 0) {
@@ -230,7 +235,10 @@ public class AppTradeinService {
                 throw new BizException(409, "TRADEIN_WALLET_CONFLICT");
             }
         }
-        if (mapper.insertWalletLedger(orderNo, userId, quote.payableUsdt(), balanceAfter) != 1) {
+        if ((quote.payableUsdt().signum() > 0
+                ? paymentAttribution.insertLedger(prepared, quote.payableUsdt(), balanceAfter,
+                        "E3 trade-in upgrade wallet payment")
+                : mapper.insertWalletLedger(orderNo, userId, quote.payableUsdt(), balanceAfter)) != 1) {
             throw new BizException(409, "TRADEIN_D4_LEDGER_CONFLICT");
         }
         if (mapper.decrementTargetStock(evaluation.target().id()) != 1) {
@@ -318,6 +326,7 @@ public class AppTradeinService {
                         "discountCreditedToWallet", false))
                 .build());
 
+        if (quote.payableUsdt().signum() > 0) paymentAttribution.record(prepared);
         return ApiResult.ok(new AppTradeinSubmitResponse(
                 tradeinNo, orderNo, evaluation.source().id(), targetDeviceId,
                 "COMPLETED", "COMPLETED", quote.discountUsdt(), quote.payableUsdt(), balanceAfter));
@@ -325,6 +334,11 @@ public class AppTradeinService {
 
     private ApiResult<AppTradeinSubmitResponse> capacityReplaceInternal(
             Long userId, String idempotencyKey, AppCapacityReplaceSubmitRequest request) {
+        String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        String tradeinNo = "CPR-" + nonce;
+        String orderNo = "CPO-" + nonce;
+        String instanceNo = "DEV-CPR-" + nonce;
+        var prepared = paymentAttribution.prepare(userId, Source.TRADE_IN, orderNo);
         AppCapacityReplaceQuoteResponse quote = evaluateCapacity(userId, request.targetProductNo(), true);
         if (!"REPLACE_REQUIRED".equals(quote.decision()) || quote.sourceDeviceId() == null) {
             throw new BizException(409, "CAPACITY_REPLACEMENT_NOT_REQUIRED");
@@ -354,16 +368,15 @@ public class AppTradeinService {
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
                 java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
 
-        String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        String tradeinNo = "CPR-" + nonce;
-        String orderNo = "CPO-" + nonce;
-        String instanceNo = "DEV-CPR-" + nonce;
         BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(quote.payableUsdt())
                 .setScale(6, RoundingMode.HALF_UP);
         if (quote.payableUsdt().signum() > 0 && mapper.debitWalletUsdt(userId, quote.payableUsdt()) != 1) {
             throw new BizException(409, "TRADEIN_WALLET_CONFLICT");
         }
-        if (mapper.insertWalletLedger(orderNo, userId, quote.payableUsdt(), balanceAfter) != 1
+        if ((quote.payableUsdt().signum() > 0
+                ? paymentAttribution.insertLedger(prepared, quote.payableUsdt(), balanceAfter,
+                        "E3 trade-in upgrade wallet payment")
+                : mapper.insertWalletLedger(orderNo, userId, quote.payableUsdt(), balanceAfter)) != 1
                 || mapper.decrementTargetStock(target.id()) != 1) {
             throw new BizException(409, "CAPACITY_REPLACEMENT_PAYMENT_CONFLICT");
         }
@@ -423,6 +436,7 @@ public class AppTradeinService {
                         "before", linked("sourceDeviceId", source.id(), "status", source.status()),
                         "after", linked("targetDeviceId", targetDeviceId, "status", "ACTIVE")))
                 .build());
+        if (quote.payableUsdt().signum() > 0) paymentAttribution.record(prepared);
         return ApiResult.ok(new AppTradeinSubmitResponse(
                 tradeinNo, orderNo, source.id(), targetDeviceId, "COMPLETED", "COMPLETED",
                 BigDecimal.ZERO.setScale(6), quote.payableUsdt(), balanceAfter));
@@ -430,6 +444,11 @@ public class AppTradeinService {
 
     private ApiResult<AppCapacityKeepSubmitResponse> capacityKeepInternal(
             Long userId, String idempotencyKey, AppCapacityKeepSubmitRequest request) {
+        String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        String operationNo = "CPK-" + nonce;
+        String orderNo = "CKO-" + nonce;
+        String instanceNo = "DEV-CPK-" + nonce;
+        var prepared = paymentAttribution.prepare(userId, Source.CAPACITY_KEEP, orderNo);
         AppCapacityReplaceQuoteResponse quote = evaluateCapacity(userId, request.targetProductNo(), true);
         if ("NO_ACTIVE_DEVICE".equals(quote.decision())) {
             throw new BizException(409, "CAPACITY_KEEP_STATE_INCONSISTENT");
@@ -456,16 +475,15 @@ public class AppTradeinService {
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
                 java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
 
-        String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        String operationNo = "CPK-" + nonce;
-        String orderNo = "CKO-" + nonce;
-        String instanceNo = "DEV-CPK-" + nonce;
         BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(quote.payableUsdt())
                 .setScale(6, RoundingMode.HALF_UP);
         if (quote.payableUsdt().signum() > 0 && mapper.debitWalletUsdt(userId, quote.payableUsdt()) != 1) {
             throw new BizException(409, "TRADEIN_WALLET_CONFLICT");
         }
-        if (mapper.insertCapacityKeepWalletLedger(orderNo, userId, quote.payableUsdt(), balanceAfter) != 1
+        if ((quote.payableUsdt().signum() > 0
+                ? paymentAttribution.insertLedger(prepared, quote.payableUsdt(), balanceAfter,
+                        "E3 capacity keep purchase wallet payment")
+                : mapper.insertCapacityKeepWalletLedger(orderNo, userId, quote.payableUsdt(), balanceAfter)) != 1
                 || mapper.decrementTargetStock(target.id()) != 1) {
             throw new BizException(409, "CAPACITY_KEEP_PAYMENT_CONFLICT");
         }
@@ -508,6 +526,7 @@ public class AppTradeinService {
                 .result("SUCCESS").riskLevel("HIGH")
                 .detail(linked("idempotencyKey", idempotencyKey.trim(), "decisionSource", "server", "after", event))
                 .build());
+        if (quote.payableUsdt().signum() > 0) paymentAttribution.record(prepared);
         return ApiResult.ok(new AppCapacityKeepSubmitResponse(
                 operationNo, orderNo, targetDeviceId, "INACTIVE", "PAID",
                 quote.payableUsdt(), balanceAfter));

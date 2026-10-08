@@ -1,5 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -114,7 +116,7 @@ class TrialGraceStateMySqlIntegrationTest {
                 new OutboxProperties(), mock(A4RuntimePolicyService.class));
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("dev");
-        AppTrialLifecycleService target = new AppTrialLifecycleService(mapper, earnings,
+        AppTrialLifecycleService target = new AppTrialLifecycleService(paymentAttribution(), mapper, earnings,
                 mock(AdminIdempotencyService.class), coverage, audit, outbox,
                 mock(StorefrontProductReleasePolicy.class), mock(CanonicalStateMapper.class), environment, CLOCK);
         ProxyFactory proxy = new ProxyFactory(target);
@@ -269,5 +271,14 @@ class TrialGraceStateMySqlIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT status FROM nx_trial_claim WHERE id=1", String.class)).isEqualTo(expectedState);
         assertThat(jdbc.queryForObject("SELECT version FROM nx_trial_claim WHERE id=1", Long.class)).isEqualTo(expectedVersion);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_event_outbox", Integer.class)).isEqualTo(eventCount);
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution() {
+        var capture = org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        return capture;
     }
 }

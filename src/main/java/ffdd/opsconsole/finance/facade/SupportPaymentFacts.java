@@ -1,4 +1,4 @@
-package ffdd.opsconsole.finance.application;
+package ffdd.opsconsole.finance.facade;
 
 import java.math.BigDecimal;
 import java.time.Instant;

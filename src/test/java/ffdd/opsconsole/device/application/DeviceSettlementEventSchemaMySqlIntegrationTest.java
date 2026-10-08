@@ -1,5 +1,7 @@
 package ffdd.opsconsole.device.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.AdditionalAnswers.delegatesTo;
@@ -274,7 +276,7 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
                 12, 1, "P1", 0, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
                 BigDecimal.ZERO, 1, new BigDecimal("100"), BigDecimal.ONE, false, List.of("test")));
         StorefrontProductReleasePolicy release = new StorefrontProductReleasePolicy(catalog, rhythm);
-        return fixture.transactional(new AppTradeinService(mapper, directIdempotency(), outbox, mock(AuditLogService.class),
+        return fixture.transactional(new AppTradeinService(paymentAttribution(mapper), mapper, directIdempotency(), outbox, mock(AuditLogService.class),
                 release, sandbox));
     }
 
@@ -441,5 +443,29 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
         return new AppTradeinMapper.TargetProduct(TARGET_PRODUCT_ID, "sku-a4-capacity", "A4 capacity target", "PRO",
                 "ACTIVE", new BigDecimal("80.000000"), 3, null, "DEVICE", 2, "GPU-A4", 64,
                 BigDecimal.ONE, new BigDecimal("1.000000"), BigDecimal.ZERO, "FINITE");
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution(ffdd.opsconsole.device.mapper.AppTradeinMapper mapper) {
+        // This older fixture mocks attribution only; financial writes remain real in its own database.
+        // SupportPaymentCaptureMySqlIntegrationTest separately verifies the actual opaque receipt path.
+        var capture=org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        var contexts=new java.util.IdentityHashMap<Prepared,Object[]>();
+        org.mockito.stubbing.Answer<Prepared> prepare=invocation -> {
+            Prepared token=org.mockito.Mockito.mock(Prepared.class);
+            contexts.put(token,new Object[]{invocation.getArgument(0),invocation.getArgument(2)});
+            return token;
+        };
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString())).thenAnswer(prepare);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString())).thenAnswer(prepare);
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString()))
+                .thenAnswer(invocation -> {
+                    Object[] identity=java.util.Objects.requireNonNull(contexts.get(invocation.getArgument(0)));
+                    return mapper.insertWalletLedger((String)identity[1],(Long)identity[0],invocation.getArgument(1),invocation.getArgument(2));
+                });
+        return capture;
     }
 }

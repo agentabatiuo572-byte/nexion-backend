@@ -1,5 +1,7 @@
 package ffdd.opsconsole.finance.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.finance.dto.FxQuoteUpdateRequest;
 import ffdd.opsconsole.finance.dto.VietQrBankAccountCommandRequest;
@@ -52,6 +54,8 @@ public class OpsVietnamPaymentService {
     static final String MIGRATED_CIPHERTEXT_FUSE_REASON = "MIGRATED_CIPHERTEXT_REQUIRES_REPROVISION";
     private static final Set<String> ROTATION_STRATEGIES = Set.of("ROUND_ROBIN", "REMAINING_CAPACITY");
     private static final ZoneId VIETNAM_BANK_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
+    @lombok.NonNull
+    private final SupportPaymentAttributionFacade paymentAttribution;
     private final VietnamPaymentMapper mapper;
     private final AuditLogService audit;
     private final AdminIdempotencyService idempotency;
@@ -450,6 +454,8 @@ public class OpsVietnamPaymentService {
                 request.evidenceRef(),
                 text(row.get("reconciliationNo")) + ":" + action + ":v" + request.expectedVersion(),
                 operator(request.operator()));
+        var prepared = credit ? paymentAttribution.prepare(userId, Source.VIETQR,
+                "D1-VIETQR-" + text(row.get("reconciliationNo")), intentNo) : null;
         if (credit) {
             Map<String, Object> wallet = requiredMap(mapper.findUsdtWalletForUpdate(userId),
                     "VIETQR_TARGET_WALLET_NOT_FOUND", 404);
@@ -458,9 +464,7 @@ public class OpsVietnamPaymentService {
             if (mapper.creditUsdtWallet(userId, amount, walletVersion) != 1) {
                 conflict("VIETQR_TARGET_WALLET_VERSION_CONFLICT");
             }
-            if (mapper.insertVietQrWalletLedger(
-                    "D1-VIETQR-" + text(row.get("reconciliationNo")),
-                    userId, amount, balanceAfter,
+            if (paymentAttribution.insertLedger(prepared, amount, balanceAfter,
                     "VietQR settlement " + text(row.get("reconciliationNo"))) != 1) {
                 throw new IllegalStateException("VIETQR_LEDGER_WRITE_FAILED");
             }
@@ -485,6 +489,7 @@ public class OpsVietnamPaymentService {
                 userId, intentNo, amount, request.reason().trim()) != 1) {
             conflict("VIETQR_RECONCILIATION_VERSION_CONFLICT");
         }
+        if (credit) paymentAttribution.record(prepared);
         requiredAudit("VIETQR_RECONCILIATION_" + action, "VIETQR_RECONCILIATION",
                 String.valueOf(id), operator(request.operator()), request.reason(), idempotencyKey,
                 Map.of("beforeStatus", "OPEN", "afterStatus", nextStatus,

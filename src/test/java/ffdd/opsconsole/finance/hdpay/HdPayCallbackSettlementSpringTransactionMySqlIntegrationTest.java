@@ -1,5 +1,7 @@
 package ffdd.opsconsole.finance.hdpay;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -483,7 +485,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
             AdminIdempotencyService idem = idempotencyService(template, tx);
             var receiptEvidence = transactionProxy(new VietQrReceiptEvidenceService(template.getMapper(VietQrReceiptEvidenceMapper.class),
                     mock(ObjectStorageService.class), audit, idem, Clock.systemUTC()), VietQrReceiptEvidenceService.class, tx);
-            OpsVietnamPaymentService bankService = transactionProxy(new OpsVietnamPaymentService(
+            OpsVietnamPaymentService bankService = transactionProxy(new OpsVietnamPaymentService(paymentAttribution(template.getMapper(VietnamPaymentMapper.class)),
                     template.getMapper(VietnamPaymentMapper.class), audit, idem, mock(FinanceSensitiveDataCipher.class),
                     template.getMapper(AppVietQrIntentMapper.class), outbox, receiptEvidence, Clock.systemUTC()), OpsVietnamPaymentService.class, tx);
             HdPayManualCreditRequest request = manualRequest(assetId, 0L, suffix);
@@ -849,7 +851,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                 mock(ObjectStorageService.class), audit, idem, Clock.systemUTC()), VietQrReceiptEvidenceService.class, tx);
         HdPayProperties properties = new HdPayProperties();
         properties.setBaseUrl("https://api.hdpayadmin.com");
-        return transactionProxy(new D1BankOrderService(template.getMapper(D1BankOrderMapper.class),
+        return transactionProxy(new D1BankOrderService(paymentAttribution(template.getMapper(VietnamPaymentMapper.class)), template.getMapper(D1BankOrderMapper.class),
                 template.getMapper(HdPayOrderMapper.class), template.getMapper(AppVietQrIntentMapper.class),
                 template.getMapper(VietnamPaymentMapper.class), evidence,
                 new MybatisTreasuryLedgerRepository(template.getMapper(TreasuryLedgerMapper.class), outbox),
@@ -921,7 +923,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                 outbox,
                 mock(AuditLogService.class),
                 new MybatisTreasuryLedgerRepository(template.getMapper(TreasuryLedgerMapper.class), outbox),
-                Clock.systemUTC());
+                Clock.systemUTC(), paymentAttribution(template.getMapper(VietnamPaymentMapper.class)));
         ProxyFactory factory = new ProxyFactory(target);
         factory.setProxyTargetClass(true);
         factory.addAdvice(new TransactionInterceptor(
@@ -1151,5 +1153,29 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
     private String sha256(String value) throws Exception {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                 .digest(value.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution(ffdd.opsconsole.finance.mapper.VietnamPaymentMapper mapper) {
+        // This older fixture mocks attribution only; financial writes remain real in its own database.
+        // SupportPaymentCaptureMySqlIntegrationTest separately verifies the actual opaque receipt path.
+        var capture=org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        var contexts=new java.util.IdentityHashMap<Prepared,Object[]>();
+        org.mockito.stubbing.Answer<Prepared> prepare=invocation -> {
+            Prepared token=org.mockito.Mockito.mock(Prepared.class);
+            contexts.put(token,new Object[]{invocation.getArgument(0),invocation.getArgument(2)});
+            return token;
+        };
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString())).thenAnswer(prepare);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString())).thenAnswer(prepare);
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString()))
+                .thenAnswer(invocation -> {
+                    Object[] identity=java.util.Objects.requireNonNull(contexts.get(invocation.getArgument(0)));
+                    return mapper.insertVietQrWalletLedger((String)identity[1],(Long)identity[0],invocation.getArgument(1),invocation.getArgument(2),invocation.getArgument(3));
+                });
+        return capture;
     }
 }

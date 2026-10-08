@@ -1,5 +1,7 @@
 package ffdd.opsconsole.device.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -212,6 +214,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             "earlyAccessLeadDays");
     private static final Set<String> E3_RETIRED_CONFIG_KEYS = Set.of(
             "degradeEarly", "degradeMid", "degradeLate", "minEfficiency", "salvagePct", "minHoldingMonths");
+    @lombok.NonNull
+    private final SupportPaymentAttributionFacade paymentAttribution;
     private final DeviceOpsRepository deviceRepository;
     private final DeviceCatalogRepository catalogRepository;
     private final PlatformConfigFacade configFacade;
@@ -3390,6 +3394,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
         }
 
+        var prepared = "E4_ORDER_REFUNDED".equals(auditAction)
+                ? paymentAttribution.prepare(facts.userId(), Source.ORDER_REFUND, "E4-REFUND-" + normalizedOrderNo)
+                : null;
         LocalDateTime now = LocalDateTime.now(clock);
         DeviceOrderView updated = catalogRepository.updateOrderState(normalizedOrderNo, fromState, toState, now).orElse(null);
         if (updated == null) {
@@ -3411,7 +3418,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     StringUtils.hasText(request.refundChannel()) ? request.refundChannel() : "WALLET",
                     request.reason().trim(),
                     request.operator(),
-                    idempotencyKey.trim());
+                    idempotencyKey.trim(), prepared);
         } else if (ORDER_STOCK_RELEASE_STATES.contains(toState)) {
             if (!catalogRepository.rollbackOrderAssets(normalizedOrderNo, now)) {
                 throw new BizException(409, "SKU_STOCK_RESTORE_CONFLICT");
