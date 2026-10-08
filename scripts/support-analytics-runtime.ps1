@@ -191,6 +191,11 @@ if ($Phase -eq 'I1-B') {
     $scope=Get-Content -Raw "$evidence/group-scope-runtime.json" | ConvertFrom-Json
     if($scope.capability -ne 'runtime' -or $scope.proofs.completed -ne $true -or $scope.proofs.cleanupComplete -ne $true -or $scope.proofs.legacyBindingsUnchanged -ne $true){throw 'Current scope runtime completion and preservation proof missing'}
     foreach($id in $acceptance){if($null -eq $scope.proofs.$id){throw "Current scope acceptance proof missing: $id"}}
+    $handover=$scope.proofs.roleRevokedScopedHandover
+    if($handover.eligibleBefore -ne 1 -or $handover.eligibleRevoked -ne 0 -or $handover.eligibleRestored -ne 1){throw 'Current-role handover eligibility proof missing'}
+    foreach($field in @('scopeCountAndPaging','otherGroupAndSharedRolesUnchanged','qualificationAndBindingsUnchanged','foreignGroupDenied')) {
+        if($handover.$field -ne $true){throw "Current-role handover proof missing: $field"}
+    }
     if(@($scope.requests).Count -lt 40){throw 'Authenticated current-scope request matrix incomplete'}
     foreach($field in @('ownerChangedReadback','oldTokenAndUrlDenied','socketWatchAndTypingDenied','sseInvalidated','dualPersonalStillReadable','managementHasNoPersonalRows','oldTicketAndAttachmentDenied','oldBulkSummaryAndRecipientsDenied','frozenAssignmentRejected','sseCurrentMessagesFiltered','socketCurrentEventsFiltered','searchRechecksCurrentScope')) {
         if($scope.proofs.'BE-G24-OBJECTS'.$field -ne $true){throw "Object revocation proof missing: $field"}

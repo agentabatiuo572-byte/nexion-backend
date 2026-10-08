@@ -87,6 +87,7 @@ class SupportGroupScopeRuntimeTest {
         bind(boundA,agentA);bind(boundB,agentB);bind(personal,dual);bind(managed,agentC);
         fixture.route(queue,groupA);
         queueAndPagination();
+        roleRevocationMakesScopedHandoverUnavailable();
         String conversationA=conversation(agentA,boundA,"advisor");
         String conversationB=conversation(agentB,boundB,"support");
         String conversationPersonal=conversation(dual,personal,"advisor");
@@ -157,6 +158,69 @@ class SupportGroupScopeRuntimeTest {
         assertThat(groupMapper.routeCurrent(queue)).isNull();
         assertThat(customerIds(workbench(agentA,"PERSONAL",null))).containsExactlyInAnyOrder(boundA,queue);
         proofs.put("BE-G09",Map.of("customerId",queue,"poolAfter",0,"routeClosed",true,"bindingId",bindings.current(queue).id(),"personalNotDoubleCounted",true));
+    }
+
+    private void roleRevocationMakesScopedHandoverUnavailable() throws Exception {
+        ledger.creationReference(agentA);
+        List<Map<String,Object>> relations=jdbc.queryForList("SELECT * FROM nx_admin_role_relation WHERE admin_id=? ORDER BY id",agentA);
+        assertThat(relations).hasSize(1);
+        Map<String,Object> relation=relations.get(0);
+        long relationId=((Number)relation.get("id")).longValue(),roleId=((Number)relation.get("role_id")).longValue();
+        assertThat(((Number)relation.get("is_deleted")).intValue()).isZero();
+        assertThat(jdbc.queryForObject("SELECT role_code FROM nx_admin_role WHERE id=?",String.class,roleId)).isEqualTo("SUPPORT");
+        var sharedRoles=jdbc.queryForList("SELECT * FROM nx_admin_role ORDER BY id");
+        var assignments=jdbc.queryForList("SELECT * FROM nx_support_agent_user_assignment ORDER BY id");
+        var qualification=groupMapper.qualification(agentA,"SERVICE");var member=groupMapper.member(agentA);
+        assertThat(qualification.state()).isEqualTo("ENABLED");assertThat(member.groupId()).isEqualTo(groupA);
+        assertThat(bindings.eligibleAgent(agentA)).isEqualTo(1);
+        handoverCustomers(managerA,groupA,agentA,false,List.of(boundA,queue));
+        handoverCustomers(managerA,groupA,agentA,true,List.of());
+        handoverCustomers(managerB,groupB,null,false,List.of(boundB,personal));
+        handoverCustomers(managerB,groupB,null,true,List.of());
+        boolean revoked=false;
+        try {
+            // Only this run's generated relation changes; the shared SUPPORT role stays active.
+            assertThat(jdbc.update("UPDATE nx_admin_role_relation SET is_deleted=1 WHERE id=? AND admin_id=? AND role_id=? AND is_deleted=0",relationId,agentA,roleId)).isEqualTo(1);
+            revoked=true;
+            assertThat(bindings.eligibleAgent(agentA)).isZero();
+            assertThat(groupMapper.qualification(agentA,"SERVICE")).isEqualTo(qualification);
+            assertThat(groupMapper.member(agentA)).isEqualTo(member);
+            handoverCustomers(managerA,groupA,agentA,true,List.of(boundA,queue));
+            handoverCustomers(managerA,groupA,null,true,List.of(boundA,queue));
+            handoverCustomers(managerA,groupA,agentA,false,List.of(boundA,queue));
+            handoverCustomers(boss,groupA,null,true,List.of(boundA,queue));
+            handoverCustomers(boss,null,agentA,true,List.of(boundA,queue));
+            handoverCustomers(managerB,groupB,null,true,List.of());
+            handoverCustomers(managerB,groupB,null,false,List.of(boundB,personal));
+            denied(get("/api/admin/content/support-agents/handover-customers?unavailableOnly=true&groupId="+groupB,managerA));
+            denied(get("/api/admin/content/support-agents/handover-customers?unavailableOnly=true&groupId="+groupA,managerB));
+            denied(get("/api/admin/content/support-agents/handover-customers?unavailableOnly=true&groupId="+groupA+"&agentAdminId="+agentB,managerA));
+            assertThat(jdbc.queryForList("SELECT * FROM nx_support_agent_user_assignment ORDER BY id")).isEqualTo(assignments);
+            assertThat(jdbc.queryForList("SELECT * FROM nx_admin_role ORDER BY id")).isEqualTo(sharedRoles);
+        } finally {
+            if(revoked)assertThat(jdbc.update("UPDATE nx_admin_role_relation SET is_deleted=0,updated_at=? WHERE id=? AND admin_id=? AND role_id=? AND is_deleted=1",relation.get("updated_at"),relationId,agentA,roleId)).isEqualTo(1);
+        }
+        assertThat(jdbc.queryForList("SELECT * FROM nx_admin_role_relation WHERE admin_id=? ORDER BY id",agentA)).isEqualTo(relations);
+        assertThat(bindings.eligibleAgent(agentA)).isEqualTo(1);
+        handoverCustomers(managerA,groupA,agentA,true,List.of());
+        assertThat(jdbc.queryForList("SELECT * FROM nx_support_agent_user_assignment ORDER BY id")).isEqualTo(assignments);
+        var roleProof=new LinkedHashMap<String,Object>(Map.of("actorId",agentA,"roleRelationId",relationId,"customerIds",List.of(boundA,queue),
+                "eligibleBefore",1,"eligibleRevoked",0,"eligibleRestored",1,"scopeCountAndPaging",true,
+                "otherGroupAndSharedRolesUnchanged",true,"qualificationAndBindingsUnchanged",true,"foreignGroupDenied",true));
+        roleProof.put("precondition","fixture-owned roleRelation; SQL soft-delete and exact restoration, not an A6 command");
+        proofs.put("roleRevokedScopedHandover",roleProof);
+    }
+
+    private void handoverCustomers(long actor,Long group,Long agent,boolean unavailable,List<Long> expected) throws Exception {
+        String path="/api/admin/content/support-agents/handover-customers?unavailableOnly="+unavailable+"&pageSize=1"
+                +(group==null?"":"&groupId="+group)+(agent==null?"":"&agentAdminId="+agent);
+        JsonNode first=ok(get(path,actor));assertThat(first.path("total").asLong()).isEqualTo(expected.size());
+        Set<Long> found=new LinkedHashSet<>(ids(first,"customerId"));
+        for(int page=2;page<=expected.size();page++) {
+            JsonNode next=ok(get(path+"&pageNum="+page,actor));assertThat(next.path("total").asLong()).isEqualTo(expected.size());
+            for(Long customer:ids(next,"customerId"))assertThat(found.add(customer)).as("unique handover page customer").isTrue();
+        }
+        assertThat(found).containsExactlyInAnyOrderElementsOf(expected);
     }
 
     private void objectAndModeMatrix(String ca,String cb,String cp,String cm) throws Exception {
@@ -315,7 +379,8 @@ class SupportGroupScopeRuntimeTest {
         rejected(http("POST",ownReplyPath,agentA,ownReply,ownCommand),401);
         assertThat(messageCount(agentConversation)).isEqualTo(oldCount+1);
         assertThat(bindings.current(boundA).agentAdminId()).isEqualTo(agentA);
-        proofs.put("BE-G21",Map.of("queueBlocksExit",true,"pendingPreviewBlocksExit",true,"routeClosedBeforeDisable",true,"replaySingleVersion",true,"staleVersionDenied",true,"qualificationExitRequiresHandover",true,"managerAccountExitRequiresHandover",true,"disabledAccountKeepsBindingButDeniesReadAndSend",true));
+        assertThat(proofs).containsKey("roleRevokedScopedHandover");
+        proofs.put("BE-G21",Map.of("queueBlocksExit",true,"pendingPreviewBlocksExit",true,"routeClosedBeforeDisable",true,"replaySingleVersion",true,"staleVersionDenied",true,"qualificationExitRequiresHandover",true,"managerAccountExitRequiresHandover",true,"disabledAccountKeepsBindingButDeniesReadAndSend",true,"roleRevokedScopedHandover",proofs.get("roleRevokedScopedHandover")));
     }
 
     private JsonNode workbench(long actor,String mode,Long group) throws Exception {
