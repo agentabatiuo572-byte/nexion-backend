@@ -21,7 +21,7 @@ class OpsSupportProductionWriteGuardContractTest {
         assertThat(conversations).contains("productionPathGuard.requireOpsWriteAllowed();")
                 .contains("private <T> ApiResult<T> executeCommand");
         assertThat(occurrences(agents, "productionPathGuard.requireOpsWriteAllowed()"))
-                .isEqualTo(5);
+                .isEqualTo(6);
         assertThat(knowledge).contains("productionPathGuard.requireOpsWriteAllowed();")
                 .contains("private <T> ApiResult<T> executeCommand");
         assertThat(timeout).contains("productionPathGuard.requireOpsWriteAllowed();");

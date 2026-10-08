@@ -30,4 +30,24 @@ class SupportGroupMapperSqlTest {
         assertThat(SupportBindingMapper.ELIGIBLE_AGENT_FROM).contains("scope_q.qualification_kind='SERVICE'")
                 .doesNotContain("seat_type","nx_support_migration");
     }
+    @Test void unavailableHandoverCountAndRowsUseTheCurrentServiceEligibilityContract(){
+        var configuration=new Configuration();configuration.addMapper(SupportBindingMapper.class);
+        String eligibility=SupportBindingMapper.ELIGIBLE_AGENT_FROM.replaceAll("\\s+"," ").trim();
+        for(String method:List.of("handoverCount","handover")) {
+            var statement=configuration.getMappedStatement(SupportBindingMapper.class.getName()+"."+method);
+            for(Long agent:Arrays.<Long>asList(null,7L)) {
+                var args=new HashMap<String,Object>();args.put("agent",agent);args.put("unavailable",true);
+                args.put("offset",0L);args.put("limit",20);
+                var filtered=statement.getBoundSql(args);
+                assertThat(filtered.getSql().replaceAll("\\s+"," ").trim()).as(method+" unavailable filter")
+                    .contains("AND NOT EXISTS(SELECT 1 "+eligibility+" AND a.id=x.agent_admin_id)");
+                assertThat(filtered.getParameterMappings()).extracting(p->p.getProperty())
+                    .containsExactlyElementsOf(agent==null
+                        ? (method.equals("handover")?List.of("limit","offset"):List.of())
+                        : (method.equals("handover")?List.of("agent","limit","offset"):List.of("agent")));
+                args.put("unavailable",false);
+                assertThat(statement.getBoundSql(args).getSql()).doesNotContain("nx_support_account_qualification_history");
+            }
+        }
+    }
 }

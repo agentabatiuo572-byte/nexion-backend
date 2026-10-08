@@ -53,7 +53,7 @@ class SupportGroupMigrationRuntimeTest {
                 ScriptUtils.executeSqlScript(c,new FileSystemResource("scripts/migrations/20261007_support_groups.sql"));
                 ScriptUtils.executeSqlScript(c,new FileSystemResource("scripts/migrations/20261007_support_groups.sql"));
             }
-            String sql=Files.readString(Path.of("scripts/migrations/20261007_support_groups_qualification_cutover.sql"));
+            String sql=Files.readString(Path.of("scripts/manual_migrations/20261007_support_groups_qualification_cutover.sql"));
             db.execute("CREATE TABLE nx_support_migration(id VARCHAR(64) PRIMARY KEY,committed_at DATETIME(6) NOT NULL)");
             int start=sql.indexOf("CREATE PROCEDURE"),end=sql.lastIndexOf("END$$");assertThat(start).isGreaterThan(0);assertThat(end).isGreaterThan(start);
             db.execute(sql.substring(start,end+3));
