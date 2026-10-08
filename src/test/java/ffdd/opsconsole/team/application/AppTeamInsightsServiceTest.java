@@ -21,6 +21,8 @@ import java.util.Map;
 import java.util.Optional;
 import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,14 +31,14 @@ class AppTeamInsightsServiceTest {
     private AppTeamInsightsService service(AppTeamInsightsMapper mapper, MockEnvironment environment) {
         var config = mock(PlatformConfigFacade.class);
         when(config.activeValue(anyString())).thenReturn(Optional.empty());
-        return new AppTeamInsightsService(mapper, mock(LeadershipPoolConfigGuard.class), config, environment);
+        return new AppTeamInsightsService(mapper, mock(LeadershipPoolConfigGuard.class), config, environment, null);
     }
 
     private AppTeamInsightsService service(AppTeamInsightsMapper mapper, MockEnvironment environment,
                                            LeadershipPoolConfigGuard poolConfig) {
         var config = mock(PlatformConfigFacade.class);
         when(config.activeValue(anyString())).thenReturn(Optional.empty());
-        return new AppTeamInsightsService(mapper, poolConfig, config, environment);
+        return new AppTeamInsightsService(mapper, poolConfig, config, environment, null);
     }
     @Test
     void genericCommissionNamesPreferTheSnapshotAndOnlyJoinVisibleSourcesInTheBeneficiaryNamespace() throws Exception {
@@ -176,6 +178,49 @@ class AppTeamInsightsServiceTest {
         assertThat(secondPage.getCode()).isZero();
         assertThat(secondPage.getData().get("rows").toString()).contains("rank=2", "earnedUSDT=20");
         verify(mapper, times(1)).leaderboardEligible(eq("week"), eq(0), any(), any(), eq(BigDecimal.ZERO), eq(50), any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"today", "week", "month", "all"})
+    void legacyPauseRejectsLiveCursorAndNeverInventsAPauseSnapshot(String period) {
+        var mapper = mock(AppTeamInsightsMapper.class);
+        var config = mock(PlatformConfigFacade.class);
+        var paused = new java.util.concurrent.atomic.AtomicBoolean(false);
+        when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0, "V5"));
+        when(config.activeValue("team.ui.F.leaderboard.paused"))
+                .thenAnswer(ignored -> Optional.of(paused.get() ? "on" : "off"));
+        when(config.activeValue("team.ui.F.pool.periodPrize"))
+                .thenReturn(Optional.of("{\"today\":100,\"week\":100,\"month\":100,\"allTime\":100}"));
+        String actionPeriod = "all".equals(period) ? "allTime" : period;
+        int candidateLimit = switch (period) { case "today" -> 20; case "week" -> 50; default -> 100; };
+        var candidates = java.util.stream.IntStream.rangeClosed(1, 21)
+                .mapToObj(index -> new AppTeamInsightsMapper.LeaderboardRow(index, (long) index + 6,
+                        "Fixture" + index, "V5", BigDecimal.valueOf(100 - index), 1, 3, 1)).toList();
+        when(mapper.leaderboardEligible(eq(actionPeriod), eq(0), any(), any(), eq(BigDecimal.ZERO), eq(candidateLimit), any()))
+                .thenReturn(candidates);
+        var service = new AppTeamInsightsService(mapper, mock(LeadershipPoolConfigGuard.class), config, new MockEnvironment(), null);
+        String snapshotAt = "2026-08-30T15:59:59Z";
+        var first = service.leaderboard(7L, period, 1, 20, snapshotAt, null).getData();
+        String version = (String) first.get("snapshotVersion");
+        assertThat(first).containsEntry("paused", false).containsEntry("totalRows", 21);
+        assertThat((List<?>) first.get("rows")).hasSize(20);
+
+        paused.set(true); // Fixture transition only; no configuration write.
+        assertThatThrownBy(() -> service.leaderboard(7L, period, 2, 20, snapshotAt, version))
+                .isInstanceOf(BizException.class).hasMessage("TEAM_LEADERBOARD_SNAPSHOT_STALE");
+        var freshPaused = service.leaderboard(7L, period, 1, 20, snapshotAt, null).getData();
+        assertThat(freshPaused).containsEntry("paused", true).containsEntry("totalRows", 0)
+                .containsEntry("snapshotState", "UNAVAILABLE").containsEntry("dataAvailable", false)
+                .containsEntry("snapshotVersion", null);
+        assertThat((List<?>) freshPaused.get("rows")).isEmpty();
+
+        paused.set(false);
+        var resumed = service.leaderboard(7L, period, 2, 20, snapshotAt, version).getData();
+        assertThat(resumed).containsEntry("paused", false).containsEntry("snapshotVersion", version)
+                .containsEntry("totalRows", 21);
+        assertThat((List<?>) resumed.get("rows")).hasSize(1);
+        assertThat(resumed.get("rows").toString()).contains("rank=21", "earnedUSDT=79");
+        verify(mapper, times(1)).leaderboardEligible(eq(actionPeriod), eq(0), any(), any(), eq(BigDecimal.ZERO), eq(candidateLimit), any());
     }
 
     @Test
@@ -452,7 +497,7 @@ class AppTeamInsightsServiceTest {
         when(mapper.leaderboardEligible(eq("week"), eq(0), any(), any(), eq(BigDecimal.ZERO), eq(50), any(LocalDateTime.class))).thenReturn(List.of());
         when(config.activeValue("team.ui.F.pool.periodPrize"))
                 .thenReturn(Optional.of("{\"today\":1000,\"week\":50000,\"month\":200000,\"allTime\":1000000}"));
-        var service = new AppTeamInsightsService(mapper, mock(LeadershipPoolConfigGuard.class), config, new MockEnvironment());
+        var service = new AppTeamInsightsService(mapper, mock(LeadershipPoolConfigGuard.class), config, new MockEnvironment(), null);
 
         var board = service.leaderboard(7L, "week");
 
@@ -470,7 +515,7 @@ class AppTeamInsightsServiceTest {
         when(mapper.leaderboardEligible(eq("week"), eq(0), any(), any(), eq(new BigDecimal("25")), eq(50), any(LocalDateTime.class)))
                 .thenReturn(List.of(new AppTeamInsightsMapper.LeaderboardRow(
                         1, 7L, "Alice", "V5", new BigDecimal("30"), 1, 1, 1)));
-        var service = new AppTeamInsightsService(mapper, mock(LeadershipPoolConfigGuard.class), config, new MockEnvironment());
+        var service = new AppTeamInsightsService(mapper, mock(LeadershipPoolConfigGuard.class), config, new MockEnvironment(), null);
 
         var board = service.leaderboard(7L, "week");
 
@@ -485,11 +530,12 @@ class AppTeamInsightsServiceTest {
         var config = mock(PlatformConfigFacade.class);
         when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0, "V5"));
         when(config.activeValue("team.ui.F.leaderboard.paused")).thenReturn(Optional.of("on"));
-        var service = new AppTeamInsightsService(mapper, mock(LeadershipPoolConfigGuard.class), config, new MockEnvironment());
+        var service = new AppTeamInsightsService(mapper, mock(LeadershipPoolConfigGuard.class), config, new MockEnvironment(), null);
 
         var board = service.leaderboard(7L, "week");
 
-        assertThat(board.getData()).containsEntry("poolUsd", BigDecimal.ZERO).containsEntry("topN", 0);
+        assertThat(board.getData()).containsEntry("poolUsd", BigDecimal.ZERO).containsEntry("topN", 0)
+                .containsEntry("paused", true);
         verify(mapper).userScope(7L);
         verifyNoMoreInteractions(mapper);
     }
@@ -591,7 +637,7 @@ class AppTeamInsightsServiceTest {
 
         var config = mock(PlatformConfigFacade.class);
         when(config.activeValue("team.ui.F.vrank.leadership.topN")).thenReturn(Optional.of("3"));
-        var result = new AppTeamInsightsService(mapper, poolConfig, config, new MockEnvironment()).leadershipPool(7L);
+        var result = new AppTeamInsightsService(mapper, poolConfig, config, new MockEnvironment(), null).leadershipPool(7L);
 
         assertThat(result.getData()).containsEntry("unlockRank", 5)
                 .containsEntry("injectRate", new BigDecimal("0.075"))

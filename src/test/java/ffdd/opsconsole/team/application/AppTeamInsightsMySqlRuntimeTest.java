@@ -50,7 +50,7 @@ class AppTeamInsightsMySqlRuntimeTest {
                 }
             }
             var result = new AppTeamInsightsService(mapper, mock(LeadershipPoolConfigGuard.class),
-                    mock(PlatformConfigFacade.class), new MockEnvironment())
+                    mock(PlatformConfigFacade.class), new MockEnvironment(), null)
                     .commissions(7L, 1, 1, "2026-10-05T15:00:00Z").getData();
             writeEvidence("classification-service", Map.of("response", result, "rows", jdbc.queryForList("SELECT * FROM nx_commission_event ORDER BY id")));
             @SuppressWarnings("unchecked") var aggregate = (Map<String, Object>) result.get("aggregate");

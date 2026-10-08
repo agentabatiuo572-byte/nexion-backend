@@ -119,7 +119,7 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
      * Time bounds are supplied by the service's UTC settlement calendar rather
      * than being re-derived from the MySQL session clock.
      */
-    @Select("""
+    String LEADERBOARD_ELIGIBLE_SQL = """
             <script>
             WITH earned AS (
               SELECT ce.user_id,SUM(ce.amount_usdt) earned_usdt
@@ -152,7 +152,9 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
               FROM ranked r JOIN nx_user u ON u.id=r.user_id
              ORDER BY r.rank_no LIMIT #{limit}
             </script>
-            """)
+            """;
+
+    @Select(LEADERBOARD_ELIGIBLE_SQL)
     List<LeaderboardRow> leaderboardEligible(@Param("actionPeriod") String actionPeriod,
                                              @Param("sandbox") Integer sandbox,
                                              @Param("fromInclusive") LocalDateTime fromInclusive,

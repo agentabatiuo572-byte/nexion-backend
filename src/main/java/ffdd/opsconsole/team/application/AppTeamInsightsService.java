@@ -46,6 +46,7 @@ public class AppTeamInsightsService {
     private final LeadershipPoolConfigGuard leadershipPoolConfigGuard;
     private final PlatformConfigFacade configFacade;
     private final Environment environment;
+    private final LeaderboardPauseSnapshotService pauseSnapshots;
     private final Map<String, LeaderboardSnapshot> leaderboardSnapshots = new ConcurrentHashMap<>();
 
     public ApiResult<Map<String, Object>> leaderboard(Long userId, String requestedPeriod) {
@@ -75,7 +76,22 @@ public class AppTeamInsightsService {
             return ApiResult.ok(TeamSandboxFactGenerator.leaderboard(scope.runId(), userId, period,
                     requestedPage, requestedPageSize));
         }
-        LeaderboardSnapshot frozen = leaderboardSnapshot(scope, period, snapshotAt, requestedPage, requestedSnapshotVersion);
+        LeaderboardPauseSnapshotService.State pause = pauseSnapshots != null ? pauseSnapshots.current()
+                : leaderboardPaused() ? LeaderboardPauseSnapshotService.State.unavailable("PRE_SNAPSHOT_PAUSE")
+                    : LeaderboardPauseSnapshotService.State.live();
+        LeaderboardSnapshot frozen;
+        if (pause.paused()) {
+            if (requestedPage > 1 && (!"FROZEN".equals(pause.mode())
+                    || !pause.version().equals(requestedSnapshotVersion) || !pause.capturedAt().equals(snapshotAt.toString()))) {
+                throw new BizException(409, "TEAM_LEADERBOARD_SNAPSHOT_STALE");
+            }
+            if ("FROZEN".equals(pause.mode())) snapshotAt = Instant.parse(pause.capturedAt());
+            var candidates = "FROZEN".equals(pause.mode())
+                    ? pause.appRows(period, new com.fasterxml.jackson.databind.ObjectMapper()) : List.<AppTeamInsightsMapper.LeaderboardRow>of();
+            frozen = new LeaderboardSnapshot(pause.version(), scope.sandbox(), period, snapshotAt, true, candidates, Instant.MAX);
+        } else {
+            frozen = leaderboardSnapshot(scope, period, snapshotAt, requestedPage, requestedSnapshotVersion);
+        }
         List<AppTeamInsightsMapper.LeaderboardRow> source = frozen.candidates();
         List<Map<String, Object>> rows = new ArrayList<>();
         Integer myRank = null; BigDecimal gap = BigDecimal.ZERO;
@@ -97,14 +113,17 @@ public class AppTeamInsightsService {
         int to = (int) Math.min(rows.size(), (long) from + requestedPageSize);
         Map<String, Object> result = provenance(scope);
         result.put("period", period); result.put("rows", rows.subList(from, to)); result.put("myRank", myRank);
-        BigDecimal prizePool = frozen.paused() ? BigDecimal.ZERO : leaderboardPoolUsd(period);
+        // Maintenance is current runtime metadata; cursor rows and their version stay frozen.
+        pause.metadata(result, false);
+        BigDecimal prizePool = "FROZEN".equals(pause.mode()) ? pause.envelope().path("appPeriods").path(period).path("poolUsd").decimalValue()
+                : frozen.paused() ? BigDecimal.ZERO : leaderboardPoolUsd(period);
         result.put("gapToNext", gap); result.put("poolUsd", prizePool);
         // A zero pool may still have a factual earned-volume ranking, but no
         // placement is represented as prize-eligible because F4 will not settle it.
-        result.put("topN", !frozen.paused() && prizePool.signum() > 0 ? rows.size() : 0); result.put("page", requestedPage);
+        result.put("topN", prizePool.signum() > 0 ? rows.size() : 0); result.put("page", requestedPage);
         result.put("pageSize", requestedPageSize); result.put("totalRows", rows.size());
         result.put("snapshotAt", snapshotAt.toString());
-        result.put("snapshotVersion", frozen.version());
+        result.put("snapshotVersion", frozen.version().isEmpty() ? null : frozen.version());
         result.put("generatedAt", Instant.now().toString());
         return ApiResult.ok(result);
     }
@@ -501,7 +520,7 @@ public class AppTeamInsightsService {
             return frozen;
         }
 
-        boolean paused = leaderboardPaused();
+        boolean paused = false;
         List<AppTeamInsightsMapper.LeaderboardRow> candidates;
         if (paused) {
             candidates = List.of();

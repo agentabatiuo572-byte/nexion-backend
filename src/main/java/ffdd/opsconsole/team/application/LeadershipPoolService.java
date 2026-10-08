@@ -29,6 +29,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 
 /**
  * F4 领导池结算引擎。
@@ -56,6 +57,8 @@ public class LeadershipPoolService {
     private static final String CONFIG_KEY_LEADERBOARD_POOL = "team.ui.F.leaderboard.poolUsd";
     private static final String CONFIG_KEY_LEADERBOARD_MIN = "team.ui.F.leaderboard.minUsd";
     private static final String CONFIG_KEY_LEADERBOARD_PAUSED = "team.ui.F.leaderboard.paused";
+    // Existing week codes and leaderboard settlement hashes are non-negative.
+    private static final int LEADERBOARD_MAINTENANCE_MUTEX = -4;
     private static final String CONFIG_KEY_LAST_SETTLED_PREFIX = "team.runtime.F.leaderboard.lastSettled.";
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final String COMMISSION_LEADERSHIP = "leadership";
@@ -263,6 +266,15 @@ public class LeadershipPoolService {
                 operator == null || operator.isBlank() ? "unknown-admin" : operator.trim(), normalizedReason);
     }
 
+    /** Pause/resume and ADMIN payout take this lock before configuration or period locks. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void lockLeaderboardMaintenance() {
+        teamCommissionMapper.ensureLeadershipSettlementMutex(LEADERBOARD_MAINTENANCE_MUTEX);
+        if (teamCommissionMapper.lockLeadershipSettlementMutex(LEADERBOARD_MAINTENANCE_MUTEX) == null) {
+            throw new IllegalStateException("F4_LEADERBOARD_MUTEX_UNAVAILABLE");
+        }
+    }
+
     private int settleLeaderboardPrize(
             String period,
             String settlementKey,
@@ -272,8 +284,16 @@ public class LeadershipPoolService {
             String actorType,
             String actorUsername,
             String reason) {
-        if (configBoolean(CONFIG_KEY_LEADERBOARD_PAUSED, false)
-                || teamCommissionMapper.countLeaderboardBySettlementKey(settlementKey) > 0) {
+        if ("ADMIN".equals(actorType)) {
+            lockLeaderboardMaintenance();
+            boolean paused = configFacade.activeValueForUpdate(CONFIG_KEY_LEADERBOARD_PAUSED)
+                    .map(value -> Set.of("on", "true", "1", "paused").contains(value.trim().toLowerCase(java.util.Locale.ROOT)))
+                    .orElse(false);
+            if (paused) throw new BizException(409, "F4_LEADERBOARD_PAUSED");
+        } else if (configBoolean(CONFIG_KEY_LEADERBOARD_PAUSED, false)) {
+            return 0;
+        }
+        if (teamCommissionMapper.countLeaderboardBySettlementKey(settlementKey) > 0) {
             return 0;
         }
         int mutexKey = settlementKey.hashCode() & Integer.MAX_VALUE;

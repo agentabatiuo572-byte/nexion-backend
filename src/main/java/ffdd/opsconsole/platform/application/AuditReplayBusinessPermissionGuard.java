@@ -11,6 +11,7 @@ import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import java.nio.charset.StandardCharsets;
@@ -98,6 +99,7 @@ public class AuditReplayBusinessPermissionGuard {
     private final AdminOperatorRoleResolver roleResolver;
     private final EmergencyControlRepository emergencyControlRepository;
     private final org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.team.application.DirectReferralPolicyService> directPolicies;
+    private final PlatformConfigFacade configFacade;
 
     public record DelegatedProposalDescriptor(
             String action,
@@ -134,6 +136,12 @@ public class AuditReplayBusinessPermissionGuard {
                 && !hasAuthority(requiredAuthority)
                 && !scopedMakerMayPropose(command, operation)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
+        }
+        if ("F".equalsIgnoreCase(command.domain()) && "f4_leaderboard_period_payout".equals(operation)
+                && configFacade.activeValue("team.ui.F.leaderboard.paused")
+                    .map(value -> Set.of("on", "true", "1", "paused").contains(value.trim().toLowerCase(Locale.ROOT)))
+                    .orElse(false)) {
+            return ApiResult.fail(409, "F4_LEADERBOARD_PAUSED");
         }
         if ("E".equalsIgnoreCase(command.domain()) && "e6_phone_calibration".equals(operation)) {
             try {
@@ -1040,7 +1048,7 @@ public class AuditReplayBusinessPermissionGuard {
                 case "f5_commission_reissue" -> "network_f5_commission_dispose";
                 case "f_vrank_override" -> "network_f1_promote_user";
                 case "f_reward_payout_action" -> f1RewardPayoutAuthority(command.params());
-                case "f4_pool_settle" -> "network_f4_pool_fund";
+                case "f4_pool_settle", "f4_leaderboard_period_payout" -> "network_f4_pool_fund";
                 default -> null;
             };
             default -> null;

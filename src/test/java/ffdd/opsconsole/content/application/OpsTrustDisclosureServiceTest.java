@@ -883,7 +883,7 @@ class OpsTrustDisclosureServiceTest {
                 .thenAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get());
 
         AuditReplayBusinessPermissionGuard permissionGuard = new AuditReplayBusinessPermissionGuard(
-                repository, mock(AdminOperatorRoleResolver.class), mock(EmergencyControlRepository.class), null);
+                repository, mock(AdminOperatorRoleResolver.class), mock(EmergencyControlRepository.class), null, mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class));
         AuditReplayDispatcher dispatcher = new AuditReplayDispatcher(List.of(service));
         OpsAuditCenterService auditCenter = new OpsAuditCenterService(
                 configRepository, a2AuditLogService,

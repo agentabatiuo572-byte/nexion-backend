@@ -361,6 +361,59 @@ class OpsUserServiceTest {
     }
 
     @Test
+    void profileHandlesInvalidProjectionThroughTheDaoExceptionContract() {
+        var scope = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(7L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.PERSONAL, null, null);
+        when(supportOwnership.customerQueryScope(1L)).thenReturn(scope);
+        for (boolean scoped : List.of(false, true)) {
+            var repository = mock(UserOpsRepository.class);
+            var failure = new org.springframework.dao.InvalidDataAccessResourceUsageException("projection unavailable");
+            when(supportOwnership.currentSupportReader()).thenReturn(scoped);
+            if (scoped) when(repository.findById(1L, scope)).thenThrow(failure);
+            else when(repository.findById(1L)).thenThrow(failure);
+
+            var result = serviceWith(repository).profile(1L);
+
+            assertThat(result.getCode()).isEqualTo(503);
+            assertThat(result.getMessage()).isEqualTo("USER_PROFILE_UNAVAILABLE");
+            assertThat(result.getData()).isNull();
+            if (scoped) {
+                verify(repository).findById(1L, scope);
+                verify(repository, org.mockito.Mockito.never()).findById(anyLong());
+            } else verify(repository).findById(1L);
+        }
+    }
+
+    @Test
+    void profilePropagatesUnscopedProjectionTypeMismatch() {
+        assertProjectionTypeMismatchPropagates(false);
+    }
+
+    @Test
+    void profilePropagatesScopedProjectionTypeMismatch() {
+        assertProjectionTypeMismatchPropagates(true);
+    }
+
+    private void assertProjectionTypeMismatchPropagates(boolean scoped) {
+        var scope = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(7L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.PERSONAL, null, null);
+        var repository = mock(UserOpsRepository.class);
+        var failure = new org.springframework.dao.TypeMismatchDataAccessException("projection type mismatch");
+        when(supportOwnership.currentSupportReader()).thenReturn(scoped);
+        if (scoped) {
+            when(supportOwnership.customerQueryScope(1L)).thenReturn(scope);
+            when(repository.findById(1L, scope)).thenThrow(failure);
+        } else when(repository.findById(1L)).thenThrow(failure);
+
+        assertThatThrownBy(() -> serviceWith(repository).profile(1L)).isSameAs(failure);
+
+        if (scoped) {
+            verify(repository).findById(1L, scope);
+            verify(repository, org.mockito.Mockito.never()).findById(anyLong());
+        } else verify(repository).findById(1L);
+    }
+
+    @Test
     void profileDoesNotConvertLockConnectionOrTransactionFailuresIntoPartialData() {
         var scope = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(7L,
                 ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.PERSONAL, null, null);

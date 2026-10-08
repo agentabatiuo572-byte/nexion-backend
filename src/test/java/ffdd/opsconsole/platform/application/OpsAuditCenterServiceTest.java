@@ -405,6 +405,95 @@ class OpsAuditCenterServiceTest {
         verify(ticketMapper, never()).updateById(ticketRows.get("WO-PERMISSION-REVOKED"));
     }
 
+    private void wireF4Guard(ffdd.opsconsole.platform.facade.PlatformConfigFacade config) {
+        var actual = new AuditReplayBusinessPermissionGuard(
+                mock(ffdd.opsconsole.content.domain.TrustDisclosureRepository.class),
+                mock(ffdd.opsconsole.shared.security.AdminOperatorRoleResolver.class),
+                mock(ffdd.opsconsole.emergency.domain.EmergencyControlRepository.class), null, config);
+        when(replayBusinessPermissionGuard.validateProposal(any())).thenAnswer(i -> actual.validateProposal(i.getArgument(0)));
+        when(replayBusinessPermissionGuard.validateApproval(any())).thenAnswer(i -> actual.validateApproval(i.getArgument(0)));
+        var authentication = new UsernamePasswordAuthenticationToken("51", null, List.of(
+                new org.springframework.security.core.authority.SimpleGrantedAuthority("platform_a2_write"),
+                new org.springframework.security.core.authority.SimpleGrantedAuthority("platform_a2_operation_approve"),
+                new org.springframework.security.core.authority.SimpleGrantedAuthority("network_f4_pool_fund")));
+        authentication.setDetails(Map.of("subjectType", "ADMIN", "username", "fixture.checker"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+    }
+
+    @Test
+    void pausedF4ProposalCreatesNoTicketOrObjectLock() {
+        var config = mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
+        when(config.activeValue("team.ui.F.leaderboard.paused")).thenReturn(java.util.Optional.of("on"));
+        wireF4Guard(config);
+        var command = new AuditReplayCommand("F", "f4_leaderboard_period_payout", Map.of("period", "allTime"));
+        var result = service.createProposal("fixture-f4-proposal-paused", new AuditOperationProposalRequest(
+                "派发总榜奖池", "allTime", "pending", "payout", "fixture.checker", "FINANCE", "fund",
+                true, false, "TWO_PERSON", "fixture maintenance proposal", "F4", command,
+                new ffdd.opsconsole.platform.domain.AuditLockTarget("F", "leaderboard_settlement", "allTime"), null));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("F4_LEADERBOARD_PAUSED");
+        assertThat(ticketRows).isEmpty();
+        verify(ticketMapper, never()).insert(any(AuditOperationTicketEntity.class));
+        verify(lockMapper, never()).insert(any(ffdd.opsconsole.platform.infrastructure.AuditObjectLockEntity.class));
+        verify(replayDispatcher, never()).dispatch(any(), any());
+    }
+
+    @Test
+    void pausedF4PendingApprovalKeepsPendingAndObjectLockBeforeReplay() throws Exception {
+        var config = mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
+        when(config.activeValue("team.ui.F.leaderboard.paused")).thenReturn(java.util.Optional.of("on"));
+        wireF4Guard(config);
+        putTicket("WO-F4-PAUSED", "派发总榜奖池", "pending", "fund", true, false);
+        var ticket = ticketRows.get("WO-F4-PAUSED");
+        ticket.setCommandJson(objectMapper.writeValueAsString(new AuditReplayCommand(
+                "F", "f4_leaderboard_period_payout", Map.of("period", "allTime"))));
+        var result = service.approve("fixture-f4-checker-paused", ticket.getOperationId(),
+                new AuditOperationDecisionRequest("fixture maintenance approval", "fixture.checker"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("F4_LEADERBOARD_PAUSED");
+        assertThat(ticket.getStatus()).isEqualTo("pending");
+        assertThat(ticket.getDecidedAt()).isNull();
+        verify(ticketMapper, never()).updateById(any(AuditOperationTicketEntity.class));
+        verify(lockMapper, never()).deleteById(org.mockito.ArgumentMatchers.any(java.io.Serializable.class));
+        verify(replayDispatcher, never()).dispatch(any(), any());
+        assertThat(A2ReplayContext.isReplaying()).isFalse();
+    }
+
+    @Test
+    void pauseAtF4ExecutionBoundaryKeepsA2PendingWithNoFinancialWrites() throws Exception {
+        var config = mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
+        when(config.activeValue("team.ui.F.leaderboard.paused")).thenReturn(java.util.Optional.of("off"));
+        when(config.activeValueForUpdate("team.ui.F.leaderboard.paused")).thenReturn(java.util.Optional.of("on"));
+        wireF4Guard(config);
+        var mapper = mock(ffdd.opsconsole.team.mapper.TeamCommissionMapper.class);
+        when(mapper.lockLeadershipSettlementMutex(org.mockito.ArgumentMatchers.anyInt())).thenReturn(1L);
+        var commissions = mock(ffdd.opsconsole.team.domain.TeamCommissionRepository.class);
+        var ledger = mock(ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade.class);
+        var domainAudit = mock(AuditLogService.class);
+        var outbox = mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class);
+        var actual = new ffdd.opsconsole.team.application.LeadershipPoolService(mapper, commissions, ledger, config,
+                domainAudit, outbox, new ffdd.opsconsole.team.application.LeadershipPoolConfigGuard(config),
+                mock(ffdd.opsconsole.team.application.LeadershipPoolConfigAlertService.class));
+        when(replayDispatcher.dispatch(any(), any())).thenAnswer(i -> {
+            actual.settleApprovedLeaderboardPeriod("allTime", "fixture.checker", "fixture execution pause");
+            return ApiResult.ok();
+        });
+        putTicket("WO-F4-LATE-PAUSE", "派发总榜奖池", "pending", "fund", true, false);
+        var ticket = ticketRows.get("WO-F4-LATE-PAUSE");
+        ticket.setCommandJson(objectMapper.writeValueAsString(new AuditReplayCommand(
+                "F", "f4_leaderboard_period_payout", Map.of("period", "allTime"))));
+        var result = service.approve("fixture-f4-late-pause", ticket.getOperationId(),
+                new AuditOperationDecisionRequest("fixture last execution boundary", "fixture.checker"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("F4_LEADERBOARD_PAUSED");
+        assertThat(ticket.getStatus()).isEqualTo("pending");
+        assertThat(ticket.getDecidedAt()).isNull();
+        verify(ticketMapper, never()).updateById(any(AuditOperationTicketEntity.class));
+        verify(lockMapper, never()).deleteById(org.mockito.ArgumentMatchers.any(java.io.Serializable.class));
+        org.mockito.Mockito.verifyNoInteractions(commissions, ledger, outbox, domainAudit);
+        assertThat(A2ReplayContext.isReplaying()).isFalse();
+    }
+
     @Test
     void authenticatedProposalCreatorOverridesSpoofedBodyOperator() {
         authenticate("41", "alice.admin");
@@ -471,7 +560,7 @@ class OpsAuditCenterServiceTest {
                 mock(ffdd.opsconsole.team.application.VRankRewardDispatcher.class), outbox,
                 mock(ffdd.opsconsole.team.application.LeadershipPoolService.class),
                 mock(ffdd.opsconsole.team.application.F5CommissionService.class), idempotencyService, null, null,
-                mock(ffdd.opsconsole.team.application.VRankSkuFulfillmentService.class));
+                mock(ffdd.opsconsole.team.application.VRankSkuFulfillmentService.class), null);
         var dispatcher = new AuditReplayDispatcher(List.of(team));
         doAnswer(invocation -> dispatcher.dispatch(invocation.getArgument(0), invocation.getArgument(1)))
                 .when(replayDispatcher).dispatch(any(), any());
@@ -641,7 +730,7 @@ class OpsAuditCenterServiceTest {
         var canonicalGuard = new AuditReplayBusinessPermissionGuard(
                 mock(ffdd.opsconsole.content.domain.TrustDisclosureRepository.class),
                 mock(ffdd.opsconsole.shared.security.AdminOperatorRoleResolver.class),
-                mock(ffdd.opsconsole.emergency.domain.EmergencyControlRepository.class), provider);
+                mock(ffdd.opsconsole.emergency.domain.EmergencyControlRepository.class), provider, mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class));
         when(replayBusinessPermissionGuard.validateProposalContext(any()))
                 .thenAnswer(invocation -> canonicalGuard.validateProposalContext(invocation.getArgument(0)));
         var command = new AuditReplayCommand("F", "f_direct_referral_policy", Map.of(

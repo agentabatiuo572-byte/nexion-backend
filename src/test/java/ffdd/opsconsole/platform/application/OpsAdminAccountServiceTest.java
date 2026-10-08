@@ -1817,7 +1817,7 @@ class OpsAdminAccountServiceTest {
                     configFacade, avatars,supportGroups);
             AdminOperatorRoleResolver roleResolver = new AdminOperatorRoleResolver(adminMapper, roleRelationMapper);
             AuditReplayBusinessPermissionGuard permissions = new AuditReplayBusinessPermissionGuard(
-                    mock(TrustDisclosureRepository.class), roleResolver, mock(EmergencyControlRepository.class), null);
+                    mock(TrustDisclosureRepository.class), roleResolver, mock(EmergencyControlRepository.class), null, configFacade);
             AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
             Map<String, String> hashes = new LinkedHashMap<>();
             Map<String, Object> responses = new LinkedHashMap<>();

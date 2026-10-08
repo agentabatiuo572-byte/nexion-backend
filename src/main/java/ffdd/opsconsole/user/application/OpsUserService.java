@@ -573,6 +573,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     .map(ApiResult::ok)
                     .orElseGet(() -> ApiResult.fail(404, "USER_NOT_FOUND"));
         } catch (InvalidDataAccessResourceUsageException ex) {
+            if (ex instanceof org.springframework.dao.TypeMismatchDataAccessException) throw ex;
             // A broken read projection must not mark the enclosing partial-profile transaction rollback-only.
             // Authorization above and lock/connection failures still propagate through the transaction boundary.
             org.slf4j.LoggerFactory.getLogger(OpsUserService.class)
