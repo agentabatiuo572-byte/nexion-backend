@@ -134,7 +134,9 @@ class AppOrderCommandMapperContractTest {
 
         assertThat(scan)
                 .contains("u.sandbox=0", "PENDING_PAYMENT", "UPPER(o.payment_status)='PENDING'",
-                        "TIMESTAMPADD(MINUTE, -#{ttlMinutes}, NOW())")
+                        "TIMESTAMPADD(MINUTE, -#{ttlMinutes}, NOW(6))",
+                        "OR EXISTS (SELECT 1 FROM nx_promotion_order_receipt pr",
+                        "pr.order_no=o.order_no AND pr.pay_by<=NOW(6)")
                 .contains("nx_vietqr_intent", "nx_hdpay_payin_order");
         assertThat(expire)
                 .contains("user_id=#{userId}", "order_status='EXPIRED'", "payment_status='EXPIRED'",

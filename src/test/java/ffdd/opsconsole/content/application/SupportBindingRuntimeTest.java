@@ -4,7 +4,10 @@ import static org.assertj.core.api.Assertions.*;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.content.dto.*;
 import ffdd.opsconsole.shared.security.*;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.nio.file.*;
 import org.junit.jupiter.api.Test;
@@ -18,10 +21,37 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /** Opt-in runner supplies the complete isolated MySQL/Redis bundle; no fallback catalog. */
-@SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties={"server.port=18129"})
+@org.springframework.context.annotation.Import(SupportIsolatedRuntime.class)
+@org.springframework.test.annotation.DirtiesContext(classMode=org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
+@SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties={"server.port=${S4_HTTP_PORT:18129}"})
 @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="S3_EVIDENCE_DIR",matches=".+")
 class SupportBindingRuntimeTest {
+    @org.springframework.test.context.DynamicPropertySource static void coreBoundary(org.springframework.test.context.DynamicPropertyRegistry registry) {
+        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))SupportEnhancementPreparationTest.isolatedBoundary(registry);
+    }
+    private ffdd.opsconsole.content.domain.SupportRules originalRules;
+    private long rulesOwner;
+    @org.junit.jupiter.api.BeforeEach void legacyMode() {
+        fixtureActors().assertBusinessEntry();
+        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED"))) {
+            assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportRuntimeTarget.current().database());
+            originalRules=mapper.rules();
+        }
+    }
+    @org.junit.jupiter.api.AfterEach void restoreCoreRules() {
+        SupportOriginalProfiles.cleanup(
+            () -> {if(originalRules!=null && rulesOwner>0)SharedMutationJournal.cleanupSql(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#rules-sql-1","UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",
+                originalRules.dormantDays(),originalRules.maintenanceDays(),originalRules.activityWindowDays(),originalRules.inheritanceMode(),originalRules.maxInheritanceDepth(),originalRules.unboundAssignmentMode(),originalRules.modeEffectiveAt(),rulesOwner);},
+            () -> {if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());},
+            SecurityContextHolder::clearContext);
+    }
     @Autowired JdbcTemplate jdbc;
+    @Autowired org.springframework.data.redis.core.StringRedisTemplate actorRedis;
+    private SupportFixtureActors actorEvidence;
+    private SupportFixtureActors fixtureActors() {
+        if (actorEvidence == null) actorEvidence = new SupportFixtureActors(jdbc, actorRedis, json, transactions, run, getClass().getSimpleName());
+        return actorEvidence;
+    }
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingMapper mapper;
     @Autowired SupportOwnershipService ownership;
@@ -41,6 +71,7 @@ class SupportBindingRuntimeTest {
     private long superId,manager,g1,g2,a,b,c,d;
     private final Map<String,Object> fixture=new LinkedHashMap<>();
     private final Map<String,String> proofs=new LinkedHashMap<>();
+    private final List<Long> createdAdmins=new ArrayList<>();
 
     @Test void globalSearchDoesNotSubstituteForModuleReadAndDisabledManagerCannotMutate() throws Exception {
         long boss=admin("GLOBAL_BOSS","SUPER_ADMIN","MANAGER"),manager=admin("DISABLED_MANAGER","SUPPORT","MANAGER"),agent=admin("GLOBAL_AGENT","SUPPORT","DEDICATED");
@@ -50,10 +81,10 @@ class SupportBindingRuntimeTest {
         assertThat(http("GET",path,token,null,null).toString()).contains(c.conversationNo());
         var ids=jdbc.queryForList("SELECT rp.id FROM nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE r.role_code='SUPER_ADMIN' AND p.permission_code='service_m3_read' AND rp.is_deleted=0",Long.class);
         try {
-            ids.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(boss);
+            ids.forEach(id->SharedMutationJournal.sql(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-disable-1","UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(boss);
             assertThat(http("GET","/api/admin/content/conversations/"+c.conversationNo(),token,null,null).path("code").asInt()).isEqualTo(403);
             var search=http("GET",path,token,null,null);assertThat(search.path("code").asInt()).isZero();assertThat(search.toString()).doesNotContain(c.conversationNo());
-        } finally {ids.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=0 WHERE id=?",id));permissions.evict(boss);}
+        } finally {ids.forEach(id->SharedMutationJournal.restorePermission(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-restore-2",id));permissions.evict(boss);}
         var profile=new LinkedHashMap<String,Object>(Map.of("position","专属客服","serviceTypes",List.of("support","advisor"),"tags",List.of(),"enabled",true,"busy",true,"maxConcurrent",0,"expectedVersion",1,"reason","Manager profile authority probe"));
         profile.put("operator","spoofed");
         String update="/api/admin/content/support-agents/"+agent+"/profile",profileKey=key();
@@ -67,15 +98,19 @@ class SupportBindingRuntimeTest {
     }
 
     @Test void unansweredOldRowsCannotStarveHandledIdleCandidate() {
-        String prefix="starve_"+run;
-        for(int i=0;i<101;i++) {
-            String no=prefix+i;
-            jdbc.update("INSERT INTO nx_conversation(conversation_no,user_id,conversation_type,status,last_message,last_message_at,created_at,updated_at) VALUES(?,0,'support','OPEN','probe',DATE_SUB(NOW(),INTERVAL 30 DAY),DATE_SUB(NOW(),INTERVAL 30 DAY),NOW())",no);
-            if(i<100) jdbc.update("INSERT INTO nx_conversation_message(conversation_id,conversation_no,sender_type,sender_name,content,created_at,updated_at) SELECT id,conversation_no,'user','probe','pending',NOW(),NOW() FROM nx_conversation WHERE conversation_no=?",no);
-        }
-        var rows=timeoutMapper.selectDueCloseCandidates(java.time.LocalDateTime.now().minusDays(1),100);
-        assertThat(rows).anyMatch(row->row.conversationNo().equals(prefix+100));
-        assertThat(rows).noneMatch(row->row.conversationNo().startsWith(prefix) && !row.conversationNo().equals(prefix+100));
+        new TransactionTemplate(transactions).executeWithoutResult(status -> {
+            status.setRollbackOnly();
+            String prefix="starve_"+run;
+            for(int i=0;i<101;i++) {
+                String no=prefix+i;
+                var at=java.time.LocalDateTime.of(1000,1,i<100?1:2,0,0);
+                jdbc.update("INSERT INTO nx_conversation(conversation_no,user_id,conversation_type,status,last_message,last_message_at,created_at,updated_at) VALUES(?,0,'support','OPEN','probe',?,?,NOW())",no,at,at);
+                if(i<100) jdbc.update("INSERT INTO nx_conversation_message(conversation_id,conversation_no,sender_type,sender_name,content,created_at,updated_at) SELECT id,conversation_no,'user','probe','pending',NOW(),NOW() FROM nx_conversation WHERE conversation_no=?",no);
+            }
+            var rows=timeoutMapper.selectDueCloseCandidates(java.time.LocalDateTime.of(1000,1,3,0,0),100);
+            assertThat(rows).anyMatch(row->row.conversationNo().equals(prefix+100));
+            assertThat(rows).noneMatch(row->row.conversationNo().startsWith(prefix) && !row.conversationNo().equals(prefix+100));
+        });
     }
 
     @Test void sendingAndTransferSerializeInBothOrders() throws Exception {
@@ -152,7 +187,7 @@ class SupportBindingRuntimeTest {
             if(!appConversion)assertThat(http("POST",endpoint+"/escalate",two,escalation,escalationKey).path("code").asInt()).isZero();
             var grants=jdbc.queryForList("SELECT rp.id FROM nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE r.role_code='SUPPORT' AND p.permission_code='service_m3_read' AND rp.is_deleted=0",Long.class);
             try {
-                grants.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(second);
+                grants.forEach(id->SharedMutationJournal.sql(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-disable-3","UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(second);
                 assertThat(http("GET",endpoint,two,null,null).toString()).doesNotContain(marker);
                 var receipt=http("GET","/api/admin/content/support-workbench/commands/"+privateKey,two,null,null);
                 assertThat(receipt.path("code").asInt()).isZero();assertThat(receipt.toString()).doesNotContain(marker);
@@ -161,8 +196,31 @@ class SupportBindingRuntimeTest {
                 assertThat(escalated.path("code").asInt()).as("restricted escalate: %s",escalated).isZero();
                 assertThat(escalated.path("data").path("conversation").path("conversationNo").asText()).isNotBlank();
                 assertThat(escalated.toString()).doesNotContain(marker);
-                assertThat(http("POST",endpoint+"/escalate",two,escalation,escalationKey)).isEqualTo(escalated);
-            } finally {grants.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=0 WHERE id=?",id));permissions.evict(second);}
+                String escalatedNo=escalated.path("data").path("conversation").path("conversationNo").asText();
+                var beforeReplay=escalationFacts(customer,no,escalatedNo,second,escalationKey);
+                assertThat(beforeReplay.get("tickets")).isEqualTo(1L);
+                assertThat(beforeReplay.get("conversations")).isEqualTo(2L);
+                assertThat(((Map<?,?>)beforeReplay.get("conversationMessages")).get("escalationOpenings")).isEqualTo(1L);
+                assertThat(beforeReplay.get("successAudits")).isEqualTo(1L);
+                var replay=http("POST",endpoint+"/escalate",two,escalation,escalationKey);
+                assertThat(replay.toString()).doesNotContain(marker);
+                var firstTime=escalated.at("/data/ticket/slaTarget/evaluatedAt");
+                var replayTime=replay.at("/data/ticket/slaTarget/evaluatedAt");
+                assertThat(firstTime.isTextual()).isTrue();assertThat(replayTime.isTextual()).isTrue();
+                var firstAt=LocalDateTime.parse(firstTime.textValue(),DateTimeFormatConfig.DATE_TIME_FORMATTER);
+                var replayAt=LocalDateTime.parse(replayTime.textValue(),DateTimeFormatConfig.DATE_TIME_FORMATTER);
+                assertThat(firstAt.format(DateTimeFormatConfig.DATE_TIME_FORMATTER)).isEqualTo(firstTime.textValue());
+                assertThat(replayAt.format(DateTimeFormatConfig.DATE_TIME_FORMATTER)).isEqualTo(replayTime.textValue());
+                assertThat(replayAt).isAfterOrEqualTo(firstAt);
+                var retained=escalated.deepCopy();var repeated=replay.deepCopy();
+                // The restricted detail re-evaluates SLA time; every other response field remains exact.
+                ((ObjectNode)retained.at("/data/ticket/slaTarget")).remove("evaluatedAt");
+                ((ObjectNode)repeated.at("/data/ticket/slaTarget")).remove("evaluatedAt");
+                assertThat(repeated).isEqualTo(retained);
+                var afterReplay=escalationFacts(customer,no,escalatedNo,second,escalationKey);
+                assertThat(afterReplay.get("successAudits")).isEqualTo(1L);
+                assertThat(afterReplay).as("Same-key escalation must not duplicate persisted facts").isEqualTo(beforeReplay);
+            } finally {grants.forEach(id->SharedMutationJournal.restorePermission(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-restore-4",id));permissions.evict(second);}
             jdbc.update("UPDATE nx_support_ticket SET source_conversation_no=NULL WHERE ticket_no=?",no);
             assertThat(http("GET",endpoint,one,null,null).toString()).doesNotContain(marker);
             assertThat(http("GET",endpoint,two,null,null).toString()).contains(marker);
@@ -313,15 +371,17 @@ class SupportBindingRuntimeTest {
         registrationMapper.insertChallengeInEnvironment(challenge,"+86",phone,clientIp,"PRODUCTION","123456",10);
         var request=new ffdd.opsconsole.auth.dto.UserRegistrationRequest("+86",phone,challenge,"123456",
             System.getenv("S3_FIXTURE_PASSWORD"),null,"zh");
-        String trigger="s3_fail_"+run;
-        jdbc.execute("CREATE TRIGGER "+trigger+" BEFORE INSERT ON nx_support_binding_pool FOR EACH ROW BEGIN IF EXISTS(SELECT 1 FROM nx_user WHERE id=NEW.customer_id AND phone='"+phone+"') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='S3_BINDING_FAILURE_INJECTION'; END IF; END");
+        String constraint="s3_fail_"+run;
+        long currentMax=jdbc.queryForObject("SELECT COALESCE(MAX(id),0) FROM nx_user",Long.class);
+        // information_schema AUTO_INCREMENT may be cached after earlier fixture inserts.
+        jdbc.execute("ALTER TABLE nx_support_binding_pool ADD CONSTRAINT "+constraint+" CHECK(customer_id<="+currentMax+")");
         try {
             assertThatThrownBy(()->{
                 var result=registration.register(request,clientIp);
                 fail("Failure injection was not reached: "+result.getCode()+" "+result.getMessage());
-            }).hasStackTraceContaining("S3_BINDING_FAILURE_INJECTION");
+            }).hasStackTraceContaining(constraint);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user WHERE phone=?",Long.class,phone)).isZero();
-        } finally {jdbc.execute("DROP TRIGGER "+trigger);}
+        } finally {jdbc.execute("ALTER TABLE nx_support_binding_pool DROP CHECK "+constraint);}
         var created=registration.register(request,clientIp);
         assertThat(created.getCode()).as("registration retry: %s",created.getMessage()).isZero();
         long id=created.getData().user().userId();
@@ -345,8 +405,8 @@ class SupportBindingRuntimeTest {
     }
 
     @Test void isolatedApplicationStartsWithBindingSchema() throws Exception {
-        assertThat(System.getenv("NEXION_DB_URL")).startsWith("jdbc:mysql://127.0.0.1:33329/cs_redesign?");
-        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_redesign");
+        assertThat(System.getenv("NEXION_DB_URL")).startsWith("jdbc:mysql://127.0.0.1:"+SupportRuntimeTarget.current().databasePort()+"/"+SupportIsolatedRuntime.database()+"?");
+        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportIsolatedRuntime.database());
         assertThat(mapper.rules()).isNotNull();
         superId=admin("SUPER","SUPER_ADMIN","MANAGER");manager=admin("MANAGER","SUPPORT","MANAGER");
         g1=admin("G1","SUPPORT","DEDICATED");g2=admin("G2","SUPPORT","DEDICATED");
@@ -488,10 +548,12 @@ class SupportBindingRuntimeTest {
     private long admin(String label,String role,String seat) {
         String username=run+"_"+label;
         String hash=new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(System.getenv("S3_FIXTURE_PASSWORD"));
-        jdbc.update("INSERT INTO nx_admin(username,password_hash,nickname,super_admin,status) VALUES(?,?,?,?,1)",username,hash,label,"SUPER_ADMIN".equals(role)?1:0);
-        Long id=jdbc.queryForObject("SELECT id FROM nx_admin WHERE username=?",Long.class,username);
-        jdbc.update("INSERT INTO nx_admin_role_relation(admin_id,role_id) SELECT ?,id FROM nx_admin_role WHERE role_code=? AND is_deleted=0",id,role);
-        jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,?,?,'support,advisor','',0,1,1,0)",id,seat,seat);
+        long id=fixtureActors().createSql(username,hash,label,role,seat);
+        createdAdmins.add(id);
+        if(originalRules!=null && rulesOwner==0) {
+            rulesOwner=id;
+            SharedMutationJournal.sql(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#rules-sql-2","UPDATE nx_support_rules SET unbound_assignment_mode='SUPERVISOR',version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",rulesOwner);
+        }
         fixture.put(label,Map.of("id",id,"username",username));return id;
     }
     private long register(String label,Long inviter) {
@@ -514,13 +576,25 @@ class SupportBindingRuntimeTest {
         String username=jdbc.queryForObject("SELECT username FROM nx_admin WHERE id=?",String.class,id);
         return tokens.createToken(id,"ADMIN",username,List.of(),sessions.createSession(id,username));
     }
+    private Map<String,Object> escalationFacts(long customer,String ticketNo,String conversationNo,long actor,String commandKey) {
+        return Map.of(
+                "tickets",jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_ticket WHERE user_id=?",Long.class,customer),
+                "conversations",jdbc.queryForObject("SELECT COUNT(*) FROM nx_conversation WHERE user_id=?",Long.class,customer),
+                "ticketMessages",jdbc.queryForMap("SELECT COUNT(*) total,COUNT(CASE WHEN sender_type='system' THEN 1 END) systemCount FROM nx_support_ticket_message WHERE ticket_no=?",ticketNo),
+                "conversationMessages",jdbc.queryForMap("SELECT COUNT(*) total,COUNT(CASE WHEN m.conversation_no=? AND m.sender_type='agent' THEN 1 END) escalationOpenings "
+                        + "FROM nx_conversation_message m JOIN nx_conversation c ON c.conversation_no=m.conversation_no WHERE c.user_id=?",conversationNo,customer),
+                "ticket",jdbc.queryForMap("SELECT status,version,message_count,updated_at FROM nx_support_ticket WHERE ticket_no=?",ticketNo),
+                "conversation",jdbc.queryForMap("SELECT status,version,unread_count,updated_at FROM nx_conversation WHERE conversation_no=?",conversationNo),
+                "successAudits",jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log WHERE action='M2_SUPPORT_TICKET_ESCALATED' AND resource_type='SUPPORT_TICKET' "
+                        + "AND resource_id=? AND actor_id=? AND result='SUCCESS' AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.idempotencyKey'))=?",Long.class,ticketNo,actor,commandKey));
+    }
     private void assertModuleRecoveryRevoked(long actor,String role,String permission,String token,String commandKey) throws Exception {
         var ids=jdbc.queryForList("SELECT rp.id FROM nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE r.role_code=? AND p.permission_code=? AND rp.is_deleted=0",Long.class,role,permission);
         assertThat(ids).isNotEmpty();
         try {
-            ids.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(actor);
+            ids.forEach(id->SharedMutationJournal.sql(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-disable-5","UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(actor);
             assertThat(http("GET","/api/admin/content/support-workbench/commands/"+commandKey,token,null,null).path("code").asInt()).as("module grant revoked: %s",permission).isEqualTo(403);
-        } finally {ids.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=0 WHERE id=?",id));permissions.evict(actor);}
+        } finally {ids.forEach(id->SharedMutationJournal.restorePermission(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-restore-6",id));permissions.evict(actor);}
         assertThat(http("GET","/api/admin/content/support-workbench/commands/"+commandKey,token,null,null).path("code").asInt()).isZero();
     }
     private String key(){return "s3-"+UUID.randomUUID();}
@@ -529,7 +603,7 @@ class SupportBindingRuntimeTest {
     private void transfer(long target,List<Long> customers,String key){assertThat(bindings.transfer(key,request(target,customers)).getCode()).isZero();}
     private void assertPool(long id,String reason){assertThat(mapper.current(id)).isNull();assertThat(jdbc.queryForObject("SELECT reason FROM nx_support_binding_pool WHERE customer_id=?",String.class,id)).isEqualTo(reason);}
     private com.fasterxml.jackson.databind.JsonNode http(String method,String path,String token,Object body,String key) throws Exception {
-        var b=java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:18129"+path)).timeout(java.time.Duration.ofSeconds(20));
+        var b=java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+path)).timeout(java.time.Duration.ofSeconds(20));
         if(token!=null)b.header("Authorization","Bearer "+token);if(key!=null)b.header("Idempotency-Key",key);
         b.header("Content-Type","application/json");b.method(method,body==null?java.net.http.HttpRequest.BodyPublishers.noBody():java.net.http.HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));
         var response=java.net.http.HttpClient.newHttpClient().send(b.build(),java.net.http.HttpResponse.BodyHandlers.ofString());
@@ -554,7 +628,7 @@ class SupportBindingRuntimeTest {
         assertThat(ticket.path("code").asInt()).as("socket ticket: %s",ticket).isZero();
         var probe=new SocketProbe();
         probe.socket=java.net.http.HttpClient.newHttpClient().newWebSocketBuilder()
-                .buildAsync(java.net.URI.create("ws://127.0.0.1:18129/ws/conversations"),probe).get(10,java.util.concurrent.TimeUnit.SECONDS);
+                .buildAsync(java.net.URI.create("ws://127.0.0.1:"+SupportIsolatedRuntime.port()+"/ws/conversations"),probe).get(10,java.util.concurrent.TimeUnit.SECONDS);
         probe.send(Map.of("type","auth","ticket",ticket.path("data").path("ticket").asText()));probe.await("ready");return probe;
     }
     private final class SocketProbe implements java.net.http.WebSocket.Listener,AutoCloseable {
@@ -575,7 +649,7 @@ class SupportBindingRuntimeTest {
     }
     private StreamProbe stream(String token) throws Exception {
         var response=java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(
-            java.net.URI.create("http://127.0.0.1:18129/api/admin/content/conversations/stream"))
+            java.net.URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+"/api/admin/content/conversations/stream"))
             .header("Authorization","Bearer "+token).GET().build(),java.net.http.HttpResponse.BodyHandlers.ofInputStream());
         assertThat(response.statusCode()).isEqualTo(200);return new StreamProbe(response.body());
     }

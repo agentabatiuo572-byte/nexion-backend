@@ -4,6 +4,8 @@ import ffdd.opsconsole.content.domain.SupportAttachment;
 import ffdd.opsconsole.content.domain.SupportAssignment;
 import ffdd.opsconsole.content.mapper.SupportAttachmentMapper;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
+import ffdd.opsconsole.content.mapper.SupportBulkMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import java.awt.image.BufferedImage;
@@ -42,8 +44,84 @@ public class SupportAttachmentService {
     private final SupportAttachmentPolicy policy;
     private final ProductionSupportPathGuard production;
     private final PlatformTransactionManager transactions;
+    private final SupportBulkMapper bulk;
+    private final ObjectMapper json;
 
     public SupportAttachmentPolicy.View policy() { return policy.view(); }
+
+    @Transactional
+    public Map<String,Object> uploadBulk(Long actor, String key, String clientUploadId, MultipartFile file) {
+        requireActor("ADMIN",actor); positiveId(actor); token(key); token(clientUploadId);
+        production.requireOpsWriteAllowed();
+        ownership.requireSendingActor(actor);
+        var limits=policy();
+        if(!limits.available()) throw new BizException(422,"ATTACHMENT_POLICY_UNCONFIGURED");
+        Encoded encoded=decode(file,limits);
+        String digest=hash(actor+"|"+clientUploadId+"|"+encoded.rawHash());
+        var previous=bulk.assetByCommand(actor,key);
+        if(previous==null) {
+            previous=bulk.assetByUpload(actor,clientUploadId);
+            if(previous!=null && !key.equals(previous.get("commandKey"))) throw conflict();
+        }
+        if(previous!=null) {
+            if(!Objects.equals(digest,previous.get("requestHash"))) throw conflict();
+            BulkAsset asset=bulkAsset(previous,actor);
+            exists(asset.objectKey());
+            return bulkView(String.valueOf(previous.get("id")),asset);
+        }
+        String id=UUID.randomUUID().toString(),objectKey="private/support-bulk/"+UUID.randomUUID()+"/"+UUID.randomUUID();
+        var asset=new BulkAsset(objectKey,encoded.mime(),encoded.content().length,encoded.width(),encoded.height(),
+                LocalDateTime.now(ZoneOffset.UTC).plusSeconds(limits.ttlSeconds()));
+        String payload=ffdd.opsconsole.content.dto.SupportMessagePayload.encode(Map.of("objectKey",objectKey,"mime",asset.mime(),
+                "bytes",asset.bytes(),"width",asset.width(),"height",asset.height()));
+        try { bulk.insertAsset(id,actor,key,clientUploadId,digest,payload,asset.expiresAt()); }
+        catch(DuplicateKeyException ex) { throw conflict(); }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCompletion(int status) {
+                if(status==STATUS_ROLLED_BACK) {
+                    try { storage.remove(objectKey); }
+                    catch(RuntimeException ex) { log.error("Bulk attachment rollback cleanup failed: {}",id,ex); }
+                }
+            }
+        });
+        try { storage.put(objectKey,asset.mime(),new ByteArrayInputStream(encoded.content()),asset.bytes()); }
+        catch(RuntimeException ex) { throw unavailable(); }
+        return bulkView(id,asset);
+    }
+
+    /** A stable per-customer reference; the ASSET lock also serializes expiry with attachment commit. */
+    @Transactional(propagation=Propagation.MANDATORY)
+    public SupportAttachment.View materializeBulkForActor(String assetId,Long actor,Long customer,Long expectedAssignment,String attachmentId) {
+        positiveId(actor); positiveId(customer); positiveId(expectedAssignment); validateAttachmentId(assetId); validateAttachmentId(attachmentId);
+        production.requireAllowed(customer);
+        var assignment=ownership.requireWriterForActor(actor,customer,true);
+        if(!expectedAssignment.equals(assignment.id())) throw conflict();
+        var source=bulk.assetForUpdate(assetId);
+        BulkAsset asset=bulkAsset(source,actor);
+        exists(asset.objectKey());
+        String digest=hash(customer+"|ADMIN|"+actor+"|"+expectedAssignment+"|"+attachmentId+"|"+source.get("requestHash"));
+        var prior=mapper.find(attachmentId);
+        if(prior!=null) {
+            if(!customer.equals(prior.customerId()) || !"ADMIN".equals(prior.uploaderType()) || !actor.equals(prior.uploaderId())
+                    || !expectedAssignment.equals(prior.assignmentId()) || !digest.equals(prior.requestHash())
+                    || !asset.objectKey().equals(prior.objectKey())) throw conflict();
+            if(!"ATTACHED".equals(prior.state())) ready(prior);
+            return prior.view();
+        }
+        var row=new SupportAttachment(attachmentId,customer,"ADMIN",actor,expectedAssignment,"bulk_"+attachmentId.replace("-",""),
+                digest,asset.mime(),asset.bytes(),asset.width(),asset.height(),asset.objectKey(),"READY",asset.expiresAt(),null);
+        try { mapper.insertAttachment(row); } catch(DuplicateKeyException ex) { throw conflict(); }
+        return row.view();
+    }
+
+    @Transactional(propagation=Propagation.MANDATORY)
+    public SupportAttachment.View attachToMessageForActor(Long customer,Long actor,Long expectedAssignment,String attachmentId,Long messageId) {
+        positiveId(customer); positiveId(actor); positiveId(messageId); positiveId(expectedAssignment);
+        production.requireAllowed(customer);
+        var assignment=ownership.requireWriterForActor(actor,customer,true);
+        if(!expectedAssignment.equals(assignment.id())) throw conflict();
+        return attach(customer,"ADMIN",actor,expectedAssignment,attachmentId,messageId);
+    }
 
     /** The authenticated subject type must match as admin/user identifiers can overlap. */
     public Long actor(String type) {
@@ -90,7 +168,7 @@ public class SupportAttachmentService {
         // Rollback compensation never removes an attached historical object.
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override public void afterCompletion(int status) {
-                if (status != STATUS_COMMITTED) {
+                if (status == STATUS_ROLLED_BACK) {
                     try { storage.remove(objectKey); }
                     catch (RuntimeException ex) { log.error("Support attachment rollback cleanup failed: {}", id, ex); }
                 }
@@ -109,6 +187,10 @@ public class SupportAttachmentService {
         production.requireAllowed(customer);
         ownership.lockCustomer(customer);
         writer(customer, type, actor, expectedAssignment);
+        return attach(customer,type,actor,expectedAssignment,attachmentId,messageId);
+    }
+
+    private SupportAttachment.View attach(Long customer,String type,Long actor,Long expectedAssignment,String attachmentId,Long messageId) {
         SupportAttachment row = find(attachmentId);
         if (!customer.equals(row.customerId()) || !type.equals(row.uploaderType()) || !actor.equals(row.uploaderId()))
             throw missing();
@@ -179,6 +261,28 @@ public class SupportAttachmentService {
         }
     }
 
+    @Scheduled(fixedDelayString="${nexion.support.attachments.cleanup-delay-ms:60000}")
+    public void cleanupExpiredBulkAssets() {
+        if(!production.productionSupportAutomationAllowed()) return;
+        var transaction=new TransactionTemplate(transactions);
+        transaction.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_READ_COMMITTED);
+        for(var candidate:bulk.expiredAssets()) {
+            String id=String.valueOf(candidate.get("id"));
+            try {
+                transaction.executeWithoutResult(status->{
+                    var row=bulk.assetForUpdate(id);
+                    if(row==null || !"READY".equals(row.get("state"))) return;
+                    var asset=readBulkAsset(row);
+                    String key=asset.objectKey();
+                    if(asset.expiresAt().isAfter(LocalDateTime.now(ZoneOffset.UTC))) return;
+                    if(!key.startsWith("private/support-bulk/")) throw unavailable();
+                    if(mapper.liveObjectReferences(key)==0) storage.remove(key);
+                    bulk.retireAsset(id,"EXPIRED");
+                });
+            } catch(RuntimeException ex) { log.warn("Bulk attachment expiry cleanup failed: {}",id,ex); }
+        }
+    }
+
     private Long writer(Long customer, String type, Long actor, Long expected) {
         if ("USER".equals(type)) {
             if (!customer.equals(actor)) throw missing();
@@ -240,7 +344,40 @@ public class SupportAttachmentService {
             throw new BizException(409, "ATTACHMENT_NOT_READY");
     }
     private void remove(SupportAttachment row) {
+        // Shared bulk bytes are owned by ASSET cleanup; a customer's cancellation cannot remove them.
+        if(row.objectKey().startsWith("private/support-bulk/")) return;
         try { storage.remove(row.objectKey()); } catch (RuntimeException ex) { throw unavailable(); }
+    }
+
+    private record BulkAsset(String objectKey,String mime,long bytes,int width,int height,LocalDateTime expiresAt) {}
+    private BulkAsset bulkAsset(Map<String,Object> row,Long actor) {
+        if(row==null || !(row.get("actorId") instanceof Number owner) || owner.longValue()!=actor) throw missing();
+        if(!"READY".equals(row.get("state"))) throw new BizException(409,"ATTACHMENT_NOT_READY");
+        var asset=readBulkAsset(row);
+        if(!asset.expiresAt().isAfter(LocalDateTime.now(ZoneOffset.UTC))) throw new BizException(409,"ATTACHMENT_NOT_READY");
+        var limits=policy();
+        if(!limits.available() || !limits.allowedMimeTypes().contains(asset.mime()) || asset.bytes()<=0 || asset.bytes()>limits.maxBytes()
+                || asset.width()<=0 || asset.height()<=0 || (long)asset.width()*asset.height()>limits.maxPixels()
+                || !asset.objectKey().startsWith("private/support-bulk/")) throw new BizException(422,"ATTACHMENT_POLICY_UNCONFIGURED");
+        return asset;
+    }
+    private BulkAsset readBulkAsset(Map<String,Object> row) {
+        try {
+            var node=json.readTree(String.valueOf(row.get("assetJson")));
+            Object expiry=row.get("expiresAt");
+            LocalDateTime expires=expiry instanceof java.sql.Timestamp stamp?stamp.toLocalDateTime():
+                    expiry instanceof LocalDateTime date?date:null;
+            if(expires==null) throw unavailable();
+            return new BulkAsset(node.path("objectKey").asText(),node.path("mime").asText(),node.path("bytes").asLong(),
+                    node.path("width").asInt(),node.path("height").asInt(),expires);
+        } catch(java.io.IOException ex) { throw unavailable(); }
+    }
+    private void exists(String key) {
+        try { if(!storage.exists(key)) throw unavailable(); } catch(RuntimeException ex) { throw unavailable(); }
+    }
+    private Map<String,Object> bulkView(String id,BulkAsset asset) {
+        return Map.of("assetId",id,"status","READY","mime",asset.mime(),"bytes",asset.bytes(),"width",asset.width(),
+                "height",asset.height(),"expiresAt",asset.expiresAt());
     }
     private void command(String type, Long actor, String operation, String key, String id) {
         try { mapper.commandInsert(type, actor, operation, key, id); }

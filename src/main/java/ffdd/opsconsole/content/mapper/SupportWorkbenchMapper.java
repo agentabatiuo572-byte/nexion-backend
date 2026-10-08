@@ -19,6 +19,7 @@ public interface SupportWorkbenchMapper extends BaseMapper<SupportAgentAssignmen
           SELECT u.id customerId,CAST(u.id AS CHAR) customerNo,u.nickname,
             a.id assignmentId,a.version assignmentVersion,a.agent_admin_id agentAdminId,
             COALESCE(ad.nickname,ad.username) agentName,
+            av.avatar_asset_id advisorAvatarAssetId,av.avatar_version advisorAvatarVersion,
             COALESCE(p.enabled,1) enabled,COALESCE(p.version,1) preferenceVersion,p.reason stoppedReason,
             (SELECT MAX(e.occurred_at) FROM nx_support_activity_event e
               WHERE e.customer_id=u.id AND e.occurred_at &lt;= #{evaluatedAt}) lastEffectiveAt,
@@ -37,6 +38,7 @@ public interface SupportWorkbenchMapper extends BaseMapper<SupportAgentAssignmen
           FROM nx_user u JOIN nx_support_agent_user_assignment a
             ON a.user_id=u.id AND a.status='ACTIVE' AND a.is_deleted=0
           JOIN nx_admin ad ON ad.id=a.agent_admin_id
+          LEFT JOIN nx_admin_account_state av ON av.admin_id=a.agent_admin_id AND av.is_deleted=0
           LEFT JOIN nx_support_maintenance_preference p ON p.customer_id=u.id
           WHERE u.is_deleted=0
           <if test='agentId != null'>AND a.agent_admin_id=#{agentId}</if>

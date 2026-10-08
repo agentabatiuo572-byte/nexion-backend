@@ -10,6 +10,17 @@ public interface SupportAgentRepository {
     /** Pure SELECT projection for M2. Must not initialize schemas or materialize account/profile rows. */
     List<SupportTicketAssigneeCandidateView> listTicketAssigneeCandidates();
 
+    SupportOperatorScope supportOperatorScope(Long visibleAdminId);
+
+    long countSupportOperators(SupportOperatorScope scope);
+
+    List<SupportOperatorRecord> pageSupportOperators(SupportOperatorScope scope, long limit, long offset);
+
+    record SupportOperatorRecord(Long adminId, String name, String email, String avatarAssetId, Long avatarVersion) {}
+
+    record SupportOperatorScope(Long visibleAdminId, List<Long> supportRoleIds,
+                                List<Long> unusablePrimaryRoleIds, boolean superFallbackToSupport) {}
+
     List<SupportAgentProfileRecord> listProfiles(List<Long> adminIds);
 
     Optional<SupportAgentProfileRecord> findProfile(Long adminId);

@@ -10,6 +10,9 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Insert;
 
 public interface ConversationMessageMapper extends BaseMapper<ConversationMessageEntity> {
+    String TARGET_AVAILABILITY="CASE WHEN h.kind='SKU' THEN CASE WHEN EXISTS(SELECT 1 FROM nx_product p WHERE p.product_no=h.sku_id AND p.is_deleted=0 AND p.store_visible=1 AND p.price_usdt>0 AND ("+
+        ffdd.opsconsole.device.mapper.DeviceCatalogMapper.SKU_STATUS_SQL+")='on' AND "+ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate.PUBLISHABLE_SQL+") THEN 'AVAILABLE' ELSE 'UNAVAILABLE' END "+
+        "WHEN h.kind='LINK' THEN CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(h.link_target_json,'$.type')) IN ('HOME','WALLET','SUPPORT') THEN 'AVAILABLE' ELSE 'UNAVAILABLE' END ELSE NULL END AS targetAvailability ";
     @Insert("""
             INSERT INTO nx_conversation_message_receipt(message_id,conversation_no,receipt_status,read_by,read_at)
             SELECT m.id,m.conversation_no,'read',#{operator},#{now}
@@ -24,8 +27,8 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
             @Param("now") LocalDateTime now);
     @Select("""
             SELECT
-              id,
-              conversation_id AS conversationId,
+              msg.id,
+              msg.conversation_id AS conversationId,
               msg.conversation_no AS conversationNo,
               sender_id AS senderId,
               sender_type AS senderType,
@@ -36,9 +39,14 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
               h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
               h.client_message_id AS clientMessageId,h.attachment_id AS attachmentId,
               CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
-              DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt
+              DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt,
+              h.sku_id AS skuId,h.sku_name AS skuName,h.link_target_json AS linkTargetJson,
+              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_asset_id END AS senderAvatarAssetId,
+              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_version END AS senderAvatarVersion,
+            """ + TARGET_AVAILABILITY + """
             FROM nx_conversation_message msg
             LEFT JOIN nx_support_human_message h ON h.message_id=msg.id
+              LEFT JOIN nx_admin_account_state av ON av.admin_id=msg.sender_id AND av.is_deleted=0 AND msg.sender_type='agent'
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
             WHERE msg.is_deleted=0 AND msg.conversation_no=#{conversationNo}
             ORDER BY msg.created_at ASC,msg.id ASC
@@ -46,16 +54,21 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
     List<ContentConversationMessageView> listByConversationNo(@Param("conversationNo") String conversationNo);
 
     @Select("""
-            SELECT id,conversation_id AS conversationId,msg.conversation_no AS conversationNo,
+            SELECT msg.id,msg.conversation_id AS conversationId,msg.conversation_no AS conversationNo,
                    sender_id AS senderId,sender_type AS senderType,sender_name AS senderName,content,
                    COALESCE(receipt.receipt_status, CASE WHEN msg.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
                    msg.created_at AS createdAt,
               h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
               h.client_message_id AS clientMessageId,h.attachment_id AS attachmentId,
               CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
-              DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt
+              DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt,
+              h.sku_id AS skuId,h.sku_name AS skuName,h.link_target_json AS linkTargetJson,
+              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_asset_id END AS senderAvatarAssetId,
+              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_version END AS senderAvatarVersion,
+            """ + TARGET_AVAILABILITY + """
               FROM nx_conversation_message msg
               LEFT JOIN nx_support_human_message h ON h.message_id=msg.id
+              LEFT JOIN nx_admin_account_state av ON av.admin_id=msg.sender_id AND av.is_deleted=0 AND msg.sender_type='agent'
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
              WHERE msg.is_deleted=0 AND msg.conversation_no=#{conversationNo}
                AND msg.sender_type IN ('user','agent')
@@ -73,7 +86,11 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
               h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
               h.client_message_id AS clientMessageId,h.attachment_id AS attachmentId,
               CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
-              DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt
+              DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt,
+              h.sku_id AS skuId,h.sku_name AS skuName,h.link_target_json AS linkTargetJson,
+              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_asset_id END AS senderAvatarAssetId,
+              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_version END AS senderAvatarVersion,
+            """ + TARGET_AVAILABILITY + """
               FROM (
                 SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at
                   FROM nx_conversation_message
@@ -82,6 +99,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
                  <if test="currentRead">FOR SHARE</if>
               ) recent
               LEFT JOIN nx_support_human_message h ON h.message_id=recent.id
+              LEFT JOIN nx_admin_account_state av ON av.admin_id=recent.sender_id AND av.is_deleted=0 AND recent.sender_type='agent'
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=recent.id
              ORDER BY recent.id ASC
              <if test="currentRead">FOR SHARE</if>
@@ -102,7 +120,11 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
               h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
               h.client_message_id AS clientMessageId,h.attachment_id AS attachmentId,
               CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
-              DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt
+              DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt,
+              h.sku_id AS skuId,h.sku_name AS skuName,h.link_target_json AS linkTargetJson,
+              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_asset_id END AS senderAvatarAssetId,
+              CASE WHEN h.actor_type='ADMIN' AND h.actor_id=av.admin_id THEN av.avatar_version END AS senderAvatarVersion,
+            """ + TARGET_AVAILABILITY + """
               FROM (
                 SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at
                   FROM nx_conversation_message
@@ -111,6 +133,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
                  ORDER BY id DESC LIMIT #{limit}
               ) recent
               LEFT JOIN nx_support_human_message h ON h.message_id=recent.id
+              LEFT JOIN nx_admin_account_state av ON av.admin_id=recent.sender_id AND av.is_deleted=0 AND recent.sender_type='agent'
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=recent.id
              ORDER BY recent.id ASC
             """)
@@ -123,6 +146,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
             SELECT COUNT(*)
               FROM nx_conversation_message msg
               LEFT JOIN nx_support_human_message h ON h.message_id=msg.id
+              LEFT JOIN nx_admin_account_state av ON av.admin_id=msg.sender_id AND av.is_deleted=0 AND msg.sender_type='agent'
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
              WHERE msg.is_deleted=0 AND msg.conversation_no=#{conversationNo} AND msg.sender_type='agent'
                AND (receipt.message_id IS NULL OR receipt.receipt_status&lt;&gt;'read')

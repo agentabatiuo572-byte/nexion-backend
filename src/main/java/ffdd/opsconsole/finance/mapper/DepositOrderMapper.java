@@ -14,6 +14,90 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
+    @Select("SELECT asset currency,SUM(amount) creditedDepositTotal,COUNT(*) creditedFactCount FROM ("+SupportFinanceSql.CREDITS+") credited GROUP BY asset")
+    List<java.util.Map<String,Object>> supportCredits(@Param("userId") Long userId);
+
+    @Select("""
+      SELECT currency,SUM(anomalies) anomalies FROM (
+       SELECT asset currency,COUNT(*) anomalies FROM (
+        SELECT asset,biz_no FROM (
+      """+SupportFinanceSql.CREDITS+"""
+        ) c GROUP BY asset,biz_no HAVING COUNT(*)>1
+       ) duplicates GROUP BY asset
+       UNION ALL
+       SELECT 'USDT',COUNT(*) FROM nx_vietqr_reconciliation r JOIN nx_hdpay_payin_order h ON h.merchant_order_id=r.intent_no
+       WHERE r.user_id=#{userId} AND r.is_deleted=0 AND EXISTS (
+        SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=r.user_id AND l.biz_no=CONCAT('D1-VIETQR-',r.reconciliation_no)
+         AND l.biz_type='VIETQR_DEPOSIT' AND l.asset='USDT' AND l.direction='IN' AND l.status='SUCCESS' AND l.is_deleted=0)
+        AND EXISTS(SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=r.user_id AND l.biz_no=h.merchant_order_id
+         AND l.biz_type='VIETQR_DEPOSIT' AND l.asset='USDT' AND l.direction='IN' AND l.status='SUCCESS' AND l.is_deleted=0)
+       HAVING COUNT(*)>0
+       UNION ALL
+       SELECT 'USDT',COUNT(*) FROM nx_vietqr_reconciliation r
+       WHERE r.user_id=#{userId} AND r.is_deleted=0 AND r.intent_no IS NOT NULL AND EXISTS (
+        SELECT 1 FROM nx_vietqr_reconciliation other WHERE other.user_id=r.user_id AND other.intent_no=r.intent_no
+         AND other.id!=r.id AND other.is_deleted=0 AND EXISTS (
+          SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=other.user_id AND l.biz_no=CONCAT('D1-VIETQR-',other.reconciliation_no)
+           AND l.biz_type='VIETQR_DEPOSIT' AND l.asset='USDT' AND l.direction='IN' AND l.status='SUCCESS' AND l.is_deleted=0))
+        AND EXISTS(SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=r.user_id AND l.biz_no=CONCAT('D1-VIETQR-',r.reconciliation_no)
+         AND l.biz_type='VIETQR_DEPOSIT' AND l.asset='USDT' AND l.direction='IN' AND l.status='SUCCESS' AND l.is_deleted=0)
+       HAVING COUNT(*)>0
+       UNION ALL
+       SELECT l.asset currency,COUNT(*) anomalies FROM nx_wallet_ledger l
+       WHERE l.user_id=#{userId} AND l.is_deleted=0 AND l.direction='IN' AND l.status='SUCCESS'
+        AND l.biz_type IN ('CHAIN_TOPUP','DEPOSIT','TOPUP','CARD_TOPUP','VIETQR_DEPOSIT')
+        AND (l.amount<=0 OR NOT
+      """+SupportFinanceSql.CREDIT_MATCH+"""
+        ) GROUP BY l.asset
+       UNION ALL
+       SELECT d.asset,COUNT(*) FROM nx_deposit_order d WHERE d.user_id=#{userId} AND d.is_deleted=0
+        AND d.status IN ('CONFIRMED','CREDITED','SUCCESS') AND NOT EXISTS (
+         SELECT 1 FROM nx_wallet_ledger l WHERE l.id=d.ledger_id AND l.user_id=d.user_id
+          AND l.biz_no=d.deposit_no AND l.asset=d.asset AND l.amount=d.amount AND l.direction='IN'
+          AND l.status='SUCCESS' AND l.is_deleted=0 AND l.biz_type IN ('CHAIN_TOPUP','DEPOSIT','TOPUP','CARD_TOPUP')) GROUP BY d.asset
+       UNION ALL
+       SELECT 'USDT',COUNT(*) FROM nx_payment_record p WHERE p.user_id=#{userId} AND p.is_deleted=0
+        AND
+      """+SupportFinanceSql.CARD_SCOPE+"""
+        AND p.payment_status IN ('CONFIRMED','CREDITED','SUCCESS') AND NOT EXISTS (
+         SELECT 1 FROM nx_wallet_ledger l WHERE l.id=p.wallet_ledger_id AND l.user_id=p.user_id
+          AND l.biz_no=p.payment_no AND l.asset='USDT' AND l.biz_type='CARD_TOPUP' AND l.amount=p.amount_usdt
+          AND l.direction='IN' AND l.status='SUCCESS' AND l.is_deleted=0)
+       HAVING COUNT(*)>0
+       UNION ALL
+       SELECT 'USDT',COUNT(*) FROM nx_vietqr_reconciliation r
+       WHERE r.user_id=#{userId} AND r.is_deleted=0 AND r.status='CREDITED'
+        AND NOT EXISTS(SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=r.user_id
+         AND l.biz_no=CONCAT('D1-VIETQR-',r.reconciliation_no) AND l.amount=r.credited_usdt
+         AND l.asset='USDT' AND l.direction='IN' AND l.status='SUCCESS' AND l.is_deleted=0 AND l.biz_type='VIETQR_DEPOSIT')
+        AND NOT EXISTS(SELECT 1 FROM nx_hdpay_payin_order h JOIN nx_vietqr_intent i ON i.intent_no=h.merchant_order_id
+         JOIN nx_wallet_ledger l ON l.user_id=i.user_id AND l.biz_no=i.intent_no AND l.biz_no=h.wallet_ledger_biz_no
+         AND l.biz_type='VIETQR_DEPOSIT' AND l.asset='USDT' AND l.direction='IN' AND l.status='SUCCESS' AND l.is_deleted=0
+         AND l.amount=h.settled_usdt AND l.amount=i.credited_usdt AND l.amount=i.requested_usdt
+         WHERE i.user_id=r.user_id AND i.intent_no=r.intent_no AND i.is_deleted=0 AND i.payment_rail='HDPAY'
+         AND i.settlement_target_type='WALLET_TOPUP' AND h.settled_at IS NOT NULL AND i.payable_vnd=h.amount_vnd
+         AND i.received_vnd=h.amount_vnd AND r.credited_usdt=l.amount)
+       HAVING COUNT(*)>0
+       UNION ALL
+       SELECT 'USDT',COUNT(*) FROM nx_hdpay_payin_order h JOIN nx_vietqr_intent i ON i.intent_no=h.merchant_order_id
+       WHERE i.user_id=#{userId} AND i.is_deleted=0 AND i.payment_rail='HDPAY' AND i.settlement_target_type='WALLET_TOPUP'
+        AND (h.settlement_status='CREDITED' OR i.status='CREDITED' OR h.settled_at IS NOT NULL)
+        AND NOT EXISTS(SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=i.user_id AND l.biz_no=i.intent_no
+         AND l.biz_no=h.wallet_ledger_biz_no AND l.biz_type='VIETQR_DEPOSIT' AND l.asset='USDT' AND l.direction='IN'
+         AND l.status='SUCCESS' AND l.is_deleted=0 AND l.amount=h.settled_usdt AND l.amount=i.credited_usdt
+         AND l.amount=i.requested_usdt AND h.settled_at IS NOT NULL AND i.payable_vnd=h.amount_vnd AND i.received_vnd=h.amount_vnd)
+       HAVING COUNT(*)>0
+      ) anomalies GROUP BY currency
+      """)
+    List<java.util.Map<String,Object>> supportCreditAnomalies(@Param("userId") Long userId);
+
+    @Select("SELECT 'USDT' currency,usdt_available availableBalance FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 UNION ALL SELECT 'NEX',nex_available FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0")
+    List<java.util.Map<String,Object>> supportBalances(@Param("userId") Long userId);
+
+    @Select("<script>"+SupportFinanceSql.FLOWS+" SELECT * FROM flows "+SupportFinanceSql.FLOW_FILTER+" ORDER BY createdAt DESC,sourceId DESC LIMIT #{limit} OFFSET #{offset}</script>")
+    List<java.util.Map<String,Object>> supportFlows(java.util.Map<String,Object> query);
+    @Select("<script>"+SupportFinanceSql.FLOWS+" SELECT COUNT(*) FROM flows "+SupportFinanceSql.FLOW_FILTER+"</script>")
+    long supportFlowCount(java.util.Map<String,Object> query);
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_deposit_reconciliation_writeoff (
               id BIGINT PRIMARY KEY AUTO_INCREMENT,

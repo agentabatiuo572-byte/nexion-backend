@@ -58,14 +58,16 @@ public final class PromotionRuntimeHarness {
     public String evidence;
 
     public PromotionRuntimeHarness() throws Exception {
-        dataSource=RuntimePool.INSTANCE;jdbc=new JdbcTemplate(dataSource);db=new PromotionMapper(jdbc);
+        dataSource=RuntimePool.INSTANCE;jdbc=new JdbcTemplate(dataSource);
         assertEquals("growth_promotions_20261007",jdbc.queryForObject("SELECT DATABASE()",String.class));assertEquals(33339,jdbc.queryForObject("SELECT @@port",Integer.class));
         ObjectMapper json=new ObjectMapper().findAndRegisterModules();var mybatis=new MybatisConfiguration(new Environment(run,new SpringManagedTransactionFactory(),dataSource));
         var global=new GlobalConfig();global.setDbConfig(new GlobalConfig.DbConfig());global.setMetaObjectHandler(new MybatisMetaObjectHandler(Clock.systemUTC()));GlobalConfigUtils.setGlobalConfig(mybatis,global);mybatis.setMapUnderscoreToCamelCase(true);
+        mybatis.setCallSettersOnNulls(true);mybatis.setLocalCacheScope(org.apache.ibatis.session.LocalCacheScope.STATEMENT);
         for(Class<?> mapper:List.of(PlatformConfigItemMapper.class,AdminMapper.class,AdminIdempotencyRecordMapper.class,AuditLogMapper.class,
                 ffdd.opsconsole.finance.mapper.EarningsReleaseMapper.class,ffdd.opsconsole.treasury.mapper.TreasuryLedgerMapper.class,
-                ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.class,ffdd.opsconsole.growth.mapper.AppGrowthLifecycleMapper.class))mybatis.addMapper(mapper);
+                ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.class,ffdd.opsconsole.growth.mapper.AppGrowthLifecycleMapper.class,PromotionMapper.class))mybatis.addMapper(mapper);
         session=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(mybatis));
+        db=session.getMapper(PromotionMapper.class);
         var repository=new MybatisPlatformConfigRepository(session.getMapper(PlatformConfigItemMapper.class));config=new PlatformConfigFacadeAdapter(repository);a2=new A2RuntimePolicy(repository);
         audit=new AuditLogService(session.getMapper(AuditLogMapper.class),new AuditLogSanitizer(json),new ApplicationNameProperties(),new AuditProperties(),session.getMapper(AdminMapper.class),a2);
         var idemMapper=session.getMapper(AdminIdempotencyRecordMapper.class);var expiry=proxy(new AdminIdempotencyExpiryTransitionExecutor(idemMapper));

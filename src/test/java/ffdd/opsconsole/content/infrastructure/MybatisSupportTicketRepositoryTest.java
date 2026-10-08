@@ -16,7 +16,9 @@ import org.mockito.ArgumentCaptor;
 class MybatisSupportTicketRepositoryTest {
     private final SupportTicketMapper ticketMapper = mock(SupportTicketMapper.class);
     private final SupportTicketMessageMapper messageMapper = mock(SupportTicketMessageMapper.class);
-    private final MybatisSupportTicketRepository repository = new MybatisSupportTicketRepository(ffdd.opsconsole.content.SupportTestDependencies.ownership(), ticketMapper, messageMapper);
+    private final ffdd.opsconsole.content.application.SupportTicketCreationPolicyService creationPolicy = mock(ffdd.opsconsole.content.application.SupportTicketCreationPolicyService.class);
+    private final ffdd.opsconsole.content.application.SupportTicketOwnerService ticketOwners = mock(ffdd.opsconsole.content.application.SupportTicketOwnerService.class);
+    private final MybatisSupportTicketRepository repository = new MybatisSupportTicketRepository(ffdd.opsconsole.content.SupportTestDependencies.ownership(), ticketMapper, messageMapper, creationPolicy, ticketOwners);
 
     @Test
     void keepsFullTranscriptInMessageAndBoundsTheTicketListHeader() {
@@ -26,6 +28,9 @@ class MybatisSupportTicketRepositoryTest {
             return 1;
         });
         String transcript = "会话全文" + "x".repeat(700);
+        when(ticketOwners.resolveForCreate(1001L, null)).thenReturn(new ffdd.opsconsole.content.domain.DedicatedAdvisorBindingView(7L, "Dedicated advisor"));
+        when(creationPolicy.requireAllowed(1001L, "TECHNICAL", "会话转工单", transcript))
+                .thenReturn(LocalDateTime.of(2026, 7, 17, 12, 0));
 
         var result = repository.createTicket(
                 "TK-001",
@@ -41,6 +46,10 @@ class MybatisSupportTicketRepositoryTest {
 
         ArgumentCaptor<SupportTicketEntity> ticketCaptor = ArgumentCaptor.forClass(SupportTicketEntity.class);
         verify(ticketMapper).insert(ticketCaptor.capture());
+        assertThat(ticketCaptor.getValue().getAssignedAdminId()).isEqualTo(7L);
+        assertThat(ticketCaptor.getValue().getAssignedAdminName()).isEqualTo("Dedicated advisor");
+        assertThat(result.assignedAdminId()).isEqualTo(7L);
+        assertThat(result.assignedAdminName()).isEqualTo("Dedicated advisor");
         assertThat(ticketCaptor.getValue().getLastMessage().codePointCount(0, ticketCaptor.getValue().getLastMessage().length()))
                 .isEqualTo(512);
         assertThat(ticketCaptor.getValue().getLastMessage()).endsWith("…");

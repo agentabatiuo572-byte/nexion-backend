@@ -15,6 +15,7 @@ public class CustomerNoteRow {
     private Long id;
     private Long userId;
     private String author;
+    private Long authorAdminId;
     private String content;
     private String operator;
     private LocalDateTime now;

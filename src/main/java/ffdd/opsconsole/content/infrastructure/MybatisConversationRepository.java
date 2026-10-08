@@ -35,7 +35,15 @@ public class MybatisConversationRepository implements ConversationRepository {
         counters.put("unread", mapper.countUnread());
         counters.put("resolved", mapper.countResolved());
         counters.put("closed", mapper.countClosed());
+        counters.put("archived", mapper.countArchived());
         return counters;
+    }
+    @Override public Map<String,Object> counters(Long agent) {
+        if(agent==null)return counters();String scope=String.valueOf(agent);var counts=new LinkedHashMap<String,Object>();
+        for(String status:List.of("OPEN","RESOLVED","CLOSED"))counts.put(status.toLowerCase(java.util.Locale.ROOT),mapper.countConversations(status,null,scope,null,null,null,null));
+        counts.put("incomingPending",mapper.countConversations("TRANSFERRED",null,scope,null,null,null,false));
+        counts.put("unread",mapper.countConversations(null,null,scope,null,null,true,false));
+        counts.put("archived",mapper.countConversations(null,null,scope,null,null,null,true));return counts;
     }
 
     @Override
@@ -48,11 +56,11 @@ public class MybatisConversationRepository implements ConversationRepository {
         Long userId = request == null ? null : request.userId();
         String keyword = request == null ? null : trim(request.keyword());
         Boolean unreadOnly = request == null ? null : request.unreadOnly();
-        long total = mapper.countConversations(status, type, ownerAgentId, userId, keyword, unreadOnly);
+        long total = mapper.countConversations(status, type, ownerAgentId, userId, keyword, unreadOnly, request==null?null:request.archived());
         List<ContentConversationView> records = total == 0
                 ? List.of()
                 : mapper.pageConversations(status, type, ownerAgentId, keyword, userId, unreadOnly,
-                        null, false, pageSize, (pageNum - 1) * pageSize);
+                        null, false, pageSize, (pageNum - 1) * pageSize, request==null?null:request.archived());
         return new PageResult<>(total, pageNum, pageSize, records);
     }
 
@@ -66,9 +74,9 @@ public class MybatisConversationRepository implements ConversationRepository {
         Long userId = request == null ? null : request.userId();
         String keyword = request == null ? null : trim(request.keyword());
         Boolean unreadOnly = request == null ? null : request.unreadOnly();
-        long total = mapper.countConversations(status, type, ownerAgentId, userId, keyword, unreadOnly);
+        long total = mapper.countConversations(status, type, ownerAgentId, userId, keyword, unreadOnly, request==null?null:request.archived());
         List<ContentConversationView> records = mapper.pageConversations(
-                status, type, ownerAgentId, keyword, userId, unreadOnly, beforeId, true, pageSize, 0);
+                status, type, ownerAgentId, keyword, userId, unreadOnly, beforeId, true, pageSize, 0, request==null?null:request.archived());
         return new PageResult<>(total, 1, pageSize, records);
     }
 
@@ -217,10 +225,16 @@ public class MybatisConversationRepository implements ConversationRepository {
 
     @Override
     public Long replyAndReturnMessageId(ContentConversationView conversation, String body, String operator, LocalDateTime now) {
+        return replyAndReturnMessageId(conversation,body,ownership.actorId(),operator,now);
+    }
+
+    @Override
+    public Long replyAndReturnMessageId(ContentConversationView conversation,String body,Long senderAdminId,String senderName,LocalDateTime now) {
+        if(senderAdminId==null || senderAdminId<=0) throw new IllegalArgumentException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
         if (mapper.replyConversation(conversation.conversationNo(), body, conversation.status(), conversation.version(), now) == 0) {
             return null;
         }
-        return insertMessage(conversation.id(), conversation.conversationNo(), ownership.actorId(), "agent", operator, body, now);
+        return insertMessage(conversation.id(), conversation.conversationNo(), senderAdminId, "agent", senderName, body, now);
     }
 
     @Override
@@ -255,8 +269,7 @@ public class MybatisConversationRepository implements ConversationRepository {
 
     @Override
     public boolean archive(ContentConversationView conversation, boolean archived, String operator, LocalDateTime now) {
-        String status = archived ? "CLOSED" : "RESOLVED";
-        if (mapper.updateConversationStatus(conversation.conversationNo(), status, conversation.status(), conversation.version(), now) == 0) {
+        if (mapper.updateArchived(conversation.conversationNo(), archived, conversation.archived(), conversation.version(), now) == 0) {
             return false;
         }
         insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
@@ -318,6 +331,15 @@ public class MybatisConversationRepository implements ConversationRepository {
             String ownerAgentName,
             String openingText,
             LocalDateTime now) {
+        return createConversationWithMessage(conversationNo,userId,conversationType,ownerAgentId,ownerAgentName,
+                openingText,ownership.actorId(),ffdd.opsconsole.shared.security.AdminActorResolver.resolve("system"),now);
+    }
+
+    @Override
+    public PersistedConversation createConversationWithMessage(
+            String conversationNo,Long userId,String conversationType,String ownerAgentId,String ownerAgentName,
+            String openingText,Long senderAdminId,String senderName,LocalDateTime now) {
+        if(senderAdminId==null || senderAdminId<=0) throw new IllegalArgumentException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
         ConversationEntity entity = new ConversationEntity();
         entity.setConversationNo(conversationNo);
         entity.setUserId(userId);
@@ -333,7 +355,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
         mapper.insert(entity);
-        Long messageId = insertMessage(entity.getId(), conversationNo, ownership.actorId(), "agent", ffdd.opsconsole.shared.security.AdminActorResolver.resolve("system"), openingText, now);
+        Long messageId = insertMessage(entity.getId(), conversationNo, senderAdminId, "agent", senderName, openingText, now);
         ContentConversationView conversation = findByConversationNo(conversationNo)
                 .orElseGet(() -> new ContentConversationView(
                         entity.getId(),

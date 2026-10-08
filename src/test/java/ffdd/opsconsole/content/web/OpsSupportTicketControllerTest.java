@@ -49,9 +49,8 @@ class OpsSupportTicketControllerTest {
     }
 
     @Test
-    void assigneeCandidatesUseM2ReadAuthorityAndReturnMinimalProjection() throws Exception {
-        List<SupportTicketAssigneeCandidateView> candidates = List.of(
-                new SupportTicketAssigneeCandidateView(7L, "Tomas R."));
+    void retiredAssigneeCandidatesKeepM2ReadAuthorityAndTheEmptyArrayContract() throws Exception {
+        List<SupportTicketAssigneeCandidateView> candidates = List.of();
         when(supportAgentService.ticketAssigneeCandidates()).thenReturn(ApiResult.ok(candidates));
 
         assertThat(controller.assigneeCandidates().getData()).containsExactlyElementsOf(candidates);
@@ -161,13 +160,35 @@ class OpsSupportTicketControllerTest {
     }
 
     @Test
-    void assignDelegatesWithIdempotencyHeader() {
+    void assignPreservesTheExplicitManagedBindingRejection() {
         SupportTicketAssigneeRequest request = new SupportTicketAssigneeRequest(7L, "Tomas R.", "Marina K.", "withdrawal specialist");
-        when(ticketService.assign("TK-1", "idem-m2-assign", request)).thenReturn(ApiResult.ok(null));
+        when(ticketService.assign("TK-1", "idem-m2-assign", request)).thenThrow(
+                new ffdd.opsconsole.shared.exception.BizException(409, "SUPPORT_TICKET_OWNER_MANAGED_BY_BINDING"));
 
-        assertThat(controller.assign("TK-1", "idem-m2-assign", request).getCode()).isZero();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.assign("TK-1", "idem-m2-assign", request))
+                .hasMessage("SUPPORT_TICKET_OWNER_MANAGED_BY_BINDING");
 
         verify(ticketService).assign("TK-1", "idem-m2-assign", request);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void ownerFailuresUseActual409AndTheExistingBusinessEnvelope(boolean assignment) throws Exception {
+        String reason = assignment ? "SUPPORT_TICKET_OWNER_MANAGED_BY_BINDING" : "SUPPORT_TICKET_OWNER_BINDING_MISMATCH";
+        var rejection = new ffdd.opsconsole.shared.exception.BizException(409, reason);
+        if (assignment) when(ticketService.assign(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any())).thenThrow(rejection);
+        else when(ticketService.create(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any())).thenThrow(rejection);
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller)
+                .setControllerAdvice(new ffdd.opsconsole.shared.exception.GlobalExceptionHandler(
+                        mock(ffdd.opsconsole.shared.audit.AuditLogService.class))).build();
+        var request = assignment
+                ? org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/admin/content/tickets/TK-1/assignee")
+                : org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/admin/content/tickets");
+        mvc.perform(request.header("Idempotency-Key", "owner-contract-key").contentType("application/json").content("{}"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isConflict())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").value(409))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.message").value(reason))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data").isEmpty());
     }
 
     @Test

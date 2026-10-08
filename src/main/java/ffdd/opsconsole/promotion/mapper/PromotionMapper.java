@@ -1,53 +1,60 @@
 package ffdd.opsconsole.promotion.mapper;
 
 import ffdd.opsconsole.shared.exception.BizException;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.util.*;
-import lombok.RequiredArgsConstructor;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.stereotype.Repository;
+import org.apache.ibatis.annotations.*;
+import org.apache.ibatis.mapping.BoundSql;
+import org.apache.ibatis.mapping.ParameterMapping;
+import org.apache.ibatis.mapping.SqlSource;
+import org.apache.ibatis.scripting.xmltags.XMLLanguageDriver;
+import org.apache.ibatis.session.Configuration;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 
-@Repository
-@RequiredArgsConstructor
-public class PromotionMapper {
-    private final JdbcTemplate jdbc;
+public interface PromotionMapper extends BaseMapper<Object> {
     /** SQL is supplied only by domain code; all data values remain bound parameters. */
-    public List<Map<String,Object>> list(String sql,Object... args) {return jdbc.queryForList(sql,args);}
-    public Map<String,Object> one(String sql,Object... args) {
+    @SelectProvider(type=StatementProvider.class,method="statement")
+    @Lang(PreparedSqlDriver.class) @Options(useCache=false)
+    List<Map<String,Object>> list(@Param("sql") String sql,@Param("args") Object... args);
+    default Map<String,Object> one(String sql,Object... args) {
         List<Map<String,Object>> rows=list(sql,args);
         if(rows.size()>1)throw new IllegalStateException("PROMOTION_EXPECTED_SINGLE_ROW");
         return rows.isEmpty()?null:rows.get(0);
     }
-    public Map<String,Object> requiredRow(String sql,Object... args) {
+    default Map<String,Object> requiredRow(String sql,Object... args) {
         Map<String,Object> row=one(sql,args);
         if(row==null)throw new BizException(404,"PROMOTION_RESOURCE_NOT_FOUND");
         return row;
     }
-    public int write(String sql,Object... args) {return jdbc.update(sql,args);}
-    public long count(String sql,Object... args) {Long n=jdbc.queryForObject(sql,Long.class,args);return n==null?0:n;}
-    public Map<String,Object> user(long id,boolean lock) {
+    @UpdateProvider(type=StatementProvider.class,method="statement")
+    @Lang(PreparedSqlDriver.class)
+    int write(@Param("sql") String sql,@Param("args") Object... args);
+    @SelectProvider(type=StatementProvider.class,method="statement")
+    @Lang(PreparedSqlDriver.class) @Options(useCache=false)
+    long count(@Param("sql") String sql,@Param("args") Object... args);
+    default Map<String,Object> user(long id,boolean lock) {
         return requiredRow("SELECT id,status,CAST(sandbox AS UNSIGNED) sandbox,sponsor_user_id,v_rank,region,created_at FROM nx_user WHERE id=? AND is_deleted=0"+(lock?" FOR UPDATE":""),id);
     }
-    public Map<String,Object> order(String no,boolean lock) {
+    default Map<String,Object> order(String no,boolean lock) {
         return requiredRow("SELECT * FROM nx_order WHERE order_no=? AND is_deleted=0"+(lock?" FOR UPDATE":""),no);
     }
-    public Map<String,Object> activity(String id,boolean lock) {
+    default Map<String,Object> activity(String id,boolean lock) {
         return requiredRow("SELECT * FROM nx_promotion WHERE activity_id=?"+(lock?" FOR UPDATE":""),id);
     }
-    public Map<String,Object> version(String id,long version,boolean lock) {
+    default Map<String,Object> version(String id,long version,boolean lock) {
         return requiredRow("SELECT * FROM nx_promotion_version WHERE activity_id=? AND version=?"+(lock?" FOR UPDATE":""),id,version);
     }
-    public Map<String,Object> product(String no,boolean lock) {
+    default Map<String,Object> product(String no,boolean lock) {
         return requiredRow("SELECT * FROM nx_product WHERE product_no=? AND is_deleted=0"+(lock?" FOR UPDATE":""),no);
     }
-    public List<Map<String,Object>> reservations(String order,boolean lock) {
+    default List<Map<String,Object>> reservations(String order,boolean lock) {
         return list("SELECT * FROM nx_promotion_reservation WHERE order_no=? ORDER BY activity_id,beneficiary_id,beneficiary_role,rule_id,unit_seq"+(lock?" FOR UPDATE":""),order);
     }
-    public boolean hasHold(String order) {
+    default boolean hasHold(String order) {
         return !list("SELECT refund_request_id FROM nx_promotion_refund_hold WHERE order_no=? AND status IN ('HELD','OUTCOME_UNKNOWN','EXECUTED') FOR UPDATE",order).isEmpty();
     }
     /** Caller holds the account lock. Current reads must not reuse an idempotency RR snapshot. */
-    public long occupiedDeviceSlots(long account) {
+    default long occupiedDeviceSlots(long account) {
         long used=list("""
             SELECT id FROM nx_user_device WHERE user_id=? AND is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
               AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
@@ -75,8 +82,23 @@ public class PromotionMapper {
         }
         return used;
     }
-    public long deviceSlotCap(){
+    default long deviceSlotCap(){
         Map<String,Object> config=one("SELECT config_value FROM nx_config_item WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1");
         return config==null?3:Long.parseLong(text(config.get("config_value")));
+    }
+    class StatementProvider {
+        public static String statement(Map<String,Object> parameters) {return (String)parameters.get("sql");}
+    }
+    class PreparedSqlDriver extends XMLLanguageDriver {
+        @Override
+        public SqlSource createSqlSource(Configuration configuration,String sql,Class<?> parameterType) {
+            // Keep existing SQL and quoted question marks intact; bind only the separate argument array.
+            return parameters -> {
+                Object[] args=(Object[])((Map<?,?>)parameters).get("args");
+                List<ParameterMapping> mappings=new ArrayList<>(args.length);
+                for(int i=0;i<args.length;i++)mappings.add(new ParameterMapping.Builder(configuration,"args["+i+"]",Object.class).build());
+                return new BoundSql(configuration,sql,mappings,parameters);
+            };
+        }
     }
 }

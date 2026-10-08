@@ -311,7 +311,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                     OR CONCAT('U', LPAD(d.user_id, GREATEST(8, LENGTH(CAST(d.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
                     OR u.nickname LIKE CONCAT('%', #{keyword}, '%'))
              </if>
-             ORDER BY COALESCE(d.last_seen_at, d.updated_at, d.created_at) DESC
+             ORDER BY COALESCE(d.last_seen_at, d.updated_at, d.created_at) DESC,d.id DESC
              LIMIT #{limit} OFFSET #{offset}
             </script>
             """)

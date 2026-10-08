@@ -40,6 +40,23 @@ class PromotionOrderServiceTest {
         when(db.order("bad",false)).thenThrow(new BizException(404,"PROMOTION_RESOURCE_NOT_FOUND"));
         assertThrows(BizException.class,()->service.lockOrderParticipants("bad"));verify(db,never()).user(anyLong(),anyBoolean());
     }
+    @Test void expiredReceiptRejectsEvenWhenNoRewardsWereReserved(){
+        when(db.order("O1",false)).thenReturn(values("user_id",17L));
+        when(db.one("SELECT pay_by FROM nx_promotion_order_receipt WHERE order_no=? FOR UPDATE","O1")).thenReturn(values("pay_by",Instant.EPOCH));
+        assertEquals("PROMOTION_PAYMENT_WINDOW_CLOSED",assertThrows(BizException.class,()->service.beforePay(17L,"O1")).getMessage());
+        verify(db,never()).reservations(anyString(),anyBoolean());
+    }
+    @Test void originalOrdersWithoutReceiptsRemainPayable(){
+        when(db.order("O1",false)).thenReturn(values("user_id",17L));
+        when(db.one("SELECT pay_by FROM nx_promotion_order_receipt WHERE order_no=? FOR UPDATE","O1")).thenReturn(null);
+        when(db.reservations("O1",true)).thenReturn(List.of());
+        assertDoesNotThrow(()->service.beforePay(17L,"O1"));
+    }
+    @Test void wrongOwnerCannotLockAnotherOrdersReceipt(){
+        when(db.order("O1",false)).thenReturn(values("user_id",17L));
+        assertEquals("PROMOTION_ORDER_OWNER_MISMATCH",assertThrows(BizException.class,()->service.beforePay(18L,"O1")).getMessage());
+        verify(db,never()).one(anyString(),any(Object[].class));
+    }
     @Test void zeroActivityQuoteKeepsOriginalDeadlineAndDurableReceipt(){
         Instant deadline=Instant.now().plusSeconds(1800);
         when(db.order("O1",false)).thenReturn(values("id",5L,"user_id",17L,"payment_status","PENDING","amount_usdt",new BigDecimal("12")));

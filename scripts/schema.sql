@@ -5074,6 +5074,8 @@ CREATE TABLE IF NOT EXISTS nx_support_ticket (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_support_ticket_no (ticket_no),
   KEY idx_support_ticket_user_time (user_id, last_message_at),
+  KEY idx_support_ticket_creation_window (user_id, created_at, id),
+  KEY idx_support_ticket_creation_active (user_id, is_deleted, status, created_at, id),
   KEY idx_support_ticket_ops (status, priority, last_message_at),
   KEY idx_support_ticket_archive (archived, archived_at, status),
   KEY idx_support_ticket_assignee (assigned_admin_id, status)

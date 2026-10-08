@@ -293,6 +293,13 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261007_e4_wallet_bill_prerequisite.sql")
   (Join-Path $root "scripts\migrations\20261007_voucher_zero_payment.sql")
   (Join-Path $root "scripts\migrations\20261008_l6_promotion_reward_routes.sql")
+  # Additive support capabilities require their schema before the current application boots.
+  (Join-Path $root "scripts\migrations\20261001_support_enhancements_core.sql")
+  (Join-Path $root "scripts\migrations\20261001_support_enhancements_bulk.sql")
+  # Group structure is safe to install; legacy qualification cutover remains an explicit reviewed operation.
+  (Join-Path $root "scripts\migrations\20261007_support_groups.sql")
+  (Join-Path $root "scripts\migrations\20261003_support_ticket_creation_policy.sql")
+  (Join-Path $root "scripts\migrations\20261003_support_ticket_binding_owner.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
@@ -346,6 +353,13 @@ $previousMySqlPassword = $env:MYSQL_PWD
 Push-Location -LiteralPath $root.Path
 try {
   $env:MYSQL_PWD = $Password
+  # S3 may require adjudication of legacy assignments; never apply it automatically.
+  # Inspect actual columns so an equivalent schema without its old marker is still accepted.
+  $supportOwnerPreflightSql = Get-Content -LiteralPath (Join-Path $PSScriptRoot "support_ticket_owner_preflight.sql") -Raw
+  $supportBindingSchema = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e $supportOwnerPreflightSql
+  if ($LASTEXITCODE -ne 0 -or (@($supportBindingSchema) -join "`n").Trim() -ne "READY") {
+    throw "Support ticket ownership requires the S3 binding schema before startup migrations. $supportBindingSchema. Follow docs/HANDOFF-support-s3.md and review/apply scripts/migrations/20260929_support_binding_s3.sql first; startup does not automatically resolve legacy assignment conflicts."
+  }
   $sources = ($migrations | ForEach-Object { "source $($_.Replace('\', '/'));" }) -join " "
   & $MySql --default-character-set=utf8mb4 --protocol=tcp -h $databaseUri.Host -P $port -u $Username $database -e $sources
   if ($LASTEXITCODE -ne 0) {

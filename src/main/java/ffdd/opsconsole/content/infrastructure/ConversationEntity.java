@@ -20,4 +20,5 @@ public class ConversationEntity extends BaseEntity {
     private String lastMessage;
     private LocalDateTime lastMessageAt;
     private Long version;
+    private Boolean archived;
 }

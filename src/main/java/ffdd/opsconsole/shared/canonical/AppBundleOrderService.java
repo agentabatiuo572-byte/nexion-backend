@@ -46,6 +46,7 @@ public class AppBundleOrderService {
     private final CommerceAcceptanceRun acceptanceRun;
     private final PlatformConfigFacade bundleConfig;
     private final PromotionOrderService promotions;
+    @SuppressWarnings("ArchitectureConfigField") // Explicit constructor parameter carries the @Value binding.
     private final int pendingOrderTtlMinutes;
 
     @Autowired

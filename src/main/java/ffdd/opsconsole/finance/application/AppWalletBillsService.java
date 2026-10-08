@@ -247,6 +247,7 @@ public class AppWalletBillsService {
     private String category(String bizType, String direction) {
         String value = bizType == null ? "" : bizType.toUpperCase(Locale.ROOT);
         String normalizedDirection = direction == null ? "" : direction.toUpperCase(Locale.ROOT);
+        if ("ORDER_REFUND".equals(value.trim())) return "refund";
         if ("TRIAL_CHARGE".equals(value)) return "purchase";
         if ("TRIAL_BONUS".equals(value) || "DAILY_CHECK_IN".equals(value)) return "bonus";
         if (value.matches(".*(DEPOSIT|TOPUP|RECHARGE).*$")) return "topup";
@@ -277,6 +278,7 @@ public class AppWalletBillsService {
             // 课程奖励此前落进通用 bonus 码,三笔同日 +10 NEX 在奖励账本里完全同名
             // 且无来源,用户与客服无法逐笔追溯(zentao #219)。给这一族自己的码位。
             case "LEARNING_REWARD" -> "learningReward";
+            case "ORDER_REFUND" -> "orderRefund";
             case "WITHDRAW_NET_PRINCIPAL" -> "withdrawPrincipal";
             case "WITHDRAW_NETWORK_FEE" -> "withdrawNetworkFee";
             case "WITHDRAW_PENALTY_FEE" -> "withdrawPenaltyFee";
@@ -302,6 +304,8 @@ public class AppWalletBillsService {
             // 逐笔追溯需要的是**课程身份**,不是内部账本主键 —— 只放出 courseId@version
             // (courseId 受 ^[a-z0-9][a-z0-9-]{2,80}$ 约束,不含用户信息)。
             case "LEARNING_REWARD" -> learningCourseReference(bizNo);
+            case "ORDER_REFUND" -> bizNo.matches("E4-REFUND-ORD-[0-9A-F]{32}")
+                    ? bizNo.substring("E4-REFUND-".length()) : null;
             case "ORDER_PURCHASE", "GENESIS_PURCHASE", "WITHDRAWAL", "WITHDRAW_PAYOUT", "DEPOSIT", "TOPUP", "RECHARGE", "VIETQR_DEPOSIT" -> bizNo;
             case "WITHDRAW_NET_PRINCIPAL" -> withdrawalComponentReference(bizNo, ":USDT:PRINCIPAL");
             case "WITHDRAW_NETWORK_FEE" -> withdrawalComponentReference(bizNo, ":USDT:NETWORK_FEE");

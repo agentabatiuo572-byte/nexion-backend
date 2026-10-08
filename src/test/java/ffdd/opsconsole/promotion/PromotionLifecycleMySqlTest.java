@@ -49,6 +49,104 @@ class PromotionLifecycleMySqlTest {
     long nextUser=880000000000L+Math.floorMod(UUID.randomUUID().getMostSignificantBits(),10000000000L);
     final List<Map<String,Object>> evidence=new ArrayList<>();
 
+    @Test void zeroRewardReceiptLockWaitCannotCommitPaymentAfterItsDeadline() throws Exception {
+        setup();
+        h.session.getConfiguration().addMapper(ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper.class);
+        var paymentMapper=h.session.getMapper(ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper.class);
+        long buyer=user();var quoted=quote(buyer,null,1);
+        assertNull(quoted.get("activityId"));assertTrue(maps(quoted.get("expectedRewards")).isEmpty());
+        String order=create(buyer,quoted,1);
+        assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_order_receipt WHERE order_no=?",order));
+        assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE order_no=?",order));
+        h.db.write("UPDATE nx_promotion_order_receipt SET pay_by=TIMESTAMPADD(SECOND,5,NOW(6)) WHERE order_no=?",order);
+        BigDecimal balance=decimal(h.db.requiredRow("SELECT usdt_available FROM nx_user_wallet WHERE user_id=?",buyer).get("usdt_available"));
+        var receiptLocked=new CountDownLatch(1);var releaseReceipt=new CountDownLatch(1);
+        var executor=Executors.newFixedThreadPool(2);
+        try {
+            var blocker=executor.submit(()->tx.executeWithoutResult(status->{
+                h.db.requiredRow("SELECT pay_by FROM nx_promotion_order_receipt WHERE order_no=? FOR UPDATE",order);receiptLocked.countDown();
+                try {assertTrue(releaseReceipt.await(15,TimeUnit.SECONDS));}
+                catch(InterruptedException failure){Thread.currentThread().interrupt();throw new IllegalStateException(failure);}
+            }));
+            assertTrue(receiptLocked.await(5,TimeUnit.SECONDS));
+            var payment=executor.submit(()->{
+                try {return tx.execute(status->{
+                    orders.lockOrderParticipants(order);var pending=h.db.order(order,true);orders.beforePay(buyer,order);
+                    var wallet=paymentMapper.lockDevelopmentWallet(buyer);
+                    BigDecimal amount=decimal(pending.get("amount_usdt")),after=wallet.usdtAvailable().subtract(amount);
+                    changed(paymentMapper.debitDevelopmentWallet(buyer,amount,wallet.version()));
+                    changed(paymentMapper.insertDevelopmentPurchaseLedger(order,buyer,amount,after));
+                    if(paymentMapper.markDevelopmentOrderActivated(order,buyer,"WALLET-PAY-"+order)!=1)
+                        throw new ffdd.opsconsole.shared.exception.BizException(409,"ORDER_STATE_CONFLICT");
+                    orders.afterPaid(buyer,order);return true;
+                });}catch(ffdd.opsconsole.shared.exception.BizException failure){assertEquals(409,failure.getCode());return false;}
+            });
+            String waiting="SELECT COUNT(*) FROM performance_schema.data_lock_waits w JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID WHERE l.OBJECT_SCHEMA=DATABASE() AND l.OBJECT_NAME='nx_promotion_order_receipt'";
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).until(()->h.db.count(waiting)>0);
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(10)).until(()->h.db.count("SELECT NOW(6)>=pay_by FROM nx_promotion_order_receipt WHERE order_no=?",order)==1);
+            assertFalse(payment.isDone());releaseReceipt.countDown();blocker.get(5,TimeUnit.SECONDS);
+            boolean paid=payment.get(10,TimeUnit.SECONDS);
+            BigDecimal after=decimal(h.db.requiredRow("SELECT usdt_available FROM nx_user_wallet WHERE user_id=?",buyer).get("usdt_available"));
+            var facts=values("orderNo",order,"observedReceiptLockWait",true,"lateRejected",!paid,"paymentState",h.db.order(order,false).get("payment_status"),
+                    "walletBefore",money(balance),"walletAfter",money(after),
+                    "purchaseLedgerCount",h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=? AND biz_type='ORDER_PURCHASE'",order),
+                    "rewardCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_reward WHERE order_no=?",order),
+                    "reservationCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE order_no=?",order));
+            Files.writeString(Path.of("D:/CodexData/test-environments/workflow-runs/growth-promotions-20261007/promotion-zero-reward-receipt-deadline-runtime.json"),json(facts));
+            assertFalse(paid,"Expired zero-reward payment committed after receipt lock wait");
+            assertEquals(0,balance.compareTo(after));assertEquals("PENDING",facts.get("paymentState"));
+            assertEquals(0L,facts.get("purchaseLedgerCount"));assertEquals(0L,facts.get("rewardCount"));assertEquals(0L,facts.get("reservationCount"));
+        } finally {releaseReceipt.countDown();executor.shutdownNow();assertTrue(executor.awaitTermination(15,TimeUnit.SECONDS));}
+    }
+
+    @Test void walletLockWaitCannotCommitPaymentAfterItsReservedDeadline() throws Exception {
+        setup();
+        h.session.getConfiguration().addMapper(ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper.class);
+        var paymentMapper=h.session.getMapper(ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper.class);
+        var reward=values("rewardRuleId","deadline-reward","beneficiaryRole","BUYER","type","USDT","calculation","FIXED","amount","0.000001","assetPolicy",h.assetPolicy("USDT"));
+        String activity=h.publish(h.contract(buy,reward,h.commonPolicies()));
+        long buyer=user();String order=create(buyer,quote(buyer,activity,1),1);
+        h.db.write("UPDATE nx_promotion_order_receipt SET pay_by=TIMESTAMPADD(SECOND,5,NOW(6)) WHERE order_no=?",order);
+        h.db.write("UPDATE nx_promotion_reservation r JOIN nx_promotion_order_receipt p ON p.order_no=r.order_no SET r.pay_by=p.pay_by WHERE r.order_no=?",order);
+        BigDecimal balance=decimal(h.db.requiredRow("SELECT usdt_available FROM nx_user_wallet WHERE user_id=?",buyer).get("usdt_available"));
+        var walletLocked=new CountDownLatch(1);var paymentReachedWallet=new CountDownLatch(1);var releaseWallet=new CountDownLatch(1);
+        var executor=Executors.newFixedThreadPool(2);
+        try {
+            var blocker=executor.submit(()->tx.executeWithoutResult(status->{
+                h.db.requiredRow("SELECT user_id FROM nx_user_wallet WHERE user_id=? FOR UPDATE",buyer);walletLocked.countDown();
+                try {assertTrue(releaseWallet.await(15,TimeUnit.SECONDS));}
+                catch(InterruptedException failure){Thread.currentThread().interrupt();throw new IllegalStateException(failure);}
+            }));
+            assertTrue(walletLocked.await(5,TimeUnit.SECONDS));
+            var payment=executor.submit(()->{
+                try {return tx.execute(status->{
+                    orders.lockOrderParticipants(order);var pending=h.db.order(order,true);orders.beforePay(buyer,order);
+                    paymentReachedWallet.countDown();var wallet=paymentMapper.lockDevelopmentWallet(buyer);
+                    BigDecimal amount=decimal(pending.get("amount_usdt")),after=wallet.usdtAvailable().subtract(amount);
+                    changed(paymentMapper.debitDevelopmentWallet(buyer,amount,wallet.version()));
+                    changed(paymentMapper.insertDevelopmentPurchaseLedger(order,buyer,amount,after));
+                    if(paymentMapper.markDevelopmentOrderActivated(order,buyer,"WALLET-PAY-"+order)!=1)
+                        throw new ffdd.opsconsole.shared.exception.BizException(409,"ORDER_STATE_CONFLICT");
+                    orders.afterPaid(buyer,order);return true;
+                });}catch(ffdd.opsconsole.shared.exception.BizException failure){assertEquals(409,failure.getCode());return false;}
+            });
+            assertTrue(paymentReachedWallet.await(5,TimeUnit.SECONDS));
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(10)).until(()->h.db.count("SELECT NOW(6)>=pay_by FROM nx_promotion_order_receipt WHERE order_no=?",order)==1);
+            releaseWallet.countDown();blocker.get(5,TimeUnit.SECONDS);
+            boolean paid=payment.get(10,TimeUnit.SECONDS);
+            BigDecimal after=decimal(h.db.requiredRow("SELECT usdt_available FROM nx_user_wallet WHERE user_id=?",buyer).get("usdt_available"));
+            var facts=values("orderNo",order,"lateRejected",!paid,"paymentState",h.db.order(order,false).get("payment_status"),
+                    "walletBefore",money(balance),"walletAfter",money(after),
+                    "purchaseLedgerCount",h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=? AND biz_type='ORDER_PURCHASE'",order),
+                    "rewardCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_reward WHERE order_no=?",order));
+            Files.writeString(Path.of("D:/CodexData/test-environments/workflow-runs/growth-promotions-20261007/promotion-late-payment-runtime.json"),json(facts));
+            assertFalse(paid,"Expired payment committed after wallet lock wait");
+            assertEquals(0,balance.compareTo(after));assertEquals("PENDING",facts.get("paymentState"));
+            assertEquals(0L,facts.get("purchaseLedgerCount"));assertEquals(0L,facts.get("rewardCount"));
+            assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE order_no=? AND status='RESERVED'",order));
+        } finally {releaseWallet.countDown();executor.shutdownNow();assertTrue(executor.awaitTermination(15,TimeUnit.SECONDS));}
+    }
+
     @Test void realApprovalReservationsWalletsDevicesRefundsAndReplay() throws Exception {
         setup();
         Map<String,Object> common=h.commonPolicies();

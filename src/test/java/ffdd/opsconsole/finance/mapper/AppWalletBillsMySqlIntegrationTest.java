@@ -58,6 +58,37 @@ class AppWalletBillsMySqlIntegrationTest {
     private boolean fixtureDatabaseCreated;
     private AppWalletBillsMapper mapper;
 
+    @Test
+    void orderRefundRemainsIncomeWithoutInflatingRewardsOrChangingCursorIdentity() {
+        String orderNo = "ORD-8EB83D7802F0458DA6CD797F2D99A746";
+        ledger(USER, orderNo, "ORDER_PURCHASE", "USDT", "OUT", "1299", "0", "SUCCESS", DAY.plusHours(1), 0);
+        ledger(USER, "REAL-EARN", "EARN", "USDT", "IN", "12", "12", "SUCCESS", DAY.plusHours(2), 0);
+        ledger(USER, "COMMISSION", "TEAM_COMMISSION", "USDT", "IN", "2", "14", "SUCCESS", DAY.plusHours(3), 0);
+        String refundNo = "E4-REFUND-" + orderNo;
+        ledger(USER, refundNo, "ORDER_REFUND", "USDT", "IN", "1299", "1313", "SUCCESS", DAY.plusHours(4), 0);
+
+        assertThat(mapper.count(USER)).isEqualTo(4);
+        assertThat(mapper.rows(USER, 50, 0)).extracting(AppWalletBillsMapper.LedgerRow::bizNo).contains(refundNo);
+        assertThat(mapper.countFiltered(USER, "USDT", "IN", null)).isEqualTo(3);
+        assertThat(mapper.rowsFiltered(USER, 50, 0, "USDT", "IN", null))
+                .extracting(AppWalletBillsMapper.LedgerRow::bizNo).contains(refundNo, "REAL-EARN", "COMMISSION");
+        assertThat(mapper.rowsAfter(USER, 50, null, "OUT", null, null, null))
+                .extracting(AppWalletBillsMapper.LedgerRow::bizNo).containsExactly(orderNo);
+        assertThat(mapper.countFiltered(USER, null, null, "REWARD")).isEqualTo(1);
+        assertThat(mapper.rowsAfter(USER, 50, null, null, "REWARD", null, null))
+                .extracting(AppWalletBillsMapper.LedgerRow::bizNo).containsExactly("COMMISSION");
+
+        var first = mapper.rowsAfter(USER, 2, null, null, null, null, null);
+        var boundary = first.get(1);
+        var second = mapper.rowsAfter(USER, 2, null, null, null, boundary.createdAt(), boundary.id());
+        assertThat(first).extracting(AppWalletBillsMapper.LedgerRow::bizNo).containsExactly(refundNo, "COMMISSION");
+        assertThat(second).extracting(AppWalletBillsMapper.LedgerRow::bizNo).containsExactly("REAL-EARN", orderNo);
+        var summary = mapper.summary(USER, DAY, DAY.plusDays(1), DAY.withDayOfMonth(1), DAY.withDayOfMonth(1).plusMonths(1));
+        assertThat(summary.rewardsUsdt()).isEqualByComparingTo("2");
+        assertThat(summary.rewardsNex()).isEqualByComparingTo("0");
+        assertThat(summary.monthBillCount()).isEqualTo(4);
+    }
+
     @BeforeAll
     void createOwnedFixtureDatabase() throws Exception {
         fixtureDatabase = "nx_wallet_bills_test_" + UUID.randomUUID().toString().replace("-", "");

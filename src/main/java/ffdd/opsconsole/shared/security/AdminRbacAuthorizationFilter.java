@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -155,9 +156,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             reject(response, HttpServletResponse.SC_UNAUTHORIZED, "ADMIN_AUTH_REQUIRED");
             return;
         }
-        if (isSharedReasonPolicyRead(path, request.getMethod())
-                && (!(authentication.getDetails() instanceof Map<?, ?> details)
-                    || !"ADMIN".equals(details.get("subjectType")))) {
+        boolean reasonPolicyRead = HttpMethod.GET.matches(request.getMethod())
+                && "/api/admin/platform/audit/reason-policy".equals(path);
+        if (reasonPolicyRead && !isTrustedAuthenticatedAdmin(authentication)) {
             auditDenial(request, authentication, "ADMIN_SUBJECT_REQUIRED", null);
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_SUBJECT_REQUIRED");
             return;
@@ -165,6 +166,10 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         if (!matchesPasswordChangeAllowedPath(path) && passwordChangeRequired(authentication)) {
             auditDenial(request, authentication, "ADMIN_PASSWORD_CHANGE_REQUIRED", null);
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_PASSWORD_CHANGE_REQUIRED");
+            return;
+        }
+        if (reasonPolicyRead) {
+            filterChain.doFilter(request, response);
             return;
         }
         if (matchesAnyAdminPath(path)) {
@@ -188,6 +193,23 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             return;
         }
         filterChain.doFilter(request, response);
+    }
+
+    private boolean isTrustedAuthenticatedAdmin(Authentication authentication) {
+        if (authentication instanceof AnonymousAuthenticationToken
+                || !authentication.isAuthenticated()
+                || !(authentication.getDetails() instanceof Map<?, ?> details)
+                || !(details.get("subjectType") instanceof String subjectType)
+                || !"ADMIN".equals(subjectType)
+                || !(authentication.getPrincipal() instanceof String principal)) {
+            return false;
+        }
+        try {
+            long adminId = Long.parseLong(principal);
+            return adminId > 0 && Long.toString(adminId).equals(principal);
+        } catch (NumberFormatException ex) {
+            return false;
+        }
     }
 
     private boolean matchesAnyAdminPath(String path) {
@@ -218,17 +240,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         }
     }
 
-    private boolean isSharedReasonPolicyRead(String path, String method) {
-        return HttpMethod.GET.matches(method) && path.equals("/api/admin/platform/audit/reason-policy");
-    }
-
     // Socket tickets authorize only the following read-only WebSocket session. Keep this
     // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
     private RequiredAuthority requiredAuthority(String path, String method) {
-        // Shared form requirements need an actual admin subject, checked before domain permissions.
-        if (isSharedReasonPolicyRead(path, method)) {
-            return RequiredAuthority.authenticated();
-        }
         if (HttpMethod.GET.matches(method) && path.equals("/api/admin/config/phone-calibration")) {
             return RequiredAuthority.exact("device_e6_read", "device_e2_read");
         }

@@ -11,12 +11,21 @@ import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import jakarta.servlet.FilterChain;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -73,9 +82,7 @@ class AdminRbacAuthorizationFilterTest {
 
     @Test
     void sharedReasonPolicyAllowsOnlyTheAuthenticatedReadWithoutPlatformGrants() throws Exception {
-        authenticate("growth_promotion_edit");
-        ((UsernamePasswordAuthenticationToken) SecurityContextHolder.getContext().getAuthentication())
-                .setDetails(java.util.Map.of("subjectType", "ADMIN"));
+        authenticateTrustedAdmin("2791", "growth_promotion_edit");
         AtomicBoolean read = new AtomicBoolean(false);
         filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), new MockHttpServletResponse(), mark(read));
         assertThat(read).isTrue();
@@ -817,6 +824,236 @@ class AdminRbacAuthorizationFilterTest {
         verify(auditLogService).record(argThat(request ->
                 "emergency_j1_gate_resume".equals(
                         ((java.util.Map<?, ?>) request.getDetail()).get("requiredAuthority"))));
+    }
+
+    @ParameterizedTest
+    @MethodSource("reasonPolicyAdmins")
+    void reasonPolicyAllowsTrustedAdminWithoutPlatformPermissions(String adminId, List<String> authorities)
+            throws Exception {
+        authenticateTrustedAdmin(adminId, authorities.toArray(String[]::new));
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), response, mark(invoked));
+
+        assertThat(invoked).isTrue();
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    private static Stream<Arguments> reasonPolicyAdmins() {
+        return Stream.of(
+                Arguments.of("2791", List.of("service_m2_read", "service_m3_read")),
+                Arguments.of("2792", List.of()),
+                Arguments.of("1", List.of()),
+                Arguments.of(Long.toString(Long.MAX_VALUE), List.of()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("untrustedReasonPolicyIdentities")
+    void reasonPolicyRejectsUntrustedIdentityDespiteClaimedPlatformPermission(
+            String scenario, Object principal, Object details) throws Exception {
+        UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                principal, null, List.of(new SimpleGrantedAuthority("platform_a1_read")));
+        authentication.setDetails(details);
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), response, mark(invoked));
+
+        assertThat(invoked).as(scenario).isFalse();
+        assertThat(response.getStatus()).as(scenario).isEqualTo(403);
+        assertThat(response.getContentAsString()).as(scenario).contains("ADMIN_SUBJECT_REQUIRED");
+    }
+
+    private static Stream<Arguments> untrustedReasonPolicyIdentities() {
+        Map<String, String> adminDetails = Map.of("subjectType", "ADMIN");
+        Object coercedSubject = new Object() {
+            @Override
+            public String toString() {
+                return "ADMIN";
+            }
+        };
+        Object coercedPrincipal = new Object() {
+            @Override
+            public String toString() {
+                return "2791";
+            }
+        };
+        return Stream.of(
+                Arguments.of("USER", "2791", Map.of("subjectType", "USER")),
+                Arguments.of("IMPERSONATION", "2791", Map.of("subjectType", "IMPERSONATION")),
+                Arguments.of("missing details", "2791", null),
+                Arguments.of("non-map details", "2791", "ADMIN"),
+                Arguments.of("missing subject", "2791", Map.of()),
+                Arguments.of("null subject", "2791", Collections.singletonMap("subjectType", null)),
+                Arguments.of("non-string subject", "2791", Map.of("subjectType", coercedSubject)),
+                Arguments.of("lowercase subject", "2791", Map.of("subjectType", "admin")),
+                Arguments.of("padded subject", "2791", Map.of("subjectType", " ADMIN ")),
+                Arguments.of("unknown subject", "2791", Map.of("subjectType", "SUPER")),
+                Arguments.of("null principal", null, adminDetails),
+                Arguments.of("numeric principal object", 2791L, adminDetails),
+                Arguments.of("coerced principal", coercedPrincipal, adminDetails),
+                Arguments.of("zero", "0", adminDetails),
+                Arguments.of("negative", "-1", adminDetails),
+                Arguments.of("leading plus", "+2791", adminDetails),
+                Arguments.of("leading zero", "02791", adminDetails),
+                Arguments.of("leading space", " 2791", adminDetails),
+                Arguments.of("trailing space", "2791 ", adminDetails),
+                Arguments.of("empty principal", "", adminDetails),
+                Arguments.of("legacy principal", "admin-1", adminDetails),
+                Arguments.of("fractional principal", "2791.0", adminDetails),
+                Arguments.of("overflow", "9223372036854775808", adminDetails),
+                Arguments.of("non-canonical digits", "٢٧٩١", adminDetails));
+    }
+
+    @Test
+    void reasonPolicyRejectsAuthenticatedAnonymousTokenDespiteAdminDetailsAndPlatformPermission()
+            throws Exception {
+        AnonymousAuthenticationToken authentication = new AnonymousAuthenticationToken(
+                "anonymous-key", "2791", List.of(new SimpleGrantedAuthority("platform_a1_read")));
+        authentication.setDetails(Map.of("subjectType", "ADMIN"));
+        assertThat(authentication.isAuthenticated()).isTrue();
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), response, mark(invoked));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("ADMIN_SUBJECT_REQUIRED");
+    }
+
+    @Test
+    void reasonPolicyStillRejectsUnauthenticatedAdminTokenBeforeTheException() throws Exception {
+        UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken("2791", null);
+        authentication.setDetails(Map.of("subjectType", "ADMIN"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), response, mark(invoked));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(response.getContentAsString()).contains("ADMIN_AUTH_REQUIRED");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"PASSWORD_CHANGE_REQUIRED", "MAIL_DISPATCHED", "HANDOFF_PENDING"})
+    void reasonPolicyDoesNotReadCollidingAdminStateForUserIdentity(String status) throws Exception {
+        AdminAccountStateEntity state = new AdminAccountStateEntity();
+        state.setAdminId(2791L);
+        state.setCredentialDeliveryStatus(status);
+        when(accountStateMapper.selectActiveByAdminId(2791L)).thenReturn(state);
+        authenticateAs("2791", "platform_a1_read");
+        ((UsernamePasswordAuthenticationToken) SecurityContextHolder.getContext().getAuthentication())
+                .setDetails(Map.of("subjectType", "USER"));
+        AtomicBoolean userInvoked = new AtomicBoolean(false);
+        MockHttpServletResponse userResponse = new MockHttpServletResponse();
+
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), userResponse, mark(userInvoked));
+
+        assertThat(userInvoked).isFalse();
+        assertThat(userResponse.getStatus()).isEqualTo(403);
+        assertThat(userResponse.getContentAsString()).contains("ADMIN_SUBJECT_REQUIRED");
+        verify(accountStateMapper, org.mockito.Mockito.never()).selectActiveByAdminId(2791L);
+
+        authenticateTrustedAdmin("2791", "platform_a1_read");
+        AtomicBoolean adminInvoked = new AtomicBoolean(false);
+        MockHttpServletResponse adminResponse = new MockHttpServletResponse();
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), adminResponse, mark(adminInvoked));
+        assertThat(adminInvoked).isFalse();
+        assertThat(adminResponse.getStatus()).isEqualTo(403);
+        assertThat(adminResponse.getContentAsString()).contains("ADMIN_PASSWORD_CHANGE_REQUIRED");
+
+        state.setCredentialDeliveryStatus("ACTIVE");
+        MockHttpServletResponse activeResponse = new MockHttpServletResponse();
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), activeResponse, mark(adminInvoked));
+        assertThat(adminInvoked).isTrue();
+        assertThat(activeResponse.getStatus()).isEqualTo(200);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"PASSWORD_CHANGE_REQUIRED", "MAIL_DISPATCHED", "HANDOFF_PENDING"})
+    void reasonPolicyDoesNotBypassAnyForcedPasswordChangeStatus(String status) throws Exception {
+        authenticateTrustedAdmin("2791", "platform_a1_read", "service_m3_read");
+        AdminAccountStateEntity state = new AdminAccountStateEntity();
+        state.setAdminId(2791L);
+        state.setCredentialDeliveryStatus(status);
+        when(accountStateMapper.selectActiveByAdminId(2791L)).thenReturn(state);
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), response, mark(invoked));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("ADMIN_PASSWORD_CHANGE_REQUIRED");
+        verify(auditLogService).record(argThat(audit ->
+                "ADMIN_PASSWORD_CHANGE_REQUIRED".equals(((Map<?, ?>) audit.getDetail()).get("reason"))));
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "HEAD, /api/admin/platform/audit/reason-policy",
+        "POST, /api/admin/platform/audit/reason-policy",
+        "PUT, /api/admin/platform/audit/reason-policy",
+        "PATCH, /api/admin/platform/audit/reason-policy",
+        "DELETE, /api/admin/platform/audit/reason-policy",
+        "GET, /api/admin/platform/audit/reason-policy/",
+        "GET, /api/admin/platform/audit/reason-policy/other",
+        "GET, /api/admin/platform/audit/reason-policy-other",
+        "GET, /api/admin/platform/audit/operations",
+        "GET, /api/admin/platform/accounts/overview"
+    })
+    void reasonPolicyExceptionLeavesOtherMethodsAndPathsRestricted(String method, String path) throws Exception {
+        authenticateTrustedAdmin("2791", "service_m3_read");
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request(method, path), response, mark(invoked));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("ADMIN_PERMISSION_DENIED");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "HEAD, /api/admin/platform/audit/reason-policy, platform_a1_read",
+        "POST, /api/admin/platform/audit/reason-policy, platform_a1_write",
+        "GET, /api/admin/platform/audit/reason-policy/other, platform_a1_read",
+        "GET, /api/admin/platform/audit/operations, platform_a2_read"
+    })
+    void reasonPolicyOtherMethodsAndPathsKeepTheirOriginalPlatformPermissionRule(
+            String method, String path, String authority) throws Exception {
+        authenticateTrustedAdmin("2791", authority);
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request(method, path), response, mark(invoked));
+
+        assertThat(invoked).isTrue();
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void reasonPolicyOptionsPreflightStillPassesWithoutAuthentication() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request("OPTIONS", "/api/admin/platform/audit/reason-policy"), response, mark(invoked));
+
+        assertThat(invoked).isTrue();
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    private void authenticateTrustedAdmin(String principal, String... authorities) {
+        authenticateAs(principal, authorities);
+        ((UsernamePasswordAuthenticationToken) SecurityContextHolder.getContext().getAuthentication())
+                .setDetails(Map.of("subjectType", "ADMIN"));
     }
 
     private MockHttpServletRequest request(String method, String path) {

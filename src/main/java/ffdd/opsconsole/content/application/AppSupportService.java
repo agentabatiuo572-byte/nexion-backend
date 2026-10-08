@@ -141,7 +141,8 @@ public class AppSupportService {
         return ApiResult.ok(ticketDetail(ticket, beforeMessageId));
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    // The customer mutex serializes admissions; avoid cross-account range gap locks.
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<SupportTicketDetail> createTicket(
             Long userId, String idempotencyKey, CreateTicketRequest request) {
         productionPathGuard.requireAllowed(userId);
@@ -161,13 +162,6 @@ public class AppSupportService {
                     Map.of("category", created.category(), "idempotencyKey", idempotencyKey.trim()));
             return ApiResult.ok(new SupportTicketDetail(created, ticketRepository.messages(created.ticketNo())));
         });
-    }
-
-    /** The delivered basic POST capability; no draft admission or enhanced limits. */
-    public ApiResult<Map<String, String>> ticketCreationPolicy(Long userId) {
-        productionPathGuard.requireAllowed(userId);
-        if (!validUser(userId)) return forbidden();
-        return ApiResult.ok(Map.of("mode", "BASIC"));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -359,7 +353,7 @@ public class AppSupportService {
         });
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<ConversationTicketResult> convertConversationToTicket(
             Long userId, String conversationNo, String idempotencyKey, ConvertToTicketRequest request) {
         productionPathGuard.requireAllowed(userId);
@@ -600,7 +594,7 @@ public class AppSupportService {
                 row.ownerAgentId(), row.ownerAgentName(), userUnread, row.lastMessage(), row.lastMessageAt(),
                 row.transferFromAgentId(), row.transferFromAgentName(), row.transferToType(), row.transferToId(),
                 row.transferToName(), row.transferReason(), row.transferredAt(), row.updatedAt(), row.version(),
-                row.lastPublicMessageId(), row.lastMessageKind());
+                row.lastPublicMessageId(), row.lastMessageKind(),row.archived());
     }
 
     private boolean validHistoryCursor(Long cursor) {

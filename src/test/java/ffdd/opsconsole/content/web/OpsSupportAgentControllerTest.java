@@ -17,7 +17,20 @@ import org.junit.jupiter.api.Test;
 class OpsSupportAgentControllerTest {
     private final OpsSupportAgentService service = mock(OpsSupportAgentService.class);
     private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
-    private final OpsSupportAgentController controller = new OpsSupportAgentController(service, productionPathGuard);
+    private final ffdd.opsconsole.content.application.SupportGroupService groups = mock(ffdd.opsconsole.content.application.SupportGroupService.class);
+    private final OpsSupportAgentController controller = new OpsSupportAgentController(service, productionPathGuard, groups);
+
+    @Test
+    void isolatedProfileBlocksQualificationMutationBeforeTheGroupService() {
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(409, "SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
+                .when(productionPathGuard).requireOpsWriteAllowed();
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.qualification(7L, "idem-qualification", null))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage("SUPPORT_PRODUCTION_PATH_FORBIDDEN");
+
+        org.mockito.Mockito.verifyNoInteractions(groups, service);
+    }
 
     @Test
     void isolatedProfileBlocksSeatMutationBeforeTheOfficialAgentService() {

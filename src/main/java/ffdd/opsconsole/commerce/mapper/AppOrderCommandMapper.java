@@ -377,6 +377,8 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                AND UPPER(o.payment_status)='PENDING'
                AND UPPER(o.order_status)='PENDING_PAYMENT'
                AND UPPER(o.activation_status)='WAITING_PAYMENT'
+               AND NOT EXISTS (SELECT 1 FROM nx_promotion_order_receipt pr
+                                WHERE pr.order_no=o.order_no AND pr.pay_by<=NOW(6))
             """)
     int markDevelopmentOrderActivated(@Param("orderNo") String orderNo,
                                       @Param("userId") Long userId,

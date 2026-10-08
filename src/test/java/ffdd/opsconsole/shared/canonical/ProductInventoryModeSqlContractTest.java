@@ -53,12 +53,13 @@ class ProductInventoryModeSqlContractTest {
     @Test
     void bundleOrderUsesTheSameUnlimitedInventoryRule() throws Exception {
         String lock = select(AppBundleOrderMapper.class, "lockProducts", java.util.List.class);
-        String decrement = update(AppBundleOrderMapper.class, "decrementStock", Long.class);
+        String decrement = update(AppBundleOrderMapper.class, "decrementStock", Long.class, Integer.class);
 
         assertThat(lock).contains("p.inventory_mode AS inventoryMode");
         assertThat(decrement)
-                .contains("CASE WHEN inventory_mode='FINITE' THEN stock-1 ELSE stock END")
-                .contains("inventory_mode='UNLIMITED' OR stock>=1");
+                .contains("CASE WHEN inventory_mode='FINITE' THEN stock-#{quantity} ELSE stock END")
+                .contains("inventory_mode='UNLIMITED' OR stock>=#{quantity}")
+                .contains("sold_count=sold_count+#{quantity}", "#{quantity} BETWEEN 1 AND 100");
     }
 
     @Test

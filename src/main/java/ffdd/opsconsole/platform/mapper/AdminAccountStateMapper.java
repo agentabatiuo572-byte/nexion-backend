@@ -20,6 +20,8 @@ public interface AdminAccountStateMapper extends BaseMapper<AdminAccountStateEnt
               tfa_reset_at DATETIME NULL,
               sessions_revoked_at DATETIME NULL,
               credential_delivery_status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+              avatar_asset_id VARCHAR(36) NULL,
+              avatar_version BIGINT NOT NULL DEFAULT 0,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
               is_deleted TINYINT NOT NULL DEFAULT 0,

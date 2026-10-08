@@ -9,6 +9,8 @@ import ffdd.opsconsole.content.domain.SupportAgentPageView;
 import ffdd.opsconsole.content.domain.SupportAgentProfileRecord;
 import ffdd.opsconsole.content.domain.SupportAgentProfileView;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
+import ffdd.opsconsole.content.domain.SupportAgentRepository.SupportOperatorRecord;
+import ffdd.opsconsole.content.domain.SupportAgentRepository.SupportOperatorScope;
 import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentBatchAssignmentRequest;
@@ -63,6 +65,7 @@ public class OpsSupportAgentService {
     private final Clock clock;
     private final SupportOwnershipService ownership;
     private final SupportBindingService binding;
+    private final SupportGroupService groups;
 
     public ApiResult<SupportAgentOverview> overview() {
         if(!ownership.supervisor(ownership.actorId())) ownership.requireEligibleAgent();
@@ -82,33 +85,33 @@ public class OpsSupportAgentService {
                 List.of("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment")));
     }
 
-    /**
-     * Returns only the identity fields M2 needs to submit an assignee command.
-     * M1 profile, capacity, service-type and assignment details never cross this boundary.
-     */
+    /** Individual tickets inherit their owner's formal advisor binding; independent assignment is retired. */
     public ApiResult<List<SupportTicketAssigneeCandidateView>> ticketAssigneeCandidates() {
-        return ApiResult.ok(repository.listTicketAssigneeCandidates());
+        return ApiResult.ok(List.of());
     }
 
     public ApiResult<SupportAgentPageView> agents(SupportAgentQueryRequest request) {
-        if(!ownership.supervisor(ownership.actorId())) ownership.requireEligibleAgent();
+        Long actorId = ownership.actorId();
+        boolean supervisor = ownership.supervisor(actorId);
+        if (!supervisor) ownership.requireEligibleAgent();
         repository.ensureSchema();
-        List<AdminAccountOverview.OperatorRecord> operators = supportOperators();
-        if (!ownership.supervisor(ownership.actorId())) operators=operators.stream().filter(o->String.valueOf(ownership.actorId()).equals(o.id())).toList();
-        ensureDefaultProfiles(operators);
         long pageNum = normalizePage(request == null ? null : request.pageNum());
         long pageSize = normalizeSize(request == null ? null : request.pageSize());
-        int from = (int) Math.min(operators.size(), Math.max(0, (pageNum - 1) * pageSize));
-        int to = (int) Math.min(operators.size(), from + pageSize);
-        List<AdminAccountOverview.OperatorRecord> pageOperators = operators.subList(from, to);
-        List<SupportAgentProfileView> agents = profileViews(pageOperators);
+        Long visibleAdminId = supervisor ? null : actorId;
+        SupportOperatorScope operatorScope = repository.supportOperatorScope(visibleAdminId);
+        long total = repository.countSupportOperators(operatorScope);
+        List<SupportAgentProfileView> agents = List.of();
+        // Prove the page is in range before multiplying, including Long.MAX_VALUE requests.
+        if (total > 0 && pageNum - 1 <= (total - 1) / pageSize) {
+            agents = pageProfileViews(repository.pageSupportOperators(operatorScope, pageSize, (pageNum - 1) * pageSize));
+        }
         List<Long> agentIds = agents.stream().map(SupportAgentProfileView::adminId).toList();
         return ApiResult.ok(new SupportAgentPageView(
-                operators.size(),
+                total,
                 pageNum,
                 pageSize,
                 agents,
-                repository.listActiveAssignments(agentIds),
+                agentIds.isEmpty() ? List.of() : repository.listActiveAssignments(agentIds),
                 POSITIONS,
                 SERVICE_TYPES,
                 List.of("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment")));
@@ -287,6 +290,7 @@ public class OpsSupportAgentService {
                 ? defaultSeatType()
                 : normalizeSeatType(currentProfile.seatType(), currentProfile.position());
         String position = positionForSeatType(seatType);
+        groups.validateLegacySeat(adminId,seatType);
         ApiResult<SupportAgentProfileView> authorization = requireSeatMutationAuthorization(adminId, seatType);
         if (authorization != null) {
             return authorization;
@@ -330,7 +334,7 @@ public class OpsSupportAgentService {
         if (guard != null) {
             return guard;
         }
-        ownership.requireSupervisor();
+        ownership.requireSupervisorSnapshot();
         var selected=normalizeUserIds(request.userIds());
         ApiResult<SupportAgentProfileView> seatAuthorization=requireSeatMutationAuthorization(adminId,seatTypeForPosition(canonicalPosition(request.position())));
         if(seatAuthorization!=null) return seatAuthorization;
@@ -339,7 +343,8 @@ public class OpsSupportAgentService {
                 throw new ffdd.opsconsole.shared.exception.BizException(422,"SUPPORT_BINDING_EXPECTATION_REQUIRED");
             selected.stream().sorted().forEach(ownership::lockCustomer);
         }
-        ownership.lockAgent(adminId);
+        new java.util.TreeSet<>(java.util.List.of(ownership.actorId(),adminId)).forEach(ownership::lockAgent);
+        ownership.requireSupervisor();
         return idempotentCommand(
                 "M1_SUPPORT_SEAT_ASSIGN",
                 idempotencyKey,
@@ -357,6 +362,7 @@ public class OpsSupportAgentService {
         }
         String position = canonicalPosition(request.position());
         String seatType = seatTypeForPosition(position);
+        groups.validateLegacySeat(adminId,seatType);
         ApiResult<SupportAgentProfileView> authorization = requireSeatMutationAuthorization(adminId, seatType);
         if (authorization != null) {
             return authorization;
@@ -516,6 +522,25 @@ public class OpsSupportAgentService {
         return views;
     }
 
+    private List<SupportAgentProfileView> pageProfileViews(List<SupportOperatorRecord> operators) {
+        if (operators.isEmpty()) return List.of();
+        List<Long> adminIds = operators.stream().map(SupportOperatorRecord::adminId).toList();
+        Map<Long, SupportAgentProfileRecord> profiles = repository.listProfiles(adminIds).stream()
+                .collect(Collectors.toMap(SupportAgentProfileRecord::adminId, Function.identity()));
+        List<Long> missingIds = adminIds.stream().filter(id -> !profiles.containsKey(id)).toList();
+        LocalDateTime now = LocalDateTime.now(clock);
+        for (Long adminId : missingIds) {
+            repository.ensureDefaultProfile(adminId, defaultSeatType(), defaultPosition(), defaultServiceTypes(),
+                    DEFAULT_TAGS, defaultMaxConcurrent(), now);
+        }
+        if (!missingIds.isEmpty()) {
+            repository.listProfiles(missingIds).forEach(profile -> profiles.put(profile.adminId(), profile));
+        }
+        return operators.stream().filter(operator -> profiles.containsKey(operator.adminId()))
+                .map(operator -> profileView(operator, profiles.get(operator.adminId()), "support", "enabled"))
+                .toList();
+    }
+
     private void ensureDefaultProfiles(List<AdminAccountOverview.OperatorRecord> operators) {
         LocalDateTime now = LocalDateTime.now(clock);
         for (AdminAccountOverview.OperatorRecord operator : operators) {
@@ -533,14 +558,20 @@ public class OpsSupportAgentService {
     private SupportAgentProfileView profileView(
             AdminAccountOverview.OperatorRecord operator,
             SupportAgentProfileRecord profile) {
+        return profileView(new SupportOperatorRecord(profile.adminId(), operator.name(), operator.email(),
+                operator.avatarAssetId(), operator.avatarVersion()), profile, operator.role(), operator.status());
+    }
+
+    private SupportAgentProfileView profileView(
+            SupportOperatorRecord operator, SupportAgentProfileRecord profile, String role, String status) {
         Long adminId = profile.adminId();
         return new SupportAgentProfileView(
                 String.valueOf(adminId),
                 adminId,
                 operator.name(),
                 operator.email(),
-                operator.role(),
-                operator.status(),
+                role,
+                status,
                 normalizeSeatType(profile.seatType(), profile.position()),
                 profile.position(),
                 profile.serviceTypes(),
@@ -551,7 +582,7 @@ public class OpsSupportAgentService {
                 profile.busy(),
                 repository.countActiveAssignments(adminId),
                 profile.version(),
-                profile.updatedAt());
+                profile.updatedAt(),operator.avatarAssetId(),operator.avatarVersion());
     }
 
     private List<Map<String, Object>> transferTargets(List<SupportAgentProfileView> agents) {
@@ -641,6 +672,8 @@ public class OpsSupportAgentService {
         if (actorAdminId == null) {
             return false;
         }
+        Boolean qualified=groups.supervisorQualification(actorAdminId);
+        if(Boolean.FALSE.equals(qualified))return false;
         return repository.findProfile(actorAdminId)
                 .filter(profile -> Boolean.TRUE.equals(profile.enabled()))
                 .map(profile -> normalizeSeatType(profile.seatType(), profile.position()))

@@ -173,6 +173,8 @@ public class PromotionOrderService {
     @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)
     public void beforePay(Long buyerId,String orderNo){
         Map<String,Object> order=db.order(orderNo,false);require(buyerId!=null&&number(order.get("user_id"))==buyerId,"PROMOTION_ORDER_OWNER_MISMATCH");
+        Map<String,Object> receipt=db.one("SELECT pay_by FROM nx_promotion_order_receipt WHERE order_no=? FOR UPDATE",orderNo);
+        if(receipt!=null)require(instant(receipt.get("pay_by")).isAfter(Instant.now()),"PROMOTION_PAYMENT_WINDOW_CLOSED");
         List<Map<String,Object>> rows=db.reservations(orderNo,true);if(rows.isEmpty())return;
         require(!db.hasHold(orderNo),"PROMOTION_REFUND_HOLD");
         for(Map<String,Object> r:rows)require("RESERVED".equals(r.get("status"))&&instant(r.get("pay_by")).isAfter(Instant.now()),"PROMOTION_PAYMENT_WINDOW_CLOSED");
@@ -185,6 +187,7 @@ public class PromotionOrderService {
     public void afterPaid(Long buyerId,String orderNo){
         Map<String,Object> order=db.order(orderNo,false);require(number(order.get("user_id"))==buyerId&&"PAID".equals(order.get("payment_status"))&&order.get("paid_at")!=null,"PROMOTION_PAYMENT_NOT_CONFIRMED");
         List<Map<String,Object>> rows=db.reservations(orderNo,true);if(rows.isEmpty()||rows.stream().allMatch(r->"COMMITTED".equals(r.get("status"))))return;
+        for(Map<String,Object> row:rows)require(instant(order.get("paid_at")).isBefore(instant(row.get("pay_by"))),"PROMOTION_PAYMENT_WINDOW_CLOSED");
         Set<String> activities=new TreeSet<>(),orderUses=new HashSet<>();
         for(Map<String,Object> r:rows){
             require("RESERVED".equals(r.get("status")),"PROMOTION_RESERVATION_NOT_PAYABLE");String activity=text(r.get("activity_id"));activities.add(activity);

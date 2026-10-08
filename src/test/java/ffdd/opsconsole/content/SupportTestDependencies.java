@@ -9,7 +9,7 @@ public final class SupportTestDependencies {
     public static ffdd.opsconsole.content.application.SupportHumanMessageService humanMessages() {
         var service=mock(ffdd.opsconsole.content.application.SupportHumanMessageService.class);
         when(service.prepare(any(),any(),any(),any(),any(),any(),nullable(String.class),nullable(String.class),nullable(String.class),nullable(String.class),nullable(Long.class)))
-            .thenReturn(new ffdd.opsconsole.content.application.SupportHumanMessageService.Prepared(42L,"ADMIN",1L,"test-message","TEXT","SERVICE",null,null,"hash",null,null));
+            .thenReturn(new ffdd.opsconsole.content.application.SupportHumanMessageService.Prepared(42L,"ADMIN",1L,"test-message","TEXT","SERVICE",null,null,"hash",null,null,null,null,null));
         return service;
     }
     public static SupportOwnershipService ownership() {

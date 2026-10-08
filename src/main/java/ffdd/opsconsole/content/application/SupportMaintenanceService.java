@@ -43,6 +43,16 @@ public class SupportMaintenanceService {
     @Transactional(propagation=Propagation.MANDATORY)
     public void executed(Long customer, SupportAssignment assignment, Long messageId, String commandKey) {
         SupportAssignment current=ownership.requireWriter(customer,true);
+        executedWithAssignment(customer,current,assignment,messageId,commandKey);
+    }
+
+    @Transactional(propagation=Propagation.MANDATORY)
+    public void executedForActor(Long customer,Long actor,SupportAssignment assignment,Long messageId,String commandKey) {
+        SupportAssignment current=ownership.requireWriterForActor(actor,customer,true);
+        executedWithAssignment(customer,current,assignment,messageId,commandKey);
+    }
+
+    private void executedWithAssignment(Long customer,SupportAssignment current,SupportAssignment assignment,Long messageId,String commandKey) {
         if(assignment==null || !Objects.equals(current.id(),assignment.id()))
             throw new BizException(409,"SUPPORT_ASSIGNMENT_CHANGED");
         if(!safeId(messageId) || commandKey==null || commandKey.trim().length()<8 || commandKey.trim().length()>128)

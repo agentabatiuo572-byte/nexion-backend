@@ -18,6 +18,9 @@ public interface ConversationRepository {
     void ensureSeedData(LocalDateTime now);
 
     Map<String, Object> counters();
+    default Map<String,Object> counters(Long agent) {
+        if(agent!=null)throw new UnsupportedOperationException("SCOPED_CONVERSATION_COUNTERS_REQUIRED");return counters();
+    }
 
     PageResult<ContentConversationView> pageConversations(ConversationQueryRequest request);
 
@@ -98,6 +101,11 @@ public interface ConversationRepository {
         throw new UnsupportedOperationException("EXACT_MESSAGE_ID_REQUIRED");
     }
 
+    default Long replyAndReturnMessageId(
+            ContentConversationView conversation,String body,Long senderAdminId,String senderName,LocalDateTime now) {
+        throw new UnsupportedOperationException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
+    }
+
     /** App user reply, kept separate from the agent command so sender/audit semantics cannot be forged. */
     default boolean replyAsUser(ContentConversationView conversation, Long userId, String body, LocalDateTime now) {
         throw new UnsupportedOperationException("APP_CONVERSATION_REPLY_NOT_IMPLEMENTED");
@@ -134,6 +142,12 @@ public interface ConversationRepository {
             String openingText,
             LocalDateTime now) {
         throw new UnsupportedOperationException("EXACT_MESSAGE_ID_REQUIRED");
+    }
+
+    default PersistedConversation createConversationWithMessage(
+            String conversationNo,Long userId,String conversationType,String ownerAgentId,String ownerAgentName,
+            String openingText,Long senderAdminId,String senderName,LocalDateTime now) {
+        throw new UnsupportedOperationException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
     }
 
     record PersistedConversation(ContentConversationView conversation, Long messageId) {}
