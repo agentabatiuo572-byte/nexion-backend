@@ -1,5 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.Attribution;
@@ -62,6 +64,8 @@ public class AppTrialLifecycleService {
     private static final String LEGACY_TRIAL_PRODUCT_ID = "device-trial-standard";
     private static final String CANONICAL_TRIAL_PRODUCT_ID = "stellarbox-s1";
 
+    @lombok.NonNull
+    private final SupportPaymentAttributionFacade paymentAttribution;
     private final AppTrialLifecycleMapper mapper;
     private final EarningsReleaseService earningsReleaseService;
     private final AdminIdempotencyService idempotency;
@@ -258,6 +262,7 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_AMOUNT_INVALID");
         }
         Map<String, String> policy = policyMap();
+        var prepared = paymentAttribution.prepare(userId, Source.TRIAL_CONVERT, "USER:" + userId);
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         String configured = trialProductCode(policy, row);
@@ -323,8 +328,10 @@ public class AppTrialLifecycleService {
         }
         BigDecimal usdtAfter = wallet.usdt().subtract(amount).add(settlement.remainderUsdt());
         BigDecimal nexAfter = wallet.nex().add(settlement.shadowNex());
-        if (amount.signum() > 0) mapper.insertLedger(userId, row.claimNo() + ":CHARGE", "TRIAL_CHARGE",
-                "USDT", "OUT", amount, wallet.usdt().subtract(amount), "H2 conversion via NexGrid USDT wallet");
+        if (amount.signum() > 0 && paymentAttribution.insertLedger(prepared, amount,
+                wallet.usdt().subtract(amount), "H2 conversion via NexGrid USDT wallet") != 1) {
+            throw new BizException(409, "TRIAL_CHARGE_LEDGER_CONFLICT");
+        }
         if (settlement.remainderUsdt().signum() > 0) mapper.insertLedger(
                 userId, row.claimNo() + ":REMAINDER", "TRIAL_BONUS", "USDT", "IN",
                 settlement.remainderUsdt(), usdtAfter, "H2 shadow remainder credited after purchase");
@@ -370,6 +377,7 @@ public class AppTrialLifecycleService {
         publish("ORDER", orderNo, "checkout.completed", userId, attr,
                 linked("order_no", orderNo, "order_subtotal_usdt", amount, "amount_usdt", amount));
         record("H2_TRIAL_CONVERTED", row.claimNo(), userId, detail);
+        if (amount.signum() > 0) paymentAttribution.record(prepared);
         return ApiResult.ok(detail);
     }
 

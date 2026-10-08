@@ -1,5 +1,7 @@
 package ffdd.opsconsole.finance.cregis;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.finance.mapper.CregisDepositMapper;
@@ -34,12 +36,14 @@ public class CregisDepositService {
     private final TransactionTemplate transactions;
     private final TreasuryLedgerRepository treasury;
     private final FinanceWithdrawalControlFacade withdrawalControl;
+    private final SupportPaymentAttributionFacade paymentAttribution;
 
     public CregisDepositService(CregisProperties config, CregisGatewayRouter router,
                                 BscDepositProof chain, CregisSigner signer, ObjectMapper json,
                                 CregisDepositMapper db, PlatformTransactionManager txManager,
                                 TreasuryLedgerRepository treasury,
-                                FinanceWithdrawalControlFacade withdrawalControl) {
+                                FinanceWithdrawalControlFacade withdrawalControl,
+                                SupportPaymentAttributionFacade paymentAttribution) {
         this.config = config;
         this.router = router;
         this.chain = chain;
@@ -49,6 +53,7 @@ public class CregisDepositService {
         this.transactions = new TransactionTemplate(txManager);
         this.treasury = treasury;
         this.withdrawalControl = withdrawalControl;
+        this.paymentAttribution = java.util.Objects.requireNonNull(paymentAttribution);
     }
 
     public Map<String, Object> address(long userId) {
@@ -748,6 +753,8 @@ public class CregisDepositService {
         requireReviewProofFresh(proof);
         BigDecimal net = amount.subtract(BigDecimal.ONE);
         long eventId = ((Number) event.get("id")).longValue();
+        var prepared = paymentAttribution.prepare(userId, Source.DEPOSIT_ORDER, "CR-" + cid,
+                String.valueOf(config.getProjectId()));
         if (db.releaseReviewedEvent(eventId, BigDecimal.ONE, net, proof.confirmations()) != 1)
             throw new IllegalStateException("CREGIS_REVIEW_EVENT_CONFLICT");
         Map<String, Object> wallet = db.lockWallet(userId);
@@ -757,7 +764,7 @@ public class CregisDepositService {
         if (db.creditWallet(net, userId, ((Number) wallet.get("version")).longValue()) != 1)
             throw new IllegalStateException("CREGIS_WALLET_CONFLICT");
         String bizNo = "CR-" + cid;
-        if (db.insertLedger(bizNo, userId, net, after, "Reviewed Cregis USDT-BEP20 deposit " + txid) != 1)
+        if (paymentAttribution.insertLedger(prepared, net, after, "Reviewed Cregis USDT-BEP20 deposit " + txid) != 1)
             throw new IllegalStateException("CREGIS_LEDGER_INSERT_FAILED");
         treasury.recordTopupReserve(bizNo, net, "CREGIS:" + cid);
         Long ledgerId = db.ledgerId(bizNo);
@@ -765,6 +772,7 @@ public class CregisDepositService {
                 || db.insertDepositOrder(userId, bizNo, txid, proof.logIndex(), net,
                         proof.confirmations(), ledgerId) != 1)
             throw new IllegalStateException("CREGIS_REVIEW_LEDGER_LINK_FAILED");
+        paymentAttribution.record(prepared);
     }
 
     private boolean settleOrHold(long deliveryId, long userId, long cid, String txid, String address,
@@ -825,6 +833,9 @@ public class CregisDepositService {
                 || db.pendingAcceptedDeliveryCount(deliveryId) != 0) return false;
         if (!Long.valueOf(userId).equals(db.lockActiveUser(userId)))
             throw new IllegalStateException("CREGIS_DEPOSIT_USER_FROZEN");
+        var prepared = "CREDITED".equals(status)
+                ? paymentAttribution.prepare(userId, Source.DEPOSIT_ORDER, "CR-" + cid,
+                        String.valueOf(config.getProjectId())) : null;
         BigDecimal fee = "CREDITED".equals(status) ? BigDecimal.ONE : BigDecimal.ZERO;
         BigDecimal net = "CREDITED".equals(status) ? amount.subtract(fee) : BigDecimal.ZERO;
         if (db.insertEvent(userId, config.getProjectId(), cid, txid, proof.logIndex(), address, amount, fee, net,
@@ -838,7 +849,7 @@ public class CregisDepositService {
             if (db.creditWallet(net, userId, ((Number) wallet.get("version")).longValue()) != 1)
                 throw new IllegalStateException("CREGIS_WALLET_CONFLICT");
             String bizNo = "CR-" + cid;
-            if (db.insertLedger(bizNo, userId, net, after, "Cregis USDT-BEP20 deposit " + txid) != 1)
+            if (paymentAttribution.insertLedger(prepared, net, after, "Cregis USDT-BEP20 deposit " + txid) != 1)
                 throw new IllegalStateException("CREGIS_LEDGER_INSERT_FAILED");
             treasury.recordTopupReserve(bizNo, net, "CREGIS:" + cid);
             Long ledgerId = db.ledgerId(bizNo), eventId = db.eventId(config.getProjectId(), cid);
@@ -846,6 +857,7 @@ public class CregisDepositService {
                 throw new IllegalStateException("CREGIS_LEDGER_LINK_FAILED");
             if (db.insertDepositOrder(userId, bizNo, txid, proof.logIndex(), net, proof.confirmations(), ledgerId) != 1)
                 throw new IllegalStateException("CREGIS_DEPOSIT_ORDER_FAILED");
+            paymentAttribution.record(prepared);
         }
         if (deliveryId > 0) db.finishDelivery(deliveryId, status);
         return true;

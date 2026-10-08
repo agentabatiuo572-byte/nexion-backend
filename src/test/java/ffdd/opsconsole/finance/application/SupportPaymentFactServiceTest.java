@@ -10,7 +10,7 @@ import org.springframework.dao.DataAccessResourceFailureException;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
-import static ffdd.opsconsole.finance.application.SupportPaymentFacts.*;
+import static ffdd.opsconsole.finance.facade.SupportPaymentFacts.*;
 
 class SupportPaymentFactServiceTest {
     private final SupportPaymentFactMapper mapper = mock(SupportPaymentFactMapper.class);

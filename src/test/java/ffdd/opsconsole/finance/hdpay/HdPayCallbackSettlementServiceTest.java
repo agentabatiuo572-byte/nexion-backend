@@ -1,5 +1,8 @@
 package ffdd.opsconsole.finance.hdpay;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -24,6 +27,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class HdPayCallbackSettlementServiceTest {
+    private final SupportPaymentAttributionFacade capture = paymentAttribution();
     private static final Clock CLOCK = Clock.fixed(
             Instant.parse("2026-09-02T04:00:00Z"), ZoneOffset.UTC);
 
@@ -34,11 +38,11 @@ class HdPayCallbackSettlementServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final TreasuryLedgerRepository treasuryLedger = mock(TreasuryLedgerRepository.class);
     private final HdPayCallbackSettlementService service = new HdPayCallbackSettlementService(
-            hdPayMapper, intentMapper, paymentMapper, outbox, audit, treasuryLedger, CLOCK);
+            hdPayMapper, intentMapper, paymentMapper, outbox, audit, treasuryLedger, CLOCK, capture);
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
-    void confirmedPaymentCreditsWalletLedgerIntentAndNotificationWithoutReceiptImage(boolean orderQuery) {
+    @org.junit.jupiter.params.provider.CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    void confirmedPaymentCreditsWalletLedgerIntentAndNotificationWithoutReceiptImage(boolean orderQuery, boolean failCapture) {
         var callback = callback("abc", "100000");
         var query = payOrder("100000");
         when(hdPayMapper.findByMerchantOrderIdForUpdate("VQR-1"))
@@ -51,9 +55,7 @@ class HdPayCallbackSettlementServiceTest {
         when(paymentMapper.findUsdtWalletForUpdate(42L)).thenReturn(Map.of(
                 "usdtAvailable", new BigDecimal("10.000000"), "version", 7L));
         when(paymentMapper.creditUsdtWallet(42L, new BigDecimal("5.000000"), 7L)).thenReturn(1);
-        when(paymentMapper.insertVietQrWalletLedger(
-                "VQR-1", 42L, new BigDecimal("5.000000"),
-                new BigDecimal("15.000000"), "HDPay BANKQR deposit VQR-1")).thenReturn(1);
+
         when(intentMapper.transitionIntent(
                 "VQR-1", 9L, "AWAITING_PAYMENT", "CREDITED",
                 new BigDecimal("100000"), new BigDecimal("5.000000"),
@@ -69,6 +71,24 @@ class HdPayCallbackSettlementServiceTest {
         when(outbox.publish(eq("WALLET"), eq("VQR-1"),
                 eq("wallet.topup_confirmed"), any())).thenReturn("event-1");
 
+        if (failCapture) {
+            org.mockito.Mockito.doThrow(new IllegalStateException("CAPTURE_WRITE_FAILED"))
+                    .when(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            if (orderQuery) {
+                org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.settleOrderQuery("VQR-1", 0L, query))
+                        .hasMessage("CAPTURE_WRITE_FAILED");
+            } else {
+                var claim = service.claimForProviderQuery(callback);
+                when(hdPayMapper.findCallbackInboxForUpdate(anyString())).thenReturn(Map.of(
+                        "processingStatus", "PROCESSING", "claimToken", claim.claimToken()));
+                org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        service.settleConfirmed(claim.fact(), claim.claimToken(), query))
+                        .hasMessage("CAPTURE_WRITE_FAILED");
+            }
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            return;
+        }
+
         if (orderQuery) {
             assertThat(service.settleOrderQuery("VQR-1", 0L, query)).isEqualTo("success");
             verify(hdPayMapper, never()).insertCallbackInbox(any(), any(), any(), any(), any(), any(), any());
@@ -82,9 +102,7 @@ class HdPayCallbackSettlementServiceTest {
 
         verify(paymentMapper).creditUsdtWallet(42L, new BigDecimal("5.000000"), 7L);
         verify(treasuryLedger).recordTopupReserve("VQR-1", new BigDecimal("5.000000"), "HDPAY:VQR-1");
-        verify(paymentMapper).insertVietQrWalletLedger(
-                "VQR-1", 42L, new BigDecimal("5.000000"),
-                new BigDecimal("15.000000"), "HDPay BANKQR deposit VQR-1");
+        verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), eq(new BigDecimal("5.000000")), eq(new BigDecimal("15.000000")), eq("HDPay BANKQR deposit VQR-1"));
         verify(intentMapper).transitionIntent(
                 "VQR-1", 9L, "AWAITING_PAYMENT", "CREDITED",
                 new BigDecimal("100000"), new BigDecimal("5.000000"),
@@ -94,6 +112,13 @@ class HdPayCallbackSettlementServiceTest {
         verify(outbox).publish(eq("WALLET"), eq("VQR-1"),
                 eq("wallet.topup_confirmed"), any());
         verify(audit).recordRequired(any());
+            org.mockito.Mockito.verify(paymentMapper,org.mockito.Mockito.never()).insertVietQrWalletLedger(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
+        var captureOrder = org.mockito.Mockito.inOrder(capture, paymentMapper);
+        captureOrder.verify(capture).prepare(42L, Source.HDPAY, "VQR-1");
+        captureOrder.verify(paymentMapper).findUsdtWalletForUpdate(42L);
+        captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),any());
+        captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
     }
 
     @Test
@@ -126,6 +151,7 @@ class HdPayCallbackSettlementServiceTest {
         verify(paymentMapper, never()).creditUsdtWallet(any(), any(), any());
         verify(paymentMapper, never()).insertVietQrWalletLedger(any(), any(), any(), any(), any());
         verify(outbox, never()).publish(any(), any(), any(), any());
+            org.mockito.Mockito.verifyNoInteractions(capture);
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -180,6 +206,7 @@ class HdPayCallbackSettlementServiceTest {
         verify(paymentMapper, never()).creditUsdtWallet(any(), any(), any());
         verify(paymentMapper, never()).insertVietQrWalletLedger(any(), any(), any(), any(), any());
         verify(intentMapper, never()).transitionIntent(any(), any(), any(), any(), any(), any(), any());
+            org.mockito.Mockito.verifyNoInteractions(capture);
     }
 
     @Test
@@ -260,6 +287,7 @@ class HdPayCallbackSettlementServiceTest {
                 new HdPayGateway.PayOrder("VQR-1", "P-1", status, new BigDecimal("100000"), "BANKQR", "")))
                 .isEqualTo("success");
         org.mockito.Mockito.verifyNoInteractions(paymentMapper, intentMapper, outbox);
+            org.mockito.Mockito.verifyNoInteractions(capture);
     }
 
     @Test
@@ -317,5 +345,27 @@ class HdPayCallbackSettlementServiceTest {
         result.put("payableVnd", new BigDecimal("100000"));
         result.put("version", 9L);
         return result;
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"false,false","false,true","true,false","true,true"})
+    void canonicalLedgerZeroOrFailureStopsCallbackAndQuery(boolean query,boolean thrown) {
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),any()))
+                .thenAnswer(invocation -> { if(thrown)throw new IllegalStateException("LEDGER_INSERT_FAILED"); return 0; });
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> confirmedPaymentCreditsWalletLedgerIntentAndNotificationWithoutReceiptImage(query,false))
+                .hasMessage(thrown?"LEDGER_INSERT_FAILED":"HDPAY_LEDGER_WRITE_FAILED");
+        verify(capture,never()).record(any());
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution() {
+        var capture = org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString())).thenReturn(1);
+        return capture;
     }
 }

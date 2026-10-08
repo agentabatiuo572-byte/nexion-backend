@@ -1,8 +1,13 @@
 package ffdd.opsconsole.finance.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -27,11 +32,12 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class D1BankOrderReasonTest {
+    private final SupportPaymentAttributionFacade capture = paymentAttribution();
     private final D1BankOrderMapper orders = mock(D1BankOrderMapper.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final HdPayOrderMapper provider = mock(HdPayOrderMapper.class);
     private final TreasuryLedgerRepository treasury = mock(TreasuryLedgerRepository.class);
-    private final D1BankOrderService service = new D1BankOrderService(orders, provider,
+    private final D1BankOrderService service = new D1BankOrderService(capture, orders, provider,
             mock(AppVietQrIntentMapper.class), mock(VietnamPaymentMapper.class),
             mock(VietQrReceiptEvidenceService.class), treasury, mock(AdminIdempotencyService.class),
             mock(EventOutboxService.class), audit, new HdPayProperties(), new ObjectMapper(), Clock.systemUTC());
@@ -127,5 +133,83 @@ class D1BankOrderReasonTest {
         row.put("lastErrorCode", code);
         row.put("createdAt", "2026-10-05T01:00:00");
         return row;
+    }
+
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void manualCreditCapturesBeforeWalletAndDoesNotSwallowCaptureFailure(boolean failCapture) {
+        var intents = mock(AppVietQrIntentMapper.class);
+        var payments = mock(VietnamPaymentMapper.class);
+        var evidence = mock(VietQrReceiptEvidenceService.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var outbox = mock(EventOutboxService.class);
+        var now = java.time.LocalDateTime.of(2026, 10, 5, 2, 0);
+        var clock = Clock.fixed(now.toInstant(java.time.ZoneOffset.UTC), java.time.ZoneOffset.UTC);
+        var amount = new java.math.BigDecimal("5.000000");
+        var payable = new java.math.BigDecimal("100000");
+        when(provider.findByMerchantOrderIdForUpdate("VQR-MANUAL")).thenReturn(Map.of(
+                "version", 3L, "settlementStatus", "UNSETTLED", "submissionStatus", "REJECTED", "amountVnd", payable));
+        when(orders.lockBankReference("BANK-MANUAL-1")).thenReturn(List.of());
+        when(orders.lockBankReceipts("VQR-MANUAL")).thenReturn(List.of());
+        when(intents.findIntentForUpdate("VQR-MANUAL")).thenReturn(Map.of(
+                "intentNo", "VQR-MANUAL", "userId", 42L, "version", 0L, "paymentRail", "HDPAY",
+                "settlementTargetType", "WALLET_TOPUP", "status", "AWAITING_PAYMENT",
+                "payableVnd", payable, "requestedUsdt", amount, "createdAt", now.minusHours(2)));
+        when(orders.insertManualConfirmation(any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(1);
+        when(payments.findUsdtWalletForUpdate(42L)).thenReturn(Map.of(
+                "usdtAvailable", new java.math.BigDecimal("10.000000"), "version", 7L));
+        when(payments.creditUsdtWallet(42L, amount, 7L)).thenReturn(1);
+
+        when(intents.transitionIntent(eq("VQR-MANUAL"), eq(0L), eq("AWAITING_PAYMENT"), eq("CREDITED"),
+                eq(payable), eq(amount), eq(now))).thenReturn(1);
+        when(provider.insertDepositNotification("HDPAY:VQR-MANUAL", 42L, amount)).thenReturn(1);
+        when(orders.markManualCredited("VQR-MANUAL", 3L, amount, now)).thenReturn(1);
+        when(idempotency.executeRetainedRepeatableRead(anyString(), anyString(), anyString(), eq(Map.class), any()))
+                .thenAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get());
+        var target = new D1BankOrderService(capture, orders, provider, intents, payments, evidence,
+                treasury, idempotency, outbox, audit, new HdPayProperties(), new ObjectMapper(), clock);
+        var request = new ffdd.opsconsole.finance.dto.HdPayManualCreditRequest(0L, 3L, payable,
+                "BANK-MANUAL-1", now.minusHours(1).atOffset(java.time.ZoneOffset.UTC),
+                "media:vqr_123e4567e89b12d3a456426614174000", "checked payment evidence", "finance-admin");
+        if (failCapture) {
+            org.mockito.Mockito.doThrow(new IllegalStateException("CAPTURE_WRITE_FAILED"))
+                    .when(capture).record(any(Prepared.class));
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> target.manualCredit("VQR-MANUAL", "manual-1", request))
+                    .hasMessage("CAPTURE_WRITE_FAILED");
+            return;
+        }
+        assertThat(target.manualCredit("VQR-MANUAL", "manual-1", request).getData()).containsEntry("status", "CREDITED");
+        org.mockito.Mockito.verify(payments,org.mockito.Mockito.never()).insertVietQrWalletLedger(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
+        var sequence = org.mockito.Mockito.inOrder(capture, payments, orders);
+        sequence.verify(capture).prepare(42L, Source.HDPAY, "VQR-MANUAL");
+        sequence.verify(payments).findUsdtWalletForUpdate(42L);
+        sequence.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
+        sequence.verify(orders).markManualCredited("VQR-MANUAL", 3L, amount, now);
+        sequence.verify(capture).record(any(Prepared.class));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans={false,true})
+    void canonicalLedgerZeroOrFailureStopsBeforeRecord(boolean thrown) {
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString()))
+                .thenAnswer(invocation -> { if(thrown)throw new IllegalStateException("LEDGER_INSERT_FAILED"); return 0; });
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> manualCreditCapturesBeforeWalletAndDoesNotSwallowCaptureFailure(false))
+                .hasMessage(thrown?"LEDGER_INSERT_FAILED":"HDPAY_LEDGER_WRITE_FAILED");
+        org.mockito.Mockito.verify(capture,org.mockito.Mockito.never()).record(org.mockito.ArgumentMatchers.any());
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution() {
+        var capture = org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString())).thenReturn(1);
+        return capture;
     }
 }

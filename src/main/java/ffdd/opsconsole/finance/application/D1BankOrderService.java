@@ -1,5 +1,7 @@
 package ffdd.opsconsole.finance.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.finance.dto.HdPayManualCreditRequest;
@@ -47,6 +49,8 @@ public class D1BankOrderService {
             "MISMATCH_REVIEW", "LATE_REVIEW");
     private static final Set<String> MANUAL_CREDIT_STATES = Set.of("AWAITING_PAYMENT", "EXPIRED", "RECEIPT_REVIEW",
             "MISMATCH_REVIEW", "LATE_REVIEW", "CANCELLED");
+    @lombok.NonNull
+    private final SupportPaymentAttributionFacade paymentAttribution;
     private final D1BankOrderMapper orders;
     private final HdPayOrderMapper hdPay;
     private final AppVietQrIntentMapper intents;
@@ -151,10 +155,11 @@ public class D1BankOrderService {
         } catch (org.springframework.dao.DuplicateKeyException ex) {
             throw new BizException(409, "HDPAY_MANUAL_CONFIRMATION_CONFLICT");
         }
+        var prepared = paymentAttribution.prepare(userId, Source.HDPAY, intentNo);
         Map<String, Object> wallet = required(payments.findUsdtWalletForUpdate(userId), "HDPAY_TARGET_WALLET_NOT_FOUND");
         BigDecimal balanceAfter = safeDecimal(wallet.get("usdtAvailable"), "HDPAY_WALLET_BALANCE_INVALID").add(amount);
         one(payments.creditUsdtWallet(userId, amount, number(wallet.get("version"))), "HDPAY_WALLET_VERSION_CONFLICT");
-        one(payments.insertVietQrWalletLedger(intentNo, userId, amount, balanceAfter,
+        one(paymentAttribution.insertLedger(prepared, amount, balanceAfter,
                 "ADMIN manual HDPay BANKQR deposit " + intentNo), "HDPAY_LEDGER_WRITE_FAILED");
         if (receipt == null) treasury.recordManualTopupReserve(intentNo, amount, "HDPAY:" + intentNo, actor);
         else one(payments.completeVietQrReconciliation(receiptId, receiptVersion, "CREDITED",
@@ -183,6 +188,7 @@ public class D1BankOrderService {
                         Map.entry("receivedAt", receivedAt.toString()), Map.entry("evidenceRef", text(request.evidenceRef())),
                         Map.entry("reason", text(request.reason())), Map.entry("idempotencyKey", key))).build());
         one(orders.markManualCredited(intentNo, providerVersion, amount, now), "HDPAY_SETTLEMENT_STATE_CONFLICT");
+        paymentAttribution.record(prepared);
         return Map.of("intentNo", intentNo, "status", "CREDITED", "creditedUsdt", amount,
                 "version", intentVersion + 1, "providerVersion", providerVersion + 1,
                 "confirmationSource", "ADMIN_MANUAL", "manualConfirmationNo", confirmationNo);

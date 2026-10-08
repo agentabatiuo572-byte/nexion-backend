@@ -21,7 +21,7 @@ class PromotionCommandQueryMySqlTest {
         h.session.getConfiguration().addMapper(AppOrderCommandMapper.class);
         var env=new MockEnvironment();env.setActiveProfiles("dev");
         var pay=h.proxy(new AppOrderCommandService(h.session.getMapper(AppOrderCommandMapper.class),h.idempotency,h.audit,
-            new FundsSandboxProfileGuard(new FundsSandboxProperties(),env),null,null,null,null,30,f.orders));
+            new FundsSandboxProfileGuard(new FundsSandboxProperties(),env),null,null,null,null,30,f.orders,h.paymentAttribution()));
         var query=new PromotionCommandQueryService(h.db,h.idempotency,f.orders);
         String activity=h.publish(h.contract(f.buy,values("rewardRuleId","reward-buyer","beneficiaryRole","BUYER","type","USDT","calculation","FIXED","amount","1.000000","assetPolicy",h.assetPolicy("USDT")),h.commonPolicies()));
         var evidence=new ArrayList<Object>();

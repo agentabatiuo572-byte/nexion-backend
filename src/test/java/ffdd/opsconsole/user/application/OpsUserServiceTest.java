@@ -339,10 +339,11 @@ class OpsUserServiceTest {
         var scope = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(7L,
                 ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.PERSONAL, null, null);
         when(supportOwnership.customerQueryScope(1L)).thenReturn(scope);
-        for (boolean scoped : List.of(false, true)) {
+        for (boolean scoped : List.of(false, true)) for (RuntimeException failure : List.of(
+                new org.springframework.jdbc.BadSqlGrammarException("projection", "private SQL",
+                    new java.sql.SQLException("table unavailable", "42S02", 1146)),
+                new org.springframework.dao.InvalidDataAccessResourceUsageException("projection unavailable"))) {
             var repository = mock(UserOpsRepository.class);
-            var failure = new org.springframework.jdbc.BadSqlGrammarException("projection", "private SQL",
-                    new java.sql.SQLException("table unavailable", "42S02", 1146));
             when(supportOwnership.currentSupportReader()).thenReturn(scoped);
             if (scoped) when(repository.findById(1L, scope)).thenThrow(failure);
             else when(repository.findById(1L)).thenThrow(failure);

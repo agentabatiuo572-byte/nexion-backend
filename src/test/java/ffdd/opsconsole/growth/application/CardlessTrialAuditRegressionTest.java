@@ -1,5 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -21,7 +23,7 @@ class CardlessTrialAuditRegressionTest {
         var idempotency = mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.class);
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(call -> ((java.util.function.Supplier) call.getArgument(4)).get());
-        var service = new AppTrialLifecycleService(mapper, null, idempotency, null, null, null, null, null,
+        var service = new AppTrialLifecycleService(paymentAttribution(), mapper, null, idempotency, null, null, null, null, null,
                 new org.springframework.mock.env.MockEnvironment().withProperty("spring.profiles.active", "prod"),
                 java.time.Clock.systemUTC());
         ApiResult<?> result = service.charge(7L, "legacy-charge");
@@ -44,5 +46,14 @@ class CardlessTrialAuditRegressionTest {
         String insert = source.substring(source.indexOf("INSERT IGNORE INTO nx_user_device"), source.indexOf("int insertWalletDevice"));
         assertThat(insert).contains("s.power_text")
                 .doesNotContain("GREATEST(COALESCE(p.vram_total_gb,0),0),0,");
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution() {
+        var capture = org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        return capture;
     }
 }

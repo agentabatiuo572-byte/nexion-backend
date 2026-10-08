@@ -1,5 +1,8 @@
 package ffdd.opsconsole.finance.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -40,6 +43,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class OpsVietnamPaymentServiceTest {
+    private final SupportPaymentAttributionFacade capture = paymentAttribution();
     private final VietnamPaymentMapper mapper = mock(VietnamPaymentMapper.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
@@ -47,7 +51,7 @@ class OpsVietnamPaymentServiceTest {
     private final AppVietQrIntentMapper appIntentMapper = mock(AppVietQrIntentMapper.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final VietQrReceiptEvidenceService receiptEvidence = mock(VietQrReceiptEvidenceService.class);
-    private final OpsVietnamPaymentService service = new OpsVietnamPaymentService(
+    private final OpsVietnamPaymentService service = new OpsVietnamPaymentService(capture,
             mapper, audit, idempotency, sensitiveDataCipher, appIntentMapper, outbox, receiptEvidence,
             Clock.fixed(Instant.parse("2026-07-25T00:00:00Z"), ZoneOffset.UTC));
 
@@ -168,8 +172,9 @@ class OpsVietnamPaymentServiceTest {
         verify(outbox, never()).publish(anyString(), anyString(), anyString(), any());
     }
 
-    @Test
-    void manualMatchUsesCanonicalIntentOwnerAndTransitionsIntentInSameTransaction() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void manualMatchUsesCanonicalIntentOwnerAndTransitionsIntentInSameTransaction(boolean failCapture) {
         when(mapper.findVietQrReconciliationForUpdate(12L)).thenReturn(Map.of(
                 "reconciliationNo", "REC-12",
                 "intentNo", "",
@@ -198,10 +203,7 @@ class OpsVietnamPaymentServiceTest {
                 "id", 8L, "dailyCapVnd", new BigDecimal("100000000"),
                 "receivedTodayVnd", BigDecimal.ZERO, "version", 0L));
         when(mapper.creditUsdtWallet(41L, new BigDecimal("25.000000"), 5L)).thenReturn(1);
-        when(mapper.insertVietQrWalletLedger(
-                "D1-VIETQR-REC-12", 41L, new BigDecimal("25.000000"),
-                new BigDecimal("125.000000"),
-                "VietQR settlement REC-12")).thenReturn(1);
+
         when(appIntentMapper.transitionIntent(
                 "VQR-CANONICAL", 3L, "AWAITING_PAYMENT", "CREDITED",
                 new BigDecimal("659750"), new BigDecimal("25.000000"),
@@ -209,6 +211,20 @@ class OpsVietnamPaymentServiceTest {
         when(mapper.completeVietQrReconciliation(
                 12L, 0L, "CREDITED", "MATCHED", 41L, "VQR-CANONICAL",
                 new BigDecimal("25.000000"), "manual bank receipt match")).thenReturn(1);
+
+        if (failCapture) {
+            org.mockito.Mockito.doThrow(new IllegalStateException("CAPTURE_WRITE_FAILED"))
+                    .when(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.reconcile(
+                12L, "match-credit", "reconcile-12",
+                new VietQrReconciliationCommandRequest(
+                        0L, 41L, "VQR-CANONICAL",
+                        receiptEvidence(),
+                        "manual bank receipt match", "finance-admin")))
+                    .isInstanceOf(IllegalStateException.class).hasMessage("CAPTURE_WRITE_FAILED");
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            return;
+        }
 
         ApiResult<Map<String, Object>> result = service.reconcile(
                 12L, "match-credit", "reconcile-12",
@@ -225,6 +241,14 @@ class OpsVietnamPaymentServiceTest {
                 new BigDecimal("659750"), new BigDecimal("25.000000"),
                 LocalDateTime.of(2026, 7, 25, 0, 0));
         verify(appIntentMapper).closeInFlightReconciliation("VQR-CANONICAL", "CREDITED");
+        org.mockito.Mockito.verify(capture).prepare(41L, Source.VIETQR, "D1-VIETQR-REC-12", "VQR-CANONICAL");
+        org.mockito.Mockito.verify(mapper,org.mockito.Mockito.never()).insertVietQrWalletLedger(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
+        var captureOrder = org.mockito.Mockito.inOrder(capture, mapper);
+        captureOrder.verify(capture).prepare(41L, Source.VIETQR, "D1-VIETQR-REC-12", "VQR-CANONICAL");
+        captureOrder.verify(mapper).findUsdtWalletForUpdate(41L);
+        captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
+        captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
     }
 
     @Test
@@ -258,10 +282,7 @@ class OpsVietnamPaymentServiceTest {
                 "usdtAvailable", new BigDecimal("100"), "version", 5L));
         when(mapper.creditUsdtWallet(
                 41L, new BigDecimal("125.000000"), 5L)).thenReturn(1);
-        when(mapper.insertVietQrWalletLedger(
-                "D1-VIETQR-REC-18", 41L, new BigDecimal("125.000000"),
-                new BigDecimal("225.000000"),
-                "VietQR settlement REC-18")).thenReturn(1);
+
         when(appIntentMapper.transitionIntent(
                 "VQR-LOCKED-LIMIT", 1L, "RECEIPT_REVIEW", "CREDITED",
                 new BigDecimal("3298750"), new BigDecimal("125.000000"),
@@ -518,6 +539,7 @@ class OpsVietnamPaymentServiceTest {
         verify(mapper).completeVietQrReconciliation(
                 29L, 0L, "RETURNED", "ORPHAN", null, null,
                 new BigDecimal("0.000000"), "return unbound orphan receipt");
+            org.mockito.Mockito.verifyNoInteractions(capture);
     }
 
     @Test
@@ -915,9 +937,7 @@ class OpsVietnamPaymentServiceTest {
         when(mapper.findUsdtWalletForUpdate(41L)).thenReturn(Map.of(
                 "usdtAvailable", new BigDecimal("100"), "version", 5L));
         when(mapper.creditUsdtWallet(41L, new BigDecimal("25.000000"), 5L)).thenReturn(1);
-        when(mapper.insertVietQrWalletLedger(
-                "D1-VIETQR-REC-21", 41L, new BigDecimal("25.000000"),
-                new BigDecimal("125.000000"), "VietQR settlement REC-21")).thenReturn(1);
+
         when(appIntentMapper.transitionIntent(
                 "VQR-BEFORE-EXPIRY", 1L, "RECEIPT_REVIEW", "CREDITED",
                 new BigDecimal("659750"), new BigDecimal("25.000000"),
@@ -1001,9 +1021,7 @@ class OpsVietnamPaymentServiceTest {
         when(mapper.findUsdtWalletForUpdate(41L)).thenReturn(Map.of(
                 "usdtAvailable", BigDecimal.ZERO, "version", 0L));
         when(mapper.creditUsdtWallet(41L, new BigDecimal("25.000000"), 0L)).thenReturn(1);
-        when(mapper.insertVietQrWalletLedger(
-                "D1-VIETQR-REC-22", 41L, new BigDecimal("25.000000"),
-                new BigDecimal("25.000000"), "VietQR settlement REC-22")).thenReturn(1);
+
         when(appIntentMapper.transitionIntent(
                 "VQR-WITHIN-GRACE", 1L, "RECEIPT_REVIEW", "CREDITED",
                 new BigDecimal("659750"), new BigDecimal("25.000000"),
@@ -1250,7 +1268,7 @@ class OpsVietnamPaymentServiceTest {
     }
 
     private OpsVietnamPaymentService serviceAt(String instant) {
-        return new OpsVietnamPaymentService(
+        return new OpsVietnamPaymentService(capture,
                 mapper, audit, idempotency, sensitiveDataCipher, appIntentMapper, outbox, receiptEvidence,
                 Clock.fixed(Instant.parse(instant), ZoneOffset.UTC));
     }
@@ -1276,5 +1294,33 @@ class OpsVietnamPaymentServiceTest {
                 "bep20Confirmations", 15,
                 "rotationStrategy", "ROUND_ROBIN",
                 "version", 0L);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans={false,true})
+    void canonicalLedgerZeroOrFailureStopsBeforeRecord(boolean thrown) {
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString()))
+                .thenAnswer(invocation -> { if(thrown)throw new IllegalStateException("LEDGER_INSERT_FAILED"); return 0; });
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> manualMatchUsesCanonicalIntentOwnerAndTransitionsIntentInSameTransaction(false))
+                .hasMessage(thrown?"LEDGER_INSERT_FAILED":"VIETQR_LEDGER_WRITE_FAILED");
+        org.mockito.Mockito.verify(capture,org.mockito.Mockito.never()).record(org.mockito.ArgumentMatchers.any());
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution() {
+        var capture = org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString())).thenReturn(1);
+        return capture;
     }
 }

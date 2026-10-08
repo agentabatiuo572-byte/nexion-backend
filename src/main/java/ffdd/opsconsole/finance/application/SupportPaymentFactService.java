@@ -13,7 +13,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataAccessException;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
-import static ffdd.opsconsole.finance.application.SupportPaymentFacts.*;
+import static ffdd.opsconsole.finance.facade.SupportPaymentFacts.*;
 
 /** Internal source adapter. A caller must authorize the requested customer IDs. */
 @ApplicationService
@@ -58,12 +58,7 @@ public class SupportPaymentFactService {
             long ledger = number(row,"ledgerId"), customer = number(row,"customerId");
             String id = kind == Kind.DEPOSIT ? "DEPOSIT:"+ledger : kind == Kind.DEVICE_PURCHASE
                 ? "PURCHASE:"+text(row,"orderNo") : "ORDER_REFUND:"+ledger;
-            var fact = new Fact(id,kind,source,List.of(sourceId),customer,ledger,text(row,"businessId"),
-                text(row,"orderNo"),text(row,"orderType"),kind == Kind.DEVICE_PURCHASE_REFUND
-                    ? "PURCHASE:"+text(row,"orderNo") : null,
-                text(row,"currency"),decimal(row,"amount"),time(row,"succeededAt"),text(row,"successTimeField"),
-                Math.toIntExact(number(row,"fractionalSecondDigits")),time(row,"providerPaidAt"),
-                time(row,"ledgerRecordedAt"),time(row,"sourceConfirmationAt"),text(row,"sourceVersion"),Status.UNKNOWN);
+            var fact = fact(row,source);
             Fact previous = facts.get(id);
             if (previous != null) {
                 if (!samePayment(previous,fact)) {
@@ -141,7 +136,12 @@ public class SupportPaymentFactService {
             for (Source source : sources) issues.add(new Issue(source,null,"SOURCE_READ_FAILED"));
         }
     }
-    private static String invalid(Map<String,Object> r, Source source) {
+    static String invalid(Map<String,Object> r, Source source) {
+        return invalid(r,source,false);
+    }
+    static String invalidNewSource(Map<String,Object> r,Source source) { return invalid(r,source,true); }
+    // Only the source service's private same-transaction proof permits the causal-time branch.
+    private static String invalid(Map<String,Object> r, Source source, boolean newSuccess) {
         if (source == Source.UNMATCHED_LEDGER) return "MISSING_AUTHORITATIVE_SOURCE";
         if (decimal(r,"amount") == null || decimal(r,"amount").signum() <= 0) return "NON_POSITIVE_AMOUNT";
         if (number(r,"customerId") <= 0 || text(r,"sourceId") == null || text(r,"businessId") == null) return "MISSING_SOURCE_ID";
@@ -165,16 +165,27 @@ public class SupportPaymentFactService {
         LocalDateTime succeeded=time(r,"succeededAt"),ledgerAt=time(r,"ledgerRecordedAt");
         if (succeeded == null) return "MISSING_SUCCESS_TIME";
         if (ledgerAt == null) return "MISSING_SETTLEMENT_TIME";
-        if (!sameRecordedSecond(succeeded,ledgerAt)) return "CONFLICTING_SUCCESS_TIME";
+        if (!newSuccess && !sameRecordedSecond(succeeded,ledgerAt)) return "CONFLICTING_SUCCESS_TIME";
         if (source == Source.WALLET_ORDER || source == Source.TRIAL_CONVERT) {
             LocalDateTime confirmation=time(r,"sourceConfirmationAt");
             if (confirmation == null) return "MISSING_SOURCE_CONFIRMATION_TIME";
-            if (!sameRecordedSecond(succeeded,confirmation)) return "CONFLICTING_SUCCESS_TIME";
+            if (!newSuccess && !sameRecordedSecond(succeeded,confirmation)) return "CONFLICTING_SUCCESS_TIME";
         }
         if (source == Source.ORDER_REFUND && text(r,"orderNo") == null) return "MISSING_ORIGINAL_ORDER";
         return null;
     }
-    private static boolean samePayment(Fact left,Fact right) {
+    static Fact fact(Map<String,Object> row,Source source) {
+        Kind kind=Kind.valueOf(text(row,"kind"));long ledger=number(row,"ledgerId");
+        String id=kind==Kind.DEPOSIT?"DEPOSIT:"+ledger:kind==Kind.DEVICE_PURCHASE
+            ?"PURCHASE:"+text(row,"orderNo"):"ORDER_REFUND:"+ledger;
+        return new Fact(id,kind,source,List.of(text(row,"sourceId")),number(row,"customerId"),ledger,
+            text(row,"businessId"),text(row,"orderNo"),text(row,"orderType"),
+            kind==Kind.DEVICE_PURCHASE_REFUND?"PURCHASE:"+text(row,"orderNo"):null,
+            text(row,"currency"),decimal(row,"amount"),time(row,"succeededAt"),text(row,"successTimeField"),
+            Math.toIntExact(number(row,"fractionalSecondDigits")),time(row,"providerPaidAt"),
+            time(row,"ledgerRecordedAt"),time(row,"sourceConfirmationAt"),text(row,"sourceVersion"),Status.UNKNOWN);
+    }
+    static boolean samePayment(Fact left,Fact right) {
         return left.kind()==right.kind() && left.customerId()==right.customerId() && left.ledgerId()==right.ledgerId()
             && left.currency().equals(right.currency()) && left.amount().compareTo(right.amount())==0
             && left.succeededAt().equals(right.succeededAt()) && Objects.equals(left.orderNo(),right.orderNo())
@@ -187,10 +198,10 @@ public class SupportPaymentFactService {
     private static boolean sameRecordedSecond(LocalDateTime a,LocalDateTime b) {
         return a.withNano(0).equals(b.withNano(0));
     }
-    private static String text(Map<String,Object> r,String key) { Object value=r.get(key); return value==null?null:value.toString(); }
-    private static long number(Map<String,Object> r,String key) { Object value=r.get(key); return value instanceof Number n?n.longValue():value==null?0:Long.parseLong(value.toString()); }
-    private static BigDecimal decimal(Map<String,Object> r,String key) { Object value=r.get(key); return value==null?null:value instanceof BigDecimal d?d:new BigDecimal(value.toString()); }
-    private static LocalDateTime time(Map<String,Object> r,String key) {
+    static String text(Map<String,Object> r,String key) { Object value=r.get(key); return value==null?null:value.toString(); }
+    static long number(Map<String,Object> r,String key) { Object value=r.get(key); return value instanceof Number n?n.longValue():value==null?0:Long.parseLong(value.toString()); }
+    static BigDecimal decimal(Map<String,Object> r,String key) { Object value=r.get(key); return value==null?null:value instanceof BigDecimal d?d:new BigDecimal(value.toString()); }
+    static LocalDateTime time(Map<String,Object> r,String key) {
         Object value=r.get(key); return value instanceof LocalDateTime t?t:value instanceof Timestamp t?t.toLocalDateTime():null;
     }
 }

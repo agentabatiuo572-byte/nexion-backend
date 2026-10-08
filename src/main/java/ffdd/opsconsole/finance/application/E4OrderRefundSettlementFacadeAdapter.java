@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.finance.domain.TopupWalletSnapshot;
 import ffdd.opsconsole.finance.facade.E4OrderRefundSettlementFacade;
@@ -16,9 +17,13 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class E4OrderRefundSettlementFacadeAdapter implements E4OrderRefundSettlementFacade {
     private static final Set<String> CHANNELS = Set.of("WALLET", "ORIGINAL_PAYMENT");
+    @lombok.NonNull
+    private final SupportPaymentAttributionFacade paymentAttribution;
     private final E4OrderRefundMapper mapper;
 
     @Override
+    @org.springframework.transaction.annotation.Transactional(
+            propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
     public Settlement settle(
             String orderNo,
             Long userId,
@@ -26,7 +31,9 @@ public class E4OrderRefundSettlementFacadeAdapter implements E4OrderRefundSettle
             String refundChannel,
             String reason,
             String operator,
-            String idempotencyKey) {
+            String idempotencyKey,
+            SupportPaymentAttributionFacade.Prepared prepared) {
+        java.util.Objects.requireNonNull(prepared, "prepared");
         String channel = refundChannel == null ? "" : refundChannel.trim().toUpperCase(Locale.ROOT);
         if (!CHANNELS.contains(channel)) {
             throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ORDER_REFUND_CHANNEL_INVALID");
@@ -58,11 +65,12 @@ public class E4OrderRefundSettlementFacadeAdapter implements E4OrderRefundSettle
         if (remark.codePointCount(0, remark.length()) > 255) {
             remark = remark.substring(0, remark.offsetByCodePoints(0, 255));
         }
-        if (mapper.insertLedger(userId, ledgerBizNo, normalizedAmount, availableAfter, remark) != 1
+        if (paymentAttribution.insertLedger(prepared, normalizedAmount, availableAfter, remark) != 1
                 || mapper.insertBill(userId, billNo, normalizedAmount) != 1) {
             throw new IllegalStateException("ORDER_REFUND_LEDGER_WRITE_FAILED");
         }
         mapper.markPaymentRefunded(orderNo, userId);
+        paymentAttribution.record(prepared);
         return new Settlement(channel, ledgerBizNo, billNo, availableBefore, availableAfter,
                 cumulativeBefore, cumulativeAfter);
     }

@@ -54,7 +54,7 @@ class PromotionExecutionReviewMySqlTest {
         var rhythm=new GrowthRhythmFacadeAdapter(h.config,OpsReadTimeSeedPolicy.disabledForDirectConstruction());
         var release=new StorefrontProductReleasePolicy(new MybatisDeviceCatalogRepository(h.session.getMapper(DeviceCatalogMapper.class),new ObjectMapper()),rhythm);
         var create=h.proxy(new AppCanonicalBoundaryService(life.canonical,null,h.idempotency,outbox,vouchers,rhythm,h.audit,null,guard,null,release,new StorefrontPurchaseGatePolicy(),env,life.orders));
-        var pay=h.proxy(new AppOrderCommandService(h.session.getMapper(AppOrderCommandMapper.class),h.idempotency,h.audit,guard,null,null,null,null,30,life.orders));
+        var pay=h.proxy(new AppOrderCommandService(h.session.getMapper(AppOrderCommandMapper.class),h.idempotency,h.audit,guard,null,null,null,null,30,life.orders,h.paymentAttribution()));
         var contract=h.contract(life.buy,life.coinSpec(),firstPolicy(common,false));contract.put("template","FIRST_PURCHASE");
         var audience=copy(map(contract.get("buyerAudience")));audience.put("purchaseHistory","NEVER_PAID");contract.put("buyerAudience",audience);
         String first=h.publish(contract);var another=copy(contract);another.put("name",h.run+" second voucher activity");String second=h.publish(another);long buyer=life.user();

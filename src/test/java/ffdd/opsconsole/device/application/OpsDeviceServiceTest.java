@@ -1,5 +1,8 @@
 package ffdd.opsconsole.device.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -106,6 +109,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsDeviceServiceTest {
+    private final SupportPaymentAttributionFacade capture = paymentAttribution();
     private final FakeDeviceOpsRepository deviceRepository = new FakeDeviceOpsRepository();
     private final FakeDeviceCatalogRepository catalogRepository = new FakeDeviceCatalogRepository();
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
@@ -127,7 +131,7 @@ class OpsDeviceServiceTest {
     }
 
     private OpsDeviceService service(OpsReadTimeSeedPolicy seedPolicy) {
-        return new OpsDeviceService(
+        return new OpsDeviceService(capture,
                 deviceRepository,
                 catalogRepository,
                 configFacade,
@@ -145,7 +149,7 @@ class OpsDeviceServiceTest {
     }
 
     private OpsDeviceService serviceWithDownloadPublicationResult(String result) {
-        return new OpsDeviceService(
+        return new OpsDeviceService(capture,
                 deviceRepository,
                 catalogRepository,
                 configFacade,
@@ -2583,6 +2587,12 @@ class OpsDeviceServiceTest {
     @Test
     void refundOrderPostsD4ReversalLedgerAndAudits() {
         catalogRepository.order = order("OD-1", "paid");
+        when(capture.prepare(1L, Source.ORDER_REFUND, "E4-REFUND-OD-1"))
+                .thenAnswer(invocation -> {
+                    assertThat(catalogRepository.order.state()).isEqualTo("paid");
+                    assertThat(catalogRepository.rollbackOrderAssetsCalls).isZero();
+                    return mock(Prepared.class);
+                });
 
         ApiResult<DeviceOrderView> result = service.refundOrder(
                 "OD-1",
@@ -2610,6 +2620,7 @@ class OpsDeviceServiceTest {
                 argThat(payload -> payload instanceof Map<?, ?> map
                         && "superadmin".equals(map.get("operator"))
                         && "customer refund approved".equals(map.get("reason"))));
+        verify(capture).prepare(1L, Source.ORDER_REFUND, "E4-REFUND-OD-1");
     }
 
     @Test
@@ -4910,12 +4921,75 @@ class OpsDeviceServiceTest {
 
         @Override
         public Settlement settle(String orderNo, Long userId, BigDecimal amount, String refundChannel,
-                                 String reason, String operator, String idempotencyKey) {
+                                 String reason, String operator, String idempotencyKey,
+                Prepared prepared) {
+            java.util.Objects.requireNonNull(prepared);
             assetsRolledBackBeforeSettle = assetsRolledBack.getAsBoolean();
             String channel = refundChannel == null ? "WALLET" : refundChannel;
             entries.add(Map.of("orderNo", orderNo, "userId", userId, "amount", amount, "channel", channel));
             return new Settlement(channel, "E4-REFUND-" + orderNo, "E4-BILL-" + orderNo,
                     BigDecimal.ZERO, amount, amount, BigDecimal.ZERO);
         }
+    }
+
+
+    @Test
+    void refundCapturePrepareFailurePreventsOrderOrAssetChanges() {
+        catalogRepository.order = order("OD-1", "paid");
+        when(capture.prepare(1L, Source.ORDER_REFUND, "E4-REFUND-OD-1"))
+                .thenThrow(new IllegalStateException("CAPTURE_PREPARE_FAILED"));
+        assertThatThrownBy(() -> service.refundOrder("OD-1", "idem-refund-capture-fail",
+                new DeviceOrderActionRequest(null, "customer refund approved", "superadmin")))
+                .hasMessage("CAPTURE_PREPARE_FAILED");
+        assertThat(catalogRepository.order.state()).isEqualTo("paid");
+        assertThat(catalogRepository.rollbackOrderAssetsCalls).isZero();
+        assertThat(refundSettlementFacade.entries).isEmpty();
+    }
+
+    @Test
+    void promotionRefundPreservesCaptureTokenAndConfirmsTheSameLedgerOnlyOnce() {
+        catalogRepository.order = order("OD-1", "paid");
+        var promotions = mock(ffdd.opsconsole.promotion.application.PromotionOrderService.class);
+        var prepared = mock(Prepared.class);
+        var settlement = mock(E4OrderRefundSettlementFacade.class);
+        when(capture.prepare(1L, Source.ORDER_REFUND, "E4-REFUND-OD-1")).thenReturn(prepared);
+        when(settlement.settle(eq("OD-1"), eq(1L), any(), eq("WALLET"), anyString(),
+                eq("superadmin"), eq("merged-refund"), eq(prepared)))
+                .thenAnswer(invocation -> {
+                    assertThat(catalogRepository.order.state()).isEqualTo("refunded");
+                    assertThat(catalogRepository.rollbackOrderAssetsCalls).isEqualTo(1);
+                    return new E4OrderRefundSettlementFacade.Settlement("WALLET", "E4-REFUND-OD-1",
+                            "E4-BILL-OD-1", BigDecimal.ZERO, new BigDecimal("1299"),
+                            new BigDecimal("1299"), BigDecimal.ZERO);
+                });
+        var mergedService = new OpsDeviceService(capture, deviceRepository, catalogRepository, configFacade,
+                ledgerPostingFacade, settlement, coverageFacade, auditLogService, idempotencyService,
+                outboxService, taskPriceHistoryService, clock, OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                lockMapper, storageService, promotions);
+        var request = new DeviceOrderActionRequest("WALLET", "customer refund approved", "superadmin");
+
+        assertThat(mergedService.refundOrder("OD-1", "merged-refund", request).getCode()).isZero();
+        var ordered = org.mockito.Mockito.inOrder(promotions, capture, settlement);
+        ordered.verify(promotions).lockOrderParticipants("OD-1");
+        ordered.verify(capture).prepare(1L, Source.ORDER_REFUND, "E4-REFUND-OD-1");
+        ordered.verify(settlement).settle(eq("OD-1"), eq(1L), any(), eq("WALLET"), anyString(),
+                eq("superadmin"), eq("merged-refund"), eq(prepared));
+        ordered.verify(promotions).confirmE4Refund("OD-1", "E4-REFUND-OD-1");
+
+        assertThat(mergedService.refundOrder("OD-1", "merged-refund-replay", request).getCode()).isZero();
+        verify(capture, times(1)).prepare(1L, Source.ORDER_REFUND, "E4-REFUND-OD-1");
+        verify(settlement, times(1)).settle(anyString(), any(), any(), anyString(), anyString(), anyString(),
+                anyString(), eq(prepared));
+        verify(promotions, times(1)).confirmE4Refund("OD-1", "E4-REFUND-OD-1");
+        assertThat(catalogRepository.rollbackOrderAssetsCalls).isEqualTo(1);
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution() {
+        var capture = org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        return capture;
     }
 }

@@ -1,5 +1,8 @@
 package ffdd.opsconsole.finance.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -38,6 +41,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class TopupCardLifecycleServiceTest {
+    private final SupportPaymentAttributionFacade capture = paymentAttribution();
     private final D1FinanceClosureMapper mapper = mock(D1FinanceClosureMapper.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final TreasuryLedgerRepository treasury = mock(TreasuryLedgerRepository.class);
@@ -47,7 +51,7 @@ class TopupCardLifecycleServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new TopupCardLifecycleService(mapper, audit, treasury, outbox, config);
+        service = new TopupCardLifecycleService(capture, mapper, audit, treasury, outbox, config);
         Map<String, String> defaults = Map.of(
                 "finance.topup.channel.card.enabled", "true",
                 "finance.topup.psp.primary", "Checkout.com",
@@ -93,8 +97,9 @@ class TopupCardLifecycleServiceTest {
         verify(mapper, never()).updateWallet(any(), any(), any(), any());
     }
 
-    @Test
-    void settlementPostsExactD4WalletCumulativeFeeBufferD3AndCanonicalOutboxAtomically() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void settlementPostsExactD4WalletCumulativeFeeBufferD3AndCanonicalOutboxAtomically(boolean failCapture) {
         when(mapper.selectAdmissionForUpdate("adm-100", "ord-100")).thenReturn(authorizedAdmission());
         when(mapper.insertSettlementReceipt(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(1);
@@ -109,14 +114,21 @@ class TopupCardLifecycleServiceTest {
         when(mapper.bindPaymentWalletLedger("pay-100")).thenReturn(1);
         when(mapper.completeSettlement(any(), any(), any(), any())).thenReturn(1);
 
+        if (failCapture) {
+            org.mockito.Mockito.doThrow(new IllegalStateException("CAPTURE_WRITE_FAILED"))
+                    .when(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.settle(settlement()))
+                    .isInstanceOf(IllegalStateException.class).hasMessage("CAPTURE_WRITE_FAILED");
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+            return;
+        }
+
         var result = service.settle(settlement());
 
         assertThat(result.walletBalanceAfter()).isEqualByComparingTo("110.000000");
         assertThat(result.cumulativeDepositAfter()).isEqualByComparingTo("120.000000");
         assertThat(result.feeBufferBalanceAfter()).isEqualByComparingTo("8.500000");
-        verify(mapper).insertCardTopupWalletLedger(
-                eq(42L), eq("pay-100"), eq(new BigDecimal("100.000000")),
-                eq(new BigDecimal("110.000000")), anyString());
+        verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), eq(new BigDecimal("100.000000")), eq(new BigDecimal("110.000000")), anyString());
         verify(mapper).insertFeeBufferCredit(any(), eq("pay-100"), eq(new BigDecimal("3.500000")),
                 eq(new BigDecimal("8.500000")), any(), any(), eq("set-100"));
         verify(treasury).recordTopupReserve("pay-100", new BigDecimal("100.000000"), "set-100");
@@ -132,6 +144,14 @@ class TopupCardLifecycleServiceTest {
                 .containsEntry("channel", "Card")
                 .containsEntry("psp", "Checkout.com");
         verify(audit).recordRequired(any(AuditLogWriteRequest.class));
+        org.mockito.Mockito.verify(capture).prepare(42L, Source.CARD_TOPUP, "pay-100");
+        org.mockito.Mockito.verify(mapper,org.mockito.Mockito.never()).insertCardTopupWalletLedger(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
+        var captureOrder = org.mockito.Mockito.inOrder(capture, mapper);
+        captureOrder.verify(capture).prepare(42L, Source.CARD_TOPUP, "pay-100");
+        captureOrder.verify(mapper).selectWalletForUpdate(42L);
+        captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
+        captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+        org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
     }
 
     @Test
@@ -310,5 +330,42 @@ class TopupCardLifecycleServiceTest {
 
     private LocalDateTime utcNow() {
         return LocalDateTime.now(ZoneId.of("Asia/Shanghai"));
+    }
+
+
+    @Test
+    void completedSettlementReplayDoesNotRecaptureOrCredit() {
+        var request = settlement();
+        String hash = TopupEventHashing.sha256(String.join("|", "set-100", "adm-100", "pay-100", "ord-100", "42",
+                "Checkout.com", "psp-pay-100", "100.000000", "3.500000", "3.500000", request.occurredAt().toString()));
+        when(mapper.selectSettlementForUpdate("set-100")).thenReturn(new ffdd.opsconsole.finance.domain.TopupSettlementReceipt(
+                "set-100", hash, "pay-100", "SETTLED", BigDecimal.TEN, BigDecimal.TEN, BigDecimal.ONE));
+        assertThat(service.settle(request).replay()).isTrue();
+        org.mockito.Mockito.verifyNoInteractions(capture);
+        verify(mapper, never()).selectAdmissionForUpdate(any(), any());
+        verify(mapper, never()).selectWalletForUpdate(any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans={false,true})
+    void canonicalLedgerZeroOrFailureStopsBeforeRecord(boolean thrown) {
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString()))
+                .thenAnswer(invocation -> { if(thrown)throw new IllegalStateException("LEDGER_INSERT_FAILED"); return 0; });
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> settlementPostsExactD4WalletCumulativeFeeBufferD3AndCanonicalOutboxAtomically(false))
+                .hasMessage(thrown?"LEDGER_INSERT_FAILED":"CARD_TOPUP_LEDGER_WRITE_FAILED");
+        org.mockito.Mockito.verify(capture,org.mockito.Mockito.never()).record(org.mockito.ArgumentMatchers.any());
+    }
+
+    private static SupportPaymentAttributionFacade paymentAttribution() {
+        var capture = org.mockito.Mockito.mock(SupportPaymentAttributionFacade.class);
+        org.mockito.Mockito.when(capture.prepare(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(org.mockito.Mockito.mock(
+                        Prepared.class));
+        org.mockito.Mockito.when(capture.insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString())).thenReturn(1);
+        return capture;
     }
 }

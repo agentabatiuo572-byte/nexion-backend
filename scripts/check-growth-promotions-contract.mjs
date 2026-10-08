@@ -734,12 +734,20 @@ for (const marker of ['actor_id BIGINT', 'query_json JSON', 'rows_json JSON', 's
   'chk_promotion_list_snapshot_total', 'chk_promotion_list_snapshot_time', 'chk_promotion_list_snapshot_shape']) {
   assert.throws(() => listSnapshotIntegrity(listMigration.split('\n').filter(line => !line.includes(marker)).join('\n')), undefined, 'Lost list snapshot invariant ' + marker);
 }
-assert.throws(() => listSnapshotIntegrity(listMigration.replace(/^(\s*CONSTRAINT.*)$/gm, '-- $1')), undefined, 'Commented list CHECKs rejected');
+for (const source of [listMigration.replace(/\r\n?/g, '\n'), listMigration.replace(/\r\n?/g, '\n').replace(/\n/g, '\r\n')]) {
+  const damaged = source.replace(/^([\t ]*CONSTRAINT[^\r\n]*)\r?$/gm, '-- $1');
+  assert.notEqual(damaged, source, 'List CHECK comment mutation must change both LF and CRLF input');
+  assert.throws(() => listSnapshotIntegrity(damaged), undefined, 'Commented list CHECKs rejected');
+}
 assert.throws(() => listSnapshotIntegrity(listMigration.replace('CHECK (expires_at > as_of)', 'CHECK (expires_at > as_of) NOT ENFORCED')), undefined, 'Unenforced list CHECK rejected');
 for (const key of ['uk_promotion_receipt_order_id','uk_promotion_receipt_quote','fk_promotion_receipt_order','fk_promotion_receipt_quote']) {
   assert.throws(() => receiptIntegrity(receiptMigration.split('\n').filter(line => !line.includes(key)).join('\n')), undefined, 'Receipt gate must reject lost relation ' + key);
 }
-assert.throws(() => receiptIntegrity(receiptMigration.replace(/^(\s*CONSTRAINT fk_.*)$/gm, '-- $1')), undefined, 'Commented receipt FKs must fail');
+for (const source of [receiptMigration.replace(/\r\n?/g, '\n'), receiptMigration.replace(/\r\n?/g, '\n').replace(/\n/g, '\r\n')]) {
+  const damaged = source.replace(/^([\t ]*CONSTRAINT fk_[^\r\n]*)\r?$/gm, '-- $1');
+  assert.notEqual(damaged, source, 'Receipt FK comment mutation must change both LF and CRLF input');
+  assert.throws(() => receiptIntegrity(damaged), undefined, 'Commented receipt FKs must fail');
+}
 assert.throws(() => receiptIntegrity(receiptMigration.replace('REFERENCES nx_order(id)', 'REFERENCES nx_order(user_id)')), undefined, 'Wrong receipt FK column must fail');
 const count = check(document, fixtures, migration);
 const mutations = [
@@ -799,7 +807,8 @@ assert.throws(() => check(document, fixtures, withoutForeignKeys), undefined, 'G
 sqlMutations++;
 for (const [name, damagedSql] of [
   ['unenforced CHECK', migration.replace(/(CONSTRAINT chk_promotion_activity_count CHECK[^\r\n]*)/, '$1 NOT ENFORCED')],
-  ['commented foreign keys', migration.replace(/^(\s*CONSTRAINT fk_.*)$/gm, '-- $1')],
+  ['commented foreign keys (LF)', migration.replace(/\r\n?/g, '\n').replace(/^([\t ]*CONSTRAINT fk_[^\r\n]*)$/gm, '-- $1')],
+  ['commented foreign keys (CRLF)', migration.replace(/\r\n?/g, '\n').replace(/\n/g, '\r\n').replace(/^([\t ]*CONSTRAINT fk_[^\r\n]*)\r?$/gm, '-- $1')],
   ['unsupported reversal asset', migration.replace("asset IN ('DEVICE','USDT','NEX')", "asset IN ('DEVICE','USDT','NEX','BTC')")],
   ['fractional device reversal', migration.replace('amount=FLOOR(amount) AND recovered=FLOOR(recovered)', 'amount >= 0 AND recovered >= 0')],
   ['fictional device target', migration.replace('REFERENCES nx_user_device(id)', 'REFERENCES nx_promotion_reward(obligation_id)')],

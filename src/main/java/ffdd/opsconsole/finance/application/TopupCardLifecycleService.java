@@ -1,5 +1,7 @@
 package ffdd.opsconsole.finance.application;
 
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.finance.domain.TopupAdmissionReceipt;
 import ffdd.opsconsole.finance.domain.TopupFeeBufferSnapshot;
 import ffdd.opsconsole.finance.domain.TopupChargebackEventReceipt;
@@ -57,6 +59,8 @@ public class TopupCardLifecycleService {
     private static final int ADMISSION_MINUTES = 10;
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
 
+    @lombok.NonNull
+    private final SupportPaymentAttributionFacade paymentAttribution;
     private final D1FinanceClosureMapper mapper;
     private final AuditLogService auditLogService;
     private final TreasuryLedgerRepository treasuryLedgerRepository;
@@ -186,6 +190,7 @@ public class TopupCardLifecycleService {
             throw new IllegalStateException("CARD_TOPUP_ADMISSION_CONFLICT");
         }
 
+        var prepared = paymentAttribution.prepare(request.userId(), Source.CARD_TOPUP, request.paymentNo());
         TopupWalletSnapshot wallet = mapper.selectWalletForUpdate(request.userId());
         TopupFeeBufferSnapshot feeBuffer = mapper.selectFeeBufferForUpdate();
         if (wallet == null) {
@@ -211,9 +216,10 @@ public class TopupCardLifecycleService {
                 request.feeAmount(), request.feeRate(), request.occurredAt()) != 1) {
             throw new IllegalStateException("CARD_TOPUP_PAYMENT_WRITE_FAILED");
         }
-        mapper.insertCardTopupWalletLedger(
-                request.userId(), request.paymentNo(), request.amount(), walletAfter,
-                "银行卡充值入账 · provider=" + request.provider() + " · event=" + request.eventId());
+        if (paymentAttribution.insertLedger(prepared, request.amount(), walletAfter,
+                "银行卡充值入账 · provider=" + request.provider() + " · event=" + request.eventId()) != 1) {
+            throw new IllegalStateException("CARD_TOPUP_LEDGER_WRITE_FAILED");
+        }
         if (mapper.bindPaymentWalletLedger(request.paymentNo()) != 1) {
             throw new IllegalStateException("CARD_TOPUP_LEDGER_BINDING_FAILED");
         }
@@ -235,6 +241,7 @@ public class TopupCardLifecycleService {
         if (mapper.completeSettlement(request.eventId(), walletAfter, cumulativeAfter, feeBufferAfter) != 1) {
             throw new IllegalStateException("SETTLEMENT_COMPLETION_CONFLICT");
         }
+        paymentAttribution.record(prepared);
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("D1_CARD_TOPUP_SETTLED")
                 .resourceType("CARD_TOPUP_SETTLEMENT")

@@ -107,6 +107,20 @@ public final class PromotionRuntimeHarness {
         }
     }
     @SuppressWarnings("unchecked") public <T>T proxy(T target){var factory=new ProxyFactory(target);factory.setProxyTargetClass(true);factory.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(dataSource),new AnnotationTransactionAttributeSource()));return (T)factory.getProxy();}
+    public ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade paymentAttribution(){
+        ObjectMapper json=new ObjectMapper().findAndRegisterModules();
+        var mybatis=new MybatisConfiguration(new Environment(run+"-payment-attribution",new SpringManagedTransactionFactory(),dataSource));
+        mybatis.setMapUnderscoreToCamelCase(true);
+        for(Class<?> mapper:List.of(ffdd.opsconsole.content.mapper.SupportPaymentAttributionMapper.class,
+                ffdd.opsconsole.finance.mapper.SupportPaymentSourceMapper.class,
+                ffdd.opsconsole.finance.mapper.SupportPaymentFactMapper.class))mybatis.addMapper(mapper);
+        var attributionSession=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(mybatis));
+        var history=new ffdd.opsconsole.finance.application.SupportPaymentFactService(attributionSession.getMapper(ffdd.opsconsole.finance.mapper.SupportPaymentFactMapper.class));
+        var sources=proxy(new ffdd.opsconsole.finance.application.SupportPaymentSourceService(
+                attributionSession.getMapper(ffdd.opsconsole.finance.mapper.SupportPaymentSourceMapper.class),history,dataSource,json));
+        return proxy(new ffdd.opsconsole.content.application.SupportPaymentAttributionService(
+                attributionSession.getMapper(ffdd.opsconsole.content.mapper.SupportPaymentAttributionMapper.class),sources,audit,dataSource,json));
+    }
     public Map<String,Object> nativeRef(String system,String resource){var value=natives.nativeContract(system,resource);value.remove("content");return value;}
     public Map<String,Object> approvePolicy(Map<String,Object> content){
         authenticate(maker);var request=values("reason","隔离治理政策真实审批依据","content",content,"evidenceRefs",List.of(evidence));
