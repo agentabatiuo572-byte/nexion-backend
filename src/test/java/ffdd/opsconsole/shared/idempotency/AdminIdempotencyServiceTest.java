@@ -26,12 +26,66 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 class AdminIdempotencyServiceTest {
+    @ParameterizedTest
+    @ValueSource(ints = {TransactionSynchronization.STATUS_COMMITTED,
+            TransactionSynchronization.STATUS_ROLLED_BACK, TransactionSynchronization.STATUS_UNKNOWN})
+    void nestedSuccessBecomesRetryableOnlyAfterCertainOuterRollback(int completion) {
+        when(recordMapper.insert(any(AdminIdempotencyRecordEntity.class))).thenAnswer(invocation -> {
+            invocation.<AdminIdempotencyRecordEntity>getArgument(0).setId(81L);
+            return 1;
+        });
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertThat(service.executeRetained("NESTED", "key", "hash", Map.class,
+                    () -> Map.of("applied", true))).containsEntry("applied", true);
+            verify(recordMapper, never()).markFailed(any(), any());
+            var callbacks = TransactionSynchronizationManager.getSynchronizations();
+            assertThat(callbacks).hasSize(1);
+            callbacks.get(0).afterCompletion(completion);
+            if (completion == TransactionSynchronization.STATUS_ROLLED_BACK) {
+                verify(recordMapper).markFailed(81L, "EnclosingTransactionRolledBack");
+            } else {
+                verify(recordMapper, never()).markFailed(any(), any());
+            }
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    @Test
+    void nestedFailureDefersFailureWriteUntilOuterLocksAreReleased() {
+        when(recordMapper.insert(any(AdminIdempotencyRecordEntity.class))).thenAnswer(invocation -> {
+            invocation.<AdminIdempotencyRecordEntity>getArgument(0).setId(82L);
+            return 1;
+        });
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            var original = new IllegalStateException("business rollback");
+            assertThatThrownBy(() -> service.executeRetained("NESTED", "key", "hash", Map.class,
+                    () -> { throw original; })).isSameAs(original);
+            verify(recordMapper, never()).markFailed(any(), any());
+            TransactionSynchronizationManager.getSynchronizations().get(0)
+                    .afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+            verify(recordMapper).markFailed(82L, "EnclosingTransactionRolledBack");
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
     @Test
     void recoveryReadsExpiredStatesWithoutResettingOrExposingHistoricalResponse() {
         for (String status : List.of("SUCCEEDED", "FAILED", "PROCESSING", "UNKNOWN")) {

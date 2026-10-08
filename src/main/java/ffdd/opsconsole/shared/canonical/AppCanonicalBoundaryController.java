@@ -144,7 +144,7 @@ public class AppCanonicalBoundaryController {
         Long userId = userId(authentication);
         return userId == null ? forbidden()
                 : service.createOrder(userId, request.orderNo(), request.productId(), request.productNo(),
-                        request.quantity(), request.voucherId(), idempotencyKey);
+                        request.quantity(), request.voucherId(), request.promotionQuoteId(), idempotencyKey);
     }
 
     @PostMapping("/api/orders/bundle")
@@ -156,8 +156,10 @@ public class AppCanonicalBoundaryController {
         return userId == null ? forbidden() : bundleOrderService.create(
                 userId,
                 request == null ? null : request.productNos(),
+                request == null ? null : request.items(),
                 request == null ? null : request.policyVersion(),
                 request == null ? null : request.expectedAmountUsdt(),
+                request == null ? null : request.promotionQuoteId(),
                 idempotencyKey);
     }
 
@@ -231,10 +233,17 @@ public class AppCanonicalBoundaryController {
     }
 
     public record OrderCreateRequest(
-            String orderNo, Long productId, String productNo, Integer quantity, String voucherId) {
+            String orderNo, Long productId, String productNo, Integer quantity, String voucherId, String promotionQuoteId) {
+        public OrderCreateRequest(String orderNo, Long productId, String productNo, Integer quantity, String voucherId) {
+            this(orderNo, productId, productNo, quantity, voucherId, null);
+        }
     }
 
-    public record BundleOrderCreateRequest(java.util.List<String> productNos, Long policyVersion, BigDecimal expectedAmountUsdt) {
+    public record BundleOrderCreateRequest(java.util.List<String> productNos, Long policyVersion,
+            BigDecimal expectedAmountUsdt, java.util.List<AppBundleOrderService.BundleItem> items, String promotionQuoteId) {
+        public BundleOrderCreateRequest(java.util.List<String> productNos, Long policyVersion, BigDecimal expectedAmountUsdt) {
+            this(productNos, policyVersion, expectedAmountUsdt, null, null);
+        }
     }
 
     public record TrialChargeRequest(Boolean chargeSucceeded, BigDecimal chargeFailRate) {

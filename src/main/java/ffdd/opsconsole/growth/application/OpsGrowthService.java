@@ -63,7 +63,6 @@ import org.springframework.util.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
-@RequiredArgsConstructor
 public class OpsGrowthService implements AuditReplayable {
     private static final String PHASE_CONFIG_KEY = "platform.phase.config";
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
@@ -210,6 +209,35 @@ public class OpsGrowthService implements AuditReplayable {
 
     private final Optional<OpsReferralRewardService> referralRewardService;
     private final StreakPerkBusinessAvailabilityFacade streakPerkAvailability;
+    private final ffdd.opsconsole.promotion.application.PromotionAdminService promotionAdmin;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,
+            TreasuryCoverageFacade coverageFacade, TreasuryLedgerPostingFacade ledgerPostingFacade,
+            AuditLogService auditLogService, ObjectMapper objectMapper, OpsReadTimeSeedPolicy readTimeSeedPolicy,
+            Optional<DeviceCatalogRepository> deviceCatalogRepository, Optional<GrowthQuestEventMapper> questEventMapper,
+            Optional<GrowthVoucherMapper> voucherMapper, AuditObjectLockMapper lockMapper,
+            AppTrialLifecycleService appTrialLifecycleService, Optional<OpsReferralRewardService> referralRewardService,
+            StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
+            ffdd.opsconsole.promotion.application.PromotionAdminService promotionAdmin) {
+        this.configFacade=configFacade;this.emergencyRepository=emergencyRepository;this.coverageFacade=coverageFacade;
+        this.ledgerPostingFacade=ledgerPostingFacade;this.auditLogService=auditLogService;this.objectMapper=objectMapper;
+        this.readTimeSeedPolicy=readTimeSeedPolicy;this.deviceCatalogRepository=deviceCatalogRepository;
+        this.questEventMapper=questEventMapper;this.voucherMapper=voucherMapper;this.lockMapper=lockMapper;
+        this.appTrialLifecycleService=appTrialLifecycleService;this.referralRewardService=referralRewardService;
+        this.streakPerkAvailability=streakPerkAvailability;this.promotionAdmin=promotionAdmin;
+    }
+
+    public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,
+            TreasuryCoverageFacade coverageFacade, TreasuryLedgerPostingFacade ledgerPostingFacade,
+            AuditLogService auditLogService, ObjectMapper objectMapper, OpsReadTimeSeedPolicy readTimeSeedPolicy,
+            Optional<DeviceCatalogRepository> deviceCatalogRepository, Optional<GrowthQuestEventMapper> questEventMapper,
+            Optional<GrowthVoucherMapper> voucherMapper, AuditObjectLockMapper lockMapper,
+            AppTrialLifecycleService appTrialLifecycleService, Optional<OpsReferralRewardService> referralRewardService,
+            StreakPerkBusinessAvailabilityFacade streakPerkAvailability) {
+        this(configFacade,emergencyRepository,coverageFacade,ledgerPostingFacade,auditLogService,objectMapper,readTimeSeedPolicy,
+            deviceCatalogRepository,questEventMapper,voucherMapper,lockMapper,appTrialLifecycleService,referralRewardService,streakPerkAvailability,null);
+    }
 
     public ApiResult<Map<String, Object>> phases() {
         ensurePhaseSeedData();
@@ -5476,6 +5504,10 @@ public class OpsGrowthService implements AuditReplayable {
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
+            case "promotion_reward_correction" -> {
+                if(promotionAdmin==null)return ApiResult.fail(503,"PROMOTION_GOVERNANCE_UNAVAILABLE");
+                return promotionAdmin.approveCorrection(p,ctx);
+            }
             case "h1_phase_dial" -> {
                 GrowthConfigUpdateRequest req = new GrowthConfigUpdateRequest(null, str(p, "value"), reason, operator);
                 Integer month = intVal(p, "month");

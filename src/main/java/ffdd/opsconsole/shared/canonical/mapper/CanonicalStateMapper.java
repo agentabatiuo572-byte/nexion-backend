@@ -13,6 +13,18 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
+    // All purchase entrypoints count unfulfilled gift promises against the same account slots.
+    String PROMOTION_RESERVED_SLOTS = """
+            COALESCE((SELECT SUM(r.amount) FROM nx_promotion_reservation r
+                       WHERE r.beneficiary_id=#{userId} AND r.asset='DEVICE'
+                         AND r.status IN ('RESERVED','COMMITTED')
+                         AND NOT EXISTS (
+                           SELECT 1 FROM nx_promotion_reward rw
+                             LEFT JOIN nx_promotion_device_receipt dr ON dr.obligation_id=rw.obligation_id
+                            WHERE rw.reservation_id=r.reservation_id
+                              AND (rw.status IN ('CANCELLED','REVERSED') OR dr.device_id IS NOT NULL)
+                         )),0)
+            """;
     @Select("""
             SELECT status
               FROM nx_trial_claim
@@ -205,7 +217,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                             ),0)
                           WHEN UPPER(COALESCE(NULLIF(header_product.product_type,''),'DEVICE'))='SHARE'
                           THEN 0 ELSE o.quantity END
-                   ), 0)
+                   ), 0) +
+            """ + PROMOTION_RESERVED_SLOTS + """
               FROM nx_order o
               JOIN nx_user u ON u.id=o.user_id AND COALESCE(u.sandbox,0)=0
               LEFT JOIN nx_product header_product
@@ -233,7 +246,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                             ),0)
                           WHEN UPPER(COALESCE(NULLIF(header_product.product_type,''),'DEVICE'))='SHARE'
                           THEN 0 ELSE o.quantity END
-                   ),0)
+                   ),0) +
+            """ + PROMOTION_RESERVED_SLOTS + """
               FROM nx_order o
               JOIN nx_user u ON u.id=o.user_id AND u.sandbox=1
               LEFT JOIN nx_product header_product
@@ -680,6 +694,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     ProductStock findPurchasableProduct(@Param("productId") Long productId,
                                         @Param("productNo") String productNo);
 
+    @Select("SELECT UNIX_TIMESTAMP(TIMESTAMPADD(MINUTE,#{ttlMinutes},created_at)) FROM nx_order WHERE order_no=#{orderNo} AND is_deleted=0")
+    Long orderDeadlineEpoch(@Param("orderNo") String orderNo, @Param("ttlMinutes") Integer ttlMinutes);
+
     @Select("""
             <script>
             SELECT p.id, p.product_no AS productNo, p.price_usdt AS priceUsdt, p.stock,
@@ -916,7 +933,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     /** Preserve order-line structure for bundle detail instead of collapsing SKUs into display text. */
     @Select("""
             SELECT product_no AS sku, product_name AS name, quantity,
-                   unit_price_usdt AS unitPriceUsdt, line_amount_usdt AS lineAmountUsdt
+                   unit_price_usdt AS unitPriceUsdt, line_amount_usdt AS lineAmountUsdt, id AS orderLineId
               FROM nx_order_item
              WHERE order_no=#{orderNo} AND is_deleted=0
              ORDER BY sort_order, id
@@ -1169,7 +1186,10 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     }
 
     record UserOrderLineItem(String sku, String name, Integer quantity,
-                             BigDecimal unitPriceUsdt, BigDecimal lineAmountUsdt) {
+                             BigDecimal unitPriceUsdt, BigDecimal lineAmountUsdt, Long orderLineId) {
+        public UserOrderLineItem(String sku, String name, Integer quantity, BigDecimal unitPriceUsdt, BigDecimal lineAmountUsdt) {
+            this(sku, name, quantity, unitPriceUsdt, lineAmountUsdt, null);
+        }
     }
 
     record TrialClaim(Long id, String claimNo, String status, BigDecimal priceUsdt, BigDecimal earnedOffsetUsdt) {

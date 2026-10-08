@@ -53,13 +53,15 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import ffdd.opsconsole.promotion.application.PromotionOrderService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.transaction.interceptor.TransactionAspectSupport;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class OpsAuditCenterService {
     private static final String GROUP_A2 = "admin_a2";
     private static final String STATUS_PENDING = "pending";
@@ -98,6 +100,18 @@ public class OpsAuditCenterService {
     private final A2AccessPolicy accessPolicy;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     private final AdminIdempotencyService idempotencyService;
+    private final PromotionOrderService promotions;
+
+    public OpsAuditCenterService(PlatformConfigRepository configRepository, AuditLogService auditLogService,
+            OpsReadTimeSeedPolicy readTimeSeedPolicy, AuditOperationTicketMapper ticketMapper,
+            AuditOperationHistoryMapper historyMapper, AuditConfirmCategoryMapper confirmCategoryMapper,
+            AuditObjectLockMapper lockMapper, AuditReplayBusinessPermissionGuard replayBusinessPermissionGuard,
+            AuditReplayDispatcher replayDispatcher, A2AccessPolicy accessPolicy,
+            com.fasterxml.jackson.databind.ObjectMapper objectMapper, AdminIdempotencyService idempotencyService) {
+        this(configRepository, auditLogService, readTimeSeedPolicy, ticketMapper, historyMapper,
+                confirmCategoryMapper, lockMapper, replayBusinessPermissionGuard, replayDispatcher,
+                accessPolicy, objectMapper, idempotencyService, null);
+    }
 
     public ApiResult<AuditCenterOverview> overview() {
         return overview(new AuditLogQueryRequest());
@@ -257,6 +271,8 @@ public class OpsAuditCenterService {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_SERIALIZE_FAILED");
             }
         }
+        String refundOrderNo = refundOrderNo(command);
+        if (promotions != null && refundOrderNo != null) promotions.lockOrderParticipants(refundOrderNo);
         // 加目标对象锁(防 pending 期间重复发起)
         if (target != null) {
             int exists = lockMapper.countActiveByTarget(target.domain(), target.type(), target.id());
@@ -305,6 +321,7 @@ public class OpsAuditCenterService {
             }
         }
         ticketMapper.insert(ticket);
+        if (promotions != null && refundOrderNo != null) promotions.holdA2Refund(ticket.getOperationId(), refundOrderNo);
 
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("A2_OPERATION_PROPOSED")
@@ -594,6 +611,14 @@ public class OpsAuditCenterService {
         if (guard != null) {
             return guard;
         }
+        String lockedRefundOrder = null;
+        if (promotions != null) {
+            AuditOperationTicketEntity preview = ticketMapper.selectActiveByOperationId(normalizeText(operationId).toUpperCase(Locale.ROOT));
+            if (preview != null && accessPolicy.canAccessTicket(preview)) {
+                lockedRefundOrder = refundOrderNo(deserializeCommand(preview.getCommandJson()));
+                if (lockedRefundOrder != null) promotions.lockOrderParticipants(lockedRefundOrder);
+            }
+        }
         AuditOperationTicketEntity ticket = ticketForUpdate(operationId).orElse(null);
         if (ticket == null) {
             return fail(OpsErrorCode.VALIDATION_FAILED, "A2_OPERATION_NOT_FOUND");
@@ -603,6 +628,10 @@ public class OpsAuditCenterService {
         // points cannot approve, reject, unlock, or replay a cross-domain operation.
         if (!accessPolicy.canAccessTicket(ticket)) {
             return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
+        }
+        if (promotions != null && !java.util.Objects.equals(lockedRefundOrder,
+                refundOrderNo(deserializeCommand(ticket.getCommandJson())))) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_REFUND_COMMAND_CHANGED");
         }
         if (expectedStatus != null && !status(ticket.getStatus()).equalsIgnoreCase(expectedStatus.trim())) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_WITHDRAW_STALE");
@@ -648,6 +677,10 @@ public class OpsAuditCenterService {
         ticket.setDecisionReason(request.reason().trim());
         ticket.setDecidedAt(LocalDateTime.now());
         ticketMapper.updateById(ticket);
+        if (promotions != null && lockedRefundOrder != null
+                && (STATUS_REJECTED.equals(nextStatus) || "withdrawn".equals(nextStatus))) {
+            promotions.clearA2Refund(ticket.getOperationId(), lockedRefundOrder);
+        }
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(auditAction)
                 .resourceType("A2_OPERATION")
@@ -666,6 +699,13 @@ public class OpsAuditCenterService {
         return proposer != null
                 && checker != null
                 && proposer.trim().equalsIgnoreCase(checker.trim());
+    }
+
+    private String refundOrderNo(AuditReplayCommand command) {
+        if (command == null || !"E".equals(command.domain()) || !"e4_order_refund".equals(command.op())
+                || command.params() == null || !(command.params().get("orderNo") instanceof String orderNo)
+                || !StringUtils.hasText(orderNo)) return null;
+        return orderNo.trim();
     }
 
     private String operationRiskLevel(AuditOperationTicketEntity ticket) {

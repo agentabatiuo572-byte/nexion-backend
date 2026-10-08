@@ -8,6 +8,15 @@ import org.junit.jupiter.api.Test;
 
 class AppAcceptanceSandboxStartupMigrationContractTest {
     @Test
+    void promotionRewardPagesAreRegisteredDuringCanonicalStartup() throws Exception {
+        String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        String routes = Files.readString(Path.of("scripts/migrations/20261008_l6_promotion_reward_routes.sql"));
+        assertThat(runner).containsOnlyOnce("20261008_l6_promotion_reward_routes.sql");
+        assertThat(routes).contains("/pages/events/promotion-rewards", "/pages/events/promotion-reward-detail",
+                "ON DUPLICATE KEY UPDATE", "tracked=1", "is_deleted=0");
+    }
+
+    @Test
     void historicalFixturesRemainReadableButCannotRunAtCanonicalStartup() throws Exception {
         String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
         String schema = Files.readString(Path.of("scripts/schema.sql"));

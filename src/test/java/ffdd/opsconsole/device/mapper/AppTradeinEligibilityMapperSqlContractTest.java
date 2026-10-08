@@ -53,14 +53,16 @@ class AppTradeinEligibilityMapperSqlContractTest {
                             : new Class<?>[] {Long.class});
             String sql = String.join(" ", method.getAnnotation(Select.class).value());
             assertThat(sql).as(methodName)
-                    .contains("UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'");
+                    .contains("UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'")
+                    .contains("UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'");
         }
 
         for (String methodName : List.of("recycleSourceDevice", "moveSourceDeviceToInventory")) {
             Method method = AppTradeinMapper.class.getMethod(methodName, Long.class, Long.class);
             String sql = String.join(" ", method.getAnnotation(org.apache.ibatis.annotations.Update.class).value());
             assertThat(sql).as(methodName)
-                    .contains("UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'");
+                    .contains("UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'")
+                    .contains("UPPER(COALESCE(source_channel,'')) <> 'PROMOTION_GIFT'");
         }
     }
 

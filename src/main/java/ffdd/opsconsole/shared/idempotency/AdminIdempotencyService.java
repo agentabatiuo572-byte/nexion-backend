@@ -9,11 +9,15 @@ import java.time.temporal.ChronoUnit;
 import java.util.Locale;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AdminIdempotencyService {
     private static final Duration DEFAULT_TTL = Duration.ofHours(24);
     /** Must stay aligned with nx_admin_idempotency_record.idempotency_key VARCHAR(128). */
@@ -78,10 +82,30 @@ public class AdminIdempotencyService {
             return claim.replayResponse();
         }
 
+        boolean joinedTransaction = TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive();
+        if (joinedTransaction) {
+            // The success marker joins the caller's transaction. Its later rollback
+            // restores the independently committed claim to PROCESSING. Finalize only
+            // after rollback releases its locks; REQUIRES_NEW before then deadlocks.
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCompletion(int status) {
+                    if (status != STATUS_ROLLED_BACK) return;
+                    try {
+                        transactionExecutor.markFailed(claim.recordId(), "EnclosingTransactionRolledBack");
+                    } catch (RuntimeException failure) {
+                        // An uncertain outcome stays fenced; never make it retryable.
+                        log.error("Could not finalize rolled-back idempotency claim {}", claim.recordId(), failure);
+                    }
+                }
+            });
+        }
         try {
             return repeatableRead ? transactionExecutor.runClaimedRepeatableRead(claim.recordId(), action)
                     : transactionExecutor.runClaimed(claim.recordId(), action);
         } catch (RuntimeException ex) {
+            if (joinedTransaction) throw ex;
             try {
                 transactionExecutor.markFailed(claim.recordId(), errorSummary(ex));
             } catch (RuntimeException markFailedError) {

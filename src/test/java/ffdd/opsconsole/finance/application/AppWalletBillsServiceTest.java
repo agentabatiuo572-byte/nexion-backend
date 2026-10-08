@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.finance.mapper.AppWalletBillsMapper;
 import ffdd.opsconsole.shared.exception.BizException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -21,6 +22,50 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
 class AppWalletBillsServiceTest {
+    @Test
+    void exactDecimalCompanionsSurviveJsonForBothAssetsAndEveryBillReadPath() throws Exception {
+        ObjectMapper json = new ObjectMapper();
+        for (String asset : List.of("USDT", "NEX")) {
+            for (String decimal : List.of("0.000001", "1.000001", "999999999999.999999", "1E+10")) {
+                AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+                BigDecimal amount = new BigDecimal(decimal);
+                var row = new AppWalletBillsMapper.LedgerRow(11L, "R-11", "PROMOTION_REWARD", asset, "OUT",
+                        amount, amount, "SUCCESS", "reward", LocalDateTime.of(2026, 10, 8, 9, 0));
+                when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+                when(mapper.count(7L)).thenReturn(1L);
+                when(mapper.rows(7L, 200)).thenReturn(List.of(row));
+                when(mapper.rows(7L, 50, 0)).thenReturn(List.of(row));
+                when(mapper.rowsAfter(7L, 51, null, null, null, null, null)).thenReturn(List.of(row));
+                when(mapper.recentNexRows(7L, 10)).thenReturn(List.of(row));
+                var service = new AppWalletBillsService(mapper, environment("prod"));
+                for (Map<String, Object> result : List.of(service.list(7L).getData(), service.list(7L, 1, 50).getData(),
+                        service.list(7L, 1, 50, null, null, null, "start").getData(), service.summary(7L).getData())) {
+                    String rowsKey = result.containsKey("bills") ? "bills" : "recentNexBills";
+                    var bill = json.readTree(json.writeValueAsString(result)).get(rowsKey).get(0);
+                    assertThat(bill.get("amount").isNumber()).isTrue();
+                    assertThat(bill.get("balanceAfter").isNumber()).isTrue();
+                    assertThat(bill.get("amountExact").isTextual()).isTrue();
+                    assertThat(bill.get("amountExact").textValue()).isEqualTo(amount.toPlainString());
+                    assertThat(bill.get("balanceAfterExact").textValue()).isEqualTo(amount.toPlainString());
+                    assertThat(bill.get("direction").textValue()).isEqualTo("OUT");
+                }
+            }
+        }
+    }
+
+    @Test
+    void exactDecimalCompanionsUseTheSameExistingNonNegativeNormalization() {
+        AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+        when(mapper.rows(7L, 200)).thenReturn(List.of(new AppWalletBillsMapper.LedgerRow(11L, "R-11",
+                "PROMOTION_REWARD", "USDT", "IN", null, new BigDecimal("-1"), "SUCCESS", "",
+                LocalDateTime.of(2026, 10, 8, 9, 0))));
+        var result = new AppWalletBillsService(mapper, environment("prod")).list(7L).getData();
+        assertThat((List<?>) result.get("bills")).singleElement().isInstanceOfSatisfying(Map.class, bill ->
+                assertThat(bill).containsEntry("amount", BigDecimal.ZERO).containsEntry("balanceAfter", BigDecimal.ZERO)
+                        .containsEntry("amountExact", "0").containsEntry("balanceAfterExact", "0"));
+    }
+
     @Test
     void productionUserReceivesOnlyTheirCanonicalLedger() {
         AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);

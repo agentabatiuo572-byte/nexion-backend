@@ -126,6 +126,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
+               AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
                AND d.deactivated_at IS NULL AND d.pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -153,6 +154,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
+               AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
                AND d.deactivated_at IS NULL AND d.pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -180,6 +182,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
+               AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
                AND d.deactivated_at IS NULL AND d.pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -207,6 +210,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
+               AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
                AND d.deactivated_at IS NULL AND d.pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -235,6 +239,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
+               AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
                AND d.deactivated_at IS NULL AND d.pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -424,6 +429,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
              WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
                AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE')
                AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'
+               AND UPPER(COALESCE(source_channel,'')) <> 'PROMOTION_GIFT'
                AND deactivated_at IS NULL AND pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -440,6 +446,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
              WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
                AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE')
                AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'
+               AND UPPER(COALESCE(source_channel,'')) <> 'PROMOTION_GIFT'
                AND deactivated_at IS NULL AND pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t

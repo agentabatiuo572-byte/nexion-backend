@@ -16,6 +16,18 @@ import org.junit.jupiter.api.Test;
 
 class AdminRbacBaselineInitializerTest {
 
+    @Test
+    void independentPromotionPermissionsDoNotRequireAutomaticClassicRoleGrants() throws Exception {
+        for (String method : java.util.List.of("countActiveClassicPermissions", "countActiveSuperAdminClassicPermissions")) {
+            String sql = String.join(" ", AdminRolePermissionMapper.class.getMethod(method)
+                    .getAnnotation(org.apache.ibatis.annotations.Select.class).value());
+            assertThat(sql).contains("17) <> 'growth_promotion_'", "resource_type = 'API'");
+        }
+        when(mapper.countActiveClassicPermissions()).thenReturn(313L);
+        when(mapper.countActiveSuperAdminClassicPermissions()).thenReturn(312L);
+        assertThatThrownBy(initializer::ensureBaseline).isInstanceOf(IllegalStateException.class);
+    }
+
     private final AdminRolePermissionMapper mapper = mock(AdminRolePermissionMapper.class);
     private final AdminRbacBaselineInitializer initializer = new AdminRbacBaselineInitializer(mapper);
 

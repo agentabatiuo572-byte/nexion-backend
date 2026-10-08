@@ -246,7 +246,9 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
              WHERE o.is_deleted=0 AND u.is_deleted=0 AND u.status='ACTIVE'
                AND UPPER(o.order_status)='PENDING_PAYMENT'
                AND UPPER(o.payment_status)='PENDING'
-               AND o.created_at <= TIMESTAMPADD(MINUTE, -#{ttlMinutes}, NOW())
+               AND (o.created_at <= TIMESTAMPADD(MINUTE, -#{ttlMinutes}, NOW(6))
+                    OR EXISTS (SELECT 1 FROM nx_promotion_order_receipt pr
+                                WHERE pr.order_no=o.order_no AND pr.pay_by<=NOW(6)))
                AND NOT EXISTS (
                  SELECT 1
                    FROM nx_vietqr_intent i
@@ -308,11 +310,13 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT COUNT(*)
-              FROM nx_order
-             WHERE order_no=#{orderNo} AND user_id=#{userId} AND is_deleted=0
-               AND UPPER(payment_status)='PENDING'
-               AND UPPER(order_status)='PENDING_PAYMENT'
-               AND created_at <= DATE_SUB(NOW(6), INTERVAL #{ttlMinutes} MINUTE)
+              FROM nx_order o
+             WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.is_deleted=0
+               AND UPPER(o.payment_status)='PENDING'
+               AND UPPER(o.order_status)='PENDING_PAYMENT'
+               AND (o.created_at <= DATE_SUB(NOW(6), INTERVAL #{ttlMinutes} MINUTE)
+                    OR EXISTS (SELECT 1 FROM nx_promotion_order_receipt pr
+                                WHERE pr.order_no=o.order_no AND pr.pay_by<=NOW(6)))
             """)
     int countExpiredPayableOrder(@Param("orderNo") String orderNo,
                                  @Param("userId") Long userId,

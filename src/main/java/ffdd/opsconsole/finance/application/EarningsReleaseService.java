@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.application;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import ffdd.opsconsole.finance.mapper.EarningsReleaseMapper;
 import ffdd.opsconsole.finance.mapper.EarningsReleaseMapper.BucketAmount;
 import ffdd.opsconsole.finance.mapper.EarningsReleaseMapper.ProtectedEntry;
@@ -23,6 +24,7 @@ import java.util.Set;
 import java.util.List;
 import java.util.TreeSet;
 import java.util.UUID;
+import java.util.Locale;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -35,11 +37,145 @@ public class EarningsReleaseService {
     private static final Set<String> BUCKETS = Set.of("withdrawable", "pending_review", "bonus_locked");
     private static final Set<String> ASSETS = Set.of("USDT", "NEX");
     private static final Set<String> SOURCE_ENVIRONMENTS = Set.of("PRODUCTION", "SANDBOX");
+    // Other domains have their own reversal owners. Do not let two owners recover the same source.
+    private static final Set<String> RECOVERY_SOURCES = Set.of("PROMOTION_REWARD", "MOCK_PROMOTION_REWARD");
     private final EarningsReleaseMapper mapper;
     private final RiskReleaseParamsService params;
     private final AdminIdempotencyService idempotency;
     private final AuditLogService audit;
     private final FundsSandboxProfileGuard sandboxProfile;
+
+    public record RewardRecoveryRequest(Long userId, String entryNo, String sourceType, String sourceRef,
+            String asset, String sourceEnvironment, BigDecimal amount, String reason, String actor) { }
+
+    public record RewardRecoveryReceipt(String recoveryNo, String entryNo, Long userId, String asset,
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal requested,
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal recovered,
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal outstanding,
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal cumulativeRecovered,
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal remainingEntitlement, String bucket,
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal balanceAfter, String evidenceStatus) { }
+
+    /**
+     * Internal asset primitive. The caller validates the durable refund/correction authority, and posts
+     * D4 plus the original obligation in this same transaction. No public controller accepts this DTO.
+     * A wallet debit watermark is deliberately conservative: every later debit may have spent this
+     * reward; later deposits, other rewards and thawed reservations never restore its evidence.
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY,
+            rollbackFor = Exception.class)
+    public RewardRecoveryReceipt recoverReward(RewardRecoveryRequest request, String idempotencyKey) {
+        RewardRecoveryRequest command = normalizeRecovery(request);
+        int sandbox = expectedWalletSandbox(command.sourceEnvironment());
+        String scope = "EARNINGS_RECOVERY:" + command.sourceEnvironment() + ":" + command.userId();
+        // Length-prefixed fields avoid delimiter collisions without a second serialization system.
+        String payload = List.of(command.userId().toString(), command.entryNo(), command.sourceType(),
+                command.sourceRef(), command.asset(), command.sourceEnvironment(), command.amount().toPlainString(),
+                command.reason(), command.actor()).stream().map(v -> v.length() + ":" + v)
+                .collect(java.util.stream.Collectors.joining());
+        return idempotency.executeRetained(scope, idempotencyKey, hash(payload), RewardRecoveryReceipt.class,
+                () -> recoverRewardOnce(command, sandbox));
+    }
+
+    private RewardRecoveryRequest normalizeRecovery(RewardRecoveryRequest request) {
+        if (request == null || request.userId() == null || request.userId() <= 0
+                || !recoveryText(request.entryNo(), 64) || !recoveryText(request.sourceType(), 64)
+                || !recoveryText(request.sourceRef(), 128) || !recoveryText(request.reason(), 2000)
+                || request.reason().trim().length() < 8 || !recoveryText(request.actor(), 128)
+                || request.asset() == null || request.sourceEnvironment() == null
+                || request.amount() == null || request.amount().signum() <= 0
+                || request.amount().stripTrailingZeros().scale() > 6
+                || request.amount().compareTo(new BigDecimal("999999999999.999999")) > 0) {
+            throw new BizException(422, "EARNINGS_RECOVERY_REQUEST_INVALID");
+        }
+        String asset = request.asset().trim().toUpperCase(Locale.ROOT);
+        String environment = request.sourceEnvironment().trim().toUpperCase(Locale.ROOT);
+        if (!ASSETS.contains(asset) || !SOURCE_ENVIRONMENTS.contains(environment)
+                || !RECOVERY_SOURCES.contains(request.sourceType().trim())
+                || ("SANDBOX".equals(environment) != request.sourceType().trim().startsWith("MOCK_"))) {
+            throw new BizException(422, "EARNINGS_RECOVERY_REQUEST_INVALID");
+        }
+        return new RewardRecoveryRequest(request.userId(), request.entryNo().trim(), request.sourceType().trim(),
+                request.sourceRef().trim(), asset, environment, request.amount().setScale(6),
+                request.reason().trim(), request.actor().trim());
+    }
+
+    private boolean recoveryText(String value, int max) {
+        return StringUtils.hasText(value) && value.trim().length() <= max;
+    }
+
+    private RewardRecoveryReceipt recoverRewardOnce(RewardRecoveryRequest command, int sandbox) {
+        // Account -> wallet -> source; the same order as credit and withdrawal. Frozen accounts may
+        // be recovered, but never released or made withdrawable by this primitive.
+        if (mapper.lockRecoveryUser(command.userId(), sandbox) == null) {
+            throw new BizException(409, "EARNINGS_RECOVERY_ACCOUNT_MISSING");
+        }
+        var wallet = mapper.lockRecoveryWallet(command.userId(), sandbox);
+        if (wallet == null) throw new BizException(409, "EARNINGS_RECOVERY_WALLET_MISSING");
+        var entry = mapper.lockRecoveryEntry(command.entryNo());
+        if (entry == null || !command.userId().equals(entry.userId())
+                || !command.sourceType().equals(entry.sourceType()) || !command.sourceRef().equals(entry.sourceRef())
+                || !command.asset().equals(entry.asset()) || !command.sourceEnvironment().equals(entry.sourceEnvironment())
+                || !Integer.valueOf(0).equals(entry.isDeleted()) || !"ACTIVE".equals(entry.status())
+                || !BUCKETS.contains(entry.bucket())) {
+            throw new BizException(409, "EARNINGS_RECOVERY_SOURCE_MISMATCH");
+        }
+        BigDecimal remaining = entry.amount().subtract(entry.recoveredAmount());
+        if (command.amount().compareTo(remaining) > 0) {
+            throw new BizException(409, "EARNINGS_RECOVERY_EXCEEDS_ORIGINAL");
+        }
+        BigDecimal available = "USDT".equals(entry.asset()) ? wallet.usdtAvailable() : wallet.nexAvailable();
+        BigDecimal debited = "USDT".equals(entry.asset()) ? wallet.usdtDebited() : wallet.nexDebited();
+        boolean tracked = entry.debitBaseline() != null;
+        if (available == null || available.signum() < 0 || debited == null || debited.signum() < 0
+                || (tracked && (debited.compareTo(entry.debitBaseline()) < 0
+                    || !wallet.walletId().equals(entry.sourceWalletId())))) {
+            throw new BizException(409, "EARNINGS_RECOVERY_EVIDENCE_INVALID");
+        }
+        // A proven recovery from a different source is not consumption of this entry.
+        // Keep this entry's earlier recoveries in the watermark; never exclude ordinary debits.
+        BigDecimal otherRecoveries = tracked
+                ? mapper.otherSourceRecoveriesSinceCredit(command.userId(), wallet.walletId(), entry.asset(),
+                    entry.sourceEnvironment(), entry.entryNo(), entry.debitBaseline(), debited)
+                    .stream().reduce(BigDecimal.ZERO, BigDecimal::add)
+                : BigDecimal.ZERO;
+        BigDecimal debitDelta = tracked ? debited.subtract(entry.debitBaseline()) : BigDecimal.ZERO;
+        if (otherRecoveries.signum() < 0 || otherRecoveries.compareTo(debitDelta) > 0) {
+            throw new BizException(409, "EARNINGS_RECOVERY_EVIDENCE_INVALID");
+        }
+        BigDecimal provable = tracked
+                ? entry.amount().subtract(debitDelta.subtract(otherRecoveries)).max(BigDecimal.ZERO)
+                : BigDecimal.ZERO;
+        BigDecimal recovered = command.amount().min(remaining).min(provable).min(available).setScale(6);
+        if (recovered.signum() > 0) {
+            if (mapper.debitRecoveredReward(command.userId(), entry.asset(), recovered, sandbox) != 1) {
+                throw new BizException(409, "EARNINGS_RECOVERY_WALLET_CONFLICT");
+            }
+            if (mapper.addRecoveredAmount(entry.entryNo(), entry.recoveredAmount(), recovered) != 1) {
+                throw new BizException(409, "EARNINGS_RECOVERY_ENTRY_CONFLICT");
+            }
+        }
+        String recoveryNo = "ERC-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        var receipt = new RewardRecoveryReceipt(recoveryNo, entry.entryNo(), command.userId(), entry.asset(),
+                command.amount(), recovered, command.amount().subtract(recovered), entry.recoveredAmount().add(recovered),
+                remaining.subtract(recovered), entry.bucket(), available.subtract(recovered),
+                tracked ? "TRACKED_CONSERVATIVE" : "LEGACY_UNPROVEN");
+        if (mapper.insertRecovery(new EarningsReleaseMapper.RecoveryWrite(receipt, command.sourceType(),
+                command.sourceRef(), command.sourceEnvironment(), command.reason(), command.actor(),
+                available, debited, entry.debitBaseline())) != 1) {
+            throw new BizException(409, "EARNINGS_RECOVERY_RECEIPT_CONFLICT");
+        }
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("receipt", receipt); detail.put("sourceType", entry.sourceType());
+        detail.put("sourceRef", entry.sourceRef()); detail.put("sourceEnvironment", entry.sourceEnvironment());
+        detail.put("reason", command.reason()); detail.put("walletBefore", available);
+        detail.put("debitCounterBefore", debited); detail.put("sourceDebitBaseline", entry.debitBaseline());
+        detail.put("otherSourceRecoveriesExcluded", otherRecoveries);
+        audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder().action("EARNINGS_SOURCE_RECOVERED")
+                .resourceType("EARNINGS_RELEASE_ENTRY").resourceId(entry.entryNo()).bizNo(recoveryNo)
+                .userId(command.userId()).actorUsername(command.actor()).riskLevel("HIGH").detail(detail).build());
+        return receipt;
+    }
 
     /** Single server-side entry point for every newly issued reward. */
     @Transactional(rollbackFor = Exception.class)

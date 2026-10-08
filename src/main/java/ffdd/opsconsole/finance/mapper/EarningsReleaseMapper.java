@@ -12,8 +12,61 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface EarningsReleaseMapper {
-    @Insert("INSERT IGNORE INTO nx_earnings_release_entry(entry_no,user_id,cluster_id,source_type,source_ref,asset,amount,bucket,status,idempotency_key,source_environment,is_deleted) VALUES(#{entryNo},#{userId},#{clusterId},#{sourceType},#{sourceRef},#{asset},#{amount},#{bucket},'ACTIVE',#{idempotencyKey},#{sourceEnvironment},0)")
+    @Insert("INSERT IGNORE INTO nx_earnings_release_entry(entry_no,user_id,cluster_id,source_type,source_ref,asset,amount,bucket,status,idempotency_key,source_environment,is_deleted,source_debit_baseline,source_wallet_id) SELECT #{entryNo},#{userId},#{clusterId},#{sourceType},#{sourceRef},#{asset},#{amount},#{bucket},'ACTIVE',#{idempotencyKey},#{sourceEnvironment},0,CASE #{asset} WHEN 'USDT' THEN earnings_usdt_debited WHEN 'NEX' THEN earnings_nex_debited END,id FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0")
     int insert(EntryWrite write);
+
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND is_deleted=0 AND sandbox=#{expectedSandbox} FOR UPDATE")
+    Long lockRecoveryUser(@Param("userId") Long userId, @Param("expectedSandbox") int expectedSandbox);
+    @Select("SELECT id walletId,usdt_available usdtAvailable,nex_available nexAvailable,earnings_usdt_debited usdtDebited,earnings_nex_debited nexDebited FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 AND sandbox=#{expectedSandbox} FOR UPDATE")
+    RecoveryWallet lockRecoveryWallet(@Param("userId") Long userId, @Param("expectedSandbox") int expectedSandbox);
+    @Select("SELECT entry_no entryNo,user_id userId,source_type sourceType,source_ref sourceRef,asset,amount,bucket,status,source_environment sourceEnvironment,is_deleted isDeleted,recovered_amount recoveredAmount,source_debit_baseline debitBaseline,source_wallet_id sourceWalletId FROM nx_earnings_release_entry WHERE entry_no=#{entryNo} FOR UPDATE")
+    RecoveryEntry lockRecoveryEntry(@Param("entryNo") String entryNo);
+    @Update("""
+            UPDATE nx_user_wallet SET
+                usdt_available=usdt_available-CASE WHEN #{asset}='USDT' THEN #{amount} ELSE 0 END,
+                nex_available=nex_available-CASE WHEN #{asset}='NEX' THEN #{amount} ELSE 0 END,
+                version=version+1,updated_at=NOW()
+             WHERE user_id=#{userId} AND sandbox=#{expectedSandbox} AND is_deleted=0
+               AND #{amount}>0 AND #{asset} IN ('USDT','NEX')
+               AND CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'NEX' THEN nex_available END>=#{amount}
+            """)
+    int debitRecoveredReward(@Param("userId") Long userId, @Param("asset") String asset,
+            @Param("amount") BigDecimal amount, @Param("expectedSandbox") int expectedSandbox);
+    @Update("""
+            UPDATE nx_earnings_release_entry SET recovered_amount=recovered_amount+#{amount},updated_at=NOW()
+             WHERE entry_no=#{entryNo} AND recovered_amount=#{expectedRecovered} AND is_deleted=0
+               AND status='ACTIVE' AND #{amount}>0 AND recovered_amount+#{amount}<=amount
+            """)
+    int addRecoveredAmount(@Param("entryNo") String entryNo, @Param("expectedRecovered") BigDecimal expectedRecovered,
+            @Param("amount") BigDecimal amount);
+    @Select("""
+            SELECT r.recovered
+              FROM nx_earnings_source_recovery r
+              JOIN nx_earnings_release_entry e ON e.entry_no=r.entry_no
+             WHERE r.user_id=#{userId} AND e.user_id=#{userId} AND e.source_wallet_id=#{walletId}
+               AND r.asset=#{asset} AND e.asset=#{asset}
+               AND r.source_environment=#{environment} AND e.source_environment=#{environment}
+               AND r.entry_no<>#{entryNo} AND r.recovered>0
+               AND r.evidence_status='TRACKED_CONSERVATIVE'
+               AND r.debit_counter_before>=#{baseline}
+               AND r.debit_counter_before+r.recovered<=#{debited}
+             ORDER BY r.id FOR UPDATE
+            """)
+    List<BigDecimal> otherSourceRecoveriesSinceCredit(@Param("userId") Long userId,
+            @Param("walletId") Long walletId, @Param("asset") String asset,
+            @Param("environment") String environment, @Param("entryNo") String entryNo,
+            @Param("baseline") BigDecimal baseline, @Param("debited") BigDecimal debited);
+    @Insert("""
+            INSERT INTO nx_earnings_source_recovery
+              (recovery_no,entry_no,user_id,source_type,source_ref,asset,source_environment,requested,recovered,
+               outstanding,cumulative_recovered,remaining_entitlement,bucket,balance_before,balance_after,
+               debit_counter_before,source_debit_baseline,evidence_status,reason,actor)
+            VALUES (#{receipt.recoveryNo},#{receipt.entryNo},#{receipt.userId},#{sourceType},#{sourceRef},
+               #{receipt.asset},#{sourceEnvironment},#{receipt.requested},#{receipt.recovered},#{receipt.outstanding},
+               #{receipt.cumulativeRecovered},#{receipt.remainingEntitlement},#{receipt.bucket},#{balanceBefore},
+               #{receipt.balanceAfter},#{debitCounterBefore},#{sourceDebitBaseline},#{receipt.evidenceStatus},#{reason},#{actor})
+            """)
+    int insertRecovery(RecoveryWrite write);
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND is_deleted=0 AND status='ACTIVE' AND sandbox=#{expectedSandbox} FOR UPDATE")
     Long lockCreditUser(@Param("userId") Long userId, @Param("expectedSandbox") int expectedSandbox);
     @Select("SELECT user_id FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 AND sandbox=#{expectedSandbox} FOR UPDATE")
@@ -43,11 +96,11 @@ public interface EarningsReleaseMapper {
     int creditNex(@Param("userId") Long userId,@Param("amount") BigDecimal amount,
                   @Param("sourceEnvironment") String sourceEnvironment,
                   @Param("expectedSandbox") int expectedSandbox);
-    @Select("SELECT asset,bucket,COALESCE(SUM(amount),0) amount FROM nx_earnings_release_entry WHERE user_id=#{userId} AND status='ACTIVE' AND is_deleted=0 GROUP BY asset,bucket")
+    @Select("SELECT asset,bucket,COALESCE(SUM(amount-recovered_amount),0) amount FROM nx_earnings_release_entry WHERE user_id=#{userId} AND status='ACTIVE' AND is_deleted=0 GROUP BY asset,bucket")
     List<BucketAmount> buckets(@Param("userId") Long userId);
-    @Select("SELECT COALESCE(SUM(amount),0) FROM nx_earnings_release_entry WHERE user_id=#{userId} AND asset='USDT' AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0")
+    @Select("SELECT COALESCE(SUM(amount-recovered_amount),0) FROM nx_earnings_release_entry WHERE user_id=#{userId} AND asset='USDT' AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0")
     BigDecimal protectedAmount(@Param("userId") Long userId);
-    @Update("UPDATE nx_earnings_release_entry SET bucket='withdrawable',release_source=#{source},released_at=NOW(),updated_at=NOW() WHERE entry_no=#{entryNo} AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0")
+    @Update("UPDATE nx_earnings_release_entry SET bucket='withdrawable',release_source=#{source},released_at=NOW(),updated_at=NOW() WHERE entry_no=#{entryNo} AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND amount>recovered_amount AND is_deleted=0")
     int release(@Param("entryNo") String entryNo,@Param("source") String source);
     @Update("""
             UPDATE nx_earnings_release_entry e
@@ -57,7 +110,7 @@ public interface EarningsReleaseMapper {
                    e.release_source=CASE WHEN #{proofSource}='JANUS_SANDBOX_EXECUTOR' THEN 'attest_sandbox' ELSE 'attest' END,
                    e.released_at=NOW(),e.updated_at=NOW()
              WHERE e.entry_no=#{entryNo} AND e.bucket IN ('pending_review','bonus_locked')
-               AND e.status='ACTIVE' AND e.is_deleted=0
+               AND e.status='ACTIVE' AND e.amount>e.recovered_amount AND e.is_deleted=0
                AND ((#{proofSource}='JANUS_PRODUCTION_EXECUTOR'
                      AND e.source_environment='PRODUCTION' AND u.sandbox=0 AND w.sandbox=0)
                  OR (#{proofSource}='JANUS_SANDBOX_EXECUTOR'
@@ -92,20 +145,20 @@ public interface EarningsReleaseMapper {
     RiskCluster riskCluster(@Param("userId") Long userId);
     @Select("SELECT c.cluster_id clusterId,c.account_count accountCount,c.status FROM nx_admin_risk_multi_account_cluster c JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0 WHERE c.is_deleted=0 AND c.nodes_json IS NOT NULL AND JSON_VALID(c.nodes_json) AND JSON_CONTAINS(CAST(c.nodes_json AS JSON),JSON_OBJECT('userNo',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')))) ORDER BY c.account_count DESC,c.id ASC LIMIT 1 FOR UPDATE")
     RiskCluster lockRiskCluster(@Param("userId") Long userId);
-    @Select("SELECT amount FROM nx_earnings_release_entry WHERE user_id=#{userId} AND asset='USDT' AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0 ORDER BY id FOR UPDATE")
+    @Select("SELECT amount-recovered_amount AS amount FROM nx_earnings_release_entry WHERE user_id=#{userId} AND asset='USDT' AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND amount>recovered_amount AND is_deleted=0 ORDER BY id FOR UPDATE")
     List<BigDecimal> lockProtectedUsdtAmounts(@Param("userId") Long userId);
-    @Select("SELECT entry_no entryNo,user_id userId,cluster_id clusterId,asset,amount,bucket FROM nx_earnings_release_entry WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0 ORDER BY id")
+    @Select("SELECT entry_no entryNo,user_id userId,cluster_id clusterId,asset,amount-recovered_amount AS amount,bucket FROM nx_earnings_release_entry WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND amount>recovered_amount AND is_deleted=0 ORDER BY id")
     List<ProtectedEntry> protectedEntryScopes(@Param("userId") Long userId,@Param("sourceEnvironment") String sourceEnvironment);
-    @Select("SELECT entry_no entryNo,user_id userId,cluster_id clusterId,asset,amount,bucket FROM nx_earnings_release_entry WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0 ORDER BY id FOR UPDATE")
+    @Select("SELECT entry_no entryNo,user_id userId,cluster_id clusterId,asset,amount-recovered_amount AS amount,bucket FROM nx_earnings_release_entry WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND amount>recovered_amount AND is_deleted=0 ORDER BY id FOR UPDATE")
     List<ProtectedEntry> protectedEntries(@Param("userId") Long userId,@Param("sourceEnvironment") String sourceEnvironment);
-    @Select("SELECT entry_no entryNo,user_id userId,cluster_id clusterId,asset,amount,bucket FROM nx_earnings_release_entry WHERE entry_no=#{entryNo} AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
+    @Select("SELECT entry_no entryNo,user_id userId,cluster_id clusterId,asset,amount-recovered_amount AS amount,bucket FROM nx_earnings_release_entry WHERE entry_no=#{entryNo} AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND amount>recovered_amount AND is_deleted=0 FOR UPDATE")
     ProtectedEntry lockProtectedEntry(@Param("entryNo") String entryNo);
     @Select("""
             <script>
             SELECT entry_no entryNo,user_id userId,cluster_id clusterId,source_type sourceType,
-                   source_ref sourceRef,asset,amount,bucket,created_at createdAt
+                   source_ref sourceRef,asset,amount-recovered_amount AS amount,bucket,created_at createdAt
               FROM nx_earnings_release_entry
-             WHERE bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0
+             WHERE bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND amount>recovered_amount AND is_deleted=0
              <if test="userId != null">AND user_id=#{userId}</if>
              <if test="clusterId != null and clusterId != ''">AND cluster_id=#{clusterId}</if>
              ORDER BY id ASC LIMIT #{limit}
@@ -132,4 +185,10 @@ public interface EarningsReleaseMapper {
     record ProtectedEntryView(String entryNo,Long userId,String clusterId,String sourceType,String sourceRef,
                               String asset,BigDecimal amount,String bucket,LocalDateTime createdAt){}
     record RiskCluster(String clusterId,Integer accountCount,String status){}
+    record RecoveryWallet(Long walletId,BigDecimal usdtAvailable,BigDecimal nexAvailable,BigDecimal usdtDebited,BigDecimal nexDebited){}
+    record RecoveryEntry(String entryNo,Long userId,String sourceType,String sourceRef,String asset,BigDecimal amount,
+            String bucket,String status,String sourceEnvironment,Integer isDeleted,BigDecimal recoveredAmount,BigDecimal debitBaseline,Long sourceWalletId){}
+    record RecoveryWrite(ffdd.opsconsole.finance.application.EarningsReleaseService.RewardRecoveryReceipt receipt,
+            String sourceType,String sourceRef,String sourceEnvironment,String reason,String actor,
+            BigDecimal balanceBefore,BigDecimal debitCounterBefore,BigDecimal sourceDebitBaseline){}
 }

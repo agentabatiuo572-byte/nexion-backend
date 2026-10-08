@@ -3,6 +3,7 @@ package ffdd.opsconsole.commerce.application;
 import ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper;
 import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
+import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -42,6 +43,7 @@ public class AppOrderCommandService {
     private final CommerceAcceptanceSandboxService sandboxService;
     private final CommerceAcceptanceRun acceptanceRun;
     private final EventOutboxService outbox;
+    private final PromotionOrderService promotions;
     @SuppressWarnings("ArchitectureConfigField") // Explicit constructor parameter carries the @Value binding.
     private final int pendingOrderTtlMinutes;
 
@@ -55,7 +57,8 @@ public class AppOrderCommandService {
             CommerceAcceptanceSandboxService sandboxService,
             CommerceAcceptanceRun acceptanceRun,
             EventOutboxService outbox,
-            @Value("${nexion.commerce.pending-order-ttl-minutes:30}") int pendingOrderTtlMinutes) {
+            @Value("${nexion.commerce.pending-order-ttl-minutes:30}") int pendingOrderTtlMinutes,
+            PromotionOrderService promotions) {
         this.mapper = mapper;
         this.idempotency = idempotency;
         this.audit = audit;
@@ -64,7 +67,16 @@ public class AppOrderCommandService {
         this.sandboxService = sandboxService;
         this.acceptanceRun = acceptanceRun;
         this.outbox = outbox;
+        this.promotions = promotions;
         this.pendingOrderTtlMinutes = Math.max(1, pendingOrderTtlMinutes);
+    }
+
+    AppOrderCommandService(AppOrderCommandMapper mapper, AdminIdempotencyService idempotency,
+            AuditLogService audit, FundsSandboxProfileGuard sandboxGuard,
+            CommerceAcceptanceSandboxMapper sandboxMapper, CommerceAcceptanceSandboxService sandboxService,
+            CommerceAcceptanceRun acceptanceRun, EventOutboxService outbox, int pendingOrderTtlMinutes) {
+        this(mapper, idempotency, audit, sandboxGuard, sandboxMapper, sandboxService, acceptanceRun,
+                outbox, pendingOrderTtlMinutes, null);
     }
 
     AppOrderCommandService(
@@ -100,6 +112,7 @@ public class AppOrderCommandService {
         if (!sandboxGuard.isStrictProductionRuntime()) {
             return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
         }
+        if (promotions != null) promotions.lockOrderParticipants(normalized);
         CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
         if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
         if (user.sandbox()) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
@@ -140,6 +153,7 @@ public class AppOrderCommandService {
     }
 
     private ApiResult<Map<String, Object>> payFromWallet(Long userId, String orderNo) {
+        if (promotions != null) promotions.lockOrderParticipants(orderNo);
         AppOrderCommandMapper.DevelopmentPayOrder order = mapper.lockDevelopmentPayOrder(orderNo);
         if (order == null || !userId.equals(order.userId())) return ApiResult.fail(403, "ORDER_FORBIDDEN");
         if (order.amountUsdt() == null || order.amountUsdt().signum() < 0
@@ -185,6 +199,7 @@ public class AppOrderCommandService {
         if (mapper.countExpiredPayableOrder(orderNo, userId, pendingOrderTtlMinutes) > 0) {
             return ApiResult.fail(409, "ORDER_PAYMENT_EXPIRED");
         }
+        if (promotions != null) promotions.beforePay(userId, orderNo);
         // A pending order is only a price/stock reservation, never an authority
         // to bypass the current E1 sale state or a platform-wide maintenance stop.
         // Re-read this immediately before the wallet CAS so an old checkout page
@@ -320,6 +335,7 @@ public class AppOrderCommandService {
                 orderNo, "placed", "activated", paymentRail + "-PAY-" + paymentNo) != 1) {
             throw new BizException(409, "ORDER_HISTORY_CONFLICT");
         }
+        if (promotions != null) promotions.afterPaid(userId, orderNo);
         publishDevelopmentCheckoutCompleted(userId, order);
         Map<String, Object> auditDetail = new LinkedHashMap<>();
         auditDetail.put("paymentNo", paymentNo);
@@ -422,6 +438,7 @@ public class AppOrderCommandService {
         data.put("sourceEnvironment", "PRODUCTION");
         data.put("runId", "");
         data.put("serverCanonical", true);
+        if (promotions != null) data.putAll(promotions.orderProjection(order.userId(), order.orderNo()));
         return ApiResult.ok(data);
     }
 
@@ -482,11 +499,13 @@ public class AppOrderCommandService {
     public boolean expirePendingOrder(Long userId, String orderNo) {
         if (userId == null || userId < 1 || !StringUtils.hasText(orderNo)) return false;
         String normalized = orderNo.trim();
+        if (promotions != null) promotions.lockOrderParticipants(normalized);
         AppOrderCommandMapper.OrderRow order = mapper.lockOrder(normalized);
         if (order == null || !userId.equals(order.userId())
                 || !"PENDING_PAYMENT".equalsIgnoreCase(order.orderStatus())
                 || !"PENDING".equalsIgnoreCase(order.paymentStatus())
-                || mapper.countNonCancellableHdPaySessions(normalized) > 0) {
+                || mapper.countNonCancellableHdPaySessions(normalized) > 0
+                || mapper.countExpiredPayableOrder(normalized, userId, pendingOrderTtlMinutes) == 0) {
             return false;
         }
         releasePendingReservation(order, userId, normalized, true);
@@ -543,6 +562,7 @@ public class AppOrderCommandService {
                 ? mapper.expireOrder(orderNo, userId)
                 : mapper.cancelOrder(orderNo, userId);
         if (terminalRows != 1) throw new BizException(409, "ORDER_STATE_CONFLICT");
+        if (promotions != null) promotions.releaseUnpaid(orderNo, expired ? "EXPIRED" : "CANCELLED");
         if (usedVouchers != null && usedVouchers.size() == 1
                 && mapper.restoreVoucher(usedVouchers.get(0).grantId(), userId, orderNo) != 1) {
             throw new BizException(409, "ORDER_VOUCHER_RETURN_CONFLICT");
@@ -592,8 +612,9 @@ public class AppOrderCommandService {
 
     private void validateBundleSnapshot(AppOrderCommandMapper.OrderRow order,
                                         List<AppOrderCommandMapper.ItemRow> items) {
-        if (order.itemCount() == null || order.itemCount() < 2 || order.quantity() == null
-                || order.quantity() != order.itemCount() || items.size() != order.itemCount()
+        if (order.itemCount() == null || order.itemCount() < 2 || order.itemCount() > 8
+                || order.quantity() == null || order.quantity() < 2 || order.quantity() > 100
+                || items.size() != order.itemCount()
                 || order.productId() == null || items.isEmpty()) {
             throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
         }
@@ -601,7 +622,7 @@ public class AppOrderCommandService {
         int quantity = 0;
         for (int index = 0; index < items.size(); index++) {
             AppOrderCommandMapper.ItemRow item = items.get(index);
-            if (item.productId() == null || item.quantity() == null || item.quantity() != 1
+            if (item.productId() == null || item.quantity() == null || item.quantity() < 1 || item.quantity() > 100
                     || !StringUtils.hasText(item.productNo()) || !productIds.add(item.productId())
                     || index == 0 && !order.productId().equals(item.productId())) {
                 throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
@@ -614,6 +635,10 @@ public class AppOrderCommandService {
     @SuppressWarnings({"rawtypes", "unchecked"})
     private ApiResult<Map<String, Object>> execute(String operation, Long userId, String orderNo, String key,
                                                     Supplier<ApiResult<Map<String, Object>>> action) {
+        if (promotions != null && !promotions.orderProjection(userId, orderNo).isEmpty()) {
+            return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.executeRetained("APP:" + operation + ":USER:" + userId,
+                    key, sha256(userId + "|" + orderNo), ApiResult.class, (Supplier) action);
+        }
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute("APP:" + operation + ":USER:" + userId,
                 key, sha256(userId + "|" + orderNo), ApiResult.class, (Supplier) action);
     }

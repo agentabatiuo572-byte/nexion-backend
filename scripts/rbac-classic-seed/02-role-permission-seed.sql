@@ -1,16 +1,19 @@
 -- role_permission 绑定（角色×权限，域级规则）
--- 规则：超管=全部；审计=所有 READ 类型；各域主操作角色=该域全部(READ/WRITE/HIGH)；B/L 域全角色。
+-- 经典权限规则：超管=全部；审计=READ；各域主操作角色=该域权限；B/L 域全角色。
+-- growth_promotion_ 权限只允许 A1 显式授权；重跑经典 seed 不隐式新增，也不删除已有授权。
 -- 按 permission_code 前缀（域 slug）+ perm_type 匹配。幂等 INSERT IGNORE。
 -- 依赖：00-alter + 01-menu + 各域权限 seed(AB/C/D/EF/GH/IJ/KLM.sql) 已执行。
 
 -- 超管：全部权限
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
-SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p WHERE r.role_code='SUPER_ADMIN';
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p WHERE r.role_code='SUPER_ADMIN'
+  AND LEFT(p.permission_code,17) <> 'growth_promotion_';
 
 -- 审计：所有 READ 类型（只读，全域）
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
-WHERE r.role_code='AUDITOR' AND p.perm_type='READ' AND p.status=1 AND p.is_deleted=0;
+WHERE r.role_code='AUDITOR' AND p.perm_type='READ' AND p.status=1 AND p.is_deleted=0
+  AND LEFT(p.permission_code,17) <> 'growth_promotion_';
 
 -- A 域(platform_)：config 延伸→仅超管(上面已给)+审计读(上面已给)。运营账号治理高敏不放开。
 -- 风控仅补 A2 读和“按自身业务权限创建提案”；业务指令仍由 AuditReplayBusinessPermissionGuard 二次校验。
@@ -105,6 +108,8 @@ SELECT lead_role.id, rp.permission_id
 FROM nx_admin_role lead_role
 JOIN nx_admin_role finance_role ON finance_role.role_code='FINANCE' AND finance_role.is_deleted=0
 JOIN nx_admin_role_permission rp ON rp.role_id=finance_role.id AND rp.is_deleted=0
+JOIN nx_admin_permission inherited ON inherited.id=rp.permission_id
+  AND LEFT(inherited.permission_code,17) <> 'growth_promotion_'
 WHERE lead_role.role_code='FINANCE_LEAD' AND lead_role.is_deleted=0;
 -- C1 跨职能最小授权：财务看资金，增长看分层并可导出脱敏名单，审计可导出脱敏取证名单。
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
@@ -289,6 +294,7 @@ WHERE r.role_code IN ('FINANCE','GROWTH') AND p.status=1 AND p.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'growth_%'
 WHERE r.role_code='GROWTH' AND p.permission_code <> 'growth_h8_settle'
+  AND LEFT(p.permission_code,17) <> 'growth_promotion_'
   AND p.status=1 AND p.is_deleted=0;
 DELETE rp FROM nx_admin_role_permission rp
 JOIN nx_admin_role r ON r.id=rp.role_id AND r.role_code='GROWTH'

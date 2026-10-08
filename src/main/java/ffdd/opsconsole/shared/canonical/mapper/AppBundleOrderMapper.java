@@ -63,7 +63,8 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
                             ),0)
                           WHEN UPPER(COALESCE(NULLIF(header_product.product_type,''),'DEVICE'))='SHARE'
                           THEN 0 ELSE o.quantity END
-                   ),0)
+                   ),0) +
+            """ + CanonicalStateMapper.PROMOTION_RESERVED_SLOTS + """
               FROM nx_order o
               LEFT JOIN nx_product header_product
                 ON header_product.id=o.product_id AND header_product.is_deleted=0
@@ -138,19 +139,21 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_product
-               SET stock=CASE WHEN inventory_mode='FINITE' THEN stock-1 ELSE stock END,
-                   sold_count=sold_count+1,
+               SET stock=CASE WHEN inventory_mode='FINITE' THEN stock-#{quantity} ELSE stock END,
+                   sold_count=sold_count+#{quantity},
                    updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE id=#{productId} AND is_deleted=0
-               AND (inventory_mode='UNLIMITED' OR stock>=1)
+               AND #{quantity} BETWEEN 1 AND 100
+               AND sold_count<=2147483647-#{quantity}
+               AND (inventory_mode='UNLIMITED' OR stock>=#{quantity})
             """)
-    int decrementStock(@Param("productId") Long productId);
+    int decrementStock(@Param("productId") Long productId, @Param("quantity") Integer quantity);
 
     @Insert("""
             INSERT INTO nx_order(user_id,order_no,product_id,quantity,order_type,item_count,
               subtotal_usdt,discount_usdt,amount_usdt,payment_status,order_status,activation_status,
               created_at,updated_at,is_deleted)
-            VALUES(#{userId},#{orderNo},#{primaryProductId},#{itemCount},'BUNDLE',#{itemCount},
+            VALUES(#{userId},#{orderNo},#{primaryProductId},#{quantity},'BUNDLE',#{itemCount},
               #{subtotalUsdt},#{discountUsdt},#{amountUsdt},'PENDING','PENDING_PAYMENT','WAITING_PAYMENT',
               NOW(),NOW(),0)
             """)
@@ -158,6 +161,7 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
                           @Param("orderNo") String orderNo,
                           @Param("primaryProductId") Long primaryProductId,
                           @Param("itemCount") Integer itemCount,
+                          @Param("quantity") Integer quantity,
                           @Param("subtotalUsdt") BigDecimal subtotalUsdt,
                           @Param("discountUsdt") BigDecimal discountUsdt,
                           @Param("amountUsdt") BigDecimal amountUsdt);
@@ -165,14 +169,18 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
     @Insert("""
             INSERT INTO nx_order_item(order_no,product_id,product_no,product_name,quantity,
               unit_price_usdt,line_amount_usdt,lifetime_quota_reserved,lifetime_quota_gate_generation,sort_order,created_at,updated_at,is_deleted)
-            VALUES(#{orderNo},#{product.id},#{product.productNo},#{product.name},1,
-              #{product.priceUsdt},#{product.priceUsdt},#{quotaReserved},#{quotaGateGeneration},#{sortOrder},NOW(),NOW(),0)
+            VALUES(#{orderNo},#{product.id},#{product.productNo},#{product.name},#{quantity},
+              #{product.priceUsdt},#{product.priceUsdt}*#{quantity},#{quotaReserved},#{quotaGateGeneration},#{sortOrder},NOW(),NOW(),0)
             """)
     int insertBundleItem(@Param("orderNo") String orderNo,
                          @Param("product") ProductRow product,
+                         @Param("quantity") Integer quantity,
                          @Param("sortOrder") Integer sortOrder,
                          @Param("quotaReserved") boolean quotaReserved,
                          @Param("quotaGateGeneration") Long quotaGateGeneration);
+
+    @Select("SELECT UNIX_TIMESTAMP(TIMESTAMPADD(MINUTE,#{ttlMinutes},created_at)) FROM nx_order WHERE order_no=#{orderNo} AND is_deleted=0")
+    Long orderDeadlineEpoch(@Param("orderNo") String orderNo, @Param("ttlMinutes") Integer ttlMinutes);
 
     record UserLock(Long id, boolean sandbox) { }
     record ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock,

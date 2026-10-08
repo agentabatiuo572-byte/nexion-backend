@@ -400,7 +400,11 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         boolean complete = invalidItemRows == 0L
                 && validItemQuantity == plan.orderQuantity().longValue()
                 && productGroups > 0L;
-        if ("BUNDLE".equals(orderType) || "TRADE_IN".equals(orderType) || "CAPACITY_KEEP".equals(orderType)) {
+        if ("BUNDLE".equals(orderType)) {
+            complete = complete && plan.itemCount() != null
+                    && plan.itemCount() >= 2 && plan.itemCount() <= 8 && plan.orderQuantity() <= 100
+                    && itemRows == plan.itemCount().longValue() && productGroups == itemRows;
+        } else if ("TRADE_IN".equals(orderType) || "CAPACITY_KEEP".equals(orderType)) {
             complete = complete
                     && plan.itemCount() != null
                     && plan.itemCount().longValue() == plan.orderQuantity().longValue()

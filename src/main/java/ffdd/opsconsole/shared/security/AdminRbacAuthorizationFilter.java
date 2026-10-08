@@ -155,6 +155,13 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             reject(response, HttpServletResponse.SC_UNAUTHORIZED, "ADMIN_AUTH_REQUIRED");
             return;
         }
+        if (isSharedReasonPolicyRead(path, request.getMethod())
+                && (!(authentication.getDetails() instanceof Map<?, ?> details)
+                    || !"ADMIN".equals(details.get("subjectType")))) {
+            auditDenial(request, authentication, "ADMIN_SUBJECT_REQUIRED", null);
+            reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_SUBJECT_REQUIRED");
+            return;
+        }
         if (!matchesPasswordChangeAllowedPath(path) && passwordChangeRequired(authentication)) {
             auditDenial(request, authentication, "ADMIN_PASSWORD_CHANGE_REQUIRED", null);
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_PASSWORD_CHANGE_REQUIRED");
@@ -211,9 +218,17 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         }
     }
 
+    private boolean isSharedReasonPolicyRead(String path, String method) {
+        return HttpMethod.GET.matches(method) && path.equals("/api/admin/platform/audit/reason-policy");
+    }
+
     // Socket tickets authorize only the following read-only WebSocket session. Keep this
     // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
     private RequiredAuthority requiredAuthority(String path, String method) {
+        // Shared form requirements need an actual admin subject, checked before domain permissions.
+        if (isSharedReasonPolicyRead(path, method)) {
+            return RequiredAuthority.authenticated();
+        }
         if (HttpMethod.GET.matches(method) && path.equals("/api/admin/config/phone-calibration")) {
             return RequiredAuthority.exact("device_e6_read", "device_e2_read");
         }
