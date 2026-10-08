@@ -10,6 +10,10 @@ import ffdd.opsconsole.content.facade.SupportPaymentCaptureHistoryFacade;
 import ffdd.opsconsole.content.mapper.SupportPaymentAttributionMapper;
 import ffdd.opsconsole.content.mapper.SupportPaymentCaptureHistoryMapper;
 import ffdd.opsconsole.content.mapper.SupportPaymentHistoryBirthMapper;
+import ffdd.opsconsole.device.application.SupportDeviceReadService;
+import ffdd.opsconsole.device.facade.SupportDeviceReadFacade;
+import ffdd.opsconsole.device.facade.SupportDeviceReadFacade.ConnectionStatus;
+import ffdd.opsconsole.device.mapper.SupportDeviceReadMapper;
 import ffdd.opsconsole.finance.application.SupportPaymentFactService;
 import ffdd.opsconsole.finance.application.SupportPaymentSourceService;
 import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade;
@@ -24,6 +28,11 @@ import ffdd.opsconsole.finance.mapper.SupportPaymentFactMapper;
 import ffdd.opsconsole.finance.mapper.SupportPaymentSourceMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.team.application.SupportInvitationReadService;
+import ffdd.opsconsole.team.facade.SupportInvitationReadFacade;
+import ffdd.opsconsole.team.facade.SupportInvitationReadFacade.Completeness;
+import ffdd.opsconsole.team.facade.SupportInvitationReadFacade.Reason;
+import ffdd.opsconsole.team.mapper.SupportInvitationReadMapper;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -92,8 +101,11 @@ class SupportPaymentCaptureMySqlIntegrationTest {
     private static final List<String> TABLES=List.of("nx_user","nx_user_wallet","nx_wallet_ledger",
         "nx_payment_record","nx_order","nx_wallet_bill","nx_deposit_order","nx_cregis_deposit_event",
         "nx_topup_card_settlement","nx_vietqr_intent","nx_vietqr_reconciliation","nx_hdpay_payin_order",
-        "nx_user_device","nx_trial_claim","nx_support_payment_attribution","nx_support_payment_history_birth");
+        "nx_user_device","nx_trial_claim","nx_support_payment_attribution","nx_support_payment_history_birth",
+        "nx_user_device_runtime");
     private final ObjectMapper json=new ObjectMapper();
+    private final List<Long> readerFixtureDeviceIds=new ArrayList<>();
+    private final List<Long> readerFixtureRuntimeIds=new ArrayList<>();
     private DriverManagerDataSource dataSource;
     private JdbcTemplate jdbc;
     private JdbcTemplate outside;
@@ -107,6 +119,8 @@ class SupportPaymentCaptureMySqlIntegrationTest {
     private E4OrderRefundMapper refundMapper;
     private SupportPaymentFactService history;
     private SupportPaymentCaptureHistoryMapper historyMapper;
+    private SupportInvitationReadFacade invitations;
+    private SupportDeviceReadFacade devices;
 
     @BeforeEach
     void exclusivelyOwnedDatabaseAndRealTransactionProxies() throws Exception {
@@ -141,6 +155,8 @@ class SupportPaymentCaptureMySqlIntegrationTest {
         configuration.addMapper(E4OrderRefundMapper.class);
         configuration.addMapper(SupportPaymentAttributionMapper.class);
         configuration.addMapper(SupportPaymentHistoryBirthMapper.class);
+        configuration.addMapper(SupportInvitationReadMapper.class);
+        configuration.addMapper(SupportDeviceReadMapper.class);
         var factory=new MybatisSqlSessionFactoryBuilder().build(configuration);
         var template=new SqlSessionTemplate(factory);
         assertThat(factory.getConfiguration().getEnvironment().getDataSource()).isSameAs(dataSource);
@@ -158,6 +174,201 @@ class SupportPaymentCaptureMySqlIntegrationTest {
         capture=proxy(new SupportPaymentAttributionService(template.getMapper(SupportPaymentAttributionMapper.class),
             finance,audit,dataSource,json));
         birth=proxy(new SupportPaymentHistoryBirthService(template.getMapper(SupportPaymentHistoryBirthMapper.class),dataSource));
+        invitations=proxy(new SupportInvitationReadService(template.getMapper(SupportInvitationReadMapper.class)));
+        devices=new SupportDeviceReadService(template.getMapper(SupportDeviceReadMapper.class));
+    }
+
+    @Test
+    void invitationReaderTraversesBeyondSevenLevelsAndKeepsInactiveOverlappingRoots() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            var chain=new ArrayList<Long>();
+            for(int depth=0;depth<=9;depth++) {
+                long customer=newAccount(accounts,0);
+                chain.add(customer);
+                if(depth>0) readerSponsor(customer,chain.get(depth-1));
+            }
+            assertThat(jdbc.update("UPDATE nx_user SET status='DISABLED' WHERE id=?",chain.get(3))).isEqualTo(1);
+            var results=invitations.readInvitations(List.of(chain.get(5),chain.get(0),chain.get(0)));
+            assertThat(results).extracting(r -> r.rootCustomerId()).containsExactly(chain.get(0),chain.get(5));
+            assertThat(results.get(0).directCustomerIds()).containsExactly(chain.get(1));
+            assertThat(results.get(0).descendantCustomerIds()).containsExactlyElementsOf(chain.subList(1,10));
+            assertThat(results.get(1).descendantCustomerIds()).containsExactlyElementsOf(chain.subList(6,10));
+            assertThat(results).allSatisfy(r -> {
+                assertThat(r.completeness()).isEqualTo(Completeness.COMPLETE);
+                assertThat(r.reasons()).isEmpty();
+            });
+            assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @Test
+    void invitationReaderTraversesDeletedBridgeAsPartialWithoutLosingRetainedDescendants() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long root=newAccount(accounts,0), bridge=newAccount(accounts,0);
+            long inactive=newAccount(accounts,0), leaf=newAccount(accounts,0);
+            readerSponsor(bridge,root);readerSponsor(inactive,bridge);readerSponsor(leaf,inactive);
+            assertThat(jdbc.update("UPDATE nx_user SET is_deleted=1 WHERE id=?",bridge)).isEqualTo(1);
+            assertThat(jdbc.update("UPDATE nx_user SET status='DISABLED' WHERE id=?",inactive)).isEqualTo(1);
+            var result=invitations.readInvitations(List.of(root)).get(0);
+            assertThat(result.directCustomerIds()).isEmpty();
+            assertThat(result.descendantCustomerIds()).containsExactly(inactive,leaf);
+            assertThat(result.completeness()).isEqualTo(Completeness.PARTIAL);
+            assertThat(result.reasons()).containsExactly(Reason.DELETED_NODE);
+            assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"CROSS_ENV","CYCLE"})
+    void invitationReaderMarksCrossEnvironmentOrCyclePartialWithoutFakeZero(String defect) {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long root=newAccount(accounts,0), clean=newAccount(accounts,0);
+            long bridge=newAccount(accounts,defect.equals("CROSS_ENV")?1:0), leaf=newAccount(accounts,0);
+            readerSponsor(clean,root);readerSponsor(bridge,root);readerSponsor(leaf,bridge);
+            if(defect.equals("CYCLE")) readerSponsor(root,leaf);
+            var result=invitations.readInvitations(List.of(root)).get(0);
+            assertThat(result.completeness()).isEqualTo(Completeness.PARTIAL);
+            if(defect.equals("CROSS_ENV")) {
+                assertThat(result.directCustomerIds()).containsExactly(clean);
+                assertThat(result.descendantCustomerIds()).containsExactly(clean);
+                assertThat(result.reasons()).containsExactly(Reason.ENVIRONMENT_CONFLICT);
+            } else {
+                assertThat(result.directCustomerIds()).containsExactly(clean,bridge);
+                assertThat(result.descendantCustomerIds()).containsExactly(clean,bridge,leaf);
+                assertThat(result.reasons()).containsExactly(Reason.CYCLE);
+            }
+            assertThat(result.descendantCustomerIds()).doesNotContain(root).doesNotHaveDuplicates();
+            assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @Test
+    void deviceReaderRetainsOwnedStoppedInventoryPendingAndRawTrialGiftSources() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long customer=newAccount(accounts,0);
+            Fixture paidTrial=pending(Source.TRIAL_CONVERT,customer);
+            Prepared prepared=prepare(paidTrial);settle(paidTrial,prepared,true,false);capture.record(prepared);
+            readerFixtureDeviceIds.add(paidTrial.device);
+            assertThat(jdbc.update("UPDATE nx_user_device SET source_channel='TRIAL',activated_at=NOW(),deactivated_at=NULL WHERE id=? AND user_id=?",
+                paidTrial.device,customer)).isEqualTo(1);
+            long freeTrial=readerDevice(customer,"OWNED","ACTIVE","TRIAL",null,"DEVICE");
+            long gift=readerDevice(customer,"OWNED","ACTIVE","GIFT",null,"DEVICE");
+            long stopped=readerDevice(customer,"OWNED","DEACTIVATED","ORDER",null,"DEVICE");
+            long inventory=readerDevice(customer,"OWNED","INVENTORY","ORDER",null,"DEVICE");
+            long pending=readerDevice(customer,"OWNED","PENDING_ACTIVATION","ORDER",null,"DEVICE");
+            long deferred=readerDevice(customer,"OWNED","RUNNING","ORDER",null,"DEVICE");
+            assertThat(jdbc.update("UPDATE nx_user_device SET pending_deactivate=1 WHERE id=?",deferred)).isEqualTo(1);
+            readerRuntime(deferred,"ONLINE",databaseLocalDateTime("SELECT NOW(6)").withNano(0),0);
+            var result=devices.readCurrent(List.of(customer,customer));
+            assertThat(result.devices()).extracting(d -> d.deviceId()).containsExactly(
+                paidTrial.device,freeTrial,gift,stopped,inventory,pending,deferred);
+            assertThat(result.unknownHoldingDevices()).isEmpty();
+            assertThat(result.devices().get(0).sourceChannel()).isEqualTo("TRIAL");
+            assertThat(result.devices().get(0).sourceOrderNo()).isEqualTo(paidTrial.order);
+            assertThat(result.devices().get(1).sourceChannel()).isEqualTo("TRIAL");
+            assertThat(result.devices().get(1).sourceOrderNo()).isNull();
+            assertThat(result.devices().get(2).sourceChannel()).isEqualTo("GIFT");
+            assertThat(result.devices().get(2).sourceOrderNo()).isNull();
+            assertThat(result.devices().get(3).deactivatedAt()).isNotNull();
+            assertThat(result.devices().subList(3,6)).allSatisfy(d ->
+                assertThat(d.connectionStatus()).isEqualTo(ConnectionStatus.NOT_APPLICABLE));
+            var running=result.devices().get(6);
+            assertThat(running.pendingDeactivate()).isEqualTo(1);
+            assertThat(running.connectionStatus()).isEqualTo(ConnectionStatus.ONLINE);
+            assertThat(running.runtime().pausedReason()).isEqualTo("maintenance");
+            assertThat(running.runtime().activeTaskNo()).isEqualTo("reader-task-"+deferred);
+            // The reader preserves a verified payment anchor; TRIAL alone does not assert paid ownership.
+            var financial=finance.readHistory(List.of(customer));
+            assertThat(financial.facts()).filteredOn(f -> f.factId().equals(paidTrial.factId())).hasSize(1);
+            assertUnknownCoverage(financial);
+            assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @Test
+    void deviceReaderUsesActualTenMinuteWindowForOnlineStaleFutureAndShare() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            try {
+                // Session-only integer DB time makes the DATETIME-second inclusive boundary exact; no global clock changes.
+                jdbc.execute("SET timestamp = UNIX_TIMESTAMP()");
+                LocalDateTime now=databaseLocalDateTime("SELECT NOW(6)");
+                assertThat(now.getNano()).isZero();
+                long customer=newAccount(accounts,0);
+                long boundary=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+                long stale=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+                long future=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+                long share=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"SHARE");
+                long reportedOffline=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+                readerRuntime(boundary,"ONLINE",now.minusMinutes(10),0);
+                readerRuntime(stale,"ONLINE",now.minusMinutes(10).minusSeconds(1),0);
+                readerRuntime(future,"OFFLINE",now.plusSeconds(1),0);
+                readerRuntime(share,"ONLINE",now,0);
+                readerRuntime(reportedOffline,"OFFLINE",now.minusMinutes(1),0);
+                var result=devices.readCurrent(List.of(customer));
+                assertThat(result.evaluatedDbAt()).isEqualTo(now);
+                assertThat(result.devices()).extracting(d -> d.deviceId()).containsExactly(boundary,stale,future,share,reportedOffline);
+                assertThat(result.devices()).extracting(d -> d.connectionStatus()).containsExactly(
+                    ConnectionStatus.ONLINE,ConnectionStatus.OFFLINE,ConnectionStatus.UNKNOWN,
+                    ConnectionStatus.ONLINE,ConnectionStatus.OFFLINE);
+                assertThat(result.devices().get(0).runtime().heartbeatAt()).isEqualTo(now.minusMinutes(10));
+                assertThat(result.devices().get(1).runtime().reportedStatus()).isEqualTo("ONLINE");
+                assertThat(result.devices().get(3).deviceType()).isEqualTo("SHARE");
+                assertThat(physicalResource()).isSameAs(resource);
+            } finally {
+                jdbc.execute("SET timestamp = 0");
+            }
+        });
+    }
+
+    @Test
+    void deviceReaderKeepsMissingOrDeletedRuntimeUnknown() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long customer=newAccount(accounts,0);
+            long missing=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+            long deletedRuntime=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+            // heartbeat_at is NOT NULL: absence is proved by no retained runtime row, not an illegal NULL fixture.
+            readerRuntime(deletedRuntime,"OFFLINE",databaseLocalDateTime("SELECT NOW(6)").withNano(0),1);
+            var result=devices.readCurrent(List.of(customer));
+            assertThat(result.devices()).extracting(d -> d.deviceId()).containsExactly(missing,deletedRuntime);
+            assertThat(result.devices()).allSatisfy(d -> {
+                assertThat(d.connectionStatus()).isEqualTo(ConnectionStatus.UNKNOWN);
+                assertThat(d.runtime().runtimeId()).isNull();
+                assertThat(d.runtime().heartbeatAt()).isNull();
+            });
+            assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @Test
+    void deviceReaderExcludesDisposedOwnedAndSeparatesUnknownHoldingWithinExactScope() {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long customer=newAccount(accounts,0), other=newAccount(accounts,0);
+            long held=readerDevice(customer,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+            readerDevice(customer,"OWNED","RECYCLED","ORDER",null,"DEVICE");
+            readerDevice(customer,"OWNED","RETIRED","ORDER",null,"DEVICE");
+            readerDevice(customer,"REFUNDED","DEACTIVATED","ORDER",null,"DEVICE");
+            readerDevice(customer,"UNBOUND","ACTIVE","ORDER",null,"DEVICE");
+            readerDevice(customer,"TRANSFERRED","ACTIVE","ORDER",null,"DEVICE");
+            long unknown=readerDevice(customer,"UNKNOWN","ACTIVE","ORDER",null,"DEVICE");
+            long otherDevice=readerDevice(other,"OWNED","ACTIVE","ORDER",null,"DEVICE");
+            var result=devices.readCurrent(List.of(customer));
+            assertThat(result.devices()).extracting(d -> d.deviceId()).containsExactly(held);
+            assertThat(result.unknownHoldingDevices()).extracting(d -> d.deviceId()).containsExactly(unknown);
+            assertThat(result.devices()).allSatisfy(d -> assertThat(d.customerId()).isEqualTo(customer));
+            assertThat(result.unknownHoldingDevices()).allSatisfy(d -> {
+                assertThat(d.customerId()).isEqualTo(customer);
+                assertThat(d.connectionStatus()).isEqualTo(ConnectionStatus.UNKNOWN);
+            });
+            assertThat(result.devices()).extracting(d -> d.deviceId()).doesNotContain(otherDevice);
+            assertThat(physicalResource()).isSameAs(resource);
+        });
     }
 
     @ParameterizedTest
@@ -1177,6 +1388,51 @@ class SupportPaymentCaptureMySqlIntegrationTest {
             assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_support_payment_attribution WHERE customer_id=?",Long.class,customer)).isZero();
             assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_wallet_bill WHERE user_id=?",Long.class,customer)).isZero();
         }
+        for(long device:readerFixtureDeviceIds) {
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_user_device WHERE id=?",Long.class,device)).isZero();
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_user_device_runtime WHERE user_device_id=?",Long.class,device)).isZero();
+        }
+        for(long runtime:readerFixtureRuntimeIds)
+            assertThat(outside.queryForObject("SELECT COUNT(*) FROM nx_user_device_runtime WHERE id=?",Long.class,runtime)).isZero();
+    }
+
+    private Object readerRrResource() {
+        Object resource=physicalResource();
+        assertThat(jdbc.queryForObject("SELECT @@transaction_isolation",String.class)).isEqualTo("REPEATABLE-READ");
+        return resource;
+    }
+
+    private void readerSponsor(long customer,long sponsor) {
+        assertThat(jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=? AND nickname='support-capture-fixture'",
+            sponsor,customer)).isEqualTo(1);
+    }
+
+    private long readerDevice(long customer,String ownership,String lifecycle,String channel,String order,String type) {
+        String instance=unique();
+        assertThat(jdbc.queryForObject("SELECT nickname FROM nx_user WHERE id=?",String.class,customer))
+            .isEqualTo("support-capture-fixture");
+        assertThat(jdbc.update("""
+            INSERT INTO nx_user_device(user_id,instance_no,name,device_type,ownership_status,source_channel,
+                source_order_no,source_environment,run_id,status,hashrate,activated_at,deactivated_at,is_deleted)
+            VALUES(?,?,'support-reader-fixture',?,?,?,?, 'PRODUCTION','',?,12.345678,
+                CASE WHEN ? IN ('INVENTORY','PENDING','PENDING_ACTIVATION') THEN NULL ELSE DATE_SUB(NOW(),INTERVAL 1 DAY) END,
+                CASE WHEN ? IN ('DEACTIVATED','INACTIVE','INVENTORY','RECYCLED','RETIRED') THEN NOW() ELSE NULL END,0)
+            """,customer,instance,type,ownership,channel,order,lifecycle,lifecycle,lifecycle)).isEqualTo(1);
+        long device=jdbc.queryForObject("SELECT id FROM nx_user_device WHERE instance_no=? AND user_id=?",
+            Long.class,instance,customer);
+        readerFixtureDeviceIds.add(device);
+        return device;
+    }
+
+    private void readerRuntime(long device,String reported,LocalDateTime heartbeat,int deleted) {
+        assertThat(readerFixtureDeviceIds).contains(device);
+        assertThat(jdbc.update("""
+            INSERT INTO nx_user_device_runtime(user_device_id,online_status,heartbeat_at,paused_reason,
+                active_task_no,network_reachable,is_deleted)
+            VALUES(?,?,?,'maintenance',?,1,?)
+            """,device,reported,heartbeat,"reader-task-"+device,deleted)).isEqualTo(1);
+        long runtime=jdbc.queryForObject("SELECT id FROM nx_user_device_runtime WHERE user_device_id=?",Long.class,device);
+        readerFixtureRuntimeIds.add(runtime);
     }
 
     private long newAccount(List<Long> accounts,int sandbox) {
