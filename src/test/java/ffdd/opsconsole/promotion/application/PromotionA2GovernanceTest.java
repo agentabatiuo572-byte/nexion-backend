@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 class PromotionA2GovernanceTest {
-    private final AuditReplayBusinessPermissionGuard guard=new AuditReplayBusinessPermissionGuard(null,mock(AdminOperatorRoleResolver.class),null,null);
+    private final AuditReplayBusinessPermissionGuard guard=new AuditReplayBusinessPermissionGuard(null,mock(AdminOperatorRoleResolver.class),null,null,mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class));
     @AfterEach void clear(){SecurityContextHolder.clearContext();}
     void auth(String... permissions){var auth=new UsernamePasswordAuthenticationToken(71L,"",Arrays.stream(permissions).map(SimpleGrantedAuthority::new).toList());auth.setDetails(Map.of("subjectType","ADMIN"));SecurityContextHolder.getContext().setAuthentication(auth);}
     Map<String,Object> params(){return values("obligationId","PR1","expectedRevision",3,"snapshotHash","a".repeat(64),"action","CANCEL","asset","USDT");}
