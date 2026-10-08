@@ -104,6 +104,9 @@ public class SupportPaymentFactService {
                     || original.customerId() != refund.customerId() || !original.currency().equals(refund.currency())) {
                 invalidRefunds.add(refund.factId());
                 issues.add(new Issue(refund.source(),refund.sourceIds().get(0),"UNPROVEN_ORIGINAL_PAYMENT"));
+            } else if (refund.succeededAt().withNano(0).isBefore(original.succeededAt().withNano(0))) {
+                invalidRefunds.add(refund.factId());
+                issues.add(new Issue(refund.source(),refund.sourceIds().get(0),"REFUND_PREDATES_ORIGINAL_PAYMENT"));
             } else refundTotals.merge(original.factId(),refund.amount(),BigDecimal::add);
         }
         for (Fact refund : facts.values()) {

@@ -108,6 +108,27 @@ class SupportPaymentFactServiceTest {
         assertThat(snapshot.facts()).filteredOn(f -> f.kind()==Kind.DEVICE_PURCHASE).extracting(Fact::amount)
             .containsExactly(new BigDecimal("80"));
     }
+    @Test void refundBeforeOriginalPaymentIsUnknown() {
+        var order=row(Source.WALLET_ORDER,Kind.DEVICE_PURCHASE,201,"order-1","80");order.put("orderNo","order-1");
+        var refund=row(Source.ORDER_REFUND,Kind.DEVICE_PURCHASE_REFUND,301,"E4-REFUND-order-1","30");
+        refund.put("orderNo","order-1");refund.put("succeededAt",at.minusSeconds(1));refund.put("ledgerRecordedAt",at.minusSeconds(1));
+        when(mapper.orders(any())).thenReturn(List.of(order));when(mapper.refunds(any())).thenReturn(List.of(refund));
+        var snapshot=service.read(List.of(7L));
+        assertThat(snapshot.facts()).hasSize(1).allMatch(f -> f.kind()==Kind.DEVICE_PURCHASE);
+        assertThat(snapshot.issues()).containsExactly(new Issue(Source.ORDER_REFUND,"ORDER_REFUND:301","REFUND_PREDATES_ORIGINAL_PAYMENT"));
+        assertThat(snapshot.coverage()).filteredOn(c -> c.source()==Source.ORDER_REFUND)
+            .extracting(Coverage::observedStatus).containsExactly(Status.UNKNOWN);
+    }
+    @Test void refundInSameRecordedSecondRetainsLowerPrecisionLedgerTime() {
+        var order=row(Source.WALLET_ORDER,Kind.DEVICE_PURCHASE,201,"order-1","80");order.put("orderNo","order-1");
+        order.put("succeededAt",at.withNano(600_000_000));order.put("sourceConfirmationAt",at.withNano(600_000_000));
+        var refund=row(Source.ORDER_REFUND,Kind.DEVICE_PURCHASE_REFUND,301,"E4-REFUND-order-1","30");refund.put("orderNo","order-1");
+        when(mapper.orders(any())).thenReturn(List.of(order));when(mapper.refunds(any())).thenReturn(List.of(refund));
+        var snapshot=service.read(List.of(7L));
+        assertThat(snapshot.facts()).hasSize(2);assertThat(snapshot.issues()).isEmpty();
+        assertThat(snapshot.facts()).filteredOn(f -> f.kind()==Kind.DEVICE_PURCHASE_REFUND)
+            .extracting(Fact::succeededAt).containsExactly(at);
+    }
     @Test void refundWithoutOriginalOrAboveOriginalOrWrongCurrencyIsUnknown() {
         var order=row(Source.WALLET_ORDER,Kind.DEVICE_PURCHASE,201,"order-1","80");order.put("orderNo","order-1");
         var tooMuch=row(Source.ORDER_REFUND,Kind.DEVICE_PURCHASE_REFUND,301,"E4-REFUND-order-1","81");tooMuch.put("orderNo","order-1");
