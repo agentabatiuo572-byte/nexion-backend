@@ -2,6 +2,7 @@
 -- Structure only: no balances, bills, orders, historical rows, or attribution are inserted/backfilled.
 -- An existing incompatible table is rejected before CREATE; it is never altered or rewritten.
 -- Checks remain in the existing E4 writer: this table does not invent general bill type/amount rules.
+-- Existing wider DECIMAL columns preserve the writer's 18,6 amounts without narrowing historical storage.
 SET @e4_bill_validate_sql = 'SELECT (
  NOT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=''nx_wallet_bill'')
  OR (
@@ -16,7 +17,7 @@ SET @e4_bill_validate_sql = 'SELECT (
           OR (column_name=''bill_no'' AND data_type=''varchar'' AND character_maximum_length>=104 AND character_set_name=''utf8mb4'')
           OR (column_name=''type'' AND data_type=''varchar'' AND character_maximum_length>=12)
           OR (column_name=''token'' AND data_type=''varchar'' AND character_maximum_length>=4)
-          OR (column_name=''amount'' AND data_type=''decimal'' AND numeric_precision=18 AND numeric_scale=6)
+          OR (column_name=''amount'' AND data_type=''decimal'' AND numeric_precision>=18 AND numeric_scale=6)
           OR (column_name=''direction'' AND data_type=''varchar'' AND character_maximum_length>=2)
           OR (column_name IN (''occurred_at'',''created_at'') AND data_type=''datetime'')
           OR (column_name=''deleted'' AND data_type=''tinyint'')
