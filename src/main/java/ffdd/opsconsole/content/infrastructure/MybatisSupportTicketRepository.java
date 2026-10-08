@@ -19,6 +19,25 @@ import org.springframework.stereotype.Repository;
 @Repository
 @RequiredArgsConstructor
 public class MybatisSupportTicketRepository implements SupportTicketRepository {
+    @Override public Map<String,Object> counters(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        return ticketMapper.scopedCounters(java.util.Objects.requireNonNull(scope,"Current scope required"));
+    }
+    @Override public PageResult<SupportTicketView> pageTickets(SupportTicketQueryRequest request,ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        return scopedPage(request,null,false,scope);
+    }
+    @Override public PageResult<SupportTicketView> pageTicketsBeforeId(SupportTicketQueryRequest request,Long beforeId,ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        return scopedPage(request,beforeId,true,scope);
+    }
+    private PageResult<SupportTicketView> scopedPage(SupportTicketQueryRequest r,Long before,boolean stable,ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        java.util.Objects.requireNonNull(scope,"Current scope required");
+        long page=stable?1:normalizePage(r==null?null:r.pageNum()),size=normalizeSize(r==null?null:r.pageSize());
+        String tab=normalizeScope(r==null?null:r.scope()),status=r==null?null:trim(r.status()),category=r==null?null:trim(r.category()),priority=r==null?null:trim(r.priority()),keyword=r==null?null:trim(r.keyword());
+        Long assigned=r==null?null:r.assignedAdminId(),user=r==null?null:r.userId();
+        var reader=visibility();
+        long total=ticketMapper.countTicketsScoped(tab,status,category,priority,assigned,user,keyword,reader,scope);
+        var rows=total==0?List.<SupportTicketView>of():ticketMapper.pageTicketsScoped(tab,status,category,priority,assigned,user,keyword,before,stable,size,(page-1)*size,reader,scope);
+        return new PageResult<>(total,page,size,rows);
+    }
     private final ffdd.opsconsole.content.application.SupportOwnershipService ownership;
     private static final int LAST_MESSAGE_MAX_CODE_POINTS = 512;
     private final SupportTicketMapper ticketMapper;

@@ -171,6 +171,17 @@ class SupportAttachmentServiceTest {
         assertThat(service.metadata(id, "ADMIN", 3L).messageId()).isEqualTo(8L);
     }
 
+    @Test void oldManagedAttachmentUrlRechecksScopeBeforeMetadataAndBytes() {
+        authenticate("ADMIN",3L);
+        when(mapper.find(id)).thenReturn(row("ADMIN",2L,"ATTACHED",8L,false));
+        when(ownership.canRead(3L,10L)).thenReturn(true);
+        assertThat(service.metadata(id,"ADMIN",3L).messageId()).isEqualTo(8L);
+        when(ownership.canRead(3L,10L)).thenReturn(false);
+        code(404,()->service.metadata(id,"ADMIN",3L));
+        code(404,()->service.content(id,"ADMIN",3L));
+        verifyNoInteractions(storage);
+    }
+
     @Test void expiredOrCancelledCannotAttachAndAttachedCannotCancel() {
         when(mapper.find(id)).thenReturn(row("USER", 10L, "READY", null, true));
         code(409, () -> service.attachToMessage(10L, "USER", 10L, null, id, 8L));

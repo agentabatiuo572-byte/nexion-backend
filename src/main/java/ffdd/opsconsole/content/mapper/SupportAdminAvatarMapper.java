@@ -25,7 +25,7 @@ public interface SupportAdminAvatarMapper {
     Map<String,Object> reference(Long admin);
     @Select("""
       SELECT a.id FROM nx_admin a JOIN nx_support_agent_profile p ON p.admin_id=a.id AND p.is_deleted=0
-      WHERE a.id=#{admin} AND a.status=1 AND a.is_deleted=0 FOR SHARE
+      WHERE a.id=#{admin} AND a.is_deleted=0 FOR SHARE
       """)
     Long rosterAdminForShare(Long admin);
     @Select("""

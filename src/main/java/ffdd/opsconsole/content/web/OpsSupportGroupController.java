@@ -30,4 +30,7 @@ public class OpsSupportGroupController {
     public Object owner(@PathVariable Long id,@RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String key,@RequestBody Owner request){production.requireOpsWriteAllowed();return groups.owner(id,key,request);}
     @PatchMapping("/members/{adminId}") @PreAuthorize("hasAuthority('service_m1_write')")
     public Object member(@PathVariable Long adminId,@RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String key,@RequestBody Move request){production.requireOpsWriteAllowed();return groups.move(adminId,key,request);}
+    @PatchMapping("/customer-routes/{customerId}") @PreAuthorize("hasAuthority('service_m1_write')")
+    public Object route(@PathVariable Long customerId,@RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String key,
+            @RequestBody ffdd.opsconsole.content.dto.SupportGroupRequests.Route request){production.requireOpsWriteAllowed();return groups.route(customerId,key,request);}
 }

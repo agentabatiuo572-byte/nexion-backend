@@ -45,9 +45,16 @@ public class OpsSupportTicketController {
 
     // 工单总览 — M2 工单台 读
     @PreAuthorize("hasAuthority('service_m2_read')")
-    @GetMapping("/overview")
     public ApiResult<Map<String, Object>> overview() {
         return ticketService.overview();
+    }
+
+    @PreAuthorize("hasAuthority('service_m2_read')")
+    @GetMapping("/overview")
+    public ApiResult<Map<String,Object>> overviewQuery(
+            @org.springframework.web.bind.annotation.RequestParam(required=false) ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode readMode,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) Long groupId) {
+        return ticketService.overview(readMode,groupId);
     }
 
     // 新建/转交工单的最小坐席候选 — M2 读；不得复用 M1 坐席总览权限或返回其完整资料。
@@ -93,6 +100,22 @@ public class OpsSupportTicketController {
     // 工单队列/搜索/分页 — M2 工单台 读
     @PreAuthorize("hasAuthority('service_m2_read')")
     @GetMapping
+    public ApiResult<PageResult<SupportTicketView>> ticketsQuery(
+            @org.springframework.web.bind.annotation.RequestParam(required=false) String scope,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) String status,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) String category,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) String priority,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) Long assignedAdminId,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) Long userId,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) String keyword,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) Long pageNum,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) Long pageSize,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode readMode,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) Long groupId) {
+        return tickets(new SupportTicketQueryRequest(scope,status,category,priority,assignedAdminId,userId,keyword,pageNum,pageSize,readMode,groupId));
+    }
+
+    @PreAuthorize("hasAuthority('service_m2_read')")
     public ApiResult<PageResult<SupportTicketView>> tickets(SupportTicketQueryRequest request) {
         return ticketService.tickets(request);
     }

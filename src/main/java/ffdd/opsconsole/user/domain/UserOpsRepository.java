@@ -12,6 +12,8 @@ import ffdd.opsconsole.user.dto.UserQueryRequest;
 public interface UserOpsRepository {
     Map<String, Object> overview();
 
+    Map<String,Object> supportOverview(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
+
     List<UserAccountView> search(String keyword, String status, int limit);
 
     List<UserAccountControlFactView> accountControlFacts(int limit);
@@ -21,6 +23,12 @@ public interface UserOpsRepository {
     PageResult<UserAccountView> pageProfiles(UserQueryRequest request);
 
     PageResult<UserAccountView> pageSupportProfiles(UserQueryRequest request);
+
+    PageResult<UserAccountView> pageSupportProfiles(UserQueryRequest request, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
+
+    Optional<UserAccountView> findById(Long userId, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
+
+    long countReadableSupportCustomers(List<Long> customerIds, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
 
     Optional<UserAccountView> findById(Long userId);
 

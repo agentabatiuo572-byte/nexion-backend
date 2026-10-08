@@ -79,6 +79,40 @@ class ConversationSocketHandlerTest {
         login();frame(Map.of("type","watch","conversationNo","CV-1"));
         awaitPresence();
     }
+    @Test void groupRevocationClearsOnlyLostWatchAndKeepsAuthenticatedSocket()throws Exception{
+        when(access.authenticate("jwt","ADMIN")).thenReturn(auth);
+        when(access.canRead(auth,"ADMIN","CV-MANAGED")).thenReturn(true);
+        frame(Map.of("type","auth","ticket",tickets.issue("Bearer jwt","ADMIN")));
+        frame(Map.of("type","watch","conversationNo","CV-MANAGED"));
+        when(access.canRead(auth,"ADMIN","CV-MANAGED")).thenReturn(false);
+        handler.scopeChanged(new ffdd.opsconsole.content.domain.SupportGroupFacts.ScopeChanged(Set.of(12L),"GROUP_CHANGED"));
+        awaitInvalidation();
+        // Even if a new grant appears, a cancelled watch cannot silently resume typing/presence.
+        when(access.canRead(auth,"ADMIN","CV-MANAGED")).thenReturn(true);
+        when(access.canWrite(auth,"ADMIN","CV-MANAGED")).thenReturn(true);
+        frame(Map.of("type","typing","conversationNo","CV-MANAGED","active",true));
+        assertTrue(frames.stream().anyMatch(s->s.contains("404")));
+        verify(access,never()).write(any(),anyString());verify(socket,never()).close(any());
+    }
+    @Test void groupRevocationPreservesStillLegalPersonalWatch()throws Exception{
+        auth=new UsernamePasswordAuthenticationToken("12",null,List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("service_m3_read")));
+        when(access.authenticate("jwt","ADMIN")).thenReturn(auth);
+        when(access.canRead(auth,"ADMIN","CV-PERSONAL")).thenReturn(true);
+        when(access.canWrite(auth,"ADMIN","CV-PERSONAL")).thenReturn(true);
+        var guard=ffdd.opsconsole.content.SupportTestDependencies.ownership();
+        when(access.participants("CV-PERSONAL")).thenReturn(Optional.of(new ConversationSocketAccess.Participants("22","12",guard)));
+        frame(Map.of("type","auth","ticket",tickets.issue("Bearer jwt","ADMIN")));
+        frame(Map.of("type","watch","conversationNo","CV-PERSONAL"));
+        handler.scopeChanged(new ffdd.opsconsole.content.domain.SupportGroupFacts.ScopeChanged(Set.of(12L),"GROUP_CHANGED"));
+        awaitInvalidation();
+        frame(Map.of("type","typing","conversationNo","CV-PERSONAL","active",true));
+        verify(access).write(auth,"ADMIN");verify(socket,never()).close(any());
+    }
+    private void awaitInvalidation()throws Exception {
+        long deadline=System.currentTimeMillis()+2000;
+        while(frames.stream().noneMatch(s->s.contains("scope-invalidated"))&&System.currentTimeMillis()<deadline)Thread.sleep(10);
+        assertTrue(frames.stream().anyMatch(s->s.contains("scope-invalidated") && !s.contains("customerId")));
+    }
     void awaitPresence()throws Exception{
         long deadline=System.currentTimeMillis()+2000;
         while(frames.stream().noneMatch(s->s.contains("\"type\":\"presence\""))&&System.currentTimeMillis()<deadline)Thread.sleep(10);

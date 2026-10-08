@@ -57,7 +57,8 @@ public class OpsSupportCommandController {
         Set<Long> customers=new TreeSet<>();
         collect(response.path("data"),customers);
         customers.forEach(ownership::lockCustomer);
-        customers.forEach(ownership::requireRead);
+        if(receipt.getScope().startsWith("SUPPORT_")) customers.forEach(ownership::requireManagingCustomer);
+        else customers.forEach(ownership::requireRead);
         if(receipt.getScope().startsWith("SUPPORT_")) ownership.requireSupervisor();
         if(receipt.getScope().startsWith("M2_") && restrictedTicket(response.path("data")))
             return ApiResult.ok(Map.of("status","SUCCEEDED","contentRestricted",true));

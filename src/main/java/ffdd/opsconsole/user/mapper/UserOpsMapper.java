@@ -335,74 +335,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             """)
     UserAccountControlFactView findAccountControlFact(@Param("userId") Long userId);
 
-    @Select("""
-            <script>
-            SELECT COUNT(*)
-              FROM nx_user u
-              LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
-              LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
-              LEFT JOIN (
-                    SELECT model_version, band_low_max, band_high_min, auto_escalate_score
-                      FROM nx_admin_risk_score_model
-                     WHERE state = 'active' AND is_deleted = 0
-                     ORDER BY model_version DESC
-                     LIMIT 1
-              ) rsm ON 1 = 1
-              LEFT JOIN nx_admin_risk_score_user rs
-                ON rs.user_no = CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))
-               AND rs.is_deleted = 0
-               AND rs.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
-               AND rs.model_version = CONCAT('k4-v', rsm.model_version)
-              LEFT JOIN nx_admin_risk_score_override rso ON rso.user_no = rs.user_no AND rso.active = 1 AND rso.is_deleted = 0
-             WHERE u.is_deleted = 0
-             <if test='query.keyword != null and query.keyword != ""'>
-               AND (u.nickname LIKE CONCAT('%', #{query.keyword}, '%')
-                    OR u.referral_code LIKE CONCAT('%', #{query.keyword}, '%')
-                    OR CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) LIKE CONCAT('%', #{query.keyword}, '%')
-                    OR CAST(u.id AS CHAR) = #{query.keyword}
-                    <if test='phoneKeyword != null'>
-                    OR RIGHT(REGEXP_REPLACE(u.phone, '[^0-9]', ''), LENGTH(#{phoneKeyword})) = #{phoneKeyword}
-                    OR REGEXP_REPLACE(CONCAT(u.country_code, u.phone), '[^0-9]', '') = #{phoneKeyword}
-                    </if>)
-             </if>
-             <if test='query.userId != null'>AND u.id = #{query.userId}</if>
-             <if test='query.phoneHash != null and query.phoneHash != ""'>
-               AND SHA2(REGEXP_REPLACE(u.phone, '[^0-9]', ''), 256) = LOWER(#{query.phoneHash})
-             </if>
-             <if test='query.phoneMasked != null and query.phoneMasked != ""'>
-               AND u.phone REGEXP '^[0-9]{7,15}$'
-               AND CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3)) = #{query.phoneMasked}
-             </if>
-             <if test='query.tier != null and query.tier != ""'>AND u.user_level = #{query.tier}</if>
-             <if test='query.vRank != null and query.vRank != ""'>AND u.v_rank = #{query.vRank}</if>
-             <if test='query.referralCode != null and query.referralCode != ""'>AND UPPER(u.referral_code) = UPPER(#{query.referralCode})</if>
-             <if test='statuses != null and statuses.size() > 0'>
-               AND UPPER(COALESCE(u.status, 'ACTIVE')) IN
-               <foreach collection='statuses' item='status' open='(' separator=',' close=')'>#{status}</foreach>
-             </if>
-             <if test='query.riskMin != null'>AND COALESCE(rso.override_score, rs.model_score) &gt;= #{query.riskMin}</if>
-             <if test='query.riskBand != null and query.riskBand == "HIGH"'>AND COALESCE(rso.override_score, rs.model_score) &gt;= rsm.band_high_min</if>
-             <if test='query.riskBand != null and query.riskBand == "MEDIUM"'>AND COALESCE(rso.override_score, rs.model_score) &gt;= rsm.band_low_max AND COALESCE(rso.override_score, rs.model_score) &lt; rsm.band_high_min</if>
-             <if test='query.riskBand != null and query.riskBand == "LOW"'>AND COALESCE(rso.override_score, rs.model_score) &lt; rsm.band_low_max</if>
-             <if test='query.depositMin != null'>
-               AND (SELECT COALESCE(SUM(de.amount), 0) FROM nx_deposit_order de WHERE de.user_id = u.id AND de.is_deleted = 0 AND de.status IN ('CONFIRMED','CREDITED','SUCCESS')) &gt;= #{query.depositMin}
-             </if>
-             <if test='query.depositMax != null'>
-               AND (SELECT COALESCE(SUM(de.amount), 0) FROM nx_deposit_order de WHERE de.user_id = u.id AND de.is_deleted = 0 AND de.status IN ('CONFIRMED','CREDITED','SUCCESS')) &lt;= #{query.depositMax}
-             </if>
-             <if test='query.walletUsdtMin != null'>AND COALESCE(w.usdt_available, 0) &gt;= #{query.walletUsdtMin}</if>
-             <if test='query.walletUsdtMax != null'>AND COALESCE(w.usdt_available, 0) &lt;= #{query.walletUsdtMax}</if>
-             <if test='query.walletNexMin != null'>AND COALESCE(w.nex_available, 0) &gt;= #{query.walletNexMin}</if>
-             <if test='query.walletNexMax != null'>AND COALESCE(w.nex_available, 0) &lt;= #{query.walletNexMax}</if>
-             <if test='query.joinedFrom != null and query.joinedFrom != ""'>AND u.created_at &gt;= CONCAT(#{query.joinedFrom}, ' 00:00:00')</if>
-             <if test='query.joinedTo != null and query.joinedTo != ""'>AND u.created_at &lt; DATE_ADD(CONCAT(#{query.joinedTo}, ' 00:00:00'), INTERVAL 1 DAY)</if>
-            </script>
-            """)
-    long countUsersByQuery(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
-                          @Param("phoneKeyword") String phoneKeyword);
-
-    @Select("""
-            <script>
+    String PROFILE_SELECT = """
             SELECT u.id,
                    CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) AS userNo,
                    u.nickname,
@@ -435,7 +368,8 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                            AND (s.last_login_at IS NULL OR sess.created_at > s.last_login_at)),
                        s.last_login_at
                    ) AS lastLoginAt
-              FROM nx_user u
+            """;
+    String PROFILE_JOINS = """
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
               LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
               LEFT JOIN (
@@ -451,6 +385,8 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND rs.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
                AND rs.model_version = CONCAT('k4-v', rsm.model_version)
               LEFT JOIN nx_admin_risk_score_override rso ON rso.user_no = rs.user_no AND rso.active = 1 AND rso.is_deleted = 0
+            """;
+    String PROFILE_FILTER = """
              WHERE u.is_deleted = 0
              <if test='query.keyword != null and query.keyword != ""'>
                AND (u.nickname LIKE CONCAT('%', #{query.keyword}, '%')
@@ -493,67 +429,51 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
              <if test='query.walletNexMax != null'>AND COALESCE(w.nex_available, 0) &lt;= #{query.walletNexMax}</if>
              <if test='query.joinedFrom != null and query.joinedFrom != ""'>AND u.created_at &gt;= CONCAT(#{query.joinedFrom}, ' 00:00:00')</if>
              <if test='query.joinedTo != null and query.joinedTo != ""'>AND u.created_at &lt; DATE_ADD(CONCAT(#{query.joinedTo}, ' 00:00:00'), INTERVAL 1 DAY)</if>
-             ORDER BY u.id DESC LIMIT #{pageSize} OFFSET #{offset}
-            </script>
-            """)
+            """;
+    String PROFILE_FROM = " FROM nx_user u " + PROFILE_JOINS;
+    String SCOPED_PROFILE_FROM = " FROM nx_user u JOIN nx_user scope_customer ON scope_customer.id=u.id " + PROFILE_JOINS;
+
+    @Select("<script>SELECT COUNT(*) totalUsers,COALESCE(SUM(COALESCE(u.status,'ACTIVE')='ACTIVE'),0) activeUsers,"
+            + "COALESCE(SUM(u.status='FROZEN'),0) frozenUsers,COUNT(rs.id) freshRiskCount,"
+            + "COALESCE(SUM(COALESCE(rso.override_score,rs.model_score)&gt;=rsm.band_high_min),0) highRiskUsers "
+            + SCOPED_PROFILE_FROM + " WHERE u.is_deleted=0 "
+            + ffdd.opsconsole.content.mapper.SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + "</script>")
+    java.util.Map<String,Object> supportOverview(@Param("scope") ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
+
+    @Select("<script>SELECT COUNT(*) FROM nx_user scope_customer WHERE 1=1 "
+            + "<choose><when test='customerIds != null and customerIds.size() > 0'>AND scope_customer.id IN "
+            + "<foreach collection='customerIds' item='customer' open='(' separator=',' close=')'>#{customer}</foreach>"
+            + "</when><otherwise>AND 1=0</otherwise></choose>"
+            + ffdd.opsconsole.content.mapper.SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + "</script>")
+    long countReadableSupportCustomers(@Param("customerIds") List<Long> customerIds,
+                                       @Param("scope") ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
+
+    @Select("<script>SELECT COUNT(*) " + PROFILE_FROM + PROFILE_FILTER + "</script>")
+    long countUsersByQuery(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
+                          @Param("phoneKeyword") String phoneKeyword);
+
+    @Select("<script>" + PROFILE_SELECT + PROFILE_FROM + PROFILE_FILTER + " ORDER BY u.id DESC LIMIT #{pageSize} OFFSET #{offset}</script>")
     List<UserAccountView> pageUsers(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
                                     @Param("offset") int offset, @Param("pageSize") int pageSize,
                                     @Param("phoneKeyword") String phoneKeyword);
 
-    @Select("""
-            <script>
-            SELECT u.id,
-                   CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) AS userNo,
-                   u.nickname,
-                   CASE
-                     WHEN u.phone REGEXP '^[0-9]{7,15}$'
-                     THEN CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
-                     ELSE NULL
-                   END AS phoneMasked,
-                   u.country_code AS countryCode,
-                   COALESCE(u.status, 'ACTIVE') AS status,
-                   u.user_level AS userLevel,
-                   u.v_rank AS vRank,
-                   COALESCE(s.two_factor_enabled, 0) AS twoFactorEnabled,
-                   COALESCE(w.usdt_available, 0) AS walletUsdt,
-                   COALESCE(w.nex_available, 0) AS walletNex,
-                   COALESCE(rso.override_score, rs.model_score) AS riskScore,
-                   CASE
-                     WHEN COALESCE(rso.override_score, rs.model_score) >= rsm.band_high_min THEN '高风险'
-                     WHEN COALESCE(rso.override_score, rs.model_score) >= rsm.band_low_max THEN '中风险'
-                     WHEN COALESCE(rso.override_score, rs.model_score) IS NULL THEN NULL
-                     ELSE '低风险'
-                   END AS riskBand,
-                   (SELECT COUNT(*) FROM nx_user_device d WHERE d.user_id = u.id AND d.is_deleted = 0) AS deviceCount,
-                   (SELECT COUNT(*) FROM nx_user_device d WHERE d.user_id = u.id AND d.is_deleted = 0 AND d.status IN ('ONLINE','BUSY','ACTIVE','RUNNING')) AS activeDeviceCount,
-                   u.created_at AS registeredAt,
-                   COALESCE(
-                       (SELECT MAX(sess.created_at)
-                          FROM nx_user_session sess
-                         WHERE sess.user_id = u.id AND sess.is_deleted = 0
-                           AND (s.last_login_at IS NULL OR sess.created_at > s.last_login_at)),
-                       s.last_login_at
-                   ) AS lastLoginAt
-              FROM nx_user u
-              LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
-              LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
-              LEFT JOIN (
-                    SELECT model_version, band_low_max, band_high_min, auto_escalate_score
-                      FROM nx_admin_risk_score_model
-                     WHERE state = 'active' AND is_deleted = 0
-                     ORDER BY model_version DESC
-                     LIMIT 1
-              ) rsm ON 1 = 1
-              LEFT JOIN nx_admin_risk_score_user rs
-                ON rs.user_no = CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))
-               AND rs.is_deleted = 0
-               AND rs.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
-               AND rs.model_version = CONCAT('k4-v', rsm.model_version)
-              LEFT JOIN nx_admin_risk_score_override rso ON rso.user_no = rs.user_no AND rso.active = 1 AND rso.is_deleted = 0
-             WHERE u.id = #{userId} AND u.is_deleted = 0
-            LIMIT 1
-            </script>
-            """)
+    @Select("<script>SELECT COUNT(*) " + SCOPED_PROFILE_FROM + PROFILE_FILTER
+            + ffdd.opsconsole.content.mapper.SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + "</script>")
+    long countScopedUsersByQuery(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
+                                @Param("phoneKeyword") String phoneKeyword, @Param("scope") ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
+
+    @Select("<script>" + PROFILE_SELECT + SCOPED_PROFILE_FROM + PROFILE_FILTER
+            + ffdd.opsconsole.content.mapper.SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE
+            + " ORDER BY u.id DESC LIMIT #{pageSize} OFFSET #{offset}</script>")
+    List<UserAccountView> pageScopedUsers(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
+                                         @Param("offset") long offset, @Param("pageSize") int pageSize,
+                                         @Param("phoneKeyword") String phoneKeyword, @Param("scope") ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
+
+    @Select("<script>" + PROFILE_SELECT + SCOPED_PROFILE_FROM + " WHERE u.id=#{userId} AND u.is_deleted=0 "
+            + ffdd.opsconsole.content.mapper.SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + " LIMIT 1</script>")
+    UserAccountView findScopedById(@Param("userId") Long userId, @Param("scope") ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
+
+    @Select("<script>" + PROFILE_SELECT + PROFILE_FROM + " WHERE u.id=#{userId} AND u.is_deleted=0 LIMIT 1</script>")
     UserAccountView findById(@Param("userId") Long userId);
 
     @Select("""

@@ -103,6 +103,25 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void invalidQueryTypesAreBadRequestsWithoutJavaTypeDetails() throws Exception {
+        var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(new QueryController())
+                .setControllerAdvice(handler).build();
+        for(String query:List.of("/query-types?mode=unknown&groupId=1","/query-types?mode=PERSONAL&groupId=invalid")) {
+            var response=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(query))
+                    .andReturn().getResponse();
+            assertThat(response.getStatus()).isEqualTo(400);
+            assertThat(response.getContentAsString()).contains("REQUEST_PARAMETER_INVALID").doesNotContain("ReadMode","java.lang","unknown","invalid");
+        }
+    }
+
+    @org.springframework.web.bind.annotation.RestController
+    static class QueryController {
+        enum Mode { PERSONAL, MANAGED }
+        @org.springframework.web.bind.annotation.GetMapping("/query-types")
+        String get(@org.springframework.web.bind.annotation.RequestParam Mode mode,@org.springframework.web.bind.annotation.RequestParam Long groupId) {return "ok";}
+    }
+
+    @Test
     void maxUploadSizeExceededReturnsStableMediaError() {
         ApiResult<Void> result = handler.handleMaxUploadSize(new MaxUploadSizeExceededException(200L * 1024 * 1024));
 

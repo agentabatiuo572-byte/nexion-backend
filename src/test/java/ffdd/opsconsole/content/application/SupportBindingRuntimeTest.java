@@ -21,7 +21,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /** Opt-in runner supplies the complete isolated MySQL/Redis bundle; no fallback catalog. */
-@org.springframework.context.annotation.Import(SupportIsolatedRuntime.class)
+@org.springframework.context.annotation.Import({SupportIsolatedRuntime.class,SupportObjectEvidenceLedger.Configuration.class})
 @org.springframework.test.annotation.DirtiesContext(classMode=org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 @SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties={"server.port=${S4_HTTP_PORT:18129}"})
 @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="S3_EVIDENCE_DIR",matches=".+")
@@ -42,6 +42,7 @@ class SupportBindingRuntimeTest {
         SupportOriginalProfiles.cleanup(
             () -> {if(originalRules!=null && rulesOwner>0)SharedMutationJournal.cleanupSql(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#rules-sql-1","UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",
                 originalRules.dormantDays(),originalRules.maintenanceDays(),originalRules.activityWindowDays(),originalRules.inheritanceMode(),originalRules.maxInheritanceDepth(),originalRules.unboundAssignmentMode(),originalRules.modeEffectiveAt(),rulesOwner);},
+            () -> {if(groupFixtures!=null)groupFixtures.cleanup();},
             () -> {if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());},
             SecurityContextHolder::clearContext);
     }
@@ -54,6 +55,18 @@ class SupportBindingRuntimeTest {
     }
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingMapper mapper;
+    @Autowired SupportObjectEvidenceLedger objects;
+    @Autowired ffdd.opsconsole.content.mapper.SupportGroupMapper groupMapper;
+    @Autowired SupportGroupService groups;
+    private SupportGroupRuntimeFixtures groupFixtures;
+    private final Set<Long> createdCustomers=new LinkedHashSet<>();
+    private long managedGroup;
+    private SupportGroupRuntimeFixtures scopeFixtures() {
+        if(groupFixtures==null)groupFixtures=new SupportGroupRuntimeFixtures(fixtureActors(),jdbc,groupMapper,groups,()->Set.copyOf(createdCustomers));
+        return groupFixtures;
+    }
+    private void serviceMembers(long boss,Long... members) {var fixture=scopeFixtures();fixture.asSuper(boss,()->Arrays.stream(members).forEach(fixture::serviceMember));}
+    private void route(long boss,long customer) {var fixture=scopeFixtures();fixture.asSuper(boss,()->fixture.route(customer,managedGroup));}
     @Autowired SupportOwnershipService ownership;
     @Autowired PlatformTransactionManager transactions;
     @Autowired JwtTokenProvider tokens;
@@ -75,6 +88,7 @@ class SupportBindingRuntimeTest {
 
     @Test void globalSearchDoesNotSubstituteForModuleReadAndDisabledManagerCannotMutate() throws Exception {
         long boss=admin("GLOBAL_BOSS","SUPER_ADMIN","MANAGER"),manager=admin("DISABLED_MANAGER","SUPPORT","MANAGER"),agent=admin("GLOBAL_AGENT","SUPPORT","DEDICATED");
+        scopeFixtures().asSuper(boss,()->managedGroup=scopeFixtures().create(manager,List.of(agent),run+"_managed").id());
         as(boss);long customer=register("GLOBAL_CUSTOMER",null);transfer(agent,List.of(customer),key());
         var c=app.startConversation(customer,key(),new AppSupportService.StartConversationRequest("support","Global read grant probe")).getData().conversation();
         String token=token(boss),managerToken=token(manager),path="/api/admin/platform/search?keyword="+c.conversationNo();
@@ -90,11 +104,25 @@ class SupportBindingRuntimeTest {
         String update="/api/admin/content/support-agents/"+agent+"/profile",profileKey=key();
         var changed=http("PATCH",update,managerToken,profile,profileKey);assertThat(changed.path("code").asInt()).as("enabled manager: %s",changed).isZero();
         jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",manager);
-        assertThat(http("PATCH",update,managerToken,profile,profileKey).path("code").asInt()).isEqualTo(403);
+        assertThat(http("PATCH",update,managerToken,profile,profileKey).path("code").asInt()).isZero();
         profile.put("expectedVersion",2);profile.put("busy",false);
+        assertThat(http("PATCH",update,managerToken,profile,key()).path("code").asInt()).isZero();
+        assertThat(groupMapper.qualificationCurrent(manager,"SUPERVISOR")).isNotNull();
+        scopeFixtures().asSuper(boss,()->{
+            var receiver=groupMapper.qualification(boss,"SUPERVISOR");
+            groups.qualification(boss,key(),new SupportGroupRequests.Qualification("SUPERVISOR","ENABLED",receiver==null?0L:receiver.version(),
+                    jdbc.queryForObject("SELECT version FROM nx_admin WHERE id=?",Long.class,boss),"Real qualification receiver fixture"));
+            var group=groupMapper.group(managedGroup);
+            assertThat(groups.owner(managedGroup,key(),new SupportGroupRequests.Owner(boss,group.version(),"Transfer group before qualification revocation")).getCode()).isZero();
+            var qualifier=groupMapper.qualification(manager,"SUPERVISOR");
+            assertThat(groups.qualification(manager,key(),new SupportGroupRequests.Qualification("SUPERVISOR","DISABLED",qualifier.version(),
+                    jdbc.queryForObject("SELECT version FROM nx_admin WHERE id=?",Long.class,manager),"Revoke actual management qualification")).getCode()).isZero();
+        });
+        assertThat(http("PATCH",update,managerToken,profile,profileKey).path("code").asInt()).isEqualTo(403);
+        profile.put("expectedVersion",3);
         assertThat(http("PATCH",update,managerToken,profile,key()).path("code").asInt()).isEqualTo(403);
-        assertThat(jdbc.queryForObject("SELECT version FROM nx_support_agent_profile WHERE admin_id=?",Long.class,agent)).isEqualTo(2L);
-        Files.writeString(Path.of(System.getenv("S3_EVIDENCE_DIR"),"read-grant-evidence.json"),"{\"globalSearchRequiresM3Read\":true,\"disabledManagerFreshAndReplayDenied\":true}");
+        assertThat(jdbc.queryForObject("SELECT version FROM nx_support_agent_profile WHERE admin_id=?",Long.class,agent)).isEqualTo(3L);
+        Files.writeString(Path.of(System.getenv("S3_EVIDENCE_DIR"),"read-grant-evidence.json"),"{\"globalSearchRequiresM3Read\":true,\"profileDisabledKeepsSupervisorScope\":true,\"revokedQualificationFreshAndReplayDenied\":true}");
     }
 
     @Test void unansweredOldRowsCannotStarveHandledIdleCandidate() {
@@ -115,6 +143,7 @@ class SupportBindingRuntimeTest {
 
     @Test void sendingAndTransferSerializeInBothOrders() throws Exception {
         long boss=admin("SEND_LOCK_BOSS","SUPER_ADMIN","MANAGER"),first=admin("SEND_LOCK_G1","SUPPORT","DEDICATED"),second=admin("SEND_LOCK_G2","SUPPORT","DEDICATED");
+        serviceMembers(boss,first,second);
         as(boss);long customer=register("SEND_LOCK_CUSTOMER",null);transfer(first,List.of(customer),key());
         var c=app.startConversation(customer,key(),new AppSupportService.StartConversationRequest("support","Concurrent source")).getData().conversation();
         var executor=java.util.concurrent.Executors.newFixedThreadPool(2);
@@ -147,6 +176,7 @@ class SupportBindingRuntimeTest {
 
     @Test void convertedPrivateTextIsHiddenButInternalCollaborationRemains() throws Exception {
         long boss=admin("PRIVATE_BOSS","SUPER_ADMIN","MANAGER"),first=admin("PRIVATE_G1","SUPPORT","DEDICATED"),second=admin("PRIVATE_G2","SUPPORT","DEDICATED");
+        serviceMembers(boss,first,second);
         String one=token(first),two=token(second),superToken=token(boss);
         for(boolean appConversion:List.of(false,true)) {
             as(boss);long customer=register(appConversion?"PRIVATE_APP":"PRIVATE_ADMIN",null);transfer(first,List.of(customer),key());
@@ -165,20 +195,33 @@ class SupportBindingRuntimeTest {
             var note=Map.of("body","Internal coordination stays readable","expectedStatus",ticket.path("status").asText(),"expectedVersion",ticket.path("version").asLong(),"reason","Internal coordination verification");
             assertThat(http("POST",endpoint+"/internal-notes",one,note,noteKey).toString()).contains(marker);
             as(boss);transfer(second,List.of(customer),key());
-            var hidden=http("GET",endpoint,one,null,null);assertThat(hidden.path("code").asInt()).isZero();
-            assertThat(hidden.toString()).doesNotContain(marker).contains("Internal coordination stays readable");
-            assertThat(hidden.path("data").path("ticket").path("contentRestricted").asBoolean()).isTrue();
-            assertThat(http("GET","/api/admin/content/tickets?scope=all&userId="+customer,one,null,null).toString()).doesNotContain(marker);
-            assertThat(http("GET","/api/admin/content/tickets?scope=all&keyword="+marker,one,null,null).path("data").path("total").asLong()).isZero();
-            assertThat(http("POST",endpoint+"/internal-notes",one,note,noteKey).toString()).doesNotContain(marker);
-            var h=hidden.path("data").path("ticket");
-            var changed=http("PATCH",endpoint+"/status",one,Map.of("status","IN_PROGRESS","expectedStatus",h.path("status").asText(),"expectedVersion",h.path("version").asLong(),"reason","Collaboration survives transfer"),key());
-            assertThat(changed.path("code").asInt()).isZero();assertThat(changed.toString()).doesNotContain(marker);
+            var hidden=http("GET",endpoint,one,null,null);assertCustomerNotFound(hidden);
+            assertThat(hidden.toString()).doesNotContain(marker,"Internal coordination stays readable");
+            for(String query:List.of("userId="+customer,"keyword="+marker)) {
+                var listing=http("GET","/api/admin/content/tickets?scope=all&"+query,one,null,null);
+                assertThat(listing.path("code").asInt()).isZero();assertThat(listing.path("data").path("total").isIntegralNumber()).isTrue();
+                assertThat(listing.path("data").path("total").asLong()).isZero();assertThat(listing.path("data").path("records").isArray()).isTrue();assertThat(listing.path("data").path("records")).isEmpty();
+                assertThat(listing.toString()).doesNotContain(marker,"Internal coordination stays readable");
+            }
+            assertCustomerNotFound(http("POST",endpoint+"/internal-notes",one,note,noteKey));
+            var acquired=http("GET",endpoint,two,null,null);assertThat(acquired.path("code").asInt()).isZero();
+            assertThat(acquired.toString()).contains(marker,"Internal coordination stays readable");
+            var h=acquired.path("data").path("ticket");
+            var status=Map.of("status","IN_PROGRESS","expectedStatus",h.path("status").asText(),"expectedVersion",h.path("version").asLong(),"reason","Current advisor collaboration after transfer");
+            assertCustomerNotFound(http("PATCH",endpoint+"/status",one,status,key()));
+            var changed=http("PATCH",endpoint+"/status",two,status,key());
+            assertThat(changed.path("code").asInt()).isZero();assertThat(changed.toString()).contains(marker,"Internal coordination stays readable");
             var next=changed.path("data").path("ticket");
-            var secondNote=http("POST",endpoint+"/internal-notes",one,Map.of("body","Former advisor may coordinate internally","expectedStatus",next.path("status").asText(),"expectedVersion",next.path("version").asLong(),"reason","Internal permission preserved"),key());
-            assertThat(secondNote.path("code").asInt()).isZero();assertThat(secondNote.toString()).doesNotContain(marker).contains("Former advisor may coordinate internally");
-            for(String allowed:List.of(two,superToken)) assertThat(http("GET",endpoint,allowed,null,null).toString()).contains(marker);
-            assertThat(http("GET","/api/app/support/tickets/"+no,customerToken,null,null).toString()).contains(marker).doesNotContain("Former advisor may coordinate internally");
+            var newNote=Map.of("body","Current advisor may coordinate internally","expectedStatus",next.path("status").asText(),"expectedVersion",next.path("version").asLong(),"reason","Current advisor internal permission preserved");
+            assertCustomerNotFound(http("POST",endpoint+"/internal-notes",one,newNote,key()));
+            var secondNote=http("POST",endpoint+"/internal-notes",two,newNote,key());
+            assertThat(secondNote.path("code").asInt()).isZero();assertThat(secondNote.toString()).contains(marker,"Current advisor may coordinate internally");
+            for(String allowed:List.of(two,superToken)) {
+                var allowedDetail=http("GET",endpoint,allowed,null,null);assertThat(allowedDetail.path("code").asInt()).isZero();
+                assertThat(allowedDetail.toString()).contains(marker,"Internal coordination stays readable","Current advisor may coordinate internally");
+            }
+            var appDetail=http("GET","/api/app/support/tickets/"+no,customerToken,null,null);assertThat(appDetail.path("code").asInt()).isZero();
+            assertThat(appDetail.toString()).contains(marker).doesNotContain("Internal coordination stays readable","Current advisor may coordinate internally");
             var current=http("GET",endpoint,two,null,null).path("data").path("ticket");String privateKey=key();
             var privateReply=Map.of("body","Private reply "+marker,"expectedStatus",current.path("status").asText(),"expectedVersion",current.path("version").asLong(),"reason","Module read revocation verification");
             assertThat(http("POST",endpoint+"/replies",two,privateReply,privateKey).path("code").asInt()).isZero();
@@ -222,7 +265,7 @@ class SupportBindingRuntimeTest {
                 assertThat(afterReplay).as("Same-key escalation must not duplicate persisted facts").isEqualTo(beforeReplay);
             } finally {grants.forEach(id->SharedMutationJournal.restorePermission(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-restore-4",id));permissions.evict(second);}
             jdbc.update("UPDATE nx_support_ticket SET source_conversation_no=NULL WHERE ticket_no=?",no);
-            assertThat(http("GET",endpoint,one,null,null).toString()).doesNotContain(marker);
+            assertCustomerNotFound(http("GET",endpoint,one,null,null));
             assertThat(http("GET",endpoint,two,null,null).toString()).contains(marker);
         }
         Files.writeString(Path.of(System.getenv("S3_EVIDENCE_DIR"),"ticket-private-evidence.json"),"{\"adminAndAppConversion\":true,\"detailListKeywordReplayHidden\":true,\"internalNotesStatusPreserved\":true,\"unknownRestricted\":true,\"currentSupervisorAndAppRead\":true}");
@@ -230,6 +273,7 @@ class SupportBindingRuntimeTest {
 
     @Test void disabledProfileCannotReadM1Customers() throws Exception {
         long boss=admin("DISABLED_BOSS","SUPER_ADMIN","MANAGER"),agent=admin("DISABLED_G1","SUPPORT","DEDICATED");as(boss);
+        serviceMembers(boss,agent);
         long customer=register("DISABLED_CUSTOMER",null);transfer(agent,List.of(customer),key());String token=token(agent);
         for(String path:List.of("/api/admin/content/support-agents","/api/admin/content/support-agents/page"))
             assertThat(http("GET",path,token,null,null).path("data").path("advisorAssignments").toString()).contains(String.valueOf(customer));
@@ -241,6 +285,7 @@ class SupportBindingRuntimeTest {
 
     @Test void ticketWritesRequireCurrentAdvisorAndPersistActualAuthor() throws Exception {
         long boss=admin("TICKET_BOSS","SUPER_ADMIN","MANAGER"),first=admin("TICKET_G1","SUPPORT","DEDICATED"),second=admin("TICKET_G2","SUPPORT","DEDICATED");
+        serviceMembers(boss,first,second);
         as(boss);long customer=register("TICKET_CUSTOMER",null);transfer(first,List.of(customer),key());
         String one=token(first),two=token(second),superToken=token(boss);
         var create=Map.of("userId",customer,"category","withdrawal","priority","NORMAL","title","Runtime support ticket","body","Real advisor ticket opening","operator","spoofed","reason","Real ticket ownership verification");
@@ -265,6 +310,7 @@ class SupportBindingRuntimeTest {
 
     @Test void bindingRejectsNumericCoercionWithoutChangingAssignment() throws Exception {
         long boss=admin("INPUT_BOSS","SUPER_ADMIN","MANAGER"),agent=admin("INPUT_G1","SUPPORT","DEDICATED");as(boss);
+        serviceMembers(boss,agent);
         long customer=register("INPUT_CUSTOMER",null);String token=token(boss);
         var before=mapper.current(customer);
         var result=http("POST","/api/admin/content/support-agents/assignments/transfer",token,
@@ -287,7 +333,7 @@ class SupportBindingRuntimeTest {
         String legacyKey=key();var original=http("POST",legacy,token,legacyRequest,legacyKey);
         assertThat(original.path("code").asInt()).as("legacy assignment: %s",original).isZero();
         assertModuleRecoveryRevoked(boss,"SUPER_ADMIN","service_m1_read",token,legacyKey);
-        long other=admin("INPUT_G2","SUPPORT","DEDICATED");transfer(other,List.of(customer),key());
+        long other=admin("INPUT_G2","SUPPORT","DEDICATED");serviceMembers(boss,other);transfer(other,List.of(customer),key());
         assertThat(http("POST",legacy,token,legacyRequest,legacyKey)).isEqualTo(original);
         for(String field:List.of("userId","expectedAssignmentId","expectedVersion")) {
             var bad=new LinkedHashMap<String,Object>(legacyRequest);bad.put(field,"1");
@@ -301,6 +347,7 @@ class SupportBindingRuntimeTest {
 
     @Test void unansweredMessagesCannotBeSealedAndCrossSegmentReplyDoesNotRewriteHistory() throws Exception {
         long boss=admin("REPLY_BOSS","SUPER_ADMIN","MANAGER"),agent=admin("REPLY_G1","SUPPORT","DEDICATED");as(boss);
+        serviceMembers(boss,agent);
         long customer=register("REPLY_CUSTOMER",null);transfer(agent,List.of(customer),key());String token=token(agent);
         var old=app.startConversation(customer,key(),new AppSupportService.StartConversationRequest("support","Old pending question")).getData().conversation();
         var close=Map.of("status","CLOSED","expectedStatus",old.status(),"expectedVersion",old.version(),"reason","Try sealing unanswered messages");
@@ -328,6 +375,7 @@ class SupportBindingRuntimeTest {
 
     @Test void concurrentRegistrationTransferAndSynchronousListenerRollback() throws Exception {
         long boss=admin("LOCK_BOSS","SUPER_ADMIN","MANAGER"),first=admin("LOCK_G1","SUPPORT","DEDICATED"),second=admin("LOCK_G2","SUPPORT","DEDICATED");
+        serviceMembers(boss,first,second);
         as(boss);rules("UNLIMITED",null);long parent=register("LOCK_PARENT",null);transfer(first,List.of(parent),key());
         var held=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);
         var executor=java.util.concurrent.Executors.newFixedThreadPool(2);
@@ -410,8 +458,10 @@ class SupportBindingRuntimeTest {
         assertThat(mapper.rules()).isNotNull();
         superId=admin("SUPER","SUPER_ADMIN","MANAGER");manager=admin("MANAGER","SUPPORT","MANAGER");
         g1=admin("G1","SUPPORT","DEDICATED");g2=admin("G2","SUPPORT","DEDICATED");
+        scopeFixtures().asSuper(superId,()->managedGroup=scopeFixtures().create(manager,List.of(g1,g2),run+"_managed").id());
         as(superId); rules("UNCONFIGURED",null);
         a=register("A",null); assertPool(a,"RULE_UNCONFIGURED");
+        route(superId,a);
         as(manager); transfer(g1,List.of(a),key());
         assertThat(mapper.current(a).depth()).isZero();
         as(superId);rules("LIMITED",2);
@@ -419,13 +469,14 @@ class SupportBindingRuntimeTest {
         assertThat(mapper.current(b).depth()).isEqualTo(1);assertThat(mapper.current(c).depth()).isEqualTo(2);
         assertThat(mapper.current(c).segmentRootId()).isEqualTo(a);assertPool(d,"DEPTH_LIMIT");
         long waitingChild=register("WAITING_CHILD",d);assertPool(waitingChild,"INVITER_UNBOUND");
+        route(superId,d);
         as(manager);transfer(g2,List.of(d),key());
         long e=register("E",d),f=register("F",e);
         assertThat(mapper.current(f).depth()).isEqualTo(2);assertThat(mapper.current(f).agentAdminId()).isEqualTo(g2);
         assertPool(waitingChild,"INVITER_UNBOUND");
         as(superId);rules("LIMITED",0);assertPool(register("ZERO",a),"DEPTH_LIMIT");
         rules("UNLIMITED",null);long deep=register("UNLIMITED",f);assertThat(mapper.current(deep).depth()).isEqualTo(3);
-        assertPool(register("NO_INVITER",null),"NO_INVITER");
+        long noInviter=register("NO_INVITER",null);assertPool(noInviter,"NO_INVITER");
         jdbc.update("UPDATE nx_support_agent_profile SET busy=1,max_concurrent=0,transferable=0 WHERE admin_id=?",g1);
         long busyChild=register("BUSY_CHILD",a);assertThat(mapper.current(busyChild).agentAdminId()).isEqualTo(g1);
         jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",g1);
@@ -451,6 +502,7 @@ class SupportBindingRuntimeTest {
         var incoming=app.startConversation(unbound,key(),new AppSupportService.StartConversationRequest("support","Unbound customer message"));
         assertThat(incoming.getCode()).as("unbound message").isZero();String pendingNo=incoming.getData().conversation().conversationNo();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_conversation_message WHERE conversation_no=? AND sender_type='user'",Long.class,pendingNo)).isEqualTo(1L);
+        route(superId,unbound);
         as(manager);transfer(g1,List.of(unbound),key());as(g1);ownership.readConversation(pendingNo);
         assertThat(app.conversation(unbound,pendingNo).getData().conversation().ownerAgentId()).isEqualTo(String.valueOf(g1));
         var advisor=app.startConversation(unbound,key(),new AppSupportService.StartConversationRequest("advisor","Advisor entry preserves assignment"));
@@ -506,15 +558,24 @@ class SupportBindingRuntimeTest {
         assertThat(http("POST","/api/admin/content/conversations/"+pendingNo+"/replies",g1Token,reply,replyKey).path("code").asInt()).isEqualTo(404);
         assertThat(http("GET","/api/admin/content/conversations/"+pendingNo,g2Token,null,null).path("code").asInt()).isZero();
         var listing=http("GET","/api/admin/content/conversations?ownerAgentId="+g2+"&userId="+unbound,g1Token,null,null);
-        assertThat(listing.path("data").path("total").asLong()).isZero();
+        assertThat(listing.path("code").asInt()).isEqualTo(422);assertThat(listing.path("message").asText()).isEqualTo("SUPPORT_READ_SCOPE_INVALID");
+        assertThat(listing.hasNonNull("data")).isFalse();
         jdbc.update("UPDATE nx_admin SET status=0 WHERE id=?",g2);
         assertThat(app.conversation(unbound,pendingNo).getData().conversation().ownerAgentId()).isEqualTo(String.valueOf(g2));
         assertThat(http("GET","/api/admin/content/conversations/"+pendingNo,g2Token,null,null).path("code").asInt()).isIn(401,403,404);
         as(manager);assertThat(bindings.handover(g2,true,1,20).getTotal()).isGreaterThan(0);
         jdbc.update("UPDATE nx_admin SET status=1 WHERE id=?",g2);
+        var retainedAssignment=mapper.current(unbound);
         jdbc.update("UPDATE nx_support_agent_profile SET seat_type='GENERAL' WHERE admin_id=?",g2);
-        assertThat(http("GET","/api/admin/content/conversations?userId="+unbound,g2Token,null,null).path("code").asInt()).isEqualTo(403);
-        jdbc.update("UPDATE nx_support_agent_profile SET seat_type='DEDICATED' WHERE admin_id=?",g2);
+        var general=http("GET","/api/admin/content/conversations?userId="+unbound,g2Token,null,null);
+        assertThat(general.path("code").asInt()).isZero();assertThat(general.path("data").path("records")).isNotEmpty();
+        for(var row:general.path("data").path("records"))assertThat(row.path("userId").asLong()).isEqualTo(unbound);
+        assertThat(general.toString()).contains(pendingNo);assertThat(mapper.current(unbound)).isEqualTo(retainedAssignment);
+        jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",g2);
+        var disabled=http("GET","/api/admin/content/conversations?userId="+unbound,g2Token,null,null);
+        assertThat(disabled.path("code").asInt()).isEqualTo(403);assertThat(disabled.hasNonNull("data")).isFalse();
+        assertThat(mapper.current(unbound)).isEqualTo(retainedAssignment);
+        jdbc.update("UPDATE nx_support_agent_profile SET enabled=1,seat_type='DEDICATED' WHERE admin_id=?",g2);
         try(var revoked=stream(g2Token)) {
             sessions.revokeSessions(g2);
             var view=app.conversation(unbound,pendingNo).getData().conversation();
@@ -531,6 +592,7 @@ class SupportBindingRuntimeTest {
         as(superId);var version=mapper.rules().version();rules("LIMITED",2);
         assertThatThrownBy(()->bindings.updateRules(key(),new SupportRulesRequest(null,null,null,"LIMITED",2,version,"Stale rules check"))).isInstanceOf(RuntimeException.class);
         assertThat(mapper.rules().dormantDays()).isNull();assertThat(mapper.rules().maintenanceDays()).isNull();
+        route(superId,waitingChild);route(superId,noInviter);
         as(manager);assertThat(bindings.pool(null,null,1,1).getTotal()).isGreaterThan(bindings.pool(null,null,1,1).getRecords().size());
         assertThatThrownBy(()->bindings.pool(null,null,Long.MAX_VALUE,100)).isInstanceOf(RuntimeException.class);
         proofs.put("s3-ac13","Actual roles and rule CAS; D/M/W remain independently null; limited0 accepted; paginated pool total exceeds current page; overflow rejected");
@@ -557,16 +619,25 @@ class SupportBindingRuntimeTest {
         fixture.put(label,Map.of("id",id,"username",username));return id;
     }
     private long register(String label,Long inviter) {
-        return new TransactionTemplate(transactions).execute(status->{
+        String referral=UUID.randomUUID().toString().replace("-", "").substring(0,20).toUpperCase();
+        String phone="199"+String.format("%08d",Math.abs((long)referral.hashCode())%100000000);
+        String password=new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(System.getenv("S3_FIXTURE_PASSWORD"));
+        java.util.function.Supplier<SupportObjectEvidenceLedger.CustomerInsert> insert=()->{
             if(inviter!=null)mapper.lockCustomer(inviter);
-            String referral=UUID.randomUUID().toString().replace("-", "").substring(0,20).toUpperCase();
-            String phone="199"+String.format("%08d",Math.abs((long)referral.hashCode())%100000000);
-            String password=new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(System.getenv("S3_FIXTURE_PASSWORD"));
-            jdbc.update("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,sponsor_user_id,status,sandbox) VALUES('+86',?,'127.0.0.1',?,?,?,?,'ACTIVE',0)",phone,password,run+"_"+label,referral,inviter);
-            Long id=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,referral);
+            var generated=new org.springframework.jdbc.support.GeneratedKeyHolder();
+            int affected=jdbc.update(connection->{
+                var statement=connection.prepareStatement("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,sponsor_user_id,status,sandbox) VALUES('+86',?,'127.0.0.1',?,?,?,?,'ACTIVE',0)",java.sql.Statement.RETURN_GENERATED_KEYS);
+                statement.setString(1,phone);statement.setString(2,password);statement.setString(3,run+"_"+label);statement.setString(4,referral);statement.setObject(5,inviter);return statement;
+            },generated);
+            long id=Objects.requireNonNull(generated.getKey(),"Exact INSERT generated customer ID").longValue();createdCustomers.add(id);
+            long lookup=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,referral);
+            assertThat(affected).isEqualTo(1);assertThat(lookup).isEqualTo(id);
             fixture.put("CUSTOMER_"+label,Map.of("id",id,"phone",phone,"countryCode","+86","referralCode",referral));
-            bindings.register(id,inviter);return id;
-        });
+            bindings.register(id,inviter);return new SupportObjectEvidenceLedger.CustomerInsert(id,affected,lookup);
+        };
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            return Objects.requireNonNull(new TransactionTemplate(transactions).execute(status->insert.get())).generatedId();
+        return objects.createCustomer(getClass().getSimpleName(),"registration_"+label,referral,insert::get);
     }
     private void as(long id) {
         var auth=new UsernamePasswordAuthenticationToken(String.valueOf(id),null,List.of(new SimpleGrantedAuthority("service_m3_write")));
@@ -598,6 +669,10 @@ class SupportBindingRuntimeTest {
         assertThat(http("GET","/api/admin/content/support-workbench/commands/"+commandKey,token,null,null).path("code").asInt()).isZero();
     }
     private String key(){return "s3-"+UUID.randomUUID();}
+    private void assertCustomerNotFound(com.fasterxml.jackson.databind.JsonNode response) {
+        assertThat(response.path("code").asInt()).isEqualTo(404);assertThat(response.path("message").asText()).isEqualTo("SUPPORT_CUSTOMER_NOT_FOUND");
+        assertThat(response.hasNonNull("data")).isFalse();
+    }
     private void rules(String mode,Integer depth){var r=mapper.rules();bindings.updateRules(key(),new SupportRulesRequest(null,null,null,mode,depth,r.version(),"Isolated runtime configuration"));}
     private SupportBindingRequest request(long target,List<Long> customers){return new SupportBindingRequest(target,customers.stream().map(id->{var r=mapper.current(id);return new SupportBindingRequest.Customer(id,r==null?null:r.id(),r==null?mapper.poolVersion(id):r.version());}).toList(),"Isolated runtime transfer");}
     private void transfer(long target,List<Long> customers,String key){assertThat(bindings.transfer(key,request(target,customers)).getCode()).isZero();}

@@ -8,6 +8,15 @@ import java.util.Map;
 import java.util.Optional;
 
 public interface SupportTicketRepository {
+    default Map<String,Object> counters(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        throw new UnsupportedOperationException("SCOPED_TICKET_COUNTERS_REQUIRED");
+    }
+    default PageResult<SupportTicketView> pageTickets(SupportTicketQueryRequest request, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        throw new UnsupportedOperationException("SCOPED_TICKET_PAGE_REQUIRED");
+    }
+    default PageResult<SupportTicketView> pageTicketsBeforeId(SupportTicketQueryRequest request, Long beforeId, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        throw new UnsupportedOperationException("SCOPED_TICKET_PAGE_REQUIRED");
+    }
     void ensureSeedData(LocalDateTime now);
 
     Map<String, Object> counters();

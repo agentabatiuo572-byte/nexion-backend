@@ -84,6 +84,8 @@ abstract class SupportBulkRuntimeFixture {
     @Autowired ApplicationContext context;
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingMapper bindingMapper;
+    @Autowired SupportGroupMapper groupMapper;
+    @Autowired SupportGroupService groupService;
     @Autowired SupportBulkMapper bulkMapper;
     @Autowired SupportBulkService bulk;
     @Autowired SupportActivityService activity;
@@ -99,6 +101,12 @@ abstract class SupportBulkRuntimeFixture {
     final String run="bulk_"+UUID.randomUUID().toString().substring(0,8);
     final List<Long> admins=new ArrayList<>();
     final Set<Long> retainedAdmins=new HashSet<>();
+    final Set<Long> retainedGroups=new HashSet<>();
+    final Set<Long> retainedCustomers=new HashSet<>();
+    private final Map<Long,String> ownedCustomers=new LinkedHashMap<>();
+    private final Map<Long,String> importedGroupNames=new LinkedHashMap<>();
+    private final Set<Long> importedParticipants=new LinkedHashSet<>();
+    private SupportGroupRuntimeFixtures supportGroups;
     final Map<String,Object> proofs=new LinkedHashMap<>();
     private final Map<Long,String> customerTokens=new HashMap<>();
     private SupportOriginalProfiles originalProfiles;
@@ -116,12 +124,14 @@ abstract class SupportBulkRuntimeFixture {
         boundary();oldRules=bindingMapper.rules();
         originalProfiles=SupportOriginalProfiles.suspend(jdbc,transactions);
         boss=admin("boss","SUPER_ADMIN","MANAGER");first=admin("first","SUPPORT","DEDICATED");second=admin("second","SUPPORT","DEDICATED");
+        initializeSupportGroups();
         as(boss);var rules=bindingMapper.rules();
         assertThat(bindings.updateRules(key(),new SupportRulesRequest(7,3,7,"UNLIMITED",null,rules.version(),"Bulk isolated fixture rules","SUPERVISOR")).getCode()).isZero();
     }
     void restoreFixture() {
         var cleanup=new ArrayList<Runnable>();
         cleanup.add(this::cleanupObjectEvidence);
+        cleanup.add(this::cleanupSupportGroupFacts);
         cleanup.add(()->{if(actorEvidence!=null)actorEvidence.cleanupAll(retainedAdmins);});
         cleanup.add(()->{if(oldRules!=null && boss>0) SharedMutationJournal.cleanupSql(jdbc,run,"SupportBulkRuntimeFixture",boss,"SupportBulkRuntimeFixture#rules-sql-1","UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",
             oldRules.dormantDays(),oldRules.maintenanceDays(),oldRules.activityWindowDays(),oldRules.inheritanceMode(),oldRules.maxInheritanceDepth(),oldRules.unboundAssignmentMode(),oldRules.modeEffectiveAt(),boss);});
@@ -135,6 +145,90 @@ abstract class SupportBulkRuntimeFixture {
         admins.add(id);
         return id;
     }
+    void initializeSupportGroups() {
+        createSupportGroup(boss,List.of(first,second),"services");
+    }
+    ffdd.opsconsole.content.domain.SupportGroupFacts.Group createSupportGroup(long owner,List<Long> members,String label) {
+        as(boss);
+        if(supportGroups==null) supportGroups=new SupportGroupRuntimeFixtures(fixtureActors(),jdbc,groupMapper,groupService,
+                ()->Set.copyOf(ownedCustomers.keySet()));
+        return supportGroups.create(owner,members,run+"_"+label);
+    }
+    Map<String,Object> supportGroupProof(long group,long owner,long member,List<Long> customers) {
+        var proof=new LinkedHashMap<String,Object>();
+        proof.put("group",jdbc.queryForMap("SELECT id,name,supervisor_admin_id,status,version FROM nx_support_group WHERE id=?",group));
+        proof.put("owners",jdbc.queryForList("SELECT id,group_id,supervisor_admin_id,version,operation_id,CAST(starts_at AS CHAR) starts_at,CAST(ends_at AS CHAR) ends_at FROM nx_support_group_owner_history WHERE group_id=? ORDER BY id",group));
+        proof.put("members",jdbc.queryForList("SELECT id,agent_admin_id,group_id,version,operation_id,CAST(starts_at AS CHAR) starts_at,CAST(ends_at AS CHAR) ends_at FROM nx_support_group_member_history WHERE group_id=? ORDER BY id",group));
+        proof.put("qualifications",jdbc.queryForList("SELECT id,admin_id,qualification_kind,state,version,operation_id,CAST(starts_at AS CHAR) starts_at,CAST(ends_at AS CHAR) ends_at FROM nx_support_account_qualification_history WHERE admin_id IN (?,?) ORDER BY id",owner,member));
+        proof.put("routes",jdbc.queryForList("SELECT id,customer_id,group_id,version,operation_id,CAST(starts_at AS CHAR) starts_at,CAST(ends_at AS CHAR) ends_at FROM nx_support_customer_route_history WHERE group_id=? ORDER BY id",group));
+        proof.put("customers",customers.stream().map(id->jdbc.queryForMap("SELECT id,referral_code,nickname,CAST(created_at AS CHAR) created_at FROM nx_user WHERE id=?",id)).toList());
+        return proof;
+    }
+    void importSupportGroupProof(JsonNode proof,long owner,long member,List<Long> customers) {
+        fixtureActors().creationReference(owner);fixtureActors().creationReference(member);
+        long group=proof.path("group").path("id").asLong();assertThat(group).isPositive();
+        assertThat(proof.path("group").path("supervisor_admin_id").asLong()).isEqualTo(owner);
+        // Register independently proven cleanup domains before checking mutable versions/qualification state.
+        for(JsonNode row:proof.path("customers")) {
+            long id=row.path("id").asLong();assertThat(customers).contains(id);
+            JsonNode actual=json.valueToTree(jdbc.queryForMap("SELECT id,referral_code,nickname,CAST(created_at AS CHAR) created_at FROM nx_user WHERE id=?",id));
+            assertThat(actual.toString()).isEqualTo(row.toString());
+            ownedCustomers.put(id,row.path("nickname").asText());
+        }
+        var identity=jdbc.queryForMap("SELECT name,supervisor_admin_id FROM nx_support_group WHERE id=?",group);
+        assertThat(identity.get("name")).isEqualTo(proof.path("group").path("name").asText());
+        assertThat(((Number)identity.get("supervisor_admin_id")).longValue()).isEqualTo(owner);
+        for(long id:jdbc.queryForList("SELECT DISTINCT agent_admin_id FROM nx_support_group_member_history WHERE group_id=?",Long.class,group))
+            fixtureActors().creationReference(id);
+        for(long id:jdbc.queryForList("SELECT DISTINCT supervisor_admin_id FROM nx_support_group_owner_history WHERE group_id=?",Long.class,group))
+            fixtureActors().creationReference(id);
+        importedGroupNames.put(group,proof.path("group").path("name").asText());
+        // This only compares persisted facts; no qualification/member/group write occurs in the second JVM.
+        JsonNode persisted=json.valueToTree(supportGroupProof(group,owner,member,customers));
+        assertThat(persisted.toString()).isEqualTo(proof.toString());
+        assertThat(groupMapper.qualificationCurrent(member,"SERVICE")).isNotNull();
+        assertThat(groupMapper.qualificationCurrent(owner,"SUPERVISOR")).isNotNull();
+        var currentMember=groupMapper.memberCurrent(member);assertThat(currentMember).isNotNull();
+        assertThat(currentMember.groupId()).isEqualTo(group);
+    }
+    void registerImportedSupportActor(long id) {
+        fixtureActors().creationReference(id);importedParticipants.add(id);
+    }
+    void cleanupSupportGroupFacts() {
+        var groups=new LinkedHashSet<>(importedGroupNames.keySet());
+        var participants=new LinkedHashSet<>(importedParticipants);
+        if(supportGroups!=null) {groups.addAll(supportGroups.createdGroupIds());participants.addAll(supportGroups.participatingAdminIds());}
+        for(long group:groups) {
+            if(retainedGroups.contains(group))continue;
+            String name=jdbc.queryForObject("SELECT name FROM nx_support_group WHERE id=?",String.class,group);
+            assertThat(name).isEqualTo(importedGroupNames.getOrDefault(group,name));
+            if(!importedGroupNames.containsKey(group))assertThat(name).startsWith(run+"_");
+            for(long id:jdbc.queryForList("SELECT DISTINCT agent_admin_id FROM nx_support_group_member_history WHERE group_id=?",Long.class,group)) {
+                fixtureActors().creationReference(id);participants.add(id);
+            }
+            for(long id:jdbc.queryForList("SELECT DISTINCT supervisor_admin_id FROM nx_support_group_owner_history WHERE group_id=?",Long.class,group)) {
+                fixtureActors().creationReference(id);participants.add(id);
+            }
+        }
+        for(var customer:ownedCustomers.entrySet())if(!retainedCustomers.contains(customer.getKey())) {
+            assertThat(jdbc.queryForObject("SELECT nickname FROM nx_user WHERE id=?",String.class,customer.getKey())).isEqualTo(customer.getValue());
+            jdbc.update("DELETE FROM nx_support_customer_route_history WHERE customer_id=?",customer.getKey());
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_customer_route_history WHERE customer_id=?",Long.class,customer.getKey())).isZero();
+        }
+        for(long id:participants)if(!retainedAdmins.contains(id)) {
+            fixtureActors().creationReference(id);
+            jdbc.update("DELETE FROM nx_support_group_member_history WHERE agent_admin_id=?",id);
+            jdbc.update("DELETE FROM nx_support_account_qualification_history WHERE admin_id=?",id);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_group_member_history WHERE agent_admin_id=?",Long.class,id)).isZero();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_account_qualification_history WHERE admin_id=?",Long.class,id)).isZero();
+        }
+        for(long group:groups)if(!retainedGroups.contains(group)) {
+            jdbc.update("DELETE FROM nx_support_group_owner_history WHERE group_id=?",group);
+            jdbc.update("DELETE FROM nx_support_group WHERE id=?",group);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_group_owner_history WHERE group_id=?",Long.class,group)).isZero();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_group WHERE id=?",Long.class,group)).isZero();
+        }
+    }
     long customer(long actor) {
         long customer=new TransactionTemplate(transactions).execute(status->{
             String referral=UUID.randomUUID().toString().replace("-","").substring(0,20).toUpperCase();
@@ -142,7 +236,7 @@ abstract class SupportBulkRuntimeFixture {
             jdbc.update("INSERT INTO nx_user(country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox) VALUES('+86',?,'127.0.0.1','fixture-disabled-password',?,?,'ACTIVE',0)",phone,run,referral);
             long id=jdbc.queryForObject("SELECT id FROM nx_user WHERE referral_code=?",Long.class,referral);bindings.register(id,null);return id;
         });
-        transfer(actor,customer);return customer;
+        ownedCustomers.put(customer,run);transfer(actor,customer);return customer;
     }
     long objectCustomer(long actor) {
         String referral=UUID.randomUUID().toString().replace("-","").substring(0,20).toUpperCase();
@@ -159,7 +253,7 @@ abstract class SupportBulkRuntimeFixture {
             bindings.register(id,null);
             return new SupportObjectEvidenceLedger.CustomerInsert(id,affected,lookup);
         });
-        transfer(actor,customer);return customer;
+        ownedCustomers.put(customer,run);transfer(actor,customer);return customer;
     }
     void transfer(long actor,long customer) {
         as(boss);var old=bindingMapper.current(customer);

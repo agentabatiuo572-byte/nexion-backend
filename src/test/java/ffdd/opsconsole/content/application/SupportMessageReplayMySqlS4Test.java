@@ -67,6 +67,9 @@ class SupportMessageReplayMySqlS4Test {
     @Autowired ObjectMapper json;
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingMapper assignments;
+    @Autowired ffdd.opsconsole.content.mapper.SupportGroupMapper groupMapper;
+    @Autowired SupportGroupService groups;
+    private SupportGroupRuntimeFixtures groupFixtures;
     @Autowired PlatformTransactionManager transactions;
     @Autowired JwtTokenProvider tokens;
     @Autowired AdminSessionRegistry sessions;
@@ -115,6 +118,8 @@ class SupportMessageReplayMySqlS4Test {
         assertThat(System.getenv("S3_FIXTURE_PASSWORD")!=null && !System.getenv("S3_FIXTURE_PASSWORD").isBlank())
                 .as("The isolated fixture password must be configured").isTrue();
         boss=admin("SUPER_ADMIN","MANAGER");agent=admin("SUPPORT","DEDICATED");
+        groupFixtures=new SupportGroupRuntimeFixtures(fixtureActors(),jdbc,groupMapper,groups,Set::of);
+        groupFixtures.asSuper(boss,()->groupFixtures.serviceMember(agent));
         as(boss);
         customer=new TransactionTemplate(transactions).execute(status->{
             String ref=UUID.randomUUID().toString().replace("-","").substring(0,20);
@@ -194,7 +199,8 @@ class SupportMessageReplayMySqlS4Test {
     @AfterEach void release() {
         Gate current=gate.getAndSet(null);if(current!=null)current.release.countDown();
         MutexGate mutex=mutexGate.getAndSet(null);if(mutex!=null)mutex.release.countDown();
-        try {if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());} finally {SecurityContextHolder.clearContext();}
+        SupportObjectEvidenceLedger.cleanupIndependently(()->{if(groupFixtures!=null)groupFixtures.cleanup();},
+                ()->{if(actorEvidence!=null)actorEvidence.cleanupAll(Set.of());},SecurityContextHolder::clearContext);
     }
 
     @ParameterizedTest(name="readFirst={0}: read and reply serialize at customer before header")
@@ -335,6 +341,7 @@ class SupportMessageReplayMySqlS4Test {
             long latestMessageId=messageId,newAgent=agent;
             if(transfer) {
                 newAgent=admin("SUPPORT","DEDICATED");
+                long nextAgent=newAgent;groupFixtures.asSuper(boss,()->groupFixtures.serviceMember(nextAgent));
                 as(boss);
                 try {
                     var currentAssignment=assignments.current(customer);

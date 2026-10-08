@@ -22,6 +22,31 @@ public class MybatisConversationRepository implements ConversationRepository {
     private final ConversationMessageMapper messageMapper;
     private final ffdd.opsconsole.content.application.SupportOwnershipService ownership;
 
+    @Override public Map<String,Object> counters(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        java.util.Objects.requireNonNull(scope,"Current scope required");
+        var counts=new LinkedHashMap<String,Object>();
+        for(String status:List.of("OPEN","RESOLVED","CLOSED")) counts.put(status.toLowerCase(java.util.Locale.ROOT),mapper.countConversationsScoped(status,null,null,null,null,null,null,scope));
+        counts.put("incomingPending",mapper.countConversationsScoped("TRANSFERRED",null,null,null,null,null,false,scope));
+        counts.put("unread",mapper.countConversationsScoped(null,null,null,null,null,true,false,scope));
+        counts.put("archived",mapper.countConversationsScoped(null,null,null,null,null,null,true,scope));return counts;
+    }
+    @Override public PageResult<ContentConversationView> pageConversations(ConversationQueryRequest request,ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        return scopedPage(request,null,false,scope);
+    }
+    @Override public PageResult<ContentConversationView> pageConversationsBeforeId(ConversationQueryRequest request,Long beforeId,ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        return scopedPage(request,beforeId,true,scope);
+    }
+    private PageResult<ContentConversationView> scopedPage(ConversationQueryRequest r,Long before,boolean stable,ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        java.util.Objects.requireNonNull(scope,"Current scope required");
+        long page=stable?1:normalizePage(r==null?null:r.pageNum()),size=normalizeSize(r==null?null:r.pageSize());
+        String status=r==null?null:trim(r.status()),type=r==null?null:trim(r.type()),keyword=r==null?null:trim(r.keyword());
+        Long user=r==null?null:r.userId();Boolean unread=r==null?null:r.unreadOnly(),archived=r==null?null:r.archived();
+        // Agent filtering is already in ReadScope; the old profile-enabled filter would hide handover assets.
+        long total=mapper.countConversationsScoped(status,type,null,user,keyword,unread,archived,scope);
+        var rows=total==0?List.<ContentConversationView>of():mapper.pageConversationsScoped(status,type,null,keyword,user,unread,before,stable,size,(page-1)*size,archived,scope);
+        return new PageResult<>(total,page,size,rows);
+    }
+
     @Override
     public void ensureSeedData(LocalDateTime now) {
         // Business rows must come from MySQL writes, not read-time demo seeds.

@@ -52,7 +52,7 @@ class OpsSupportWorkbenchControllerTest {
     @Test
     void ordinaryWorkbenchRetainsRawPhoneRestriction() {
         var query = UserQueryRequest.basic("13800138000", null, null, 1, 8, null);
-        when(users.profilePage(query)).thenReturn(ApiResult.fail(422, "C1_RAW_PHONE_SEARCH_FORBIDDEN"));
+        when(users.supportWorkbenchProfilePage(query)).thenReturn(ApiResult.fail(422, "C1_RAW_PHONE_SEARCH_FORBIDDEN"));
         assertThat(controller.users(query).getMessage()).isEqualTo("C1_RAW_PHONE_SEARCH_FORBIDDEN");
         verify(users, never()).supportProfilePage(any());
     }

@@ -57,6 +57,12 @@ public class GlobalExceptionHandler {
         return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
     }
 
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ApiResult<Void> handleParameterTypeMismatch(HttpServletResponse response) {
+        response.setStatus(400);
+        return ApiResult.fail(400, "REQUEST_PARAMETER_INVALID");
+    }
+
     @ExceptionHandler(AccessDeniedException.class)
     public ApiResult<Void> handleAccessDenied(AccessDeniedException ex, HttpServletRequest request) {
         auditAccessDenied(ex, request);

@@ -36,7 +36,7 @@ public class SupportCustomerProfileService {
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public Map<String,Object> profile(Long customer) {
-        ownership.requireRead(customer);
+        var scope=ownership.customerQueryScope(customer);
         String evaluatedAt=Instant.now().toString();
         var result=new LinkedHashMap<String,Object>();
         var identity=group(()-> {
@@ -83,7 +83,7 @@ public class SupportCustomerProfileService {
             var rules=bindings.rules();var coverage=mapper.coverage();
             data.put("activityStatus","UNKNOWN");data.put("lastEffectiveAt",null);data.put("nextMaintenanceAt",null);
             if(assignment!=null && coverage!=null) {
-                var q=SupportWorkbenchService.query(null,customer,rules,coverage);
+                var q=SupportWorkbenchService.query(scope,customer,rules,coverage);
                 q.put("filter","ALL");q.put("keyword",null);q.put("offset",0);q.put("limit",1);
                 var rows=workbench.customers(q);
                 if(rows.size()!=1)throw new IllegalStateException("SUPPORT_CUSTOMER_PROJECTION_MISSING");

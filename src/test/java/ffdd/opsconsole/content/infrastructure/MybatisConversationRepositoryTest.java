@@ -23,6 +23,20 @@ class MybatisConversationRepositoryTest {
     private final MybatisConversationRepository repository = new MybatisConversationRepository(mapper, messageMapper, ffdd.opsconsole.content.SupportTestDependencies.ownership());
     private final LocalDateTime now = LocalDateTime.of(2026, 7, 23, 12, 0);
 
+    @Test void collectionCountAndRowsUseTheSameExplicitScope() {
+        var scope=new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(7L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED,9L,null);
+        when(mapper.countConversationsScoped(null,null,null,null,"needle",null,null,scope)).thenReturn(2L);
+        var request=new ffdd.opsconsole.content.dto.ConversationQueryRequest(null,null,null,null,"needle",null,2L,10L);
+        assertThat(repository.pageConversations(request,scope).getTotal()).isEqualTo(2L);
+        org.mockito.Mockito.verify(mapper).pageConversationsScoped(null,null,null,"needle",null,null,null,false,10L,10L,null,scope);
+        org.mockito.Mockito.verify(mapper,org.mockito.Mockito.never()).countConversations(any(),any(),any(),any(),any(),any(),any());
+    }
+    @Test void missingCollectionScopeNeverFallsBackToAppQuery() {
+        assertThatThrownBy(()->repository.pageConversations(null,null)).isInstanceOf(NullPointerException.class);
+        verifyNoInteractions(mapper);
+    }
+
     @Test
     void lockingReadAlwaysLocksHeaderBeforePendingTransfer() {
         ContentConversationView conversation = transferredConversation();

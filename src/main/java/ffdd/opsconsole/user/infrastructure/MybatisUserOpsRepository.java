@@ -59,6 +59,21 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     }
 
     @Override
+    public Map<String,Object> supportOverview(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        java.util.Objects.requireNonNull(scope, "SUPPORT_READ_SCOPE_REQUIRED");
+        Map<String,Object> overview=new LinkedHashMap<>(mapper.supportOverview(scope));
+        boolean riskAvailable=mapper.countActiveRiskModels()==1 && ((Number)overview.remove("freshRiskCount")).longValue()>0;
+        overview.put("riskAuthorityAvailable",riskAvailable);
+        if(!riskAvailable) overview.put("highRiskUsers",null);
+        overview.put("highRiskThreshold",riskAvailable?mapper.activeHighRiskThreshold():null);
+        // C1's support projection does not imply authority over separate security/control dashboards.
+        for(String field:List.of("activeSessions","twoFactorEnabledUsers","lockedShort","lockedLong","tokenReuseToday",
+                "trustListCount","blockedListCount","activeImpersonations","totalAccountLists","totalImpersonations","totalSessions"))
+            overview.put(field,null);
+        return overview;
+    }
+
+    @Override
     public List<UserAccountView> search(String keyword, String status, int limit) {
         UserQueryRequest query = UserQueryRequest.basic(
                 trim(keyword), status, null, 1, cappedLimit(limit), null);
@@ -83,6 +98,32 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     @Override
     public PageResult<UserAccountView> pageSupportProfiles(UserQueryRequest request) {
         return pageProfiles(request, supportPhoneKeyword(request == null ? null : request.keyword()), true);
+    }
+
+    @Override
+    public PageResult<UserAccountView> pageSupportProfiles(UserQueryRequest request, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        java.util.Objects.requireNonNull(scope, "SUPPORT_READ_SCOPE_REQUIRED");
+        int pageNum = page(request == null ? null : request.pageNum());
+        int pageSize = request == null || request.pageSize() == null ? 20 : Math.max(1, Math.min(200, request.pageSize()));
+        UserQueryRequest query = normalizeProfileQuery(request, pageNum, pageSize);
+        List<String> statuses = statusList(request == null ? null : request.status());
+        String phoneKeyword = supportPhoneKeyword(request == null ? null : request.keyword());
+        long total = mapper.countScopedUsersByQuery(query, statuses, phoneKeyword, scope);
+        List<UserAccountView> records = total == 0 ? List.of()
+                : mapper.pageScopedUsers(query, statuses, (long)(pageNum - 1) * pageSize, pageSize, phoneKeyword, scope);
+        return new PageResult<>(total, pageNum, pageSize, records);
+    }
+
+    @Override
+    public Optional<UserAccountView> findById(Long userId, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        java.util.Objects.requireNonNull(scope, "SUPPORT_READ_SCOPE_REQUIRED");
+        return Optional.ofNullable(mapper.findScopedById(userId, scope));
+    }
+
+    @Override
+    public long countReadableSupportCustomers(List<Long> customerIds, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        java.util.Objects.requireNonNull(scope, "SUPPORT_READ_SCOPE_REQUIRED");
+        return mapper.countReadableSupportCustomers(customerIds,scope);
     }
 
     private PageResult<UserAccountView> pageProfiles(UserQueryRequest request, String phoneKeyword, boolean supportSearch) {

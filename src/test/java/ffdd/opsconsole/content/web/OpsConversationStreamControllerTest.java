@@ -97,6 +97,25 @@ class OpsConversationStreamControllerTest {
         controller.shutdown();
     }
 
+    @Test void groupInvalidationKeepsLoginButRechecksEverySubsequentConversation()throws Exception {
+        SseEmitter emitter=mock(SseEmitter.class);
+        var guard=mock(ffdd.opsconsole.content.application.SupportOwnershipService.class);
+        var controller=new OpsConversationStreamController(guard,authentication()) {
+            @Override protected SseEmitter createEmitter(long timeoutMs){return emitter;}
+        };
+        try {
+            authenticateAs("1");controller.stream("Bearer test");
+            controller.scopeChanged(new ffdd.opsconsole.content.domain.SupportGroupFacts.ScopeChanged(java.util.Set.of(1L),"GROUP_CHANGED"));
+            verify(emitter,times(2)).send(any(SseEmitter.SseEventBuilder.class));
+            controller.onConversationMessage(ConversationMessageEvent.builder().conversationNo("CV-LOST").build());
+            verify(emitter,times(2)).send(any(SseEmitter.SseEventBuilder.class));
+            org.mockito.Mockito.when(guard.canReadConversation(1L,"CV-PERSONAL")).thenReturn(true);
+            controller.onConversationMessage(ConversationMessageEvent.builder().conversationNo("CV-PERSONAL").build());
+            verify(emitter,times(3)).send(any(SseEmitter.SseEventBuilder.class));
+            assertThat(controller.activeEmitterCount()).isEqualTo(1);
+        } finally {controller.shutdown();}
+    }
+
     private OpsConversationStreamController controllerUsing(SseEmitter emitter) {
         return new OpsConversationStreamController(ffdd.opsconsole.content.SupportTestDependencies.ownership(), authentication()) {
             @Override

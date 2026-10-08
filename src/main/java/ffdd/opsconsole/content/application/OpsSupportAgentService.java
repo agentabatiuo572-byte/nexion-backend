@@ -11,6 +11,7 @@ import ffdd.opsconsole.content.domain.SupportAgentProfileView;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.domain.SupportAgentRepository.SupportOperatorRecord;
 import ffdd.opsconsole.content.domain.SupportAgentRepository.SupportOperatorScope;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentBatchAssignmentRequest;
@@ -67,21 +68,19 @@ public class OpsSupportAgentService {
     private final SupportBindingService binding;
     private final SupportGroupService groups;
 
+    @Transactional
     public ApiResult<SupportAgentOverview> overview() {
-        if(!ownership.supervisor(ownership.actorId())) ownership.requireEligibleAgent();
+        ReadScope scope=ownership.defaultQueryScope(null,null);
         repository.ensureSchema();
-        List<AdminAccountOverview.OperatorRecord> operators = supportOperators();
-        if (!ownership.supervisor(ownership.actorId())) operators=operators.stream().filter(o->String.valueOf(ownership.actorId()).equals(o.id())).toList();
-        ensureDefaultProfiles(operators);
-        List<SupportAgentProfileView> agents = profileViews(operators);
+        List<SupportAgentProfileView> agents = pageProfileViews(directoryOperators(scope),scope);
         List<Long> agentIds = agents.stream().map(SupportAgentProfileView::adminId).toList();
-        List<SupportAgentAssignmentView> assignments = repository.listActiveAssignments(agentIds);
+        List<SupportAgentAssignmentView> assignments = repository.listActiveAssignments(agentIds,scope);
         return ApiResult.ok(new SupportAgentOverview(
                 agents,
                 assignments,
                 transferTargets(agents),
-                POSITIONS,
-                SERVICE_TYPES,
+                publicPositions(),
+                defaultServiceTypes(),
                 List.of("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment")));
     }
 
@@ -90,20 +89,18 @@ public class OpsSupportAgentService {
         return ApiResult.ok(List.of());
     }
 
+    @Transactional
     public ApiResult<SupportAgentPageView> agents(SupportAgentQueryRequest request) {
-        Long actorId = ownership.actorId();
-        boolean supervisor = ownership.supervisor(actorId);
-        if (!supervisor) ownership.requireEligibleAgent();
+        ReadScope scope=ownership.defaultQueryScope(null,null);
         repository.ensureSchema();
         long pageNum = normalizePage(request == null ? null : request.pageNum());
         long pageSize = normalizeSize(request == null ? null : request.pageSize());
-        Long visibleAdminId = supervisor ? null : actorId;
-        SupportOperatorScope operatorScope = repository.supportOperatorScope(visibleAdminId);
+        SupportOperatorScope operatorScope = repository.scopedSupportOperators(scope);
         long total = repository.countSupportOperators(operatorScope);
         List<SupportAgentProfileView> agents = List.of();
         // Prove the page is in range before multiplying, including Long.MAX_VALUE requests.
         if (total > 0 && pageNum - 1 <= (total - 1) / pageSize) {
-            agents = pageProfileViews(repository.pageSupportOperators(operatorScope, pageSize, (pageNum - 1) * pageSize));
+            agents = pageProfileViews(repository.pageSupportOperators(operatorScope, pageSize, (pageNum - 1) * pageSize),scope);
         }
         List<Long> agentIds = agents.stream().map(SupportAgentProfileView::adminId).toList();
         return ApiResult.ok(new SupportAgentPageView(
@@ -111,25 +108,24 @@ public class OpsSupportAgentService {
                 pageNum,
                 pageSize,
                 agents,
-                agentIds.isEmpty() ? List.of() : repository.listActiveAssignments(agentIds),
-                POSITIONS,
-                SERVICE_TYPES,
+                agentIds.isEmpty() ? List.of() : repository.listActiveAssignments(agentIds,scope),
+                publicPositions(),
+                defaultServiceTypes(),
                 List.of("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment")));
     }
 
+    @Transactional
     public List<Map<String, Object>> transferTargets() {
         repository.ensureSchema();
-        List<AdminAccountOverview.OperatorRecord> operators = supportOperators();
-        if (!ownership.supervisor(ownership.actorId())) operators=operators.stream().filter(o->String.valueOf(ownership.actorId()).equals(o.id())).toList();
-        ensureDefaultProfiles(operators);
-        return transferTargets(profileViews(operators));
+        ReadScope scope=ownership.defaultQueryScope(null,null);
+        return transferTargets(pageProfileViews(directoryOperators(scope),scope));
     }
 
     /** Shared M1/M5 availability projection; legacy load-config flags are not routing authority. */
+    @Transactional
     public Map<String, Map<String, Object>> availabilityStates() {
         Map<String, Map<String, Object>> states = new LinkedHashMap<>();
-        List<Long> ids = supportOperators().stream().map(row -> parseAdminId(row.id()))
-                .flatMap(Optional::stream).toList();
+        List<Long> ids = directoryOperators(ownership.defaultQueryScope(null,null)).stream().map(SupportOperatorRecord::adminId).toList();
         if (ids.isEmpty()) return states;
         repository.listProfiles(ids).forEach(profile -> states.put(String.valueOf(profile.adminId()),
                 Map.of("busy", Boolean.TRUE.equals(profile.busy()), "profileVersion", profile.version())));
@@ -182,14 +178,7 @@ public class OpsSupportAgentService {
     }
 
     public boolean canManageSupportSeats() {
-        AdminAccountOverview.OperatorRecord actor = accountService.currentOperator().orElse(null);
-        if (actor == null) {
-            return false;
-        }
-        String actorRole = normalizedRole(actor.role());
-        return "super".equals(actorRole)
-                || "superadmin".equals(actorRole)
-                || ("support".equals(actorRole) && supportSeatSupervisor(actor));
+        return ownership.defaultQueryScope(null,null).mode()!=ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.PERSONAL;
     }
 
     /**
@@ -210,6 +199,7 @@ public class OpsSupportAgentService {
                 || ("support".equals(actorRole) && supportSeatSupervisor(actor));
     }
 
+    @Transactional
     public Optional<SupportAgentProfileView> assignableSupportAgent(String agentId) {
         if (!StringUtils.hasText(agentId)) {
             return Optional.empty();
@@ -221,6 +211,7 @@ public class OpsSupportAgentService {
         }
     }
 
+    @Transactional
     public Optional<SupportAgentProfileView> assignableSupportAgent(Long adminId) {
         repository.ensureSchema();
         AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
@@ -237,13 +228,15 @@ public class OpsSupportAgentService {
                 defaultMaxConcurrent(),
                 now);
         return repository.findProfile(adminId)
+                // Canonical display types cannot grant legacy routing capability.
+                .filter(profile -> profile.serviceTypes() != null && profile.serviceTypes().contains("support"))
                 .map(profile -> profileView(operator, profile))
                 .filter(agent -> Boolean.TRUE.equals(agent.enabled()))
                 .filter(agent -> Boolean.TRUE.equals(agent.transferable()))
-                .filter(agent -> !Boolean.TRUE.equals(agent.busy()))
-                .filter(agent -> agent.serviceTypes().contains("support"));
+                .filter(agent -> !Boolean.TRUE.equals(agent.busy()));
     }
 
+    @Transactional
     public Optional<SupportAgentProfileView> currentAssignableSupportAgent() {
         AdminAccountOverview.OperatorRecord actor = accountService.currentOperator().orElse(null);
         if (actor == null) return Optional.empty();
@@ -266,6 +259,14 @@ public class OpsSupportAgentService {
         ApiResult<SupportAgentProfileView> guard = requireProfileCommand(adminId, idempotencyKey, request);
         if (guard != null) {
             return guard;
+        }
+        new java.util.TreeSet<>(java.util.List.of(ownership.actorId(), adminId)).forEach(ownership::lockAgent);
+        SupportAgentProfileRecord currentProfile = repository.findProfile(adminId).orElse(null);
+        String currentSeat = currentProfile == null ? defaultSeatType()
+                : normalizeSeatType(currentProfile.seatType(), currentProfile.position());
+        ApiResult<SupportAgentProfileView> authorization = requireSeatMutationAuthorization(adminId, currentSeat);
+        if (authorization != null) {
+            return authorization;
         }
         return idempotentCommand(
                 "M5_SUPPORT_AGENT_PROFILE_UPDATE",
@@ -336,15 +337,20 @@ public class OpsSupportAgentService {
         }
         ownership.requireSupervisorSnapshot();
         var selected=normalizeUserIds(request.userIds());
-        ApiResult<SupportAgentProfileView> seatAuthorization=requireSeatMutationAuthorization(adminId,seatTypeForPosition(canonicalPosition(request.position())));
-        if(seatAuthorization!=null) return seatAuthorization;
         if(!selected.isEmpty()) {
             if(request.customers()==null || !selected.equals(request.customers().stream().map(ffdd.opsconsole.content.dto.SupportBindingRequest.Customer::id).toList()))
                 throw new ffdd.opsconsole.shared.exception.BizException(422,"SUPPORT_BINDING_EXPECTATION_REQUIRED");
             selected.stream().sorted().forEach(ownership::lockCustomer);
+            binding.prepareTransferLocks(new ffdd.opsconsole.content.dto.SupportBindingRequest(
+                    adminId,request.customers(),request.reason()));
         }
         new java.util.TreeSet<>(java.util.List.of(ownership.actorId(),adminId)).forEach(ownership::lockAgent);
         ownership.requireSupervisor();
+        ApiResult<SupportAgentProfileView> seatAuthorization=requireSeatMutationAuthorization(adminId,seatTypeForPosition(canonicalPosition(request.position())));
+        if(seatAuthorization!=null) return seatAuthorization;
+        selected.forEach(ownership::requireManagingCustomer);
+        if(!ownership.canReadAgent(ownership.actorId(),adminId))
+            throw new ffdd.opsconsole.shared.exception.BizException(404,"SUPPORT_AGENT_NOT_FOUND");
         return idempotentCommand(
                 "M1_SUPPORT_SEAT_ASSIGN",
                 idempotencyKey,
@@ -522,7 +528,13 @@ public class OpsSupportAgentService {
         return views;
     }
 
-    private List<SupportAgentProfileView> pageProfileViews(List<SupportOperatorRecord> operators) {
+    private List<SupportOperatorRecord> directoryOperators(ReadScope scope) {
+        SupportOperatorScope operators=repository.scopedSupportOperators(scope);
+        long count=repository.countSupportOperators(operators);
+        return count==0 ? List.of() : repository.pageSupportOperators(operators,count,0);
+    }
+
+    private List<SupportAgentProfileView> pageProfileViews(List<SupportOperatorRecord> operators,ReadScope scope) {
         if (operators.isEmpty()) return List.of();
         List<Long> adminIds = operators.stream().map(SupportOperatorRecord::adminId).toList();
         Map<Long, SupportAgentProfileRecord> profiles = repository.listProfiles(adminIds).stream()
@@ -537,7 +549,7 @@ public class OpsSupportAgentService {
             repository.listProfiles(missingIds).forEach(profile -> profiles.put(profile.adminId(), profile));
         }
         return operators.stream().filter(operator -> profiles.containsKey(operator.adminId()))
-                .map(operator -> profileView(operator, profiles.get(operator.adminId()), "support", "enabled"))
+                .map(operator -> profileView(operator, profiles.get(operator.adminId()), "support", operator.status(),scope))
                 .toList();
     }
 
@@ -564,7 +576,13 @@ public class OpsSupportAgentService {
 
     private SupportAgentProfileView profileView(
             SupportOperatorRecord operator, SupportAgentProfileRecord profile, String role, String status) {
+        return profileView(operator,profile,role,status,ownership.defaultQueryScope(null,null));
+    }
+
+    private SupportAgentProfileView profileView(
+            SupportOperatorRecord operator, SupportAgentProfileRecord profile, String role, String status,ReadScope scope) {
         Long adminId = profile.adminId();
+        String seatType = normalizeSeatType(profile.seatType(), profile.position());
         return new SupportAgentProfileView(
                 String.valueOf(adminId),
                 adminId,
@@ -572,15 +590,15 @@ public class OpsSupportAgentService {
                 operator.email(),
                 role,
                 status,
-                normalizeSeatType(profile.seatType(), profile.position()),
-                profile.position(),
-                profile.serviceTypes(),
+                seatType,
+                SEAT_MANAGER.equals(seatType) ? POSITION_MANAGER : POSITION_DEDICATED,
+                defaultServiceTypes(),
                 profile.tags(),
                 profile.maxConcurrent(),
                 profile.enabled(),
                 profile.transferable(),
                 profile.busy(),
-                repository.countActiveAssignments(adminId),
+                repository.countActiveAssignments(adminId,scope),
                 profile.version(),
                 profile.updatedAt(),operator.avatarAssetId(),operator.avatarVersion());
     }
@@ -619,6 +637,7 @@ public class OpsSupportAgentService {
                 .filter(operator -> SUPPORT_OPERATOR_ROLES.contains(normalizedRole(operator.role())))
                 .filter(operator -> "enabled".equalsIgnoreCase(operator.status()))
                 .filter(operator -> parseAdminId(operator.id()).isPresent())
+                .filter(operator -> ownership.canReadAgent(ownership.actorId(),parseAdminId(operator.id()).orElseThrow()))
                 .toList();
     }
 
@@ -647,6 +666,10 @@ public class OpsSupportAgentService {
     }
 
     private ApiResult<SupportAgentProfileView> requireSeatMutationAuthorization(Long targetAdminId, String seatType) {
+        var scope=ownership.defaultQueryScope(null,null);
+        if(scope.mode()==ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.PERSONAL
+                || !ownership.canReadAgent(scope.actorId(),targetAdminId))
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_ASSIGNMENT_FORBIDDEN");
         AdminAccountOverview.OperatorRecord actor = accountService.currentOperator().orElse(null);
         if (actor == null) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_ASSIGNMENT_FORBIDDEN");
@@ -672,13 +695,7 @@ public class OpsSupportAgentService {
         if (actorAdminId == null) {
             return false;
         }
-        Boolean qualified=groups.supervisorQualification(actorAdminId);
-        if(Boolean.FALSE.equals(qualified))return false;
-        return repository.findProfile(actorAdminId)
-                .filter(profile -> Boolean.TRUE.equals(profile.enabled()))
-                .map(profile -> normalizeSeatType(profile.seatType(), profile.position()))
-                .filter(SEAT_MANAGER::equals)
-                .isPresent();
+        return ownership.supervisor(actorAdminId);
     }
 
     private String defaultSeatType() {
@@ -691,6 +708,10 @@ public class OpsSupportAgentService {
 
     private List<String> defaultServiceTypes() {
         return List.of("support");
+    }
+
+    private List<String> publicPositions() {
+        return POSITIONS.stream().filter(position -> !POSITION_GENERAL.equals(position)).toList();
     }
 
     private int defaultMaxConcurrent() {

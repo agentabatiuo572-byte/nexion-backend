@@ -18,9 +18,6 @@ public interface SupportBulkMapper {
         + "r.client_message_id clientMessageId,r.attachment_id attachmentId,r.operation,r.conversation_no conversationNo,"
         + "r.request_json requestJson,r.state,r.result_certainty resultCertainty,r.message_id messageId,"
         + "r.failure_code failureCode,r.retryable,r.attempts,r.created_at createdAt,r.updated_at updatedAt";
-    String READABLE = " WHERE r.batch_id=#{batch} AND (#{supervisor} OR (#{eligible} AND EXISTS(SELECT 1 FROM "
-        + "nx_support_agent_user_assignment a JOIN nx_user u ON u.id=a.user_id AND u.is_deleted=0 "
-        + "WHERE a.user_id=r.customer_id AND a.agent_admin_id=#{actor} AND a.status='ACTIVE' AND a.is_deleted=0)))";
 
     @Select("<script>" + SupportWorkbenchMapper.PROJECTION + """
         SELECT c.*,c.activityStatus accountState,COALESCE(NULLIF(u.v_rank,''),NULLIF(u.user_level,'')) level,
@@ -52,6 +49,7 @@ public interface SupportBulkMapper {
           JOIN nx_admin_permission p ON p.id=rp.permission_id AND p.status=1 AND p.is_deleted=0
         WHERE a.id=#{actor} AND a.status=1 AND a.is_deleted=0 AND p.resource_type='API'
           AND (p.permission_code='service_m3_read' OR (#{supervisor} AND p.permission_code='service_m1_read'))
+        FOR SHARE
         """)
     int readerGrant(@Param("actor") Long actor,@Param("supervisor") boolean supervisor);
 
@@ -120,16 +118,52 @@ public interface SupportBulkMapper {
         FROM nx_support_bulk_recipient WHERE batch_id=#{batch}
         """)
     Map<String,Object> counts(String batch);
-    @Select("SELECT " + RECIPIENT + " FROM nx_support_bulk_recipient r" + READABLE + " ORDER BY r.customer_id LIMIT #{limit} OFFSET #{offset}")
-    List<Map<String,Object>> recipients(@Param("batch") String batch,@Param("actor") Long actor,
-        @Param("supervisor") boolean supervisor,@Param("eligible") boolean eligible,@Param("offset") long offset,@Param("limit") int limit);
-    @Select("SELECT COUNT(*) FROM nx_support_bulk_recipient r" + READABLE)
-    long recipientCount(@Param("batch") String batch,@Param("actor") Long actor,@Param("supervisor") boolean supervisor,@Param("eligible") boolean eligible);
-    @Select("SELECT " + HEADER + " FROM nx_support_bulk_job WHERE record_type='JOB' AND state<>'DRAFT' AND (#{supervisor} OR actor_id=#{actor}) ORDER BY created_at DESC,id DESC LIMIT #{limit} OFFSET #{offset}")
-    List<Map<String,Object>> jobs(@Param("actor") Long actor,@Param("supervisor") boolean supervisor,
-        @Param("offset") long offset,@Param("limit") int limit);
-    @Select("SELECT COUNT(*) FROM nx_support_bulk_job WHERE record_type='JOB' AND state<>'DRAFT' AND (#{supervisor} OR actor_id=#{actor})")
-    long jobCount(@Param("actor") Long actor,@Param("supervisor") boolean supervisor);
+    @SelectProvider(type=ScopedSql.class,method="recipients")
+    List<Map<String,Object>> scopedRecipients(Map<String,Object> query);
+    @SelectProvider(type=ScopedSql.class,method="recipientCount")
+    long scopedRecipientCount(Map<String,Object> query);
+    @SelectProvider(type=ScopedSql.class,method="counts")
+    Map<String,Object> scopedCounts(Map<String,Object> query);
+    @SelectProvider(type=ScopedSql.class,method="jobs")
+    List<Map<String,Object>> scopedJobs(Map<String,Object> query);
+    @SelectProvider(type=ScopedSql.class,method="jobCount")
+    long scopedJobCount(Map<String,Object> query);
+
+    /** Fixed server parameters only; each arm reuses the same current authorization predicate. */
+    final class ScopedSql {
+        private ScopedSql() {}
+        private static String customer(String parameter) {
+            return "EXISTS(SELECT 1 FROM nx_user scope_customer WHERE scope_customer.id=r.customer_id "
+                    + SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE.replaceAll("\\bscope\\b",parameter) + ")";
+        }
+        private static String readable() {
+            return "("+customer("scope")+" OR "+customer("managedScope")+" OR "+customer("personalScope")+")";
+        }
+        private static String recipientWhere() {return " WHERE r.batch_id=#{batch} AND "+readable();}
+        private static String jobWhere() {
+            return " WHERE j.record_type='JOB' AND j.state&lt;&gt;'DRAFT' AND (EXISTS(SELECT 1 FROM nx_support_bulk_recipient r "
+                    + "WHERE r.batch_id=j.id AND "+readable()+") "
+                    + "<if test=\"senderSummary == true and scope != null and scope.mode.name() == 'PERSONAL'\">OR j.actor_id=#{scope.actorId}</if>)";
+        }
+        public static String recipients() {
+            return "<script>SELECT "+RECIPIENT+" FROM nx_support_bulk_recipient r"+recipientWhere()
+                    +" ORDER BY r.customer_id LIMIT #{limit} OFFSET #{offset}</script>";
+        }
+        public static String recipientCount() {
+            return "<script>SELECT COUNT(*) FROM nx_support_bulk_recipient r"+recipientWhere()+"</script>";
+        }
+        public static String counts() {
+            return "<script>SELECT COUNT(*) total,COALESCE(SUM(r.state='PENDING'),0) pending,COALESCE(SUM(r.state='SENT'),0) sent,"
+                    +"COALESCE(SUM(r.state='FAILED'),0) failed,COALESCE(SUM(r.state='SKIPPED'),0) skipped,"
+                    +"COALESCE(SUM(r.state='CANCELLED'),0) cancelled,COALESCE(SUM(r.result_certainty='UNKNOWN'),0) unknown "
+                    +"FROM nx_support_bulk_recipient r"+recipientWhere()+"</script>";
+        }
+        public static String jobs() {
+            return "<script>SELECT "+HEADER+" FROM nx_support_bulk_job j"+jobWhere()
+                    +" ORDER BY j.created_at DESC,j.id DESC LIMIT #{limit} OFFSET #{offset}</script>";
+        }
+        public static String jobCount() {return "<script>SELECT COUNT(*) FROM nx_support_bulk_job j"+jobWhere()+"</script>";}
+    }
     @Select("""
         SELECT r.batch_id batchId,r.customer_id customerId FROM nx_support_bulk_recipient r
         JOIN nx_support_bulk_job j ON j.id=r.batch_id WHERE j.record_type='JOB'

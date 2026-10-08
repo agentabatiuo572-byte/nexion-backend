@@ -112,7 +112,9 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
             jdbc.update("INSERT INTO nx_deposit_order(user_id,deposit_no,chain_name,chain_tx_hash,asset,amount,status,created_at) VALUES(?,?,'TRC20',?,'USDT',1,'SUCCESS',NOW())",unknown,key(),key());
             String activityFrom=Instant.now().minusSeconds(120).toString(),activityTo=Instant.now().plusSeconds(120).toString();
             var active=preview(first,List.of(known,dormant,unknown),List.of(),"EXPLICIT",filter("ACTIVE","DUE","V3",List.of("bulk-authoritative"),"2026-09-01T00:00:00Z","2026-09-02T00:00:00Z",activityFrom,activityTo,"0.3","0.3","0.125001","0.125001",false,null));
-            var query=SupportWorkbenchService.query(first,known,bindingMapper.rules(),activity.checkpoint());query.put("ids",List.of(known));
+            var query=SupportWorkbenchService.query(new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(
+                    first,ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.PERSONAL,null,null),
+                    known,bindingMapper.rules(),activity.checkpoint());query.put("ids",List.of(known));
             var candidate=bulkMapper.candidates(query).get(0);
             var mapping=new LinkedHashMap<String,Object>();
             for(String field:List.of("registeredAt","lastEffectiveAt")) {
@@ -417,15 +419,28 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
     }
 
     @Test @Order(99) void persistQueuedAndPreparedRestartSeedAsLastFirstJvmAction() throws Exception {
-        long actor=admin("restart","SUPPORT","DEDICATED"),one=customer(actor),two=customer(actor),prepared=customer(actor);retainedAdmins.add(actor);
+        long owner=admin("restart_owner","SUPPORT","MANAGER"),actor=admin("restart","SUPPORT","DEDICATED");
+        long group=createSupportGroup(owner,List.of(actor),"restart").id();
+        long one=customer(actor),two=customer(actor),prepared=customer(actor);
         String batch=batch(actor,List.of(one,two),"MAINTENANCE","TEXT","Second JVM durable frozen delivery",null,null,null);
         String preparedBatch=batch(actor,List.of(prepared),"MAINTENANCE","TEXT","Prepared DTO survives JVM exit",null,null,null);SecurityContextHolder.clearContext();bulk.prepareRecipient(preparedBatch,prepared);
         counts(batch,0,0,0,0,2);counts(preparedBatch,0,0,0,0,1);assertThat(jdbc.queryForObject("SELECT state FROM nx_support_bulk_job WHERE id=?",String.class,batch)).isEqualTo("QUEUED");assertThat(row(preparedBatch,prepared).get("request_json")).isNotNull();
         var seed=new LinkedHashMap<String,Object>();seed.put("checkedAt",Instant.now().toString());seed.put("database",SupportRuntimeTarget.current().database());seed.put("port",SupportRuntimeTarget.current().httpPort());seed.put("workflowRunId",System.getenv("WORKFLOW_RUN_ID"));seed.put("snapshotHash",System.getenv("WORKFLOW_SNAPSHOT_HASH"));seed.put("firstJvmPid",ProcessHandle.current().pid());seed.put("actorId",actor);seed.put("batchId",batch);seed.put("customerIds",List.of(one,two));seed.put("clientMessageIds",List.of(row(batch,one).get("client_message_id"),row(batch,two).get("client_message_id")));seed.put("frozenContent",jdbc.queryForObject("SELECT content_json FROM nx_support_bulk_job WHERE id=?",String.class,batch));seed.put("preparedBatchId",preparedBatch);seed.put("preparedCustomerId",prepared);seed.put("preparedClientMessageId",row(preparedBatch,prepared).get("client_message_id"));seed.put("preparedRequestJson",row(preparedBatch,prepared).get("request_json"));
         assertThat(messageCount(one)+messageCount(two)+messageCount(prepared)).isZero();
         fixtureActors().deferCleanup(actor,"SupportBulkRestartRuntimeTest");
+        fixtureActors().deferCleanup(owner,"SupportBulkRestartRuntimeTest");
         seed.put("actorCreationProof",fixtureActors().creationReference(actor));
-        Files.writeString(Path.of(System.getenv("CS_ENHANCE_EVIDENCE_DIR"),"bulk-restart-seed.json"),json.writeValueAsString(seed));writeProof("bulk-runtime.json");
+        seed.put("ownerId",owner);seed.put("ownerCreationProof",fixtureActors().creationReference(owner));
+        seed.put("supportGroupProof",supportGroupProof(group,owner,actor,List.of(one,two,prepared)));
+        Path directory=Path.of(System.getenv("CS_ENHANCE_EVIDENCE_DIR"));
+        Path pending=Files.createTempFile(directory,"bulk-restart-seed-",".pending");
+        try {
+            Files.writeString(pending,json.writeValueAsString(seed));
+            Files.move(pending,directory.resolve("bulk-restart-seed.json"),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
+        } finally {Files.deleteIfExists(pending);}
+        writeProof("bulk-runtime.json");
+        // Cleanup ownership is handed off only after the complete seed and first-JVM evidence are durable.
+        retainedAdmins.addAll(List.of(owner,actor));retainedGroups.add(group);retainedCustomers.addAll(List.of(one,two,prepared));
     }
 
     private com.fasterxml.jackson.databind.JsonNode message(com.fasterxml.jackson.databind.JsonNode rows,long id) {for(var row:rows)if(row.path("id").asLong()==id)return row;throw new AssertionError("Actual message missing "+id);}

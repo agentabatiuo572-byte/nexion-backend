@@ -89,9 +89,16 @@ public class OpsConversationController {
 
     // 会话总览 — M3 即时会话台 读
     @PreAuthorize("hasAuthority('service_m3_read')")
-    @GetMapping("/overview")
     public ApiResult<Map<String, Object>> overview() {
         return conversationService.overview();
+    }
+
+    @PreAuthorize("hasAuthority('service_m3_read')")
+    @GetMapping("/overview")
+    public ApiResult<Map<String,Object>> overviewQuery(
+            @RequestParam(required=false) ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode readMode,
+            @RequestParam(required=false) Long groupId) {
+        return conversationService.overview(readMode,groupId);
     }
 
     // 收件箱/会话列表 — M3 即时会话台 读
@@ -101,8 +108,9 @@ public class OpsConversationController {
             @RequestParam(required=false) String status,@RequestParam(required=false) String type,
             @RequestParam(required=false) String ownerAgentId,@RequestParam(required=false) Long userId,
             @RequestParam(required=false) String keyword,@RequestParam(required=false) Boolean unreadOnly,
-            @RequestParam(required=false) Long pageNum,@RequestParam(required=false) Long pageSize,@RequestParam(required=false) Boolean archived) {
-        return conversations(new ConversationQueryRequest(status,type,ownerAgentId,userId,keyword,unreadOnly,pageNum,pageSize,archived));
+            @RequestParam(required=false) Long pageNum,@RequestParam(required=false) Long pageSize,@RequestParam(required=false) Boolean archived,
+            @RequestParam(required=false) ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode readMode,@RequestParam(required=false) Long groupId) {
+        return conversations(new ConversationQueryRequest(status,type,ownerAgentId,userId,keyword,unreadOnly,pageNum,pageSize,archived,readMode,groupId));
     }
     public ApiResult<PageResult<ContentConversationView>> conversations(ConversationQueryRequest request) {
         return conversationService.conversations(request);

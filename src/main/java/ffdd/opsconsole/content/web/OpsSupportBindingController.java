@@ -28,14 +28,16 @@ public class OpsSupportBindingController {
 
     @GetMapping("/binding-pool") @PreAuthorize("hasAuthority('service_m1_read')")
     public ApiResult<ffdd.opsconsole.shared.api.PageResult<Map<String,Object>>> pool(@RequestParam(required=false) String keyword,@RequestParam(required=false) String reason,
+            @RequestParam(required=false) Long groupId,
             @RequestParam(defaultValue="1") long pageNum,@RequestParam(defaultValue="20") int pageSize){
-        return ApiResult.ok(service.pool(keyword,reason,pageNum,pageSize));
+        return ApiResult.ok(service.pool(keyword,reason,groupId,pageNum,pageSize));
     }
 
     @GetMapping("/handover-customers") @PreAuthorize("hasAuthority('service_m1_read')")
     public ApiResult<ffdd.opsconsole.shared.api.PageResult<Map<String,Object>>> handover(@RequestParam(required=false) Long agentAdminId,
+            @RequestParam(required=false) Long groupId,
             @RequestParam(defaultValue="true") boolean unavailableOnly,@RequestParam(defaultValue="1") long pageNum,@RequestParam(defaultValue="20") int pageSize) {
-        return ApiResult.ok(service.handover(agentAdminId,unavailableOnly,pageNum,pageSize));
+        return ApiResult.ok(service.handover(agentAdminId,groupId,unavailableOnly,pageNum,pageSize));
     }
 
     @PostMapping("/assignments/transfer") @PreAuthorize("hasAuthority('service_m1_write')")

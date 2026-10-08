@@ -1803,7 +1803,7 @@ class OpsAdminAccountServiceTest {
             SupportBindingMapper bindings = mock(SupportBindingMapper.class);
             when(bindings.rolesSnapshot(anyLong())).thenAnswer(invocation ->
                     List.of(roleRelations.get(invocation.getArgument(0))));
-            SupportOwnershipService ownership = new SupportOwnershipService(bindings);
+            SupportOwnershipService ownership = new SupportOwnershipService(bindings, mock(ffdd.opsconsole.content.mapper.SupportGroupMapper.class));
             SupportAttachmentPolicy policy = mock(SupportAttachmentPolicy.class);
             SupportAttachmentService attachments = new SupportAttachmentService(
                     mock(SupportAttachmentMapper.class), bindings, ownership, storage, policy,

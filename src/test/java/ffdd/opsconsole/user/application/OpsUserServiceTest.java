@@ -97,8 +97,12 @@ class OpsUserServiceTest {
             mock(ffdd.opsconsole.shared.security.JwtTokenProvider.class);
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
             mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
-    private final OpsUserService service = new OpsUserService(
-            userRepository,
+    private final ffdd.opsconsole.content.application.SupportOwnershipService supportOwnership = mock(ffdd.opsconsole.content.application.SupportOwnershipService.class);
+    private final OpsUserService service = serviceWith(userRepository);
+
+    private OpsUserService serviceWith(UserOpsRepository repository) {
+        return new OpsUserService(
+            repository,
             coverageFacade,
             configFacade,
             financeWithdrawalControlFacade,
@@ -110,7 +114,8 @@ class OpsUserServiceTest {
             lockMapper,
             outboxService,
             tokenProvider,
-            Clock.fixed(Instant.parse("2026-07-19T12:00:00Z"), ZoneOffset.UTC));
+            Clock.fixed(Instant.parse("2026-07-19T12:00:00Z"), ZoneOffset.UTC), supportOwnership);
+    }
 
     @BeforeEach
     void stubLockMapperNoActiveLock() {
@@ -280,6 +285,7 @@ class OpsUserServiceTest {
 
     @Test
     void supportProfilePageAcceptsPhoneAndAuditsOnlyItsHash() {
+        when(supportOwnership.defaultQueryScope(null,null)).thenReturn(new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(1L, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.ALL,null,null));
         ApiResult<PageResult<UserAccountView>> result = service.supportProfilePage(
                 UserQueryRequest.basic("+86 138-0013-8000", null, null, 1, 8, null));
 
@@ -326,6 +332,82 @@ class OpsUserServiceTest {
                 .extracting(UserAccountView::userNo)
                 .contains("U00008807");
         assertThat(userRepository.lastProfileRequest.keyword()).isEqualTo("Marcus");
+    }
+
+    @Test
+    void profileKeepsProjectionGrammarFailuresInsideItsTransactionBoundary() {
+        var scope = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(7L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.PERSONAL, null, null);
+        when(supportOwnership.customerQueryScope(1L)).thenReturn(scope);
+        for (boolean scoped : List.of(false, true)) {
+            var repository = mock(UserOpsRepository.class);
+            var failure = new org.springframework.jdbc.BadSqlGrammarException("projection", "private SQL",
+                    new java.sql.SQLException("table unavailable", "42S02", 1146));
+            when(supportOwnership.currentSupportReader()).thenReturn(scoped);
+            if (scoped) when(repository.findById(1L, scope)).thenThrow(failure);
+            else when(repository.findById(1L)).thenThrow(failure);
+
+            var result = serviceWith(repository).profile(1L);
+
+            assertThat(result.getCode()).isEqualTo(503);
+            assertThat(result.getMessage()).isEqualTo("USER_PROFILE_UNAVAILABLE");
+            assertThat(result.getData()).isNull();
+            if (scoped) {
+                verify(repository).findById(1L, scope);
+                verify(repository, org.mockito.Mockito.never()).findById(anyLong());
+            } else verify(repository).findById(1L);
+        }
+    }
+
+    @Test
+    void profileDoesNotConvertLockConnectionOrTransactionFailuresIntoPartialData() {
+        var scope = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(7L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.PERSONAL, null, null);
+        when(supportOwnership.currentSupportReader()).thenReturn(true);
+        when(supportOwnership.customerQueryScope(1L)).thenReturn(scope);
+        for (RuntimeException failure : List.of(
+                new org.springframework.dao.CannotAcquireLockException("lock unavailable"),
+                new org.springframework.dao.DeadlockLoserDataAccessException("deadlock", new java.sql.SQLException()),
+                new org.springframework.dao.DataAccessResourceFailureException("connection unavailable"),
+                new org.springframework.transaction.UnexpectedRollbackException("transaction failed"))) {
+            var repository = mock(UserOpsRepository.class);
+            when(repository.findById(1L, scope)).thenThrow(failure);
+            assertThatThrownBy(() -> serviceWith(repository).profile(1L)).isSameAs(failure);
+            verify(repository, org.mockito.Mockito.never()).findById(anyLong());
+        }
+    }
+
+    @Test
+    void profileNeverCatchesAuthorizationQueryFailuresOrFallsBackToUnscopedReads() {
+        var repository = mock(UserOpsRepository.class);
+        var failure = new org.springframework.jdbc.BadSqlGrammarException("authorization", "private SQL",
+                new java.sql.SQLException("authorization unavailable", "42S02", 1146));
+        when(supportOwnership.currentSupportReader()).thenReturn(true);
+        when(supportOwnership.customerQueryScope(1L)).thenThrow(failure);
+        assertThatThrownBy(() -> serviceWith(repository).profile(1L)).isSameAs(failure);
+        verifyNoInteractions(repository);
+    }
+
+    @Test
+    void supportCachedExportRechecksManagedScopeAndRejectsLegacyReceipts() {
+        var scope=new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(7L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED,10L,null);
+        when(supportOwnership.currentSupportReader()).thenReturn(true);
+        when(supportOwnership.defaultQueryScope(null,null)).thenReturn(scope);
+        userRepository.currentSupportScopes.put(scope,java.util.Set.of(1L));
+        var request=UserProfileExportRequest.basic(null,null,null,"verified masked support export",null);
+        var cached=new UserProfileExportFile("cached.csv",new byte[0],1,List.of(1L));
+        when(idempotencyService.execute(eq("C1_USER_LIST_EXPORT:7"),anyString(),anyString(),eq(UserProfileExportFile.class),any())).thenReturn(cached);
+        assertThat(service.exportProfileExcel("support-replay",request)).isSameAs(cached);
+        userRepository.currentSupportScopes.put(scope,java.util.Set.of());
+        assertThatThrownBy(()->service.exportProfileExcel("support-replay",request)).hasMessage("SUPPORT_EXPORT_SCOPE_CHANGED");
+        var legacy=new UserProfileExportFile("legacy.csv",new byte[0],0);
+        when(idempotencyService.execute(eq("C1_USER_LIST_EXPORT:7"),anyString(),anyString(),eq(UserProfileExportFile.class),any())).thenReturn(legacy);
+        assertThatThrownBy(()->service.exportProfileExcel("support-legacy",request)).hasMessage("SUPPORT_EXPORT_SCOPE_CHANGED");
+        var empty=new UserProfileExportFile("empty.csv",new byte[0],0,List.of());
+        when(idempotencyService.execute(eq("C1_USER_LIST_EXPORT:7"),anyString(),anyString(),eq(UserProfileExportFile.class),any())).thenReturn(empty);
+        assertThat(service.exportProfileExcel("support-empty",request)).isSameAs(empty);
+        org.mockito.Mockito.verify(supportOwnership,org.mockito.Mockito.never()).customerQueryScope(any());
     }
 
     @Test
@@ -1938,6 +2020,7 @@ class OpsUserServiceTest {
     }
 
     private static final class FakeUserOpsRepository implements UserOpsRepository {
+        private final Map<ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope,java.util.Set<Long>> currentSupportScopes=new LinkedHashMap<>();
         private UserAccountView user = new UserAccountView(
                 1L,
                 "U00000001",
@@ -2010,6 +2093,11 @@ class OpsUserServiceTest {
         }
 
         @Override
+        public Map<String,Object> supportOverview(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+            return Map.of("totalUsers",(long)currentSupportScopes.getOrDefault(scope,java.util.Set.of()).size());
+        }
+
+        @Override
         public long countRegistrationOtpToday() {
             return registrationOtpToday;
         }
@@ -2067,6 +2155,26 @@ class OpsUserServiceTest {
             supportProfileSearch = true;
             return pageProfiles(request);
         }
+
+        @Override
+        public PageResult<UserAccountView> pageSupportProfiles(UserQueryRequest request, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+            // This fixture explicitly represents the authenticated root administrator in the phone-search test.
+            if (scope.actorId()!=1L || scope.mode()!=ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.ALL)
+                throw new IllegalArgumentException("TEST_SCOPE_NOT_DECLARED");
+            return pageSupportProfiles(request);
+        }
+
+        @Override
+        public Optional<UserAccountView> findById(Long userId, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+            throw new IllegalArgumentException("TEST_SCOPE_NOT_DECLARED");
+        }
+
+        @Override
+        public long countReadableSupportCustomers(List<Long> customerIds, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+            return customerIds.stream().filter(currentSupportScopes.getOrDefault(scope,java.util.Set.of())::contains).count();
+        }
+
+
 
         public Optional<UserAccountView> findById(Long userId) {
             return allUsers().stream()

@@ -54,7 +54,18 @@ class OpsUser360ServiceTest {
     private final AdminOperatorRoleResolver roleResolver = mock(AdminOperatorRoleResolver.class);
     private final EventOutboxService outboxService = mock(EventOutboxService.class);
     private final ffdd.opsconsole.finance.application.FinanceSupportReadService financeRead = mock(ffdd.opsconsole.finance.application.FinanceSupportReadService.class);
+    private final ffdd.opsconsole.content.application.SupportOwnershipService supportOwnership = mock(ffdd.opsconsole.content.application.SupportOwnershipService.class);
     private final OpsUser360Service service = service();
+
+    @Test
+    void currentSupportScopeRejectsDirect360BeforeAnyBusinessProjection() {
+        when(roleResolver.resolveCode()).thenReturn("SUPER_ADMIN"); // A stale role label must not widen the current scope.
+        when(supportOwnership.currentSupportReader()).thenReturn(true);
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND"))
+                .when(supportOwnership).requireRead(52L);
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->service.detail(52L)).hasMessage("SUPPORT_CUSTOMER_NOT_FOUND");
+        org.mockito.Mockito.verifyNoInteractions(userService,financeService,treasuryService,deviceService,riskService);
+    }
 
     private OpsUser360Service service() {
         return new OpsUser360Service(
@@ -66,7 +77,7 @@ class OpsUser360ServiceTest {
                 auditLogService,
                 userRepository,
                 roleResolver,
-                outboxService, financeRead);
+                outboxService, financeRead, supportOwnership);
     }
 
     @BeforeEach
