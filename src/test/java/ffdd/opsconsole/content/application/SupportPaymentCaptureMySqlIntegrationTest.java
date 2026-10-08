@@ -79,6 +79,7 @@ import org.mybatis.spring.transaction.SpringManagedTransactionFactory;
 import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.datasource.ConnectionHolder;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -137,6 +138,7 @@ class SupportPaymentCaptureMySqlIntegrationTest {
     private E4OrderRefundMapper refundMapper;
     private SupportPaymentFactService history;
     private SupportPaymentCaptureHistoryMapper historyMapper;
+    private SupportPaymentHistoryBirthMapper birthMapper;
     private SupportInvitationReadFacade invitations;
     private SupportDeviceReadFacade devices;
     private SupportAnalyticsService statistics;
@@ -192,10 +194,11 @@ class SupportPaymentCaptureMySqlIntegrationTest {
         refundMapper=template.getMapper(E4OrderRefundMapper.class);
         history=proxy(new SupportPaymentFactService(template.getMapper(SupportPaymentFactMapper.class)));
         historyMapper=template.getMapper(SupportPaymentCaptureHistoryMapper.class);
+        birthMapper=template.getMapper(SupportPaymentHistoryBirthMapper.class);
         finance=historyReader(historyMapper);
         capture=proxy(new SupportPaymentAttributionService(template.getMapper(SupportPaymentAttributionMapper.class),
             finance,audit,dataSource,json));
-        birth=proxy(new SupportPaymentHistoryBirthService(template.getMapper(SupportPaymentHistoryBirthMapper.class),dataSource));
+        birth=proxy(new SupportPaymentHistoryBirthService(birthMapper,dataSource));
         invitations=proxy(new SupportInvitationReadService(template.getMapper(SupportInvitationReadMapper.class)));
         devices=new SupportDeviceReadService(template.getMapper(SupportDeviceReadMapper.class));
         var ownership=proxy(new SupportOwnershipService(template.getMapper(SupportBindingMapper.class),
@@ -339,6 +342,159 @@ class SupportPaymentCaptureMySqlIntegrationTest {
             assertThat(statsCurrency(all,"USDT").deposits().observedAmount()).isEqualByComparingTo("10");
             assertThat(statsCurrency(all,"USDT").purchases().observedAmount()).isEqualByComparingTo("10");
             assertStatsUncertified(period);assertStatsUncertified(all);
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"PURCHASE_FIRST","DEPOSIT_FIRST"})
+    void registeredFirstIsConfirmedOnceWithSeparateSourceAmountsAndNoRefundCertification(String firstKind) {
+        rollbackFixtures(accounts -> {
+            Object resource=readerRrResource();
+            long agent=statsActor("SERVICE"), customer=newAccount(accounts,0);
+            birth.registerNewAccount(customer);statsBind(customer,agent,false);
+            readerDevice(customer,"OWNED","ACTIVE","GIFT",null,"BOX");
+            pending(Source.TRIAL_CONVERT,customer);
+            Query query=statsQuery(ReadMode.PERSONAL,null,Basis.CURRENT_CUSTOMER_HISTORY,"USDT");
+            Result empty=statsAs(agent,query);
+            assertThat(empty.currentCustomers()).singleElement().satisfies(c -> {
+                assertThat(c.first().state()).isEqualTo(SupportAnalyticsStats.FirstState.NONE);
+                assertThat(c.first().observedCandidate()).isNull();
+            });
+            assertThat(empty.financialSummary().firstCandidates().confirmedValue()).isZero();
+
+            Source first=firstKind.equals("PURCHASE_FIRST")?Source.WALLET_ORDER:Source.HDPAY;
+            Fixture firstPayment=pending(first,customer);Prepared fp=prepare(firstPayment);
+            settle(firstPayment,fp,true);capture.record(fp);
+            Fixture later=pending(first==Source.WALLET_ORDER?Source.HDPAY:Source.WALLET_ORDER,customer);
+            Prepared lp=prepare(later);settle(later,lp,true);capture.record(lp);
+            Map<String,String> original=evidence(firstPayment);
+            capture.record(prepare(firstPayment));
+            assertThat(evidence(firstPayment)).isEqualTo(original);
+
+            for(int read=0;read<2;read++) {
+                Snapshot facts=finance.readHistory(List.of(customer));
+                assertThat(facts.firstHistory()).singleElement().satisfies(h -> {
+                    assertThat(h.customerId()).isEqualTo(customer);assertThat(h.status()).isEqualTo(Status.READY);
+                });
+                Result result=statsAs(agent,query);
+                assertThat(result.currentCustomers()).singleElement().satisfies(c -> {
+                    assertThat(c.first().state()).isEqualTo(SupportAnalyticsStats.FirstState.CONFIRMED);
+                    assertThat(c.first().status()).isEqualTo(SupportAnalyticsStats.Status.AVAILABLE);
+                    assertThat(c.first().observedCandidate().kind()).isEqualTo(firstKind.equals("PURCHASE_FIRST")?"DEVICE_PURCHASE":"DEPOSIT");
+                });
+                assertThat(result.financialSummary().firstCandidates().confirmedValue()).isEqualTo(1L);
+                assertThat(result.financialSummary().firstSources()).singleElement().satisfies(s -> {
+                    assertThat(s.currency()).isEqualTo("USDT");
+                    var selected=first==Source.WALLET_ORDER?s.purchases():s.deposits();
+                    var other=first==Source.WALLET_ORDER?s.deposits():s.purchases();
+                    assertThat(selected.confirmedAmount()).isEqualByComparingTo("10");
+                    assertThat(selected.confirmedEvents()).isEqualTo(1L);
+                    assertThat(other.confirmedAmount()).isEqualByComparingTo("0");
+                    assertThat(other.confirmedEvents()).isZero();
+                });
+                assertThat(statsCurrency(result,"USDT").deposits().observedAmount()).isEqualByComparingTo("10");
+                assertThat(statsCurrency(result,"USDT").purchases().observedAmount()).isEqualByComparingTo("10");
+                assertThat(statsCurrency(result,"USDT").net().confirmedAmount()).isNull();
+                assertThat(statsCurrency(result,"USDT").net().status()).isEqualTo(SupportAnalyticsStats.Status.UNKNOWN);
+            }
+            assertThat(physicalResource()).isSameAs(resource);
+        });
+    }
+
+    @Test
+    void registeredHistoryDistinguishesNoPaymentLegacyMissingCaptureAndCorruptCustomerWithoutPoisoningKnownPeer() {
+        rollbackFixtures(accounts -> {
+            long agent=statsActor("SERVICE");
+            long bad=newAccount(accounts,0), known=newAccount(accounts,0), legacy=newAccount(accounts,0);
+            long none=newAccount(accounts,0), missing=newAccount(accounts,0);
+            for(long customer:List.of(bad,known,none,missing))birth.registerNewAccount(customer);
+            for(long customer:List.of(bad,known,legacy,none,missing))statsBind(customer,agent,false);
+            Fixture a=pending(Source.WALLET_ORDER,bad);Prepared ap=prepare(a);settle(a,ap,true);capture.record(ap);
+            Fixture b=pending(Source.WALLET_ORDER,known);Prepared bp=prepare(b);settle(b,bp,true);capture.record(bp);
+            Fixture old=pending(Source.HDPAY,legacy);Prepared op=prepare(old);settle(old,op,true);capture.record(op);
+            Fixture gap=pending(Source.HDPAY,missing);Prepared gp=prepare(gap);settle(gap,gp,true);
+            Map<String,String> savedB=evidence(b);
+            assertThat(jdbc.update("UPDATE nx_support_payment_attribution SET source_fact_json=? WHERE fact_id=? AND customer_id=?",
+                savedB.get("source_fact_json"),a.factId(),bad)).isEqualTo(1);
+            Snapshot facts=finance.readHistory(List.of(bad,known,legacy,none,missing));
+            assertThat(facts.firstHistory()).hasSize(5);
+            Map<Long,Status> statuses=new LinkedHashMap<>();
+            for(var h:facts.firstHistory())assertThat(statuses.put(h.customerId(),h.status())).isNull();
+            assertThat(statuses).containsEntry(known,Status.READY).containsEntry(none,Status.READY)
+                .containsEntry(bad,Status.UNKNOWN).containsEntry(legacy,Status.UNKNOWN).containsEntry(missing,Status.UNKNOWN);
+            Result result=statsAs(agent,statsQuery(ReadMode.PERSONAL,null,Basis.CURRENT_CUSTOMER_HISTORY,"USDT"));
+            assertThat(result.currentCustomers()).hasSize(5).allSatisfy(c -> {
+                var expected=c.customerId()==known?SupportAnalyticsStats.FirstState.CONFIRMED
+                    :c.customerId()==none?SupportAnalyticsStats.FirstState.NONE:SupportAnalyticsStats.FirstState.UNKNOWN;
+                assertThat(c.first().state()).isEqualTo(expected);
+            });
+            assertThat(result.financialSummary().firstCandidates().confirmedValue()).isEqualTo(1L);
+            assertThat(result.financialSummary().firstCandidates().status()).isEqualTo(SupportAnalyticsStats.Status.PARTIAL);
+            assertThat(evidence(b)).isEqualTo(savedB);
+        });
+    }
+
+    @Test
+    void supportedWholeOrderRefundDoesNotEraseTheNewCustomersPurchaseFirstOrCertifyMissingDepositRefunds() {
+        rollbackFixtures(accounts -> {
+            long agent=statsActor("SERVICE"), customer=newAccount(accounts,0);
+            birth.registerNewAccount(customer);statsBind(customer,agent,false);
+            Fixture refund=pending(Source.ORDER_REFUND,customer);
+            Prepared rp=prepare(refund);settle(refund,rp,true);capture.record(rp);
+            Query query=statsQuery(ReadMode.PERSONAL,null,Basis.CURRENT_CUSTOMER_HISTORY,"USDT");
+            for(int read=0;read<2;read++) {
+                Result result=statsAs(agent,query);
+                assertThat(result.currentCustomers()).singleElement().satisfies(c -> {
+                    assertThat(c.first().state()).isEqualTo(SupportAnalyticsStats.FirstState.CONFIRMED);
+                    assertThat(c.first().observedCandidate().kind()).isEqualTo("DEVICE_PURCHASE");
+                });
+                assertThat(result.financialSummary().firstCandidates().confirmedValue()).isEqualTo(1L);
+                assertThat(result.financialSummary().firstSources()).singleElement().satisfies(s -> {
+                    assertThat(s.purchases().confirmedEvents()).isEqualTo(1L);
+                    assertThat(s.purchases().confirmedAmount()).isEqualByComparingTo("10");
+                });
+                assertThat(statsCurrency(result,"USDT").purchaseRefunds().observedAmount()).isEqualByComparingTo("10");
+                assertThat(statsCurrency(result,"USDT").purchases().observedAmount()).isEqualByComparingTo("10");
+                assertThat(statsCurrency(result,"USDT").net().confirmedAmount()).isNull();
+            }
+        });
+    }
+
+    @Test
+    void contradictoryCardSettlementCannotReuseKnownAttributionForPeriodMoneyAndDoesNotRejectAnotherCustomer() {
+        rollbackFixtures(accounts -> {
+            long owner=statsActor("SUPERVISOR"), agent=statsActor("SERVICE"), group=statsGroup(owner);
+            statsMember(agent,group);
+            long bad=newAccount(accounts,0), known=newAccount(accounts,0);
+            birth.registerNewAccount(bad);birth.registerNewAccount(known);
+            statsBind(bad,agent,false);statsBind(known,agent,false);
+            Fixture card=pending(Source.CARD_TOPUP,bad);Prepared cp=prepare(card);settle(card,cp,false);capture.record(cp);
+            Fixture purchase=pending(Source.WALLET_ORDER,known);Prepared pp=prepare(purchase);settle(purchase,pp,true);capture.record(pp);
+            Map<String,String> savedCard=evidence(card), savedPurchase=evidence(purchase);
+            assertThat(savedCard.get("agent_status")).isEqualTo("KNOWN");
+            assertThat(savedCard.get("group_status")).isEqualTo("KNOWN");
+            assertThat(jdbc.update("UPDATE nx_topup_card_settlement SET amount_usdt=9 WHERE settlement_event_id=? AND payment_no=? AND user_id=?",
+                card.name,card.key,bad)).isEqualTo(1);
+            Snapshot facts=finance.readHistory(List.of(bad,known));
+            assertThat(facts.issues()).anyMatch(i -> i.source()==Source.CARD_TOPUP && i.reason().equals("SETTLEMENT_MISMATCH")
+                && Long.valueOf(bad).equals(i.customerId()) && card.factId().equals(i.sourceId()));
+            assertThat(facts.facts()).extracting(Fact::factId).doesNotContain(card.factId()).contains(purchase.factId());
+            assertThat(facts.firstHistory()).filteredOn(h -> h.customerId()==bad).singleElement()
+                .satisfies(h -> assertThat(h.status()).isEqualTo(Status.UNKNOWN));
+            assertThat(facts.firstHistory()).filteredOn(h -> h.customerId()==known).singleElement()
+                .satisfies(h -> assertThat(h.status()).isEqualTo(Status.READY));
+            for(Result result:List.of(statsAs(agent,statsPeriod(ReadMode.PERSONAL,null)),
+                    statsAs(owner,statsPeriod(ReadMode.MANAGED,group)))) {
+                assertThat(statsCurrency(result,"USDT").deposits().observedAmount()).isNull();
+                assertThat(statsCurrency(result,"USDT").deposits().status()).isEqualTo(SupportAnalyticsStats.Status.UNKNOWN);
+                assertThat(result.financialSummary().reasons()).contains("PERIOD_EVENT_COVERAGE_UNVERIFIED");
+                assertThat(statsCurrency(result,"USDT").purchases().observedAmount()).isEqualByComparingTo("10");
+                assertThat(result.financialSummary().firstCandidates().confirmedValue()).isEqualTo(1L);
+                assertThat(result.currentCustomers()).filteredOn(c -> c.customerId()==bad).singleElement()
+                    .satisfies(c -> assertThat(c.first().state()).isEqualTo(SupportAnalyticsStats.FirstState.UNKNOWN));
+            }
+            assertThat(evidence(card)).isEqualTo(savedCard);
+            assertThat(evidence(purchase)).isEqualTo(savedPurchase);
         });
     }
 
@@ -1375,6 +1531,16 @@ class SupportPaymentCaptureMySqlIntegrationTest {
             assertThat(persisted.get("capture_mode")).isEqualTo("NEW_SUCCESS");
             assertThat(originalBirth.get("environment_status")).isEqualTo("PRODUCTION");
             assertThat(originalBirth.get("sandbox_at_birth")).isEqualTo("0");
+            for(int read=0;read<2;read++) {
+                Snapshot persistedHistory=transaction.execute(status -> finance.readHistory(List.of(f.customer)));
+                assertThat(persistedHistory.firstHistory()).singleElement().satisfies(h -> {
+                    assertThat(h.customerId()).isEqualTo(f.customer);assertThat(h.status()).isEqualTo(Status.READY);
+                });
+                assertThat(persistedHistory.facts()).singleElement().satisfies(payment -> {
+                    assertThat(payment.factId()).isEqualTo(f.factId());
+                    assertThat(payment.amount()).isEqualByComparingTo("10");
+                });
+            }
             transaction.executeWithoutResult(status -> {
                 capture.record(prepare(f));
                 jdbc.update("UPDATE nx_user SET sandbox=1 WHERE id=?",f.customer);
@@ -1566,7 +1732,7 @@ class SupportPaymentCaptureMySqlIntegrationTest {
     }
 
     private FinanceSupportPaymentFactsFacade historyReader(SupportPaymentCaptureHistoryMapper mapper) {
-        SupportPaymentCaptureHistoryFacade reader=proxy(new SupportPaymentCaptureHistoryService(mapper));
+        SupportPaymentCaptureHistoryFacade reader=proxy(new SupportPaymentCaptureHistoryService(mapper,birthMapper));
         return proxy(new SupportPaymentSourceService(sourceMapper,history,dataSource,json,reader));
     }
 
@@ -1618,9 +1784,18 @@ class SupportPaymentCaptureMySqlIntegrationTest {
 
     private Map<String,Long> outsideCounts() {
         assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
-        Map<String,Long> result=new LinkedHashMap<>();
-        for(String table:TABLES) result.put(table,outside.queryForObject("SELECT COUNT(*) FROM "+table,Long.class));
-        return result;
+        // One fresh connection per complete snapshot avoids exhausting Windows client sockets.
+        return outside.execute((ConnectionCallback<Map<String,Long>>) connection -> {
+            Map<String,Long> result=new LinkedHashMap<>();
+            try(var statement=connection.createStatement()) {
+                for(String table:TABLES) try(var rows=statement.executeQuery("SELECT COUNT(*) FROM "+table)) {
+                    assertThat(rows.next()).isTrue();
+                    result.put(table,rows.getLong(1));
+                    assertThat(rows.next()).isFalse();
+                }
+            }
+            return result;
+        });
     }
 
     private void assertRollbackReadback(Map<String,Long> before,List<Long> accounts) {

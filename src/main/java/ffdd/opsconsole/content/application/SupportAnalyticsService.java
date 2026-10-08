@@ -85,10 +85,19 @@ public class SupportAnalyticsService {
         if(!ids.isEmpty() && snapshot==null)throw invalid("SUPPORT_ANALYTICS_FINANCIAL_RESPONSE_MISSING");
         var facts=new TreeMap<String,Fact>();
         var first=new TreeMap<Long,Fact>();
+        var firstHistory=new TreeMap<Long,SupportPaymentFacts.FirstHistory>();
         ZoneId sourceZone=null;
         if(snapshot!=null) {
             try { sourceZone=ZoneId.of(snapshot.businessZone()); }
             catch(RuntimeException ex) { throw invalid("SUPPORT_ANALYTICS_FINANCIAL_INVALID"); }
+            for(var history:snapshot.firstHistory()) {
+                if(history==null || !ids.contains(history.customerId()) || history.status()==null
+                        || history.reasons().stream().anyMatch(r -> r==null || r.isBlank())
+                        || history.status()==SupportPaymentFacts.Status.READY && !history.reasons().isEmpty()
+                        || history.status()==SupportPaymentFacts.Status.UNKNOWN && history.reasons().isEmpty()
+                        || firstHistory.putIfAbsent(history.customerId(),history)!=null)
+                    throw invalid("SUPPORT_ANALYTICS_FIRST_HISTORY_INVALID");
+            }
             for(Fact fact:snapshot.facts()) {
                 if(fact==null || !ids.contains(fact.customerId()))throw invalid("SUPPORT_ANALYTICS_FINANCIAL_SCOPE_INVALID");
                 if(SupportPaymentFacts.validateCanonical(fact,snapshot.businessZone())!=null)throw invalid("SUPPORT_ANALYTICS_FINANCIAL_INVALID");
@@ -130,12 +139,16 @@ public class SupportAnalyticsService {
                 candidate.succeededAt().atZone(sourceZone).withZoneSameInstant(ZoneId.of(query.businessZone())).toLocalDateTime(),
                 candidate.fractionalSecondDigits(),candidate.amount(),candidate.currency(),
                 attribution.getOrDefault(candidate.factId(),unknownAttribution()));
-            customers.add(customer(row,new FirstSelection(observed,Status.UNKNOWN,
-                List.of(candidate==null?"HISTORY_UNVERIFIED":"COMPLETE_HISTORY_NOT_PROVEN"))));
+            var history=firstHistory.get(row.customerId());
+            boolean ready=firstReady(firstHistory,row.customerId());
+            customers.add(customer(row,new FirstSelection(observed,ready?Status.AVAILABLE:Status.UNKNOWN,
+                ready?List.of():history==null?List.of(candidate==null?"HISTORY_UNVERIFIED":"COMPLETE_HISTORY_NOT_PROVEN"):history.reasons(),
+                ready?candidate==null?FirstState.NONE:FirstState.CONFIRMED:FirstState.UNKNOWN)));
         }
         var selected=new ArrayList<Fact>();
         var selectedFirst=new ArrayList<Fact>();
-        boolean periodGap=eventFailed || attributionFailed;
+        var confirmedSelectedFirst=new ArrayList<Fact>();
+        boolean periodGap=eventFailed || query.basis()==Basis.PERIOD_EVENT && !global(scope) && attributionFailed;
         if(query.basis()==Basis.PERIOD_EVENT && !global(scope))
             for(var entry:eventIds.entrySet()) {
                 Fact fact=facts.get(entry.getKey());
@@ -147,7 +160,10 @@ public class SupportAnalyticsService {
                     :authorizedEvent(fact,scope,eventIds,validAttribution);
             if(!eligible || !matches(query,fact,sourceZone))continue;
             selected.add(fact);
-            if(first.get(fact.customerId())==fact)selectedFirst.add(fact);
+            if(first.get(fact.customerId())==fact) {
+                selectedFirst.add(fact);
+                if(firstReady(firstHistory,fact.customerId()))confirmedSelectedFirst.add(fact);
+            }
         }
         if(periodGap)reasons.add("PERIOD_EVENT_COVERAGE_UNVERIFIED");
         boolean unavailable=(query.basis()==Basis.CURRENT_CUSTOMER_HISTORY?currentFailed:eventFailed) && selected.isEmpty();
@@ -163,13 +179,28 @@ public class SupportAnalyticsService {
             new Money(null,null,null,null,null,Status.UNKNOWN,List.of("COMPLETE_NET_NOT_PROVEN"))));
         long restrictedCustomers=selected.stream().map(Fact::customerId).filter(id -> !current.containsKey(id)).distinct().count();
         long restrictedFirst=selectedFirst.stream().filter(f -> !current.containsKey(f.customerId())).count();
+        long restrictedConfirmedFirst=confirmedSelectedFirst.stream().filter(f -> !current.containsKey(f.customerId())).count();
+        boolean historyGap=ids.stream().anyMatch(id -> !firstReady(firstHistory,id));
+        boolean hasConfirmedHistory=ids.stream().anyMatch(id -> firstReady(firstHistory,id));
+        boolean firstFailed=!hasConfirmedHistory && (unavailable || selectedFirst.isEmpty() && snapshot!=null && snapshot.issues().stream().anyMatch(i ->
+            "SOURCE_READ_FAILED".equals(i.reason()) && i.source()!=SupportPaymentFacts.Source.ORDER_REFUND
+                && i.source()!=SupportPaymentFacts.Source.FREE_TRIAL));
+        Status firstStatus=firstFailed?Status.FAILED:snapshot==null?Status.UNKNOWN:
+            periodGap || currentFailed || historyGap?(hasConfirmedHistory?Status.PARTIAL:Status.UNKNOWN):Status.AVAILABLE;
+        var firstTotals=new ArrayList<FirstCurrencyTotals>();
+        for(String currency:currencies)firstTotals.add(new FirstCurrencyTotals(currency,
+            firstMoney(selectedFirst,confirmedSelectedFirst,Kind.DEPOSIT,currency,firstStatus,hasConfirmedHistory),
+            firstMoney(selectedFirst,confirmedSelectedFirst,Kind.DEVICE_PURCHASE,currency,firstStatus,hasConfirmedHistory)));
         var coverage=new ArrayList<SourceCoverage>();
         if(snapshot!=null)for(var c:snapshot.coverage())coverage.add(new SourceCoverage(c.source().name(),c.observedStatus().name(),
             c.historyStatus().name(),c.refundStatus().name(),c.historicalEnvironmentStatus().name(),c.supportedFrom(),c.adapterVersion()));
-        reasons.add("COMPLETE_HISTORY_NOT_PROVEN");
-        var summary=new FinancialSummary(financialStatus,totals,new Count((long)selectedFirst.size(),null,Status.UNKNOWN),
-            partitions(selected,attribution),List.copyOf(reasons));
-        return new Result(query,currentScope,customers,summary,restricted(restrictedCustomers,restrictedFirst,financialStatus),
+        if(historyGap || snapshot==null)reasons.add("COMPLETE_HISTORY_NOT_PROVEN");
+        var summary=new FinancialSummary(financialStatus,totals,
+            new Count(firstFailed?null:(long)selectedFirst.size(),firstFailed || !hasConfirmedHistory?null:(long)confirmedSelectedFirst.size(),firstStatus),
+            partitions(selected,attribution),List.copyOf(reasons),firstTotals);
+        var restricted=new RestrictedSummary(new Count(financialStatus==Status.FAILED?null:restrictedCustomers,null,financialStatus),
+            new Count(firstFailed?null:restrictedFirst,firstFailed || !hasConfirmedHistory?null:restrictedConfirmedFirst,firstStatus));
+        return new Result(query,currentScope,customers,summary,restricted,
             coverage,snapshot==null?Instant.now():snapshot.evaluatedAt(),List.copyOf(reasons));
     }
 
@@ -224,12 +255,10 @@ public class SupportAnalyticsService {
     private static boolean proofRejected(Snapshot snapshot,Fact fact) {
         // Capture readers identify a canonical fact; legacy reconciliation identifies an original
         // source row. A null ID reports a failure of this source for the whole requested scope.
-        return snapshot.issues().stream().anyMatch(i -> i.source()==fact.source()
+        return snapshot.issues().stream().anyMatch(i -> (i.source()==null || i.source()==fact.source())
+            && (i.customerId()==null || i.customerId()==fact.customerId())
             && (i.sourceId()==null || Objects.equals(i.sourceId(),fact.factId()) || fact.sourceIds().contains(i.sourceId()))
-            && Set.of("INVALID_PERSISTED_SOURCE_PROOF","CAPTURED_SOURCE_PROOF_MISMATCH",
-                "CONFLICTING_CAPTURED_SOURCE_PROJECTION","SOURCE_READ_FAILED","MISSING_SETTLEMENT_LEDGER",
-                "MISSING_AUTHORITATIVE_SOURCE","MISSING_INTENT_IDENTITY","MISSING_CARD_SETTLEMENT",
-                "MISSING_SOURCE_CONFIRMATION_TIME").contains(Objects.toString(i.reason(),"")));
+            && SupportPaymentFacts.rejectsAttributionProof(i.reason()));
     }
     private static boolean sameFinancial(Fact a,Fact b) {
         return a.customerId()==b.customerId() && a.kind()==b.kind() && a.source()==b.source() && a.ledgerId()==b.ledgerId()
@@ -247,6 +276,20 @@ public class SupportAnalyticsService {
         BigDecimal amount=rows.stream().map(Fact::amount).reduce(BigDecimal.ZERO,BigDecimal::add);
         return new Money(amount,null,(long)rows.size(),null,rows.stream().map(Fact::customerId).distinct().count(),Status.PARTIAL,
             List.of("COMPLETE_HISTORY_NOT_PROVEN","COMPLETE_REFUNDS_NOT_PROVEN","HISTORICAL_ENVIRONMENT_UNVERIFIED"));
+    }
+    private static boolean firstReady(Map<Long,SupportPaymentFacts.FirstHistory> histories,long customer) {
+        var history=histories.get(customer);
+        return history!=null && history.status()==SupportPaymentFacts.Status.READY;
+    }
+    private static Money firstMoney(List<Fact> observed,List<Fact> confirmed,Kind kind,String currency,Status status,boolean hasConfirmedHistory) {
+        if(status==Status.FAILED)return new Money(null,null,null,null,null,status,List.of("SOURCE_READ_FAILED"));
+        var rows=observed.stream().filter(f -> f.kind()==kind && currency.equals(f.currency())).toList();
+        var proved=confirmed.stream().filter(f -> f.kind()==kind && currency.equals(f.currency())).toList();
+        return new Money(rows.stream().map(Fact::amount).reduce(BigDecimal.ZERO,BigDecimal::add),
+            hasConfirmedHistory?proved.stream().map(Fact::amount).reduce(BigDecimal.ZERO,BigDecimal::add):null,
+            (long)rows.size(),hasConfirmedHistory?(long)proved.size():null,
+            rows.stream().map(Fact::customerId).distinct().count(),status,
+            status==Status.AVAILABLE?List.of():List.of("FIRST_HISTORY_OR_SCOPE_UNVERIFIED"));
     }
     private static Kind family(SupportPaymentFacts.Source source) {
         if(source==null)return null;

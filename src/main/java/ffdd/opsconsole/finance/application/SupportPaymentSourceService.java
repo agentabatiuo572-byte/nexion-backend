@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.facade.SupportPaymentCaptureHistoryFacade;
 import ffdd.opsconsole.content.facade.SupportPaymentCaptureHistoryFacade.Envelope;
+import ffdd.opsconsole.content.facade.SupportPaymentCaptureHistoryFacade.BirthEvidence;
 import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts;
 import ffdd.opsconsole.finance.mapper.SupportPaymentSourceMapper;
@@ -14,6 +15,7 @@ import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -46,6 +48,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
             throw new IllegalArgumentException("Explicit positive customer scope required");
         requireHistorySnapshot();
         var ids=List.copyOf(new TreeSet<>(customers));
+        var registration=registrationBoundary(ids);
         var candidates=new ArrayList<VerifiedCandidate>();
         var issues=new ArrayList<Issue>();
         var conflicts=new HashSet<String>();
@@ -53,11 +56,11 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
         try { envelopes=capturedHistory.readNewFinancialProofs(ids); }
         catch(DataAccessException ex) {
             historyReadFailure(issues);
-            return history.readWithCapturedHistory(ids,new CapturedFinancialHistory(candidates,issues,conflicts));
+            return history.readWithCapturedHistory(ids,new CapturedFinancialHistory(candidates,issues,conflicts,registration.problems()));
         } catch(IllegalStateException ex) {
             if(!Set.of("INVALID_CAPTURE_HISTORY_SCHEMA","INVALID_CAPTURE_HISTORY_ROW").contains(Objects.toString(ex.getMessage(),"")))throw ex;
             for(Source source:historySources())issues.add(new Issue(source,null,"INVALID_PERSISTED_SOURCE_PROOF"));
-            return history.readWithCapturedHistory(ids,new CapturedFinancialHistory(candidates,issues,conflicts));
+            return history.readWithCapturedHistory(ids,new CapturedFinancialHistory(candidates,issues,conflicts,registration.problems()));
         }
         // A returned out-of-scope actor remains a hard boundary failure, never partial financial data.
         for(var envelope:envelopes)
@@ -70,9 +73,9 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
                 if(!matchesIdentity(envelope,fact) || envelope.captureDbUtc()==null
                     || !SupportPaymentCapturedSourceProof.matchesExpected(fact,envelope.sourcePartition(),proof(envelope),json)
                     || !validBeforeTypes(envelope.beforeSourceJson())) {
-                    Source source=historySource(envelope.identity().source());
-                    if(source==null)throw failure("INVALID_PERSISTED_SOURCE_PROOF");
-                    issues.add(new Issue(source,envelope.identity().factId(),"CAPTURED_SOURCE_PROOF_MISMATCH"));continue;
+                    Source source=historyIssueSource(envelope);
+                    if(source==Source.ORDER_REFUND && fact.kind()!=Kind.DEVICE_PURCHASE_REFUND)source=null;
+                    issues.add(new Issue(source,envelope.identity().factId(),"CAPTURED_SOURCE_PROOF_MISMATCH",envelope.identity().customerId()));continue;
                 }
                 validateKey(fact.customerId(),fact.source(),fact.sourceBusinessId());
                 if(fact.sourceBusinessId().startsWith("USER:") || !validHistoryPartition(fact.source(),envelope.sourcePartition()))
@@ -86,9 +89,9 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
                     || fact.historicalEnvironmentStatus()!=Status.UNKNOWN)throw failure("INVALID_PERSISTED_SOURCE_PROOF");
                 decoded.put(envelope,fact);
             } catch(IllegalArgumentException | IllegalStateException ex) {
-                Source source=historySource(envelope.identity().source());
-                if(source==null) for(Source supported:historySources())issues.add(new Issue(supported,null,"INVALID_PERSISTED_SOURCE_PROOF"));
-                else issues.add(new Issue(source,envelope.identity().factId(),"INVALID_PERSISTED_SOURCE_PROOF"));
+                Source source=historyIssueSource(envelope);
+                if(source==null) for(Source supported:historySources())issues.add(new Issue(supported,null,"INVALID_PERSISTED_SOURCE_PROOF",envelope.identity().customerId()));
+                else issues.add(new Issue(source,envelope.identity().factId(),"INVALID_PERSISTED_SOURCE_PROOF",envelope.identity().customerId()));
             }
         }
         if(!decoded.isEmpty()) {
@@ -96,7 +99,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
             try { ledgers=mapper.historyLedgers(ids,decoded.values().stream().map(Fact::ledgerId).distinct().sorted().toList()); }
             catch(DataAccessException ex) {
                 historyReadFailure(issues);
-                return history.readWithCapturedHistory(ids,new CapturedFinancialHistory(candidates,issues,conflicts));
+                return history.readWithCapturedHistory(ids,new CapturedFinancialHistory(candidates,issues,conflicts,registration.problems()));
             }
             for(var entry:decoded.entrySet()) {
                 var fact=entry.getValue();
@@ -107,15 +110,63 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
                     catch(DataAccessException ex) { problem="SOURCE_READ_FAILED"; }
                 }
                 if(problem!=null) {
-                    issues.add(new Issue(fact.source(),fact.factId(),problem));
-                    if(!Set.of("SOURCE_READ_FAILED","MISSING_SETTLEMENT_LEDGER","MISSING_AUTHORITATIVE_SOURCE",
-                        "MISSING_INTENT_IDENTITY","MISSING_CARD_SETTLEMENT","MISSING_SOURCE_CONFIRMATION_TIME").contains(problem))
-                        conflicts.add(fact.factId());
-                } else candidates.add(new VerifiedCandidate(fact,fact.source()==Source.VIETQR?entry.getKey().sourcePartition():fact.sourceBusinessId()));
+                    issues.add(new Issue(fact.source(),fact.factId(),problem,fact.customerId()));
+                    // FactService quarantines real contradictions by this customer/source/canonical tuple.
+                    // A rejected capture cannot own its claimed canonical ID globally or evict another customer.
+                } else {
+                    candidates.add(new VerifiedCandidate(fact,fact.source()==Source.VIETQR?entry.getKey().sourcePartition():fact.sourceBusinessId()));
+                    if(fact.kind()!=Kind.DEVICE_PURCHASE_REFUND) {
+                        var birth=registration.births().get(fact.customerId());
+                        String lifecycle=birth==null?null:lifecycleProblem(birth,entry.getKey(),fact);
+                        if(lifecycle!=null)registration.problems().get(fact.customerId()).add(lifecycle);
+                    }
+                }
             }
         }
-        return history.readWithCapturedHistory(ids,new CapturedFinancialHistory(candidates,issues,conflicts));
+        return history.readWithCapturedHistory(ids,new CapturedFinancialHistory(candidates,issues,conflicts,registration.problems()));
     }
+
+    private RegistrationBoundary registrationBoundary(List<Long> ids) {
+        var births=new HashMap<Long,BirthEvidence>();
+        var problems=new TreeMap<Long,List<String>>();
+        for(Long id:ids)problems.put(id,new ArrayList<>(List.of("NEW_ACCOUNT_BIRTH_NOT_PROVEN")));
+        final List<BirthEvidence> rows;
+        try { rows=capturedHistory.readBirths(ids); }
+        catch(DataAccessException ex) { return birthFailure(births,problems,"BIRTH_SOURCE_READ_FAILED"); }
+        catch(IllegalStateException ex) {
+            if(!"INVALID_CAPTURE_HISTORY_BIRTH".equals(ex.getMessage()))throw ex;
+            return birthFailure(births,problems,"INVALID_NEW_ACCOUNT_BIRTH");
+        }
+        if(rows==null)return birthFailure(births,problems,"INVALID_NEW_ACCOUNT_BIRTH");
+        for(var row:rows) {
+            if(row==null || row.customerId()==null || !ids.contains(row.customerId()))
+                throw failure("CAPTURED_CUSTOMER_OUTSIDE_SCOPE");
+            if(births.putIfAbsent(row.customerId(),row)!=null)
+                return birthFailure(births,problems,"INVALID_NEW_ACCOUNT_BIRTH");
+            var reasons=problems.get(row.customerId());reasons.clear();
+            if(!"support-payment-attribution-v1".equals(row.captureProtocol())
+                    || !"AUTH_NEW_ACCOUNT_REGISTRATION".equals(row.birthOrigin()) || row.birthDbUtc()==null
+                    || row.birthDbUtc().getYear()<1 || row.birthDbUtc().getYear()>9999
+                    || row.birthDbUtc().getNano()%1000!=0
+                    || !Integer.valueOf(0).equals(row.sandboxAtBirth()) || !"PRODUCTION".equals(row.environmentStatus()))
+                reasons.add("INVALID_NEW_ACCOUNT_BIRTH");
+        }
+        return new RegistrationBoundary(births,problems);
+    }
+    private static RegistrationBoundary birthFailure(Map<Long,BirthEvidence> births,Map<Long,List<String>> problems,String reason) {
+        problems.values().forEach(values -> {values.clear();values.add(reason);});
+        return new RegistrationBoundary(births,problems);
+    }
+    private static String lifecycleProblem(BirthEvidence birth,Envelope envelope,Fact fact) {
+        if(birth.birthDbUtc()==null)return "INVALID_NEW_ACCOUNT_BIRTH";
+        var born=birth.birthDbUtc().toInstant(ZoneOffset.UTC);
+        if(envelope.captureDbUtc().toInstant(ZoneOffset.UTC).isBefore(born))return "CAPTURE_PREDATES_NEW_ACCOUNT";
+        var at=fact.succeededAt().atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant();
+        long quantum=1;for(int p=fact.fractionalSecondDigits();p<9;p++)quantum*=10;
+        // Overlap is accepted only here, after the persisted causal NEW proof and real source have both verified.
+        return !at.plusNanos(quantum).isAfter(born)?"PAYMENT_PREDATES_NEW_ACCOUNT":null;
+    }
+    private record RegistrationBoundary(Map<Long,BirthEvidence> births,Map<Long,List<String>> problems) { }
 
     private void requireHistorySnapshot() {
         Object resource=TransactionSynchronizationManager.getResource(dataSource);
@@ -136,6 +187,12 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
     private static Source historySource(String source) {
         try { Source value=Source.valueOf(source);return historySources().contains(value)?value:null; }
         catch(IllegalArgumentException | NullPointerException ex) { return null; }
+    }
+    private static Source historyIssueSource(Envelope envelope) {
+        Source source=historySource(envelope.identity().source());
+        // Only a defined refund kind/source can isolate a malformed capture to refund completeness.
+        if(source==Source.ORDER_REFUND && !Kind.DEVICE_PURCHASE_REFUND.name().equals(envelope.identity().kind()))return null;
+        return source;
     }
     private static boolean validHistoryPartition(Source source,String partition) {
         return source==Source.DEPOSIT_ORDER?partition!=null && partition.matches("[1-9][0-9]*")

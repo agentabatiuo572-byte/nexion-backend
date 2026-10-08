@@ -31,6 +31,17 @@ class SupportPaymentFactServiceTest {
         assertThatThrownBy(() -> service.read(Arrays.asList(1L,null))).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.read(List.of(-1L))).isInstanceOf(IllegalArgumentException.class);
     }
+    @Test void legacyDirectReadAndThreeArgumentCapturedHistoryCannotCertifyEvenValidObservedPayment() {
+        var valid=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");when(mapper.cards(any())).thenReturn(List.of(valid));
+        for(var result:List.of(service.read(List.of(7L)),service.readWithCapturedHistory(List.of(7L),captured(valid,Source.CARD_TOPUP)))) {
+            assertThat(result.facts()).hasSize(1);assertThat(result.issues()).isEmpty();
+            assertThat(result.firstHistory()).singleElement().satisfies(h->{assertThat(h.customerId()).isEqualTo(7);assertThat(h.status()).isEqualTo(Status.UNKNOWN);assertThat(h.reasons()).isNotEmpty();});
+        }
+        var legacyIssue=new Issue(Source.CARD_TOPUP,"unlocated-proof","INVALID_PERSISTED_SOURCE_PROOF");
+        assertThat(legacyIssue.customerId()).isNull();
+        var unlocated=new SupportPaymentFactService.CapturedFinancialHistory(captured(valid,Source.CARD_TOPUP).candidates(),List.of(legacyIssue),Set.of());
+        assertThat(service.readWithCapturedHistory(List.of(7L),unlocated).firstHistory()).singleElement().satisfies(h->assertThat(h.status()).isEqualTo(Status.UNKNOWN));
+    }
     @Test void verifiedNewHistoryUsesItsOwnCausalProofWithoutAttestingLifetime() {
         var order=row(Source.WALLET_ORDER,Kind.DEVICE_PURCHASE,201,"order-1","80");
         order.put("orderNo","order-1");order.put("succeededAt",at.plusSeconds(1));
@@ -137,6 +148,11 @@ class SupportPaymentFactServiceTest {
             default -> throw new IllegalArgumentException(changed);
         }
         when(mapper.unmatched(any())).thenReturn(List.of(unmatched));
+        if(changed.equals("customerId")) {
+            assertThatThrownBy(()->service.readWithCapturedHistory(List.of(7L),captured(valid,Source.CARD_TOPUP)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessage("Source customer outside explicit scope");
+            return;
+        }
         var result=service.readWithCapturedHistory(List.of(7L),captured(valid,Source.CARD_TOPUP));
         assertThat(result.facts()).hasSize(1);
         assertThat(result.issues()).extracting(Issue::reason).containsExactly("MISSING_AUTHORITATIVE_SOURCE");
@@ -257,7 +273,7 @@ class SupportPaymentFactServiceTest {
         when(mapper.orders(any())).thenReturn(List.of(order));when(mapper.refunds(any())).thenReturn(List.of(refund));
         var snapshot=service.read(List.of(7L));
         assertThat(snapshot.facts()).hasSize(1).allMatch(f -> f.kind()==Kind.DEVICE_PURCHASE);
-        assertThat(snapshot.issues()).containsExactly(new Issue(Source.ORDER_REFUND,"ORDER_REFUND:301","REFUND_PREDATES_ORIGINAL_PAYMENT"));
+        assertThat(snapshot.issues()).containsExactly(new Issue(Source.ORDER_REFUND,"ORDER_REFUND:301","REFUND_PREDATES_ORIGINAL_PAYMENT",7L));
         assertThat(snapshot.coverage()).filteredOn(c -> c.source()==Source.ORDER_REFUND)
             .extracting(Coverage::observedStatus).containsExactly(Status.UNKNOWN);
     }
