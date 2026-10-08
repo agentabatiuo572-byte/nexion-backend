@@ -578,9 +578,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     int insertAmbassadorBudgetGrants(@Param("applicationId") Long applicationId,
                                      @Param("operator") String operator);
 
-    @Select("""
+    String LEADERBOARD_PODIUM_SQL = """
             SELECT ranked.rank_no AS `rank`,
                    ranked.member_user_id AS memberUserId,
+                   ranked.volume AS volumeUsd,
                    CONCAT('U', LPAD(ranked.member_user_id, GREATEST(8, CHAR_LENGTH(CAST(ranked.member_user_id AS CHAR))), '0')) AS userId,
                    CONCAT('$', ROUND(ranked.volume, 0)) AS gmvLabel,
                    CASE
@@ -621,11 +622,13 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND UPPER(a.action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
              WHERE ranked.rank_no <= #{limit}
              ORDER BY ranked.rank_no ASC
-            """)
+            """;
+
+    @Select(LEADERBOARD_PODIUM_SQL)
     List<Map<String, Object>> leaderboardPodium(@Param("minVolumeUsd") BigDecimal minVolumeUsd,
                                                 @Param("limit") int limit);
 
-    @Select("""
+    String LEADERBOARD_SUMMARY_SQL = """
             SELECT (
                      SELECT COUNT(DISTINCT member_user_id)
                        FROM nx_team_member
@@ -676,7 +679,9 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                      ) > 0 THEN 'active'
                      ELSE ''
                    END AS periodStatus
-            """)
+            """;
+
+    @Select(LEADERBOARD_SUMMARY_SQL)
     Map<String, Object> leaderboardSummary();
 
     @Select("""

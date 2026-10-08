@@ -66,7 +66,7 @@ class SevenLayerAppInsightsMySqlRuntimeTest {
             cfg.setMapUnderscoreToCamelCase(true);cfg.addMapper(AppTeamInsightsMapper.class);
             try(var session=new MybatisSqlSessionFactoryBuilder().build(cfg).openSession(true)) {
                 var service=new AppTeamInsightsService(session.getMapper(AppTeamInsightsMapper.class),
-                    mock(LeadershipPoolConfigGuard.class),mock(PlatformConfigFacade.class),new MockEnvironment());
+                    mock(LeadershipPoolConfigGuard.class),mock(PlatformConfigFacade.class),new MockEnvironment(), null);
                 var all=service.unilevel(owner,"all",1,100,"2026-10-05T08:00:00Z","all",2).getData();
                 assertThat(all).containsEntry("totalRows",7L);
                 var summary=(Map<String,Object>)all.get("summary");

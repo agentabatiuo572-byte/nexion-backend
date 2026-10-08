@@ -77,7 +77,7 @@ class F1SkuEntitlementMySqlIntegrationTest {
         worker = new VRankSkuFulfillmentService(session.getMapper(TeamFulfillmentQueueMapper.class), tx, audit, outbox);
         var target = new OpsTeamService(null, null, null, audit, OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
                 mock(TeamFulfillmentQueueRepository.class), new MybatisTeamCommissionRepository(session.getMapper(TeamCommissionMapper.class)),
-                null, null, null, null, outbox, null, null, null, null, null, worker);
+                null, null, null, null, outbox, null, null, null, null, null, worker, null);
         var proxy = new ProxyFactory(target);
         proxy.setProxyTargetClass(true);
         proxy.addAdvice(new TransactionInterceptor(tx, new AnnotationTransactionAttributeSource()));

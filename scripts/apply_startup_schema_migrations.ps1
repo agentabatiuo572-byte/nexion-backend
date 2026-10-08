@@ -290,6 +290,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261001_support_enhancements_bulk.sql")
   # Group structure is safe to install; legacy qualification cutover remains an explicit reviewed operation.
   (Join-Path $root "scripts\migrations\20261007_support_groups.sql")
+  (Join-Path $root "scripts\migrations\20261009_e4_wallet_bill_compat.sql")
   (Join-Path $root "scripts\migrations\20261009_e4_wallet_bill_schema.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_attribution.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_history_birth.sql")

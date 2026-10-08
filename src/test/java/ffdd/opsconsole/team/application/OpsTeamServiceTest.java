@@ -94,7 +94,7 @@ class OpsTeamServiceTest {
             eventOutboxService,
             leadershipPoolService,
             f5CommissionService,
-            idempotencyService, null, null, mock(VRankSkuFulfillmentService.class));
+            idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null);
 
     @BeforeEach
     void seedPermissionContext() {
@@ -289,7 +289,7 @@ class OpsTeamServiceTest {
                 mock(EventOutboxService.class),
                 mock(LeadershipPoolService.class),
                 mock(F5CommissionService.class),
-                idempotencyService, null, null, mock(VRankSkuFulfillmentService.class));
+                idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null);
 
         ApiResult<Map<String, Object>> rates = realOnlyService.rates();
         ApiResult<Map<String, Object>> pool = realOnlyService.leadershipPool();
@@ -472,6 +472,52 @@ class OpsTeamServiceTest {
                 .containsEntry("poolRatioStatus", "HOLD")
                 .containsEntry("poolRatioAvailable", false)
                 .containsEntry("poolRatioUnavailableReason", "F4_POOL_RATE_INVALID");
+    }
+
+    @Test
+    void leadershipParticipantCountUsesConfiguredUnlockAndCanonicalPositiveVotePopulation() {
+        configFacade.values.put("team.ui.F.pool.configVersion", "7");
+        configFacade.values.put("team.ui.F.pool.ratio", "5%");
+        configFacade.values.put("team.ui.F.pool.unlockVRank", "V5");
+        configFacade.values.put("team.ui.F.pool.monthlyCap", "5000");
+        configFacade.values.put("team.ui.F.pool.settleCron", "0 59 23 * * 0");
+        commissionRepository.leadershipPoolSummary.put("participantCount", 99);
+        commissionRepository.leadershipRanks.add(Map.of("v", 2, "votes", 1, "pop", 4));
+        commissionRepository.leadershipRanks.add(Map.of("v", 3, "votes", 1, "pop", 2));
+        commissionRepository.leadershipRanks.add(Map.of("v", 5, "votes", 4, "pop", 3));
+        commissionRepository.leadershipRanks.add(Map.of("v", 6, "votes", 0, "pop", 5));
+        var before = new LinkedHashMap<>(configFacade.values);
+
+        assertThat(service.leadershipPool().getData())
+                .containsEntry("participantCount", 3)
+                .containsEntry("unlockRank", 5);
+        assertThat(configFacade.values).containsExactlyInAnyOrderEntriesOf(before);
+    }
+
+    @Test
+    void oldPausedLeaderboardWithoutDurableSnapshotMustExposeUnavailableRatherThanLiveRanks() {
+        configFacade.values.put("team.ui.F.leaderboard.paused", "on");
+        commissionRepository.leaderboardPodium.add(Map.of("rank", 1, "memberUserId", 77L,
+                "userId", "U00000077", "gmvLabel", "$900", "tip", "本期 GV", "className", "r-1"));
+        assertThat(service.leadershipPool().getData())
+                .containsEntry("leaderboardPaused", true)
+                .containsEntry("leaderboardSnapshotState", "UNAVAILABLE")
+                .containsEntry("leaderboardDataAvailable", false)
+                .containsEntry("podium", List.of());
+        assertThat(configFacade.values).containsOnlyKeys("team.ui.F.leaderboard.paused");
+    }
+
+    @Test
+    void leadershipPoolReportsPauseSeparatelyFromLeaderboardRiskStatus() {
+        configFacade.values.put("team.ui.F.leaderboard.paused", "on");
+        commissionRepository.leaderboardSummary.put("periodStatus", "flagged");
+        assertThat(service.leadershipPool().getData())
+                .containsEntry("leaderboardPaused", true)
+                .containsEntry("leaderboardPeriodStatus", "flagged");
+        configFacade.values.put("team.ui.F.leaderboard.paused", "off");
+        assertThat(service.leadershipPool().getData())
+                .containsEntry("leaderboardPaused", false)
+                .containsEntry("leaderboardPeriodStatus", "flagged");
     }
 
     @Test
@@ -1080,6 +1126,70 @@ class OpsTeamServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getActorUsername()).isEqualTo("admin:77");
+    }
+
+    @Test
+    void leaderboardPauseAndResumeAcquireMaintenanceLockBeforeConfigurationWrite() {
+        configFacade.values.put("team.ui.F.leaderboard.paused", "off");
+        var snapshots = mock(LeaderboardPauseSnapshotService.class);
+        var frozen = new LeaderboardPauseSnapshotService.State(true, "FROZEN", "", "fixture-key",
+                "2026-10-08T00:00:00Z", "a".repeat(64), new com.fasterxml.jackson.databind.ObjectMapper().createObjectNode());
+        when(snapshots.capture()).thenReturn(frozen);
+        when(snapshots.current()).thenAnswer(ignored -> "on".equals(configFacade.values.get("team.ui.F.leaderboard.paused"))
+                ? frozen : LeaderboardPauseSnapshotService.State.live());
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "pauseSnapshots", snapshots);
+        org.mockito.Mockito.doAnswer(i -> {
+            assertThat(configFacade.values.get("team.ui.F.leaderboard.paused")).isEqualTo("off");
+            return null;
+        }).doAnswer(i -> {
+            assertThat(configFacade.values.get("team.ui.F.leaderboard.paused")).isEqualTo("on");
+            return null;
+        }).when(leadershipPoolService).lockLeaderboardMaintenance();
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay("fixture-f4-pause-operation");
+        try {
+        assertThat(service.updateConfig("fixture-f4-pause", new TeamCommissionConfigUpdateRequest(
+                "F.leaderboard.paused", "on", "fixture pause state boundary", "superadmin")).getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("team.ui.F.leaderboard.paused", "on");
+        assertThat(service.updateConfig("fixture-f4-resume", new TeamCommissionConfigUpdateRequest(
+                "F.leaderboard.paused", "off", "fixture resume state boundary", "superadmin")).getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("team.ui.F.leaderboard.paused", "off");
+        } finally { ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay(); }
+        verify(leadershipPoolService, times(2)).lockLeaderboardMaintenance();
+        verify(snapshots).capture();
+        verify(snapshots).resume();
+        assertThat(ledgerPostingFacade.releasedCommissionIds).isEmpty();
+    }
+
+    @Test
+    void leaderboardDirectPauseCannotCaptureOrWriteWithoutDurableA2Operation() {
+        var snapshots = mock(LeaderboardPauseSnapshotService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "pauseSnapshots", snapshots);
+        configFacade.values.put("team.ui.F.leaderboard.paused", "off");
+        var result = service.updateConfig("direct-pause", new TeamCommissionConfigUpdateRequest(
+                "F.leaderboard.paused", "on", "fixture direct pause rejected", "superadmin"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        assertThat(configFacade.values).containsEntry("team.ui.F.leaderboard.paused", "off");
+        org.mockito.Mockito.verifyNoInteractions(snapshots, leadershipPoolService, auditLogService, eventOutboxService);
+        assertThat(ledgerPostingFacade.releasedCommissionIds).isEmpty();
+    }
+
+    @Test
+    void leaderboardCaptureFailurePrecedesPauseWriteAuditAndOutbox() {
+        var snapshots = mock(LeaderboardPauseSnapshotService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "pauseSnapshots", snapshots);
+        when(snapshots.capture()).thenThrow(new ffdd.opsconsole.shared.exception.BizException(503,
+                "F4_LEADERBOARD_SNAPSHOT_CAPTURE_FAILED"));
+        configFacade.values.put("team.ui.F.leaderboard.paused", "off");
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay("fixture-failing-capture");
+        try {
+            assertThatThrownBy(() -> service.updateConfig("failing-capture", new TeamCommissionConfigUpdateRequest(
+                    "F.leaderboard.paused", "on", "fixture capture failure", "superadmin")))
+                    .hasMessage("F4_LEADERBOARD_SNAPSHOT_CAPTURE_FAILED");
+        } finally { ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay(); }
+        assertThat(configFacade.values).containsEntry("team.ui.F.leaderboard.paused", "off");
+        org.mockito.Mockito.verifyNoInteractions(auditLogService, eventOutboxService);
+        assertThat(ledgerPostingFacade.releasedCommissionIds).isEmpty();
     }
 
     @Test
@@ -2686,7 +2796,7 @@ class OpsTeamServiceTest {
                 eventOutboxService,
                 leadershipPoolService,
                 f5CommissionService,
-                idempotencyService, null, null, mock(VRankSkuFulfillmentService.class));
+                idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null);
         commissionRepository.memberVRanks.put(7106L, "V1");
 
         ApiResult<Map<String, Object>> result = lockedService.overrideVRank(7106L, "idem-7106",

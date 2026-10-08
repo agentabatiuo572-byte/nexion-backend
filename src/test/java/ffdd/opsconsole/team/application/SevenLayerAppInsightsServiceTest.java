@@ -18,7 +18,7 @@ class SevenLayerAppInsightsServiceTest {
     private final AppTeamInsightsMapper mapper = mock(AppTeamInsightsMapper.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final AppTeamInsightsService service = new AppTeamInsightsService(mapper,
-            mock(LeadershipPoolConfigGuard.class), config, new MockEnvironment());
+            mock(LeadershipPoolConfigGuard.class), config, new MockEnvironment(), null);
 
     @Test
     @SuppressWarnings("unchecked")

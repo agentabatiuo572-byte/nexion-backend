@@ -254,6 +254,7 @@ public class OpsTeamService implements AuditReplayable {
     private final org.springframework.beans.factory.ObjectProvider<DirectReferralPolicyService> directPolicies;
     private final org.springframework.beans.factory.ObjectProvider<DirectReferralService> directReferrals;
     private final VRankSkuFulfillmentService skuFulfillmentService;
+    private final LeaderboardPauseSnapshotService pauseSnapshots;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> binarySummary = binarySettlementSummary();
@@ -905,10 +906,32 @@ public class OpsTeamService implements AuditReplayable {
         }
         String value = normalizeUiValue(request.value());
         validateUiConfig(key, value);
+        if ("F.leaderboard.paused".equals(key)) {
+            if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())) {
+                return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+            }
+            if (request.reason() == null || request.reason().trim().length() < 8 || request.reason().trim().length() > 200) {
+                return ApiResult.fail(400, "REASON_REQUIRED");
+            }
+            leadershipPoolService.lockLeaderboardMaintenance();
+        }
         // F.cooldown 使用引擎消费者读取的单一权威键，避免 UI 镜像键与业务键双写分叉。
         String configKey = "F.cooldown".equals(key) ? COMMISSION_COOLING_DAYS_KEY : uiConfigKey(key);
-        String oldValue = configFacade.activeValue(configKey).orElse("");
+        String oldValue = ("F.leaderboard.paused".equals(key)
+                ? configFacade.activeValueForUpdate(configKey) : configFacade.activeValue(configKey)).orElse("");
         String effectiveOldValue = projectLegacyUiValue(key, oldValue);
+        LeaderboardPauseSnapshotService.State pauseChange = null;
+        if ("F.leaderboard.paused".equals(key)) {
+            if (pauseSnapshots == null) throw new BizException(503, "F4_LEADERBOARD_SNAPSHOT_READ_FAILED");
+            boolean wasPaused = LeaderboardPauseSnapshotService.paused(oldValue);
+            boolean nextPaused = "on".equalsIgnoreCase(value);
+            if (wasPaused == nextPaused) return ApiResult.fail(409, nextPaused ? "F4_LEADERBOARD_ALREADY_PAUSED" : "F4_LEADERBOARD_ALREADY_LIVE");
+            if (nextPaused) pauseChange = pauseSnapshots.capture();
+            else {
+                pauseChange = pauseSnapshots.current();
+                pauseSnapshots.resume();
+            }
+        }
         // A1 批1a 修复2:全域 B1 资金护栏接线(原 UI keys 路径完全跳过 loosensPayoutControl + coverageBelowRedline)。
         // 资金放大类 UI key(费率/比例上调、门槛下调)在 B1 红线下阻断,范式同 updateConfig:434-436。
         if (loosensPayoutControlUiKey(key, effectiveOldValue, value) && coverageBelowRedline()) {
@@ -944,8 +967,13 @@ public class OpsTeamService implements AuditReplayable {
         auditDetail.put("idempotencyKey", idempotencyKey.trim());
         if (settlementConfigVersion != null) auditDetail.put("settlementConfigVersion", settlementConfigVersion);
         if (settlementConfigIncompleteKey != null) auditDetail.put("settlementConfigIncompleteKey", settlementConfigIncompleteKey);
-        audit("F_TEAM_UI_CONFIG_CHANGED", configKey, actor(request.operator()), auditDetail);
-        publishApprovedUiConfigOutbox(key, oldValue, value, request);
+        if (pauseChange != null) {
+            auditDetail.put("pauseSnapshotId", pauseChange.id());
+            auditDetail.put("pauseCapturedAt", pauseChange.capturedAt());
+            auditDetail.put("pauseSnapshotState", pauseChange.mode());
+        }
+        audit("F_TEAM_UI_CONFIG_CHANGED", configKey, actor(request.operator()), auditDetail, pauseChange != null);
+        publishApprovedUiConfigOutbox(key, oldValue, value, request, pauseChange);
         Map<String, Object> response = overview().getData();
         Map<String, Object> updated = new LinkedHashMap<>();
         updated.put("key", key);
@@ -1776,12 +1804,19 @@ public class OpsTeamService implements AuditReplayable {
         int unlockRank = leadershipUnlockRank();
         int topN = intConfig(uiConfigKey("F.vrank.leadership.topN"), 0);
         List<Map<String, Object>> ranks = leadershipRanks();
+        int participantCount = 0;
         List<Map<String, Object>> quotaRows = quotaRows();
         int quotaCurrent = quotaRows.stream().mapToInt(row -> intValue(row.get("current"), 0)).sum();
         int quotaCap = quotaRows.stream().mapToInt(row -> intValue(row.get("cap"), 0)).sum();
         Map<String, Object> ambassador = commissionRepository.ambassadorSummary();
         Map<String, Object> leaderboard = commissionRepository.leaderboardSummary();
         String leaderboardStatus = textValue(leaderboard, "periodStatus", "");
+        LeaderboardPauseSnapshotService.State pause = pauseSnapshots != null ? pauseSnapshots.current()
+                : boolConfig(uiConfigKey("F.leaderboard.paused"), false)
+                    ? LeaderboardPauseSnapshotService.State.unavailable("PRE_SNAPSHOT_PAUSE")
+                    : LeaderboardPauseSnapshotService.State.live();
+        Map<String, Object> displayLeaderboard = "FROZEN".equals(pause.mode())
+                ? pauseSnapshots.pcSummary(pause) : pause.paused() ? Map.of() : leaderboard;
         Map<String, Object> pool = new LinkedHashMap<>();
         // Read-only projection of the same mandatory CAS version consumed by
         // LeadershipPoolConfigGuard; never synthesize a browser/default version.
@@ -1789,6 +1824,12 @@ public class OpsTeamService implements AuditReplayable {
         try {
             var settlementConfig = new LeadershipPoolConfigGuard(configFacade).requireValid();
             weeklyInjectedUsd = LeadershipPoolProjection.amount(summary, settlementConfig);
+            unlockRank = settlementConfig.unlockRank();
+            participantCount = ranks.stream()
+                    .filter(rank -> intValue(rank.get("v"), 0) >= settlementConfig.unlockRank()
+                            && intValue(rank.get("votes"), 0) > 0)
+                    .mapToInt(rank -> intValue(rank.get("pop"), 0))
+                    .sum();
             pool.put("settlementConfigStatus", "READY");
             pool.put("settlementConfigUnavailableKey", "");
             pool.put("settlementConfigUnavailableReason", "");
@@ -1808,7 +1849,7 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("monthlyCapLabel", configText("F.pool.monthlyCap", ""));
         pool.put("monthlyCapUsd", moneyLabelToInt(configText("F.pool.monthlyCap", ""), 0));
         pool.put("monthLeadershipUsd", intValue(summary.get("monthLeadershipUsd"), 0));
-        pool.put("participantCount", intValue(summary.get("participantCount"), 0));
+        pool.put("participantCount", participantCount);
         pool.put("topN", topN);
         pool.put("topSharePct", leadershipTopConcentrationPct(ranks, topN));
         pool.put("unlockRank", unlockRank);
@@ -1830,12 +1871,14 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("ambassadorBudgetCapLabel", moneyLabel(decimalValue(ambassador.get("requestedBudgetUsd"), BigDecimal.ZERO)));
         pool.put("ambassadorKolBudgetPct", intValue(ambassador.get("kolBudgetPct"), 0));
         pool.put("ambassadorNextQuotaReviewDate", textValue(ambassador, "nextQuotaReviewDate", ""));
-        pool.put("leaderboardPoolLabel", moneyLabel(decimalValue(leaderboard.get("poolUsd"), BigDecimal.ZERO)));
-        pool.put("leaderboardParticipantCount", intValue(leaderboard.get("participantCount"), 0));
+        pool.put("leaderboardPoolLabel", pause.available() ? moneyLabel(decimalValue(displayLeaderboard.get("poolUsd"), BigDecimal.ZERO)) : null);
+        pool.put("leaderboardParticipantCount", pause.available() ? intValue(displayLeaderboard.get("participantCount"), 0) : null);
         pool.put("leaderboardFraudHitCount", intValue(leaderboard.get("fraudHitCount"), 0));
         pool.put("leaderboardDisqualified", "disqualified".equalsIgnoreCase(leaderboardStatus));
         pool.put("leaderboardPeriodStatus", leaderboardStatus);
-        pool.put("podium", leaderboardPodium());
+        pause.metadata(pool, true);
+        pool.put("podium", !pause.available() ? List.of() : "FROZEN".equals(pause.mode())
+                ? pauseSnapshots.pcPodium(pause).stream().map(this::normalizePodium).toList() : leaderboardPodium());
         pool.put("voteWeights", voteWeights());
         return pool;
     }
@@ -3043,7 +3086,11 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private void audit(String action, String resourceId, String operator, Map<String, Object> detail) {
-        auditLogService.record(AuditLogWriteRequest.builder()
+        audit(action, resourceId, operator, detail, false);
+    }
+
+    private void audit(String action, String resourceId, String operator, Map<String, Object> detail, boolean required) {
+        AuditLogWriteRequest write = AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType("TEAM_POLICY")
                 .resourceId(resourceId)
@@ -3053,7 +3100,9 @@ public class OpsTeamService implements AuditReplayable {
                 .result("SUCCESS")
                 .riskLevel("HIGH")
                 .detail(detail)
-                .build());
+                .build();
+        if (required) auditLogService.recordRequired(write);
+        else auditLogService.record(write);
     }
 
     /**
@@ -3065,16 +3114,13 @@ public class OpsTeamService implements AuditReplayable {
             String key,
             String oldValue,
             String newValue,
-            TeamCommissionConfigUpdateRequest request) {
+            TeamCommissionConfigUpdateRequest request,
+            LeaderboardPauseSnapshotService.State pauseChange) {
         String operationId = A2ReplayContext.operationId();
         if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(operationId)) {
             return;
         }
-        eventOutboxService.publish(
-                "A2_OPERATION",
-                operationId,
-                "F_TEAM_UI_CONFIG_APPROVED",
-                Map.of(
+        Map<String, Object> payload = new LinkedHashMap<>(Map.of(
                         "operationId", operationId,
                         "domain", "F",
                         "key", key,
@@ -3082,6 +3128,11 @@ public class OpsTeamService implements AuditReplayable {
                         "newValue", newValue,
                         "operator", actor(request.operator()),
                         "reason", request.reason().trim()));
+        if (pauseChange != null) {
+            payload.put("pauseSnapshotId", pauseChange.id());
+            payload.put("pauseCapturedAt", pauseChange.capturedAt());
+        }
+        eventOutboxService.publish("A2_OPERATION", operationId, "F_TEAM_UI_CONFIG_APPROVED", payload);
     }
 
     // ============================================================
