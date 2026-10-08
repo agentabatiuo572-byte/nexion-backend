@@ -49,7 +49,7 @@ class OpsConsoleArchitectureTest {
     private static final Pattern CLASS_NAME_PATTERN =
             Pattern.compile("\\b(?:class|record)\\s+([A-Za-z0-9_]+)");
     private static final Pattern HAND_WRITTEN_JDBC_PATTERN =
-            Pattern.compile("\\b(?:JdbcTemplate|NamedParameterJdbcTemplate|SimpleJdbcInsert)\\b|org\\.springframework\\.jdbc");
+            Pattern.compile("\\b(?:JdbcTemplate|NamedParameterJdbcTemplate|SimpleJdbcInsert)\\b|org\\.springframework\\.jdbc(?!\\.BadSqlGrammarException\\b)");
     private static final Pattern LEGACY_ADMIN_ROUTE_PATTERN =
             Pattern.compile("/auth/admin\\b|/api/config(?!/(?:platform|referral-rewards|task-pricing|phone-tiers"
                     + "|staking/pools|v-ranks|v-rank-policy|commission/(?:rates|guide|direct-referral)|exchange/caps|market/nex|market/external|repurchase)\\b)");
@@ -63,6 +63,17 @@ class OpsConsoleArchitectureTest {
             Pattern.compile("(?m)\\s<=?\\s");
     private static final Pattern XML_ENTITY_OPERATOR_PATTERN =
             Pattern.compile("&(?:lt|gt);");
+
+    @Test
+    void translatedSqlExceptionDoesNotPermitHandWrittenJdbcAccess() {
+        assertThat(HAND_WRITTEN_JDBC_PATTERN.matcher(
+                "catch (org.springframework.jdbc.BadSqlGrammarException ex)").find()).isFalse();
+        for (String jdbcAccess : List.of("JdbcTemplate", "NamedParameterJdbcTemplate", "SimpleJdbcInsert",
+                "org.springframework.jdbc.core.JdbcOperations", "org.springframework.jdbc.core",
+                "org.springframework.jdbc.BadSqlGrammarExceptionOther")) {
+            assertThat(HAND_WRITTEN_JDBC_PATTERN.matcher(jdbcAccess).find()).as(jdbcAccess).isTrue();
+        }
+    }
 
     @Test
     void domainCatalogContainsTwelveOpsConsoleDomains() {

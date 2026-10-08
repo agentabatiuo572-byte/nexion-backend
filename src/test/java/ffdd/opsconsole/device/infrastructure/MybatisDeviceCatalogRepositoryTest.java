@@ -32,6 +32,26 @@ class MybatisDeviceCatalogRepositoryTest {
     }
 
     @Test
+    void refundRestocksAllUnitsWhenBundleRowCountDiffersFromQuantity() {
+        when(mapper.orderRestockPlan("OD-BUNDLE-MULTI")).thenReturn(
+                new DeviceCatalogMapper.OrderRestockPlan("BUNDLE", 5, 2, 2L, 5L, 0L, 2L));
+        when(mapper.restockOrderItemProducts("OD-BUNDLE-MULTI", now)).thenReturn(2);
+
+        assertThat(repository.rollbackOrderAssets("OD-BUNDLE-MULTI", now)).isTrue();
+        verify(mapper).restockOrderItemProducts("OD-BUNDLE-MULTI", now);
+        verify(mapper, never()).restockOrderProduct("OD-BUNDLE-MULTI", now);
+    }
+
+    @Test
+    void refundRejectsDuplicateBundleSkuRowsEvenWhenTotalQuantityMatches() {
+        when(mapper.orderRestockPlan("OD-BUNDLE-DUP")).thenReturn(
+                new DeviceCatalogMapper.OrderRestockPlan("BUNDLE", 5, 2, 2L, 5L, 0L, 1L));
+
+        assertThat(repository.rollbackOrderAssets("OD-BUNDLE-DUP", now)).isFalse();
+        verify(mapper, never()).restockOrderItemProducts("OD-BUNDLE-DUP", now);
+    }
+
+    @Test
     void rollbackOrderAssetsFailsWhenAnyBundleProductCannotBeRestocked() {
         when(mapper.orderRestockPlan("OD-BUNDLE")).thenReturn(
                 new DeviceCatalogMapper.OrderRestockPlan("BUNDLE", 2, 2, 2L, 2L, 0L, 2L));

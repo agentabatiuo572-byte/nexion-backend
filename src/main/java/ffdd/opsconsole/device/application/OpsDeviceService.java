@@ -116,13 +116,15 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import ffdd.opsconsole.promotion.application.PromotionOrderService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditReplayable {
     private static final ObjectMapper E1_AUDIT_JSON = new ObjectMapper();
     private static final Set<String> RESTORABLE_STATUSES = Set.of("RECYCLED", "DEACTIVATED", "INACTIVE", "RETIRED");
@@ -230,6 +232,20 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
     private final ObjectStorageService storageService;
+    private final PromotionOrderService promotions;
+
+    public OpsDeviceService(SupportPaymentAttributionFacade paymentAttribution,
+            DeviceOpsRepository deviceRepository, DeviceCatalogRepository catalogRepository,
+            PlatformConfigFacade configFacade, TreasuryLedgerPostingFacade ledgerPostingFacade,
+            E4OrderRefundSettlementFacade refundSettlementFacade, TreasuryCoverageFacade coverageFacade,
+            AuditLogService auditLogService, AdminIdempotencyService idempotencyService,
+            EventOutboxService outboxService, E2TaskPriceHistoryService taskPriceHistoryService,
+            Clock clock, OpsReadTimeSeedPolicy readTimeSeedPolicy,
+            ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper, ObjectStorageService storageService) {
+        this(paymentAttribution, deviceRepository, catalogRepository, configFacade, ledgerPostingFacade, refundSettlementFacade,
+                coverageFacade, auditLogService, idempotencyService, outboxService, taskPriceHistoryService,
+                clock, readTimeSeedPolicy, lockMapper, storageService, null);
+    }
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> response = new LinkedHashMap<>(deviceRepository.overviewCounters());
@@ -3365,6 +3381,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             String toState,
             String auditAction) {
         String normalizedOrderNo = normalizeId(orderNo);
+        if (promotions != null) promotions.lockOrderParticipants(normalizedOrderNo);
         DeviceOrderView before = catalogRepository.findOrder(normalizedOrderNo).orElse(null);
         DeviceOrderFacts facts = catalogRepository.findOrderFacts(normalizedOrderNo).orElse(null);
         if (before == null || facts == null) {
@@ -3439,8 +3456,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         if (settlement != null) {
+            if (promotions != null) promotions.confirmE4Refund(normalizedOrderNo, settlement.ledgerBizNo());
             publishRefundEvents(normalizedOrderNo, facts, before, updated, request, settlement);
         } else {
+            if (promotions != null && ORDER_STOCK_RELEASE_STATES.contains(toState)) {
+                promotions.releaseUnpaid(normalizedOrderNo, "payment_failed".equals(toState) ? "FAILED" : toState.toUpperCase(Locale.ROOT));
+            }
             publishOrderEvent(auditAction, normalizedOrderNo, before, updated, request.operator());
         }
         return ApiResult.ok(updated);

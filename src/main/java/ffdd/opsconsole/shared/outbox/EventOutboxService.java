@@ -332,6 +332,9 @@ public class EventOutboxService {
      * back to PENDING when a binding appears, so they must stay dispatchable).
      */
     static final Set<String> RECORD_ONLY_EVENT_TYPES = Set.of(
+            "promotion.reward.committed",
+            "promotion.reward.issued",
+            "promotion.refund.confirmed",
             "C2_USER_IMPERSONATION_PAGE_VIEWED",
             "C2_USER_STATUS_CHANGED_BY_K1",
             "C2_USER_STATUS_RESTORED_BY_K1",

@@ -748,9 +748,9 @@ class AppCanonicalBoundaryServiceTest {
                 null, null, null, null, null)));
         when(mapper.userOrderLineItems("BND-1")).thenReturn(List.of(
                 new CanonicalStateMapper.UserOrderLineItem("S1", "NexGridBox S1", 1,
-                        new BigDecimal("1299"), new BigDecimal("1299")),
+                        new BigDecimal("1299"), new BigDecimal("1299"), 101L),
                 new CanonicalStateMapper.UserOrderLineItem("PRO", "NexGridBox Pro", 1,
-                        new BigDecimal("1290"), new BigDecimal("1290"))));
+                        new BigDecimal("1290"), new BigDecimal("1290"), 102L)));
 
         var result = service.orders(42L);
 
@@ -760,9 +760,9 @@ class AppCanonicalBoundaryServiceTest {
         @SuppressWarnings("unchecked")
         var lines = (List<Map<String, Object>>) orders.get(0).get("lineItems");
         assertThat(lines).containsExactly(
-                Map.of("sku", "S1", "name", "NexGridBox S1", "quantity", 1,
+                Map.of("orderLineId", "101", "sku", "S1", "name", "NexGridBox S1", "quantity", 1,
                         "unitPriceUsdt", new BigDecimal("1299"), "lineAmountUsdt", new BigDecimal("1299")),
-                Map.of("sku", "PRO", "name", "NexGridBox Pro", "quantity", 1,
+                Map.of("orderLineId", "102", "sku", "PRO", "name", "NexGridBox Pro", "quantity", 1,
                         "unitPriceUsdt", new BigDecimal("1290"), "lineAmountUsdt", new BigDecimal("1290")));
         verify(mapper).userOrderLineItems("BND-1");
     }

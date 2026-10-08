@@ -10,6 +10,7 @@ import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -23,11 +24,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.time.Instant;
 import java.util.function.Supplier;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 
 @Service
 public class AppBundleOrderService {
@@ -42,6 +45,9 @@ public class AppBundleOrderService {
     private final CommerceAcceptanceSandboxMapper sandboxMapper;
     private final CommerceAcceptanceRun acceptanceRun;
     private final PlatformConfigFacade bundleConfig;
+    private final PromotionOrderService promotions;
+    @SuppressWarnings("ArchitectureConfigField") // Explicit constructor parameter carries the @Value binding.
+    private final int pendingOrderTtlMinutes;
 
     @Autowired
     public AppBundleOrderService(
@@ -53,7 +59,9 @@ public class AppBundleOrderService {
             StorefrontProductReleasePolicy releasePolicy,
             CommerceAcceptanceSandboxMapper sandboxMapper,
             CommerceAcceptanceRun acceptanceRun,
-            PlatformConfigFacade bundleConfig) {
+            PlatformConfigFacade bundleConfig,
+            PromotionOrderService promotions,
+            @Value("${nexion.commerce.pending-order-ttl-minutes:30}") int pendingOrderTtlMinutes) {
         this.mapper = mapper;
         this.idempotency = idempotency;
         this.outbox = outbox;
@@ -63,6 +71,17 @@ public class AppBundleOrderService {
         this.sandboxMapper = sandboxMapper;
         this.acceptanceRun = acceptanceRun;
         this.bundleConfig = bundleConfig;
+        this.promotions = promotions;
+        this.pendingOrderTtlMinutes = Math.max(1, pendingOrderTtlMinutes);
+    }
+
+    public AppBundleOrderService(AppBundleOrderMapper mapper, AdminIdempotencyService idempotency,
+            EventOutboxService outbox, FundsSandboxProfileGuard profileGuard,
+            StorefrontPurchaseGatePolicy purchaseGatePolicy, StorefrontProductReleasePolicy releasePolicy,
+            CommerceAcceptanceSandboxMapper sandboxMapper, CommerceAcceptanceRun acceptanceRun,
+            PlatformConfigFacade bundleConfig) {
+        this(mapper, idempotency, outbox, profileGuard, purchaseGatePolicy, releasePolicy,
+                sandboxMapper, acceptanceRun, bundleConfig, null, 30);
     }
 
     AppBundleOrderService(
@@ -82,12 +101,37 @@ public class AppBundleOrderService {
     public ApiResult<Map<String, Object>> create(
             Long userId, List<String> productNos, Long expectedPolicyVersion,
             BigDecimal expectedAmountUsdt, String idempotencyKey) {
+        return create(userId, productNos, null, expectedPolicyVersion, expectedAmountUsdt,
+                null, idempotencyKey);
+    }
+
+    public record BundleItem(String productNo, Integer quantity) { }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> create(Long userId, List<String> productNos, List<BundleItem> items,
+            Long expectedPolicyVersion, BigDecimal expectedAmountUsdt, String promotionQuoteId,
+            String idempotencyKey) {
+        if ((productNos == null) == (items == null)) return ApiResult.fail(422, "BUNDLE_PRODUCTS_INVALID");
+        if (promotionQuoteId != null && !StringUtils.hasText(promotionQuoteId)) {
+            return ApiResult.fail(422, "PROMOTION_QUOTE_INVALID");
+        }
+        List<String> normalized = normalizeProducts(items == null ? productNos
+                : items.stream().map(item -> item == null ? null : item.productNo()).toList());
+        if (normalized == null) return ApiResult.fail(422, "BUNDLE_PRODUCTS_INVALID");
+        Map<String, Integer> quantities = new LinkedHashMap<>();
+        for (int index = 0; index < normalized.size(); index++) {
+            Integer quantity = items == null ? 1 : items.get(index).quantity();
+            if (quantity == null || quantity < 1 || quantity > 100) return ApiResult.fail(422, "BUNDLE_QUANTITY_INVALID");
+            quantities.put(normalized.get(index), quantity);
+        }
+        if (quantities.values().stream().mapToInt(Integer::intValue).sum() > 100) {
+            return ApiResult.fail(422, "BUNDLE_QUANTITY_INVALID");
+        }
         if (profileGuard.isLocalSandboxEnabled()) {
+            if (items != null || promotionQuoteId != null) return ApiResult.fail(409, "PROMOTION_RUNTIME_UNAVAILABLE");
             AppBundleOrderMapper.UserLock user = mapper.lockUser(userId);
             if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
             if (!user.sandbox()) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_REQUIRED");
-            List<String> normalized = normalizeProducts(productNos);
-            if (normalized == null) return ApiResult.fail(422, "BUNDLE_PRODUCTS_INVALID");
             if (sandboxMapper == null || acceptanceRun == null) {
                 return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
             }
@@ -103,18 +147,40 @@ public class AppBundleOrderService {
         if (!profileGuard.isStrictProductionRuntime()) {
             return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
         }
-        AppBundleOrderMapper.UserLock user = mapper.lockUser(userId);
-        if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
-        if (user.sandbox()) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
-        List<String> normalized = normalizeProducts(productNos);
-        if (normalized == null) return ApiResult.fail(422, "BUNDLE_PRODUCTS_INVALID");
-        return executeOnce(userId, normalized, idempotencyKey, "APP:BUNDLE_ORDER_CREATE:USER:",
-                () -> {
-                    ApiResult<Map<String, Object>> quoteFailure = quoteValidationFailure(expectedAmountUsdt);
-                    return quoteFailure == null
-                            ? createOnce(userId, normalized, expectedPolicyVersion, expectedAmountUsdt)
-                            : quoteFailure;
-                });
+        // Promoted orders lock all beneficiaries before the buyer/product locks.
+        if (promotionQuoteId == null) {
+            AppBundleOrderMapper.UserLock user = mapper.lockUser(userId);
+            if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
+            if (user.sandbox()) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
+        } else if (promotions == null) return ApiResult.fail(503, "PROMOTION_UNAVAILABLE");
+        Supplier<ApiResult<Map<String, Object>>> action = () -> {
+            ApiResult<Map<String, Object>> failure = quoteValidationFailure(expectedAmountUsdt);
+            if (failure != null) return failure;
+            PromotionOrderService.CreationPlan plan = promotionQuoteId == null ? null
+                    : promotions.prepareCreate(userId, promotionQuoteId, quantities.entrySet().stream()
+                            .map(item -> new PromotionOrderService.Selection(item.getKey(), item.getValue())).toList(),
+                            null, expectedAmountUsdt);
+            if (plan != null) {
+                AppBundleOrderMapper.UserLock user = mapper.lockUser(userId);
+                if (user == null || user.sandbox()) throw new BizException(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
+            }
+            return createOnce(userId, normalized, quantities, expectedPolicyVersion, expectedAmountUsdt, plan);
+        };
+        if (items == null && promotionQuoteId == null) {
+            return executeOnce(userId, normalized, idempotencyKey, "APP:BUNDLE_ORDER_CREATE:USER:", action);
+        }
+        String material = userId + "|" + quantities.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                .map(item -> item.getKey() + ":" + item.getValue()).toList() + "|" + expectedPolicyVersion
+                + "|" + (expectedAmountUsdt == null ? "" : expectedAmountUsdt.stripTrailingZeros().toPlainString())
+                + "|" + promotionQuoteId;
+        return executeQuantityOnce(userId, idempotencyKey, material, action);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private ApiResult<Map<String, Object>> executeQuantityOnce(Long userId, String key, String material,
+            Supplier<ApiResult<Map<String, Object>>> action) {
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.executeRetained(
+                "APP:BUNDLE_ORDER_CREATE:USER:" + userId, key, sha256(material), ApiResult.class, (Supplier) action);
     }
 
     /**
@@ -188,14 +254,15 @@ public class AppBundleOrderService {
     }
 
     private ApiResult<Map<String, Object>> createOnce(
-            Long userId, List<String> productNos, Long expectedPolicyVersion, BigDecimal expectedAmountUsdt) {
+            Long userId, List<String> productNos, Map<String, Integer> quantities, Long expectedPolicyVersion,
+            BigDecimal expectedAmountUsdt, PromotionOrderService.CreationPlan promotionPlan) {
+        List<AppBundleOrderMapper.ProductRow> rows = mapper.lockProducts(productNos.stream().sorted().toList());
+        if (rows == null || rows.size() != productNos.size()) return ApiResult.fail(409, "BUNDLE_PRODUCT_NOT_AVAILABLE");
         long currentPolicyVersion = lockDiscountPolicyVersion();
         if (expectedPolicyVersion == null || expectedPolicyVersion < 1
                 || expectedPolicyVersion != currentPolicyVersion) {
             return ApiResult.fail(409, "BUNDLE_DISCOUNT_POLICY_STALE");
         }
-        List<AppBundleOrderMapper.ProductRow> rows = mapper.lockProducts(productNos.stream().sorted().toList());
-        if (rows == null || rows.size() != productNos.size()) return ApiResult.fail(409, "BUNDLE_PRODUCT_NOT_AVAILABLE");
         List<AppBundleOrderMapper.ProductRow> products = rows.stream()
                 .sorted(Comparator.comparing(AppBundleOrderMapper.ProductRow::productNo)).toList();
         for (AppBundleOrderMapper.ProductRow product : products) {
@@ -205,12 +272,13 @@ public class AppBundleOrderService {
             if (configurationBlock != null) return ApiResult.fail(409, configurationBlock);
         }
         if (products.stream().anyMatch(row -> (!ProductInventoryMode.isUnlimited(row.inventoryMode())
-                        && (row.stock() == null || row.stock() < 1))
+                        && (row.stock() == null || row.stock() < quantities.get(row.productNo())))
                 || row.priceUsdt() == null || row.priceUsdt().signum() <= 0 || !StringUtils.hasText(row.name()))) {
             return ApiResult.fail(409, "BUNDLE_PRODUCT_NOT_AVAILABLE");
         }
         int itemCount = products.size();
-        BigDecimal subtotal = products.stream().map(AppBundleOrderMapper.ProductRow::priceUsdt)
+        int quantity = quantities.values().stream().mapToInt(Integer::intValue).sum();
+        BigDecimal subtotal = products.stream().map(row -> row.priceUsdt().multiply(BigDecimal.valueOf(quantities.get(row.productNo()))))
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
         BigDecimal discountRate = discountRate(itemCount);
         BigDecimal discount = subtotal.multiply(discountRate).setScale(6, RoundingMode.HALF_UP);
@@ -230,7 +298,8 @@ public class AppBundleOrderService {
             }
         }
         long physicalItemCount = products.stream()
-                .filter(row -> !"SHARE".equalsIgnoreCase(row.productType())).count();
+                .filter(row -> !"SHARE".equalsIgnoreCase(row.productType()))
+                .mapToLong(row -> quantities.get(row.productNo())).sum();
         int cap = Math.max(1, mapper.deviceSlotCap());
         int active = Math.max(0, mapper.activeDeviceCount(userId));
         int reserved = Math.max(0, mapper.reservedDeviceOrderCount(userId));
@@ -243,22 +312,22 @@ public class AppBundleOrderService {
         }
         Map<String, QuotaReservation> quotaReservations = new LinkedHashMap<>();
         for (AppBundleOrderMapper.ProductRow product : products) {
-            QuotaReservation quotaReservation = reserveCanonicalPurchaseQuota(userId, product.productNo(), 1);
+            QuotaReservation quotaReservation = reserveCanonicalPurchaseQuota(userId, product.productNo(), quantities.get(product.productNo()));
             if (quotaReservation.reserved()) {
                 quotaReservations.put(product.productNo(), quotaReservation);
             }
         }
         String orderNo = "BND-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         for (AppBundleOrderMapper.ProductRow product : products) {
-            if (mapper.decrementStock(product.id()) != 1) throw new BizException(409, "BUNDLE_PRODUCT_STOCK_CONFLICT");
+            if (mapper.decrementStock(product.id(), quantities.get(product.productNo())) != 1) throw new BizException(409, "BUNDLE_PRODUCT_STOCK_CONFLICT");
         }
-        if (mapper.insertBundleOrder(userId, orderNo, products.get(0).id(), itemCount, subtotal, discount, amount) != 1) {
+        if (mapper.insertBundleOrder(userId, orderNo, products.get(0).id(), itemCount, quantity, subtotal, discount, amount) != 1) {
             throw new BizException(409, "BUNDLE_ORDER_CREATE_CONFLICT");
         }
         for (int index = 0; index < products.size(); index++) {
             AppBundleOrderMapper.ProductRow product = products.get(index);
             QuotaReservation quotaReservation = quotaReservations.get(product.productNo());
-            if (mapper.insertBundleItem(orderNo, product, index,
+            if (mapper.insertBundleItem(orderNo, product, quantities.get(product.productNo()), index,
                     quotaReservation != null, quotaReservation == null ? null : quotaReservation.gateGeneration()) != 1) {
                 throw new BizException(409, "BUNDLE_ORDER_ITEM_CREATE_CONFLICT");
             }
@@ -267,12 +336,20 @@ public class AppBundleOrderService {
                 normalizePhase(attribution.phase()), attribution.accountAgeMonths(), attribution.cohort(),
                 linked("userId", userId, "orderId", orderNo, "orderType", "BUNDLE",
                         "productNos", products.stream().map(AppBundleOrderMapper.ProductRow::productNo).toList(),
-                        "itemCount", itemCount, "amountUsdt", amount));
-        return ApiResult.ok(linked("orderNo", orderNo, "orderType", "BUNDLE", "itemCount", itemCount,
+                        "itemCount", itemCount, "quantity", quantity, "amountUsdt", amount));
+        Map<String, Object> receipt = linked("orderNo", orderNo, "orderType", "BUNDLE", "itemCount", itemCount,
+                "quantity", quantity,
                 "productNos", products.stream().map(AppBundleOrderMapper.ProductRow::productNo).toList(),
                 "subtotalUsdt", subtotal, "discountRate", discountRate, "discountUsdt", discount,
                 "amountUsdt", amount, "paymentStatus", "PENDING", "orderStatus", "PENDING_PAYMENT",
-                "idSource", "server", "policyVersion", currentPolicyVersion));
+                "idSource", "server", "policyVersion", currentPolicyVersion);
+        if (promotionPlan != null) {
+            Long deadlineSeconds = mapper.orderDeadlineEpoch(orderNo, pendingOrderTtlMinutes);
+            if (deadlineSeconds == null) throw new BizException(409, "ORDER_STATE_CONFLICT");
+            Instant deadline = Instant.ofEpochSecond(deadlineSeconds);
+            receipt.putAll(promotions.reserveCreatedOrder(promotionPlan, orderNo, deadline));
+        }
+        return ApiResult.ok(receipt);
     }
 
     private StorefrontPurchaseGatePolicy.Facts safeGateFacts(AppBundleOrderMapper.PurchaseFacts facts) {

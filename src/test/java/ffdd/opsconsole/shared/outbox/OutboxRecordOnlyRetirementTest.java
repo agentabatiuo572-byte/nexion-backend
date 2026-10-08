@@ -98,7 +98,8 @@ class OutboxRecordOnlyRetirementTest {
     @Test
     void disclosureAndTrialFactsWithoutBusConsumersDoNotAgeInTheA3Backlog() {
         assertThat(EventOutboxService.RECORD_ONLY_EVENT_TYPES)
-                .contains("disclosure.viewed", "disclosure.acked", "trial.started");
+                .contains("disclosure.viewed", "disclosure.acked", "trial.started",
+                        "promotion.reward.committed", "promotion.reward.issued", "promotion.refund.confirmed");
         assertThat(EventOutboxService.RECORD_ONLY_GRACE_MINUTES).isEqualTo(15);
     }
 

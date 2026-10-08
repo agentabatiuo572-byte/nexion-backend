@@ -285,6 +285,14 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260928_cregis_deposit.sql")
   # Maker/checker controls and reconciliation state must exist before PROVIDER mode starts.
   (Join-Path $root "scripts\migrations\20260928_cregis_controls_reconciliation.sql")
+  (Join-Path $root "scripts\migrations\20261007_growth_promotions.sql")
+  (Join-Path $root "scripts\migrations\20261007_growth_promotions_order_receipt.sql")
+  (Join-Path $root "scripts\migrations\20261007_earnings_source_recovery.sql")
+  (Join-Path $root "scripts\migrations\20261007_growth_promotions_list_snapshot.sql")
+  (Join-Path $root "scripts\migrations\20261007_growth_promotions_quota_restore.sql")
+  (Join-Path $root "scripts\migrations\20261007_e4_wallet_bill_prerequisite.sql")
+  (Join-Path $root "scripts\migrations\20261007_voucher_zero_payment.sql")
+  (Join-Path $root "scripts\migrations\20261008_l6_promotion_reward_routes.sql")
   # Additive support capabilities require their schema before the current application boots.
   (Join-Path $root "scripts\migrations\20261001_support_enhancements_core.sql")
   (Join-Path $root "scripts\migrations\20261001_support_enhancements_bulk.sql")

@@ -43,6 +43,60 @@ class AppBundleOrderServiceTest {
     }
 
     @Test
+    void persistsDistinctLinesAndTotalUnitsWithQuantityAwarePriceStockAndCapacity() {
+        var mapper = mock(AppBundleOrderMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).executeRetained(anyString(), anyString(), anyString(), any(), any());
+        when(mapper.lockUser(7L)).thenReturn(new AppBundleOrderMapper.UserLock(7L, false));
+        when(mapper.lockProducts(any())).thenReturn(List.of(
+                new AppBundleOrderMapper.ProductRow(1L, "s1", "S1", new BigDecimal("100"), 2),
+                new AppBundleOrderMapper.ProductRow(2L, "pro", "Pro", new BigDecimal("200"), 3)));
+        when(mapper.deviceSlotCap()).thenReturn(5);
+        when(mapper.attribution(7L)).thenReturn(new AppBundleOrderMapper.Attribution("P1", 1, "2026-W41"));
+        when(mapper.decrementStock(anyLong(), anyInt())).thenReturn(1);
+        when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), anyInt(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertBundleItem(anyString(), any(), anyInt(), anyInt(), anyBoolean(), any())).thenReturn(1);
+        var service = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
+                new StorefrontPurchaseGatePolicy(), releasePolicy, null, null);
+        var items = List.of(new AppBundleOrderService.BundleItem("s1", 2), new AppBundleOrderService.BundleItem("pro", 3));
+
+        var result = service.create(7L, null, items, 1L, new BigDecimal("760"), null, "bundle-quantities");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("itemCount", 2).containsEntry("quantity", 5)
+                .containsEntry("subtotalUsdt", new BigDecimal("800.000000"))
+                .containsEntry("amountUsdt", new BigDecimal("760.000000"));
+        verify(mapper).decrementStock(1L, 2);
+        verify(mapper).decrementStock(2L, 3);
+        verify(mapper).insertBundleOrder(eq(7L), anyString(), eq(2L), eq(2), eq(5),
+                eq(new BigDecimal("800.000000")), eq(new BigDecimal("40.000000")), eq(new BigDecimal("760.000000")));
+        verify(mapper).insertBundleItem(anyString(), argThat(row -> "s1".equals(row.productNo())), eq(2), eq(1), eq(false), eq(null));
+        when(mapper.deviceSlotCap()).thenReturn(4);
+        assertThat(service.create(7L, null, items, 1L, new BigDecimal("760"), null, "bundle-capacity").getMessage())
+                .isEqualTo("CAPACITY_REPLACEMENT_REQUIRED");
+        verify(mapper, times(2)).decrementStock(anyLong(), anyInt());
+    }
+
+    @Test
+    void rejectsAmbiguousDuplicateAndOversizedItemInputsBeforeLocking() {
+        var mapper = mock(AppBundleOrderMapper.class);
+        var service = new AppBundleOrderService(mapper, mock(AdminIdempotencyService.class), mock(EventOutboxService.class),
+                mock(FundsSandboxProfileGuard.class), new StorefrontPurchaseGatePolicy(), releasePolicy, null, null);
+        var valid = List.of(new AppBundleOrderService.BundleItem("s1", 1), new AppBundleOrderService.BundleItem("pro", 1));
+        assertThat(service.create(7L, List.of("s1", "pro"), valid, 1L, BigDecimal.ONE, null, "k").getCode()).isEqualTo(422);
+        for (var invalid : List.of(
+                List.of(new AppBundleOrderService.BundleItem("s1", 1), new AppBundleOrderService.BundleItem("s1", 2)),
+                List.of(new AppBundleOrderService.BundleItem("s1", 0), new AppBundleOrderService.BundleItem("pro", 1)),
+                List.of(new AppBundleOrderService.BundleItem("s1", 100), new AppBundleOrderService.BundleItem("pro", 1)))) {
+            assertThat(service.create(7L, null, invalid, 1L, BigDecimal.ONE, null, "k").getCode()).isEqualTo(422);
+        }
+        verifyNoInteractions(mapper);
+    }
+
+    @Test
     void pricesAndPersistsOneServerAuthoritativeBundle() {
         AppBundleOrderMapper mapper = mock(AppBundleOrderMapper.class);
         AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
@@ -57,9 +111,9 @@ class AppBundleOrderServiceTest {
                 new AppBundleOrderMapper.ProductRow(2L, "stellarbox-pro", "Pro", new BigDecimal("200"), 2)));
         when(mapper.deviceSlotCap()).thenReturn(6);
         when(mapper.attribution(7L)).thenReturn(new AppBundleOrderMapper.Attribution("P1", 1, "2026-W33"));
-        when(mapper.decrementStock(anyLong())).thenReturn(1);
-        when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), any(), any(), any())).thenReturn(1);
-        when(mapper.insertBundleItem(anyString(), any(), anyInt(), anyBoolean(), any())).thenReturn(1);
+        when(mapper.decrementStock(anyLong(), anyInt())).thenReturn(1);
+        when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), anyInt(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertBundleItem(anyString(), any(), anyInt(), anyInt(), anyBoolean(), any())).thenReturn(1);
 
         var result = new AppBundleOrderService(mapper, idempotency, outbox, guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
@@ -70,7 +124,7 @@ class AppBundleOrderServiceTest {
                 .containsEntry("subtotalUsdt", new BigDecimal("300.000000"))
                 .containsEntry("discountUsdt", new BigDecimal("15.000000"))
                 .containsEntry("amountUsdt", new BigDecimal("285.000000"));
-        verify(mapper, times(2)).insertBundleItem(anyString(), any(), anyInt(), anyBoolean(), any());
+        verify(mapper, times(2)).insertBundleItem(anyString(), any(), anyInt(), anyInt(), anyBoolean(), any());
     }
 
     @Test
@@ -87,9 +141,9 @@ class AppBundleOrderServiceTest {
                 new AppBundleOrderMapper.ProductRow(2L, "pro", "Pro", new BigDecimal("100.01"), 2)));
         when(mapper.deviceSlotCap()).thenReturn(6);
         when(mapper.attribution(7L)).thenReturn(new AppBundleOrderMapper.Attribution("P1", 1, "2026-W33"));
-        when(mapper.decrementStock(anyLong())).thenReturn(1);
-        when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), any(), any(), any())).thenReturn(1);
-        when(mapper.insertBundleItem(anyString(), any(), anyInt(), anyBoolean(), any())).thenReturn(1);
+        when(mapper.decrementStock(anyLong(), anyInt())).thenReturn(1);
+        when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), anyInt(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertBundleItem(anyString(), any(), anyInt(), anyInt(), anyBoolean(), any())).thenReturn(1);
 
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
@@ -121,8 +175,8 @@ class AppBundleOrderServiceTest {
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("BUNDLE_QUOTE_STALE");
         verify(mapper, never()).consumePurchaseQuota(anyString(), anyInt());
-        verify(mapper, never()).decrementStock(anyLong());
-        verify(mapper, never()).insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), any(), any(), any());
+        verify(mapper, never()).decrementStock(anyLong(), anyInt());
+        verify(mapper, never()).insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), anyInt(), any(), any(), any());
     }
 
     @Test
@@ -142,7 +196,7 @@ class AppBundleOrderServiceTest {
         assertThat(result.getCode()).isEqualTo(422);
         assertThat(result.getMessage()).isEqualTo("BUNDLE_QUOTE_REQUIRED");
         verify(mapper, never()).lockProducts(any());
-        verify(mapper, never()).decrementStock(anyLong());
+        verify(mapper, never()).decrementStock(anyLong(), anyInt());
     }
 
     @Test
@@ -162,7 +216,7 @@ class AppBundleOrderServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("orderNo", "BND-LEGACY");
         verify(mapper, never()).lockProducts(any());
-        verify(mapper, never()).decrementStock(anyLong());
+        verify(mapper, never()).decrementStock(anyLong(), anyInt());
     }
 
     @Test
@@ -188,8 +242,8 @@ class AppBundleOrderServiceTest {
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("CAPACITY_REPLACEMENT_REQUIRED");
-        verify(mapper, never()).decrementStock(anyLong());
-        verify(mapper, never()).insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), any(), any(), any());
+        verify(mapper, never()).decrementStock(anyLong(), anyInt());
+        verify(mapper, never()).insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), anyInt(), any(), any(), any());
     }
 
     @Test
@@ -215,8 +269,8 @@ class AppBundleOrderServiceTest {
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("PRODUCT_SPECS_UNAVAILABLE");
         verify(mapper, never()).consumePurchaseQuota(anyString(), anyInt());
-        verify(mapper, never()).decrementStock(anyLong());
-        verify(mapper, never()).insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), any(), any(), any());
+        verify(mapper, never()).decrementStock(anyLong(), anyInt());
+        verify(mapper, never()).insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), anyInt(), any(), any(), any());
     }
 
     @Test
@@ -308,7 +362,7 @@ class AppBundleOrderServiceTest {
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
                 .create(7L, List.of("s1", "pro"), 1L, new BigDecimal("285"), "bundle-gate-key");
         assertThat(result.getMessage()).isEqualTo("PURCHASE_GATE_BLOCKED");
-        verify(mapper, never()).decrementStock(anyLong());
+        verify(mapper, never()).decrementStock(anyLong(), anyInt());
     }
 
     @Test
@@ -330,9 +384,9 @@ class AppBundleOrderServiceTest {
         when(mapper.lockPurchaseGateGeneration("s1")).thenReturn(1L);
         when(mapper.deviceSlotCap()).thenReturn(6);
         when(mapper.attribution(7L)).thenReturn(new AppBundleOrderMapper.Attribution("P1", 1, "2026-W33"));
-        when(mapper.decrementStock(anyLong())).thenReturn(1);
-        when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), any(), any(), any())).thenReturn(1);
-        when(mapper.insertBundleItem(anyString(), any(), anyInt(), anyBoolean(), any())).thenReturn(1);
+        when(mapper.decrementStock(anyLong(), anyInt())).thenReturn(1);
+        when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), anyInt(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertBundleItem(anyString(), any(), anyInt(), anyInt(), anyBoolean(), any())).thenReturn(1);
 
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
@@ -341,9 +395,9 @@ class AppBundleOrderServiceTest {
         assertThat(result.getCode()).isZero();
         verify(mapper).consumePurchaseQuota("s1", 1);
         verify(mapper).insertBundleItem(anyString(),
-                argThat((AppBundleOrderMapper.ProductRow product) -> "s1".equals(product.productNo())), anyInt(), eq(true), eq(1L));
+                argThat((AppBundleOrderMapper.ProductRow product) -> "s1".equals(product.productNo())), eq(1), anyInt(), eq(true), eq(1L));
         verify(mapper).insertBundleItem(anyString(),
-                argThat((AppBundleOrderMapper.ProductRow product) -> "pro".equals(product.productNo())), anyInt(), eq(false), eq((Long) null));
+                argThat((AppBundleOrderMapper.ProductRow product) -> "pro".equals(product.productNo())), eq(1), anyInt(), eq(false), eq((Long) null));
     }
 
     @Test
@@ -368,7 +422,7 @@ class AppBundleOrderServiceTest {
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("BUNDLE_PRODUCT_NOT_RELEASED");
-        verify(mapper, never()).decrementStock(anyLong());
+        verify(mapper, never()).decrementStock(anyLong(), anyInt());
     }
 
     @Test

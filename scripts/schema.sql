@@ -1530,7 +1530,7 @@ CREATE TABLE IF NOT EXISTS nx_payment_record (
   KEY idx_payment_status_time (payment_status, created_at),
   KEY idx_payment_reconcile_due (payment_status, next_reconcile_at, created_at),
   KEY idx_payment_wallet_ledger (wallet_ledger_id),
-  CONSTRAINT chk_payment_record_positive_amount CHECK (amount_usdt > 0)
+  CONSTRAINT chk_payment_record_positive_amount CHECK (amount_usdt > 0 OR (amount_usdt = 0 AND provider = 'VOUCHER' AND currency = 'USDT'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_payment_callback_event (
@@ -1839,7 +1839,7 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SC
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'chk_payment_record_positive_amount') = 0,
-  'ALTER TABLE nx_payment_record ADD CONSTRAINT chk_payment_record_positive_amount CHECK (amount_usdt > 0)',
+  'ALTER TABLE nx_payment_record ADD CONSTRAINT chk_payment_record_positive_amount CHECK (amount_usdt > 0 OR (amount_usdt = 0 AND provider = ''VOUCHER'' AND currency = ''USDT''))',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 

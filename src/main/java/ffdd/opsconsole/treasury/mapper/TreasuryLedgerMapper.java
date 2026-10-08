@@ -788,12 +788,14 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     List<TreasuryLedgerBillView> userLedgerRows(@Param("userId") Long userId, @Param("limit") int limit);
 
+    // Posting holds the account/asset ledger mutex. A locking read sees the last committed
+    // posting even when the outer transaction opened a repeatable-read snapshot earlier.
     @Select("""
             SELECT balance_after
               FROM nx_wallet_ledger
              WHERE is_deleted = 0 AND user_id = #{userId} AND asset = #{asset}
              ORDER BY created_at DESC, id DESC
-             LIMIT 1
+             LIMIT 1 FOR UPDATE
             """)
     BigDecimal currentUserBalance(@Param("userId") Long userId, @Param("asset") String asset);
 

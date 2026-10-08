@@ -8,6 +8,40 @@ import org.junit.jupiter.api.Test;
 
 class AppAcceptanceSandboxStartupMigrationContractTest {
     @Test
+    void mergedStartupPreservesPromotionAndPaymentCapturePrerequisitesInOrder() throws Exception {
+        String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        for (String migration : java.util.List.of("20261007_growth_promotions.sql",
+                "20261007_growth_promotions_order_receipt.sql", "20261007_earnings_source_recovery.sql",
+                "20261007_growth_promotions_list_snapshot.sql", "20261007_growth_promotions_quota_restore.sql",
+                "20261007_e4_wallet_bill_prerequisite.sql", "20261007_support_groups.sql",
+                "20261009_e4_wallet_bill_schema.sql", "20261008_support_payment_attribution.sql",
+                "20261008_support_payment_history_birth.sql")) {
+            assertThat(runner).containsOnlyOnce(migration);
+        }
+        assertThat(runner.indexOf("20261007_growth_promotions.sql"))
+                .isLessThan(runner.indexOf("20261007_growth_promotions_order_receipt.sql"));
+        assertThat(runner.indexOf("20261007_growth_promotions_order_receipt.sql"))
+                .isLessThan(runner.indexOf("20261007_growth_promotions_quota_restore.sql"));
+        assertThat(runner.indexOf("20261007_e4_wallet_bill_prerequisite.sql"))
+                .isLessThan(runner.indexOf("20261009_e4_wallet_bill_schema.sql"));
+        assertThat(runner.indexOf("20261007_support_groups.sql"))
+                .isLessThan(runner.indexOf("20261009_e4_wallet_bill_schema.sql"));
+        assertThat(runner.indexOf("20261009_e4_wallet_bill_schema.sql"))
+                .isLessThan(runner.indexOf("20261008_support_payment_attribution.sql"));
+        assertThat(runner.indexOf("20261008_support_payment_attribution.sql"))
+                .isLessThan(runner.indexOf("20261008_support_payment_history_birth.sql"));
+    }
+
+    @Test
+    void promotionRewardPagesAreRegisteredDuringCanonicalStartup() throws Exception {
+        String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        String routes = Files.readString(Path.of("scripts/migrations/20261008_l6_promotion_reward_routes.sql"));
+        assertThat(runner).containsOnlyOnce("20261008_l6_promotion_reward_routes.sql");
+        assertThat(routes).contains("/pages/events/promotion-rewards", "/pages/events/promotion-reward-detail",
+                "ON DUPLICATE KEY UPDATE", "tracked=1", "is_deleted=0");
+    }
+
+    @Test
     void historicalFixturesRemainReadableButCannotRunAtCanonicalStartup() throws Exception {
         String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
         String schema = Files.readString(Path.of("scripts/schema.sql"));

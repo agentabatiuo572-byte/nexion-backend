@@ -232,8 +232,12 @@ public class AppWalletBillsService {
         item.put("publicReference", publicReference(row.bizType(), row.bizNo()));
         item.put("asset", row.asset());
         item.put("direction", row.direction());
-        item.put("amount", nonNegative(row.amount()));
-        item.put("balanceAfter", nonNegative(row.balanceAfter()));
+        BigDecimal amount = nonNegative(row.amount());
+        BigDecimal balanceAfter = nonNegative(row.balanceAfter());
+        item.put("amount", amount);
+        item.put("balanceAfter", balanceAfter);
+        item.put("amountExact", amount.toPlainString());
+        item.put("balanceAfterExact", balanceAfter.toPlainString());
         item.put("status", apiStatus(row.status()));
         item.put("remark", row.remark());
         item.put("createdAt", apiInstant(row.createdAt()));

@@ -1596,6 +1596,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                SET ownership_status='REFUNDED',status='DEACTIVATED',pending_deactivate=0,
                    deactivated_at=COALESCE(deactivated_at,#{now}),updated_at=#{now}
              WHERE source_order_no=#{orderNo} AND is_deleted=0
+               AND UPPER(COALESCE(source_channel,'')) <> 'PROMOTION_GIFT'
                AND UPPER(ownership_status) NOT IN ('REFUNDED','RECYCLED')
             """)
     int rollbackOrderDevices(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
@@ -1646,7 +1647,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                                 AND (
                                       UPPER(complete_order.order_type) IN ('SINGLE','TRIAL_CONVERT','CAPACITY_KEEP')
                                       OR (
-                                           UPPER(complete_order.order_type) IN ('BUNDLE','TRADE_IN')
+                                           UPPER(complete_order.order_type)='BUNDLE'
+                                           AND complete_order.item_count BETWEEN 2 AND 8
+                                           AND complete_order.quantity BETWEEN 2 AND 100
+                                           AND COUNT(complete_item.id)=complete_order.item_count
+                                           AND COUNT(DISTINCT complete_item.product_id)=complete_order.item_count
+                                         )
+                                      OR (
+                                           UPPER(complete_order.order_type)='TRADE_IN'
                                            AND COUNT(complete_item.id)=complete_order.item_count
                                            AND complete_order.item_count=complete_order.quantity
                                          )

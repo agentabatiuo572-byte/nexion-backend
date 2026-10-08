@@ -12,6 +12,8 @@ import org.apache.ibatis.annotations.Update;
 
 public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissionEntity> {
 
+    // Promotion capabilities are explicitly granted through A1. Their separate
+    // migration must not make the classic baseline demand automatic super grants.
     @Select("""
             SELECT COUNT(*)
               FROM nx_admin_permission
@@ -19,6 +21,7 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
                AND is_deleted = 0
                AND resource_type = 'API'
                AND permission_code NOT LIKE 'PERM\\_%'
+               AND LEFT(permission_code, 17) <> 'growth_promotion_'
             """)
     long countActiveClassicPermissions();
 
@@ -31,6 +34,7 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
              WHERE r.role_code = 'SUPER_ADMIN'
                AND r.status = 1 AND r.is_deleted = 0
                AND p.permission_code NOT LIKE 'PERM\\_%'
+               AND LEFT(p.permission_code, 17) <> 'growth_promotion_'
             """)
     long countActiveSuperAdminClassicPermissions();
 

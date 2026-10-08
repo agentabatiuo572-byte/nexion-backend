@@ -11,6 +11,7 @@ import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.commerce.application.CommerceAcceptanceRun;
 import ffdd.opsconsole.shared.capacity.E3DeviceCapacityPolicy;
+import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -28,6 +29,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.LocalDate;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -41,6 +43,7 @@ import java.time.ZoneId;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DuplicateKeyException;
@@ -48,7 +51,7 @@ import org.springframework.dao.TransientDataAccessException;
 import org.springframework.util.StringUtils;
 
 @Service
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class AppCanonicalBoundaryService {
     private static final ZoneId SERVER_ZONE = ZoneId.of("Asia/Shanghai");
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -67,6 +70,19 @@ public class AppCanonicalBoundaryService {
     private final StorefrontProductReleasePolicy productReleasePolicy;
     private final StorefrontPurchaseGatePolicy purchaseGatePolicy;
     private final Environment environment;
+    private final PromotionOrderService promotions;
+
+    public AppCanonicalBoundaryService(CanonicalStateMapper mapper, TamperDetectionPublisher tamperPublisher,
+            AdminIdempotencyService idempotencyService, EventOutboxService outboxService,
+            AppGrowthLifecyclePublisher growthLifecyclePublisher, GrowthRhythmFacade growthRhythmFacade,
+            AuditLogService auditLogService, CommerceAcceptanceSandboxMapper commerceAcceptanceSandboxMapper,
+            FundsSandboxProfileGuard fundsSandboxProfileGuard, CommerceAcceptanceRun commerceAcceptanceRun,
+            StorefrontProductReleasePolicy productReleasePolicy, StorefrontPurchaseGatePolicy purchaseGatePolicy,
+            Environment environment) {
+        this(mapper, tamperPublisher, idempotencyService, outboxService, growthLifecyclePublisher, growthRhythmFacade,
+                auditLogService, commerceAcceptanceSandboxMapper, fundsSandboxProfileGuard, commerceAcceptanceRun,
+                productReleasePolicy, purchaseGatePolicy, environment, null);
+    }
 
     @PostConstruct
     void ensureOtpChallengeTable() {
@@ -627,10 +643,19 @@ public class AppCanonicalBoundaryService {
     public ApiResult<Map<String, Object>> createOrder(
             Long userId, String clientOrderId, Long productId, String productNo,
             Integer quantity, String voucherId, String idempotencyKey) {
+        return createOrder(userId, clientOrderId, productId, productNo, quantity, voucherId, null, idempotencyKey);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> createOrder(
+            Long userId, String clientOrderId, Long productId, String productNo,
+            Integer quantity, String voucherId, String promotionQuoteId, String idempotencyKey) {
+        if (promotionQuoteId != null && !StringUtils.hasText(promotionQuoteId)) return ApiResult.fail(422, "PROMOTION_QUOTE_INVALID");
         boolean developmentRuntime = false;
         // Acceptance checkout has its own catalogue/order/inventory facts. Do this
         // before touching canonical order, product, voucher, or outbox boundaries.
         if (!developmentRuntime && commerceSandboxProfile()) {
+            if (promotionQuoteId != null) return ApiResult.fail(409, "PROMOTION_RUNTIME_UNAVAILABLE");
             if (!isCommerceSandboxUser(userId)) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_REQUIRED");
             return executeSandboxOrderOnce(userId, idempotencyKey,
                     linked("clientOrderId", clientOrderId, "productId", productId,
@@ -644,16 +669,41 @@ public class AppCanonicalBoundaryService {
             Integer userEnvironment = mapper.activeUserEnvironment(userId);
             if (userEnvironment == null) return ApiResult.fail(404, "USER_NOT_FOUND");
             if (userEnvironment != 1) return ApiResult.fail(403, "CANONICAL_DEVELOPMENT_USER_REQUIRED");
-        } else {
+        } else if (promotionQuoteId == null) {
             CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
             if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
             if (user.sandbox()) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
         }
-        return executeOnce("ORDER_CREATE", userId, idempotencyKey,
-                linked("clientOrderId", clientOrderId, "productId", productId,
-                        "productNo", productNo, "quantity", quantity, "voucherId", voucherId),
-                () -> createOrderInternal(
-                        userId, clientOrderId, productId, productNo, quantity, voucherId, developmentRuntime));
+        Map<String, Object> payload = linked("clientOrderId", clientOrderId, "productId", productId,
+                "productNo", productNo, "quantity", quantity, "voucherId", voucherId);
+        if (promotionQuoteId != null) payload.put("promotionQuoteId", promotionQuoteId);
+        return executeOnce("ORDER_CREATE", userId, idempotencyKey, payload, () -> {
+            PromotionOrderService.CreationPlan plan = null;
+            if (promotionQuoteId != null) {
+                if (promotions == null) throw new BizException(503, "PROMOTION_UNAVAILABLE");
+                int units = quantity == null ? 1 : quantity;
+                CanonicalStateMapper.ProductStock product = mapper.findPurchasableProduct(productId, productNo);
+                if (product == null || (productId != null && !productId.equals(product.id()))
+                        || (StringUtils.hasText(productNo) && !productNo.trim().equals(product.productNo()))
+                        || units < 1 || units > 100) throw new BizException(409, "PROMOTION_QUOTE_STALE");
+                plan = promotions.prepareCreate(userId, promotionQuoteId,
+                        List.of(new PromotionOrderService.Selection(product.productNo(), units)), voucherId, null);
+                CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
+                if (user == null || user.sandbox()) throw new BizException(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
+            }
+            ApiResult<Map<String, Object>> result = createOrderInternal(
+                    userId, clientOrderId, productId, productNo, quantity, voucherId, developmentRuntime);
+            if (result.getCode() == 0 && plan != null) {
+                String orderNo = String.valueOf(result.getData().get("orderNo"));
+                Long deadlineSeconds = mapper.orderDeadlineEpoch(orderNo, pendingOrderTtlMinutes());
+                if (deadlineSeconds == null) throw new BizException(409, "ORDER_STATE_CONFLICT");
+                result.getData().putAll(promotions.reserveCreatedOrder(plan, orderNo, Instant.ofEpochSecond(deadlineSeconds)));
+                result.getData().put("orderType", "SINGLE");
+                result.getData().put("itemCount", 1);
+                result.getData().put("quantity", quantity == null ? 1 : quantity);
+            }
+            return result;
+        });
     }
 
     public ApiResult<Map<String, Object>> orders(Long userId) {
@@ -719,13 +769,13 @@ public class AppCanonicalBoundaryService {
         boolean hasMore = !legacyRead && fetched.size() > pageSize;
         List<CanonicalStateMapper.UserOrder> page = hasMore ? fetched.subList(0, pageSize) : fetched;
         List<Map<String, Object>> orders = page
-                .stream().map(row -> projectUserOrder(row, overlays.get(row.orderNo()))).toList();
+                .stream().map(row -> projectUserOrder(userId, row, overlays.get(row.orderNo()))).toList();
         String nextCursor = hasMore && !page.isEmpty() ? page.get(page.size() - 1).orderNo() : null;
         return ApiResult.ok(linked("orders", orders, "source", "server", "sourceEnvironment", "PRODUCTION",
                 "runId", null, "serverCanonical", true, "nextCursor", nextCursor));
     }
 
-    private Map<String, Object> projectUserOrder(CanonicalStateMapper.UserOrder order,
+    private Map<String, Object> projectUserOrder(Long userId, CanonicalStateMapper.UserOrder order,
                                                   CommerceAcceptanceSandboxMapper.OrderOverlay overlay) {
         String sandboxState = overlay == null ? null : normalizeState(overlay.state(), "");
         String paymentStatus = overlayPaymentStatus(sandboxState, order.paymentStatus());
@@ -778,10 +828,12 @@ public class AppCanonicalBoundaryService {
             List<CanonicalStateMapper.UserOrderLineItem> lines = mapper.userOrderLineItems(order.orderNo());
             if (lines == null || lines.isEmpty()) throw new BizException(503, "BUNDLE_ORDER_LINES_UNAVAILABLE");
             projected.put("lineItems", lines.stream().map(line -> linked(
+                    "orderLineId", line.orderLineId() == null ? null : line.orderLineId().toString(),
                     "sku", line.sku(), "name", line.name(), "quantity", line.quantity(),
                     "unitPriceUsdt", zero(line.unitPriceUsdt()), "lineAmountUsdt", zero(line.lineAmountUsdt())))
                     .toList());
         }
+        if (promotions != null && overlay == null) projected.putAll(promotions.orderProjection(userId, order.orderNo()));
         return projected;
     }
 
@@ -1439,6 +1491,10 @@ public class AppCanonicalBoundaryService {
             String operation, Long userId, String idempotencyKey, Object request,
             java.util.function.Supplier<ApiResult<Map<String, Object>>> action) {
         String scope = "APP:" + operation + ":USER:" + userId;
+        if ("ORDER_CREATE".equals(operation) && request instanceof Map<?, ?> fields && fields.containsKey("promotionQuoteId")) {
+            return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeRetained(
+                    scope, idempotencyKey, sha256(String.valueOf(request)), ApiResult.class, (java.util.function.Supplier) action);
+        }
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 scope, idempotencyKey, sha256(String.valueOf(request)), ApiResult.class, (java.util.function.Supplier) action);
     }

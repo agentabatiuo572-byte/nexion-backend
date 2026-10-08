@@ -17,6 +17,7 @@ import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
@@ -169,6 +170,7 @@ class AppOrderCommandServiceTest {
         when(mapper.lockUsedVouchersForOrder(7L, "ORD-EXPIRED-1")).thenReturn(List.of(
                 new AppOrderCommandMapper.VoucherGrantRow("VGR-19")));
         when(mapper.expireOrder("ORD-EXPIRED-1", 7L)).thenReturn(1);
+        when(mapper.countExpiredPayableOrder("ORD-EXPIRED-1", 7L, 30)).thenReturn(1);
         when(mapper.restoreVoucher("VGR-19", 7L, "ORD-EXPIRED-1")).thenReturn(1);
 
         var service = new AppOrderCommandService(mapper, mock(AdminIdempotencyService.class), audit,
@@ -180,6 +182,22 @@ class AppOrderCommandServiceTest {
         verify(mapper).restoreVoucher("VGR-19", 7L, "ORD-EXPIRED-1");
         verify(mapper).expireOrder("ORD-EXPIRED-1", 7L);
         verify(audit).recordRequired(argThat(row -> "APP_ORDER_EXPIRED".equals(row.getAction())));
+    }
+
+    @Test
+    void schedulerRechecksDeadlineAndUnknownPaymentBeforeReleasingReservations() {
+        for (boolean unknownPayment : List.of(false, true)) {
+            var mapper = mock(AppOrderCommandMapper.class);
+            when(mapper.lockOrder("ORD-RACE")).thenReturn(new AppOrderCommandMapper.OrderRow(
+                    "ORD-RACE", 7L, 1L, 1, "SINGLE", 1, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+            when(mapper.countNonCancellableHdPaySessions("ORD-RACE")).thenReturn(unknownPayment ? 1L : 0L);
+            when(mapper.countExpiredPayableOrder("ORD-RACE", 7L, 30)).thenReturn(unknownPayment ? 1 : 0);
+            var service = new AppOrderCommandService(mapper, mock(AdminIdempotencyService.class),
+                    mock(AuditLogService.class), mock(FundsSandboxProfileGuard.class), null, null, null, capture);
+            assertThat(service.expirePendingOrder(7L, "ORD-RACE")).isFalse();
+            verify(mapper, never()).lockItems(anyString());
+            verify(mapper, never()).expireOrder(anyString(), anyLong());
+        }
     }
 
     @Test
@@ -587,6 +605,49 @@ class AppOrderCommandServiceTest {
     }
 
     @Test
+    void cancelAndExpiryReturnEachBundleQuantityWithoutRequiringOneUnitPerRow() {
+        for (boolean expired : List.of(false, true)) {
+            var mapper = mock(AppOrderCommandMapper.class);
+            var idempotency = mock(AdminIdempotencyService.class);
+            var promotions = mock(PromotionOrderService.class);
+            when(promotions.orderProjection(7L, "BND-MULTI")).thenReturn(Map.of("promotionQuoteId", "PQ-MULTI"));
+            var guard = mock(FundsSandboxProfileGuard.class);
+            when(guard.isStrictProductionRuntime()).thenReturn(true);
+            doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                    .when(idempotency).executeRetained(anyString(), anyString(), anyString(), any(), any());
+            when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L, false));
+            when(mapper.lockOrder("BND-MULTI")).thenReturn(new AppOrderCommandMapper.OrderRow(
+                    "BND-MULTI", 7L, 1L, 5, "BUNDLE", 2, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+            when(mapper.lockItems("BND-MULTI")).thenReturn(List.of(
+                    new AppOrderCommandMapper.ItemRow("BND-MULTI", 1L, "S1", 2, true, 7L),
+                    new AppOrderCommandMapper.ItemRow("BND-MULTI", 2L, "PRO", 3, false)));
+            when(mapper.lockProduct(1L)).thenReturn(new AppOrderCommandMapper.ProductRow(1L, 0, 2));
+            when(mapper.lockProduct(2L)).thenReturn(new AppOrderCommandMapper.ProductRow(2L, 0, 3));
+            when(mapper.returnStock(1L, 2)).thenReturn(1);
+            when(mapper.returnStock(2L, 3)).thenReturn(1);
+            when(mapper.lockLifetimeQuotaState("S1")).thenReturn(new AppOrderCommandMapper.QuotaState(2, 7L));
+            when(mapper.releaseLifetimeQuota("S1", 2, 7L)).thenReturn(1);
+            when(mapper.cancelOrder("BND-MULTI", 7L)).thenReturn(1);
+            when(mapper.expireOrder("BND-MULTI", 7L)).thenReturn(1);
+            when(mapper.countExpiredPayableOrder("BND-MULTI", 7L, 30)).thenReturn(1);
+            var service = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                    null, null, null, null, 30, promotions, capture);
+
+            if (expired) assertThat(service.expirePendingOrder(7L, "BND-MULTI")).isTrue();
+            else assertThat(service.cancel(7L, "BND-MULTI", "multi-cancel").getCode()).isZero();
+            verify(mapper).returnStock(1L, 2);
+            verify(mapper).returnStock(2L, 3);
+            verify(mapper).releaseLifetimeQuota("S1", 2, 7L);
+            var locks = inOrder(promotions, mapper);
+            locks.verify(promotions).lockOrderParticipants("BND-MULTI");
+            locks.verify(mapper).lockOrder("BND-MULTI");
+            if (expired) locks.verify(mapper).expireOrder("BND-MULTI", 7L);
+            else locks.verify(mapper).cancelOrder("BND-MULTI", 7L);
+            locks.verify(promotions).releaseUnpaid("BND-MULTI", expired ? "EXPIRED" : "CANCELLED");
+        }
+    }
+
+    @Test
     void cancellingAnUnpaidOrderRestoresItsConsumedVoucherInTheSameTransaction() {
         var mapper = mock(AppOrderCommandMapper.class);
         var idempotency = mock(AdminIdempotencyService.class);
@@ -979,6 +1040,8 @@ class AppOrderCommandServiceTest {
         var idempotency = mock(AdminIdempotencyService.class);
         var audit = mock(AuditLogService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
+        var promotions = mock(PromotionOrderService.class);
+        when(promotions.orderProjection(7L, "ORD-1")).thenReturn(Map.of("promotionQuoteId", "PQ-1"));
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
         when(mapper.activeUserEnvironment(7L)).thenReturn(0);
@@ -1004,12 +1067,24 @@ class AppOrderCommandServiceTest {
         when(mapper.insertDevelopmentOrderHistory(eq("ORD-1"), eq("placed"), eq("activated"),
                 anyString())).thenReturn(1);
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
-                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+                .when(idempotency).executeRetained(anyString(), anyString(), anyString(), any(), any());
         var outbox = mock(EventOutboxService.class);
-        var service = new AppOrderCommandService(
-                mapper, idempotency, audit, guard, null, null, null, outbox, capture);
-
-        var result = service.pay(7L, "ORD-1", "pay-key");
+        ApiResult<Map<String,Object>> result;
+        try (var context = new org.springframework.context.annotation.AnnotationConfigApplicationContext()) {
+            context.registerBean(AppOrderCommandMapper.class, () -> mapper);
+            context.registerBean(AdminIdempotencyService.class, () -> idempotency);
+            context.registerBean(AuditLogService.class, () -> audit);
+            context.registerBean(FundsSandboxProfileGuard.class, () -> guard);
+            context.registerBean(CommerceAcceptanceSandboxMapper.class, () -> mock(CommerceAcceptanceSandboxMapper.class));
+            context.registerBean(CommerceAcceptanceSandboxService.class, () -> mock(CommerceAcceptanceSandboxService.class));
+            context.registerBean(CommerceAcceptanceRun.class, () -> mock(CommerceAcceptanceRun.class));
+            context.registerBean(EventOutboxService.class, () -> outbox);
+            context.registerBean(PromotionOrderService.class, () -> promotions);
+            context.registerBean(SupportPaymentAttributionFacade.class, () -> capture);
+            context.register(AppOrderCommandService.class);
+            context.refresh();
+            result = context.getBean(AppOrderCommandService.class).pay(7L, "ORD-1", "pay-key");
+        }
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("orderNo", "ORD-1")
@@ -1019,6 +1094,46 @@ class AppOrderCommandServiceTest {
         verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("10.000000"), 2L);
         verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), eq(new BigDecimal("10.000000")), eq(new BigDecimal("15.000000")), eq("NexGrid wallet order settlement"));
         verify(audit).recordRequired(any());
+        var settlement = inOrder(promotions, mapper, capture);
+        settlement.verify(mapper).findDevelopmentPayOrderOwner("ORD-1");
+        settlement.verify(promotions).lockOrderParticipants("ORD-1");
+        settlement.verify(capture).prepare(7L, Source.WALLET_ORDER, "ORD-1");
+        settlement.verify(mapper).lockDevelopmentPayOrder("ORD-1");
+        settlement.verify(promotions).beforePay(7L, "ORD-1");
+        settlement.verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("10.000000"), 2L);
+        settlement.verify(capture).insertLedger(any(Prepared.class), eq(new BigDecimal("10.000000")),
+                eq(new BigDecimal("15.000000")), eq("NexGrid wallet order settlement"));
+        settlement.verify(mapper).markDevelopmentOrderActivated(eq("ORD-1"), eq(7L), anyString());
+        settlement.verify(promotions).afterPaid(7L, "ORD-1");
+        settlement.verify(capture).record(any(Prepared.class));
+    }
+
+    @Test
+    void promotionEligibilityFailurePreventsWalletDebitAndOrderFulfillment() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var promotions = mock(PromotionOrderService.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.findDevelopmentPayOrderOwner("ORD-PROMO-STALE")).thenReturn(7L);
+        when(mapper.lockDevelopmentPayOrder("ORD-PROMO-STALE")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder("ORD-PROMO-STALE", 7L, 18L, 1,
+                        new BigDecimal("20.000000"), null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(promotions.orderProjection(7L, "ORD-PROMO-STALE")).thenReturn(Map.of("promotionQuoteId", "PQ-STALE"));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).executeRetained(anyString(), anyString(), anyString(), any(), any());
+        doThrow(new BizException(409, "PROMOTION_FIRST_PURCHASE_ALREADY_USED"))
+                .when(promotions).beforePay(7L, "ORD-PROMO-STALE");
+        var service = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null, null, 30, promotions, capture);
+        assertThatThrownBy(() -> service.pay(7L, "ORD-PROMO-STALE", "stale-promotion-pay"))
+                .isInstanceOf(BizException.class).hasMessage("PROMOTION_FIRST_PURCHASE_ALREADY_USED");
+        verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
+        verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());
+        verify(promotions, never()).afterPaid(anyLong(), anyString());
+        verify(capture, never()).insertLedger(any(), any(), any(), anyString());
+        verify(capture, never()).record(any());
     }
 
     @Test

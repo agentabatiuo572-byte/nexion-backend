@@ -1,0 +1,6870 @@
+{
+  "components": {
+    "schemas": {
+      "Id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+      },
+      "Hash": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "Amount": {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,6})?$",
+        "description": "Decimal string; max existing D4 precision 18,6. Asset catalog controls allowed scale; excess precision rejected, never rounded."
+      },
+      "PositiveAmount": {
+        "type": "string",
+        "pattern": "^(?=.*[1-9])(0|[1-9][0-9]{0,11})(\\.[0-9]{1,6})?$"
+      },
+      "Time": {
+        "type": "string",
+        "format": "date-time",
+        "pattern": "Z$",
+        "description": "UTC RFC3339 instant with trailing Z."
+      },
+      "Revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 2147483647
+      },
+      "Quantity": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100
+      },
+      "Limit": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "UNLIMITED"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "LIMITED"
+              },
+              "value": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483647
+              }
+            },
+            "required": [
+              "mode",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "Template": {
+        "type": "string",
+        "enum": [
+          "SKU_GIFT",
+          "FIRST_PURCHASE",
+          "DIRECT_REFERRAL",
+          "MULTI_PRODUCT",
+          "REPURCHASE"
+        ]
+      },
+      "ActivityState": {
+        "type": "string",
+        "enum": [
+          "DRAFT",
+          "SCHEDULED",
+          "ACTIVE",
+          "PAUSED",
+          "ENDED",
+          "ARCHIVED"
+        ]
+      },
+      "VersionState": {
+        "type": "string",
+        "enum": [
+          "DRAFT",
+          "PENDING_APPROVAL",
+          "APPROVED",
+          "PUBLISHED"
+        ]
+      },
+      "RewardState": {
+        "type": "string",
+        "enum": [
+          "PENDING",
+          "READY",
+          "PROCESSING",
+          "ISSUED",
+          "RETRYABLE_FAILED",
+          "OUTCOME_UNKNOWN",
+          "CANCELLED",
+          "REVERSAL_PENDING",
+          "REVERSED",
+          "MANUAL_REVIEW"
+        ]
+      },
+      "ReservationState": {
+        "type": "string",
+        "enum": [
+          "RESERVED",
+          "COMMITTED",
+          "RELEASED"
+        ]
+      },
+      "HoldState": {
+        "type": "string",
+        "enum": [
+          "HELD",
+          "RELEASED",
+          "EXECUTED",
+          "OUTCOME_UNKNOWN"
+        ]
+      },
+      "Role": {
+        "type": "string",
+        "enum": [
+          "BUYER",
+          "DIRECT_INVITER"
+        ]
+      },
+      "PolicyKind": {
+        "type": "string",
+        "enum": [
+          "FIRST_PURCHASE",
+          "DEVICE_AUDIENCE",
+          "DEVICE_RIGHTS",
+          "ASSET",
+          "SETTLEMENT",
+          "STACKING",
+          "REFUND",
+          "QUOTE",
+          "AUTHORIZATION"
+        ]
+      },
+      "PolicyRef": {
+        "type": "object",
+        "properties": {
+          "policyId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "version": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "contentHash": {
+            "$ref": "#/components/schemas/Hash"
+          }
+        },
+        "required": [
+          "policyId",
+          "version",
+          "contentHash"
+        ],
+        "additionalProperties": false
+      },
+      "NativeRef": {
+        "type": "object",
+        "properties": {
+          "system": {
+            "type": "string",
+            "enum": [
+              "E1_PRODUCT",
+              "ORDER_CONTRACT",
+              "EARNINGS_RELEASE",
+              "A2_POLICY"
+            ]
+          },
+          "resourceId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "contentHash": {
+            "$ref": "#/components/schemas/Hash"
+          }
+        },
+        "required": [
+          "system",
+          "resourceId",
+          "revision",
+          "contentHash"
+        ],
+        "additionalProperties": false
+      },
+      "LocalizedText": {
+        "type": "object",
+        "properties": {
+          "zh": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "en": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "vi": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          }
+        },
+        "required": [
+          "zh",
+          "en",
+          "vi"
+        ],
+        "additionalProperties": false
+      },
+      "PolicyContent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "FIRST_PURCHASE"
+              },
+              "executorCode": {
+                "const": "PROMOTION_FIRST_PURCHASE_V1"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "FIRST_ELIGIBLE_ORDER",
+                  "FIRST_ELIGIBLE_UNIT"
+                ]
+              },
+              "restoreAfterRefund": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "mode",
+              "restoreAfterRefund"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "DEVICE_AUDIENCE"
+              },
+              "executorCode": {
+                "const": "PROMOTION_DEVICE_AUDIENCE_V1"
+              },
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "ORDER",
+                    "PROMOTION_GIFT"
+                  ]
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "states": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "ACTIVE",
+                    "ONLINE"
+                  ]
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "excludeExpired": {
+                "const": true
+              },
+              "excludePhoneAndTrial": {
+                "const": true
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "sources",
+              "states",
+              "excludeExpired",
+              "excludePhoneAndTrial"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "DEVICE_RIGHTS"
+              },
+              "executorCode": {
+                "const": "COMMERCE_GIFT_FROM_PRODUCT_V1"
+              },
+              "productNo": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "productContract": {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              "taskEligibility": {
+                "type": "string",
+                "enum": [
+                  "EXISTING_PRODUCT_RULES",
+                  "DISABLED"
+                ]
+              },
+              "rightsDescription": {
+                "$ref": "#/components/schemas/LocalizedText"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "productNo",
+              "productContract",
+              "taskEligibility",
+              "rightsDescription"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "ASSET"
+              },
+              "executorCode": {
+                "const": "EXISTING_EARNINGS_RELEASE_V1"
+              },
+              "asset": {
+                "type": "string",
+                "enum": [
+                  "USDT",
+                  "NEX"
+                ]
+              },
+              "nativeContract": {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              "riskBucketRouting": {
+                "const": true
+              },
+              "availabilityDescription": {
+                "$ref": "#/components/schemas/LocalizedText"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "asset",
+              "nativeContract",
+              "riskBucketRouting",
+              "availabilityDescription"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "SETTLEMENT"
+              },
+              "executorCode": {
+                "const": "EXISTING_ORDER_MATURITY_V1"
+              },
+              "nativeContract": {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              "requiresPaid": {
+                "const": true
+              },
+              "requiresNoRefundHold": {
+                "const": true
+              },
+              "requiresNoFreeze": {
+                "const": true
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "nativeContract",
+              "requiresPaid",
+              "requiresNoRefundHold",
+              "requiresNoFreeze"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "STACKING"
+              },
+              "executorCode": {
+                "const": "PROMOTION_STACKING_V1"
+              },
+              "voucher": {
+                "type": "string",
+                "enum": [
+                  "ALLOW",
+                  "DENY"
+                ]
+              },
+              "bundleDiscount": {
+                "type": "string",
+                "enum": [
+                  "ALLOW",
+                  "DENY"
+                ]
+              },
+              "existingH8": {
+                "type": "string",
+                "enum": [
+                  "ALLOW",
+                  "DENY"
+                ]
+              },
+              "existingReferral": {
+                "type": "string",
+                "enum": [
+                  "ALLOW",
+                  "DENY"
+                ]
+              },
+              "samePurchaseUnit": {
+                "const": "EXCLUSIVE"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "voucher",
+              "bundleDiscount",
+              "existingH8",
+              "existingReferral",
+              "samePurchaseUnit"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "REFUND"
+              },
+              "executorCode": {
+                "const": "PROMOTION_WALLET_REFUND_V1"
+              },
+              "principalChannel": {
+                "const": "WALLET"
+              },
+              "scope": {
+                "const": "WHOLE_ORDER"
+              },
+              "insufficientRecovery": {
+                "const": "MANUAL_REVIEW"
+              },
+              "negativeBalance": {
+                "const": false
+              },
+              "crossAssetDeduction": {
+                "const": false
+              },
+              "deviceRecoveryPolicy": {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              "lossOwner": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "terms": {
+                "$ref": "#/components/schemas/LocalizedText"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "principalChannel",
+              "scope",
+              "insufficientRecovery",
+              "negativeBalance",
+              "crossAssetDeduction",
+              "deviceRecoveryPolicy",
+              "lossOwner",
+              "terms"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "QUOTE"
+              },
+              "executorCode": {
+                "const": "PROMOTION_QUOTE_V1"
+              },
+              "ttlSeconds": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "payByRule": {
+                "const": "MIN_ORDER_DEADLINE_ACTIVITY_END"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "ttlSeconds",
+              "payByRule"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "AUTHORIZATION"
+              },
+              "executorCode": {
+                "const": "PROMOTION_AUTHORIZATION_V1"
+              },
+              "approvalCapability": {
+                "const": "growth_promotion_approve"
+              },
+              "publishCapability": {
+                "const": "growth_promotion_publish"
+              },
+              "separateMakerChecker": {
+                "type": "boolean"
+              },
+              "scope": {
+                "const": "PROMOTION_ONLY"
+              },
+              "nativeContract": {
+                "$ref": "#/components/schemas/NativeRef"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "approvalCapability",
+              "publishCapability",
+              "separateMakerChecker",
+              "scope",
+              "nativeContract"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "PolicyDraft": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/PolicyContent"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "content",
+          "reason",
+          "evidenceRefs"
+        ],
+        "additionalProperties": false
+      },
+      "Policy": {
+        "type": "object",
+        "properties": {
+          "policyId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "version": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "contentHash": {
+            "$ref": "#/components/schemas/Hash"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "APPROVED",
+              "REVOKED"
+            ]
+          },
+          "content": {
+            "$ref": "#/components/schemas/PolicyContent"
+          },
+          "approvalRef": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExternalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approvedBy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approvedAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fixture": {
+            "type": "boolean"
+          },
+          "fixtureRunId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolvedDeviceRights": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolvedDeviceRights"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required non-null for approved DEVICE_RIGHTS policies. Server-resolved immutable materialization, not accepted in PolicyDraft input."
+          }
+        },
+        "required": [
+          "policyId",
+          "version",
+          "revision",
+          "contentHash",
+          "state",
+          "content",
+          "approvalRef",
+          "approvedBy",
+          "approvedAt",
+          "fixture",
+          "fixtureRunId",
+          "resolvedDeviceRights"
+        ],
+        "additionalProperties": false
+      },
+      "DayRange": {
+        "type": "object",
+        "properties": {
+          "minDays": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxDays": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "minDays",
+          "maxDays"
+        ],
+        "additionalProperties": false
+      },
+      "Audience": {
+        "type": "object",
+        "properties": {
+          "registrationAge": {
+            "$ref": "#/components/schemas/DayRange"
+          },
+          "purchaseHistory": {
+            "type": "string",
+            "enum": [
+              "ANY",
+              "NEVER_PAID",
+              "HAS_VALID_PURCHASE"
+            ]
+          },
+          "devicePresence": {
+            "type": "string",
+            "enum": [
+              "ANY",
+              "NONE",
+              "HAS_QUALIFYING_DEVICE"
+            ]
+          },
+          "deviceAudiencePolicy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rankIds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "uniqueItems": true
+          },
+          "lastValidPurchaseAge": {
+            "$ref": "#/components/schemas/DayRange"
+          },
+          "neverPurchased": {
+            "type": "boolean"
+          },
+          "markets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "uniqueItems": true
+          },
+          "sponsor": {
+            "type": "string",
+            "enum": [
+              "ANY",
+              "REQUIRED",
+              "ABSENT"
+            ]
+          }
+        },
+        "required": [
+          "registrationAge",
+          "purchaseHistory",
+          "devicePresence",
+          "deviceAudiencePolicy",
+          "rankIds",
+          "lastValidPurchaseAge",
+          "neverPurchased",
+          "markets",
+          "sponsor"
+        ],
+        "additionalProperties": false
+      },
+      "RewardSpec": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "rewardRuleId": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "beneficiaryRole": {
+                "$ref": "#/components/schemas/Role"
+              },
+              "type": {
+                "const": "DEVICE"
+              },
+              "giftProductNo": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "quantity": {
+                "$ref": "#/components/schemas/Quantity"
+              },
+              "deviceRightsProfile": {
+                "$ref": "#/components/schemas/PolicyRef"
+              }
+            },
+            "required": [
+              "rewardRuleId",
+              "beneficiaryRole",
+              "type",
+              "giftProductNo",
+              "quantity",
+              "deviceRightsProfile"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "rewardRuleId": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "beneficiaryRole": {
+                "$ref": "#/components/schemas/Role"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "USDT",
+                  "NEX"
+                ]
+              },
+              "calculation": {
+                "const": "FIXED"
+              },
+              "amount": {
+                "$ref": "#/components/schemas/PositiveAmount"
+              },
+              "assetPolicy": {
+                "$ref": "#/components/schemas/PolicyRef"
+              }
+            },
+            "required": [
+              "rewardRuleId",
+              "beneficiaryRole",
+              "type",
+              "calculation",
+              "amount",
+              "assetPolicy"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "PurchaseRule": {
+        "type": "object",
+        "properties": {
+          "ruleId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "productNo": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "minBuyQty": {
+            "$ref": "#/components/schemas/Quantity"
+          },
+          "repeatMode": {
+            "type": "string",
+            "enum": [
+              "PER_GROUP",
+              "ONCE_PER_ORDER"
+            ]
+          },
+          "maxGroups": {
+            "$ref": "#/components/schemas/Limit"
+          },
+          "maxGroupsPerPerson": {
+            "$ref": "#/components/schemas/Limit"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "buyerReward": {
+            "$ref": "#/components/schemas/RewardSpec"
+          },
+          "inviterReward": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RewardSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ruleId",
+          "productNo",
+          "minBuyQty",
+          "repeatMode",
+          "maxGroups",
+          "maxGroupsPerPerson",
+          "priority",
+          "buyerReward",
+          "inviterReward"
+        ],
+        "additionalProperties": false
+      },
+      "BudgetInput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "asset": {
+                "type": "string",
+                "enum": [
+                  "USDT",
+                  "NEX"
+                ]
+              },
+              "total": {
+                "$ref": "#/components/schemas/PositiveAmount"
+              }
+            },
+            "required": [
+              "asset",
+              "total"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "asset": {
+                "const": "DEVICE"
+              },
+              "productNo": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "total": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "asset",
+              "productNo",
+              "total"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "PolicySet": {
+        "type": "object",
+        "properties": {
+          "firstPurchase": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settlement": {
+            "$ref": "#/components/schemas/PolicyRef"
+          },
+          "stacking": {
+            "$ref": "#/components/schemas/PolicyRef"
+          },
+          "refund": {
+            "$ref": "#/components/schemas/PolicyRef"
+          },
+          "quote": {
+            "$ref": "#/components/schemas/PolicyRef"
+          },
+          "authorization": {
+            "$ref": "#/components/schemas/PolicyRef"
+          }
+        },
+        "required": [
+          "firstPurchase",
+          "settlement",
+          "stacking",
+          "refund",
+          "quote",
+          "authorization"
+        ],
+        "additionalProperties": false
+      },
+      "Draft": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "PROMOTION",
+              "REFERRAL"
+            ]
+          },
+          "template": {
+            "$ref": "#/components/schemas/Template"
+          },
+          "startsAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "endsAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "displayTimezone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftLocalizedText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "terms": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftLocalizedText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "placement": {
+            "anyOf": [
+              {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "home.purchase-promotion",
+                  null
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "minimumClientCapabilities": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "PROMOTION_QUOTE_V1",
+                    "ORDER_ITEM_QUANTITIES_V1",
+                    "PROMOTION_REWARDS_V1"
+                  ]
+                },
+                "minItems": 3,
+                "maxItems": 3,
+                "uniqueItems": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "buyerAudience": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftAudience"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inviterAudience": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftAudience"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DraftPurchaseRule"
+                },
+                "minItems": 0,
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "combinationMatch": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "ALL",
+                  "ANY"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "perPersonLimit": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "buyer": {
+                    "$ref": "#/components/schemas/Limit"
+                  },
+                  "directInviter": {
+                    "$ref": "#/components/schemas/Limit"
+                  }
+                },
+                "required": [
+                  "buyer",
+                  "directInviter"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxRewardUnitsPerOrder": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "budgets": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DraftBudgetInput"
+                },
+                "minItems": 0,
+                "maxItems": 102
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shortagePolicy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "RULE_STOP",
+                  "ACTIVITY_PAUSE"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policies": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftPolicySet"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "activityLimit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "\\S",
+                "description": "Internal administrative activity name, independent of the localized public title; versioned with the draft and never used as identity."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "category",
+          "template"
+        ],
+        "additionalProperties": false,
+        "description": "Persistable draft. Only category/template are mandatory. Missing or null configuration has no business default and cannot authorize publication."
+      },
+      "DraftWrite": {
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "draft": {
+            "$ref": "#/components/schemas/DraftPatch"
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "reason",
+          "draft"
+        ],
+        "additionalProperties": false
+      },
+      "CreatePromotion": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "draft": {
+            "$ref": "#/components/schemas/Draft"
+          }
+        },
+        "required": [
+          "reason",
+          "draft"
+        ],
+        "additionalProperties": false
+      },
+      "Action": {
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "maxItems": 20
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "reason",
+          "evidenceRefs"
+        ],
+        "additionalProperties": false
+      },
+      "PublishAction": {
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "maxItems": 20
+          },
+          "version": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "reason",
+          "evidenceRefs",
+          "version"
+        ],
+        "additionalProperties": false
+      },
+      "Version": {
+        "type": "object",
+        "properties": {
+          "activityId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "version": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "state": {
+            "$ref": "#/components/schemas/VersionState"
+          },
+          "contentHash": {
+            "$ref": "#/components/schemas/Hash"
+          },
+          "draft": {
+            "$ref": "#/components/schemas/Draft"
+          },
+          "approvedBy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approvedAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publishedBy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publishedAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policyResolutionErrors": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "activityId",
+          "version",
+          "revision",
+          "state",
+          "contentHash",
+          "draft",
+          "approvedBy",
+          "approvedAt",
+          "publishedBy",
+          "publishedAt",
+          "policyResolutionErrors"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "enum": [
+                    "PENDING_APPROVAL",
+                    "APPROVED",
+                    "PUBLISHED"
+                  ]
+                }
+              },
+              "required": [
+                "state"
+              ]
+            },
+            "then": {
+              "properties": {
+                "draft": {
+                  "$ref": "#/components/schemas/PromotionContract"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Promotion": {
+        "type": "object",
+        "properties": {
+          "activityId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "eventCode": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ActivityState"
+          },
+          "activeVersion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Revision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "draftVersion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Revision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Version"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "serverTime": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "fixture": {
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "\\S",
+                "description": "Internal administrative activity name, independent of the localized public title; versioned with the draft and never used as identity."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "PROMOTION",
+              "REFERRAL"
+            ]
+          },
+          "template": {
+            "$ref": "#/components/schemas/Template"
+          },
+          "startsAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "endsAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "displayTimezone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "draftVersionState": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VersionState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "impact": {
+            "$ref": "#/components/schemas/PromotionImpact"
+          },
+          "reserved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "issued": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unresolved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/Time"
+          }
+        },
+        "required": [
+          "activityId",
+          "eventCode",
+          "revision",
+          "state",
+          "activeVersion",
+          "draftVersion",
+          "current",
+          "serverTime",
+          "fixture",
+          "name",
+          "category",
+          "template",
+          "startsAt",
+          "endsAt",
+          "displayTimezone",
+          "updatedAt",
+          "draftVersionState",
+          "impact",
+          "reserved",
+          "issued",
+          "unresolved",
+          "asOf"
+        ],
+        "additionalProperties": false
+      },
+      "PublicPromotion": {
+        "type": "object",
+        "properties": {
+          "activityId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "version": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "template": {
+            "$ref": "#/components/schemas/Template"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ActivityState"
+          },
+          "startsAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "endsAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "serverTime": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "title": {
+            "$ref": "#/components/schemas/LocalizedText"
+          },
+          "terms": {
+            "$ref": "#/components/schemas/LocalizedText"
+          },
+          "placement": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "home.purchase-promotion",
+              null
+            ]
+          },
+          "target": {
+            "const": "STORE"
+          },
+          "productNos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "minItems": 1
+          },
+          "minimumClientCapabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "PROMOTION_QUOTE_V1",
+                "ORDER_ITEM_QUANTITIES_V1",
+                "PROMOTION_REWARDS_V1"
+              ]
+            },
+            "minItems": 3,
+            "maxItems": 3,
+            "uniqueItems": true
+          },
+          "eligibility": {
+            "type": "string",
+            "enum": [
+              "SIGN_IN_REQUIRED",
+              "ESTIMATE_ELIGIBLE",
+              "INELIGIBLE",
+              "UNKNOWN"
+            ]
+          },
+          "eligibilityMessage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalizedText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rewardRules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicPurchaseRule"
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "activityId",
+          "version",
+          "template",
+          "state",
+          "startsAt",
+          "endsAt",
+          "serverTime",
+          "title",
+          "terms",
+          "placement",
+          "target",
+          "productNos",
+          "minimumClientCapabilities",
+          "eligibility",
+          "eligibilityMessage",
+          "rewardRules"
+        ],
+        "additionalProperties": false
+      },
+      "Item": {
+        "type": "object",
+        "properties": {
+          "productNo": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "quantity": {
+            "$ref": "#/components/schemas/Quantity"
+          }
+        },
+        "required": [
+          "productNo",
+          "quantity"
+        ],
+        "additionalProperties": false
+      },
+      "QuoteInput": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "voucherId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "activityId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "clientCapabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "PROMOTION_QUOTE_V1",
+                "ORDER_ITEM_QUANTITIES_V1",
+                "PROMOTION_REWARDS_V1"
+              ]
+            },
+            "minItems": 3,
+            "maxItems": 3,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "items",
+          "clientCapabilities"
+        ],
+        "additionalProperties": false
+      },
+      "QuoteLine": {
+        "type": "object",
+        "properties": {
+          "lineId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "productNo": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "quantity": {
+            "$ref": "#/components/schemas/Quantity"
+          },
+          "unitPriceUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "subtotalUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "discountUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "payableUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          }
+        },
+        "required": [
+          "lineId",
+          "productNo",
+          "quantity",
+          "unitPriceUsdt",
+          "subtotalUsdt",
+          "discountUsdt",
+          "payableUsdt"
+        ],
+        "additionalProperties": false
+      },
+      "ExpectedReward": {
+        "type": "object",
+        "properties": {
+          "lineId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "activityId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "version": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "ruleId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "rewardRuleId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "beneficiaryRole": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "groups": {
+            "$ref": "#/components/schemas/Quantity"
+          },
+          "reward": {
+            "$ref": "#/components/schemas/RewardSpec"
+          },
+          "eligibility": {
+            "type": "string",
+            "enum": [
+              "ELIGIBLE",
+              "INELIGIBLE",
+              "UNKNOWN"
+            ]
+          },
+          "message": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalizedText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "disclosure": {
+            "$ref": "#/components/schemas/RewardDisclosure"
+          }
+        },
+        "required": [
+          "lineId",
+          "activityId",
+          "version",
+          "ruleId",
+          "rewardRuleId",
+          "beneficiaryRole",
+          "groups",
+          "reward",
+          "eligibility",
+          "message",
+          "disclosure"
+        ],
+        "additionalProperties": false
+      },
+      "Quote": {
+        "type": "object",
+        "properties": {
+          "quoteId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "quoteHash": {
+            "$ref": "#/components/schemas/Hash"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "serverTime": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "itemCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8
+          },
+          "quantity": {
+            "$ref": "#/components/schemas/Quantity"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuoteLine"
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "subtotalUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "discountUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "amountUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "bundlePolicyVersion": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "activityId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "activityVersion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Revision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "eligibility": {
+            "type": "string",
+            "enum": [
+              "ELIGIBLE",
+              "INELIGIBLE",
+              "UNKNOWN"
+            ]
+          },
+          "expectedRewards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExpectedReward"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocalizedText"
+            }
+          },
+          "reserved": {
+            "const": false
+          }
+        },
+        "required": [
+          "quoteId",
+          "quoteHash",
+          "expiresAt",
+          "serverTime",
+          "itemCount",
+          "quantity",
+          "items",
+          "subtotalUsdt",
+          "discountUsdt",
+          "amountUsdt",
+          "bundlePolicyVersion",
+          "activityId",
+          "activityVersion",
+          "eligibility",
+          "expectedRewards",
+          "warnings",
+          "reserved"
+        ],
+        "additionalProperties": false
+      },
+      "SingleOrderInput": {
+        "type": "object",
+        "properties": {
+          "orderNo": {
+            "type": "null"
+          },
+          "productId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "productNo": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "quantity": {
+            "$ref": "#/components/schemas/Quantity"
+          },
+          "voucherId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "promotionQuoteId": {
+            "$ref": "#/components/schemas/Id"
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "required": [
+              "productId"
+            ]
+          },
+          {
+            "required": [
+              "productNo"
+            ]
+          }
+        ],
+        "description": "Existing optional fields remain optional. orderNo must be omitted or null. promotionQuoteId must match account, SKU, quantity and voucher in persisted quote."
+      },
+      "BundleOrderInput": {
+        "type": "object",
+        "properties": {
+          "productNos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "minItems": 2,
+            "maxItems": 8,
+            "uniqueItems": true
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            },
+            "minItems": 2,
+            "maxItems": 8
+          },
+          "policyVersion": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "expectedAmountUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "promotionQuoteId": {
+            "$ref": "#/components/schemas/Id"
+          }
+        },
+        "required": [
+          "policyVersion",
+          "expectedAmountUsdt"
+        ],
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "productNos"
+            ],
+            "not": {
+              "required": [
+                "items"
+              ]
+            }
+          },
+          {
+            "required": [
+              "items"
+            ],
+            "not": {
+              "required": [
+                "productNos"
+              ]
+            }
+          }
+        ],
+        "description": "itemCount counts lines; quantity counts units. Duplicate SKU lines rejected; <=100 total units."
+      },
+      "OrderReceipt": {
+        "type": "object",
+        "properties": {
+          "orderNo": {
+            "$ref": "#/components/schemas/OrderNo"
+          },
+          "orderType": {
+            "type": "string",
+            "enum": [
+              "SINGLE",
+              "BUNDLE"
+            ]
+          },
+          "itemCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8
+          },
+          "quantity": {
+            "$ref": "#/components/schemas/Quantity"
+          },
+          "amountUsdt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Amount"
+              },
+              {
+                "type": "number",
+                "minimum": 0
+              }
+            ],
+            "description": "Promoted orders always return the frozen exact six-decimal string through the shared projection; legacy orders retain their existing numeric serializer."
+          },
+          "paymentStatus": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "PAID",
+              "CANCELLED",
+              "EXPIRED",
+              "REFUNDED"
+            ]
+          },
+          "orderStatus": {
+            "type": "string",
+            "enum": [
+              "PENDING_PAYMENT",
+              "COMPLETED",
+              "CANCELLED",
+              "EXPIRED",
+              "REFUNDED"
+            ]
+          },
+          "payBy": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "promotionQuoteId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rewards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExpectedReward"
+            }
+          },
+          "idempotent": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/OrderReceiptItem"
+            },
+            "description": "Frozen purchased items for promoted orders. Historical receipts are enriched from their original canonical order items, never the current catalog."
+          }
+        },
+        "required": [
+          "orderNo",
+          "paymentStatus",
+          "orderStatus"
+        ],
+        "additionalProperties": true,
+        "description": "Legacy responses may omit additive properties. Promoted orders require all properties; enforced by runtime response contract and fixtures."
+      },
+      "RefundInput": {
+        "type": "object",
+        "properties": {
+          "terminalState": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "refundChannel": {
+            "const": "WALLET"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "operator": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "refundChannel",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "description": "Existing E4 whole-order command. Authenticated actor overrides operator. No client amount."
+      },
+      "Resource": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "PROMOTION",
+              "VERSION",
+              "POLICY",
+              "REWARD",
+              "ORDER",
+              "EXPORT",
+              "REFUND_HOLD"
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/ExternalId"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Revision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "data": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "commandId": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ExternalId"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  },
+                  "fieldErrors": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "field": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "reason": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "field",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "commandId",
+                  "retryable",
+                  "fieldErrors"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "additionalProperties": false
+      },
+      "CommandReceipt": {
+        "type": "object",
+        "properties": {
+          "commandId": {
+            "$ref": "#/components/schemas/ExternalId"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "targetId": {
+            "$ref": "#/components/schemas/ExternalId"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/CommandKey"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PROCESSING",
+              "SUCCEEDED",
+              "FAILED",
+              "OUTCOME_UNKNOWN",
+              "NOT_FOUND"
+            ]
+          },
+          "resource": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Resource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OrderReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Error"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Time"
+          }
+        },
+        "required": [
+          "commandId",
+          "operation",
+          "targetId",
+          "idempotencyKey",
+          "status",
+          "resource",
+          "order",
+          "error",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "AssetReceipt": {
+        "type": "object",
+        "properties": {
+          "ledgerBizNo": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LedgerNo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "earningsEntryNo": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deviceIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "instanceNos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExternalId"
+            }
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "PROMOTION_GIFT",
+              "PROMOTION_REWARD"
+            ]
+          },
+          "issuedAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ledgerBizNo",
+          "earningsEntryNo",
+          "deviceIds",
+          "instanceNos",
+          "source",
+          "issuedAt"
+        ],
+        "additionalProperties": false
+      },
+      "Reward": {
+        "type": "object",
+        "properties": {
+          "obligationId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "activityId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "version": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "orderNo": {
+            "$ref": "#/components/schemas/OrderNo"
+          },
+          "orderLineId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "ruleId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "rewardRuleId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "unitSeq": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "beneficiaryRole": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "reward": {
+            "$ref": "#/components/schemas/RewardSpec"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RewardState"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "refundHold": {
+            "type": "boolean"
+          },
+          "refundRequestIds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExternalId"
+            }
+          },
+          "assetReceipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssetReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recoveredAmount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Amount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recoveryOutstanding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Amount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "commandId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExternalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "disclosure": {
+            "$ref": "#/components/schemas/RewardDisclosure"
+          }
+        },
+        "required": [
+          "obligationId",
+          "activityId",
+          "version",
+          "orderNo",
+          "orderLineId",
+          "ruleId",
+          "rewardRuleId",
+          "unitSeq",
+          "beneficiaryRole",
+          "reward",
+          "state",
+          "revision",
+          "refundHold",
+          "refundRequestIds",
+          "assetReceipt",
+          "recoveredAmount",
+          "recoveryOutstanding",
+          "commandId",
+          "updatedAt",
+          "disclosure"
+        ],
+        "additionalProperties": false
+      },
+      "RewardAdmin": {
+        "type": "object",
+        "properties": {
+          "obligationId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "activityId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "version": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "orderNo": {
+            "$ref": "#/components/schemas/OrderNo"
+          },
+          "orderLineId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "ruleId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "rewardRuleId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "unitSeq": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "beneficiaryRole": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "reward": {
+            "$ref": "#/components/schemas/RewardSpec"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RewardState"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "refundHold": {
+            "type": "boolean"
+          },
+          "refundRequestIds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExternalId"
+            }
+          },
+          "assetReceipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssetReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recoveredAmount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Amount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recoveryOutstanding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Amount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "commandId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExternalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "beneficiaryId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "qualificationSnapshotHash": {
+            "$ref": "#/components/schemas/Hash"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "attemptId": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "commandId": {
+                  "$ref": "#/components/schemas/ExternalId"
+                },
+                "state": {
+                  "$ref": "#/components/schemas/RewardState"
+                },
+                "startedAt": {
+                  "$ref": "#/components/schemas/Time"
+                },
+                "finishedAt": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Time"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "evidenceRefs": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Id"
+                  }
+                }
+              },
+              "required": [
+                "attemptId",
+                "commandId",
+                "state",
+                "startedAt",
+                "finishedAt",
+                "evidenceRefs"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "disclosure": {
+            "$ref": "#/components/schemas/RewardDisclosure"
+          },
+          "dispositionOptions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DispositionOption"
+            },
+            "description": "Server-resolved confirmed refunds and valid current approved A2 corrections for this obligation; executable authorization is rechecked transactionally on command."
+          }
+        },
+        "required": [
+          "obligationId",
+          "activityId",
+          "version",
+          "orderNo",
+          "orderLineId",
+          "ruleId",
+          "rewardRuleId",
+          "unitSeq",
+          "beneficiaryRole",
+          "reward",
+          "state",
+          "revision",
+          "refundHold",
+          "refundRequestIds",
+          "assetReceipt",
+          "recoveredAmount",
+          "recoveryOutstanding",
+          "commandId",
+          "updatedAt",
+          "beneficiaryId",
+          "qualificationSnapshotHash",
+          "attempts",
+          "disclosure",
+          "dispositionOptions"
+        ],
+        "additionalProperties": false
+      },
+      "ResolveInput": {
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "maxItems": 20,
+            "minItems": 1
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "CONFIRM_ISSUED",
+              "CONFIRM_NOT_ISSUED",
+              "CONFIRM_REVERSED",
+              "KEEP_MANUAL_REVIEW"
+            ]
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "reason",
+          "evidenceRefs",
+          "decision"
+        ],
+        "additionalProperties": false,
+        "description": "Requires matching asset evidence; no arbitrary terminal-state edit."
+      },
+      "ReverseInput": {
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "maxItems": 20,
+            "minItems": 1
+          },
+          "basis": {
+            "$ref": "#/components/schemas/DispositionBasis"
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "reason",
+          "evidenceRefs",
+          "basis"
+        ],
+        "additionalProperties": false
+      },
+      "Budget": {
+        "type": "object",
+        "properties": {
+          "asset": {
+            "type": "string",
+            "enum": [
+              "USDT",
+              "NEX",
+              "DEVICE"
+            ]
+          },
+          "productNo": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "available": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "reserved": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "committed": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "issued": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "reversed": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "unrecoverable": {
+            "$ref": "#/components/schemas/Amount"
+          }
+        },
+        "required": [
+          "asset",
+          "productNo",
+          "total",
+          "available",
+          "reserved",
+          "committed",
+          "issued",
+          "reversed",
+          "unrecoverable"
+        ],
+        "additionalProperties": false
+      },
+      "MetricAsset": {
+        "type": "object",
+        "properties": {
+          "asset": {
+            "type": "string",
+            "enum": [
+              "USDT",
+              "NEX"
+            ]
+          },
+          "issued": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AggregateAmount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reversed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AggregateAmount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AggregateAmount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unrecoverable": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AggregateAmount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "asset",
+          "issued",
+          "reversed",
+          "pending",
+          "unrecoverable"
+        ],
+        "additionalProperties": false
+      },
+      "Metrics": {
+        "type": "object",
+        "properties": {
+          "activityId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Revision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "from": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "to": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "timezone": {
+            "type": "string",
+            "minLength": 1
+          },
+          "querySnapshot": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "source": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "completeness": {
+            "type": "string",
+            "enum": [
+              "COMPLETE",
+              "DELAYED",
+              "UNAVAILABLE"
+            ]
+          },
+          "impressions": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quotes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "paidOrders": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "grossPaidUsdt": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "refundUsdt": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "netReceivedUsdt": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "externalInflowUsdt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AggregateAmount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "externalOutflowUsdt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AggregateAmount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricAsset"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "giftDevices": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "giftCostUsdt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AggregateAmount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "budgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Budget"
+            }
+          },
+          "testDataExcluded": {
+            "const": true
+          },
+          "effectiveFirstPurchasePeople": {
+            "$ref": "#/components/schemas/PeopleMetric"
+          },
+          "directInvitedQualifiedPurchasers": {
+            "$ref": "#/components/schemas/PeopleMetric"
+          },
+          "rewardFailureMetrics": {
+            "$ref": "#/components/schemas/ObligationFailureMetrics"
+          },
+          "recoveryDuration": {
+            "$ref": "#/components/schemas/RecoveryDurationMetric"
+          },
+          "orders": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "refundedOrders": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "acquisitionCostUsdt": {
+            "type": "null"
+          },
+          "conversionRate": {
+            "type": "null"
+          },
+          "roi": {
+            "type": "null"
+          },
+          "orderWindowBasis": {
+            "const": "CREATED_AT"
+          },
+          "paidWindowBasis": {
+            "const": "PAID_AT_REFUNDS_AS_OF"
+          },
+          "breakdown": {
+            "$ref": "#/components/schemas/MetricRewardBreakdown"
+          },
+          "salesBySku": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricSkuSales"
+            },
+            "description": "All purchased SKUs in the paid-order cohort, with exact frozen post-discount allocation and confirmed whole-order refunds as of the same snapshot. A bundle counts once for each purchased SKU; per-SKU order counts must not be summed as total orders. Independent of reward groupBy/pagination."
+          }
+        },
+        "required": [
+          "activityId",
+          "version",
+          "from",
+          "to",
+          "timezone",
+          "querySnapshot",
+          "asOf",
+          "source",
+          "completeness",
+          "impressions",
+          "quotes",
+          "paidOrders",
+          "grossPaidUsdt",
+          "refundUsdt",
+          "netReceivedUsdt",
+          "externalInflowUsdt",
+          "externalOutflowUsdt",
+          "assets",
+          "giftDevices",
+          "giftCostUsdt",
+          "budgets",
+          "testDataExcluded",
+          "effectiveFirstPurchasePeople",
+          "directInvitedQualifiedPurchasers",
+          "rewardFailureMetrics",
+          "recoveryDuration",
+          "orders",
+          "refundedOrders",
+          "acquisitionCostUsdt",
+          "conversionRate",
+          "roi",
+          "orderWindowBasis",
+          "paidWindowBasis",
+          "breakdown",
+          "salesBySku"
+        ],
+        "additionalProperties": false,
+        "description": "orders uses distinct order.created_at in [from,to); paidOrders/gross use paid_at in the same window; refunds/refundedOrders refer to that paid cohort as of asOf and require a confirmed wallet refund receipt. Therefore cross-cohort conversionRate is unavailable. Snapshots retain created and paid order manifests. Fixture/sandbox facts are excluded."
+      },
+      "ExportInput": {
+        "type": "object",
+        "properties": {
+          "querySnapshot": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "querySnapshot",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "ExportJob": {
+        "type": "object",
+        "properties": {
+          "exportId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "querySnapshot": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "PROCESSING",
+              "READY",
+              "FAILED",
+              "EXPIRED"
+            ]
+          },
+          "rowCount": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "downloadUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uri"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Error"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "exportId",
+          "querySnapshot",
+          "state",
+          "rowCount",
+          "expiresAt",
+          "downloadUrl",
+          "error"
+        ],
+        "additionalProperties": false
+      },
+      "ReferralProgress": {
+        "type": "object",
+        "properties": {
+          "activityId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "qualifyingOrders": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ownRewards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Reward"
+            }
+          },
+          "serverTime": {
+            "$ref": "#/components/schemas/Time"
+          }
+        },
+        "required": [
+          "activityId",
+          "qualifyingOrders",
+          "ownRewards",
+          "serverTime"
+        ],
+        "additionalProperties": false
+      },
+      "AudiencePreviewInput": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "$ref": "#/components/schemas/Draft"
+          }
+        },
+        "required": [
+          "draft"
+        ],
+        "additionalProperties": false
+      },
+      "AudiencePreview": {
+        "type": "object",
+        "properties": {
+          "asOf": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "estimatedAccounts": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "matched": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rejected": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unknown": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completeness": {
+            "type": "string",
+            "enum": [
+              "COMPLETE",
+              "UNAVAILABLE"
+            ]
+          },
+          "conditionSummary": {
+            "$ref": "#/components/schemas/AudienceConditionSummary"
+          },
+          "source": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "reasonCounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminDiagnosticCount"
+            }
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "accountId": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "MATCHED",
+                    "REJECTED",
+                    "UNKNOWN"
+                  ]
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminDiagnostic"
+                  }
+                }
+              },
+              "required": [
+                "accountId",
+                "status",
+                "reasons"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 20
+          },
+          "audiences": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AudienceRolePreview"
+            }
+          },
+          "matchedConditionIds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocalizedText"
+            }
+          },
+          "qualificationCredential": {
+            "const": false
+          }
+        },
+        "required": [
+          "asOf",
+          "estimatedAccounts",
+          "matched",
+          "rejected",
+          "unknown",
+          "total",
+          "completeness",
+          "conditionSummary",
+          "source",
+          "reasonCounts",
+          "samples",
+          "audiences",
+          "matchedConditionIds",
+          "warnings",
+          "qualificationCredential"
+        ],
+        "additionalProperties": false,
+        "description": "Read-only census of nondeleted, nonsandbox accounts. Validates only audience structure and required audience/first-purchase policies; draft may omit time/rewards/budget/global settlement policies. Unknown dependencies never count as rejected or as device absence. Counts sum to total when the account source is available. estimatedAccounts is null if unknowns exist. Samples are at most 20 account IDs with no contact data, and are returned only with the existing user_c1_read capability; otherwise samples is empty and aggregate counts remain available."
+      },
+      "SimulateInput": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "$ref": "#/components/schemas/Draft"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "sampleAccountId": {
+            "description": "A nonnull account requires the existing user_c1_read capability in addition to growth_promotion_simulate; otherwise return 403 PROMOTION_ACCOUNT_SAMPLE_FORBIDDEN. Null permits a configuration preview with explicitly unknown account eligibility.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "draft",
+          "items",
+          "sampleAccountId"
+        ],
+        "additionalProperties": false
+      },
+      "Catalog": {
+        "type": "object",
+        "properties": {
+          "assets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "asset": {
+                  "type": "string",
+                  "enum": [
+                    "USDT",
+                    "NEX"
+                  ]
+                },
+                "scale": {
+                  "const": 6
+                },
+                "minimumUnit": {
+                  "$ref": "#/components/schemas/PositiveAmount"
+                }
+              },
+              "required": [
+                "asset",
+                "scale",
+                "minimumUnit"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "skus": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "productNo": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "productRevision": {
+                  "$ref": "#/components/schemas/Revision"
+                },
+                "giftEligible": {
+                  "type": "boolean",
+                  "description": "Whether the current gift executor can fulfill this SKU's complete native rights. Independent of paid purchase availability."
+                },
+                "giftUnavailabilityReason": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LocalizedText"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "name": {
+                  "$ref": "#/components/schemas/LocalizedText"
+                },
+                "available": {
+                  "type": "boolean"
+                },
+                "inventoryMode": {
+                  "type": "string",
+                  "enum": [
+                    "FINITE",
+                    "UNLIMITED"
+                  ]
+                },
+                "availableQuantity": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "productNo",
+                "productRevision",
+                "giftEligible",
+                "giftUnavailabilityReason",
+                "name",
+                "available",
+                "inventoryMode",
+                "availableQuantity"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "ranks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "name": {
+                  "$ref": "#/components/schemas/LocalizedText"
+                }
+              },
+              "required": [
+                "id",
+                "name"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "markets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "name": {
+                  "$ref": "#/components/schemas/LocalizedText"
+                }
+              },
+              "required": [
+                "id",
+                "name"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "policies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Policy"
+            }
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "serverTime": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "nativeContracts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NativeContractOption"
+            },
+            "description": "Server-resolved reference allowlist for policy creation. No native business configuration is returned; unresolved or unsupported contracts are disabled with an explanation."
+          }
+        },
+        "required": [
+          "assets",
+          "skus",
+          "ranks",
+          "markets",
+          "policies",
+          "capabilities",
+          "serverTime",
+          "nativeContracts"
+        ],
+        "additionalProperties": false
+      },
+      "PromotionPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Promotion"
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "query": {
+            "$ref": "#/components/schemas/PromotionListQuery"
+          },
+          "querySnapshot": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/PromotionListSummary"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "hasMore",
+          "total",
+          "query",
+          "querySnapshot",
+          "asOf",
+          "expiresAt",
+          "summary"
+        ],
+        "additionalProperties": false
+      },
+      "VersionPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Version"
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "hasMore"
+        ],
+        "additionalProperties": false
+      },
+      "PublicPromotionPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicPromotion"
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "hasMore"
+        ],
+        "additionalProperties": false
+      },
+      "RewardPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Reward"
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "hasMore"
+        ],
+        "additionalProperties": false
+      },
+      "RewardAdminPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RewardAdmin"
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "query": {
+            "$ref": "#/components/schemas/RewardAdminQuery"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "hasMore",
+          "total",
+          "asOf",
+          "query"
+        ],
+        "additionalProperties": false,
+        "description": "total and rows are read from one REPEATABLE_READ transaction for the complete query before cursor. Each next-page read is fresh and returns its own asOf; unlike the activity list, it is not a persisted cross-page snapshot."
+      },
+      "PolicyPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Policy"
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "hasMore"
+        ],
+        "additionalProperties": false
+      },
+      "LegacyRefundOrder": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "orderNo",
+          "userNo",
+          "skuId",
+          "skuName",
+          "skuSource",
+          "amount",
+          "state",
+          "dcLocation",
+          "ageText",
+          "orderedAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "orderNo": {
+            "$ref": "#/components/schemas/OrderNo"
+          },
+          "userNo": {
+            "type": "string"
+          },
+          "skuId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skuName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skuSource": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "amount": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "dcLocation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ageText": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "orderedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "description": "Unchanged existing DeviceOrderView; native BigDecimal/LocalDateTime wire format retained. New promotion money schemas always use decimal strings."
+      },
+      "OrderNo": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 96,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+      },
+      "CommandKey": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+      },
+      "PolicyVersionInput": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/PolicyContent"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "minItems": 1
+          },
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        },
+        "required": [
+          "content",
+          "reason",
+          "evidenceRefs",
+          "expectedRevision"
+        ],
+        "additionalProperties": false
+      },
+      "ExternalId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 96,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+      },
+      "LedgerNo": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+      },
+      "DispositionBasis": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "WHOLE_ORDER_REFUND"
+              },
+              "refundNo": {
+                "$ref": "#/components/schemas/ExternalId"
+              }
+            },
+            "required": [
+              "type",
+              "refundNo"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "APPROVED_CORRECTION"
+              },
+              "approvalOperationId": {
+                "$ref": "#/components/schemas/ExternalId"
+              },
+              "approvalRevision": {
+                "$ref": "#/components/schemas/Revision"
+              },
+              "approvedPayloadHash": {
+                "$ref": "#/components/schemas/Hash"
+              }
+            },
+            "required": [
+              "type",
+              "approvalOperationId",
+              "approvalRevision",
+              "approvedPayloadHash"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "description": "Server resolves a confirmed whole-order refund or a current approved A2 operation bound to this obligation and action. A string reference alone does not authorize cancellation/reversal."
+      },
+      "PublicRewardSpec": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "rewardRuleId": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "beneficiaryRole": {
+                "$ref": "#/components/schemas/Role"
+              },
+              "type": {
+                "const": "DEVICE"
+              },
+              "giftProductNo": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "quantity": {
+                "$ref": "#/components/schemas/Quantity"
+              },
+              "disclosure": {
+                "$ref": "#/components/schemas/RewardDisclosure"
+              }
+            },
+            "required": [
+              "rewardRuleId",
+              "beneficiaryRole",
+              "type",
+              "giftProductNo",
+              "quantity",
+              "disclosure"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "rewardRuleId": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "beneficiaryRole": {
+                "$ref": "#/components/schemas/Role"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "USDT",
+                  "NEX"
+                ]
+              },
+              "calculation": {
+                "const": "FIXED"
+              },
+              "amount": {
+                "$ref": "#/components/schemas/PositiveAmount"
+              },
+              "disclosure": {
+                "$ref": "#/components/schemas/RewardDisclosure"
+              }
+            },
+            "required": [
+              "rewardRuleId",
+              "beneficiaryRole",
+              "type",
+              "calculation",
+              "amount",
+              "disclosure"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "PublicPurchaseRule": {
+        "type": "object",
+        "properties": {
+          "ruleId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "productNo": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "minBuyQty": {
+            "$ref": "#/components/schemas/Quantity"
+          },
+          "repeatMode": {
+            "type": "string",
+            "enum": [
+              "PER_GROUP",
+              "ONCE_PER_ORDER"
+            ]
+          },
+          "maxGroups": {
+            "$ref": "#/components/schemas/Limit"
+          },
+          "maxGroupsPerPerson": {
+            "$ref": "#/components/schemas/Limit"
+          },
+          "buyerReward": {
+            "$ref": "#/components/schemas/PublicRewardSpec"
+          },
+          "inviterReward": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicRewardSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ruleId",
+          "productNo",
+          "minBuyQty",
+          "repeatMode",
+          "maxGroups",
+          "maxGroupsPerPerson",
+          "buyerReward",
+          "inviterReward"
+        ],
+        "additionalProperties": false
+      },
+      "ResolvedDeviceRights": {
+        "type": "object",
+        "properties": {
+          "productNo": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "productContract": {
+            "$ref": "#/components/schemas/NativeRef"
+          },
+          "activationMode": {
+            "enum": [
+              "AUTO",
+              "MANUAL"
+            ]
+          },
+          "effectiveOn": {
+            "enum": [
+              "ISSUED",
+              "ACTIVATED"
+            ]
+          },
+          "durationDays": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "taskEnabled": {
+            "type": "boolean"
+          },
+          "taskRule": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "earningsRule": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "countsAsDeviceHolding": {
+            "type": "boolean"
+          },
+          "countsForRank": {
+            "type": "boolean"
+          },
+          "transferable": {
+            "type": "boolean"
+          },
+          "exchangeable": {
+            "type": "boolean"
+          },
+          "revocationMode": {
+            "enum": [
+              "REVOKE_IF_UNUSED",
+              "MANUAL_IF_USED"
+            ]
+          }
+        },
+        "required": [
+          "productNo",
+          "productContract",
+          "activationMode",
+          "effectiveOn",
+          "durationDays",
+          "taskEnabled",
+          "taskRule",
+          "earningsRule",
+          "countsAsDeviceHolding",
+          "countsForRank",
+          "transferable",
+          "exchangeable",
+          "revocationMode"
+        ],
+        "additionalProperties": false
+      },
+      "PromotionContract": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "PROMOTION",
+              "REFERRAL"
+            ]
+          },
+          "template": {
+            "$ref": "#/components/schemas/Template"
+          },
+          "startsAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "endsAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "displayTimezone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "title": {
+            "$ref": "#/components/schemas/LocalizedText"
+          },
+          "terms": {
+            "$ref": "#/components/schemas/LocalizedText"
+          },
+          "placement": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "home.purchase-promotion",
+              null
+            ]
+          },
+          "minimumClientCapabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "PROMOTION_QUOTE_V1",
+                "ORDER_ITEM_QUANTITIES_V1",
+                "PROMOTION_REWARDS_V1"
+              ]
+            },
+            "minItems": 3,
+            "maxItems": 3,
+            "uniqueItems": true
+          },
+          "buyerAudience": {
+            "$ref": "#/components/schemas/Audience"
+          },
+          "inviterAudience": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Audience"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PurchaseRule"
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "combinationMatch": {
+            "type": "string",
+            "enum": [
+              "ALL",
+              "ANY"
+            ]
+          },
+          "perPersonLimit": {
+            "type": "object",
+            "properties": {
+              "buyer": {
+                "$ref": "#/components/schemas/Limit"
+              },
+              "directInviter": {
+                "$ref": "#/components/schemas/Limit"
+              }
+            },
+            "required": [
+              "buyer",
+              "directInviter"
+            ],
+            "additionalProperties": false
+          },
+          "maxRewardUnitsPerOrder": {
+            "$ref": "#/components/schemas/Limit"
+          },
+          "budgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BudgetInput"
+            },
+            "minItems": 1,
+            "maxItems": 102
+          },
+          "shortagePolicy": {
+            "type": "string",
+            "enum": [
+              "RULE_STOP",
+              "ACTIVITY_PAUSE"
+            ]
+          },
+          "policies": {
+            "$ref": "#/components/schemas/PolicySet"
+          },
+          "activityLimit": {
+            "$ref": "#/components/schemas/Limit"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "\\S",
+            "description": "Internal administrative activity name, independent of the localized public title; versioned with the draft and never used as identity."
+          }
+        },
+        "required": [
+          "category",
+          "template",
+          "startsAt",
+          "endsAt",
+          "displayTimezone",
+          "title",
+          "terms",
+          "placement",
+          "minimumClientCapabilities",
+          "buyerAudience",
+          "inviterAudience",
+          "rules",
+          "combinationMatch",
+          "perPersonLimit",
+          "maxRewardUnitsPerOrder",
+          "budgets",
+          "shortagePolicy",
+          "policies",
+          "activityLimit",
+          "name"
+        ],
+        "additionalProperties": false,
+        "description": "Complete stored contract validated on submit, approve and publish. Satisfying this shape is insufficient without resolving current approved policies and executable capabilities."
+      },
+      "DraftPolicySet": {
+        "type": "object",
+        "properties": {
+          "firstPurchase": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settlement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stacking": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "refund": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "authorization": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "DraftLocalizedText": {
+        "type": "object",
+        "properties": {
+          "zh": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "en": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "vi": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "DraftAudience": {
+        "type": "object",
+        "properties": {
+          "registrationAge": {
+            "$ref": "#/components/schemas/DayRange"
+          },
+          "purchaseHistory": {
+            "type": "string",
+            "enum": [
+              "ANY",
+              "NEVER_PAID",
+              "HAS_VALID_PURCHASE"
+            ]
+          },
+          "devicePresence": {
+            "type": "string",
+            "enum": [
+              "ANY",
+              "NONE",
+              "HAS_QUALIFYING_DEVICE"
+            ]
+          },
+          "deviceAudiencePolicy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rankIds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "uniqueItems": true
+          },
+          "lastValidPurchaseAge": {
+            "$ref": "#/components/schemas/DayRange"
+          },
+          "neverPurchased": {
+            "type": "boolean"
+          },
+          "markets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "uniqueItems": true
+          },
+          "sponsor": {
+            "type": "string",
+            "enum": [
+              "ANY",
+              "REQUIRED",
+              "ABSENT"
+            ]
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "DraftRewardSpec": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "rewardRuleId": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "beneficiaryRole": {
+                "$ref": "#/components/schemas/Role"
+              },
+              "type": {
+                "const": "DEVICE"
+              },
+              "giftProductNo": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Id"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "quantity": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Quantity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "deviceRightsProfile": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PolicyRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "rewardRuleId",
+              "beneficiaryRole",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "rewardRuleId": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "beneficiaryRole": {
+                "$ref": "#/components/schemas/Role"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "USDT",
+                  "NEX"
+                ]
+              },
+              "calculation": {
+                "anyOf": [
+                  {
+                    "const": "FIXED"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "amount": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PositiveAmount"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "assetPolicy": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PolicyRef"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "rewardRuleId",
+              "beneficiaryRole",
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "DraftPurchaseRule": {
+        "type": "object",
+        "properties": {
+          "ruleId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "productNo": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "minBuyQty": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Quantity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repeatMode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "PER_GROUP",
+                  "ONCE_PER_ORDER"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxGroups": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxGroupsPerPerson": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "buyerReward": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftRewardSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inviterReward": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftRewardSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ruleId"
+        ],
+        "additionalProperties": false
+      },
+      "DraftBudgetInput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "asset": {
+                "type": "string",
+                "enum": [
+                  "USDT",
+                  "NEX"
+                ]
+              },
+              "total": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PositiveAmount"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "asset"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "asset": {
+                "const": "DEVICE"
+              },
+              "productNo": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Id"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "total": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "asset"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "DraftPatch": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "PROMOTION",
+              "REFERRAL"
+            ]
+          },
+          "template": {
+            "$ref": "#/components/schemas/Template"
+          },
+          "startsAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "endsAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "displayTimezone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftLocalizedText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "terms": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftLocalizedText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "placement": {
+            "anyOf": [
+              {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "home.purchase-promotion",
+                  null
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "minimumClientCapabilities": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "PROMOTION_QUOTE_V1",
+                    "ORDER_ITEM_QUANTITIES_V1",
+                    "PROMOTION_REWARDS_V1"
+                  ]
+                },
+                "minItems": 3,
+                "maxItems": 3,
+                "uniqueItems": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "buyerAudience": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftAudience"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inviterAudience": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftAudience"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DraftPurchaseRule"
+                },
+                "minItems": 0,
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "combinationMatch": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "ALL",
+                  "ANY"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "perPersonLimit": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "buyer": {
+                    "$ref": "#/components/schemas/Limit"
+                  },
+                  "directInviter": {
+                    "$ref": "#/components/schemas/Limit"
+                  }
+                },
+                "required": [
+                  "buyer",
+                  "directInviter"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxRewardUnitsPerOrder": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "budgets": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DraftBudgetInput"
+                },
+                "minItems": 0,
+                "maxItems": 102
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shortagePolicy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "RULE_STOP",
+                  "ACTIVITY_PAUSE"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policies": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftPolicySet"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "activityLimit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "\\S",
+                "description": "Internal administrative activity name, independent of the localized public title; versioned with the draft and never used as identity."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "description": "Top-level patch: omitted fields stay unchanged; supplied objects/arrays replace that entire field; null clears an unfinished value. An unpublished draft may change category/template after the interface explains incompatible fields and the confirmed patch explicitly clears or replaces them; reject unresolved incompatibilities without changing the draft. Audit before/after values and preserve published snapshots, used rule identities and historical counts. Candidate metadata does not change the effective activity projection until publication. activityId/version/revision and approval fields are forbidden here.",
+        "minProperties": 1
+      },
+      "PeopleMetric": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unit": {
+            "const": "PEOPLE"
+          },
+          "completeness": {
+            "type": "string",
+            "enum": [
+              "COMPLETE",
+              "DELAYED",
+              "UNAVAILABLE"
+            ]
+          },
+          "source": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "asOf": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "unit",
+          "completeness",
+          "source",
+          "asOf"
+        ],
+        "additionalProperties": false
+      },
+      "ObligationFailureMetrics": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unit": {
+            "const": "DISTINCT_OBLIGATIONS"
+          },
+          "breakdown": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "ISSUANCE",
+                        "RECONCILIATION",
+                        "REVERSAL"
+                      ]
+                    },
+                    "asset": {
+                      "type": "string",
+                      "enum": [
+                        "DEVICE",
+                        "USDT",
+                        "NEX"
+                      ]
+                    },
+                    "reasonCode": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 96
+                    },
+                    "obligations": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "stage",
+                    "asset",
+                    "reasonCode",
+                    "obligations"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completeness": {
+            "type": "string",
+            "enum": [
+              "COMPLETE",
+              "DELAYED",
+              "UNAVAILABLE"
+            ]
+          },
+          "source": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "asOf": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "unit",
+          "breakdown",
+          "completeness",
+          "source",
+          "asOf"
+        ],
+        "additionalProperties": false
+      },
+      "RecoveryDurationMetric": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unit": {
+            "const": "SECONDS"
+          },
+          "statistic": {
+            "const": "MEAN"
+          },
+          "sampleCount": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completeness": {
+            "type": "string",
+            "enum": [
+              "COMPLETE",
+              "DELAYED",
+              "UNAVAILABLE"
+            ]
+          },
+          "source": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "asOf": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "unit",
+          "statistic",
+          "sampleCount",
+          "completeness",
+          "source",
+          "asOf"
+        ],
+        "additionalProperties": false
+      },
+      "ResolvedApprovedPolicy": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Policy"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "APPROVED"
+              },
+              "approvalRef": {
+                "$ref": "#/components/schemas/ExternalId"
+              },
+              "approvedBy": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "approvedAt": {
+                "$ref": "#/components/schemas/Time"
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "content": {
+                  "properties": {
+                    "kind": {
+                      "const": "DEVICE_RIGHTS"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                }
+              },
+              "required": [
+                "content"
+              ]
+            },
+            "then": {
+              "properties": {
+                "resolvedDeviceRights": {
+                  "$ref": "#/components/schemas/ResolvedDeviceRights"
+                }
+              }
+            }
+          }
+        ],
+        "description": "Server-resolved stored policy after actual authority/executor checks; this schema is never a client-supplied approval."
+      },
+      "NativeContractOption": {
+        "type": "object",
+        "properties": {
+          "system": {
+            "type": "string",
+            "enum": [
+              "E1_PRODUCT",
+              "ORDER_CONTRACT",
+              "EARNINGS_RELEASE",
+              "A2_POLICY"
+            ]
+          },
+          "resourceId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "title": {
+            "$ref": "#/components/schemas/LocalizedText"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "unavailabilityReason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalizedText"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "system",
+          "resourceId",
+          "title",
+          "reference",
+          "available",
+          "unavailabilityReason"
+        ],
+        "additionalProperties": false
+      },
+      "PromotionListQuery": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "activityId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "PROMOTION",
+              "REFERRAL"
+            ]
+          },
+          "template": {
+            "$ref": "#/components/schemas/Template"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ActivityState"
+          },
+          "from": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "to": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "timezone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "UPDATED_DESC",
+              "NAME_ASC",
+              "STARTS_ASC"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "from"
+              ]
+            },
+            "then": {
+              "required": [
+                "from",
+                "to",
+                "timezone"
+              ]
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "to"
+              ]
+            },
+            "then": {
+              "required": [
+                "from",
+                "to",
+                "timezone"
+              ]
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "timezone"
+              ]
+            },
+            "then": {
+              "required": [
+                "from",
+                "to",
+                "timezone"
+              ]
+            }
+          }
+        ]
+      },
+      "PromotionImpact": {
+        "type": "object",
+        "properties": {
+          "reserved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "issued": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unresolved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unpaidOrders": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pendingRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failedRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unknownRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reversingRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "manualReviewRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unfulfilledRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "obligations": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reservedOrders": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "orderNo": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 96
+                },
+                "version": {
+                  "$ref": "#/components/schemas/Revision"
+                },
+                "payBy": {
+                  "$ref": "#/components/schemas/Time"
+                },
+                "reservedRewards": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "orderNo",
+                "version",
+                "payBy",
+                "reservedRewards"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "budgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Budget"
+            }
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "completeness": {
+            "const": "COMPLETE"
+          },
+          "source": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "reserved",
+          "issued",
+          "unresolved",
+          "unpaidOrders",
+          "pendingRewards",
+          "failedRewards",
+          "unknownRewards",
+          "reversingRewards",
+          "manualReviewRewards",
+          "unfulfilledRewards",
+          "obligations",
+          "reservedOrders",
+          "budgets",
+          "asOf",
+          "completeness",
+          "source"
+        ],
+        "additionalProperties": false,
+        "description": "Operational facts across all versions, including marked fixtures. reserved counts future reward obligations, unpaidOrders counts distinct reserved orders. issued requires a matching wallet/device receipt and remains a gross historical count after reversal. pendingRewards includes PENDING/READY/PROCESSING; unresolved includes RETRYABLE_FAILED/OUTCOME_UNKNOWN/REVERSAL_PENDING/MANUAL_REVIEW; unfulfilledRewards includes all nonterminal obligations. Amounts stay split by asset and device SKU. No inferred revenue."
+      },
+      "PromotionListSummary": {
+        "type": "object",
+        "properties": {
+          "activeActivities": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reserved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "issued": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unresolved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unpaidOrders": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unfulfilledRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "budgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AggregateBudget"
+            }
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "completeness": {
+            "const": "COMPLETE"
+          },
+          "source": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "activeActivities",
+          "reserved",
+          "issued",
+          "unresolved",
+          "unpaidOrders",
+          "unfulfilledRewards",
+          "budgets",
+          "asOf",
+          "completeness",
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "AggregateAmount": {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]{0,35})(\\.[0-9]{1,6})?$",
+        "description": "Read-only sums may exceed a single DECIMAL(18,6) entry. Single-entry Amount and database constraints remain unchanged."
+      },
+      "AggregateBudget": {
+        "type": "object",
+        "properties": {
+          "asset": {
+            "type": "string",
+            "enum": [
+              "USDT",
+              "NEX",
+              "DEVICE"
+            ]
+          },
+          "productNo": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "available": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "reserved": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "committed": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "issued": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "reversed": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "unrecoverable": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          }
+        },
+        "required": [
+          "asset",
+          "productNo",
+          "total",
+          "available",
+          "reserved",
+          "committed",
+          "issued",
+          "reversed",
+          "unrecoverable"
+        ],
+        "additionalProperties": false
+      },
+      "AdminDiagnostic": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "$ref": "#/components/schemas/LocalizedText"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "AdminDiagnosticCount": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "$ref": "#/components/schemas/LocalizedText"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "count"
+        ],
+        "additionalProperties": false
+      },
+      "AudienceConditionSummary": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "$ref": "#/components/schemas/Template"
+          },
+          "buyerAudience": {
+            "$ref": "#/components/schemas/Audience"
+          },
+          "inviterAudience": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Audience"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "template",
+          "buyerAudience",
+          "inviterAudience"
+        ],
+        "additionalProperties": false
+      },
+      "AudienceRolePreview": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "conditions": {
+            "$ref": "#/components/schemas/Audience"
+          },
+          "matched": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "rejected": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unknown": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reasonCounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminDiagnosticCount"
+            }
+          }
+        },
+        "required": [
+          "role",
+          "conditions",
+          "matched",
+          "rejected",
+          "unknown",
+          "reasonCounts"
+        ],
+        "additionalProperties": false
+      },
+      "AdminSimulationPricing": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuoteLine"
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "subtotalUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "discountUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "amountUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "bundlePolicyVersion": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        },
+        "required": [
+          "items",
+          "subtotalUsdt",
+          "discountUsdt",
+          "amountUsdt",
+          "bundlePolicyVersion"
+        ],
+        "additionalProperties": false
+      },
+      "AdminRewardUnit": {
+        "type": "object",
+        "properties": {
+          "productNo": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "ruleId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "rewardRuleId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "beneficiaryId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "beneficiaryRole": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "unitSeq": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reward": {
+            "$ref": "#/components/schemas/RewardSpec"
+          },
+          "purchaseUnitFrom": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "purchaseUnitTo": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "productNo",
+          "ruleId",
+          "rewardRuleId",
+          "beneficiaryId",
+          "beneficiaryRole",
+          "unitSeq",
+          "reward",
+          "purchaseUnitFrom",
+          "purchaseUnitTo"
+        ],
+        "additionalProperties": false
+      },
+      "AdminRuleResult": {
+        "type": "object",
+        "properties": {
+          "ruleId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "productNo": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "purchaseQuantity": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "minimumQuantity": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "beneficiaries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "$ref": "#/components/schemas/Role"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "MATCHED",
+                    "REJECTED",
+                    "UNKNOWN"
+                  ]
+                },
+                "rewardUnits": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminDiagnostic"
+                  }
+                }
+              },
+              "required": [
+                "role",
+                "status",
+                "rewardUnits",
+                "reasons"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "ruleId",
+          "productNo",
+          "purchaseQuantity",
+          "minimumQuantity",
+          "beneficiaries"
+        ],
+        "additionalProperties": false
+      },
+      "AdminResourceImpact": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "BUDGET",
+              "INVENTORY"
+            ]
+          },
+          "asset": {
+            "type": "string",
+            "enum": [
+              "USDT",
+              "NEX",
+              "DEVICE"
+            ]
+          },
+          "productNo": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "required": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AggregateAmount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "available": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AggregateAmount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "AVAILABLE",
+              "SHORTAGE",
+              "UNKNOWN"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "asset",
+          "productNo",
+          "required",
+          "available",
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "AdminPublicPreview": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "$ref": "#/components/schemas/LocalizedText"
+          },
+          "terms": {
+            "$ref": "#/components/schemas/LocalizedText"
+          },
+          "startsAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "endsAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "placement": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "home.purchase-promotion",
+              null
+            ]
+          },
+          "rewardRules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicPurchaseRule"
+            },
+            "minItems": 1
+          },
+          "displayTimezone": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "title",
+          "terms",
+          "startsAt",
+          "endsAt",
+          "placement",
+          "rewardRules",
+          "displayTimezone"
+        ],
+        "additionalProperties": false
+      },
+      "AdminSimulation": {
+        "type": "object",
+        "properties": {
+          "activityId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "version": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "configHash": {
+            "$ref": "#/components/schemas/Hash"
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "sample": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "UNSELECTED",
+                  "EXISTING_ACCOUNT"
+                ]
+              },
+              "accountId": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Id"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "accountId"
+            ],
+            "additionalProperties": false
+          },
+          "pricing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdminSimulationPricing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "eligibility": {
+            "type": "string",
+            "enum": [
+              "ELIGIBLE",
+              "INELIGIBLE",
+              "UNKNOWN"
+            ]
+          },
+          "ruleResults": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminRuleResult"
+            },
+            "minItems": 1
+          },
+          "rewardUnits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminRewardUnit"
+            }
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminResourceImpact"
+            },
+            "minItems": 1
+          },
+          "publicPreview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdminPublicPreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminDiagnostic"
+            }
+          },
+          "completeness": {
+            "type": "string",
+            "enum": [
+              "COMPLETE",
+              "UNAVAILABLE"
+            ]
+          },
+          "reserved": {
+            "const": false
+          },
+          "giftCostUsdt": {
+            "type": "null"
+          },
+          "acquisitionCostUsdt": {
+            "type": "null"
+          },
+          "source": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "quotaImpact": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminQuotaImpact"
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "activityId",
+          "version",
+          "configHash",
+          "asOf",
+          "sample",
+          "pricing",
+          "eligibility",
+          "ruleResults",
+          "rewardUnits",
+          "resources",
+          "publicPreview",
+          "blockers",
+          "completeness",
+          "reserved",
+          "giftCostUsdt",
+          "acquisitionCostUsdt",
+          "source",
+          "quotaImpact"
+        ],
+        "additionalProperties": false,
+        "description": "Admin-only draft diagnostics, never a checkout quote or reservation. Reward units are shared evaluator outputs grouped by purchase units and beneficiary. Resource demand remains separate from actual eligibility; shortages are explicit blockers, unknown demand is null. No actual cost source means no inferred cost. Publish still revalidates all current facts."
+      },
+      "RewardAdminQuery": {
+        "type": "object",
+        "properties": {
+          "activityId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RewardState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "orderNo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 96
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "beneficiaryId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "DEVICE",
+                  "USDT",
+                  "NEX"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "activityId",
+          "state",
+          "orderNo",
+          "beneficiaryId",
+          "type"
+        ],
+        "additionalProperties": false
+      },
+      "AdminQuotaImpact": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "enum": [
+              "ACTIVITY_ORDER",
+              "PERSON_ORDER",
+              "PERSON_RULE"
+            ]
+          },
+          "beneficiaryId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "beneficiaryRole": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Role"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ruleId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usedAndReserved": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "required": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remaining": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "AVAILABLE",
+              "SHORTAGE",
+              "UNKNOWN"
+            ]
+          }
+        },
+        "required": [
+          "scope",
+          "beneficiaryId",
+          "beneficiaryRole",
+          "ruleId",
+          "limit",
+          "usedAndReserved",
+          "required",
+          "remaining",
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "MetricRewardGroupBy": {
+        "type": "string",
+        "enum": [
+          "SKU",
+          "TEMPLATE",
+          "BENEFICIARY"
+        ]
+      },
+      "MetricRewardGroupRow": {
+        "type": "object",
+        "properties": {
+          "groupKey": {
+            "$ref": "#/components/schemas/Hash"
+          },
+          "purchaseProductNo": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "template": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Template"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "beneficiaryId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "beneficiaryRole": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Role"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "asset": {
+            "enum": [
+              "DEVICE",
+              "USDT",
+              "NEX"
+            ]
+          },
+          "giftProductNo": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "obligations": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "orders": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "beneficiaries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "amount": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "issued": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "pending": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "reversed": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "unrecoverable": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "cancelled": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          }
+        },
+        "required": [
+          "groupKey",
+          "purchaseProductNo",
+          "template",
+          "beneficiaryId",
+          "beneficiaryRole",
+          "asset",
+          "giftProductNo",
+          "obligations",
+          "orders",
+          "beneficiaries",
+          "amount",
+          "issued",
+          "pending",
+          "reversed",
+          "unrecoverable",
+          "cancelled"
+        ],
+        "additionalProperties": false,
+        "description": "One reward grouping and asset; device gifts split by gift SKU. SKU is the purchased SKU from the immutable award snapshot. TEMPLATE is the original contract template. BENEFICIARY splits by original beneficiary role and account ID. Amounts use original asset units; none represent acquisition cost."
+      },
+      "MetricRewardBreakdown": {
+        "type": "object",
+        "properties": {
+          "groupBy": {
+            "$ref": "#/components/schemas/MetricRewardGroupBy"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricRewardGroupRow"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "rewardWindowBasis": {
+            "const": "OBLIGATION_CREATED_AT_OUTCOMES_AS_OF"
+          }
+        },
+        "required": [
+          "groupBy",
+          "rows",
+          "total",
+          "nextCursor",
+          "hasMore",
+          "rewardWindowBasis"
+        ],
+        "additionalProperties": false,
+        "description": "Server aggregate of obligations created in the report window, with receipt/reversal outcomes through the same asOf. Rows, total and all top metrics remain fixed under querySnapshot; deterministic ordering and offset cursor. Switching groupBy retains the snapshot and top-level totals. Export includes all groups and the enriched immutable reward facts."
+      },
+      "RewardDisclosure": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "$ref": "#/components/schemas/LocalizedText"
+          },
+          "terms": {
+            "$ref": "#/components/schemas/LocalizedText"
+          },
+          "refundTerms": {
+            "$ref": "#/components/schemas/LocalizedText"
+          },
+          "benefitDescription": {
+            "$ref": "#/components/schemas/LocalizedText"
+          },
+          "deviceRights": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "activationMode": {
+                    "enum": [
+                      "AUTO",
+                      "MANUAL"
+                    ]
+                  },
+                  "effectiveOn": {
+                    "enum": [
+                      "ISSUED",
+                      "ACTIVATED"
+                    ]
+                  },
+                  "durationDays": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "taskEnabled": {
+                    "type": "boolean"
+                  },
+                  "countsAsDeviceHolding": {
+                    "type": "boolean"
+                  },
+                  "countsForRank": {
+                    "type": "boolean"
+                  },
+                  "transferable": {
+                    "type": "boolean"
+                  },
+                  "exchangeable": {
+                    "type": "boolean"
+                  },
+                  "revocationMode": {
+                    "enum": [
+                      "REVOKE_IF_UNUSED",
+                      "MANUAL_IF_USED"
+                    ]
+                  }
+                },
+                "required": [
+                  "activationMode",
+                  "effectiveOn",
+                  "durationDays",
+                  "taskEnabled",
+                  "countsAsDeviceHolding",
+                  "countsForRank",
+                  "transferable",
+                  "exchangeable",
+                  "revocationMode"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deviceName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "DEVICE model name from the original approved E1 product contract evidence. Null for USDT/NEX; never resolved from the current store catalog."
+          }
+        },
+        "required": [
+          "title",
+          "terms",
+          "refundTerms",
+          "benefitDescription",
+          "deviceRights",
+          "deviceName"
+        ],
+        "additionalProperties": false,
+        "description": "Public benefit and refund terms resolved exclusively from the published or frozen original policy snapshot. No native hashes, approval identities or internal configuration. Device rights are null for asset rewards. Historical orders never consult current promotion terms."
+      },
+      "DispositionOption": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "enum": [
+              "CANCEL",
+              "REVERSE"
+            ]
+          },
+          "basis": {
+            "$ref": "#/components/schemas/DispositionBasis"
+          },
+          "label": {
+            "$ref": "#/components/schemas/LocalizedText"
+          }
+        },
+        "required": [
+          "action",
+          "basis",
+          "label"
+        ],
+        "additionalProperties": false
+      },
+      "OrderReceiptItem": {
+        "type": "object",
+        "properties": {
+          "lineId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "productNo": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "quantity": {
+            "$ref": "#/components/schemas/Quantity"
+          },
+          "productName": {
+            "type": "string",
+            "description": "Original canonical purchased order item name."
+          }
+        },
+        "required": [
+          "lineId",
+          "productNo",
+          "quantity",
+          "productName"
+        ],
+        "additionalProperties": false,
+        "description": "Purchased canonical order line. lineId is the actual order item ID and joins ExpectedReward.lineId; never a quote line ID."
+      },
+      "MetricSkuSales": {
+        "type": "object",
+        "properties": {
+          "purchaseProductNo": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "productName": {
+            "type": "string"
+          },
+          "paidOrders": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "grossPaidUsdt": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "refundUsdt": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          },
+          "netReceivedUsdt": {
+            "$ref": "#/components/schemas/AggregateAmount"
+          }
+        },
+        "required": [
+          "purchaseProductNo",
+          "productName",
+          "paidOrders",
+          "grossPaidUsdt",
+          "refundUsdt",
+          "netReceivedUsdt"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

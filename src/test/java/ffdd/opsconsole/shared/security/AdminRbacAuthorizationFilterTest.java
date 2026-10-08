@@ -81,6 +81,41 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void sharedReasonPolicyAllowsOnlyTheAuthenticatedReadWithoutPlatformGrants() throws Exception {
+        authenticateTrustedAdmin("2791", "growth_promotion_edit");
+        AtomicBoolean read = new AtomicBoolean(false);
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), new MockHttpServletResponse(), mark(read));
+        assertThat(read).isTrue();
+        for (String path : List.of("/api/admin/platform/audit/reason-policy", "/api/admin/platform/audit/operations")) {
+            AtomicBoolean denied = new AtomicBoolean(false);
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(request(path.endsWith("reason-policy") ? "POST" : "GET", path), response, mark(denied));
+            assertThat(denied).isFalse();assertThat(response.getStatus()).isEqualTo(403);
+        }
+        SecurityContextHolder.clearContext();
+        AtomicBoolean anonymous = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), response, mark(anonymous));
+        assertThat(anonymous).isFalse();assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void sharedReasonPolicyRejectsUserAndMissingSubjectEvenWithAnAuthority() throws Exception {
+        for (String subject : List.of("USER", "MISSING")) {
+            authenticate("growth_promotion_edit");
+            if (subject.equals("USER")) {
+                ((UsernamePasswordAuthenticationToken) SecurityContextHolder.getContext().getAuthentication())
+                        .setDetails(java.util.Map.of("subjectType", subject));
+            }
+            AtomicBoolean invoked = new AtomicBoolean(false);
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(request("GET", "/api/admin/platform/audit/reason-policy"), response, mark(invoked));
+            assertThat(invoked).isFalse();assertThat(response.getStatus()).isEqualTo(403);
+            assertThat(response.getContentAsString()).contains("ADMIN_SUBJECT_REQUIRED");
+        }
+    }
+
+    @Test
     void routesCanonicalRegulatoryEndpointsThroughBiAuthorities() throws Exception {
         AtomicBoolean readInvoked = new AtomicBoolean(false);
         authenticate("bi_l5_read");

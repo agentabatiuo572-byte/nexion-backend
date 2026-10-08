@@ -126,6 +126,9 @@ public class AuditReplayBusinessPermissionGuard {
         }
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
         String requiredAuthority = requiredAuthority(command, operation);
+        if("promotion_reward_correction".equals(operation)
+                &&(!"H".equals(command.domain())||!promotionCorrectionValid(command.params())))
+            return ApiResult.fail(422,"PROMOTION_CORRECTION_FIELDS_INVALID");
         if (delegatedProposal() && requiredAuthority == null) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_UNMAPPED");
         }
@@ -490,6 +493,13 @@ public class AuditReplayBusinessPermissionGuard {
      * 提交给 A2；实际快照是否仍有效由回放服务再次用数据库状态校验。
      */
     private DelegatedProposalDescriptor delegatedHDescriptor(String operation, Map<String, Object> params) {
+        if("promotion_reward_correction".equals(operation)) {
+            if(!promotionCorrectionValid(params))return null;
+            String id=value(params,"obligationId"),action=value(params,"action");
+            return new DelegatedProposalDescriptor("CANCEL".equals(action)?"批准取消成交奖励":"批准追回成交奖励",id,
+                "奖励版本 "+value(params,"expectedRevision"),"仅批准指定奖励及资产的处置", "H", "fund",false,
+                new AuditLockTarget("H","promotion_reward",id));
+        }
         if (!"h8_referral_settlement".equals(operation)) {
             return null;
         }
@@ -876,6 +886,15 @@ public class AuditReplayBusinessPermissionGuard {
                 new AuditLockTarget(targetDomain, targetType, targetId));
     }
 
+    private boolean promotionCorrectionValid(Map<String,Object> p) {
+        return p!=null&&p.keySet().equals(Set.of("obligationId","expectedRevision","snapshotHash","action","asset"))
+            &&value(p,"obligationId").matches("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+            &&strictLong(p.get("expectedRevision"),1,Long.MAX_VALUE)!=null
+            &&value(p,"snapshotHash").matches("^[0-9a-f]{64}$")
+            &&Set.of("CANCEL","REVERSE").contains(value(p,"action"))
+            &&Set.of("DEVICE","USDT","NEX").contains(value(p,"asset"));
+    }
+
     private String positiveIdentifier(Object value) {
         String identifier = value == null ? "" : String.valueOf(value).trim();
         try {
@@ -984,6 +1003,8 @@ public class AuditReplayBusinessPermissionGuard {
                 default -> null;
             };
             case "H" -> switch (operation) {
+                case "promotion_reward_correction" -> "CANCEL".equals(value(command.params(),"action"))
+                        ?"growth_promotion_reward_cancel":"growth_promotion_reward_reverse";
                 case "h1_phase_dial" -> "growth_h1_write";
                 case "h1_phase_control", "h1_phase_override" -> "growth_h1_control_pin_write";
                 case "h2_trial_cancel" -> "growth_h2_session_cancel";
