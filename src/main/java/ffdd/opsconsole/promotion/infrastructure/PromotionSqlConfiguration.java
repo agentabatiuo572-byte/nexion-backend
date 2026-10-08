@@ -10,11 +10,12 @@ import org.mybatis.spring.SqlSessionTemplate;
 import org.mybatis.spring.transaction.SpringManagedTransactionFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 @Configuration
 public class PromotionSqlConfiguration {
-    @Bean
-    public PromotionMapper promotionMapper(DataSource dataSource) {
+    @Bean @Primary
+    public PromotionMapper promotionRawMapper(DataSource dataSource) {
         var configuration=new MybatisConfiguration(new Environment("promotion",new SpringManagedTransactionFactory(),dataSource));
         // Frozen raw-row hashes include null columns; locking reads must never reuse a session cache.
         configuration.setCallSettersOnNulls(true);
