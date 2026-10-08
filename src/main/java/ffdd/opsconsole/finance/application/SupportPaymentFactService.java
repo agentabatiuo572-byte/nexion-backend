@@ -24,11 +24,26 @@ public class SupportPaymentFactService {
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Snapshot read(Collection<Long> customerIds) {
+        return readWithCapturedHistory(customerIds,new CapturedFinancialHistory(List.of(),List.of(),Set.of()));
+    }
+    record VerifiedCandidate(Fact fact,String logicalPaymentKey) {
+        VerifiedCandidate {
+            Objects.requireNonNull(fact);
+            if(logicalPaymentKey==null || logicalPaymentKey.isBlank())throw new IllegalArgumentException("Explicit logical payment key required");
+        }
+    }
+    record CapturedFinancialHistory(List<VerifiedCandidate> candidates,List<Issue> issues,Set<String> conflictingFactIds) {
+        CapturedFinancialHistory {
+            candidates=List.copyOf(candidates);issues=List.copyOf(issues);conflictingFactIds=Set.copyOf(conflictingFactIds);
+        }
+    }
+    // The source facade supplies verified financial data inside its existing RR transaction.
+    Snapshot readWithCapturedHistory(Collection<Long> customerIds,CapturedFinancialHistory captured) {
         if (customerIds == null || customerIds.isEmpty() || customerIds.stream().anyMatch(id -> id == null || id <= 0))
             throw new IllegalArgumentException("Explicit positive customer scope required");
         var ids = List.copyOf(new TreeSet<>(customerIds));
         var rows = new ArrayList<Map<String,Object>>();
-        var issues = new ArrayList<Issue>();
+        var issues = new ArrayList<Issue>(captured.issues());
         var excluded = new EnumMap<Source,Long>(Source.class);
         load(rows, issues, () -> mapper.deposits(ids), Source.DEPOSIT_ORDER);
         load(rows, issues, () -> mapper.cards(ids), Source.CARD_TOPUP);
@@ -41,43 +56,46 @@ public class SupportPaymentFactService {
         load(rows, issues, () -> mapper.unmatched(ids), Source.UNMATCHED_LEDGER);
 
         var facts = new LinkedHashMap<String,Fact>();
-        var rejected = new HashSet<String>();
+        var rejected = new HashSet<String>(captured.conflictingFactIds());
         var logicalPayments = new HashMap<String,String>();
+        var verified=new HashMap<String,Fact>();
+        for(var candidate:captured.candidates()) {
+            Fact fact=candidate.fact();
+            if(!ids.contains(fact.customerId()))throw new IllegalArgumentException("Captured customer outside explicit scope");
+            Fact prior=verified.putIfAbsent(fact.factId(),fact);
+            if(prior!=null && !sameCapturedProjection(prior,fact)) {
+                rejected.add(fact.factId());issues.add(new Issue(fact.source(),fact.sourceIds().get(0),"CONFLICTING_CAPTURED_SOURCE_PROJECTION"));
+            }
+            accept(fact,candidate.logicalPaymentKey(),facts,rejected,logicalPayments,issues);
+        }
         for (var row : rows) {
             Source source = Source.valueOf(text(row,"source"));
             String sourceId = text(row,"sourceId");
+            if(source==Source.UNMATCHED_LEDGER)continue;
             if (source == Source.FREE_TRIAL || number(row,"excludedEnvironment") == 1
                     || (Kind.DEVICE_PURCHASE.name().equals(text(row,"kind")) && decimal(row,"amount") != null
                         && decimal(row,"amount").signum() == 0
                         && (decimal(row,"ledgerAmount") == null || decimal(row,"ledgerAmount").signum() == 0))) {
                 excluded.merge(source,1L,Long::sum); continue;
             }
-            String problem = invalid(row, source);
-            if (problem != null) { issues.add(new Issue(source,sourceId,problem)); continue; }
             Kind kind = Kind.valueOf(text(row,"kind"));
-            long ledger = number(row,"ledgerId"), customer = number(row,"customerId");
-            String id = kind == Kind.DEPOSIT ? "DEPOSIT:"+ledger : kind == Kind.DEVICE_PURCHASE
-                ? "PURCHASE:"+text(row,"orderNo") : "ORDER_REFUND:"+ledger;
-            var fact = fact(row,source);
-            Fact previous = facts.get(id);
-            if (previous != null) {
-                if (!samePayment(previous,fact)) {
-                    rejected.add(id); issues.add(new Issue(source,sourceId,"CONFLICTING_FACT_PROJECTION"));
-                } else {
-                    var references = new TreeSet<>(previous.sourceIds()); references.addAll(fact.sourceIds());
-                    facts.put(id,new Fact(previous.factId(),previous.kind(),previous.source(),List.copyOf(references),
-                        previous.customerId(),previous.ledgerId(),previous.sourceBusinessId(),previous.orderNo(),previous.orderType(),
-                        previous.originalFactId(),previous.currency(),previous.amount(),previous.succeededAt(),
-                        previous.successTimeField(),previous.fractionalSecondDigits(),previous.providerPaidAt(),
-                        previous.ledgerRecordedAt(),previous.sourceConfirmationAt(),previous.sourceVersion(),previous.historicalEnvironmentStatus()));
-                }
-            } else facts.put(id,fact);
-            String logical = customer+":"+kind+":"+text(row,"currency")+":"+text(row,"duplicateKey");
-            String priorId = logicalPayments.putIfAbsent(logical,id);
-            if (priorId != null && !priorId.equals(id)) {
-                rejected.add(priorId); rejected.add(id);
-                issues.add(new Issue(source,sourceId,"DUPLICATE_PAYMENT_SOURCE"));
+            String id=kind==Kind.DEPOSIT ? "DEPOSIT:"+number(row,"ledgerId") : kind==Kind.DEVICE_PURCHASE
+                ? "PURCHASE:"+text(row,"orderNo") : "ORDER_REFUND:"+number(row,"ledgerId");
+            Fact saved=verified.get(id);
+            String problem = invalid(row, source);
+            if(saved!=null && "CONFLICTING_SUCCESS_TIME".equals(problem)
+                && invalidNewSource(row,source)==null && sameCapturedProjection(saved,fact(row,source)))problem=null;
+            if (problem != null) {
+                issues.add(new Issue(source,sourceId,problem));
+                if(saved!=null)rejected.add(id);
+                continue;
             }
+            var fact = fact(row,source);
+            if(saved!=null && !sameCapturedProjection(saved,fact)) {
+                rejected.add(id);issues.add(new Issue(source,sourceId,"CONFLICTING_CAPTURED_SOURCE_PROJECTION"));
+                continue;
+            }
+            accept(fact,text(row,"duplicateKey"),facts,rejected,logicalPayments,issues);
         }
         // A legacy conversion backfill can map the same charge to multiple orders.
         var ledgerOwners = new HashMap<String,String>();
@@ -114,6 +132,16 @@ public class SupportPaymentFactService {
             }
         }
         invalidRefunds.forEach(facts::remove);
+        // Legacy missing-source queries can overlook a retained, independently verified soft-deleted root.
+        for(var row:rows) {
+            if(!Source.UNMATCHED_LEDGER.name().equals(text(row,"source")))continue;
+            boolean resolved=number(row,"ledgerId")>0 && facts.values().stream().anyMatch(f ->
+                f.ledgerId()==number(row,"ledgerId") && f.customerId()==number(row,"customerId")
+                && f.kind().name().equals(text(row,"kind")) && Objects.equals(f.sourceBusinessId(),text(row,"businessId"))
+                && f.currency().equals(text(row,"currency")) && decimal(row,"amount")!=null
+                && f.amount().compareTo(decimal(row,"amount"))==0);
+            if(!resolved)issues.add(new Issue(Source.UNMATCHED_LEDGER,text(row,"sourceId"),"MISSING_AUTHORITATIVE_SOURCE"));
+        }
         var coverage = new ArrayList<Coverage>();
         for (Source source : Source.values()) {
             var reasons = new TreeSet<String>();
@@ -127,6 +155,33 @@ public class SupportPaymentFactService {
         }
         var sorted = facts.values().stream().sorted(Comparator.comparing(Fact::succeededAt).thenComparing(Fact::factId)).toList();
         return new Snapshot(sorted,issues,coverage,DateTimeFormatConfig.BUSINESS_ZONE.getId(),Instant.now());
+    }
+
+    private static void accept(Fact fact,String logicalKey,Map<String,Fact> facts,Set<String> rejected,
+            Map<String,String> logicalPayments,List<Issue> issues) {
+        String id=fact.factId();Fact previous=facts.get(id);
+        if(previous!=null) {
+            if(!samePayment(previous,fact)) {
+                rejected.add(id);issues.add(new Issue(fact.source(),fact.sourceIds().get(0),"CONFLICTING_FACT_PROJECTION"));
+            } else {
+                var refs=new TreeSet<>(previous.sourceIds());refs.addAll(fact.sourceIds());
+                facts.put(id,new Fact(previous.factId(),previous.kind(),previous.source(),List.copyOf(refs),previous.customerId(),
+                    previous.ledgerId(),previous.sourceBusinessId(),previous.orderNo(),previous.orderType(),previous.originalFactId(),
+                    previous.currency(),previous.amount(),previous.succeededAt(),previous.successTimeField(),previous.fractionalSecondDigits(),
+                    previous.providerPaidAt(),previous.ledgerRecordedAt(),previous.sourceConfirmationAt(),previous.sourceVersion(),previous.historicalEnvironmentStatus()));
+            }
+        } else facts.put(id,fact);
+        String logical=fact.customerId()+":"+fact.kind()+":"+fact.currency()+":"+logicalKey;
+        String prior=logicalPayments.putIfAbsent(logical,id);
+        if(prior!=null && !prior.equals(id)) {
+            rejected.add(prior);rejected.add(id);issues.add(new Issue(fact.source(),fact.sourceIds().get(0),"DUPLICATE_PAYMENT_SOURCE"));
+        }
+    }
+    private static boolean sameCapturedProjection(Fact left,Fact right) {
+        return samePayment(left,right) && left.source()==right.source() && left.sourceIds().equals(right.sourceIds())
+            && Objects.equals(left.sourceBusinessId(),right.sourceBusinessId()) && Objects.equals(left.orderType(),right.orderType())
+            && Objects.equals(left.originalFactId(),right.originalFactId()) && Objects.equals(left.successTimeField(),right.successTimeField())
+            && left.fractionalSecondDigits()==right.fractionalSecondDigits() && Objects.equals(left.providerPaidAt(),right.providerPaidAt());
     }
 
     private static void load(List<Map<String,Object>> rows,List<Issue> issues,Supplier<List<Map<String,Object>>> query,Source... sources) {

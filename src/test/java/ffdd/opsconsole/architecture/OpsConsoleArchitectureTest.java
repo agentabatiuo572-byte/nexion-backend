@@ -285,7 +285,7 @@ class OpsConsoleArchitectureTest {
 
         for (Path file : sourceFiles()) {
             String source = Files.readString(file);
-            if (HAND_WRITTEN_JDBC_PATTERN.matcher(source).find()) {
+            if (hasHandWrittenJdbc(displayPath(file), source)) {
                 jdbcViolations.add(displayPath(file));
             }
         }
@@ -304,6 +304,23 @@ class OpsConsoleArchitectureTest {
         assertThat(jdbcViolations)
                 .as("Application code must not reintroduce hand-written Spring JDBC repositories")
                 .isEmpty();
+    }
+
+    @Test
+    void snapshotIsolationInspectionDoesNotPermitJdbcRepositoriesOrOtherConnectionHolderCallers() {
+        String reader = "src/main/java/ffdd/opsconsole/finance/application/SupportPaymentSourceService.java";
+        String holder = "import org.springframework.jdbc.datasource.ConnectionHolder;";
+        assertThat(hasHandWrittenJdbc(reader, holder)).isFalse();
+        assertThat(hasHandWrittenJdbc("src/main/java/other/Reader.java", holder)).isTrue();
+        assertThat(hasHandWrittenJdbc(reader, holder + "\nimport org.springframework.jdbc.core.JdbcTemplate;")).isTrue();
+        assertThat(hasHandWrittenJdbc(reader, holder + "\nNamedParameterJdbcTemplate query;")).isTrue();
+    }
+
+    private static boolean hasHandWrittenJdbc(String path, String source) {
+        // This reader only inspects its existing transaction isolation; SQL still belongs to MyBatis.
+        if (path.equals("src/main/java/ffdd/opsconsole/finance/application/SupportPaymentSourceService.java"))
+            source = source.replace("import org.springframework.jdbc.datasource.ConnectionHolder;", "");
+        return HAND_WRITTEN_JDBC_PATTERN.matcher(source).find();
     }
 
     @Test

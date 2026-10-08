@@ -32,4 +32,19 @@ class SupportPaymentFactMapperSqlTest {
         assertThat(refund).contains("l.biz_no=CONCAT('E4-REFUND-',o.order_no)","l.created_at succeededAt","l.biz_type='ORDER_REFUND'")
             .doesNotContain("nx_wallet_bill","CHARGEBACK_RECOVERY");
     }
+    @Test void walletOriginalPaymentRequiresSuccessfulHistoryAndAnyStoredLedgerLinkMustMatch() {
+        var configuration=new Configuration();configuration.addMapper(SupportPaymentFactMapper.class);
+        String sql=configuration.getMappedStatement(SupportPaymentFactMapper.class.getName()+".orders")
+            .getBoundSql(Map.of("customerIds",List.of(7L))).getSql();
+        assertThat(sql).contains("p.payment_status IN ('PAID','CONFIRMED','SUCCESS','REFUNDED')",
+            "(p.wallet_ledger_id IS NULL OR p.wallet_ledger_id=l.id)");
+        assertThat(sql.split("p.payment_status IN",-1)).hasSize(3);
+        assertThat(sql.split("p.wallet_ledger_id IS NULL",-1)).hasSize(3);
+    }
+    @Test void unmatchedRowsRetainTheActualLedgerIdentityAndCorrectDepositOrPurchaseKind() {
+        var configuration=new Configuration();configuration.addMapper(SupportPaymentFactMapper.class);
+        String sql=configuration.getMappedStatement(SupportPaymentFactMapper.class.getName()+".unmatched")
+            .getBoundSql(Map.of("customerIds",List.of(7L))).getSql();
+        assertThat(sql).contains("l.id ledgerId","CASE WHEN l.direction='IN' THEN 'DEPOSIT' ELSE 'DEVICE_PURCHASE' END kind");
+    }
 }

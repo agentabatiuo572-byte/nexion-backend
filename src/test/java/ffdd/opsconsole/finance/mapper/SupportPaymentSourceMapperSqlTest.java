@@ -31,6 +31,10 @@ class SupportPaymentSourceMapperSqlTest {
             else assertThat(sql).doesNotContain("FOR SHARE");
         }
     }
+    @Test void retainedVietqrReceiptReadsItsIndependentProviderTimeEvenAfterSoftDelete() {
+        assertThat(bound("before",parameters(Source.VIETQR,"D1-VIETQR-r-1")))
+            .contains("received_at providerPaidAt","WHERE reconciliation_no=?").doesNotContain("is_deleted=0","FOR SHARE");
+    }
     @Test void allCanonicalFamiliesCurrentReadEveryNecessaryAliasByItsExactId() {
         for(Source source:Source.values()) {
             if(source==Source.FREE_TRIAL || source==Source.UNMATCHED_LEDGER) continue;
@@ -61,6 +65,25 @@ class SupportPaymentSourceMapperSqlTest {
         var p=Map.<String,Object>of("factId","PURCHASE:order-1");
         assertThat(bound("originalSourceProof",p)).contains("source_fact_json","'$.beforeSource'","capture_schema_version","WHERE fact_id=?").doesNotContain("FOR SHARE");
         assertThat(bound("currentSourceProof",p)).endsWith("WHERE fact_id=? FOR SHARE");
+    }
+    @Test void historyLedgerBatchRequiresBothExplicitCustomerAndExistingLedgerIdsWithoutLocks() {
+        var p=Map.<String,Object>of("customerIds",List.of(7L,8L),"ledgerIds",List.of(201L,202L));
+        var statement=configuration.getMappedStatement(SupportPaymentSourceMapper.class.getName()+".historyLedgers");
+        var sql=statement.getBoundSql(p);
+        assertThat(sql.getSql()).contains("FROM nx_wallet_ledger WHERE user_id IN","AND id IN",
+            "biz_no businessId","is_deleted deleted","created_at successAt").doesNotContain("FOR SHARE","FOR UPDATE","${");
+        assertThat(sql.getParameterMappings()).extracting(mapping -> mapping.getProperty())
+            .containsExactly("__frch_customer_0","__frch_customer_1","__frch_ledger_2","__frch_ledger_3");
+        assertThat(statement.isUseCache()).isFalse();assertThat(statement.isFlushCacheRequired()).isTrue();
+    }
+    @Test void retainedFinancialRootsIncludeMoneyEvenAfterSoftDeletion() {
+        for(Source source:List.of(Source.DEPOSIT_ORDER,Source.CARD_TOPUP,Source.WALLET_ORDER,Source.TRADE_IN,Source.CAPACITY_KEEP)) {
+            assertThat(bound("before",parameters(source,key(source))))
+                .contains(" amount").doesNotContain("is_deleted=0","FOR SHARE");
+        }
+        assertThat(bound("before",parameters(Source.DEPOSIT_ORDER,key(Source.DEPOSIT_ORDER)))).contains("d.asset currency");
+        assertThat(bound("before",parameters(Source.CARD_TOPUP,key(Source.CARD_TOPUP))))
+            .contains("currency,provider,provider_payment_id providerPaymentId");
     }
     @Test void freshInsertKeepsTheOriginalMoneyTupleAndSourceTimestampPrecision() {
         for(Source source:Source.values()) {
@@ -95,6 +118,6 @@ class SupportPaymentSourceMapperSqlTest {
     }
     private HashMap<String,Object> parameters(Source source,String key) {
         var p=new HashMap<String,Object>();p.put("source",source);p.put("key",key);p.put("customerId",7L);p.put("customerIds",List.of(7L));
-        p.put("ids",Map.of("sourceRootId",1L,"ledgerId",201L,"intentId",2L,"deviceId",3L,"claimId",4L));return p;
+        p.put("ids",Map.of("sourceRootId",1L,"ledgerId",201L,"intentId",2L,"deviceId",3L,"claimId",4L));p.put("ledgerIds",List.of(201L));return p;
     }
 }

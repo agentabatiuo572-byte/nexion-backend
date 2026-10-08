@@ -88,11 +88,15 @@ final class SupportPaymentFactSql {
         CASE WHEN o.order_type IN ('TRADE_IN','CAPACITY_KEEP') THEN 1
           WHEN (SELECT COUNT(*) FROM nx_payment_record p WHERE p.payment_no=o.payment_no
             AND p.order_no=o.order_no AND p.user_id=o.user_id AND p.amount_usdt=o.amount_usdt
-            AND p.currency='USDT' AND p.provider='NEXGRID_WALLET' AND p.paid_at IS NOT NULL AND p.is_deleted=0)=1
+            AND p.currency='USDT' AND p.provider='NEXGRID_WALLET' AND p.paid_at IS NOT NULL AND p.is_deleted=0
+            AND p.payment_status IN ('PAID','CONFIRMED','SUCCESS','REFUNDED')
+            AND (p.wallet_ledger_id IS NULL OR p.wallet_ledger_id=l.id))=1
           THEN 1 ELSE 0 END sourceLinked,
         (SELECT MIN(p.paid_at) FROM nx_payment_record p WHERE p.payment_no=o.payment_no
           AND p.order_no=o.order_no AND p.user_id=o.user_id AND p.amount_usdt=o.amount_usdt
-          AND p.currency='USDT' AND p.provider='NEXGRID_WALLET' AND p.is_deleted=0) sourceConfirmationAt,
+          AND p.currency='USDT' AND p.provider='NEXGRID_WALLET' AND p.is_deleted=0
+          AND p.payment_status IN ('PAID','CONFIRMED','SUCCESS','REFUNDED')
+          AND (p.wallet_ledger_id IS NULL OR p.wallet_ledger_id=l.id)) sourceConfirmationAt,
         """ + LEDGER + """
         FROM nx_order o LEFT JOIN nx_wallet_ledger l ON l.biz_no=o.order_no AND l.direction='OUT' AND l.asset='USDT'
           AND l.biz_type=CASE o.order_type WHEN 'TRADE_IN' THEN 'TRADE_IN_PURCHASE'
@@ -143,7 +147,8 @@ final class SupportPaymentFactSql {
         WHERE c.is_deleted=0 AND c.status NOT IN ('REDEEMED') AND c.user_id IN
         """ + USERS + "</script>";
     static final String UNMATCHED = """
-        <script>SELECT 'DEPOSIT' kind,'UNMATCHED_LEDGER' source,CONCAT('nx_wallet_ledger:',l.id) sourceId,
+        <script>SELECT CASE WHEN l.direction='IN' THEN 'DEPOSIT' ELSE 'DEVICE_PURCHASE' END kind,
+        'UNMATCHED_LEDGER' source,CONCAT('nx_wallet_ledger:',l.id) sourceId,l.id ledgerId,
         l.user_id customerId,l.biz_no businessId,l.amount amount,l.asset currency
         FROM nx_wallet_ledger l WHERE l.is_deleted=0 AND l.user_id IN
         """ + USERS + """

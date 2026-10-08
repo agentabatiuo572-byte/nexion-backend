@@ -38,6 +38,10 @@ public interface SupportPaymentSourceMapper {
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     Map<String,Object> originalSourceProof(@Param("factId") String factId);
 
+    @Select(SupportPaymentSourceSql.HISTORY_LEDGERS)
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> historyLedgers(@Param("customerIds") List<Long> customers,@Param("ledgerIds") List<Long> ledgers);
+
     @Select(SupportPaymentSourceSql.CREGIS_EVENT)
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     List<Map<String,Object>> cregisEvents(@Param("partition") long partition,@Param("cid") long cid);
