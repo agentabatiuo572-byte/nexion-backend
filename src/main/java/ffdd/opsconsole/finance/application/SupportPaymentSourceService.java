@@ -70,7 +70,9 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
                 if(!matchesIdentity(envelope,fact) || envelope.captureDbUtc()==null
                     || !SupportPaymentCapturedSourceProof.matchesExpected(fact,envelope.sourcePartition(),proof(envelope),json)
                     || !validBeforeTypes(envelope.beforeSourceJson())) {
-                    issues.add(new Issue(fact.source(),fact.factId(),"CAPTURED_SOURCE_PROOF_MISMATCH"));continue;
+                    Source source=historySource(envelope.identity().source());
+                    if(source==null)throw failure("INVALID_PERSISTED_SOURCE_PROOF");
+                    issues.add(new Issue(source,envelope.identity().factId(),"CAPTURED_SOURCE_PROOF_MISMATCH"));continue;
                 }
                 validateKey(fact.customerId(),fact.source(),fact.sourceBusinessId());
                 if(fact.sourceBusinessId().startsWith("USER:") || !validHistoryPartition(fact.source(),envelope.sourcePartition()))

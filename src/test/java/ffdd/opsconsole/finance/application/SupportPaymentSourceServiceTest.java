@@ -21,6 +21,8 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.datasource.ConnectionHolder;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -124,6 +126,28 @@ class SupportPaymentSourceServiceTest {
         when(capturedHistory.readNewFinancialProofs(anyCollection())).thenReturn(List.of(new Envelope(wrong,null,at,e.captureMode(),
             e.captureSchemaVersion(),e.sourceFactJson(),e.beforeSourceJson(),e.evidenceCaptureMode(),e.evidenceSchemaVersion())));
         assertThat(service.readHistory(List.of(7L)).issues()).extracting(Issue::reason).containsExactly("CAPTURED_SOURCE_PROOF_MISMATCH");
+        verify(mapper,never()).historyLedgers(anyList(),anyList());
+    }
+    @ParameterizedTest
+    @EnumSource(value=Source.class,names={"CARD_TOPUP","WALLET_ORDER"})
+    void mismatchedJsonRejectsSavedIdentityWithoutRelabelingAnIndependentLegacyFact(Source claimedSource) throws Exception {
+        historyTransaction();
+        var original=payment(Source.CARD_TOPUP,"saved-card",101,"10");original.put("sourceId","nx_payment_record:9");
+        var saved=historyEnvelope(original,null);
+        var claimed=historyEnvelope(payment(claimedSource,"another-payment",202,"80"),null);
+        assertThat(SupportPaymentCapturedSourceProof.decodeSourceFact(claimed.sourceFactJson(),json).source()).isEqualTo(claimedSource);
+        when(capturedHistory.readNewFinancialProofs(anyCollection())).thenReturn(List.of(new Envelope(saved.identity(),null,at,
+            saved.captureMode(),saved.captureSchemaVersion(),claimed.sourceFactJson(),saved.beforeSourceJson(),
+            saved.evidenceCaptureMode(),saved.evidenceSchemaVersion())));
+        var factMapper=mock(ffdd.opsconsole.finance.mapper.SupportPaymentFactMapper.class);
+        when(factMapper.cards(anyList())).thenReturn(List.of(original));
+        var actualPipeline=new SupportPaymentSourceService(mapper,new SupportPaymentFactService(factMapper),dataSource,json,capturedHistory);
+        var result=actualPipeline.readHistory(List.of(7L));
+        assertThat(result.facts()).singleElement().satisfies(fact -> {
+            assertThat(fact.factId()).isEqualTo(saved.identity().factId());
+            assertThat(fact.amount()).isEqualByComparingTo("10");
+        });
+        assertThat(result.issues()).containsExactly(new Issue(Source.CARD_TOPUP,saved.identity().factId(),"CAPTURED_SOURCE_PROOF_MISMATCH"));
         verify(mapper,never()).historyLedgers(anyList(),anyList());
     }
     @Test void historicalActualLedgerAmountContradictionQuarantinesIdentityButMissingLedgerDoesNot() throws Exception {
