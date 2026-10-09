@@ -5,6 +5,7 @@ kind=${1:?kind required}
 test "$(git rev-parse HEAD)" = "$(git rev-parse refs/remotes/origin/test)"
 mkdir -p artifacts
 git rev-parse HEAD > artifacts/test-sha.txt
+git rev-parse 'HEAD^{tree}' > artifacts/test-tree.txt
 case "$kind" in
   backend)
     export JAVA_HOME="$JAVA17_HOME" PATH="$JAVA17_HOME/bin:$PATH"
@@ -53,7 +54,12 @@ const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const schema = process.argv[3];
 const manifest = {version:1,component:kind,branch:'test',sha:fs.readFileSync('artifacts/test-sha.txt','utf8').trim(),
   artifact,sha256:hash(fs.readFileSync('artifacts/'+artifact)),schema};
+if (kind === 'backend') {
+  manifest.tree = fs.readFileSync('artifacts/test-tree.txt','utf8').trim();
+  manifest.publicationNative = 'OWNER_ADMISSION_REQUIRED';
+}
 fs.writeFileSync('artifacts/release.json', JSON.stringify(manifest, null, 2)+'\n');
 JS
-(cd artifacts && shopt -s nullglob && sha256sum test-sha.txt release.json *.jar *.tgz | tee SHA256SUMS)
+(cd artifacts && shopt -s nullglob && sha256sum test-sha.txt test-tree.txt release.json *.jar *.tgz | tee SHA256SUMS)
 echo 'RELEASE_ARTIFACT_READY: isolated CI passed; host broker independently controls promotion and rollback.'
+if [ "$kind" = backend ]; then echo 'PUBLICATION_NATIVE_HOLD: normal build success needs independent root owner admission before promotion.'; fi
