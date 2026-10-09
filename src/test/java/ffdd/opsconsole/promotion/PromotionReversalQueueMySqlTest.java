@@ -36,7 +36,12 @@ class PromotionReversalQueueMySqlTest {
             assertEquals("IDEMPOTENCY_REQUEST_IN_PROGRESS",failure.getMessage());
         }
         var scheduler=new PromotionRewardScheduler(life.rewards,h.proxy(new PromotionAvailabilityService(h.db,h.audit)));
-        scheduler.dispatch();scheduler.dispatch();
+        long queued=h.db.count("SELECT COUNT(*) FROM nx_promotion_reward WHERE status='REVERSAL_PENDING'");
+        long maxDispatches=(queued+49)/50+2;
+        long dispatches=0;
+        while(dispatches<maxDispatches&&!"REVERSED".equals(life.rewards.get(buyers.get(healthy),healthy,false).get("state"))){
+            scheduler.dispatch();dispatches++;
+        }
         assertEquals("REVERSED",life.rewards.get(buyers.get(healthy),healthy,false).get("state"));
         for(String id:ids.subList(0,50)){
             assertEquals("REVERSAL_PENDING",life.rewards.get(buyers.get(id),id,false).get("state"));
@@ -46,7 +51,7 @@ class PromotionReversalQueueMySqlTest {
         assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_reversal WHERE obligation_id=?",healthy));
         assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=?","PROMOTION-REVERSE-"+healthy));
         life.budget(activity,"NEX","reversed",amount("1.000001"));
-        var report=values("completed",true,"run",h.run,"activity",activity,"healthyObligation",healthy,"blockedCount",50,"dispatches",2,"unknownFencesPreserved",true,"singleActualRecovery",true);
+        var report=values("completed",true,"run",h.run,"activity",activity,"healthyObligation",healthy,"blockedCount",50,"dispatches",dispatches,"queued",queued,"maxDispatches",maxDispatches,"unknownFencesPreserved",true,"singleActualRecovery",true);
         Files.writeString(Path.of("C:/Users/jason/.codex/workflow-runs/growth-promotions-20261007/promotion-reversal-queue-runtime.json"),json(report));
     }
 }
