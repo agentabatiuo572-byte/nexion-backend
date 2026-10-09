@@ -1,7 +1,6 @@
 package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.content.domain.ConversationIdleCandidate;
-import ffdd.opsconsole.content.domain.ConversationTimeoutPolicy;
 import ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -20,7 +19,6 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @Service
 @RequiredArgsConstructor
 public class ConversationIdleTimeoutScheduler {
-    private final ffdd.opsconsole.content.mapper.SupportBindingMapper bindings;
     private static final int BATCH_SIZE = 100;
 
     private final ConversationTimeoutPolicyMapper mapper;
@@ -33,55 +31,49 @@ public class ConversationIdleTimeoutScheduler {
     @Transactional
     public SweepResult sweep() {
         if (!productionPathGuard.productionSupportAutomationAllowed()) return new SweepResult(0, 0);
-        ConversationTimeoutPolicy policy = mapper.selectPolicy();
-        if (policy == null) {
-            return new SweepResult(0, 0);
-        }
-
         LocalDateTime now = LocalDateTime.now(clock);
-        LocalDateTime warnCutoff = now.minusMinutes(policy.warnMinutes());
-        LocalDateTime closeCutoff = now.minusMinutes(policy.closeMinutes());
         int warned = 0;
         int closed = 0;
 
         for (ConversationIdleCandidate candidate
-                : mapper.selectDueWarningCandidates(warnCutoff, closeCutoff, BATCH_SIZE)) {
+                : mapper.selectDueWarningCandidates(now, BATCH_SIZE)) {
             ConversationIdleCandidate locked = mapper.lockCandidate(candidate.conversationNo());
-            if (!eligible(locked, candidate, warnCutoff)
-                    || !locked.lastActivityAt().isAfter(closeCutoff)) {
+            if (!eligible(locked, candidate, now, false)
+                    || !mapper.pendingRepliesCurrent(candidate.conversationNo()).isEmpty()) {
                 continue;
             }
             if (mapper.insertEvent(
                     locked.conversationNo(),
                     "WARN",
                     locked.lastActivityAt(),
-                    policy.version(),
+                    locked.policyVersion(),
                     now) != 1) {
                 continue;
             }
-            String message = "当前会话已闲置 " + policy.warnMinutes()
-                    + " 分钟,约 " + (policy.closeMinutes() - policy.warnMinutes())
+            String message = "当前会话已闲置 " + locked.warnMinutes()
+                    + " 分钟,约 " + (locked.closeMinutes() - locked.warnMinutes())
                     + " 分钟后自动结束;继续发送消息可保持会话。";
             mapper.insertSystemMessage(locked.id(), locked.conversationNo(), message, now);
             publish(locked, ConversationMessageEvent.EventType.MESSAGE, message, now);
             warned++;
         }
 
-        for (ConversationIdleCandidate candidate : mapper.selectDueCloseCandidates(closeCutoff, BATCH_SIZE)) {
+        for (ConversationIdleCandidate candidate : mapper.selectDueCloseCandidates(now, BATCH_SIZE)) {
             ConversationIdleCandidate locked = mapper.lockCandidate(candidate.conversationNo());
-            if (!eligible(locked, candidate, closeCutoff) || bindings.pendingReplies(candidate.conversationNo()) > 0) {
+            if (!eligible(locked, candidate, now, true)
+                    || !mapper.pendingRepliesCurrent(candidate.conversationNo()).isEmpty()) {
                 continue;
             }
             if (mapper.insertEvent(
                     locked.conversationNo(),
                     "CLOSE",
                     locked.lastActivityAt(),
-                    policy.version(),
+                    locked.policyVersion(),
                     now) != 1) {
                 continue;
             }
-            String message = "会话已因用户闲置 " + policy.closeMinutes() + " 分钟自动结束,可重新发起会话。";
-            if (mapper.closeIfStillIdle(locked.conversationNo(), locked.lastActivityAt(), message, now) != 1) {
+            String message = "会话已因客户静默 " + locked.closeMinutes() + " 分钟自动结束,可重新发起会话。";
+            if (mapper.closeIfStillIdle(locked.conversationNo(), locked.lastActivityAt(), locked.version(), message, now) != 1) {
                 throw new IllegalStateException("M3_TIMEOUT_CLOSE_CAS_FAILED");
             }
             mapper.insertSystemMessage(locked.id(), locked.conversationNo(), message, now);
@@ -99,9 +91,7 @@ public class ConversationIdleTimeoutScheduler {
                     .result("SUCCESS")
                     .riskLevel("MEDIUM")
                     .detail(Map.of(
-                            "policyVersion", policy.version(),
-                            "warnMinutes", policy.warnMinutes(),
-                            "closeMinutes", policy.closeMinutes(),
+                            "policySource", "CONVERSATION_SEGMENT_SNAPSHOT",
                             "warned", warned,
                             "closed", closed))
                     .build());
@@ -112,11 +102,20 @@ public class ConversationIdleTimeoutScheduler {
     private boolean eligible(
             ConversationIdleCandidate locked,
             ConversationIdleCandidate candidate,
-            LocalDateTime cutoff) {
+            LocalDateTime now,
+            boolean closing) {
         return locked != null
                 && "OPEN".equals(locked.status())
+                && locked.hasValidPolicy()
+                && locked.version() != null && Objects.equals(locked.version(), candidate.version())
                 && Objects.equals(locked.lastActivityAt(), candidate.lastActivityAt())
-                && !locked.lastActivityAt().isAfter(cutoff);
+                && Objects.equals(locked.policyVersion(), candidate.policyVersion())
+                && Objects.equals(locked.warnMinutes(), candidate.warnMinutes())
+                && Objects.equals(locked.closeMinutes(), candidate.closeMinutes())
+                && locked.lastActivityAt() != null
+                && (closing ? !locked.lastActivityAt().plusMinutes(locked.closeMinutes()).isAfter(now)
+                    : !locked.lastActivityAt().plusMinutes(locked.warnMinutes()).isAfter(now)
+                        && locked.lastActivityAt().plusMinutes(locked.closeMinutes()).isAfter(now));
     }
 
     private void publish(

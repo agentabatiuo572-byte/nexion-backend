@@ -365,6 +365,7 @@ public class MybatisConversationRepository implements ConversationRepository {
             String conversationNo,Long userId,String conversationType,String ownerAgentId,String ownerAgentName,
             String openingText,Long senderAdminId,String senderName,LocalDateTime now) {
         if(senderAdminId==null || senderAdminId<=0) throw new IllegalArgumentException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
+        snapshotTimeout(conversationNo,conversationType);
         ConversationEntity entity = new ConversationEntity();
         entity.setConversationNo(conversationNo);
         entity.setUserId(userId);
@@ -418,6 +419,7 @@ public class MybatisConversationRepository implements ConversationRepository {
     public ContentConversationView createUserConversation(
             String conversationNo, Long userId, String conversationType, String openingText,
             String ownerAgentId, String ownerAgentName, LocalDateTime now) {
+        snapshotTimeout(conversationNo,conversationType);
         ConversationEntity entity = new ConversationEntity();
         entity.setConversationNo(conversationNo);
         entity.setUserId(userId);
@@ -435,6 +437,14 @@ public class MybatisConversationRepository implements ConversationRepository {
         mapper.insert(entity);
         insertMessage(entity.getId(), conversationNo, userId, "user", "用户", openingText, now);
         return findByConversationNo(conversationNo).orElseThrow();
+    }
+
+    private void snapshotTimeout(String conversationNo,String conversationType) {
+        if (!List.of("advisor","support").contains(conversationType)) return;
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("CONVERSATION_CREATE_TRANSACTION_REQUIRED");
+        if (mapper.insertTimeoutSnapshot(conversationNo)!=1)
+            throw new ffdd.opsconsole.shared.exception.BizException(503,"M3_TIMEOUT_POLICY_NOT_CONFIGURED");
     }
 
     private Long insertMessage(

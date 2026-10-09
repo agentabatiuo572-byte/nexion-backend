@@ -12,6 +12,41 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface ConversationTimeoutPolicyMapper extends BaseMapper<ConversationEntity> {
+    String MANAGE_GRANT = """
+            SELECT p.id FROM nx_admin a
+              JOIN nx_admin_role_relation rr ON rr.admin_id=a.id AND rr.is_deleted=0
+              JOIN nx_admin_role r ON r.id=rr.role_id AND r.status=1 AND r.is_deleted=0
+              JOIN nx_admin_role_permission rp ON rp.role_id=r.id AND rp.is_deleted=0
+              JOIN nx_admin_permission p ON p.id=rp.permission_id AND p.status=1 AND p.is_deleted=0
+             WHERE a.id=#{actor} AND a.status=1 AND a.is_deleted=0
+               AND p.resource_type='API' AND p.permission_code='service_m3_timeout_manage'
+             ORDER BY r.id,rp.id
+            """;
+    @Select(MANAGE_GRANT)
+    List<Long> timeoutManageGrantSnapshot(@Param("actor") Long actor);
+    @Select(MANAGE_GRANT + " FOR SHARE")
+    List<Long> timeoutManageGrant(@Param("actor") Long actor);
+
+    String IDLE_FACTS = """
+            SELECT c.id,c.conversation_no AS conversationNo,c.status,
+                   COALESCE(c.last_message_at,c.created_at) AS lastActivityAt,c.version,
+                   s.policy_version AS policyVersion,s.warn_minutes AS warnMinutes,s.close_minutes AS closeMinutes
+              FROM nx_conversation c
+              JOIN nx_conversation_timeout_segment s ON s.conversation_no=c.conversation_no
+            """;
+    String VALID_IDLE = """
+             WHERE c.is_deleted=0 AND c.status='OPEN' AND c.conversation_type IN ('advisor','support')
+               AND s.policy_version>0 AND s.warn_minutes BETWEEN 1 AND 30
+               AND s.close_minutes BETWEEN 2 AND 120 AND s.close_minutes>s.warn_minutes
+            """;
+    String NO_PENDING_REPLY = """
+               AND NOT EXISTS (
+                   SELECT 1 FROM nx_conversation_message m
+                     LEFT JOIN nx_support_reply_cursor r ON r.conversation_no=m.conversation_no
+                    WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0 AND m.sender_type='user'
+                      AND m.id>COALESCE(r.through_message_id,0)
+               )
+            """;
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_conversation_timeout_policy (
               policy_key VARCHAR(64) PRIMARY KEY,
@@ -95,16 +130,9 @@ public interface ConversationTimeoutPolicyMapper extends BaseMapper<Conversation
             @Param("reason") String reason,
             @Param("now") LocalDateTime now);
 
-    @Select("""
-            SELECT c.id,
-                   c.conversation_no AS conversationNo,
-                   c.status,
-                   COALESCE(c.last_message_at,c.created_at) AS lastActivityAt
-              FROM nx_conversation c
-             WHERE c.is_deleted=0
-               AND c.status='OPEN'
-               AND COALESCE(c.last_message_at,c.created_at) <= #{warnCutoff}
-               AND COALESCE(c.last_message_at,c.created_at) > #{closeCutoff}
+    @Select(IDLE_FACTS + VALID_IDLE + NO_PENDING_REPLY + """
+               AND TIMESTAMPADD(MINUTE,s.warn_minutes,COALESCE(c.last_message_at,c.created_at)) <= #{now}
+               AND TIMESTAMPADD(MINUTE,s.close_minutes,COALESCE(c.last_message_at,c.created_at)) > #{now}
                AND NOT EXISTS (
                    SELECT 1
                      FROM nx_conversation_timeout_event e
@@ -116,25 +144,11 @@ public interface ConversationTimeoutPolicyMapper extends BaseMapper<Conversation
              LIMIT #{limit}
             """)
     List<ConversationIdleCandidate> selectDueWarningCandidates(
-            @Param("warnCutoff") LocalDateTime warnCutoff,
-            @Param("closeCutoff") LocalDateTime closeCutoff,
+            @Param("now") LocalDateTime now,
             @Param("limit") int limit);
 
-    @Select("""
-            SELECT c.id,
-                   c.conversation_no AS conversationNo,
-                   c.status,
-                   COALESCE(c.last_message_at,c.created_at) AS lastActivityAt
-              FROM nx_conversation c
-             WHERE c.is_deleted=0
-               AND c.status='OPEN'
-               AND COALESCE(c.last_message_at,c.created_at) <= #{closeCutoff}
-               AND NOT EXISTS (
-                   SELECT 1 FROM nx_conversation_message m
-                    LEFT JOIN nx_support_reply_cursor r ON r.conversation_no=m.conversation_no
-                    WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0 AND m.sender_type='user'
-                      AND m.id>COALESCE(r.through_message_id,0)
-               )
+    @Select(IDLE_FACTS + VALID_IDLE + NO_PENDING_REPLY + """
+               AND TIMESTAMPADD(MINUTE,s.close_minutes,COALESCE(c.last_message_at,c.created_at)) <= #{now}
                AND NOT EXISTS (
                    SELECT 1
                      FROM nx_conversation_timeout_event e
@@ -146,21 +160,25 @@ public interface ConversationTimeoutPolicyMapper extends BaseMapper<Conversation
              LIMIT #{limit}
             """)
     List<ConversationIdleCandidate> selectDueCloseCandidates(
-            @Param("closeCutoff") LocalDateTime closeCutoff,
+            @Param("now") LocalDateTime now,
             @Param("limit") int limit);
 
-    @Select("""
-            SELECT c.id,
-                   c.conversation_no AS conversationNo,
-                   c.status,
-                   COALESCE(c.last_message_at,c.created_at) AS lastActivityAt
-              FROM nx_conversation c
+    @Select(IDLE_FACTS + """
              WHERE c.conversation_no=#{conversationNo}
-               AND c.is_deleted=0
+               AND c.is_deleted=0 AND c.conversation_type IN ('advisor','support')
              LIMIT 1
              FOR UPDATE
             """)
     ConversationIdleCandidate lockCandidate(@Param("conversationNo") String conversationNo);
+
+    @Select("""
+            SELECT m.id FROM nx_conversation_message m
+              LEFT JOIN nx_support_reply_cursor r ON r.conversation_no=m.conversation_no
+             WHERE m.conversation_no=#{conversationNo} AND m.is_deleted=0 AND m.sender_type='user'
+               AND m.id>COALESCE(r.through_message_id,0)
+             ORDER BY m.id FOR SHARE
+            """)
+    List<Long> pendingRepliesCurrent(@Param("conversationNo") String conversationNo);
 
     @Insert("""
             INSERT IGNORE INTO nx_conversation_timeout_event
@@ -195,11 +213,13 @@ public interface ConversationTimeoutPolicyMapper extends BaseMapper<Conversation
              WHERE conversation_no=#{conversationNo}
                AND status='OPEN'
                AND is_deleted=0
+               AND version=#{expectedVersion}
                AND COALESCE(last_message_at,created_at)=#{expectedActivityAt}
             """)
     int closeIfStillIdle(
             @Param("conversationNo") String conversationNo,
             @Param("expectedActivityAt") LocalDateTime expectedActivityAt,
+            @Param("expectedVersion") Long expectedVersion,
             @Param("message") String message,
             @Param("now") LocalDateTime now);
 }

@@ -95,6 +95,55 @@ import org.springframework.transaction.support.TransactionTemplate;
 @EnabledIfEnvironmentVariable(named = "NEXION_TEST_DB_PASSWORD", matches = ".+")
 class SupportTicketCreationMySqlTest {
     @Test
+    void currentPendingReadAndHeaderCasSeeReplyCommittedAfterRepeatableReadSnapshot() throws Exception {
+        try(var runtime=new Runtime()) {
+            String no="CV-TIMEOUT-RR";var at=runtime.now().minusMinutes(10);
+            runtime.conversation(no,1);
+            runtime.jdbc.update("UPDATE nx_conversation SET conversation_type='support',last_message_at=? WHERE conversation_no=?",at,no);
+            runtime.jdbc.update("INSERT INTO nx_conversation_timeout_segment VALUES(?,1,5,10)",no);
+            var worker=Executors.newSingleThreadExecutor();
+            try {
+                runtime.repeatableRead(()->{
+                    var candidate=runtime.timeoutMapper.selectDueCloseCandidates(runtime.now(),100).stream()
+                            .filter(row->no.equals(row.conversationNo())).findFirst().orElseThrow();
+                    assertThat(runtime.jdbc.queryForObject("SELECT COUNT(*) FROM nx_conversation_message WHERE conversation_no=? AND sender_type='user'",Long.class,no)).isZero();
+                    var committed=worker.submit(()->new TransactionTemplate(runtime.manager).executeWithoutResult(status->{
+                        runtime.jdbc.update("UPDATE nx_conversation SET version=version+1 WHERE conversation_no=?",no);
+                        runtime.jdbc.update("INSERT INTO nx_conversation_message(conversation_id,conversation_no,sender_type,sender_name,content,created_at,updated_at) SELECT id,conversation_no,'user','customer','Same timestamp reply',?,? FROM nx_conversation WHERE conversation_no=?",at,at,no);
+                    }));
+                    try {committed.get(10,TimeUnit.SECONDS);}catch(Exception failure){throw new IllegalStateException(failure);}
+                    // Establish the counterexample: an ordinary read still sees the old RR snapshot.
+                    assertThat(runtime.jdbc.queryForObject("SELECT COUNT(*) FROM nx_conversation_message WHERE conversation_no=? AND sender_type='user'",Long.class,no)).isZero();
+                    var current=runtime.timeoutMapper.lockCandidate(no);
+                    assertThat(current.version()).isEqualTo(candidate.version()+1);
+                    assertThat(current.lastActivityAt()).isEqualTo(candidate.lastActivityAt());
+                    assertThat(runtime.timeoutMapper.pendingRepliesCurrent(no)).hasSize(1);
+                    assertThat(runtime.timeoutMapper.closeIfStillIdle(no,at,candidate.version(),"Must not close",runtime.now())).isZero();
+                    return null;
+                });
+                assertThat(runtime.jdbc.queryForObject("SELECT status FROM nx_conversation WHERE conversation_no=?",String.class,no)).isEqualTo("OPEN");
+            } finally {worker.shutdownNow();assertThat(worker.awaitTermination(15,TimeUnit.SECONDS)).isTrue();}
+        }
+    }
+
+    @Test
+    void shorterLatestGlobalPolicyCannotCloseAnOlderSegmentOrHistoricalRowWithoutSnapshot() throws Exception {
+        try(var runtime=new Runtime()) {
+            for(String no:List.of("CV-LONG-SEGMENT","CV-NO-SNAPSHOT")) {
+                runtime.conversation(no,1);
+                runtime.jdbc.update("UPDATE nx_conversation SET conversation_type='support',last_message_at=? WHERE conversation_no=?",runtime.now().minusMinutes(10),no);
+            }
+            runtime.jdbc.update("INSERT INTO nx_conversation_timeout_segment VALUES('CV-LONG-SEGMENT',1,1,120)");
+            runtime.jdbc.update("UPDATE nx_conversation_timeout_policy SET warn_minutes=1,close_minutes=2,version=version+1 WHERE policy_key='GLOBAL'");
+            assertThat(runtime.timeoutMapper.selectDueCloseCandidates(runtime.now(),100)).isEmpty();
+            assertThat(runtime.timeoutMapper.selectDueWarningCandidates(runtime.now(),100)).extracting(row->row.conversationNo()).containsExactly("CV-LONG-SEGMENT");
+            assertThat(runtime.timeoutMapper.lockCandidate("CV-NO-SNAPSHOT")).isNull();
+            assertThat(runtime.jdbc.queryForMap("SELECT policy_version,warn_minutes,close_minutes FROM nx_conversation_timeout_segment WHERE conversation_no='CV-LONG-SEGMENT'"))
+                    .containsEntry("policy_version",1L).containsEntry("warn_minutes",1).containsEntry("close_minutes",120);
+        }
+    }
+
+    @Test
     void appAndAdminCompeteForLastDailySlotAfterBothPinRepeatableReadSnapshots() throws Exception {
         try (var runtime = new Runtime()) {
             for (int index = 0; index < 9; index++) runtime.seed(1, "old-" + index, "CLOSED", false, false, 7200 + index);
@@ -356,6 +405,7 @@ class SupportTicketCreationMySqlTest {
         final SupportTicketOwnerService ticketOwners;
         final SupportBindingService bindings;
         final SupportBindingMapper bindingMapper;
+        final ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper timeoutMapper;
         final MybatisSupportTicketRepository tickets;
         final AuditLogService audit = mock(AuditLogService.class);
         final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
@@ -379,8 +429,9 @@ class SupportTicketCreationMySqlTest {
                 GlobalConfigUtils.setGlobalConfig(configuration, global);
                 for (Class<?> mapper : List.of(SupportTicketCreationMapper.class, SupportTicketMapper.class,
                         SupportTicketMessageMapper.class, SupportBindingMapper.class, AdminIdempotencyRecordMapper.class,
-                        ConversationMapper.class, ConversationMessageMapper.class)) configuration.addMapper(mapper);
+                        ConversationMapper.class, ConversationMessageMapper.class,ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper.class)) configuration.addMapper(mapper);
                 var template = new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(configuration));
+                timeoutMapper=template.getMapper(ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper.class);
                 assertEmptyMessageProjections(template.getMapper(ConversationMessageMapper.class));
                 seedFixtureData();
                 manager = new DataSourceTransactionManager(jdbc.getDataSource());
@@ -540,6 +591,9 @@ class SupportTicketCreationMySqlTest {
             jdbc.execute("ALTER TABLE nx_support_human_message ADD COLUMN sku_id VARCHAR(64) NULL, "
                     + "ADD COLUMN sku_name VARCHAR(255) NULL, ADD COLUMN link_target_json JSON NULL");
             createTable(Files.readString(Path.of("scripts/migrations/20260725_m3_conversation_idle_timeout.sql")), "nx_conversation_timeout_event");
+            createTable(Files.readString(Path.of("scripts/migrations/20260725_m3_conversation_idle_timeout.sql")), "nx_conversation_timeout_policy");
+            createTable(Files.readString(Path.of("scripts/migrations/20261009_support_timeout_segment.sql")), "nx_conversation_timeout_segment");
+            jdbc.update("INSERT INTO nx_conversation_timeout_policy(policy_key,warn_minutes,close_minutes,version,updated_by,reason) VALUES('GLOBAL',1,5,1,'fixture','Fixture default')");
         }
 
         void assertEmptyMessageProjections(ConversationMessageMapper messages) {

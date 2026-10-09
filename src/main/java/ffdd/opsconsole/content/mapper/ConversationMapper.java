@@ -13,6 +13,17 @@ import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import org.apache.ibatis.annotations.Update;
 
 public interface ConversationMapper extends BaseMapper<ConversationEntity> {
+    @Insert("""
+            INSERT INTO nx_conversation_timeout_segment
+              (conversation_no,policy_version,warn_minutes,close_minutes)
+            SELECT #{conversationNo},version,warn_minutes,close_minutes
+              FROM nx_conversation_timeout_policy
+             WHERE policy_key='GLOBAL' AND version>0
+               AND warn_minutes BETWEEN 1 AND 30
+               AND close_minutes BETWEEN 2 AND 120 AND close_minutes>warn_minutes
+            """)
+    int insertTimeoutSnapshot(@Param("conversationNo") String conversationNo);
+
     @Update("""
             UPDATE nx_conversation c SET unread_count=(
                 SELECT COUNT(*) FROM nx_conversation_message m

@@ -133,6 +133,7 @@ class SupportBindingRuntimeTest {
                 String no=prefix+i;
                 var at=java.time.LocalDateTime.of(1000,1,i<100?1:2,0,0);
                 jdbc.update("INSERT INTO nx_conversation(conversation_no,user_id,conversation_type,status,last_message,last_message_at,created_at,updated_at) VALUES(?,0,'support','OPEN','probe',?,?,NOW())",no,at,at);
+                jdbc.update("INSERT INTO nx_conversation_timeout_segment(conversation_no,policy_version,warn_minutes,close_minutes) VALUES(?,1,1,5)",no);
                 if(i<100) jdbc.update("INSERT INTO nx_conversation_message(conversation_id,conversation_no,sender_type,sender_name,content,created_at,updated_at) SELECT id,conversation_no,'user','probe','pending',NOW(),NOW() FROM nx_conversation WHERE conversation_no=?",no);
             }
             var rows=timeoutMapper.selectDueCloseCandidates(java.time.LocalDateTime.of(1000,1,3,0,0),100);
@@ -673,7 +674,17 @@ class SupportBindingRuntimeTest {
         assertThat(response.path("code").asInt()).isEqualTo(404);assertThat(response.path("message").asText()).isEqualTo("SUPPORT_CUSTOMER_NOT_FOUND");
         assertThat(response.hasNonNull("data")).isFalse();
     }
-    private void rules(String mode,Integer depth){var r=mapper.rules();bindings.updateRules(key(),new SupportRulesRequest(null,null,null,mode,depth,r.version(),"Isolated runtime configuration"));}
+    private void rules(String mode,Integer depth){
+        if("UNCONFIGURED".equals(mode)) {
+            // Legacy fixture only: the registered SharedMutationJournal mapper proxy records this write.
+            new TransactionTemplate(transactions).executeWithoutResult(status->{
+                mapper.lockRules();var r=mapper.rules();
+                assertThat(mapper.updateRules(r.dormantDays(),r.maintenanceDays(),r.activityWindowDays(),mode,null,
+                        r.version(),ownership.actorId(),"Isolated legacy sentinel fixture",r.unboundAssignmentMode())).isEqualTo(1);
+            });return;
+        }
+        var r=mapper.rules();assertThat(bindings.updateRules(key(),new SupportRulesRequest(null,null,null,mode,depth,r.version(),"Isolated runtime configuration")).getCode()).isZero();
+    }
     private SupportBindingRequest request(long target,List<Long> customers){return new SupportBindingRequest(target,customers.stream().map(id->{var r=mapper.current(id);return new SupportBindingRequest.Customer(id,r==null?null:r.id(),r==null?mapper.poolVersion(id):r.version());}).toList(),"Isolated runtime transfer");}
     private void transfer(long target,List<Long> customers,String key){assertThat(bindings.transfer(key,request(target,customers)).getCode()).isZero();}
     private void assertPool(long id,String reason){assertThat(mapper.current(id)).isNull();assertThat(jdbc.queryForObject("SELECT reason FROM nx_support_binding_pool WHERE customer_id=?",String.class,id)).isEqualTo(reason);}

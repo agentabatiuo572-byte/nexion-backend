@@ -298,6 +298,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261001_support_enhancements_bulk.sql")
   # Group structure is safe to install; legacy qualification cutover remains an explicit reviewed operation.
   (Join-Path $root "scripts\migrations\20261007_support_groups.sql")
+  (Join-Path $root "scripts\migrations\20261009_support_timeout_segment.sql")
   (Join-Path $root "scripts\migrations\20261009_e4_wallet_bill_compat.sql")
   (Join-Path $root "scripts\migrations\20261009_e4_wallet_bill_schema.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_attribution.sql")
@@ -369,6 +370,7 @@ try {
   if ($LASTEXITCODE -ne 0) {
     throw "Required startup schema migration failed with mysql exit code $LASTEXITCODE. Backend startup has been stopped."
   }
+  Write-Host "Support schema installed. After the API starts, run scripts/manual_migrations/20261009_support_rules_unconfigured_upgrade.ps1 with an authorized administrator, saved operation ID and proof file. Installation is not ready until that command reads back LIMITED/UNLIMITED; it preserves existing explicit configuration and never creates a missing row."
 
   $databaseSqlLiteral = $database.Replace("'", "''")
   # INSERT IGNORE keeps operator-owned versions immutable. Pair it with an

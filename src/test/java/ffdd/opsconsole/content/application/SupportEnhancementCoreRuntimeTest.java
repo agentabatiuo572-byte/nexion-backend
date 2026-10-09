@@ -1030,7 +1030,18 @@ class SupportEnhancementCoreRuntimeTest {
             return new SupportObjectEvidenceLedger.CustomerInsert(id,affected,lookup);
         });
     }
-    private void rules(String inheritance,Integer depth,String mode) {as(boss);var rules=mapper.rules();assertThat(bindings.updateRules(key(),new SupportRulesRequest(null,null,null,inheritance,depth,rules.version(),"Core isolated rules proof",mode)).getCode()).isZero();}
+    private void rules(String inheritance,Integer depth,String mode) {
+        as(boss);
+        if("UNCONFIGURED".equals(inheritance)) {
+            // Legacy fixture only: the registered SharedMutationJournal mapper proxy records this write.
+            new TransactionTemplate(transactions).executeWithoutResult(status->{
+                mapper.lockRules();var r=mapper.rules();
+                assertThat(mapper.updateRules(r.dormantDays(),r.maintenanceDays(),r.activityWindowDays(),inheritance,null,
+                        r.version(),boss,"Core isolated legacy sentinel fixture",mode)).isEqualTo(1);
+            });return;
+        }
+        var rules=mapper.rules();assertThat(bindings.updateRules(key(),new SupportRulesRequest(null,null,null,inheritance,depth,rules.version(),"Core isolated rules proof",mode)).getCode()).isZero();
+    }
     private void as(long id) {var auth=new UsernamePasswordAuthenticationToken(String.valueOf(id),null,List.of(new SimpleGrantedAuthority("platform_a1_write"),new SimpleGrantedAuthority("platform_a1_read"),new SimpleGrantedAuthority("service_m1_write"),new SimpleGrantedAuthority("service_m1_read"),new SimpleGrantedAuthority("service_m3_read"),new SimpleGrantedAuthority("service_m3_write")));auth.setDetails(Map.of("subjectType","ADMIN","username",run));SecurityContextHolder.getContext().setAuthentication(auth);}
     private String token(long id){String username=jdbc.queryForObject("SELECT username FROM nx_admin WHERE id=?",String.class,id);return tokens.createToken(id,"ADMIN",username,List.of(),sessions.createSession(id,username));}
     private String key(){return "enhance-"+UUID.randomUUID();}

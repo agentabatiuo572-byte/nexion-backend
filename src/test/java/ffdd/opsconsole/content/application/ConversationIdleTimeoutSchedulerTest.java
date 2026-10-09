@@ -8,10 +8,10 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.domain.ConversationIdleCandidate;
-import ffdd.opsconsole.content.domain.ConversationTimeoutPolicy;
 import ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import java.time.Clock;
@@ -32,7 +32,7 @@ class ConversationIdleTimeoutSchedulerTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     private final ProductionSupportPathGuard productionPathGuard = enabledGuard();
-    private final ConversationIdleTimeoutScheduler scheduler = new ConversationIdleTimeoutScheduler(org.mockito.Mockito.mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class),
+    private final ConversationIdleTimeoutScheduler scheduler = new ConversationIdleTimeoutScheduler(
             mapper,
             auditLogService,
             publisher,
@@ -47,22 +47,16 @@ class ConversationIdleTimeoutSchedulerTest {
 
     @Test
     void sweepWarnsAndClosesOnlyStillIdleOpenConversations() {
-        ConversationTimeoutPolicy policy = new ConversationTimeoutPolicy(
-                "GLOBAL", 5, 10, 3L, "superadmin", "调整", NOW);
         ConversationIdleCandidate warning = candidate("CV-WARN", LocalDateTime.of(2026, 7, 25, 9, 54));
         ConversationIdleCandidate closing = candidate("CV-CLOSE", ACTIVITY);
-        when(mapper.selectPolicy()).thenReturn(policy);
-        when(mapper.selectDueWarningCandidates(
-                LocalDateTime.of(2026, 7, 25, 9, 55),
-                LocalDateTime.of(2026, 7, 25, 9, 50),
-                100)).thenReturn(List.of(warning));
-        when(mapper.selectDueCloseCandidates(LocalDateTime.of(2026, 7, 25, 9, 50), 100))
+        when(mapper.selectDueWarningCandidates(NOW,100)).thenReturn(List.of(warning));
+        when(mapper.selectDueCloseCandidates(NOW, 100))
                 .thenReturn(List.of(closing));
         when(mapper.lockCandidate("CV-WARN")).thenReturn(warning);
         when(mapper.lockCandidate("CV-CLOSE")).thenReturn(closing);
         when(mapper.insertEvent(eq("CV-WARN"), eq("WARN"), any(), eq(3L), eq(NOW))).thenReturn(1);
         when(mapper.insertEvent(eq("CV-CLOSE"), eq("CLOSE"), any(), eq(3L), eq(NOW))).thenReturn(1);
-        when(mapper.closeIfStillIdle("CV-CLOSE", ACTIVITY, "会话已因用户闲置 10 分钟自动结束,可重新发起会话。", NOW))
+        when(mapper.closeIfStillIdle("CV-CLOSE", ACTIVITY, 7L, "会话已因客户静默 10 分钟自动结束,可重新发起会话。", NOW))
                 .thenReturn(1);
 
         ConversationIdleTimeoutScheduler.SweepResult result = scheduler.sweep();
@@ -77,47 +71,39 @@ class ConversationIdleTimeoutSchedulerTest {
     @Test
     void isolatedAutomationSweepDoesNotReadOrWriteOfficialConversationFacts() {
         ProductionSupportPathGuard disabled = mock(ProductionSupportPathGuard.class);
-        ConversationIdleTimeoutScheduler isolated = new ConversationIdleTimeoutScheduler(org.mockito.Mockito.mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class), mapper, auditLogService, publisher,
+        ConversationIdleTimeoutScheduler isolated = new ConversationIdleTimeoutScheduler(mapper, auditLogService, publisher,
                 Clock.systemUTC(), disabled);
         assertThat(isolated.sweep()).isEqualTo(new ConversationIdleTimeoutScheduler.SweepResult(0, 0));
-        verify(mapper, never()).selectPolicy();
-        verify(auditLogService, never()).recordRequired(any());
-        verify(publisher, never()).publishEvent(any());
+        verifyNoInteractions(mapper, auditLogService, publisher);
     }
 
     @Test
     void sweepDoesNotCloseWhenActivityChangedAfterCandidateQuery() {
-        ConversationTimeoutPolicy policy = new ConversationTimeoutPolicy(
-                "GLOBAL", 5, 10, 3L, "superadmin", "调整", NOW);
         ConversationIdleCandidate stale = candidate("CV-RACE", ACTIVITY);
         ConversationIdleCandidate refreshed = new ConversationIdleCandidate(
-                42L, "CV-RACE", "OPEN", LocalDateTime.of(2026, 7, 25, 9, 59));
-        when(mapper.selectPolicy()).thenReturn(policy);
-        when(mapper.selectDueWarningCandidates(any(), any(), eq(100))).thenReturn(List.of());
+                42L, "CV-RACE", "OPEN", LocalDateTime.of(2026, 7, 25, 9, 59),7L,3L,5,10);
+        when(mapper.selectDueWarningCandidates(any(), eq(100))).thenReturn(List.of());
         when(mapper.selectDueCloseCandidates(any(), eq(100))).thenReturn(List.of(stale));
         when(mapper.lockCandidate("CV-RACE")).thenReturn(refreshed);
 
         ConversationIdleTimeoutScheduler.SweepResult result = scheduler.sweep();
 
         assertThat(result.closed()).isZero();
-        verify(mapper, never()).closeIfStillIdle(any(), any(), any(), any());
+        verify(mapper, never()).closeIfStillIdle(any(), any(), any(), any(), any());
         verify(mapper, never()).insertSystemMessage(any(), any(), any(), any());
     }
 
     @Test
     void sweepPublishesSseEventsOnlyAfterTheDatabaseTransactionCommits() {
-        ConversationTimeoutPolicy policy = new ConversationTimeoutPolicy(
-                "GLOBAL", 5, 10, 3L, "superadmin", "调整", NOW);
         ConversationIdleCandidate warning = candidate("CV-WARN", LocalDateTime.of(2026, 7, 25, 9, 54));
         ConversationIdleCandidate closing = candidate("CV-CLOSE", ACTIVITY);
-        when(mapper.selectPolicy()).thenReturn(policy);
-        when(mapper.selectDueWarningCandidates(any(), any(), eq(100))).thenReturn(List.of(warning));
+        when(mapper.selectDueWarningCandidates(any(), eq(100))).thenReturn(List.of(warning));
         when(mapper.selectDueCloseCandidates(any(), eq(100))).thenReturn(List.of(closing));
         when(mapper.lockCandidate("CV-WARN")).thenReturn(warning);
         when(mapper.lockCandidate("CV-CLOSE")).thenReturn(closing);
         when(mapper.insertEvent(eq("CV-WARN"), eq("WARN"), any(), eq(3L), eq(NOW))).thenReturn(1);
         when(mapper.insertEvent(eq("CV-CLOSE"), eq("CLOSE"), any(), eq(3L), eq(NOW))).thenReturn(1);
-        when(mapper.closeIfStillIdle(eq("CV-CLOSE"), eq(ACTIVITY), any(), eq(NOW))).thenReturn(1);
+        when(mapper.closeIfStillIdle(eq("CV-CLOSE"), eq(ACTIVITY), eq(7L), any(), eq(NOW))).thenReturn(1);
 
         TransactionSynchronizationManager.initSynchronization();
         try {
@@ -134,7 +120,39 @@ class ConversationIdleTimeoutSchedulerTest {
         }
     }
 
+    @Test void pendingReplyStopsBothWarningAndCloseUsingCurrentRead() {
+        var warning=candidate("CV-WARN",NOW.minusMinutes(6));
+        var closing=candidate("CV-CLOSE",NOW.minusMinutes(10));
+        when(mapper.selectDueWarningCandidates(NOW,100)).thenReturn(List.of(warning));
+        when(mapper.selectDueCloseCandidates(NOW,100)).thenReturn(List.of(closing));
+        when(mapper.lockCandidate("CV-WARN")).thenReturn(warning);
+        when(mapper.lockCandidate("CV-CLOSE")).thenReturn(closing);
+        when(mapper.pendingRepliesCurrent(any())).thenReturn(List.of(77L));
+        assertThat(scheduler.sweep()).isEqualTo(new ConversationIdleTimeoutScheduler.SweepResult(0,0));
+        verify(mapper,never()).insertEvent(any(),any(),any(),any(),any());
+        verify(mapper,never()).closeIfStillIdle(any(),any(),any(),any(),any());
+    }
+
+    @Test void oldSegmentUsesItsOwnThresholdAndNeverReadsLatestGlobalPolicy() {
+        var old=new ConversationIdleCandidate(42L,"CV-OLD","OPEN",NOW.minusMinutes(6),7L,1L,1,120);
+        when(mapper.selectDueCloseCandidates(NOW,100)).thenReturn(List.of(old));
+        when(mapper.lockCandidate("CV-OLD")).thenReturn(old);
+        assertThat(scheduler.sweep().closed()).isZero();
+        verify(mapper,never()).selectPolicy();
+        verify(mapper,never()).closeIfStillIdle(any(),any(),any(),any(),any());
+    }
+
+    @Test void changedHeaderVersionAtSameTimestampAndMissingSnapshotFailClosed() {
+        var candidate=candidate("CV-SAME",ACTIVITY);
+        when(mapper.selectDueCloseCandidates(NOW,100)).thenReturn(List.of(candidate));
+        when(mapper.lockCandidate("CV-SAME")).thenReturn(new ConversationIdleCandidate(42L,"CV-SAME","OPEN",ACTIVITY,8L,3L,5,10));
+        assertThat(scheduler.sweep().closed()).isZero();
+        when(mapper.lockCandidate("CV-SAME")).thenReturn(new ConversationIdleCandidate(42L,"CV-SAME","OPEN",ACTIVITY,7L,null,null,null));
+        assertThat(scheduler.sweep().closed()).isZero();
+        verify(mapper,never()).closeIfStillIdle(any(),any(),any(),any(),any());
+    }
+
     private ConversationIdleCandidate candidate(String no, LocalDateTime activity) {
-        return new ConversationIdleCandidate(42L, no, "OPEN", activity);
+        return new ConversationIdleCandidate(42L, no, "OPEN", activity,7L,3L,5,10);
     }
 }

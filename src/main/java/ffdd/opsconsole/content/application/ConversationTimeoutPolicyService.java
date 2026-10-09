@@ -23,12 +23,13 @@ public class ConversationTimeoutPolicyService {
     private static final int MAX_WARN_MINUTES = 30;
     private static final int MIN_CLOSE_MINUTES = 2;
     private static final int MAX_CLOSE_MINUTES = 120;
-    private static final int MIN_REASON_LENGTH = 8;
+    private static final int MIN_REASON_LENGTH = 6;
     private static final int MAX_REASON_LENGTH = 200;
 
     private final ConversationTimeoutPolicyMapper mapper;
     private final AuditLogService auditLogService;
     private final Clock clock;
+    private final SupportOwnershipService ownership;
 
     public ApiResult<ConversationTimeoutPolicy> current() {
         ConversationTimeoutPolicy policy = mapper.selectPolicy();
@@ -40,6 +41,8 @@ public class ConversationTimeoutPolicyService {
 
     @Transactional
     public ApiResult<ConversationTimeoutPolicy> update(ConversationTimeoutPolicyUpdateRequest request) {
+        requireWriterSnapshot();
+        Long actorId = ownership.actorId();
         ApiResult<ConversationTimeoutPolicy> invalid = validate(request);
         if (invalid != null) {
             return invalid;
@@ -50,6 +53,10 @@ public class ConversationTimeoutPolicyService {
         String reason = request.reason().trim();
         String actor = AdminActorResolver.resolve(request.operator());
         ConversationTimeoutPolicy before = mapper.selectPolicyForUpdate();
+        ownership.lockAgent(actorId);
+        ownership.requireSuperAdmin();
+        if (mapper.timeoutManageGrant(actorId).isEmpty())
+            throw new ffdd.opsconsole.shared.exception.BizException(403, "M3_TIMEOUT_POLICY_FORBIDDEN");
         if (before == null) {
             return ApiResult.fail(OpsErrorCode.INTERNAL_ERROR.httpStatus(), "M3_TIMEOUT_POLICY_NOT_CONFIGURED");
         }
@@ -92,6 +99,12 @@ public class ConversationTimeoutPolicyService {
                         "reason", reason))
                 .build());
         return ApiResult.ok(after);
+    }
+
+    public void requireWriterSnapshot() {
+        ownership.requireSuperAdminSnapshot();
+        if (mapper.timeoutManageGrantSnapshot(ownership.actorId()).isEmpty())
+            throw new ffdd.opsconsole.shared.exception.BizException(403,"M3_TIMEOUT_POLICY_FORBIDDEN");
     }
 
     private ApiResult<ConversationTimeoutPolicy> validate(ConversationTimeoutPolicyUpdateRequest request) {

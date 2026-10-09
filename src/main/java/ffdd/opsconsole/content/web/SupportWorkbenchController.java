@@ -9,18 +9,38 @@ import ffdd.opsconsole.content.dto.SupportMaintenancePreferenceRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.util.Map;
-import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/content/support-workbench")
-@RequiredArgsConstructor
 public class SupportWorkbenchController {
     private final SupportWorkbenchService workbench;
     private final SupportMaintenanceService maintenance;
     private final ProductionSupportPathGuard productionPathGuard;
     private final ffdd.opsconsole.content.application.SupportCustomerProfileService profiles;
+    private final ffdd.opsconsole.content.application.SupportAnalyticsPrivateQueryService analytics;
+
+    /** Existing four-argument construction remains compatible with legacy endpoint tests. */
+    public SupportWorkbenchController(SupportWorkbenchService workbench,SupportMaintenanceService maintenance,
+            ProductionSupportPathGuard productionPathGuard,ffdd.opsconsole.content.application.SupportCustomerProfileService profiles) {
+        this(workbench,maintenance,productionPathGuard,profiles,null);
+    }
+    @org.springframework.beans.factory.annotation.Autowired
+    public SupportWorkbenchController(SupportWorkbenchService workbench,SupportMaintenanceService maintenance,
+            ProductionSupportPathGuard productionPathGuard,ffdd.opsconsole.content.application.SupportCustomerProfileService profiles,
+            ffdd.opsconsole.content.application.SupportAnalyticsPrivateQueryService analytics) {
+        this.workbench=workbench;this.maintenance=maintenance;this.productionPathGuard=productionPathGuard;
+        this.profiles=profiles;this.analytics=analytics;
+    }
+
+    @GetMapping("/analytics")
+    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
+    public ApiResult<Map<String,Object>> analytics(@RequestParam org.springframework.util.MultiValueMap<String,String> parameters) {
+        productionPathGuard.requireOpsWriteAllowed();
+        if(analytics==null)throw new BizException(503,"SUPPORT_ANALYTICS_READER_UNAVAILABLE");
+        return ApiResult.ok(analytics.query(parameters));
+    }
 
     @GetMapping({"/overview","/customers"})
     @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
