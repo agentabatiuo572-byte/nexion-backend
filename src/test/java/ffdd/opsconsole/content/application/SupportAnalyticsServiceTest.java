@@ -570,7 +570,7 @@ class SupportAnalyticsServiceTest {
         when(finance.readHistory(any())).thenReturn(snapshot(List.of(purchase)));
         var online=device(101,1,purchase.orderNo(),"TRIAL","PRODUCTION",ffdd.opsconsole.device.facade.SupportDeviceReadFacade.ConnectionStatus.ONLINE);
         when(devices.readCurrent(any())).thenReturn(new ffdd.opsconsole.device.facade.SupportDeviceReadFacade.Snapshot(List.of(online,online,
-            device(102,1,null,"GIFT","PRODUCTION",ffdd.opsconsole.device.facade.SupportDeviceReadFacade.ConnectionStatus.OFFLINE),
+            device(102,1,purchase.orderNo(),"PROMOTION_GIFT","PRODUCTION",ffdd.opsconsole.device.facade.SupportDeviceReadFacade.ConnectionStatus.OFFLINE),
             device(103,1,null,"TRIAL","PRODUCTION",ffdd.opsconsole.device.facade.SupportDeviceReadFacade.ConnectionStatus.UNKNOWN),
             device(104,1,null,"OTHER","PRODUCTION",ffdd.opsconsole.device.facade.SupportDeviceReadFacade.ConnectionStatus.NOT_APPLICABLE),
             device(105,1,null,"GIFT",null,ffdd.opsconsole.device.facade.SupportDeviceReadFacade.ConnectionStatus.UNKNOWN),
@@ -580,6 +580,8 @@ class SupportAnalyticsServiceTest {
         assertThat(stock.partitions()).filteredOn(p->p.dimension().equals("CONNECTION")).extracting(p->p.devices().confirmedValue()).containsExactly(1L,1L,1L,1L);
         assertThat(stock.partitions()).filteredOn(p->p.dimension().equals("ACQUISITION") && p.value().equals("PAID_PURCHASE")).singleElement().satisfies(p->assertThat(p.devices().confirmedValue()).isEqualTo(1));
         assertThat(stock.partitions()).filteredOn(p->p.dimension().equals("ACQUISITION") && p.value().equals("UNKNOWN")).singleElement().satisfies(p->assertThat(p.devices().confirmedValue()).isEqualTo(3));
+        assertThat(acquisition(result.currentCustomers().get(0).metrics().devices(),Acquisition.PAID_PURCHASE)).isEqualTo(1);
+        assertThat(acquisition(result.currentCustomers().get(0).metrics().devices(),Acquisition.UNKNOWN)).isEqualTo(3);
         assertThat(result.financialSummary().status()).isEqualTo(Status.UNAVAILABLE);assertThat(result.currentCustomers().get(0).metrics().lifetimeStatus()).isEqualTo(Status.UNAVAILABLE);
         assertThat(result.currentCustomers().get(0).metrics().lifetime().get(0).purchases().observedAmount()).isNull();assertThat(result.currentMetrics().firstConfirmed().status()).isEqualTo(Status.UNAVAILABLE);
         verify(finance).readHistory(List.of(1L));verify(mapper,never()).eventCandidates(any());verify(mapper,never()).attributions(any(),any());

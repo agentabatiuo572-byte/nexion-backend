@@ -410,7 +410,8 @@ public class SupportAnalyticsService {
         var partitions=new ArrayList<DevicePartition>();
         for(var state:SupportDeviceReadFacade.ConnectionStatus.values())partitions.add(new DevicePartition("CONNECTION",state.name(),exact(held.values().stream().filter(d->d.connectionStatus()==state).count())));
         // Facts already passed the canonical positive-payment check; history coverage is independent of current acquisition.
-        long paid=held.values().stream().filter(d->d.sourceOrderNo()!=null && !d.sourceOrderNo().isBlank() && facts.stream().anyMatch(f->
+        long paid=held.values().stream().filter(d->!"PROMOTION_GIFT".equalsIgnoreCase(d.sourceChannel())
+            && d.sourceOrderNo()!=null && !d.sourceOrderNo().isBlank() && facts.stream().anyMatch(f->
             f.customerId()==d.customerId() && f.kind()==Kind.DEVICE_PURCHASE && Objects.equals(f.orderNo(),d.sourceOrderNo())
                 && !proofRejected(snapshot,f))).count();
         partitions.add(new DevicePartition("ACQUISITION",Acquisition.PAID_PURCHASE.name(),exact(paid)));
