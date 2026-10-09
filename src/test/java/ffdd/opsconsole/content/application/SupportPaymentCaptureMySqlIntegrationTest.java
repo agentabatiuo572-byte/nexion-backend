@@ -1901,7 +1901,7 @@ class SupportPaymentCaptureMySqlIntegrationTest {
         long bills=billExisted?jdbc.queryForObject("SELECT COUNT(*) FROM nx_wallet_bill",Long.class):0;
         for(int attempt=0;attempt<2;attempt++) {
             ResourceDatabasePopulator ddl=new ResourceDatabasePopulator(
-                new FileSystemResource("scripts/migrations/20261009_e4_wallet_bill_schema.sql"),
+                new FileSystemResource("scripts/migrations/20261009_e4_wallet_bill_schema_precision_forward.sql"),
                 new FileSystemResource("scripts/migrations/20261008_support_payment_attribution.sql"),
                 new FileSystemResource("scripts/migrations/20261008_support_payment_history_birth.sql"));
             ddl.execute(dataSource);

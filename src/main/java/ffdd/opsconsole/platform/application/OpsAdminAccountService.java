@@ -40,6 +40,7 @@ import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.AdminSessionRegistry;
+import ffdd.opsconsole.shared.security.AdminSessionPolicy;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -686,20 +687,11 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (!baseline.value().equals(request.expectedValue().trim())) {
             return ApiResult.fail(409, "SECURITY_BASELINE_STALE");
         }
+        if ("session".equals(key)) {
+            return ApiResult.fail(422, "SESSION_LIMIT_POLICY_FIXED");
+        }
         if (baseline.locked()) {
             return ApiResult.fail(OpsErrorCode.PHASE_PARAM_READONLY.httpStatus(), "SECURITY_BASELINE_LOCKED");
-        }
-        if ("session".equals(key)) {
-            Matcher matcher = Pattern.compile("(\\d+)\\s*min?\\s*/\\s*(\\d+)\\s*h?", Pattern.CASE_INSENSITIVE)
-                    .matcher(value);
-            if (!matcher.find()) {
-                return ApiResult.fail(422, "SESSION_LIMIT_FORMAT_INVALID");
-            }
-            int idle = Integer.parseInt(matcher.group(1));
-            int abs = Integer.parseInt(matcher.group(2));
-            if (idle < 15 || idle > 60 || abs < 4 || abs > 12) {
-                return ApiResult.fail(422, "SESSION_LIMIT_OUT_OF_RANGE");
-            }
         }
         // lock 行不可达:它恒为派生只读(见 LOCK_BASELINE_KEY),上面已按 SECURITY_BASELINE_LOCKED
         // 拒绝。登录阈值只能改 C6 的 auth.risk.*,这里不再保留第二套校验。
@@ -816,14 +808,14 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
      * 幂等 seed 安全基线默认值:仅当行缺席时插入,绝不覆盖管理员已调整的阈值。
      *
      * <p>值字符串格式对齐前端 a1-accounts.tsx 的正则提取:
-     * session 行 "Xmin / Yh"(滑动过期 min / 绝对上限 h)。
+     * session 行 "60min / unlimited"，有效操作滑动续期，无绝对上限。
      * lock 行只 seed 一个占位壳,真实值由 {@link #securityBaseline(AdminSecurityBaselineEntity)}
      * 从 auth.risk.* 实时派生 —— 见 {@link #LOCK_BASELINE_KEY} 的说明。</p>
      */
     private void seedSecurityBaselines() {
         seedBaselineIfAbsent("session", "会话基线",
-                "session 滑动过期(无操作自动登出) / 绝对上限(一次登录最长存活);比用户侧更短,操盘台高敏",
-                "30min / 8h", 0, 10);
+                AdminSessionPolicy.BASELINE_DESCRIPTION,
+                AdminSessionPolicy.BASELINE_VALUE, 1, 10);
         seedDerivedLockBaseline();
     }
 
@@ -1197,12 +1189,13 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
 
     private AdminAccountOverview.SecurityBaseline securityBaseline(AdminSecurityBaselineEntity row) {
         boolean derivedLock = LOCK_BASELINE_KEY.equals(roleKey(row.getBaselineKey()));
+        boolean session = "session".equals(roleKey(row.getBaselineKey()));
         return new AdminAccountOverview.SecurityBaseline(
                 roleKey(row.getBaselineKey()),
                 firstText(row.getLabel(), row.getBaselineKey()),
-                derivedLock ? lockBaselineDescription() : firstText(row.getDescription()),
-                derivedLock ? lockBaselineValue() : firstText(row.getBaselineValue()),
-                derivedLock || Integer.valueOf(1).equals(row.getLocked()));
+                derivedLock ? lockBaselineDescription() : session ? AdminSessionPolicy.BASELINE_DESCRIPTION : firstText(row.getDescription()),
+                derivedLock ? lockBaselineValue() : session ? AdminSessionPolicy.BASELINE_VALUE : firstText(row.getBaselineValue()),
+                derivedLock || session || Integer.valueOf(1).equals(row.getLocked()));
     }
 
     private AdminAccountOverview.OperatorRecord requireOperator(String accountId) {

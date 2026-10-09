@@ -300,7 +300,10 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261007_support_groups.sql")
   (Join-Path $root "scripts\migrations\20261009_support_timeout_segment.sql")
   (Join-Path $root "scripts\migrations\20261009_e4_wallet_bill_compat.sql")
-  (Join-Path $root "scripts\migrations\20261009_e4_wallet_bill_schema.sql")
+  # Startup replays the current guard; the old precision guard stays immutable in the release catalog.
+  (Join-Path $root "scripts\migrations\20261009_e4_wallet_bill_schema_precision_forward.sql"),
+  # ADMIN activity alone extends the 60min idle session; legacy absolute limits are retired.
+  (Join-Path $root "scripts\migrations\20261009_admin_session_idle60.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_attribution.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_history_birth.sql")
   (Join-Path $root "scripts\migrations\20261009_support_leaderboard_publication.sql")

@@ -23,6 +23,7 @@ import urllib.request
 ROOT = Path('/srv/nexgrid/cd/migrations')
 BACKUPS = Path('/srv/nexgrid/backups/auto-migrations')
 ENV_FILE = Path('/srv/nexgrid/secrets/backend.env')
+HOST_CONFIG = Path('/srv/jenkins/release/config.json')
 DB = 'nexion'
 CONTAINER = 'nexgrid-mysql'
 GUARD = Path('/etc/systemd/system/nexgrid-backend.service.d/60-database-migration-hold.conf')
@@ -33,6 +34,26 @@ NAME = re.compile(r'[0-9]{8}_[a-z0-9_]+\.sql')
 SHA = re.compile(r'[0-9a-f]{40}')
 MAX_ARCHIVE = 100 * 1024**2
 MAX_SQL = 8 * 1024**2
+EARNINGS_FILE = '20261007_earnings_source_recovery.sql'
+EARNINGS_SHA256 = 'f443722d71d6a9da77759e55142ddd12e15b71c8af356a5dc9cd73dd03a410e9'
+EARNINGS_TRIGGER = 'nx_wallet_earnings_debit_counter_v1'
+EARNINGS_BODY = ('SET NEW.earnings_usdt_debited=OLD.earnings_usdt_debited+'
+                 'GREATEST(OLD.usdt_available-NEW.usdt_available,0),'
+                 'NEW.earnings_nex_debited=OLD.earnings_nex_debited+'
+                 'GREATEST(OLD.nex_available-NEW.nex_available,0)')
+EARNINGS_CREATE = (f'CREATE TRIGGER IF NOT EXISTS {EARNINGS_TRIGGER}\n'
+                   'BEFORE UPDATE ON nx_user_wallet FOR EACH ROW\n' + EARNINGS_BODY + ';\n').encode()
+CONTEXT_SQL = ("SELECT JSON_OBJECT('version',VERSION(),'database',DATABASE(),"
+               "'principal',CURRENT_USER(),'log_bin',@@GLOBAL.log_bin,"
+               "'trust',@@GLOBAL.log_bin_trust_function_creators,'mode',@@SESSION.sql_mode,"
+               "'charset',@@SESSION.character_set_client,'collation',@@SESSION.collation_connection);")
+TRIGGER_SQL = ("SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('name',TRIGGER_NAME,"
+               "'table',EVENT_OBJECT_TABLE,'timing',ACTION_TIMING,'event',EVENT_MANIPULATION,"
+               "'body',ACTION_STATEMENT,'definer',DEFINER,'mode',SQL_MODE,"
+               "'charset',CHARACTER_SET_CLIENT,'collation',COLLATION_CONNECTION)),JSON_ARRAY()) "
+               "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND "
+               f"(TRIGGER_NAME='{EARNINGS_TRIGGER}' OR (EVENT_OBJECT_TABLE='nx_user_wallet' "
+               "AND ACTION_TIMING='BEFORE' AND EVENT_MANIPULATION='UPDATE'));")
 
 
 class MigrationError(RuntimeError):
@@ -184,6 +205,152 @@ def scoped_account(user, password):
                 for row in grants), 'MIGRATION_PRIVILEGES_NOT_DATABASE_SCOPED')
 
 
+def probe(user, password, sql, *, as_json=True):
+    """Read-only, fixed caller queries; never print MySQL output or credentials."""
+    result = subprocess.run(mysql_args(user), input=sql.encode(), capture_output=True,
+                            timeout=30, env={**os.environ, 'MYSQL_PWD': password})
+    require(result.returncode == 0, 'MIGRATION_CAPABILITY_QUERY_FAILED')
+    try:
+        text = result.stdout.decode('utf-8').strip()
+        return json.loads(text) if as_json else text.splitlines()
+    except (UnicodeError, ValueError):
+        raise MigrationError('MIGRATION_CAPABILITY_RESPONSE_REJECTED') from None
+
+
+def fixed_trigger_enabled():
+    if not HOST_CONFIG.exists() and not HOST_CONFIG.is_symlink():
+        return False
+    trusted(HOST_CONFIG)
+    require(stat.S_ISREG(HOST_CONFIG.lstat().st_mode), 'MIGRATION_HOST_CONFIG_REJECTED')
+    try:
+        config = json.loads(HOST_CONFIG.read_bytes())
+    except (UnicodeError, ValueError):
+        raise MigrationError('MIGRATION_HOST_CONFIG_REJECTED') from None
+    require(isinstance(config, dict), 'MIGRATION_HOST_CONFIG_REJECTED')
+    value = config.get('allow_fixed_earnings_trigger_install', False)
+    require(type(value) is bool, 'MIGRATION_HOST_CONFIG_REJECTED')
+    return value  # Only a separately approved root-owned host configuration enables writing.
+
+
+def account_definer(principal, user):
+    require(isinstance(principal, str) and principal.count('@') == 1,
+            'MIGRATION_TRIGGER_DEFINER_REJECTED')
+    account, host = principal.split('@')
+    require(account == user and account != 'root' and re.fullmatch(r'[a-zA-Z0-9_]{1,32}', account)
+            and re.fullmatch(r'[a-zA-Z0-9_.%:_-]{1,255}', host),
+            'MIGRATION_TRIGGER_DEFINER_REJECTED')
+    # Account identifiers are quoted, and quotes/backticks/control characters are rejected.
+    return '`' + account + '`@`' + host + '`'
+
+
+def earnings_parts(data):
+    require(digest(data) == EARNINGS_SHA256, 'MIGRATION_FIXED_TRIGGER_FILE_CHANGED')
+    require(data.count(EARNINGS_CREATE) == 1, 'MIGRATION_FIXED_TRIGGER_BLOCK_CHANGED')
+    prefix, suffix = data.split(EARNINGS_CREATE)
+    require(prefix and suffix, 'MIGRATION_FIXED_TRIGGER_BLOCK_CHANGED')
+    return prefix, suffix
+
+
+def grant_privileges(rows, scope):
+    require(isinstance(rows, list) and rows, 'MIGRATION_CAPABILITY_GRANTS_REJECTED')
+    privileges = set()
+    for row in rows:
+        require(isinstance(row, str), 'MIGRATION_CAPABILITY_GRANTS_REJECTED')
+        match = re.fullmatch(r'GRANT ([A-Z_, ]+) ON ' + re.escape(scope) + r' TO .+', row)
+        if match:
+            privileges.update(value.strip() for value in match[1].split(','))
+    return privileges
+
+
+def server_context(user, password):
+    context = probe(user, password, CONTEXT_SQL)
+    require(isinstance(context, dict) and context.get('database') == DB
+            and isinstance(context.get('version'), str)
+            and type(context.get('log_bin')) is int and context['log_bin'] in (0, 1)
+            and type(context.get('trust')) is int and context['trust'] in (0, 1)
+            and all(isinstance(context.get(k), str) and context[k]
+                    for k in ('principal', 'mode', 'charset', 'collation')),
+            'MIGRATION_CAPABILITY_RESPONSE_REJECTED')
+    return context
+
+
+def verify_earnings_trigger(user, password, context, *, required=False):
+    rows = probe(user, password, TRIGGER_SQL)
+    require(isinstance(rows, list), 'MIGRATION_TRIGGER_METADATA_REJECTED')
+    if not rows:
+        require(not required, 'MIGRATION_FIXED_TRIGGER_MISSING')
+        return False
+    require(len(rows) == 1 and isinstance(rows[0], dict), 'MIGRATION_TRIGGER_SHAPE_REJECTED')
+    row = rows[0]
+    require(row.get('name') == EARNINGS_TRIGGER and row.get('table') == 'nx_user_wallet'
+            and row.get('timing') == 'BEFORE' and row.get('event') == 'UPDATE'
+            and isinstance(row.get('body'), str)
+            and re.sub(r'\s', '', row['body']).lower() == re.sub(r'\s', '', EARNINGS_BODY).lower()
+            and row.get('definer') == context['principal']
+            and all(row.get(k) == context[k] for k in ('mode', 'charset', 'collation')),
+            'MIGRATION_TRIGGER_SHAPE_REJECTED')
+    return True
+
+
+def stored_program_text(text, *, backslash_escapes):
+    # Mask quoted tokens and ordinary comments; retain executable comment SQL.
+    # Both escaping modes are checked by the caller, independent of sql_mode.
+    escape = r'\\[\s\S]|' if backslash_escapes else ''
+    quoted = '|'.join(q + '(?:' + escape + q + q + '|[^' + q
+                      + (r'\\' if backslash_escapes else '') + '])*' + q
+                      for q in ("'", '"', '`'))
+    pattern = quoted + r'|--(?=[\x00-\x20\x7f])[^\r\n]*|#[^\r\n]*|/\*.*?\*/'
+
+    def mask(match):
+        value = match[0]
+        if value.startswith('/*!'):
+            executable = re.sub(r'^\d*', '', value[3:-2])
+            return ' ' + stored_program_text(executable, backslash_escapes=backslash_escapes) + ' '
+        return ' '
+
+    return re.sub(pattern, mask, text, flags=re.S)
+
+
+def migration_preflight(pending, user, password, root_password):
+    """Check the entire pending batch before creating a journal, hold or any DDL."""
+    special = False
+    for name, data in pending:
+        if name == EARNINGS_FILE:
+            earnings_parts(data)
+            special = True
+        else:
+            # Conservative refusal, not a SQL sandbox: grants still enforce isolation.
+            text = data.decode('utf-8-sig')
+            for backslash_escapes in (False, True):
+                scanned = stored_program_text(text, backslash_escapes=backslash_escapes)
+                require(not re.search(r'\bCREATE\b[^;]*\b(?:TRIGGER|FUNCTION)\b', scanned, re.I),
+                        'MIGRATION_UNREVIEWED_STORED_PROGRAM')
+    if not special:
+        return None
+    context = server_context(user, password)
+    account_definer(context['principal'], user)
+    privileges = grant_privileges(probe(user, password, 'SHOW GRANTS FOR CURRENT_USER();',
+                                       as_json=False), '`nexion`.*')
+    require('ALL PRIVILEGES' in privileges
+            or {'ALTER', 'CREATE', 'REFERENCES', 'TRIGGER', 'SELECT', 'UPDATE'} <= privileges,
+            'MIGRATION_TRIGGER_APP_CAPABILITIES_MISSING')
+    verify_earnings_trigger(user, password, context)
+    root_install = bool(context['log_bin'] and not context['trust'])
+    if root_install:
+        require(fixed_trigger_enabled(), 'MIGRATION_TRIGGER_PRIVILEGED_INSTALL_NOT_APPROVED_BEFORE_HOLD')
+        root_context = server_context('root', root_password)
+        require(context['version'].startswith('8.4.') and root_context['version'] == context['version']
+                and root_context['principal'].startswith('root@')
+                and all(root_context[k] == context[k] for k in ('mode', 'charset', 'collation', 'log_bin', 'trust')),
+                'MIGRATION_TRIGGER_ROOT_CONTEXT_REJECTED')
+        root_privileges = grant_privileges(probe('root', root_password, 'SHOW GRANTS FOR CURRENT_USER();',
+                                               as_json=False), '*.*')
+        require(('ALL PRIVILEGES' in root_privileges or {'SUPER', 'TRIGGER'} <= root_privileges)
+                and 'SET_ANY_DEFINER' in root_privileges,
+                'MIGRATION_TRIGGER_ROOT_CAPABILITIES_MISSING')
+    return {**context, 'root_install': root_install}
+
+
 def stop_backend():
     revoke_candidate_start()
     save(ROOT / 'START_BLOCKED', {'reason': 'DATABASE_MIGRATION_HOLD'})
@@ -260,6 +427,69 @@ def execute_sql(name, data, folder, user, password):
     require(result.returncode == 0, 'MIGRATION_SQL_FAILED: ' + name)
 
 
+def fixed_earnings_template(principal, user):
+    definer = account_definer(principal, user)
+    return (f'CREATE DEFINER={definer} TRIGGER IF NOT EXISTS `{DB}`.`{EARNINGS_TRIGGER}`\n'
+            f'BEFORE UPDATE ON `{DB}`.`nx_user_wallet` FOR EACH ROW\n' + EARNINGS_BODY + ';\n').encode()
+
+
+def install_fixed_earnings_trigger(folder, user, password, root_password, context):
+    """The only root SQL write: no archive bytes, filenames or SQL body accepted."""
+    require(context.get('root_install') is True and fixed_trigger_enabled(),
+            'MIGRATION_TRIGGER_PRIVILEGED_INSTALL_NOT_APPROVED')
+    template = fixed_earnings_template(context['principal'], user)
+    app_current = server_context(user, password)
+    require(all(app_current[k] == context[k]
+                for k in ('principal', 'version', 'mode', 'charset', 'collation', 'log_bin', 'trust')),
+            'MIGRATION_TRIGGER_APP_CONTEXT_CHANGED')
+    current = server_context('root', root_password)
+    require(current['principal'].startswith('root@')
+            and all(current[k] == context[k] for k in ('version', 'mode', 'charset', 'collation', 'log_bin', 'trust')),
+            'MIGRATION_TRIGGER_ROOT_CONTEXT_REJECTED')
+    columns = probe(user, password,
+                    "SELECT JSON_ARRAYAGG(JSON_OBJECT('name',COLUMN_NAME,'type',COLUMN_TYPE,"
+                    "'nullable',IS_NULLABLE,'default',COLUMN_DEFAULT)) FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user_wallet' AND COLUMN_NAME "
+                    "IN ('earnings_usdt_debited','earnings_nex_debited');")
+    require(isinstance(columns, list) and len(columns) == 2 and all(isinstance(c, dict) for c in columns)
+            and {c.get('name') for c in columns} == {'earnings_usdt_debited', 'earnings_nex_debited'}
+            and all(c.get('type') == 'decimal(30,6)' and c.get('nullable') == 'NO'
+                    and isinstance(c.get('default'), str) and re.fullmatch(r'0(?:\.0+)?', c['default'])
+                    for c in columns), 'MIGRATION_TRIGGER_COLUMNS_REJECTED')
+    if not verify_earnings_trigger(user, password, context):
+        with (folder / (EARNINGS_FILE + '.trigger.stdout')).open('xb') as out, \
+                (folder / (EARNINGS_FILE + '.trigger.stderr')).open('xb') as err:
+            result = subprocess.run(mysql_args('root'),
+                                    input=b'SET SESSION lock_wait_timeout=30;\n' + template,
+                                    stdout=out, stderr=err, timeout=180,
+                                    env={**os.environ, 'MYSQL_PWD': root_password})
+        require(result.returncode == 0, 'MIGRATION_FIXED_TRIGGER_INSTALL_FAILED')
+    verify_earnings_trigger(user, password, context, required=True)
+    return digest(template)
+
+
+def execute_earnings_recovery(data, folder, user, password, root_password, context, journal):
+    prefix, suffix = earnings_parts(data)
+
+    def segment(value):
+        journal['segment'] = value
+        save(ROOT / 'active.json', journal)
+        save(folder / 'receipt.json', journal)
+
+    journal['fixed_trigger'] = {'actor': 'ROOT_FIXED_TRIGGER_INSTALL', 'definer': context['principal'],
+                                'template_sha256': digest(fixed_earnings_template(context['principal'], user))}
+    segment('PREFIX')
+    execute_sql(EARNINGS_FILE + '.prefix', prefix, folder, user, password)
+    segment('TRIGGER_INSTALLING')
+    install_fixed_earnings_trigger(folder, user, password, root_password, context)
+    journal['fixed_trigger']['verified'] = True
+    segment('TRIGGER_VERIFIED')
+    segment('SUFFIX')
+    execute_sql(EARNINGS_FILE + '.suffix', suffix, folder, user, password)
+    verify_earnings_trigger(user, password, context, required=True)
+    segment('SUFFIX_VERIFIED')
+
+
 def active():
     path = ROOT / 'active.json'
     if not path.exists():
@@ -286,6 +516,7 @@ def apply(sha, *, rollback_check=False):
         validate_sql(data)
     user, password, root_password = credentials()
     scoped_account(user, password)
+    trigger_context = migration_preflight(pending, user, password, root_password)
     trusted(BACKUPS)
     folder = BACKUPS / (time.strftime('%Y%m%d-%H%M%S', time.gmtime()) + '-' + sha[:12])
     folder.mkdir(mode=0o700)
@@ -307,10 +538,14 @@ def apply(sha, *, rollback_check=False):
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
+            journal.pop('segment', None)
             journal.update(phase='SQL_APPLYING', current=name)
             save(ROOT / 'active.json', journal)
             sql_started = True
-            execute_sql(name, data, folder, user, password)
+            if name == EARNINGS_FILE and trigger_context['root_install']:
+                execute_earnings_recovery(data, folder, user, password, root_password, trigger_context, journal)
+            else:
+                execute_sql(name, data, folder, user, password)
             state['scripts'][name] = {'sha256': digest(data), 'status': 'APPLIED',
                                       'sha': sha, 'backup': journal['backup']['path']}
             save(ROOT / 'state.json', state)

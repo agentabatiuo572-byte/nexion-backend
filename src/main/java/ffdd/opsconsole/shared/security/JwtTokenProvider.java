@@ -75,14 +75,18 @@ public class JwtTokenProvider {
             Long subjectId, String subjectType, String username, Collection<String> authorities,
             String sessionId, Duration ttl, UserAuthEnvironment audience) {
         Date now = new Date();
+        boolean admin = "ADMIN".equals(subjectType);
+        if (admin && (sessionId == null || sessionId.isBlank())) {
+            throw new IllegalArgumentException("ADMIN_SESSION_ID_REQUIRED");
+        }
         Date expiresAt = new Date(now.getTime() + ttl.toMillis());
         var builder = Jwts.builder()
                 .subject(String.valueOf(subjectId))
                 .claim("subjectType", subjectType)
                 .claim("username", username)
                 .claim("authorities", authorities)
-                .issuedAt(now)
-                .expiration(expiresAt);
+                .issuedAt(now);
+        if (!admin) builder.expiration(expiresAt);
         if (sessionId != null && !sessionId.isBlank()) {
             builder.claim("sessionId", sessionId);
         }

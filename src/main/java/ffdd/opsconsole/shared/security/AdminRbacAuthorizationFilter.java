@@ -41,6 +41,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             "/api/admin/auth/password/change",
             "/api/admin/auth/logout");
     private static final Set<String> ANY_ADMIN_PATHS = Set.of(
+            "/api/admin/auth/activity",
             "/api/admin/auth/me",
             "/api/admin/auth/password/change",
             "/api/admin/auth/logout",
@@ -158,7 +159,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         }
         boolean reasonPolicyRead = HttpMethod.GET.matches(request.getMethod())
                 && "/api/admin/platform/audit/reason-policy".equals(path);
-        if (reasonPolicyRead && !isTrustedAuthenticatedAdmin(authentication)) {
+        if ((reasonPolicyRead || "/api/admin/auth/activity".equals(path))
+                && !isTrustedAuthenticatedAdmin(authentication)) {
             auditDenial(request, authentication, "ADMIN_SUBJECT_REQUIRED", null);
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_SUBJECT_REQUIRED");
             return;

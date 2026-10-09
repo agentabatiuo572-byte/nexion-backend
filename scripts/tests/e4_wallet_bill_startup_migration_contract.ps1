@@ -26,7 +26,10 @@ $paths = @($assignments[0].Right.FindAll({
   $_.CommandElements[2].Value.Replace('\', '/')
 })
 $compat = 'scripts/migrations/20261009_e4_wallet_bill_compat.sql'
-$strict = 'scripts/migrations/20261009_e4_wallet_bill_schema.sql'
+$strict = 'scripts/migrations/20261009_e4_wallet_bill_schema_precision_forward.sql'
+if ($paths -contains 'scripts/migrations/20261009_e4_wallet_bill_schema.sql') {
+  throw "Normal startup must not replay the immutable historical precision guard."
+}
 if (@($paths | Where-Object { $_ -eq $compat }).Count -ne 1 -or
     @($paths | Where-Object { $_ -eq $strict }).Count -ne 1) {
   throw "Normal startup must register compat and strict wallet schema exactly once."
