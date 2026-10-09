@@ -1731,33 +1731,58 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                                 @Param("count") long count, @Param("color") String color, @Param("tone") String tone,
                                 @Param("sortOrder") int sortOrder);
 
+    // The map can miss a later commit; all three cleanups retain the original locking matcher for absent entries.
     @Update("""
-            UPDATE nx_admin_risk_score_override o
-              LEFT JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=o.user_no
-               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+            UPDATE /*+ NO_MERGE(m) */ nx_admin_risk_score_override o
+              LEFT JOIN (
+                SELECT u.id,CAST(CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))
+                       AS CHAR(21) CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci AS canonical_no
+                  FROM nx_user u FORCE INDEX(PRIMARY)
+              ) m ON m.canonical_no=o.user_no
+              LEFT JOIN nx_user u ON u.id=m.id AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
                SET o.active=0,o.updated_at=NOW()
              WHERE o.active=1 AND o.is_deleted=0 AND u.id IS NULL
+               AND (m.id IS NOT NULL OR NOT EXISTS (
+                 SELECT 1 FROM nx_user live_user
+                  WHERE CONCAT('U',LPAD(live_user.id,GREATEST(8,CHAR_LENGTH(CAST(live_user.id AS CHAR))),'0'))=o.user_no
+                    AND live_user.is_deleted=0 AND COALESCE(live_user.sandbox,0)=0 FOR SHARE
+               ))
             """)
     int deactivateOrphanScoreOverrides();
 
     @Update("""
-            UPDATE nx_admin_risk_score_contribution c
-              LEFT JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=c.user_no
-               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+            UPDATE /*+ NO_MERGE(m) */ nx_admin_risk_score_contribution c
+              LEFT JOIN (
+                SELECT u.id,CAST(CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))
+                       AS CHAR(21) CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci AS canonical_no
+                  FROM nx_user u FORCE INDEX(PRIMARY)
+              ) m ON m.canonical_no=c.user_no
+              LEFT JOIN nx_user u ON u.id=m.id AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
                SET c.is_deleted=1
              WHERE c.is_deleted=0 AND u.id IS NULL
+               AND (m.id IS NOT NULL OR NOT EXISTS (
+                 SELECT 1 FROM nx_user live_user
+                  WHERE CONCAT('U',LPAD(live_user.id,GREATEST(8,CHAR_LENGTH(CAST(live_user.id AS CHAR))),'0'))=c.user_no
+                    AND live_user.is_deleted=0 AND COALESCE(live_user.sandbox,0)=0 FOR SHARE
+               ))
             """)
     int retireOrphanScoreContributions();
 
     @Update("""
-            UPDATE nx_admin_risk_score_user s
-              LEFT JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
-               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+            UPDATE /*+ NO_MERGE(m) */ nx_admin_risk_score_user s
+              LEFT JOIN (
+                SELECT u.id,CAST(CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))
+                       AS CHAR(21) CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci AS canonical_no
+                  FROM nx_user u FORCE INDEX(PRIMARY)
+              ) m ON m.canonical_no=s.user_no
+              LEFT JOIN nx_user u ON u.id=m.id AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
                SET s.is_deleted=1,s.updated_at=NOW()
              WHERE s.is_deleted=0 AND u.id IS NULL
+               AND (m.id IS NOT NULL OR NOT EXISTS (
+                 SELECT 1 FROM nx_user live_user
+                  WHERE CONCAT('U',LPAD(live_user.id,GREATEST(8,CHAR_LENGTH(CAST(live_user.id AS CHAR))),'0'))=s.user_no
+                    AND live_user.is_deleted=0 AND COALESCE(live_user.sandbox,0)=0 FOR SHARE
+               ))
             """)
     int retireOrphanScoreUsers();
 
