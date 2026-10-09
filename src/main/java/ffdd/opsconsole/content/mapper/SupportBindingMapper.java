@@ -161,6 +161,20 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
     List<String> roles(Long id);
     @Select("SELECT r.role_code FROM nx_admin a JOIN nx_admin_role_relation rr ON rr.admin_id=a.id JOIN nx_admin_role r ON r.id=rr.role_id WHERE a.id=#{id} AND a.status=1 AND a.is_deleted=0 AND rr.is_deleted=0 AND r.is_deleted=0 AND r.status=1")
     List<String> rolesSnapshot(Long id);
+    String RULES_WRITE_GRANT="""
+        SELECT p.id FROM nx_admin a
+          JOIN nx_admin_role_relation rr ON rr.admin_id=a.id AND rr.is_deleted=0
+          JOIN nx_admin_role r ON r.id=rr.role_id AND r.status=1 AND r.is_deleted=0
+          JOIN nx_admin_role_permission rp ON rp.role_id=r.id AND rp.is_deleted=0
+          JOIN nx_admin_permission p ON p.id=rp.permission_id AND p.status=1 AND p.is_deleted=0
+         WHERE a.id=#{id} AND a.status=1 AND a.is_deleted=0
+           AND p.resource_type='API' AND p.permission_code='service_m1_write'
+         ORDER BY r.id,rp.id
+        """;
+    @Select(RULES_WRITE_GRANT)
+    List<Long> rulesWriteGrantSnapshot(Long id);
+    @Select(RULES_WRITE_GRANT+" FOR SHARE")
+    List<Long> rulesWriteGrant(Long id);
     // Compatibility name only: position text and migration presence cannot grant management authority.
     String SUPERVISOR_PROFILE="SELECT COUNT(DISTINCT a.id) FROM nx_admin a JOIN nx_support_account_qualification_history scope_q ON scope_q.admin_id=a.id JOIN nx_admin_role_relation rr ON rr.admin_id=a.id AND rr.is_deleted=0 JOIN nx_admin_role r ON r.id=rr.role_id AND r.is_deleted=0 AND r.status=1 AND r.role_code IN ('SUPPORT','SUPER_ADMIN') WHERE a.id=#{id} AND a.status=1 AND a.is_deleted=0 AND scope_q.qualification_kind='SUPERVISOR' AND scope_q.state='ENABLED' AND " + SupportGroupMapper.UNIQUE_QUALIFICATION;
     @Select("<script>"+SUPERVISOR_PROFILE+"</script>")

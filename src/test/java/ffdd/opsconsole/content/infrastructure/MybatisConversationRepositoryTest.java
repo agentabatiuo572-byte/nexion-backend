@@ -147,6 +147,39 @@ class MybatisConversationRepositoryTest {
         verifyNoInteractions(messageMapper);
     }
 
+    @Test void successfulUserAndAgentSegmentsWritePolicyBeforeHeaderAndMessageInSameTransaction() {
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            when(mapper.insertTimeoutSnapshot("CV-RACE")).thenReturn(1);
+            when(mapper.findByConversationNo("CV-RACE")).thenReturn(openConversation());
+            repository.createUserConversation("CV-RACE",1001L,"support","hello",now);
+            repository.createConversationWithMessage("CV-RACE",1001L,"advisor","7","Agent","hello",7L,"Agent",now);
+            var order=inOrder(mapper,messageMapper);
+            order.verify(mapper).insertTimeoutSnapshot("CV-RACE");
+            order.verify(mapper).insert(any(ConversationEntity.class));
+            order.verify(messageMapper).insert(any(ConversationMessageEntity.class));
+            order.verify(mapper).insertTimeoutSnapshot("CV-RACE");
+            order.verify(mapper).insert(any(ConversationEntity.class));
+            order.verify(messageMapper).insert(any(ConversationMessageEntity.class));
+        } finally {org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(false);}
+    }
+
+    @Test void missingPolicyNeverCreatesHumanHeaderOrMessage() {
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            assertThatThrownBy(()->repository.createUserConversation("CV-RACE",1001L,"support","hello",now))
+                    .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class).hasMessage("M3_TIMEOUT_POLICY_NOT_CONFIGURED");
+            org.mockito.Mockito.verify(mapper,org.mockito.Mockito.never()).insert(any(ConversationEntity.class));
+            verifyNoInteractions(messageMapper);
+        } finally {org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(false);}
+    }
+
+    @Test void humanSegmentCreationOutsideTransactionFailsBeforeAnyWrite() {
+        assertThatThrownBy(()->repository.createUserConversation("CV-RACE",1001L,"support","hello",now))
+                .isInstanceOf(IllegalStateException.class).hasMessage("CONVERSATION_CREATE_TRANSACTION_REQUIRED");
+        verifyNoInteractions(mapper,messageMapper);
+    }
+
     private ContentConversationView openConversation() {
         return new ContentConversationView(
                 1L, "CV-RACE", 1001L, "support", "OPEN", "agent-1", "Agent One", 0,

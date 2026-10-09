@@ -24,10 +24,49 @@ class ConversationTimeoutPolicyServiceTest {
 
     private final ConversationTimeoutPolicyMapper mapper = mock(ConversationTimeoutPolicyMapper.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final SupportOwnershipService ownership = mock(SupportOwnershipService.class);
     private final ConversationTimeoutPolicyService service = new ConversationTimeoutPolicyService(
             mapper,
             auditLogService,
-            Clock.fixed(Instant.parse("2026-07-25T10:00:00Z"), ZoneId.of("UTC")));
+            Clock.fixed(Instant.parse("2026-07-25T10:00:00Z"), ZoneId.of("UTC")), ownership);
+
+    @org.junit.jupiter.api.BeforeEach void writer() {
+        when(ownership.actorId()).thenReturn(7L);
+        when(mapper.timeoutManageGrantSnapshot(7L)).thenReturn(java.util.List.of(11L));
+        when(mapper.timeoutManageGrant(7L)).thenReturn(java.util.List.of(11L));
+    }
+
+    @Test void nonSuperRoleWithCapabilityIsRejectedBeforePolicyRead() {
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(403,"SUPPORT_RULES_FORBIDDEN"))
+                .when(ownership).requireSuperAdminSnapshot();
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->service.update(new ConversationTimeoutPolicyUpdateRequest(1,5,1L,"operator","六字有效理由")))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+        verify(mapper,never()).selectPolicyForUpdate();
+    }
+
+    @Test void capabilityRevokedAfterPreflightIsRejectedWithoutWrite() {
+        when(mapper.selectPolicyForUpdate()).thenReturn(policy(1,1,5));
+        when(mapper.timeoutManageGrant(7L)).thenReturn(java.util.List.of());
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->service.update(new ConversationTimeoutPolicyUpdateRequest(2,6,1L,"operator","六字有效理由")))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+        verify(mapper,never()).updatePolicy(any(),any(),any(),any(),any(),any());
+        verify(auditLogService,never()).recordRequired(any());
+    }
+
+    @Test void superRoleWithoutCapabilityIsRejectedBeforePolicyLock() {
+        when(mapper.timeoutManageGrantSnapshot(7L)).thenReturn(java.util.List.of());
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->service.update(new ConversationTimeoutPolicyUpdateRequest(2,6,1L,"operator","六字有效理由")))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+        verify(mapper,never()).selectPolicyForUpdate();
+    }
+
+    @Test void sixCharacterReasonIsAcceptedAndFiveIsRejected() {
+        when(mapper.selectPolicyForUpdate()).thenReturn(policy(1,1,5));
+        when(mapper.updatePolicy(2,6,1L,"operator","六字有效理由",NOW)).thenReturn(1);
+        when(mapper.selectPolicy()).thenReturn(policy(2,2,6));
+        assertThat(service.update(new ConversationTimeoutPolicyUpdateRequest(2,6,1L,"operator","六字有效理由")).getCode()).isZero();
+        assertThat(service.update(new ConversationTimeoutPolicyUpdateRequest(2,6,1L,"operator","五字的理由")).getCode()).isEqualTo(422);
+    }
 
     @Test
     void currentReturnsDurablePolicy() {
@@ -120,6 +159,25 @@ class ConversationTimeoutPolicyServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().version()).isEqualTo(6L);
         verify(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test void revokedSuperRoleAfterPreflightStopsTheLockedWrite() {
+        when(mapper.selectPolicyForUpdate()).thenReturn(policy(1,1,5));
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(403,"SUPPORT_RULES_FORBIDDEN"))
+                .when(ownership).requireSuperAdmin();
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->service.update(new ConversationTimeoutPolicyUpdateRequest(2,6,1L,"operator","六字有效理由")))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+        verify(mapper,never()).updatePolicy(any(),any(),any(),any(),any(),any());
+    }
+
+    @Test void requiredAuditFailureEscapesTheTransactionalMethodWithoutReturningSuccess() {
+        when(mapper.selectPolicyForUpdate()).thenReturn(policy(1,1,5));
+        when(mapper.updatePolicy(2,6,1L,"operator","六字有效理由",NOW)).thenReturn(1);
+        when(mapper.selectPolicy()).thenReturn(policy(2,2,6));
+        org.mockito.Mockito.doThrow(new IllegalStateException("audit unavailable")).when(auditLogService).recordRequired(any());
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->service.update(new ConversationTimeoutPolicyUpdateRequest(2,6,1L,"operator","六字有效理由")))
+                .isInstanceOf(IllegalStateException.class).hasMessage("audit unavailable");
+        // The unit test proves error propagation only; root MySQL runtime must verify the rollback.
     }
 
     private ConversationTimeoutPolicy policy(long version, int warn, int close) {

@@ -21,6 +21,7 @@ public class OpsSupportCommandController {
     private final ffdd.opsconsole.content.domain.SupportTicketRepository tickets;
     private final ffdd.opsconsole.content.application.SupportBindingRandomService random;
     private final ffdd.opsconsole.content.application.SupportBulkService bulk;
+    private final ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper timeoutPolicy;
     private static final List<String> SCOPES=List.of("SUPPORT_TRANSFER","SUPPORT_LEGACY_TRANSFER","SUPPORT_LEGACY_SINGLE","SUPPORT_RULES","SUPPORT_RANDOM",
             "M3_MAINTENANCE","M3_CONVERSATION_INITIATE","M3_CONVERSATION_REPLY","M3_CONVERSATION_STATUS","M3_CONVERSATION_ARCHIVE",
             "M3_CONVERSATION_ARCHIVE_BATCH","M3_CONVERSATION_TO_TICKET","M3_CUSTOMER_TAG_ADD","M3_CUSTOMER_TAG_REMOVE",
@@ -33,7 +34,11 @@ public class OpsSupportCommandController {
     public ApiResult<Map<String,Object>> recover(@PathVariable String key) throws com.fasterxml.jackson.core.JsonProcessingException {
         if(key.trim().length()<8 || key.length()>128) throw new BizException(422,"IDEMPOTENCY_KEY_INVALID");
         long actor=ownership.actorId();
-        var found=records.selectSupportCommand(SCOPES.stream().map(s->s+":"+actor).toList(),key.trim());
+        List<String> scopes=new ArrayList<>(SCOPES.stream().map(s->s+":"+actor).toList());
+        // Legacy timeout keys are global; only their existing configuration writers may recover them.
+        if(ownership.currentSuperAdmin() && !timeoutPolicy.timeoutManageGrant(actor).isEmpty())
+            scopes.add("M3_CONVERSATION_TIMEOUT_POLICY");
+        var found=records.selectSupportCommand(scopes,key.trim());
         if(found.isEmpty()) {
             var restored=bulk.recover(key);
             if("SUCCEEDED".equals(restored.get("status"))) return ApiResult.ok(restored);
@@ -41,6 +46,11 @@ public class OpsSupportCommandController {
         }
         if(found.size()!=1) throw new BizException(409,"SUPPORT_COMMAND_AMBIGUOUS");
         var receipt=found.get(0);
+        if("M3_CONVERSATION_TIMEOUT_POLICY".equals(receipt.getScope())) {
+            if(!ownership.currentSuperAdmin() || timeoutPolicy.timeoutManageGrant(actor).isEmpty())
+                throw new BizException(403,"M3_TIMEOUT_POLICY_FORBIDDEN");
+            return ApiResult.ok(Map.of("status",receipt.getStatus()));
+        }
         if(receipt.getScope().startsWith("M3_SUPPORT_BULK_CREATE:")) return ApiResult.ok(bulk.recover(key));
         if(receipt.getScope().startsWith("M3_SUPPORT_BULK_CANCEL:") || receipt.getScope().startsWith("M3_SUPPORT_BULK_RETRY:")) {
             if(!"SUCCEEDED".equals(receipt.getStatus())) return ApiResult.ok(Map.of("status",receipt.getStatus()));

@@ -103,6 +103,21 @@ the baseline, `apply_startup_schema_migrations.ps1 is the canonical installer` f
 the application revision and must be run before starting the backend. It is replay-safe
 for both a fresh baseline and an upgraded database.
 
+Support installation has one required post-schema step. After applying
+`20261009_support_timeout_segment.sql` and starting the API in the controlled installation
+window, run [the support-rule upgrade command](scripts/manual_migrations/20261009_support_rules_unconfigured_upgrade.ps1)
+with the approved API origin, a current super administrator's token, a saved operation ID,
+an 8–200 character reason, and a proof file in the task evidence directory. The command
+reads the actual rules and uses the existing versioned PUT endpoint only for an explicitly
+stored `UNCONFIGURED` row. Existing `LIMITED` (including depth 0) and `UNLIMITED` are read
+without a write; missing fields, a missing row, failed reads, conflicts, or an uncertain
+command result stop the step. Reuse the original proof, operation ID, and reason for
+recovery. This step must read back a configured mode before support installation is ready.
+The historical S3 migration can create the fresh-install sentinel; the new migration sets
+the final default for future records to `UNLIMITED` without rewriting existing rules,
+assignments, or binding-pool rows. Historical conversations without a segment policy
+snapshot remain ineligible for automatic timeout.
+
 `scripts/seed.sql` is limited to the local system baseline: admin login, RBAC, navigation, and platform configuration. It does not create business records.
 
 The current [seven-layer reward contract](docs/seven-layer-rewards-contract.md) defines the v2 policy and App queries. Deploy `20261006_seven_layer_direct_split.sql` through the canonical migration installer before deploying this API revision. Migration leaves the cutover time and live policy disabled until their approved publication.

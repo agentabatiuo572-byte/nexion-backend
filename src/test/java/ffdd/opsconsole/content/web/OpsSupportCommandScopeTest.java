@@ -17,8 +17,9 @@ import static org.mockito.Mockito.*;
 class OpsSupportCommandScopeTest {
     final AdminIdempotencyRecordMapper records=mock(AdminIdempotencyRecordMapper.class);
     final SupportOwnershipService ownership=mock(SupportOwnershipService.class);
+    final ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper timeoutPolicy=mock(ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper.class);
     final OpsSupportCommandController controller=new OpsSupportCommandController(records,ownership,new ObjectMapper(),
-            mock(SupportTicketRepository.class),mock(SupportBindingRandomService.class),mock(SupportBulkService.class));
+            mock(SupportTicketRepository.class),mock(SupportBindingRandomService.class),mock(SupportBulkService.class),timeoutPolicy);
     @BeforeEach void login() {
         when(ownership.actorId()).thenReturn(7L);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken("7",null,
@@ -43,6 +44,35 @@ class OpsSupportCommandScopeTest {
         assertThat(result.getData()).containsEntry("status","SUCCEEDED");
         assertThat(result.getData().get("result").toString()).contains("original-private-body");
         verify(records).selectSupportCommand(argThat(s->s.stream().allMatch(v->v.endsWith(":7"))),eq("retained-key"));
+    }
+    @Test void timeoutRecoveryRequiresCurrentRoleAndCapabilityAndReturnsOnlyStatus() throws Exception {
+        when(ownership.currentSuperAdmin()).thenReturn(true);
+        when(timeoutPolicy.timeoutManageGrant(7L)).thenReturn(List.of(11L));
+        receipt("M3_CONVERSATION_TIMEOUT_POLICY");
+        assertThat(controller.recover("retained-key").getData()).containsExactlyEntriesOf(Map.of("status","SUCCEEDED"));
+        verify(records).selectSupportCommand(argThat(s->s.contains("M3_CONVERSATION_TIMEOUT_POLICY")
+                && s.stream().filter(v->!v.endsWith(":7")).toList().equals(List.of("M3_CONVERSATION_TIMEOUT_POLICY"))),eq("retained-key"));
+    }
+    @Test void timeoutCapabilityWithoutSuperRoleNeverIncludesGlobalKeys() throws Exception {
+        when(ownership.currentSuperAdmin()).thenReturn(false);
+        receipt("M3_CONVERSATION_REPLY:7");
+        controller.recover("retained-key");
+        verify(records).selectSupportCommand(argThat(s->!s.contains("M3_CONVERSATION_TIMEOUT_POLICY")),eq("retained-key"));
+        verifyNoInteractions(timeoutPolicy);
+    }
+    @Test void superRoleWithoutCurrentTimeoutCapabilityNeverIncludesGlobalKeys() throws Exception {
+        when(ownership.currentSuperAdmin()).thenReturn(true);
+        when(timeoutPolicy.timeoutManageGrant(7L)).thenReturn(List.of());
+        receipt("M3_CONVERSATION_REPLY:7");
+        controller.recover("retained-key");
+        verify(records).selectSupportCommand(argThat(s->!s.contains("M3_CONVERSATION_TIMEOUT_POLICY")),eq("retained-key"));
+    }
+    @Test void timeoutRecoveryRechecksCapabilityBeforeProjectingReceipt() {
+        when(ownership.currentSuperAdmin()).thenReturn(true);
+        when(timeoutPolicy.timeoutManageGrant(7L)).thenReturn(List.of(11L),List.of());
+        receipt("M3_CONVERSATION_TIMEOUT_POLICY");
+        assertThatThrownBy(()->controller.recover("retained-key")).isInstanceOfSatisfying(BizException.class,
+                e->assertThat(e.getCode()).isEqualTo(403));
     }
     private void receipt(String scope) {
         var row=new AdminIdempotencyRecordEntity();row.setScope(scope);row.setStatus("SUCCEEDED");

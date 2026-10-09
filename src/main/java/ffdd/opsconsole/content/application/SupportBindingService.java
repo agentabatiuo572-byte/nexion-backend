@@ -61,10 +61,11 @@ public class SupportBindingService {
 
     public ApiResult<SupportRules> updateRules(String key, SupportRulesRequest r) {
         ownership.requireSuperAdminSnapshot();
+        if(mapper.rulesWriteGrantSnapshot(ownership.actorId()).isEmpty())throw new BizException(403,"SUPPORT_RULES_FORBIDDEN");
         if (r == null) throw new BizException(422,"SUPPORT_RULES_REQUIRED");
         validateCommand(key,r.reason());
         if (r.expectedVersion() == null || r.expectedVersion() < 1
-                || !Set.of("UNCONFIGURED","LIMITED","UNLIMITED").contains(String.valueOf(r.inheritanceMode()))
+                || !Set.of("LIMITED","UNLIMITED").contains(String.valueOf(r.inheritanceMode()))
                 || ("LIMITED".equals(r.inheritanceMode()) ? r.maxInheritanceDepth()==null || r.maxInheritanceDepth()<0 : r.maxInheritanceDepth()!=null)
                 || invalidDays(r.dormantDays()) || invalidDays(r.maintenanceDays()) || invalidDays(r.activityWindowDays())
                 || (r.dormantDays()!=null && r.activityWindowDays()!=null && r.activityWindowDays()>r.dormantDays()))
@@ -74,10 +75,13 @@ public class SupportBindingService {
         return command("RULES",key,r,()-> {
             mapper.lockRules();ownership.lockAgent(ownership.actorId());
             ownership.requireSuperAdmin();
+            if(mapper.rulesWriteGrant(ownership.actorId()).isEmpty())throw new BizException(403,"SUPPORT_RULES_FORBIDDEN");
+            SupportRules before=mapper.rules();
             if(mapper.updateRules(r.dormantDays(),r.maintenanceDays(),r.activityWindowDays(),r.inheritanceMode(),r.maxInheritanceDepth(),r.expectedVersion(),ownership.actorId(),r.reason().trim(),r.unboundAssignmentMode())!=1)
                 throw new BizException(409,"SUPPORT_RULES_VERSION_CONFLICT");
-            record("SUPPORT_RULES_CHANGED","1",key,r.reason(),Map.of("request",r));
-            return ApiResult.ok(mapper.rules());
+            SupportRules after=mapper.rules();
+            record("SUPPORT_RULES_CHANGED","1",key,r.reason(),Map.of("before",before,"after",after,"request",r));
+            return ApiResult.ok(after);
         });
     }
 

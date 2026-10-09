@@ -1015,6 +1015,19 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
                         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                         """);
                 sql.execute("""
+                        CREATE TABLE nx_conversation_timeout_segment (
+                          conversation_no VARCHAR(40) PRIMARY KEY,policy_version BIGINT NOT NULL,
+                          warn_minutes INT NOT NULL,close_minutes INT NOT NULL
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                        """);
+                sql.execute("""
+                        CREATE TABLE nx_conversation_timeout_policy (
+                          policy_key VARCHAR(64) PRIMARY KEY,version BIGINT NOT NULL,
+                          warn_minutes INT NOT NULL,close_minutes INT NOT NULL
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                        """);
+                sql.execute("INSERT INTO nx_conversation_timeout_policy VALUES('GLOBAL',1,1,5)");
+                sql.execute("""
                         CREATE TABLE nx_conversation_timeout_event (
                           conversation_no VARCHAR(40) NOT NULL,
                           event_type VARCHAR(16) NOT NULL,

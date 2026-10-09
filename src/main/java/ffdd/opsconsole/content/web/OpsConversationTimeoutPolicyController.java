@@ -59,7 +59,8 @@ public class OpsConversationTimeoutPolicyController {
         }
         ApiResult<ConversationTimeoutPolicy> result;
         try {
-            result = (ApiResult<ConversationTimeoutPolicy>) idempotencyService.execute(
+            service.requireWriterSnapshot();
+            result = (ApiResult<ConversationTimeoutPolicy>) idempotencyService.executeRetained(
                     SCOPE,
                     idempotencyKey.trim(),
                     requestHash(String.valueOf(request)),
