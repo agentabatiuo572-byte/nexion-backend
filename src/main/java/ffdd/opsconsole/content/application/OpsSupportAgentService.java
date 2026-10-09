@@ -548,8 +548,10 @@ public class OpsSupportAgentService {
         if (!missingIds.isEmpty()) {
             repository.listProfiles(missingIds).forEach(profile -> profiles.put(profile.adminId(), profile));
         }
+        Set<Long> assignmentEligibleIds = Set.copyOf(repository.listAssignmentEligibleAgentIds(adminIds, scope));
         return operators.stream().filter(operator -> profiles.containsKey(operator.adminId()))
-                .map(operator -> profileView(operator, profiles.get(operator.adminId()), "support", operator.status(),scope))
+                .map(operator -> profileView(operator, profiles.get(operator.adminId()), "support", operator.status(),scope,
+                        assignmentEligibleIds.contains(operator.adminId())))
                 .toList();
     }
 
@@ -581,6 +583,12 @@ public class OpsSupportAgentService {
 
     private SupportAgentProfileView profileView(
             SupportOperatorRecord operator, SupportAgentProfileRecord profile, String role, String status,ReadScope scope) {
+        return profileView(operator, profile, role, status, scope,
+                repository.listAssignmentEligibleAgentIds(List.of(profile.adminId()), scope).contains(profile.adminId()));
+    }
+
+    private SupportAgentProfileView profileView(
+            SupportOperatorRecord operator, SupportAgentProfileRecord profile, String role, String status,ReadScope scope,boolean assignmentEligible) {
         Long adminId = profile.adminId();
         String seatType = normalizeSeatType(profile.seatType(), profile.position());
         return new SupportAgentProfileView(
@@ -600,12 +608,14 @@ public class OpsSupportAgentService {
                 profile.busy(),
                 repository.countActiveAssignments(adminId,scope),
                 profile.version(),
-                profile.updatedAt(),operator.avatarAssetId(),operator.avatarVersion());
+                profile.updatedAt(),operator.avatarAssetId(),operator.avatarVersion(),
+                assignmentEligible && "enabled".equals(status) && Boolean.TRUE.equals(profile.enabled()));
     }
 
     private List<Map<String, Object>> transferTargets(List<SupportAgentProfileView> agents) {
         List<Map<String, Object>> targets = new ArrayList<>();
         agents.stream()
+                .filter(agent -> Boolean.TRUE.equals(agent.assignmentEligible()))
                 .filter(agent -> Boolean.TRUE.equals(agent.enabled()))
                 .filter(agent -> Boolean.TRUE.equals(agent.transferable()))
                 .filter(agent -> !Boolean.TRUE.equals(agent.busy()))

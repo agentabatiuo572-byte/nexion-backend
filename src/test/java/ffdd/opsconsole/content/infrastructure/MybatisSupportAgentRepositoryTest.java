@@ -28,6 +28,42 @@ import org.springframework.test.util.ReflectionTestUtils;
 class MybatisSupportAgentRepositoryTest {
 
     @Test
+    void assignmentEligibilityQueriesOnlyAuthorizedDirectoryIdsAndRechecksCurrentScope() {
+        var mapper = Mockito.mock(SupportAgentMapper.class);
+        var scope = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(6L, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED, 10L, null);
+        var roles = new SupportOperatorScope(null, List.of(2L), List.of(), true, scope);
+        when(mapper.listActiveSupportRoleRows()).thenReturn(List.of(new SupportRoleRow(2L, "SUPPORT")));
+        when(mapper.listAssignmentEligibleAgentIds(List.of(7L, 8L), roles)).thenReturn(List.of(7L));
+        var repository = new MybatisSupportAgentRepository(mapper);
+        assertThat(repository.listAssignmentEligibleAgentIds(List.of(), scope)).isEmpty();
+        Mockito.verifyNoInteractions(mapper);
+        assertThat(repository.listAssignmentEligibleAgentIds(List.of(7L, 8L), scope)).containsExactly(7L);
+        verify(mapper).listActiveSupportRoleRows();
+        verify(mapper).listAssignmentEligibleAgentIds(List.of(7L, 8L), roles);
+        Mockito.verifyNoMoreInteractions(mapper);
+    }
+
+    @Test
+    void candidateSqlPreservesDirectoryButRequiresAccountAndUniqueServiceAuthority() {
+        var configuration = new org.apache.ibatis.session.Configuration();
+        configuration.addMapper(SupportAgentMapper.class);
+        var statement = configuration.getMappedStatement(SupportAgentMapper.class.getName() + ".listAssignmentEligibleAgentIds");
+        for (var mode : ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.values()) {
+            var read = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(6L, mode, null, null);
+            var scope = new SupportOperatorScope(null, List.of(2L), List.of(), false, read);
+            var sql = statement.getBoundSql(java.util.Map.of("scope", scope, "directoryIds", List.of(7L))).getSql().replaceAll("\\s+", " ");
+            assertThat(sql).contains("scope_agent.id IN", "a.id=scope_agent.id", "a.status=1", "p.enabled=1",
+                    "scope_q.qualification_kind='SERVICE'", "scope_q.state='ENABLED'", "scope_q.ends_at IS NULL",
+                    "scope_q_other.starts_at <= UTC_TIMESTAMP(6)", "scope_q_other.ends_at>UTC_TIMESTAMP(6)")
+                    .doesNotContain("p.busy", "p.transferable", "${", "&lt;");
+            if (mode == ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED) {
+                assertThat(sql).contains("scope_group.supervisor_admin_id=", "qualification_kind='SUPERVISOR'");
+            }
+            assertThat(statement.getBoundSql(java.util.Map.of("scope", scope, "directoryIds", List.of())).getSql()).contains("1=0");
+        }
+    }
+
+    @Test
     void lightweightPageAndCountKeepTheSameActorScopeWithoutAccountOrSchemaFanout() {
         SupportAgentMapper mapper = Mockito.mock(SupportAgentMapper.class);
         List<SupportOperatorRecord> rows = List.of(new SupportOperatorRecord(6L, "Self", "self@example.test", "avatar", 9L));

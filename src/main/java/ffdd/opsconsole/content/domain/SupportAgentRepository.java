@@ -22,6 +22,8 @@ public interface SupportAgentRepository {
 
     List<SupportOperatorRecord> pageSupportOperators(SupportOperatorScope scope, long limit, long offset);
 
+    List<Long> listAssignmentEligibleAgentIds(List<Long> directoryIds, SupportGroupFacts.ReadScope scope);
+
     record SupportOperatorRecord(Long adminId, String name, String email, String avatarAssetId, Long avatarVersion, String status) {
         public SupportOperatorRecord(Long adminId, String name, String email, String avatarAssetId, Long avatarVersion) {
             this(adminId, name, email, avatarAssetId, avatarVersion, "enabled");
