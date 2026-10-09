@@ -277,6 +277,46 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
+    void disabledAccountWithEnabledProfileKeepsAssetsButLeavesBothTransferProjections() {
+        var fake = (FakeSupportAgentRepository) repository;
+        fake.operators.add(operator("3", "Disabled member", "support", "disabled"));
+        fake.updateProfile(3L, "DEDICATED", "专属客服", List.of("support"), List.of(), 12, true, true, false, now());
+        fake.assignments.add(new SupportAgentAssignmentView(91L, 3L, 1001L, "U1001", "Customer", "ACTIVE", null, null, "actor", "reason", null));
+        var overview = service.overview().getData();
+        assertThat(overview.agents()).extracting("adminId").containsExactly(3L);
+        assertThat(overview.agents().get(0).enabled()).isTrue();
+        assertThat(overview.advisorAssignments()).extracting("id").containsExactly(91L);
+        assertThat(service.agents(new SupportAgentQueryRequest(1L, 20L)).getData().records()).extracting("adminId").containsExactly(3L);
+        assertThat(service.availabilityStates()).containsOnlyKeys("3");
+        assertThat(overview.transferTargets()).isEmpty();
+        assertThat(service.transferTargets()).isEmpty();
+    }
+
+    @Test
+    void assignmentAuthorityKeepsUnavailableRosterAndScopesCandidatesWithoutAddingBusyPolicy() {
+        var fake = (FakeSupportAgentRepository) repository;
+        for (long id : List.of(2L, 5L, 6L, 7L, 8L, 9L)) {
+            fake.operators.add(operator(String.valueOf(id), "Member " + id, "support", "enabled"));
+            fake.agentGroups.put(id, id == 9L ? 20L : 10L);
+            fake.updateProfile(id, id == 6L ? "MANAGER" : "DEDICATED", "专属客服", List.of("support"), List.of(), 12, true, true, id == 8L, now());
+        }
+        // Mapper authority: removed SERVICE, pure supervisor, and conflicting SERVICE intervals are ineligible.
+        fake.serviceQualificationCounts.putAll(Map.of(5L, 0, 6L, 0, 7L, 2));
+        fake.groupOwners.putAll(Map.of(10L, 11L, 20L, 12L));
+        var scope = new ReadScope(11L, ReadMode.MANAGED, null, null);
+        when(ownership.defaultQueryScope(null, null)).thenReturn(scope);
+        var overview = service.overview().getData();
+        assertThat(overview.agents()).extracting("adminId").containsExactly(2L, 5L, 6L, 7L, 8L);
+        assertThat(overview.agents().stream().filter(agent -> Boolean.TRUE.equals(agent.assignmentEligible())).map(agent -> agent.adminId()))
+                .containsExactly(2L, 8L);
+        assertThat(overview.transferTargets()).extracting(row -> row.get("targetId")).containsExactly("2");
+        assertThat(service.transferTargets()).extracting(row -> row.get("targetId")).containsExactly("2");
+        assertThat(service.availabilityStates()).containsOnlyKeys("2", "5", "6", "7", "8");
+        assertThat(fake.eligibilityReadIds).allSatisfy(ids -> assertThat(ids).doesNotContain(9L));
+        assertThat(fake.lastEligibilityScope).isEqualTo(scope);
+    }
+
+    @Test
     void agentsReturnPagedBackendRowsAndCurrentPageAssignments() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
         fake.operators.addAll(List.of(
@@ -821,6 +861,9 @@ class OpsSupportAgentServiceTest {
         private final Map<Long, Long> groupOwners = new LinkedHashMap<>();
         private final Map<Long, String> avatars = new LinkedHashMap<>();
         private final Map<Long, Long> avatarVersions = new LinkedHashMap<>();
+        private final Map<Long, Integer> serviceQualificationCounts = new LinkedHashMap<>();
+        private final List<List<Long>> eligibilityReadIds = new ArrayList<>();
+        private ReadScope lastEligibilityScope;
         private final List<Long> defaultProfileAttempts = new ArrayList<>();
         private final List<List<Long>> profileReadIds = new ArrayList<>();
         private final List<Long> assignmentCountIds = new ArrayList<>();
@@ -851,6 +894,9 @@ class OpsSupportAgentServiceTest {
             groupOwners.clear();
             avatars.clear();
             avatarVersions.clear();
+            serviceQualificationCounts.clear();
+            eligibilityReadIds.clear();
+            lastEligibilityScope = null;
             defaultProfileAttempts.clear();
             profileReadIds.clear();
             assignmentCountIds.clear();
@@ -925,6 +971,17 @@ class OpsSupportAgentServiceTest {
             return visibleOperators(scope).stream().skip(offset).limit(limit)
                     .map(row -> new SupportOperatorRecord(Long.valueOf(row.id()), row.name(), row.email(),
                             avatars.get(Long.valueOf(row.id())), avatarVersions.getOrDefault(Long.valueOf(row.id()), 0L),row.status()))
+                    .toList();
+        }
+
+        @Override
+        public List<Long> listAssignmentEligibleAgentIds(List<Long> directoryIds, ReadScope scope) {
+            eligibilityReadIds.add(List.copyOf(directoryIds));
+            lastEligibilityScope = scope;
+            return directoryIds.stream().filter(id -> visibleAgent(id, scope))
+                    .filter(id -> serviceQualificationCounts.getOrDefault(id, 1) == 1)
+                    .filter(id -> findProfile(id).filter(profile -> Boolean.TRUE.equals(profile.enabled())).isPresent())
+                    .filter(id -> operators.stream().noneMatch(row -> row.id().equals(String.valueOf(id)) && !"enabled".equals(row.status())))
                     .toList();
         }
 
