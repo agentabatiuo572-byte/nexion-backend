@@ -429,6 +429,75 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getData().authorities()).containsExactly("PERM_SYSTEM_READ", "PERM_USER_READ");
     }
 
+    private UsernamePasswordAuthenticationToken activityIdentity(String type, String sid) {
+        var authentication = new UsernamePasswordAuthenticationToken("1", null, List.of());
+        authentication.setDetails(sid == null ? java.util.Map.of("subjectType", type)
+                : java.util.Map.of("subjectType", type, "sessionId", sid));
+        return authentication;
+    }
+
+    @Test void activityUpgradesTheSameActiveSessionWithoutExpiration() {
+        when(adminMapper.selectById(1L)).thenReturn(activeSuperAdmin("synthetic"));
+        when(adminSessionRegistry.recordActivity(1L, "legacy-sid")).thenReturn(true);
+        var result=service.activity(activityIdentity("ADMIN", "legacy-sid"), new ffdd.opsconsole.auth.dto.AdminActivityRequest(1L));
+        assertThat(result.getCode()).isZero();
+        var claims=tokenProvider.parse(result.getData().accessToken());
+        assertThat(claims.getExpiration()).isNull();
+        assertThat(claims.get("sessionId",String.class)).isEqualTo("legacy-sid");
+        verify(adminSessionRegistry,never()).createSession(any(),anyString(),anyString(),anyString());
+    }
+
+    @Test void activityRejectsStaleTabIdentityBeforeAnyStoreAccess() {
+        var result=service.activity(activityIdentity("ADMIN", "sid"), new ffdd.opsconsole.auth.dto.AdminActivityRequest(2L));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("ADMIN_ACTIVITY_IDENTITY_MISMATCH");
+        org.mockito.Mockito.verifyNoInteractions(adminSessionRegistry,adminMapper);
+    }
+
+    @Test void activityCannotRestoreRevokedOrExpiredRedisSession() {
+        when(adminMapper.selectById(1L)).thenReturn(activeSuperAdmin("synthetic"));
+        when(adminSessionRegistry.recordActivity(1L, "revoked")).thenReturn(false);
+        var result=service.activity(activityIdentity("ADMIN", "revoked"), new ffdd.opsconsole.auth.dto.AdminActivityRequest(1L));
+        assertThat(result.getCode()).isEqualTo(401);
+        assertThat(result.getData()).isNull();
+        verify(adminSessionRegistry,never()).createSession(any(),anyString(),anyString(),anyString());
+    }
+
+    @Test void activityRequiresAdminSidAndPositiveExpectedIdentity() {
+        for (var identity : List.of(activityIdentity("USER","sid"), activityIdentity("IMPERSONATION","sid"),activityIdentity("ADMIN",null))) {
+            assertThat(service.activity(identity,new ffdd.opsconsole.auth.dto.AdminActivityRequest(1L)).getCode()).isEqualTo(401);
+        }
+        for (var body : List.of(new ffdd.opsconsole.auth.dto.AdminActivityRequest(0L),new ffdd.opsconsole.auth.dto.AdminActivityRequest(-1L),new ffdd.opsconsole.auth.dto.AdminActivityRequest(null))) {
+            assertThat(service.activity(activityIdentity("ADMIN","sid"),body).getCode()).isEqualTo(422);
+        }
+        assertThat(service.activity(activityIdentity("ADMIN","sid"),null).getCode()).isEqualTo(422);
+        org.mockito.Mockito.verifyNoInteractions(adminSessionRegistry);
+    }
+
+    @Test void activityPreservesDisabledAndPasswordChangeGates() {
+        var admin=activeSuperAdmin("synthetic");admin.setStatus(0);
+        when(adminMapper.selectById(1L)).thenReturn(admin);
+        assertThat(service.activity(activityIdentity("ADMIN","sid"),new ffdd.opsconsole.auth.dto.AdminActivityRequest(1L)).getMessage()).isEqualTo("ADMIN_DISABLED");
+        admin.setStatus(1);
+        var state=new AdminAccountStateEntity();state.setCredentialDeliveryStatus("PASSWORD_CHANGE_REQUIRED");
+        when(accountStateMapper.selectActiveByAdminId(1L)).thenReturn(state);
+        assertThat(service.activity(activityIdentity("ADMIN","sid"),new ffdd.opsconsole.auth.dto.AdminActivityRequest(1L)).getMessage()).isEqualTo("ADMIN_PASSWORD_CHANGE_REQUIRED");
+        org.mockito.Mockito.verifyNoInteractions(adminSessionRegistry);
+    }
+
+    @Test void activityStoreOutageReturnsNoTokenOrCookieMaterial() {
+        when(adminMapper.selectById(1L)).thenReturn(activeSuperAdmin("synthetic"));
+        when(adminSessionRegistry.recordActivity(1L,"sid")).thenThrow(new IllegalStateException("synthetic unavailable"));
+        var result=service.activity(activityIdentity("ADMIN","sid"),new ffdd.opsconsole.auth.dto.AdminActivityRequest(1L));
+        assertThat(result.getCode()).isEqualTo(503);assertThat(result.getData()).isNull();
+    }
+
+    @Test void meNeverRecordsExplicitActivity() {
+        when(adminMapper.selectById(1L)).thenReturn(activeSuperAdmin("synthetic"));
+        assertThat(service.current(activityIdentity("ADMIN","sid")).getCode()).isZero();
+        org.mockito.Mockito.verifyNoInteractions(adminSessionRegistry);
+    }
+
     private AdminEntity activeSuperAdmin(String hash) {
         AdminEntity admin = new AdminEntity();
         admin.setId(1L);

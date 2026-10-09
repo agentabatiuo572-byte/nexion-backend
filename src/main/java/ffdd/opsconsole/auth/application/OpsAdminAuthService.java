@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.auth.dto.AdminLoginRequest;
+import ffdd.opsconsole.auth.dto.AdminActivityRequest;
 import ffdd.opsconsole.auth.dto.AdminMfaVerifyRequest;
 import ffdd.opsconsole.auth.dto.AdminPasswordChangeRequest;
 import ffdd.opsconsole.auth.dto.AdminLoginResponse;
@@ -217,6 +218,36 @@ public class OpsAdminAuthService {
                 .filter(StringUtils::hasText)
                 .toList();
         return ApiResult.ok(session(admin, authorities));
+    }
+
+    public ApiResult<AdminLoginResponse> activity(Authentication authentication, AdminActivityRequest request) {
+        Long adminId = authentication == null ? null : parseAdminId(authentication.getPrincipal());
+        String sid = sessionId(authentication);
+        if (authentication == null || !authentication.isAuthenticated() || adminId == null || adminId <= 0
+                || !(authentication.getDetails() instanceof Map<?, ?> details)
+                || !SUBJECT_TYPE_ADMIN.equals(details.get("subjectType")) || !StringUtils.hasText(sid)) {
+            return ApiResult.fail(401, "ADMIN_SESSION_INVALID");
+        }
+        if (request == null || request.expectedAdminId() == null || request.expectedAdminId() <= 0) {
+            return ApiResult.fail(422, "ADMIN_ACTIVITY_ID_REQUIRED");
+        }
+        if (!adminId.equals(request.expectedAdminId())) {
+            return ApiResult.fail(409, "ADMIN_ACTIVITY_IDENTITY_MISMATCH");
+        }
+        AdminEntity admin = adminMapper.selectById(adminId);
+        if (admin == null || !activeRecord(admin)) return ApiResult.fail(401, "ADMIN_SESSION_INVALID");
+        if (!enabled(admin)) return ApiResult.fail(403, "ADMIN_DISABLED");
+        if (passwordChangeRequired(adminId)) return ApiResult.fail(403, "ADMIN_PASSWORD_CHANGE_REQUIRED");
+        // Resolve response data before touching: failed lookups never extend a cookie/session.
+        AdminLoginResponse response = new AdminLoginResponse(
+                tokenProvider.createToken(adminId, SUBJECT_TYPE_ADMIN, admin.getUsername(), List.of(), sid),
+                "Bearer", session(admin, effectiveAuthorities(admin), false));
+        try {
+            if (!adminSessionRegistry.recordActivity(adminId, sid)) return ApiResult.fail(401, "ADMIN_SESSION_INVALID");
+        } catch (RuntimeException unavailable) {
+            return ApiResult.fail(503, "ADMIN_SESSION_STORE_UNAVAILABLE");
+        }
+        return ApiResult.ok(response);
     }
 
     public ApiResult<AdminLoginResponse> changePassword(Authentication authentication, AdminPasswordChangeRequest request) {

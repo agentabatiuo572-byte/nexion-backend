@@ -127,7 +127,7 @@ public class OpsBiExportQueryService {
             case "FUNNEL_COHORT" -> "漏斗聚合";
             case "FINANCE_AGG" -> "财务聚合";
             case "OPERATIONS_AGG" -> "运营聚合";
-            case "BILL_CSV" -> "七类账单明细";
+            case "BILL_CSV" -> "八类账单明细";
             case "REGULATORY" -> "监管报告";
             default -> "导出任务";
         };

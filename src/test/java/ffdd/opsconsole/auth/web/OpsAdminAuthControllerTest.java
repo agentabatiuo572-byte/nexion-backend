@@ -18,6 +18,13 @@ class OpsAdminAuthControllerTest {
     private final GatewaySecurityProperties gatewaySecurity = new GatewaySecurityProperties();
     private final OpsAdminAuthController controller = new OpsAdminAuthController(authService, gatewaySecurity);
 
+    @Test void activityForwardsOnlyTheExpectedIdentityAndAuthenticatedSession() {
+        Authentication authentication=mock(Authentication.class);
+        var body=new ffdd.opsconsole.auth.dto.AdminActivityRequest(7L);
+        controller.activity(authentication,body);
+        verify(authService).activity(authentication,body);
+    }
+
     @Test
     void loginForwardsTrustedSessionMetadataForTemporaryBypassSessions() {
         AdminLoginRequest body = new AdminLoginRequest("superadmin", "secret");

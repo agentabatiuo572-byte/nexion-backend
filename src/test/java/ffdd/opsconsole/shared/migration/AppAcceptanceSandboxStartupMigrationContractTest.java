@@ -14,7 +14,7 @@ class AppAcceptanceSandboxStartupMigrationContractTest {
                 "20261007_growth_promotions_order_receipt.sql", "20261007_earnings_source_recovery.sql",
                 "20261007_growth_promotions_list_snapshot.sql", "20261007_growth_promotions_quota_restore.sql",
                 "20261007_e4_wallet_bill_prerequisite.sql", "20261007_support_groups.sql",
-                "20261009_e4_wallet_bill_schema.sql", "20261008_support_payment_attribution.sql",
+                "20261009_e4_wallet_bill_schema_precision_forward.sql", "20261008_support_payment_attribution.sql",
                 "20261008_support_payment_history_birth.sql")) {
             assertThat(runner).containsOnlyOnce(migration);
         }
@@ -23,10 +23,11 @@ class AppAcceptanceSandboxStartupMigrationContractTest {
         assertThat(runner.indexOf("20261007_growth_promotions_order_receipt.sql"))
                 .isLessThan(runner.indexOf("20261007_growth_promotions_quota_restore.sql"));
         assertThat(runner.indexOf("20261007_e4_wallet_bill_prerequisite.sql"))
-                .isLessThan(runner.indexOf("20261009_e4_wallet_bill_schema.sql"));
+                .isLessThan(runner.indexOf("20261009_e4_wallet_bill_schema_precision_forward.sql"));
         assertThat(runner.indexOf("20261007_support_groups.sql"))
-                .isLessThan(runner.indexOf("20261009_e4_wallet_bill_schema.sql"));
-        assertThat(runner.indexOf("20261009_e4_wallet_bill_schema.sql"))
+                .isLessThan(runner.indexOf("20261009_e4_wallet_bill_schema_precision_forward.sql"));
+        assertThat(runner).doesNotContain("20261009_e4_wallet_bill_schema.sql");
+        assertThat(runner.indexOf("20261009_e4_wallet_bill_schema_precision_forward.sql"))
                 .isLessThan(runner.indexOf("20261008_support_payment_attribution.sql"));
         assertThat(runner.indexOf("20261008_support_payment_attribution.sql"))
                 .isLessThan(runner.indexOf("20261008_support_payment_history_birth.sql"));

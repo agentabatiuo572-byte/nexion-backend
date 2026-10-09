@@ -5,11 +5,14 @@ import ffdd.opsconsole.finance.hdpay.HdPayCreateRejectedException;
 import ffdd.opsconsole.finance.dto.AppVietQrIntentCancelRequest;
 import ffdd.opsconsole.finance.dto.AppVietQrIntentCreateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.GatewaySecurityProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.util.Map;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -24,7 +27,16 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/app")
 @RequiredArgsConstructor
+@Slf4j
 public class AppVietQrIntentController {
+    private static final Set<String> SAFE_CREATE_UNAVAILABLE_CODES = Set.of(
+            "HDPAY_CONFIGURATION_INCOMPLETE", "PAYMENT_CONFIG_UNAVAILABLE", "FX_QUOTE_UNAVAILABLE",
+            "VIETQR_CHANNEL_UNAVAILABLE", "VIETQR_CHANNEL_CONFIG_INVALID", "VIETQR_RUNTIME_PROFILE_INVALID",
+            "VIETQR_SANDBOX_RUN_ID_REQUIRED", "VIETQR_SANDBOX_CONFIG_UNAVAILABLE", "VIETQR_BANK_RAIL_UNAVAILABLE",
+            "VIETQR_INTENT_READ_AFTER_WRITE_FAILED", "VIETQR_PAYMENT_RAIL_INVALID", "VIETQR_TIMESTAMP_INVALID",
+            "HDPAY_ORDER_RESERVATION_LOST", "HDPAY_ORDER_STATE_CONFLICT", "HDPAY_ORDER_READ_AFTER_WRITE_FAILED",
+            "HDPAY_ORDER_SUBMISSION_STATE_CONFLICT", "HDPAY_ORDER_SUBMISSION_UNKNOWN", "HDPAY_ORDER_STATE_INVALID",
+            "HDPAY_ORDER_AMOUNT_INVALID");
     private final HdPayHostedDepositService service;
     private final GatewaySecurityProperties gatewaySecurity;
 
@@ -57,12 +69,23 @@ public class AppVietQrIntentController {
             Authentication authentication,
             HttpServletRequest httpRequest) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden()
-                : service.create(
-                        userId,
-                        idempotencyKey,
-                        request == null ? null : request.usdtAmount(),
-                        clientIp(httpRequest));
+        try {
+            return userId == null ? forbidden()
+                    : service.create(
+                            userId,
+                            idempotencyKey,
+                            request == null ? null : request.usdtAmount(),
+                            clientIp(httpRequest));
+        } catch (BizException failure) {
+            if (failure.getCode() == 503 && httpRequest != null
+                    && "POST".equals(httpRequest.getMethod())
+                    && "/api/app/deposits/vietqr/intents".equals(httpRequest.getRequestURI())) {
+                String reason = failure.getMessage();
+                log.warn("event=VIETQR_INTENT_CREATE_UNAVAILABLE phase=CONTROLLER code={}",
+                        reason != null && SAFE_CREATE_UNAVAILABLE_CODES.contains(reason) ? reason : "UNCLASSIFIED_503");
+            }
+            throw failure;
+        }
     }
 
     @GetMapping("/deposits/vietqr/intents")

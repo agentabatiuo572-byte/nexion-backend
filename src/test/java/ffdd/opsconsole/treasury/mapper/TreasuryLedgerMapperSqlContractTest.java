@@ -56,7 +56,7 @@ class TreasuryLedgerMapperSqlContractTest {
         var pageSource = driver.createSqlSource(configuration,
                 String.join("\n", page.getAnnotation(Select.class).value()), Map.class);
 
-        for (String type : List.of("swap", "topup", "withdraw", "earning", "commission", "refund", "bonus")) {
+        for (String type : List.of("swap", "topup", "withdraw", "earning", "commission", "refund", "bonus", "purchase")) {
             Map<String, Object> parameters = Map.of(
                     "type", type, "userId", 10001L, "keyword", "task", "bizNo", "TASK-1", "status", "SUCCESS",
                     "from", LocalDateTime.parse("2026-10-01T00:00:00"),
@@ -68,6 +68,7 @@ class TreasuryLedgerMapperSqlContractTest {
 
             assertThat(pageWhere).as("count/page scope for %s", type).isEqualTo(countWhere);
             assertThat(countWhere)
+                    .contains("WHEN UPPER(TRIM(l.biz_type)) = 'ORDER_PURCHASE' AND UPPER(TRIM(l.direction)) IN ('OUT', 'DEBIT') THEN 'purchase'")
                     .contains("WHEN UPPER(TRIM(l.biz_type)) = 'COMPUTE_TASK_REWARD' THEN 'earning'")
                     .contains("WHEN UPPER(TRIM(l.biz_type)) = 'DAILY_CHECK_IN' THEN 'bonus'")
                     .contains("AND l.user_id = ?", "AND l.biz_no = ?", "AND UPPER(l.status) = ?",
@@ -77,6 +78,8 @@ class TreasuryLedgerMapperSqlContractTest {
                     .isLessThan(countWhere.indexOf("LIKE '%REWARD%'"));
             assertThat(countWhere.indexOf("= 'DAILY_CHECK_IN'"))
                     .isLessThan(countWhere.indexOf("LIKE '%REWARD%'"));
+            assertThat(countWhere.indexOf("= 'ORDER_PURCHASE'"))
+                    .isLessThan(countWhere.indexOf("ELSE 'earning'"));
         }
 
         Map<String, Object> rawType = Map.of("type", "COMPUTE_TASK_REWARD", "pageSize", 20, "offset", 0);

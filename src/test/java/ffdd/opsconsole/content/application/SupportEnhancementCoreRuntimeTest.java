@@ -49,6 +49,7 @@ class SupportEnhancementCoreRuntimeTest {
     @Autowired SupportGroupService groups;
     @Autowired PlatformTransactionManager transactions;
     @Autowired JwtTokenProvider tokens;
+    @Autowired JwtProperties legacyJwtProperties;
     @Autowired AdminSessionRegistry sessions;
     @Autowired ObjectMapper json;
     @Autowired AppSupportService app;
@@ -757,7 +758,13 @@ class SupportEnhancementCoreRuntimeTest {
             jdbc.update("UPDATE nx_user_impersonation_session SET status='TERMINATED',terminated_by=?,terminate_reason='Owned reason-policy test cleanup',terminated_at=NOW() WHERE user_id=? AND session_no=?",run,customer,impersonation);
         }
         var anonymous=httpResponse("GET",path,null,null,null);observed.put("ANONYMOUS",anonymous.statusCode());assertThat(anonymous.statusCode()).isEqualTo(401);
-        String expired=tokens.createToken(second,"ADMIN",run,List.of(),sessions.createSession(second,run),java.time.Duration.ofMillis(1));
+        // Explicit legacy exp fixture: the current ADMIN issuer intentionally has no exp.
+        String legacySecret=legacyJwtProperties.getSecret();
+        if (legacySecret.length()<32) legacySecret=(legacySecret+"0".repeat(32)).substring(0,32);
+        String expired=io.jsonwebtoken.Jwts.builder().subject(String.valueOf(second)).claim("subjectType","ADMIN")
+            .claim("username",run).claim("sessionId",sessions.createSession(second,run))
+            .expiration(new java.util.Date(System.currentTimeMillis()-1000))
+            .signWith(io.jsonwebtoken.security.Keys.hmacShaKeyFor(legacySecret.getBytes(java.nio.charset.StandardCharsets.UTF_8))).compact();
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(2)).untilAsserted(()->assertThatThrownBy(()->tokens.parse(expired)).isInstanceOf(io.jsonwebtoken.ExpiredJwtException.class));
         var expiredResponse=httpResponse("GET",path,expired,null,null);observed.put("EXPIRED_ADMIN",expiredResponse.statusCode());assertThat(expiredResponse.statusCode()).isEqualTo(401);
         sessions.revokeSessions(first);var revoked=httpResponse("GET",path,owner,null,null);observed.put("REVOKED_ADMIN",revoked.statusCode());assertThat(revoked.statusCode()).isEqualTo(401);

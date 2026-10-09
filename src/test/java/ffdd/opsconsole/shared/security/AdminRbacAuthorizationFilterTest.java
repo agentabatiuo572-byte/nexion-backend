@@ -40,6 +40,29 @@ class AdminRbacAuthorizationFilterTest {
         SecurityContextHolder.clearContext();
     }
 
+    @Test void activityNeedsAnAdminSubjectButNoBusinessGrant() throws Exception {
+        authenticateTrustedAdmin("7");
+        AtomicBoolean invoked=new AtomicBoolean(false);
+        filter.doFilter(request("POST","/api/admin/auth/activity"),new MockHttpServletResponse(),mark(invoked));
+        assertThat(invoked).isTrue();
+        var authentication=(UsernamePasswordAuthenticationToken)SecurityContextHolder.getContext().getAuthentication();
+        authentication.setDetails(Map.of("subjectType","USER"));
+        invoked.set(false);var response=new MockHttpServletResponse();
+        filter.doFilter(request("POST","/api/admin/auth/activity"),response,mark(invoked));
+        assertThat(invoked).isFalse();assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("ADMIN_SUBJECT_REQUIRED");
+    }
+
+    @Test void activityDoesNotBypassTheOriginalPasswordChangeGate() throws Exception {
+        authenticateTrustedAdmin("7");
+        var state=new AdminAccountStateEntity();state.setCredentialDeliveryStatus("PASSWORD_CHANGE_REQUIRED");
+        when(accountStateMapper.selectActiveByAdminId(7L)).thenReturn(state);
+        var response=new MockHttpServletResponse();AtomicBoolean invoked=new AtomicBoolean(false);
+        filter.doFilter(request("POST","/api/admin/auth/activity"),response,mark(invoked));
+        assertThat(invoked).isFalse();assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("ADMIN_PASSWORD_CHANGE_REQUIRED");
+    }
+
     @Test
     void permitsLoginWithoutAuthentication() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
