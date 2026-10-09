@@ -1061,6 +1061,30 @@ class OpsTreasuryServiceTest {
     }
 
     @Test
+    void d4PurchaseFilterIsCanonicalAndPreservesTheOriginalDebitInListAndCsv() {
+        TreasuryLedgerBillView purchase = new TreasuryLedgerBillView(
+                1L, 10001L, "U00010001", "user", "ORDER-1", "ORDER_PURCHASE", "USDT", "DEBIT",
+                new BigDecimal("1299"), BigDecimal.ZERO, "SUCCESS", "purchase",
+                LocalDateTime.now(CLOCK), LocalDateTime.now(CLOCK));
+        ledgerRepository.bills.add(purchase);
+        var query = new TreasuryLedgerQueryRequest(" PURCHASE ", 10001L, null, 1, 20);
+
+        var page = service.ledgerBills(query).getData();
+        assertThat(ledgerRepository.lastBillType).isEqualTo("purchase");
+        assertThat(page.getTotal()).isEqualTo(1);
+        assertThat(page.getRecords()).containsExactly(purchase);
+        assertThat(page.getRecords().get(0).billType()).isEqualTo("purchase");
+        String csv = new String(service.ledgerBillsCsv(query, "D4 purchase classification regression"),
+                java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(ledgerRepository.lastBillType).isEqualTo("purchase");
+        assertThat(csv).contains("\"purchase\",\"order_purchase\",\"USDT\",\"DEBIT\",\"1299\",\"0\"")
+                .doesNotContain("\"earning\",\"order_purchase\"", "U00010001");
+        assertThat(ledgerRepository.bills).containsExactly(purchase);
+        assertThatThrownBy(() -> service.ledgerBills(new TreasuryLedgerQueryRequest("ORDER_PURCHASE", 10001L, null, 1, 20)))
+                .isInstanceOf(BizException.class).hasMessageContaining("D4_BILL_TYPE_INVALID");
+    }
+
+    @Test
     void ledgerBillsCsvRejectsShortReasonBeforeReadingOrAuditing() {
         assertThatThrownBy(() -> service.ledgerBillsCsv(
                 new TreasuryLedgerQueryRequest(null, null, null, 1, 20), "short"))
@@ -1237,7 +1261,7 @@ class OpsTreasuryServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void d4UserLedgerAlwaysReturnsAllSevenBillTypesForBothCanonicalAssets() {
+    void d4UserLedgerAlwaysReturnsAllEightBillTypesForBothCanonicalAssets() {
         ledgerRepository.bills.add(new TreasuryLedgerBillView(
                 1L, 10001L, "U00010001", "测试用户", "TOPUP-1", "CARD_TOPUP", "USDT", "IN",
                 new BigDecimal("100"), new BigDecimal("100"), "POSTED", "topup",
@@ -1248,7 +1272,7 @@ class OpsTreasuryServiceTest {
         assertThat(result.getCode()).isZero();
         Map<String, BigDecimal> categorySums =
                 (Map<String, BigDecimal>) result.getData().get("categorySums");
-        assertThat(categorySums).hasSize(14)
+        assertThat(categorySums).hasSize(16)
                 .containsEntry("swap:USDT", BigDecimal.ZERO)
                 .containsEntry("swap:NEX", BigDecimal.ZERO)
                 .containsEntry("topup:USDT", new BigDecimal("100"))
@@ -1257,7 +1281,9 @@ class OpsTreasuryServiceTest {
                 .containsEntry("earning:USDT", BigDecimal.ZERO)
                 .containsEntry("commission:USDT", BigDecimal.ZERO)
                 .containsEntry("refund:USDT", BigDecimal.ZERO)
-                .containsEntry("bonus:USDT", BigDecimal.ZERO);
+                .containsEntry("bonus:USDT", BigDecimal.ZERO)
+                .containsEntry("purchase:USDT", BigDecimal.ZERO)
+                .containsEntry("purchase:NEX", BigDecimal.ZERO);
     }
 
     @Test
@@ -1282,10 +1308,12 @@ class OpsTreasuryServiceTest {
         var page = service.ledgerBills(new TreasuryLedgerQueryRequest(null, 10001L, null, 1, 20)).getData();
         assertThat(page.getTotal()).isEqualTo(5);
         assertThat(page.getRecords()).extracting(TreasuryLedgerBillView::billType)
-                .containsExactly("earning", "earning", "bonus", "bonus", "earning");
+                .containsExactly("earning", "earning", "bonus", "bonus", "purchase");
         Map<String, Object> userLedger = service.userLedger(10001L).getData();
-        assertThat((Map<String, BigDecimal>) userLedger.get("categorySums")).hasSize(14)
-                .containsEntry("earning:USDT", new BigDecimal("-0.954995"))
+        assertThat((Map<String, BigDecimal>) userLedger.get("categorySums")).hasSize(16)
+                .containsEntry("earning:USDT", new BigDecimal("0.045005"))
+                .containsEntry("purchase:USDT", BigDecimal.ONE.negate())
+                .containsEntry("purchase:NEX", BigDecimal.ZERO)
                 .containsEntry("earning:NEX", new BigDecimal("3"))
                 .containsEntry("bonus:USDT", new BigDecimal("2"))
                 .containsEntry("bonus:NEX", BigDecimal.ONE);
@@ -1306,7 +1334,7 @@ class OpsTreasuryServiceTest {
                 .contains("\"earning\",\"compute_task_reward\",\"NEX\",\"IN\",\"3\",\"13\"")
                 .contains("\"bonus\",\"daily_check_in\",\"NEX\",\"IN\",\"1\",\"14\"")
                 .contains("\"bonus\",\"referral_reward\"")
-                .contains("\"earning\",\"order_purchase\",\"USDT\",\"OUT\",\"1\",\"101.045005\"")
+                .contains("\"purchase\",\"order_purchase\",\"USDT\",\"OUT\",\"1\",\"101.045005\"")
                 .doesNotContain("U00010001");
         assertThat(ledgerRepository.bills).containsExactlyElementsOf(originalRows);
         assertThat(ledgerRepository.actualBalances).containsExactlyInAnyOrderEntriesOf(Map.of(

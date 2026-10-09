@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
@@ -27,6 +28,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  */
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class UserBusinessWriteGateFilter extends OncePerRequestFilter {
     private final UserOpsMapper users;
     private final LegalTermsService legalTerms;
@@ -56,6 +58,14 @@ public class UserBusinessWriteGateFilter extends OncePerRequestFilter {
         }
         ApiResult<Void> blocked = businessWriteBlock(userId);
         if (blocked != null) {
+            if (blocked.getCode() == 503 && "POST".equals(request.getMethod())
+                    && "/api/app/deposits/vietqr/intents".equals(request.getRequestURI())) {
+                String reason = switch (blocked.getMessage() == null ? "" : blocked.getMessage()) {
+                    case "USER_ONBOARDING_STATE_UNAVAILABLE", "LEGAL_TERMS_UNAVAILABLE" -> blocked.getMessage();
+                    default -> "UNCLASSIFIED_503";
+                };
+                log.warn("event=VIETQR_INTENT_CREATE_UNAVAILABLE phase=USER_WRITE_GATE code={}", reason);
+            }
             write(response, blocked.getCode(), blocked.getMessage());
             return;
         }

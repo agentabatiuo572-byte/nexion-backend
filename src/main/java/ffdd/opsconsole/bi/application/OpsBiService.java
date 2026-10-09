@@ -1661,7 +1661,7 @@ public class OpsBiService implements AuditReplayable {
                         "s", "导出内容来自对应 L1-L4 服务端实时聚合，创建时固化为只读快照"),
                 linked("k", "监管报告", "v", "I5 当前法域 × 披露版本", "fixed", true,
                         "s", "只输出七章完整性、确认进度及业务聚合指标，不输出逐用户明细"),
-                linked("k", "账单明细", "v", "D4 七类强制脱敏", "fixed", true,
+                linked("k", "账单明细", "v", "D4 八类强制脱敏", "fixed", true,
                         "s", "敏感财务明细须确认 8-200 字用途，最多 10 万行并写统一导出审计"),
                 linked("k", "单任务行数上限", "v", "100 万行", "fixed", true,
                         "s", "超过上限的明细导出不在当前 L5 接口放行"),

@@ -672,9 +672,10 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
              WHERE l.is_deleted = 0
              <if test='type != null and type != ""'>
                <choose>
-                 <when test="type == 'swap' or type == 'topup' or type == 'withdraw' or type == 'earning' or type == 'commission' or type == 'refund' or type == 'bonus'">
+                 <when test="type == 'swap' or type == 'topup' or type == 'withdraw' or type == 'earning' or type == 'commission' or type == 'refund' or type == 'bonus' or type == 'purchase'">
                    AND (CASE
                      WHEN UPPER(l.biz_type) LIKE '%REFUND%' OR UPPER(l.biz_type) LIKE '%CHARGEBACK%' OR UPPER(l.biz_type) LIKE '%REVERSAL%' THEN 'refund'
+                     WHEN UPPER(TRIM(l.biz_type)) = 'ORDER_PURCHASE' AND UPPER(TRIM(l.direction)) IN ('OUT', 'DEBIT') THEN 'purchase'
                      WHEN UPPER(TRIM(l.biz_type)) = 'COMPUTE_TASK_REWARD' THEN 'earning'
                      WHEN UPPER(TRIM(l.biz_type)) = 'DAILY_CHECK_IN' THEN 'bonus'
                      WHEN UPPER(l.biz_type) LIKE '%BONUS%' OR UPPER(l.biz_type) LIKE '%TRIAL%' OR UPPER(l.biz_type) LIKE '%REWARD%' THEN 'bonus'
@@ -727,9 +728,10 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
              WHERE l.is_deleted = 0
              <if test='type != null and type != ""'>
                <choose>
-                 <when test="type == 'swap' or type == 'topup' or type == 'withdraw' or type == 'earning' or type == 'commission' or type == 'refund' or type == 'bonus'">
+                 <when test="type == 'swap' or type == 'topup' or type == 'withdraw' or type == 'earning' or type == 'commission' or type == 'refund' or type == 'bonus' or type == 'purchase'">
                    AND (CASE
                      WHEN UPPER(l.biz_type) LIKE '%REFUND%' OR UPPER(l.biz_type) LIKE '%CHARGEBACK%' OR UPPER(l.biz_type) LIKE '%REVERSAL%' THEN 'refund'
+                     WHEN UPPER(TRIM(l.biz_type)) = 'ORDER_PURCHASE' AND UPPER(TRIM(l.direction)) IN ('OUT', 'DEBIT') THEN 'purchase'
                      WHEN UPPER(TRIM(l.biz_type)) = 'COMPUTE_TASK_REWARD' THEN 'earning'
                      WHEN UPPER(TRIM(l.biz_type)) = 'DAILY_CHECK_IN' THEN 'bonus'
                      WHEN UPPER(l.biz_type) LIKE '%BONUS%' OR UPPER(l.biz_type) LIKE '%TRIAL%' OR UPPER(l.biz_type) LIKE '%REWARD%' THEN 'bonus'

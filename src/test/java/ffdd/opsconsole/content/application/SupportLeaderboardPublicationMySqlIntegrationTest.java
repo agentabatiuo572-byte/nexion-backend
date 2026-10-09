@@ -27,6 +27,7 @@ import org.apache.ibatis.session.LocalCacheScope;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.mybatis.spring.transaction.SpringManagedTransactionFactory;
 import org.springframework.aop.framework.ProxyFactory;
@@ -41,6 +42,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import static org.assertj.core.api.Assertions.*;
 
 /** Real publication SQL/transactions; aggregate and qualification values are synthetic fixtures, not financial-source capture. */
+@EnabledIfEnvironmentVariable(named="SUPPORT_CAPTURE_MYSQL_ENABLED", matches="true")
 class SupportLeaderboardPublicationMySqlIntegrationTest {
     private static final String SERVER_UUID="3556ddae-c1a1-11f1-8853-a40c6626953d";
     private static final String PUBLICATIONS="nx_support_leaderboard_publication", POINTERS="nx_support_leaderboard_latest";
