@@ -173,6 +173,10 @@ class SupportAnalyticsPrivateQueryFixesTest {
         String observed=(String)f.service.query(Map.of("view",List.of("DEVICES"))).get("queryVersion");assertThat(observed).startsWith("saq-v1:");f.capture.facts=Map.of();
         assertThat(deviceResponse(f)).containsEntry("acquisition","UNKNOWN");assertThat(f.service.query(Map.of("view",List.of("DEVICES"))).get("queryVersion")).isNotEqualTo(observed);
     }
+    @Test void promotionGiftSharingThePaidParentOrderKeepsUnknownAcquisition() {
+        var f=new Fixture();paid(f,new DeviceEvidence(20,100,"order20","PROMOTION_GIFT","IDC",BigDecimal.ONE,"HELD","ACTIVE",T,null,0,"PRODUCTION",null,null,SupportDeviceReadFacade.ConnectionStatus.UNKNOWN));
+        assertThat(deviceResponse(f)).containsEntry("holdingStatus","AVAILABLE").containsEntry("acquisition","UNKNOWN");
+    }
     @Test void channelLabelsWrongCustomerWrongOrderAndStrictIssueCannotConfirmPurchase() {
         var absent=new Fixture();absent.capture.stock=new SupportDeviceReadFacade.Snapshot(List.of(device("PRODUCTION",null,"order20")),List.of(),T);
         assertThat(deviceResponse(absent)).containsEntry("acquisition","UNKNOWN");

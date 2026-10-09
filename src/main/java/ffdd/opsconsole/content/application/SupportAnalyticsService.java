@@ -465,7 +465,8 @@ public class SupportAnalyticsService {
     }
     /** Same existing canonical acquisition rule for the internal query adapter and aggregate. */
     public static boolean paidDeviceFact(SupportDeviceReadFacade.DeviceEvidence device,Fact fact,Snapshot snapshot) {
-        return device.sourceOrderNo()!=null && !device.sourceOrderNo().isBlank() && fact.customerId()==device.customerId()
+        return !"PROMOTION_GIFT".equalsIgnoreCase(device.sourceChannel())
+            && device.sourceOrderNo()!=null && !device.sourceOrderNo().isBlank() && fact.customerId()==device.customerId()
             && fact.kind()==Kind.DEVICE_PURCHASE && Objects.equals(fact.orderNo(),device.sourceOrderNo())
             && snapshot!=null && !proofRejected(snapshot,fact);
     }
