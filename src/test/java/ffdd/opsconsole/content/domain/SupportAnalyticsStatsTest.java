@@ -66,4 +66,21 @@ class SupportAnalyticsStatsTest {
     private static Query query(Basis basis,LocalDateTime from,LocalDateTime to,String zone,String currency) {
         return new Query(null,null,null,basis,from,to,zone,currency);
     }
+    @Test void oldCustomerAndResultConstructorsCannotTurnMissingCurrentMetricsIntoAvailableZero() {
+        var old=new Customer(1,Category.BOUND,Placement.GROUPED,false,new FirstSelection(null,Status.UNKNOWN,List.of("HISTORY_UNVERIFIED")));
+        assertThat(old.metrics().lifetimeBasis()).isEqualTo(Basis.CURRENT_CUSTOMER_HISTORY);assertThat(old.metrics().lifetimeStatus()).isEqualTo(Status.UNAVAILABLE);
+        assertThat(old.metrics().invitations().directCustomers().observedValue()).isNull();assertThat(old.metrics().devices().held().confirmedValue()).isNull();
+        var result=new Result(query(Basis.CURRENT_ASSET,null,null,"UTC",null),new CurrentScope(ReadMode.PERSONAL,null,null,Status.AVAILABLE,1L,1L,0L,0L,List.of()),
+            List.of(old),new FinancialSummary(Status.UNAVAILABLE,List.of(),SupportAnalyticsStats.unavailableCount(),List.of(),List.of()),
+            new RestrictedSummary(SupportAnalyticsStats.unavailableCount(),SupportAnalyticsStats.unavailableCount()),List.of(),java.time.Instant.EPOCH,List.of());
+        assertThat(result.currentMetrics().status()).isEqualTo(Status.UNAVAILABLE);assertThat(result.personnel().groups().confirmedValue()).isNull();assertThat(result.groups()).isEmpty();
+    }
+    @Test void summaryCollectionsAreCopiesAndAcquisitionDoesNotClaimUnprovenGiftOrFreeTrial() {
+        var currencies=new ArrayList<InvitationCurrencyTotal>();var reasons=new ArrayList<>(List.of("ACQUISITION_NOT_PROVEN"));
+        var invitation=new InvitationSummary(new Count(0L,0L,Status.AVAILABLE),new Count(0L,0L,Status.AVAILABLE),currencies,Status.AVAILABLE,reasons);
+        reasons.clear();assertThat(invitation.reasons()).containsExactly("ACQUISITION_NOT_PROVEN");
+        assertThatThrownBy(()->invitation.descendantDeposits().clear()).isInstanceOf(UnsupportedOperationException.class);
+        assertThat(Acquisition.values()).containsExactly(Acquisition.PAID_PURCHASE,Acquisition.UNKNOWN);
+        assertThat(SupportAnalyticsStats.unavailablePersonnel().accounts()).isEmpty();assertThat(SupportAnalyticsStats.unavailablePersonnel().people().observedValue()).isNull();
+    }
 }

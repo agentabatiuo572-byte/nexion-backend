@@ -54,6 +54,15 @@ public interface SupportAnalyticsMapper {
             AND (ends_at IS NULL OR ends_at&gt;UTC_TIMESTAMP(6)) GROUP BY group_id
         ), classified AS (
           SELECT scope_customer.id customerId,
+            CASE WHEN a.activeRows=1 AND a.openRows=1 AND bi.intervalRows=1 AND ad.id IS NOT NULL
+              THEN a.agentId ELSE NULL END ownerAgentId,
+            CASE WHEN a.activeRows=1 AND a.openRows=1 AND bi.intervalRows=1 AND ad.id IS NOT NULL
+                AND m.intervalRows=1 AND m.openRows=1 AND g.id IS NOT NULL
+                AND o.intervalRows=1 AND o.openRows=1 AND o.supervisorId=g.supervisor_admin_id THEN g.id
+              WHEN COALESCE(a.activeRows,0)=0 AND COALESCE(bi.intervalRows,0)=0
+                AND r.intervalRows=1 AND r.openRows=1 AND g.id IS NOT NULL
+                AND o.intervalRows=1 AND o.openRows=1 AND o.supervisorId=g.supervisor_admin_id THEN g.id
+              ELSE NULL END currentGroupId,
             CASE WHEN a.activeRows=1 AND a.openRows=1 AND bi.intervalRows=1 AND ad.id IS NOT NULL THEN 'BOUND'
               WHEN COALESCE(a.activeRows,0)=0 AND COALESCE(bi.intervalRows,0)=0
                 AND (r.customer_id IS NULL OR (r.intervalRows=1 AND r.openRows=1)) THEN 'PENDING'
@@ -82,7 +91,7 @@ public interface SupportAnalyticsMapper {
           LEFT JOIN owners o ON o.group_id=g.id
           WHERE scope_customer.sandbox=0
         """ + SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + """
-        ) SELECT customerId,category,placement,handoverRequired FROM classified ORDER BY customerId
+        ) SELECT customerId,category,placement,handoverRequired,ownerAgentId,currentGroupId FROM classified ORDER BY customerId
         """;
     @Select("<script>"+CURRENT_PROJECTION+"</script>")
     List<CurrentCustomer> currentCustomers(@Param("scope") ReadScope scope);
@@ -117,7 +126,89 @@ public interface SupportAnalyticsMapper {
         """)
     List<AttributionRow> attributions(@Param("scope") ReadScope scope,@Param("factIds") Collection<String> factIds);
 
-    record CurrentCustomer(Long customerId,String category,String placement,Integer handoverRequired) { }
+    String READ_SCOPE="<choose><when test=\"scope != null and scope.mode.name() == 'PERSONAL'\">"+SupportGroupMapper.SCOPE_SERVICE
+        +"</when><when test=\"scope != null and scope.mode.name() == 'MANAGED'\">"+SupportGroupMapper.SCOPE_SUPERVISOR
+        +"</when><when test=\"scope != null and scope.mode.name() == 'ALL'\">"+SupportGroupMapper.SCOPE_SUPER_ADMIN+"</when><otherwise>1=0</otherwise></choose>";
+    @Select("<script>SELECT coverage_start_at coverageStartAt,observed_through_at observedThroughAt,UTC_TIMESTAMP(6) evaluatedDbAt FROM nx_support_activity_coverage WHERE id=1 AND "+READ_SCOPE+"</script>")
+    ActivityCoverage activityCoverage(@Param("scope") ReadScope scope);
+    @Select("<script>SELECT version,activity_window_days activityWindowDays FROM nx_support_rules WHERE id=1 AND "+READ_SCOPE+"</script>")
+    ActivityRules activityRules(@Param("scope") ReadScope scope);
+    @Select("""
+        <script>SELECT e.customer_id customerId,MAX(e.occurred_at) lastEffectiveAt
+        FROM nx_support_activity_event e JOIN nx_user scope_customer ON scope_customer.id=e.customer_id
+        WHERE scope_customer.sandbox=0
+        """+SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE+"""
+        AND <choose><when test="customerIds != null and !customerIds.isEmpty()">e.customer_id IN
+          <foreach collection="customerIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+        </when><otherwise>1=0</otherwise></choose>
+        AND e.occurred_at &lt;= #{observedThroughAt}
+        GROUP BY e.customer_id ORDER BY e.customer_id</script>
+        """)
+    List<ActivityRow> activityEvents(@Param("scope") ReadScope scope,@Param("customerIds") Collection<Long> customerIds,
+            @Param("observedThroughAt") LocalDateTime observedThroughAt);
+
+    @Select("""
+        <script>SELECT scope_group.id,scope_group.supervisor_admin_id supervisorAdminId,scope_group.status,
+          EXISTS(SELECT 1 FROM nx_support_group_owner_history o WHERE o.group_id=scope_group.id
+            AND o.supervisor_admin_id=scope_group.supervisor_admin_id AND o.starts_at &lt;= UTC_TIMESTAMP(6) AND o.ends_at IS NULL
+            AND NOT EXISTS(SELECT 1 FROM nx_support_group_owner_history other_o WHERE other_o.group_id=o.group_id
+              AND other_o.id&lt;&gt;o.id AND other_o.starts_at &lt;= UTC_TIMESTAMP(6)
+              AND (other_o.ends_at IS NULL OR other_o.ends_at&gt;UTC_TIMESTAMP(6)))) ownerVerified
+        FROM nx_support_group scope_group WHERE 1=1
+        """+SupportGroupMapper.GROUP_SCOPE_PREDICATE+" ORDER BY scope_group.id</script>")
+    List<GroupRow> scopedGroupRows(@Param("scope") ReadScope scope);
+
+    String ROSTER_SELECT="""
+        SELECT scope_agent.id accountId,scope_agent.status accountStatus,p.enabled profileEnabled,p.is_deleted profileDeleted,
+          p.seat_type profileSeatType,q.id qualificationId,q.qualification_kind qualificationKind,q.state qualificationState,
+          q.starts_at qualificationStartsAt,q.ends_at qualificationEndsAt,m.id memberId,m.group_id groupId,
+          m.starts_at memberStartsAt,m.ends_at memberEndsAt,UTC_TIMESTAMP(6) evaluatedDbAt,
+          EXISTS(SELECT 1 FROM nx_admin_role_relation rr JOIN nx_admin_role compatible_role ON compatible_role.id=rr.role_id
+            WHERE rr.admin_id=scope_agent.id AND rr.is_deleted=0 AND compatible_role.is_deleted=0 AND compatible_role.status=1
+              AND compatible_role.role_code IN ('SUPPORT','SUPER_ADMIN')) compatibleRole
+        FROM nx_admin scope_agent LEFT JOIN nx_support_agent_profile p ON p.admin_id=scope_agent.id
+        LEFT JOIN nx_support_account_qualification_history q ON q.admin_id=scope_agent.id
+          AND q.qualification_kind=
+        """;
+    String ROSTER_JOIN="""
+          AND q.starts_at &lt;= UTC_TIMESTAMP(6) AND (q.ends_at IS NULL OR q.ends_at&gt;UTC_TIMESTAMP(6))
+        LEFT JOIN nx_support_group_member_history m ON m.agent_admin_id=scope_agent.id
+          AND m.starts_at &lt;= UTC_TIMESTAMP(6) AND (m.ends_at IS NULL OR m.ends_at&gt;UTC_TIMESTAMP(6))
+        WHERE scope_agent.is_deleted=0
+        """;
+    // GENERAL and DEDICATED are old storage categories of the same current service account category.
+    @Select("<script>"+ROSTER_SELECT+"'SERVICE' "+ROSTER_JOIN+"""
+        AND (q.id IS NOT NULL OR (p.is_deleted=0 AND p.seat_type IN ('GENERAL','DEDICATED')) OR m.id IS NOT NULL
+          OR EXISTS(SELECT 1 FROM nx_support_agent_user_assignment a WHERE a.agent_admin_id=scope_agent.id
+            AND a.status='ACTIVE' AND a.is_deleted=0))
+        """+SupportGroupMapper.AGENT_SCOPE_PREDICATE+" ORDER BY scope_agent.id,q.id,m.id</script>")
+    List<RosterRow> serviceAccountRows(@Param("scope") ReadScope scope);
+    @Select("<script>"+ROSTER_SELECT+"'SUPERVISOR' "+ROSTER_JOIN+"""
+        AND (q.id IS NOT NULL OR (p.is_deleted=0 AND p.seat_type='MANAGER')) AND
+        <choose><when test="scope != null and scope.mode.name() == 'ALL'">
+        """+SupportGroupMapper.SCOPE_SUPER_ADMIN+"""
+        </when><when test="scope != null and scope.mode.name() == 'MANAGED'">
+        """+SupportGroupMapper.SCOPE_SUPERVISOR+"""
+          AND scope_agent.id=#{scope.actorId}
+        </when><otherwise>1=0</otherwise></choose> ORDER BY scope_agent.id,q.id,m.id</script>
+        """)
+    List<RosterRow> supervisorAccountRows(@Param("scope") ReadScope scope);
+
+    record CurrentCustomer(Long customerId,String category,String placement,Integer handoverRequired,Long ownerAgentId,Long currentGroupId) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public CurrentCustomer { }
+        public CurrentCustomer(Long customerId,String category,String placement,Integer handoverRequired) {
+            this(customerId,category,placement,handoverRequired,null,null);
+        }
+    }
+    record ActivityCoverage(LocalDateTime coverageStartAt,LocalDateTime observedThroughAt,LocalDateTime evaluatedDbAt) { }
+    record ActivityRules(Long version,Integer activityWindowDays) { }
+    record ActivityRow(Long customerId,LocalDateTime lastEffectiveAt) { }
+    record GroupRow(Long id,Long supervisorAdminId,String status,Integer ownerVerified) { }
+    record RosterRow(Long accountId,Integer accountStatus,Integer profileEnabled,Integer profileDeleted,String profileSeatType,
+            Long qualificationId,String qualificationKind,String qualificationState,LocalDateTime qualificationStartsAt,
+            LocalDateTime qualificationEndsAt,Long memberId,Long groupId,LocalDateTime memberStartsAt,
+            LocalDateTime memberEndsAt,LocalDateTime evaluatedDbAt,Integer compatibleRole) { }
     record EventCandidate(String factId,Long customerId) { }
     record AttributionRow(String factId,Long customerId,String kind,String source,Long ledgerId,String sourceBusinessId,
                           String orderNo,String orderType,String originalFactId,String currency,BigDecimal amount,

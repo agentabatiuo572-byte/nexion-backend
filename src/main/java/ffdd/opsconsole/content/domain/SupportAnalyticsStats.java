@@ -16,6 +16,11 @@ public final class SupportAnalyticsStats {
     public enum Placement { GROUPED, UNGROUPED, GROUP_QUEUE, GLOBAL_QUEUE, UNKNOWN }
     public enum AttributionStatus { KNOWN, UNASSIGNED, UNKNOWN }
     public enum FirstState { CONFIRMED, NONE, UNKNOWN }
+    public enum Acquisition { PAID_PURCHASE, UNKNOWN }
+    public enum WindowState { ACTIVE, INACTIVE, UNKNOWN }
+    public enum AccountState { ENABLED, DISABLED, UNKNOWN }
+    public enum QualificationState { ENABLED, DISABLED, REMOVED, UNKNOWN }
+    public enum MemberState { GROUPED, UNGROUPED, UNKNOWN }
 
     public record Query(ReadMode mode,Long groupId,Long agentId,Basis basis,
                         LocalDateTime fromInclusive,LocalDateTime toExclusive,String businessZone,String currency) {
@@ -52,7 +57,12 @@ public final class SupportAnalyticsStats {
     }
     /** Current identities only; first is a whole-history profile, independent of the period/currency summary. */
     public record Customer(long customerId,Category category,Placement placement,boolean handoverRequired,
-                           FirstSelection first) { }
+                           FirstSelection first,CurrentOwner owner,CustomerMetrics metrics) {
+        public Customer(long customerId,Category category,Placement placement,boolean handoverRequired,FirstSelection first) {
+            this(customerId,category,placement,handoverRequired,first,new CurrentOwner(null,null),unavailableCustomerMetrics());
+        }
+    }
+    public record CurrentOwner(Long agentId,Long groupId) { }
     public record Money(BigDecimal observedAmount,BigDecimal confirmedAmount,Long observedEvents,
                         Long confirmedEvents,Long observedCustomers,Status status,List<String> reasons) {
         public Money { reasons=List.copyOf(reasons); }
@@ -75,9 +85,74 @@ public final class SupportAnalyticsStats {
                                  String historicalEnvironmentStatus,LocalDateTime supportedFrom,String adapterVersion) { }
     /** Historical transfer information is aggregate only, with no customer, event or order identifiers. */
     public record RestrictedSummary(Count customers,Count firstCandidates) { }
+    public record CustomerCurrencyTotals(String currency,Money deposits,Money purchases) { }
+    public record InvitationCurrencyTotal(String currency,Money deposits) { }
+    /** Descendant identities and per-descendant facts never belong in this projection. */
+    public record InvitationSummary(Count directCustomers,Count descendantCustomers,
+            List<InvitationCurrencyTotal> descendantDeposits,Status status,List<String> reasons) {
+        public InvitationSummary {descendantDeposits=List.copyOf(descendantDeposits);reasons=List.copyOf(reasons);}
+    }
+    public record DevicePartition(String dimension,String value,Count devices) { }
+    public record DeviceSummary(Count held,Count unknownHolding,List<DevicePartition> partitions,
+            LocalDateTime evaluatedDbAt,Status status,List<String> reasons) {
+        public DeviceSummary {partitions=List.copyOf(partitions);reasons=List.copyOf(reasons);}
+    }
+    public record ActivityWindow(Integer days,LocalDateTime fromInclusive,LocalDateTime throughInclusive,
+            LocalDateTime coverageStartAt,Long rulesVersion,String source,Status status) { }
+    public record CustomerActivity(LocalDateTime lastEffectiveAt,WindowState state,Status status,List<String> reasons) {
+        public CustomerActivity {reasons=List.copyOf(reasons);}
+    }
+    public record ActivityPartition(Category category,Count active,Count inactive,Count unknown) { }
+    public record ActivitySummary(Count active,Count inactive,Count unknown,ActivityWindow window,
+            Status status,List<String> reasons,List<ActivityPartition> partitions) {
+        public ActivitySummary(Count active,Count inactive,Count unknown,ActivityWindow window,Status status,List<String> reasons) {
+            this(active,inactive,unknown,window,status,reasons,List.of());
+        }
+        public ActivitySummary {reasons=List.copyOf(reasons);partitions=List.copyOf(partitions);}
+    }
+    public record CustomerMetrics(Basis lifetimeBasis,Status lifetimeStatus,List<CustomerCurrencyTotals> lifetime,
+            InvitationSummary invitations,DeviceSummary devices,CustomerActivity activity) {
+        public CustomerMetrics {lifetime=List.copyOf(lifetime);}
+    }
+    /** Category, account activation, reception qualification and membership are separate facts. */
+    public record AccountRow(long accountId,boolean serviceAccount,boolean supervisorAccount,Status serviceCategoryStatus,Status supervisorCategoryStatus,AccountState accountState,
+            QualificationState serviceQualification,QualificationState supervisorQualification,AccountState receptionState,
+            MemberState memberState,Long groupId,boolean handoverRequired,Status status) { }
+    public record PersonnelPartition(String dimension,String value,Count accounts) { }
+    public record PersonnelSummary(List<AccountRow> accounts,Count serviceAccounts,Count groupMembers,
+            Count supervisors,Count people,Count groups,List<PersonnelPartition> partitions,Status status,List<String> reasons) {
+        public PersonnelSummary {accounts=List.copyOf(accounts);partitions=List.copyOf(partitions);reasons=List.copyOf(reasons);}
+    }
+    public record CurrentMetrics(Basis lifetimeBasis,Status status,List<CustomerCurrencyTotals> ownLifetime,
+            Count firstConfirmed,Count firstNone,Count firstUnknown,DeviceSummary devices,ActivitySummary activity) {
+        public CurrentMetrics {ownLifetime=List.copyOf(ownLifetime);}
+    }
+    public record GroupAggregate(long groupId,CurrentScope customers,CurrentMetrics current,
+            FinancialSummary period,PersonnelSummary personnel) { }
     public record Result(Query query,CurrentScope currentScope,List<Customer> currentCustomers,
                          FinancialSummary financialSummary,RestrictedSummary restrictedSummary,
-                         List<SourceCoverage> coverage,Instant asOf,List<String> reasons) {
-        public Result { currentCustomers=List.copyOf(currentCustomers);coverage=List.copyOf(coverage);reasons=List.copyOf(reasons); }
+                         List<SourceCoverage> coverage,Instant asOf,List<String> reasons,CurrentMetrics currentMetrics,
+                         PersonnelSummary personnel,List<GroupAggregate> groups) {
+        public Result(Query query,CurrentScope currentScope,List<Customer> currentCustomers,FinancialSummary financialSummary,
+                RestrictedSummary restrictedSummary,List<SourceCoverage> coverage,Instant asOf,List<String> reasons) {
+            this(query,currentScope,currentCustomers,financialSummary,restrictedSummary,coverage,asOf,reasons,
+                unavailableCurrentMetrics(),unavailablePersonnel(),List.of());
+        }
+        public Result { currentCustomers=List.copyOf(currentCustomers);coverage=List.copyOf(coverage);reasons=List.copyOf(reasons);groups=List.copyOf(groups); }
+    }
+    public static Count unavailableCount() {return new Count(null,null,Status.UNAVAILABLE);}
+    public static DeviceSummary unavailableDevices() {return new DeviceSummary(unavailableCount(),unavailableCount(),List.of(),null,Status.UNAVAILABLE,List.of("CURRENT_DEVICE_NOT_REQUESTED"));}
+    public static ActivityWindow unavailableWindow() {return new ActivityWindow(null,null,null,null,null,"INTERACTIVE_LOGIN",Status.UNAVAILABLE);}
+    public static CustomerActivity unavailableActivity() {return new CustomerActivity(null,WindowState.UNKNOWN,Status.UNAVAILABLE,List.of("ACTIVITY_NOT_REQUESTED"));}
+    public static CustomerMetrics unavailableCustomerMetrics() {
+        return new CustomerMetrics(Basis.CURRENT_CUSTOMER_HISTORY,Status.UNAVAILABLE,List.of(),
+            new InvitationSummary(unavailableCount(),unavailableCount(),List.of(),Status.UNAVAILABLE,List.of("INVITATION_NOT_REQUESTED")),unavailableDevices(),unavailableActivity());
+    }
+    public static CurrentMetrics unavailableCurrentMetrics() {
+        return new CurrentMetrics(Basis.CURRENT_CUSTOMER_HISTORY,Status.UNAVAILABLE,List.of(),unavailableCount(),unavailableCount(),unavailableCount(),unavailableDevices(),
+            new ActivitySummary(unavailableCount(),unavailableCount(),unavailableCount(),unavailableWindow(),Status.UNAVAILABLE,List.of("ACTIVITY_NOT_REQUESTED")));
+    }
+    public static PersonnelSummary unavailablePersonnel() {
+        return new PersonnelSummary(List.of(),unavailableCount(),unavailableCount(),unavailableCount(),unavailableCount(),unavailableCount(),List.of(),Status.UNAVAILABLE,List.of("PERSONNEL_NOT_AUTHORIZED_OR_REQUESTED"));
     }
 }

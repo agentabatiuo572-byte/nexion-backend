@@ -34,7 +34,8 @@ class SupportAnalyticsMapperSqlTest {
             "a.activeRows=1", "bi.intervalRows=1", "o.supervisorId=g.supervisor_admin_id", "handoverRequired",
             "LEFT JOIN assignments a", "LEFT JOIN routes r", "p.enabled=1", "q.state='ENABLED'");
         assertThat(query).doesNotContain("LIMIT", "OFFSET", "nx_wallet", "balance", "attribution_evidence_json");
-        assertThat(query).endsWith("SELECT customerId,category,placement,handoverRequired FROM classified ORDER BY customerId");
+        assertThat(query).endsWith("SELECT customerId,category,placement,handoverRequired,ownerAgentId,currentGroupId FROM classified ORDER BY customerId");
+        assertThat(query).contains("THEN a.agentId ELSE NULL END ownerAgentId","ELSE NULL END currentGroupId");
     }
 
     @Test void platformLegacyEnumerationIncludesUnboundAndDeletedHistoricalProductionSubjectsWithoutGrantingOtherModes() {
@@ -63,8 +64,33 @@ class SupportAnalyticsMapperSqlTest {
 
     private BoundSql bound(String method,ReadScope scope) {
         Map<String,Object> parameters=new HashMap<>();parameters.put("scope",scope);parameters.put("factIds",List.of("DEPOSIT:1","PURCHASE:2"));
+        parameters.put("customerIds",List.of(1L,2L));parameters.put("observedThroughAt",java.time.LocalDateTime.of(2026,10,9,12,0));
         return configuration.getMappedStatement(SupportAnalyticsMapper.class.getName()+"."+method).getBoundSql(parameters);
     }
     private String sql(String method,ReadScope scope) {return bound(method,scope).getSql().replaceAll("\\s+"," ").trim();}
     private static Configuration configuration() {var config=new Configuration();config.addMapper(SupportAnalyticsMapper.class);return config;}
+    @Test void currentActivityUsesOnlyRequestedAuthorizedRootsThroughSavedWatermarkAndKeepsQueues() {
+        String query=sql("activityEvents",new ReadScope(8L,ReadMode.MANAGED,null,null));
+        assertThat(query).contains("FROM nx_support_activity_event e JOIN nx_user scope_customer", "scope_customer.sandbox=0","e.customer_id IN ( ? , ? )","e.occurred_at <= ?","MAX(e.occurred_at)");
+        assertThat(query).contains("qualification_kind='SUPERVISOR'","nx_support_customer_route_history");
+        assertThat(query).doesNotContain("JOIN nx_support_agent_user_assignment","nx_support_activity_state","nx_support_maintenance_execution","nx_user_device_runtime","LIMIT","OFFSET");
+        assertThat(query).endsWith("GROUP BY e.customer_id ORDER BY e.customer_id");
+        Map<String,Object> parameters=new HashMap<>();parameters.put("scope",new ReadScope(7L,ReadMode.PERSONAL,null,null));parameters.put("customerIds",List.of());parameters.put("observedThroughAt",java.time.LocalDateTime.of(2026,10,9,12,0));
+        assertThat(configuration.getMappedStatement(SupportAnalyticsMapper.class.getName()+".activityEvents").getBoundSql(parameters).getSql()).contains("1=0");
+    }
+    @Test void ordinaryCoverageRulesAndRosterReadsKeepLiveScopeGuardsAndDoNotWriteOrLockOuterStatistics() {
+        for(String method:List.of("activityCoverage","activityRules")) {
+            String query=sql(method,new ReadScope(7L,ReadMode.PERSONAL,null,null));
+            assertThat(query).contains("qualification_kind='SERVICE'").doesNotContain("FOR UPDATE","UPDATE nx_support","checkpoint");
+            assertThat(query).doesNotEndWith("FOR SHARE");assertThat(sql(method,null)).contains("1=0");
+        }
+        String rules=sql("activityRules",new ReadScope(7L,ReadMode.PERSONAL,null,null));assertThat(rules).contains("activity_window_days activityWindowDays");
+        String services=sql("serviceAccountRows",new ReadScope(8L,ReadMode.ALL,null,null));
+        assertThat(services).contains("scope_role.role_code IN ('SUPER','SUPERADMIN','SUPER_ADMIN')","p.seat_type IN ('GENERAL','DEDICATED')","q.qualification_kind= 'SERVICE'","q.ends_at>UTC_TIMESTAMP(6)","p.enabled profileEnabled");
+        assertThat(services).doesNotContain("q.state='ENABLED'","p.enabled=1","FIND_IN_SET","MIN(","COUNT(*)","LIMIT");assertThat(services).endsWith("ORDER BY scope_agent.id,q.id,m.id");
+        String managed=sql("supervisorAccountRows",new ReadScope(8L,ReadMode.MANAGED,null,null));assertThat(managed).contains("scope_agent.id=?","q.qualification_kind= 'SUPERVISOR'");
+        assertThat(sql("supervisorAccountRows",new ReadScope(7L,ReadMode.PERSONAL,null,null))).contains("1=0");
+        String groups=sql("scopedGroupRows",new ReadScope(8L,ReadMode.MANAGED,100L,null));assertThat(groups).contains("ownerVerified","scope_group.supervisor_admin_id=?","scope_group.id=?");assertThat(groups).endsWith("ORDER BY scope_group.id");
+        for(String method:List.of("scopedGroupRows","serviceAccountRows","supervisorAccountRows"))assertThat(sql(method,null)).contains("1=0");
+    }
 }
