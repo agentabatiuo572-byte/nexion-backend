@@ -20,6 +20,8 @@ public class OpsSupportGroupController {
     public Object group(@PathVariable Long id){return ffdd.opsconsole.shared.api.ApiResult.ok(groups.detail(id));}
     @GetMapping("/supervisors") @PreAuthorize("hasAuthority('platform_a1_read')")
     public Object supervisors(){return ffdd.opsconsole.shared.api.ApiResult.ok(groups.supervisors());}
+    @GetMapping("/members/{adminId}") @PreAuthorize("hasAuthority('service_m1_read')")
+    public Object member(@PathVariable Long adminId){return ffdd.opsconsole.shared.api.ApiResult.ok(groups.memberTarget(adminId));}
     @PostMapping @PreAuthorize("hasAuthority('service_m1_write')")
     public Object create(@RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String key,@RequestBody Create request){production.requireOpsWriteAllowed();return groups.create(key,request);}
     @PatchMapping("/{id}/name") @PreAuthorize("hasAuthority('service_m1_write')")

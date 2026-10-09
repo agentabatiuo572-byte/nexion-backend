@@ -74,4 +74,26 @@ class SupportGroupServiceTest {
     @Test void peopleAreUnionNotRoleSum(){when(mapper.supervisors()).thenReturn(List.of(Map.of("adminId",1L),Map.of("adminId",2L)));when(mapper.memberIds()).thenReturn(List.of(2L,3L));assertThat(service.supervisors()).containsEntry("supervisorCount",2).containsEntry("memberCount",2).containsEntry("peopleCount",3);}
     @Test void legacySeatCannotGrantQualificationAfterCutover(){when(mapper.cutoverApplied()).thenReturn(1);assertThatThrownBy(()->service.validateLegacySeat(3L,"MANAGER")).hasMessage("SUPPORT_EXPLICIT_QUALIFICATION_REQUIRED");}
     @Test void changedQualificationFailureIsNotSwallowed(){var q=new ffdd.opsconsole.content.domain.SupportGroupFacts.Qualification(1L,3L,"SUPERVISOR","ENABLED",1L,at);when(mapper.qualification(3L,"SUPERVISOR")).thenReturn(q);when(mapper.qualifications(3L)).thenReturn(List.of(q));when(mapper.closeQualification(1L,1L,at)).thenReturn(0);assertThatThrownBy(()->service.accountChanged(3L,null,true,"disable","合法操作原因说明")).hasMessage("SUPPORT_GROUP_VERSION_CONFLICT");verifyNoInteractions(audit);}
+    @Test void everyGroupVersionIncrementRejectsUnrepresentableNextVersionBeforeAnyMutation(){
+        long max=9007199254740991L;var group=new Group(8L,"组一",1L,"ENABLED",max);
+        when(mapper.group(8L)).thenReturn(group);when(mapper.lockGroup(8L)).thenReturn(group);
+        when(mapper.memberCurrent(3L)).thenReturn(new Member(7L,3L,8L,1L,at));
+        List<Runnable> writes=List.of(
+            ()->service.rename(8L,"rename-max",new Rename("新组名",max,"合法操作原因说明")),
+            ()->service.status(8L,"status-max",new Status("DISABLED",max,"合法操作原因说明")),
+            ()->service.owner(8L,"owner-max",new ffdd.opsconsole.content.dto.SupportGroupRequests.Owner(2L,max,"合法操作原因说明")),
+            ()->service.move(3L,"move-max",new Move(null,1L,max,null,"合法操作原因说明")),
+            ()->service.route(20L,"route-max",new ffdd.opsconsole.content.dto.SupportGroupRequests.Route(8L,0L,null,max,"合法操作原因说明")));
+        for(Runnable write:writes)assertThatThrownBy(write::run).isInstanceOf(BizException.class).hasMessage("SUPPORT_GROUP_VERSION_CONFLICT");
+        verify(mapper,never()).rename(anyLong(),anyString(),anyLong(),any());
+        verify(mapper,never()).status(anyLong(),anyString(),anyLong(),any());
+        verify(mapper,never()).owner(anyLong(),anyLong(),anyLong(),any());
+        verify(mapper,never()).closeOwner(anyLong(),anyLong(),any());
+        verify(mapper,never()).touch(anyLong(),anyLong(),any());
+        verify(mapper,never()).closeMember(anyLong(),anyLong(),any());
+        verify(mapper,never()).insertMember(anyLong(),any(),any(),anyLong(),anyLong(),anyString(),anyString());
+        verify(mapper,never()).closeRoute(anyLong(),anyLong(),any());
+        verify(mapper,never()).insertRoute(anyLong(),any(),any(),anyLong(),anyLong(),anyString(),anyString());
+        verifyNoInteractions(audit,events);
+    }
 }

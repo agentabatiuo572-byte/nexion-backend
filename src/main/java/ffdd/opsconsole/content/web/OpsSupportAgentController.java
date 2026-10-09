@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -34,6 +35,12 @@ public class OpsSupportAgentController {
     private final OpsSupportAgentService supportAgentService;
     private final ProductionSupportPathGuard productionPathGuard;
     private final ffdd.opsconsole.content.application.SupportGroupService groups;
+
+    @PreAuthorize("hasAuthority('platform_a1_read')")
+    @GetMapping("/{adminId}/qualifications")
+    public Object qualifications(@PathVariable Long adminId) {
+        return ApiResult.ok(groups.accountQualifications(adminId));
+    }
 
     @PreAuthorize("hasAuthority('platform_a1_write')")
     @PatchMapping("/{adminId}/qualification")
@@ -54,8 +61,9 @@ public class OpsSupportAgentController {
     // 坐席分页列表 — M1 客服总览 读
     @PreAuthorize("hasAuthority('service_m1_read')")
     @GetMapping("/page")
-    public ApiResult<SupportAgentPageView> agents(SupportAgentQueryRequest request) {
-        return supportAgentService.agents(request);
+    public ApiResult<SupportAgentPageView> agents(@RequestParam(required = false) Long pageNum,
+            @RequestParam(required = false) Long pageSize, @RequestParam(required = false) Long groupId) {
+        return supportAgentService.agents(new SupportAgentQueryRequest(pageNum, pageSize, groupId));
     }
 
     // 更新坐席资料 — M1 客服总览 写

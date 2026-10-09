@@ -16,10 +16,12 @@ import org.springframework.transaction.annotation.Transactional;
 public class SupportSlaBaselineInitializer implements ApplicationRunner {
     private final SupportKnowledgeRepository knowledgeRepository;
     private final Clock clock;
+    private final ffdd.opsconsole.platform.facade.PlatformConfigFacade config;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void run(ApplicationArguments args) {
+        config.insertAdminValueIfMissing(SupportLeaderboardService.REFRESH_KEY,"5","NUMBER","admin_platform_param","公开业绩榜刷新间隔（分钟）");
         LocalDateTime now = LocalDateTime.now(clock);
         for (SupportSlaBaseline.Rule rule : SupportSlaBaseline.RULES) {
             knowledgeRepository.insertSlaIfMissing(

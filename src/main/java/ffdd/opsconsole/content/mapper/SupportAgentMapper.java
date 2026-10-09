@@ -85,6 +85,22 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                                                    @Param("limit") long limit,
                                                    @Param("offset") long offset);
 
+    @Select("<script>SELECT scope_agent.id " + SUPPORT_OPERATOR_FROM + SUPPORT_OPERATOR_WHERE + """
+        AND
+        <choose>
+          <when test='directoryIds != null and directoryIds.size() > 0'>
+            scope_agent.id IN
+            <foreach collection='directoryIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>
+          </when>
+          <otherwise>1=0</otherwise>
+        </choose>
+        AND EXISTS (SELECT 1
+        """ + SupportBindingMapper.ELIGIBLE_AGENT_FROM + """
+            AND a.id=scope_agent.id FOR SHARE)
+        ORDER BY scope_agent.id FOR SHARE</script>
+        """)
+    List<Long> listAssignmentEligibleAgentIds(@Param("directoryIds") List<Long> directoryIds, @Param("scope") SupportOperatorScope scope);
+
     // One consistent SELECT: never mix current-read eligibility with a historical RR projection.
     @Select("""
         <script>SELECT assignmentId,currentAdvisorId,currentAdvisorName,

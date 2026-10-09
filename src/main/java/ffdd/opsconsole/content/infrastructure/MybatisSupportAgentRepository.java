@@ -83,6 +83,12 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
         return mapper.pageSupportOperators(scope, limit, offset);
     }
 
+    @Override
+    public List<Long> listAssignmentEligibleAgentIds(List<Long> directoryIds, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+        if (directoryIds.isEmpty()) return List.of();
+        return mapper.listAssignmentEligibleAgentIds(directoryIds, scopedSupportOperators(scope));
+    }
+
     // Keep the M1 roster population equivalent to A1.roleKey; regression tests compare the real A1 resolver.
     private String rosterRoleKey(String roleOrCode) {
         if (!StringUtils.hasText(roleOrCode)) return "";

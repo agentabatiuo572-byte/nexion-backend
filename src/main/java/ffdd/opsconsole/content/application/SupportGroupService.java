@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.application;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.*;
 import ffdd.opsconsole.content.dto.SupportGroupRequests.*;
+import ffdd.opsconsole.content.dto.SupportGroupManagementViews.*;
 import ffdd.opsconsole.content.mapper.SupportGroupMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -39,12 +40,59 @@ public class SupportGroupService {
 
     @Transactional
     public Map<String,Object> detail(Long id) {
+        id(id);
         authority("service_m1_read");
         ReadScope scope=ownership.defaultQueryScope(id,null);
         if(scope.mode()==ReadMode.PERSONAL)forbidden();
         Group g=mapper.readableGroup(scope,id);if(g==null)notFound();
-        return Map.of("group",g,"members",mapper.members(id),"memberCount",mapper.memberCount(id),
-                "routedCustomers",mapper.routeCount(id));
+        long members=mapper.memberCount(id),routes=mapper.routeCount(id),pending=mapper.pendingGroupOperations(id);
+        var nextSteps=new ArrayList<String>();
+        if(members>0)nextSteps.add("/api/admin/content/support-agents/groups/"+id);
+        if(routes>0)nextSteps.add("/api/admin/content/support-agents/binding-pool?groupId="+id);
+        if(pending>0)nextSteps.add("先确认未结束的分配操作结果，或等待未提交预览到期后刷新");
+        return Map.of("group",g,"members",mapper.members(id),"memberCount",members,
+                "routedCustomers",routes,"pendingOperations",pending,
+                "blockers",Map.of("members",members,"routedCustomers",routes,"pendingOperations",pending,
+                    "canExit",members==0&&routes==0&&pending==0,"nextSteps",nextSteps));
+    }
+
+    @Transactional
+    public MemberTarget memberTarget(Long admin) {
+        id(admin);authority("service_m1_read");
+        ReadScope scope=ownership.defaultQueryScope(null,admin);
+        if(scope.mode()==ReadMode.PERSONAL)forbidden();
+        var account=mapper.managementAccount(scope,admin);if(account==null)notFound();
+        Member current=mapper.memberCurrent(admin);
+        MemberFact fact;
+        if(current==null)fact=new MemberFact(mapper.memberHistoryCount(admin)==0?"ABSENT":"UNKNOWN",null,null,null);
+        else if(!safeId(current.id())||!safePositiveVersion(current.version())
+                ||!Objects.equals(current.agentAdminId(),admin)||(current.groupId()!=null&&!safeId(current.groupId())))
+            fact=new MemberFact("UNKNOWN",null,null,null);
+        else fact=new MemberFact("AVAILABLE",String.valueOf(current.id()),current.groupId()==null?null:String.valueOf(current.groupId()),current.version());
+        return new MemberTarget(String.valueOf(admin),String.valueOf(account.get("name")),
+                ((Number)account.get("status")).intValue(),fact,mapper.boundCount(admin));
+    }
+
+    @Transactional
+    public AccountQualifications accountQualifications(Long admin) {
+        id(admin);authority("platform_a1_read");ownership.requireSuperAdmin();
+        var account=mapper.qualificationAccount(new ReadScope(ownership.actorId(),ReadMode.ALL,null,null),admin);
+        if(account==null)notFound();
+        Object rawVersion=account.get("version");
+        if(!(rawVersion instanceof Number n)||!safeNonnegativeVersion(n.longValue())
+                ||!n.toString().equals(Long.toString(n.longValue())))
+            throw new BizException(409,"SUPPORT_ACCOUNT_VERSION_UNKNOWN");
+        var facts=new ArrayList<QualificationFact>();
+        for(String kind:List.of("SERVICE","SUPERVISOR")) {
+            var q=mapper.qualificationForRead(admin,kind);
+            if(q==null)facts.add(new QualificationFact(kind,null,mapper.qualificationHistoryCount(admin,kind)==0?"ABSENT":"UNKNOWN",null,null));
+            else if(!safeId(q.id())||!safePositiveVersion(q.version())||!Objects.equals(q.adminId(),admin)
+                    ||!kind.equals(q.qualificationKind())||!Set.of("ENABLED","DISABLED","REMOVED").contains(String.valueOf(q.state())))
+                facts.add(new QualificationFact(kind,null,"UNKNOWN",null,null));
+            else facts.add(new QualificationFact(kind,q.state(),"AVAILABLE",String.valueOf(q.id()),q.version()));
+        }
+        return new AccountQualifications(String.valueOf(admin),String.valueOf(account.get("name")),
+                ((Number)account.get("status")).intValue(),rawVersion.toString(),List.copyOf(facts));
     }
 
     @Transactional
@@ -113,6 +161,7 @@ public class SupportGroupService {
         return command("OWNER",key,List.of(id,r),r.reason(),()-> {
             lockAccounts(ownership.actorId(),seen.supervisorAdminId(),r.supervisorAdminId());ownership.requireSuperAdmin();
             Group g=mapper.lockGroup(id);if(g==null)notFound();expected(g.version(),r.expectedVersion());expected(g.supervisorAdminId(),seen.supervisorAdminId());
+            nextVersion(g.version());
             requireSupervisor(r.supervisorAdminId());
             if(g.supervisorAdminId().equals(r.supervisorAdminId()))throw new BizException(409,"SUPPORT_GROUP_OWNER_UNCHANGED");
             LocalDateTime at=mapper.now();changed(mapper.closeOwner(id,g.supervisorAdminId(),at));
@@ -127,7 +176,7 @@ public class SupportGroupService {
     public ApiResult<Map<String,Object>> move(Long agent,String key,Move r) {
         id(agent);if(r==null)invalid();if(r.targetGroupId()!=null)id(r.targetGroupId());
         nonnegative(r.expectedMemberVersion());management();
-        Member seen=mapper.memberCurrent(agent);
+        Member seen=writableMember(agent);
         Long seenSource=seen==null?null:seen.groupId();
         if(!isSuper()&&(seenSource==null||r.targetGroupId()==null))forbidden();
         if(seenSource!=null)readable(mapper.group(seenSource));
@@ -139,9 +188,9 @@ public class SupportGroupService {
             var accountIds=new TreeSet<Long>(List.of(ownership.actorId(),agent));
             for(Group g:plannedGroups.values())accountIds.add(g.supervisorAdminId());
             lockAccounts(accountIds.toArray(Long[]::new));management();
-            var qualification=mapper.qualification(agent,"SERVICE");
+            var qualification=writableQualification(agent,"SERVICE");
             if(qualification==null||"REMOVED".equals(qualification.state())) throw new BizException(422,"SUPPORT_SERVICE_QUALIFICATION_REQUIRED");
-            Member old=mapper.memberCurrent(agent);expected(old==null?0L:old.version(),r.expectedMemberVersion());
+            Member old=writableMember(agent);expected(old==null?0L:old.version(),r.expectedMemberVersion());
             Long source=old==null?null:old.groupId();
             if(!Objects.equals(source,seenSource))throw new BizException(409,"SUPPORT_GROUP_VERSION_CONFLICT");
             if(Objects.equals(source,r.targetGroupId()))throw new BizException(409,"SUPPORT_GROUP_MEMBER_UNCHANGED");
@@ -156,8 +205,9 @@ public class SupportGroupService {
                 if(mapper.ownerCurrent(target.id())==null)throw new BizException(409,"SUPPORT_GROUP_TARGET_UNAVAILABLE");
                 requireSupervisor(target.supervisorAdminId());
             }
+            long nextVersion=nextVersion(old==null?0L:old.version());
             LocalDateTime at=mapper.now();if(old!=null)changed(mapper.closeMember(old.id(),old.version(),at));
-            changed(mapper.insertMember(agent,r.targetGroupId(),at,(old==null?0:old.version())+1,ownership.actorId(),r.reason().trim(),operation(key)));
+            changed(mapper.insertMember(agent,r.targetGroupId(),at,nextVersion,ownership.actorId(),r.reason().trim(),operation(key)));
             for(Group group:groups.values())changed(mapper.touch(group.id(),group.version(),at));
             record("MEMBER_MOVED",agent,key,Map.of("request",r,"before",old==null?"UNPROVEN":old,"after",mapper.member(agent)));
             var affected=new TreeSet<Long>();affected.add(agent);for(Group g:groups.values())affected.add(g.supervisorAdminId());
@@ -175,13 +225,14 @@ public class SupportGroupService {
         return command("QUALIFICATION",key,List.of(admin,r),r.reason(),()-> {
             lockAccounts(ownership.actorId(),admin);ownership.requireSuperAdmin();
             Account account=mapper.lockAccount(admin);expected(account.version(),r.expectedAccountVersion());
-            var old=mapper.qualification(admin,r.qualificationKind());expected(old==null?0L:old.version(),r.expectedQualificationVersion());
+            var old=writableQualification(admin,r.qualificationKind());expected(old==null?0L:old.version(),r.expectedQualificationVersion());
             if("ENABLED".equals(r.state()) && (account.status()!=1||mapper.compatibleAccount(admin)!=1))
                 throw new BizException(422,"SUPPORT_QUALIFICATION_ACCOUNT_INCOMPATIBLE");
             if(!"ENABLED".equals(r.state()))guardQualificationExit(admin,r.qualificationKind());
             if(old!=null&&old.state().equals(r.state()))throw new BizException(409,"SUPPORT_QUALIFICATION_UNCHANGED");
+            boolean initializeMember="SERVICE".equals(r.qualificationKind()) && "ENABLED".equals(r.state()) && writableMember(admin)==null;
             LocalDateTime at=mapper.now();replaceQualification(admin,r.qualificationKind(),r.state(),old,at,key,r.reason());
-            if("SERVICE".equals(r.qualificationKind()) && "ENABLED".equals(r.state()) && mapper.member(admin)==null)
+            if(initializeMember)
                 changed(mapper.insertMember(admin,null,at,1L,ownership.actorId(),r.reason().trim(),operation(key)));
             record("QUALIFICATION_CHANGED",admin,key,Map.of("request",r,"before",old==null?"UNPROVEN":old,"after",mapper.qualification(admin,r.qualificationKind())));
             invalidate(r.reason(),admin);return ApiResult.ok(mapper.qualifications(admin));
@@ -202,11 +253,14 @@ public class SupportGroupService {
             for(Long groupId:groupIds) {Group g=mapper.group(groupId);if(g==null)notFound();beforeGroups.put(groupId,g);admins.add(g.supervisorAdminId());}
             lockAccounts(admins.toArray(Long[]::new));ownership.requireSuperAdmin();
             Map<Long,Group> locked=new HashMap<>();
-            for(Long groupId:groupIds) {Group g=mapper.lockGroup(groupId);if(g==null)notFound();expected(g.version(),beforeGroups.get(groupId).version());locked.put(groupId,g);}
+            for(Long groupId:groupIds) {Group g=mapper.lockGroup(groupId);if(g==null)notFound();expected(g.version(),beforeGroups.get(groupId).version());nextVersion(g.version());locked.put(groupId,g);}
             if(mapper.currentBindingCount(customer)!=0 || mapper.routePoolVersion(customer)==null)
                 throw new BizException(409,"SUPPORT_ROUTE_REQUIRES_UNBOUND_POOL");
             var old=mapper.routeCurrent(customer);
+            if(old==null && mapper.routeHistoryCount(customer)!=0)throw new BizException(409,"SUPPORT_GROUP_ROUTE_HISTORY_UNKNOWN");
             if(old==null && mapper.openRouteCount(customer)!=0)throw new BizException(409,"SUPPORT_GROUP_ROUTE_CONFLICT");
+            if(old!=null && (!safeId(old.id())||!Objects.equals(old.customerId(),customer)||!safePositiveVersion(old.version())
+                    ||(old.groupId()!=null&&!safeId(old.groupId()))))throw new BizException(409,"SUPPORT_GROUP_ROUTE_HISTORY_UNKNOWN");
             expected(old==null?0L:old.version(),r.expectedRouteVersion());
             if(!Objects.equals(seen==null?null:seen.groupId(),old==null?null:old.groupId()))
                 throw new BizException(409,"SUPPORT_GROUP_ROUTE_CONFLICT");
@@ -219,8 +273,9 @@ public class SupportGroupService {
                     throw new BizException(409,"SUPPORT_GROUP_TARGET_UNAVAILABLE");
                 requireSupervisor(target.supervisorAdminId());
             }
+            long nextVersion=nextVersion(old==null?0L:old.version());
             LocalDateTime at=mapper.now();if(old!=null)changed(mapper.closeRoute(old.id(),old.version(),at));
-            changed(mapper.insertRoute(customer,r.targetGroupId(),at,(old==null?0L:old.version())+1,ownership.actorId(),r.reason().trim(),operation(key)));
+            changed(mapper.insertRoute(customer,r.targetGroupId(),at,nextVersion,ownership.actorId(),r.reason().trim(),operation(key)));
             for(Group g:locked.values())changed(mapper.touch(g.id(),g.version(),at));
             var after=mapper.routeCurrent(customer);
             record("ROUTE_CHANGED",customer,key,Map.of("request",r,"before",old==null?"UNROUTED":old,"after",after));
@@ -233,7 +288,7 @@ public class SupportGroupService {
     @Transactional(propagation=Propagation.MANDATORY)
     public void accountChanging(Long admin,String nextRole,boolean disabling,String key,String reason) {
         boolean incompatible=nextRole!=null&&!Set.of("support","super").contains(nextRole);
-        var supervisor=mapper.qualification(admin,"SUPERVISOR");
+        var supervisor=(incompatible||disabling)?writableQualification(admin,"SUPERVISOR"):mapper.qualification(admin,"SUPERVISOR");
         if((incompatible||disabling)&&supervisor!=null&&!"REMOVED".equals(supervisor.state())) {
             guardQualificationExit(admin,"SUPERVISOR");
             if(mapper.boundCount(admin)>0)throw new BizException(409,"SUPPORT_PERSONAL_HANDOVER_REQUIRED");
@@ -245,8 +300,9 @@ public class SupportGroupService {
     @Transactional(propagation=Propagation.MANDATORY)
     public void accountChanged(Long admin,String nextRole,boolean disabling,String key,String reason) {
         boolean incompatible=nextRole!=null&&!Set.of("support","super").contains(nextRole);
-        var supervisor=mapper.qualification(admin,"SUPERVISOR");
+        var supervisor=writableQualification(admin,"SUPERVISOR");
         if(incompatible || (disabling&&supervisor!=null&&"ENABLED".equals(supervisor.state()))) {
+            if(incompatible)writableQualification(admin,"SERVICE");
             LocalDateTime at=mapper.now();
             var before=mapper.qualifications(admin);
             for(var q:before) {
@@ -275,17 +331,43 @@ public class SupportGroupService {
 
     private void guardQualificationExit(Long admin,String kind) {
         if("SUPERVISOR".equals(kind)&&mapper.ownedGroupCount(admin)>0)throw new BizException(409,"SUPPORT_GROUP_OWNER_HANDOVER_REQUIRED");
-        if("SERVICE".equals(kind)&&(mapper.boundCount(admin)>0||(mapper.member(admin)!=null&&mapper.member(admin).groupId()!=null)))
-            throw new BizException(409,"SUPPORT_PERSONAL_HANDOVER_REQUIRED");
+        if("SERVICE".equals(kind)) {
+            writableQualification(admin,kind);
+            Member member=writableMember(admin);
+            if(mapper.boundCount(admin)>0||(member!=null&&member.groupId()!=null))
+                throw new BizException(409,"SUPPORT_PERSONAL_HANDOVER_REQUIRED");
+        }
     }
     private void replaceQualification(Long admin,String kind,String state,
             ffdd.opsconsole.content.domain.SupportGroupFacts.Qualification old,LocalDateTime at,String key,String reason) {
+        if(!Objects.equals(writableQualification(admin,kind),old))throw new BizException(409,"SUPPORT_GROUP_VERSION_CONFLICT");
+        long nextVersion=nextVersion(old==null?0L:old.version());
         if(old!=null)changed(mapper.closeQualification(old.id(),old.version(),at));
-        changed(mapper.insertQualification(admin,kind,state,at,(old==null?0:old.version())+1,ownership.actorId(),reason.trim(),operation(key)));
+        changed(mapper.insertQualification(admin,kind,state,at,nextVersion,ownership.actorId(),reason.trim(),operation(key)));
+    }
+    private Member writableMember(Long admin) {
+        Member member=mapper.memberCurrent(admin);
+        if(member==null?mapper.memberHistoryCount(admin)!=0:!safeId(member.id())||!Objects.equals(member.agentAdminId(),admin)
+                ||!safePositiveVersion(member.version())||(member.groupId()!=null&&!safeId(member.groupId())))
+            throw new BizException(409,"SUPPORT_GROUP_MEMBER_HISTORY_UNKNOWN");
+        return member;
+    }
+    private ffdd.opsconsole.content.domain.SupportGroupFacts.Qualification writableQualification(Long admin,String kind) {
+        var q=mapper.qualification(admin,kind);
+        if(q==null?mapper.qualificationHistoryCount(admin,kind)!=0:!safeId(q.id())||!Objects.equals(q.adminId(),admin)
+                ||!kind.equals(q.qualificationKind())||!safePositiveVersion(q.version())
+                ||!Set.of("ENABLED","DISABLED","REMOVED").contains(String.valueOf(q.state())))
+            throw new BizException(409,"SUPPORT_QUALIFICATION_HISTORY_UNKNOWN");
+        return q;
+    }
+    private static long nextVersion(Long current) {
+        if(!safeNonnegativeVersion(current)||current==9007199254740991L)throw new BizException(409,"SUPPORT_GROUP_VERSION_CONFLICT");
+        return current+1;
     }
     private Group readable(Group group) {
         if(group==null)notFound();
         if(!isSuper() && mapper.readableGroup(new ReadScope(ownership.actorId(),ReadMode.MANAGED,group.id(),null),group.id())==null)notFound();
+        nextVersion(group.version());
         return group;
     }
     private void management(){authority("service_m1_write");if(!isSuper())requireSupervisor(ownership.actorId());}
@@ -306,8 +388,11 @@ public class SupportGroupService {
     private static void authority(String p){if(!SupportOwnershipService.hasAuthority(p))forbidden();}
     private static void name(String s){if(s==null||s.isBlank()||s.trim().length()>120)invalid();}
     private static void id(Long id){if(id==null||id<1||id>9007199254740991L)invalid();}
-    private static void version(Long v){if(v==null||v<1)invalid();}
-    private static void nonnegative(Long v){if(v==null||v<0)invalid();}
+    private static boolean safeId(Long id){return id!=null&&id>0&&id<=9007199254740991L;}
+    private static boolean safeNonnegativeVersion(Long v){return v!=null&&v>=0&&v<=9007199254740991L;}
+    private static boolean safePositiveVersion(Long v){return safeNonnegativeVersion(v)&&v>0;}
+    private static void version(Long v){if(!safePositiveVersion(v))invalid();}
+    private static void nonnegative(Long v){if(!safeNonnegativeVersion(v))invalid();}
     private static void expected(Long actual,Long expected){if(!Objects.equals(actual,expected))throw new BizException(409,"SUPPORT_GROUP_VERSION_CONFLICT");}
     private static void changed(int rows){if(rows!=1)throw new BizException(409,"SUPPORT_GROUP_VERSION_CONFLICT");}
     private static void forbidden(){throw new BizException(403,"SUPPORT_GROUP_FORBIDDEN");}

@@ -4,18 +4,24 @@ package ffdd.opsconsole.content.dto;
 public final class SupportGroupRequests {
     private SupportGroupRequests() {}
     public record Create(String name, Long supervisorAdminId, String reason) {}
-    public record Rename(String name, Long expectedVersion, String reason) {}
-    public record Status(String status, Long expectedVersion, String reason) {}
-    public record Owner(Long supervisorAdminId, Long expectedVersion, String reason) {}
-    public record Move(Long targetGroupId, Long expectedMemberVersion, Long sourceGroupVersion,
-                       Long targetGroupVersion, String reason) {}
-    public record Qualification(String qualificationKind, String state, Long expectedQualificationVersion,
-                                Long expectedAccountVersion, String reason) {}
+    public record Rename(String name,
+            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictVersion.class) Long expectedVersion, String reason) {}
+    public record Status(String status,
+            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictVersion.class) Long expectedVersion, String reason) {}
+    public record Owner(Long supervisorAdminId,
+            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictVersion.class) Long expectedVersion, String reason) {}
+    public record Move(Long targetGroupId,
+            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictVersion.class) Long expectedMemberVersion,
+            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictVersion.class) Long sourceGroupVersion,
+            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictVersion.class) Long targetGroupVersion, String reason) {}
+    public record Qualification(String qualificationKind, String state,
+            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictVersion.class) Long expectedQualificationVersion,
+            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictVersion.class) Long expectedAccountVersion, String reason) {}
     public record Route(
             @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=SupportBindingRequest.StrictId.class) Long targetGroupId,
             @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictVersion.class) Long expectedRouteVersion,
-            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=SupportBindingRequest.StrictId.class) Long sourceGroupVersion,
-            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=SupportBindingRequest.StrictId.class) Long targetGroupVersion,String reason) {}
+            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictVersion.class) Long sourceGroupVersion,
+            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictVersion.class) Long targetGroupVersion,String reason) {}
     public static final class StrictVersion extends com.fasterxml.jackson.databind.JsonDeserializer<Long> {
         @Override public Long deserialize(com.fasterxml.jackson.core.JsonParser parser,
                 com.fasterxml.jackson.databind.DeserializationContext context) throws java.io.IOException {

@@ -1050,6 +1050,46 @@ class AdminRbacAuthorizationFilterTest {
         assertThat(response.getStatus()).isEqualTo(200);
     }
 
+    @ParameterizedTest
+    @CsvSource({
+        "GET, /api/admin/content/support-agents/13/qualifications, platform_a1_read",
+        "HEAD, /api/admin/content/support-agents/13/qualifications, platform_a1_read",
+        "GET, /api/admin/content/support-agents/groups/supervisors, platform_a1_read",
+        "HEAD, /api/admin/content/support-agents/groups/supervisors, platform_a1_read",
+        "PATCH, /api/admin/content/support-agents/13/qualification, platform_a1_write",
+        "GET, /api/admin/content/support-workbench/commands/k, platform_a1_read",
+        "HEAD, /api/admin/content/support-workbench/commands/k, platform_a1_read",
+        "GET, /api/admin/content/support-workbench/commands/k, service_m1_read",
+        "GET, /api/admin/content/support-workbench/commands/k, service_m2_read",
+        "GET, /api/admin/content/support-workbench/commands/k, service_m3_read"
+    })
+    void exactGroupManagementEntryPermissionsReachMethodChecks(String method,String path,String authority)throws Exception {
+        authenticateTrustedAdmin("7",authority);AtomicBoolean invoked=new AtomicBoolean(false);
+        var response=new MockHttpServletResponse();filter.doFilter(request(method,path),response,mark(invoked));
+        assertThat(invoked).isTrue();assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "GET, /api/admin/content/support-agents/13/qualifications, service_m1_read",
+        "HEAD, /api/admin/content/support-agents/13/qualifications, service_m1_read",
+        "GET, /api/admin/content/support-agents/groups/supervisors, service_m1_read",
+        "PATCH, /api/admin/content/support-agents/13/qualification, service_m1_write",
+        "GET, /api/admin/content/support-agents/page, platform_a1_read",
+        "GET, /api/admin/content/support-agents/groups/8, platform_a1_read",
+        "GET, /api/admin/content/support-agents/groups/members/13, platform_a1_read",
+        "GET, /api/admin/content/support-agents/0/qualifications, platform_a1_read",
+        "GET, /api/admin/content/support-agents/13/qualifications/other, platform_a1_read",
+        "PATCH, /api/admin/content/support-agents/13/profile, platform_a1_write",
+        "POST, /api/admin/content/support-workbench/commands/k, platform_a1_write",
+        "GET, /api/admin/content/support-workbench/commands/k/other, platform_a1_read"
+    })
+    void exactGroupManagementMappingDoesNotBroadenNeighborPaths(String method,String path,String authority)throws Exception {
+        authenticateTrustedAdmin("7",authority);AtomicBoolean invoked=new AtomicBoolean(false);
+        var response=new MockHttpServletResponse();filter.doFilter(request(method,path),response,mark(invoked));
+        assertThat(invoked).isFalse();assertThat(response.getStatus()).isEqualTo(403);
+    }
+
     private void authenticateTrustedAdmin(String principal, String... authorities) {
         authenticateAs(principal, authorities);
         ((UsernamePasswordAuthenticationToken) SecurityContextHolder.getContext().getAuthentication())

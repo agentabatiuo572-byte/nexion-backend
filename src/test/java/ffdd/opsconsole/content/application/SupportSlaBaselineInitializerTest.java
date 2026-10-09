@@ -26,7 +26,8 @@ class SupportSlaBaselineInitializerTest {
                 "D2/K4 support2 on-call", 7L, LocalDateTime.of(2026, 7, 28, 0, 0)));
         SupportSlaBaselineInitializer initializer = new SupportSlaBaselineInitializer(
                 repository,
-                Clock.fixed(Instant.parse("2026-07-28T00:00:00Z"), ZoneOffset.UTC));
+                Clock.fixed(Instant.parse("2026-07-28T00:00:00Z"), ZoneOffset.UTC),
+                org.mockito.Mockito.mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class));
 
         initializer.run(null);
         initializer.run(null);
@@ -47,6 +48,15 @@ class SupportSlaBaselineInitializerTest {
                 });
     }
 
+    @Test
+    void leaderboardSeedUsesInsertIfMissingAndNeverResurrectsOrUpdatesExistingConfig() {
+        var config=org.mockito.Mockito.mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
+        var initializer=new SupportSlaBaselineInitializer(new FakeRepository(),Clock.systemUTC(),config);
+        initializer.run(null);initializer.run(null);
+        org.mockito.Mockito.verify(config,org.mockito.Mockito.times(2)).insertAdminValueIfMissing(
+            SupportLeaderboardService.REFRESH_KEY,"5","NUMBER","admin_platform_param","公开业绩榜刷新间隔（分钟）");
+        org.mockito.Mockito.verifyNoMoreInteractions(config);
+    }
     private static final class FakeRepository implements SupportKnowledgeRepository {
         private final List<SupportSlaView> sla = new ArrayList<>();
 

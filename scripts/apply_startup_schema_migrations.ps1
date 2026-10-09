@@ -303,6 +303,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261009_e4_wallet_bill_schema.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_attribution.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_history_birth.sql")
+  (Join-Path $root "scripts\migrations\20261009_support_leaderboard_publication.sql")
   (Join-Path $root "scripts\migrations\20261003_support_ticket_creation_policy.sql")
   (Join-Path $root "scripts\migrations\20261003_support_ticket_binding_owner.sql")
 )
