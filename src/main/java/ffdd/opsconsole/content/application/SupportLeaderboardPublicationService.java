@@ -119,8 +119,7 @@ public class SupportLeaderboardPublicationService {
         List<Candidate> candidates = snapshot.rows().stream().map(r -> new Candidate(r.agentId(),r.name(),r.avatarUrl(),
             r.groupName(),r.qualification(),r.firstPayment(),r.customers(),r.amount(),snapshot.qualificationBirths().get(r.agentId()))).toList();
         Snapshot base = SupportLeaderboard.calculate(snapshot.context(),snapshot.sourceVersion(),snapshot.candidateCoverage(),candidates);
-        if (snapshot.rows().isEmpty() && snapshot.candidateCoverage() != Coverage.COMPLETE
-                || snapshot.state() != base.state() || !snapshot.comparisonKey().equals(base.comparisonKey())
+        if (snapshot.state() != base.state() || !snapshot.comparisonKey().equals(base.comparisonKey())
                 || !snapshot.qualificationBirths().equals(base.qualificationBirths()) || snapshot.rows().size() != base.rows().size()) throw unavailable();
         for (int i=0; i<base.rows().size(); i++) {
             Row actual = snapshot.rows().get(i), expected = base.rows().get(i);

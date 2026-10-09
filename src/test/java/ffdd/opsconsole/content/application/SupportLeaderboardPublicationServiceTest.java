@@ -91,9 +91,34 @@ class SupportLeaderboardPublicationServiceTest {
         when(mapper.insert(anyMap())).thenReturn(1); when(mapper.advance(anyString(),isNull(),eq(10L))).thenReturn(1);
         assertEquals(State.PROVISIONAL,service.publish(partial).snapshot().state());
         var blocked=mock(SupportLeaderboardPublicationMapper.class); var safe=new SupportLeaderboardPublicationService(blocked);
-        assert503(()->safe.publish(SupportLeaderboard.calculate(c,"tuple",Coverage.UNKNOWN,List.of())));
+        Snapshot empty=SupportLeaderboard.calculate(c,"tuple",Coverage.UNKNOWN,List.of());
+        Snapshot fakeComplete=new Snapshot(c,empty.sourceVersion(),empty.candidateCoverage(),State.COMPLETE,
+            empty.comparisonKey(),empty.viewVersion(),empty.rows(),empty.qualificationBirths());
+        assert503(()->safe.publish(fakeComplete));
         Snapshot fakeFailed=new Snapshot(c,"tuple",Coverage.FAILED,State.PROVISIONAL,"a".repeat(64),"slb-v1:"+"b".repeat(64),List.of(),Map.of());
         assert503(()->safe.publish(fakeFailed)); verifyNoInteractions(blocked);
+    }
+    @Test void emptyUncertifiedMonthlySourcePersistsAsProvisionalWithoutFabricatingCompleteZero() throws Exception {
+        for (Board board:List.of(Board.firstPayment,Board.deposit,Board.purchase)) {
+            for (Coverage coverage:List.of(Coverage.PARTIAL,Coverage.UNKNOWN)) {
+                var mapper=mock(SupportLeaderboardPublicationMapper.class);
+                var service=new SupportLeaderboardPublicationService(mapper);
+                Snapshot empty=SupportLeaderboard.withMovement(SupportLeaderboard.calculate(
+                    context(board,"USDT","defA",NOW),"uncertified-real-source",coverage,List.of()),List.of());
+                when(mapper.lockPointer(anyString())).thenReturn(null);
+                when(mapper.byVersionForUpdate(anyString(),anyString())).thenReturn(null,stored(10,empty,NOW.plusSeconds(2)));
+                when(mapper.insert(anyMap())).thenReturn(1);
+                when(mapper.advance(anyString(),isNull(),eq(10L))).thenReturn(1);
+                Publication published=service.publish(empty);
+                assertEquals(empty,published.snapshot());
+                assertEquals(State.PROVISIONAL,published.snapshot().state());
+                assertEquals(coverage,published.snapshot().candidateCoverage());
+                assertTrue(published.snapshot().rows().isEmpty());
+                var page=SupportLeaderboard.page(published.snapshot(),null,1,20,null,7);
+                assertEquals(0,page.ranked());assertNull(page.self().gap());
+                verify(mapper).advance(anyString(),isNull(),eq(10L));
+            }
+        }
     }
     @Test void insertedReadbackOrPointerFailureThrowsRatherThanReturnPartialSuccess() throws Exception {
         for (boolean corrupt:List.of(false,true)) {
