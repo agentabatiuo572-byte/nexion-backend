@@ -37,7 +37,18 @@ public class PromotionRewardService {
             .stream().map(r->text(r.get("obligation_id"))).toList();
     }
     public List<String> reversalsAfter(String cursor,int limit){
-        return db.list("SELECT obligation_id FROM nx_promotion_reward WHERE status='REVERSAL_PENDING' AND obligation_id>? ORDER BY obligation_id LIMIT ?",text(cursor),Math.min(100,Math.max(1,limit)))
+        return db.list("""
+            SELECT r.obligation_id FROM nx_promotion_reward r
+            WHERE r.status='REVERSAL_PENDING' AND r.obligation_id>?
+              AND (r.original_earnings_entry_no IS NULL OR NOT EXISTS(
+                SELECT 1 FROM nx_admin_idempotency_record i
+                WHERE i.scope=CONCAT('EARNINGS_RECOVERY:PRODUCTION:',r.beneficiary_id)
+                  AND i.idempotency_key=CONCAT('PROMOTION-RECOVER-',SHA2(CONCAT(r.obligation_id,':WHOLE_ORDER_REFUND:',(
+                    SELECT h.refund_no FROM nx_promotion_refund_hold h
+                    WHERE h.order_no=r.order_no AND h.status='EXECUTED' ORDER BY h.refund_request_id LIMIT 1)),256))
+                  AND (i.status='UNKNOWN' OR (i.status='PROCESSING' AND i.is_deleted=0))))
+            ORDER BY r.obligation_id LIMIT ?
+            """,text(cursor),Math.min(100,Math.max(1,limit)))
             .stream().map(r->text(r.get("obligation_id"))).toList();
     }
     private Map<String,Object> lock(String id){
