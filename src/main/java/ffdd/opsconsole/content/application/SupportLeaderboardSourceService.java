@@ -23,6 +23,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionSynchronization;
 
 /** Internal full-source adapter. The public owner authorizes before entry and rechecks before returning HTTP. */
 @ApplicationService
@@ -50,14 +51,53 @@ public class SupportLeaderboardSourceService {
     @Transactional(readOnly=true,propagation=Propagation.MANDATORY)
     public Read readForAuthorizedLeaderboard(Context authorizedContext) {
         Objects.requireNonNull(authorizedContext);
-        if (!TransactionSynchronizationManager.isActualTransactionActive()
-                || !Objects.equals(TransactionSynchronizationManager.getCurrentTransactionIsolationLevel(),Connection.TRANSACTION_REPEATABLE_READ))
-            throw new IllegalStateException("SUPPORT_LEADERBOARD_CALLER_RR_REQUIRED");
+        CapturedFacts captured=captureMaterial();
+        return projectCaptured(captured,authorizedContext);
+    }
+
+    /** Internal material only: its constructor and evidence are not a public projection. */
+    static final class CapturedFacts {
+        private final LocalDateTime cutoff;
+        private final Evidence evidence;
+        private final TransactionSynchronization boundary;
+        private CapturedFacts(LocalDateTime cutoff,Evidence evidence,TransactionSynchronization boundary) {
+            this.cutoff=cutoff;this.evidence=evidence;this.boundary=boundary;
+        }
+        LocalDateTime cutoff() { return cutoff; }
+    }
+
+    /** System sampling owns this RR boundary; it never forges a signed-in principal or private ReadScope. */
+    @Transactional(readOnly=true,propagation=Propagation.MANDATORY)
+    public CapturedFacts captureForSampling() {
+        if(!TransactionSynchronizationManager.isSynchronizationActive())
+            throw new IllegalStateException("SUPPORT_LEADERBOARD_CAPTURE_SYNCHRONIZATION_REQUIRED");
+        return captureMaterial();
+    }
+
+    private CapturedFacts captureMaterial() {
+        requireReadBoundary();
         final LocalDateTime cutoff;
         final Evidence raw;
         try {
             cutoff=mapper.nowUtc();
             if (cutoff==null) throw failed();
+            raw=readEvidence();
+        } catch (DataAccessException ex) {throw failed();}
+        TransactionSynchronization boundary=null;
+        if(TransactionSynchronizationManager.isSynchronizationActive()) {
+            boundary=new TransactionSynchronization() { };
+            TransactionSynchronizationManager.registerSynchronization(boundary);
+        }
+        return new CapturedFacts(cutoff,raw,boundary);
+    }
+
+    private static void requireReadBoundary() {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !Objects.equals(TransactionSynchronizationManager.getCurrentTransactionIsolationLevel(),Connection.TRANSACTION_REPEATABLE_READ))
+            throw new IllegalStateException("SUPPORT_LEADERBOARD_CALLER_RR_REQUIRED");
+    }
+
+    private Evidence readEvidence() {
             List<Account> accounts=ordered(mapper.accounts(),Account::id);
             List<QualificationInterval> qualifications=ordered(mapper.qualifications(),QualificationInterval::id);
             List<MemberInterval> memberships=ordered(mapper.memberships(),MemberInterval::id);
@@ -70,14 +110,23 @@ public class SupportLeaderboardSourceService {
             // No private ALL scope or writer is used: these IDs are explicit internal public-aggregate source subjects.
             SupportPaymentFacts.Snapshot financial=customers.isEmpty()?null:finance.readHistory(customers);
             if (!customers.isEmpty() && financial==null) throw failed();
-            raw=new Evidence(accounts,qualifications,memberships,groups,bindings,customers,attributions,proofs,financial);
-        } catch (DataAccessException ex) {throw failed();}
+            return new Evidence(accounts,qualifications,memberships,groups,bindings,customers,attributions,proofs,financial);
+    }
+
+    /** Pure reuse of the sole projection algorithm, only while the capturing RR transaction is active. */
+    Read projectCaptured(CapturedFacts captured,Context authorizedContext) {
+        requireReadBoundary();
+        Objects.requireNonNull(captured);Objects.requireNonNull(authorizedContext);
+        if(captured.boundary!=null && (!TransactionSynchronizationManager.isSynchronizationActive()
+                || !TransactionSynchronizationManager.getSynchronizations().contains(captured.boundary)))
+            throw new IllegalStateException("SUPPORT_LEADERBOARD_CAPTURE_BOUNDARY_CHANGED");
+        LocalDateTime cutoff=captured.cutoff;
         Instant evaluatedAt=cutoff.toInstant(ZoneOffset.UTC);
         YearMonth currentMonth=YearMonth.from(evaluatedAt.atZone(SupportLeaderboard.BUSINESS_ZONE));
         Context context=new Context(authorizedContext.board(),authorizedContext.rankMonth(),
             authorizedContext.board()==Board.customers?currentMonth:authorizedContext.referenceMonth(),authorizedContext.currency(),
             authorizedContext.scope(),authorizedContext.approvedGroupIds(),authorizedContext.definitionVersion(),evaluatedAt);
-        return project(context,cutoff,raw,currentMonth);
+        return project(context,cutoff,captured.evidence,currentMonth);
     }
 
     private static Read project(Context context,LocalDateTime cutoff,Evidence raw,YearMonth currentMonth) {

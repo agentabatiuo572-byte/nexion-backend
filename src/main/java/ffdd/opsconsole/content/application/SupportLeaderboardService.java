@@ -27,7 +27,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class SupportLeaderboardService {
     public static final String REFRESH_KEY="support.leaderboard.refresh_interval_minutes";
-    private static final String DEFINITION="support-leaderboard-v1";
+    private static final String DEFINITION=SupportLeaderboardPolicy.DEFINITION;
     private final SupportOwnershipService ownership;
     private final SupportLeaderboardAuthorizationMapper authorization;
     private final SupportLeaderboardMapper sourceMapper;
@@ -149,8 +149,7 @@ public class SupportLeaderboardService {
         return new Context(q.board(),q.rankMonth(),q.referenceMonth(),q.currency(),q.scope(),groups,DEFINITION,now);
     }
     private int refreshMinutes() {
-        String value=config.activeValue(REFRESH_KEY).orElseThrow(SupportLeaderboardService::unavailable);
-        if(!value.matches("[0-9]{1,2}"))throw unavailable(); int result=Integer.parseInt(value);if(result<1 || result>60)throw unavailable();return result;
+        return SupportLeaderboardPolicy.refreshMinutes(config);
     }
     private static boolean expired(Publication p,Instant now,int interval){return !now.isBefore(p.snapshot().context().evaluatedAt().plusSeconds(interval*60L));}
     private record Authorization(long actor,Account account,List<Role> roles,List<Grant> grants,List<Qualification> qualifications,

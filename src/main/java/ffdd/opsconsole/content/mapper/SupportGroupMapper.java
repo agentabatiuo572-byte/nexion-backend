@@ -110,6 +110,17 @@ public interface SupportGroupMapper {
         """;
     @Select("<script>SELECT COUNT(*) FROM nx_admin scope_agent WHERE scope_agent.id=#{agent} " + AGENT_SCOPE_PREDICATE + " FOR SHARE</script>")
     int readableAgent(@Param("scope") ReadScope scope,@Param("agent") Long agent);
+    @Select("<script>SELECT scope_agent.id,COALESCE(NULLIF(TRIM(scope_agent.nickname),''),CONCAT('账号 ',scope_agent.id)) name,scope_agent.status,scope_agent.version FROM nx_admin scope_agent WHERE scope_agent.id=#{id} " + AGENT_SCOPE_PREDICATE + " FOR SHARE</script>")
+    Map<String,Object> managementAccount(@Param("scope") ReadScope scope,@Param("id") Long id);
+    @Select("<script>SELECT a.id,COALESCE(NULLIF(TRIM(a.nickname),''),CONCAT('账号 ',a.id)) name,a.status,a.version FROM nx_admin a WHERE a.id=#{id} AND a.is_deleted=0 AND " + SCOPE_SUPER_ADMIN + " FOR SHARE</script>")
+    Map<String,Object> qualificationAccount(@Param("scope") ReadScope scope,@Param("id") Long id);
+    @Select("SELECT COUNT(*) FROM nx_support_group_member_history WHERE agent_admin_id=#{id} FOR SHARE")
+    long memberHistoryCount(Long id);
+    String QUALIFICATION_READ_SELECT="<script>SELECT scope_q.id,scope_q.admin_id adminId,scope_q.qualification_kind qualificationKind,scope_q.state,scope_q.version,scope_q.starts_at startsAt FROM nx_support_account_qualification_history scope_q WHERE scope_q.admin_id=#{id} AND scope_q.qualification_kind=#{kind} AND " + UNIQUE_QUALIFICATION + " FOR SHARE</script>";
+    @Select(QUALIFICATION_READ_SELECT)
+    Qualification qualificationForRead(@Param("id") Long id,@Param("kind") String kind);
+    @Select("SELECT COUNT(*) FROM nx_support_account_qualification_history WHERE admin_id=#{id} AND qualification_kind=#{kind} FOR SHARE")
+    long qualificationHistoryCount(@Param("id") Long id,@Param("kind") String kind);
     @Select("""
         <script>SELECT scope_route.id,scope_route.customer_id customerId,scope_route.group_id groupId,
           scope_route.version,scope_route.starts_at startsAt FROM nx_support_customer_route_history scope_route
@@ -127,6 +138,8 @@ public interface SupportGroupMapper {
     List<Long> candidateIdsSnapshot(Long id);
     @Select("SELECT COUNT(*) FROM nx_support_customer_route_history WHERE customer_id=#{id} AND ends_at IS NULL FOR SHARE")
     int openRouteCount(Long id);
+    @Select("SELECT COUNT(*) FROM nx_support_customer_route_history WHERE customer_id=#{id} FOR SHARE")
+    long routeHistoryCount(Long id);
     @Select("<script>SELECT scope_owner.id,scope_owner.group_id groupId,scope_owner.supervisor_admin_id supervisorAdminId,scope_owner.version,scope_owner.starts_at startsAt FROM nx_support_group_owner_history scope_owner JOIN nx_support_group scope_group ON scope_group.id=scope_owner.group_id WHERE scope_owner.group_id=#{id} AND scope_owner.supervisor_admin_id=scope_group.supervisor_admin_id AND scope_owner.starts_at &lt;= UTC_TIMESTAMP(6) AND scope_owner.ends_at IS NULL AND NOT EXISTS (SELECT 1 FROM nx_support_group_owner_history other_owner WHERE other_owner.group_id=scope_owner.group_id AND other_owner.id&lt;&gt;scope_owner.id AND other_owner.starts_at &lt;= UTC_TIMESTAMP(6) AND (other_owner.ends_at IS NULL OR other_owner.ends_at&gt;UTC_TIMESTAMP(6)) FOR SHARE) FOR SHARE</script>")
     Owner ownerCurrent(Long id);
     @Select("""
@@ -166,7 +179,7 @@ public interface SupportGroupMapper {
     int compatibleAccount(Long id);
     @Select("SELECT COUNT(*) FROM nx_support_account_qualification_history q JOIN nx_admin a ON a.id=q.admin_id WHERE q.admin_id=#{id} AND q.qualification_kind=#{kind} AND q.state='ENABLED' AND q.ends_at IS NULL AND a.status=1 AND a.is_deleted=0 AND EXISTS(SELECT 1 FROM nx_admin_role_relation rr JOIN nx_admin_role r ON r.id=rr.role_id WHERE rr.admin_id=a.id AND rr.is_deleted=0 AND r.status=1 AND r.is_deleted=0 AND r.role_code IN ('SUPPORT','SUPER_ADMIN'))")
     int qualified(@Param("id") Long id,@Param("kind") String kind);
-    @Select("SELECT "+QUALIFICATION_COLUMNS+" FROM nx_support_account_qualification_history WHERE admin_id=#{id} AND qualification_kind=#{kind} AND ends_at IS NULL FOR SHARE")
+    @Select(QUALIFICATION_READ_SELECT)
     Qualification qualification(@Param("id") Long id,@Param("kind") String kind);
     @Select("SELECT "+QUALIFICATION_COLUMNS+" FROM nx_support_account_qualification_history WHERE admin_id=#{id} AND ends_at IS NULL ORDER BY qualification_kind FOR SHARE")
     List<Qualification> qualifications(Long id);
@@ -180,7 +193,7 @@ public interface SupportGroupMapper {
     @Select("SELECT COUNT(*) FROM nx_support_agent_user_assignment WHERE agent_admin_id=#{id} AND status='ACTIVE' AND is_deleted=0 FOR SHARE") long boundCount(Long id);
     @Select("SELECT m.agent_admin_id adminId,m.version,m.group_id groupId,a.status accountStatus,IF(a.status=1,0,1) handoverRequired,(SELECT COUNT(*) FROM nx_support_agent_user_assignment x WHERE x.agent_admin_id=m.agent_admin_id AND x.status='ACTIVE' AND x.is_deleted=0) boundCustomers FROM nx_support_group_member_history m JOIN nx_admin a ON a.id=m.agent_admin_id WHERE m.group_id=#{id} AND m.ends_at IS NULL ORDER BY m.agent_admin_id")
     List<Map<String,Object>> members(Long id);
-    @Select("SELECT q.admin_id adminId,q.state,q.version,a.status accountStatus,(SELECT COUNT(*) FROM nx_support_group g WHERE g.supervisor_admin_id=q.admin_id) groupCount FROM nx_support_account_qualification_history q JOIN nx_admin a ON a.id=q.admin_id WHERE q.qualification_kind='SUPERVISOR' AND q.ends_at IS NULL AND q.state<>'REMOVED' ORDER BY q.admin_id")
+    @Select("SELECT q.admin_id adminId,COALESCE(NULLIF(TRIM(a.nickname),''),CONCAT('账号 ',a.id)) name,q.state,q.version,a.status accountStatus,(SELECT COUNT(*) FROM nx_support_group g WHERE g.supervisor_admin_id=q.admin_id) groupCount FROM nx_support_account_qualification_history q JOIN nx_admin a ON a.id=q.admin_id WHERE q.qualification_kind='SUPERVISOR' AND q.ends_at IS NULL AND q.state<>'REMOVED' ORDER BY q.admin_id")
     List<Map<String,Object>> supervisors();
     @Select("SELECT DISTINCT agent_admin_id FROM nx_support_group_member_history WHERE ends_at IS NULL AND group_id IS NOT NULL ORDER BY agent_admin_id") List<Long> memberIds();
     @Insert("INSERT INTO nx_support_group(name,supervisor_admin_id,status,version,created_at,updated_at) VALUES(#{name},#{owner},'ENABLED',1,#{at},#{at})")

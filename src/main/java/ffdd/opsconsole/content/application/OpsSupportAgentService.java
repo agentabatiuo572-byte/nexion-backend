@@ -91,7 +91,7 @@ public class OpsSupportAgentService {
 
     @Transactional
     public ApiResult<SupportAgentPageView> agents(SupportAgentQueryRequest request) {
-        ReadScope scope=ownership.defaultQueryScope(null,null);
+        ReadScope scope=ownership.defaultQueryScope(request==null?null:request.groupId(),null);
         repository.ensureSchema();
         long pageNum = normalizePage(request == null ? null : request.pageNum());
         long pageSize = normalizeSize(request == null ? null : request.pageSize());

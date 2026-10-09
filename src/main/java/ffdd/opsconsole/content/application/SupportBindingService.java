@@ -45,7 +45,14 @@ public class SupportBindingService {
     public ffdd.opsconsole.shared.api.PageResult<Map<String,Object>> pool(String keyword,String reason,Long group,long page,int size) {
         ReadScope scope=managementScope(group,null);
         if(page<1 || size<1 || size>100 || page>Long.MAX_VALUE/size) throw new BizException(422,"SUPPORT_PAGE_INVALID");
-        return new ffdd.opsconsole.shared.api.PageResult<>(mapper.scopedPoolCount(scope,blank(reason),blank(keyword)),page,size,mapper.scopedPool(scope,blank(reason),blank(keyword),(page-1)*size,size));
+        long total=mapper.scopedPoolCount(scope,blank(reason),blank(keyword));
+        List<Map<String,Object>> rows=new ArrayList<>();
+        for(var row:mapper.scopedPool(scope,blank(reason),blank(keyword),(page-1)*size,size)) {
+            Map<String,Object> projected=new LinkedHashMap<>(row);
+            for(String field:List.of("routeId","routeGroupId","routeVersion"))projected.putIfAbsent(field,null);
+            rows.add(projected);
+        }
+        return new ffdd.opsconsole.shared.api.PageResult<>(total,page,size,rows);
     }
 
     @Transactional

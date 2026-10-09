@@ -69,7 +69,21 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
             + CUSTOMER_SCOPE_PREDICATE + " AND NOT EXISTS(SELECT 1 FROM nx_support_agent_user_assignment active_pool_binding WHERE active_pool_binding.user_id=p.customer_id AND active_pool_binding.status='ACTIVE' AND active_pool_binding.is_deleted=0 FOR SHARE) <if test='reason != null'>AND p.reason=#{reason}</if> <if test='keyword != null'>AND (scope_customer.nickname LIKE CONCAT('%',#{keyword},'%') OR CAST(scope_customer.id AS CHAR)=#{keyword})</if> ";
     @Select("<script>SELECT COUNT(*) "+SCOPED_POOL_FILTER+" FOR SHARE</script>")
     long scopedPoolCount(@Param("scope") ReadScope scope,@Param("reason") String reason,@Param("keyword") String keyword);
-    @Select("<script>SELECT p.customer_id customerId,p.reason,p.version,p.entered_at enteredAt,p.auto_eligible autoEligible,p.auto_rule_version autoRuleVersion,p.auto_attempt_state autoAttemptState,p.attempts,p.last_attempt_at lastAttemptAt,p.last_outcome lastOutcome,p.operation_id operationId,scope_customer.sponsor_user_id inviterId,scope_customer.nickname "+SCOPED_POOL_FILTER+" ORDER BY p.customer_id LIMIT #{limit} OFFSET #{offset} FOR SHARE</script>")
+    String POOL_ROUTE_FACT = """
+        FROM nx_support_customer_route_history read_route WHERE read_route.customer_id=p.customer_id
+          AND read_route.starts_at &lt;= UTC_TIMESTAMP(6) AND read_route.ends_at IS NULL
+          AND read_route.id BETWEEN 1 AND 9007199254740991 AND read_route.version BETWEEN 1 AND 9007199254740991
+          AND (read_route.group_id IS NULL OR read_route.group_id BETWEEN 1 AND 9007199254740991)
+          AND NOT EXISTS(SELECT 1 FROM nx_support_customer_route_history other_route
+            WHERE other_route.customer_id=read_route.customer_id AND other_route.id&lt;&gt;read_route.id
+              AND other_route.starts_at &lt;= UTC_TIMESTAMP(6)
+              AND (other_route.ends_at IS NULL OR other_route.ends_at&gt;UTC_TIMESTAMP(6)) FOR SHARE)
+        """;
+    String POOL_ROUTE_COLUMNS = " CASE WHEN NOT EXISTS(SELECT 1 FROM nx_support_customer_route_history history_route WHERE history_route.customer_id=p.customer_id FOR SHARE) THEN 'ABSENT' WHEN (SELECT COUNT(*) " + POOL_ROUTE_FACT + " FOR SHARE)=1 THEN 'AVAILABLE' ELSE 'UNKNOWN' END routeState,"
+            + "(SELECT CAST(read_route.id AS CHAR) "+POOL_ROUTE_FACT+" FOR SHARE) routeId,"
+            + "(SELECT CAST(read_route.group_id AS CHAR) "+POOL_ROUTE_FACT+" FOR SHARE) routeGroupId,"
+            + "(SELECT read_route.version "+POOL_ROUTE_FACT+" FOR SHARE) routeVersion,";
+    @Select("<script>SELECT "+POOL_ROUTE_COLUMNS+"p.customer_id customerId,p.reason,p.version,p.entered_at enteredAt,p.auto_eligible autoEligible,p.auto_rule_version autoRuleVersion,p.auto_attempt_state autoAttemptState,p.attempts,p.last_attempt_at lastAttemptAt,p.last_outcome lastOutcome,p.operation_id operationId,scope_customer.sponsor_user_id inviterId,scope_customer.nickname "+SCOPED_POOL_FILTER+" ORDER BY p.customer_id LIMIT #{limit} OFFSET #{offset} FOR SHARE</script>")
     List<Map<String,Object>> scopedPool(@Param("scope") ReadScope scope,@Param("reason") String reason,@Param("keyword") String keyword,@Param("offset") long offset,@Param("limit") int limit);
     String SCOPED_HANDOVER_FILTER="FROM nx_support_agent_user_assignment x JOIN nx_user scope_customer ON scope_customer.id=x.user_id LEFT JOIN nx_admin a ON a.id=x.agent_admin_id LEFT JOIN nx_support_agent_profile p ON p.admin_id=a.id WHERE x.status='ACTIVE' AND x.is_deleted=0 " + CUSTOMER_SCOPE_PREDICATE
             + " <if test='unavailable'>AND NOT EXISTS(SELECT 1 " + SupportBindingMapper.ELIGIBLE_AGENT_FROM + " AND a.id=x.agent_admin_id FOR SHARE)</if> ";

@@ -212,6 +212,25 @@ class SupportLeaderboardSourceServiceTest {
         assertEquals(Propagation.MANDATORY,annotation.propagation());assertTrue(annotation.readOnly());
         assertEquals(409,assertThrows(BizException.class,() -> f.read(context(Board.customers,"NEX",Scope.ownGroup,Set.of(999L)))).getCode());
     }
+    @Test void oneCapturedTupleReusesTheSoleProjectionAndCannotCrossTransactionBoundaries() {
+        var f=new Fixture();TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.setCurrentTransactionIsolationLevel(Connection.TRANSACTION_REPEATABLE_READ);
+        TransactionSynchronizationManager.initSynchronization();
+        var material=f.service.captureForSampling();
+        try {
+            var all=f.service.projectCaptured(material,context(Board.customers,"USDT",Scope.all,Set.of()));
+            var own=f.service.projectCaptured(material,context(Board.customers,"NEX",Scope.ownGroup,Set.of(100L)));
+            assertEquals(1L,all.candidates().get(0).customers().value());assertEquals(1L,own.candidates().get(0).customers().value());
+            assertEquals(all.context().evaluatedAt(),own.context().evaluatedAt());
+            verify(f.finance,times(1)).readHistory(List.of(1L));verify(f.mapper,times(1)).accounts();
+            TransactionSynchronizationManager.clearSynchronization();TransactionSynchronizationManager.initSynchronization();
+            assertThrows(IllegalStateException.class,()->f.service.projectCaptured(material,context(Board.customers,"NEX",Scope.all,Set.of())));
+        }finally {TransactionSynchronizationManager.clear();}
+    }
+    @Test void samplingCaptureRequiresActiveRrSynchronizationWithoutWeakeningOriginalSingleRead() {
+        var f=new Fixture();assertThrows(IllegalStateException.class,f.service::captureForSampling);
+        assertEquals(1,f.read(Board.customers).candidates().size());
+    }
     private static void assert503(org.junit.jupiter.api.function.Executable action) {assertEquals(503,assertThrows(BizException.class,action).getCode());}
     private static Account account(long id,String nickname,int enabled) {return new Account(id,nickname,enabled,0,1L,enabled,0,1L,"SUPPORT",null,null,null,null,1);}
     private static QualificationInterval q(long id,long agent,String state,LocalDateTime start,LocalDateTime end) {return new QualificationInterval(id,agent,state,1L,start,end);}

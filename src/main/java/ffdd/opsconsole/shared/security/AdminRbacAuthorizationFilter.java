@@ -243,6 +243,18 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     // Socket tickets authorize only the following read-only WebSocket session. Keep this
     // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
     private RequiredAuthority requiredAuthority(String path, String method) {
+        boolean read = HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
+        if (read && (path.equals("/api/admin/content/support-agents/groups/supervisors")
+                || path.matches("/api/admin/content/support-agents/[1-9][0-9]{0,15}/qualifications"))) {
+            return RequiredAuthority.exact("platform_a1_read");
+        }
+        if (HttpMethod.PATCH.matches(method)
+                && path.matches("/api/admin/content/support-agents/[1-9][0-9]{0,15}/qualification")) {
+            return RequiredAuthority.exact("platform_a1_write");
+        }
+        if (read && pathMatcher.match("/api/admin/content/support-workbench/commands/*", path)) {
+            return RequiredAuthority.exact("service_m1_read", "service_m2_read", "service_m3_read", "platform_a1_read");
+        }
         if (HttpMethod.GET.matches(method) && path.equals("/api/admin/config/phone-calibration")) {
             return RequiredAuthority.exact("device_e6_read", "device_e2_read");
         }
@@ -259,7 +271,6 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         if (HttpMethod.PATCH.matches(method) && pathMatcher.match(STAKING_POOL_RESTORE_PATH, path)) {
             return RequiredAuthority.exact(STAKING_POOL_RESTORE_AUTHORITY);
         }
-        boolean read = HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
         return RULES.stream()
                 .filter(rule -> pathMatcher.match(rule.pattern(), path))
                 .findFirst()
