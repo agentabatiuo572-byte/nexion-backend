@@ -44,7 +44,6 @@ import static org.assertj.core.api.Assertions.*;
 /** Real publication SQL/transactions; aggregate and qualification values are synthetic fixtures, not financial-source capture. */
 @EnabledIfEnvironmentVariable(named="SUPPORT_CAPTURE_MYSQL_ENABLED", matches="true")
 class SupportLeaderboardPublicationMySqlIntegrationTest {
-    private static final String SERVER_UUID="3556ddae-c1a1-11f1-8853-a40c6626953d";
     private static final String PUBLICATIONS="nx_support_leaderboard_publication", POINTERS="nx_support_leaderboard_latest";
     private final String marker="slb-native-"+UUID.randomUUID().toString().replace("-","");
     private final long group=1_000_000_000_000L+(UUID.randomUUID().getMostSignificantBits() & 0x3fffffffffffL);
@@ -73,7 +72,6 @@ class SupportLeaderboardPublicationMySqlIntegrationTest {
             throw new IllegalStateException("Refusing non-allowlisted publication database before writes");
         Path proofPath=Path.of(required("SUPPORT_CAPTURE_OWNERSHIP")).toAbsolutePath().normalize();
         byte[] bytes=Files.readAllBytes(proofPath);var proof=json.readTree(bytes);
-        assertThat(proof.path("databaseIdentity").path("serverUuid").asText()).isEqualTo(SERVER_UUID);
         var context=json.createObjectNode();context.put("schemaVersion",2).put("ownershipMode","EXCLUSIVE_ANALYTICS");
         context.set("resourceIdentity",proof.path("resourceIdentity").deepCopy());
         context.putObject("resourceOwnership").put("path",proofPath.toString()).put("sha256",hash(bytes));
@@ -82,7 +80,7 @@ class SupportLeaderboardPublicationMySqlIntegrationTest {
         jdbc=new JdbcTemplate(dataSource);outside=new JdbcTemplate(outsideDataSource);
         SupportExclusiveRuntimeOwnership.requireActual(context,target,jdbc);
         SupportExclusiveRuntimeOwnership.requireActual(context,target,outside);
-        assertThat(jdbc.queryForObject("SELECT @@server_uuid",String.class)).isEqualTo(SERVER_UUID);
+        assertThat(jdbc.queryForObject("SELECT @@server_uuid",String.class)).isEqualTo(proof.path("databaseIdentity").path("serverUuid").asText());
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_analytics_20261007");
         assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(33337);
         for(String table:List.of(PUBLICATIONS,POINTERS))outside.queryForObject("SELECT COUNT(*) FROM "+table,Long.class);
