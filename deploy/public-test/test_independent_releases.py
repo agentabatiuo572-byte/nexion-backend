@@ -1,11 +1,16 @@
 """Real journal/filesystem fixtures, no production commands or database access."""
+import contextlib
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import xml.etree.ElementTree as ET
 import zipfile
 
 import release_broker as b
@@ -58,6 +63,64 @@ class IndependentReleasesTests(unittest.TestCase):
             b.save(artifacts / 'release.json', {'version': 1, 'component': kind, 'branch': 'test',
                    'sha': 'a'*40, 'artifact': b.ARTIFACTS[kind], 'sha256': b.digest(artifact), 'schema': 'c'*64})
             (self.root / kind).mkdir()
+
+    @contextlib.contextmanager
+    def publication_fixture(self):
+        """Synthetic owner inputs for the real admission guard, never native proof."""
+        path = b.JOBS / 'nexgrid-backend-test/builds/2/archive/artifacts/release.json'
+        manifest = json.loads(path.read_text())
+        manifest.update(tree='b'*40, publicationNative='OWNER_ADMISSION_REQUIRED')
+        b.save(path, manifest)
+        policy = {'gateManifestSHA256': 'd'*64, 'entrySHA256': 'e'*64,
+                  'sourcePinsSHA256': 'f'*64,
+                  'candidateLFPins': {f'synthetic-source-{i}': '1'*64 for i in range(13)}}
+        self.config['publication_native'] = policy
+        directory = self.root / 'publication-native' / manifest['sha'] / '2' / manifest['sha256']
+        directory.mkdir(parents=True, exist_ok=True)
+        xml = ET.Element('testsuite', name=b.PUBLICATION_CLASS, tests='6', failures='0', errors='0', skipped='0')
+        for name in sorted(b.PUBLICATION_METHODS):
+            ET.SubElement(xml, 'testcase', name=name, classname=b.PUBLICATION_CLASS)
+        xml_bytes = ET.tostring(xml)
+        xml_hash = hashlib.sha256(xml_bytes).hexdigest()
+        binding = {'head': manifest['sha'], 'tree': manifest['tree'], 'clean': True,
+                   'sourceLFPins': policy['candidateLFPins']}
+        receipt = {'SYNTHETIC_ONLY_NOT_ACTUAL_PROOF': True,
+                   'status': 'QUALIFIED_EXACT_CANDIDATE_ONLY', 'nativeMySql': 'ACTUAL_6_0F_0E_0S',
+                   'mavenExit': 0, 'entryRawSHA256': policy['entrySHA256'],
+                   'sourcePinsRawSHA256': policy['sourcePinsSHA256'],
+                   'sourceBefore': dict(binding), 'sourceAfter': dict(binding),
+                   'startedEpoch': time.time()-5, 'finishedEpoch': time.time()+5,
+                   'mavenArgv': ['/synthetic/mvn', '-B', '-ntp', '-o', '-Dstyle.color=never',
+                                 '-Dtest='+b.PUBLICATION_CLASS.rsplit('.', 1)[1],
+                                 '-Dsupport.test.reportsDirectory=/synthetic/reports', 'clean', 'test'],
+                   'ownership': {'rawSHA256': '2'*64, 'resourceIdentity': 'SYNTHETIC_ONLY',
+                                 'permissions': ['SYNTHETIC_ONLY'], 'databaseIdentity': {
+                                     'database': 'cs_analytics_20261007', 'port': 33337,
+                                     'currentUser': 'cs_analytics_runner@127.0.0.1',
+                                     'serverUuid': '00000000-0000-4000-8000-000000000001',
+                                     'dataDirectory': '/synthetic/not-actual'}},
+                   'nativeXml': {'rawSHA256': xml_hash, 'tests': 6, 'failures': 0, 'errors': 0,
+                                 'skipped': 0, 'methods': sorted(b.PUBLICATION_METHODS)}}
+        receipt_bytes = json.dumps(receipt).encode()
+        seal = {'version': 1, 'component': 'backend', 'branch': 'test', 'build': 2,
+                'sha': manifest['sha'], 'tree': manifest['tree'], 'artifactSHA256': manifest['sha256'],
+                'gateManifestSHA256': policy['gateManifestSHA256'], 'ownershipProofSHA256': '2'*64,
+                'ownerReceiptSHA256': hashlib.sha256(receipt_bytes).hexdigest(), 'nativeXMLSHA256': xml_hash}
+        (directory / 'PUBLICATION.xml').write_bytes(xml_bytes)
+        (directory / 'NATIVE-RECEIPT.json').write_bytes(receipt_bytes)
+        b.save(directory / 'ADMISSION.json', seal)
+        original_stat = Path.stat
+        def simulated_private_metadata(path, *args, **kwargs):
+            info = original_stat(path, *args, **kwargs)
+            if path == self.root or self.root in path.parents or path in self.root.parents:
+                # Simulate only this temporary trust path; preserve actual types, size and mtime.
+                values = list(info)
+                values[0] = stat.S_IFMT(info.st_mode) | (0o700 if stat.S_ISDIR(info.st_mode) else 0o600)
+                values[4] = values[5] = 0
+                return os.stat_result(values)
+            return info
+        with patch.object(Path, 'stat', simulated_private_metadata):
+            yield path, directory
 
     def journal(self, phase='APPLYING', kind='pc'):
         journal = {'phase': phase, 'component': kind, 'old_state': self.state,
@@ -154,7 +217,7 @@ class IndependentReleasesTests(unittest.TestCase):
 
     def test_main_backend_without_schema_approval_reaches_normal_build_validation(self):
         # No config['schema']; the old source-fingerprint gate would fail here.
-        with patch.object(b, 'run', return_value='a'*40 + ' refs/heads/test') as run, \
+        with self.publication_fixture(), patch.object(b, 'run', return_value='a'*40 + ' refs/heads/test') as run, \
                 patch.object(b.shutil, 'disk_usage', return_value=SimpleNamespace(free=100*1024**3)), \
                 patch.object(b, 'apply_with_rollback'), patch.object(b, 'finish_commit'):
             b.promote('backend', 2, self.config, self.state)
@@ -165,12 +228,39 @@ class IndependentReleasesTests(unittest.TestCase):
 
     def test_policy_guard_still_blocks_backend_and_leaves_no_transaction(self):
         self.config['policy_sha256'] = '0'*64
-        with patch.object(b, 'run', return_value='a'*40 + ' refs/heads/test'), \
+        with self.publication_fixture(), patch.object(b, 'run', return_value='a'*40 + ' refs/heads/test'), \
                 patch.object(b.shutil, 'disk_usage', return_value=SimpleNamespace(free=100*1024**3)):
             with self.assertRaisesRegex(b.ComponentFailed, 'JAR_POLICY_REJECTED'):
                 b.promote('backend', 2, self.config, self.state)
         self.assertFalse((self.root / 'transaction.json').exists())
         self.assertFalse((self.root / 'HALTED.json').exists())
+
+    def test_missing_or_mismatched_owner_binding_rejects_before_mutations(self):
+        for defect in ('tree', 'publicationNative', 'missing-owner', 'wrong-owner-build'):
+            with self.subTest(defect=defect), self.publication_fixture() as (path, directory):
+                if defect in ('tree', 'publicationNative'):
+                    manifest = json.loads(path.read_text())
+                    manifest.pop(defect)
+                    b.save(path, manifest)
+                elif defect == 'missing-owner':
+                    (directory / 'ADMISSION.json').unlink()
+                else:
+                    seal = json.loads((directory / 'ADMISSION.json').read_text())
+                    seal['build'] = 3
+                    b.save(directory / 'ADMISSION.json', seal)
+                before = (self.root / 'state.json').read_bytes(), self.nginx.read_bytes(), self.dropin.read_bytes()
+                with patch.object(b, 'run', return_value='a'*40 + ' refs/heads/test'), \
+                        patch.object(b, 'save') as save, patch.object(b, 'stage_release') as stage, \
+                        patch.object(b.migrations, 'apply') as migration:
+                    with self.assertRaises(b.Rejected):
+                        b.promote('backend', 2, self.config, self.state)
+                save.assert_not_called()
+                stage.assert_not_called()
+                migration.assert_not_called()
+                self.assertEqual(((self.root / 'state.json').read_bytes(), self.nginx.read_bytes(), self.dropin.read_bytes()), before)
+                self.assertFalse((self.root / 'transaction.json').exists())
+                self.assertFalse((self.root / 'HALTED.json').exists())
+                self.assertFalse((self.root / 'backend/2-aaaaaaaaaaaa').exists())
 
 
 if __name__ == '__main__':

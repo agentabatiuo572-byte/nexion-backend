@@ -504,6 +504,7 @@ def apply(sha, *, rollback_check=False):
     trusted(GUARD)
     require(GUARD.read_text() == GUARD_TEXT, 'MIGRATION_START_GUARD_CHANGED')
     previous = active()
+    was_blocked = (ROOT / 'START_BLOCKED').exists()
     require(not previous or previous.get('phase') == 'SQL_APPLIED', 'MIGRATION_PARTIAL_OR_INTERRUPTED_HOLD')
     require(not (previous and rollback_check), 'MIGRATION_NEEDS_FORWARD_DEPLOY_NOT_ROLLBACK_CHECK')
     state = json.loads((ROOT / 'state.json').read_text())
@@ -563,7 +564,7 @@ def apply(sha, *, rollback_check=False):
                        error=str(error) if isinstance(error, MigrationError) else type(error).__name__)
         save(ROOT / 'active.json', journal)
         save(folder / 'receipt.json', journal)
-        if not sql_started and not previous:
+        if not sql_started and not previous and not was_blocked:
             start_previous()
             remove_journal()
         elif not sql_started and previous:
