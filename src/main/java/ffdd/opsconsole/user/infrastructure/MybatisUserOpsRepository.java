@@ -2,6 +2,7 @@ package ffdd.opsconsole.user.infrastructure;
 
 
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.user.domain.UserAccountListEntryView;
 import ffdd.opsconsole.user.domain.UserAccountControlFactView;
 import ffdd.opsconsole.user.domain.UserAccountView;
@@ -134,7 +135,12 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
                 ? requestedSize == null ? 20 : Math.max(1, Math.min(200, requestedSize))
                 : profilePageSize(requestedSize);
         UserQueryRequest query = normalizeProfileQuery(request, pageNum, pageSize);
-        int offset = (pageNum - 1) * pageSize;
+        int offset;
+        try {
+            offset = Math.multiplyExact(pageNum - 1, pageSize);
+        } catch (ArithmeticException invalidOffset) {
+            throw new BizException(422, "C1_PAGE_NUM_INVALID");
+        }
         long total = mapper.countUsersByQuery(query, statuses, phoneKeyword);
         List<UserAccountView> records = total == 0
                 ? List.of()

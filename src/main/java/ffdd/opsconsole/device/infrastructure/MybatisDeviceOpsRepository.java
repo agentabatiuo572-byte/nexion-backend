@@ -12,6 +12,7 @@ import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -124,7 +125,12 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         String heartbeat = request == null ? null : normalize(request.heartbeat());
         long pageNum = normalizePage(request == null ? null : request.pageNum());
         long pageSize = normalizeSize(request == null ? null : request.pageSize());
-        long offset = (pageNum - 1) * pageSize;
+        long offset;
+        try {
+            offset = Math.multiplyExact(pageNum - 1, pageSize);
+        } catch (ArithmeticException invalidOffset) {
+            throw new BizException(422, "E5_PAGE_NUM_INVALID");
+        }
         long total = mapper.countDevices(status, dcLocation, keyword, userId, kind, heartbeat);
         List<DeviceOpsView> records = mapper.pageDevices(status, dcLocation, keyword, userId, kind, heartbeat, pageSize, offset);
         return new PageResult<>(total, pageNum, pageSize, records);

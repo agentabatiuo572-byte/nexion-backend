@@ -1026,7 +1026,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                 enabled ? "enabled" : "disabled",
                 state != null && state.getLastLoginAt() != null
                         ? state.getLastLoginAt().format(ISO)
-                        : admin.getUpdatedAt() == null ? "" : admin.getUpdatedAt().format(ISO),
+                        : "",
                 sessions,
                 state != null && state.getTfaResetAt() != null ? state.getTfaResetAt().format(ISO) : null,
                 firstText(state == null ? null : state.getCredentialDeliveryStatus(), "ACTIVE"),

@@ -43,6 +43,15 @@ public interface AdminAccountStateMapper extends BaseMapper<AdminAccountStateEnt
     AdminAccountStateEntity selectActiveByAdminId(@Param("adminId") Long adminId);
 
     @Insert("""
+            INSERT INTO nx_admin_account_state (admin_id, last_login_at)
+            VALUES (#{adminId}, NOW())
+            ON DUPLICATE KEY UPDATE
+              last_login_at = GREATEST(
+                  COALESCE(last_login_at, VALUES(last_login_at)), VALUES(last_login_at))
+            """)
+    int recordAuthenticatedLogin(@Param("adminId") Long adminId);
+
+    @Insert("""
             INSERT INTO nx_admin_account_state (
               admin_id, tfa_required, credential_delivery_status, is_deleted
             ) VALUES (

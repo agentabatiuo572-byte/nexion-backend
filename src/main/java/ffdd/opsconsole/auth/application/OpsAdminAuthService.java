@@ -12,6 +12,7 @@ import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.infrastructure.AdminAccountStateEntity;
 import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
@@ -30,6 +31,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -442,18 +445,41 @@ public class OpsAdminAuthService {
         } catch (RuntimeException ex) {
             return ApiResult.fail(503, "ADMIN_SESSION_STORE_UNAVAILABLE");
         }
+        AdminLoginResponse response;
         try {
             loginGuard.recordSuccess(normalizedUsername);
+            String token = tokenProvider.createToken(
+                    admin.getId(), SUBJECT_TYPE_ADMIN, admin.getUsername(), List.of(), sessionId);
+            response = new AdminLoginResponse(token, "Bearer", session(admin, authorities, mustChangePassword));
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCompletion(int status) {
+                        if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                            revokeFailedLoginSession(admin.getId(), sessionId);
+                        }
+                    }
+                });
+            }
         } catch (RuntimeException ex) {
-            adminSessionRegistry.revokeSession(admin.getId(), sessionId);
+            revokeFailedLoginSession(admin.getId(), sessionId);
             return ApiResult.fail(503, successRecordingFailureCode);
         }
-        String token = tokenProvider.createToken(
-                admin.getId(), SUBJECT_TYPE_ADMIN, admin.getUsername(), List.of(), sessionId);
-        return ApiResult.ok(new AdminLoginResponse(
-                token,
-                "Bearer",
-                session(admin, authorities, mustChangePassword)));
+        try {
+            accountStateMapper.recordAuthenticatedLogin(admin.getId());
+        } catch (RuntimeException ex) {
+            revokeFailedLoginSession(admin.getId(), sessionId);
+            throw new BizException(503, successRecordingFailureCode);
+        }
+        return ApiResult.ok(response);
+    }
+
+    private void revokeFailedLoginSession(Long adminId, String sessionId) {
+        try {
+            adminSessionRegistry.revokeSession(adminId, sessionId);
+        } catch (RuntimeException ex) {
+            log.warn("Admin login session cleanup unavailable: {}", ex.getClass().getSimpleName());
+        }
     }
 
     private boolean loginLocked(String username) {

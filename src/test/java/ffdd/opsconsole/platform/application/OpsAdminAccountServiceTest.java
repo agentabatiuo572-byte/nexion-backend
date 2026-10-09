@@ -372,6 +372,23 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
+    void overviewUsesOnlyRecordedLoginTimeAndNeverAccountModificationTime() {
+        LocalDateTime accountModifiedAt = LocalDateTime.of(2026, 8, 25, 11, 58, 58);
+        admins.forEach(admin -> admin.setUpdatedAt(accountModifiedAt));
+        accountStates.get(1L).setLastLoginAt(null);
+        LocalDateTime recordedLoginAt = LocalDateTime.of(2026, 10, 9, 14, 51, 15);
+        accountStates.get(2L).setLastLoginAt(recordedLoginAt);
+        accountStates.remove(3L);
+
+        var operators = service.overview().getData().operators();
+
+        assertThat(operators.stream().filter(row -> row.id().equals("1")).findFirst().orElseThrow().lastLogin()).isEmpty();
+        assertThat(operators.stream().filter(row -> row.id().equals("2")).findFirst().orElseThrow().lastLogin())
+                .isEqualTo(recordedLoginAt.toString());
+        assertThat(operators.stream().filter(row -> row.id().equals("3")).findFirst().orElseThrow().lastLogin()).isEmpty();
+    }
+
+    @Test
     void overviewIncludesAuditableRoleHistoryBaseline() {
         ApiResult<AdminAccountOverview> result = service.overview();
 
