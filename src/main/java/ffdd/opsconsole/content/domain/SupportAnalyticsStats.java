@@ -15,6 +15,7 @@ public final class SupportAnalyticsStats {
     public enum Category { BOUND, PENDING, ANOMALY }
     public enum Placement { GROUPED, UNGROUPED, GROUP_QUEUE, GLOBAL_QUEUE, UNKNOWN }
     public enum AttributionStatus { KNOWN, UNASSIGNED, UNKNOWN }
+    public enum FirstState { CONFIRMED, NONE, UNKNOWN }
 
     public record Query(ReadMode mode,Long groupId,Long agentId,Basis basis,
                         LocalDateTime fromInclusive,LocalDateTime toExclusive,String businessZone,String currency) {
@@ -43,7 +44,10 @@ public final class SupportAnalyticsStats {
     public record Attribution(AttributionStatus agent,AttributionStatus group,AttributionStatus owner) { }
     public record FirstCandidate(String kind,String source,LocalDateTime succeededAt,int fractionalSecondDigits,
                                  BigDecimal amount,String currency,Attribution attribution) { }
-    public record FirstSelection(FirstCandidate observedCandidate,Status status,List<String> reasons) {
+    public record FirstSelection(FirstCandidate observedCandidate,Status status,List<String> reasons,FirstState state) {
+        public FirstSelection(FirstCandidate observedCandidate,Status status,List<String> reasons) {
+            this(observedCandidate,status,reasons,FirstState.UNKNOWN);
+        }
         public FirstSelection { reasons=List.copyOf(reasons); }
     }
     /** Current identities only; first is a whole-history profile, independent of the period/currency summary. */
@@ -54,11 +58,17 @@ public final class SupportAnalyticsStats {
         public Money { reasons=List.copyOf(reasons); }
     }
     public record CurrencyTotals(String currency,Money deposits,Money purchases,Money purchaseRefunds,Money net) { }
+    public record FirstCurrencyTotals(String currency,Money deposits,Money purchases) { }
     public record AttributionPartition(String layer,AttributionStatus status,long observedEvents) { }
     public record FinancialSummary(Status status,List<CurrencyTotals> currencies,Count firstCandidates,
-                                   List<AttributionPartition> attribution,List<String> reasons) {
+                                   List<AttributionPartition> attribution,List<String> reasons,List<FirstCurrencyTotals> firstSources) {
+        public FinancialSummary(Status status,List<CurrencyTotals> currencies,Count firstCandidates,
+                List<AttributionPartition> attribution,List<String> reasons) {
+            this(status,currencies,firstCandidates,attribution,reasons,List.of());
+        }
         public FinancialSummary {
             currencies=List.copyOf(currencies);attribution=List.copyOf(attribution);reasons=List.copyOf(reasons);
+            firstSources=List.copyOf(firstSources);
         }
     }
     public record SourceCoverage(String source,String observedStatus,String historyStatus,String refundStatus,

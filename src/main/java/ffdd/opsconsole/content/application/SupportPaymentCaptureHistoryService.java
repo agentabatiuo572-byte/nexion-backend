@@ -3,17 +3,51 @@ package ffdd.opsconsole.content.application;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.facade.SupportPaymentCaptureHistoryFacade;
 import ffdd.opsconsole.content.mapper.SupportPaymentCaptureHistoryMapper;
+import ffdd.opsconsole.content.mapper.SupportPaymentHistoryBirthMapper;
 import java.util.Collection;
 import java.util.List;
 import java.util.TreeSet;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 
 /** The finance caller owns the RR snapshot; this reader has no writer dependency or ownership gate. */
 @ApplicationService
-@RequiredArgsConstructor
 public class SupportPaymentCaptureHistoryService implements SupportPaymentCaptureHistoryFacade {
     private static final String SCHEMA_VERSION = "support-payment-attribution-v1";
     private final SupportPaymentCaptureHistoryMapper mapper;
+    private final SupportPaymentHistoryBirthMapper births;
+
+    @Autowired
+    public SupportPaymentCaptureHistoryService(SupportPaymentCaptureHistoryMapper mapper,
+            SupportPaymentHistoryBirthMapper births) {
+        this.mapper = mapper;
+        this.births = java.util.Objects.requireNonNull(births);
+    }
+
+    /** Compatibility readers observe proofs only; absence of a birth reader stays UNKNOWN. */
+    public SupportPaymentCaptureHistoryService(SupportPaymentCaptureHistoryMapper mapper) {
+        this.mapper = mapper;
+        this.births = null;
+    }
+
+    @Override
+    public List<BirthEvidence> readBirths(Collection<Long> customerIds) {
+        if (customerIds == null || customerIds.isEmpty()
+                || customerIds.stream().anyMatch(id -> id == null || id <= 0))
+            throw new IllegalArgumentException("INVALID_CAPTURE_HISTORY_SCOPE");
+        if (births == null) return List.of();
+        var scope = new TreeSet<>(customerIds);
+        var rows = births.readBirths(List.copyOf(scope));
+        if (rows == null) throw new IllegalStateException("INVALID_CAPTURE_HISTORY_BIRTH");
+        var seen = new TreeSet<Long>();
+        for (var row : rows) {
+            if (row == null || row.customerId() == null || row.customerId() <= 0)
+                throw new IllegalStateException("INVALID_CAPTURE_HISTORY_BIRTH");
+            if (!scope.contains(row.customerId())) throw new IllegalStateException("INVALID_CAPTURE_HISTORY_SCOPE");
+            if (!seen.add(row.customerId())) throw new IllegalStateException("INVALID_CAPTURE_HISTORY_BIRTH");
+        }
+        return rows.stream().map(row -> new BirthEvidence(row.customerId(), row.captureProtocol(), row.birthOrigin(),
+            row.birthDbUtc(), row.sandboxAtBirth(), row.environmentStatus())).toList();
+    }
 
     @Override
     public List<Envelope> readNewFinancialProofs(Collection<Long> customerIds) {

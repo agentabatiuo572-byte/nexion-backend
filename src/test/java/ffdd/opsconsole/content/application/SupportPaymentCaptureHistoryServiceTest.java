@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.content.facade.SupportPaymentCaptureHistoryFacade;
 import ffdd.opsconsole.content.mapper.SupportPaymentCaptureHistoryMapper;
+import ffdd.opsconsole.content.mapper.SupportPaymentHistoryBirthMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Arrays;
@@ -19,7 +20,49 @@ class SupportPaymentCaptureHistoryServiceTest {
     private static final String VERSION = "support-payment-attribution-v1";
     private static final LocalDateTime AT = LocalDateTime.of(2026, 10, 7, 12, 0, 0, 800_000_000);
     private final SupportPaymentCaptureHistoryMapper mapper = mock(SupportPaymentCaptureHistoryMapper.class);
-    private final SupportPaymentCaptureHistoryService service = new SupportPaymentCaptureHistoryService(mapper);
+    private final SupportPaymentHistoryBirthMapper births = mock(SupportPaymentHistoryBirthMapper.class);
+    private final SupportPaymentCaptureHistoryService service = new SupportPaymentCaptureHistoryService(mapper,births);
+
+    @Test void birthReadUsesExactSortedScopeAndTransportsUnchangedRegistrationEvidence() {
+        var row=new SupportPaymentHistoryBirthMapper.Birth(7L,VERSION,"AUTH_NEW_ACCOUNT_REGISTRATION",AT,0,"PRODUCTION");
+        when(births.readBirths(any())).thenReturn(List.of(row));
+        var result=service.readBirths(List.of(8L,7L,8L));
+        verify(births).readBirths(List.of(7L,8L));
+        assertThat(result).containsExactly(new SupportPaymentCaptureHistoryFacade.BirthEvidence(7L,VERSION,"AUTH_NEW_ACCOUNT_REGISTRATION",AT,0,"PRODUCTION"));
+        assertThatThrownBy(()->result.clear()).isInstanceOf(UnsupportedOperationException.class);
+        verifyNoInteractions(mapper);
+    }
+    @Test void birthMissingAndLegacyFacadeConstructionCannotAttestHistory() {
+        when(births.readBirths(any())).thenReturn(List.of());
+        assertThat(service.readBirths(List.of(7L))).isEmpty();
+        assertThat(new SupportPaymentCaptureHistoryService(mapper).readBirths(List.of(7L))).isEmpty();
+        SupportPaymentCaptureHistoryFacade oldFacade=ids->List.of();
+        assertThat(oldFacade.readBirths(List.of(7L))).isEmpty();
+    }
+    @Test void birthScopeRejectsInvalidInputsForeignRowsAndDuplicateIdentity() {
+        for(var scope:Arrays.asList(null,List.<Long>of(),List.of(0L),List.of(-1L),Arrays.asList(7L,null)))
+            assertThatThrownBy(()->service.readBirths(scope)).isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(births);
+        var row=new SupportPaymentHistoryBirthMapper.Birth(7L,VERSION,"AUTH_NEW_ACCOUNT_REGISTRATION",AT,0,"PRODUCTION");
+        when(births.readBirths(any())).thenReturn(List.of(new SupportPaymentHistoryBirthMapper.Birth(8L,VERSION,row.birthOrigin(),AT,0,"PRODUCTION")));
+        assertThatThrownBy(()->service.readBirths(List.of(7L))).isInstanceOf(IllegalStateException.class);
+        when(births.readBirths(any())).thenReturn(List.of(row,row));
+        assertThatThrownBy(()->service.readBirths(List.of(7L))).isInstanceOf(IllegalStateException.class);
+    }
+    @Test void birthQueryFailureDoesNotBecomeAnEmptyBirth() {
+        var failure=new DataAccessResourceFailureException("private source");
+        when(births.readBirths(any())).thenThrow(failure);
+        assertThatThrownBy(()->service.readBirths(List.of(7L))).isSameAs(failure);
+    }
+    @Test void birthBatchIsParameterizedOrdinarySelectWithoutOwnerOrStateFilters() {
+        var configuration=new Configuration();configuration.addMapper(SupportPaymentHistoryBirthMapper.class);
+        var statement=configuration.getMappedStatement(SupportPaymentHistoryBirthMapper.class.getName()+".readBirths");
+        assertThat(statement.getSqlCommandType()).isEqualTo(SqlCommandType.SELECT);
+        var bound=statement.getBoundSql(Map.of("customerIds",List.of(7L,8L)));
+        assertThat(bound.getParameterMappings()).hasSize(2);
+        assertThat(bound.getSql()).contains("nx_support_payment_history_birth","customer_id IN","capture_protocol captureProtocol","birth_db_utc birthDbUtc");
+        assertThat(bound.getSql()).doesNotContain("FOR SHARE","FOR UPDATE","${","agent_admin_id","group_id"," JOIN ","environment_status=","sandbox_at_birth=");
+    }
 
     @Test void explicitPositiveScopeIsRequiredBeforeQuerying() {
         for (var scope : Arrays.asList(null, List.<Long>of(), List.of(0L), List.of(-1L), Arrays.asList(7L, null)))

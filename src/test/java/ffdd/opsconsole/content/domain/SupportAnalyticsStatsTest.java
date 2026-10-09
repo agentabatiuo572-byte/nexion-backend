@@ -47,9 +47,20 @@ class SupportAnalyticsStatsTest {
         FirstSelection selection=new FirstSelection(null,Status.UNKNOWN,reasons);
         reasons.clear();
         assertThat(selection.reasons()).containsExactly("COMPLETE_HISTORY_NOT_PROVEN");
+        assertThat(selection.state()).isEqualTo(FirstState.UNKNOWN);
         assertThatThrownBy(() -> selection.reasons().clear()).isInstanceOf(UnsupportedOperationException.class);
         Count first=new Count(0L,null,Status.UNKNOWN);
         assertThat(first.observedValue()).isZero();assertThat(first.confirmedValue()).isNull();
+    }
+    @Test void financeCompatibilityConstructorsPreserveUnknownAndCopyExplicitFirstHistory() {
+        var old=new ffdd.opsconsole.finance.facade.SupportPaymentFacts.Snapshot(List.of(),List.of(),List.of(),"Asia/Shanghai",java.time.Instant.EPOCH);
+        assertThat(old.firstHistory()).isEmpty();
+        var issue=new ffdd.opsconsole.finance.facade.SupportPaymentFacts.Issue(ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source.CARD_TOPUP,null,"SOURCE_READ_FAILED");
+        assertThat(issue.customerId()).isNull();
+        var reasons=new ArrayList<>(List.of("NEW_ACCOUNT_BIRTH_NOT_PROVEN"));
+        var unknown=new ffdd.opsconsole.finance.facade.SupportPaymentFacts.FirstHistory(7,ffdd.opsconsole.finance.facade.SupportPaymentFacts.Status.UNKNOWN,reasons);
+        reasons.clear();assertThat(unknown.reasons()).containsExactly("NEW_ACCOUNT_BIRTH_NOT_PROVEN");
+        assertThatThrownBy(()->unknown.reasons().clear()).isInstanceOf(UnsupportedOperationException.class);
     }
 
     private static Query query(Basis basis,LocalDateTime from,LocalDateTime to,String zone,String currency) {

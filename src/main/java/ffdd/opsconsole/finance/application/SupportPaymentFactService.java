@@ -32,9 +32,16 @@ public class SupportPaymentFactService {
             if(logicalPaymentKey==null || logicalPaymentKey.isBlank())throw new IllegalArgumentException("Explicit logical payment key required");
         }
     }
-    record CapturedFinancialHistory(List<VerifiedCandidate> candidates,List<Issue> issues,Set<String> conflictingFactIds) {
+    record CapturedFinancialHistory(List<VerifiedCandidate> candidates,List<Issue> issues,Set<String> conflictingFactIds,
+            Map<Long,List<String>> registrationProblems) {
+        CapturedFinancialHistory(List<VerifiedCandidate> candidates,List<Issue> issues,Set<String> conflictingFactIds) {
+            this(candidates,issues,conflictingFactIds,Map.of());
+        }
         CapturedFinancialHistory {
             candidates=List.copyOf(candidates);issues=List.copyOf(issues);conflictingFactIds=Set.copyOf(conflictingFactIds);
+            var copy=new TreeMap<Long,List<String>>();
+            registrationProblems.forEach((id,reasons) -> copy.put(id,List.copyOf(reasons)));
+            registrationProblems=Collections.unmodifiableMap(copy);
         }
     }
     // The source facade supplies verified financial data inside its existing RR transaction.
@@ -62,14 +69,22 @@ public class SupportPaymentFactService {
         for(var candidate:captured.candidates()) {
             Fact fact=candidate.fact();
             if(!ids.contains(fact.customerId()))throw new IllegalArgumentException("Captured customer outside explicit scope");
+            if(capturedContradiction(captured.issues(),fact.customerId(),fact.source(),fact.factId()))continue;
             Fact prior=verified.putIfAbsent(fact.factId(),fact);
             if(prior!=null && !sameCapturedProjection(prior,fact)) {
-                rejected.add(fact.factId());issues.add(new Issue(fact.source(),fact.sourceIds().get(0),"CONFLICTING_CAPTURED_SOURCE_PROJECTION"));
+                rejected.add(fact.factId());issues.add(new Issue(fact.source(),fact.sourceIds().get(0),"CONFLICTING_CAPTURED_SOURCE_PROJECTION",fact.customerId()));
             }
             accept(fact,candidate.logicalPaymentKey(),facts,rejected,logicalPayments,issues);
         }
         for (var row : rows) {
-            Source source = Source.valueOf(text(row,"source"));
+            if(row==null) {issues.add(new Issue(null,null,"INVALID_SOURCE_ROW"));continue;}
+            long customer=number(row,"customerId");
+            if(customer>0 && !ids.contains(customer))throw new IllegalArgumentException("Source customer outside explicit scope");
+            Source source;
+            try { source=Source.valueOf(text(row,"source")); }
+            catch(IllegalArgumentException | NullPointerException ex) {
+                issues.add(new Issue(null,text(row,"sourceId"),"UNKNOWN_FINANCIAL_SOURCE",customer>0?customer:null));continue;
+            }
             String sourceId = text(row,"sourceId");
             if(source==Source.UNMATCHED_LEDGER)continue;
             if (source == Source.FREE_TRIAL || number(row,"excludedEnvironment") == 1
@@ -78,21 +93,40 @@ public class SupportPaymentFactService {
                         && (decimal(row,"ledgerAmount") == null || decimal(row,"ledgerAmount").signum() == 0))) {
                 excluded.merge(source,1L,Long::sum); continue;
             }
-            Kind kind = Kind.valueOf(text(row,"kind"));
+            Kind kind;
+            try { kind=Kind.valueOf(text(row,"kind")); }
+            catch(IllegalArgumentException | NullPointerException ex) {
+                issues.add(new Issue(source,sourceId,"UNKNOWN_FINANCIAL_KIND",customer>0?customer:null));continue;
+            }
+            Kind expected=switch(source) {
+                case DEPOSIT_ORDER,CARD_TOPUP,VIETQR,HDPAY -> Kind.DEPOSIT;
+                case WALLET_ORDER,TRADE_IN,CAPACITY_KEEP,TRIAL_CONVERT -> Kind.DEVICE_PURCHASE;
+                case ORDER_REFUND -> Kind.DEVICE_PURCHASE_REFUND;
+                default -> null;
+            };
+            if(kind!=expected) {
+                issues.add(new Issue(source,sourceId,"UNKNOWN_FINANCIAL_KIND",customer>0?customer:null));continue;
+            }
             String id=kind==Kind.DEPOSIT ? "DEPOSIT:"+number(row,"ledgerId") : kind==Kind.DEVICE_PURCHASE
                 ? "PURCHASE:"+text(row,"orderNo") : "ORDER_REFUND:"+number(row,"ledgerId");
+            // Quarantine only the real row's customer/source/canonical, never a foreign claimed ID globally.
+            if(capturedContradiction(captured.issues(),customer,source,id))continue;
             Fact saved=verified.get(id);
+            // The actual source customer owns a malformed row, never the customer behind its claimed ledger/order.
+            if(saved!=null && saved.customerId()!=customer) {
+                issues.add(new Issue(source,sourceId,"CANONICAL_CUSTOMER_MISMATCH",customer>0?customer:null));continue;
+            }
             String problem = invalid(row, source);
             if(saved!=null && "CONFLICTING_SUCCESS_TIME".equals(problem)
                 && invalidNewSource(row,source)==null && sameCapturedProjection(saved,fact(row,source)))problem=null;
             if (problem != null) {
-                issues.add(new Issue(source,sourceId,problem));
+                issues.add(new Issue(source,sourceId,problem,customer>0?customer:null));
                 if(saved!=null)rejected.add(id);
                 continue;
             }
             var fact = fact(row,source);
             if(saved!=null && !sameCapturedProjection(saved,fact)) {
-                rejected.add(id);issues.add(new Issue(source,sourceId,"CONFLICTING_CAPTURED_SOURCE_PROJECTION"));
+                rejected.add(id);issues.add(new Issue(source,sourceId,"CONFLICTING_CAPTURED_SOURCE_PROJECTION",customer));
                 continue;
             }
             accept(fact,text(row,"duplicateKey"),facts,rejected,logicalPayments,issues);
@@ -104,7 +138,7 @@ public class SupportPaymentFactService {
             String previous = ledgerOwners.putIfAbsent(ledgerKey,fact.factId());
             if (previous != null && !previous.equals(fact.factId())) {
                 rejected.add(previous); rejected.add(fact.factId());
-                issues.add(new Issue(fact.source(),fact.sourceIds().get(0),"DUPLICATE_SETTLEMENT_LEDGER"));
+                issues.add(new Issue(fact.source(),fact.sourceIds().get(0),"DUPLICATE_SETTLEMENT_LEDGER",fact.customerId()));
             }
         }
         rejected.forEach(facts::remove);
@@ -116,10 +150,10 @@ public class SupportPaymentFactService {
             if (original == null || original.kind() != Kind.DEVICE_PURCHASE
                     || original.customerId() != refund.customerId() || !original.currency().equals(refund.currency())) {
                 invalidRefunds.add(refund.factId());
-                issues.add(new Issue(refund.source(),refund.sourceIds().get(0),"UNPROVEN_ORIGINAL_PAYMENT"));
+                issues.add(new Issue(refund.source(),refund.sourceIds().get(0),"UNPROVEN_ORIGINAL_PAYMENT",refund.customerId()));
             } else if (refund.succeededAt().withNano(0).isBefore(original.succeededAt().withNano(0))) {
                 invalidRefunds.add(refund.factId());
-                issues.add(new Issue(refund.source(),refund.sourceIds().get(0),"REFUND_PREDATES_ORIGINAL_PAYMENT"));
+                issues.add(new Issue(refund.source(),refund.sourceIds().get(0),"REFUND_PREDATES_ORIGINAL_PAYMENT",refund.customerId()));
             } else refundTotals.merge(original.factId(),refund.amount(),BigDecimal::add);
         }
         for (Fact refund : facts.values()) {
@@ -128,19 +162,22 @@ public class SupportPaymentFactService {
             if (refund.kind() == Kind.DEVICE_PURCHASE_REFUND && total != null && original != null
                     && total.compareTo(original.amount()) > 0) {
                 invalidRefunds.add(refund.factId());
-                issues.add(new Issue(refund.source(),refund.sourceIds().get(0),"REFUND_EXCEEDS_ORIGINAL_AMOUNT"));
+                issues.add(new Issue(refund.source(),refund.sourceIds().get(0),"REFUND_EXCEEDS_ORIGINAL_AMOUNT",refund.customerId()));
             }
         }
         invalidRefunds.forEach(facts::remove);
         // Legacy missing-source queries can overlook a retained, independently verified soft-deleted root.
         for(var row:rows) {
+            if(row==null)continue;
             if(!Source.UNMATCHED_LEDGER.name().equals(text(row,"source")))continue;
             boolean resolved=number(row,"ledgerId")>0 && facts.values().stream().anyMatch(f ->
                 f.ledgerId()==number(row,"ledgerId") && f.customerId()==number(row,"customerId")
                 && f.kind().name().equals(text(row,"kind")) && Objects.equals(f.sourceBusinessId(),text(row,"businessId"))
                 && f.currency().equals(text(row,"currency")) && decimal(row,"amount")!=null
                 && f.amount().compareTo(decimal(row,"amount"))==0);
-            if(!resolved)issues.add(new Issue(Source.UNMATCHED_LEDGER,text(row,"sourceId"),"MISSING_AUTHORITATIVE_SOURCE"));
+            if(!resolved)issues.add(new Issue(Source.UNMATCHED_LEDGER,text(row,"sourceId"),
+                Kind.DEVICE_PURCHASE_REFUND.name().equals(text(row,"kind"))?"MISSING_AUTHORITATIVE_REFUND_SOURCE":"MISSING_AUTHORITATIVE_SOURCE",
+                number(row,"customerId")>0?number(row,"customerId"):null));
         }
         var coverage = new ArrayList<Coverage>();
         for (Source source : Source.values()) {
@@ -154,7 +191,56 @@ public class SupportPaymentFactService {
                 Status.UNKNOWN,Status.UNKNOWN,Status.UNKNOWN,null,List.copyOf(reasons),excluded.getOrDefault(source,0L),ADAPTER_VERSION));
         }
         var sorted = facts.values().stream().sorted(Comparator.comparing(Fact::succeededAt).thenComparing(Fact::factId)).toList();
-        return new Snapshot(sorted,issues,coverage,DateTimeFormatConfig.BUSINESS_ZONE.getId(),Instant.now());
+        return new Snapshot(sorted,issues,coverage,DateTimeFormatConfig.BUSINESS_ZONE.getId(),Instant.now(),
+            firstHistory(ids,captured,sorted,issues));
+    }
+
+    private static List<FirstHistory> firstHistory(List<Long> ids,CapturedFinancialHistory captured,List<Fact> facts,List<Issue> issues) {
+        var result=new ArrayList<FirstHistory>();
+        var payments=new HashMap<Long,List<Fact>>();
+        var captures=new HashMap<Long,List<Fact>>();
+        var verifiedById=new HashMap<String,List<Fact>>();
+        var reconciledById=new HashMap<String,Fact>();
+        for(var fact:facts)if(fact.kind()!=Kind.DEVICE_PURCHASE_REFUND) {
+            payments.computeIfAbsent(fact.customerId(),ignored -> new ArrayList<>()).add(fact);
+            reconciledById.put(fact.factId(),fact);
+        }
+        for(var candidate:captured.candidates()) {
+            var fact=candidate.fact();if(fact.kind()==Kind.DEVICE_PURCHASE_REFUND)continue;
+            captures.computeIfAbsent(fact.customerId(),ignored -> new ArrayList<>()).add(fact);
+            verifiedById.computeIfAbsent(fact.factId(),ignored -> new ArrayList<>()).add(fact);
+        }
+        for(long customer:ids) {
+            var reasons=new TreeSet<String>();
+            var registration=captured.registrationProblems().get(customer);
+            if(registration==null)reasons.add("NEW_ACCOUNT_BIRTH_NOT_PROVEN");else reasons.addAll(registration);
+            for(var issue:issues) {
+                if(issue.customerId()!=null && issue.customerId()!=customer)continue;
+                if(firstBarrier(issue))reasons.add(issue.reason());
+            }
+            // Forward: every reconciled real payment needs the same independently verified NEW capture.
+            for(var fact:payments.getOrDefault(customer,List.of())) {
+                if(verifiedById.getOrDefault(fact.factId(),List.of()).stream().noneMatch(c -> sameCapturedProjection(c,fact)))
+                    reasons.add("PAYMENT_NEW_SUCCESS_NOT_PROVEN");
+            }
+            // Reverse: a verified payment may not disappear during source merging, dedup or conflict rejection.
+            for(var fact:captures.getOrDefault(customer,List.of())) {
+                var reconciled=reconciledById.get(fact.factId());
+                if(reconciled==null || !sameCapturedProjection(fact,reconciled))reasons.add("CAPTURED_PAYMENT_NOT_RECONCILED");
+            }
+            result.add(new FirstHistory(customer,reasons.isEmpty()?Status.READY:Status.UNKNOWN,List.copyOf(reasons)));
+        }
+        return List.copyOf(result);
+    }
+    private static boolean firstBarrier(Issue issue) {
+        if("UNKNOWN_FINANCIAL_KIND".equals(issue.reason()))return true;
+        if(issue.source()==Source.ORDER_REFUND || issue.source()==Source.FREE_TRIAL)return false;
+        return !"MISSING_AUTHORITATIVE_REFUND_SOURCE".equals(issue.reason())
+            && !"FINAL_DEPOSIT_REFUND_SOURCE_UNAVAILABLE".equals(issue.reason());
+    }
+    private static boolean capturedContradiction(List<Issue> issues,long customer,Source source,String canonical) {
+        return customer>0 && issues.stream().anyMatch(i -> i.customerId()!=null && i.customerId()==customer
+            && i.source()==source && Objects.equals(i.sourceId(),canonical) && capturedFinancialContradiction(i.reason()));
     }
 
     private static void accept(Fact fact,String logicalKey,Map<String,Fact> facts,Set<String> rejected,
@@ -162,7 +248,7 @@ public class SupportPaymentFactService {
         String id=fact.factId();Fact previous=facts.get(id);
         if(previous!=null) {
             if(!samePayment(previous,fact)) {
-                rejected.add(id);issues.add(new Issue(fact.source(),fact.sourceIds().get(0),"CONFLICTING_FACT_PROJECTION"));
+                rejected.add(id);issues.add(new Issue(fact.source(),fact.sourceIds().get(0),"CONFLICTING_FACT_PROJECTION",fact.customerId()));
             } else {
                 var refs=new TreeSet<>(previous.sourceIds());refs.addAll(fact.sourceIds());
                 facts.put(id,new Fact(previous.factId(),previous.kind(),previous.source(),List.copyOf(refs),previous.customerId(),
@@ -174,7 +260,7 @@ public class SupportPaymentFactService {
         String logical=fact.customerId()+":"+fact.kind()+":"+fact.currency()+":"+logicalKey;
         String prior=logicalPayments.putIfAbsent(logical,id);
         if(prior!=null && !prior.equals(id)) {
-            rejected.add(prior);rejected.add(id);issues.add(new Issue(fact.source(),fact.sourceIds().get(0),"DUPLICATE_PAYMENT_SOURCE"));
+            rejected.add(prior);rejected.add(id);issues.add(new Issue(fact.source(),fact.sourceIds().get(0),"DUPLICATE_PAYMENT_SOURCE",fact.customerId()));
         }
     }
     private static boolean sameCapturedProjection(Fact left,Fact right) {

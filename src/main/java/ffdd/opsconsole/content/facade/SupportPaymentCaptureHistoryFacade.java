@@ -10,6 +10,12 @@ import java.util.List;
 public interface SupportPaymentCaptureHistoryFacade extends DomainFacade {
     List<Envelope> readNewFinancialProofs(Collection<Long> customerIds);
 
+    /** Old readers supply no birth evidence and therefore cannot certify first history. */
+    default List<BirthEvidence> readBirths(Collection<Long> customerIds) { return List.of(); }
+
+    record BirthEvidence(Long customerId, String captureProtocol, String birthOrigin,
+        LocalDateTime birthDbUtc, Integer sandboxAtBirth, String environmentStatus) { }
+
     record Identity(String factId, long customerId, String kind, String source, long ledgerId,
         String sourceBusinessId, String orderNo, String orderType, String originalFactId,
         String currency, BigDecimal amount, LocalDateTime succeededAt, String sourceBusinessZone,
