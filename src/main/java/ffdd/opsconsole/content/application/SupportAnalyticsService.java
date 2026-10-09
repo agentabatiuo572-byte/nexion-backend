@@ -176,9 +176,7 @@ public class SupportAnalyticsService {
                 Fact previous=facts.putIfAbsent(fact.factId(),fact);
                 if(previous!=null && !sameFinancial(previous,fact))throw invalid("SUPPORT_ANALYTICS_FINANCIAL_CONFLICT");
             }
-            var order=Comparator.comparing(Fact::succeededAt).thenComparingInt(f -> f.kind()==Kind.DEPOSIT?0:1).thenComparing(Fact::factId);
-            for(Fact fact:facts.values())if(fact.kind()!=Kind.DEVICE_PURCHASE_REFUND)
-                first.merge(fact.customerId(),fact,(left,right) -> order.compare(left,right)<=0?left:right);
+            first.putAll(selectFirstFacts(facts.values()));
             for(var issue:snapshot.issues())reasons.add("FINANCIAL_SOURCE_UNVERIFIED");
         } else reasons.add("NO_OBSERVED_FINANCIAL_SCOPE");
         if(invitations!=null)validateSnapshotBoundary(snapshot,ids);
@@ -394,7 +392,7 @@ public class SupportAnalyticsService {
                 || scope.requestedAgentId()!=null && !scope.requestedAgentId().equals(row.ownerAgentId()))
             throw invalid("SUPPORT_ANALYTICS_CURRENT_OWNER_INVALID");
     }
-    private static void validateSnapshotBoundary(Snapshot snapshot,Set<Long> ids) {
+    static void validateSnapshotBoundary(Snapshot snapshot,Set<Long> ids) {
         if(snapshot==null)return;
         try {ZoneId.of(snapshot.businessZone());}catch(RuntimeException ex){throw invalid("SUPPORT_ANALYTICS_FINANCIAL_INVALID");}
         if(snapshot.evaluatedAt()==null || snapshot.facts().stream().anyMatch(f->f==null || !ids.contains(f.customerId()))
@@ -752,7 +750,7 @@ public class SupportAnalyticsService {
             case ALL -> true;
         };
     }
-    private static boolean aligned(AttributionRow r,Fact f,String sourceZone) {
+    static boolean aligned(AttributionRow r,Fact f,String sourceZone) {
         return Objects.equals(r.customerId(),f.customerId()) && Objects.equals(r.kind(),f.kind().name()) && Objects.equals(r.source(),f.source().name())
             && Objects.equals(r.ledgerId(),f.ledgerId()) && Objects.equals(r.sourceBusinessId(),f.sourceBusinessId())
             && Objects.equals(r.orderNo(),f.orderNo()) && Objects.equals(r.orderType(),f.orderType()) && Objects.equals(r.originalFactId(),f.originalFactId())
@@ -760,7 +758,7 @@ public class SupportAnalyticsService {
             && Objects.equals(r.succeededAt(),f.succeededAt()) && Objects.equals(r.sourceBusinessZone(),sourceZone)
             && Objects.equals(r.successTimeField(),f.successTimeField()) && Objects.equals(r.fractionalSecondDigits(),f.fractionalSecondDigits());
     }
-    private static boolean validLayers(AttributionRow row) {
+    static boolean validLayers(AttributionRow row) {
         if(!"support-payment-attribution-v1".equals(row.captureSchemaVersion())
                 || !("NEW_SUCCESS".equals(row.captureMode()) || "OLD_SOURCE".equals(row.captureMode())))return false;
         if(!layer(row.agentStatus(),row.agentAdminId()) || !layer(row.groupStatus(),row.groupId()) || !layer(row.ownerStatus(),row.ownerAdminId()))return false;
@@ -770,7 +768,7 @@ public class SupportAnalyticsService {
     private static boolean layer(String status,Long id) {
         return "KNOWN".equals(status)?id!=null && id>0:("UNASSIGNED".equals(status) || "UNKNOWN".equals(status)) && id==null;
     }
-    private static boolean proofRejected(Snapshot snapshot,Fact fact) {
+    static boolean proofRejected(Snapshot snapshot,Fact fact) {
         // Capture readers identify a canonical fact; legacy reconciliation identifies an original
         // source row. A null ID reports a failure of this source for the whole requested scope.
         return snapshot.issues().stream().anyMatch(i -> (i.source()==null || i.source()==fact.source())
@@ -778,7 +776,7 @@ public class SupportAnalyticsService {
             && (i.sourceId()==null || Objects.equals(i.sourceId(),fact.factId()) || fact.sourceIds().contains(i.sourceId()))
             && SupportPaymentFacts.rejectsAttributionProof(i.reason()));
     }
-    private static boolean sameFinancial(Fact a,Fact b) {
+    static boolean sameFinancial(Fact a,Fact b) {
         return a.customerId()==b.customerId() && a.kind()==b.kind() && a.source()==b.source() && a.ledgerId()==b.ledgerId()
             && Objects.equals(a.sourceBusinessId(),b.sourceBusinessId()) && Objects.equals(a.orderNo(),b.orderNo())
             && Objects.equals(a.orderType(),b.orderType()) && Objects.equals(a.originalFactId(),b.originalFactId())
@@ -795,7 +793,14 @@ public class SupportAnalyticsService {
         return new Money(amount,null,(long)rows.size(),null,rows.stream().map(Fact::customerId).distinct().count(),Status.PARTIAL,
             List.of("COMPLETE_HISTORY_NOT_PROVEN","COMPLETE_REFUNDS_NOT_PROVEN","HISTORICAL_ENVIRONMENT_UNVERIFIED"));
     }
-    private static boolean firstReady(Map<Long,SupportPaymentFacts.FirstHistory> histories,long customer) {
+    static Map<Long,Fact> selectFirstFacts(Collection<Fact> facts) {
+        var first=new TreeMap<Long,Fact>();
+        var order=Comparator.comparing(Fact::succeededAt).thenComparingInt(f -> f.kind()==Kind.DEPOSIT?0:1).thenComparing(Fact::factId);
+        for(Fact fact:facts)if(fact.kind()!=Kind.DEVICE_PURCHASE_REFUND)
+            first.merge(fact.customerId(),fact,(left,right) -> order.compare(left,right)<=0?left:right);
+        return first;
+    }
+    static boolean firstReady(Map<Long,SupportPaymentFacts.FirstHistory> histories,long customer) {
         var history=histories.get(customer);
         return history!=null && history.status()==SupportPaymentFacts.Status.READY;
     }
