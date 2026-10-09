@@ -171,6 +171,22 @@ class OpsPlatformConfigServiceTest {
                 any());
     }
 
+    @Test
+    void leaderboardParamUsesExistingRangeExpectedReasonRoleAuditAndIdempotencyContract() {
+        String key="support.leaderboard.refresh_interval_minutes";
+        repository.put(activeConfig(8L,key,"5","admin_platform_param"));
+        assertThat(service.overview().getData().platformParams()).anySatisfy(param -> assertThat(param).containsEntry("key",key));
+        for(String invalid:List.of("0","61"))assertFailure(new PlatformConfigUpdateRequest("param",key,null,invalid,"5","planned refresh change",null),"A3_PARAM_OUT_OF_RANGE");
+        assertFailure(new PlatformConfigUpdateRequest("param",key,null,"1","4","planned refresh change",null),"A3_PARAM_STALE");
+        assertFailure(new PlatformConfigUpdateRequest("param",key,null,"1","5","short",null),"A3_REASON_LENGTH_INVALID");
+        when(roleResolver.resolveCode()).thenReturn("SUPPORT");
+        assertFailure(new PlatformConfigUpdateRequest("param",key,null,"1","5","planned refresh change",null),"A3_PARAM_ROLE_FORBIDDEN");
+        when(roleResolver.resolveCode()).thenReturn("SUPER_ADMIN");
+        var result=service.update("idem-refresh",new PlatformConfigUpdateRequest("param",key,null,"60","5","planned refresh change","spoofed-user"));
+        assertThat(result.getCode()).isZero();assertThat(result.getData().configValue()).isEqualTo("60");
+        verify(auditLogService).recordRequired(any());
+        verify(idempotencyService).execute(org.mockito.ArgumentMatchers.eq("A3_PLATFORM_PARAM:"+key),org.mockito.ArgumentMatchers.eq("idem-refresh"),anyString(),org.mockito.ArgumentMatchers.eq(ApiResult.class),any());
+    }
     private void assertFailure(PlatformConfigUpdateRequest request, String message) {
         ApiResult<PlatformConfigResponse> result = service.update("idem-test-" + message, request);
         assertThat(result.getCode()).isIn(

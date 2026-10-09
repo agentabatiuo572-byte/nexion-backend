@@ -52,7 +52,11 @@ public class OpsPlatformConfigService {
             "withdrawal.strong_review_threshold_usdt",
             new ParamDefinition("withdrawal.strong_review_threshold_usdt", "提现强审阈值",
                     "达到该 USDT 金额的提现必须进入人工强审", "USDT", 20, 10_000_000,
-                    "D2 AppWithdrawalService + B1/B5 withdrawal projection", List.of("SUPER_ADMIN")));
+                    "D2 AppWithdrawalService + B1/B5 withdrawal projection", List.of("SUPER_ADMIN")),
+            "support.leaderboard.refresh_interval_minutes",
+            new ParamDefinition("support.leaderboard.refresh_interval_minutes", "业绩榜刷新间隔",
+                    "公开业绩榜重新计算的间隔", "分钟", 1, 60,
+                    "SupportLeaderboardService", List.of("SUPER_ADMIN")));
 
     private final PlatformConfigRepository configRepository;
     private final AuditLogService auditLogService;

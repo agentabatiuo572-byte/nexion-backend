@@ -111,6 +111,20 @@ public class SupportAdminAvatarService {
         }
         return attachedContent(admin);
     }
+    /** Only the current public service can construct this authorization; private avatar scopes are unchanged. */
+    @Transactional(propagation=Propagation.MANDATORY)
+    public SupportAttachmentService.Content publicLeaderboardContent(SupportLeaderboardService.AvatarAuthorization authorization) {
+        if(authorization==null || !TransactionSynchronizationManager.isActualTransactionActive())
+            throw new BizException(403,"AVATAR_READ_FORBIDDEN");
+        Long actor=attachments.actor("ADMIN");
+        if(actor!=authorization.actor() || (!SupportOwnershipService.hasAuthority("service_m1_read")
+            && !SupportOwnershipService.hasAuthority("service_m3_read")))throw new BizException(403,"AVATAR_READ_FORBIDDEN");
+        var reference=mapper.reference(authorization.agent());
+        if(reference==null || reference.get("assetId")==null)throw missing();
+        if(!Objects.equals(reference.get("assetId"),authorization.assetId())
+            || !(reference.get("version") instanceof Number version) || version.longValue()!=authorization.assetVersion())throw conflict();
+        return attachedContent(authorization.agent());
+    }
     private SupportAttachmentService.Content attachedContent(Long admin) {
         var ref=mapper.reference(admin);if(ref==null || ref.get("assetId")==null)throw missing();
         var row=find(ref.get("assetId").toString());
