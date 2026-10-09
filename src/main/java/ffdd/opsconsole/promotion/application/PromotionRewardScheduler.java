@@ -1,5 +1,6 @@
 package ffdd.opsconsole.promotion.application;
 
+import java.util.concurrent.atomic.AtomicReference;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -12,6 +13,7 @@ import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 public class PromotionRewardScheduler {
     private final PromotionRewardService rewards;
     private final PromotionAvailabilityService availability;
+    private final AtomicReference<String> reversalCursor=new AtomicReference<>("");
     @Scheduled(fixedDelayString="${nexion.promotion.dispatch-delay-ms:60000}")
     public void dispatch(){
         String cursor="";
@@ -32,10 +34,9 @@ public class PromotionRewardScheduler {
                 catch(RuntimeException auditFailure){log.error("Promotion failure could not be recorded obligation={}",id,auditFailure);}
             }
         }
-        cursor="";
-        while(true){
-          var reversals=rewards.reversalsAfter(cursor,50);if(reversals.isEmpty())break;
-          for(String id:reversals){
+        var reversals=rewards.reversalsAfter(reversalCursor.get(),50);
+        if(reversals.isEmpty()){reversalCursor.set("");return;}
+        for(String id:reversals){
             String command=id("PC");
             try{rewards.reverseRefund(id,command);}
             catch(RuntimeException failure){
@@ -43,8 +44,7 @@ public class PromotionRewardScheduler {
                 try{rewards.recordActionFailure(id,command,"REVERSE",failure.getMessage());}
                 catch(RuntimeException auditFailure){log.error("Promotion recovery failure could not be recorded obligation={}",id,auditFailure);}
             }
-          }
-          cursor=reversals.get(reversals.size()-1);if(reversals.size()<50)break;
+            reversalCursor.set(id);
         }
     }
 }
