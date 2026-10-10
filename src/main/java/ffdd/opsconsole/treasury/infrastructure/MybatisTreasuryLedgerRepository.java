@@ -3,6 +3,7 @@ package ffdd.opsconsole.treasury.infrastructure;
 
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import ffdd.opsconsole.treasury.mapper.TreasuryLedgerMapper;
@@ -309,6 +310,12 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
         }
         BigDecimal safeAmount = nz(amount).abs().setScale(6, java.math.RoundingMode.UNNECESSARY);
         BigDecimal safeNexBurned = nz(nexBurned).abs().setScale(6, java.math.RoundingMode.UNNECESSARY);
+        WalletLedgerEntity providerRefund = mapper.findLedgerEntry(withdrawalNo + ":PAYOUT:USDT:REFUND", "USDT", "IN");
+        if (providerRefund != null) {
+            assertSameLedgerFingerprint(providerRefund, userId, "WITHDRAW_PAYOUT_REFUND", safeAmount, "POSTED",
+                    "Provider payout failed; reserved withdrawal returned");
+            throw new BizException(409, "WITHDRAWAL_ALREADY_REFUNDED_BY_PROVIDER");
+        }
         BigDecimal usdtBefore = actualUserBalance(userId, "USDT").orElse(BigDecimal.ZERO);
         BigDecimal nexBefore = actualUserBalance(userId, "NEX").orElse(BigDecimal.ZERO);
         if (mapper.releasePendingWithdrawalWithNex(userId, safeAmount, safeNexBurned) != 1) {

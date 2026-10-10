@@ -201,6 +201,76 @@ class MybatisTreasuryLedgerRepositoryTest {
                 org.mockito.ArgumentMatchers.anyMap());
     }
 
+    @Test
+    void priorProviderRefundCannotReleaseAnotherWithdrawalReserve() {
+        TreasuryLedgerMapper mapper = mock(TreasuryLedgerMapper.class);
+        EventOutboxService outbox = mock(EventOutboxService.class);
+        MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox);
+        WalletLedgerEntity priorRefund = providerRefundEvidence();
+        when(mapper.findLedgerEntry("WD-PROVIDER:PAYOUT:USDT:REFUND", "USDT", "IN"))
+                .thenReturn(priorRefund);
+        // A different pending withdrawal can satisfy the aggregate SQL balance predicate.
+        when(mapper.releasePendingWithdrawalWithNex(7L, new BigDecimal("100.000000"), BigDecimal.ZERO.setScale(6)))
+                .thenReturn(1);
+        when(mapper.insertLedgerEntry(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString())).thenReturn(1);
+
+        assertThatThrownBy(() -> repository.refundWithdrawal(
+                "WD-PROVIDER", 7L, new BigDecimal("100"), "USDT", "funds were verified unpaid"))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage("WITHDRAWAL_ALREADY_REFUNDED_BY_PROVIDER");
+        org.mockito.Mockito.verify(mapper, never()).releasePendingWithdrawalWithNex(
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.verify(mapper, never()).insertLedgerEntry(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+        org.mockito.Mockito.verifyNoInteractions(outbox);
+    }
+
+    @Test
+    void conflictingProviderRefundEvidenceStopsBeforeWalletMutation() {
+        for (String conflict : java.util.List.of("user", "amount", "type", "status")) {
+            TreasuryLedgerMapper mapper = mock(TreasuryLedgerMapper.class);
+            EventOutboxService outbox = mock(EventOutboxService.class);
+            MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox);
+            WalletLedgerEntity evidence = providerRefundEvidence();
+            switch (conflict) {
+                case "user" -> evidence.setUserId(8L);
+                case "amount" -> evidence.setAmount(new BigDecimal("99"));
+                case "type" -> evidence.setBizType("ADJUSTMENT");
+                case "status" -> evidence.setStatus(null);
+                default -> throw new AssertionError(conflict);
+            }
+            when(mapper.findLedgerEntry("WD-PROVIDER:PAYOUT:USDT:REFUND", "USDT", "IN"))
+                    .thenReturn(evidence);
+            assertThatThrownBy(() -> repository.refundWithdrawal(
+                    "WD-PROVIDER", 7L, new BigDecimal("100"), "USDT", "retain conflicting refund evidence"))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("D4_LEDGER_IDEMPOTENCY_CONFLICT");
+            org.mockito.Mockito.verify(mapper, never()).releasePendingWithdrawalWithNex(
+                    org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+            org.mockito.Mockito.verifyNoInteractions(outbox);
+        }
+    }
+
+    private static WalletLedgerEntity providerRefundEvidence() {
+        WalletLedgerEntity evidence = new WalletLedgerEntity();
+        evidence.setUserId(7L);
+        evidence.setBizNo("WD-PROVIDER:PAYOUT:USDT:REFUND");
+        evidence.setBizType("WITHDRAW_PAYOUT_REFUND");
+        evidence.setAsset("USDT");
+        evidence.setDirection("IN");
+        evidence.setAmount(new BigDecimal("100"));
+        evidence.setStatus("POSTED");
+        evidence.setRemark("Provider payout failed; reserved withdrawal returned");
+        return evidence;
+    }
+
     private static String uniqueKey(String bizNo, String asset, String direction) {
         return "D4_BIZ_" + UUID.nameUUIDFromBytes(
                 (bizNo + "|" + asset + "|" + direction).getBytes(StandardCharsets.UTF_8));

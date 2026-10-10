@@ -11,6 +11,8 @@ import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -20,6 +22,8 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class HttpHdPayGatewayTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -195,6 +199,50 @@ class HttpHdPayGatewayTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"200", "\"200\""})
+    void queryAcceptsOnlyIntegralOrExactTextSuccessCode(String code) throws Exception {
+        HdPayGateway.PayOrder order = queryGatewayWithPublicResponse(code).queryPayOrder("FIXTURE-Q-01");
+
+        assertThat(order.merchantOrderId()).isEqualTo("FIXTURE-Q-01");
+        assertThat(order.providerOrderId()).isEqualTo("FIXTURE-P-01");
+        assertThat(order.orderStatus()).isEqualTo(3);
+        assertThat(order.transAmt()).isEqualByComparingTo("131923610");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"200.0", "200.7", "\"200.7\"", "\"200.0\"", "\" 200 \"",
+            "\"0200\"", "\"+200\"", "4294967496", "9223372036854776008", "500", "\"500\"",
+            "null", "true", "[]", "{}"})
+    void queryRejectsCoercedOrNonSuccessCodes(String code) throws Exception {
+        HttpHdPayGateway gateway = queryGatewayWithPublicResponse(code);
+
+        assertThatThrownBy(() -> gateway.queryPayOrder("FIXTURE-Q-01"))
+                .isInstanceOf(HdPayGatewayException.class).hasMessage("HDPAY_QUERY_REJECTED")
+                .satisfies(ex -> assertThat(((HdPayGatewayException) ex).ambiguous()).isFalse());
+    }
+
+    @SuppressWarnings("unchecked")
+    private HttpHdPayGateway queryGatewayWithPublicResponse(String code) throws Exception {
+        HdPayProperties properties = new HdPayProperties();
+        properties.setMode(HdPayProperties.Mode.PROVIDER);
+        properties.setBaseUrl("https://provider.fixture.example/api/order");
+        properties.setCallbackBaseUrl("https://callback.fixture.example");
+        properties.setCallbackHosts(List.of("callback.fixture.example"));
+        properties.setMerchantId("100001");
+        properties.setMd5Key("PUBLIC-FIXTURE-ONLY-KEY");
+        HttpClient client = org.mockito.Mockito.mock(HttpClient.class);
+        HttpResponse<byte[]> response = org.mockito.Mockito.mock(HttpResponse.class);
+        org.mockito.Mockito.when(response.statusCode()).thenReturn(200);
+        org.mockito.Mockito.when(response.body()).thenReturn(("{\"code\":" + code
+                + ",\"data\":{\"merchantId\":\"100001\",\"merchantOrderId\":\"FIXTURE-Q-01\","
+                + "\"orderId\":\"FIXTURE-P-01\",\"orderStatus\":3,\"transAmt\":131923610,"
+                + "\"payType\":\"BANKQR\",\"appLink\":\"\"}}").getBytes(StandardCharsets.UTF_8));
+        org.mockito.Mockito.when(client.send(org.mockito.ArgumentMatchers.any(HttpRequest.class),
+                org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<byte[]>>any())).thenReturn(response);
+        return new HttpHdPayGateway(properties, objectMapper, client);
     }
 
     @Test
