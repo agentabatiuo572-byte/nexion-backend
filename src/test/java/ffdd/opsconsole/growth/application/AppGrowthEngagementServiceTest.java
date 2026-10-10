@@ -33,6 +33,7 @@ import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.StreakState;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.VoucherClaimDefinition;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -47,6 +48,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -958,6 +960,100 @@ class AppGrowthEngagementServiceTest {
         assertThat(row).containsEntry("grantStatus", "EXPIRED");
         assertThat(row).containsEntry("claimable", false);
         assertThat(row).containsEntry("definitionDeleted", 1);
+    }
+
+    @Test
+    void voucherStateProjectsMissingAndNullConfigurationAsEmptyLists() {
+        Map<String, Object> missing = Map.of("voucherId", "V-MISSING");
+        Map<String, Object> nullable = new LinkedHashMap<>();
+        nullable.put("voucherId", "V-NULL");
+        nullable.put("applicableSkus", null);
+        nullable.put("claimSurfaces", null);
+        when(mapper.voucherState(eq(42L), anyLong())).thenReturn(List.of(missing, nullable));
+
+        var result = service.voucherState(42L);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) result.getData().get("vouchers");
+
+        assertThat(rows).allSatisfy(row -> {
+            assertThat(row).containsEntry("applicableSkus", List.of());
+            assertThat(row).containsEntry("claimSurfaces", List.of());
+        });
+        assertThat(missing).doesNotContainKeys("applicableSkus", "claimSurfaces");
+        assertThat(nullable).containsEntry("applicableSkus", null).containsEntry("claimSurfaces", null);
+        assertThat(result.getData()).containsEntry("source", "nx_growth_voucher + nx_growth_voucher_grant")
+                .containsEntry("serverCanonical", true)
+                .containsEntry("provenance", Map.of("source", "nx_growth_voucher",
+                        "sourceEnvironment", "PRODUCTION", "runId", ""));
+    }
+
+    @Test
+    void voucherStatePreservesConfiguredJsonSkuAndClaimSurfaceLists() {
+        Map<String, Object> configured = Map.of("voucherId", "V-JSON",
+                "applicableSkus", "[\"SKU-2\",\"SKU-1\"]", "claimSurfaces", "[\"me\",\"earn\"]");
+        Map<String, Object> empty = Map.of("voucherId", "V-EMPTY",
+                "applicableSkus", "[]", "claimSurfaces", "[]");
+        when(mapper.voucherState(eq(42L), anyLong())).thenReturn(List.of(configured, empty));
+
+        var result = service.voucherState(42L);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) result.getData().get("vouchers");
+
+        assertThat(rows.get(0)).containsEntry("applicableSkus", List.of("SKU-2", "SKU-1"))
+                .containsEntry("claimSurfaces", List.of("me", "earn"));
+        assertThat(rows.get(1)).containsEntry("applicableSkus", List.of())
+                .containsEntry("claimSurfaces", List.of());
+        assertThat(configured).containsEntry("applicableSkus", "[\"SKU-2\",\"SKU-1\"]")
+                .containsEntry("claimSurfaces", "[\"me\",\"earn\"]");
+    }
+
+    @Test
+    void voucherStatePreservesAlreadyDecodedListValues() {
+        when(mapper.voucherState(eq(42L), anyLong())).thenReturn(List.of(Map.of(
+                "voucherId", "V-LIST", "applicableSkus", List.of("SKU-3", "SKU-1"),
+                "claimSurfaces", List.of("earn", "home", "store", "me"))));
+
+        var result = service.voucherState(42L);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> row = ((List<Map<String, Object>>) result.getData().get("vouchers")).get(0);
+
+        assertThat(row).containsEntry("applicableSkus", List.of("SKU-3", "SKU-1"))
+                .containsEntry("claimSurfaces", List.of("earn", "home", "store", "me"));
+    }
+
+    @Test
+    void voucherStateRejectsInvalidListConfigurationInsteadOfInventingAnEmptyList() {
+        List<Object> invalidValues = List.of("", "not-json", "null", "{}", "\"SKU-1\"", "[1]",
+                "[\"\"]", "[null]", "[] []", "[\"\u00a0\"]", "[\"\u2007\"]", "[\"\u202f\"]", "[\"\ufeff\"]",
+                1, Map.of(), List.of(1), List.of(""), List.of("\u00a0\u2007\u202f\ufeff"));
+        for (String field : List.of("applicableSkus", "claimSurfaces")) {
+            for (Object invalid : invalidValues) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("voucherId", "V-INVALID");
+                row.put("applicableSkus", List.of());
+                row.put("claimSurfaces", List.of());
+                row.put(field, invalid);
+                when(mapper.voucherState(eq(42L), anyLong())).thenReturn(List.of(row));
+
+                assertThatThrownBy(() -> service.voucherState(42L)).as("%s: %s", field, invalid)
+                        .isInstanceOf(BizException.class)
+                        .hasMessage("VOUCHER_CONFIGURATION_INVALID")
+                        .extracting("code").isEqualTo(503);
+            }
+        }
+    }
+
+    @Test
+    void voucherStateRejectsUnsupportedClaimSurfaces() {
+        for (Object invalid : List.of("[\"unknown\"]", List.of("HOME"))) {
+            when(mapper.voucherState(eq(42L), anyLong())).thenReturn(List.of(Map.of(
+                    "voucherId", "V-SURFACE", "applicableSkus", List.of(), "claimSurfaces", invalid)));
+
+            assertThatThrownBy(() -> service.voucherState(42L))
+                    .isInstanceOf(BizException.class)
+                    .hasMessage("VOUCHER_CONFIGURATION_INVALID")
+                    .extracting("code").isEqualTo(503);
+        }
     }
 
     @Test

@@ -1,5 +1,9 @@
 package ffdd.opsconsole.growth.application;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
 import ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
@@ -61,6 +65,9 @@ import org.springframework.util.StringUtils;
 public class AppGrowthEngagementService {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final ZoneId H5_BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
+    private static final ObjectReader VOUCHER_LIST_READER = new ObjectMapper().readerFor(List.class)
+            .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    private static final Set<String> VOUCHER_CLAIM_SURFACES = Set.of("home", "store", "me", "earn");
     private static final Set<String> SHARE_CHANNELS = Set.of(
             "telegram", "zalo", "whatsapp", "messenger", "sms", "x",
             "copy", "poster", "system", "code", "link");
@@ -368,6 +375,12 @@ public class AppGrowthEngagementService {
         List<Map<String, Object>> rows = safeList(mapper.voucherState(userId, nowMillis));
         List<Map<String, Object>> vouchers = rows.stream().map(row -> {
             Map<String, Object> item = new LinkedHashMap<>(row);
+            item.put("applicableSkus", voucherStringList(row.get("applicableSkus")));
+            List<String> claimSurfaces = voucherStringList(row.get("claimSurfaces"));
+            if (!VOUCHER_CLAIM_SURFACES.containsAll(claimSurfaces)) {
+                throw new BizException(503, "VOUCHER_CONFIGURATION_INVALID");
+            }
+            item.put("claimSurfaces", claimSurfaces);
             boolean audienceEligible = !"new".equalsIgnoreCase(String.valueOf(row.get("audience")))
                     || attribution.accountAgeMonths() == 0;
             String grantStatus = String.valueOf(row.getOrDefault("grantStatus", "UNCLAIMED")).toUpperCase(Locale.ROOT);
@@ -991,6 +1004,29 @@ public class AppGrowthEngagementService {
 
     private List<Map<String, Object>> safeList(List<Map<String, Object>> value) {
         return value == null ? List.of() : value;
+    }
+
+    private List<String> voucherStringList(Object value) {
+        if (value == null) return List.of();
+        Object parsed = value;
+        if (value instanceof String json) {
+            try {
+                parsed = VOUCHER_LIST_READER.readValue(json);
+            } catch (JsonProcessingException ex) {
+                throw new BizException(503, "VOUCHER_CONFIGURATION_INVALID");
+            }
+        }
+        if (!(parsed instanceof List<?> entries)) {
+            throw new BizException(503, "VOUCHER_CONFIGURATION_INVALID");
+        }
+        List<String> result = new ArrayList<>(entries.size());
+        for (Object entry : entries) {
+            if (!(entry instanceof String text) || text.matches("[\\s\\p{Z}\\uFEFF]*")) {
+                throw new BizException(503, "VOUCHER_CONFIGURATION_INVALID");
+            }
+            result.add(text);
+        }
+        return List.copyOf(result);
     }
 
     private boolean truthy(Object value) {
