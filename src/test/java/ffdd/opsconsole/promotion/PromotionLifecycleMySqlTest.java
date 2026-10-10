@@ -60,6 +60,7 @@ class PromotionLifecycleMySqlTest {
         Files.writeString(Path.of("D:/CodexData/test-environments/workflow-runs/growth-promotions-20261007/promotion-concurrency-runtime"+suffix+".json"),
             json(values("completed",true,"scope","Isolated MySQL promotion transactions; payment/refund source facts use the existing fixture once","scenarioCount",checks.size(),"checks",checks)));
     }
+    // The refund endpoint returns the order; read the locked reward state inside this transaction.
     void issueAndRefundSerializeBothTransactionOrdersForEveryAsset(List<Map<String,Object>> checks) throws Exception {
         setup();var common=h.commonPolicies();
         for(String asset:List.of("DEVICE","USDT","NEX")){
@@ -76,17 +77,17 @@ class PromotionLifecycleMySqlTest {
                         firstConnection.complete(h.db.count("SELECT CONNECTION_ID()"));
                         String state;
                         if(issueFirst)state=text(rewards.issue(obligation,id("RACEISSUE")).get("state"));
-                        else{refund(buyer,order);state=text(rewards.get(buyer,obligation,false).get("state"));}
+                        else{refund(buyer,order);state=text(h.db.requiredRow("SELECT status FROM nx_promotion_reward WHERE obligation_id=? FOR UPDATE",obligation).get("status"));}
                         firstReturned.countDown();awaitRelease(releaseFirst);return state;
                     }));
                     assertTrue(firstReturned.await(10,TimeUnit.SECONDS),"First domain action must return before its transaction is committed");
                     var second=executor.submit(()->{
                         try{return tx.execute(s->{
                             secondConnection.complete(h.db.count("SELECT CONNECTION_ID()"));
-                            if(issueFirst){refund(buyer,order);return text(rewards.get(buyer,obligation,false).get("state"));}
+                            if(issueFirst){refund(buyer,order);return text(h.db.requiredRow("SELECT status FROM nx_promotion_reward WHERE obligation_id=? FOR UPDATE",obligation).get("status"));}
                             return text(rewards.issue(obligation,id("RACEISSUE")).get("state"));
                         });}catch(ffdd.opsconsole.shared.exception.BizException rejected){
-                            assertFalse(issueFirst);assertEquals(409,rejected.getCode());
+                            if(issueFirst)throw rejected;assertEquals(409,rejected.getCode());
                             assertEquals("PROMOTION_REWARD_NOT_RETRYABLE",rejected.getMessage());return rejected.getMessage();
                         }
                     });
