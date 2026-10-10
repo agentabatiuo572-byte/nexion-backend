@@ -38,9 +38,7 @@ public class PromotionPublicService {
     }
     private Map<String,Object> view(Map<String,Object> row,Long user){
         Map<String,Object> contract=parse(row.get("contract_json"));Instant now=Instant.now();
-        String state=text(row.get("status"));
-        if("PAUSED".equals(state)&&!now.isBefore(instant(contract.get("endsAt"))))state="ENDED";
-        if(Set.of("ACTIVE","SCHEDULED").contains(state))state=now.isBefore(instant(contract.get("startsAt")))?"SCHEDULED":now.isBefore(instant(contract.get("endsAt")))?"ACTIVE":"ENDED";
+        String state=effectiveLifecycle(row.get("status"),contract,now);
         String eligibility=user==null?"SIGN_IN_REQUIRED":"UNKNOWN";
         if(user!=null){
             Map<String,Object> policies=parse(row.get("resolved_policies_json"));
