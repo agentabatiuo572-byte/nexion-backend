@@ -125,10 +125,12 @@ public class QuestCanonicalEventProjector {
             if (userId == null) {
                 throw new IllegalArgumentException("QUEST_CANONICAL_USER_ID_REQUIRED");
             }
-            // A frozen Day-One snapshot is the authoritative route for this user.
-            // Never let a later PC edit re-map the old source event to a current
-            // Day-One mission; non-Day-One bindings on the same event stay intact.
-            if (snapshotUsers.contains(userId) && "DAY_ONE".equals(binding.missionType())) {
+            // Even when this new event has no matching frozen rule, an existing
+            // snapshot (including EMPTY) owns the user's Day-One definition.
+            // Only users without any snapshot retain the legacy live route.
+            if ("DAY_ONE".equals(binding.missionType())
+                    && (snapshotUsers.contains(userId) || (dayOneInstanceMapper != null
+                    && dayOneInstanceMapper.findLatestByUserId(userId) != null))) {
                 continue;
             }
             String factEventId = message.getEventId() + ":" + binding.bindingCode();

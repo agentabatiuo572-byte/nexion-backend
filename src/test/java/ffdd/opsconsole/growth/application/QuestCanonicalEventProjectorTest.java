@@ -14,9 +14,11 @@ import ffdd.opsconsole.growth.mapper.QuestCanonicalEventBindingMapper;
 import ffdd.opsconsole.growth.mapper.QuestCanonicalEventBindingMapper.CanonicalQuestEventBinding;
 import ffdd.opsconsole.growth.mapper.DayOneInstanceMapper;
 import ffdd.opsconsole.growth.mapper.DayOneInstanceMapper.DayOneSnapshotBinding;
+import ffdd.opsconsole.growth.facade.DayOneInstanceFacade.DayOneInstanceSnapshot;
 import ffdd.opsconsole.shared.outbox.EventConsumerDeliveryService;
 import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
 import java.time.LocalDateTime;
+import java.math.BigDecimal;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -267,6 +269,59 @@ class QuestCanonicalEventProjectorTest {
         verify(factConsumer, never()).consume(new QuestCompletionCommand("SYSTEM", "evt-remap:CURRENT_REMAP", 990725L,
                 "new_pc_quest", EVENT_TS));
         verify(deliveryService).markSuccess(QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-remap", 1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"SNAPSHOT", "EMPTY"})
+    void currentDayOneNewEventCannotCompleteAnExistingFrozenInstance(String snapshotStatus) {
+        when(bindingMapper.listActiveBindings("LEARNING_COURSE_COMPLETED")).thenReturn(List.of(
+                new CanonicalQuestEventBinding("CURRENT_REBIND", "LEARNING", "LEARNING_COURSE_COMPLETED",
+                        "custom_quest", "user_id", "DAY_ONE")));
+        when(dayOneInstances.listInWindowSnapshotBindings(List.of(7L), "LEARNING_COURSE_COMPLETED", EVENT_TS))
+                .thenReturn(List.of());
+        when(dayOneInstances.findLatestByUserId(7L)).thenReturn(frozenInstance(snapshotStatus));
+
+        projector.project(event("evt-new-rule", "LEARNING_COURSE_COMPLETED", "{\"user_id\":7}"), "evt-new-rule");
+
+        verify(dayOneInstances).findLatestByUserId(7L);
+        verify(factConsumer, never()).consume(any());
+        verify(deliveryService).markSuccess(QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-new-rule", 0);
+    }
+
+    @Test
+    void currentDayOneRouteStillCompletesForALegacyUserWithoutAnySnapshot() {
+        when(bindingMapper.listActiveBindings("LEARNING_COURSE_COMPLETED")).thenReturn(List.of(
+                new CanonicalQuestEventBinding("LEGACY_RULE", "LEARNING", "LEARNING_COURSE_COMPLETED",
+                        "custom_quest", "user_id", "DAY_ONE")));
+        when(dayOneInstances.findLatestByUserId(7L)).thenReturn(null);
+
+        projector.project(event("evt-legacy-rule", "LEARNING_COURSE_COMPLETED", "{\"user_id\":7}"), "evt-legacy-rule");
+
+        verify(dayOneInstances).findLatestByUserId(7L);
+        verify(factConsumer).consume(new QuestCompletionCommand("LEARNING", "evt-legacy-rule:LEGACY_RULE",
+                7L, "custom_quest", EVENT_TS));
+        verify(deliveryService).markSuccess(QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-legacy-rule", 1);
+    }
+
+    @Test
+    void weeklyBindingStillCompletesWhenItsUserHasAFrozenDayOneInstance() {
+        when(bindingMapper.listActiveBindings("LEARNING_COURSE_COMPLETED")).thenReturn(List.of(
+                new CanonicalQuestEventBinding("WEEKLY_RULE", "LEARNING", "LEARNING_COURSE_COMPLETED",
+                        "weekly_custom_quest", "user_id", "WEEKLY_T1")));
+        when(dayOneInstances.findLatestByUserId(7L)).thenReturn(frozenInstance("SNAPSHOT"));
+
+        projector.project(event("evt-weekly-rule", "LEARNING_COURSE_COMPLETED", "{\"user_id\":7}"), "evt-weekly-rule");
+
+        verify(dayOneInstances, never()).findLatestByUserId(any());
+        verify(factConsumer).consume(new QuestCompletionCommand("LEARNING", "evt-weekly-rule:WEEKLY_RULE",
+                7L, "weekly_custom_quest", EVENT_TS));
+        verify(deliveryService).markSuccess(QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-weekly-rule", 1);
+    }
+
+    private DayOneInstanceSnapshot frozenInstance(String status) {
+        return new DayOneInstanceSnapshot(71L, 7L, "DAY_ONE:20260901T090000", status,
+                EVENT_TS.minusMinutes(30), 72, 24, EVENT_TS.plusHours(71), "{}", BigDecimal.ONE,
+                1, "EMPTY".equals(status) ? 0 : 1, "frozen-definition-hash");
     }
 
     private EventOutboxMessage event(String eventId, String eventType, String payload) {
