@@ -135,19 +135,20 @@ class SupportLeaderboardSourceServiceTest {
         assertEquals(d11,SupportAnalyticsService.selectFirstFacts(List.of(d2,purchase,d11)).get(1L));
         assertEquals(d11,SupportAnalyticsService.selectFirstFacts(List.of(d11,d2,purchase)).get(1L));
     }
-    @Test void confirmedFirstCountDoesNotInheritUnknownReferenceRefundAmount() {
+    @Test void confirmedFirstCountAndDepositAmountDoNotInheritUnknownRefundCoverage() {
         for(String currency:List.of("NEX","USDT")) {
             var f=new Fixture();var fact=fact(1,2,Kind.DEPOSIT,"USDT",LocalDateTime.parse("2026-10-01T10:00:00"));
             f.events(fact);f.financial(List.of(fact),ready(1));var r=f.read(context(Board.firstPayment,currency,Scope.all,Set.of()));
             var c=r.candidates().get(0);assertEquals(1L,c.firstPayment().value());assertEquals(Coverage.COMPLETE,c.firstPayment().coverage());
-            assertNull(c.amount().value());assertEquals(Coverage.UNKNOWN,c.amount().coverage());assertEquals(currency,c.amount().currency());
-            assertEquals(Reason.REFUNDS_UNKNOWN,c.amount().reason());assertEquals(Coverage.PARTIAL,r.candidateCoverage());
+            assertEquals(0,(currency.equals("USDT")?new BigDecimal("1.25"):BigDecimal.ZERO).compareTo(c.amount().value()));
+            assertEquals(Coverage.COMPLETE,c.amount().coverage());assertEquals(currency,c.amount().currency());
+            assertEquals(Reason.NONE,c.amount().reason());assertEquals(Coverage.PARTIAL,r.candidateCoverage());
         }
     }
     @Test void unknownFirstAndMoneyStayNullAndDepositPurchaseAreNeverAdded() {
         var f=new Fixture();var deposit=f.read(Board.deposit);var purchase=f.read(Board.purchase);
         assertNull(deposit.candidates().get(0).firstPayment().value());assertNull(deposit.candidates().get(0).amount().value());
-        assertEquals(AmountKind.DEPOSIT,deposit.candidates().get(0).amount().kind());assertEquals(Reason.REFUNDS_UNKNOWN,deposit.candidates().get(0).amount().reason());
+        assertEquals(AmountKind.DEPOSIT,deposit.candidates().get(0).amount().kind());assertEquals(Reason.HISTORY_UNKNOWN,deposit.candidates().get(0).amount().reason());
         assertNull(purchase.candidates().get(0).amount().value());assertEquals(AmountKind.PURCHASE,purchase.candidates().get(0).amount().kind());
         assertEquals(Reason.SOURCE_INCOMPLETE,purchase.candidates().get(0).amount().reason());
     }
@@ -230,6 +231,113 @@ class SupportLeaderboardSourceServiceTest {
     @Test void samplingCaptureRequiresActiveRrSynchronizationWithoutWeakeningOriginalSingleRead() {
         var f=new Fixture();assertThrows(IllegalStateException.class,f.service::captureForSampling);
         assertEquals(1,f.read(Board.customers).candidates().size());
+    }
+    @Test void everyDepositCountsOnceAndDeviceFirstDoesNotHideLaterDeposits() {
+        var f=new Fixture();var at=LocalDateTime.parse("2026-10-01T10:00:00");
+        var purchase=fact(1,1,Kind.DEVICE_PURCHASE,"NEX",at);
+        var d1=money(fact(1,2,Kind.DEPOSIT,"NEX",at.plusSeconds(1)),"1.123456");
+        var d2=money(fact(1,3,Kind.DEPOSIT,"NEX",at.plusSeconds(2)),"2.000001");
+        f.events(purchase,d1,d2);f.financial(List.of(d2,purchase,d1,d1),ready(1));
+        var noRefund=snapshot(List.of(d2,purchase,d1,d1),ready(1));
+        when(f.finance.readHistory(any())).thenReturn(new SupportPaymentFacts.Snapshot(noRefund.facts(),noRefund.issues(),
+            noRefund.coverage().stream().filter(c->c.source()!=Source.ORDER_REFUND).toList(),noRefund.businessZone(),noRefund.evaluatedAt(),noRefund.firstHistory()));
+        var r=f.read(Board.deposit);assertMoney(r,"3.123457");
+        assertEquals(1L,r.candidates().get(0).firstPayment().value());
+        assertEquals(Coverage.PARTIAL,r.candidateCoverage());
+        assertEquals(State.PROVISIONAL,SupportLeaderboard.calculate(r.context(),r.sourceVersion(),r.candidateCoverage(),r.candidates()).state());
+        assertNull(f.read(Board.purchase).candidates().get(0).amount().value());
+        assertEquals(Reason.SOURCE_INCOMPLETE,f.read(Board.purchase).candidates().get(0).amount().reason());
+    }
+    @Test void onlyProvenEmptyCompletePaymentDomainHasKnownZero() {
+        var f=new Fixture();f.financial(List.of(),ready(1));assertMoney(f.read(Board.deposit),"0");
+        f.financial(List.of(),List.of());assertUnknownMoney(f.read(Board.deposit),Reason.HISTORY_UNKNOWN);
+        var observed=fact(1,1,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));f.events(observed);
+        f.financial(List.of(observed),List.of());assertUnknownMoney(f.read(Board.deposit),Reason.HISTORY_UNKNOWN);
+        when(f.mapper.productionCustomers()).thenReturn(List.of());when(f.mapper.currentBindings()).thenReturn(List.of());
+        when(f.mapper.attributions()).thenReturn(List.of());when(f.mapper.attributionProofs()).thenReturn(List.of());
+        assertMoney(f.read(Board.deposit),"0");
+    }
+    @Test void depositMonthIsHalfOpenAndDatabaseCutoffIsInclusive() {
+        var f=new Fixture();var lower=LocalDateTime.parse("2026-10-01T00:00:00");
+        var cutoff=NOW.atOffset(ZoneOffset.UTC).atZoneSameInstant(SupportLeaderboard.BUSINESS_ZONE).toLocalDateTime();
+        var facts=List.of(fact(1,1,Kind.DEPOSIT,"NEX",lower.minusSeconds(1)),fact(1,2,Kind.DEPOSIT,"NEX",lower),
+            fact(1,3,Kind.DEPOSIT,"NEX",cutoff),fact(1,4,Kind.DEPOSIT,"NEX",cutoff.plusSeconds(1)),
+            fact(1,5,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-11-01T00:00:00")));
+        f.events(facts.toArray(Fact[]::new));f.financial(facts,ready(1));assertMoney(f.read(Board.deposit),"2.50");
+        when(f.mapper.nowUtc()).thenReturn(LocalDateTime.parse("2026-11-02T00:00:00"));
+        assertMoney(f.read(Board.deposit),"3.75");
+    }
+    @Test void depositCurrenciesStaySeparateAndFullPrecisionProducesRealTies() {
+        var f=new Fixture();when(f.mapper.qualifications()).thenReturn(List.of(q(1,7,"ENABLED",START,null),q(2,8,"ENABLED",START,null)));
+        var at=LocalDateTime.parse("2026-10-01T10:00:00");
+        var a=money(fact(1,1,Kind.DEPOSIT,"NEX",at),"0.123456");
+        var b=money(fact(1,2,Kind.DEPOSIT,"NEX",at),"0.000001");
+        var c=money(fact(1,3,Kind.DEPOSIT,"NEX",at),"0.123457");
+        var usdt=money(fact(1,4,Kind.DEPOSIT,"USDT",at),"19.654321");
+        f.events(a,b,c,usdt);when(f.mapper.attributions()).thenReturn(List.of(attribution(a),attribution(b),owner(c,8L,200L,"KNOWN"),attribution(usdt)));
+        f.financial(List.of(a,b,c,usdt),ready(1));var r=f.read(Board.deposit);
+        assertTrue(r.candidates().stream().allMatch(x->x.amount().value().compareTo(new BigDecimal("0.123457"))==0));
+        var rows=SupportLeaderboard.calculate(r.context(),r.sourceVersion(),r.candidateCoverage(),r.candidates()).rows();
+        assertTrue(rows.stream().allMatch(x->x.rank()==null && !x.isTied()));
+        assertEquals(List.of(7L,8L),rows.stream().map(Row::agentId).toList());
+        var other=f.read(context(Board.deposit,"USDT",Scope.all,Set.of()));
+        assertEquals(0,new BigDecimal("19.654321").compareTo(other.candidates().get(0).amount().value()));
+        assertEquals(0,BigDecimal.ZERO.compareTo(other.candidates().get(1).amount().value()));
+    }
+    @Test void bindingAndMemberTransfersNeverMoveCapturedDepositContribution() {
+        var f=new Fixture();var d=fact(1,1,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));f.events(d);f.financial(List.of(d),ready(1));
+        when(f.mapper.qualifications()).thenReturn(List.of(q(1,7,"ENABLED",START,null),q(2,8,"ENABLED",START,null)));
+        when(f.mapper.currentBindings()).thenReturn(List.of(binding(1,1,8)));
+        when(f.mapper.memberships()).thenReturn(List.of(new MemberInterval(1L,7L,200L,1L,START,null)));
+        var r=f.read(Board.deposit);assertEquals("当前二组",r.candidates().get(0).groupName());
+        assertEquals(0,new BigDecimal("1.25").compareTo(r.candidates().get(0).amount().value()));
+        assertEquals(0,BigDecimal.ZERO.compareTo(r.candidates().get(1).amount().value()));
+    }
+    @Test void unassignedIsNotSpreadAndUnknownAttributionNeverBecomesZero() {
+        var f=new Fixture();var d=fact(1,1,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));f.events(d);f.financial(List.of(d),ready(1));
+        when(f.mapper.attributions()).thenReturn(List.of(owner(d,null,null,"UNASSIGNED")));assertMoney(f.read(Board.deposit),"0");
+        when(f.mapper.attributions()).thenReturn(List.of(owner(d,null,null,"UNKNOWN")));assertUnknownMoney(f.read(Board.deposit),Reason.ATTRIBUTION_UNKNOWN);
+        when(f.mapper.attributions()).thenReturn(List.of());when(f.mapper.attributionProofs()).thenReturn(List.of());
+        assertUnknownMoney(f.read(Board.deposit),Reason.ATTRIBUTION_UNKNOWN);
+    }
+    @Test void amountCompletenessIsIndependentFromFirstEventAttribution() {
+        var f=new Fixture();var purchase=fact(1,1,Kind.DEVICE_PURCHASE,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));
+        var deposit=fact(1,2,Kind.DEPOSIT,"NEX",purchase.succeededAt().plusSeconds(1));f.events(purchase,deposit);f.financial(List.of(purchase,deposit),ready(1));
+        when(f.mapper.attributions()).thenReturn(List.of(owner(purchase,null,null,"UNKNOWN"),attribution(deposit)));
+        var r=f.read(Board.deposit);assertMoney(r,"1.25");assertNull(r.candidates().get(0).firstPayment().value());
+        assertEquals(Reason.ATTRIBUTION_UNKNOWN,r.candidates().get(0).firstPayment().reason());
+        when(f.mapper.attributions()).thenReturn(List.of(attribution(purchase),owner(deposit,null,null,"UNKNOWN")));
+        r=f.read(Board.deposit);assertUnknownMoney(r,Reason.ATTRIBUTION_UNKNOWN);
+        assertEquals(1L,r.candidates().get(0).firstPayment().value());assertEquals(Coverage.COMPLETE,r.candidates().get(0).firstPayment().coverage());
+    }
+    @Test void missingRequiredSourceAndRejectedProofStayUnknownAndReadFailuresStay503() {
+        var f=new Fixture();var d=fact(1,1,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));f.events(d);
+        var s=snapshot(List.of(d),ready(1));
+        when(f.finance.readHistory(any())).thenReturn(new SupportPaymentFacts.Snapshot(s.facts(),s.issues(),s.coverage().stream().filter(c->c.source()!=Source.VIETQR).toList(),s.businessZone(),s.evaluatedAt(),s.firstHistory()));
+        assertUnknownMoney(f.read(Board.deposit),Reason.HISTORY_UNKNOWN);
+        when(f.finance.readHistory(any())).thenReturn(new SupportPaymentFacts.Snapshot(s.facts(),List.of(new SupportPaymentFacts.Issue(d.source(),d.factId(),"CAPTURED_SOURCE_PROOF_MISMATCH",1L)),s.coverage(),s.businessZone(),s.evaluatedAt(),s.firstHistory()));
+        assertUnknownMoney(f.read(Board.deposit),Reason.ATTRIBUTION_UNKNOWN);
+        when(f.finance.readHistory(any())).thenThrow(new DataRetrievalFailureException("private"));assert503(()->f.read(Board.deposit));
+    }
+    @Test void invalidCanonicalDepositAndConflictingDuplicateCannotProduceMoney() {
+        var f=new Fixture();var d=fact(1,1,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));f.events(d);
+        f.financial(List.of(money(d,"0")),ready(1));assert503(()->f.read(Board.deposit));
+        f.financial(List.of(d,money(d,"2.50")),ready(1));assert503(()->f.read(Board.deposit));
+    }
+    private static void assertMoney(SupportLeaderboardSourceService.Read r,String expected) {
+        var a=r.candidates().get(0).amount();assertNotNull(a.value());assertEquals(0,new BigDecimal(expected).compareTo(a.value()));
+        assertEquals(Coverage.COMPLETE,a.coverage());assertEquals(Reason.NONE,a.reason());
+    }
+    private static void assertUnknownMoney(SupportLeaderboardSourceService.Read r,Reason expected) {
+        var a=r.candidates().get(0).amount();assertNull(a.value());assertEquals(Coverage.UNKNOWN,a.coverage());assertEquals(expected,a.reason());
+    }
+    private static Fact money(Fact f,String amount) {
+        return new Fact(f.factId(),f.kind(),f.source(),f.sourceIds(),f.customerId(),f.ledgerId(),f.sourceBusinessId(),f.orderNo(),f.orderType(),f.originalFactId(),
+            f.currency(),new BigDecimal(amount),f.succeededAt(),f.successTimeField(),f.fractionalSecondDigits(),f.providerPaidAt(),f.ledgerRecordedAt(),f.sourceConfirmationAt(),f.sourceVersion(),f.historicalEnvironmentStatus());
+    }
+    private static AttributionRow owner(Fact f,Long agent,Long group,String status) {
+        return new AttributionRow(f.factId(),f.customerId(),f.kind().name(),f.source().name(),f.ledgerId(),f.sourceBusinessId(),f.orderNo(),f.orderType(),f.originalFactId(),
+            f.currency(),f.amount(),f.succeededAt(),"Asia/Shanghai",f.successTimeField(),f.fractionalSecondDigits(),"NEW_SUCCESS","support-payment-attribution-v1",agent,group,group==null?null:8L,status,status,status);
     }
     private static void assert503(org.junit.jupiter.api.function.Executable action) {assertEquals(503,assertThrows(BizException.class,action).getCode());}
     private static Account account(long id,String nickname,int enabled) {return new Account(id,nickname,enabled,0,1L,enabled,0,1L,"SUPPORT",null,null,null,null,1);}

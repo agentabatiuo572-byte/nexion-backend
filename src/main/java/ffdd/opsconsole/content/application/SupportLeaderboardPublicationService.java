@@ -68,6 +68,9 @@ public class SupportLeaderboardPublicationService {
         if (stored == null) throw new BizException(503,"SUPPORT_LEADERBOARD_PUBLICATION_UNAVAILABLE");
         if (!streamKey(current).equals(stored.streamKey())) throw unavailable();
         Publication publication = decode(stored);
+        // A verified legacy snapshot needs a fresh source read; it is never a fallback for the new policy.
+        if (expectedVersion == null && current.definitionVersion().equals(SupportLeaderboardPolicy.DEFINITION)
+                && "support-leaderboard-v1".equals(publication.snapshot().context().definitionVersion())) return null;
         if (!sameViewIdentity(current,publication.snapshot().context())
                 || expectedVersion != null && !expectedVersion.equals(publication.snapshot().viewVersion()))
             throw new BizException(409,"SUPPORT_LEADERBOARD_VERSION_CHANGED");

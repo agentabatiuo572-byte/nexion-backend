@@ -202,8 +202,10 @@ public class SupportLeaderboardSourceService {
                 ?"/api/admin/content/support-workbench/leaderboard/"+a.id()+"/avatar?assetVersion="+a.avatarVersion():null;
             Count firstPayment=new Count(first.complete()?first.confirmedFirst().getOrDefault(a.id(),0L):first.confirmedFirst().get(a.id()),first.complete()?Coverage.COMPLETE:Coverage.PARTIAL,
                 first.reason());
-            Amount amount=new Amount(null,context.currency(),context.referenceMonth(),context.board()==Board.purchase?AmountKind.PURCHASE:AmountKind.DEPOSIT,
-                Coverage.UNKNOWN,context.board()==Board.purchase?Reason.SOURCE_INCOMPLETE:Reason.REFUNDS_UNKNOWN,"financial-source-unverified");
+            boolean depositComplete=context.board()!=Board.purchase && first.depositReason()==Reason.NONE;
+            Amount amount=new Amount(depositComplete?first.deposits().getOrDefault(a.id(),BigDecimal.ZERO):null,
+                context.currency(),context.referenceMonth(),context.board()==Board.purchase?AmountKind.PURCHASE:AmountKind.DEPOSIT,
+                depositComplete?Coverage.COMPLETE:Coverage.UNKNOWN,context.board()==Board.purchase?Reason.SOURCE_INCOMPLETE:first.depositReason(),"financial-source-unverified");
             candidates.add(new Candidate(a.id(),name,avatar,groupId==null?"待分组":groups.get(groupId).name(),qualification,
                 firstPayment,new Count(customers,Coverage.COMPLETE,Reason.NONE),amount,null));
         }
@@ -217,10 +219,11 @@ public class SupportLeaderboardSourceService {
         return new Read(context,sourceVersion,candidateCoverage,versioned,List.of(currentMonth),raw);
     }
 
-    private record Financial(Map<Long,Long> confirmedFirst,boolean complete,Reason reason) { }
+    private record Financial(Map<Long,Long> confirmedFirst,boolean complete,Reason reason,Map<Long,BigDecimal> deposits,Reason depositReason) { }
     private static Financial first(Evidence raw,Set<Long> ids,Context context,Instant from,Instant to) {
         SupportPaymentFacts.Snapshot snapshot=raw.finance();
-        if (snapshot==null) return new Financial(Map.of(),ids.isEmpty(),ids.isEmpty()?Reason.NONE:Reason.HISTORY_UNKNOWN);
+        if (snapshot==null) return new Financial(Map.of(),ids.isEmpty(),ids.isEmpty()?Reason.NONE:Reason.HISTORY_UNKNOWN,
+            Map.of(),ids.isEmpty()?Reason.NONE:Reason.HISTORY_UNKNOWN);
         try {SupportAnalyticsService.validateSnapshotBoundary(snapshot,ids);} catch(IllegalStateException | IllegalArgumentException ex) {throw failed();}
         if (!SupportLeaderboard.BUSINESS_ZONE.getId().equals(snapshot.businessZone())) throw failed();
         Set<SupportPaymentFacts.Source> coverageSources=new HashSet<>();
@@ -255,20 +258,36 @@ public class SupportLeaderboardSourceService {
                 SupportPaymentFacts.Source.VIETQR,SupportPaymentFacts.Source.HDPAY,SupportPaymentFacts.Source.WALLET_ORDER,
                 SupportPaymentFacts.Source.TRADE_IN,SupportPaymentFacts.Source.CAPACITY_KEEP,SupportPaymentFacts.Source.TRIAL_CONVERT));
         Reason reason=complete?Reason.NONE:Reason.HISTORY_UNKNOWN;
+        Reason depositReason=reason;
+        Map<Long,BigDecimal> deposits=new HashMap<>();
+        // Successful deposits cannot be refunded; birth-v1 proves all non-refund payments, never purchase refunds.
+        for (Fact f:facts.values()) {
+            Instant occurred=f.succeededAt().atZone(SupportLeaderboard.BUSINESS_ZONE).toInstant();
+            if (f.kind()!=Kind.DEPOSIT || !context.currency().equals(f.currency()) || occurred.isBefore(from)
+                    || !occurred.isBefore(to) || occurred.isAfter(context.evaluatedAt())) continue;
+            AttributionRow attribution=attributions.get(f.factId());
+            if (!proved(attribution,f,snapshot) || "UNKNOWN".equals(attribution.agentStatus())) {
+                if(depositReason==Reason.NONE)depositReason=Reason.ATTRIBUTION_UNKNOWN;
+                continue;
+            }
+            if("KNOWN".equals(attribution.agentStatus()))deposits.merge(attribution.agentAdminId(),f.amount(),BigDecimal::add);
+        }
         Map<Long,Long> result=new HashMap<>();
         for (Fact f:SupportAnalyticsService.selectFirstFacts(facts.values()).values()) {
             Instant occurred=f.succeededAt().atZone(SupportLeaderboard.BUSINESS_ZONE).toInstant();
             if (occurred.isBefore(from) || !occurred.isBefore(to) || occurred.isAfter(context.evaluatedAt())) continue;
             AttributionRow attribution=attributions.get(f.factId());
-            boolean proved=attribution!=null && SupportAnalyticsService.aligned(attribution,f,snapshot.businessZone())
-                && SupportAnalyticsService.validLayers(attribution) && !SupportAnalyticsService.proofRejected(snapshot,f);
-            if (!proved || "UNKNOWN".equals(attribution.agentStatus())) {
+            if (!proved(attribution,f,snapshot) || "UNKNOWN".equals(attribution.agentStatus())) {
                 complete=false;if (reason==Reason.NONE) reason=Reason.ATTRIBUTION_UNKNOWN;continue;
             }
             if (SupportAnalyticsService.firstReady(histories,f.customerId()) && "KNOWN".equals(attribution.agentStatus()))
                 result.merge(attribution.agentAdminId(),1L,Math::addExact);
         }
-        return new Financial(Map.copyOf(result),complete,reason);
+        return new Financial(Map.copyOf(result),complete,reason,Map.copyOf(deposits),depositReason);
+    }
+    private static boolean proved(AttributionRow attribution,Fact fact,SupportPaymentFacts.Snapshot snapshot) {
+        return attribution!=null && SupportAnalyticsService.aligned(attribution,fact,snapshot.businessZone())
+            && SupportAnalyticsService.validLayers(attribution) && !SupportAnalyticsService.proofRejected(snapshot,fact);
     }
     private static Instant evaluatedFrom(Context c) {return c.referenceMonth().atDay(1).atStartOfDay(SupportLeaderboard.BUSINESS_ZONE).toInstant();}
     private static Instant evaluatedTo(Context c) {return c.referenceMonth().plusMonths(1).atDay(1).atStartOfDay(SupportLeaderboard.BUSINESS_ZONE).toInstant();}
@@ -295,7 +314,8 @@ public class SupportLeaderboardSourceService {
     private static String fingerprint(Context context,Evidence raw,List<Candidate> candidates,Coverage coverage) {
         try {
             ByteArrayOutputStream bytes=new ByteArrayOutputStream();DataOutputStream out=new DataOutputStream(bytes);
-            write(out,"support-leaderboard-source-v1");write(out,context.board());write(out,context.rankMonth()==null?null:context.rankMonth().toString());
+            write(out,"support-leaderboard-source-v2");write(out,SupportLeaderboardPolicy.DEFINITION);
+            write(out,context.board());write(out,context.rankMonth()==null?null:context.rankMonth().toString());
             write(out,context.referenceMonth().toString());write(out,context.currency());write(out,context.scope());
             write(out,context.approvedGroupIds().stream().sorted().toList());write(out,context.definitionVersion());
             write(out,raw.accounts());write(out,raw.qualifications());write(out,raw.memberships());write(out,raw.groups());write(out,raw.bindings());
@@ -309,7 +329,7 @@ public class SupportLeaderboardSourceService {
             }
             // Evaluation clocks are reported separately; source identity is the complete read tuple and projection, not a clock.
             write(out,coverage);write(out,candidates);
-            return "slbs-v1:"+HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray()));
+            return "slbs-v2:"+HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray()));
         } catch(IOException | ReflectiveOperationException | NoSuchAlgorithmException ex) {throw new IllegalStateException(ex);}
     }
     private static void write(DataOutputStream out,Object value) throws IOException,ReflectiveOperationException {

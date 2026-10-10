@@ -66,7 +66,7 @@ public class SupportLeaderboardSamplingService {
                 Boolean expired=reads.execute(status->{
                     if(publicationMapper.latest(key)==null)return true;
                     Publication previous=publications.latest(context,null);
-                    return !plan.now().isBefore(previous.snapshot().context().evaluatedAt().plusSeconds(plan.interval()*60L));
+                    return previous==null || !plan.now().isBefore(previous.snapshot().context().evaluatedAt().plusSeconds(plan.interval()*60L));
                 });
                 if(Boolean.TRUE.equals(expired))due.add(context);
             }catch(RuntimeException failure){failed++;warn("LATEST_FAILED",key,failure);}

@@ -110,6 +110,25 @@ class SupportLeaderboardSamplingServiceTest {
         assertEquals("IDLE",f.sampling.sample().status());verifyNoInteractions(f.finance);verify(f.facts,never()).accounts();
         Fixture blocked=new Fixture();when(blocked.guard.productionSupportAutomationAllowed()).thenReturn(false);
         assertEquals("PROFILE_BLOCKED",blocked.sampling.sample().status());verifyNoInteractions(blocked.catalogue,blocked.finance,blocked.config,blocked.facts);}
+    @Test void freshLegacyDefinitionIsDueAndSamplingDoesNotIdleOrFail() throws Exception {
+        Fixture f=new Fixture();legacyStored(f);
+        var result=f.sampling.sample();assertEquals("SAMPLED",result.status());assertEquals(8,result.due());assertEquals(8,result.committed());assertEquals(0,result.failed());
+        assertTrue(f.publication.committed.stream().allMatch(s->s.context().definitionVersion().equals("support-leaderboard-v2-deposit-no-refund")));
+        verify(f.finance,times(1)).readHistory(any());
+    }
+    @Test void legacyDefinitionSourceFailureCannotPublishOldMoney() throws Exception {
+        Fixture f=new Fixture();legacyStored(f);when(f.facts.accounts()).thenThrow(new DataAccessResourceFailureException("private"));
+        var result=f.sampling.sample();assertEquals("SOURCE_FAILED",result.status());assertEquals(8,result.due());assertEquals(0,result.committed());assertEquals(8,result.failed());
+        assertTrue(f.publication.committed.isEmpty());
+    }
+    private static void legacyStored(Fixture f) throws Exception {
+        for(var context:SupportLeaderboardSamplingService.catalogue(AT,List.of(),List.of(),List.of()).values()) {
+            String key=SupportLeaderboardPublicationService.streamKey(context);f.publication.corruptLatest.add(key);
+            Context old=new Context(context.board(),context.rankMonth(),context.referenceMonth(),context.currency(),context.scope(),context.approvedGroupIds(),"support-leaderboard-v1",AT.minusSeconds(30));
+            var snapshot=SupportLeaderboardPublicationServiceTest.snapshot(old,Coverage.COMPLETE);
+            when(f.stored.latest(key)).thenReturn(SupportLeaderboardPublicationServiceTest.stored(99,snapshot,AT.minusSeconds(29)));
+        }
+    }
     @Test void disabledMissingAndInvalidConfigDoNotFallBackButBoundsDriveDue(){for(Optional<String> value:List.of(Optional.<String>empty(),Optional.of("0"),Optional.of("61"),Optional.of("bad"))){
         Fixture f=new Fixture();when(f.config.activeValue(anyString())).thenReturn(value);assertEquals("PLAN_FAILED",f.sampling.sample().status());verifyNoInteractions(f.finance,f.catalogue);}
         for(String value:List.of("1","60")){Fixture f=new Fixture();f.publication.fresh=true;when(f.config.activeValue(anyString())).thenReturn(Optional.of(value));
