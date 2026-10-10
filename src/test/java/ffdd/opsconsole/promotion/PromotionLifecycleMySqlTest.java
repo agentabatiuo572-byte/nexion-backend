@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.mock.env.MockEnvironment;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -48,6 +49,129 @@ class PromotionLifecycleMySqlTest {
     String buy,gift;
     long nextUser=880000000000L+Math.floorMod(UUID.randomUUID().getMostSignificantBits(),10000000000L);
     final List<Map<String,Object>> evidence=new ArrayList<>();
+    final List<Map<String,Object>> archiveIsolationObservations=Collections.synchronizedList(new ArrayList<>());
+
+    @Test void readCommittedArchiveResponsibilitiesAndBothLockOrders() throws Exception {
+        var checks=new ArrayList<Map<String,Object>>();
+        setup();String activity=h.publish(h.contract(buy,runtimeReward("USDT"),h.commonPolicies()));
+        long buyer=user();var walletBefore=h.db.requiredRow("SELECT usdt_available,nex_available FROM nx_user_wallet WHERE user_id=?",buyer);
+        String order=create(buyer,quote(buyer,activity,1),1);endForArchive(activity);
+        long revision=number(h.db.activity(activity,false).get("revision"));
+        assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE activity_id=? AND status='RESERVED'",activity));
+        assertEquals("PROMOTION_OBLIGATIONS_OPEN",archiveRc(activity,revision,()->{}));
+        assertEquals(revision,number(h.db.activity(activity,false).get("revision")));
+        readCommitted().executeWithoutResult(s->{assertReadCommitted("writer-pay");pay(buyer,order);});
+        String obligation=obligations(order).get(0);assertEquals("PENDING",rewards.get(buyer,obligation,false).get("state"));
+        revision=number(h.db.activity(activity,false).get("revision"));
+        assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE activity_id=? AND status='RESERVED'",activity));
+        assertEquals("PROMOTION_OBLIGATIONS_OPEN",archiveRc(activity,revision,()->{}));
+        assertEquals(revision,number(h.db.activity(activity,false).get("revision")));
+        assertEquals("ISSUED",rewards.issue(obligation,id("ARCHIVEISSUE")).get("state"));
+        Object receipt=rewards.get(buyer,obligation,false).get("assetReceipt");assertNotNull(receipt);
+        assertEquals("ARCHIVED",archiveRc(activity,number(h.db.activity(activity,false).get("revision")),()->{}));
+        assertEquals("ARCHIVED",h.admin.get(activity).get("state"));
+        readCommitted().executeWithoutResult(s->{assertReadCommitted("writer-refund");refund(buyer,order);});
+        assertEquals("REVERSAL_PENDING",rewards.get(buyer,obligation,false).get("state"));
+        assertEquals("REVERSED",rewards.reverseRefund(obligation,id("ARCHIVEREVERSE")).get("state"));
+        assertEquals("REVERSED",rewards.reverseRefund(obligation,id("ARCHIVEREPLAY")).get("state"));
+        assertEquals(receipt,rewards.get(buyer,obligation,false).get("assetReceipt"));
+        assertEquals("ARCHIVED",h.db.activity(activity,false).get("status"));
+        assertEquals("REFUNDED",h.db.order(order,false).get("payment_status"));
+        assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=? AND biz_type='ORDER_REFUND'","E4-REFUND-"+order));
+        assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_reversal WHERE obligation_id=?",obligation));
+        assertEquals(0,decimal(h.db.requiredRow("SELECT outstanding FROM nx_promotion_reversal WHERE obligation_id=?",obligation).get("outstanding")).signum());
+        var walletAfter=h.db.requiredRow("SELECT usdt_available,nex_available FROM nx_user_wallet WHERE user_id=?",buyer);
+        for(String field:List.of("usdt_available","nex_available"))assertEquals(0,decimal(walletBefore.get(field)).compareTo(decimal(walletAfter.get(field))),field);
+        checks.add(values("scenario","committed-reserved-and-pending-block-archive-issued-allows-historical-refund","run",h.run,"activity",activity,"order",order,"obligation",obligation,"isolation","READ-COMMITTED","orderSource","CANONICAL_SQL_FIXTURE","finalState","REVERSED"));
+        for(String action:List.of("PAY","CANCEL"))for(boolean archiveFirst:List.of(true,false))archiveAndUnpaidActionLockOrder(action,archiveFirst,checks);
+        assertEquals(5,checks.size());
+        String suffix=Objects.toString(System.getenv("GROWTH_HTTP_EVIDENCE_SUFFIX"),"");assertTrue(suffix.matches("[A-Za-z0-9_-]*"));
+        Files.writeString(Path.of("D:/CodexData/test-environments/workflow-runs/growth-promotions-20261007/promotion-archive-rc-runtime"+suffix+".json"),
+            json(values("completed",true,"scope","Real isolated MySQL archive/lock/ledger transactions; create/pay/cancel/refund source facts are canonical SQL fixtures, not commerce HTTP","scenarioCount",checks.size(),"checks",checks,"transactionObservations",archiveIsolationObservations)),StandardOpenOption.CREATE_NEW);
+    }
+    TransactionTemplate readCommitted(){
+        var result=new TransactionTemplate(new DataSourceTransactionManager(h.dataSource));
+        result.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);return result;
+    }
+    long assertReadCommitted(String role){
+        assertTrue(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+        var actual=h.jdbc.queryForMap("SELECT CONNECTION_ID() connectionId,@@transaction_isolation isolation");
+        assertEquals("READ-COMMITTED",actual.get("isolation"));long connection=number(actual.get("connectionId"));
+        assertEquals(connection,h.db.count("SELECT CONNECTION_ID()"));archiveIsolationObservations.add(values("role",role,"run",h.run,"connectionId",connection,"isolation",actual.get("isolation")));return connection;
+    }
+    Map<String,Object> archiveStateWithConnectionWitness(String activity,Map<String,Object> request){
+        long connection=assertReadCommitted("actual-admin-command-before-state-and-original-counts");
+        try{return h.admin.state(activity,"archive",request);}
+        finally{assertEquals(connection,assertReadCommitted("actual-admin-command-after-state-or-rejected-original-count"));}
+    }
+    void endForArchive(String activity){
+        h.authenticate(h.maker);var request=values("expectedRevision",h.db.activity(activity,false).get("revision"),"reason","End isolated activity before archive responsibility checks","evidenceRefs",List.of(h.evidence));
+        h.admin.command("endPromotion",activity,id("ARCHIVEEND"),request,()->h.admin.state(activity,"end",request));
+    }
+    String archiveRc(String activity,long revision,Runnable locked){
+        h.authenticate(h.maker);var request=values("expectedRevision",revision,"reason","Check isolated archive responsibilities under the actual retained command transaction","evidenceRefs",List.of(h.evidence));
+        try{
+            h.admin.command("archivePromotion",activity,id("ARCHIVERC"),request,()->{
+                assertReadCommitted("actual-admin-command-before-activity-lock");h.db.activity(activity,true);locked.run();return archiveStateWithConnectionWitness(activity,request);
+            });return "ARCHIVED";
+        }catch(ffdd.opsconsole.shared.exception.BizException rejected){
+            assertEquals(409,rejected.getCode());assertEquals("PROMOTION_OBLIGATIONS_OPEN",rejected.getMessage());return rejected.getMessage();
+        }
+    }
+    void cancelSourceFixture(long buyer,String order){
+        tx.executeWithoutResult(s->{
+            orders.lockOrderParticipants(order);var o=h.db.order(order,true);assertEquals(buyer,number(o.get("user_id")));assertNull(o.get("paid_at"));
+            changed(h.db.write("UPDATE nx_order SET order_status='CANCELLED' WHERE order_no=? AND order_status='PENDING_PAYMENT'",order));
+            for(var item:h.db.list("SELECT product_id,quantity FROM nx_order_item WHERE order_no=?",order))changed(h.db.write("UPDATE nx_product SET stock=CASE WHEN inventory_mode='FINITE' THEN stock+? ELSE stock END,sold_count=sold_count-?,updated_at=NOW(6) WHERE id=? AND is_deleted=0 AND (inventory_mode='UNLIMITED' OR stock<=2147483647-?) AND sold_count>=?",item.get("quantity"),item.get("quantity"),item.get("product_id"),item.get("quantity"),item.get("quantity")));
+            orders.releaseUnpaid(order,"CANCELLED");
+        });
+    }
+    void archiveAndUnpaidActionLockOrder(String action,boolean archiveFirst,List<Map<String,Object>> checks) throws Exception {
+        setup();String activity=h.publish(h.contract(buy,runtimeReward("USDT"),h.commonPolicies()));
+        long buyer=user();BigDecimal stockBefore=decimal(h.db.product(buy,false).get("stock"));
+        String order=create(buyer,quote(buyer,activity,1),1);endForArchive(activity);
+        long revision=number(h.db.activity(activity,false).get("revision"));
+        var firstConnection=new CompletableFuture<Long>();var secondConnection=new CompletableFuture<Long>();
+        var firstReturned=new CountDownLatch(1);var releaseFirst=new CountDownLatch(1);var executor=Executors.newFixedThreadPool(2);
+        Map<String,Object> wait;String archiveOutcome;
+        try{
+            var first=executor.submit(()->{
+                if(archiveFirst)return archiveRc(activity,revision,()->{firstConnection.complete(h.db.count("SELECT CONNECTION_ID()"));firstReturned.countDown();awaitRelease(releaseFirst);});
+                return readCommitted().execute(s->{
+                    firstConnection.complete(assertReadCommitted("writer-"+action));
+                    if("PAY".equals(action))pay(buyer,order);else cancelSourceFixture(buyer,order);
+                    assertEquals(revision+1,number(h.db.activity(activity,false).get("revision")));
+                    firstReturned.countDown();awaitRelease(releaseFirst);return action;
+                });
+            });
+            assertTrue(firstReturned.await(10,TimeUnit.SECONDS),"First action must hold the activity row before the second starts");
+            var second=executor.submit(()->{
+                if(!archiveFirst){
+                    // The writer's checked revision isolates COUNT visibility from the independent optimistic-revision gate.
+                    h.authenticate(h.maker);var request=values("expectedRevision",revision+1,"reason","Check newly committed responsibilities after ordinary before reads and an activity lock wait","evidenceRefs",List.of(h.evidence));
+                    try{h.admin.command("archivePromotion",activity,id("ARCHIVEWAIT"),request,()->{
+                        secondConnection.complete(assertReadCommitted("actual-admin-command-before-wait"));return archiveStateWithConnectionWitness(activity,request);
+                    });return "ARCHIVED";}catch(ffdd.opsconsole.shared.exception.BizException rejected){assertEquals(409,rejected.getCode());assertEquals("PROMOTION_OBLIGATIONS_OPEN",rejected.getMessage());return rejected.getMessage();}
+                }
+                return readCommitted().execute(s->{
+                    secondConnection.complete(assertReadCommitted("writer-"+action));
+                    if("PAY".equals(action))pay(buyer,order);else cancelSourceFixture(buyer,order);return action;
+                });
+            });
+            wait=observedLockWait(secondConnection.get(5,TimeUnit.SECONDS),firstConnection.get(5,TimeUnit.SECONDS),"nx_promotion","'"+activity+"'");
+            assertFalse(second.isDone());releaseFirst.countDown();
+            String firstResult=first.get(10,TimeUnit.SECONDS),secondResult=second.get(10,TimeUnit.SECONDS);
+            archiveOutcome=archiveFirst?firstResult:secondResult;assertEquals(action,archiveFirst?secondResult:firstResult);
+            assertEquals(!archiveFirst&&"CANCEL".equals(action)?"ARCHIVED":"PROMOTION_OBLIGATIONS_OPEN",archiveOutcome);
+        }finally{releaseFirst.countDown();executor.shutdownNow();assertTrue(executor.awaitTermination(15,TimeUnit.SECONDS));}
+        assertEquals(!archiveFirst&&"CANCEL".equals(action)?"ARCHIVED":"ENDED",h.admin.get(activity).get("state"));
+        assertEquals("PAY".equals(action)?"COMMITTED":"RELEASED",h.db.requiredRow("SELECT status FROM nx_promotion_reservation WHERE order_no=?",order).get("status"));
+        assertEquals("PAY".equals(action)?"PAID":"PENDING",h.db.order(order,false).get("payment_status"));
+        assertEquals("PAY".equals(action)?1:0,obligations(order).size());
+        if("PAY".equals(action))assertEquals("PENDING",rewards.get(buyer,obligations(order).get(0),false).get("state"));
+        else{assertEquals("CANCELLED",h.db.order(order,false).get("order_status"));assertEquals(0,stockBefore.compareTo(decimal(h.db.product(buy,false).get("stock"))));budget(activity,"USDT","reserved",BigDecimal.ZERO);}
+        checks.add(values("scenario","archive-unpaid-action-lock-order","run",h.run,"action",action,"firstAction",archiveFirst?"ARCHIVE":action,"activity",activity,"order",order,"isolation","READ-COMMITTED","orderSource","CANONICAL_SQL_FIXTURE","observedLockWait",wait,"archiveOutcome",archiveOutcome));
+    }
 
     @Test void concurrencyAndVersionBoundariesHaveRealMySqlEvidence() throws Exception {
         var checks=new ArrayList<Map<String,Object>>();
