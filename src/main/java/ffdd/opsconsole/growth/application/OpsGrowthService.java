@@ -500,6 +500,7 @@ public class OpsGrowthService implements AuditReplayable {
         response.put("coverage", coverage());
         response.put("sources", List.of(
                 "nx_growth_trial_policy",
+                "nx_growth_trial_daily_quota",
                 "nx_growth_trial_gate",
                 "nx_trial_claim",
                 "nx_config_item:" + TRIAL_AUTO_PUSH_KILLED_KEY,
@@ -517,7 +518,7 @@ public class OpsGrowthService implements AuditReplayable {
             return guard;
         }
         String key = normalizeTrialParamKey(paramKey);
-        if (Set.of("phaseOpen", "trialPriceUSD", "autoChargeAtEnd", "chargeFailRate").contains(key)) {
+        if (Set.of("phaseOpen", "trialPriceUSD", "autoChargeAtEnd", "chargeFailRate", "actualSeatsLeftToday").contains(key)) {
             return validation("TRIAL_PARAM_READONLY");
         }
         if ("trialProductId".equals(key)) {
@@ -3222,9 +3223,17 @@ public class OpsGrowthService implements AuditReplayable {
                 .findFirst()
                 .orElse("");
         String livePrice = liveTrialProductPrice(productNo, trialProducts);
-        return policies.stream()
+        List<Map<String, Object>> params = new ArrayList<>(policies.stream()
+                .filter(row -> !"autoChargeAtEnd".equals(row.get("key"))
+                        && !"actualSeatsLeftToday".equals(row.get("key")))
                 .map(row -> {
                     Map<String, Object> copy = new LinkedHashMap<>(row);
+                    if ("seatsLeftToday".equals(copy.get("key"))) {
+                        copy.put("name", "每日免费名额上限");
+                        copy.put("sub", "每日可领取的总名额；领取后的实际剩余见下方");
+                        copy.put("readOnly", false);
+                        copy.put("unit", "张");
+                    }
                     if ("trialProductId".equals(copy.get("key"))) {
                         copy.put("cur", canonicalTrialProductId(stringValue(copy.get("cur"), "")));
                     }
@@ -3236,7 +3245,27 @@ public class OpsGrowthService implements AuditReplayable {
                     }
                     return copy;
                 })
-                .toList();
+                .toList());
+        AppTrialLifecycleService.TrialQuotaSnapshot quota = null;
+        try {
+            if (appTrialLifecycleService != null) quota = appTrialLifecycleService.dailyQuota();
+        } catch (RuntimeException ex) {
+            // An unavailable canonical counter must not be presented as the configured limit.
+        }
+        boolean known = quota != null && quota.remaining() != null;
+        params.add(Map.of(
+                "key", "actualSeatsLeftToday",
+                "name", "今日实际剩余免费名额",
+                "sub", known ? "按试用业务日实时读取，与 App 使用同一名额计数"
+                        : "名额计数暂不可用，请稍后刷新；不能作为领取依据",
+                "cur", known ? quota.remaining().toString() : "UNKNOWN",
+                "section", "live",
+                "readOnly", true,
+                "unit", "张",
+                "businessDate", quota == null ? "UNKNOWN" : quota.businessDate().toString(),
+                "status", known ? "READY" : "UNKNOWN",
+                "source", "nx_growth_trial_daily_quota + nx_growth_trial_policy"));
+        return params;
     }
 
     private String liveTrialProductPrice(String productNo, List<Map<String, Object>> trialProducts) {
@@ -3472,7 +3501,7 @@ public class OpsGrowthService implements AuditReplayable {
 
     private String normalizeTrialParamKey(String key) {
         String normalized = requireText(key, "Trial parameter key is required");
-        if (!TRIAL_PARAM_KEYS.contains(normalized)) {
+        if (!TRIAL_PARAM_KEYS.contains(normalized) && !"actualSeatsLeftToday".equals(normalized)) {
             throw new IllegalArgumentException("Unsupported H2 trial parameter");
         }
         return normalized;

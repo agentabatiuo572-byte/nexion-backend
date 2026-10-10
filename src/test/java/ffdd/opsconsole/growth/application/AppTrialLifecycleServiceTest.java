@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -478,6 +479,61 @@ class AppTrialLifecycleServiceTest {
         assertThat(result.getCode()).isZero();
         verify(mapper, never()).ensureTrialQuotaDay(any(LocalDate.class), anyInt());
         verify(mapper).trialQuotaRemaining(LocalDate.of(2026, 8, 21));
+    }
+
+    @Test
+    void adminQuotaSnapshotUsesCanonicalBusinessDateWithoutUserOrWrites() {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-20T16:30:00Z"), ZoneId.of("Pacific/Honolulu"));
+        AppTrialLifecycleService shanghaiService = new AppTrialLifecycleService(paymentAttribution(),
+                mapper, earningsRelease, idempotency, coverage, audit, outbox, productReleasePolicy, canonicalStateMapper, environment, clock);
+        when(mapper.trialQuotaRemaining(LocalDate.of(2026, 8, 21))).thenReturn(46, 0);
+
+        assertThat(shanghaiService.dailyQuota()).isEqualTo(
+                new AppTrialLifecycleService.TrialQuotaSnapshot(LocalDate.of(2026, 8, 21), 46));
+        assertThat(shanghaiService.dailyQuota().remaining()).isZero();
+        verify(mapper, never()).ensureTrialQuotaDay(any(LocalDate.class), anyInt());
+        verify(mapper, never()).consumeTrialQuota(any(LocalDate.class));
+        verify(mapper, never()).activeUser(anyLong());
+        verify(mapper, never()).trial(anyLong());
+        verify(audit, never()).recordRequired(any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void adminQuotaSnapshotSharesTheAppFallbackBeforeTheDayCounterExistsWithoutInitializingIt() {
+        when(mapper.trialQuotaRemaining(any(LocalDate.class))).thenReturn(null);
+
+        assertThat(service.dailyQuota().remaining()).isEqualTo(47);
+        assertThat((Map<String, Object>) service.state(7L).getData().get("config"))
+                .containsEntry("seatsLeftToday", "47");
+        verify(mapper, never()).ensureTrialQuotaDay(any(LocalDate.class), anyInt());
+        verify(mapper, never()).consumeTrialQuota(any(LocalDate.class));
+        verify(audit, never()).recordRequired(any());
+    }
+
+    @Test
+    void adminQuotaSnapshotCannotInventRemainingWhenTheConfiguredLimitIsMissingOrInvalid() {
+        when(mapper.policies()).thenReturn(List.of());
+        assertThat(service.dailyQuota().remaining()).isNull();
+        for (String value : List.of("", "-1", "47.5", "4.7E1", "4294967296", "1000001")) {
+            when(mapper.policies()).thenReturn(List.of(new PolicyRow("seatsLeftToday", value)));
+            assertThat(service.dailyQuota().remaining()).isNull();
+        }
+        verify(mapper, never()).trialQuotaRemaining(any(LocalDate.class));
+        verify(mapper, never()).ensureTrialQuotaDay(any(LocalDate.class), anyInt());
+        verify(mapper, never()).consumeTrialQuota(any(LocalDate.class));
+    }
+
+    @Test
+    void adminQuotaReadFailureReturnsUnknownWithoutEscapingIntoTheCallerTransaction() {
+        when(mapper.policies()).thenThrow(new IllegalStateException("policy unavailable"));
+        assertThat(service.dailyQuota().remaining()).isNull();
+        verify(mapper, never()).trialQuotaRemaining(any(LocalDate.class));
+        doReturn(List.of(new PolicyRow("seatsLeftToday", "47"))).when(mapper).policies();
+        when(mapper.trialQuotaRemaining(any(LocalDate.class))).thenThrow(new IllegalStateException("quota unavailable"));
+        assertThat(service.dailyQuota().remaining()).isNull();
+        verify(mapper, never()).ensureTrialQuotaDay(any(LocalDate.class), anyInt());
+        verify(mapper, never()).consumeTrialQuota(any(LocalDate.class));
     }
 
     @Test
