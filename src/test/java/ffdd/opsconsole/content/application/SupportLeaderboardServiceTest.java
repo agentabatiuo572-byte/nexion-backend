@@ -30,7 +30,7 @@ class SupportLeaderboardServiceTest {
     static void login(String subject,String... caps){var token=new UsernamePasswordAuthenticationToken("7","unused",Arrays.stream(caps).map(SimpleGrantedAuthority::new).toList());
         token.setDetails(Map.of("subjectType",subject));SecurityContextHolder.getContext().setAuthentication(token);}
     @AfterEach void clear(){SecurityContextHolder.clearContext();TransactionSynchronizationManager.clear();}
-    static Context context(Board b,String unit,Instant at){return new Context(b,b==Board.customers?null:YearMonth.of(2026,10),YearMonth.of(2026,10),unit,Scope.all,Set.of(),"support-leaderboard-v1",at);}
+    static Context context(Board b,String unit,Instant at){return new Context(b,b==Board.customers?null:YearMonth.of(2026,10),YearMonth.of(2026,10),unit,Scope.all,Set.of(),SupportLeaderboardPolicy.DEFINITION,at);}
     static Candidate candidate(Context c,long id,long count){return new Candidate(id,"公开客服"+id,
         "/api/admin/content/support-workbench/leaderboard/"+id+"/avatar?assetVersion=1","当前组",SupportLeaderboard.Qualification.ACTIVE,
         new Count(count,Coverage.COMPLETE,Reason.NONE),new Count(count,Coverage.COMPLETE,Reason.NONE),
@@ -178,7 +178,7 @@ class SupportLeaderboardServiceTest {
         verify(storage,times(1)).get("private-key");assertEquals(403,assertThrows(BizException.class,()->real.publicLeaderboardContent(null)).getCode());
     }
     @Test void verifiedHistoricalMonthAvatarDoesNotRequireTargetCurrentServiceSeat(){Harness h=new Harness();YearMonth september=YearMonth.of(2026,9);
-        Context c=new Context(Board.firstPayment,september,september,"USDT",Scope.all,Set.of(),"support-leaderboard-v1",NOW.minusSeconds(30));
+        Context c=new Context(Board.firstPayment,september,september,"USDT",Scope.all,Set.of(),SupportLeaderboardPolicy.DEFINITION,NOW.minusSeconds(30));
         Candidate valid=candidate(c,9,1);Candidate disabled=new Candidate(valid.agentId(),valid.name(),valid.avatarUrl(),valid.groupName(),SupportLeaderboard.Qualification.DISABLED,
             valid.firstPayment(),valid.customers(),valid.amount(),null);Snapshot s=SupportLeaderboard.calculate(c,"verified-history-tuple",Coverage.COMPLETE,List.of(disabled));
         when(h.publicationMapper.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));when(h.publication.latest(any(),isNull())).thenReturn(new Publication(23,c.evaluatedAt().plusSeconds(1),s));
@@ -186,5 +186,44 @@ class SupportLeaderboardServiceTest {
         when(h.auth.avatarReference(9)).thenReturn(new AssetReference("historical-attached-asset",1L));when(h.avatars.publicLeaderboardContent(any())).thenReturn(new SupportAttachmentService.Content("image/png",new byte[]{1}));
         assertEquals(1,h.service.avatar(Map.of("month",List.of("2026-09"),"expectedVersion",List.of(s.viewVersion())),9).bytes().length);
         verify(h.ownership,never()).canReadAgent(any(),any());verify(h.publication,never()).publish(any());
+    }
+    @Test void verifiedOldDefinitionRecomputesInsteadOfServingFreshNetCache() throws Exception {
+        Harness h=new Harness();var real=legacyPublication(h);
+        SupportLeaderboardPublicationServiceTest.beginRead();try {
+            var body=service(h,real).page(Map.of("board",List.of("deposit")));
+            assertEquals("support-leaderboard-v2-deposit-no-refund",body.get("definitionVersion"));
+            assertEquals(false,body.get("stale"));assertEquals(false,body.get("refreshFailed"));
+            verify(real).publish(any());
+        }finally {SupportLeaderboardPublicationServiceTest.endRead();}
+    }
+    @Test void oldExpectedVersionIsConflictAfterNewDefinitionRefresh() throws Exception {
+        Harness h=new Harness();var real=legacyPublication(h);
+        String old=h.cached.snapshot().viewVersion();SupportLeaderboardPublicationServiceTest.beginRead();try {
+            assertEquals(409,assertThrows(BizException.class,()->service(h,real).page(Map.of("board",List.of("deposit"),"expectedVersion",List.of(old)))).getCode());
+        }finally {SupportLeaderboardPublicationServiceTest.endRead();}
+    }
+    @Test void sourceFailureAfterDefinitionChangeCannotFallbackToOldNetSnapshot() throws Exception {
+        for(boolean selected:List.of(false,true)) {
+            Harness h=new Harness();var real=legacyPublication(h);
+            doAnswer(i->{Context c=i.getArgument(0);if(!selected || c.board()==Board.deposit)throw new BizException(503,"SUPPORT_LEADERBOARD_SOURCE_FAILED");
+                return new SupportLeaderboardSourceService.Read(c,"tuple",Coverage.COMPLETE,List.of(candidate(c,7,1)),List.of(YearMonth.of(2026,10)),null);
+            }).when(h.source).readForAuthorizedLeaderboard(any());
+            SupportLeaderboardPublicationServiceTest.beginRead();try {
+                assertEquals(503,assertThrows(BizException.class,()->service(h,real).page(Map.of("board",List.of("deposit")))).getCode());
+                verify(real,never()).publish(any());
+            }finally {SupportLeaderboardPublicationServiceTest.endRead();}
+        }
+    }
+    private static SupportLeaderboardService service(Harness h,SupportLeaderboardPublicationService publication) {
+        return new SupportLeaderboardService(h.ownership,h.auth,h.mapper,h.source,publication,h.publicationMapper,h.config,h.avatars,h.transactions);
+    }
+    private static SupportLeaderboardPublicationService legacyPublication(Harness h) throws Exception {
+        Context old=new Context(Board.deposit,YearMonth.of(2026,10),YearMonth.of(2026,10),"USDT",Scope.all,Set.of(),"support-leaderboard-v1",NOW.minusSeconds(30));
+        Snapshot snapshot=SupportLeaderboardPublicationServiceTest.snapshot(old,Coverage.COMPLETE);
+        h.cached=new Publication(23,old.evaluatedAt().plusSeconds(1),snapshot);
+        when(h.publicationMapper.latest(anyString())).thenReturn(SupportLeaderboardPublicationServiceTest.stored(23,snapshot,h.cached.publishedAt()));
+        var real=spy(new SupportLeaderboardPublicationService(h.publicationMapper));
+        doAnswer(i->new Publication(24,NOW.plusSeconds(1),i.getArgument(0))).when(real).publish(any());
+        return real;
     }
 }
