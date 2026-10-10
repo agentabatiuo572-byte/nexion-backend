@@ -109,7 +109,7 @@ function validate(value, schema, doc, fixture, label = '$', currentFile = openap
     if (schema.maxLength !== undefined) assert([...value].length <= schema.maxLength, `${label}: maxLength`);
     if (schema.pattern) assert(new RegExp(schema.pattern).test(value), `${label}: pattern`);
     if (schema.format === 'date-time') {
-      assert(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/.test(value) && Number.isFinite(Date.parse(value)), `${label}: UTC date-time`);
+      assert(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/.test(value) && Number.isFinite(Date.parse(value)), `${label}: UTC date-time`);
     }
     if (schema.format === 'uri') assert(new URL(value).protocol, `${label}: uri`);
   }
@@ -539,6 +539,13 @@ function check(doc, fixture, sql) {
   assert.equal(doc.components.schemas.Metrics.properties.grossPaidUsdt.$ref,'#/components/schemas/AggregateAmount');
   assert.throws(()=>validate('1200000000000.000000',doc.components.schemas.Amount,doc,fixture),'Single entry must keep its 18,6 limit');
   validate('1200000000000.000000',doc.components.schemas.AggregateAmount,doc,fixture);
+  for (const time of ['2026-10-10T04:37:57Z', '2026-10-10T04:37:57.889Z', '2026-10-10T04:37:57.889337Z',
+    '2026-10-10T04:37:57.889337200Z', '2026-10-10T06:37:57.889337200Z']) {
+    validate(time, doc.components.schemas.Time, doc, fixture, 'Time precision ' + time);
+  }
+  for (const time of ['2026-10-10T04:37:57.8893372000Z', '2026-10-10T04:37:57.889337200+00:00', 'invalid-timeZ', '2026-13-10T04:37:57Z']) {
+    assert.throws(() => validate(time, doc.components.schemas.Time, doc, fixture), undefined, 'Invalid UTC Time accepted: ' + time);
+  }
   assert.deepEqual(doc.components.schemas.MetricRewardGroupBy.enum,['SKU','TEMPLATE','BENEFICIARY']);
   assert(doc.components.schemas.Metrics.required.includes('breakdown'),'Report requires server-side reward groups');
   assert(doc.components.schemas.Metrics.required.includes('salesBySku'),'Report requires exact per-SKU sales');
