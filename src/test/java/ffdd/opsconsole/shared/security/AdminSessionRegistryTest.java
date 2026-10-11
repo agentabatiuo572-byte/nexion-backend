@@ -26,6 +26,11 @@ class AdminSessionRegistryTest {
         verify(redis).expire("ops:admin:session:"+sid,Duration.ofMinutes(60));
         verify(redis).expire("ops:admin:sessions:7",Duration.ofMinutes(65));
     }
+    @Test void constructorsSetIdleModeAndKeepTheSingleArgumentDefault() {
+        assertThat(new AdminSessionRegistry(redis).isIdleDisabled()).isFalse();
+        assertThat(new AdminSessionRegistry(redis, false).isIdleDisabled()).isFalse();
+        assertThat(new AdminSessionRegistry(redis, true).isIdleDisabled()).isTrue();
+    }
     @Test void normalReadAndEnumerationUseNonTouchAtomicCheck() {
         legacyActive();when(sets.members("ops:admin:sessions:7")).thenReturn(java.util.Set.of("sid"));
         when(redis.execute(any(RedisScript.class),anyList(),any(Object[].class))).thenAnswer(invocation->{

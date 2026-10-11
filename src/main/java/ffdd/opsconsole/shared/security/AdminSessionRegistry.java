@@ -8,7 +8,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.Comparator;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -16,15 +16,26 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 @Component
-@RequiredArgsConstructor
 public class AdminSessionRegistry {
     private static final String SESSION_KEY_PREFIX = "ops:admin:session:";
     private static final String ADMIN_INDEX_PREFIX = "ops:admin:sessions:";
 
     private final StringRedisTemplate redisTemplate;
 
-    @Value("${NEXION_ADMIN_SESSION_IDLE_DISABLED:false}")
-    private boolean idleDisabled;
+    // Configuration is injected by the constructor; manual beans need no field post-processing.
+    @SuppressWarnings("ArchitectureConfigField")
+    private final boolean idleDisabled;
+
+    @Autowired
+    public AdminSessionRegistry(StringRedisTemplate redisTemplate,
+            @Value("${NEXION_ADMIN_SESSION_IDLE_DISABLED:false}") boolean idleDisabled) {
+        this.redisTemplate = redisTemplate;
+        this.idleDisabled = idleDisabled;
+    }
+
+    public AdminSessionRegistry(StringRedisTemplate redisTemplate) {
+        this(redisTemplate, false);
+    }
 
     // Check, explicit activity and removal of a legacy idle TTL share one atomic boundary.
     private static final DefaultRedisScript<Long> SESSION_ACTIVITY = new DefaultRedisScript<>("""
