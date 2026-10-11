@@ -31,6 +31,7 @@ public class PromotionAdminService {
     private final AuditLogService audit;
     private final A2RuntimePolicy reasonPolicy;
     private final ffdd.opsconsole.platform.application.OpsOptionsService options;
+    private final PromotionBannerService banners;
 
     public static long actor(){
         var auth=SecurityContextHolder.getContext().getAuthentication();
@@ -187,7 +188,7 @@ public class PromotionAdminService {
     }
     public Map<String,Object> create(Map<String,Object> request){validator.validate("CreatePromotion",request);return createDraft(map(request.get("draft")));}
     private Map<String,Object> createDraft(Map<String,Object> draft){
-        validator.validate("Draft",draft);validateWindow(draft);String id=id("PROMO");
+        validator.validate("Draft",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));String id=id("PROMO");
         changed(db.write("INSERT INTO nx_promotion(activity_id,event_code,category,template,draft_version) VALUES(?,?,?,?,1)",id,id,draft.get("category"),draft.get("template")));
         insertVersion(id,1,draft);return resource("PROMOTION",id,1L);
     }
@@ -202,7 +203,7 @@ public class PromotionAdminService {
         validator.validate("DraftWrite",request);var p=db.activity(id,true);require(!Set.of("ENDED","ARCHIVED").contains(commandState(p)),"PROMOTION_READ_ONLY");
         require(p.get("draft_version")!=null,"PROMOTION_DRAFT_MISSING");var v=db.version(id,number(p.get("draft_version")),true);
         require(number(v.get("revision"))==number(request.get("expectedRevision")),"PROMOTION_CONCURRENT_CHANGE");require("DRAFT".equals(v.get("status")),"PROMOTION_VERSION_READ_ONLY");
-        var draft=mergeDraft(parse(v.get("contract_json")),map(request.get("draft")));validator.validate("Draft",draft);validateWindow(draft);identities(id,draft,false);
+        var draft=mergeDraft(parse(v.get("contract_json")),map(request.get("draft")));validator.validate("Draft",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));identities(id,draft,false);
         changed(db.write("UPDATE nx_promotion_version SET contract_json=?,content_hash=?,starts_at=?,ends_at=?,status='DRAFT',approved_by=NULL,approved_at=NULL,approval_ref=NULL,resolved_policies_json=NULL,revision=revision+1 WHERE activity_id=? AND version=? AND revision=?",
             json(draft),hash(draft),ts(draft.get("startsAt")),ts(draft.get("endsAt")),id,v.get("version"),v.get("revision")));
         changed(db.write("UPDATE nx_promotion SET updated_at=NOW(6) WHERE activity_id=?",id));return resource("VERSION",id+":"+v.get("version"),number(v.get("revision"))+1);
@@ -232,7 +233,7 @@ public class PromotionAdminService {
         require(p.get("draft_version")!=null&&number(p.get("draft_version"))==ver&&!Set.of("ENDED","ARCHIVED").contains(lifecycle),"PROMOTION_VERSION_NOT_CURRENT");
         String current=text(v.get("status"));String expected=switch(action){case "submit"->"DRAFT";case "approve","reject"->"PENDING_APPROVAL";case "publish"->"APPROVED";case "withdraw"->current;default->throw new BizException(422,"PROMOTION_ACTION_INVALID");};require(expected.equals(current)&&(!"withdraw".equals(action)||Set.of("PENDING_APPROVAL","APPROVED").contains(current)),"PROMOTION_VERSION_STATE_INVALID");
         var draft=parse(v.get("contract_json"));Map<String,Object> resolved=Map.of();
-        if(!Set.of("reject","withdraw").contains(action)){validator.validate("PromotionContract",draft);validateWindow(draft);natives.fixtureAllowed(p.get("fixture_run_id"));resolved=governancePolicies(draft,true);semantic(id,draft,resolved);}
+        if(!Set.of("reject","withdraw").contains(action)){validator.validate("PromotionContract",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));natives.fixtureAllowed(p.get("fixture_run_id"));resolved=governancePolicies(draft,true);semantic(id,draft,resolved);}
         long actor=actor();
         if("approve".equals(action)||"publish".equals(action)){
             var auth=PromotionPolicyResolver.content(resolved,"authorization");

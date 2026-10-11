@@ -563,6 +563,19 @@ function check(doc, fixture, sql) {
   for (const [route, verbs] of Object.entries(doc.paths)) {
     assert(route.startsWith('/'));
     for (const [method, operation] of Object.entries(verbs)) {
+      if (route === '/api/promotions/{activityId}/banner/{version}') {
+        assert.equal(method, 'get');
+        assert.equal(operation.operationId, 'getPublicPromotionBanner');
+        assert.equal(operation['x-response-type'], 'IMAGE_BYTES');
+        assert.equal(operation['x-audience'], 'PUBLIC');
+        assert.deepEqual(operation.security, [{}]);
+        assert.deepEqual(operation.parameters.map(p => [p.name, p.in, p.required]), [['activityId', 'path', true], ['version', 'path', true]]);
+        assert.equal(operation.parameters[1].schema.minimum, 1);
+        assert.deepEqual(Object.keys(operation.responses['200'].content).sort(), ['image/jpeg', 'image/png']);
+        for (const content of Object.values(operation.responses['200'].content)) assert.deepEqual(content.schema, {type: 'string', format: 'binary'});
+        for (const code of ['404', '503']) assert(operation.responses[code]);
+        continue;
+      }
       assert(['get', 'post', 'put', 'patch'].includes(method), 'Unexpected HTTP method');
       assert(!opMap.has(operation.operationId), 'Duplicate operationId');
       opMap.set(operation.operationId, operation);
@@ -605,6 +618,18 @@ function check(doc, fixture, sql) {
     }
   }
   assert.deepEqual([...opMap.keys()].sort(), [...requiredOperations].sort(), 'Required API inventory');
+  assert(doc.paths['/api/promotions/{activityId}/banner/{version}'], 'Promotion artwork route is required');
+  for (const name of ['Draft', 'DraftPatch', 'PromotionContract']) {
+    const schema = doc.components.schemas[name].properties.bannerAssetId;
+    assert(schema, 'Versioned banner identity is required in ' + name);
+    validate(null, schema, doc, fixture);
+    validate('a'.repeat(240), schema, doc, fixture);
+    for (const invalid of ['', 'a'.repeat(241), 1]) assert.throws(() => validate(invalid, schema, doc, fixture));
+  }
+  const imageSchema = doc.components.schemas.PublicPromotion.properties.bannerImageUrl;
+  validate(null, imageSchema, doc, fixture);
+  validate('/api/promotions/PROMO-1/banner/1', imageSchema, doc, fixture);
+  for (const invalid of ['https://external.example/image.png', '/api/admin/media/private', '/api/promotions/PROMO-1/banner/0']) assert.throws(() => validate(invalid, imageSchema, doc, fixture));
   assert.equal(fixture.cases.length, requiredOperations.length);
   for (const item of [...fixture.templates, ...fixture.rewardStates, ...fixture.legacyRequests, ...fixture.positiveRequests]) {
     validate(item.value, doc.components.schemas[item.schema], doc, fixture, item.schema);

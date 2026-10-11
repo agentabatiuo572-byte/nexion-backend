@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 import ffdd.opsconsole.promotion.application.PromotionPublicService;
+import ffdd.opsconsole.promotion.application.PromotionBannerService;
 import ffdd.opsconsole.promotion.application.PromotionEvaluationService;
 import ffdd.opsconsole.promotion.domain.PromotionRules;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
@@ -25,7 +26,7 @@ class PromotionPublicServiceTest {
         var policies=values("$firstPurchase",values("content",values("restoreAfterRefund",true)));
         when(mapper.requiredRow(anyString(),any())).thenReturn(values("activity_id","test","active_version",1,"status","ACTIVE","contract_json",json(contract),"resolved_policies_json",json(policies)));
         when(evaluator.account(17L,audience,policies,null)).thenReturn(new PromotionRules.Account(17,now.minusSeconds(3600),"V0","",null,true,1,0,null,0,consumed));
-        assertEquals(expected,new PromotionPublicService(mapper,evaluator,null).get(17L,"test").get("eligibility"));
+        assertEquals(expected,new PromotionPublicService(mapper,evaluator,null,mock(PromotionBannerService.class)).get(17L,"test").get("eligibility"));
     }
     @ParameterizedTest
     @CsvSource({"ENDED,-3600,3600,ENDED", "PAUSED,-3600,3600,PAUSED",
@@ -40,7 +41,7 @@ class PromotionPublicServiceTest {
                 "endsAt", now.plusSeconds(endOffset).toString(), "rules", List.of());
         when(mapper.requiredRow(anyString(), any())).thenReturn(values("activity_id", "test",
                 "active_version", 1, "status", persisted, "contract_json", json(contract)));
-        var service = new PromotionPublicService(mapper, null, null);
+        var service = new PromotionPublicService(mapper, null, null, mock(PromotionBannerService.class));
         assertEquals(expected, service.get(null, "test").get("state"));
     }
 }

@@ -26,7 +26,7 @@ class PromotionEffectiveLifecycleTest {
     @BeforeEach void setup(){
         db=mock(PromotionMapper.class);resolver=mock(PromotionPolicyResolver.class);
         admin=new PromotionAdminService(db,mock(PromotionContractValidator.class),resolver,null,
-            mock(PromotionNativeContractResolver.class),null,null,null,null,null,null,null,null);
+            mock(PromotionNativeContractResolver.class),null,null,null,null,null,null,null,null,mock(PromotionBannerService.class));
         when(db.write(anyString(),any(Object[].class))).thenReturn(1);
         when(db.list(anyString(),any(Object[].class))).thenReturn(List.of());
         when(db.requiredRow(anyString(),any(Object[].class))).thenReturn(values("reserved",0,"unpaid_orders",0,
@@ -78,7 +78,7 @@ class PromotionEffectiveLifecycleTest {
         assertEquals(NOW.toString(),detail.get("endsAt"));assertEquals(NOW.toString(),detail.get("asOf"));
         var row=values("activity_id","expired","active_version",1,"status","ACTIVE","contract_json",json(contract(NOW.minusSeconds(10),NOW)));
         when(db.requiredRow(startsWith("SELECT p.*"),any(Object[].class))).thenReturn(row);
-        assertEquals(detail.get("state"),new PromotionPublicService(db,null,null).get(null,"expired").get("state"));
+        assertEquals(detail.get("state"),new PromotionPublicService(db,null,null,mock(PromotionBannerService.class)).get(null,"expired").get("state"));
     }
     @Test void allFilteredRowsAndSummaryFreezeBeforePagination(){
         activity("starts-now","SCHEDULED",null,NOW,NOW.plusSeconds(10),"DRAFT");

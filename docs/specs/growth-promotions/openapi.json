@@ -12,6 +12,32 @@
     }
   ],
   "paths": {
+    "/api/promotions/{activityId}/banner/{version}": {
+      "get": {
+        "operationId": "getPublicPromotionBanner",
+        "summary": "Read current published ACTIVE promotion artwork",
+        "security": [{}],
+        "x-audience": "PUBLIC",
+        "x-required-permission": null,
+        "x-response-type": "IMAGE_BYTES",
+        "parameters": [
+          {"name": "activityId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
+          {"name": "version", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Only the current published ACTIVE version image; response is no-store and nosniff.",
+            "content": {
+              "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
+              "image/png": {"schema": {"type": "string", "format": "binary"}}
+            }
+          },
+          "400": {"$ref": "#/components/responses/Error400"},
+          "404": {"$ref": "#/components/responses/Error404"},
+          "503": {"$ref": "#/components/responses/Error503"}
+        }
+      }
+    },
     "/api/promotions": {
       "get": {
         "operationId": "listPublicPromotions",
@@ -4495,6 +4521,12 @@
       "Draft": {
         "type": "object",
         "properties": {
+          "bannerAssetId": {
+            "type": ["string", "null"],
+            "minLength": 1,
+            "maxLength": 240,
+            "description": "Optional managed growth/promotion-banner JPEG or PNG image identity; null removes the version artwork."
+          },
           "category": {
             "type": "string",
             "enum": [
@@ -5115,6 +5147,11 @@
       "PublicPromotion": {
         "type": "object",
         "properties": {
+          "bannerImageUrl": {
+            "type": ["string", "null"],
+            "pattern": "^/api/promotions/[A-Za-z0-9][A-Za-z0-9._-]{0,127}/banner/[1-9][0-9]*$",
+            "description": "Current published ACTIVE version image path, resolved using the existing API base. Null or absence uses a text-only card."
+          },
           "activityId": {
             "$ref": "#/components/schemas/Id"
           },
@@ -7799,6 +7836,12 @@
       "PromotionContract": {
         "type": "object",
         "properties": {
+          "bannerAssetId": {
+            "type": ["string", "null"],
+            "minLength": 1,
+            "maxLength": 240,
+            "description": "Optional managed growth/promotion-banner JPEG or PNG image identity; null removes the version artwork."
+          },
           "category": {
             "type": "string",
             "enum": [
@@ -8375,6 +8418,12 @@
       "DraftPatch": {
         "type": "object",
         "properties": {
+          "bannerAssetId": {
+            "type": ["string", "null"],
+            "minLength": 1,
+            "maxLength": 240,
+            "description": "Optional managed growth/promotion-banner JPEG or PNG image identity; null removes the version artwork."
+          },
           "category": {
             "type": "string",
             "enum": [

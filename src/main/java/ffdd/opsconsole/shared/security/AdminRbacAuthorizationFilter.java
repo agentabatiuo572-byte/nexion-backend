@@ -246,6 +246,13 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
     private RequiredAuthority requiredAuthority(String path, String method) {
         boolean read = HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
+        // Method security additionally binds these grants to the requested media namespace.
+        if (HttpMethod.POST.matches(method) && path.equals("/api/admin/media/uploads")) {
+            return RequiredAuthority.exact("device_e1_write", "growth_promotion_edit");
+        }
+        if (HttpMethod.GET.matches(method) && pathMatcher.match("/api/admin/media/uploads/*/preview-url", path)) {
+            return RequiredAuthority.exact("device_e1_read", "growth_promotion_read", "growth_promotion_edit");
+        }
         if (read && (path.equals("/api/admin/content/support-agents/groups/supervisors")
                 || path.matches("/api/admin/content/support-agents/[1-9][0-9]{0,15}/qualifications"))) {
             return RequiredAuthority.exact("platform_a1_read");

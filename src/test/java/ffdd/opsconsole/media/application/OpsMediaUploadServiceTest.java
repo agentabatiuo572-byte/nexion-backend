@@ -94,6 +94,41 @@ class OpsMediaUploadServiceTest {
     }
 
     @Test
+    void promotionArtworkUsesExistingStorageIdempotencyAndRejectsVideosOrDisguisedImages() {
+        executeIdempotentAction();
+        byte[] png = Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/qXcAAAAASUVORK5CYII=");
+        when(storageService.put(anyString(), eq("image/png"), any(), eq((long) png.length)))
+                .thenAnswer(i -> new StoredObject("nexion", i.getArgument(0), "image/png", png.length));
+        when(storageService.presignGet(anyString(), any())).thenReturn("https://storage/preview");
+        var asset = service.upload(new MockMultipartFile("file", "mismatched.jpg", "image/png", png), "banner-1", "growth", "promotion-banner", null, null, "operator");
+        assertThat(asset.objectKey()).startsWith("admin/growth/promotion-banner/").endsWith(".png");
+        assertThat(service.isPromotionBannerAsset(asset.assetId())).isTrue();
+        assertThat(service.refreshPreviewUrl(asset.assetId()).previewUrl()).isEqualTo("https://storage/preview");
+        for (String type : new String[] {"video/mp4", "image/gif", "image/webp", "image/png"}) {
+            assertThatThrownBy(() -> service.upload(new MockMultipartFile("file", "fake.png", type, new byte[] {1}), "rejected", "growth", "promotion-banner", null, null, "operator"))
+                    .isInstanceOf(BizException.class).hasMessageContaining("UNSUPPORTED_MEDIA_TYPE");
+        }
+        verify(storageService, org.mockito.Mockito.times(1)).put(anyString(), anyString(), any(), any(Long.class));
+    }
+
+    @Test
+    void promotionRejectsValidWebpWhileE1SkuUploadAndPreviewKeepWebpSupport() {
+        executeIdempotentAction();
+        byte[] webp = Base64.getDecoder().decode("UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAUAmJaQAA3AA/vz0AAA=");
+        var file = new MockMultipartFile("file", "image.webp", "image/webp", webp);
+        assertThatThrownBy(() -> service.upload(file, "banner-webp", "growth", "promotion-banner", null, null, "operator"))
+                .isInstanceOf(BizException.class).hasMessageContaining("UNSUPPORTED_MEDIA_TYPE");
+        verifyNoInteractions(storageService);
+        when(storageService.put(anyString(), eq("image/webp"), any(), eq((long) webp.length)))
+                .thenAnswer(i -> new StoredObject("nexion", i.getArgument(0), "image/webp", webp.length));
+        when(storageService.presignGet(anyString(), any())).thenReturn("https://storage/sku-preview");
+        var asset = service.upload(file, "sku-webp", "E", "sku-image", null, null, "operator");
+        assertThat(asset.objectKey()).startsWith("admin/e/sku-image/").endsWith(".webp");
+        assertThat(asset.contentType()).isEqualTo("image/webp");
+        assertThat(service.refreshPreviewUrl(asset.assetId()).previewUrl()).isEqualTo("https://storage/sku-preview");
+    }
+
+    @Test
     void rejectsUploadWithoutIdempotencyKey() {
         MultipartFile file = new MockMultipartFile("file", "sku.png", "image/png", new byte[] {1});
 
