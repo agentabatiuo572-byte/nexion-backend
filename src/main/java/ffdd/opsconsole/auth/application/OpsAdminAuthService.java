@@ -202,11 +202,14 @@ public class OpsAdminAuthService {
     }
 
     public ApiResult<AdminLoginResponse.AdminSession> current(Authentication authentication) {
-        if (authentication == null || !authentication.isAuthenticated()) {
+        if (authentication == null || !authentication.isAuthenticated()
+                || !(authentication.getDetails() instanceof Map<?, ?> details)
+                || !SUBJECT_TYPE_ADMIN.equals(details.get("subjectType"))
+                || !StringUtils.hasText(sessionId(authentication))) {
             return ApiResult.fail(OpsErrorCode.UNAUTHORIZED.httpStatus(), OpsErrorCode.UNAUTHORIZED.name());
         }
         Long adminId = parseAdminId(authentication.getPrincipal());
-        if (adminId == null) {
+        if (adminId == null || adminId <= 0) {
             return ApiResult.fail(OpsErrorCode.UNAUTHORIZED.httpStatus(), OpsErrorCode.UNAUTHORIZED.name());
         }
         AdminEntity admin = adminMapper.selectById(adminId);
@@ -361,7 +364,8 @@ public class OpsAdminAuthService {
                 List.copyOf(authorities),
                 effectiveMenus,
                 safeMenuNodes,
-                passwordChangeRequired);
+                passwordChangeRequired,
+                adminSessionRegistry.isIdleDisabled());
     }
 
     private boolean passwordChangeRequired(Long adminId) {

@@ -1190,11 +1190,15 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     private AdminAccountOverview.SecurityBaseline securityBaseline(AdminSecurityBaselineEntity row) {
         boolean derivedLock = LOCK_BASELINE_KEY.equals(roleKey(row.getBaselineKey()));
         boolean session = "session".equals(roleKey(row.getBaselineKey()));
+        boolean idleDisabled = session && adminSessionRegistry.isIdleDisabled();
         return new AdminAccountOverview.SecurityBaseline(
                 roleKey(row.getBaselineKey()),
                 firstText(row.getLabel(), row.getBaselineKey()),
-                derivedLock ? lockBaselineDescription() : session ? AdminSessionPolicy.BASELINE_DESCRIPTION : firstText(row.getDescription()),
-                derivedLock ? lockBaselineValue() : session ? AdminSessionPolicy.BASELINE_VALUE : firstText(row.getBaselineValue()),
+                derivedLock ? lockBaselineDescription() : idleDisabled
+                        ? "后台闲置自动登出已停用；会话由主动登出或撤销结束，无绝对登录时限。"
+                        : session ? AdminSessionPolicy.BASELINE_DESCRIPTION : firstText(row.getDescription()),
+                derivedLock ? lockBaselineValue() : idleDisabled ? "disabled / unlimited"
+                        : session ? AdminSessionPolicy.BASELINE_VALUE : firstText(row.getBaselineValue()),
                 derivedLock || session || Integer.valueOf(1).equals(row.getLocked()));
     }
 

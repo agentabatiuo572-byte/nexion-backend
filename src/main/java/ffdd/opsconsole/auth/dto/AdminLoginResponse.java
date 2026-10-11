@@ -24,7 +24,14 @@ public record AdminLoginResponse(String accessToken, String tokenType, AdminSess
             List<String> authorities,
             List<String> effectiveMenus,
             List<EffectiveMenuNode> effectiveMenuNodes,
-            boolean passwordChangeRequired) {
+            boolean passwordChangeRequired,
+            boolean idleTimeoutDisabled) {
+        public AdminSession(Long adminId, String username, String operator, String role, String roleCode,
+                List<String> authorities, List<String> effectiveMenus, List<EffectiveMenuNode> effectiveMenuNodes,
+                boolean passwordChangeRequired) {
+            this(adminId, username, operator, role, roleCode, authorities, effectiveMenus, effectiveMenuNodes,
+                    passwordChangeRequired, false);
+        }
     }
 
     /** A7 metadata filtered by the current admin's active A6 role-menu grants. */

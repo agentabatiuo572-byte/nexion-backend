@@ -980,6 +980,22 @@ class OpsAdminAccountServiceTest {
         assertThat(service.overview().getData().securityBaselines().stream().filter(x->"session".equals(x.key())).findFirst().orElseThrow().value()).isEqualTo("60min / unlimited");
     }
 
+    @Test void disabledSessionPolicyIsDerivedOnReadWithoutChangingStoredBaselineOrAllowingEditing() {
+        when(adminSessionRegistry.isIdleDisabled()).thenReturn(true);
+        var baseline = service.overview().getData().securityBaselines().stream()
+                .filter(row -> "session".equals(row.key())).findFirst().orElseThrow();
+        assertThat(baseline.value()).isEqualTo("disabled / unlimited");
+        assertThat(baseline.sub()).isEqualTo("后台闲置自动登出已停用；会话由主动登出或撤销结束，无绝对登录时限。");
+        assertThat(baseline.locked()).isTrue();
+        assertThat(securityBaselineRows.get("session").getBaselineValue()).isEqualTo("30min / 8h");
+        var rejected = service.updateSecurityBaseline("idem-disabled-session", "session",
+                new AdminAccountSecurityBaselineUpdateRequest("disabled / unlimited", "synthetic policy check",
+                        "superadmin", "disabled / unlimited"));
+        assertThat(rejected.getCode()).isEqualTo(422);
+        assertThat(rejected.getMessage()).isEqualTo("SESSION_LIMIT_POLICY_FIXED");
+        verify(securityBaselineMapper, never()).upsertValue(eq("session"), anyString());
+    }
+
     @Test
     void legacyA1RbacGrantMatrixIsRejectedBecauseA6IsAuthoritative() {
         AdminRbacGrantUpdateRequest auditWriteRequest = new AdminRbacGrantUpdateRequest(

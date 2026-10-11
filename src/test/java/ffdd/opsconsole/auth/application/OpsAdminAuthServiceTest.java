@@ -31,6 +31,7 @@ import ffdd.opsconsole.shared.security.JwtTokenProvider;
 import io.jsonwebtoken.Claims;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -295,6 +296,7 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void changePasswordVerifiesCurrentPasswordStoresHashAndIssuesFreshSession() {
+        when(adminSessionRegistry.isIdleDisabled()).thenReturn(true);
         AdminEntity admin = activeAdmin(4L, "risk.shift", "风险值班", passwordEncoder.encode("RiskShift@123"));
         when(adminMapper.selectById(4L)).thenReturn(admin);
         when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
@@ -319,6 +321,7 @@ class OpsAdminAuthServiceTest {
         assertThat(passwordEncoder.matches("NewRiskShift@4567", admin.getPasswordHash())).isTrue();
         assertThat(result.getData().accessToken()).isNotBlank();
         assertThat(result.getData().session().passwordChangeRequired()).isFalse();
+        assertThat(result.getData().session().idleTimeoutDisabled()).isTrue();
         verify(accountStateMapper).upsertCredentialStatus(4L, "ACTIVE");
         verify(accountStateMapper, never()).recordAuthenticatedLogin(any());
         verify(adminSessionRegistry).revokeSessionsExcept(4L, "admin-session-new");
@@ -434,6 +437,7 @@ class OpsAdminAuthServiceTest {
                 List.of(
                         new SimpleGrantedAuthority("PERM_SYSTEM_READ"),
                         new SimpleGrantedAuthority("PERM_USER_READ")));
+        authentication.setDetails(Map.of("subjectType", "ADMIN", "sessionId", "verified-admin-sid"));
 
         ApiResult<AdminLoginResponse.AdminSession> result = service.current(authentication);
 
@@ -447,6 +451,74 @@ class OpsAdminAuthServiceTest {
         authentication.setDetails(sid == null ? java.util.Map.of("subjectType", type)
                 : java.util.Map.of("subjectType", type, "sessionId", sid));
         return authentication;
+    }
+
+    @Test void currentRejectsSameIdUserImpersonationAndMissingAdminSessionMetadata() {
+        when(adminMapper.selectById(1L)).thenReturn(activeSuperAdmin("synthetic"));
+        var missingDetails = new UsernamePasswordAuthenticationToken("1", null, List.of());
+        for (var identity : List.of(activityIdentity("USER", "user-sid"),
+                activityIdentity("IMPERSONATION", "impersonation-sid"),
+                activityIdentity("ADMIN", null), activityIdentity("ADMIN", " "), missingDetails)) {
+            var result = service.current(identity);
+            assertThat(result.getCode()).isEqualTo(401);
+            assertThat(result.getData()).isNull();
+        }
+        verify(adminMapper, never()).selectById(any(Long.class));
+        org.mockito.Mockito.verifyNoInteractions(adminSessionRegistry);
+    }
+
+    @Test void currentRequiresPositiveAdminIdentity() {
+        for (String id : List.of("0", "-1")) {
+            var identity = new UsernamePasswordAuthenticationToken(id, null, List.of());
+            identity.setDetails(Map.of("subjectType", "ADMIN", "sessionId", "sid"));
+            assertThat(service.current(identity).getCode()).isEqualTo(401);
+        }
+        verify(adminMapper, never()).selectById(any(Long.class));
+    }
+
+    @Test void adminTokenHasNoAbsoluteExpiryWhileUserAndImpersonationTokensKeepTheirExpiry() {
+        assertThat(tokenProvider.parse(tokenProvider.createToken(1L, "ADMIN", "synthetic", List.of(), "admin-sid"))
+                .getExpiration()).isNull();
+        assertThat(tokenProvider.parse(tokenProvider.createToken(1L, "USER", "synthetic", List.of(), "user-sid"))
+                .getExpiration()).isNotNull();
+        assertThat(tokenProvider.parse(tokenProvider.createImpersonationToken(1L, "synthetic", "impersonation-sid", 5))
+                .getExpiration()).isNotNull();
+        assertThatThrownBy(() -> tokenProvider.createToken(1L, "ADMIN", "synthetic", List.of(), null))
+                .isInstanceOf(IllegalArgumentException.class).hasMessage("ADMIN_SESSION_ID_REQUIRED");
+    }
+
+    @Test void meAndActivityReportOnlyTheServerIdleMode() {
+        when(adminMapper.selectById(1L)).thenReturn(activeSuperAdmin("synthetic"));
+        when(adminSessionRegistry.recordActivity(1L, "sid")).thenReturn(true);
+        for (boolean disabled : List.of(false, true)) {
+            when(adminSessionRegistry.isIdleDisabled()).thenReturn(disabled);
+            var identity = activityIdentity("ADMIN", "sid");
+            identity.setDetails(Map.of("subjectType", "ADMIN", "sessionId", "sid",
+                    "idleTimeoutDisabled", !disabled));
+            var me = service.current(identity);
+            assertThat(me.getCode()).isZero();
+            assertThat(me.getData().idleTimeoutDisabled()).isEqualTo(disabled);
+            var activity = service.activity(identity, new ffdd.opsconsole.auth.dto.AdminActivityRequest(1L));
+            assertThat(activity.getCode()).isZero();
+            assertThat(activity.getData().session().idleTimeoutDisabled()).isEqualTo(disabled);
+        }
+        verify(adminSessionRegistry, never()).createSession(any(), anyString(), anyString(), anyString());
+    }
+
+    @Test void completedMfaLoginReportsDisabledModeAndChallengeStillCarriesNoSession() {
+        var admin = activeSuperAdmin(passwordEncoder.encode("ValidPass@123"));
+        when(adminMapper.selectOne(any())).thenReturn(admin);
+        when(adminSessionRegistry.isIdleDisabled()).thenReturn(true);
+        var result = loginWithMfa(admin, "superadmin", "ValidPass@123", null);
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().session().idleTimeoutDisabled()).isTrue();
+        assertThat(result.getData().session().passwordChangeRequired()).isFalse();
+    }
+
+    @Test void legacyAdminSessionConstructorDefaultsIdleDisableMarkerToFalse() {
+        var response = new AdminLoginResponse.AdminSession(1L, "synthetic", "operator", "superadmin", "SUPER_ADMIN",
+                List.of(), List.of(), List.of(), false);
+        assertThat(response.idleTimeoutDisabled()).isFalse();
     }
 
     @Test void activityUpgradesTheSameActiveSessionWithoutExpiration() {
@@ -509,7 +581,8 @@ class OpsAdminAuthServiceTest {
     @Test void meNeverRecordsExplicitActivity() {
         when(adminMapper.selectById(1L)).thenReturn(activeSuperAdmin("synthetic"));
         assertThat(service.current(activityIdentity("ADMIN","sid")).getCode()).isZero();
-        org.mockito.Mockito.verifyNoInteractions(adminSessionRegistry);
+        verify(adminSessionRegistry, never()).recordActivity(any(), anyString());
+        verify(adminSessionRegistry, never()).createSession(any(), anyString(), anyString(), anyString());
         verify(accountStateMapper, never()).recordAuthenticatedLogin(any());
     }
 
