@@ -1021,7 +1021,10 @@
         "type": "object",
         "properties": {
           "bannerAssetId": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "minLength": 1,
             "maxLength": 240,
             "description": "Optional managed growth/promotion-banner JPEG or PNG image identity; null removes the version artwork."
@@ -1647,7 +1650,10 @@
         "type": "object",
         "properties": {
           "bannerImageUrl": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "pattern": "^/api/promotions/[A-Za-z0-9][A-Za-z0-9._-]{0,127}/banner/[1-9][0-9]*$",
             "description": "Current published ACTIVE version image path, resolved using the existing API base. Null or absence uses a text-only card."
           },
@@ -3717,7 +3723,7 @@
           "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Promotion"
+              "$ref": "#/components/schemas/PromotionListItem"
             }
           },
           "nextCursor": {
@@ -4336,7 +4342,10 @@
         "type": "object",
         "properties": {
           "bannerAssetId": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "minLength": 1,
             "maxLength": 240,
             "description": "Optional managed growth/promotion-banner JPEG or PNG image identity; null removes the version artwork."
@@ -4918,7 +4927,10 @@
         "type": "object",
         "properties": {
           "bannerAssetId": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "minLength": 1,
             "maxLength": 240,
             "description": "Optional managed growth/promotion-banner JPEG or PNG image identity; null removes the version artwork."
@@ -6887,6 +6899,243 @@
           "netReceivedUsdt"
         ],
         "additionalProperties": false
+      },
+      "PromotionListItem": {
+        "type": "object",
+        "properties": {
+          "activityId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "eventCode": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ActivityState"
+          },
+          "activeVersion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Revision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "draftVersion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Revision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "serverTime": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "fixture": {
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "\\S",
+                "description": "Internal administrative activity name, independent of the localized public title; versioned with the draft and never used as identity."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "PROMOTION",
+              "REFERRAL"
+            ]
+          },
+          "template": {
+            "$ref": "#/components/schemas/Template"
+          },
+          "startsAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "endsAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "displayTimezone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "draftVersionState": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VersionState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "impact": {
+            "$ref": "#/components/schemas/PromotionListImpact"
+          },
+          "reserved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "issued": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unresolved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/Time"
+          }
+        },
+        "required": [
+          "activityId",
+          "eventCode",
+          "revision",
+          "state",
+          "activeVersion",
+          "draftVersion",
+          "serverTime",
+          "fixture",
+          "name",
+          "category",
+          "template",
+          "startsAt",
+          "endsAt",
+          "displayTimezone",
+          "updatedAt",
+          "draftVersionState",
+          "impact",
+          "reserved",
+          "issued",
+          "unresolved",
+          "asOf"
+        ],
+        "additionalProperties": false,
+        "description": "Frozen activity-list projection. Full draft and reserved order rows are available from the activity detail endpoint."
+      },
+      "PromotionListImpact": {
+        "type": "object",
+        "properties": {
+          "reserved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "issued": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unresolved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unpaidOrders": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pendingRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failedRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unknownRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reversingRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "manualReviewRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unfulfilledRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "obligations": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "budgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Budget"
+            }
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "completeness": {
+            "const": "COMPLETE"
+          },
+          "source": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "reserved",
+          "issued",
+          "unresolved",
+          "unpaidOrders",
+          "pendingRewards",
+          "failedRewards",
+          "unknownRewards",
+          "reversingRewards",
+          "manualReviewRewards",
+          "unfulfilledRewards",
+          "obligations",
+          "budgets",
+          "asOf",
+          "completeness",
+          "source"
+        ],
+        "additionalProperties": false,
+        "description": "Operational counts and asset-separated budgets for an activity list row. Reserved order details are only returned by the activity detail endpoint."
       }
     }
   }

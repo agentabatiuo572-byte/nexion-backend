@@ -525,6 +525,10 @@ function check(doc, fixture, sql) {
   assert.equal(doc.paths['/api/admin/growth/promotions/{activityId}/withdraw'].post['x-request-schema'],'PublishAction');
   for(const field of ['query','name','category','template','from','to','timezone','querySnapshot','sort']) assert(doc.paths['/api/admin/growth/promotions'].get.parameters.some(p=>p.name===field),'List filter missing '+field);
   for(const field of ['total','query','querySnapshot','asOf','expiresAt','summary']) assert(doc.components.schemas.PromotionPage.required.includes(field),'List snapshot missing '+field);
+  assert.equal(doc.components.schemas.PromotionPage.properties.items.items.$ref,'#/components/schemas/PromotionListItem');
+  assert(!doc.components.schemas.PromotionListItem.properties.current,'Full draft must remain detail-only');
+  assert(!doc.components.schemas.PromotionListImpact.properties.reservedOrders,'Reserved order rows must remain detail-only');
+  assert(doc.components.schemas.Promotion.properties.current,'Detail must retain its complete version');
   for(const field of ['reserved','issued','unresolved','unpaidOrders','pendingRewards','failedRewards','unknownRewards','reversingRewards','manualReviewRewards','reservedOrders','budgets']) assert(doc.components.schemas.PromotionImpact.required.includes(field),'Impact missing '+field);
   assert.deepEqual(doc['x-contract'].withdrawal,{operation:'withdrawPromotion',permission:'growth_promotion_submit',from:['PENDING_APPROVAL','APPROVED'],to:'DRAFT',activeVersionUnchanged:true});
   assert.equal(doc.paths['/api/admin/growth/promotions/{activityId}/simulate'].post['x-response-schema'],'AdminSimulation');

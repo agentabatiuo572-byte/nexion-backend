@@ -96,9 +96,17 @@ class PromotionEffectiveLifecycleTest {
             Object[] a=(Object[])call.getRawArguments()[1];snapshots.put(text(a[0]),values("snapshot_id",a[0],"actor_id",a[1],"query_json",a[2],
                 "rows_json",a[3],"summary_json",a[4],"total",a[5],"as_of",a[6],"expires_at",a[7]));return 1;
         });
-        when(db.requiredRow(startsWith("SELECT * FROM nx_promotion_list_snapshot"),any(Object[].class)))
+        when(db.requiredRow(startsWith("SELECT snapshot_id,query_json"),any(Object[].class)))
             .thenAnswer(call->snapshots.get(text(((Object[])call.getRawArguments()[1])[0])));
+        when(db.requiredRow(startsWith("SELECT JSON_EXTRACT(rows_json,?)"),any(Object[].class))).thenAnswer(call->{
+            Object[] a=(Object[])call.getRawArguments()[1];String range=text(a[0]);var parts=range.substring(2,range.length()-1).split(" to ");
+            var rows=maps(parse("{\"rows\":"+snapshots.get(text(a[1])).get("rows_json")+"}").get("rows"));
+            return values("rows_json",json(rows.subList(Integer.parseInt(parts[0]),Integer.parseInt(parts[1])+1)));
+        });
         var first=admin.page(values("state","ACTIVE"),null,null,1);
+        assertFalse(maps(first.get("items")).get(0).containsKey("current"),"List snapshots must not copy full drafts");
+        assertFalse(map(maps(first.get("items")).get(0).get("impact")).containsKey("reservedOrders"),"List snapshots must not copy order details");
+        verify(db,never()).list(startsWith("SELECT order_no,version,MIN(pay_by)"),any(Object[].class));
         assertEquals(2,number(first.get("total")));assertEquals(2,number(map(first.get("summary")).get("activeActivities")));
         assertEquals("starts-now",maps(first.get("items")).get(0).get("activityId"));assertEquals("1",first.get("nextCursor"));
         assertEquals(NOW.toString(),map(first.get("summary")).get("asOf"));
@@ -106,6 +114,12 @@ class PromotionEffectiveLifecycleTest {
         var second=admin.page(values("state","ACTIVE"),text(first.get("querySnapshot")),"1",1);
         assertEquals("active",maps(second.get("items")).get(0).get("activityId"));assertEquals("ACTIVE",maps(second.get("items")).get(0).get("state"));
         assertEquals(first.get("summary"),second.get("summary"));assertEquals(first.get("asOf"),second.get("asOf"));assertEquals(false,second.get("hasMore"));
+        var historical=snapshots.get(text(first.get("querySnapshot")));
+        var historicalRows=maps(parse("{\"rows\":"+historical.get("rows_json")+"}").get("rows"));
+        historicalRows.get(1).put("current",values("draft",values("legacy","x".repeat(4096))));var historicalImpact=map(historicalRows.get(1).get("impact"));historicalImpact.put("reservedOrders",List.of(values("orderNo","legacy")));historicalRows.get(1).put("impact",historicalImpact);
+        historical.put("rows_json",json(historicalRows));var legacyPage=admin.page(values("state","ACTIVE"),text(first.get("querySnapshot")),"1",1);
+        assertEquals(second,legacyPage,"An unexpired old-format cache must remain readable as a compact list");
+        assertTrue(maps(admin.page(values("state","ACTIVE"),text(first.get("querySnapshot")),"2",1).get("items")).isEmpty());
         var fresh=admin.page(values("state","ENDED"),null,null,1);
         assertEquals(4,number(fresh.get("total")));assertEquals(0,number(map(fresh.get("summary")).get("activeActivities")));
     }

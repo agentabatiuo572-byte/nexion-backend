@@ -16,25 +16,58 @@
       "get": {
         "operationId": "getPublicPromotionBanner",
         "summary": "Read current published ACTIVE promotion artwork",
-        "security": [{}],
+        "security": [
+          {}
+        ],
         "x-audience": "PUBLIC",
         "x-required-permission": null,
         "x-response-type": "IMAGE_BYTES",
         "parameters": [
-          {"name": "activityId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/Id"}},
-          {"name": "version", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}
+          {
+            "name": "activityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
         ],
         "responses": {
           "200": {
             "description": "Only the current published ACTIVE version image; response is no-store and nosniff.",
             "content": {
-              "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
-              "image/png": {"schema": {"type": "string", "format": "binary"}}
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
             }
           },
-          "400": {"$ref": "#/components/responses/Error400"},
-          "404": {"$ref": "#/components/responses/Error404"},
-          "503": {"$ref": "#/components/responses/Error503"}
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
         }
       }
     },
@@ -1351,7 +1384,7 @@
       "get": {
         "operationId": "listPromotions",
         "summary": "listPromotions",
-        "description": "Actor-owned persisted query snapshot: initial query freezes all matching rows, total and cross-page summary in one repeatable-read transaction. Subsequent pages require the same normalized query and querySnapshot; cursor is an offset only within that snapshot. Read permission is checked on every request. Snapshot expires after 30 minutes; expiry/query mismatch is 409, another actor is 404. from/to/timezone must be supplied together and mean activity window overlap [from,to); undated drafts do not match. query matches internal name or activity/event ID; name matches internal name. Published activity metadata stays at activeVersion while current may be a candidate draft. Sorting is stable with activityId as tie-breaker.",
+        "description": "Actor-owned persisted query snapshot: initial query freezes all matching rows, total and cross-page summary in one repeatable-read transaction. Subsequent pages require the same normalized query and querySnapshot; cursor is an offset only within that snapshot. Read permission is checked on every request. Snapshot expires after 30 minutes; expiry/query mismatch is 409, another actor is 404. from/to/timezone must be supplied together and mean activity window overlap [from,to); undated drafts do not match. query matches internal name or activity/event ID; name matches internal name. Published activity metadata stays at activeVersion while current may be a candidate draft. Sorting is stable with activityId as tie-breaker. List rows exclude current and impact.reservedOrders; detail responses retain both. Expired snapshots are removed in bounded batches; a reclaimed snapshot returns 404. Retry starts a new query without snapshot or cursor.",
         "tags": [
           "ADMIN"
         ],
@@ -3029,7 +3062,7 @@
       "get": {
         "operationId": "getMetrics",
         "summary": "getMetrics",
-        "description": "A new query freezes totals, reward facts and SKU/template/beneficiary aggregations in the existing report snapshot. Reuse querySnapshot with identical activity/version/window/timezone and an offset cursor to page; groupBy can switch within the snapshot. Actor ownership and current metrics-read permission are checked each time; changed query or expired snapshot rejects with 409.",
+        "description": "A new query freezes totals, reward facts and SKU/template/beneficiary aggregations in the existing report snapshot. Reuse querySnapshot with identical activity/version/window/timezone and an offset cursor to page; groupBy can switch within the snapshot. Actor ownership and current metrics-read permission are checked each time; changed query or an expired snapshot not yet reclaimed rejects with 409. Expired snapshots without any export job are reclaimed in bounded batches; reclaimed or other-actor snapshots return 404. Read retries start a new snapshot with the same filters and no old cursor. Referenced export snapshots are retained.",
         "tags": [
           "ADMIN"
         ],
@@ -4522,7 +4555,10 @@
         "type": "object",
         "properties": {
           "bannerAssetId": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "minLength": 1,
             "maxLength": 240,
             "description": "Optional managed growth/promotion-banner JPEG or PNG image identity; null removes the version artwork."
@@ -5148,7 +5184,10 @@
         "type": "object",
         "properties": {
           "bannerImageUrl": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "pattern": "^/api/promotions/[A-Za-z0-9][A-Za-z0-9._-]{0,127}/banner/[1-9][0-9]*$",
             "description": "Current published ACTIVE version image path, resolved using the existing API base. Null or absence uses a text-only card."
           },
@@ -7218,7 +7257,7 @@
           "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Promotion"
+              "$ref": "#/components/schemas/PromotionListItem"
             }
           },
           "nextCursor": {
@@ -7837,7 +7876,10 @@
         "type": "object",
         "properties": {
           "bannerAssetId": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "minLength": 1,
             "maxLength": 240,
             "description": "Optional managed growth/promotion-banner JPEG or PNG image identity; null removes the version artwork."
@@ -8419,7 +8461,10 @@
         "type": "object",
         "properties": {
           "bannerAssetId": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "minLength": 1,
             "maxLength": 240,
             "description": "Optional managed growth/promotion-banner JPEG or PNG image identity; null removes the version artwork."
@@ -10388,6 +10433,243 @@
           "netReceivedUsdt"
         ],
         "additionalProperties": false
+      },
+      "PromotionListItem": {
+        "type": "object",
+        "properties": {
+          "activityId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "eventCode": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ActivityState"
+          },
+          "activeVersion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Revision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "draftVersion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Revision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "serverTime": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "fixture": {
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "\\S",
+                "description": "Internal administrative activity name, independent of the localized public title; versioned with the draft and never used as identity."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "PROMOTION",
+              "REFERRAL"
+            ]
+          },
+          "template": {
+            "$ref": "#/components/schemas/Template"
+          },
+          "startsAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "endsAt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "displayTimezone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "draftVersionState": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VersionState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "impact": {
+            "$ref": "#/components/schemas/PromotionListImpact"
+          },
+          "reserved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "issued": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unresolved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/Time"
+          }
+        },
+        "required": [
+          "activityId",
+          "eventCode",
+          "revision",
+          "state",
+          "activeVersion",
+          "draftVersion",
+          "serverTime",
+          "fixture",
+          "name",
+          "category",
+          "template",
+          "startsAt",
+          "endsAt",
+          "displayTimezone",
+          "updatedAt",
+          "draftVersionState",
+          "impact",
+          "reserved",
+          "issued",
+          "unresolved",
+          "asOf"
+        ],
+        "additionalProperties": false,
+        "description": "Frozen activity-list projection. Full draft and reserved order rows are available from the activity detail endpoint."
+      },
+      "PromotionListImpact": {
+        "type": "object",
+        "properties": {
+          "reserved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "issued": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unresolved": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unpaidOrders": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pendingRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "failedRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unknownRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reversingRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "manualReviewRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unfulfilledRewards": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "obligations": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "budgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Budget"
+            }
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/Time"
+          },
+          "completeness": {
+            "const": "COMPLETE"
+          },
+          "source": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "reserved",
+          "issued",
+          "unresolved",
+          "unpaidOrders",
+          "pendingRewards",
+          "failedRewards",
+          "unknownRewards",
+          "reversingRewards",
+          "manualReviewRewards",
+          "unfulfilledRewards",
+          "obligations",
+          "budgets",
+          "asOf",
+          "completeness",
+          "source"
+        ],
+        "additionalProperties": false,
+        "description": "Operational counts and asset-separated budgets for an activity list row. Reserved order details are only returned by the activity detail endpoint."
       }
     },
     "parameters": {

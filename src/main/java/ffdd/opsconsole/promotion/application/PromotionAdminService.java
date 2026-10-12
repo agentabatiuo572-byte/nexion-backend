@@ -100,16 +100,17 @@ public class PromotionAdminService {
     public static Map<String,Object> resource(String type,String id,Long revision){return values("type",type,"id",id,"revision",revision);}
 
     @org.springframework.transaction.annotation.Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
-    public Map<String,Object> get(String id){return readPromotion(id,Instant.now());}
-    private Map<String,Object> readPromotion(String id,Instant asOf){
+    public Map<String,Object> get(String id){return readPromotion(id,Instant.now(),true);}
+    private Map<String,Object> readPromotion(String id,Instant asOf,boolean detail){
         var p=db.activity(id,false);Object current=p.get("draft_version")!=null?p.get("draft_version"):p.get("active_version");
         Object effective=p.get("active_version")!=null?p.get("active_version"):p.get("draft_version");
         var config=effective==null?Map.<String,Object>of():parse(db.version(id,number(effective),false).get("contract_json"));
         var draft=p.get("draft_version")==null?null:db.version(id,number(p.get("draft_version")),false);
-        var impact=PromotionMetricsService.readImpact(db,id,asOf);
-        return values("activityId",id,"eventCode",p.get("event_code"),"revision",number(p.get("revision")),"state",effectiveLifecycle(p.get("status"),config,asOf),"activeVersion",p.get("active_version"),"draftVersion",p.get("draft_version"),"draftVersionState",draft==null?null:draft.get("status"),
+        var impact=detail?PromotionMetricsService.readImpact(db,id,asOf):PromotionMetricsService.readListImpact(db,id,asOf);
+        var result=values("activityId",id,"eventCode",p.get("event_code"),"revision",number(p.get("revision")),"state",effectiveLifecycle(p.get("status"),config,asOf),"activeVersion",p.get("active_version"),"draftVersion",p.get("draft_version"),"draftVersionState",draft==null?null:draft.get("status"),
             "name",config.get("name"),"category",config.get("category"),"template",config.get("template"),"startsAt",config.get("startsAt"),"endsAt",config.get("endsAt"),"displayTimezone",config.get("displayTimezone"),"updatedAt",time(p.get("updated_at")),
-            "current",current==null?null:version(id,number(current)),"impact",impact,"reserved",impact.get("reserved"),"issued",impact.get("issued"),"unresolved",impact.get("unresolved"),"asOf",asOf.toString(),"serverTime",asOf.toString(),"fixture",!text(p.get("fixture_run_id")).isEmpty());
+            "impact",impact,"reserved",impact.get("reserved"),"issued",impact.get("issued"),"unresolved",impact.get("unresolved"),"asOf",asOf.toString(),"serverTime",asOf.toString(),"fixture",!text(p.get("fixture_run_id")).isEmpty());
+        if(detail)result.put("current",current==null?null:version(id,number(current)));return result;
     }
     public Map<String,Object> version(String id,long version){var v=db.version(id,version,false);return values("activityId",id,"version",version,"revision",number(v.get("revision")),"state",v.get("status"),"contentHash",v.get("content_hash"),"draft",parse(v.get("contract_json")),"approvedBy",nullableText(v.get("approved_by")),"approvedAt",time(v.get("approved_at")),"publishedBy",nullableText(v.get("published_by")),"publishedAt",time(v.get("published_at")),"policyResolutionErrors",List.of());}
     private static String nullableText(Object v){return v==null?null:text(v);}private static String time(Object v){return v==null?null:instant(v).toString();}
@@ -153,7 +154,7 @@ public class PromotionAdminService {
         field(limit>=1&&limit<=100,"limit");var query=normalizeListQuery(filters);long offset=cursor==null?0:number(cursor);field(offset>=0,"cursor");
         Map<String,Object> snapshot;
         if(querySnapshot!=null){
-            validator.validate("Id",querySnapshot);snapshot=db.requiredRow("SELECT * FROM nx_promotion_list_snapshot WHERE snapshot_id=? AND actor_id=?",querySnapshot,actor);
+            validator.validate("Id",querySnapshot);snapshot=listSnapshot(querySnapshot,actor);
             require(instant(snapshot.get("expires_at")).isAfter(Instant.now()),"PROMOTION_LIST_SNAPSHOT_EXPIRED");require(hash(parse(snapshot.get("query_json"))).equals(hash(query)),"PROMOTION_LIST_QUERY_CHANGED");
         }else{
             field(cursor==null,"querySnapshot");Instant asOf=Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);String id=id("PLS");var rows=new ArrayList<Map<String,Object>>();
@@ -166,13 +167,20 @@ public class PromotionAdminService {
             if(query.get("query")!=null){sql+=" AND (LOWER("+name+") LIKE ? ESCAPE '!' OR LOWER(p.activity_id) LIKE ? ESCAPE '!' OR LOWER(p.event_code) LIKE ? ESCAPE '!')";for(int i=0;i<3;i++)args.add(like(text(query.get("query"))));}
             if(query.get("from")!=null){sql+=" AND v.ends_at>? AND v.starts_at<?";args.add(timestamp(instant(query.get("from"))));args.add(timestamp(instant(query.get("to"))));}
             sql+=" ORDER BY "+switch(text(query.get("sort"))){case "NAME_ASC"->"LOWER("+name+") ASC,p.activity_id ASC";case "STARTS_ASC"->"v.starts_at ASC,p.activity_id ASC";default->"p.updated_at DESC,p.activity_id ASC";};
-            for(var row:db.list(sql,args.toArray()))if(query.get("state")==null||query.get("state").equals(effectiveLifecycle(row.get("status"),parse(row.get("contract_json")),asOf)))rows.add(readPromotion(text(row.get("activity_id")),asOf));
+            for(var row:db.list(sql,args.toArray()))if(query.get("state")==null||query.get("state").equals(effectiveLifecycle(row.get("status"),parse(row.get("contract_json")),asOf)))rows.add(readPromotion(text(row.get("activity_id")),asOf,false));
             var summary=PromotionMetricsService.summarizeActivities(rows,asOf);
             changed(db.write("INSERT INTO nx_promotion_list_snapshot(snapshot_id,actor_id,query_json,rows_json,summary_json,total,as_of,expires_at) VALUES(?,?,?,?,?,?,?,?)",id,actor,json(query),json(rows),json(summary),rows.size(),timestamp(asOf),timestamp(asOf.plusSeconds(1800))));
-            snapshot=db.requiredRow("SELECT * FROM nx_promotion_list_snapshot WHERE snapshot_id=? AND actor_id=?",id,actor);
+            snapshot=listSnapshot(id,actor);
         }
-        var rows=maps(parse("{\"rows\":"+text(snapshot.get("rows_json"))+"}").get("rows"));field(offset<=rows.size(),"cursor");int end=(int)Math.min(rows.size(),offset+limit);boolean more=end<rows.size();
-        return values("items",rows.subList((int)offset,end),"hasMore",more,"nextCursor",more?String.valueOf(end):null,"total",number(snapshot.get("total")),"query",query,"querySnapshot",snapshot.get("snapshot_id"),"asOf",instant(snapshot.get("as_of")).toString(),"expiresAt",instant(snapshot.get("expires_at")).toString(),"summary",parse(snapshot.get("summary_json")));
+        long total=number(snapshot.get("total"));field(offset<=total,"cursor");long end=offset+Math.min(limit,total-offset);boolean more=end<total;
+        var rows=offset==end?List.<Map<String,Object>>of():maps(parse("{\"rows\":"+text(db.requiredRow("SELECT JSON_EXTRACT(rows_json,?) rows_json FROM nx_promotion_list_snapshot WHERE snapshot_id=? AND actor_id=?","$["+offset+" to "+(end-1)+"]",snapshot.get("snapshot_id"),actor).get("rows_json"))+"}").get("rows"));
+        if(rows.size()!=end-offset)throw new BizException(503,"PROMOTION_LIST_SNAPSHOT_UNAVAILABLE");
+        return values("items",rows.stream().map(PromotionAdminService::listItem).toList(),"hasMore",more,"nextCursor",more?String.valueOf(end):null,"total",total,"query",query,"querySnapshot",snapshot.get("snapshot_id"),"asOf",instant(snapshot.get("as_of")).toString(),"expiresAt",instant(snapshot.get("expires_at")).toString(),"summary",parse(snapshot.get("summary_json")));
+    }
+    private Map<String,Object> listSnapshot(String id,long actor){return db.requiredRow("SELECT snapshot_id,query_json,summary_json,total,as_of,expires_at FROM nx_promotion_list_snapshot WHERE snapshot_id=? AND actor_id=?",id,actor);}
+    private static Map<String,Object> listItem(Map<String,Object> row){
+        // Unexpired snapshots created by the previous version still contain detail-only fields.
+        var item=new LinkedHashMap<>(row);item.remove("current");var impact=new LinkedHashMap<>(map(item.get("impact")));impact.remove("reservedOrders");item.put("impact",impact);return item;
     }
     public Map<String,Object> normalizeListQuery(Map<String,Object> filters){
         var query=new LinkedHashMap<String,Object>();filters.forEach((key,value)->{if(value!=null){String text=text(value).trim();if(!text.isEmpty())query.put(key,text);}});validator.validate("PromotionListQuery",query);
