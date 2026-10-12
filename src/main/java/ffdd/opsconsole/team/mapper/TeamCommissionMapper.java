@@ -723,6 +723,11 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                      WHEN settlement_date = CURDATE() THEN matched_volume
                      ELSE 0
                    END), 0), 0) AS dailyMatchUsd,
+                   (SELECT COUNT(1)
+                      FROM nx_binary_leg_assignment
+                     WHERE assigned_by = 'SYSTEM_AUTO_PLACEMENT'
+                       AND assigned_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                       AND assigned_at <= NOW()) AS autoPlacement7dCount,
                    COALESCE(ROUND(MAX(daily_cap_usdt), 0), 0) AS maxDailyCapUsd,
                    COALESCE(ROUND(MAX(GREATEST(left_volume, right_volume)), 0), 0) AS maxTrackGmv,
                    COALESCE(ROUND(SUM(GREATEST(left_volume, right_volume) - matched_volume), 0), 0) AS residualPoolUsd
