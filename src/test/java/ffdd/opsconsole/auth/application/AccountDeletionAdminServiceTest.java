@@ -1,24 +1,29 @@
 package ffdd.opsconsole.auth.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.dto.AdminAccountDeletionCommandRequest;
 import ffdd.opsconsole.auth.mapper.AppUserSecurityMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
+import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.annotation.Transactional;
 
 class AccountDeletionAdminServiceTest {
     private final AppUserSecurityMapper mapper = mock(AppUserSecurityMapper.class);
@@ -26,6 +31,65 @@ class AccountDeletionAdminServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final AccountDeletionAdminService service = new AccountDeletionAdminService(mapper, sessions, audit, idempotency);
+
+    @Test
+    void detailReadUsesANonLockingQueryAndKeepsNullableFields() throws Exception {
+        String requestNo = "ADR-0123456789abcdef0123456789abcdef";
+        Map<String, Object> record = row("REQUESTED", 0L);
+        AppUserSecurityMapper detailMapper = mock(AppUserSecurityMapper.class, invocation -> {
+            String sql = String.join(" ", invocation.getMethod().getAnnotation(Select.class).value());
+            assertThat(sql).contains("request_no=#{requestNo}", "is_deleted=0", "LIMIT 1")
+                    .doesNotContain("FOR UPDATE");
+            assertThat(invocation.<String>getArgument(0)).isEqualTo(requestNo);
+            return record;
+        });
+        var readService = new AccountDeletionAdminService(detailMapper, sessions, audit, idempotency);
+
+        var result = readService.find(" " + requestNo + " ");
+
+        assertThat(AccountDeletionAdminService.class.getMethod("find", String.class)
+                .getAnnotation(Transactional.class).readOnly()).isTrue();
+        assertThat(result.requestNo()).isEqualTo(requestNo);
+        assertThat(result.userId()).isEqualTo(42L);
+        assertThat(result.status()).isEqualTo("REQUESTED");
+        assertThat(result.version()).isZero();
+        assertThat(result.requestedAt()).isEqualTo(record.get("requestedAt"));
+        assertThat(result.reviewedAt()).isNull();
+        assertThat(result.completedAt()).isNull();
+        assertThat(result.reason()).isNull();
+        assertThat(result.blockReason()).isNull();
+        assertThat(result.sessionsRevoked()).isFalse();
+        assertThat(result.accountDisabled()).isFalse();
+        verify(detailMapper, never()).accountDeletionByRequestNoForUpdate(anyString());
+        verifyNoInteractions(sessions, audit, idempotency);
+    }
+
+    @Test
+    void detailLookupKeepsNotFoundAndMalformedInputErrorsWithoutSideEffects() {
+        AppUserSecurityMapper notFoundMapper = mock(AppUserSecurityMapper.class, invocation -> null);
+        var readService = new AccountDeletionAdminService(notFoundMapper, sessions, audit, idempotency);
+        for (String requestNo : new String[]{null, " ", "ADR-invalid"}) {
+            assertThatThrownBy(() -> readService.find(requestNo))
+                    .isInstanceOfSatisfying(BizException.class, error -> assertThat(error.getCode()).isEqualTo(422));
+        }
+        verifyNoInteractions(notFoundMapper, sessions, audit, idempotency);
+        assertThatThrownBy(() -> readService.find("ADR-0123456789abcdef0123456789abcdef"))
+                .isInstanceOfSatisfying(BizException.class, error -> assertThat(error.getCode()).isEqualTo(404))
+                .hasMessage("ACCOUNT_DELETION_REQUEST_NOT_FOUND");
+        verifyNoInteractions(sessions, audit, idempotency);
+    }
+
+    @Test
+    void detailAndCommandQueriesKeepTheSameProjectionAndActiveScopeButDifferentLocks() throws Exception {
+        String read = String.join(" ", AppUserSecurityMapper.class
+                .getMethod("accountDeletionByRequestNo", String.class).getAnnotation(Select.class).value());
+        String locked = String.join(" ", AppUserSecurityMapper.class
+                .getMethod("accountDeletionByRequestNoForUpdate", String.class).getAnnotation(Select.class).value());
+
+        assertThat(locked).contains("FOR UPDATE");
+        assertThat(read).doesNotContain("FOR UPDATE");
+        assertThat(read.strip()).isEqualTo(locked.replace(" FOR UPDATE", "").strip());
+    }
 
     @Test
     void completionFailsClosedAndLeavesAccountAndSessionsUntouchedWhenLedgerIsOpen() {
