@@ -75,6 +75,17 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
                    cancelled_at AS cancelledAt,block_reason AS blockReason
               FROM nx_user_account_deletion_request
              WHERE request_no=#{requestNo} AND is_deleted=0
+             LIMIT 1
+            """)
+    Map<String, Object> accountDeletionByRequestNo(@Param("requestNo") String requestNo);
+
+    @Select("""
+            SELECT request_no AS requestNo,user_id AS userId,status,version,
+                   requested_at AS requestedAt,reviewed_at AS reviewedAt,
+                   completed_at AS completedAt,reason,reviewed_by AS reviewedBy,
+                   cancelled_at AS cancelledAt,block_reason AS blockReason
+              FROM nx_user_account_deletion_request
+             WHERE request_no=#{requestNo} AND is_deleted=0
              LIMIT 1 FOR UPDATE
             """)
     Map<String, Object> accountDeletionByRequestNoForUpdate(@Param("requestNo") String requestNo);
