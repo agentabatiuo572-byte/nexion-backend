@@ -58,6 +58,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260811_f15_leadership_pool_authoritative_config.sql"),
   (Join-Path $root "scripts\migrations\20260811_f15_leadership_pool_config_blocked_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260811_g2_exchange_execution_mutex.sql"),
+  # Existing databases may predate G4's shared transaction mutex row.
+  (Join-Path $root "scripts\migrations\20261013_g4_config_mutation_mutex.sql"),
   (Join-Path $root "scripts\migrations\20260811_a2_a4_runtime_policy_closure.sql"),
   (Join-Path $root "scripts\migrations\20260811_f5_commission_export_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260811_l6_source_environment_schema.sql"),
