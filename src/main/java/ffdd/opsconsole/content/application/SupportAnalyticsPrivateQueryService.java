@@ -203,7 +203,8 @@ public class SupportAnalyticsPrivateQueryService {
         if(q.category()!=SupportAnalyticsQueryRequest.Category.ALL && !q.category().name().equals(c.category().name()))return false;
         if(q.firstState()!=First.ALL && !q.firstState().name().equals(c.first().state().name()))return false;
         var d=s.display().get(c.customerId());
-        if(q.keyword()!=null && !(d.nickname()!=null && d.nickname().toLowerCase(Locale.ROOT).contains(q.keyword().toLowerCase(Locale.ROOT))) && !d.customerNo().equals(q.keyword()))return false;
+        if(q.keyword()!=null && !(d.nickname()!=null && d.nickname().toLowerCase(Locale.ROOT).contains(q.keyword().toLowerCase(Locale.ROOT)))
+                && !q.keyword().equalsIgnoreCase(d.customerNo()) && !Long.toString(c.customerId()).equals(q.keyword()))return false;
         var t=s.tasks().get(c.customerId());
         return switch(q.filter()) {
             case ALL -> true;

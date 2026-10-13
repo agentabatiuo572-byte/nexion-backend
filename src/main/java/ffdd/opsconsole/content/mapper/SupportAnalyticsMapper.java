@@ -272,7 +272,8 @@ public interface SupportAnalyticsMapper {
     List<RelationshipStamp> ownerStamps(@Param("scope") ReadScope scope,@Param("ids") Collection<Long> ids);
 
     @Select("""
-        <script>SELECT scope_customer.id customerId,scope_customer.nickname,CAST(scope_customer.id AS CHAR) customerNo,
+        <script>SELECT scope_customer.id customerId,scope_customer.nickname,
+          CONCAT('U', LPAD(scope_customer.id, GREATEST(8, LENGTH(CAST(scope_customer.id AS CHAR))), '0')) customerNo,
           scope_customer.status,scope_customer.created_at registeredAt,scope_customer.updated_at sourceUpdatedAt,
           (SELECT MAX(a.starts_at) FROM nx_support_agent_user_assignment a WHERE a.user_id=scope_customer.id
             AND a.status='ACTIVE' AND a.is_deleted=0 AND a.starts_at&lt;=UTC_TIMESTAMP(6) AND a.ends_at IS NULL) assignedAt,

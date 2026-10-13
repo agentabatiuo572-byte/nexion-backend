@@ -68,12 +68,27 @@ class SupportAnalyticsPrivateQueryServiceTest {
             when(mapper.qualificationStamps(eq(scope),anyCollection())).thenReturn(List.of(new QualificationStamp(1L,1L,"SERVICE","ENABLED",1L,T.minusDays(1),null)));
             when(mapper.assignmentStamps(eq(scope),anyCollection())).thenReturn(List.of(new RelationshipStamp("ASSIGNMENT",10L,100L,1L,null,null,"ACTIVE",0,1L,T.minusDays(1),null)));
             when(mapper.routeStamps(eq(scope),anyCollection())).thenReturn(List.of());when(mapper.memberStamps(eq(scope),anyCollection())).thenReturn(List.of());when(mapper.ownerStamps(eq(scope),anyCollection())).thenReturn(List.of());
-            when(mapper.rootDisplayRows(eq(scope),anyCollection())).thenReturn(List.of(new RootDisplayRow(100L,"Customer","100","ACTIVE",T.minusDays(1),T,T.minusDays(1),null,null)));
+            when(mapper.rootDisplayRows(eq(scope),anyCollection())).thenReturn(List.of(new RootDisplayRow(100L,"Customer","U00000100","ACTIVE",T.minusDays(1),T,T.minusDays(1),null,null)));
             when(mapper.queryRules(scope)).thenReturn(new SupportRules(1L,7,7,7,"INFINITE",null,"SUPERVISOR",null));
             when(mapper.activityIdentityRows(eq(scope),anyCollection(),eq(T))).thenReturn(List.of(new ActivityIdentityRow(100L,10L,1L,"LOGIN:10",T)));
             when(mapper.taskRows(eq(scope),anyCollection(),eq(T),any(),any(),any(),eq(7),isNull(),eq(T))).thenReturn(List.of(new TaskRow(100L,1,1L,null,null,null,null,1,null,null,0L,0,0,null,"ACTIVE","ACTIVE",T,0,null,null,null)));
             when(mapper.pendingReplyRows(eq(scope),anyCollection())).thenReturn(List.of());
         }
+    }
+    @Test void canonicalCustomerCodeNumericIdAndNameSearchKeepTheAuthorizedCustomerAndRejectWrongCodes() {
+        var f=new Fixture();
+        for(String view:List.of("CUSTOMERS","OVERVIEW","FINANCE","ACTIVITY")) {
+            for(String keyword:List.of("U00000100","u00000100","100","Cust","customer")) {
+                var response=f.service.query(Map.of("view",List.of(view),"keyword",List.of(keyword)));
+                @SuppressWarnings("unchecked") var rows=(List<Map<String,Object>>)response.get("records");
+                assertThat(rows).as("%s search %s",view,keyword).singleElement()
+                    .satisfies(row->assertThat(row).containsEntry("customerId","100").containsEntry("customerNo","U00000100"));
+            }
+            for(String keyword:List.of("U00000101","U100","U00000100x","0100","101"))
+                assertThat((List<?>)f.service.query(Map.of("view",List.of(view),"keyword",List.of(keyword))).get("records"))
+                    .as("%s rejects %s",view,keyword).isEmpty();
+        }
+        verify(f.mapper,atLeastOnce()).rootDisplayRows(eq(f.scope),eq(Set.of(100L)));
     }
     @Test void sameEvaluationFeedsPageCardsAndReadyVersionWithoutAnotherSummaryCall() {
         var f=new Fixture();var first=f.service.query(Map.of());String token=(String)first.get("queryVersion");assertThat(token).startsWith("saq-v1:");
