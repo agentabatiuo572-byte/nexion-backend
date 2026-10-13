@@ -52,6 +52,12 @@ public final class PromotionValues {
         if(value instanceof Instant t) return t;
         return Instant.parse(text(value));
     }
+    public static String effectiveLifecycle(Object stored,Map<String,Object> published,Instant asOf) {
+        String state=text(stored);
+        if(!Set.of("ACTIVE","SCHEDULED","PAUSED").contains(state))return state;
+        if(!asOf.isBefore(instant(published.get("endsAt"))))return "ENDED";
+        return "PAUSED".equals(state)?"PAUSED":asOf.isBefore(instant(published.get("startsAt")))?"SCHEDULED":"ACTIVE";
+    }
     public static Timestamp timestamp(Instant value) { return value==null?null:Timestamp.from(value); }
     public static String json(Object value) {
         try {return JSON.writeValueAsString(value);} catch(Exception e) {throw new IllegalArgumentException("PROMOTION_JSON_INVALID",e);}

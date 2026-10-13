@@ -447,6 +447,23 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
+    void overviewUsesOnlyRecordedLoginTimeAndNeverAccountModificationTime() {
+        LocalDateTime accountModifiedAt = LocalDateTime.of(2026, 8, 25, 11, 58, 58);
+        admins.forEach(admin -> admin.setUpdatedAt(accountModifiedAt));
+        accountStates.get(1L).setLastLoginAt(null);
+        LocalDateTime recordedLoginAt = LocalDateTime.of(2026, 10, 9, 14, 51, 15);
+        accountStates.get(2L).setLastLoginAt(recordedLoginAt);
+        accountStates.remove(3L);
+
+        var operators = service.overview().getData().operators();
+
+        assertThat(operators.stream().filter(row -> row.id().equals("1")).findFirst().orElseThrow().lastLogin()).isEmpty();
+        assertThat(operators.stream().filter(row -> row.id().equals("2")).findFirst().orElseThrow().lastLogin())
+                .isEqualTo(recordedLoginAt.toString());
+        assertThat(operators.stream().filter(row -> row.id().equals("3")).findFirst().orElseThrow().lastLogin()).isEmpty();
+    }
+
+    @Test
     void overviewIncludesAuditableRoleHistoryBaseline() {
         ApiResult<AdminAccountOverview> result = service.overview();
 
@@ -1017,21 +1034,41 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
-    void updateSecurityBaselineParsesSessionLimitAndAudits() {
-        AdminAccountSecurityBaselineUpdateRequest request =
-                new AdminAccountSecurityBaselineUpdateRequest(
-                        "45min / 10h", "shorten console sessions", "superadmin", "30min / 8h");
+    void fixedSessionPolicyIsReadOnlyEvenForASuperAdmin() {
+        var request=new AdminAccountSecurityBaselineUpdateRequest(
+            "60min / unlimited","keep current console policy","superadmin","60min / unlimited");
+        var result=service.updateSecurityBaseline("idem-sec-1","session",request);
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("SESSION_LIMIT_POLICY_FIXED");
+        var baseline=service.overview().getData().securityBaselines().stream().filter(x->"session".equals(x.key())).findFirst().orElseThrow();
+        assertThat(baseline.value()).isEqualTo("60min / unlimited");assertThat(baseline.locked()).isTrue();
+        verify(auditLogService,org.mockito.Mockito.never()).record(any(AuditLogWriteRequest.class));
+    }
 
-        ApiResult<AdminAccountOverview.SecurityBaseline> result =
-                service.updateSecurityBaseline("idem-sec-1", "session", request);
+    @Test void legacySessionLimitsAreProjectedAsCurrentPolicyAndCannotBeReintroduced() {
+        for (String value : List.of("30min / 8h", "60min / 12h", "45min / unlimited")) {
+            var result=service.updateSecurityBaseline("idem-session-"+value,"session",
+                new AdminAccountSecurityBaselineUpdateRequest(value,"synthetic policy check","superadmin","60min / unlimited"));
+            assertThat(result.getCode()).isEqualTo(422);
+            assertThat(result.getMessage()).isEqualTo("SESSION_LIMIT_POLICY_FIXED");
+        }
+        assertThat(service.overview().getData().securityBaselines().stream().filter(x->"session".equals(x.key())).findFirst().orElseThrow().value()).isEqualTo("60min / unlimited");
+    }
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().value()).isEqualTo("45min / 10h");
-        assertThat(securityBaselineRows.get("session").getBaselineValue()).isEqualTo("45min / 10h");
-        assertThat(repository.items).doesNotContainKey("a1.security.sessionIdle");
-        assertThat(repository.items).doesNotContainKey("a1.security.sessionAbs");
-        assertThat(repository.items).doesNotContainKey("a1.security.baseline.session.value");
-        verify(auditLogService).record(any(AuditLogWriteRequest.class));
+    @Test void disabledSessionPolicyIsDerivedOnReadWithoutChangingStoredBaselineOrAllowingEditing() {
+        when(adminSessionRegistry.isIdleDisabled()).thenReturn(true);
+        var baseline = service.overview().getData().securityBaselines().stream()
+                .filter(row -> "session".equals(row.key())).findFirst().orElseThrow();
+        assertThat(baseline.value()).isEqualTo("disabled / unlimited");
+        assertThat(baseline.sub()).isEqualTo("后台闲置自动登出已停用；会话由主动登出或撤销结束，无绝对登录时限。");
+        assertThat(baseline.locked()).isTrue();
+        assertThat(securityBaselineRows.get("session").getBaselineValue()).isEqualTo("30min / 8h");
+        var rejected = service.updateSecurityBaseline("idem-disabled-session", "session",
+                new AdminAccountSecurityBaselineUpdateRequest("disabled / unlimited", "synthetic policy check",
+                        "superadmin", "disabled / unlimited"));
+        assertThat(rejected.getCode()).isEqualTo(422);
+        assertThat(rejected.getMessage()).isEqualTo("SESSION_LIMIT_POLICY_FIXED");
+        verify(securityBaselineMapper, never()).upsertValue(eq("session"), anyString());
     }
 
     @Test

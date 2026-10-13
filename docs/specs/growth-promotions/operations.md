@@ -105,11 +105,13 @@ nx_promotion_order_receipt 保存所有使用报价建成的真实订单，包�
 
 GET /api/admin/growth/promotions 接受 query/name/activityId/category/template/state、from/to/timezone、sort、limit/cursor/querySnapshot。query 按内部名称、活动 ID 或事件编号查找，name 仅查内部名；通配符按文字处理。时窗三个字段同时提供，使用活动窗口与 [from,to) 相交语义，无日期草稿不匹配。排序支持 UPDATED_DESC/NAME_ASC/STARTS_ASC，并以 activityId 稳定排序。已发布活动采用 activeVersion 的分类、名称与时窗；没有发布版本才采用草稿。
 
-首查在同一数据库读取快照中冻结全部匹配行、total、全查询 summary、规范化 query、asOf 和 expiresAt；分页携同 querySnapshot 与原筛选，不能只合计本页。快照限原操作者、有效 30 分钟，筛选不符或过期返回 409，跨操作者返回 404，每次读取仍即时复核权限。列表是当时事实，任何命令仍按当前 revision 复核；刷新新查得到新事实。
+首查在同一数据库读取快照中冻结全部匹配的列表投影、total、全查询 summary、规范化 query、asOf 和 expiresAt；分页携同 querySnapshot 与原筛选，不能只合计本页。快照限原操作者、有效 30 分钟，筛选不符或尚未回收的过期快照返回 409，已回收或跨操作者返回 404，每次读取仍即时复核权限。过期列表快照定时分批回收，未过期快照不受影响。列表是当时事实，任何命令仍按当前 revision 复核；刷新或读取失败后的重试清除旧快照及游标，新查得到新事实。列表不包含完整版本草稿和逐笔预留订单，详情接口保留这些内容。
 
-每行及详情的 impact 跨该活动所有版本读取预留、义务、真实钱包/设备回执及预算，包含 marked fixture 的运营责任。reserved 是仍预留的奖励项数，unpaidOrders 是去重的已锁订单数，reservedOrders 明示原版本及 payBy；issued 只计真实匹配回执，冲正后保留历史累计。pendingRewards 单列待履约，unresolved 汇总失败、结果未知、冲正处理中和人工处理；unfulfilledRewards 覆盖全部未终结义务。summary 聚合全部匹配活动，订单数量是逐活动责任数，同一订单参与多个活动可分别计入。预算按 USDT/NEX/设备 SKU 分列，禁止混币合计；source/asOf/completeness 标明来源与统计时间，不制造收入或曝光数据。
+列表及详情的 impact 跨该活动所有版本读取预留、义务、真实钱包/设备回执及预算，包含 marked fixture 的运营责任。reserved 是仍预留的奖励项数，unpaidOrders 是去重的已锁订单数；详情的 reservedOrders 明示原版本及 payBy，列表仅返回汇总计数。issued 只计真实匹配回执，冲正后保留历史累计。pendingRewards 单列待履约，unresolved 汇总失败、结果未知、冲正处理中和人工处理；unfulfilledRewards 覆盖全部未终结义务。summary 聚合全部匹配活动，订单数量是逐活动责任数，同一订单参与多个活动可分别计入。预算按 USDT/NEX/设备 SKU 分列，禁止混币合计；source/asOf/completeness 标明来源与统计时间，不制造收入或曝光数据。
 
 ## 运营预览、奖励查询与报表口径
+
+报表快照有效24小时；过期且没有关联任何导出任务的快照定时分批回收，回收后重新查询生成新快照。已关联导出任务的快照及导出记录保留，供原操作、导出状态与审计追溯。
 
 audience-preview 只要求 Draft 的类别、模板及所预览 Audience；不要求先配置时间、奖励、预算或全局结算政策。只解析设备人群和首购口径所需的已批准政策。返回条件摘要、来源、matched/rejected/unknown/total、拒绝原因计数；具备既有 user_c1_read 能力才返回最多 20 个仅含账户 ID 的样本，否则 samples=[]，各角色分别计数。simulate 的非空 sampleAccountId 同样要求 user_c1_read，缺少时返回 403。政策缺失或事实源不可读是 UNKNOWN，不能当无设备或未命中；账户来源不可读时 total 等为 null，estimatedAccounts 只在全部可判断时提供。预览不构成资格凭证，不写资格或订单。
 
@@ -123,7 +125,7 @@ salesBySku 按上述已付款订单的全部购买 SKU 分列成交单数、实�
 
 Metrics.breakdown 按 groupBy=SKU/TEMPLATE/BENEFICIARY 返回服务端聚合 rows/total/nextCursor/hasMore，默认 SKU、limit=20（1–100）。SKU 是锁定奖励承诺的购买商品，模板来自成交版本，受益人按既有角色及账户 ID 区分；同组仍分 USDT/NEX/DEVICE，设备另分赠品 SKU。每行包含原承诺、真实已发、待发、已回收、未追回、已取消及去重订单/受益人数。奖励以义务 created_at 的 [from,to) 取样，结果截至 asOf；这一口径显式返回，不将赠品当付费销量，也不混成成本。
 
-首次查询在可重复读事务内冻结全部三类分组、原始奖励事实、整体指标、筛选和时区。后续页必须携带 querySnapshot 及相同 activityId/version/from/to/timezone；可在同一快照切换分组和每页数量。快照绑定当前管理员，24 小时到期后 409，查询变更 409，无快照翻页 422；每次访问即时核验报表权限。导出从该快照包含所有分组和全部原始行，不只当前页；受益人仅包含本业务已有义务的 ID 和角色，无联系资料，沿用报表/导出能力。无曝光或成本来源仍为 null。
+首次查询在可重复读事务内冻结全部三类分组、原始奖励事实、整体指标、筛选和时区。后续页必须携带 querySnapshot 及相同 activityId/version/from/to/timezone；可在同一快照切换分组和每页数量。快照绑定当前管理员，24 小时到期且尚未回收时 409，已回收或跨操作者 404，查询变更 409，无快照翻页 422；失败后重试清除旧快照和游标，保留原筛选重新查询；每次访问即时核验报表权限。导出从该快照包含所有分组和全部原始行，不只当前页；受益人仅包含本业务已有义务的 ID 和角色，无联系资料，沿用报表/导出能力。无曝光或成本来源仍为 null。
 
 正式全额券订单虽实付为 0，payment_channel=VOUCHER 且 PAID 仍是成功购机事实并消耗首购资格。原 E4 钱包整单退款拒绝 amount<=0（ORDER_REFUND_SETTLEMENT_INVALID），首期沿用此边界；不存在可执行的零额钱包退款或由它触发的资格恢复，不伪造零额账本。
 

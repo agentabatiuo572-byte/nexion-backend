@@ -8,24 +8,71 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.Comparator;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
-import ffdd.opsconsole.platform.infrastructure.AdminSecurityBaselineEntity;
-import ffdd.opsconsole.platform.mapper.AdminSecurityBaselineMapper;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 @Component
-@RequiredArgsConstructor
 public class AdminSessionRegistry {
     private static final String SESSION_KEY_PREFIX = "ops:admin:session:";
     private static final String ADMIN_INDEX_PREFIX = "ops:admin:sessions:";
 
     private final StringRedisTemplate redisTemplate;
-    private final JwtProperties jwtProperties;
-    private final AdminSecurityBaselineMapper baselineMapper;
+
+    // Configuration is injected by the constructor; manual beans need no field post-processing.
+    @SuppressWarnings("ArchitectureConfigField")
+    private final boolean idleDisabled;
+
+    @Autowired
+    public AdminSessionRegistry(StringRedisTemplate redisTemplate,
+            @Value("${NEXION_ADMIN_SESSION_IDLE_DISABLED:false}") boolean idleDisabled) {
+        this.redisTemplate = redisTemplate;
+        this.idleDisabled = idleDisabled;
+    }
+
+    public AdminSessionRegistry(StringRedisTemplate redisTemplate) {
+        this(redisTemplate, false);
+    }
+
+    // Check, explicit activity and removal of a legacy idle TTL share one atomic boundary.
+    private static final DefaultRedisScript<Long> SESSION_ACTIVITY = new DefaultRedisScript<>("""
+            if redis.call('HGET', KEYS[1], 'adminId') ~= ARGV[1]
+                or redis.call('HGET', KEYS[1], 'issuedAt') ~= ARGV[10]
+                or not redis.call('HGET', KEYS[1], 'lastSeenAt')
+                or redis.call('SISMEMBER', KEYS[2], ARGV[2]) ~= 1 then return 0 end
+            local rawSeen = redis.call('HGET', KEYS[1], 'lastSeenMillis')
+            local seen = tonumber(rawSeen)
+            if rawSeen and not seen then return 0 end
+            if not seen then
+                if redis.call('HGET', KEYS[1], 'lastSeenAt') ~= ARGV[5] then return 0 end
+                seen = tonumber(ARGV[6])
+            end
+            local clock = redis.call('TIME')
+            local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+            local ttl = tonumber(ARGV[4])
+            if not seen or seen > now then return 0 end
+            local idleDisabled = ARGV[9] == '1'
+            if not idleDisabled and now - seen >= ttl * 1000 then
+                redis.call('DEL', KEYS[1])
+                redis.call('SREM', KEYS[2], ARGV[2])
+                return 0
+            end
+            if idleDisabled then
+                redis.call('PERSIST', KEYS[1])
+                redis.call('PERSIST', KEYS[2])
+            end
+            if ARGV[8] == '1' then
+                redis.call('HSET', KEYS[1], 'lastSeenAt', ARGV[7], 'lastSeenMillis', string.format('%.0f', now))
+                if not idleDisabled then
+                    redis.call('EXPIRE', KEYS[1], ttl)
+                    redis.call('EXPIRE', KEYS[2], ttl + 300)
+                end
+            end
+            return 1
+            """, Long.class);
 
     public String createSession(Long adminId, String username) {
         return createSession(adminId, username, "unknown", "unknown");
@@ -36,62 +83,54 @@ public class AdminSessionRegistry {
             throw new IllegalArgumentException("admin session identity required");
         }
         String sessionId = UUID.randomUUID().toString();
-        AdminSessionPolicy policy = sessionPolicy();
-        Duration ttl = Duration.ofMinutes(policy.absoluteMinutes());
+        Duration ttl = Duration.ofMinutes(AdminSessionPolicy.IDLE_MINUTES);
         String sessionKey = sessionKey(sessionId);
-        String now = Instant.now().toString();
+        Instant issuedAt = Instant.now();
+        String now = issuedAt.toString();
         redisTemplate.opsForHash().putAll(sessionKey, Map.of(
                 "adminId", String.valueOf(adminId),
                 "username", username.trim(),
                 "issuedAt", now,
                 "lastSeenAt", now,
+                "lastSeenMillis", String.valueOf(issuedAt.toEpochMilli()),
                 "ipAddress", safe(ipAddress, "unknown"),
                 "userAgent", safe(userAgent, "unknown")));
-        redisTemplate.expire(sessionKey, ttl);
+        if (!idleDisabled) redisTemplate.expire(sessionKey, ttl);
         String indexKey = indexKey(adminId);
         redisTemplate.opsForSet().add(indexKey, sessionId);
-        redisTemplate.expire(indexKey, ttl.plusMinutes(5));
+        if (idleDisabled) redisTemplate.persist(indexKey);
+        else redisTemplate.expire(indexKey, ttl.plusMinutes(5));
         return sessionId;
     }
 
     public boolean isSessionActive(Long adminId, String sessionId) {
+        return evaluateSession(adminId, sessionId, false);
+    }
+
+    public boolean recordActivity(Long adminId, String sessionId) {
         return evaluateSession(adminId, sessionId, true);
     }
 
     private boolean evaluateSession(Long adminId, String sessionId, boolean touch) {
-        if (adminId == null || !StringUtils.hasText(sessionId)) {
-            return false;
-        }
-        String normalizedSessionId = sessionId.trim();
-        String key = sessionKey(normalizedSessionId);
+        if (adminId == null || adminId <= 0 || !StringUtils.hasText(sessionId)) return false;
+        String normalized = sessionId.trim();
+        String key = sessionKey(normalized);
         List<Object> values = redisTemplate.opsForHash().multiGet(key, List.of("adminId", "issuedAt", "lastSeenAt"));
-        if (values == null || values.size() < 3 || !String.valueOf(adminId).equals(values.get(0))) {
-            return false;
-        }
+        if (values == null || values.size() < 3 || !String.valueOf(adminId).equals(values.get(0))) return false;
+        final Instant lastSeen;
         try {
-            Instant issuedAt = Instant.parse(String.valueOf(values.get(1)));
-            Object rawLastSeen = values.get(2);
-            Instant lastSeenAt = rawLastSeen == null ? issuedAt : Instant.parse(String.valueOf(rawLastSeen));
-            Instant now = Instant.now();
-            AdminSessionPolicy policy = sessionPolicy();
-            if (!policy.isActive(issuedAt, lastSeenAt, now)) {
-                redisTemplate.delete(key);
-                redisTemplate.opsForSet().remove(indexKey(adminId), normalizedSessionId);
-                return false;
-            }
-            if (touch) {
-                redisTemplate.opsForHash().put(key, "lastSeenAt", now.toString());
-                Duration remaining = Duration.between(now, issuedAt.plus(Duration.ofMinutes(policy.absoluteMinutes())));
-                if (!remaining.isNegative() && !remaining.isZero()) {
-                    redisTemplate.expire(key, remaining);
-                }
-            }
-            return true;
-        } catch (RuntimeException ex) {
-            redisTemplate.delete(key);
-            redisTemplate.opsForSet().remove(indexKey(adminId), normalizedSessionId);
+            Instant.parse(String.valueOf(values.get(1)));
+            lastSeen = Instant.parse(String.valueOf(values.get(2)));
+        } catch (RuntimeException invalidMetadata) {
             return false;
         }
+        Instant now = Instant.now();
+        Long active = redisTemplate.execute(SESSION_ACTIVITY, List.of(key, indexKey(adminId)),
+                String.valueOf(adminId), normalized, String.valueOf(now.toEpochMilli()),
+                String.valueOf(Duration.ofMinutes(AdminSessionPolicy.IDLE_MINUTES).toSeconds()),
+                String.valueOf(values.get(2)), String.valueOf(lastSeen.toEpochMilli()), now.toString(), touch ? "1" : "0",
+                idleDisabled ? "1" : "0", String.valueOf(values.get(1)));
+        return Long.valueOf(1).equals(active);
     }
 
     public int countActiveSessions(Long adminId) {
@@ -223,23 +262,8 @@ public class AdminSessionRegistry {
         }
     }
 
-    private AdminSessionPolicy sessionPolicy() {
-        long idle = 30;
-        long absolute = Math.min(Math.max(jwtProperties.getTtlMinutes(), 1), 480);
-        try {
-            AdminSecurityBaselineEntity baseline = baselineMapper.selectActiveByKey("session");
-            if (baseline != null && StringUtils.hasText(baseline.getBaselineValue())) {
-                Matcher matcher = Pattern.compile("(\\d+)\\s*min\\s*/\\s*(\\d+)\\s*h", Pattern.CASE_INSENSITIVE)
-                        .matcher(baseline.getBaselineValue());
-                if (matcher.find()) {
-                    idle = Long.parseLong(matcher.group(1));
-                    absolute = Long.parseLong(matcher.group(2)) * 60L;
-                }
-            }
-        } catch (RuntimeException ignored) {
-            // Authentication must remain fail-closed with the seeded 30m/8h baseline.
-        }
-        return new AdminSessionPolicy(idle, absolute);
+    public boolean isIdleDisabled() {
+        return idleDisabled;
     }
 
     private String safe(Object value, String fallback) {

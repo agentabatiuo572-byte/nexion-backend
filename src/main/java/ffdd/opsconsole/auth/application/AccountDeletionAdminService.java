@@ -33,7 +33,7 @@ public class AccountDeletionAdminService {
     public AccountDeletionAdminView find(String requestNo) {
         if (!StringUtils.hasText(requestNo)) throw new BizException(422, "ACCOUNT_DELETION_REQUEST_NO_REQUIRED");
         String normalized = normalizeRequestNo(requestNo);
-        Map<String, Object> row = mapper.accountDeletionByRequestNoForUpdate(normalized);
+        Map<String, Object> row = mapper.accountDeletionByRequestNo(normalized);
         if (row == null) throw new BizException(404, "ACCOUNT_DELETION_REQUEST_NOT_FOUND");
         return view(row, false, false);
     }

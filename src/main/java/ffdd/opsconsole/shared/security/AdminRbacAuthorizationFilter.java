@@ -41,6 +41,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             "/api/admin/auth/password/change",
             "/api/admin/auth/logout");
     private static final Set<String> ANY_ADMIN_PATHS = Set.of(
+            "/api/admin/auth/activity",
             "/api/admin/auth/me",
             "/api/admin/auth/password/change",
             "/api/admin/auth/logout",
@@ -159,7 +160,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         boolean reasonPolicyRead = HttpMethod.GET.matches(request.getMethod())
                 && "/api/admin/platform/audit/reason-policy".equals(path);
         boolean selfAvatarRequest = isSelfAvatarRequest(path, request.getMethod());
-        if ((reasonPolicyRead || selfAvatarRequest) && !isTrustedAuthenticatedAdmin(authentication)) {
+        if ((reasonPolicyRead || selfAvatarRequest || "/api/admin/auth/activity".equals(path))
+                && !isTrustedAuthenticatedAdmin(authentication)) {
             auditDenial(request, authentication, "ADMIN_SUBJECT_REQUIRED", null);
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_SUBJECT_REQUIRED");
             return;
@@ -257,6 +259,13 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
     private RequiredAuthority requiredAuthority(String path, String method) {
         boolean read = HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
+        // Method security additionally binds these grants to the requested media namespace.
+        if (HttpMethod.POST.matches(method) && path.equals("/api/admin/media/uploads")) {
+            return RequiredAuthority.exact("device_e1_write", "growth_promotion_edit");
+        }
+        if (HttpMethod.GET.matches(method) && pathMatcher.match("/api/admin/media/uploads/*/preview-url", path)) {
+            return RequiredAuthority.exact("device_e1_read", "growth_promotion_read", "growth_promotion_edit");
+        }
         if (read && (path.equals("/api/admin/content/support-agents/groups/supervisors")
                 || path.matches("/api/admin/content/support-agents/[1-9][0-9]{0,15}/qualifications"))) {
             return RequiredAuthority.exact("platform_a1_read");

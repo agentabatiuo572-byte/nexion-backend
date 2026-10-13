@@ -14,7 +14,10 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -25,10 +28,93 @@ class UserBusinessWriteGateFilterTest {
     private final UserOpsMapper users = mock(UserOpsMapper.class);
     private final LegalTermsService terms = mock(LegalTermsService.class);
     private final UserBusinessWriteGateFilter filter = new UserBusinessWriteGateFilter(users, terms);
+    private final ch.qos.logback.classic.Logger logger =
+            (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(UserBusinessWriteGateFilter.class);
+    private final ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> logs =
+            new ch.qos.logback.core.read.ListAppender<>();
+    private ch.qos.logback.classic.Level previousLevel;
+
+    @BeforeEach
+    void captureDiagnostics() {
+        previousLevel = logger.getLevel();
+        logger.setLevel(ch.qos.logback.classic.Level.WARN);
+        logs.start();
+        logger.addAppender(logs);
+    }
 
     @AfterEach
     void clearSecurityContext() {
         SecurityContextHolder.clearContext();
+        logger.detachAppender(logs);
+        logs.stop();
+        logger.setLevel(previousLevel);
+    }
+
+    @Test
+    void depositOnboarding503PreservesResponseBlocksDispatchAndLogsNoCause() throws Exception {
+        authenticateUser(42L);
+        when(users.isOnboardingComplete(42L)).thenThrow(
+                new IllegalStateException("fixture-secret database-url synthetic-token"));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+        filter.doFilter(new MockHttpServletRequest("POST", "/api/app/deposits/vietqr/intents"), response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getContentAsString()).isEqualTo(
+                "{\"code\":503,\"message\":\"USER_ONBOARDING_STATE_UNAVAILABLE\",\"data\":null}");
+        assertThat(chain.getRequest()).isNull();
+        verify(terms, never()).current("en", "GLOBAL", 42L);
+        assertSafeDiagnostic("USER_ONBOARDING_STATE_UNAVAILABLE");
+    }
+
+    @Test
+    void depositLegal503PreservesResponseBlocksDispatchAndLogsOnlyGateEnum() throws Exception {
+        authenticateUser(42L);
+        when(users.isOnboardingComplete(42L)).thenReturn(true);
+        when(users.activeUserLanguage(42L)).thenReturn("en");
+        when(terms.current("en", "GLOBAL", 42L)).thenReturn(ApiResult.fail(503, "fixture-private-message"));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+        filter.doFilter(new MockHttpServletRequest("POST", "/api/app/deposits/vietqr/intents"), response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getContentAsString()).isEqualTo(
+                "{\"code\":503,\"message\":\"LEGAL_TERMS_UNAVAILABLE\",\"data\":null}");
+        assertThat(chain.getRequest()).isNull();
+        assertSafeDiagnostic("LEGAL_TERMS_UNAVAILABLE");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"GET,/api/app/deposits/vietqr/intents,200", "POST,/api/orders,503",
+            "POST,/api/app/deposits/vietqr/intents/other,503"})
+    void otherRoutesAndReadsDoNotEmitDeposit503Diagnostic(String method, String path, int status) throws Exception {
+        authenticateUser(42L);
+        when(users.isOnboardingComplete(42L)).thenThrow(new IllegalStateException("synthetic-cause"));
+        assertThat(invoke(method, path).getStatus()).isEqualTo(status);
+        assertThat(logs.list).isEmpty();
+    }
+
+    @Test
+    void permittedDepositWriteStillDispatchesOnceWithoutFailureDiagnostic() throws Exception {
+        authenticateUser(42L);
+        when(users.isOnboardingComplete(42L)).thenReturn(true);
+        when(users.activeUserLanguage(42L)).thenReturn("en");
+        when(terms.current("en", "GLOBAL", 42L)).thenReturn(ApiResult.ok(current(true)));
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/app/deposits/vietqr/intents");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+        filter.doFilter(request, response, chain);
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(chain.getRequest()).isSameAs(request);
+        verify(users).isOnboardingComplete(42L);
+        verify(terms).current("en", "GLOBAL", 42L);
+        assertThat(logs.list).isEmpty();
+    }
+
+    private void assertSafeDiagnostic(String code) {
+        assertThat(logs.list).extracting(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                .containsExactly("event=VIETQR_INTENT_CREATE_UNAVAILABLE phase=USER_WRITE_GATE code=" + code);
+        assertThat(logs.list).singleElement().satisfies(event -> assertThat(event.getThrowableProxy()).isNull());
     }
 
     @Test

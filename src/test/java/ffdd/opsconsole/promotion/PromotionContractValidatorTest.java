@@ -32,4 +32,11 @@ class PromotionContractValidatorTest {
         validator.validate("Draft",draft);
         assertThrows(BizException.class,()->validator.validate("PromotionContract",draft));
     }
+    @Test void bannerIsOptionalNullableAndBoundedInDraftAndPatch(){
+        for(Object banner:Arrays.asList(null,"managed-asset")){
+            validator.validate("Draft",values("category","PROMOTION","template","SKU_GIFT","bannerAssetId",banner));
+            validator.validate("DraftPatch",values("bannerAssetId",banner));
+        }
+        for(Object invalid:List.of("",1,"a".repeat(241)))assertThrows(BizException.class,()->validator.validate("DraftPatch",values("bannerAssetId",invalid)));
+    }
 }

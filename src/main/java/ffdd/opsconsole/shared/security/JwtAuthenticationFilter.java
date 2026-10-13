@@ -126,6 +126,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 throw new SessionStoreUnavailableException(ex, "USER");
             }
         }
+        if ("ADMIN".equals(normalizedSubjectType)) {
+            String sid = request.getHeader(AuthHeaders.SESSION_ID);
+            if (!StringUtils.hasText(sid)) return;
+            try {
+                if (!adminSessionRegistry.isSessionActive(Long.valueOf(subjectId), sid.trim())) return;
+            } catch (RuntimeException unavailable) {
+                throw new SessionStoreUnavailableException(unavailable, "ADMIN");
+            }
+        }
         List<SimpleGrantedAuthority> authorities = List.of();
         if (StringUtils.hasText(authoritiesHeader)) {
             authorities = Arrays.stream(authoritiesHeader.split(","))
@@ -142,9 +151,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (StringUtils.hasText(username)) {
             details.put("username", username.trim());
         }
-        if ("USER".equals(normalizedSubjectType)) {
-            details.put("sessionId", request.getHeader(AuthHeaders.SESSION_ID).trim());
-        }
+        details.put("sessionId", request.getHeader(AuthHeaders.SESSION_ID).trim());
         authentication.setDetails(Map.copyOf(details));
         SecurityContextHolder.getContext().setAuthentication(authentication);
     }

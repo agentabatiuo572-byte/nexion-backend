@@ -14,6 +14,7 @@ public class PromotionPublicService {
     private final PromotionMapper db;
     private final PromotionEvaluationService evaluator;
     private final PromotionRewardService rewards;
+    private final PromotionBannerService banners;
     public Map<String,Object> page(Long user,String cursor,int limit,String activity,String placement){
         require(text(placement).isEmpty()||"home.purchase-promotion".equals(placement),"PROMOTION_PLACEMENT_INVALID");
         int size=Math.min(100,Math.max(1,limit));
@@ -38,9 +39,7 @@ public class PromotionPublicService {
     }
     private Map<String,Object> view(Map<String,Object> row,Long user){
         Map<String,Object> contract=parse(row.get("contract_json"));Instant now=Instant.now();
-        String state=text(row.get("status"));
-        if("PAUSED".equals(state)&&!now.isBefore(instant(contract.get("endsAt"))))state="ENDED";
-        if(Set.of("ACTIVE","SCHEDULED").contains(state))state=now.isBefore(instant(contract.get("startsAt")))?"SCHEDULED":now.isBefore(instant(contract.get("endsAt")))?"ACTIVE":"ENDED";
+        String state=effectiveLifecycle(row.get("status"),contract,now);
         String eligibility=user==null?"SIGN_IN_REQUIRED":"UNKNOWN";
         if(user!=null){
             Map<String,Object> policies=parse(row.get("resolved_policies_json"));
@@ -68,7 +67,7 @@ public class PromotionPublicService {
         }
         return values("activityId",row.get("activity_id"),"version",number(row.get("active_version")),"template",contract.get("template"),"state",state,
             "startsAt",contract.get("startsAt"),"endsAt",contract.get("endsAt"),"serverTime",now.toString(),"title",contract.get("title"),"terms",contract.get("terms"),
-            "placement",contract.get("placement"),"target","STORE","productNos",publicRules.stream().map(r->r.get("productNo")).distinct().toList(),
+            "placement",contract.get("placement"),"bannerImageUrl","ACTIVE".equals(state)?banners.issueUrl(text(row.get("activity_id")),number(row.get("active_version")),contract.get("bannerAssetId")):null,"target","STORE","productNos",publicRules.stream().map(r->r.get("productNo")).distinct().toList(),
             "minimumClientCapabilities",contract.get("minimumClientCapabilities"),"eligibility",eligibility,"eligibilityMessage",null,"rewardRules",publicRules);
     }
     /** Only public benefits are projected; the supplied policy map is the original approved snapshot. */

@@ -15,7 +15,7 @@ class PromotionDisclosureMySqlTest {
     @Test void historicalBenefitsAndActionOptionsUseOriginalApprovedFacts() throws Exception {
         var f=new PromotionLifecycleMySqlTest();f.setup();var h=f.h;var common=h.commonPolicies();
         ReflectionTestUtils.setField(h.admin,"orders",f.orders);ReflectionTestUtils.setField(h.admin,"rewards",f.rewards);
-        var publicApi=new PromotionPublicService(h.db,new PromotionEvaluationService(h.db),f.rewards);
+        var publicApi=new PromotionPublicService(h.db,new PromotionEvaluationService(h.db),f.rewards,org.mockito.Mockito.mock(PromotionBannerService.class));
         var evidence=new ArrayList<Object>();
         for(String asset:List.of("USDT","NEX","DEVICE")){
             var spec="DEVICE".equals(asset)?values("rewardRuleId","reward-buyer","beneficiaryRole","BUYER","type",asset,"giftProductNo",f.gift,"quantity",1,"deviceRightsProfile",h.devicePolicy(f.gift))

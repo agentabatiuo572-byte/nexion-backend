@@ -306,11 +306,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     private ApiResult<PageResult<UserAccountView>> profilePage(UserQueryRequest request, boolean supportPhoneSearch, boolean forceSupportScope) {
-        String validationError = validateProfileQuery(request, supportPhoneSearch);
+        boolean scopedRead = supportPhoneSearch || forceSupportScope || supportReader();
+        String validationError = validateProfileQuery(request, supportPhoneSearch, scopedRead);
         if (validationError != null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), validationError);
         }
-        PageResult<UserAccountView> page = supportPhoneSearch || forceSupportScope || supportReader()
+        PageResult<UserAccountView> page = scopedRead
                 ? userRepository.pageSupportProfiles(request, supportOwnership.defaultQueryScope(null, null))
                 : userRepository.pageProfiles(request);
         requiredAudit(
@@ -488,6 +489,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     private String validateProfileQuery(UserQueryRequest request, boolean supportPhoneSearch) {
+        return validateProfileQuery(request, supportPhoneSearch, supportPhoneSearch);
+    }
+
+    private String validateProfileQuery(UserQueryRequest request, boolean supportPhoneSearch, boolean scopedRead) {
         if (request == null) {
             return null;
         }
@@ -514,6 +519,13 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (request.pageNum() != null
                 && request.pageSize() != null
                 && ((long) request.pageNum() - 1L) * request.pageSize() > Integer.MAX_VALUE) {
+            return "C1_PAGE_NUM_INVALID";
+        }
+        int effectivePageSize = request.pageSize() == null
+                ? scopedRead ? 20 : 50
+                : Math.max(scopedRead ? 1 : 20, request.pageSize());
+        long effectiveOffset = ((long) (request.pageNum() == null ? 1 : request.pageNum()) - 1L) * effectivePageSize;
+        if (effectiveOffset > (scopedRead ? Long.MAX_VALUE : Integer.MAX_VALUE)) {
             return "C1_PAGE_NUM_INVALID";
         }
         if (invalidRange(request.depositMin(), request.depositMax())

@@ -87,6 +87,28 @@ public class AppTrialLifecycleService {
         return ApiResult.ok(project(userId, mapper.trial(userId), policy, now));
     }
 
+    @Transactional(readOnly = true)
+    public TrialQuotaSnapshot dailyQuota() {
+        LocalDate quotaDate = businessDate();
+        try {
+            Map<String, String> policy = configuredPolicyMap();
+            String configuredLimit = policy.get("seatsLeftToday");
+            int dailyLimit = nonNegativeInt(policy, "seatsLeftToday", -1);
+            if (configuredLimit == null || !configuredLimit.matches("[0-9]+")
+                    || dailyLimit < 0 || dailyLimit > 1_000_000) {
+                return new TrialQuotaSnapshot(quotaDate, null);
+            }
+            Integer remaining = mapper.trialQuotaRemaining(quotaDate);
+            // An unclaimed business day uses its configured limit without creating a counter.
+            return new TrialQuotaSnapshot(quotaDate, remaining == null ? dailyLimit : Math.max(remaining, 0));
+        } catch (RuntimeException ex) {
+            // Do not mark a caller's configuration-write transaction rollback-only for a read failure.
+            return new TrialQuotaSnapshot(quotaDate, null);
+        }
+    }
+
+    public record TrialQuotaSnapshot(LocalDate businessDate, Integer remaining) {}
+
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> start(
             Long userId, Long paymentMethodId, String deviceName, String idempotencyKey) {
@@ -767,9 +789,7 @@ public class AppTrialLifecycleService {
     }
 
     private Map<String, String> policyMap(boolean initializeQuota, LocalDate quotaDate) {
-        List<PolicyRow> rows = mapper.policies();
-        Map<String, String> policy = (rows == null ? List.<PolicyRow>of() : rows).stream().collect(Collectors.toMap(
-                PolicyRow::policyKey, PolicyRow::currentValue, (left, right) -> right, LinkedHashMap::new));
+        Map<String, String> policy = configuredPolicyMap();
         int dailyLimit = nonNegativeInt(policy, "seatsLeftToday", 0);
         // Read endpoints must not create or update quota rows. Only a start command
         // initializes the day's counter before the atomic quota consumption.
@@ -777,6 +797,12 @@ public class AppTrialLifecycleService {
         Integer remaining = mapper.trialQuotaRemaining(quotaDate);
         policy.put("seatsLeftToday", Integer.toString(remaining == null ? dailyLimit : Math.max(remaining, 0)));
         return policy;
+    }
+
+    private Map<String, String> configuredPolicyMap() {
+        List<PolicyRow> rows = mapper.policies();
+        return (rows == null ? List.<PolicyRow>of() : rows).stream().collect(Collectors.toMap(
+                PolicyRow::policyKey, PolicyRow::currentValue, (left, right) -> right, LinkedHashMap::new));
     }
 
     private LocalDate businessDate() {

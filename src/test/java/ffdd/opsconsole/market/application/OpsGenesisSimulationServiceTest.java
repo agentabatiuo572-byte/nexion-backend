@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.market.dto.GenesisSimulationRequest;
@@ -17,6 +18,8 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.math.BigDecimal;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.function.Supplier;
 import java.util.Optional;
@@ -90,6 +93,42 @@ class OpsGenesisSimulationServiceTest {
                 new NexMarketValueUpdateRequest("true", "mutex health verification", "superadmin")))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("G4_CONFIG_MUTEX_UNAVAILABLE");
+        verifyNoInteractions(config, audit, idempotency);
+    }
+
+    @Test
+    void g4MutexIsProvisionedForFreshAndUpgradedDatabasesWithoutChangingBusinessState() throws Exception {
+        String migrationName = "20261013_g4_config_mutation_mutex.sql";
+        String migration = Files.readString(Path.of("scripts", "migrations", migrationName));
+
+        assertThat(migration).contains("CREATE TABLE IF NOT EXISTS nx_admin_operation_mutex",
+                "lock_key VARCHAR(64) PRIMARY KEY", "ENGINE=InnoDB",
+                "INSERT IGNORE INTO nx_admin_operation_mutex (lock_key) VALUES ('G4_CONFIG')")
+                .doesNotContain("nx_config_item", "nx_genesis_series", "nx_genesis_holding", "nx_user_wallet");
+        assertThat(Files.readString(Path.of("scripts", "apply_startup_schema_migrations.ps1")))
+                .contains(migrationName);
+        assertThat(Files.readString(Path.of("scripts", "schema.sql"))).contains("('G4_CONFIG')");
+    }
+
+    @Test
+    void missingConfigExpectedValueFailsClosedBeforeReadOrWrite() {
+        assertThatThrownBy(() -> service.updateConfig("eligibility.minAccountAgeDays", "idem-missing-cas",
+                new NexMarketValueUpdateRequest("2", "verify controlled age policy", "superadmin")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("G4_CONFIG_EXPECTED_VALUE_REQUIRED");
+        verifyNoInteractions(config, audit);
+    }
+
+    @Test
+    void unchangedConfigValueFailsClosedBeforeWrite() {
+        when(config.activeValueForUpdate("market.genesis.ops.eligibility.minAccountAgeDays"))
+                .thenReturn(Optional.of("0"));
+
+        assertThatThrownBy(() -> service.updateConfig("eligibility.minAccountAgeDays", "idem-unchanged-cas",
+                new NexMarketValueUpdateRequest("0", "verify unchanged age policy", "superadmin", "0")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("G4_CONFIG_NO_CHANGES");
+        verifyNoInteractions(audit);
     }
 
     @Test

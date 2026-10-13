@@ -26,7 +26,7 @@ public class OpsMediaController {
     private final OpsMediaUploadService uploadService;
 
     @PostMapping(value = "/uploads", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAuthority('device_e1_write')")
+    @PreAuthorize("hasAuthority('device_e1_write') or (hasAuthority('growth_promotion_edit') and #domain == 'growth' and #usage == 'promotion-banner')")
     public ApiResult<UploadedAsset> upload(
             @RequestPart("file") MultipartFile file,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -41,7 +41,7 @@ public class OpsMediaController {
     }
 
     @GetMapping("/uploads/{assetId}/preview-url")
-    @PreAuthorize("hasAuthority('device_e1_read')")
+    @PreAuthorize("(hasAuthority('device_e1_read') and @opsMediaUploadService.isSkuAsset(#assetId)) or (hasAnyAuthority('growth_promotion_read', 'growth_promotion_edit') and @opsMediaUploadService.isPromotionBannerAsset(#assetId))")
     public ApiResult<UploadedAsset> previewUrl(@PathVariable String assetId) {
         return ApiResult.ok(uploadService.refreshPreviewUrl(assetId));
     }

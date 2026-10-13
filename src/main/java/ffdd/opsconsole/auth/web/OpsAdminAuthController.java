@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.web;
 
 import ffdd.opsconsole.auth.application.OpsAdminAuthService;
 import ffdd.opsconsole.auth.dto.AdminLoginRequest;
+import ffdd.opsconsole.auth.dto.AdminActivityRequest;
 import ffdd.opsconsole.auth.dto.AdminLoginResponse;
 import ffdd.opsconsole.auth.dto.AdminMfaVerifyRequest;
 import ffdd.opsconsole.auth.dto.AdminPasswordChangeRequest;
@@ -46,6 +47,13 @@ public class OpsAdminAuthController {
     @GetMapping("/me")
     public ApiResult<AdminLoginResponse.AdminSession> me(Authentication authentication) {
         return authService.current(authentication);
+    }
+
+    @PostMapping("/activity")
+    public ApiResult<AdminLoginResponse> activity(
+            Authentication authentication,
+            @RequestBody(required = false) AdminActivityRequest request) {
+        return authService.activity(authentication, request);
     }
 
     @PostMapping("/password/change")

@@ -58,6 +58,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260811_f15_leadership_pool_authoritative_config.sql"),
   (Join-Path $root "scripts\migrations\20260811_f15_leadership_pool_config_blocked_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260811_g2_exchange_execution_mutex.sql"),
+  # Existing databases may predate G4's shared transaction mutex row.
+  (Join-Path $root "scripts\migrations\20261013_g4_config_mutation_mutex.sql"),
   (Join-Path $root "scripts\migrations\20260811_a2_a4_runtime_policy_closure.sql"),
   (Join-Path $root "scripts\migrations\20260811_f5_commission_export_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260811_l6_source_environment_schema.sql"),
@@ -289,6 +291,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261007_growth_promotions_order_receipt.sql")
   (Join-Path $root "scripts\migrations\20261007_earnings_source_recovery.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions_list_snapshot.sql")
+  (Join-Path $root "scripts\migrations\20261012_growth_promotions_snapshot_cleanup.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions_quota_restore.sql")
   (Join-Path $root "scripts\migrations\20261007_e4_wallet_bill_prerequisite.sql")
   (Join-Path $root "scripts\migrations\20261007_voucher_zero_payment.sql")
@@ -301,7 +304,10 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261007_support_groups.sql")
   (Join-Path $root "scripts\migrations\20261009_support_timeout_segment.sql")
   (Join-Path $root "scripts\migrations\20261009_e4_wallet_bill_compat.sql")
-  (Join-Path $root "scripts\migrations\20261009_e4_wallet_bill_schema.sql")
+  # Startup replays the current guard; the old precision guard stays immutable in the release catalog.
+  (Join-Path $root "scripts\migrations\20261009_e4_wallet_bill_schema_precision_forward.sql"),
+  # ADMIN activity alone extends the 60min idle session; legacy absolute limits are retired.
+  (Join-Path $root "scripts\migrations\20261009_admin_session_idle60.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_attribution.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_history_birth.sql")
   # AUTH and cash writers need the canonical fund schema before API startup.

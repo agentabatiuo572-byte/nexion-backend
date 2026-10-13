@@ -271,7 +271,9 @@ public final class HttpHdPayGateway implements HdPayGateway {
             throw new HdPayGatewayException("HDPAY_HTTP_" + response.statusCode(), false);
         }
         JsonNode root = objectMapper.readTree(response.body());
-        if (root == null || root.path("code").asInt(Integer.MIN_VALUE) != 200) {
+        JsonNode code = root == null ? null : root.get("code");
+        if (code == null || !((code.isIntegralNumber() && code.canConvertToInt() && code.intValue() == 200)
+                || (code.isTextual() && "200".equals(code.textValue())))) {
             throw new HdPayGatewayException("HDPAY_QUERY_REJECTED", false);
         }
         return root;

@@ -660,6 +660,30 @@ class OpsBiServiceTest {
     }
 
     @Test
+    void financeDetailExportsPurchaseAsItsOwnCategoryWithoutChangingTheLedger() {
+        when(permissionCache.getPermissionCodes(1L)).thenReturn(java.util.Set.of("bi_l3_export_detail"));
+        ledgerRepository.counts.put(null, 1L);
+        TreasuryLedgerBillView purchase = new TreasuryLedgerBillView(
+                1L, 7L, "U00000007", "不应导出的姓名", "ORDER-1", "ORDER_PURCHASE",
+                "USDT", "OUT", new BigDecimal("1299"), BigDecimal.ZERO,
+                "SUCCESS", "purchase", LocalDateTime.parse("2026-07-10T09:30:00"),
+                LocalDateTime.parse("2026-07-10T09:30:00"));
+        ledgerRepository.bills.add(purchase);
+
+        ApiResult<Map<String, Object>> result = service.createReport("idem-finance-purchase-classification",
+                new BiReportCreateRequest("export purchase classification regression", "forged-client", "财务资金明细",
+                        "2026-07-01/2026-07-31", "业务编号,账单类型,资产,方向,金额,余额,状态",
+                        "HIGH_PII", "MASKED", "财务管理员", "L3-FINANCE-DETAIL"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(reportRepository.report.status()).isEqualTo("PENDING_CONFIRM");
+        assertThat(reportRepository.snapshots.get(reportRepository.report.reportId()))
+                .contains("\"ORDER-1\",\"purchase\",\"USDT\",\"OUT\",\"1299\",\"0\",\"SUCCESS\"")
+                .doesNotContain("earning", "不应导出的姓名");
+        assertThat(ledgerRepository.bills).containsExactly(purchase);
+    }
+
+    @Test
     void financeDetailRejectsAnInvalidRangeAndAnOversizedSnapshotBeforePersistence() {
         when(permissionCache.getPermissionCodes(1L)).thenReturn(java.util.Set.of("bi_l3_export_detail"));
         BiReportCreateRequest invalidRange = new BiReportCreateRequest(

@@ -142,17 +142,56 @@ class JwtAuthenticationFilterTest {
     @Test
     void doesNotAuthenticateAdminTokenWithoutSessionIdClaim() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
-        MockHttpServletRequest request = requestWithBearer(tokenProvider.createToken(
-                1L,
-                "ADMIN",
-                "superadmin",
-                List.of("PERM_SYSTEM_READ")));
+        String secret=jwtProperties.getSecret();
+        String legacy=io.jsonwebtoken.Jwts.builder().subject("1").claim("subjectType","ADMIN")
+                .claim("username","superadmin").signWith(io.jsonwebtoken.security.Keys.hmacShaKeyFor(
+                        secret.getBytes(java.nio.charset.StandardCharsets.UTF_8))).compact();
+        MockHttpServletRequest request = requestWithBearer(legacy);
 
         filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> invoked.set(true));
 
         assertThat(invoked).isTrue();
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
         verifyNoInteractions(adminSessionRegistry);
+    }
+
+    private String legacyAdminToken(String sid, java.util.Date expiration) {
+        return io.jsonwebtoken.Jwts.builder().subject("1").claim("subjectType","ADMIN").claim("sessionId",sid)
+            .expiration(expiration).signWith(io.jsonwebtoken.security.Keys.hmacShaKeyFor(
+                jwtProperties.getSecret().getBytes(java.nio.charset.StandardCharsets.UTF_8))).compact();
+    }
+
+    @Test void validLegacyAdminTokenOnlyChecksItsExistingRedisSession() throws Exception {
+        when(adminSessionRegistry.isSessionActive(1L,"legacy-sid")).thenReturn(true);
+        filter.doFilter(requestWithBearer(legacyAdminToken("legacy-sid",new java.util.Date(System.currentTimeMillis()+60000))),
+            new MockHttpServletResponse(),(request,response)->{});
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNotNull();
+        org.mockito.Mockito.verify(adminSessionRegistry,never()).recordActivity(any(),any());
+        org.mockito.Mockito.verify(adminSessionRegistry,never()).createSession(any(),any());
+    }
+
+    @Test void expiredLegacyAdminTokenCannotReachRedisOrUpgrade() throws Exception {
+        filter.doFilter(requestWithBearer(legacyAdminToken("legacy-sid",new java.util.Date(System.currentTimeMillis()-60000))),
+            new MockHttpServletResponse(),(request,response)->{});
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+        verifyNoInteractions(adminSessionRegistry);
+    }
+
+    @Test void gatewayAdminMustCarryTheExistingSidAndNeverTouchesIt() throws Exception {
+        gatewayProperties.setHeaderAuthenticationEnabled(true);
+        gatewayProperties.setInternalSecret("test-gateway-secret-with-32-characters");
+        var request=new MockHttpServletRequest("GET","/api/admin/auth/me");request.setRemoteAddr("127.0.0.1");
+        request.addHeader(AuthHeaders.GATEWAY_SECRET,gatewayProperties.getInternalSecret());
+        request.addHeader(AuthHeaders.SUBJECT_ID,"1");request.addHeader(AuthHeaders.SUBJECT_TYPE,"ADMIN");
+        filter.doFilter(request,new MockHttpServletResponse(),(a,c)->{});
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+        request=new MockHttpServletRequest("GET","/api/admin/auth/me");request.setRemoteAddr("127.0.0.1");
+        request.addHeader(AuthHeaders.GATEWAY_SECRET,gatewayProperties.getInternalSecret());
+        request.addHeader(AuthHeaders.SUBJECT_ID,"1");request.addHeader(AuthHeaders.SUBJECT_TYPE,"ADMIN");request.addHeader(AuthHeaders.SESSION_ID,"sid");
+        when(adminSessionRegistry.isSessionActive(1L,"sid")).thenReturn(true);
+        filter.doFilter(request,new MockHttpServletResponse(),(a,c)->{});
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNotNull();
+        org.mockito.Mockito.verify(adminSessionRegistry,never()).recordActivity(any(),any());
     }
 
     @Test

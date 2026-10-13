@@ -109,7 +109,7 @@ function validate(value, schema, doc, fixture, label = '$', currentFile = openap
     if (schema.maxLength !== undefined) assert([...value].length <= schema.maxLength, `${label}: maxLength`);
     if (schema.pattern) assert(new RegExp(schema.pattern).test(value), `${label}: pattern`);
     if (schema.format === 'date-time') {
-      assert(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/.test(value) && Number.isFinite(Date.parse(value)), `${label}: UTC date-time`);
+      assert(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/.test(value) && Number.isFinite(Date.parse(value)), `${label}: UTC date-time`);
     }
     if (schema.format === 'uri') assert(new URL(value).protocol, `${label}: uri`);
   }
@@ -525,6 +525,10 @@ function check(doc, fixture, sql) {
   assert.equal(doc.paths['/api/admin/growth/promotions/{activityId}/withdraw'].post['x-request-schema'],'PublishAction');
   for(const field of ['query','name','category','template','from','to','timezone','querySnapshot','sort']) assert(doc.paths['/api/admin/growth/promotions'].get.parameters.some(p=>p.name===field),'List filter missing '+field);
   for(const field of ['total','query','querySnapshot','asOf','expiresAt','summary']) assert(doc.components.schemas.PromotionPage.required.includes(field),'List snapshot missing '+field);
+  assert.equal(doc.components.schemas.PromotionPage.properties.items.items.$ref,'#/components/schemas/PromotionListItem');
+  assert(!doc.components.schemas.PromotionListItem.properties.current,'Full draft must remain detail-only');
+  assert(!doc.components.schemas.PromotionListImpact.properties.reservedOrders,'Reserved order rows must remain detail-only');
+  assert(doc.components.schemas.Promotion.properties.current,'Detail must retain its complete version');
   for(const field of ['reserved','issued','unresolved','unpaidOrders','pendingRewards','failedRewards','unknownRewards','reversingRewards','manualReviewRewards','reservedOrders','budgets']) assert(doc.components.schemas.PromotionImpact.required.includes(field),'Impact missing '+field);
   assert.deepEqual(doc['x-contract'].withdrawal,{operation:'withdrawPromotion',permission:'growth_promotion_submit',from:['PENDING_APPROVAL','APPROVED'],to:'DRAFT',activeVersionUnchanged:true});
   assert.equal(doc.paths['/api/admin/growth/promotions/{activityId}/simulate'].post['x-response-schema'],'AdminSimulation');
@@ -539,6 +543,13 @@ function check(doc, fixture, sql) {
   assert.equal(doc.components.schemas.Metrics.properties.grossPaidUsdt.$ref,'#/components/schemas/AggregateAmount');
   assert.throws(()=>validate('1200000000000.000000',doc.components.schemas.Amount,doc,fixture),'Single entry must keep its 18,6 limit');
   validate('1200000000000.000000',doc.components.schemas.AggregateAmount,doc,fixture);
+  for (const time of ['2026-10-10T04:37:57Z', '2026-10-10T04:37:57.889Z', '2026-10-10T04:37:57.889337Z',
+    '2026-10-10T04:37:57.889337200Z', '2026-10-10T06:37:57.889337200Z']) {
+    validate(time, doc.components.schemas.Time, doc, fixture, 'Time precision ' + time);
+  }
+  for (const time of ['2026-10-10T04:37:57.8893372000Z', '2026-10-10T04:37:57.889337200+00:00', 'invalid-timeZ', '2026-13-10T04:37:57Z']) {
+    assert.throws(() => validate(time, doc.components.schemas.Time, doc, fixture), undefined, 'Invalid UTC Time accepted: ' + time);
+  }
   assert.deepEqual(doc.components.schemas.MetricRewardGroupBy.enum,['SKU','TEMPLATE','BENEFICIARY']);
   assert(doc.components.schemas.Metrics.required.includes('breakdown'),'Report requires server-side reward groups');
   assert(doc.components.schemas.Metrics.required.includes('salesBySku'),'Report requires exact per-SKU sales');
@@ -556,6 +567,19 @@ function check(doc, fixture, sql) {
   for (const [route, verbs] of Object.entries(doc.paths)) {
     assert(route.startsWith('/'));
     for (const [method, operation] of Object.entries(verbs)) {
+      if (route === '/api/promotions/{activityId}/banner/{version}') {
+        assert.equal(method, 'get');
+        assert.equal(operation.operationId, 'getPublicPromotionBanner');
+        assert.equal(operation['x-response-type'], 'IMAGE_BYTES');
+        assert.equal(operation['x-audience'], 'PUBLIC');
+        assert.deepEqual(operation.security, [{}]);
+        assert.deepEqual(operation.parameters.map(p => [p.name, p.in, p.required]), [['activityId', 'path', true], ['version', 'path', true]]);
+        assert.equal(operation.parameters[1].schema.minimum, 1);
+        assert.deepEqual(Object.keys(operation.responses['200'].content).sort(), ['image/jpeg', 'image/png']);
+        for (const content of Object.values(operation.responses['200'].content)) assert.deepEqual(content.schema, {type: 'string', format: 'binary'});
+        for (const code of ['404', '503']) assert(operation.responses[code]);
+        continue;
+      }
       assert(['get', 'post', 'put', 'patch'].includes(method), 'Unexpected HTTP method');
       assert(!opMap.has(operation.operationId), 'Duplicate operationId');
       opMap.set(operation.operationId, operation);
@@ -598,6 +622,18 @@ function check(doc, fixture, sql) {
     }
   }
   assert.deepEqual([...opMap.keys()].sort(), [...requiredOperations].sort(), 'Required API inventory');
+  assert(doc.paths['/api/promotions/{activityId}/banner/{version}'], 'Promotion artwork route is required');
+  for (const name of ['Draft', 'DraftPatch', 'PromotionContract']) {
+    const schema = doc.components.schemas[name].properties.bannerAssetId;
+    assert(schema, 'Versioned banner identity is required in ' + name);
+    validate(null, schema, doc, fixture);
+    validate('a'.repeat(240), schema, doc, fixture);
+    for (const invalid of ['', 'a'.repeat(241), 1]) assert.throws(() => validate(invalid, schema, doc, fixture));
+  }
+  const imageSchema = doc.components.schemas.PublicPromotion.properties.bannerImageUrl;
+  validate(null, imageSchema, doc, fixture);
+  validate('/api/promotions/PROMO-1/banner/1', imageSchema, doc, fixture);
+  for (const invalid of ['https://external.example/image.png', '/api/admin/media/private', '/api/promotions/PROMO-1/banner/0']) assert.throws(() => validate(invalid, imageSchema, doc, fixture));
   assert.equal(fixture.cases.length, requiredOperations.length);
   for (const item of [...fixture.templates, ...fixture.rewardStates, ...fixture.legacyRequests, ...fixture.positiveRequests]) {
     validate(item.value, doc.components.schemas[item.schema], doc, fixture, item.schema);

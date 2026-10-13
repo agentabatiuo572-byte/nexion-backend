@@ -83,6 +83,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/config/exchange/caps", "/api/config/market/nex", "/api/config/market/external", "/api/market/nex").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/genesis/state").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/promotions", "/api/promotions/{activityId}").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/promotions/{activityId}/banner/{version}").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/repurchase").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/content/trust/sections/current", "/api/content/how-it-works/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/content/i18n", "/api/content/i18n/**", "/i18n", "/i18n/**").permitAll()

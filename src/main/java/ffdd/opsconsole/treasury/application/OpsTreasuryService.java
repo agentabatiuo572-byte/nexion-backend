@@ -78,7 +78,7 @@ public class OpsTreasuryService {
     private static final String D3_DEVELOPMENT_RESERVE_MUTEX = "D3_DEVELOPMENT_RESERVE";
     private static final BigDecimal ONE_HUNDRED = new BigDecimal("100");
     private static final List<String> D4_BILL_TYPE_ORDER = List.of(
-            "swap", "topup", "withdraw", "earning", "commission", "refund", "bonus");
+            "swap", "topup", "withdraw", "earning", "commission", "refund", "bonus", "purchase");
     private static final Set<String> D4_BILL_TYPES = Set.copyOf(D4_BILL_TYPE_ORDER);
     private static final List<String> D4_ASSET_ORDER = List.of("USDT", "NEX");
     private static final int D4_MAX_AUDIT_ROWS = 100_000;
@@ -2254,6 +2254,7 @@ public class OpsTreasuryService {
             case "commission", "team_commission" -> "commission";
             case "refund", "chargeback", "chargeback_recovery", "reversal" -> "refund";
             case "bonus", "trial_bonus" -> "bonus";
+            case "purchase" -> "purchase";
             default -> null;
         };
         if (canonical == null || !D4_BILL_TYPES.contains(canonical)) {

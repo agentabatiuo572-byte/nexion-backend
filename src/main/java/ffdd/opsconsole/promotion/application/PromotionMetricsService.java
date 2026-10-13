@@ -25,6 +25,12 @@ public class PromotionMetricsService {
 
     /** Operational obligations, including fixtures: never conflated with the business metrics cohort. */
     public static Map<String,Object> readImpact(PromotionMapper db,String activity,Instant asOf){
+        return readImpact(db,activity,asOf,true);
+    }
+    public static Map<String,Object> readListImpact(PromotionMapper db,String activity,Instant asOf){
+        return readImpact(db,activity,asOf,false);
+    }
+    private static Map<String,Object> readImpact(PromotionMapper db,String activity,Instant asOf,boolean detail){
         var reservations=db.requiredRow("SELECT COUNT(*) reserved,COUNT(DISTINCT order_no) unpaid_orders FROM nx_promotion_reservation WHERE activity_id=? AND status='RESERVED'",activity);
         var rewards=db.requiredRow("""
             SELECT COUNT(*) obligations,
@@ -46,8 +52,8 @@ public class PromotionMetricsService {
                   AND d.user_id=r.beneficiary_id AND d.source_order_no=r.order_no AND d.source_channel='PROMOTION_GIFT')))
             """,activity);
         long failed=number(rewards.get("failed")),unknown=number(rewards.get("unknown_count")),reversing=number(rewards.get("reversing")),manual=number(rewards.get("manual_count"));
-        var orders=db.list("SELECT order_no,version,MIN(pay_by) pay_by,COUNT(*) reserved_rewards FROM nx_promotion_reservation WHERE activity_id=? AND status='RESERVED' GROUP BY order_no,version ORDER BY order_no,version",activity).stream().map(r->values("orderNo",r.get("order_no"),"version",number(r.get("version")),"payBy",instant(r.get("pay_by")).toString(),"reservedRewards",number(r.get("reserved_rewards")))).toList();
-        return values("reserved",number(reservations.get("reserved")),"issued",issued,"unresolved",failed+unknown+reversing+manual,"unpaidOrders",number(reservations.get("unpaid_orders")),"pendingRewards",number(rewards.get("pending")),"failedRewards",failed,"unknownRewards",unknown,"reversingRewards",reversing,"manualReviewRewards",manual,"unfulfilledRewards",number(rewards.get("unfulfilled")),"obligations",number(rewards.get("obligations")),"reservedOrders",orders,"budgets",readBudgets(db,activity),"asOf",asOf.toString(),"completeness","COMPLETE","source",List.of("nx_promotion_reservation","nx_promotion_reward","nx_wallet_ledger","nx_promotion_device_receipt","nx_promotion_budget"));
+        var result=values("reserved",number(reservations.get("reserved")),"issued",issued,"unresolved",failed+unknown+reversing+manual,"unpaidOrders",number(reservations.get("unpaid_orders")),"pendingRewards",number(rewards.get("pending")),"failedRewards",failed,"unknownRewards",unknown,"reversingRewards",reversing,"manualReviewRewards",manual,"unfulfilledRewards",number(rewards.get("unfulfilled")),"obligations",number(rewards.get("obligations")),"budgets",readBudgets(db,activity),"asOf",asOf.toString(),"completeness","COMPLETE","source",List.of("nx_promotion_reservation","nx_promotion_reward","nx_wallet_ledger","nx_promotion_device_receipt","nx_promotion_budget"));
+        if(detail)result.put("reservedOrders",db.list("SELECT order_no,version,MIN(pay_by) pay_by,COUNT(*) reserved_rewards FROM nx_promotion_reservation WHERE activity_id=? AND status='RESERVED' GROUP BY order_no,version ORDER BY order_no,version",activity).stream().map(r->values("orderNo",r.get("order_no"),"version",number(r.get("version")),"payBy",instant(r.get("pay_by")).toString(),"reservedRewards",number(r.get("reserved_rewards")))).toList());return result;
     }
     public static Map<String,Object> summarizeActivities(List<Map<String,Object>> activities,Instant asOf){
         long reserved=0,issued=0,unresolved=0,unpaid=0,unfulfilled=0,active=0;var aggregate=new TreeMap<String,Map<String,Object>>();

@@ -7,6 +7,7 @@ it gets no host socket, credentials or deployment API. Installation/activation i
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -36,6 +37,16 @@ HASH = re.compile(r'[0-9a-f]{64}')
 RELEASE_NAME = re.compile(r'([0-9]+)-[0-9a-f]{12}(?:-rollback)?')
 RELEASE_KEEP = 5
 MAINTENANCE_INTERVAL = 24 * 60 * 60
+PUBLICATION_CLASS = 'ffdd.opsconsole.content.application.SupportLeaderboardPublicationMySqlIntegrationTest'
+PUBLICATION_METHODS = frozenset({
+    'realInsertFailureAndPointerCasFailureRollbackOnlyTheirNewVersion',
+    'concurrentFirstPublishersCommitOneImmutableVersionAndReplayItsSameId',
+    'lateEvaluationRejects409WhileLatestAndEarlierReplayRemainCommitted',
+    'outerRepeatableReadCannotRereadRequiresNewCommitButReturnedPublicationSurvivesOuterRollback',
+    'databaseUtcMicrosecondClockAndDecodedPayloadRetainEveryReplayBinding',
+    'previousDayUsesCompleteOwnedScopeBoardPeriodCurrencyAndLastTimeThenIdWithoutRewritingYesterday',
+})
+
 
 
 class Rejected(RuntimeError):
@@ -129,6 +140,101 @@ def build_identity(data):
     require(len(shas) == 1 and all(SHA.fullmatch(s or '') for s in shas)
             and names and names <= {'origin/test', 'refs/remotes/origin/test'}, 'SCM_TEST_REQUIRED')
     return shas.pop()
+
+
+def publication_private_read(path, limit):
+    trusted_root_path(path)
+    require(path.stat().st_mode & 0o077 == 0, 'PUBLICATION_EVIDENCE_PRIVATE_REQUIRED')
+    return safe_read(path, limit)
+
+
+def require_native_publication(component, number, sha, manifest, config):
+    if component != 'backend':
+        return None
+    try:
+        tree = manifest.get('tree', '')
+        require(type(number) is int and number > 0 and SHA.fullmatch(sha)
+                and SHA.fullmatch(tree) and HASH.fullmatch(manifest.get('sha256', ''))
+                and manifest.get('publicationNative') == 'OWNER_ADMISSION_REQUIRED',
+                'PUBLICATION_RELEASE_BINDING_REQUIRED')
+        policy = config.get('publication_native', {})
+        pins = policy.get('candidateLFPins', {})
+        require(len(pins) == 13 and all(HASH.fullmatch(value) for value in pins.values())
+                and all(HASH.fullmatch(policy.get(key, '')) for key in
+                        ('gateManifestSHA256', 'entrySHA256', 'sourcePinsSHA256')),
+                'PUBLICATION_ROOT_POLICY_REQUIRED')
+        directory = ROOT / 'publication-native' / sha / str(number) / manifest['sha256']
+        trusted_root_path(directory, directory=True)
+        require(directory.stat().st_mode & 0o077 == 0, 'PUBLICATION_DIRECTORY_PRIVATE_REQUIRED')
+        seal_bytes = publication_private_read(directory / 'ADMISSION.json', 65536)
+        seal = json.loads(seal_bytes)
+        binding = {'version': 1, 'component': 'backend', 'branch': 'test', 'build': number,
+                   'sha': sha, 'tree': tree, 'artifactSHA256': manifest['sha256'],
+                   'gateManifestSHA256': policy['gateManifestSHA256']}
+        require(all(seal.get(key) == value for key, value in binding.items()),
+                'PUBLICATION_OWNER_BINDING_REJECTED')
+        require(all(HASH.fullmatch(seal.get(key, '')) for key in
+                    ('ownerReceiptSHA256', 'nativeXMLSHA256', 'ownershipProofSHA256')),
+                'PUBLICATION_OWNER_HASH_REQUIRED')
+        receipt_bytes = publication_private_read(directory / 'NATIVE-RECEIPT.json', 1048576)
+        require(hashlib.sha256(receipt_bytes).hexdigest() == seal['ownerReceiptSHA256'],
+                'PUBLICATION_OWNER_RECEIPT_HASH_REJECTED')
+        receipt = json.loads(receipt_bytes)
+        require(receipt.get('status') == 'QUALIFIED_EXACT_CANDIDATE_ONLY'
+                and receipt.get('nativeMySql') == 'ACTUAL_6_0F_0E_0S'
+                and type(receipt.get('mavenExit')) is int and receipt['mavenExit'] == 0
+                and receipt.get('entryRawSHA256') == policy['entrySHA256']
+                and receipt.get('sourcePinsRawSHA256') == policy['sourcePinsSHA256'],
+                'PUBLICATION_NATIVE_QUALIFICATION_REQUIRED')
+        for name in ('sourceBefore', 'sourceAfter'):
+            source = receipt.get(name, {})
+            require(source.get('head') == sha and source.get('tree') == tree
+                    and source.get('clean') is True and source.get('sourceLFPins') == pins,
+                    'PUBLICATION_NATIVE_SOURCE_REJECTED')
+        ownership = receipt.get('ownership', {})
+        identity = ownership.get('databaseIdentity', {})
+        require(ownership.get('rawSHA256') == seal['ownershipProofSHA256']
+                and ownership.get('resourceIdentity') and ownership.get('permissions')
+                and (identity.get('database'), identity.get('port'), identity.get('currentUser'))
+                    == ('cs_analytics_20261007', 33337, 'cs_analytics_runner@127.0.0.1')
+                and re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}',
+                                 identity.get('serverUuid', ''))
+                and identity.get('dataDirectory'), 'PUBLICATION_OWNER_PROOF_REQUIRED')
+        argv = receipt.get('mavenArgv', [])
+        require(len(argv) == 9 and argv[1:6] == ['-B', '-ntp', '-o', '-Dstyle.color=never',
+                     '-Dtest=' + PUBLICATION_CLASS.rsplit('.', 1)[1]]
+                and argv[6].startswith('-Dsupport.test.reportsDirectory=')
+                and argv[7:] == ['clean', 'test'], 'PUBLICATION_NATIVE_CLEAN_COMMAND_REQUIRED')
+        started, finished = receipt.get('startedEpoch'), receipt.get('finishedEpoch')
+        require(all(type(value) in (int, float) and math.isfinite(value) for value in (started, finished))
+                and 0 < started <= finished, 'PUBLICATION_NATIVE_RUN_WINDOW_REQUIRED')
+        native = receipt.get('nativeXml', {})
+        require(native.get('rawSHA256') == seal['nativeXMLSHA256']
+                and [native.get(key) for key in ('tests', 'failures', 'errors', 'skipped')] == [6, 0, 0, 0]
+                and native.get('methods') == sorted(PUBLICATION_METHODS), 'PUBLICATION_NATIVE_XML_RECEIPT_REJECTED')
+        xml_path = directory / 'PUBLICATION.xml'
+        xml_bytes = publication_private_read(xml_path, 8 * 1024 * 1024)
+        require(hashlib.sha256(xml_bytes).hexdigest() == seal['nativeXMLSHA256']
+                and started - 1 <= xml_path.stat().st_mtime <= finished + 1,
+                'PUBLICATION_NATIVE_XML_FRESH_HASH_REQUIRED')
+        root = xml_root(xml_bytes)
+        cases = root.findall('testcase')
+        require(root.tag == 'testsuite' and root.get('name') == PUBLICATION_CLASS
+                and [root.get(key) for key in ('tests', 'failures', 'errors', 'skipped')] == ['6', '0', '0', '0']
+                and len(cases) == 6 and {case.get('name') for case in cases} == PUBLICATION_METHODS
+                and all(case.get('classname') == PUBLICATION_CLASS for case in cases)
+                and not any(node.tag in ('skipped', 'failure', 'error') for node in root.iter()),
+                'PUBLICATION_SIX_REAL_METHODS_REQUIRED')
+        return {**binding, 'status': 'ADMITTED_BY_ROOT_OWNER',
+                'admissionSHA256': hashlib.sha256(seal_bytes).hexdigest(),
+                'ownerReceiptSHA256': seal['ownerReceiptSHA256'],
+                'nativeXMLSHA256': seal['nativeXMLSHA256'],
+                'ownershipProofSHA256': seal['ownershipProofSHA256']}
+    except Rejected:
+        raise
+    except Exception:
+        # Do not print receipt contents, arbitrary paths, logs or secret values.
+        raise Rejected('PUBLICATION_NATIVE_ADMISSION_HOLD') from None
 
 
 def validate_manifest(manifest, component, sha):
@@ -357,6 +463,11 @@ def maintain_storage(state):
 
 def finish_commit(journal):
     # HEALTHY is durable before state is advanced. Repeating this operation is safe.
+    if journal['component'] == 'backend':
+        config = json.loads(publication_private_read(INSTALL / 'config.json', 1048576))
+        current_native = require_native_publication('backend', journal['build'], journal['sha'],
+                          journal.get('publicationManifest', {}), config)
+        require(current_native == journal.get('publicationNative'), 'PUBLICATION_COMMIT_ADMISSION_DRIFT')
     save(ROOT / 'state.json', journal['new_state'])
     component = journal['component']
     if component == 'backend':
@@ -552,6 +663,7 @@ def promote(component, number, config, state, rollback_check=False):
     url = f'https://github.com/agentabatiuo572-byte/{REPOS[component]}.git'
     remote = run('git', 'ls-remote', url, 'refs/heads/test', timeout=30).split()
     require(len(remote) == 2 and remote == [sha, 'refs/heads/test'], 'BUILD_IS_NOT_CURRENT_TEST')
+    publication_native = require_native_publication(component, number, sha, manifest, config)
     # GitHub test is the user's approved business source. Mapper/startup/source
     # changes do not require a second fingerprint approval. Versioned SQL runs
     # through the host-owned backup/once-only migration runner, never a root shell.
@@ -563,6 +675,7 @@ def promote(component, number, config, state, rollback_check=False):
     journal = {'component': component, 'build': number, 'sha': sha, 'phase': 'STAGING',
                'staged_path': str(destination), 'old_state': json.loads(json.dumps(state))}
     if component == 'backend':
+        journal.update(publicationManifest=manifest, publicationNative=publication_native)
         journal.update(old_target=str((ROOT / 'backend/current').resolve()),
                        old_dropin=DROPIN.read_text() if DROPIN.exists() else None)
         port = 8110
@@ -627,6 +740,8 @@ def promote(component, number, config, state, rollback_check=False):
         return
     apply_with_rollback(journal, apply, port, current['port'])
     new_state = {**current, 'build': number, 'sha': sha, 'port': port, 'release': str(release)}
+    if component == 'backend':
+        new_state.update(tree=manifest['tree'], publicationNative=publication_native)
     if component != 'backend':
         new_state['container'] = candidate
     state[component] = new_state

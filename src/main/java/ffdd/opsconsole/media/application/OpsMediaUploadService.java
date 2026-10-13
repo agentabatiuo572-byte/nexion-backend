@@ -4,6 +4,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.media.dto.UploadedAsset;
 import ffdd.opsconsole.shared.canonical.ManagedSkuMediaIdentity;
+import ffdd.opsconsole.shared.canonical.ManagedPromotionBannerIdentity;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -66,6 +67,10 @@ public class OpsMediaUploadService {
         String normalizedDomain = segment(domain, "shared");
         String normalizedUsage = segment(usage, "general");
         byte[] bytes = fileBytes(file);
+        if ("growth".equals(normalizedDomain) && "promotion-banner".equals(normalizedUsage)
+                && !ManagedPromotionBannerIdentity.matchesImageType(contentType, bytes)) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "UNSUPPORTED_MEDIA_TYPE");
+        }
         String requestHash = requestHash(
                 file.getOriginalFilename(),
                 contentType,
@@ -94,7 +99,8 @@ public class OpsMediaUploadService {
             String entityType,
             String entityId,
             String operator) {
-        String objectKey = objectKey(normalizedDomain, normalizedUsage, filename, contentType);
+        String objectKey = objectKey(normalizedDomain, normalizedUsage,
+                "growth".equals(normalizedDomain) && "promotion-banner".equals(normalizedUsage) ? null : filename, contentType);
         StoredObject storedObject = storageService.put(
                 objectKey,
                 contentType,
@@ -109,7 +115,7 @@ public class OpsMediaUploadService {
     public UploadedAsset refreshPreviewUrl(String assetId) {
         String objectKey = decodeAssetId(assetId);
         if (objectKey.length() > 256 || !MANAGED_OBJECT_KEY.matcher(objectKey).matches()
-                || !ManagedSkuMediaIdentity.isApprovedObjectKey(objectKey)) {
+                || (!ManagedSkuMediaIdentity.isApprovedObjectKey(objectKey) && !isPromotionBannerAsset(assetId))) {
             throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ASSET_ID_INVALID");
         }
         String previewUrl = storageService.presignGet(objectKey, PREVIEW_EXPIRY);
@@ -123,6 +129,15 @@ public class OpsMediaUploadService {
                 LocalDateTime.now(clock).plus(PREVIEW_EXPIRY),
                 null,
                 null);
+    }
+
+    public boolean isPromotionBannerAsset(String assetId) {
+        return ManagedPromotionBannerIdentity.objectKey(assetId) != null;
+    }
+
+    public boolean isSkuAsset(String assetId) {
+        try { return ManagedSkuMediaIdentity.isApprovedObjectKey(decodeAssetId(assetId)); }
+        catch (BizException rejected) { return false; }
     }
 
     private UploadedAsset asset(StoredObject storedObject, String previewUrl, String domain, String usage) {

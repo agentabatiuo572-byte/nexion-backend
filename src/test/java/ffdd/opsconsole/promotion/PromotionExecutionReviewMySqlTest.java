@@ -200,7 +200,7 @@ class PromotionExecutionReviewMySqlTest {
             var request=values("expectedRevision",oldRevision,"reason","隔离事务等待后校验原奖励版本，不能核账过时状态","evidenceRefs",List.of(h.evidence));
             var snapshot=new CountDownLatch(1);var db=org.mockito.Mockito.spy(h.db);
             org.mockito.Mockito.doAnswer(call->{var result=call.callRealMethod();snapshot.countDown();return result;}).when(db).requiredRow("SELECT order_no FROM nx_promotion_reward WHERE obligation_id=?",reward);
-            var admin=new PromotionAdminService(db,h.validator,h.resolver,h.policies,h.natives,new PromotionEvaluationService(h.db),life.quotes,life.rewards,life.orders,h.idempotency,h.audit,h.a2,null);
+            var admin=new PromotionAdminService(db,h.validator,h.resolver,h.policies,h.natives,new PromotionEvaluationService(h.db),life.quotes,life.rewards,life.orders,h.idempotency,h.audit,h.a2,null,org.mockito.Mockito.mock(PromotionBannerService.class));
             var executor=Executors.newSingleThreadExecutor();var pending=new AtomicReference<Future<Map<String,Object>>>();ExecutionException failure;
             try{
                 life.tx.executeWithoutResult(tx->{h.db.user(buyer,true);pending.set(executor.submit(()->{h.authenticate(h.checker);return admin.command("reconcileReward",reward,command,request,()->admin.rewardAction(reward,"reconcile",request,command));}));

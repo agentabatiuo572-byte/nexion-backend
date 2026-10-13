@@ -48,6 +48,7 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -70,6 +71,7 @@ class OpsGrowthServiceTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final GrowthQuestEventMapper questEventMapper = mock(GrowthQuestEventMapper.class);
+    private final AppTrialLifecycleService trialLifecycleService = mock(AppTrialLifecycleService.class);
     private final StreakPerkBusinessAvailabilityFacade missionAvailability =
             mock(StreakPerkBusinessAvailabilityFacade.class);
     private final List<Map<String, Object>> trialPolicies = new ArrayList<>();
@@ -346,7 +348,7 @@ class OpsGrowthServiceTest {
                 .containsEntry("domain", "H2")
                 .containsEntry("autoPushKilled", false);
         assertThat(result.getData().toString()).doesNotContain("4.1");
-        assertThat(result.getData().get("params")).asList().hasSize(6);
+        assertThat(result.getData().get("params")).asList().hasSize(7);
         assertThat(result.getData().get("sessions")).asList().isEmpty();
         assertThat(result.getData().get("serverOnlyFields")).asList().contains("chargeFailRate");
 
@@ -490,6 +492,69 @@ class OpsGrowthServiceTest {
         assertThat(service.updateTrialParam("idem-h2-auto-charge", "autoChargeAtEnd",
                 new GrowthConfigUpdateRequest("autoChargeAtEnd", "开", "retired toggle", "superadmin"))
                 .getMessage()).isEqualTo("TRIAL_PARAM_READONLY");
+        verify(auditLogService, never()).recordRequired(any());
+        verify(questEventMapper, never()).upsertTrialPolicyValue(
+                anyString(), anyString(), anyString(), anyBoolean(), anyString(), anyBoolean(), anyInt());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void trialsSeparatesTheConfiguredLimitFromCanonicalRemainingAndHidesRetiredAutoCharge() {
+        seedTrialPolicies();
+        trialPolicies.add(row("key", "seatsLeftToday", "name", "今日剩余免费名额", "cur", "47", "section", "live"));
+        trialPolicies.add(row("key", "autoChargeAtEnd", "name", "到期自动扣款", "cur", "开", "section", "newonly"));
+        trialPolicies.add(row("key", "actualSeatsLeftToday", "cur", "999", "readOnly", false));
+        when(trialLifecycleService.dailyQuota()).thenReturn(
+                new AppTrialLifecycleService.TrialQuotaSnapshot(LocalDate.of(2026, 10, 11), 46));
+
+        List<Map<String, Object>> params = (List<Map<String, Object>>) serviceWithTrialLifecycle().trials().getData().get("params");
+
+        assertThat(params).extracting(param -> param.get("key")).doesNotContain("autoChargeAtEnd");
+        assertThat(params).filteredOn(param -> "seatsLeftToday".equals(param.get("key"))).singleElement()
+                .satisfies(param -> assertThat(param).containsEntry("cur", "47")
+                        .containsEntry("name", "每日免费名额上限").containsEntry("readOnly", false));
+        assertThat(params).filteredOn(param -> "actualSeatsLeftToday".equals(param.get("key"))).singleElement()
+                .satisfies(param -> assertThat(param).containsEntry("cur", "46").containsEntry("readOnly", true)
+                        .containsEntry("unit", "张").containsEntry("businessDate", "2026-10-11")
+                        .containsEntry("status", "READY"));
+        verify(trialLifecycleService).dailyQuota();
+        verify(trialLifecycleService, never()).state(anyLong());
+        verify(questEventMapper, never()).upsertTrialPolicyValue(
+                anyString(), anyString(), anyString(), anyBoolean(), anyString(), anyBoolean(), anyInt());
+        verify(auditLogService, never()).recordRequired(any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void trialsKeepsZeroRemainingAndMarksUnavailableCanonicalQuotaUnknown() {
+        seedTrialPolicies();
+        trialPolicies.add(row("key", "seatsLeftToday", "cur", "47", "section", "live"));
+        when(trialLifecycleService.dailyQuota()).thenReturn(
+                new AppTrialLifecycleService.TrialQuotaSnapshot(LocalDate.of(2026, 10, 11), 0),
+                new AppTrialLifecycleService.TrialQuotaSnapshot(LocalDate.of(2026, 10, 11), null));
+        OpsGrowthService quotaService = serviceWithTrialLifecycle();
+        for (String expected : List.of("0", "UNKNOWN")) {
+            List<Map<String, Object>> params = (List<Map<String, Object>>) quotaService.trials().getData().get("params");
+            assertThat(params).filteredOn(param -> "actualSeatsLeftToday".equals(param.get("key"))).singleElement()
+                    .satisfies(param -> assertThat(param).containsEntry("cur", expected).containsEntry("readOnly", true)
+                            .containsEntry("status", "0".equals(expected) ? "READY" : "UNKNOWN"));
+        }
+        when(trialLifecycleService.dailyQuota()).thenThrow(new IllegalStateException("canonical quota unavailable"));
+        List<Map<String, Object>> unavailable = (List<Map<String, Object>>) quotaService.trials().getData().get("params");
+        assertThat(unavailable).filteredOn(param -> "actualSeatsLeftToday".equals(param.get("key"))).singleElement()
+                .satisfies(param -> assertThat(param).containsEntry("cur", "UNKNOWN").containsEntry("status", "UNKNOWN"));
+    }
+
+    @Test
+    void actualRemainingQuotaCannotBeWrittenOrAuditedAsConfiguration() {
+        ApiResult<Map<String, Object>> result = service.updateTrialParam(
+                "idem-h2-actual-quota", "actualSeatsLeftToday",
+                new GrowthConfigUpdateRequest("actualSeatsLeftToday", "47", "attempt counter override", "superadmin"));
+
+        assertThat(result.getMessage()).isEqualTo("TRIAL_PARAM_READONLY");
+        verify(questEventMapper, never()).upsertTrialPolicyValue(
+                anyString(), anyString(), anyString(), anyBoolean(), anyString(), anyBoolean(), anyInt());
+        verify(trialLifecycleService, never()).dailyQuota();
         verify(auditLogService, never()).recordRequired(any());
     }
 
@@ -2432,6 +2497,14 @@ class OpsGrowthServiceTest {
         row.put("batchCount", 0L);
         row.put("status", status);
         return row;
+    }
+
+    private OpsGrowthService serviceWithTrialLifecycle() {
+        return new OpsGrowthService(
+                configFacade, emergencyRepository, coverageFacade, ledgerPostingFacade, auditLogService,
+                new ObjectMapper(), OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                Optional.empty(), Optional.of(questEventMapper), Optional.empty(), lockMapper,
+                trialLifecycleService, Optional.empty(), missionAvailability);
     }
 
     private OpsGrowthService serviceWithDeviceCatalog(DeviceCatalogRepository catalog) {

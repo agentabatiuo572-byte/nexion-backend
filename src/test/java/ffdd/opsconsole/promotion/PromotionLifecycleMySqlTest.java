@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.mock.env.MockEnvironment;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -48,7 +49,390 @@ class PromotionLifecycleMySqlTest {
     String buy,gift;
     long nextUser=880000000000L+Math.floorMod(UUID.randomUUID().getMostSignificantBits(),10000000000L);
     final List<Map<String,Object>> evidence=new ArrayList<>();
+    final List<Map<String,Object>> archiveIsolationObservations=Collections.synchronizedList(new ArrayList<>());
 
+    @Test void readCommittedArchiveResponsibilitiesAndBothLockOrders() throws Exception {
+        var checks=new ArrayList<Map<String,Object>>();
+        setup();String activity=h.publish(h.contract(buy,runtimeReward("USDT"),h.commonPolicies()));
+        long buyer=user();var walletBefore=h.db.requiredRow("SELECT usdt_available,nex_available FROM nx_user_wallet WHERE user_id=?",buyer);
+        String order=create(buyer,quote(buyer,activity,1),1);endForArchive(activity);
+        long revision=number(h.db.activity(activity,false).get("revision"));
+        assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE activity_id=? AND status='RESERVED'",activity));
+        assertEquals("PROMOTION_OBLIGATIONS_OPEN",archiveRc(activity,revision,()->{}));
+        assertEquals(revision,number(h.db.activity(activity,false).get("revision")));
+        readCommitted().executeWithoutResult(s->{assertReadCommitted("writer-pay");pay(buyer,order);});
+        String obligation=obligations(order).get(0);assertEquals("PENDING",rewards.get(buyer,obligation,false).get("state"));
+        revision=number(h.db.activity(activity,false).get("revision"));
+        assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE activity_id=? AND status='RESERVED'",activity));
+        assertEquals("PROMOTION_OBLIGATIONS_OPEN",archiveRc(activity,revision,()->{}));
+        assertEquals(revision,number(h.db.activity(activity,false).get("revision")));
+        assertEquals("ISSUED",rewards.issue(obligation,id("ARCHIVEISSUE")).get("state"));
+        Object receipt=rewards.get(buyer,obligation,false).get("assetReceipt");assertNotNull(receipt);
+        assertEquals("ARCHIVED",archiveRc(activity,number(h.db.activity(activity,false).get("revision")),()->{}));
+        assertEquals("ARCHIVED",h.admin.get(activity).get("state"));
+        readCommitted().executeWithoutResult(s->{assertReadCommitted("writer-refund");refund(buyer,order);});
+        assertEquals("REVERSAL_PENDING",rewards.get(buyer,obligation,false).get("state"));
+        assertEquals("REVERSED",rewards.reverseRefund(obligation,id("ARCHIVEREVERSE")).get("state"));
+        assertEquals("REVERSED",rewards.reverseRefund(obligation,id("ARCHIVEREPLAY")).get("state"));
+        assertEquals(receipt,rewards.get(buyer,obligation,false).get("assetReceipt"));
+        assertEquals("ARCHIVED",h.db.activity(activity,false).get("status"));
+        assertEquals("REFUNDED",h.db.order(order,false).get("payment_status"));
+        assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=? AND biz_type='ORDER_REFUND'","E4-REFUND-"+order));
+        assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_reversal WHERE obligation_id=?",obligation));
+        assertEquals(0,decimal(h.db.requiredRow("SELECT outstanding FROM nx_promotion_reversal WHERE obligation_id=?",obligation).get("outstanding")).signum());
+        var walletAfter=h.db.requiredRow("SELECT usdt_available,nex_available FROM nx_user_wallet WHERE user_id=?",buyer);
+        for(String field:List.of("usdt_available","nex_available"))assertEquals(0,decimal(walletBefore.get(field)).compareTo(decimal(walletAfter.get(field))),field);
+        checks.add(values("scenario","committed-reserved-and-pending-block-archive-issued-allows-historical-refund","run",h.run,"activity",activity,"order",order,"obligation",obligation,"isolation","READ-COMMITTED","orderSource","CANONICAL_SQL_FIXTURE","finalState","REVERSED"));
+        for(String action:List.of("PAY","CANCEL"))for(boolean archiveFirst:List.of(true,false))archiveAndUnpaidActionLockOrder(action,archiveFirst,checks);
+        assertEquals(5,checks.size());
+        String suffix=Objects.toString(System.getenv("GROWTH_HTTP_EVIDENCE_SUFFIX"),"");assertTrue(suffix.matches("[A-Za-z0-9_-]*"));
+        Files.writeString(Path.of("D:/CodexData/test-environments/workflow-runs/growth-promotions-20261007/promotion-archive-rc-runtime"+suffix+".json"),
+            json(values("completed",true,"scope","Real isolated MySQL archive/lock/ledger transactions; create/pay/cancel/refund source facts are canonical SQL fixtures, not commerce HTTP","scenarioCount",checks.size(),"checks",checks,"transactionObservations",archiveIsolationObservations)),StandardOpenOption.CREATE_NEW);
+    }
+    TransactionTemplate readCommitted(){
+        var result=new TransactionTemplate(new DataSourceTransactionManager(h.dataSource));
+        result.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);return result;
+    }
+    long assertReadCommitted(String role){
+        assertTrue(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+        var actual=h.jdbc.queryForMap("SELECT CONNECTION_ID() connectionId,@@transaction_isolation isolation");
+        assertEquals("READ-COMMITTED",actual.get("isolation"));long connection=number(actual.get("connectionId"));
+        assertEquals(connection,h.db.count("SELECT CONNECTION_ID()"));archiveIsolationObservations.add(values("role",role,"run",h.run,"connectionId",connection,"isolation",actual.get("isolation")));return connection;
+    }
+    Map<String,Object> archiveStateWithConnectionWitness(String activity,Map<String,Object> request){
+        long connection=assertReadCommitted("actual-admin-command-before-state-and-original-counts");
+        try{return h.admin.state(activity,"archive",request);}
+        finally{assertEquals(connection,assertReadCommitted("actual-admin-command-after-state-or-rejected-original-count"));}
+    }
+    void endForArchive(String activity){
+        h.authenticate(h.maker);var request=values("expectedRevision",h.db.activity(activity,false).get("revision"),"reason","End isolated activity before archive responsibility checks","evidenceRefs",List.of(h.evidence));
+        h.admin.command("endPromotion",activity,id("ARCHIVEEND"),request,()->h.admin.state(activity,"end",request));
+    }
+    String archiveRc(String activity,long revision,Runnable locked){
+        h.authenticate(h.maker);var request=values("expectedRevision",revision,"reason","Check isolated archive responsibilities under the actual retained command transaction","evidenceRefs",List.of(h.evidence));
+        try{
+            h.admin.command("archivePromotion",activity,id("ARCHIVERC"),request,()->{
+                assertReadCommitted("actual-admin-command-before-activity-lock");h.db.activity(activity,true);locked.run();return archiveStateWithConnectionWitness(activity,request);
+            });return "ARCHIVED";
+        }catch(ffdd.opsconsole.shared.exception.BizException rejected){
+            assertEquals(409,rejected.getCode());assertEquals("PROMOTION_OBLIGATIONS_OPEN",rejected.getMessage());return rejected.getMessage();
+        }
+    }
+    void cancelSourceFixture(long buyer,String order){
+        tx.executeWithoutResult(s->{
+            orders.lockOrderParticipants(order);var o=h.db.order(order,true);assertEquals(buyer,number(o.get("user_id")));assertNull(o.get("paid_at"));
+            changed(h.db.write("UPDATE nx_order SET order_status='CANCELLED' WHERE order_no=? AND order_status='PENDING_PAYMENT'",order));
+            for(var item:h.db.list("SELECT product_id,quantity FROM nx_order_item WHERE order_no=?",order))changed(h.db.write("UPDATE nx_product SET stock=CASE WHEN inventory_mode='FINITE' THEN stock+? ELSE stock END,sold_count=sold_count-?,updated_at=NOW(6) WHERE id=? AND is_deleted=0 AND (inventory_mode='UNLIMITED' OR stock<=2147483647-?) AND sold_count>=?",item.get("quantity"),item.get("quantity"),item.get("product_id"),item.get("quantity"),item.get("quantity")));
+            orders.releaseUnpaid(order,"CANCELLED");
+        });
+    }
+    void archiveAndUnpaidActionLockOrder(String action,boolean archiveFirst,List<Map<String,Object>> checks) throws Exception {
+        setup();String activity=h.publish(h.contract(buy,runtimeReward("USDT"),h.commonPolicies()));
+        long buyer=user();BigDecimal stockBefore=decimal(h.db.product(buy,false).get("stock"));
+        String order=create(buyer,quote(buyer,activity,1),1);endForArchive(activity);
+        long revision=number(h.db.activity(activity,false).get("revision"));
+        var firstConnection=new CompletableFuture<Long>();var secondConnection=new CompletableFuture<Long>();
+        var firstReturned=new CountDownLatch(1);var releaseFirst=new CountDownLatch(1);var executor=Executors.newFixedThreadPool(2);
+        Map<String,Object> wait;String archiveOutcome;
+        try{
+            var first=executor.submit(()->{
+                if(archiveFirst)return archiveRc(activity,revision,()->{firstConnection.complete(h.db.count("SELECT CONNECTION_ID()"));firstReturned.countDown();awaitRelease(releaseFirst);});
+                return readCommitted().execute(s->{
+                    firstConnection.complete(assertReadCommitted("writer-"+action));
+                    if("PAY".equals(action))pay(buyer,order);else cancelSourceFixture(buyer,order);
+                    assertEquals(revision+1,number(h.db.activity(activity,false).get("revision")));
+                    firstReturned.countDown();awaitRelease(releaseFirst);return action;
+                });
+            });
+            assertTrue(firstReturned.await(10,TimeUnit.SECONDS),"First action must hold the activity row before the second starts");
+            var second=executor.submit(()->{
+                if(!archiveFirst){
+                    // The writer's checked revision isolates COUNT visibility from the independent optimistic-revision gate.
+                    h.authenticate(h.maker);var request=values("expectedRevision",revision+1,"reason","Check newly committed responsibilities after ordinary before reads and an activity lock wait","evidenceRefs",List.of(h.evidence));
+                    try{h.admin.command("archivePromotion",activity,id("ARCHIVEWAIT"),request,()->{
+                        secondConnection.complete(assertReadCommitted("actual-admin-command-before-wait"));return archiveStateWithConnectionWitness(activity,request);
+                    });return "ARCHIVED";}catch(ffdd.opsconsole.shared.exception.BizException rejected){assertEquals(409,rejected.getCode());assertEquals("PROMOTION_OBLIGATIONS_OPEN",rejected.getMessage());return rejected.getMessage();}
+                }
+                return readCommitted().execute(s->{
+                    secondConnection.complete(assertReadCommitted("writer-"+action));
+                    if("PAY".equals(action))pay(buyer,order);else cancelSourceFixture(buyer,order);return action;
+                });
+            });
+            wait=observedLockWait(secondConnection.get(5,TimeUnit.SECONDS),firstConnection.get(5,TimeUnit.SECONDS),"nx_promotion","'"+activity+"'");
+            assertFalse(second.isDone());releaseFirst.countDown();
+            String firstResult=first.get(10,TimeUnit.SECONDS),secondResult=second.get(10,TimeUnit.SECONDS);
+            archiveOutcome=archiveFirst?firstResult:secondResult;assertEquals(action,archiveFirst?secondResult:firstResult);
+            assertEquals(!archiveFirst&&"CANCEL".equals(action)?"ARCHIVED":"PROMOTION_OBLIGATIONS_OPEN",archiveOutcome);
+        }finally{releaseFirst.countDown();executor.shutdownNow();assertTrue(executor.awaitTermination(15,TimeUnit.SECONDS));}
+        assertEquals(!archiveFirst&&"CANCEL".equals(action)?"ARCHIVED":"ENDED",h.admin.get(activity).get("state"));
+        assertEquals("PAY".equals(action)?"COMMITTED":"RELEASED",h.db.requiredRow("SELECT status FROM nx_promotion_reservation WHERE order_no=?",order).get("status"));
+        assertEquals("PAY".equals(action)?"PAID":"PENDING",h.db.order(order,false).get("payment_status"));
+        assertEquals("PAY".equals(action)?1:0,obligations(order).size());
+        if("PAY".equals(action))assertEquals("PENDING",rewards.get(buyer,obligations(order).get(0),false).get("state"));
+        else{assertEquals("CANCELLED",h.db.order(order,false).get("order_status"));assertEquals(0,stockBefore.compareTo(decimal(h.db.product(buy,false).get("stock"))));budget(activity,"USDT","reserved",BigDecimal.ZERO);}
+        checks.add(values("scenario","archive-unpaid-action-lock-order","run",h.run,"action",action,"firstAction",archiveFirst?"ARCHIVE":action,"activity",activity,"order",order,"isolation","READ-COMMITTED","orderSource","CANONICAL_SQL_FIXTURE","observedLockWait",wait,"archiveOutcome",archiveOutcome));
+    }
+
+    @Test void concurrencyAndVersionBoundariesHaveRealMySqlEvidence() throws Exception {
+        var checks=new ArrayList<Map<String,Object>>();
+        issueAndRefundSerializeBothTransactionOrdersForEveryAsset(checks);
+        twoAccountsCompeteForOneGiftWithActivityAndBudgetStillAvailable(checks);
+        reservedVersionOnePaysBeforeItsDeadlineAfterVersionTwoPublicationAndPause(checks);
+        versionOneQuoteCannotCreateAfterRealVersionTwoPublicationAndWritesNothing(checks);
+        assertEquals(13,checks.size());
+        String suffix=Objects.toString(System.getenv("GROWTH_HTTP_EVIDENCE_SUFFIX"),"");assertTrue(suffix.matches("[A-Za-z0-9_-]*"));
+        Files.writeString(Path.of("D:/CodexData/test-environments/workflow-runs/growth-promotions-20261007/promotion-concurrency-runtime"+suffix+".json"),
+            json(values("completed",true,"scope","Isolated MySQL promotion transactions; payment/refund source facts use the existing fixture once","scenarioCount",checks.size(),"checks",checks)));
+    }
+    // The refund endpoint returns the order; read the locked reward state inside this transaction.
+    void issueAndRefundSerializeBothTransactionOrdersForEveryAsset(List<Map<String,Object>> checks) throws Exception {
+        setup();var common=h.commonPolicies();
+        for(String asset:List.of("DEVICE","USDT","NEX")){
+            String activity=h.publish(h.contract(buy,runtimeReward(asset),common));
+            for(boolean issueFirst:List.of(true,false)){
+                long buyer=user();var walletBefore=h.db.requiredRow("SELECT usdt_available,nex_available FROM nx_user_wallet WHERE user_id=?",buyer);
+                BigDecimal stockBefore=decimal(h.db.product(gift,false).get("stock"));
+                String order=create(buyer,quote(buyer,activity,1),1);pay(buyer,order);String obligation=obligations(order).get(0);
+                var firstConnection=new CompletableFuture<Long>();var secondConnection=new CompletableFuture<Long>();
+                var firstReturned=new CountDownLatch(1);var releaseFirst=new CountDownLatch(1);var executor=Executors.newFixedThreadPool(2);
+                Map<String,Object> wait;
+                try{
+                    var first=executor.submit(()->tx.execute(s->{
+                        firstConnection.complete(h.db.count("SELECT CONNECTION_ID()"));
+                        String state;
+                        if(issueFirst)state=text(rewards.issue(obligation,id("RACEISSUE")).get("state"));
+                        else{refund(buyer,order);state=text(h.db.requiredRow("SELECT status FROM nx_promotion_reward WHERE obligation_id=? FOR UPDATE",obligation).get("status"));}
+                        firstReturned.countDown();awaitRelease(releaseFirst);return state;
+                    }));
+                    assertTrue(firstReturned.await(10,TimeUnit.SECONDS),"First domain action must return before its transaction is committed");
+                    var second=executor.submit(()->{
+                        try{return tx.execute(s->{
+                            secondConnection.complete(h.db.count("SELECT CONNECTION_ID()"));
+                            if(issueFirst){refund(buyer,order);return text(h.db.requiredRow("SELECT status FROM nx_promotion_reward WHERE obligation_id=? FOR UPDATE",obligation).get("status"));}
+                            return text(rewards.issue(obligation,id("RACEISSUE")).get("state"));
+                        });}catch(ffdd.opsconsole.shared.exception.BizException rejected){
+                            if(issueFirst)throw rejected;assertEquals(409,rejected.getCode());
+                            assertEquals("PROMOTION_REWARD_NOT_RETRYABLE",rejected.getMessage());return rejected.getMessage();
+                        }
+                    });
+                    wait=observedLockWait(secondConnection.get(5,TimeUnit.SECONDS),firstConnection.get(5,TimeUnit.SECONDS),"nx_user",String.valueOf(buyer));
+                    assertFalse(second.isDone());releaseFirst.countDown();
+                    assertEquals(issueFirst?"ISSUED":"CANCELLED",first.get(10,TimeUnit.SECONDS));
+                    assertEquals(issueFirst?"REVERSAL_PENDING":"PROMOTION_REWARD_NOT_RETRYABLE",second.get(10,TimeUnit.SECONDS));
+                }finally{releaseFirst.countDown();executor.shutdownNow();assertTrue(executor.awaitTermination(15,TimeUnit.SECONDS));}
+                Object originalReceipt=rewards.get(buyer,obligation,false).get("assetReceipt");
+                if(issueFirst){
+                    assertNotNull(originalReceipt);
+                    assertEquals("REVERSED",rewards.reverseRefund(obligation,id("RACEREVERSE")).get("state"));
+                    assertEquals("REVERSED",rewards.reverseRefund(obligation,id("RACEREPLAY")).get("state"));
+                    assertEquals(originalReceipt,rewards.get(buyer,obligation,false).get("assetReceipt"));
+                    var reversal=h.db.requiredRow("SELECT amount,recovered,outstanding FROM nx_promotion_reversal WHERE obligation_id=?",obligation);
+                    assertEquals(0,decimal(reversal.get("amount")).compareTo(decimal(reversal.get("recovered"))));
+                    assertEquals(0,decimal(reversal.get("outstanding")).signum());
+                }else assertNull(rewards.get(buyer,obligation,false).get("assetReceipt"));
+                String finalState=issueFirst?"REVERSED":"CANCELLED";assertEquals(finalState,rewards.get(buyer,obligation,false).get("state"));
+                assertEquals("REFUNDED",h.db.order(order,false).get("payment_status"));assertEquals(1,obligations(order).size());
+                assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_order_receipt WHERE order_no=?",order));
+                assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE order_no=?",order));
+                assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_refund_hold WHERE order_no=? AND status='EXECUTED'",order));
+                assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=? AND biz_type='ORDER_REFUND'", "E4-REFUND-"+order));
+                assertEquals(issueFirst?1:0,h.db.count("SELECT COUNT(*) FROM nx_promotion_reward_attempt WHERE obligation_id=? AND action='ISSUE'",obligation));
+                assertEquals(issueFirst?1:0,h.db.count("SELECT COUNT(*) FROM nx_promotion_reversal WHERE obligation_id=?",obligation));
+                var walletAfter=h.db.requiredRow("SELECT usdt_available,nex_available FROM nx_user_wallet WHERE user_id=?",buyer);
+                for(String field:List.of("usdt_available","nex_available"))assertEquals(0,decimal(walletBefore.get(field)).compareTo(decimal(walletAfter.get(field))),field);
+                if("DEVICE".equals(asset)){
+                    assertEquals(issueFirst?1:0,h.db.count("SELECT COUNT(*) FROM nx_promotion_device_receipt WHERE obligation_id=?",obligation));
+                    assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_user_device WHERE user_id=? AND source_order_no=? AND source_channel='PROMOTION_GIFT' AND ownership_status='OWNED'",buyer,order));
+                    assertEquals(issueFirst?1:0,h.db.count("SELECT COUNT(*) FROM nx_user_device WHERE user_id=? AND source_order_no=? AND source_channel='PROMOTION_GIFT' AND ownership_status='REVOKED'",buyer,order));
+                    assertEquals(0,stockBefore.compareTo(decimal(h.db.product(gift,false).get("stock"))));
+                }else{
+                    assertEquals(issueFirst?1:0,h.db.count("SELECT COUNT(*) FROM nx_earnings_release_entry WHERE user_id=? AND source_type='PROMOTION_REWARD' AND source_ref=? AND asset=?",buyer,obligation,asset));
+                    assertEquals(issueFirst?1:0,h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE user_id=? AND biz_type='PROMOTION_REWARD' AND asset=? AND direction='IN'",buyer,asset));
+                    assertEquals(issueFirst?1:0,h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE user_id=? AND biz_type='PROMOTION_REWARD_REVERSAL' AND asset=? AND direction='OUT'",buyer,asset));
+                    assertEquals(0,decimal(h.db.requiredRow("SELECT COALESCE(SUM(amount-recovered_amount),0) net FROM nx_earnings_release_entry WHERE user_id=? AND source_type='PROMOTION_REWARD' AND source_ref=? AND asset=?",buyer,obligation,asset).get("net")).signum());
+                    assertEquals(0,decimal(h.db.requiredRow("SELECT COALESCE(SUM(CASE direction WHEN 'IN' THEN amount ELSE -amount END),0) net FROM nx_wallet_ledger WHERE user_id=? AND asset=? AND biz_type IN ('PROMOTION_REWARD','PROMOTION_REWARD_REVERSAL')",buyer,asset).get("net")).signum());
+                }
+                budget(activity,asset,"reserved",BigDecimal.ZERO);budget(activity,asset,"committed",BigDecimal.ZERO);budget(activity,asset,"unrecoverable",BigDecimal.ZERO);
+                var totals=h.db.requiredRow("SELECT total,reserved,committed,issued,reversed,unrecoverable FROM nx_promotion_budget WHERE activity_id=? AND asset=?",activity,asset);
+                assertEquals(0,decimal(totals.get("issued")).compareTo(decimal(totals.get("reversed"))));
+                checks.add(values("scenario","issue-refund-lock-order","run",h.run,"asset",asset,"firstAction",issueFirst?"ISSUE":"REFUND","activity",activity,"buyer",buyer,"order",order,"obligation",obligation,"observedLockWait",wait,
+                    "orderState",h.db.order(order,false).get("payment_status"),"reward",h.db.requiredRow("SELECT status,version,original_ledger_no,original_earnings_entry_no FROM nx_promotion_reward WHERE obligation_id=?",obligation),
+                    "walletBefore",walletBefore,"walletAfter",walletAfter,"orderReceiptCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_order_receipt WHERE order_no=?",order),
+                    "obligationCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_reward WHERE order_no=?",order),"refundLedgerCount",h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=? AND biz_type='ORDER_REFUND'","E4-REFUND-"+order),
+                    "reservationCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE order_no=?",order),"issueAttemptCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_reward_attempt WHERE obligation_id=? AND action='ISSUE'",obligation),
+                    "refundHoldCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_refund_hold WHERE order_no=?",order),"refundHoldState",h.db.requiredRow("SELECT status FROM nx_promotion_refund_hold WHERE order_no=?",order).get("status"),
+                    "assetReceipt",rewards.get(buyer,obligation,false).get("assetReceipt"),"deviceReceiptCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_device_receipt WHERE obligation_id=?",obligation),
+                    "ownedGiftCount",h.db.count("SELECT COUNT(*) FROM nx_user_device WHERE source_order_no=? AND source_channel='PROMOTION_GIFT' AND ownership_status='OWNED'",order),
+                    "rewardLedgerCount",h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE user_id=? AND asset=? AND biz_type='PROMOTION_REWARD'",buyer,asset),
+                    "reverseLedgerCount",h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE user_id=? AND asset=? AND biz_type='PROMOTION_REWARD_REVERSAL'",buyer,asset),
+                    "rewardLedgerNet",h.db.requiredRow("SELECT COALESCE(SUM(CASE direction WHEN 'IN' THEN amount ELSE -amount END),0) net FROM nx_wallet_ledger WHERE user_id=? AND asset=? AND biz_type IN ('PROMOTION_REWARD','PROMOTION_REWARD_REVERSAL')",buyer,asset).get("net"),
+                    "earningsNet",h.db.requiredRow("SELECT COALESCE(SUM(amount-recovered_amount),0) net FROM nx_earnings_release_entry WHERE user_id=? AND source_type='PROMOTION_REWARD' AND source_ref=? AND asset=?",buyer,obligation,asset).get("net"),
+                    "reversal",h.db.one("SELECT status,amount,recovered,outstanding FROM nx_promotion_reversal WHERE obligation_id=?",obligation),"budget",totals));
+            }
+        }
+    }
+
+    void twoAccountsCompeteForOneGiftWithActivityAndBudgetStillAvailable(List<Map<String,Object>> checks) throws Exception {
+        setup();changed(h.db.write("UPDATE nx_product SET stock=1,inventory_mode='FINITE' WHERE product_no=?",gift));
+        var contract=h.contract(buy,runtimeReward("DEVICE"),h.commonPolicies());String activity=h.publish(contract);
+        assertEquals(100,number(map(contract.get("activityLimit")).get("value")));budget(activity,"DEVICE","total",new BigDecimal("100"));
+        long winner=user(),loser=user();var winnerQuote=quote(winner,activity,1);var loserQuote=quote(loser,activity,1);
+        var loserQuoteBefore=h.db.requiredRow("SELECT * FROM nx_promotion_quote WHERE quote_id=?",loserQuote.get("quoteId"));
+        BigDecimal giftStock=decimal(h.db.product(gift,false).get("stock"));assertEquals(0,BigDecimal.ONE.compareTo(giftStock));
+        BigDecimal buyStock=decimal(h.db.product(buy,false).get("stock"));
+        var firstConnection=new CompletableFuture<Long>();var secondConnection=new CompletableFuture<Long>();
+        var firstReturned=new CountDownLatch(1);var releaseFirst=new CountDownLatch(1);var executor=Executors.newFixedThreadPool(2);
+        String order,rejection;Map<String,Object> wait,loserOutcome;
+        try{
+            var first=executor.submit(()->tx.execute(s->{
+                firstConnection.complete(h.db.count("SELECT CONNECTION_ID()"));String created=create(winner,winnerQuote,1);
+                firstReturned.countDown();awaitRelease(releaseFirst);return created;
+            }));
+            assertTrue(firstReturned.await(10,TimeUnit.SECONDS));
+            var second=executor.submit(()->{
+                try{return tx.execute(s->{secondConnection.complete(h.db.count("SELECT CONNECTION_ID()"));return values("order",create(loser,loserQuote,1));});}
+                catch(ffdd.opsconsole.shared.exception.BizException rejected){assertEquals(409,rejected.getCode());assertEquals("PROMOTION_CAPACITY_UNAVAILABLE",rejected.getMessage());return values("error",rejected.getMessage(),"code",rejected.getCode());}
+            });
+            // The real create lock order serializes this shared inventory through the activity root first.
+            wait=observedLockWait(secondConnection.get(5,TimeUnit.SECONDS),firstConnection.get(5,TimeUnit.SECONDS),"nx_promotion","'"+activity+"'");
+            assertFalse(second.isDone());releaseFirst.countDown();order=first.get(10,TimeUnit.SECONDS);
+            loserOutcome=second.get(10,TimeUnit.SECONDS);rejection=text(loserOutcome.get("error"));assertEquals("PROMOTION_CAPACITY_UNAVAILABLE",rejection);
+        }finally{releaseFirst.countDown();executor.shutdownNow();assertTrue(executor.awaitTermination(15,TimeUnit.SECONDS));}
+        assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_order WHERE user_id IN (?,?)",winner,loser));
+        assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_order WHERE user_id=?",loser));
+        assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_order_item WHERE order_no=?",order));
+        assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_order_receipt WHERE buyer_id IN (?,?)",winner,loser));
+        assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_promotion_order_receipt WHERE quote_id=?",loserQuote.get("quoteId")));
+        assertEquals(loserQuoteBefore,h.db.requiredRow("SELECT * FROM nx_promotion_quote WHERE quote_id=?",loserQuote.get("quoteId")));
+        assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE activity_id=? AND asset='DEVICE' AND product_no=? AND status='RESERVED'",activity,gift));
+        assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE buyer_id=?",loser));
+        assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_promotion_usage WHERE activity_id=? AND account_id=?",activity,loser));
+        assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_promotion_reward WHERE activity_id=?",activity));
+        assertEquals(1,number(h.db.activity(activity,false).get("reserved_orders")));
+        assertEquals(0,number(h.db.product(gift,false).get("stock")));
+        assertEquals(0,buyStock.subtract(BigDecimal.ONE).compareTo(decimal(h.db.product(buy,false).get("stock"))));
+        budget(activity,"DEVICE","reserved",BigDecimal.ONE);budget(activity,"DEVICE","committed",BigDecimal.ZERO);budget(activity,"DEVICE","issued",BigDecimal.ZERO);
+        var remaining=h.db.requiredRow("SELECT total-reserved-committed-issued+reversed available FROM nx_promotion_budget WHERE activity_id=? AND asset='DEVICE' AND product_no=?",activity,gift);
+        assertEquals(0,new BigDecimal("99").compareTo(decimal(remaining.get("available"))));
+        var conserved=h.db.requiredRow("SELECT COALESCE(SUM(amount),0) reserved FROM nx_promotion_reservation WHERE activity_id=? AND asset='DEVICE' AND product_no=? AND status='RESERVED'",activity,gift);
+        assertEquals(0,BigDecimal.ONE.compareTo(decimal(conserved.get("reserved")).add(decimal(h.db.product(gift,false).get("stock")))));
+        var root=h.db.activity(activity,false);long capacity=number(map(parse(h.db.version(activity,1,false).get("contract_json")).get("activityLimit")).get("value"));
+        long remainingOrders=capacity-number(root.get("reserved_orders"))-number(root.get("used_orders"));assertEquals(99,remainingOrders);
+        checks.add(values("scenario","one-gift-two-accounts","run",h.run,"activity",activity,"winner",winner,"loser",loser,"order",order,"giftProduct",gift,
+            "giftInitialStock",giftStock,"giftFinalStock",h.db.product(gift,false).get("stock"),"reservedGiftQuantity",conserved.get("reserved"),"activityRemainingOrders",remainingOrders,"deviceBudgetRemaining",remaining.get("available"),
+            "orderCount",h.db.count("SELECT COUNT(*) FROM nx_order WHERE user_id IN (?,?)",winner,loser),"receiptCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_order_receipt WHERE buyer_id IN (?,?)",winner,loser),
+            "reservationCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE activity_id=?",activity),"loserOrderCount",h.db.count("SELECT COUNT(*) FROM nx_order WHERE user_id=?",loser),
+            "loserReservationCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE buyer_id=?",loser),"loserConsumedQuoteCount",h.db.count("SELECT COUNT(*) FROM nx_promotion_order_receipt WHERE quote_id=?",loserQuote.get("quoteId")),
+            "observedLockWait",wait,"loserError",rejection,"loserErrorCode",loserOutcome.get("code"),"loserQuoteBefore",loserQuoteBefore,"loserQuoteAfter",h.db.requiredRow("SELECT * FROM nx_promotion_quote WHERE quote_id=?",loserQuote.get("quoteId"))));
+    }
+
+    void reservedVersionOnePaysBeforeItsDeadlineAfterVersionTwoPublicationAndPause(List<Map<String,Object>> checks) throws Exception {
+        setup();var common=h.commonPolicies();
+        for(String asset:List.of("DEVICE","USDT","NEX")){
+            var contract=h.contract(buy,runtimeReward(asset),common);String activity=h.publish(contract);long buyer=user();
+            var quoted=quote(buyer,activity,1);String order=create(buyer,quoted,1);var projection=orders.orderProjection(buyer,order);
+            var reserved=h.db.requiredRow("SELECT * FROM nx_promotion_reservation WHERE order_no=?",order);
+            assertEquals(1,number(reserved.get("version")));assertEquals("RESERVED",reserved.get("status"));assertTrue(obligations(order).isEmpty());
+            publishVersionTwo(activity,contract);
+            h.authenticate(h.publisher);var pause=values("expectedRevision",h.db.activity(activity,false).get("revision"),"reason","新版暂停后验证原预留支付合同","evidenceRefs",List.of(h.evidence));
+            h.admin.command("pausePromotion",activity,id("PAUSE"),pause,()->h.admin.state(activity,"pause",pause));
+            assertEquals("PAUSED",h.admin.get(activity).get("state"));assertEquals(2,number(h.admin.get(activity).get("activeVersion")));
+            assertEquals(1,h.db.count("SELECT NOW(6)<pay_by FROM nx_promotion_order_receipt WHERE order_no=?",order));pay(buyer,order);
+            assertEquals("PAID",h.db.order(order,false).get("payment_status"));assertEquals(1,obligations(order).size());
+            assertEquals(projection,orders.orderProjection(buyer,order));assertEquals(quoted.get("amountUsdt"),orders.orderProjection(buyer,order).get("amountUsdt"));
+            var committed=h.db.requiredRow("SELECT * FROM nx_promotion_reservation WHERE order_no=?",order);
+            assertEquals("COMMITTED",committed.get("status"));assertEquals(1,number(committed.get("version")));
+            assertEquals(reserved.get("snapshot_json"),committed.get("snapshot_json"));assertEquals(reserved.get("snapshot_hash"),committed.get("snapshot_hash"));
+            String obligation=obligations(order).get(0);var reward=h.db.requiredRow("SELECT version,snapshot_json,snapshot_hash FROM nx_promotion_reward WHERE obligation_id=?",obligation);
+            assertEquals(1,number(reward.get("version")));assertEquals(reserved.get("snapshot_json"),reward.get("snapshot_json"));assertEquals(reserved.get("snapshot_hash"),reward.get("snapshot_hash"));
+            BigDecimal expected="DEVICE".equals(asset)?BigDecimal.ONE:new BigDecimal("1.000001");budget(activity,asset,"reserved",BigDecimal.ZERO);budget(activity,asset,"committed",expected);
+            assertEquals("ISSUED",rewards.issue(obligation,id("OLDVERSIONISSUE")).get("state"));budget(activity,asset,"issued",expected);
+            if("DEVICE".equals(asset))assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_device_receipt WHERE obligation_id=?",obligation));
+            else assertEquals(0,expected.compareTo(decimal(h.db.requiredRow("SELECT amount FROM nx_wallet_ledger WHERE biz_no=? AND asset=? AND direction='IN'", "PROMOTION-ISSUE-"+obligation,asset).get("amount"))));
+            checks.add(values("scenario","reserved-v1-pay-after-v2-pause","run",h.run,"asset",asset,"activity",activity,"currentVersion",h.db.activity(activity,false).get("active_version"),"currentState",h.db.activity(activity,false).get("status"),"order",order,
+                "orderState",h.db.order(order,false).get("payment_status"),"paidBeforePayBy",h.db.count("SELECT o.paid_at<r.pay_by FROM nx_order o JOIN nx_promotion_order_receipt r ON r.order_no=o.order_no WHERE o.order_no=?",order),
+                "obligation",obligation,"reservedVersion",committed.get("version"),"obligationVersion",reward.get("version"),"oldRewardAmount",committed.get("amount"),
+                "oldSnapshotHash",reserved.get("snapshot_hash"),"obligationSnapshotHash",reward.get("snapshot_hash"),"projectionBefore",projection,"projectionAfter",orders.orderProjection(buyer,order),
+                "assetReceipt",rewards.get(buyer,obligation,false).get("assetReceipt"),"budget",h.db.requiredRow("SELECT total,reserved,committed,issued,reversed FROM nx_promotion_budget WHERE activity_id=? AND asset=?",activity,asset)));
+        }
+    }
+
+    void versionOneQuoteCannotCreateAfterRealVersionTwoPublicationAndWritesNothing(List<Map<String,Object>> checks) throws Exception {
+        setup();var common=h.commonPolicies();
+        for(String asset:List.of("DEVICE","USDT","NEX")){
+            var contract=h.contract(buy,runtimeReward(asset),common);String activity=h.publish(contract);long buyer=user();var quoted=quote(buyer,activity,1);
+            assertEquals(1,number(quoted.get("activityVersion")));publishVersionTwo(activity,contract);
+            assertEquals("ACTIVE",h.admin.get(activity).get("state"));assertEquals(2,number(h.admin.get(activity).get("activeVersion")));
+            var quoteBefore=h.db.requiredRow("SELECT * FROM nx_promotion_quote WHERE quote_id=?",quoted.get("quoteId"));
+            var rootBefore=h.db.activity(activity,false);var budgetsBefore=h.db.list("SELECT * FROM nx_promotion_budget WHERE activity_id=? ORDER BY asset,product_no",activity);
+            var buyBefore=h.db.product(buy,false);var giftBefore=h.db.product(gift,false);
+            var walletBefore=h.db.requiredRow("SELECT * FROM nx_user_wallet WHERE user_id=?",buyer);
+            var walletLedgerBefore=h.db.list("SELECT * FROM nx_wallet_ledger WHERE user_id=? ORDER BY id",buyer);
+            var rejected=assertThrows(ffdd.opsconsole.shared.exception.BizException.class,()->create(buyer,quoted,1));
+            assertEquals(409,rejected.getCode());assertEquals("PROMOTION_QUOTE_VERSION_CHANGED",rejected.getMessage());
+            assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_order WHERE user_id=?",buyer));
+            assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_order_item i JOIN nx_order o ON o.order_no=i.order_no WHERE o.user_id=?",buyer));
+            assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_promotion_order_receipt WHERE buyer_id=? OR quote_id=?",buyer,quoted.get("quoteId")));
+            assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE activity_id=?",activity));
+            assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_promotion_reward WHERE activity_id=?",activity));
+            assertEquals(0,h.db.count("SELECT COUNT(*) FROM nx_promotion_usage WHERE activity_id=?",activity));
+            assertEquals(quoteBefore,h.db.requiredRow("SELECT * FROM nx_promotion_quote WHERE quote_id=?",quoted.get("quoteId")));
+            assertEquals(rootBefore,h.db.activity(activity,false));assertEquals(budgetsBefore,h.db.list("SELECT * FROM nx_promotion_budget WHERE activity_id=? ORDER BY asset,product_no",activity));
+            assertEquals(buyBefore,h.db.product(buy,false));assertEquals(giftBefore,h.db.product(gift,false));
+            var walletAfter=h.db.requiredRow("SELECT * FROM nx_user_wallet WHERE user_id=?",buyer);
+            var walletLedgerAfter=h.db.list("SELECT * FROM nx_wallet_ledger WHERE user_id=? ORDER BY id",buyer);
+            assertEquals(walletBefore,walletAfter);assertEquals(walletLedgerBefore,walletLedgerAfter);
+            checks.add(values("scenario","v1-quote-rejected-after-v2","run",h.run,"asset",asset,"activity",activity,"quote",quoted.get("quoteId"),"quotedVersion",quoted.get("activityVersion"),"currentVersion",h.db.activity(activity,false).get("active_version"),"error",rejected.getMessage(),"errorCode",rejected.getCode(),
+                "orders",h.db.count("SELECT COUNT(*) FROM nx_order WHERE user_id=?",buyer),"receipts",h.db.count("SELECT COUNT(*) FROM nx_promotion_order_receipt WHERE buyer_id=? OR quote_id=?",buyer,quoted.get("quoteId")),
+                "reservations",h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE activity_id=?",activity),"rewardObligations",h.db.count("SELECT COUNT(*) FROM nx_promotion_reward WHERE activity_id=?",activity),
+                "budgetBefore",budgetsBefore,"budgetAfter",h.db.list("SELECT * FROM nx_promotion_budget WHERE activity_id=? ORDER BY asset,product_no",activity),
+                "walletBefore",walletBefore,"walletAfter",walletAfter,"walletLedgerBefore",walletLedgerBefore,"walletLedgerAfter",walletLedgerAfter,
+                "quoteBefore",quoteBefore,"quoteAfter",h.db.requiredRow("SELECT * FROM nx_promotion_quote WHERE quote_id=?",quoted.get("quoteId"))));
+        }
+    }
+
+    Map<String,Object> runtimeReward(String asset){
+        return "DEVICE".equals(asset)?values("rewardRuleId","reward-buyer","beneficiaryRole","BUYER","type",asset,"giftProductNo",gift,"quantity",1,"deviceRightsProfile",h.devicePolicy(gift))
+            :values("rewardRuleId","reward-buyer","beneficiaryRole","BUYER","type",asset,"calculation","FIXED","amount","1.000001","assetPolicy",h.assetPolicy(asset));
+    }
+    void publishVersionTwo(String activity,Map<String,Object> contract){
+        h.authenticate(h.maker);var action=values("expectedRevision",h.db.activity(activity,false).get("revision"),"reason","建立新版奖励验证原预留和报价边界","evidenceRefs",List.of(h.evidence));
+        h.admin.command("createDraftVersion",activity,id("VERSION"),action,()->h.admin.newVersion(activity,action,false));
+        var rules=maps(copy(contract).get("rules"));var spec=map(rules.get(0).get("buyerReward"));
+        spec.put("DEVICE".equals(spec.get("type"))?"quantity":"amount","DEVICE".equals(spec.get("type"))?2:"2.000002");rules.get(0).put("buyerReward",spec);
+        var edit=values("expectedRevision",1,"reason","新版使用不同奖励和条款验证快照","draft",values("rules",rules,"title",PromotionRuntimeHarness.localized("Version two reward"),"terms",PromotionRuntimeHarness.localized("Version two terms")));
+        h.admin.command("saveDraft",activity,id("EDIT"),edit,()->h.admin.save(activity,edit));
+        for(String stage:List.of("submit","approve","publish")){
+            h.authenticate("submit".equals(stage)?h.maker:"approve".equals(stage)?h.checker:h.publisher);
+            var transition=values("expectedRevision",h.db.version(activity,2,false).get("revision"),"version",2,"reason","提交审批并发布真实新版奖励合同","evidenceRefs",List.of(h.evidence));
+            h.admin.command(stage+"Promotion",activity,id("STAGE"),transition,()->h.admin.versionAction(activity,stage,transition));
+        }
+        assertEquals("PUBLISHED",h.admin.version(activity,2).get("state"));assertEquals(2,number(h.admin.get(activity).get("activeVersion")));
+    }
+    Map<String,Object> observedLockWait(long requesting,long blocking,String table,String record){
+        assertNotEquals(requesting,blocking);var observed=new java.util.concurrent.atomic.AtomicReference<Map<String,Object>>();
+        String sql="""
+            SELECT rt.PROCESSLIST_ID requestConnection,bt.PROCESSLIST_ID blockConnection,
+              w.REQUESTING_ENGINE_TRANSACTION_ID requestTransaction,w.BLOCKING_ENGINE_TRANSACTION_ID blockTransaction,
+              r.OBJECT_SCHEMA objectSchema,r.OBJECT_NAME objectName,r.INDEX_NAME indexName,r.LOCK_DATA lockedRecord,
+              r.LOCK_MODE requestMode,b.LOCK_MODE blockMode
+            FROM performance_schema.data_lock_waits w
+            JOIN performance_schema.data_locks r ON r.ENGINE=w.ENGINE AND r.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID
+            JOIN performance_schema.data_locks b ON b.ENGINE=w.ENGINE AND b.ENGINE_LOCK_ID=w.BLOCKING_ENGINE_LOCK_ID
+            JOIN performance_schema.threads rt ON rt.THREAD_ID=w.REQUESTING_THREAD_ID
+            JOIN performance_schema.threads bt ON bt.THREAD_ID=w.BLOCKING_THREAD_ID
+            WHERE r.OBJECT_SCHEMA=DATABASE() AND b.OBJECT_SCHEMA=r.OBJECT_SCHEMA AND r.OBJECT_NAME=? AND b.OBJECT_NAME=r.OBJECT_NAME
+              AND r.INDEX_NAME='PRIMARY' AND b.INDEX_NAME=r.INDEX_NAME AND r.LOCK_TYPE='RECORD' AND b.LOCK_TYPE='RECORD'
+              AND r.LOCK_DATA=? AND b.LOCK_DATA=r.LOCK_DATA AND rt.PROCESSLIST_ID=? AND bt.PROCESSLIST_ID=?
+            """;
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).until(()->{
+            var waits=h.db.list(sql,table,record,requesting,blocking);if(waits.isEmpty())return false;observed.set(waits.get(0));return true;
+        });return observed.get();
+    }
+    void awaitRelease(CountDownLatch release){
+        try{assertTrue(release.await(20,TimeUnit.SECONDS),"Held transaction was not released");}
+        catch(InterruptedException failure){Thread.currentThread().interrupt();throw new IllegalStateException(failure);}
+    }
     @Test void zeroRewardReceiptLockWaitCannotCommitPaymentAfterItsDeadline() throws Exception {
         setup();
         h.session.getConfiguration().addMapper(ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper.class);
