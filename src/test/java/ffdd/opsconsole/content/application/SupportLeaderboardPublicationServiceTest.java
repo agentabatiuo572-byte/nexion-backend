@@ -30,7 +30,7 @@ class SupportLeaderboardPublicationServiceTest {
         Count count = new Count(0L,Coverage.COMPLETE,Reason.NONE);
         return SupportLeaderboard.calculate(c,"real-source-tuple",coverage,List.of(new Candidate(7,"公开客服",null,"组一",
             Qualification.ACTIVE,count,count,new Amount(BigDecimal.ZERO,c.currency(),c.referenceMonth(),
-            c.board() == Board.purchase ? AmountKind.PURCHASE : AmountKind.DEPOSIT,Coverage.COMPLETE,Reason.NONE,"money-source"),null)));
+            AmountKind.NET_CONTRIBUTION,Coverage.COMPLETE,Reason.NONE,"money-source"),null)));
     }
     static Stored stored(long id, Snapshot s, Instant published) throws Exception {
         String payload = new ObjectMapper().registerModule(new JavaTimeModule()).writeValueAsString(s);
@@ -193,6 +193,60 @@ class SupportLeaderboardPublicationServiceTest {
         Context x=new Context(a.board(),a.rankMonth(),a.referenceMonth(),a.currency(),Scope.managedGroups,Set.of(9L,3L),a.definitionVersion(),NOW);
         Context y=new Context(a.board(),a.rankMonth(),a.referenceMonth(),a.currency(),Scope.managedGroups,new LinkedHashSet<>(List.of(3L,9L)),a.definitionVersion(),NOW);
         assertEquals(SupportLeaderboardPublicationService.streamKey(x),SupportLeaderboardPublicationService.streamKey(y));
+    }
+    @Test void verifiedLegacyDefinitionRequiresRefreshButVersionBoundReaderStillConflicts() throws Exception {
+        var mapper=mock(SupportLeaderboardPublicationMapper.class);var service=new SupportLeaderboardPublicationService(mapper);
+        Context old=context(Board.deposit,"USDT","support-leaderboard-v1",NOW.minusSeconds(30));
+        Snapshot snapshot=snapshot(old,Coverage.COMPLETE);
+        Context current=context(Board.deposit,"USDT",SupportLeaderboardPolicy.DEFINITION,NOW);
+        when(mapper.latest(anyString())).thenReturn(stored(2,snapshot,NOW.minusSeconds(29)));
+        beginRead();try {
+            assertEquals(SupportLeaderboard.NET_DEFINITION,current.definitionVersion());
+            assertNull(service.latest(current,null));
+            assertEquals(409,assertThrows(BizException.class,()->service.latest(current,snapshot.viewVersion())).getCode());
+            assertEquals(snapshot,service.latest(old,snapshot.viewVersion()).snapshot());
+            verify(mapper,never()).insert(anyMap());verify(mapper,never()).advance(anyString(),any(),anyLong());
+        }finally {endRead();}
+    }
+    @Test void invalidOrUnrecognizedLegacyPublicationCannotMasqueradeAsDefinitionRefresh() throws Exception {
+        var mapper=mock(SupportLeaderboardPublicationMapper.class);var service=new SupportLeaderboardPublicationService(mapper);
+        Context current=context(Board.deposit,"USDT",SupportLeaderboardPolicy.DEFINITION,NOW);
+        Snapshot old=snapshot(context(Board.deposit,"USDT","support-leaderboard-v1",NOW.minusSeconds(30)),Coverage.COMPLETE);
+        beginRead();try {
+            for(String payload:List.of("null","{\"unknown\":true}")) {
+                when(mapper.latest(anyString())).thenReturn(stored(2,old,NOW.minusSeconds(29),payload));assert503(()->service.latest(current,null));
+            }
+            when(mapper.latest(anyString())).thenReturn(null);assert503(()->service.latest(current,null));
+            Snapshot future=snapshot(context(Board.deposit,"USDT","support-leaderboard-future",NOW.minusSeconds(30)),Coverage.COMPLETE);
+            when(mapper.latest(anyString())).thenReturn(stored(2,future,NOW.minusSeconds(29)));
+            assertEquals(409,assertThrows(BizException.class,()->service.latest(current,null)).getCode());
+        }finally {endRead();}
+    }
+    @Test void verifiedV2CountPublicationsRequireRefreshAndCannotBeFallbackOrMovement() throws Exception {
+        for(Board board:List.of(Board.firstPayment,Board.customers)) {
+            var mapper=mock(SupportLeaderboardPublicationMapper.class);var service=new SupportLeaderboardPublicationService(mapper);
+            Context current=context(board,"USDT",SupportLeaderboardPolicy.DEFINITION,NOW);
+            Context previous=context(board,"USDT","support-leaderboard-v2-deposit-no-refund",NOW.minusSeconds(86400));
+            var historical=snapshot(previous,Coverage.COMPLETE);var stored=stored(2,historical,NOW.minusSeconds(86399));
+            when(mapper.latest(anyString())).thenReturn(stored);when(mapper.previousDay(anyMap())).thenReturn(List.of(stored));
+            beginRead();try {
+                assertNull(service.latest(current,null));
+                assertEquals(409,assertThrows(BizException.class,()->service.latest(current,historical.viewVersion())).getCode());
+                var fresh=SupportLeaderboard.withMovement(snapshot(current,Coverage.COMPLETE),service.previousBusinessDay(current));
+                assertTrue(fresh.rows().stream().allMatch(r->r.movement().reason()==Reason.DEFINITION_CHANGED));
+            }finally {endRead();}
+        }
+    }
+    @Test void noRefundDefinitionCannotCompareAgainstYesterdayNetDefinition() throws Exception {
+        var mapper=mock(SupportLeaderboardPublicationMapper.class);var service=new SupportLeaderboardPublicationService(mapper);
+        Context current=context(Board.deposit,"USDT",SupportLeaderboardPolicy.DEFINITION,NOW);
+        Snapshot yesterday=snapshot(context(Board.deposit,"USDT","support-leaderboard-v1",NOW.minusSeconds(86400)),Coverage.COMPLETE);
+        when(mapper.previousDay(anyMap())).thenReturn(List.of(stored(2,yesterday,NOW.minusSeconds(86399))));
+        beginRead();try {
+            var comparison=SupportLeaderboard.withMovement(snapshot(current,Coverage.COMPLETE),service.previousBusinessDay(current));
+            assertEquals(MovementKind.UNAVAILABLE,comparison.rows().get(0).movement().kind());
+            assertEquals(Reason.DEFINITION_CHANGED,comparison.rows().get(0).movement().reason());
+        }finally {endRead();}
     }
     @Test void exactMicrosecondsAndRealReadBoundaryAreRequired() {
         var mapper=mock(SupportLeaderboardPublicationMapper.class); var service=new SupportLeaderboardPublicationService(mapper);

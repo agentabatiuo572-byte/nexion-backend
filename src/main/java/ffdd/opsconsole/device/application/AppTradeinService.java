@@ -231,6 +231,7 @@ public class AppTradeinService {
         BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(quote.payableUsdt()).setScale(6, RoundingMode.HALF_UP);
 
         if (quote.payableUsdt().signum() > 0) {
+            paymentAttribution.beforeCash(prepared);
             if (mapper.debitWalletUsdt(userId, quote.payableUsdt()) != 1) {
                 throw new BizException(409, "TRADEIN_WALLET_CONFLICT");
             }
@@ -370,6 +371,7 @@ public class AppTradeinService {
 
         BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(quote.payableUsdt())
                 .setScale(6, RoundingMode.HALF_UP);
+        if (quote.payableUsdt().signum() > 0) paymentAttribution.beforeCash(prepared);
         if (quote.payableUsdt().signum() > 0 && mapper.debitWalletUsdt(userId, quote.payableUsdt()) != 1) {
             throw new BizException(409, "TRADEIN_WALLET_CONFLICT");
         }
@@ -477,6 +479,7 @@ public class AppTradeinService {
 
         BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(quote.payableUsdt())
                 .setScale(6, RoundingMode.HALF_UP);
+        if (quote.payableUsdt().signum() > 0) paymentAttribution.beforeCash(prepared);
         if (quote.payableUsdt().signum() > 0 && mapper.debitWalletUsdt(userId, quote.payableUsdt()) != 1) {
             throw new BizException(409, "TRADEIN_WALLET_CONFLICT");
         }

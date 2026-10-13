@@ -3,6 +3,7 @@ package ffdd.opsconsole.finance.mapper;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDateTime;
 import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -12,7 +13,33 @@ import org.apache.ibatis.annotations.InsertProvider;
 // Exact source observations, not generic CRUD; every read bypasses both MyBatis caches.
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportPaymentSourceMapper {
+    @Select("SELECT UTC_TIMESTAMP(6)")
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    LocalDateTime historyNowUtc();
+    @Select(SupportPaymentSourceSql.HISTORY_PAYMENT_AUDITS)
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> historyPaymentAudits(@Param("customerIds") List<Long> customers);
+
+    @Select(SupportPaymentSourceSql.HISTORY_REFUND_ORIGINS)
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> historyRefundOrigins(@Param("customerIds") List<Long> customers);
     enum Marker { CREGIS_EVENT, LEDGER, PAYMENT, CARD_SETTLEMENT, INTENT, REFUND_BILL, DEVICE }
+
+    @SelectProvider(type=SupportPaymentSourceSql.class,method="historyBeforeBatch")
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> historyBeforeBatch(@Param("source") Source source,@Param("customerIds") List<Long> customers,@Param("keys") List<String> keys);
+
+    @SelectProvider(type=SupportPaymentSourceSql.class,method="historySettledBatch")
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> historySettledBatch(@Param("source") Source source,@Param("customerIds") List<Long> customers,@Param("keys") List<String> keys);
+
+    @SelectProvider(type=SupportPaymentSourceSql.class,method="historyMarkerBatch")
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> historyMarkerBatch(@Param("marker") Marker marker,@Param("customerIds") List<Long> customers,@Param("refs") List<Map<String,Object>> refs);
+
+    @Select(SupportPaymentSourceSql.TRIAL_FUND_SOURCE)
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> trialFundSource(@Param("customerId") long customer,@Param("claimNo") String claimNo);
 
     @Select(SupportPaymentSourceSql.PROOF+" FOR SHARE")
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)

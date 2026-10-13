@@ -319,7 +319,7 @@ public class SupportGroupService {
     public void validateLegacySeat(Long admin,String requestedSeat) {
         if(mapper.cutoverApplied()==0 && mapper.qualifications(admin).isEmpty())return;
         String kind="MANAGER".equals(requestedSeat)?"SUPERVISOR":"SERVICE";
-        if(!Set.of("MANAGER","DEDICATED").contains(requestedSeat)||mapper.qualified(admin,kind)!=1)
+        if(!Set.of("MANAGER","DEDICATED","GENERAL").contains(requestedSeat)||mapper.qualified(admin,kind)!=1)
             throw new BizException(409,"SUPPORT_EXPLICIT_QUALIFICATION_REQUIRED");
     }
 

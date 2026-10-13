@@ -24,7 +24,7 @@ public class LearningAcceptanceSandboxCatalogService {
     private static final ObjectMapper JSON = new ObjectMapper();
     private final LearningAcceptanceSandboxGate gate;
     private final AppLearningMapper mapper;
-    @Value("${nexion.learning.acceptance-run-id:}") private String configuredRunId;
+    @Value("${nexion.learning.acceptance-run-id:}") private final String configuredRunId;
 
     public ApiResult<List<LearningSandboxCourseRow>> list(String runId) {
         requireRun(runId);

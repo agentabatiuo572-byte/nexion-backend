@@ -23,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository {
     private final TreasuryLedgerMapper mapper;
     private final EventOutboxService outboxService;
+    private final ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade commissionCapture;
 
     @Override
     public long countDeposits(LocalDateTime since, String status) {
@@ -567,12 +568,14 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
         BigDecimal delta = reverse ? event.amount().negate() : event.amount();
         BigDecimal after = before.add(delta);
         if (after.signum() < 0) throw new IllegalStateException("COMMISSION_WALLET_INSUFFICIENT_BALANCE");
+        var fundBefore=commissionCapture.begin(event.userId(),eventId,reverse?"REVERSE":"RELEASE");
         if (mapper.adjustCommissionWallet(event.userId(), event.asset(), delta) != 1) {
             throw new IllegalStateException("COMMISSION_WALLET_WRITE_CONFLICT");
         }
         insertImmutableLedgerEntry(bizNo, event.userId(), "TEAM_COMMISSION", event.asset(), direction,
                 event.amount(), after, "SUCCESS", remark);
         mapper.closeCommissionAccrual(eventId, event.userId(), event.asset());
+        commissionCapture.recorded(fundBefore);
         return true;
     }
 

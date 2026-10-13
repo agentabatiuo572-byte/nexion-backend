@@ -50,22 +50,16 @@ class SupportAnalyticsCaptureTest {
         if (phase.equals("after")) try { SupportAnalyticsSharedState.verifyAndRestore(directory, jdbc); }
         catch (Exception failure) { restorationFailure = failure; }
 
-        // Full row values are private evidence; string conversion agrees with the mutation journal's JDBC readback.
         var tables = new LinkedHashMap<String, Object>();
         var rawTables = new LinkedHashMap<String, Object>();
         for (String table : jdbc.queryForList("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME", String.class)) {
             if (!table.matches("[A-Za-z0-9_]+")) throw new IllegalStateException("Unrecognized table identifier");
-            var rows = jdbc.query("SELECT * FROM `" + table + "`", (rs, ordinal) -> {
-                var row = new LinkedHashMap<String, String>();
-                for (int column = 1; column <= rs.getMetaData().getColumnCount(); column++)
-                    row.put(rs.getMetaData().getColumnName(column), rs.getString(column));
-                return row;
-            });
-            rows.sort(java.util.Comparator.comparing(Object::toString));
-            tables.put(table, Map.of("rows", rows)); rawTables.put(table, rows);
+            var captured = SupportAnalyticsSnapshot.capture(jdbc, table);
+            tables.put(table, captured.summary());
+            if (SupportAnalyticsSnapshot.OBJECT_COLUMNS.containsKey(table)) rawTables.put(table, captured.objectRows());
         }
         var shared = new LinkedHashMap<String, Object>();
-        shared.put("schemaVersion", 1); shared.put("at", Instant.now().toString()); shared.put("identity", identity);
+        shared.put("schemaVersion", 2); shared.put("at", Instant.now().toString()); shared.put("identity", identity);
         shared.put("databaseIdentity", ownership.path("databaseIdentity")); shared.put("tables", tables);
         Path sharedPath = directory.resolve("shared-" + phase + ".json"); writeNew(sharedPath, shared);
 
@@ -111,14 +105,14 @@ class SupportAnalyticsCaptureTest {
     }
 
     private static void writeNew(Path path, Object data) throws Exception {
-        Files.write(path, JSON.writerWithDefaultPrettyPrinter().writeValueAsBytes(data), java.nio.file.StandardOpenOption.CREATE_NEW);
+        try (var output = Files.newOutputStream(path, java.nio.file.StandardOpenOption.CREATE_NEW)) { JSON.writeValue(output, data); }
     }
     static com.fasterxml.jackson.databind.JsonNode canonicalValue(Object value) throws Exception {
         return JSON.readTree(JSON.writeValueAsBytes(value));
     }
     private static Map<String, String> reference(Path path) throws Exception {
         return Map.of("path", path.toAbsolutePath().toString(), "sha256",
-                HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path))));
+                SupportAnalyticsSnapshot.fileHash(path));
     }
     private static String required(String key) {
         String value = System.getenv(key);

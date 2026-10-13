@@ -128,6 +128,20 @@ public interface SupportAnalyticsMapper {
         """)
     List<AttributionRow> attributions(@Param("scope") ReadScope scope,@Param("factIds") Collection<String> factIds);
 
+    /** Same authorized event/current-subject boundary as the source tuple; never public all-source material. */
+    @Select("""
+        <script>SELECT e.fact_id factId,e.source_partition sourcePartition,e.capture_db_utc captureDbUtc,
+          e.source_fact_json sourceFactJson,e.attribution_evidence_json attributionEvidenceJson
+        FROM nx_support_payment_attribution e WHERE e.fact_id IN
+        <foreach collection="factIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+        AND (
+        """+EVENT_SCOPE+"""
+          OR EXISTS(SELECT 1 FROM nx_user scope_customer WHERE scope_customer.id=e.customer_id AND scope_customer.sandbox=0
+        """+SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE+"""
+          )) ORDER BY e.fact_id</script>
+        """)
+    List<AttributionProof> attributionProofs(@Param("scope") ReadScope scope,@Param("factIds") Collection<String> factIds);
+
     String READ_SCOPE="<choose><when test=\"scope != null and scope.mode.name() == 'PERSONAL'\">"+SupportGroupMapper.SCOPE_SERVICE
         +"</when><when test=\"scope != null and scope.mode.name() == 'MANAGED'\">"+SupportGroupMapper.SCOPE_SUPERVISOR
         +"</when><when test=\"scope != null and scope.mode.name() == 'ALL'\">"+SupportGroupMapper.SCOPE_SUPER_ADMIN+"</when><otherwise>1=0</otherwise></choose>";
@@ -212,6 +226,7 @@ public interface SupportAnalyticsMapper {
             LocalDateTime qualificationEndsAt,Long memberId,Long groupId,LocalDateTime memberStartsAt,
             LocalDateTime memberEndsAt,LocalDateTime evaluatedDbAt,Integer compatibleRole) { }
     record EventCandidate(String factId,Long customerId) { }
+    record AttributionProof(String factId,String sourcePartition,LocalDateTime captureDbUtc,String sourceFactJson,String attributionEvidenceJson) { }
     record AttributionRow(String factId,Long customerId,String kind,String source,Long ledgerId,String sourceBusinessId,
                           String orderNo,String orderType,String originalFactId,String currency,BigDecimal amount,
                           LocalDateTime succeededAt,String sourceBusinessZone,String successTimeField,Integer fractionalSecondDigits,

@@ -328,6 +328,7 @@ public class HdPayCallbackSettlementService {
                 wallet.get("usdtAvailable"), "HDPAY_WALLET_BALANCE_INVALID")
                 .add(amountUsdt)
                 .setScale(6, RoundingMode.UNNECESSARY);
+        paymentAttribution.beforeCash(prepared);
         requireOne(paymentMapper.creditUsdtWallet(userId, amountUsdt, walletVersion),
                 "HDPAY_WALLET_VERSION_CONFLICT");
         String ledgerBizNo = fact.merchantOrderId();

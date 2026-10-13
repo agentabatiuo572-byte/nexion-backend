@@ -13,6 +13,14 @@ public record SupportRuntimeTarget(String database, int databasePort, String use
             "cs_analytics_20261007", 33337, "cs_analytics_runner", 18161, 16343,
             "http://127.0.0.1:19043", "cs-analytics-20261007-private",
             "cs_analytics_20261007|codex/cs-analytics-api-20261007");
+    private static final SupportRuntimeTarget FRESH_COMMITTED = new SupportRuntimeTarget(
+            "cs_analytics_20261007", 33338, "cs_analytics_runner", 18162, 16343,
+            "http://127.0.0.1:19043", "cs-analytics-20261007-private",
+            "cs_analytics_20261007|codex/cs-analytics-api-20261007");
+    private static final SupportRuntimeTarget NET_COMMITTED = new SupportRuntimeTarget(
+            "cs_analytics_20261007", 33338, "support_net_r55_app", 18162, 16343,
+            "http://127.0.0.1:19043", "cs-analytics-20261007-private",
+            "cs_analytics_20261007|codex/cs-analytics-api-20261007");
 
     public static SupportRuntimeTarget current() { return select(System.getenv()); }
 
@@ -20,6 +28,8 @@ public record SupportRuntimeTarget(String database, int databasePort, String use
         return switch (environment.getOrDefault("SUPPORT_RUNTIME_TARGET", "legacy")) {
             case "legacy" -> LEGACY;
             case "analytics-20261007" -> ANALYTICS;
+            case "analytics-committed-r21" -> FRESH_COMMITTED;
+            case "analytics-net-committed-r64" -> NET_COMMITTED;
             default -> throw new IllegalStateException("Unknown isolated support runtime target");
         };
     }
@@ -27,7 +37,9 @@ public record SupportRuntimeTarget(String database, int databasePort, String use
     public String jdbcPrefix() { return "jdbc:mysql://127.0.0.1:" + databasePort + "/" + database + "?"; }
     public String httpBase() { return "http://127.0.0.1:" + httpPort; }
     public String websocketBase() { return "ws://127.0.0.1:" + httpPort; }
-    public boolean analytics() { return equals(ANALYTICS); }
+    public boolean analytics() { return equals(ANALYTICS) || freshCommitted() || netCommitted(); }
+    public boolean freshCommitted() { return equals(FRESH_COMMITTED); }
+    public boolean netCommitted() { return equals(NET_COMMITTED); }
 
     void requireEnvironment(Map<String, String> environment) {
         String url = environment.get("NEXION_DB_URL");

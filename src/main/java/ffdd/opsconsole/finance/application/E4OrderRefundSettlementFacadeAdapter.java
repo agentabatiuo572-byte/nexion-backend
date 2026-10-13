@@ -54,6 +54,7 @@ public class E4OrderRefundSettlementFacadeAdapter implements E4OrderRefundSettle
         BigDecimal cumulativeBefore = nz(wallet.cumulativeDepositUsdt());
         BigDecimal availableAfter = availableBefore.add(normalizedAmount);
         BigDecimal cumulativeAfter = cumulativeBefore.subtract(normalizedAmount).max(BigDecimal.ZERO);
+        paymentAttribution.beforeCash(prepared);
         if (mapper.updateWallet(userId, availableAfter, cumulativeAfter, wallet.version()) != 1) {
             throw new BizException(409, "ORDER_REFUND_WALLET_CONFLICT");
         }

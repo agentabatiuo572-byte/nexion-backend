@@ -128,10 +128,11 @@ class SupportPaymentCapturedSourceProofTest {
         Kind kind=switch(source) {
             case DEPOSIT_ORDER,CARD_TOPUP,VIETQR,HDPAY -> Kind.DEPOSIT;
             case ORDER_REFUND -> Kind.DEVICE_PURCHASE_REFUND;
+            case GENESIS_PRIMARY,GENESIS_SECONDARY -> Kind.CONSUMPTION;
             default -> Kind.DEVICE_PURCHASE;
         };
         saved.put("kind",kind.name());saved.put("factId",kind==Kind.DEPOSIT?"DEPOSIT:201"
-            :kind==Kind.DEVICE_PURCHASE_REFUND?"ORDER_REFUND:201":"PURCHASE:order-1");
+            :kind==Kind.DEVICE_PURCHASE_REFUND?"ORDER_REFUND:201":kind==Kind.CONSUMPTION?"CONSUMPTION:order-1":"PURCHASE:order-1");
         if(kind==Kind.DEPOSIT) {saved.putNull("orderNo");saved.putNull("orderType");}
         if(source!=Source.WALLET_ORDER && source!=Source.TRIAL_CONVERT)saved.putNull("sourceConfirmationAt");
         if(kind==Kind.DEVICE_PURCHASE_REFUND)saved.put("originalFactId","PURCHASE:order-1");
@@ -150,10 +151,11 @@ class SupportPaymentCapturedSourceProofTest {
         Kind kind=switch(source) {
             case DEPOSIT_ORDER,CARD_TOPUP,VIETQR,HDPAY -> Kind.DEPOSIT;
             case ORDER_REFUND -> Kind.DEVICE_PURCHASE_REFUND;
+            case GENESIS_PRIMARY,GENESIS_SECONDARY -> Kind.CONSUMPTION;
             default -> Kind.DEVICE_PURCHASE;
         };
         baseline.put("kind",kind.name());baseline.put("factId",kind==Kind.DEPOSIT?"DEPOSIT:201"
-            :kind==Kind.DEVICE_PURCHASE_REFUND?"ORDER_REFUND:201":"PURCHASE:order-1");
+            :kind==Kind.DEVICE_PURCHASE_REFUND?"ORDER_REFUND:201":kind==Kind.CONSUMPTION?"CONSUMPTION:order-1":"PURCHASE:order-1");
         if(kind==Kind.DEPOSIT) {baseline.putNull("orderNo");baseline.putNull("orderType");}
         if(kind==Kind.DEVICE_PURCHASE_REFUND)baseline.put("originalFactId","PURCHASE:order-1");
         if(source!=Source.WALLET_ORDER && source!=Source.TRIAL_CONVERT)baseline.putNull("sourceConfirmationAt");

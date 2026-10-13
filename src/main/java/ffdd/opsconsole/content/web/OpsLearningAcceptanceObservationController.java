@@ -23,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsLearningAcceptanceObservationController {
     private final LearningAcceptanceSandboxGate gate;
     private final AppLearningMapper mapper;
-    @Value("${nexion.learning.acceptance-run-id:}") private String configuredRunId;
+    @Value("${nexion.learning.acceptance-run-id:}") private final String configuredRunId;
 
     @GetMapping("/observation")
     @PreAuthorize("hasAuthority('content_i7_read')")

@@ -21,7 +21,7 @@ public class FinanceSupportReadService {
         for(var balance:balances) currencies.put(text(balance,"currency"),row(text(balance,"currency"),balance.get("availableBalance")));
         for(var credit:deposits.supportCredits(customer)) {
             var row=currencies.computeIfAbsent(text(credit,"currency"),c->row(c,null));
-            row.put("creditedDepositTotal",decimal(credit.get("creditedDepositTotal")));
+            observed(row,"creditedDepositTotal",credit.get("creditedDepositTotal"));
         }
         for(var withdrawal:withdrawals.supportTotals(customer)) {
             var row=currencies.computeIfAbsent(text(withdrawal,"currency"),c->row(c,null));
@@ -37,7 +37,7 @@ public class FinanceSupportReadService {
             }
         }
         return Map.of("byCurrency",List.copyOf(currencies.values()),"completeness","PARTIAL","balanceSourceStatus",balances.isEmpty()?"UNKNOWN":"READY",
-            "refundSourceStatus","UNKNOWN","evaluatedAt",Instant.now().toString());
+            "refundSourceStatus","NOT_APPLICABLE","evaluatedAt",Instant.now().toString());
     }
 
     public Map<String,Object> flows(Long customer,long page,int size,String currency,String status,
@@ -59,15 +59,22 @@ public class FinanceSupportReadService {
     private static Map<String,Object> row(String currency,Object balance) {
         var row=new LinkedHashMap<String,Object>();row.put("currency",currency);var statuses=new LinkedHashMap<String,String>();
         for(String field:List.of("creditedDepositTotal","successfulWithdrawalPrincipalTotal","successfulWithdrawalFeeTotal",
-                "successfulWithdrawalNetTotal","processingWithdrawalPrincipalTotal")) {row.put(field,"0");statuses.put(field,"READY");}
-        row.put("depositRefundTotal",null);statuses.put("depositRefundTotal","UNKNOWN");
+                "successfulWithdrawalNetTotal","processingWithdrawalPrincipalTotal")) {row.put(field,null);statuses.put(field,"UNKNOWN");}
+        // Successful deposits cannot be refunded; preserve the old field as a policy zero.
+        row.put("depositRefundTotal","0");statuses.put("depositRefundTotal","READY");
         row.put("balance",decimal(balance));row.put("availableBalance",decimal(balance));
         statuses.put("balance",balance==null?"UNKNOWN":"READY");statuses.put("availableBalance",balance==null?"UNKNOWN":"READY");
         row.put("fieldStatuses",statuses);return row;
     }
     private static void put(Map<String,Object> row,String name,Map<String,Object> source,String value,String anomalies) {
         boolean known=((Number)source.get(anomalies)).longValue()==0;
-        row.put(name,known?decimal(source.get(value)):null);statuses(row).put(name,known?"READY":"UNKNOWN");
+        if(known)observed(row,name,source.get(value));
+        else {row.put(name,null);statuses(row).put(name,"UNKNOWN");}
+    }
+    private static void observed(Map<String,Object> row,String name,Object value) {
+        // Legacy SQL has reconciled subtotals, not customer lifetime/environment coverage.
+        String amount=decimal(value);boolean positive=amount!=null && new BigDecimal(amount).signum()>0;
+        row.put(name,positive?amount:null);statuses(row).put(name,positive?"PARTIAL":"UNKNOWN");
     }
     @SuppressWarnings("unchecked") private static Map<String,String> statuses(Map<String,Object> row){return (Map<String,String>)row.get("fieldStatuses");}
     private static String text(Map<String,Object> row,String key){return String.valueOf(row.get(key));}

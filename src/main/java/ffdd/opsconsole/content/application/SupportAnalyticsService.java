@@ -1,12 +1,16 @@
 package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.content.dto.SupportAnalyticsQueryRequest;
 import ffdd.opsconsole.content.domain.SupportAnalyticsStats.*;
 import static ffdd.opsconsole.content.domain.SupportAnalyticsStats.*;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import ffdd.opsconsole.content.mapper.SupportAnalyticsMapper;
 import ffdd.opsconsole.content.mapper.SupportAnalyticsMapper.AttributionRow;
+import ffdd.opsconsole.content.mapper.SupportAnalyticsMapper.AttributionProof;
+import ffdd.opsconsole.finance.facade.SupportFundsReadFacade;
+import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.*;
 import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Fact;
@@ -23,6 +27,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 
 /** Internal statistics only. Authorization is current; event attribution never comes from current membership. */
 @ApplicationService
@@ -32,22 +40,32 @@ public class SupportAnalyticsService {
     private final SupportAnalyticsMapper mapper;
     private final SupportInvitationReadFacade invitations;
     private final SupportDeviceReadFacade devices;
+    private final SupportFundsReadFacade funds;
 
     /** Legacy callers do not gain newly requested metrics from absent dependencies. */
     public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper) {
+        this(ownership,finance,mapper,(SupportFundsReadFacade)null);
+    }
+    public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper,SupportFundsReadFacade funds) {
         this.ownership=Objects.requireNonNull(ownership);this.finance=Objects.requireNonNull(finance);this.mapper=Objects.requireNonNull(mapper);
-        this.invitations=null;this.devices=null;
+        this.invitations=null;this.devices=null;this.funds=funds;
+    }
+    public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper,
+            SupportInvitationReadFacade invitations,SupportDeviceReadFacade devices) {
+        this(ownership,finance,mapper,invitations,devices,null);
     }
     @Autowired
     public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper,
-            SupportInvitationReadFacade invitations,SupportDeviceReadFacade devices) {
+            SupportInvitationReadFacade invitations,SupportDeviceReadFacade devices,SupportFundsReadFacade funds) {
         this.ownership=Objects.requireNonNull(ownership);this.finance=Objects.requireNonNull(finance);this.mapper=Objects.requireNonNull(mapper);
-        this.invitations=Objects.requireNonNull(invitations);this.devices=Objects.requireNonNull(devices);
+        this.invitations=Objects.requireNonNull(invitations);this.devices=Objects.requireNonNull(devices);this.funds=funds;
     }
 
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public Result summarize(Query query) {
-        return evaluate(query,resolveScope(query),null);
+        var capture=funds==null?null:new QueryCapture();
+        var result=evaluate(query,resolveScope(query),capture);
+        return capture==null?result:withNet(result,capture);
     }
 
     private ReadScope resolveScope(Query query) {
@@ -68,7 +86,7 @@ public class SupportAnalyticsService {
                 || !Objects.equals(query.agentId(),authorizedScope.requestedAgentId()))throw invalid("SUPPORT_ANALYTICS_SCOPE_INVALID");
         var capture=new QueryCapture();capture.supervisorDirectory=supervisorDirectory;
         var result=evaluate(query,authorizedScope,capture);
-        return new QueryEvaluation(result,capture);
+        return new QueryEvaluation(withNet(result,capture),capture);
     }
 
     public record QueryEvaluation(Result result,QueryCapture evidence) { }
@@ -93,15 +111,173 @@ public class SupportAnalyticsService {
         public List<AccountRow> accounts=List.of();
         public boolean currentFailed,eventFailed,attributionFailed,deviceFailed,supervisorDirectory;
         public Status rosterStatus=Status.UNKNOWN;
+        public NetSnapshot net;
+        public List<AttributionProof> netAttributionProofs=List.of();
+        private NetRead netRead;
     }
 
     /** Reuses evaluated facts for the filtered current-root aggregate; performs no reader call. */
     public CurrentMetrics selectedCurrent(QueryEvaluation evaluation,List<Customer> selected) {
         var c=evaluation.evidence();
         if(selected.stream().anyMatch(row->!c.current.containsKey(row.customerId())))throw invalid("SUPPORT_ANALYTICS_SCOPE_INVALID");
-        return currentMetrics(evaluation.result().query(),selected,c.facts.values(),c.snapshot,c.stock,
+        var metric=currentMetrics(evaluation.result().query(),selected,c.facts.values(),c.snapshot,c.stock,
             new ActivityRead(c.activityWindow,c.activities),c.currentFailed);
+        return c.netRead==null?metric:withNet(metric,selected.stream().map(Customer::customerId).collect(java.util.stream.Collectors.toSet()),evaluation.result().query(),c.netRead);
     }
+
+    /** Read once inside the caller's RR capture; no money business algorithm is reproduced here. */
+    private Result withNet(Result base,QueryCapture c) {
+        Query q=base.query();
+        if(funds==null || q.basis()==Basis.CURRENT_ASSET)return base;
+        try {
+            c.net=funds.readNetContributions(new TreeSet<>(c.financialIds).stream().toList());
+            if(c.net!=null && !c.net.origins().isEmpty()) {
+                var ids=c.net.origins().stream().filter(Objects::nonNull).map(ContributionOrigin::paymentFactId)
+                    .filter(Objects::nonNull).filter(c.facts::containsKey).distinct().sorted().toList();
+                if(!ids.isEmpty()) {
+                    var proofs=mapper.attributionProofs(c.scope,ids);
+                    if(proofs==null || proofs.stream().anyMatch(Objects::isNull))throw invalid("SUPPORT_ANALYTICS_NET_PROOF_INVALID");
+                    c.netAttributionProofs=List.copyOf(proofs);
+                }
+            }
+            c.netRead=NetRead.observe(c,base.asOf());
+            if(c.currentFailed || c.attributionFailed || q.basis()==Basis.PERIOD_EVENT && c.eventFailed)c.netRead=NetRead.unknown(c.financialIds);
+        }catch(DataAccessException | IllegalArgumentException | IllegalStateException ex) {
+            c.netRead=NetRead.unknown(c.financialIds);
+        }
+        var customers=base.currentCustomers().stream().map(old->{
+            var m=old.metrics();
+            var metric=new CustomerMetrics(m.lifetimeBasis(),m.lifetimeStatus(),withNet(m.lifetime(),Set.of(old.customerId()),q,c.netRead),m.invitations(),m.devices(),m.activity());
+            return new Customer(old.customerId(),old.category(),old.placement(),old.handoverRequired(),old.first(),old.owner(),metric);
+        }).toList();
+        Set<Long> current=customers.stream().map(Customer::customerId).collect(java.util.stream.Collectors.toSet());
+        Set<Long> approvedGroups=base.groups().stream().map(GroupAggregate::groupId).collect(java.util.stream.Collectors.toSet());
+        var groups=base.groups().stream().map(g->{
+            Set<Long> roots=customers.stream().filter(x->Objects.equals(x.owner().groupId(),g.groupId())).map(Customer::customerId).collect(java.util.stream.Collectors.toSet());
+            return new GroupAggregate(g.groupId(),g.customers(),withNet(g.current(),roots,q,c.netRead),
+                q.basis()==Basis.PERIOD_EVENT?withNet(g.period(),c.financialIds,q,c.netRead,c.scope,Set.of(g.groupId()),g.groupId()):g.period(),g.personnel());
+        }).toList();
+        var financial=withNet(base.financialSummary(),q.basis()==Basis.PERIOD_EVENT?c.financialIds:current,q,c.netRead,c.scope,approvedGroups,null);
+        return new Result(q,base.currentScope(),customers,financial,base.restrictedSummary(),base.coverage(),base.asOf(),base.reasons(),
+            withNet(base.currentMetrics(),current,q,c.netRead),base.personnel(),groups);
+    }
+    static SupportAnalyticsQueryVersion.ReadState capturedNetState(QueryCapture c) {
+        if(c.netRead==null)return c.net==null?SupportAnalyticsQueryVersion.ReadState.NOT_REQUESTED:SupportAnalyticsQueryVersion.netObservation(c.net,c.financialIds,c.netAttributionProofs);
+        return c.netRead.complete(c.financialIds)?SupportAnalyticsQueryVersion.ReadState.COMPLETE:SupportAnalyticsQueryVersion.ReadState.UNKNOWN;
+    }
+    private static CurrentMetrics withNet(CurrentMetrics old,Set<Long> roots,Query q,NetRead net) {
+        return new CurrentMetrics(old.lifetimeBasis(),old.status(),withNet(old.ownLifetime(),roots,q,net),old.firstConfirmed(),old.firstNone(),old.firstUnknown(),old.devices(),old.activity());
+    }
+    private static List<CustomerCurrencyTotals> withNet(List<CustomerCurrencyTotals> old,Set<Long> roots,Query q,NetRead net) {
+        var byCurrency=new TreeMap<String,CustomerCurrencyTotals>();old.forEach(x->byCurrency.put(x.currency(),x));
+        Set<String> currencies=q.currency()==null?Set.of("USDT","NEX"):Set.of(q.currency());
+        for(String currency:currencies){var x=byCurrency.get(currency);
+            Money absent=new Money(null,null,null,null,null,Status.UNAVAILABLE,List.of("HISTORY_NOT_REQUESTED"));
+            byCurrency.put(currency,new CustomerCurrencyTotals(currency,x==null?absent:x.deposits(),x==null?absent:x.purchases(),net.money(roots,currency,null,null,null,null)));}
+        return List.copyOf(byCurrency.values());
+    }
+    private static FinancialSummary withNet(FinancialSummary old,Set<Long> roots,Query q,NetRead net,ReadScope scope,Set<Long> groups,Long group) {
+        if(old.status()==Status.UNAVAILABLE)return old;
+        var byCurrency=new TreeMap<String,CurrencyTotals>();old.currencies().forEach(x->byCurrency.put(x.currency(),x));
+        Set<String> currencies=q.currency()==null?Set.of("USDT","NEX"):Set.of(q.currency());
+        Money absent=new Money(null,null,null,null,null,Status.UNKNOWN,List.of("COMPLETE_HISTORY_NOT_PROVEN"));
+        for(String currency:currencies){var x=byCurrency.get(currency);var amount=net.money(roots,currency,q.basis()==Basis.PERIOD_EVENT?q:null,scope,groups,group);
+            byCurrency.put(currency,new CurrencyTotals(currency,x==null?absent:x.deposits(),x==null?absent:x.purchases(),x==null?absent:x.purchaseRefunds(),amount));}
+        return new FinancialSummary(old.status(),List.copyOf(byCurrency.values()),old.firstCandidates(),old.attribution(),old.reasons(),old.firstSources());
+    }
+    private record NetRead(NetSnapshot snapshot,Map<Long,NetCustomer> customers,Map<String,ContributionOrigin> origins,
+                           Map<String,AttributionRow> attributions,Set<Long> gaps,boolean structureGap) {
+        static NetRead unknown(Set<Long> roots){return new NetRead(null,Map.of(),Map.of(),Map.of(),Set.copyOf(roots),true);}
+        boolean complete(Set<Long> roots){return !structureGap && customers.keySet().containsAll(roots) && roots.stream().noneMatch(gaps::contains);}
+        static NetRead observe(QueryCapture c,Instant asOf) {
+            if(c.net==null)return unknown(c.financialIds);
+            var customers=new HashMap<Long,NetCustomer>();var gaps=new HashSet<Long>();
+            for(var row:c.net.customers()) {
+                if(row==null || !c.financialIds.contains(row.customerId()) || row.state()==null || customers.putIfAbsent(row.customerId(),row)!=null)return unknown(c.financialIds);
+                if(row.state()!=EvidenceState.READY || !row.reasons().isEmpty() || row.usdt()==null || row.nex()==null)gaps.add(row.customerId());
+            }
+            if(!customers.keySet().equals(c.financialIds))return unknown(c.financialIds);
+            var proofs=new HashMap<String,AttributionProof>();
+            Set<String> requested=c.net.origins().stream().map(ContributionOrigin::paymentFactId).filter(Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+            for(var p:c.netAttributionProofs)if(p==null || p.factId()==null || !requested.contains(p.factId()) || proofs.putIfAbsent(p.factId(),p)!=null)return unknown(c.financialIds);
+            var origins=new HashMap<String,ContributionOrigin>();
+            for(var o:c.net.origins()) {
+                if(o==null || !customers.containsKey(o.customerId()) || !netToken(o.contributionId()) || !netToken(o.paymentFactId()) || origins.putIfAbsent(o.contributionId(),o)!=null
+                        || !netStamp(o.formedAt(),o.businessZone(),o.fractionalSecondDigits(),o.sourceReference(),asOf))return unknown(c.financialIds);
+                Fact f=c.facts.get(o.paymentFactId());var a=c.validAttributions.get(o.paymentFactId());
+                if(f==null || f.customerId()!=o.customerId() || f.kind()==Kind.DEVICE_PURCHASE_REFUND || c.snapshot==null
+                        || !c.snapshot.businessZone().equals(o.businessZone()) || !f.succeededAt().equals(o.formedAt()) || f.fractionalSecondDigits()!=o.fractionalSecondDigits()
+                        || a==null || !netProof(proofs.get(o.paymentFactId()),a,f)
+                        || "UNKNOWN".equals(a.agentStatus()) || "UNKNOWN".equals(a.groupStatus()) || "UNKNOWN".equals(a.ownerStatus()))gaps.add(o.customerId());
+            }
+            var totals=new HashMap<String,BigDecimal>();var formations=new HashMap<String,BigDecimal>();
+            for(var change:c.net.changes()) {
+                var o=change==null?null:origins.get(change.contributionId());
+                if(o==null || o.customerId()!=change.originCustomerId() || change.amount()==null || change.currency()==null || !Set.of("USDT","NEX").contains(change.currency())
+                        || !netStamp(change.succeededAt(),change.businessZone(),change.fractionalSecondDigits(),change.sourceReference(),asOf)
+                        || !change.businessZone().equals(o.businessZone()) || change.succeededAt().isBefore(o.formedAt()))return unknown(c.financialIds);
+                totals.merge(change.originCustomerId()+":"+change.currency(),change.amount(),BigDecimal::add);
+                Fact f=c.facts.get(o.paymentFactId());
+                if(f==null || !f.currency().equals(change.currency())){gaps.add(o.customerId());continue;}
+                if(change.amount().signum()>0) {
+                    if(change.succeededAt().equals(o.formedAt()) && change.fractionalSecondDigits()==o.fractionalSecondDigits() && change.sourceReference().equals(o.sourceReference()))formations.merge(o.contributionId(),change.amount(),BigDecimal::add);
+                    else gaps.add(o.customerId());
+                }
+            }
+            for(var row:customers.values())if(row.state()==EvidenceState.READY)
+                if(row.usdt()==null || row.nex()==null || totals.getOrDefault(row.customerId()+":USDT",BigDecimal.ZERO).compareTo(row.usdt())!=0
+                        || totals.getOrDefault(row.customerId()+":NEX",BigDecimal.ZERO).compareTo(row.nex())!=0)gaps.add(row.customerId());
+            for(var o:origins.values()) {
+                var formed=formations.get(o.contributionId());var f=c.facts.get(o.paymentFactId());
+                if(f==null || formed==null || formed.signum()<=0 || formed.compareTo(f.amount())>0
+                        || f.kind()==Kind.DEPOSIT && formed.compareTo(f.amount())!=0)gaps.add(o.customerId());
+            }
+            return new NetRead(c.net,Map.copyOf(customers),Map.copyOf(origins),c.validAttributions,Set.copyOf(gaps),false);
+        }
+        Money money(Set<Long> roots,String currency,Query period,ReadScope scope,Set<Long> groups,Long group) {
+            if(!Set.of("USDT","NEX").contains(currency) || !complete(roots) || period!=null && scope.mode()==ReadMode.MANAGED && groups.isEmpty() && !roots.isEmpty())
+                return new Money(null,null,null,null,null,Status.UNKNOWN,List.of("NET_SOURCE_UNVERIFIED"));
+            BigDecimal amount=BigDecimal.ZERO;
+            if(period==null)for(long id:roots)amount=amount.add("USDT".equals(currency)?customers.get(id).usdt():"NEX".equals(currency)?customers.get(id).nex():BigDecimal.ZERO);
+            else for(var change:snapshot.changes()) {
+                if(!roots.contains(change.originCustomerId()) || !currency.equals(change.currency()))continue;
+                var at=change.succeededAt().atZone(ZoneId.of(change.businessZone())).withZoneSameInstant(ZoneId.of(period.businessZone())).toLocalDateTime();
+                if(at.isBefore(period.fromInclusive()) || !at.isBefore(period.toExclusive()))continue;
+                var a=attributions.get(origins.get(change.contributionId()).paymentFactId());
+                if(group!=null && !Objects.equals(group,a.groupId()) || scope.requestedGroupId()!=null && !Objects.equals(scope.requestedGroupId(),a.groupId())
+                        || scope.requestedAgentId()!=null && !Objects.equals(scope.requestedAgentId(),a.agentAdminId())
+                        || scope.mode()==ReadMode.PERSONAL && !Objects.equals(scope.actorId(),a.agentAdminId())
+                        || scope.mode()==ReadMode.MANAGED && !groups.contains(a.groupId()))continue;
+                amount=amount.add(change.amount());
+            }
+            return new Money(amount,amount,null,null,null,Status.AVAILABLE,List.of());
+        }
+    }
+    private static boolean netToken(String value){return value!=null && !value.isBlank() && value.length()<=512;}
+    private static boolean netStamp(LocalDateTime at,String zone,int digits,String source,Instant asOf){
+        return at!=null && SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId().equals(zone) && digits>=0 && digits<=9
+            && at.getNano()%(int)Math.pow(10,9-digits)==0 && netToken(source) && !at.atZone(ZoneId.of(zone)).toInstant().isAfter(asOf);
+    }
+    static boolean netProof(AttributionProof proof,AttributionRow attribution,Fact fact) {
+        if(proof==null || proof.captureDbUtc()==null || proof.sourceFactJson()==null || proof.attributionEvidenceJson()==null)return false;
+        try {
+            var reader=new ObjectMapper().reader().with(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS,DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
+            JsonNode source=reader.readTree(proof.sourceFactJson()),evidence=reader.readTree(proof.attributionEvidenceJson());
+            return source.isObject() && evidence.isObject() && netText(source,"factId",fact.factId()) && netId(source,"customerId",fact.customerId())
+                && netId(source,"ledgerId",fact.ledgerId()) && netText(source,"kind",fact.kind().name()) && netText(source,"source",fact.source().name())
+                && netText(source,"currency",fact.currency()) && source.path("amount").isNumber() && source.path("amount").decimalValue().compareTo(fact.amount())==0
+                && LocalDateTime.parse(source.path("succeededAt").textValue()).equals(fact.succeededAt()) && netText(source,"businessZone",attribution.sourceBusinessZone())
+                && netId(source,"fractionalSecondDigits",(long)fact.fractionalSecondDigits()) && netText(evidence,"schemaVersion",attribution.captureSchemaVersion())
+                && netText(evidence,"captureMode",attribution.captureMode()) && netText(evidence,"captureZone","UTC")
+                && LocalDateTime.parse(evidence.path("captureDbUtc").textValue()).equals(proof.captureDbUtc()) && netText(evidence,"sourcePartition",proof.sourcePartition())
+                && netLayer(evidence.path("agent"),attribution.agentStatus(),attribution.agentAdminId())
+                && netLayer(evidence.path("group"),attribution.groupStatus(),attribution.groupId()) && netLayer(evidence.path("owner"),attribution.ownerStatus(),attribution.ownerAdminId());
+        }catch(java.io.IOException | IllegalArgumentException | java.time.DateTimeException | NullPointerException ex){return false;}
+    }
+    private static boolean netText(JsonNode node,String field,String expected){var v=node.get(field);return v!=null && (expected==null?v.isNull():v.isTextual() && expected.equals(v.textValue()));}
+    private static boolean netId(JsonNode node,String field,Long expected){var v=node.get(field);return v!=null && (expected==null?v.isNull():v.isIntegralNumber() && v.canConvertToLong() && v.longValue()==expected);}
+    private static boolean netLayer(JsonNode node,String status,Long id){return node.isObject() && netText(node,"status",status) && netId(node,"id",id);}
     private Result evaluate(Query query,ReadScope scope,QueryCapture capture) {
         var reasons=new TreeSet<String>();
         var current=new TreeMap<Long,SupportAnalyticsMapper.CurrentCustomer>();
@@ -179,7 +355,7 @@ public class SupportAnalyticsService {
             first.putAll(selectFirstFacts(facts.values()));
             for(var issue:snapshot.issues())reasons.add("FINANCIAL_SOURCE_UNVERIFIED");
         } else reasons.add("NO_OBSERVED_FINANCIAL_SCOPE");
-        if(invitations!=null)validateSnapshotBoundary(snapshot,ids);
+        if(invitations!=null)validateSnapshotBoundary(snapshot,ids);else validateCustomerCoverage(snapshot,ids);
         if(capture!=null){capture.snapshot=snapshot;capture.facts=Map.copyOf(facts);capture.first=Map.copyOf(first);capture.firstHistory=Map.copyOf(firstHistory);}
         if(query.basis()==Basis.CURRENT_ASSET && capture==null) {
             var customers=current.values().stream().map(row->customer(row,new FirstSelection(null,Status.UNKNOWN,List.of("HISTORY_NOT_REQUESTED")))).toList();
@@ -259,9 +435,9 @@ public class SupportAnalyticsService {
         else for(Fact fact:facts.values())currencies.add(fact.currency());
         var totals=new ArrayList<CurrencyTotals>();
         for(String currency:currencies)totals.add(new CurrencyTotals(currency,
-            money(selected,snapshot,Kind.DEPOSIT,currency,unavailable,periodGap),
-            money(selected,snapshot,Kind.DEVICE_PURCHASE,currency,unavailable,periodGap),
-            money(selected,snapshot,Kind.DEVICE_PURCHASE_REFUND,currency,unavailable,periodGap),
+            money(selected,snapshot,Kind.DEPOSIT,currency,unavailable,periodGap,ids),
+            money(selected,snapshot,Kind.DEVICE_PURCHASE,currency,unavailable,periodGap,ids),
+            money(selected,snapshot,Kind.DEVICE_PURCHASE_REFUND,currency,unavailable,periodGap,ids),
             new Money(null,null,null,null,null,Status.UNKNOWN,List.of("COMPLETE_NET_NOT_PROVEN"))));
         long restrictedCustomers=selected.stream().map(Fact::customerId).filter(id -> !current.containsKey(id)).distinct().count();
         long restrictedFirst=selectedFirst.stream().filter(f -> !current.containsKey(f.customerId())).count();
@@ -357,8 +533,9 @@ public class SupportAnalyticsService {
         for(var old:base) {
             long root=old.customerId();var row=current.get(root);var tree=trees.get(root);
             var money=lifetime(ownFacts.values(),Set.of(root),query.currency(),snapshot,currentFailed,query.basis()==Basis.CURRENT_ASSET);
-            Status lifetimeStatus=query.basis()==Basis.CURRENT_ASSET?Status.UNAVAILABLE:money.stream().anyMatch(c->c.deposits().status()==Status.PARTIAL || c.purchases().status()==Status.PARTIAL)?Status.PARTIAL:
-                money.stream().anyMatch(c->c.deposits().status()==Status.FAILED || c.purchases().status()==Status.FAILED)?Status.FAILED:Status.UNKNOWN;
+            Status lifetimeStatus=query.basis()==Basis.CURRENT_ASSET?Status.UNAVAILABLE:money.stream().anyMatch(c->c.deposits().status()==Status.FAILED || c.purchases().status()==Status.FAILED)?Status.FAILED:
+                !money.isEmpty() && money.stream().allMatch(c->c.deposits().status()==Status.AVAILABLE && c.purchases().status()==Status.AVAILABLE)?Status.AVAILABLE:
+                money.stream().anyMatch(c->c.deposits().status()==Status.PARTIAL || c.purchases().status()==Status.PARTIAL || c.deposits().status()==Status.AVAILABLE || c.purchases().status()==Status.AVAILABLE)?Status.PARTIAL:Status.UNKNOWN;
             var metric=new CustomerMetrics(Basis.CURRENT_CUSTOMER_HISTORY,lifetimeStatus,money,
                 invitationSummary(tree,query,teamFacts.values(),snapshot,teamSnapshot,financialIds),
                 deviceSummary(stock,Set.of(root),ownFacts.values(),snapshot,false),activity.customers().get(root));
@@ -378,7 +555,7 @@ public class SupportAnalyticsService {
                 currentMetrics(query,groupCustomers,ownFacts.values(),snapshot,stock,activity,currentFailed),period,
                 personnel(roster,group.id(),scope)));
         }
-        return new Enrichment(customers,aggregate,personnel(roster,null,scope),groups);
+        return new Enrichment(customers,aggregate,personnel(roster,scope.requestedGroupId(),scope),groups);
     }
 
     private static void validateCurrentOwner(SupportAnalyticsMapper.CurrentCustomer row,ReadScope scope) {
@@ -399,6 +576,17 @@ public class SupportAnalyticsService {
                 || snapshot.firstHistory().stream().anyMatch(h->h==null || !ids.contains(h.customerId()) || h.status()==null)
                 || snapshot.issues().stream().anyMatch(i->i==null || i.customerId()!=null && !ids.contains(i.customerId())))
             throw invalid("SUPPORT_ANALYTICS_FINANCIAL_SCOPE_INVALID");
+        validateCustomerCoverage(snapshot,ids);
+    }
+    private static void validateCustomerCoverage(Snapshot snapshot,Set<Long> ids) {
+        if(snapshot==null)return;
+        var seen=new HashSet<String>();
+        for(var row:snapshot.customerCoverage()) {
+            if(row==null || !ids.contains(row.customerId()))throw invalid("SUPPORT_ANALYTICS_FINANCIAL_SCOPE_INVALID");
+            if(row.customerId()<=0 || row.source()==null || row.historyStatus()==null || row.refundStatus()==null
+                || row.historicalEnvironmentStatus()==null || row.reasons().stream().anyMatch(r->r==null || r.isBlank())
+                || !seen.add(row.customerId()+":"+row.source()))throw invalid("SUPPORT_ANALYTICS_FINANCIAL_COVERAGE_INVALID");
+        }
     }
     private static List<CustomerCurrencyTotals> lifetime(Collection<Fact> facts,Set<Long> roots,String selectedCurrency,
             Snapshot snapshot,boolean failed,boolean notRequested) {
@@ -413,13 +601,7 @@ public class SupportAnalyticsService {
     }
     private static Money lifetimeMoney(List<Fact> facts,Snapshot snapshot,Kind kind,String currency,Set<Long> subjects,boolean failed,boolean notRequested) {
         if(notRequested)return new Money(null,null,null,null,null,Status.UNAVAILABLE,List.of("HISTORY_NOT_REQUESTED"));
-        var rows=facts.stream().filter(f->f.kind()==kind && currency.equals(f.currency())).toList();
-        boolean readFailed=snapshot!=null && snapshot.issues().stream().anyMatch(i->"SOURCE_READ_FAILED".equals(i.reason())
-            && (i.source()==null || family(i.source())==kind) && (i.customerId()==null || subjects.contains(i.customerId())));
-        if(failed || readFailed && rows.isEmpty())return new Money(null,null,null,null,null,Status.FAILED,List.of("SOURCE_READ_FAILED"));
-        if(rows.isEmpty())return new Money(null,null,null,null,null,Status.UNKNOWN,List.of("COMPLETE_HISTORY_NOT_PROVEN"));
-        return new Money(rows.stream().map(Fact::amount).reduce(BigDecimal.ZERO,BigDecimal::add),null,(long)rows.size(),null,
-            rows.stream().map(Fact::customerId).distinct().count(),Status.PARTIAL,List.of("COMPLETE_HISTORY_NOT_PROVEN"));
+        return money(facts,snapshot,kind,currency,failed,false,subjects);
     }
     private static InvitationSummary invitationSummary(SupportInvitationReadFacade.Invitation tree,Query query,Collection<Fact> facts,
             Snapshot rootSnapshot,Snapshot extraSnapshot,Set<Long> rootFinancialIds) {
@@ -428,8 +610,21 @@ public class SupportAnalyticsService {
         var descendants=new HashSet<>(tree.descendantCustomerIds());var rows=facts.stream().filter(f->descendants.contains(f.customerId()) && f.kind()==Kind.DEPOSIT).toList();
         var currencies=new TreeSet<String>();if(query.currency()!=null)currencies.add(query.currency());else rows.forEach(f->currencies.add(f.currency()));
         var totals=new ArrayList<InvitationCurrencyTotal>();
+        var proofs=new ArrayList<SupportPaymentFacts.CustomerCoverage>();var issues=new ArrayList<SupportPaymentFacts.Issue>();
+        var coverage=new ArrayList<SupportPaymentFacts.Coverage>();
+        for(var source:Arrays.asList(rootSnapshot,extraSnapshot))if(source!=null) {
+            var subjects=descendants.stream().filter(id->source==rootSnapshot?rootFinancialIds.contains(id):!rootFinancialIds.contains(id)).collect(java.util.stream.Collectors.toSet());
+            proofs.addAll(source.customerCoverage().stream().filter(c->descendants.contains(c.customerId())).toList());
+            for(var issue:source.issues()) {
+                if(issue.customerId()==null)for(long id:subjects)issues.add(new SupportPaymentFacts.Issue(issue.source(),issue.sourceId(),issue.reason(),id));
+                else if(subjects.contains(issue.customerId()))issues.add(issue);
+            }
+            coverage.addAll(source.coverage());
+        }
+        Snapshot proof=rootSnapshot==null && extraSnapshot==null?null:new Snapshot(rows,issues,coverage,query.businessZone(),Instant.now(),List.of(),proofs);
         for(String currency:currencies) {
-            Money value=lifetimeMoney(rows,descendants.stream().anyMatch(rootFinancialIds::contains)?rootSnapshot:null,Kind.DEPOSIT,currency,descendants,state==Status.FAILED,query.basis()==Basis.CURRENT_ASSET);
+            Money value=query.basis()==Basis.CURRENT_ASSET?new Money(null,null,null,null,null,Status.UNAVAILABLE,List.of("HISTORY_NOT_REQUESTED")):
+                money(rows,proof,Kind.DEPOSIT,currency,state==Status.FAILED,state!=Status.AVAILABLE,descendants);
             boolean extraFailed=extraSnapshot!=null && extraSnapshot.issues().stream().anyMatch(i->"SOURCE_READ_FAILED".equals(i.reason()) && (i.source()==null || family(i.source())==Kind.DEPOSIT)
                 && (i.customerId()==null?descendants.stream().anyMatch(id->!rootFinancialIds.contains(id)):descendants.contains(i.customerId())));
             if(extraFailed && value.observedAmount()==null)value=new Money(null,null,null,null,null,Status.FAILED,List.of("SOURCE_READ_FAILED"));
@@ -565,9 +760,12 @@ public class SupportAnalyticsService {
             && "KNOWN".equals(saved.get(f.factId()).groupStatus()) && Objects.equals(saved.get(f.factId()).groupId(),group));
         Status status=snapshot==null || gap && rows.isEmpty()?Status.UNKNOWN:Status.PARTIAL;
         Status firstState=hasHistory?Status.PARTIAL:Status.UNKNOWN;
+        var subjects=historyFacts.stream().filter(f->saved.containsKey(f.factId()) && "KNOWN".equals(saved.get(f.factId()).groupStatus())
+            && Objects.equals(saved.get(f.factId()).groupId(),group)).map(Fact::customerId).collect(java.util.stream.Collectors.toSet());
+        boolean groupGap=gap || historyFacts.stream().anyMatch(f->!saved.containsKey(f.factId()) || "UNKNOWN".equals(saved.get(f.factId()).groupStatus()));
         for(String currency:currencies) {
-            totals.add(new CurrencyTotals(currency,money(rows,snapshot,Kind.DEPOSIT,currency,false,gap),money(rows,snapshot,Kind.DEVICE_PURCHASE,currency,false,gap),
-                money(rows,snapshot,Kind.DEVICE_PURCHASE_REFUND,currency,false,gap),new Money(null,null,null,null,null,Status.UNKNOWN,List.of("COMPLETE_NET_NOT_PROVEN"))));
+            totals.add(new CurrencyTotals(currency,money(rows,snapshot,Kind.DEPOSIT,currency,false,groupGap,subjects),money(rows,snapshot,Kind.DEVICE_PURCHASE,currency,false,groupGap,subjects),
+                money(rows,snapshot,Kind.DEVICE_PURCHASE_REFUND,currency,false,groupGap,subjects),new Money(null,null,null,null,null,Status.UNKNOWN,List.of("COMPLETE_NET_NOT_PROVEN"))));
             firstTotals.add(new FirstCurrencyTotals(currency,firstMoney(firstRows,confirmedRows,Kind.DEPOSIT,currency,firstState,hasHistory),firstMoney(firstRows,confirmedRows,Kind.DEVICE_PURCHASE,currency,firstState,hasHistory)));
         }
         return new FinancialSummary(status,totals,new Count((long)firstRows.size(),hasHistory?(long)confirmedRows.size():null,firstState),partitions(rows,attribution),
@@ -785,19 +983,45 @@ public class SupportAnalyticsService {
             && Objects.equals(a.successTimeField(),b.successTimeField()) && a.fractionalSecondDigits()==b.fractionalSecondDigits();
     }
     private static Money money(List<Fact> selected,Snapshot snapshot,Kind kind,String currency,boolean unavailable,boolean periodGap) {
-        var rows=selected.stream().filter(f -> f.kind()==kind && f.currency().equals(currency)).toList();
-        boolean failed=unavailable || snapshot!=null && rows.isEmpty() && snapshot.issues().stream().anyMatch(i -> family(i.source())==kind && "SOURCE_READ_FAILED".equals(i.reason()));
-        boolean unknown=snapshot==null || periodGap && rows.isEmpty();
-        if(failed || unknown)return new Money(null,null,null,null,null,failed?Status.FAILED:Status.UNKNOWN,
-            List.of(failed?"SOURCE_READ_FAILED":"SOURCE_COVERAGE_UNVERIFIED"));
+        var subjects=new HashSet<Long>();selected.forEach(f->subjects.add(f.customerId()));
+        if(snapshot!=null){snapshot.customerCoverage().forEach(c->subjects.add(c.customerId()));snapshot.firstHistory().forEach(h->subjects.add(h.customerId()));}
+        return money(selected,snapshot,kind,currency,unavailable,periodGap,subjects);
+    }
+    private static Money money(List<Fact> selected,Snapshot snapshot,Kind kind,String currency,boolean unavailable,boolean periodGap,Set<Long> subjects) {
+        var rows=selected.stream().filter(f->subjects.contains(f.customerId()) && f.kind()==kind && f.currency().equals(currency)).toList();
+        boolean readFailed=snapshot!=null && snapshot.issues().stream().anyMatch(i->"SOURCE_READ_FAILED".equals(i.reason())
+            && (i.source()==null || family(i.source())==kind) && (i.customerId()==null || subjects.contains(i.customerId())));
+        if(unavailable || readFailed && rows.isEmpty())return new Money(null,null,null,null,null,Status.FAILED,List.of("SOURCE_READ_FAILED"));
+        if(snapshot==null)return new Money(null,null,null,null,null,Status.UNKNOWN,List.of("SOURCE_COVERAGE_UNVERIFIED"));
+        var ready=subjects.stream().filter(id->moneyReady(snapshot,id,kind)).collect(java.util.stream.Collectors.toSet());
+        boolean complete=!subjects.isEmpty() && ready.containsAll(subjects) && !periodGap;
+        var proved=rows.stream().filter(f->ready.contains(f.customerId())).toList();
         BigDecimal amount=rows.stream().map(Fact::amount).reduce(BigDecimal.ZERO,BigDecimal::add);
-        return new Money(amount,null,(long)rows.size(),null,rows.stream().map(Fact::customerId).distinct().count(),Status.PARTIAL,
-            List.of("COMPLETE_HISTORY_NOT_PROVEN","COMPLETE_REFUNDS_NOT_PROVEN","HISTORICAL_ENVIRONMENT_UNVERIFIED"));
+        BigDecimal confirmed=proved.stream().map(Fact::amount).reduce(BigDecimal.ZERO,BigDecimal::add);
+        boolean subtotal=complete || confirmed.signum()>0;
+        boolean observed=complete || !rows.isEmpty();
+        var reasons=new ArrayList<String>();
+        if(!complete){reasons.add("COMPLETE_HISTORY_NOT_PROVEN");reasons.add("HISTORICAL_ENVIRONMENT_UNVERIFIED");
+            if(kind==Kind.DEVICE_PURCHASE_REFUND)reasons.add("COMPLETE_REFUNDS_NOT_PROVEN");if(periodGap)reasons.add("PERIOD_EVENT_COVERAGE_UNVERIFIED");}
+        return new Money(observed?amount:null,subtotal?confirmed:null,observed?(long)rows.size():null,subtotal?(long)proved.size():null,
+            observed?rows.stream().map(Fact::customerId).distinct().count():null,complete?Status.AVAILABLE:observed || subtotal?Status.PARTIAL:Status.UNKNOWN,reasons);
+    }
+    private static boolean moneyReady(Snapshot snapshot,long customer,Kind kind) {
+        var sources=Arrays.stream(SupportPaymentFacts.Source.values()).filter(s->family(s)==kind).toList();
+        for(var source:sources) {
+            var row=snapshot.customerCoverage().stream().filter(c->c.customerId()==customer && c.source()==source).findFirst().orElse(null);
+            if(row==null || row.supportedFrom()==null || row.historyStatus()!=SupportPaymentFacts.Status.READY
+                || row.historicalEnvironmentStatus()!=SupportPaymentFacts.Status.READY
+                || kind==Kind.DEVICE_PURCHASE_REFUND && row.refundStatus()!=SupportPaymentFacts.Status.READY
+                || snapshot.coverage().stream().noneMatch(c->c.source()==source))return false;
+        }
+        return snapshot.issues().stream().noneMatch(i->(i.customerId()==null || i.customerId()==customer)
+            && (i.source()==null || family(i.source())==kind));
     }
     static Map<Long,Fact> selectFirstFacts(Collection<Fact> facts) {
         var first=new TreeMap<Long,Fact>();
         var order=Comparator.comparing(Fact::succeededAt).thenComparingInt(f -> f.kind()==Kind.DEPOSIT?0:1).thenComparing(Fact::factId);
-        for(Fact fact:facts)if(fact.kind()!=Kind.DEVICE_PURCHASE_REFUND)
+        for(Fact fact:facts)if(SupportPaymentFacts.firstEligible(fact.kind()))
             first.merge(fact.customerId(),fact,(left,right) -> order.compare(left,right)<=0?left:right);
         return first;
     }
@@ -820,7 +1044,8 @@ public class SupportAnalyticsService {
         return switch(source) {
             case DEPOSIT_ORDER,CARD_TOPUP,VIETQR,HDPAY -> Kind.DEPOSIT;
             case WALLET_ORDER,TRADE_IN,CAPACITY_KEEP,TRIAL_CONVERT -> Kind.DEVICE_PURCHASE;
-            case ORDER_REFUND -> Kind.DEVICE_PURCHASE_REFUND;default -> null;
+            case ORDER_REFUND -> Kind.DEVICE_PURCHASE_REFUND;
+            case GENESIS_PRIMARY,GENESIS_SECONDARY -> Kind.CONSUMPTION;default -> null;
         };
     }
     private static List<AttributionPartition> partitions(List<Fact> facts,Map<String,Attribution> attributions) {

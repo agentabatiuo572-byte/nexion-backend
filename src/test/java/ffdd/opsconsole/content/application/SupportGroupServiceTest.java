@@ -72,6 +72,15 @@ class SupportGroupServiceTest {
     @Test void archivedOwnedGroupBlocksOldAccountDisable(){when(mapper.qualification(3L,"SUPERVISOR")).thenReturn(new ffdd.opsconsole.content.domain.SupportGroupFacts.Qualification(1L,3L,"SUPERVISOR","ENABLED",1L,at));when(mapper.ownedGroupCount(3L)).thenReturn(1L);assertThatThrownBy(()->service.accountChanging(3L,null,true,"disable","合法操作原因说明")).hasMessage("SUPPORT_GROUP_OWNER_HANDOVER_REQUIRED");verify(mapper,never()).closeQualification(any(),any(),any());}
     @Test void roleRemovalRequiresPersonalHandover(){when(mapper.boundCount(3L)).thenReturn(2L);assertThatThrownBy(()->service.accountChanging(3L,"finance",false,"role","合法操作原因说明")).hasMessage("SUPPORT_PERSONAL_HANDOVER_REQUIRED");}
     @Test void peopleAreUnionNotRoleSum(){when(mapper.supervisors()).thenReturn(List.of(Map.of("adminId",1L),Map.of("adminId",2L)));when(mapper.memberIds()).thenReturn(List.of(2L,3L));assertThat(service.supervisors()).containsEntry("supervisorCount",2).containsEntry("memberCount",2).containsEntry("peopleCount",3);}
+    @Test void legacyGeneralAliasRetainsExplicitServiceQualificationAndCannotGrantIt() {
+        when(mapper.cutoverApplied()).thenReturn(1);
+        when(mapper.qualified(3L,"SERVICE")).thenReturn(1);
+        service.validateLegacySeat(3L,"GENERAL");
+        when(mapper.qualified(3L,"SERVICE")).thenReturn(0);
+        assertThatThrownBy(()->service.validateLegacySeat(3L,"GENERAL"))
+            .hasMessage("SUPPORT_EXPLICIT_QUALIFICATION_REQUIRED");
+        verifyNoInteractions(idempotency,audit,events);
+    }
     @Test void legacySeatCannotGrantQualificationAfterCutover(){when(mapper.cutoverApplied()).thenReturn(1);assertThatThrownBy(()->service.validateLegacySeat(3L,"MANAGER")).hasMessage("SUPPORT_EXPLICIT_QUALIFICATION_REQUIRED");}
     @Test void changedQualificationFailureIsNotSwallowed(){var q=new ffdd.opsconsole.content.domain.SupportGroupFacts.Qualification(1L,3L,"SUPERVISOR","ENABLED",1L,at);when(mapper.qualification(3L,"SUPERVISOR")).thenReturn(q);when(mapper.qualifications(3L)).thenReturn(List.of(q));when(mapper.closeQualification(1L,1L,at)).thenReturn(0);assertThatThrownBy(()->service.accountChanged(3L,null,true,"disable","合法操作原因说明")).hasMessage("SUPPORT_GROUP_VERSION_CONFLICT");verifyNoInteractions(audit);}
     @Test void everyGroupVersionIncrementRejectsUnrepresentableNextVersionBeforeAnyMutation(){

@@ -12,6 +12,58 @@ import org.junit.jupiter.api.Test;
 
 class AppOrderCommandMapperContractTest {
     @Test
+    void bothFulfillmentStatementsAcceptSourceWattsAndRejectMalformedOrUnrepresentablePower() throws Exception {
+        var samples = java.util.Map.ofEntries(
+                java.util.Map.entry("1200", "1200"),
+                java.util.Map.entry("1200.25", "1200.25"),
+                java.util.Map.entry("1200W", "1200"),
+                java.util.Map.entry("1200w", "1200"),
+                java.util.Map.entry("1,200W TDP", "1200"),
+                java.util.Map.entry(" 1,200W TDP ", "1200"),
+                java.util.Map.entry("1200W\u00a0TDP", "1200"),
+                java.util.Map.entry("1200W\u2003TDP", "1200"),
+                java.util.Map.entry("1,200.125 W TDP", "1200.125"),
+                java.util.Map.entry("0.000001W", "0.000001"),
+                java.util.Map.entry("999,999,999,999.999999 W TDP", "999999999999.999999"));
+        var malformed = java.util.List.of("", "unknown", "0", "0 W TDP", "-1200W", "1e3W",
+                "1000000000000W", "1,000,000,000,000W", "1200.1234567W",
+                "1,20W TDP", "12,34,567W", "1,200WW TDP", "1200WTDP",
+                "TDP1200W", "1200W TDP extra", "1200W; DROP TABLE nx_user_device",
+                "1200W\u0000", "1200W\u0001", "1200W\u001f", "\t1200W", "1200W\t", "\n1200W",
+                "1200W\n", "1200W TDP\n", "1200W TDP\t", "\u00a01200W", "1200W\u00a0");
+        var sqlGrammar = java.util.regex.Pattern.compile(
+                "UPPER\\(TRIM\\(s.power_text\\)\\) REGEXP '([^']+)'");
+        for (Method method : java.util.List.of(
+                AppOrderCommandMapper.class.getMethod("insertDevelopmentDevice",
+                        String.class, Long.class, String.class, Integer.class),
+                AppOrderCommandMapper.class.getMethod("insertWalletDevice",
+                        String.class, Long.class, Long.class, String.class, Integer.class))) {
+            String sql = String.join(" ", method.getAnnotation(Insert.class).value());
+            var literal = sqlGrammar.matcher(sql);
+            assertThat(literal.find()).as(method.getName()).isTrue();
+            var grammar = java.util.regex.Pattern.compile(literal.group(1).replace("\\\\", "\\").replace("[[:space:]]", "\\s"),
+                    java.util.regex.Pattern.UNICODE_CHARACTER_CLASS);
+            assertThat(sql).contains(
+                    "CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0",
+                    "o.user_id=#{userId}", "o.payment_status='PAID'", "o.order_status='COMPLETED'",
+                    "o.activation_status='ACTIVATED'", "UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE')");
+            for (var sample : samples.entrySet()) {
+                var parsed = grammar.matcher(sample.getKey().replaceAll("^ +| +$", "").toUpperCase(java.util.Locale.ROOT));
+                assertThat(parsed.matches()).as(sample.getKey()).isTrue();
+                var watts = new java.math.BigDecimal(parsed.group(1).replace(",", "")
+                        + java.util.Objects.toString(parsed.group(3), ""));
+                assertThat(watts).isPositive().isEqualByComparingTo(sample.getValue());
+            }
+            for (String value : malformed) {
+                var parsed = grammar.matcher(value.replaceAll("^ +| +$", "").toUpperCase(java.util.Locale.ROOT));
+                boolean positive = parsed.matches() && new java.math.BigDecimal(parsed.group(1).replace(",", "")
+                        + java.util.Objects.toString(parsed.group(3), "")).signum() > 0;
+                assertThat(positive).as(value).isFalse();
+            }
+        }
+    }
+
+    @Test
     void cancellationSqlIsUserScopedPendingOnlyAndStockReturnIsOverflowSafe() throws Exception {
         String user = ((Select) AppOrderCommandMapper.class.getMethod("lockUser", Long.class)
                 .getAnnotation(Select.class)).value()[0];

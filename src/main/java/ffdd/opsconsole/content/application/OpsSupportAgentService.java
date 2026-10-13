@@ -80,7 +80,7 @@ public class OpsSupportAgentService {
                 assignments,
                 transferTargets(agents),
                 publicPositions(),
-                defaultServiceTypes(),
+                List.of("advisor"),
                 List.of("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment")));
     }
 
@@ -110,7 +110,7 @@ public class OpsSupportAgentService {
                 agents,
                 agentIds.isEmpty() ? List.of() : repository.listActiveAssignments(agentIds,scope),
                 publicPositions(),
-                defaultServiceTypes(),
+                List.of("advisor"),
                 List.of("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment")));
     }
 
@@ -298,6 +298,12 @@ public class OpsSupportAgentService {
         }
         LocalDateTime now = LocalDateTime.now(clock);
         List<String> serviceTypes = normalizeSeatServiceTypes(seatType, request.serviceTypes());
+        if (currentProfile != null) {
+            // Public category aliases cannot remove existing routing capabilities.
+            LinkedHashSet<String> preserved = new LinkedHashSet<>(normalizeServiceTypes(currentProfile.serviceTypes()));
+            preserved.addAll(serviceTypes);
+            serviceTypes = new ArrayList<>(preserved);
+        }
         List<String> tags = normalizeTags(request.tags());
         int maxConcurrent = boundedInt(request.maxConcurrent(), 0, 40, 10);
         repository.ensureDefaultProfile(adminId, seatType, position, serviceTypes, tags, maxConcurrent, now);
@@ -590,7 +596,7 @@ public class OpsSupportAgentService {
     private SupportAgentProfileView profileView(
             SupportOperatorRecord operator, SupportAgentProfileRecord profile, String role, String status,ReadScope scope,boolean assignmentEligible) {
         Long adminId = profile.adminId();
-        String seatType = normalizeSeatType(profile.seatType(), profile.position());
+        String seatType = SEAT_MANAGER.equals(normalizeSeatType(profile.seatType(), profile.position())) ? SEAT_MANAGER : SEAT_DEDICATED;
         return new SupportAgentProfileView(
                 String.valueOf(adminId),
                 adminId,
@@ -600,7 +606,7 @@ public class OpsSupportAgentService {
                 status,
                 seatType,
                 SEAT_MANAGER.equals(seatType) ? POSITION_MANAGER : POSITION_DEDICATED,
-                defaultServiceTypes(),
+                List.of("advisor"),
                 profile.tags(),
                 profile.maxConcurrent(),
                 profile.enabled(),
@@ -639,11 +645,7 @@ public class OpsSupportAgentService {
     }
 
     private List<AdminAccountOverview.OperatorRecord> supportOperators() {
-        ApiResult<AdminAccountOverview> overview = accountService.overview();
-        if (overview == null || overview.getData() == null || overview.getData().operators() == null) {
-            return List.of();
-        }
-        return overview.getData().operators().stream()
+        return accountService.operatorsForSupport().stream()
                 .filter(operator -> SUPPORT_OPERATOR_ROLES.contains(normalizedRole(operator.role())))
                 .filter(operator -> "enabled".equalsIgnoreCase(operator.status()))
                 .filter(operator -> parseAdminId(operator.id()).isPresent())

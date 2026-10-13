@@ -66,7 +66,7 @@ public class SupportLeaderboardSamplingService {
                 Boolean expired=reads.execute(status->{
                     if(publicationMapper.latest(key)==null)return true;
                     Publication previous=publications.latest(context,null);
-                    return !plan.now().isBefore(previous.snapshot().context().evaluatedAt().plusSeconds(plan.interval()*60L));
+                    return previous==null || !plan.now().isBefore(previous.snapshot().context().evaluatedAt().plusSeconds(plan.interval()*60L));
                 });
                 if(Boolean.TRUE.equals(expired))due.add(context);
             }catch(RuntimeException failure){failed++;warn("LATEST_FAILED",key,failure);}
@@ -129,7 +129,7 @@ public class SupportLeaderboardSamplingService {
     }
     private static void safeId(long id){if(id<=0 || id>9007199254740991L)throw SupportLeaderboardPolicy.unavailable();}
     private static void add(Map<String,Context> output,Instant at,Scope scope,Set<Long> groups){YearMonth month=YearMonth.from(at.atZone(SupportLeaderboard.BUSINESS_ZONE));
-        for(Board board:Board.values())for(String currency:SupportAnalyticsPrivateQueryService.CURRENCIES){
+        for(Board board:List.of(Board.netContribution,Board.firstPayment,Board.customers))for(String currency:SupportAnalyticsPrivateQueryService.CURRENCIES){
             Context context=new Context(board,board==Board.customers?null:month,month,currency,scope,Set.copyOf(groups),SupportLeaderboardPolicy.DEFINITION,at);
             output.put(SupportLeaderboardPublicationService.streamKey(context),context);}
     }

@@ -438,6 +438,8 @@ class AppOrderCommandServiceTest {
         captureOrder.verify(mapper).findDevelopmentPayOrderOwner("ORD-DEV-1");
         captureOrder.verify(capture).prepare(7L, Source.WALLET_ORDER, "ORD-DEV-1");
         captureOrder.verify(mapper).lockDevelopmentPayOrder("ORD-DEV-1");
+        captureOrder.verify(capture).beforeCash(any(Prepared.class));
+        captureOrder.verify(mapper).debitDevelopmentWallet(7L,new BigDecimal("1199.000000"),4L);
         captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
         captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
         org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
@@ -1100,6 +1102,7 @@ class AppOrderCommandServiceTest {
         settlement.verify(capture).prepare(7L, Source.WALLET_ORDER, "ORD-1");
         settlement.verify(mapper).lockDevelopmentPayOrder("ORD-1");
         settlement.verify(promotions).beforePay(7L, "ORD-1");
+        settlement.verify(capture).beforeCash(any(Prepared.class));
         settlement.verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("10.000000"), 2L);
         settlement.verify(capture).insertLedger(any(Prepared.class), eq(new BigDecimal("10.000000")),
                 eq(new BigDecimal("15.000000")), eq("NexGrid wallet order settlement"));

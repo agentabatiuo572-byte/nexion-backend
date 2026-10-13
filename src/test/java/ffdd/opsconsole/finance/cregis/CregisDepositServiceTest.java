@@ -119,6 +119,8 @@ class CregisDepositServiceTest {
                 argThat(n -> n.compareTo(BigDecimal.TEN) == 0), eq(BigDecimal.ONE), eq(new BigDecimal("9")),
                 eq(101L), eq(BLOCK), eq(15), eq("CREDITED"));
         captureOrder.verify(db).lockWallet(42L);
+        captureOrder.verify(capture).beforeCash(any(Prepared.class));
+        captureOrder.verify(db).creditWallet(new BigDecimal("9"),42L,7L);
         captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
         captureOrder.verify(db).insertDepositOrder(42, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11);
         captureOrder.verify(capture).record(any(Prepared.class));
@@ -537,6 +539,8 @@ class CregisDepositServiceTest {
         sequence.verify(capture).prepare(42L, Source.DEPOSIT_ORDER, "CR-77", "88");
         sequence.verify(db).releaseReviewedEvent(12L, BigDecimal.ONE, new BigDecimal("9"), 15);
         sequence.verify(db).lockWallet(42L);
+        sequence.verify(capture).beforeCash(any(Prepared.class));
+        sequence.verify(db).creditWallet(new BigDecimal("9"),42L,7L);
         sequence.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
         sequence.verify(db).insertDepositOrder(42L, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11L);
         sequence.verify(capture).record(any(Prepared.class));

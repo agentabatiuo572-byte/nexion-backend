@@ -49,7 +49,7 @@ class HdPayPayoutTransactionsTest {
         verify(bank, never()).clientIp(anyString()); // Client IP is audit data, not provider routing.
         verify(bank,never()).processing(anyString(),any());
         verify(bank,never()).dispatch(anyString(),any());
-        verifyNoInteractions(finalizer, outbox);
+        verifyNoCashFinalizerCalls(); verifyNoInteractions(outbox);
     }
     HdPayPayoutGateway.Order response(int status) {
         return new HdPayPayoutGateway.Order(no, 123L, status, quote.amountVnd(), "0123456789", "NGUYEN VAN A", "2");
@@ -65,7 +65,7 @@ class HdPayPayoutTransactionsTest {
     }
     @Test void pendingResultNeverSettlesOrRefunds() {
         service.reconcile(no, response(2));
-        verifyNoInteractions(finalizer, outbox);
+        verifyNoCashFinalizerCalls(); verifyNoInteractions(outbox);
         verify(bank).progress(eq(no), eq("PENDING"), eq(123L), eq(2), isNull(), any());
     }
     @Test void successUsesCanonicalFinalizerAndDuplicateCannotSettleAgain() {
@@ -92,18 +92,18 @@ class HdPayPayoutTransactionsTest {
         var callback = new HdPayPayoutCallbackVerifier.Callback(no, 123L, 3, quote.amountVnd(), "fixture-digest");
         assertEquals("success", service.accept(callback));
         verify(bank).callback(callback);
-        verifyNoInteractions(finalizer, outbox);
+        verifyNoCashFinalizerCalls(); verifyNoInteractions(outbox);
     }
     @Test void contradictoryCallbackEvidenceBlocksAQuerySuccess() {
         when(bank.conflictingCallbacks(no, 123L, quote.amountVnd(), 3)).thenReturn(1);
         service.reconcile(no, response(3));
         verify(bank).hold(eq(no), eq("BANK_PAYOUT_EVIDENCE_CONFLICT"), any());
-        verifyNoInteractions(finalizer, outbox);
+        verifyNoCashFinalizerCalls(); verifyNoInteractions(outbox);
     }
     @Test void queryRecipientMismatchNeverMovesMoney() {
         service.reconcile(no, new HdPayPayoutGateway.Order(no, 123L, 3, quote.amountVnd(), "9999999999", "NGUYEN VAN A", "2"));
         verify(bank).hold(eq(no), eq("BANK_PAYOUT_EVIDENCE_CONFLICT"), any());
-        verifyNoInteractions(finalizer, outbox);
+        verifyNoCashFinalizerCalls(); verifyNoInteractions(outbox);
     }
     @Test void canonicalWrongOwnerOrMoneyCannotSettleQuotedBankPayment() {
         for (var bad : java.util.List.of(row("SENT", 72L, "100", "99"), row("SENT", 71L, "200", "99"), row("SENT", 71L, "100", "98"))) {
@@ -111,18 +111,53 @@ class HdPayPayoutTransactionsTest {
             service.reconcile(no, response(3));
         }
         verify(bank, times(3)).hold(eq(no), eq("BANK_PAYOUT_SNAPSHOT_MISMATCH"), any());
-        verifyNoInteractions(finalizer, outbox);
+        verifyNoCashFinalizerCalls(); verifyNoInteractions(outbox);
     }
     @Test void unknownTargetTypeCannotSettle() {
         service.reconcile(no, new HdPayPayoutGateway.Order(no, 123L, 3, quote.amountVnd(), "0123456789", "NGUYEN VAN A", "BANK"));
-        verifyNoInteractions(finalizer, outbox);
+        verifyNoCashFinalizerCalls(); verifyNoInteractions(outbox);
         verify(bank).hold(eq(no), eq("BANK_PAYOUT_EVIDENCE_CONFLICT"), any());
     }
     @Test void staleRecoveryNeverChangesMoneyOrCanonicalStatus() {
         when(bank.lockOrder(no)).thenReturn(order("MANUAL_REVIEW"));
         when(bank.version(no)).thenReturn(2L);
         assertThrows(RuntimeException.class, () -> service.recover(no, 1, response(3), "admin", "verify original order"));
-        verifyNoInteractions(finalizer, outbox);
+        verifyNoCashFinalizerCalls(); verifyNoInteractions(outbox);
         verify(bank, never()).resumeHeld(anyString(), any());
+    }
+    @Test void reconciliationLocksCustomerBeforeWalletAndBankOrder() {
+        service.reconcile(no,response(2));
+        var sequence=inOrder(bank,finalizer,users);
+        sequence.verify(bank).order(no);
+        sequence.verify(finalizer).lockCashCustomer(71L);
+        sequence.verify(users).lockWallet(71L);
+        sequence.verify(bank).lockOrder(no);
+        verify(users,never()).lockActiveUser(anyLong());
+    }
+    @Test void recoveryLocksCustomerBeforeWalletAndBankOrderWithoutActiveStatusRestriction() {
+        when(bank.lockOrder(no)).thenReturn(order("MANUAL_REVIEW"));when(bank.version(no)).thenReturn(2L);
+        assertThrows(RuntimeException.class,()->service.recover(no,1,response(3),"admin","verify original order"));
+        var sequence=inOrder(bank,finalizer,users);
+        sequence.verify(bank).order(no);
+        sequence.verify(finalizer).lockCashCustomer(71L);
+        sequence.verify(users).lockWallet(71L);
+        sequence.verify(bank).lockOrder(no);
+        verify(users,never()).lockActiveUser(anyLong());
+    }
+    @Test void evidenceOnlyCallbackLocksCustomerBeforeBankOrderAndNeverSettlesCash() {
+        var callback=new HdPayPayoutCallbackVerifier.Callback(no,123L,3,quote.amountVnd(),"fixture-digest");
+        assertEquals("success",service.accept(callback));
+        var sequence=inOrder(bank,finalizer);
+        sequence.verify(bank).order(no);
+        sequence.verify(finalizer).lockCashCustomer(71L);
+        sequence.verify(bank).lockOrder(no);
+        sequence.verify(bank).callback(callback);
+        verifyNoCashFinalizerCalls();verifyNoInteractions(outbox);
+        verify(users,never()).lockActiveUser(anyLong());
+    }
+    private void verifyNoCashFinalizerCalls() {
+        verify(finalizer,never()).terminal(any(),anyLong(),anyString(),anyString(),anyString(),anyString(),any(),any());
+        verify(finalizer,never()).submitted(any(),anyLong(),anyString());
+        verify(finalizer,never()).settleManualConfirmation(anyString(),any(),any(),any(),any());
     }
 }

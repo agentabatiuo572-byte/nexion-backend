@@ -282,17 +282,44 @@ class SupportEnhancementCoreRuntimeTest {
             jdbc.update("INSERT INTO nx_user_device(user_id,instance_no,name,device_type,status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at) VALUES(?,?,?,'PHONE','ACTIVE',88.123456,1.123456,2.123456,'2026-08-01 12:00:00','2026-08-01 12:00:00')",customer,instance,instance);
             deviceIds.add(jdbc.queryForObject("SELECT id FROM nx_user_device WHERE instance_no=?",Long.class,instance));
         }
+        // Observe the fixture's stored provenance; history is not proof of production ownership.
+        var sourceRows=jdbc.queryForList("SELECT id,user_id,source_environment,run_id,ownership_status,status FROM nx_user_device WHERE id IN ("+String.join(",",Collections.nCopies(deviceIds.size(),"?"))+") ORDER BY id",deviceIds.toArray());
+        assertThat(sourceRows).hasSize(211);
+        var sourceIds=new HashSet<Long>();var productionOwned=new TreeSet<Long>();long unknownCurrent=0;
+        var disposed=Set.of("RECYCLED","RETIRED","REFUNDED","TRANSFERRED","UNBOUND");
+        for(var row:sourceRows) {
+            long id=((Number)row.get("id")).longValue();assertThat(sourceIds.add(id)).isTrue();assertThat(((Number)row.get("user_id")).longValue()).isEqualTo(customer);
+            String environment=(String)row.get("source_environment"),sourceRun=(String)row.get("run_id");
+            String ownership=Objects.toString(row.get("ownership_status"),"").trim().toUpperCase(Locale.ROOT);
+            String lifecycle=Objects.toString(row.get("status"),"").trim().toUpperCase(Locale.ROOT);
+            assertThat(lifecycle).isEqualTo("ACTIVE");
+            if(disposed.contains(ownership)||disposed.contains(lifecycle))continue;
+            if(environment!=null&&!environment.isBlank()&&!"PRODUCTION".equalsIgnoreCase(environment))continue;
+            if("PRODUCTION".equalsIgnoreCase(environment)&&(sourceRun==null||sourceRun.isBlank())&&"OWNED".equals(ownership))productionOwned.add(id);
+            else unknownCurrent++;
+        }
+        assertThat(sourceIds).isEqualTo(deviceIds);
+        final long unknownHolding=unknownCurrent,held=productionOwned.size();
+        java.util.function.BiConsumer<com.fasterxml.jackson.databind.JsonNode,Long> assertCurrent=(devices,expectedOnline)->{
+            assertThat(devices.path("observedHeldCount").asLong()).isEqualTo(held);assertThat(devices.path("unknownHoldingCount").asLong()).isEqualTo(unknownHolding);
+            if(unknownHolding>0){assertThat(devices.path("heldCount").isNull()).isTrue();assertThat(devices.path("fieldStatuses").path("heldCount").asText()).isEqualTo("UNKNOWN");}
+            else {assertThat(devices.path("heldCount").isIntegralNumber()).isTrue();assertThat(devices.path("heldCount").asLong()).isEqualTo(held);assertThat(devices.path("fieldStatuses").path("heldCount").asText()).isEqualTo("READY");}
+            if(expectedOnline==null||unknownHolding>0){assertThat(devices.path("onlineCount").isNull()).isTrue();assertThat(devices.path("fieldStatuses").path("onlineCount").asText()).isEqualTo("UNKNOWN");}
+            else {assertThat(devices.path("onlineCount").isIntegralNumber()).isTrue();assertThat(devices.path("onlineCount").asLong()).isEqualTo(expectedOnline.longValue());assertThat(devices.path("fieldStatuses").path("onlineCount").asText()).isEqualTo("READY");}
+        };
         var seen=new HashSet<Long>();
         for(int page=1;page<=8;page++) {
             var response=http("GET",path+"/devices?pageNum="+page+"&pageSize=31",owner,null,null);assertThat(response.path("data").path("status").asText()).isEqualTo("READY");var devices=response.path("data").path("data");
-            assertThat(devices.path("total").asLong()).isEqualTo(211);assertThat(devices.path("onlineCount").isNull()).isTrue();assertThat(devices.path("hashrateTotal").isNull()).isTrue();assertThat(devices.path("idleCount").isNull()).isTrue();
+            assertThat(devices.path("total").asLong()).isEqualTo(211);assertCurrent.accept(devices,held==0?0L:null);assertThat(devices.path("hashrateTotal").isNull()).isTrue();assertThat(devices.has("idleCount")).isFalse();assertThat(devices.path("fieldStatuses").has("idleCount")).isFalse();
             for(var row:devices.path("records")){assertThat(seen.add(row.path("id").asLong())).isTrue();assertThat(row.path("hashrate").isNull()).isTrue();assertThat(row.path("dailyUsdt").isNull()).isTrue();assertThat(row.path("storedHashrate").asText()).isEqualTo("88.123456");}
         }
         assertThat(seen).isEqualTo(deviceIds);
-        for(long device:deviceIds)jdbc.update("INSERT INTO nx_user_device_runtime(user_device_id,online_status,heartbeat_at) VALUES(?,'ONLINE',DATE_SUB(NOW(),INTERVAL 1 SECOND))",device);
-        var live=http("GET",path+"/devices",owner,null,null).path("data").path("data");assertThat(live.path("onlineCount").asLong()).isEqualTo(211);assertThat(live.path("fieldStatuses").path("onlineCount").asText()).isEqualTo("READY");
-        jdbc.update("UPDATE nx_user_device_runtime SET heartbeat_at=DATE_SUB(NOW(),INTERVAL 1 HOUR) WHERE user_device_id=?",deviceIds.iterator().next());
-        assertThat(http("GET",path+"/devices",owner,null,null).path("data").path("data").path("onlineCount").asLong()).isEqualTo(210);
+        for(long device:productionOwned)jdbc.update("INSERT INTO nx_user_device_runtime(user_device_id,online_status,heartbeat_at) VALUES(?,'ONLINE',DATE_SUB(NOW(),INTERVAL 1 SECOND))",device);
+        var live=http("GET",path+"/devices",owner,null,null).path("data").path("data");assertCurrent.accept(live,held);assertThat(live.path("observedOnlineCount").asLong()).isEqualTo(held);
+        if(!productionOwned.isEmpty()) {
+            jdbc.update("UPDATE nx_user_device_runtime SET heartbeat_at=DATE_SUB(NOW(),INTERVAL 1 HOUR) WHERE user_device_id=?",productionOwned.first());
+            var stale=http("GET",path+"/devices",owner,null,null).path("data").path("data");assertCurrent.accept(stale,held-1);assertThat(stale.path("observedOnlineCount").asLong()).isEqualTo(held-1);
+        }
         String hidden="nx_user_device_hidden_"+run.substring(8);boolean renamed=false;
         try {jdbc.execute("RENAME TABLE nx_user_device TO "+hidden);renamed=true;
             var failed=http("GET",path+"/360",owner,null,null);assertThat(failed.path("code").asInt()).isZero();assertThat(failed.path("data").path("profile").path("devices").path("status").asText()).isEqualTo("ERROR");
@@ -321,7 +348,7 @@ class SupportEnhancementCoreRuntimeTest {
         proof("R08","Actual masked phone, region and business-time registration projected");proof("R09","Three distinct persisted register/login/effective-activity dates retained");
         proof("R10","No trusted risk score stays UNKNOWN and private risk/security data FORBIDDEN");
         proof("R15","211 equal-time devices reached through 8 real HTTP pages without truncation, duplicates or omissions");
-        proof("R16","No devices yields true 0; missing telemetry null; 211 fresh reports online, one stale excludes it; source failure ERROR and retry READY; mixed stored units never summed");
+        proof("R16","211 historical records retain actual provenance: production-owned="+held+", uncertain-current="+unknownHolding+"; only proven production-owned devices exercise fresh/stale telemetry; excluded development/test records do not count, unknown remains null; source failure ERROR and retry READY; mixed stored units never summed");
         proof("R17","System tags derived from real identity remain separate from editable persistent custom tags");
         proof("R18","Actual custom tag write/remove persisted and refreshed; supervisor and transferred former advisor denied");
         proof("R19","Actual note author ID/name/UTC timestamp match DB; write/remove refresh, supervisor/old owner denial and no client exposure");
@@ -359,7 +386,8 @@ class SupportEnhancementCoreRuntimeTest {
         assertThat(usdt.path("successfulWithdrawalPrincipalTotal").asText()).isEqualTo("313.827136");
         assertThat(usdt.path("successfulWithdrawalFeeTotal").asText()).isEqualTo("3.827136");assertThat(usdt.path("successfulWithdrawalNetTotal").asText()).isEqualTo("310");
         assertThat(usdt.path("processingWithdrawalPrincipalTotal").asText()).isEqualTo("11.000011");
-        assertThat(usdt.path("depositRefundTotal").isNull()).isTrue();assertThat(usdt.path("fieldStatuses").path("depositRefundTotal").asText()).isEqualTo("UNKNOWN");
+        assertThat(usdt.path("depositRefundTotal").asText()).isEqualTo("0");assertThat(usdt.path("fieldStatuses").path("depositRefundTotal").asText()).isEqualTo("READY");
+        assertThat(profile.path("finance").path("data").path("refundSourceStatus").asText()).isEqualTo("NOT_APPLICABLE");
         for(String section:List.of("identity","finance","devices","risk","annotations","service","security","riskCases"))assertThat(profile.path(section).path("evaluatedAt")).isEqualTo(profile.path("evaluatedAt"));
         var ids=new HashSet<String>();long total=0;boolean chargeback=false;
         for(int page=1;;page++) {

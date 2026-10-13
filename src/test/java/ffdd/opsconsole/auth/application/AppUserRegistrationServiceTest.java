@@ -79,16 +79,28 @@ class AppUserRegistrationServiceTest {
     private final UserLoginGuardMapper loginGuards = mock(UserLoginGuardMapper.class);
     private final CaptchaOtpGate captchaGate = mock(CaptchaOtpGate.class);
     private final DayOneInstanceFacade dayOneInstanceFacade = mock(DayOneInstanceFacade.class);
+    private final AuthNewAccountCreator accountCreator = mock(AuthNewAccountCreator.class);
+    private record TestBirth(long customerId, int sandbox, String incarnation) implements AuthNewAccountCreator.BirthHandle {}
     private AppUserRegistrationService service;
 
     @BeforeEach
     void setUp() {
+        var writes = new ffdd.opsconsole.user.application.UserRegistrationWriteAdapter(userMapper);
+        when(accountCreator.insertNew(any())).thenAnswer(invocation -> {
+            ffdd.opsconsole.user.facade.UserRegistrationWriteFacade.NewAccountCommand c = invocation.getArgument(0);
+            return new TestBirth(writes.insertNewAccount(c), c.sandbox(), c.sandbox()==0 ? java.util.UUID.randomUUID().toString() : null);
+        });
+        doAnswer(invocation -> {
+            TestBirth b = invocation.getArgument(0);
+            writes.ensureRegisteredWallet(b.customerId(), b.sandbox(), b.incarnation());
+            return null;
+        }).when(accountCreator).ensureWallet(any());
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(0)).get())
                 .when(transactionExecutor).execute(any());
         service = new AppUserRegistrationService(
                 mapper, userMapper, passwordEncoder, otpDeliveryService, authService, outboxService,
                 transactionExecutor, environment, referralRewardService, configFacade, loginGuards, captchaGate,
-                dayOneInstanceFacade, org.mockito.Mockito.mock(ffdd.opsconsole.content.facade.SupportRegistrationFacade.class));
+                dayOneInstanceFacade, org.mockito.Mockito.mock(ffdd.opsconsole.content.facade.SupportRegistrationFacade.class), accountCreator);
         when(configFacade.activeValue(any())).thenReturn(Optional.empty());
         when(loginGuards.lockOtpSendGuard(any())).thenAnswer(ignored -> freshOtpSendGuard());
         when(loginGuards.recordOtpSend(any(), any(), any(), anyInt(), any(), anyInt())).thenReturn(1);
@@ -374,7 +386,7 @@ class AppUserRegistrationServiceTest {
         AppUserRegistrationService transactionalService = new AppUserRegistrationService(
                 mapper, userMapper, passwordEncoder, otpDeliveryService, authService, outboxService,
                 new AppUserRegistrationTransactionExecutor(transactions), environment, referralRewardService,
-                configFacade, loginGuards, captchaGate, proxiedDayOne, org.mockito.Mockito.mock(ffdd.opsconsole.content.facade.SupportRegistrationFacade.class));
+                configFacade, loginGuards, captchaGate, proxiedDayOne, org.mockito.Mockito.mock(ffdd.opsconsole.content.facade.SupportRegistrationFacade.class), accountCreator);
 
         assertThatThrownBy(() -> transactionalService.register(new UserRegistrationRequest(
                 "+84", "987654320", "REG-DAY-ONE-ROLLBACK", "123456", "NexPass9a", null), "127.0.0.3"))
@@ -482,7 +494,7 @@ class AppUserRegistrationServiceTest {
 
         ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
         verify(userMapper).insert(inserted.capture());
-        verify(userMapper).ensureRegisteredUserWallet(99L, 0);
+        verify(userMapper).ensureNewRegisteredUserWallet(eq(99L), eq(0), any(String.class));
         assertThat(result.getCode()).isZero();
         assertThat(inserted.getValue().getSandbox()).isZero();
         assertThat(inserted.getValue().getClientIp()).isEqualTo("127.0.0.3");
@@ -542,7 +554,7 @@ class AppUserRegistrationServiceTest {
         ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
         verify(mapper).findSponsorForUpdate(sponsorCode.capture());
         verify(userMapper).insert(inserted.capture());
-        verify(userMapper).ensureRegisteredUserWallet(99L, 0);
+        verify(userMapper).ensureNewRegisteredUserWallet(eq(99L), eq(0), any(String.class));
         verify(mapper).insertTeamMemberProjection(99L, 99L, 0, 0);
         verify(mapper).insertTeamMemberProjection(41L, 99L, 1, 0);
         verify(authService).issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"));
@@ -632,7 +644,7 @@ class AppUserRegistrationServiceTest {
         assertThat(result.getCode()).isZero();
         verify(transactionExecutor, org.mockito.Mockito.times(2)).execute(any());
         verify(userMapper, org.mockito.Mockito.times(2)).insert(any(UserEntity.class));
-        verify(userMapper).ensureRegisteredUserWallet(99L, 0);
+        verify(userMapper).ensureNewRegisteredUserWallet(eq(99L), eq(0), any(String.class));
         verify(authService).issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"));
         verify(outboxService, org.mockito.Mockito.times(2)).publish(any(), any(), any(), any());
     }
@@ -679,7 +691,7 @@ class AppUserRegistrationServiceTest {
 
         assertThat(results).extracting(ApiResult::getCode).containsOnly(0);
         verify(mapper, org.mockito.Mockito.times(2)).findSponsorForUpdate("nx-ab12-cd34-ef");
-        verify(userMapper, org.mockito.Mockito.times(2)).ensureRegisteredUserWallet(anyLong(), eq(0));
+        verify(userMapper, org.mockito.Mockito.times(2)).ensureNewRegisteredUserWallet(anyLong(), eq(0), any(String.class));
         verify(authService, org.mockito.Mockito.times(2)).issueRegisteredSession(any(), any());
         verify(outboxService, org.mockito.Mockito.times(4)).publish(any(), any(), any(), any());
     }
@@ -707,7 +719,7 @@ class AppUserRegistrationServiceTest {
 
         assertThat(results).extracting(ApiResult::getCode).containsExactlyInAnyOrder(0, 422);
         verify(userMapper, org.mockito.Mockito.times(1)).insert(any(UserEntity.class));
-        verify(userMapper, org.mockito.Mockito.times(1)).ensureRegisteredUserWallet(111L, 0);
+        verify(userMapper, org.mockito.Mockito.times(1)).ensureNewRegisteredUserWallet(eq(111L), eq(0), any(String.class));
         verify(authService, org.mockito.Mockito.times(1)).issueRegisteredSession(any(), any());
         verify(outboxService, org.mockito.Mockito.times(1)).publish(any(), any(), any(), any());
     }

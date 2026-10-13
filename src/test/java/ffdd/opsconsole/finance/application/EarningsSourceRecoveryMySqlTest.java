@@ -329,7 +329,7 @@ class EarningsSourceRecoveryMySqlTest {
                 new ApplicationNameProperties(),auditProperties,mock(AdminMapper.class),auditPolicy);
         var profile=mock(FundsSandboxProfileGuard.class);when(profile.isStrictProductionRuntime()).thenReturn(true);
         service=proxy(new EarningsReleaseService(mapper,mock(RiskReleaseParamsService.class),idempotency,audit,profile));
-        ledger=proxy(new MybatisTreasuryLedgerRepository(session.getMapper(TreasuryLedgerMapper.class),mock(EventOutboxService.class)));
+        ledger=proxy(new MybatisTreasuryLedgerRepository(session.getMapper(TreasuryLedgerMapper.class),mock(EventOutboxService.class),ffdd.opsconsole.treasury.application.SupportCommissionTestCapture.real(session,dataSource,json)));
     }
 
     private void migrate() throws Exception {

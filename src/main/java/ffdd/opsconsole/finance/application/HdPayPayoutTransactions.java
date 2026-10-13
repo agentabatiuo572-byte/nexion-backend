@@ -73,7 +73,8 @@ public class HdPayPayoutTransactions {
     public void reconcile(String orderNo, HdPayPayoutGateway.Order response) {
         var read = bank.order(orderNo);
         if (read == null) return;
-        // Wallet mutex first, shared with withdrawal submit/binding. Reconciliation also works after user suspension.
+        // Customer first, shared with withdrawal submit/binding; suspension does not block reconciliation.
+        finalizer.lockCashCustomer(read.userId());
         users.lockWallet(read.userId());
         var order = bank.lockOrder(orderNo);
         if (order == null || "READY".equals(order.state()) || "MANUAL_REVIEW".equals(order.state())) return;
@@ -85,6 +86,7 @@ public class HdPayPayoutTransactions {
     public String recover(String orderNo, long expectedVersion, HdPayPayoutGateway.Order response, String actor, String reason) {
         var read = bank.order(orderNo);
         if (read == null) throw new BizException(404, "BANK_WITHDRAWAL_NOT_FOUND");
+        finalizer.lockCashCustomer(read.userId());
         users.lockWallet(read.userId());
         var order = bank.lockOrder(orderNo);
         if (order == null || !"MANUAL_REVIEW".equals(order.state()) || !Long.valueOf(expectedVersion).equals(bank.version(orderNo)))
@@ -171,6 +173,9 @@ public class HdPayPayoutTransactions {
 
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public String accept(HdPayPayoutCallbackVerifier.Callback callback) {
+        var read = bank.order(callback.merchantOrderId());
+        if (read == null) throw new BizException(409, "BANK_PAYOUT_CALLBACK_ORDER_UNKNOWN");
+        finalizer.lockCashCustomer(read.userId());
         var order = bank.lockOrder(callback.merchantOrderId());
         if (order == null || "READY".equals(order.state())) throw new BizException(409, "BANK_PAYOUT_CALLBACK_ORDER_UNKNOWN");
         var quote = bank.quote(order.quoteNo());

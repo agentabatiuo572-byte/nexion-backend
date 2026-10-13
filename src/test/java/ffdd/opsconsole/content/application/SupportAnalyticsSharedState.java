@@ -34,6 +34,7 @@ final class SupportAnalyticsSharedState {
         Path beforePath = Path.of(context.path("phaseSharedBefore").path("path").asText());
         require(hash(beforePath).equals(context.path("phaseSharedBefore").path("sha256").asText()), "Shared baseline changed");
         JsonNode before = JSON.readTree(beforePath.toFile());
+        SupportAnalyticsSnapshot.validate(before);
         var events = new ArrayList<JsonNode>();
         Path journal = directory.resolve("shared-mutations");
         if (Files.isDirectory(journal)) try (var files = Files.list(journal)) {
@@ -58,9 +59,12 @@ final class SupportAnalyticsSharedState {
         var ruleDifferences = new ArrayList<Map<String, Object>>();
         var watermarkDifferences = new ArrayList<Map<String, Object>>();
         for (String table : TABLES) {
-            JsonNode originals = before.path("tables").path(table).path("rows");
-            require(originals.isArray(), "Missing shared baseline table: " + table);
             List<JsonNode> actual = rows(jdbc, table, false, null);
+            if (SupportAnalyticsSnapshot.HISTORICAL_ROWS.contains(table)) {
+                SupportAnalyticsSnapshot.requireHistoricalRows(before, table, actual);
+                continue;
+            }
+            JsonNode originals = SupportAnalyticsSnapshot.requiredRows(before, table);
             if (RESTORABLE.contains(table) || table.equals("nx_support_rules")) {
                 for (JsonNode original : originals) {
                     var matches = actual.stream().filter(row -> row.path("id").equals(original.path("id"))).toList();
@@ -150,7 +154,7 @@ final class SupportAnalyticsSharedState {
             return JSON.valueToTree(row);
         }, id == null ? new Object[0] : new Object[]{id});
     }
-    private static String hash(Path path) throws Exception { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path))); }
+    private static String hash(Path path) throws Exception { return SupportAnalyticsSnapshot.fileHash(path); }
     private static void writeNew(Path path, Object value) throws Exception { Files.write(path, JSON.writerWithDefaultPrettyPrinter().writeValueAsBytes(value), java.nio.file.StandardOpenOption.CREATE_NEW); }
     private static void require(boolean value, String message) { if (!value) throw new IllegalStateException(message); }
 }

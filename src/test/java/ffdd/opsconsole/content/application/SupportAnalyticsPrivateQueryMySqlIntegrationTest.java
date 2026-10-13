@@ -113,7 +113,8 @@ class SupportAnalyticsPrivateQueryMySqlIntegrationTest {
         configuration.addInterceptor(new MybatisPlusConfig().mybatisPlusInterceptor());configuration.addInterceptor(probe);
         for(Class<?> mapper:List.of(SupportBindingMapper.class,SupportGroupMapper.class,SupportAnalyticsMapper.class,
             SupportPaymentFactMapper.class,SupportPaymentSourceMapper.class,SupportPaymentCaptureHistoryMapper.class,
-            SupportPaymentHistoryBirthMapper.class,SupportInvitationReadMapper.class,SupportDeviceReadMapper.class))configuration.addMapper(mapper);
+            SupportPaymentHistoryBirthMapper.class,SupportInvitationReadMapper.class,SupportDeviceReadMapper.class,
+            ffdd.opsconsole.finance.mapper.SupportFundJournalMapper.class,ffdd.opsconsole.finance.mapper.EarningsReleaseMapper.class))configuration.addMapper(mapper);
         var factory=new MybatisSqlSessionFactoryBuilder().build(configuration);var template=new SqlSessionTemplate(factory);
         assertThat(factory.getConfiguration().getLocalCacheScope()).isEqualTo(LocalCacheScope.SESSION);
         manager=new DataSourceTransactionManager(dataSource);transaction=new TransactionTemplate(manager);
@@ -121,7 +122,10 @@ class SupportAnalyticsPrivateQueryMySqlIntegrationTest {
         ownership=proxy(new SupportOwnershipService(template.getMapper(SupportBindingMapper.class),template.getMapper(SupportGroupMapper.class)));
         var history=proxy(new SupportPaymentFactService(template.getMapper(SupportPaymentFactMapper.class)));
         var captured=new SupportPaymentCaptureHistoryService(template.getMapper(SupportPaymentCaptureHistoryMapper.class),template.getMapper(SupportPaymentHistoryBirthMapper.class));
-        var finance=proxy(new SupportPaymentSourceService(template.getMapper(SupportPaymentSourceMapper.class),history,dataSource,json,captured));
+        var journalMapper=template.getMapper(ffdd.opsconsole.finance.mapper.SupportFundJournalMapper.class);
+        var journal=proxy(new ffdd.opsconsole.finance.application.SupportFundJournalBindingService(journalMapper,dataSource,json));
+        var finance=proxy(new SupportPaymentSourceService(template.getMapper(SupportPaymentSourceMapper.class),history,dataSource,json,captured,
+            journal,journalMapper,template.getMapper(ffdd.opsconsole.finance.mapper.EarningsReleaseMapper.class)));
         var invitations=proxy(new SupportInvitationReadService(template.getMapper(SupportInvitationReadMapper.class)));
         var devices=new SupportDeviceReadService(template.getMapper(SupportDeviceReadMapper.class));
         var stats=proxy(new SupportAnalyticsService(ownership,finance,template.getMapper(SupportAnalyticsMapper.class),invitations,devices));

@@ -60,4 +60,13 @@ class SupportAnalyticsQueryRequestTest {
         var q = request(Map.of("groupId","9"));
         assertThatThrownBy(() -> q.toStatsQuery(new ReadScope(1L,ReadMode.MANAGED,8L,null))).isInstanceOf(IllegalArgumentException.class);
     }
+    @Test void netContributionSortRequiresExplicitSupportedCurrency() {
+        for(String currency:List.of("USDT","NEX")){
+            var q=request(Map.of("sortKey","NET_CONTRIBUTION","currency",currency));
+            assertThat(q.sortKey()).isEqualTo(Sort.NET_CONTRIBUTION);assertThat(q.currency()).isEqualTo(currency);
+        }
+        assertThatThrownBy(()->request(Map.of("sortKey","NET_CONTRIBUTION")))
+            .isInstanceOf(BizException.class).hasMessage("SUPPORT_ANALYTICS_CURRENCY_REQUIRED");
+        invalid(Map.of("sortKey","NET_CONTRIBUTION","currency","USD"),422);
+    }
 }

@@ -153,18 +153,63 @@ class AppSupportServiceTest {
     }
 
     @Test
-    void disabledM5ConversationCategoryBlocksNewAppSessionsBeforeIdempotencyOrRouting() {
+    void disabledHumanCategoryThrowsRetryableFailureAfterLegacyReplayBeforeRouting() {
+        when(configFacade.activeValue("I.session.cat.support.enabled")).thenReturn(Optional.of("on"));
         when(configFacade.activeValue("I.session.cat.advisor.enabled")).thenReturn(Optional.of("off"));
-
-        ApiResult<?> result = service.startConversation(
-                42L, "disabled-category-key", new AppSupportService.StartConversationRequest("ADVISOR", "hello"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("CONVERSATION_CATEGORY_DISABLED");
+        assertThatThrownBy(() -> service.startConversation(42L, "disabled-category-key",
+                new AppSupportService.StartConversationRequest("SUPPORT", "hello")))
+                .isInstanceOf(BizException.class).hasMessage("CONVERSATION_CATEGORY_DISABLED")
+                .satisfies(cause -> assertThat(((BizException) cause).getCode()).isEqualTo(409));
         verifyNoInteractions(supportAgents);
-        verifyNoInteractions(idempotency);
+        verify(idempotency).executeRetained(any(), any(), any(), any(), any());
     }
 
+    @Test
+    void realRetainedExecutorDoesNotCacheGateRejectionAndRetriesOriginalSupportKeyHash() {
+        var ledger = mock(AdminIdempotencyRecordMapper.class);
+        var row = new java.util.concurrent.atomic.AtomicReference<ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity>();
+        when(ledger.selectActive(any(), any())).thenAnswer(i -> row.get());
+        when(ledger.selectCurrent(any(), any())).thenAnswer(i -> row.get());
+        when(ledger.insert(any(ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity.class))).thenAnswer(i -> {
+            var entity = i.<ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity>getArgument(0);
+            entity.setId(9L); row.set(entity); return 1;
+        });
+        when(ledger.markFailed(any(), any())).thenAnswer(i -> { row.get().setStatus("FAILED"); return 1; });
+        when(ledger.resetFailedById(any(), any(), any())).thenAnswer(i -> { row.get().setStatus("PROCESSING"); return 1; });
+        when(ledger.markSucceeded(any(), any())).thenAnswer(i -> {
+            row.get().setStatus("SUCCEEDED"); row.get().setResponseJson(i.getArgument(1)); return 1;
+        });
+        when(ledger.selectSupportCommand(any(), any())).thenAnswer(i -> List.of(row.get()));
+        var mapper = new ObjectMapper().findAndRegisterModules();
+        var executor = new ffdd.opsconsole.shared.idempotency.AdminIdempotencyTransactionExecutor(ledger, mapper,
+                mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyExpiryTransitionExecutor.class));
+        var retained = new AdminIdempotencyService(executor, clock);
+        service = new AppSupportService(tickets, conversations, knowledge, retained, audit, eventPublisher, clock,
+                productionPathGuard, ledger, mapper, supportAgents, configFacade,
+                ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages());
+        var request = new AppSupportService.StartConversationRequest("SUPPORT", "original");
+        when(configFacade.activeValue("I.session.cat.advisor.enabled")).thenReturn(Optional.of("off"));
+        assertThatThrownBy(() -> service.startConversation(42L, "original-retained-key", request))
+                .isInstanceOf(BizException.class).hasMessage("CONVERSATION_CATEGORY_DISABLED");
+        assertThat(row.get().getStatus()).isEqualTo("FAILED");
+        verify(ledger, never()).markSucceeded(any(), any());
+        assertThat(service.commandResult(42L, "original-retained-key").getMessage()).isEqualTo("SUPPORT_COMMAND_FAILED_RETRYABLE");
+        String originalHash = row.get().getRequestHash();
+        var historical = conversation(42L, "CV-original");
+        when(conversations.createUserConversation(any(), any(), any(), any(), any(), any(), any())).thenReturn(historical);
+        when(conversations.findByConversationNo("CV-original")).thenReturn(Optional.of(historical));
+        when(conversations.userVisibleMessages("CV-original")).thenReturn(List.of());
+        when(configFacade.activeValue("I.session.cat.advisor.enabled")).thenReturn(Optional.of("on"));
+        assertThat(service.startConversation(42L, "original-retained-key", request).getCode()).isZero();
+        assertThat(row.get().getRequestHash()).isEqualTo(originalHash);
+        assertThat(row.get().getStatus()).isEqualTo("SUCCEEDED");
+        assertThat(service.commandResult(42L, "original-retained-key").getCode()).isZero();
+        when(configFacade.activeValue("I.session.cat.advisor.enabled")).thenReturn(Optional.of("off"));
+        assertThat(service.startConversation(42L, "original-retained-key", request).getCode()).isZero();
+        assertThat(request.conversationType()).isEqualTo("SUPPORT");
+        verify(ledger).markSucceeded(any(), any());
+        verify(conversations).createUserConversation(any(), any(), org.mockito.ArgumentMatchers.eq("advisor"), any(), any(), any(), any());
+    }
     @Test
     void appCategoryReadModelProjectsTheSameM5ConfigKeysThatGateConversationCreation() {
         when(configFacade.activeValue("I.session.cat.advisor.enabled")).thenReturn(Optional.of("off"));
@@ -176,7 +221,7 @@ class AppSupportServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsExactly(
                 new AppSupportService.ConversationCategoryAvailability("advisor", false),
-                new AppSupportService.ConversationCategoryAvailability("support", true),
+                new AppSupportService.ConversationCategoryAvailability("support", false),
                 new AppSupportService.ConversationCategoryAvailability("ai", true));
     }
 
@@ -355,7 +400,7 @@ class AppSupportServiceTest {
     }
 
     @Test
-    void idempotentConversationRetryPublishesOnlyTheFirstPersistedMutation() {
+    void idempotentConversationRetryPublishesOnlyTheFirstPersistedMutation() throws Exception {
         ContentConversationView conversation = conversation(42L, "CV-1");
         when(conversations.createUserConversation(any(), any(), any(), any(), any(), any(), any())).thenReturn(conversation);
         when(conversations.findByConversationNo(conversation.conversationNo())).thenReturn(Optional.of(conversation));
@@ -369,10 +414,19 @@ class AppSupportServiceTest {
         }).when(idempotency).executeRetained(any(), any(), any(), any(), any());
         var request = new AppSupportService.StartConversationRequest("SUPPORT", "help");
 
-        service.startConversation(42L, "stable-idempotency", request);
-        service.startConversation(42L, "stable-idempotency", request);
+        var first = service.startConversation(42L, "stable-idempotency", request);
+        when(configFacade.activeValue("I.session.cat.advisor.enabled")).thenReturn(Optional.of("off"));
+        var replay = service.startConversation(42L, "stable-idempotency", request);
+        assertThat(replay).isSameAs(first);
+        assertThat(request.conversationType()).isEqualTo("SUPPORT");
+        var digest = java.security.MessageDigest.getInstance("SHA-256");
+        digest.update(request.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        digest.update((byte) 0);
+        String originalHash = java.util.HexFormat.of().formatHex(digest.digest());
+        verify(idempotency, times(2)).executeRetained(org.mockito.ArgumentMatchers.eq("APP_CONVERSATION_CREATE:42"),
+                org.mockito.ArgumentMatchers.eq("stable-idempotency"), org.mockito.ArgumentMatchers.eq(originalHash), any(), any());
 
-        verify(conversations, times(1)).createUserConversation(any(), any(), any(), any(), any(), any(), any());
+        verify(conversations, times(1)).createUserConversation(any(), any(), org.mockito.ArgumentMatchers.eq("advisor"), any(), any(), any(), any());
         verify(eventPublisher, times(1)).publishEvent(any(ConversationMessageEvent.class));
     }
 

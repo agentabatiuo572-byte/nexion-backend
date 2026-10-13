@@ -104,6 +104,19 @@ public class SupportPaymentAttributionService implements SupportPaymentAttributi
 
     @Override
     @Transactional(propagation=Propagation.MANDATORY)
+    public void beforeCash(Prepared prepared) { finance.beforeCash(requireToken(prepared).context.before()); }
+    @Override
+    @Transactional(propagation=Propagation.MANDATORY)
+    public void beforeGenesisCash(Prepared prepared,java.util.Collection<Long> customers,String holdingNo) {
+        finance.beforeGenesisCash(requireToken(prepared).context.before(),customers,holdingNo);
+    }
+
+    @Override
+    @Transactional(propagation=Propagation.MANDATORY)
+    public void trialReward(Prepared prepared,String entryNo) { finance.trialReward(requireToken(prepared).context.before(),entryNo); }
+
+    @Override
+    @Transactional(propagation=Propagation.MANDATORY)
     public int insertLedger(Prepared prepared,BigDecimal amount,BigDecimal balanceAfter,String remark) {
         Token token=requireToken(prepared);
         if(!token.ledgerAttempted.compareAndSet(false,true))throw new IllegalStateException("SUPPORT_PAYMENT_LEDGER_ALREADY_ATTEMPTED");
@@ -301,7 +314,8 @@ public class SupportPaymentAttributionService implements SupportPaymentAttributi
     private static String time(LocalDateTime time) { return time==null?null:ISO6.format(time); }
     private static boolean text(String text) { return text!=null && !text.isBlank(); }
     private static boolean positive(Long id) { return id!=null && id>0; }
-    private static boolean validAdmin(Admin admin,Long id) { return admin!=null && Objects.equals(admin.id(),id) && positive(admin.version()); }
+    // Admin accounts start at version 0; ownership history revisions start at 1.
+    private static boolean validAdmin(Admin admin,Long id) { return admin!=null && Objects.equals(admin.id(),id) && admin.version()!=null && admin.version()>=0; }
     private static boolean validGroup(Group group,Long id) { return group!=null && Objects.equals(group.id(),id) && positive(group.version()); }
     private record Layer(Long id,String status,String reason) {
         static Layer known(Long id) { return new Layer(id,"KNOWN",null); }

@@ -23,7 +23,7 @@ class SupportLeaderboardTest {
     private Candidate agent(long id,long first,long customers,String amount,Board board,String currency,YearMonth month,String group,Instant birth) {
         return new Candidate(id,"Agent " + id,null,group,Qualification.ACTIVE,count(first),count(customers),
             new Amount(amount == null ? null : new BigDecimal(amount),currency,month,
-                board == Board.purchase ? AmountKind.PURCHASE : AmountKind.DEPOSIT,
+                board == Board.netContribution ? AmountKind.NET_CONTRIBUTION : board == Board.purchase ? AmountKind.PURCHASE : AmountKind.DEPOSIT,
                 amount == null ? Coverage.UNKNOWN : Coverage.COMPLETE,amount == null ? Reason.REFUNDS_UNKNOWN : Reason.NONE,"finance-1"),birth);
     }
     private Snapshot snapshot(Board board, Candidate... agents) {return calculate(context(board),"source-1",Coverage.COMPLETE,List.of(agents));}
@@ -32,6 +32,25 @@ class SupportLeaderboardTest {
     }
     private Row row(Snapshot s,long id) {return s.rows().stream().filter(r -> r.agentId() == id).findFirst().orElseThrow();}
     private void code(int status, Runnable action) {assertEquals(status,assertThrows(BizException.class,action::run).getCode());}
+
+    @Test void signedNetAmountsRankBelowZeroWithFullPrecisionAndUnknownNeverRanks() {
+        Snapshot signed=snapshot(Board.netContribution,agent(1,0,0,"-10.000001",Board.netContribution),
+            agent(2,0,0,"0",Board.netContribution),agent(3,0,0,"-10.000002",Board.netContribution));
+        assertEquals(List.of(2L,1L,3L),signed.rows().stream().map(Row::agentId).toList());
+        assertEquals(List.of(1,2,3),signed.rows().stream().map(Row::rank).toList());
+        var incomplete=snapshot(Board.netContribution,agent(1,0,0,"-10",Board.netContribution),agent(2,0,0,null,Board.netContribution));
+        assertEquals(State.PROVISIONAL,incomplete.state());assertTrue(incomplete.rows().stream().allMatch(r->r.rank()==null));
+        code(422,()->count(-1));
+    }
+    @Test void previousDepositDefinitionCannotCreateRankMovementForNewNetDefinition() {
+        var current=context(Board.firstPayment,NOW,"USDT",Scope.all,Set.of(),NET_DEFINITION);
+        var old=context(Board.firstPayment,NOW.minusSeconds(86400),"USDT",Scope.all,Set.of(),"support-leaderboard-v2-deposit-no-refund");
+        var candidate=new Candidate(1,"Agent 1",null,"A",Qualification.ACTIVE,count(1),count(1),
+            new Amount(new BigDecimal("-10"),"USDT",MONTH,AmountKind.NET_CONTRIBUTION,Coverage.COMPLETE,Reason.NONE,"net-source"),null);
+        var now=calculate(current,"new",Coverage.COMPLETE,List.of(candidate));
+        var yesterday=new Publication(1,old.evaluatedAt(),calculate(old,"old",Coverage.COMPLETE,List.of(candidate)));
+        assertEquals(Reason.DEFINITION_CHANGED,withMovement(now,List.of(yesterday)).rows().get(0).movement().reason());
+    }
 
     @Test void fullPrecisionCompetitionRanksAndNumericTieOrder() {
         Snapshot s=snapshot(Board.deposit,agent(20,0,0,"9.0001",Board.deposit),agent(10,0,0,"9.0001",Board.deposit),
@@ -58,6 +77,18 @@ class SupportLeaderboardTest {
         assertNull(page(s,null,1,2,null,1).self().gap());
         assertEquals(Reason.NOT_A_CANDIDATE,page(s,null,1,20,null,90).self().reason());
         assertEquals(2,page(s,"Agent 1",1,2,null,4).self().pageNum());
+    }
+    @Test void podiumUsesFullPublishedRanksAndCountsEveryTieWithoutGrowingTheSummary() {
+        Snapshot s=snapshot(Board.firstPayment,agent(1,20,40,null,Board.firstPayment),agent(2,18,36,null,Board.firstPayment),
+            agent(3,12,24,null,Board.firstPayment),agent(4,12,24,null,Board.firstPayment),agent(5,12,24,null,Board.firstPayment),
+            agent(6,9,18,null,Board.firstPayment));
+        assertEquals(List.of(5L,6L),page(s,null,3,2,s.viewVersion(),6).rows().stream().map(Row::agentId).toList());
+        assertEquals(List.of(1L,2L,3L,4L),podium(s).rows().stream().map(Row::agentId).toList());
+        assertEquals(5,podium(s).total());
+        assertTrue(podium(s).rows().get(3).isTied());
+        Snapshot partial=calculate(context(Board.firstPayment),"unknown",Coverage.UNKNOWN,List.of(agent(1,20,40,null,Board.firstPayment)));
+        assertTrue(podium(partial).rows().isEmpty()); assertEquals(0,podium(partial).total());
+        assertEquals(0,podium(snapshot(Board.firstPayment)).total());
     }
     @Test void unknownReferenceAmountDoesNotInvalidateCountRankOrMovement() {
         Instant oldTime=Instant.parse("2026-10-08T15:45:00Z");
@@ -279,7 +310,7 @@ class SupportLeaderboardTest {
             List<Candidate> failed=new ArrayList<>();
             for(long id=1;id<=2;id++) {
                 Count primary=new Count(null,Coverage.FAILED,Reason.SOURCE_FAILED);
-                Amount amount=new Amount(null,"USDT",MONTH,board==Board.purchase ? AmountKind.PURCHASE : AmountKind.DEPOSIT,
+                Amount amount=new Amount(null,"USDT",MONTH,board==Board.netContribution?AmountKind.NET_CONTRIBUTION:board==Board.purchase ? AmountKind.PURCHASE : AmountKind.DEPOSIT,
                     Coverage.FAILED,Reason.SOURCE_FAILED,"failed-finance");
                 failed.add(new Candidate(id,"Agent "+id,null,"A",Qualification.ACTIVE,
                     board==Board.firstPayment ? primary : count(1),board==Board.customers ? primary : count(1),amount,null));

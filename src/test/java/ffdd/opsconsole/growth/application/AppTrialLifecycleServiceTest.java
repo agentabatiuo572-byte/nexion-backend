@@ -896,6 +896,9 @@ class AppTrialLifecycleServiceTest {
         verify(mapper,never()).insertLedger(anyLong(),anyString(),eq("TRIAL_CHARGE"),anyString(),anyString(),any(),any(),anyString());
         var sequence=org.mockito.Mockito.inOrder(capture,mapper);
         sequence.verify(capture).prepare(7L,Source.TRIAL_CONVERT,"USER:7");
+        sequence.verify(mapper).lockWallet(7L);
+        sequence.verify(capture).beforeCash(any(Prepared.class));
+        sequence.verify(mapper).settleWallet(eq(7L),any(),eq(BigDecimal.ZERO),eq(BigDecimal.ZERO));
         sequence.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),anyString());
         sequence.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
         String orderNo = (String) result.getData().get("orderNo");
@@ -907,6 +910,73 @@ class AppTrialLifecycleServiceTest {
         assertThat((BigDecimal) payload.getValue().get("amount_usdt")).isEqualByComparingTo("1239");
         verify(mapper).insertConversionOrder(eq(7L), eq(orderNo), eq(9L), eq(new BigDecimal("1299")),
                 eq(new BigDecimal("60.000000")), eq(new BigDecimal("1239.000000")));
+        var trialPayload = org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(outbox).publishUserEvent(eq("TRIAL"), eq("TRIAL-1"), eq("trial.redeemed"),
+                eq(7L), eq("P2"), eq(2), eq("2026-W30"), trialPayload.capture());
+        String source = "nx_trial_claim + nx_order + nx_order_item";
+        assertThat(result.getData()).containsEntry("serverCanonical", true).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "").containsEntry("source", source);
+        assertThat((Map<String, Object>) result.getData().get("provenance"))
+                .containsEntry("serverCanonical", true).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "").containsEntry("source", source);
+        var auditRequest = org.mockito.ArgumentCaptor.forClass(ffdd.opsconsole.shared.audit.AuditLogWriteRequest.class);
+        verify(audit).recordRequired(auditRequest.capture());
+        assertThat(auditRequest.getValue().getDetail()).isEqualTo(result.getData());
+
+        var schemaMapper = mock(ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.class);
+        when(schemaMapper.findActiveSchema("checkout.completed"))
+                .thenReturn(new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaGateRow("conversion", 285, true));
+        when(schemaMapper.listActiveProperties("checkout.completed")).thenReturn(List.of(
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("order_id", "id", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("order_no", "id", false),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("order_subtotal_usdt", "number", false),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("amount_usdt", "number", false)));
+        when(schemaMapper.findActiveSchema("trial.redeemed"))
+                .thenReturn(new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaGateRow("growth", 311, true));
+        when(schemaMapper.listActiveProperties("trial.redeemed")).thenReturn(List.of(
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("shadow_usdt", "number", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("shadow_nex", "number", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("offset_usdt", "number", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("remainder_usdt", "number", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("discount_applied", "number", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("amount_usdt", "number", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("early_purchase", "boolean", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("payment_rail", "enum", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("device_id", "id", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("order_no", "id", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("product_no", "id", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("discount_usdt", "number", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("payment_status", "enum", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("order_status", "enum", true)));
+        var registeredOutbox = new EventOutboxService(schemaMapper, new com.fasterxml.jackson.databind.ObjectMapper(),
+                new ffdd.opsconsole.shared.outbox.OutboxProperties(), mock(ffdd.opsconsole.platform.application.A4RuntimePolicyService.class));
+        org.junit.jupiter.api.Assertions.assertAll(
+                () -> assertThat(payload.getValue()).containsOnlyKeys("order_id", "order_no", "order_subtotal_usdt", "amount_usdt")
+                        .containsEntry("order_id", orderNo).containsEntry("order_no", orderNo)
+                        .containsEntry("order_subtotal_usdt", new BigDecimal("1239.000000"))
+                        .containsEntry("amount_usdt", new BigDecimal("1239.000000")),
+                () -> {
+                    assertThat(trialPayload.getValue()).containsOnlyKeys("shadowUsdt", "shadowNex", "offsetUsdt", "remainderUsdt",
+                            "discountApplied", "amountUsdt", "earlyPurchase", "paymentRail", "deviceId", "orderNo", "productNo",
+                            "discountUsdt", "paymentStatus", "orderStatus", "source");
+                    trialPayload.getValue().forEach((key, value) -> assertThat(result.getData()).containsEntry((String) key, value));
+                    assertThat(trialPayload.getValue()).containsEntry("source", source);
+                    assertThat(trialPayload.getValue()).isNotSameAs(result.getData());
+                },
+                () -> {
+                    assertThat(registeredOutbox.publishUserEvent("ORDER", orderNo, "checkout.completed", 7L,
+                            "P2", 2, "2026-W30", payload.getValue())).isNotBlank();
+                    verify(schemaMapper).insertEvent(anyString(), eq("ORDER"), eq(orderNo), eq("checkout.completed"),
+                            eq("checkout.completed"), eq("conversion"), eq("P2"), eq(2), eq("2026-W30"),
+                            eq(true), eq(285), eq(true), eq(true), anyString());
+                },
+                () -> {
+                    assertThat(registeredOutbox.publishUserEvent("TRIAL", "TRIAL-1", "trial.redeemed", 7L,
+                            "P2", 2, "2026-W30", trialPayload.getValue())).isNotBlank();
+                    verify(schemaMapper).insertEvent(anyString(), eq("TRIAL"), eq("TRIAL-1"), eq("trial.redeemed"),
+                            eq("trial.redeemed"), eq("growth"), eq("P2"), eq(2), eq("2026-W30"),
+                            eq(true), eq(311), eq(true), eq(true), anyString());
+                });
     }
 
     private TrialRow activeTrial() {
@@ -916,6 +986,36 @@ class AppTrialLifecycleServiceTest {
                 new BigDecimal("1299"), "productCode=stellarbox-s1", now.minusDays(1), now.plusDays(2),
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, null, 0L);
+    }
+
+    @Test void zeroChargeConversionStillCompletesOneCashOwnerAfterActualUsdtAndNexRewards() {
+        Clock fixed=Clock.fixed(Instant.parse("2026-10-05T00:00:00Z"),ZoneId.of("Asia/Shanghai"));
+        LocalDateTime now=LocalDateTime.now(fixed);
+        when(mapper.policies()).thenReturn(List.of(new PolicyRow("discountRate","0"),new PolicyRow("discountCapUSD","0")));
+        when(mapper.lockTrial(7L)).thenReturn(new TrialRow(1L,7L,"TRIAL-ZERO","ACTIVE",null,null,"Trial",3,
+            new BigDecimal("40"),new BigDecimal("5"),new BigDecimal("10"),new BigDecimal("10"),"productCode=stellarbox-s1",
+            now.minusDays(1),now.plusDays(2),BigDecimal.ZERO,BigDecimal.ZERO,BigDecimal.ZERO,BigDecimal.ZERO,BigDecimal.ZERO,null,0L));
+        when(mapper.lockWallet(7L)).thenReturn(new WalletRow(BigDecimal.ZERO,BigDecimal.ZERO));
+        when(mapper.settleWallet(eq(7L),any(),eq(BigDecimal.ZERO),eq(BigDecimal.ZERO))).thenReturn(1);
+        when(mapper.decrementProductStock(9L)).thenReturn(1);
+        when(mapper.insertConversionOrder(eq(7L),anyString(),eq(9L),any(),any(),any())).thenReturn(1);
+        when(mapper.insertConversionOrderItem(anyString(),eq(9L),eq("stellarbox-s1"),anyString(),any())).thenReturn(1);
+        when(mapper.insertPurchasedDevice(eq(7L),anyString(),eq(9L),eq("stellarbox-s1"),eq("Entry"),eq("DEVICE"),anyString(),eq("Trial"),any())).thenReturn(1);
+        when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
+        when(mapper.markRedeemed(eq(1L),eq(0L),eq(77L),any(),any(),any(),any(),any(),any(),anyString())).thenReturn(1);
+        when(earningsRelease.creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_REMAINDER"),eq("TRIAL-ZERO:REMAINDER"),eq("USDT"),any(),anyString())).thenReturn("ER-USDT");
+        when(earningsRelease.creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_BONUS"),eq("TRIAL-ZERO:NEX"),eq("NEX"),any(),anyString())).thenReturn("ER-NEX");
+        var target=new AppTrialLifecycleService(capture,mapper,earningsRelease,idempotency,coverage,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,fixed);
+        assertThat(target.convert(7L,"stellarbox-s1",BigDecimal.ZERO,"zero-rewards").getCode()).isZero();
+        var order=org.mockito.Mockito.inOrder(mapper,capture,earningsRelease,audit);
+        order.verify(mapper).lockWallet(7L);order.verify(capture).beforeCash(any(Prepared.class));
+        order.verify(mapper).settleWallet(eq(7L),eq(new BigDecimal("0.000000")),eq(BigDecimal.ZERO),eq(BigDecimal.ZERO));
+        order.verify(earningsRelease).creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_REMAINDER"),eq("TRIAL-ZERO:REMAINDER"),eq("USDT"),eq(new BigDecimal("30.000000")),anyString());
+        order.verify(capture).trialReward(any(Prepared.class),eq("ER-USDT"));
+        order.verify(earningsRelease).creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_BONUS"),eq("TRIAL-ZERO:NEX"),eq("NEX"),eq(new BigDecimal("5.000000")),anyString());
+        order.verify(capture).trialReward(any(Prepared.class),eq("ER-NEX"));
+        order.verify(audit).recordRequired(any());order.verify(capture).record(any(Prepared.class));
+        verify(capture,never()).insertLedger(any(),any(),any(),anyString());
     }
 
     private TrialRow trialWithStatus(String status, LocalDateTime cooldownUntil, long version) {

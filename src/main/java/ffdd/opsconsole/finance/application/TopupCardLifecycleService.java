@@ -204,6 +204,7 @@ public class TopupCardLifecycleService {
                 .setScale(6, RoundingMode.HALF_UP);
         BigDecimal feeBufferAfter = safe(feeBuffer.balanceUsdt()).add(request.feeAmount())
                 .setScale(6, RoundingMode.HALF_UP);
+        paymentAttribution.beforeCash(prepared);
         if (mapper.updateWallet(request.userId(), walletAfter, cumulativeAfter, wallet.version()) != 1) {
             throw new IllegalStateException("CARD_TOPUP_WALLET_CONFLICT");
         }

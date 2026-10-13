@@ -116,6 +116,8 @@ class HdPayCallbackSettlementServiceTest {
         var captureOrder = org.mockito.Mockito.inOrder(capture, paymentMapper);
         captureOrder.verify(capture).prepare(42L, Source.HDPAY, "VQR-1");
         captureOrder.verify(paymentMapper).findUsdtWalletForUpdate(42L);
+        captureOrder.verify(capture).beforeCash(any(Prepared.class));
+        captureOrder.verify(paymentMapper).creditUsdtWallet(eq(42L),any(),org.mockito.ArgumentMatchers.anyLong());
         captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),any());
         captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
         org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));

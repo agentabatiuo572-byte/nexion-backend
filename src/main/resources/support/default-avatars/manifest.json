@@ -1,0 +1,272 @@
+{
+  "schemaVersion": 1,
+  "poolVersion": "support-default-avatars-r12-v2",
+  "createdAt": "2026-10-09T11:10:58.844Z",
+  "subjectKind": "FICTIONAL_SYNTHETIC_ADULT_PORTRAITS",
+  "entries": [
+    {
+      "poolEntryId": "male-01",
+      "pool": "MALE",
+      "file": "male-01.jpg",
+      "sha256": "4643b4848ca34a58e7ea7f6077c9a185185595c1ea8bd5f6837ed9c1bff466a0",
+      "width": 512,
+      "height": 512,
+      "bytes": 45461,
+      "reviewed": true,
+      "source": "SOURCE.md",
+      "generation": {
+        "tool": "image_gen.imagegen",
+        "outputId": "819ae199-b4a8-4858-b4ed-7ffc1dc0e1be",
+        "prompt": "Create one square professional photorealistic default avatar portrait asset for an exclusive customer-support console: a fictional East Asian male adult around 32, neat short dark hair, charcoal knit polo. Entire subject is invented, not a real person or celebrity. Face and shoulders centered, eye level, full crown of head visible, safe padding for a circular avatar crop; head occupies about 60 percent height. Calm approachable natural expression, subtle smile, direct eye contact, comfortable contemporary business-casual clothing. Neutral matte warm-gray studio background, soft even diffused light, realistic skin texture, restrained editorial photography, accurate eyes and facial anatomy. Clean portrait only, no text, logos, headset, badges, accessories, frame, collage or multiple people. Square composition, crisp eyes and sufficient fidelity at 512 by 512. Keep color, scale, lighting and background consistent with a premium black customer-support admin UI."
+      },
+      "review": {
+        "reviewer": "/root",
+        "visual": "PASS",
+        "observations": "Single adult fictional portrait; centered face; full crown; no visible text, logo, watermark or personal identifiers; distinct from other seven entries. Pool classification comes from the explicit generation brief, not inferred identity."
+      },
+      "mimeType": "image/jpeg",
+      "export": {
+        "kind": "TECHNICAL_ASSET_EXPORT",
+        "sourceFile": "male-01.png",
+        "sourceSHA256": "26af86aace9d2159658a6347147573542b275b3f973fe17b142c1a4e3eef02e5",
+        "sourceWidth": 1254,
+        "sourceHeight": 1254,
+        "sourceBytes": 2268315,
+        "resize": "512 x 512, inside, no crop, no enlargement",
+        "encoding": "sRGB JPEG quality90 4:4:4",
+        "sceneChanges": "NONE"
+      }
+    },
+    {
+      "poolEntryId": "male-02",
+      "pool": "MALE",
+      "file": "male-02.jpg",
+      "sha256": "d3b4c4eaaeeb87435b68b57ff9acf011acfa333dc6f97ad616aee7356bc7d9fa",
+      "width": 512,
+      "height": 512,
+      "bytes": 37773,
+      "reviewed": true,
+      "source": "SOURCE.md",
+      "generation": {
+        "tool": "image_gen.imagegen",
+        "outputId": "80046eda-f4f4-498d-b454-623fa99bb6cf",
+        "prompt": "Create one square professional photorealistic default avatar portrait asset for an exclusive customer-support console: a fictional Southeast Asian male adult around 30, short side-parted hair, dark navy crewneck. Entire subject is invented, not a real person or celebrity. Face and shoulders centered, eye level, full crown of head visible, safe padding for a circular avatar crop; head occupies about 60 percent height. Calm approachable natural expression, subtle smile, direct eye contact, comfortable contemporary business-casual clothing. Neutral matte warm-gray studio background, soft even diffused light, realistic skin texture, restrained editorial photography, accurate eyes and facial anatomy. Clean portrait only, no text, logos, headset, badges, accessories, frame, collage or multiple people. Square composition, crisp eyes and sufficient fidelity at 512 by 512. Keep color, scale, lighting and background consistent with a premium black customer-support admin UI."
+      },
+      "review": {
+        "reviewer": "/root",
+        "visual": "PASS",
+        "observations": "Single adult fictional portrait; centered face; full crown; no visible text, logo, watermark or personal identifiers; distinct from other seven entries. Pool classification comes from the explicit generation brief, not inferred identity."
+      },
+      "mimeType": "image/jpeg",
+      "export": {
+        "kind": "TECHNICAL_ASSET_EXPORT",
+        "sourceFile": "male-02.png",
+        "sourceSHA256": "bf51e051110fe993080217d5298ef775015d9bf647043f555143670fb9d16ef0",
+        "sourceWidth": 1254,
+        "sourceHeight": 1254,
+        "sourceBytes": 2068723,
+        "resize": "512 x 512, inside, no crop, no enlargement",
+        "encoding": "sRGB JPEG quality90 4:4:4",
+        "sceneChanges": "NONE"
+      }
+    },
+    {
+      "poolEntryId": "male-03",
+      "pool": "MALE",
+      "file": "male-03.jpg",
+      "sha256": "a6d86a04107e1660ff97ad5740a2177d37f592a96b0d6bd3f79b19786a9f8461",
+      "width": 512,
+      "height": 512,
+      "bytes": 50544,
+      "reviewed": true,
+      "source": "SOURCE.md",
+      "generation": {
+        "tool": "image_gen.imagegen",
+        "outputId": "5cd7e896-9098-43c4-be24-b67bd9aae86e",
+        "prompt": "Create one square professional photorealistic default avatar portrait asset for an exclusive customer-support console: a fictional European male adult around 35, neatly trimmed beard, charcoal crewneck. Entire subject is invented, not a real person or celebrity. Face and shoulders centered, eye level, full crown of head visible, safe padding for a circular avatar crop; head occupies about 60 percent height. Calm approachable natural expression, subtle smile, direct eye contact, comfortable contemporary business-casual clothing. Neutral matte warm-gray studio background, soft even diffused light, realistic skin texture, restrained editorial photography, accurate eyes and facial anatomy. Clean portrait only, no text, logos, headset, badges, accessories, frame, collage or multiple people. Square composition, crisp eyes and sufficient fidelity at 512 by 512. Keep color, scale, lighting and background consistent with a premium black customer-support admin UI."
+      },
+      "review": {
+        "reviewer": "/root",
+        "visual": "PASS",
+        "observations": "Single adult fictional portrait; centered face; full crown; no visible text, logo, watermark or personal identifiers; distinct from other seven entries. Pool classification comes from the explicit generation brief, not inferred identity."
+      },
+      "mimeType": "image/jpeg",
+      "export": {
+        "kind": "TECHNICAL_ASSET_EXPORT",
+        "sourceFile": "male-03.png",
+        "sourceSHA256": "da4c3351728c70e25756b187d7b2c9793d9fcaee8775a9d2e48479a40ad2a1c3",
+        "sourceWidth": 1254,
+        "sourceHeight": 1254,
+        "sourceBytes": 2172818,
+        "resize": "512 x 512, inside, no crop, no enlargement",
+        "encoding": "sRGB JPEG quality90 4:4:4",
+        "sceneChanges": "NONE"
+      }
+    },
+    {
+      "poolEntryId": "male-04",
+      "pool": "MALE",
+      "file": "male-04.jpg",
+      "sha256": "48aa15e9b7b711e4d5ae584d87d8cd64dfd1d346e6af847827a24c1f46e9444d",
+      "width": 512,
+      "height": 512,
+      "bytes": 46489,
+      "reviewed": true,
+      "source": "SOURCE.md",
+      "generation": {
+        "tool": "image_gen.imagegen",
+        "outputId": "f31fbedb-8760-4287-8a1e-903af6b2a68e",
+        "prompt": "Create one square professional photorealistic default avatar portrait asset for an exclusive customer-support console: a fictional Black male adult around 30, short natural hair, dark gray polo. Entire subject is invented, not a real person or celebrity. Face and shoulders centered, eye level, full crown of head visible, safe padding for a circular avatar crop; head occupies about 60 percent height. Calm approachable natural expression, subtle smile, direct eye contact, comfortable contemporary business-casual clothing. Neutral matte warm-gray studio background, soft even diffused light, realistic skin texture, restrained editorial photography, accurate eyes and facial anatomy. Clean portrait only, no text, logos, headset, badges, accessories, frame, collage or multiple people. Square composition, crisp eyes and sufficient fidelity at 512 by 512. Keep color, scale, lighting and background consistent with a premium black customer-support admin UI."
+      },
+      "review": {
+        "reviewer": "/root",
+        "visual": "PASS",
+        "observations": "Single adult fictional portrait; centered face; full crown; no visible text, logo, watermark or personal identifiers; distinct from other seven entries. Pool classification comes from the explicit generation brief, not inferred identity."
+      },
+      "mimeType": "image/jpeg",
+      "export": {
+        "kind": "TECHNICAL_ASSET_EXPORT",
+        "sourceFile": "male-04.png",
+        "sourceSHA256": "10924b21ed47cffd3b81092bc3ff7a8318529c03e9c094c8cac6f68f15f3e548",
+        "sourceWidth": 1254,
+        "sourceHeight": 1254,
+        "sourceBytes": 2274655,
+        "resize": "512 x 512, inside, no crop, no enlargement",
+        "encoding": "sRGB JPEG quality90 4:4:4",
+        "sceneChanges": "NONE"
+      }
+    },
+    {
+      "poolEntryId": "female-01",
+      "pool": "FEMALE",
+      "file": "female-01.jpg",
+      "sha256": "faefe442ce32218fcfce5bd918cc6be450faaea51c4e78fa030e19907a140323",
+      "width": 512,
+      "height": 512,
+      "bytes": 42868,
+      "reviewed": true,
+      "source": "SOURCE.md",
+      "generation": {
+        "tool": "image_gen.imagegen",
+        "outputId": "59bb5f01-81ab-4e80-bc63-0f9cb561a20c",
+        "prompt": "Create one square professional photorealistic default avatar portrait asset for an exclusive customer-support console: a fictional East Asian female adult around 30, neat shoulder-length dark hair, charcoal blouse. Entire subject is invented, not a real person or celebrity. Face and shoulders centered, eye level, full crown of head visible, safe padding for a circular avatar crop; head occupies about 60 percent height. Calm approachable natural expression, subtle smile, direct eye contact, comfortable contemporary business-casual clothing. Neutral matte warm-gray studio background, soft even diffused light, realistic skin texture, restrained editorial photography, accurate eyes and facial anatomy. Clean portrait only, no text, logos, headset, badges, accessories, frame, collage or multiple people. Square composition, crisp eyes and sufficient fidelity at 512 by 512. Keep color, scale, lighting and background consistent with a premium black customer-support admin UI."
+      },
+      "review": {
+        "reviewer": "/root",
+        "visual": "PASS",
+        "observations": "Single adult fictional portrait; centered face; full crown; no visible text, logo, watermark or personal identifiers; distinct from other seven entries. Pool classification comes from the explicit generation brief, not inferred identity."
+      },
+      "mimeType": "image/jpeg",
+      "export": {
+        "kind": "TECHNICAL_ASSET_EXPORT",
+        "sourceFile": "female-01.png",
+        "sourceSHA256": "5fd3084703218b5d32c87b38794845e615e4025925052bd8e15146d7ba4c1cb7",
+        "sourceWidth": 1254,
+        "sourceHeight": 1254,
+        "sourceBytes": 2047180,
+        "resize": "512 x 512, inside, no crop, no enlargement",
+        "encoding": "sRGB JPEG quality90 4:4:4",
+        "sceneChanges": "NONE"
+      }
+    },
+    {
+      "poolEntryId": "female-02",
+      "pool": "FEMALE",
+      "file": "female-02.jpg",
+      "sha256": "9e6f7a39343adf3bf833a3b401c3e6987cad776f5646a1e8095ca3743444f050",
+      "width": 512,
+      "height": 512,
+      "bytes": 40365,
+      "reviewed": true,
+      "source": "SOURCE.md",
+      "generation": {
+        "tool": "image_gen.imagegen",
+        "outputId": "2cf17f6b-f1a3-4bab-9492-67458752f168",
+        "prompt": "Create one square professional photorealistic default avatar portrait asset for an exclusive customer-support console: a fictional Southeast Asian female adult around 32, tied-back dark hair, dark navy knit top. Entire subject is invented, not a real person or celebrity. Face and shoulders centered, eye level, full crown of head visible, safe padding for a circular avatar crop; head occupies about 60 percent height. Calm approachable natural expression, subtle smile, direct eye contact, comfortable contemporary business-casual clothing. Neutral matte warm-gray studio background, soft even diffused light, realistic skin texture, restrained editorial photography, accurate eyes and facial anatomy. Clean portrait only, no text, logos, headset, badges, accessories, frame, collage or multiple people. Square composition, crisp eyes and sufficient fidelity at 512 by 512. Keep color, scale, lighting and background consistent with a premium black customer-support admin UI."
+      },
+      "review": {
+        "reviewer": "/root",
+        "visual": "PASS",
+        "observations": "Single adult fictional portrait; centered face; full crown; no visible text, logo, watermark or personal identifiers; distinct from other seven entries. Pool classification comes from the explicit generation brief, not inferred identity."
+      },
+      "mimeType": "image/jpeg",
+      "export": {
+        "kind": "TECHNICAL_ASSET_EXPORT",
+        "sourceFile": "female-02.png",
+        "sourceSHA256": "d87208ad2987a3afdbc3f8da02c00ed0c1f19ecd90c1172eaadc453ed2aae923",
+        "sourceWidth": 1254,
+        "sourceHeight": 1254,
+        "sourceBytes": 2089224,
+        "resize": "512 x 512, inside, no crop, no enlargement",
+        "encoding": "sRGB JPEG quality90 4:4:4",
+        "sceneChanges": "NONE"
+      }
+    },
+    {
+      "poolEntryId": "female-03",
+      "pool": "FEMALE",
+      "file": "female-03.jpg",
+      "sha256": "ba0db7ac723861b889105dabdf234378caa0eb3330fa90aa98e96a9cb5f11312",
+      "width": 512,
+      "height": 512,
+      "bytes": 44064,
+      "reviewed": true,
+      "source": "SOURCE.md",
+      "generation": {
+        "tool": "image_gen.imagegen",
+        "outputId": "242d1245-e85c-4a7f-8048-a73e0540c611",
+        "prompt": "Create one square professional photorealistic default avatar portrait asset for an exclusive customer-support console: a fictional European female adult around 34, short brown bob, dark gray blouse. Entire subject is invented, not a real person or celebrity. Face and shoulders centered, eye level, full crown of head visible, safe padding for a circular avatar crop; head occupies about 60 percent height. Calm approachable natural expression, subtle smile, direct eye contact, comfortable contemporary business-casual clothing. Neutral matte warm-gray studio background, soft even diffused light, realistic skin texture, restrained editorial photography, accurate eyes and facial anatomy. Clean portrait only, no text, logos, headset, badges, accessories, frame, collage or multiple people. Square composition, crisp eyes and sufficient fidelity at 512 by 512. Keep color, scale, lighting and background consistent with a premium black customer-support admin UI."
+      },
+      "review": {
+        "reviewer": "/root",
+        "visual": "PASS",
+        "observations": "Single adult fictional portrait; centered face; full crown; no visible text, logo, watermark or personal identifiers; distinct from other seven entries. Pool classification comes from the explicit generation brief, not inferred identity."
+      },
+      "mimeType": "image/jpeg",
+      "export": {
+        "kind": "TECHNICAL_ASSET_EXPORT",
+        "sourceFile": "female-03.png",
+        "sourceSHA256": "28986b166dbb0e5815c9f74b48f158f1c4e95d1ced4ac17a5260be3a669b3850",
+        "sourceWidth": 1254,
+        "sourceHeight": 1254,
+        "sourceBytes": 2039343,
+        "resize": "512 x 512, inside, no crop, no enlargement",
+        "encoding": "sRGB JPEG quality90 4:4:4",
+        "sceneChanges": "NONE"
+      }
+    },
+    {
+      "poolEntryId": "female-04",
+      "pool": "FEMALE",
+      "file": "female-04.jpg",
+      "sha256": "184588536b69bed58372298845763311fe6ab4d5abf18faa9d566a28055e137d",
+      "width": 512,
+      "height": 512,
+      "bytes": 51704,
+      "reviewed": true,
+      "source": "SOURCE.md",
+      "generation": {
+        "tool": "image_gen.imagegen",
+        "outputId": "2d8969ef-4530-43df-bae3-aeba9bbbd01b",
+        "prompt": "Create one square professional photorealistic default avatar portrait asset for an exclusive customer-support console: a fictional Black female adult around 30, natural shoulder-length curls, charcoal blouse. Entire subject is invented, not a real person or celebrity. Face and shoulders centered, eye level, full crown of head visible, safe padding for a circular avatar crop; head occupies about 60 percent height. Calm approachable natural expression, subtle smile, direct eye contact, comfortable contemporary business-casual clothing. Neutral matte warm-gray studio background, soft even diffused light, realistic skin texture, restrained editorial photography, accurate eyes and facial anatomy. Clean portrait only, no text, logos, headset, badges, accessories, frame, collage or multiple people. Square composition, crisp eyes and sufficient fidelity at 512 by 512. Keep color, scale, lighting and background consistent with a premium black customer-support admin UI."
+      },
+      "review": {
+        "reviewer": "/root",
+        "visual": "PASS",
+        "observations": "Single adult fictional portrait; centered face; full crown; no visible text, logo, watermark or personal identifiers; distinct from other seven entries. Pool classification comes from the explicit generation brief, not inferred identity."
+      },
+      "mimeType": "image/jpeg",
+      "export": {
+        "kind": "TECHNICAL_ASSET_EXPORT",
+        "sourceFile": "female-04.png",
+        "sourceSHA256": "c589ec942403826fa82a0b2c40a7e0f6e33bda55a7db2faff2510b4971a41f4a",
+        "sourceWidth": 1254,
+        "sourceHeight": 1254,
+        "sourceBytes": 2202830,
+        "resize": "512 x 512, inside, no crop, no enlargement",
+        "encoding": "sRGB JPEG quality90 4:4:4",
+        "sceneChanges": "NONE"
+      }
+    }
+  ]
+}

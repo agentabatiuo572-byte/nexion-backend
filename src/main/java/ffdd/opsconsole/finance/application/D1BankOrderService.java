@@ -158,6 +158,7 @@ public class D1BankOrderService {
         var prepared = paymentAttribution.prepare(userId, Source.HDPAY, intentNo);
         Map<String, Object> wallet = required(payments.findUsdtWalletForUpdate(userId), "HDPAY_TARGET_WALLET_NOT_FOUND");
         BigDecimal balanceAfter = safeDecimal(wallet.get("usdtAvailable"), "HDPAY_WALLET_BALANCE_INVALID").add(amount);
+        paymentAttribution.beforeCash(prepared);
         one(payments.creditUsdtWallet(userId, amount, number(wallet.get("version"))), "HDPAY_WALLET_VERSION_CONFLICT");
         one(paymentAttribution.insertLedger(prepared, amount, balanceAfter,
                 "ADMIN manual HDPay BANKQR deposit " + intentNo), "HDPAY_LEDGER_WRITE_FAILED");

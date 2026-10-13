@@ -21,7 +21,7 @@ public class PromotionNativeContractResolver {
     private final RiskReleaseParamsService earnings;
     private final A2RuntimePolicy auditPolicy;
     private final Environment environment;
-    @Value("${nexion.commerce.pending-order-ttl-minutes:30}") private int orderTtlMinutes;
+    @Value("${nexion.commerce.pending-order-ttl-minutes:30}") private final int orderTtlMinutes;
 
     public void fixtureAllowed(Object run) {
         if(!text(run).isEmpty() && Arrays.stream(environment.getActiveProfiles()).noneMatch(p->Set.of("test","local","acceptance").contains(p)))
@@ -116,9 +116,15 @@ public class PromotionNativeContractResolver {
         String identity=String.join(" ",type,text(product.get("device_type")),text(product.get("product_no")),text(sku.get("name"))).toUpperCase(Locale.ROOT);
         if(identity.contains("CLOUD-SHARE")||identity.contains("CLOUD_SHARE")||identity.matches(".*\\bSHARE\\b.*")||!Set.of("DEVICE","SERVER").contains(type))return "UNSUPPORTED_DEVICE_TYPE";
         if(!"ACTIVE".equals(product.get("status")))return "PRODUCT_UNAVAILABLE";
-        String power=text(sku.get("power_text")).replaceAll("[Ww]","").trim();
-        if(!power.matches("[0-9]+(\\.[0-9]+)?")||new java.math.BigDecimal(power).signum()<=0||text(sku.get("datacenter")).isBlank()||product.get("vram_total_gb")==null||number(product.get("vram_total_gb"))<=0)return "PRODUCT_RIGHTS_INCOMPLETE";
+        if(powerWatts(sku.get("power_text"))==null||text(sku.get("datacenter")).isBlank()||product.get("vram_total_gb")==null||number(product.get("vram_total_gb"))<=0)return "PRODUCT_RIGHTS_INCOMPLETE";
         return null;
+    }
+    static java.math.BigDecimal powerWatts(Object value){
+        var power=java.util.regex.Pattern.compile(" *(([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})(\\.[0-9]{1,6})?)(?U:\\s)*(W((?U:\\s)+TDP)?)? *")
+            .matcher(text(value).toUpperCase(Locale.ROOT));
+        if(!power.matches())return null;
+        var watts=new java.math.BigDecimal(power.group(1).replace(",",""));
+        return watts.signum()>0?watts:null;
     }
     private static void valid(boolean value,String message){if(!value)throw new BizException(422,message);}
 }

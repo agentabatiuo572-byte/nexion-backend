@@ -461,6 +461,7 @@ public class OpsVietnamPaymentService {
                     "VIETQR_TARGET_WALLET_NOT_FOUND", 404);
             long walletVersion = longValue(wallet.get("version"));
             BigDecimal balanceAfter = decimal(wallet.get("usdtAvailable")).add(amount);
+            paymentAttribution.beforeCash(prepared);
             if (mapper.creditUsdtWallet(userId, amount, walletVersion) != 1) {
                 conflict("VIETQR_TARGET_WALLET_VERSION_CONFLICT");
             }

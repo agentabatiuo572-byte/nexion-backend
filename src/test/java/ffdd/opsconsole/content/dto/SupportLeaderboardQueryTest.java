@@ -17,10 +17,14 @@ class SupportLeaderboardQueryTest {
     }
     private void invalid(Map<String,String> p) {assertEquals(422,assertThrows(BizException.class,()->query(p)).getCode());}
     @Test void defaultMonthAndCurrencyComeFromServerAndShanghaiBusinessMonth() {
-        var q=query(Map.of()); assertEquals(Board.firstPayment,q.board()); assertEquals(YearMonth.of(2026,10),q.rankMonth());
+        var q=query(Map.of()); assertEquals("netContribution",q.board().name()); assertEquals(YearMonth.of(2026,10),q.rankMonth());
         assertEquals("USDT",q.currency()); assertEquals(Scope.all,q.scope()); assertEquals(1,q.pageNum()); assertEquals(20,q.pageSize());
         var boundary=SupportLeaderboardQuery.fromParameters(Map.of()).normalize(Instant.parse("2026-09-30T16:00:00Z"),MONTHS,Set.of("NEX"),"NEX",Map.of(Scope.all,Set.of()));
         assertEquals(YearMonth.of(2026,10),boundary.rankMonth()); assertEquals("NEX",boundary.currency());
+    }
+    @Test void legacyMoneyRequestsUseTheSingleNetContributionBoard() {
+        for(String board:List.of("deposit","purchase","netContribution"))
+            assertEquals("netContribution",query(Map.of("board",board)).board().name());
     }
     @Test void unknownDuplicateRoleAgentSortAndUnitParametersAreRejected() {
         for(String key:List.of("agentId","adminId","role","businessZone","sortKey","direction","unit","from","to"))
@@ -28,8 +32,8 @@ class SupportLeaderboardQueryTest {
         assertThrows(BizException.class,()->SupportLeaderboardQuery.fromParameters(Map.of("board",List.of("deposit","purchase"))));
         assertThrows(BizException.class,()->SupportLeaderboardQuery.fromParameters(Map.of("month",List.of())));
     }
-    @Test void fourExactBoardsMonthsAndCurrenciesRejectInvalidOrUncoveredInputs() {
-        for(Board b:Board.values()) assertEquals(b,query(Map.of("board",b.name())).board());
+    @Test void threeExactBoardsMonthsAndCurrenciesRejectInvalidOrUncoveredInputs() {
+        for(Board b:List.of(Board.netContribution,Board.firstPayment,Board.customers)) assertEquals(b,query(Map.of("board",b.name())).board());
         for(String m:List.of("2026-13","2026-9","2026-09-01","0000-01","2026-11","2025-01","2026-10 ")) invalid(Map.of("month",m));
         for(String c:List.of("USD","usdt","USDT,NEX",""," USDT")) invalid(Map.of("currency",c));
         invalid(Map.of("board","FIRST_PAYMENT"));

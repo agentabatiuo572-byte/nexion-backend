@@ -16,7 +16,6 @@ import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.dto.SupportAgentLoadStateRequest;
 import ffdd.opsconsole.platform.application.OpsAdminAccountService;
 import ffdd.opsconsole.platform.dto.AdminAccountOverview;
-import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
@@ -86,8 +85,8 @@ class M1SupportAvailabilitySpringTransactionMySqlIntegrationTest {
         SupportAgentRepository repository = mock(SupportAgentRepository.class);
         OpsAdminAccountService accounts = mock(OpsAdminAccountService.class);
         when(accounts.currentOperator()).thenReturn(Optional.of(operator("1", "Root", "superadmin")));
-        when(accounts.overview()).thenReturn(ApiResult.ok(overview(List.of(
-                operator("2", "Support A", "support"), operator("5", "Support B", "support")))));
+        when(accounts.operatorsForSupport()).thenReturn(List.of(
+                operator("2", "Support A", "support"), operator("5", "Support B", "support")));
         when(repository.findProfile(2L)).thenReturn(Optional.of(profile(2L)));
         when(repository.findProfile(5L)).thenReturn(Optional.of(profile(5L)));
         doAnswer(invocation -> {
@@ -107,11 +106,6 @@ class M1SupportAvailabilitySpringTransactionMySqlIntegrationTest {
     private static SupportAgentProfileRecord profile(long id) {
         return new SupportAgentProfileRecord(id, "GENERAL", "通用客服", List.of("support"), List.of("keep"),
                 12, true, true, false, 1L, "2026-09-10T00:00:00");
-    }
-
-    private static AdminAccountOverview overview(List<AdminAccountOverview.OperatorRecord> operators) {
-        return new AdminAccountOverview(new AdminAccountOverview.AdminAccountStats(operators.size(), 1, 0, 0, 1, 0),
-                List.of(), operators, List.of(), List.of());
     }
 
     private static AdminAccountOverview.OperatorRecord operator(String id, String name, String role) {

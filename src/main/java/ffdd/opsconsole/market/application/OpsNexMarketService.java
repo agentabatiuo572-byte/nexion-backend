@@ -159,6 +159,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private final AdminPermissionCache permissionCache;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
     private final ExchangeOrderMapper exchangeOrderMapper;
+    private final SupportExchangeFundAdapter exchangeFunds;
 
     public ApiResult<Map<String, Object>> exchangeOverview() {
         BigDecimal platformCap = readDecimal(EXCHANGE_PLATFORM_DAILY_CAP_KEY, new BigDecimal("20000"));
@@ -320,6 +321,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             }
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        var fundBefore=exchangeFunds.begin(queued.userId(),exchangeNo);
         if (exchangeOrderMapper.cancelQueued(exchangeNo) != 1) {
             return ApiResult.fail(409, "EXCHANGE_QUEUE_STATE_CONFLICT");
         }
@@ -352,6 +354,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "sourceReservationRefunded", reserved,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        exchangeFunds.recorded(fundBefore,exchangeNo,"CANCEL",BigDecimal.ZERO);
         Map<String, Object> response = exchangeOverview().getData();
         response.put("updated", map("exchangeNo", exchangeNo, "before", "QUEUED", "after", "CANCELLED"));
         return ApiResult.ok(response);

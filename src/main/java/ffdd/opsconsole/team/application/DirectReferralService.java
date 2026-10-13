@@ -33,6 +33,12 @@ public class DirectReferralService {
     private final Clock clock;
     private final UnilevelCommissionService unilevel;
     private final org.springframework.beans.factory.ObjectProvider<DirectReferralService> self;
+    private final SupportDirectReferralFundAdapter supportFund;
+    public DirectReferralService(DirectReferralMapper mapper,DirectReferralPolicyService policies,EarningsReleaseService earnings,
+            EarningsReleaseMapper releaseMapper,RiskReleaseParamsService risk,TreasuryLedgerPostingFacade ledger,EventOutboxService outbox,ObjectMapper json,Clock clock,
+            UnilevelCommissionService unilevel,org.springframework.beans.factory.ObjectProvider<DirectReferralService> self){
+        this(mapper,policies,earnings,releaseMapper,risk,ledger,outbox,json,clock,unilevel,self,null);
+    }
     public DirectReferralService(DirectReferralMapper mapper,DirectReferralPolicyService policies,EarningsReleaseService earnings,
             EarningsReleaseMapper releaseMapper,RiskReleaseParamsService risk,TreasuryLedgerPostingFacade ledger,EventOutboxService outbox,ObjectMapper json,Clock clock){
         this(mapper,policies,earnings,releaseMapper,risk,ledger,outbox,json,clock,null,null);
@@ -63,6 +69,7 @@ public class DirectReferralService {
         BigDecimal dueUsdt=assetCredited(row,"usdt")?targetUsdt.subtract(recoveredUsdt).max(BigDecimal.ZERO):BigDecimal.ZERO;
         BigDecimal dueNex=assetCredited(row,"nex")?targetNex.subtract(recoveredNex).max(BigDecimal.ZERO):BigDecimal.ZERO;
         var wallet=mapper.lockWallet(id,sandbox);if(wallet==null)wallet=new DirectReferralMapper.Wallet(BigDecimal.ZERO,BigDecimal.ZERO);
+        var capture=sandbox==0&&supportFund!=null?supportFund.begin("S:"+no):null;
         BigDecimal takeUsdt=dueUsdt.min(zero(wallet.usdt()).max(BigDecimal.ZERO)),takeNex=dueNex.min(zero(wallet.nex()).max(BigDecimal.ZERO));
         if(takeUsdt.signum()>0||takeNex.signum()>0){
             if(mapper.debit(id,sandbox,takeUsdt,takeNex)!=1)throw conflict();
@@ -77,6 +84,7 @@ public class DirectReferralService {
         if(targetUsdt.signum()>0&&row.get("usdt_event_id")!=null)mapper.recoveredEventStatus(number(row,"usdt_event_id"),pendingUsdt.signum()>0?"RECOVERY_PENDING":"REVERSED");
         if(targetNex.signum()>0&&row.get("nex_event_id")!=null)mapper.recoveredEventStatus(number(row,"nex_event_id"),pendingNex.signum()>0?"RECOVERY_PENDING":"REVERSED");
         mapper.reverseReleaseEntries(id,targetUsdt.signum()>0?no+":USDT":no+":NONE",targetNex.signum()>0?no+":NEX":no+":NONE");
+        if(capture!=null)supportFund.recorded(capture);
     }
     @Transactional(rollbackFor=Exception.class)
     public boolean releaseEvent(Long eventId){
@@ -247,6 +255,7 @@ public class DirectReferralService {
             var prior=mapper.eventRecovery(id);BigDecimal target=flag(event,"credited")&&!flag(event,"reversed")?money(event,"amount"):BigDecimal.ZERO;
             BigDecimal recovered=money(prior==null?Map.of():prior,"recovered_amount"),due=target.subtract(recovered).max(BigDecimal.ZERO);
             var wallet=mapper.lockWallet(user,scope.sandbox());BigDecimal balance=wallet==null?BigDecimal.ZERO:"USDT".equals(asset)?wallet.usdt():wallet.nex();
+            var capture=scope.sandbox()==0&&supportFund!=null?supportFund.begin("R:"+id):null;
             BigDecimal take=due.min(zero(balance).max(BigDecimal.ZERO));
             if(take.signum()>0){
                 if(mapper.debit(user,scope.sandbox(),"USDT".equals(asset)?take:BigDecimal.ZERO,"NEX".equals(asset)?take:BigDecimal.ZERO)!=1)throw conflict();
@@ -255,6 +264,7 @@ public class DirectReferralService {
             BigDecimal pending=target.subtract(recovered).max(BigDecimal.ZERO);
             mapper.saveEventRecovery(id,order,scope.sourceEnvironment(),scope.runId(),user,asset,target,recovered,pending);
             mapper.recoveredEventStatus(id,pending.signum()>0?"RECOVERY_PENDING":"REVERSED");
+            if(capture!=null)supportFund.recorded(capture);
         }
     }
 
@@ -350,12 +360,14 @@ public class DirectReferralService {
     }
     @Transactional(rollbackFor=Exception.class)
     public void markRecoveryFailure(String no){lockPurchaseSource(no);var row=lock(no);
+        var capture=scope(row)==0&&supportFund!=null?supportFund.beginFailure("S:"+no):null;
         BigDecimal usdt=money(row,"recovered_usdt"),nex=money(row,"recovered_nex");
         BigDecimal pendingUsdt=assetCredited(row,"usdt")?money(row,"amount_usdt").subtract(usdt).max(BigDecimal.ZERO):BigDecimal.ZERO;
         BigDecimal pendingNex=assetCredited(row,"nex")?money(row,"amount_nex").subtract(nex).max(BigDecimal.ZERO):BigDecimal.ZERO;
         mapper.assetRecovery(no,money(row,"amount_usdt"),money(row,"amount_nex"),1,BigDecimal.ONE,usdt,nex,pendingUsdt,pendingNex,pendingUsdt.signum()>0||pendingNex.signum()>0?"RECOVERY_PENDING":"REVERSED");
         if(row.get("usdt_event_id")!=null)mapper.recoveredEventStatus(number(row,"usdt_event_id"),pendingUsdt.signum()>0?"RECOVERY_PENDING":"REVERSED");
         if(row.get("nex_event_id")!=null)mapper.recoveredEventStatus(number(row,"nex_event_id"),pendingNex.signum()>0?"RECOVERY_PENDING":"REVERSED");
+        if(capture!=null)supportFund.recorded(capture);
     }
 
 

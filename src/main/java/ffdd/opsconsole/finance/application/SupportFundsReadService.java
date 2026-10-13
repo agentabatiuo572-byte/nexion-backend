@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import java.math.BigDecimal;
 import java.sql.Connection;
 import java.time.LocalDateTime;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
@@ -23,7 +24,29 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @ApplicationService
 public class SupportFundsReadService implements SupportFundsReadFacade {
     private final SupportFundsReadMapper mapper;
-    public SupportFundsReadService(SupportFundsReadMapper mapper) {this.mapper=Objects.requireNonNull(mapper);}
+    private final SupportFundReadService net;
+    @org.springframework.beans.factory.annotation.Autowired
+    public SupportFundsReadService(SupportFundsReadMapper mapper,SupportFundReadService net) {this.mapper=Objects.requireNonNull(mapper);this.net=Objects.requireNonNull(net);}
+    public SupportFundsReadService(SupportFundsReadMapper mapper) {this.mapper=Objects.requireNonNull(mapper);this.net=null;}
+    @Override public NetSnapshot readNetContributions(Collection<Long> ids) {
+        if(net==null)throw invalid("SUPPORT_FUND_READER_NOT_CONFIGURED");
+        if(ids==null || ids.stream().anyMatch(id->id==null || id<=0))throw new IllegalArgumentException("Explicit positive customer scope required");
+        var roots=List.copyOf(new TreeSet<>(ids));
+        if(roots.isEmpty())return net.read(roots);
+        var pending=new ArrayDeque<List<Long>>();
+        for(int offset=0;offset<roots.size();offset+=1000)pending.add(roots.subList(offset,Math.min(offset+1000,roots.size())));
+        var customers=new ArrayList<NetCustomer>();var origins=new ArrayList<ContributionOrigin>();var changes=new ArrayList<ContributionChange>();
+        while(!pending.isEmpty()) {
+            var batch=pending.removeFirst();var read=net.read(batch);
+            // Unrelated roots must not push a valid connected component over its closure limit.
+            if(batch.size()>1 && read.customers().size()==batch.size() && read.customers().stream()
+                    .allMatch(row->row.state()==EvidenceState.UNKNOWN && row.reasons().equals(List.of("CLOSURE_LIMIT")))) {
+                int middle=batch.size()/2;pending.addFirst(batch.subList(middle,batch.size()));pending.addFirst(batch.subList(0,middle));continue;
+            }
+            customers.addAll(read.customers());origins.addAll(read.origins());changes.addAll(read.changes());
+        }
+        return new NetSnapshot(customers,origins,changes);
+    }
 
     @Override public Snapshot readCurrent(Collection<Long> customerIds) {
         if(customerIds==null || customerIds.stream().anyMatch(id->id==null || id<=0))throw invalid("INVALID_SUPPORT_FUNDS_SCOPE");

@@ -251,7 +251,7 @@ class PromotionLifecycleMySqlTest {
         h.session.getConfiguration().addMapper(AppBundleOrderMapper.class);bundle=h.session.getMapper(AppBundleOrderMapper.class);
         var outbox=new EventOutboxService(h.session.getMapper(EventOutboxMapper.class),new ObjectMapper().findAndRegisterModules(),new OutboxProperties(),
             new A4RuntimePolicyService(new MybatisPlatformConfigRepository(h.session.getMapper(PlatformConfigItemMapper.class))));
-        var repo=h.proxy(new MybatisTreasuryLedgerRepository(h.session.getMapper(TreasuryLedgerMapper.class),outbox));ledger=new TreasuryLedgerPostingFacadeAdapter(repo,null);
+        var repo=h.proxy(new MybatisTreasuryLedgerRepository(h.session.getMapper(TreasuryLedgerMapper.class),outbox,ffdd.opsconsole.treasury.application.SupportCommissionTestCapture.real(h.session,h.dataSource,new ObjectMapper().findAndRegisterModules())));ledger=new TreasuryLedgerPostingFacadeAdapter(repo,null);
         var env=new MockEnvironment();env.setActiveProfiles("dev");
         var guard=new FundsSandboxProfileGuard(new FundsSandboxProperties(),env);
         var earnings=h.proxy(new EarningsReleaseService(h.session.getMapper(EarningsReleaseMapper.class),h.earningsPolicy,h.idempotency,h.audit,guard));

@@ -6,6 +6,9 @@ import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -76,6 +79,8 @@ class OpsFinanceServiceTest {
             mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
     private final RiskDisclosureGateFacade disclosureGateFacade = mock(RiskDisclosureGateFacade.class);
     private final TreasuryLedgerRepository treasuryLedgerRepository = mock(TreasuryLedgerRepository.class);
+    private final WithdrawalPayoutFinalizer withdrawalPayoutFinalizer = mock(WithdrawalPayoutFinalizer.class);
+    private final SupportWithdrawalFundSourceService withdrawalFunds = mock(SupportWithdrawalFundSourceService.class);
     private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
     private final AdminOperatorRoleResolver operatorRoleResolver = mock(AdminOperatorRoleResolver.class);
     private final AppWithdrawalMapper appWithdrawalMapper = mock(AppWithdrawalMapper.class);
@@ -98,6 +103,7 @@ class OpsFinanceServiceTest {
                     lockMapper,
                     disclosureGateFacade,
                     treasuryLedgerRepository,
+                    withdrawalPayoutFinalizer, withdrawalFunds,
                     eventOutboxService,
                     operatorRoleResolver,
                     appWithdrawalMapper,
@@ -106,6 +112,7 @@ class OpsFinanceServiceTest {
 
     @BeforeEach
     void setUpRiskDefaults() {
+        when(withdrawalFunds.hasCashReservation(anyString(), org.mockito.ArgumentMatchers.anyLong(), any(), any())).thenReturn(true);
         when(appWithdrawalMapper.businessDayOrdinal(org.mockito.ArgumentMatchers.anyLong(), anyString()))
                 .thenAnswer(invocation -> withdrawalRepository.order == null ? 1 : withdrawalRepository.order.withdrawalCount24h());
         when(riskTimePolicy.enabled()).thenReturn(true);
@@ -149,6 +156,7 @@ class OpsFinanceServiceTest {
                 lockMapper,
                 disclosureGateFacade,
                 treasuryLedgerRepository,
+                withdrawalPayoutFinalizer, withdrawalFunds,
                 eventOutboxService,
                 operatorRoleResolver,
                 appWithdrawalMapper,
@@ -1220,6 +1228,88 @@ class OpsFinanceServiceTest {
     }
 
     @Test
+    void unreservedOldRejectCannotReturnAnotherOrdersPendingCash() {
+        assertUnreservedOldReturnKeepsOtherOrdersCash("REJECT", "REVIEW_PENDING");
+    }
+
+    @Test
+    void unreservedOldRefundCannotReturnAnotherOrdersPendingCash() {
+        assertUnreservedOldReturnKeepsOtherOrdersCash("REFUND", "TX_FAILED");
+    }
+
+    private void assertUnreservedOldReturnKeepsOtherOrdersCash(String action, String state) {
+        withdrawalRepository.order = withdrawal("WD1", state);
+        var source = new SupportWithdrawalFundSourceServiceTest.Fixture("RETURN", BigDecimal.ZERO);
+        source.order.put("userId",1001L);
+        source.order.remove("attemptStatus");
+        when(source.mapper.fundReservationLedgers("WD1")).thenReturn(List.of());
+        when(withdrawalFunds.hasCashReservation(eq("WD1"),eq(1001L),any(),any()))
+                .thenAnswer(i -> source.service.hasCashReservation(i.getArgument(0),i.getArgument(1),i.getArgument(2),i.getArgument(3)));
+        var pending = new java.util.concurrent.atomic.AtomicReference<>(new BigDecimal("100"));
+        var available = new java.util.concurrent.atomic.AtomicReference<>(new BigDecimal("900"));
+        var cashMapper = mock(ffdd.opsconsole.treasury.mapper.TreasuryLedgerMapper.class);
+        when(cashMapper.actualUserBalance(1001L,"USDT")).thenAnswer(i -> available.get());
+        when(cashMapper.releasePendingWithdrawalWithNex(eq(1001L),any(),any())).thenAnswer(i -> {
+            BigDecimal gross=i.getArgument(1);
+            if(pending.get().compareTo(gross)<0)return 0;
+            pending.set(pending.get().subtract(gross));available.set(available.get().add(gross));return 1;
+        });
+        when(cashMapper.insertLedgerEntry(any(),any(),any(),any(),any(),any(),any(),any(),any())).thenReturn(1);
+        var cash = new ffdd.opsconsole.treasury.infrastructure.MybatisTreasuryLedgerRepository(cashMapper,eventOutboxService,mock(ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade.class));
+        org.mockito.Mockito.doAnswer(i -> {cash.refundWithdrawal(i.getArgument(0),i.getArgument(1),i.getArgument(2),i.getArgument(3),i.getArgument(4),i.getArgument(5));return null;})
+                .when(treasuryLedgerRepository).refundWithdrawal(anyString(),any(),any(),anyString(),any(),anyString());
+        var result=service.reviewWithdrawal("WD1","old-return-"+action,
+                new WithdrawalReviewRequest(action,"superadmin","复核该笔提现资金返还"));
+        assertThat(pending.get()).isEqualByComparingTo("100");
+        assertThat(available.get()).isEqualByComparingTo("900");
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(withdrawalRepository.lastStatus).isNull();
+        verify(cashMapper,org.mockito.Mockito.never()).releasePendingWithdrawalWithNex(any(),any(),any());
+        verify(withdrawalFunds,org.mockito.Mockito.never()).begin(anyLong());
+        verify(eventOutboxService,org.mockito.Mockito.never()).publish(anyString(),anyString(),anyString(),any());
+    }
+
+    @Test
+    void refundCashCasZeroRollsBackTheActualOpsStateTransition() {
+        withdrawalRepository.order=withdrawal("WD-RETURN","TX_FAILED");
+        var original=withdrawalRepository.order;
+        org.mockito.Mockito.doThrow(new IllegalStateException("WITHDRAWAL_PENDING_FUNDS_INCONSISTENT"))
+                .when(treasuryLedgerRepository).refundWithdrawal(anyString(),any(),any(),anyString(),any(),anyString());
+        var manager=new WithdrawalCashClosureTest.MemoryTransactionManager(()->{},()->{
+            withdrawalRepository.order=original;withdrawalRepository.lastStatus=null;
+        });
+        var transactional=WithdrawalCashClosureTest.transactionProxy(service,manager);
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->transactional.reviewWithdrawal("WD-RETURN","refund-cas-zero",
+                new WithdrawalReviewRequest("REFUND","superadmin","复核该笔提现资金返还")))
+                .isInstanceOf(IllegalStateException.class).hasMessage("WITHDRAWAL_PENDING_FUNDS_INCONSISTENT");
+        assertThat(withdrawalRepository.order.status()).isEqualTo("TX_FAILED");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+        verify(withdrawalFunds,org.mockito.Mockito.never()).returned(any(),anyString());
+    }
+
+    @Test
+    void refundRequiredAuditFailureRollsBackCashStatusAndBoundReceipt() {
+        withdrawalRepository.order=withdrawal("WD-RETURN","TX_FAILED");
+        var original=withdrawalRepository.order;
+        var pending=new java.util.concurrent.atomic.AtomicReference<>(new BigDecimal("200"));
+        var receipts=new ArrayList<String>();
+        org.mockito.Mockito.doAnswer(i->{pending.set(pending.get().subtract(i.getArgument(2)));return null;})
+                .when(treasuryLedgerRepository).refundWithdrawal(anyString(),any(),any(),anyString(),any(),anyString());
+        org.mockito.Mockito.doAnswer(i->{receipts.add(i.getArgument(1));return null;}).when(withdrawalFunds).returned(any(),anyString());
+        org.mockito.Mockito.doThrow(new IllegalStateException("audit unavailable")).when(auditLogService).recordRequired(any());
+        var manager=new WithdrawalCashClosureTest.MemoryTransactionManager(()->{},()->{
+            pending.set(new BigDecimal("200"));receipts.clear();withdrawalRepository.order=original;withdrawalRepository.lastStatus=null;
+        });
+        var transactional=WithdrawalCashClosureTest.transactionProxy(service,manager);
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->transactional.reviewWithdrawal("WD-RETURN","refund-audit-failure",
+                new WithdrawalReviewRequest("REFUND","superadmin","复核该笔提现资金返还")))
+                .isInstanceOf(IllegalStateException.class).hasMessage("audit unavailable");
+        assertThat(pending.get()).isEqualByComparingTo("200");assertThat(receipts).isEmpty();
+        assertThat(withdrawalRepository.order.status()).isEqualTo("TX_FAILED");
+        verify(eventOutboxService,org.mockito.Mockito.never()).publish(anyString(),anyString(),anyString(),any());
+    }
+
+    @Test
     void reviewWithdrawalRejectsApproveWhenUserStatusIsNotActive() {
         withdrawalRepository.order = withdrawal("WD-1", "REVIEWING", "FROZEN", 42, "", 1);
         WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
@@ -2007,6 +2097,29 @@ class OpsFinanceServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(audit.capture());
         assertThat(audit.getValue().getAction()).isEqualTo("D2_WITHDRAWAL_CHAIN_CONFIRMED");
+        verify(withdrawalPayoutFinalizer).settleManualConfirmation(eq("WD-CONFIRM-1"),
+                eq(result.getData().userId()),eq(result.getData().amount()),eq(result.getData().nexBurned()),any(LocalDateTime.class));
+    }
+
+    @Test void manualConfirmationUsesOneWholeSecondForOrderCashAuditAndEvent() {
+        Clock clock=Clock.fixed(Instant.parse("2026-10-13T12:47:34.900Z"),
+                ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE);
+        LocalDateTime expected=LocalDateTime.now(clock).withNano(0);
+        withdrawalRepository.order=withdrawal("WD-SECOND","SENT");
+        var result=service(OpsReadTimeSeedPolicy.enabledForDirectConstruction(),clock).confirmWithdrawal(
+                "WD-SECOND","confirm-whole-second",new WithdrawalConfirmationRequest(
+                        "0x0123456789abcdef0123456789abcdef","finance-admin","复核该笔提现链上结果"));
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().completedAt()).isEqualTo(expected);
+        verify(withdrawalPayoutFinalizer).settleManualConfirmation(eq("WD-SECOND"),eq(result.getData().userId()),
+                eq(result.getData().amount()),eq(result.getData().nexBurned()),eq(expected));
+        ArgumentCaptor<AuditLogWriteRequest> audit=ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(audit.getValue().getDetail()).isInstanceOf(Map.class);
+        assertThat(((Map<?,?>)audit.getValue().getDetail()).get("confirmedAt")).isEqualTo(expected);
+        @SuppressWarnings("unchecked") ArgumentCaptor<Map<String,Object>> event=ArgumentCaptor.forClass(Map.class);
+        verify(eventOutboxService).publish(eq("WITHDRAWAL"),eq("WD-SECOND"),eq("withdraw.confirmed"),event.capture());
+        assertThat(event.getValue()).containsEntry("confirmed_at",expected);
     }
 
     @Test
@@ -2023,6 +2136,60 @@ class OpsFinanceServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat(withdrawalRepository.lastStatus).isNull();
+    }
+
+    @Test void actualManualConfirmationClearsOnlyItsGrossAndReplayLeavesOtherOrderPending() {
+        var f=new ManualCashFixture(true);
+        assertThat(f.confirm().getCode()).isZero();
+        assertThat(f.pending.get()).isEqualByComparingTo("100");
+        assertThat(f.confirm().getCode()).isEqualTo(409);
+        assertThat(f.pending.get()).isEqualByComparingTo("100");assertThat(f.receipts).hasSize(1);
+        verify(f.cashMapper).settlePending(eq(1001L),eq(new BigDecimal("100.00")),any());
+        verify(f.cashMapper,org.mockito.Mockito.never()).refundPending(any(),any(),any(),any());
+    }
+    @Test void actualManualConfirmationWithNoReservationPreservesOtherOrdersCash() {
+        var f=new ManualCashFixture(false);
+        assertThat(f.confirm().getCode()).isZero();
+        assertThat(withdrawalRepository.order.status()).isEqualTo("CONFIRMED");
+        assertThat(f.pending.get()).isEqualByComparingTo("200");assertThat(f.receipts).isEmpty();
+        verify(f.cashMapper,org.mockito.Mockito.never()).settlePending(any(),any(),any());
+    }
+    @Test void actualManualConfirmationCashCasZeroRollsBackSentCas() {
+        var f=new ManualCashFixture(true);
+        when(f.cashMapper.settlePending(eq(1001L),any(),any())).thenReturn(0);
+        org.assertj.core.api.Assertions.assertThatThrownBy(f::confirm).isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+        f.assertRolledBack();
+    }
+    @Test void actualManualConfirmationAuditFailureRollsBackCashReceiptAndSentCas() {
+        var f=new ManualCashFixture(true);
+        org.mockito.Mockito.doThrow(new IllegalStateException("audit unavailable")).when(auditLogService).recordRequired(any());
+        org.assertj.core.api.Assertions.assertThatThrownBy(f::confirm).isInstanceOf(IllegalStateException.class).hasMessage("audit unavailable");
+        f.assertRolledBack();
+        verify(eventOutboxService,org.mockito.Mockito.never()).publish(anyString(),anyString(),anyString(),any());
+    }
+    private class ManualCashFixture {
+        final ffdd.opsconsole.finance.mapper.WithdrawalPayoutMapper cashMapper=mock(ffdd.opsconsole.finance.mapper.WithdrawalPayoutMapper.class);
+        final java.util.concurrent.atomic.AtomicReference<BigDecimal> pending=new java.util.concurrent.atomic.AtomicReference<>(new BigDecimal("200"));
+        final List<String> receipts=new ArrayList<>();final OpsFinanceService transactional;
+        ManualCashFixture(boolean reserved) {
+            withdrawalRepository.order=withdrawal("WD-MANUAL","SENT");var original=withdrawalRepository.order;
+            when(withdrawalFunds.hasCashReservation(eq("WD-MANUAL"),eq(1001L),any(),any())).thenReturn(reserved);
+            when(cashMapper.lockCashCustomer(1001L)).thenReturn(1001L);
+            when(cashMapper.settlePending(eq(1001L),any(),any())).thenAnswer(i->{pending.set(pending.get().subtract(i.getArgument(1)));return 1;});
+            org.mockito.Mockito.doAnswer(i->{receipts.add(i.getArgument(1));return null;}).when(withdrawalFunds).confirmed(any(),anyString(),any());
+            var finalizer=new WithdrawalPayoutFinalizer(cashMapper,auditLogService,mock(ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade.class),Clock.systemUTC(),withdrawalFunds);
+            var target=new OpsFinanceService(configFacade,growthRhythmFacade,emergencyRepository,coverageFacade,withdrawalRepository,
+                    depositOpsRepository,riskOpsRepository,auditLogService,idempotencyService,OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                    lockMapper,disclosureGateFacade,treasuryLedgerRepository,finalizer,withdrawalFunds,eventOutboxService,operatorRoleResolver,
+                    appWithdrawalMapper,withdrawalRiskRuleFacade,bankWithdrawalMapper,Clock.systemUTC(),riskTimePolicy);
+            transactional=WithdrawalCashClosureTest.transactionProxy(target,new WithdrawalCashClosureTest.MemoryTransactionManager(()->{},()->{
+                pending.set(new BigDecimal("200"));receipts.clear();withdrawalRepository.order=original;withdrawalRepository.lastStatus=null;
+            }));
+        }
+        ApiResult<WithdrawalOrderView> confirm(){return transactional.confirmWithdrawal("WD-MANUAL","manual-full-chain",
+                new WithdrawalConfirmationRequest("0x0123456789abcdef0123456789abcdef","finance-admin","复核该笔提现链上结果"));}
+        void assertRolledBack(){assertThat(pending.get()).isEqualByComparingTo("200");assertThat(receipts).isEmpty();
+            assertThat(withdrawalRepository.order.status()).isEqualTo("SENT");assertThat(withdrawalRepository.lastStatus).isNull();}
     }
 
     @SuppressWarnings("unchecked")

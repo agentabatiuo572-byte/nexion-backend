@@ -8,6 +8,29 @@ import org.junit.jupiter.api.Test;
 
 class AppAcceptanceSandboxStartupMigrationContractTest {
     @Test
+    void fundWritersHaveTheirCanonicalSchemaBeforeStartup() throws Exception {
+        String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        java.util.List<String> prerequisites = java.util.List.of("20261011_support_fund_journal.sql",
+                "20261011_support_fund_operations.sql", "20261011_support_fund_operation_party.sql");
+        int previous = 0;
+        for (String migration : java.util.List.of("20260928_cregis_deposit.sql",
+                "20261007_earnings_source_recovery.sql", "20261008_support_payment_attribution.sql",
+                "20261008_support_payment_history_birth.sql")) {
+            assertThat(runner).containsOnlyOnce(migration);
+            assertThat(Files.isRegularFile(Path.of("scripts/migrations", migration))).isTrue();
+            assertThat(runner.indexOf(migration)).isPositive();
+            previous = Math.max(previous, runner.indexOf(migration));
+        }
+        for (String migration : prerequisites) {
+            assertThat(runner).containsOnlyOnce(migration);
+            assertThat(Files.isRegularFile(Path.of("scripts/migrations", migration))).isTrue();
+            int position = runner.indexOf(migration);
+            assertThat(position).isGreaterThan(previous);
+            previous = position;
+        }
+    }
+
+    @Test
     void mergedStartupPreservesPromotionAndPaymentCapturePrerequisitesInOrder() throws Exception {
         String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
         for (String migration : java.util.List.of("20261007_growth_promotions.sql",

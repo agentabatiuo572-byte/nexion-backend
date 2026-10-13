@@ -182,6 +182,13 @@ public interface AppGenesisMapper {
              WHERE h.holding_no=#{holdingNo} AND h.is_deleted=0 LIMIT 1 FOR UPDATE
             """)
     HoldingRow lockHolding(@Param("holdingNo") String holdingNo);
+    @Select("""
+            SELECT id,holding_no AS holdingNo,user_id AS userId,order_no AS orderNo,series_code AS seriesCode,
+                   acquired_price_usdt AS acquiredPriceUsdt,UPPER(status) AS status,
+                   listing_price_usdt AS listingPriceUsdt,acquired_at AS acquiredAt,listed_at AS listedAt
+              FROM nx_genesis_holding WHERE holding_no=#{holdingNo} AND is_deleted=0
+            """)
+    HoldingRow routeHolding(@Param("holdingNo") String holdingNo);
 
     @Update("""
             UPDATE nx_genesis_holding SET status='LISTED',listing_price_usdt=#{askPrice},listed_at=#{listedAt},updated_at=NOW()

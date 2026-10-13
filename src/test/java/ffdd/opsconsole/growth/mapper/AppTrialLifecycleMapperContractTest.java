@@ -27,7 +27,7 @@ class AppTrialLifecycleMapperContractTest {
                 .contains("p.vram_total_gb>0")
                 .contains("AS DECIMAL(18,6))>0")
                 .contains("TRIM(s.datacenter)<>''")
-                .contains("s.power_text REGEXP")
+                .contains("UPPER(TRIM(s.power_text)) REGEXP")
                 .doesNotContain("#{deviceType},1,0");
     }
 

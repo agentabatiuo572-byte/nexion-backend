@@ -56,6 +56,7 @@ public class AppRepurchaseService {
     private final Clock clock;
     private final Environment environment;
     private final MarketSandboxMapper sandboxMapper;
+    private final SupportStakingFundAdapter fundAdapter;
 
     public AppRepurchaseService(AppRepurchaseMapper mapper, RiskDisclosureGateFacade disclosureGate,
             PlatformConfigFacade config, GrowthRhythmFacade growthRhythmFacade, AdminIdempotencyService idempotency,
@@ -63,11 +64,19 @@ public class AppRepurchaseService {
         this(mapper, disclosureGate, config, growthRhythmFacade, idempotency, outbox, audit, clock, environment, null);
     }
 
-    @Autowired
     public AppRepurchaseService(AppRepurchaseMapper mapper, RiskDisclosureGateFacade disclosureGate,
             PlatformConfigFacade config, GrowthRhythmFacade growthRhythmFacade, AdminIdempotencyService idempotency,
             EventOutboxService outbox, AuditLogService audit, Clock clock, Environment environment,
             MarketSandboxMapper sandboxMapper) {
+        this(mapper, disclosureGate, config, growthRhythmFacade, idempotency, outbox, audit, clock,
+                environment, sandboxMapper, null);
+    }
+
+    @Autowired
+    public AppRepurchaseService(AppRepurchaseMapper mapper, RiskDisclosureGateFacade disclosureGate,
+            PlatformConfigFacade config, GrowthRhythmFacade growthRhythmFacade, AdminIdempotencyService idempotency,
+            EventOutboxService outbox, AuditLogService audit, Clock clock, Environment environment,
+            MarketSandboxMapper sandboxMapper, SupportStakingFundAdapter fundAdapter) {
         this.mapper = mapper;
         this.disclosureGate = disclosureGate;
         this.config = config;
@@ -78,6 +87,7 @@ public class AppRepurchaseService {
         this.clock = clock;
         this.environment = environment;
         this.sandboxMapper = sandboxMapper;
+        this.fundAdapter = fundAdapter;
     }
 
     public ApiResult<Map<String, Object>> config() {
@@ -146,6 +156,7 @@ public class AppRepurchaseService {
         if (before == null || before.compareTo(request.amountUsdt()) < 0) {
             throw new BizException(409, "REPURCHASE_WALLET_INSUFFICIENT");
         }
+        var fundBefore = fundAdapter == null ? null : fundAdapter.begin(userId, null);
         if (mapper.debitWallet(userId, request.amountUsdt()) != 1) {
             throw new BizException(409, "REPURCHASE_WALLET_CONFLICT");
         }
@@ -172,6 +183,7 @@ public class AppRepurchaseService {
                 userId, orderNo, Math.toIntExact(tickets), now)) != 1) {
             throw new BizException(409, "G4_LOTTERY_TICKET_CONFLICT");
         }
+        if (fundBefore != null) fundAdapter.recorded(fundBefore, orderNo, "OPEN");
         AppRepurchaseMapper.UserAttribution at = requireAttribution(userId);
         Map<String, Object> payload = linked(
                 "positionNo", orderNo, "product", "repurchase", "amountUsdt", request.amountUsdt(),
@@ -209,6 +221,7 @@ public class AppRepurchaseService {
         if (!("ACTIVE".equals(row.status()) || "MATURE_UNCLAIMED".equals(row.status()))
                 || now.isBefore(row.unlockAt())) throw new BizException(409, "REPURCHASE_NOT_CLAIMABLE");
         BigDecimal before = requireWallet(userId);
+        var fundBefore = fundAdapter == null ? null : fundAdapter.begin(userId, orderNo);
         if (mapper.markClaimed(row.id(), userId, now) != 1) throw new BizException(409, "REPURCHASE_STATE_CONFLICT");
         BigDecimal credited = money(row.amountUsdt().add(row.interestUsdt()));
         if (mapper.creditWallet(userId, credited) != 1) throw new BizException(409, "REPURCHASE_WALLET_CONFLICT");
@@ -216,6 +229,7 @@ public class AppRepurchaseService {
         String billNo = orderNo + "-CLAIM";
         requireLedger(new AppRepurchaseMapper.LedgerWrite(userId, billNo, "REPURCHASE_CLAIM", "IN", credited,
                 after, "G7 matured principal and interest"));
+        if (fundBefore != null) fundAdapter.recorded(fundBefore, orderNo, "CLAIM");
         AppRepurchaseMapper.UserAttribution at = requireAttribution(userId);
         Map<String, Object> payload = linked("positionNo", orderNo,
                 "principalUsdt", row.amountUsdt(), "interestUsdt", row.interestUsdt(),
@@ -243,6 +257,7 @@ public class AppRepurchaseService {
             throw new BizException(409, "REPURCHASE_NOT_EARLY_WITHDRAWABLE");
         }
         BigDecimal before = requireWallet(userId);
+        var fundBefore = fundAdapter == null ? null : fundAdapter.begin(userId, orderNo);
         if (mapper.markEarly(row.id(), userId, now) != 1) throw new BizException(409, "REPURCHASE_STATE_CONFLICT");
         mapper.forfeitTickets(userId, orderNo, now);
         BigDecimal penalty = money(row.amountUsdt().multiply(pct(row.earlyPenaltyBps()))
@@ -253,6 +268,7 @@ public class AppRepurchaseService {
         String billNo = orderNo + "-EARLY";
         requireLedger(new AppRepurchaseMapper.LedgerWrite(userId, billNo, "REPURCHASE_EARLY_WITHDRAW", "IN",
                 credited, after, "G7 early withdrawal net principal; interest and tickets forfeited"));
+        if (fundBefore != null) fundAdapter.recorded(fundBefore, orderNo, "EARLY");
         AppRepurchaseMapper.UserAttribution at = requireAttribution(userId);
         Map<String, Object> payload = linked("positionNo", orderNo,
                 "principalUsdt", row.amountUsdt(), "penaltyUsdt", penalty, "creditedUsdt", credited,

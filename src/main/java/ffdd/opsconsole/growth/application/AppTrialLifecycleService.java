@@ -315,16 +315,19 @@ public class AppTrialLifecycleService {
         WalletRow wallet = mapper.lockWallet(userId);
         if (wallet == null) return ApiResult.fail(409, "TRIAL_WALLET_UNAVAILABLE");
         if (wallet.usdt().compareTo(amount) < 0) return ApiResult.fail(409, "TRIAL_WALLET_INSUFFICIENT");
+        paymentAttribution.beforeCash(prepared);
         if (mapper.settleWallet(userId, amount, BigDecimal.ZERO, BigDecimal.ZERO) != 1) {
             throw new BizException(409, "TRIAL_WALLET_CONFLICT");
         }
         if (settlement.remainderUsdt().signum() > 0) {
-            earningsReleaseService.creditReward(userId, "H2_TRIAL_REMAINDER", row.claimNo() + ":REMAINDER",
+            String entryNo = earningsReleaseService.creditRewardInFundOperation(userId, "H2_TRIAL_REMAINDER", row.claimNo() + ":REMAINDER",
                     "USDT", settlement.remainderUsdt(), "H2:" + row.claimNo() + ":REMAINDER:USDT");
+            paymentAttribution.trialReward(prepared, entryNo);
         }
         if (settlement.shadowNex().signum() > 0) {
-            earningsReleaseService.creditReward(userId, "H2_TRIAL_BONUS", row.claimNo() + ":NEX",
+            String entryNo = earningsReleaseService.creditRewardInFundOperation(userId, "H2_TRIAL_BONUS", row.claimNo() + ":NEX",
                     "NEX", settlement.shadowNex(), "H2:" + row.claimNo() + ":NEX");
+            paymentAttribution.trialReward(prepared, entryNo);
         }
         BigDecimal usdtAfter = wallet.usdt().subtract(amount).add(settlement.remainderUsdt());
         BigDecimal nexAfter = wallet.nex().add(settlement.shadowNex());
@@ -373,11 +376,13 @@ public class AppTrialLifecycleService {
                 "remainderUsdt", settlement.remainderUsdt(), "discountApplied", promoDiscount,
                 "earlyPurchase", false, "sourceEnvironment", "PRODUCTION");
         putCanonicalProvenance(detail, TRIAL_CONVERSION_SOURCE);
-        publish("TRIAL", row.claimNo(), "trial.redeemed", userId, attr, detail);
+        Map<String, Object> eventDetail = new LinkedHashMap<>(detail);
+        eventDetail.keySet().removeAll(Set.of("serverCanonical", "sourceEnvironment", "runId", "provenance"));
+        publish("TRIAL", row.claimNo(), "trial.redeemed", userId, attr, eventDetail);
         publish("ORDER", orderNo, "checkout.completed", userId, attr,
-                linked("order_no", orderNo, "order_subtotal_usdt", amount, "amount_usdt", amount));
+                linked("order_id", orderNo, "order_no", orderNo, "order_subtotal_usdt", amount, "amount_usdt", amount));
         record("H2_TRIAL_CONVERTED", row.claimNo(), userId, detail);
-        if (amount.signum() > 0) paymentAttribution.record(prepared);
+        paymentAttribution.record(prepared);
         return ApiResult.ok(detail);
     }
 

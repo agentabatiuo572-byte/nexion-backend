@@ -427,7 +427,7 @@ class SupportAnalyticsServiceTest {
         assertUnknown(result);
         when(finance.readHistory(any())).thenReturn(snapshot);
         result=service.summarize(history("USDT"));
-        assertThat(result.financialSummary().currencies().get(0).deposits().observedAmount()).isZero();
+        assertThat(result.financialSummary().currencies().get(0).deposits().observedAmount()).isNull();
         assertThat(result.financialSummary().currencies().get(0).deposits().confirmedAmount()).isNull();
         assertThat(result.currentCustomers().get(0).first().reasons()).containsExactly("HISTORY_UNVERIFIED");
     }
@@ -774,6 +774,18 @@ class SupportAnalyticsServiceTest {
             assertThat(result.personnel().serviceAccounts().confirmedValue()).isEqualTo(1);assertThat(result.personnel().supervisors().confirmedValue()).isEqualTo(2);assertThat(result.personnel().people().confirmedValue()).isEqualTo(2);
             assertThat(result.personnel().partitions()).filteredOn(p->p.dimension().equals("SUPERVISOR_ACCOUNT") && p.value().equals("DISABLED")).singleElement().satisfies(p->assertThat(p.accounts().confirmedValue()).isEqualTo(1));
             verify(mapper).supervisorAccountRows(all);
+            var groups=mapper.scopedGroupRows(all);var services=mapper.serviceAccountRows(all);var supervisors=mapper.supervisorAccountRows(all);
+            var selected=new ReadScope(8L,ReadMode.ALL,100L,null);
+            when(ownership.queryScope(ReadMode.ALL,100L,null)).thenReturn(selected);
+            when(mapper.scopedGroupRows(selected)).thenReturn(groups);
+            when(mapper.serviceAccountRows(selected)).thenReturn(services);
+            when(mapper.supervisorAccountRows(selected)).thenReturn(supervisors);
+            var single=complete.summarize(new Query(ReadMode.ALL,100L,null,Basis.CURRENT_CUSTOMER_HISTORY,null,null,"UTC","USDT"));
+            assertThat(single.personnel().supervisors().confirmedValue()).isEqualTo(1);
+            assertThat(single.personnel().serviceAccounts().confirmedValue()).isEqualTo(1);
+            assertThat(single.personnel().people().confirmedValue()).isEqualTo(1);
+            assertThat(single.personnel().groups().confirmedValue()).isEqualTo(1);
+            assertThat(single.personnel()).isEqualTo(single.groups().get(0).personnel());
         }finally{SecurityContextHolder.clearContext();}
     }
     @Test void legacyConstructorDoesNotMakeAbsentMetricsAvailableZero() {

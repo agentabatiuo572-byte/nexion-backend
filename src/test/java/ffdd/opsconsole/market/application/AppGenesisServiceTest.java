@@ -11,6 +11,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.inOrder;
 
 import ffdd.opsconsole.market.mapper.AppGenesisMapper;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper;
@@ -96,15 +97,20 @@ class AppGenesisServiceTest {
     private final AdminIdempotencyService idempotency=mock(AdminIdempotencyService.class);
     private final EventOutboxService outbox=mock(EventOutboxService.class);
     private final AuditLogService audit=mock(AuditLogService.class);
+    private final ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade payments=mock(ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.class);
+    private final ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared prepared=mock(ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared.class);
     private final GenesisCatalogService catalog=mock(GenesisCatalogService.class);
     private final MockEnvironment environment = new MockEnvironment();
     private final AppGenesisService service=new AppGenesisService(mapper,config,idempotency,outbox,audit,
             Clock.fixed(Instant.parse("2026-07-22T04:00:00Z"), ZoneOffset.UTC),catalog,environment,
-            Optional.empty());
+            Optional.empty(),payments);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes","unchecked"})
     void setUp(){
+        when(payments.prepare(anyLong(),any(),anyString())).thenReturn(prepared);
+        when(payments.insertLedger(any(),any(),any(),anyString())).thenReturn(1);
+        when(mapper.lockActiveUser(anyLong())).thenAnswer(i->i.getArgument(0));
         when(config.activeValue(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
             case "market.genesis.ops.eligibility.enabled" -> Optional.of("true");
             case "market.genesis.ops.eligibility.maxPerUser" -> Optional.of("5");
@@ -145,6 +151,46 @@ class AppGenesisServiceTest {
                 "catalogAvailable", true, "tradeAvailable", true, "tradeBlockedReason", ""));
         when(idempotency.executeRetained(anyString(),anyString(),anyString(),any(),any()))
                 .thenAnswer(i->((Supplier)i.getArgument(4)).get());
+    }
+    @Test void realPrimaryWritePreparesBeforeDebitAndCapturesOnlyAfterOrderHoldingAndFreshLedger() {
+        service.purchase(42L,"fund-primary",new AppGenesisService.PurchaseRequest(1));
+        var order=inOrder(mapper,payments);
+        order.verify(payments).prepare(org.mockito.ArgumentMatchers.eq(42L),org.mockito.ArgumentMatchers.eq(ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source.GENESIS_PRIMARY),anyString());
+        order.verify(payments).beforeGenesisCash(prepared,List.of(42L),null);
+        order.verify(mapper).debitWallet(org.mockito.ArgumentMatchers.eq(42L),any());
+        order.verify(mapper).insertOrder(any());order.verify(mapper).insertHolding(any());
+        order.verify(payments).insertLedger(org.mockito.ArgumentMatchers.eq(prepared),any(),any(),anyString());
+        order.verify(payments).record(prepared);
+    }
+    @ParameterizedTest @ValueSource(longs={7L,99L})
+    void secondaryLocksBothUsersAndWalletsInNumericOrderBeforeHoldingAndOneCompleteCashPreparation(long seller) {
+        var row=holding(seller,"LISTED");when(mapper.routeHolding("GEN-FIXTURE")).thenReturn(row);when(mapper.lockHolding("GEN-FIXTURE")).thenReturn(row);
+        when(mapper.lockWallet(seller)).thenReturn(BigDecimal.ZERO);when(mapper.debitWallet(org.mockito.ArgumentMatchers.eq(42L),any())).thenReturn(1);
+        when(mapper.creditWallet(org.mockito.ArgumentMatchers.eq(seller),any())).thenReturn(1);
+        when(mapper.transferHolding(anyLong(),anyLong(),anyLong(),anyString(),any(),any())).thenReturn(1);
+        service.buyListing(42L,"GEN-FIXTURE","sorted-parties-"+seller,new AppGenesisService.BuyRequest(new BigDecimal("120")));
+        long first=Math.min(42,seller),second=Math.max(42,seller);var order=inOrder(mapper,payments);
+        order.verify(mapper).routeHolding("GEN-FIXTURE");order.verify(mapper).lockActiveSeries();
+        order.verify(mapper).lockActiveUser(first);order.verify(mapper).lockActiveUser(second);
+        order.verify(mapper).lockWallet(first);order.verify(mapper).lockWallet(second);order.verify(mapper).lockHolding("GEN-FIXTURE");
+        order.verify(payments).prepare(org.mockito.ArgumentMatchers.eq(42L),org.mockito.ArgumentMatchers.eq(ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source.GENESIS_SECONDARY),anyString());
+        order.verify(payments).beforeGenesisCash(prepared,List.of(first,second),"GEN-FIXTURE");
+        order.verify(mapper).debitWallet(org.mockito.ArgumentMatchers.eq(42L),any());order.verify(mapper).creditWallet(seller,new BigDecimal("117.000000"));
+        order.verify(mapper).insertOrder(any());order.verify(mapper).transferHolding(anyLong(),anyLong(),anyLong(),anyString(),any(),any());
+        order.verify(payments).insertLedger(org.mockito.ArgumentMatchers.eq(prepared),org.mockito.ArgumentMatchers.eq(new BigDecimal("120.000000")),any(),anyString());
+        order.verify(mapper).insertLedger(org.mockito.ArgumentMatchers.argThat(l->l.userId()==seller && l.amount().compareTo(new BigDecimal("117"))==0 && l.bizType().equals("GENESIS_SECONDARY_SELL")));
+        order.verify(payments).record(prepared);
+    }
+    @Test void competingBuyerChangingHoldingBetweenRouteAndLockedReadCannotDebitOrCapture() {
+        when(mapper.routeHolding("GEN-FIXTURE")).thenReturn(holding(7L,"LISTED"));
+        when(mapper.lockHolding("GEN-FIXTURE")).thenReturn(holding(99L,"ACTIVE"));when(mapper.lockWallet(7L)).thenReturn(BigDecimal.ZERO);
+        assertThatThrownBy(()->service.buyListing(42L,"GEN-FIXTURE","lost-race",new AppGenesisService.BuyRequest(new BigDecimal("120"))))
+            .hasMessage("GENESIS_LISTING_CONFLICT");assertNoTradeWrites();verifyNoInteractions(payments);
+    }
+    @Test void listingUsesTheSameUserBeforeHoldingLockOrder() {
+        when(mapper.lockHolding("GEN-FIXTURE")).thenReturn(holding(42L,"ACTIVE"));when(mapper.listHolding(anyLong(),anyLong(),any(),any())).thenReturn(1);
+        service.list(42L,"GEN-FIXTURE","listing-lock-order",new AppGenesisService.ListingRequest(BigDecimal.TEN));
+        var order=inOrder(mapper);order.verify(mapper).lockActiveUser(42L);order.verify(mapper).lockHolding("GEN-FIXTURE");
     }
 
     @Test
@@ -331,7 +377,7 @@ class AppGenesisServiceTest {
         verify(mapper).insertOrder(any(AppGenesisMapper.OrderWrite.class));
         verify(mapper).insertHolding(any(AppGenesisMapper.HoldingWrite.class));
         verify(mapper).updateSoldSupply(1L,1L);
-        verify(mapper).insertLedger(any(AppGenesisMapper.LedgerWrite.class));
+        verify(payments).insertLedger(org.mockito.ArgumentMatchers.eq(prepared),any(),any(),anyString());
         verify(outbox).publishUserEvent(anyString(),anyString(),org.mockito.ArgumentMatchers.eq("genesis.purchased"),
                 org.mockito.ArgumentMatchers.eq(42L),anyString(),org.mockito.ArgumentMatchers.anyInt(),anyString(),any());
         verify(audit).recordRequiredForTrustedActor(any());
@@ -399,7 +445,7 @@ class AppGenesisServiceTest {
         verify(mapper).debitWallet(42L, new BigDecimal("9999.000000"));
         verify(mapper).insertOrder(any(AppGenesisMapper.OrderWrite.class));
         verify(mapper).insertHolding(any(AppGenesisMapper.HoldingWrite.class));
-        verify(mapper).insertLedger(any(AppGenesisMapper.LedgerWrite.class));
+        verify(payments).insertLedger(org.mockito.ArgumentMatchers.eq(prepared),any(),any(),anyString());
     }
 
     @Test
@@ -540,7 +586,7 @@ class AppGenesisServiceTest {
 
     @Test
     void secondaryBuyRejectsLockedPriceChangeBeforeSeriesWalletOrderTransferLedgerOutboxOrAudit() {
-        when(mapper.lockHolding("listed-price-change")).thenReturn(new AppGenesisMapper.HoldingRow(
+        when(mapper.routeHolding("listed-price-change")).thenReturn(new AppGenesisMapper.HoldingRow(
                 9L, "listed-price-change", 7L, "seller-order", "genesis-main",
                 new BigDecimal("100"), "LISTED", new BigDecimal("120.123456"),
                 LocalDateTime.now(), LocalDateTime.now()));
@@ -564,9 +610,10 @@ class AppGenesisServiceTest {
     @Test
     void secondaryBuyUsesTheExactLockedExpectedPriceForDebitOrderAndTransfer() {
         BigDecimal price = new BigDecimal("120.123456");
-        when(mapper.lockHolding("listed-exact")).thenReturn(new AppGenesisMapper.HoldingRow(
+        var original = new AppGenesisMapper.HoldingRow(
                 9L, "listed-exact", 7L, "seller-order", "genesis-main",
-                new BigDecimal("100"), "LISTED", price, LocalDateTime.now(), LocalDateTime.now()));
+                new BigDecimal("100"), "LISTED", price, LocalDateTime.now(), LocalDateTime.now());
+        when(mapper.routeHolding("listed-exact")).thenReturn(original);when(mapper.lockHolding("listed-exact")).thenReturn(original);
         when(mapper.lockWallet(7L)).thenReturn(BigDecimal.ZERO);
         when(mapper.debitWallet(42L, price)).thenReturn(1);
         when(mapper.creditWallet(7L, new BigDecimal("117.120370"))).thenReturn(1);
@@ -606,7 +653,7 @@ class AppGenesisServiceTest {
 
     @Test
     void secondaryPurchaseRejectsSellerFromAnotherEnvironmentBeforeWalletMutation() {
-        when(mapper.lockHolding("sandbox-holding")).thenReturn(new AppGenesisMapper.HoldingRow(
+        when(mapper.routeHolding("sandbox-holding")).thenReturn(new AppGenesisMapper.HoldingRow(
                 9L, "sandbox-holding", 99L, "sandbox-order", "genesis-main",
                 new BigDecimal("100"), "LISTED", new BigDecimal("120"),
                 LocalDateTime.now(), LocalDateTime.now()));
@@ -718,7 +765,7 @@ class AppGenesisServiceTest {
         assertThatThrownBy(()->service.purchase(42L,"purchase-cap",
                 new AppGenesisService.PurchaseRequest(1)))
                 .isInstanceOf(BizException.class).hasMessageContaining("GENESIS_USER_CAP_REACHED");
-        when(mapper.lockHolding("listed-cap")).thenReturn(new AppGenesisMapper.HoldingRow(
+        when(mapper.routeHolding("listed-cap")).thenReturn(new AppGenesisMapper.HoldingRow(
                 9L,"listed-cap",99L,"seller-order","genesis-main",new BigDecimal("100"),
                 "LISTED",new BigDecimal("120"),LocalDateTime.now(),LocalDateTime.now()));
         assertThatThrownBy(()->service.buyListing(42L,"listed-cap","secondary-cap",
