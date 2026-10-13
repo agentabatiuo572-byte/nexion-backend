@@ -37,10 +37,17 @@ public class SupportCustomerProfileService {
     private final ffdd.opsconsole.shared.storage.ObjectStorageService storage;
     private final SupportFundsReadFacade funds;
     private final SupportDeviceReadFacade currentDevices;
+    private final SupportAnalyticsService analytics;
     public SupportCustomerProfileService(SupportOwnershipService ownership,SupportBindingMapper bindings,SupportCustomerProfileMapper mapper,
             OpsUserService users,FinanceSupportReadService finance,OpsDeviceService devices,OpsRiskService risk,CustomerProfileRepository annotations,
             SupportMaintenanceService maintenance,ffdd.opsconsole.content.mapper.SupportWorkbenchMapper workbench,ffdd.opsconsole.shared.storage.ObjectStorageService storage) {
-        this(ownership,bindings,mapper,users,finance,devices,risk,annotations,maintenance,workbench,storage,null,null);
+        this(ownership,bindings,mapper,users,finance,devices,risk,annotations,maintenance,workbench,storage,null,null,null);
+    }
+    public SupportCustomerProfileService(SupportOwnershipService ownership,SupportBindingMapper bindings,SupportCustomerProfileMapper mapper,
+            OpsUserService users,FinanceSupportReadService finance,OpsDeviceService devices,OpsRiskService risk,CustomerProfileRepository annotations,
+            SupportMaintenanceService maintenance,ffdd.opsconsole.content.mapper.SupportWorkbenchMapper workbench,ffdd.opsconsole.shared.storage.ObjectStorageService storage,
+            SupportFundsReadFacade funds,SupportDeviceReadFacade currentDevices) {
+        this(ownership,bindings,mapper,users,finance,devices,risk,annotations,maintenance,workbench,storage,funds,currentDevices,null);
     }
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
@@ -48,6 +55,7 @@ public class SupportCustomerProfileService {
         var scope=ownership.customerQueryScope(customer);
         String evaluatedAt=Instant.now().toString();
         var result=new LinkedHashMap<String,Object>();
+        result.put("statistics",group(()->analytics==null?null:analytics.statisticsForCustomer(customer,scope)));
         var identity=group(()-> {
             var response=users.profile(customer);
             if(response.getCode()!=0) throw new BizException(response.getCode(),"SUPPORT_IDENTITY_UNAVAILABLE");

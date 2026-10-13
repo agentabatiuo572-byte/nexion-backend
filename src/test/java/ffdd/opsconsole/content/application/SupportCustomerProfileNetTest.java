@@ -23,12 +23,25 @@ class SupportCustomerProfileNetTest {
     private final FinanceSupportReadService finance=mock(FinanceSupportReadService.class);
     private final SupportFundsReadFacade funds=mock(SupportFundsReadFacade.class);
     private SupportCustomerProfileService service() throws Exception {
+        return service(null);
+    }
+    private SupportCustomerProfileService service(SupportAnalyticsService analytics) throws Exception {
         Object[] legacy={ownership,mock(SupportBindingMapper.class),mock(SupportCustomerProfileMapper.class),mock(OpsUserService.class),finance,
             mock(OpsDeviceService.class),mock(OpsRiskService.class),mock(CustomerProfileRepository.class),mock(SupportMaintenanceService.class),mock(SupportWorkbenchMapper.class),mock(ObjectStorageService.class)};
         when(ownership.customerQueryScope(1L)).thenReturn(new ReadScope(7L,ReadMode.PERSONAL,null,null));
         when(finance.totals(1L)).thenReturn(Map.of("byCurrency",List.of(Map.of("currency","USDT","balance","77","creditedDepositTotal","11","fieldStatuses",Map.of("balance","READY","creditedDepositTotal","READY")))));
-        for(var ctor:SupportCustomerProfileService.class.getConstructors())if(ctor.getParameterCount()==13){var args=Arrays.copyOf(legacy,13);args[11]=funds;args[12]=mock(ffdd.opsconsole.device.facade.SupportDeviceReadFacade.class);return (SupportCustomerProfileService)ctor.newInstance(args);}
+        for(var ctor:SupportCustomerProfileService.class.getConstructors())if(ctor.getParameterCount()==14){var args=Arrays.copyOf(legacy,14);args[11]=funds;args[12]=mock(ffdd.opsconsole.device.facade.SupportDeviceReadFacade.class);args[13]=analytics;return (SupportCustomerProfileService)ctor.newInstance(args);}
         return (SupportCustomerProfileService)SupportCustomerProfileService.class.getConstructors()[0].newInstance(legacy);
+    }
+    @Test void profileUsesAuthorizedScopeForStatisticsAndPreservesSectionTimestamp() throws Exception {
+        var analytics=mock(SupportAnalyticsService.class);var service=service(analytics);
+        var scope=new ReadScope(7L,ReadMode.PERSONAL,null,null);var payload=Map.<String,Object>of("lifetimeStatus","UNKNOWN");
+        when(analytics.statisticsForCustomer(1L,scope)).thenReturn(payload);
+        var group=(Map<?,?>)service.profile(1L).get("statistics");assertThat(group.get("status")).isEqualTo("READY");
+        assertThat(group.get("data")).isEqualTo(payload);assertThat(group.get("evaluatedAt")).isNotNull();
+        verify(analytics).statisticsForCustomer(1L,scope);
+        when(ownership.customerQueryScope(1L)).thenThrow(new BizException(403,"SUPPORT_SCOPE_FORBIDDEN"));clearInvocations(analytics);
+        assertThatThrownBy(()->service.profile(1L)).isInstanceOf(BizException.class);verifyNoInteractions(analytics);
     }
     @SuppressWarnings("unchecked") private static List<Map<String,Object>> currencies(Map<String,Object> result){return (List<Map<String,Object>>)((Map<String,Object>)((Map<String,Object>)result.get("finance")).get("data")).get("byCurrency");}
     @Test void signedNetAndBothCurrenciesPreserveOldBalanceAndRechargeFields() throws Exception {

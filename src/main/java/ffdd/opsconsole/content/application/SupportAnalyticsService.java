@@ -89,6 +89,20 @@ public class SupportAnalyticsService {
         return new QueryEvaluation(withNet(result,capture),capture);
     }
 
+    /** Profile owns the RR transaction and has already authorized this exact current root. */
+    @Transactional(readOnly=true,propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,noRollbackFor=RuntimeException.class)
+    public Map<String,Object> statisticsForCustomer(Long customerId,ReadScope authorizedScope) {
+        if(customerId==null || customerId<=0 || authorizedScope==null)throw invalid("SUPPORT_ANALYTICS_SCOPE_INVALID");
+        if(invitations==null || devices==null)throw new ffdd.opsconsole.shared.exception.BizException(503,"SUPPORT_ANALYTICS_READER_UNAVAILABLE");
+        var query=new Query(authorizedScope.mode(),authorizedScope.requestedGroupId(),authorizedScope.requestedAgentId(),
+            Basis.CURRENT_CUSTOMER_HISTORY,null,null,SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId(),null);
+        var capture=new QueryCapture();capture.singleCustomer=true;
+        var result=withNet(evaluate(query,authorizedScope,capture,customerId),capture);
+        if(result.currentCustomers().size()!=1 || result.currentCustomers().get(0).customerId()!=customerId)
+            throw invalid("SUPPORT_ANALYTICS_CURRENT_INVALID");
+        return SupportAnalyticsPrivateQueryService.customerStatistics(result.currentCustomers().get(0));
+    }
+
     public record QueryEvaluation(Result result,QueryCapture evidence) { }
     /** Internal data, never HTTP serialized; filled only by the actual evaluation paths below. */
     public static final class QueryCapture {
@@ -109,7 +123,7 @@ public class SupportAnalyticsService {
         public SupportAnalyticsMapper.ActivityCoverage activityCoverage;
         public Map<Long,CustomerActivity> activities=Map.of();
         public List<AccountRow> accounts=List.of();
-        public boolean currentFailed,eventFailed,attributionFailed,deviceFailed,supervisorDirectory;
+        public boolean currentFailed,eventFailed,attributionFailed,deviceFailed,supervisorDirectory,singleCustomer;
         public Status rosterStatus=Status.UNKNOWN;
         public NetSnapshot net;
         public List<AttributionProof> netAttributionProofs=List.of();
@@ -279,12 +293,17 @@ public class SupportAnalyticsService {
     private static boolean netId(JsonNode node,String field,Long expected){var v=node.get(field);return v!=null && (expected==null?v.isNull():v.isIntegralNumber() && v.canConvertToLong() && v.longValue()==expected);}
     private static boolean netLayer(JsonNode node,String status,Long id){return node.isObject() && netText(node,"status",status) && netId(node,"id",id);}
     private Result evaluate(Query query,ReadScope scope,QueryCapture capture) {
+        return evaluate(query,scope,capture,null);
+    }
+    private Result evaluate(Query query,ReadScope scope,QueryCapture capture,Long customerId) {
         var reasons=new TreeSet<String>();
         var current=new TreeMap<Long,SupportAnalyticsMapper.CurrentCustomer>();
         boolean currentFailed=false;
         try {
-            var rows=mapper.currentCustomers(scope);
+            var rows=customerId==null?mapper.currentCustomers(scope):mapper.currentCustomer(scope,customerId);
             if(rows==null)throw invalid("SUPPORT_ANALYTICS_CURRENT_INVALID");
+            if(customerId!=null && (rows.size()!=1 || rows.get(0)==null || !customerId.equals(rows.get(0).customerId())))
+                throw invalid("SUPPORT_ANALYTICS_SCOPE_INVALID");
             for(var row:rows) {
                 if(row==null || row.customerId()==null || row.customerId()<=0 || row.handoverRequired()==null
                         || row.handoverRequired()<0 || row.handoverRequired()>1)
@@ -522,7 +541,7 @@ public class SupportAnalyticsService {
             validateDevices(stock,roots);
         }
         var activity=readActivity(scope,roots,currentFailed,capture);
-        var roster=readRoster(scope,capture);
+        var roster=capture!=null && capture.singleCustomer?new RosterRead(List.of(),List.of(),Status.UNAVAILABLE,false):readRoster(scope,capture);
         if(capture!=null){capture.trees=Map.copyOf(trees);capture.teamSnapshot=teamSnapshot;capture.teamFacts=Map.copyOf(teamFacts);
             capture.stock=stock;capture.deviceFailed=deviceFailed;capture.activityWindow=activity.window();capture.activities=Map.copyOf(activity.customers());
             capture.accounts=List.copyOf(roster.accounts());capture.rosterStatus=roster.status();}

@@ -92,11 +92,15 @@ public interface SupportAnalyticsMapper {
           LEFT JOIN nx_support_group g ON g.id=CASE WHEN a.activeRows=1 THEN m.groupId ELSE r.groupId END
           LEFT JOIN owners o ON o.group_id=g.id
           WHERE scope_customer.sandbox=0
+          <if test="customerId != null">AND scope_customer.id=#{customerId}</if>
         """ + SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + """
         ) SELECT customerId,category,placement,handoverRequired,ownerAgentId,currentGroupId FROM classified ORDER BY customerId
         """;
-    @Select("<script>"+CURRENT_PROJECTION+"</script>")
+    @Select("<script><bind name=\"customerId\" value=\"null\"/>"+CURRENT_PROJECTION+"</script>")
     List<CurrentCustomer> currentCustomers(@Param("scope") ReadScope scope);
+
+    @Select("<script>"+CURRENT_PROJECTION+"</script>")
+    List<CurrentCustomer> currentCustomer(@Param("scope") ReadScope scope,@Param("customerId") Long customerId);
 
     // All-history event candidates are independent of present customer membership and query dates/currency.
     @Select("<script>SELECT e.fact_id factId,e.customer_id customerId FROM nx_support_payment_attribution e WHERE "+EVENT_SCOPE+" ORDER BY e.fact_id</script>")

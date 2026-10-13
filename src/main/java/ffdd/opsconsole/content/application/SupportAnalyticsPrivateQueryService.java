@@ -261,17 +261,23 @@ public class SupportAnalyticsPrivateQueryService {
         .map(CustomerCurrencyTotals::net).filter(m->m.status()==Status.AVAILABLE && m.reasons().isEmpty())
         .map(Money::confirmedAmount).filter(Objects::nonNull).findFirst().orElse(null);}
     private static Map<String,Object> customer(SupportAnalyticsStats.Customer c,Sources s) {
-        var d=s.display().get(c.customerId());var t=s.tasks().get(c.customerId());var m=c.metrics();var first=c.first().observedCandidate();
+        var d=s.display().get(c.customerId());var t=s.tasks().get(c.customerId());var m=c.metrics();var statistics=customerStatistics(c);
         var advisor=s.people().stream().filter(p->Objects.equals(p.id(),c.owner().agentId())).findFirst().orElse(null);
         return map("customerId",Long.toString(c.customerId()),"customerNo",d.customerNo(),"nickname",d.nickname(),"avatar",customerAvatarRef(d),"level",level(d),
             "customTags",s.tags().stream().filter(tg->tg.customerId().equals(c.customerId())).sorted(Comparator.comparing(CustomerTagRow::id)).map(CustomerTagRow::tag).toList(),
             "systemTags",systemTags(d),"systemTagsStatus","PARTIAL","profileRef","/api/admin/content/support-workbench/customers/"+c.customerId(),
             "registeredAt",time(d.registeredAt()),"assignedAt",utc(d.assignedAt()),"category",c.category().name(),"placement",c.placement().name(),"handoverRequired",c.handoverRequired(),"owner",map("agentId",id(c.owner().agentId()),"groupId",id(c.owner().groupId()),"agentName",advisor==null?null:advisor.nickname()==null?advisor.username():advisor.nickname(),"advisorAvatar",personAvatar(advisor),"advisorAvatarRef",personAvatarRef(advisor,c.customerId())),
-            "first",map("state",c.first().state().name(),"status",c.first().status().name(),"kind",first==null?null:first.kind(),"currency",first==null?null:first.currency(),"amount",first==null?null:decimal(first.amount()),"succeededAt",first==null?null:time(first.succeededAt())),
+            "first",statistics.get("first"),"lifetime",statistics.get("lifetime"),"lifetimeStatus",statistics.get("lifetimeStatus"),
+            "invitations",statistics.get("invitations"),"devices",devices(m.devices()),"activity",statistics.get("activity"),
+            "task",t==null?map("status","UNAVAILABLE"):map("status",s.taskRead().name(),"enabled",nullableBool(t.enabled()),"due",nullableBool(t.due()),"waitingReply",nullableBool(t.waitingReply()),"firstContact",nullableBool(t.firstContact()),"nextDueAt",utc(t.nextDueAt()),"waitingSinceAt",businessTime(t.waitingSinceAt())),"funds",funds(s,Set.of(c.customerId())));
+    }
+
+    static Map<String,Object> customerStatistics(SupportAnalyticsStats.Customer c) {
+        var m=c.metrics();var first=c.first().observedCandidate();
+        return map("first",map("state",c.first().state().name(),"status",c.first().status().name(),"kind",first==null?null:first.kind(),"currency",first==null?null:first.currency(),"amount",first==null?null:decimal(first.amount()),"succeededAt",first==null?null:time(first.succeededAt())),
             "lifetime",m.lifetime().stream().map(SupportAnalyticsPrivateQueryService::customerMoney).toList(),"lifetimeStatus",m.lifetimeStatus().name(),
             "invitations",map("direct",count(m.invitations().directCustomers()),"descendants",count(m.invitations().descendantCustomers()),"status",m.invitations().status().name(),"deposits",m.invitations().descendantDeposits().stream().map(x->map("currency",x.currency(),"deposits",money(x.deposits()))).toList()),
-            "devices",devices(m.devices()),"activity",map("state",m.activity().state().name(),"status",m.activity().status().name(),"lastEffectiveAt",utc(m.activity().lastEffectiveAt())),
-            "task",t==null?map("status","UNAVAILABLE"):map("status",s.taskRead().name(),"enabled",nullableBool(t.enabled()),"due",nullableBool(t.due()),"waitingReply",nullableBool(t.waitingReply()),"firstContact",nullableBool(t.firstContact()),"nextDueAt",utc(t.nextDueAt()),"waitingSinceAt",businessTime(t.waitingSinceAt())),"funds",funds(s,Set.of(c.customerId())));
+            "activity",map("state",m.activity().state().name(),"status",m.activity().status().name(),"lastEffectiveAt",utc(m.activity().lastEffectiveAt())));
     }
 
     private static String level(RootDisplayRow d){return d.vRank()!=null && !d.vRank().isBlank()?d.vRank():d.userLevel()!=null && !d.userLevel().isBlank()?d.userLevel():null;}

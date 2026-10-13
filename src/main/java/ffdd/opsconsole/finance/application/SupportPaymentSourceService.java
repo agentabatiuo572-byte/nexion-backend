@@ -66,7 +66,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
     }
 
     @Override
-    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ,noRollbackFor=RuntimeException.class)
     public SupportPaymentFacts.Snapshot readHistory(Collection<Long> customers) {
         if(customers==null || customers.isEmpty() || customers.stream().anyMatch(id -> id==null || id<=0))
             throw new IllegalArgumentException("Explicit positive customer scope required");
