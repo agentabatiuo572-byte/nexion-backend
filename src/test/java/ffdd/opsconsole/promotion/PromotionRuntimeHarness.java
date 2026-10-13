@@ -53,11 +53,12 @@ public final class PromotionRuntimeHarness {
     public final PromotionPolicyService policies;
     public final PromotionContractValidator validator;
     public final PromotionAdminService admin;
-    public final String run="PGR-"+UUID.randomUUID().toString().substring(0,12);
+    public final String run="PGR-S1-"+UUID.randomUUID().toString().substring(0,12);
     public final long maker=790000000001L,checker=790000000002L,publisher=790000000003L;
     public String evidence;
 
     public PromotionRuntimeHarness() throws Exception {
+        assertEquals("capacityApplyToS1",ffdd.opsconsole.shared.capacity.E3DeviceCapacityPolicy.classify(run,"DEVICE"));
         dataSource=RuntimePool.INSTANCE;jdbc=new JdbcTemplate(dataSource);
         assertEquals("growth_promotions_20261007",jdbc.queryForObject("SELECT DATABASE()",String.class));assertEquals(33339,jdbc.queryForObject("SELECT @@port",Integer.class));
         ObjectMapper json=new ObjectMapper().findAndRegisterModules();var mybatis=new MybatisConfiguration(new Environment(run,new SpringManagedTransactionFactory(),dataSource));
