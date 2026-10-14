@@ -26,7 +26,7 @@ public class SupportInvitationReadService implements SupportInvitationReadFacade
 
     /** An enclosing statistics transaction must also use RR; all reads join that same snapshot. */
     @Override
-    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ,noRollbackFor=RuntimeException.class)
     public List<Invitation> readInvitations(Collection<Long> rootCustomerIds) {
         if (rootCustomerIds == null || rootCustomerIds.isEmpty()
                 || rootCustomerIds.stream().anyMatch(id -> id == null || id <= 0))

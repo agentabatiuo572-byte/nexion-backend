@@ -85,7 +85,11 @@ public final class SupportAnalyticsStats {
                                  String historicalEnvironmentStatus,LocalDateTime supportedFrom,String adapterVersion) { }
     /** Historical transfer information is aggregate only, with no customer, event or order identifiers. */
     public record RestrictedSummary(Count customers,Count firstCandidates) { }
-    public record CustomerCurrencyTotals(String currency,Money deposits,Money purchases) { }
+    public record CustomerCurrencyTotals(String currency,Money deposits,Money purchases,Money net) {
+        public CustomerCurrencyTotals(String currency,Money deposits,Money purchases) {
+            this(currency,deposits,purchases,new Money(null,null,null,null,null,Status.UNKNOWN,List.of("COMPLETE_NET_NOT_PROVEN")));
+        }
+    }
     public record InvitationCurrencyTotal(String currency,Money deposits) { }
     /** Descendant identities and per-descendant facts never belong in this projection. */
     public record InvitationSummary(Count directCustomers,Count descendantCustomers,

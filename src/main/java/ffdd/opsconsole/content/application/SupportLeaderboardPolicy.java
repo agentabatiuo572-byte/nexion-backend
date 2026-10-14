@@ -5,7 +5,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 
 /** One policy for request refresh and internal sampling; absent configuration remains unavailable. */
 final class SupportLeaderboardPolicy {
-    static final String DEFINITION = "support-leaderboard-v2-deposit-no-refund";
+    static final String DEFINITION = ffdd.opsconsole.content.domain.SupportLeaderboard.NET_DEFINITION;
     private SupportLeaderboardPolicy() { }
     static int refreshMinutes(PlatformConfigFacade config) {
         String value = config.activeValue(SupportLeaderboardService.REFRESH_KEY)

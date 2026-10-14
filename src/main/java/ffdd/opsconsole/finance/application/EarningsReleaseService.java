@@ -32,7 +32,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_=@org.springframework.beans.factory.annotation.Autowired)
 public class EarningsReleaseService {
     private static final Set<String> BUCKETS = Set.of("withdrawable", "pending_review", "bonus_locked");
     private static final Set<String> ASSETS = Set.of("USDT", "NEX");
@@ -44,6 +44,13 @@ public class EarningsReleaseService {
     private final AdminIdempotencyService idempotency;
     private final AuditLogService audit;
     private final FundsSandboxProfileGuard sandboxProfile;
+    private final SupportFundEarningsAdapter fundEarnings;
+
+    /** Compatibility for isolated business-rule tests; the production constructor requires the adapter. */
+    public EarningsReleaseService(EarningsReleaseMapper mapper,RiskReleaseParamsService params,
+            AdminIdempotencyService idempotency,AuditLogService audit,FundsSandboxProfileGuard sandboxProfile) {
+        this(mapper,params,idempotency,audit,sandboxProfile,null);
+    }
 
     public record RewardRecoveryRequest(Long userId, String entryNo, String sourceType, String sourceRef,
             String asset, String sourceEnvironment, BigDecimal amount, String reason, String actor) { }
@@ -147,6 +154,8 @@ public class EarningsReleaseService {
                 ? entry.amount().subtract(debitDelta.subtract(otherRecoveries)).max(BigDecimal.ZERO)
                 : BigDecimal.ZERO;
         BigDecimal recovered = command.amount().min(remaining).min(provable).min(available).setScale(6);
+        var fundBefore=sandbox==0 && fundEarnings!=null?fundEarnings.begin(command.userId()):null;
+        var fundEntry=fundBefore==null?null:fundEarnings.entry(entry.entryNo());
         if (recovered.signum() > 0) {
             if (mapper.debitRecoveredReward(command.userId(), entry.asset(), recovered, sandbox) != 1) {
                 throw new BizException(409, "EARNINGS_RECOVERY_WALLET_CONFLICT");
@@ -174,6 +183,7 @@ public class EarningsReleaseService {
         audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder().action("EARNINGS_SOURCE_RECOVERED")
                 .resourceType("EARNINGS_RELEASE_ENTRY").resourceId(entry.entryNo()).bizNo(recoveryNo)
                 .userId(command.userId()).actorUsername(command.actor()).riskLevel("HIGH").detail(detail).build());
+        if(fundBefore!=null)fundEarnings.recover(fundBefore,fundEntry,recoveryNo);
         return receipt;
     }
 
@@ -187,6 +197,22 @@ public class EarningsReleaseService {
     @Transactional(rollbackFor = Exception.class)
     public String creditReward(Long userId, String sourceType, String sourceRef, String asset,
                                BigDecimal amount, String sourceEnvironment, String idempotencyKey) {
+        return creditRewardInternal(userId,sourceType,sourceRef,asset,amount,sourceEnvironment,idempotencyKey,true);
+    }
+
+    /** The caller already owns begin/bind for the whole compound wallet operation. */
+    @Transactional(rollbackFor=Exception.class)
+    public String creditRewardInFundOperation(Long userId,String sourceType,String sourceRef,String asset,
+                                             BigDecimal amount,String idempotencyKey) {
+        return creditRewardInFundOperation(userId,sourceType,sourceRef,asset,amount,"PRODUCTION",idempotencyKey);
+    }
+    @Transactional(rollbackFor=Exception.class)
+    public String creditRewardInFundOperation(Long userId,String sourceType,String sourceRef,String asset,
+                                             BigDecimal amount,String sourceEnvironment,String idempotencyKey) {
+        return creditRewardInternal(userId,sourceType,sourceRef,asset,amount,sourceEnvironment,idempotencyKey,false);
+    }
+    private String creditRewardInternal(Long userId,String sourceType,String sourceRef,String asset,
+                                       BigDecimal amount,String sourceEnvironment,String idempotencyKey,boolean capture) {
         EarningsReleaseMapper.RiskCluster cluster = mapper.riskCluster(userId);
         String clusterId = cluster == null || !StringUtils.hasText(cluster.clusterId())
                 ? "USER:" + userId : cluster.clusterId();
@@ -195,8 +221,8 @@ public class EarningsReleaseService {
         String bucket = Set.of("detected", "flagged", "frozen").contains(status) || accounts >= params.freezeFrom()
                 ? "bonus_locked"
                 : accounts >= params.pendingFrom() ? "pending_review" : "withdrawable";
-        return credit(userId, clusterId, sourceType, sourceRef, asset, amount, bucket,
-                sourceEnvironment, idempotencyKey);
+        return creditInternal(userId, clusterId, sourceType, sourceRef, asset, amount, bucket,
+                sourceEnvironment, idempotencyKey,capture);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -209,6 +235,10 @@ public class EarningsReleaseService {
     @Transactional(rollbackFor = Exception.class)
     public String credit(Long userId, String clusterId, String sourceType, String sourceRef, String asset,
                          BigDecimal amount, String bucket, String sourceEnvironment, String idempotencyKey) {
+        return creditInternal(userId,clusterId,sourceType,sourceRef,asset,amount,bucket,sourceEnvironment,idempotencyKey,true);
+    }
+    private String creditInternal(Long userId,String clusterId,String sourceType,String sourceRef,String asset,
+                                  BigDecimal amount,String bucket,String sourceEnvironment,String idempotencyKey,boolean capture) {
         String normalizedAsset = asset == null ? "" : asset.trim().toUpperCase();
         String normalizedEnvironment = sourceEnvironment == null ? "" : sourceEnvironment.trim().toUpperCase();
         String normalizedSourceType = sourceType == null ? "" : sourceType.trim();
@@ -227,6 +257,7 @@ public class EarningsReleaseService {
         // Follow the withdrawal order explicitly: user, wallet, then earnings entry.
         mapper.lockCreditUser(userId, expectedSandbox);
         mapper.lockCreditWallet(userId, expectedSandbox);
+        var fundBefore=capture && expectedSandbox==0 && fundEarnings!=null?fundEarnings.begin(userId):null;
         if (mapper.insert(new EarningsReleaseMapper.EntryWrite(no, userId, clusterId, normalizedSourceType,
                 normalizedSourceRef, normalizedAsset, amount, bucket, normalizedIdempotencyKey, normalizedEnvironment)) != 1) {
             EarningsReleaseMapper.ExistingEntry existing = mapper.findBySource(
@@ -241,6 +272,7 @@ public class EarningsReleaseService {
                 ? mapper.creditUsdt(userId, amount, normalizedEnvironment, expectedSandbox)
                 : mapper.creditNex(userId, amount, normalizedEnvironment, expectedSandbox);
         if (credited != 1) throw new BizException(409, "EARNINGS_RELEASE_WALLET_CONFLICT");
+        if(fundBefore!=null)fundEarnings.credit(fundBefore,no);
         return no;
     }
 
@@ -361,6 +393,8 @@ public class EarningsReleaseService {
                 throw new BizException(409, "EARNINGS_RELEASE_CLUSTER_MISSING");
             }
             if (mapper.releasedAccountsInWindow(cluster, userId, params.releaseWindowHours()) >= params.freeSlots()) continue;
+            var fundBefore=fundEarnings==null?null:fundEarnings.begin(userId);
+            var fundEntry=fundBefore==null?null:fundEarnings.entry(entry.entryNo());
             int released=mapper.releaseFromJanusProof(entry.entryNo(),proof.source());
             if(released!=1)throw new BizException(409,"EARNINGS_RELEASE_CONFLICT");
             audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
@@ -370,6 +404,7 @@ public class EarningsReleaseService {
                     .detail(Map.of("userId", userId, "clusterId", cluster, "deviceId", deviceId.trim(),
                             "before", entry.bucket(), "after", "withdrawable", "source", proof.source()))
                     .build());
+            if(fundBefore!=null)fundEarnings.release(fundBefore,fundEntry,"JANUS",proof);
         }
     }
 
@@ -389,8 +424,20 @@ public class EarningsReleaseService {
     @Transactional(rollbackFor = Exception.class)
     protected ApiResult<Map<String, Object>> manualReleaseOnce(String entryNo,
                                                                 EarningsManualReleaseRequest request) {
+        SupportFundEarningsAdapter.Capture fundBefore=null;
+        if(fundEarnings!=null) {
+            var route=mapper.fundEntryRoute(entryNo);
+            if(route!=null &&"PRODUCTION".equals(route.get("sourceEnvironment"))) {
+                Long owner=((Number)route.get("userId")).longValue();
+                // Route without a source lock, then keep user -> wallet -> source. Frozen-account release semantics stay unchanged.
+                mapper.lockRecoveryUser(owner,0);mapper.lockCreditWallet(owner,0);
+                fundBefore=fundEarnings.begin(owner);
+            }
+        }
         ProtectedEntry entry = mapper.lockProtectedEntry(entryNo);
         if (entry == null) throw new BizException(409, "EARNINGS_RELEASE_ENTRY_NOT_PROTECTED");
+        if(fundBefore!=null && fundBefore.customerId()!=entry.userId())throw new BizException(409,"EARNINGS_RELEASE_ENTRY_NOT_PROTECTED");
+        var fundEntry=fundBefore==null?null:fundEarnings.entry(entryNo);
         TreasuryCoverageSnapshot coverage = params.requireCoverageForAmplifyingRelease();
         if (mapper.release(entryNo, "manual") != 1) throw new BizException(409, "EARNINGS_RELEASE_CONFLICT");
         String actor = AdminActorResolver.resolve(request.operator());
@@ -407,6 +454,7 @@ public class EarningsReleaseService {
         audit.recordRequired(AuditLogWriteRequest.builder().action("K1_EARNINGS_MANUALLY_RELEASED")
                 .resourceType("EARNINGS_RELEASE_ENTRY").resourceId(entryNo).actorUsername(actor)
                 .riskLevel("HIGH").detail(detail).build());
+        if(fundBefore!=null)fundEarnings.release(fundBefore,fundEntry,"MANUAL",null);
         return ApiResult.ok(Map.of("entryNo", entryNo, "bucket", "withdrawable", "releaseSource", "manual"));
     }
 

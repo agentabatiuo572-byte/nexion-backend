@@ -90,11 +90,12 @@ class OpsSupportAgentServiceTest {
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotencyService)
                 .executeRetained(anyString(), anyString(), anyString(), any(), any());
-        when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.of(
+        doThrow(new AssertionError("SUPPORT_MUST_NOT_INITIALIZE_A1_A2")).when(accountService).overview();
+        when(accountService.operatorsForSupport()).thenReturn(List.of(
                 operator("1", "Root Admin", "super", "enabled"),
                 operator("2", "Support Agent", "support", "enabled"),
                 operator("3", "Disabled Support", "support", "disabled"),
-                operator("4", "Finance Agent", "finance", "enabled")))));
+                operator("4", "Finance Agent", "finance", "enabled")));
         when(accountService.currentOperator()).thenReturn(Optional.of(operator("1", "Root Admin", "super", "enabled")));
     }
 
@@ -123,7 +124,10 @@ class OpsSupportAgentServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().agents()).extracting("adminId").containsExactly(2L);
-        assertThat(result.getData().agents().get(0).seatType()).isEqualTo("GENERAL");
+        assertThat(result.getData().agents().get(0).seatType()).isEqualTo("DEDICATED");
+        assertThat(result.getData().agents().get(0).serviceTypes()).containsExactly("advisor");
+        assertThat(fake.findProfile(2L).orElseThrow().seatType()).isEqualTo("GENERAL");
+        assertThat(fake.findProfile(2L).orElseThrow().serviceTypes()).containsExactly("support");
         assertThat(result.getData().agents().get(0).position()).isEqualTo("专属客服");
         assertThat(result.getData().transferTargets())
                 .anySatisfy(target -> assertThat(target).containsEntry("targetType", "agent").containsEntry("targetId", "2"));
@@ -142,23 +146,50 @@ class OpsSupportAgentServiceTest {
 
         var overview = service.overview().getData();
         var page = service.agents(new SupportAgentQueryRequest(1L,20L)).getData();
-        assertThat(overview.serviceTypes()).containsExactly("support");
-        assertThat(page.serviceTypes()).containsExactly("support");
+        assertThat(overview.serviceTypes()).containsExactly("advisor");
+        assertThat(page.serviceTypes()).containsExactly("advisor");
         assertThat(overview.positions()).containsExactly("客服主管","专属客服");
         assertThat(page.positions()).isEqualTo(overview.positions());
-        assertThat(overview.agents()).allSatisfy(agent -> assertThat(agent.serviceTypes()).containsExactly("support"));
-        assertThat(page.records()).allSatisfy(agent -> assertThat(agent.serviceTypes()).containsExactly("support"));
+        assertThat(overview.agents()).allSatisfy(agent -> assertThat(agent.serviceTypes()).containsExactly("advisor"));
+        assertThat(page.records()).allSatisfy(agent -> assertThat(agent.serviceTypes()).containsExactly("advisor"));
         assertThat(page.records()).extracting(agent -> agent.position()).containsExactly("专属客服","专属客服","客服主管");
         assertThat(service.transferTargets()).allSatisfy(target ->
-                assertThat(target.get("serviceTypes")).isEqualTo(List.of("support")));
+                assertThat(target.get("serviceTypes")).isEqualTo(List.of("advisor")));
         assertThat(overview.transferTargets()).allSatisfy(target ->
                 assertThat(target.get("position")).isIn("专属客服","客服主管"));
         assertThat(fake.findProfile(2L).orElseThrow().position()).isEqualTo("通用客服");
         assertThat(fake.findProfile(5L).orElseThrow().serviceTypes()).containsExactly("advisor");
         assertThat(fake.findProfile(6L).orElseThrow().serviceTypes()).containsExactly("support","advisor");
         // A public canonical label does not turn an old advisor-only profile into a legacy routing grant.
-        when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.copyOf(fake.operators))));
+        when(accountService.operatorsForSupport()).thenReturn(List.copyOf(fake.operators));
         assertThat(service.assignableSupportAgent(5L)).isEmpty();
+    }
+
+    @Test
+    void canonicalProfileRoundtripPreservesEveryExistingRoutingCapability() {
+        var fake = (FakeSupportAgentRepository) repository;
+        fake.operators.add(operator("2", "Support Agent", "support", "enabled"));
+        var cases = List.of(
+                Map.entry("GENERAL",List.of("support")),
+                Map.entry("DEDICATED",List.of("support","advisor")),
+                Map.entry("DEDICATED",List.of("advisor")),
+                Map.entry("MANAGER",List.of("support","advisor")));
+        for (var legacy : cases) {
+            fake.updateProfile(2L,legacy.getKey(),"MANAGER".equals(legacy.getKey()) ? "客服主管" : "专属顾问",legacy.getValue(),List.of(),12,true,true,false,now());
+            var before = fake.findProfile(2L).orElseThrow();
+            boolean assignable = service.assignableSupportAgent(2L).isPresent();
+            var view = service.overview().getData().agents().stream().filter(agent -> agent.adminId().equals(2L)).findFirst().orElseThrow();
+            var request = new SupportAgentProfileUpdateRequest(view.position(),view.serviceTypes(),List.of("已复核"),
+                    14,true,true,false,view.version(),"superadmin","仅调整标签和接待容量");
+            var result = service.updateProfile(2L,"canonical-roundtrip-"+legacy.getKey()+legacy.getValue(),request);
+            assertThat(result.getCode()).isZero();
+            var after = fake.findProfile(2L).orElseThrow();
+            assertThat(after.serviceTypes()).containsExactlyElementsOf(before.serviceTypes());
+            assertThat(after.seatType()).isEqualTo(before.seatType());
+            assertThat(after.tags()).containsExactly("已复核");
+            assertThat(after.maxConcurrent()).isEqualTo(14);
+            assertThat(service.assignableSupportAgent(2L).isPresent()).isEqualTo(assignable);
+        }
     }
 
     @Test
@@ -173,7 +204,7 @@ class OpsSupportAgentServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().seatType()).isEqualTo("DEDICATED");
         assertThat(result.getData().position()).isEqualTo("专属客服");
-        assertThat(result.getData().serviceTypes()).containsExactly("support");
+        assertThat(result.getData().serviceTypes()).containsExactly("advisor");
         assertThat(fake.findProfile(2L).orElseThrow().serviceTypes()).containsExactly("advisor","support");
     }
 
@@ -498,9 +529,9 @@ class OpsSupportAgentServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().adminId()).isEqualTo(2L);
-        assertThat(result.getData().seatType()).isEqualTo("GENERAL");
+        assertThat(result.getData().seatType()).isEqualTo("DEDICATED");
         assertThat(result.getData().position()).isEqualTo("专属客服");
-        assertThat(result.getData().serviceTypes()).containsExactly("support");
+        assertThat(result.getData().serviceTypes()).containsExactly("advisor");
         assertThat(result.getData().maxConcurrent()).isEqualTo(16);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
@@ -530,7 +561,7 @@ class OpsSupportAgentServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().seatType()).isEqualTo("DEDICATED");
         assertThat(result.getData().position()).isEqualTo("专属客服");
-        assertThat(result.getData().serviceTypes()).containsExactly("support");
+        assertThat(result.getData().serviceTypes()).containsExactly("advisor");
         assertThat(fake.findProfile(2L).orElseThrow().seatType()).isEqualTo("DEDICATED");
         assertThat(fake.findProfile(2L).orElseThrow().serviceTypes()).contains("advisor");
     }
@@ -816,15 +847,6 @@ class OpsSupportAgentServiceTest {
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(fake.findProfile(2L).orElseThrow().tags()).isEmpty();
-    }
-
-    private static AdminAccountOverview adminOverview(List<AdminAccountOverview.OperatorRecord> operators) {
-        return new AdminAccountOverview(
-                new AdminAccountOverview.AdminAccountStats(operators.size(), 1, 0, 0, 1, 0),
-                List.of(),
-                operators,
-                List.of(),
-                List.of());
     }
 
     private static AdminAccountOverview.OperatorRecord operator(String id, String name, String role, String status) {

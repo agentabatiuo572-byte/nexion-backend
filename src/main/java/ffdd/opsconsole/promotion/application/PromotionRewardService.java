@@ -105,9 +105,8 @@ public class PromotionRewardService {
         require("ACTIVE".equals(product.get("status")),"PROMOTION_GIFT_PRODUCT_UNAVAILABLE");
         String type=text(product.get("product_type"));require(Set.of("DEVICE","SERVER").contains(type),"PROMOTION_GIFT_PRODUCT_UNSUPPORTED");
         boolean share=false;
-        String power=text(sku.get("power_text")).replaceAll("[Ww]","").trim();
-        require(share||power.matches("[0-9]+(\\.[0-9]+)?"),"PROMOTION_GIFT_POWER_UNAVAILABLE");
-        BigDecimal watts=share?BigDecimal.ZERO:new BigDecimal(power);require(share||watts.signum()>0,"PROMOTION_GIFT_POWER_UNAVAILABLE");
+        BigDecimal watts=share?BigDecimal.ZERO:PromotionNativeContractResolver.powerWatts(sku.get("power_text"));
+        require(watts!=null,"PROMOTION_GIFT_POWER_UNAVAILABLE");
         int count=Math.toIntExact(number(spec.get("quantity")));
         for(int i=0;i<count;i++){
             String instance="PG-"+sha256(text(reward.get("obligation_id"))+":"+i).substring(0,48);

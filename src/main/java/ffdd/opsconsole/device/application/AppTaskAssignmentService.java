@@ -85,6 +85,7 @@ public class AppTaskAssignmentService {
     private final Environment environment;
     private final Clock clock;
     private final TestComputeWorkerService testWorker;
+    private final SupportDeviceFundAdapter deviceFunds;
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> testWorkerClaim(Grant grant, String taskNo, String key) {
@@ -748,6 +749,7 @@ public class AppTaskAssignmentService {
                 rewardNex, "CREDITED", sourceEnvironment, now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_REWARD_CONFLICT");
         }
+        var fundBefore=deviceFunds.begin(userId);
         if (mapper.creditWallet(userId, task.deviceId(), task.rewardUsdt(), now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_REWARD_CONFLICT");
         }
@@ -758,6 +760,7 @@ public class AppTaskAssignmentService {
                     task.rewardUsdt(), now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_SETTLEMENT_CONFLICT");
         }
+        deviceFunds.afterUsdt(fundBefore);
         if (rewardNex.signum() > 0) {
             if (mapper.creditCloudShareNex(userId, task.deviceId(), receiptNo, rewardNex, now) != 1) {
                 throw new BizException(409, "TASK_ASSIGNMENT_NEX_SETTLEMENT_CONFLICT");
@@ -830,6 +833,7 @@ public class AppTaskAssignmentService {
                         .build());
             }
         }
+        deviceFunds.recorded(fundBefore,receiptNo);
         AppTaskAssignmentView completion = new AppTaskAssignmentView(task.taskNo(), task.deviceId(), task.taskId(),
                 task.taskName(), task.taskClass(), task.modelName(), task.clientName(), "COMPLETED",
                 task.rewardUsdt(), task.requiredSeconds(), task.startedAt(), completableAt, now, receiptNo,

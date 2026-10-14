@@ -63,6 +63,7 @@ public class AppUserRegistrationService {
     private final CaptchaOtpGate captchaGate;
     private final DayOneInstanceFacade dayOneInstanceFacade;
     private final ffdd.opsconsole.content.facade.SupportRegistrationFacade supportBindingService;
+    private final AuthNewAccountCreator accountCreator;
 
     @PostConstruct
     void ensureSchema() {
@@ -325,10 +326,13 @@ public class AppUserRegistrationService {
         user.setLanguage(StringUtils.hasText(request.language())
                 ? request.language().trim().toLowerCase(java.util.Locale.ROOT) : "en-US");
         user.setIsDeleted(0);
+        AuthNewAccountCreator.BirthHandle birth;
         try {
-            if (userMapper.insert(user) != 1 || user.getId() == null) {
-                throw new IllegalStateException("USER_REGISTRATION_INSERT_FAILED");
-            }
+            birth = accountCreator.insertNew(new ffdd.opsconsole.user.facade.UserRegistrationWriteFacade.NewAccountCommand(
+                    user.getCountryCode(), user.getPhone(), user.getClientIp(), user.getPasswordHash(),
+                    user.getNickname(), user.getReferralCode(), user.getSponsorUserId(), user.getSponsorCode(),
+                    user.getUserLevel(), user.getVRank(), user.getStatus(), sandbox, user.getLanguage()));
+            user.setId(birth.customerId());
         } catch (DuplicateKeyException exception) {
             throw new BizException(409, "USER_REGISTRATION_IDENTITY_CONFLICT");
         }
@@ -336,12 +340,13 @@ public class AppUserRegistrationService {
         dayOneInstanceFacade.provisionForRegisteredUser(user.getId());
         createTeamGraphProjection(user.getId(), sandbox);
         userMapper.resetLoginFailures(user.getId());
-        userMapper.ensureRegisteredUserWallet(user.getId(), sandbox);
-        outboxService.publish(
+        accountCreator.ensureWallet(birth);
+        String registrationEventId = outboxService.publish(
                 "USER_REGISTRATION",
                 String.valueOf(user.getId()),
                 "auth.register_completed",
                 Map.of("userId", user.getId()));
+        accountCreator.complete(birth, registrationEventId);
         if (sponsor != null) {
             outboxService.publish(
                     "USER_REFERRAL",

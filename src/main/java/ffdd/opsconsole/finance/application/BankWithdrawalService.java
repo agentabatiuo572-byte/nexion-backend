@@ -39,6 +39,7 @@ public class BankWithdrawalService {
     private final AuditLogService audit;
     private final Environment environment;
     private final Clock clock;
+    private final SupportWithdrawalFundSourceService withdrawalFunds;
 
     public record BindRequest(String bankCode, String account, String holder, String challengeNo, String code,
                               Boolean accountRoutingConfirmed) {
@@ -209,11 +210,13 @@ public class BankWithdrawalService {
                     if (!recipient.beneficiaryNo().equals(quote.beneficiaryNo()) || !recipient.version().equals(quote.beneficiaryVersion()))
                         throw error(409, "BANK_BENEFICIARY_CHANGED");
                     String requestIp = HdPayClientIp.requireLiteral(clientIp);
+                    var fundBefore = withdrawalFunds.begin(userId);
                     var result = withdrawals.reserveBank(userId, quote, "BANK:" + HdPayPayoutDigest.sha(userId + "|" + key));
                     if (result.getCode() != 0) throw error(result.getCode(), result.getMessage());
                     String order = result.getData().get("withdrawalNo").toString();
                     if (bank.useQuote(quoteNo, order) != 1 || bank.insertOrder(order, quoteNo, userId, now, requestIp) != 1)
                         throw error(409, "BANK_ORDER_LINK_CONFLICT");
+                    withdrawalFunds.reserved(fundBefore,order);
                     return orderView(userId, order);
                 });
         // Retained receipts created by older releases must still project current authoritative settlement evidence.

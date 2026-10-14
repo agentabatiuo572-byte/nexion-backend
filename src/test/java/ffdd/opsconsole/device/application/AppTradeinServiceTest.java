@@ -374,6 +374,9 @@ class AppTradeinServiceTest {
         var captureOrder = org.mockito.Mockito.inOrder(capture, mapper);
         captureOrder.verify(capture).prepare(eq(7L), eq(Source.TRADE_IN), org.mockito.ArgumentMatchers.startsWith("TIO-"));
         captureOrder.verify(mapper).lockSourceDevice(7L, 11L);
+        captureOrder.verify(mapper).lockWalletBalanceUsdt(7L);
+        captureOrder.verify(capture).beforeCash(any(Prepared.class));
+        captureOrder.verify(mapper).debitWalletUsdt(eq(7L),any());
         captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),anyString());
         captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
         org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
@@ -519,7 +522,10 @@ class AppTradeinServiceTest {
         org.mockito.Mockito.verify(mapper,org.mockito.Mockito.never()).insertCapacityKeepWalletLedger(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
         var captureOrder = org.mockito.Mockito.inOrder(capture, mapper);
         captureOrder.verify(capture).prepare(eq(7L), eq(Source.TRADE_IN), org.mockito.ArgumentMatchers.startsWith("CPO-"));
+        captureOrder.verify(mapper).lockWalletBalanceUsdt(7L);
         captureOrder.verify(mapper).lockCapacityReplacementSource(7L);
+        captureOrder.verify(capture).beforeCash(any(Prepared.class));
+        captureOrder.verify(mapper).debitWalletUsdt(eq(7L),any());
         captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),anyString());
         captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
         org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
@@ -668,6 +674,9 @@ class AppTradeinServiceTest {
         var captureOrder = org.mockito.Mockito.inOrder(capture, mapper);
         captureOrder.verify(capture).prepare(eq(7L), eq(Source.CAPACITY_KEEP), org.mockito.ArgumentMatchers.startsWith("CKO-"));
         captureOrder.verify(mapper).lockTargetProduct(null, "stellarbox-pro-v2");
+        captureOrder.verify(mapper).lockWalletBalanceUsdt(7L);
+        captureOrder.verify(capture).beforeCash(any(Prepared.class));
+        captureOrder.verify(mapper).debitWalletUsdt(eq(7L),any());
         captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),anyString());
         captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
         org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));

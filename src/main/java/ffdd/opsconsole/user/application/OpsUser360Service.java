@@ -165,7 +165,7 @@ public class OpsUser360Service {
         Map<String, Object> depositSection = deposits(deposits.getRecords(),totals);
         depositSection.put("total",deposits.getTotal());
         sourceStatus(depositSection, depositRead);
-        Map<String, Object> withdrawalSection = withdrawals(withdrawals.getRecords(),totals);
+        Map<String, Object> withdrawalSection = withdrawals(withdrawals.getRecords(),totals,role);
         withdrawalSection.put("total",withdrawals.getTotal());
         sourceStatus(withdrawalSection, withdrawalRead);
         Map<String, Object> teamSection = canGrowth
@@ -498,10 +498,20 @@ public class OpsUser360Service {
                 "sourceStatus", "READY");
     }
 
-    private Map<String, Object> withdrawals(List<WithdrawalOrderView> rows,Map<String,Object> totals) {
+    private Map<String, Object> withdrawals(List<WithdrawalOrderView> rows,Map<String,Object> totals,String role) {
+        Object records = "SUPPORT".equals(role) ? rows.stream().map(row -> section(
+                "id", row.id(), "userId", row.userId(), "withdrawalNo", row.withdrawalNo(),
+                "asset", row.asset(), "chain", row.chain(), "amount", row.amount(), "fee", row.fee(),
+                "targetAddress", row.targetAddress(), "chainTxHash", row.chainTxHash(), "status", row.status(),
+                "chainSubmittedAt", row.chainSubmittedAt(), "completedAt", row.completedAt(), "failedAt", row.failedAt(),
+                "failureReason", row.failureReason(), "createdAt", row.createdAt(), "updatedAt", row.updatedAt(),
+                "userNo", row.userNo(), "nickname", row.nickname(), "phoneMasked", row.phoneMasked(), "userStatus", row.userStatus(),
+                "penaltyFeeRate", row.penaltyFeeRate(), "grossFee", row.grossFee(), "nexBurned", row.nexBurned(),
+                "nexFeeOffsetRate", row.nexFeeOffsetRate(), "feeWaived", row.feeWaived(), "actualFee", row.actualFee(),
+                "netReceive", row.netReceive(), "networkFee", row.networkFee(), "holdUntil", row.holdUntil())).toList() : rows;
         return section(
                 "total", rows.size(),
-                "records", rows,
+                "records", records,
                 "completedUsd", supportTotal(totals,"successfulWithdrawalPrincipalTotal"),
                 "requestedUsd", supportTotal(totals,"processingWithdrawalPrincipalTotal"),
                 "sourceStatus", "READY");

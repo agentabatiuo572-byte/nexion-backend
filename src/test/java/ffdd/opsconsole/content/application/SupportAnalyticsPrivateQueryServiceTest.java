@@ -68,12 +68,27 @@ class SupportAnalyticsPrivateQueryServiceTest {
             when(mapper.qualificationStamps(eq(scope),anyCollection())).thenReturn(List.of(new QualificationStamp(1L,1L,"SERVICE","ENABLED",1L,T.minusDays(1),null)));
             when(mapper.assignmentStamps(eq(scope),anyCollection())).thenReturn(List.of(new RelationshipStamp("ASSIGNMENT",10L,100L,1L,null,null,"ACTIVE",0,1L,T.minusDays(1),null)));
             when(mapper.routeStamps(eq(scope),anyCollection())).thenReturn(List.of());when(mapper.memberStamps(eq(scope),anyCollection())).thenReturn(List.of());when(mapper.ownerStamps(eq(scope),anyCollection())).thenReturn(List.of());
-            when(mapper.rootDisplayRows(eq(scope),anyCollection())).thenReturn(List.of(new RootDisplayRow(100L,"Customer","100","ACTIVE",T.minusDays(1),T,T.minusDays(1),null,null)));
+            when(mapper.rootDisplayRows(eq(scope),anyCollection())).thenReturn(List.of(new RootDisplayRow(100L,"Customer","U00000100","ACTIVE",T.minusDays(1),T,T.minusDays(1),null,null)));
             when(mapper.queryRules(scope)).thenReturn(new SupportRules(1L,7,7,7,"INFINITE",null,"SUPERVISOR",null));
             when(mapper.activityIdentityRows(eq(scope),anyCollection(),eq(T))).thenReturn(List.of(new ActivityIdentityRow(100L,10L,1L,"LOGIN:10",T)));
             when(mapper.taskRows(eq(scope),anyCollection(),eq(T),any(),any(),any(),eq(7),isNull(),eq(T))).thenReturn(List.of(new TaskRow(100L,1,1L,null,null,null,null,1,null,null,0L,0,0,null,"ACTIVE","ACTIVE",T,0,null,null,null)));
             when(mapper.pendingReplyRows(eq(scope),anyCollection())).thenReturn(List.of());
         }
+    }
+    @Test void canonicalCustomerCodeNumericIdAndNameSearchKeepTheAuthorizedCustomerAndRejectWrongCodes() {
+        var f=new Fixture();
+        for(String view:List.of("CUSTOMERS","OVERVIEW","FINANCE","ACTIVITY")) {
+            for(String keyword:List.of("U00000100","u00000100","100","Cust","customer")) {
+                var response=f.service.query(Map.of("view",List.of(view),"keyword",List.of(keyword)));
+                @SuppressWarnings("unchecked") var rows=(List<Map<String,Object>>)response.get("records");
+                assertThat(rows).as("%s search %s",view,keyword).singleElement()
+                    .satisfies(row->assertThat(row).containsEntry("customerId","100").containsEntry("customerNo","U00000100"));
+            }
+            for(String keyword:List.of("U00000101","U100","U00000100x","0100","101"))
+                assertThat((List<?>)f.service.query(Map.of("view",List.of(view),"keyword",List.of(keyword))).get("records"))
+                    .as("%s rejects %s",view,keyword).isEmpty();
+        }
+        verify(f.mapper,atLeastOnce()).rootDisplayRows(eq(f.scope),eq(Set.of(100L)));
     }
     @Test void sameEvaluationFeedsPageCardsAndReadyVersionWithoutAnotherSummaryCall() {
         var f=new Fixture();var first=f.service.query(Map.of());String token=(String)first.get("queryVersion");assertThat(token).startsWith("saq-v1:");
@@ -140,5 +155,50 @@ class SupportAnalyticsPrivateQueryServiceTest {
         assertThat(SupportAnalyticsPrivateQueryService.decimal(new BigDecimal("10.000000"))).isEqualTo("10");assertThat(SupportAnalyticsPrivateQueryService.decimal(null)).isNull();
         var rows=new ArrayList<>(List.of(new SupportAnalyticsPrivateQueryService.Row(10,"",BigDecimal.TEN,Map.of()),new SupportAnalyticsPrivateQueryService.Row(2,"",BigDecimal.TEN,Map.of()),new SupportAnalyticsPrivateQueryService.Row(1,"",null,Map.of())));
         rows.sort(SupportAnalyticsPrivateQueryService.rowOrder(Direction.DESC));assertThat(rows.stream().map(SupportAnalyticsPrivateQueryService.Row::id)).containsExactly(2L,10L,1L);
+    }
+    @Test void netSortOnlyAllowsCurrentHistoryCustomerRowsAndRejectsBeforeReadingSources() {
+        var f=new Fixture();
+        for(String view:List.of("AGENTS","FINANCE","DEVICES"))
+            assertThatThrownBy(()->f.service.query(Map.of("view",List.of(view),"sortKey",List.of("NET_CONTRIBUTION"),"currency",List.of("USDT"))))
+                .isInstanceOf(BizException.class).hasMessage("SUPPORT_ANALYTICS_SORT_INVALID");
+        for(String basis:List.of("CURRENT_ASSET","PERIOD_EVENT")){
+            var raw=new HashMap<String,List<String>>(Map.of("basis",List.of(basis),"sortKey",List.of("NET_CONTRIBUTION"),"currency",List.of("USDT")));
+            if(basis.equals("PERIOD_EVENT")){raw.put("from",List.of("2026-10-01T00:00:00Z"));raw.put("to",List.of("2026-10-02T00:00:00Z"));}
+            assertThatThrownBy(()->f.service.query(raw)).isInstanceOf(BizException.class).hasMessage("SUPPORT_ANALYTICS_SORT_INVALID");
+        }
+        verifyNoInteractions(f.ownership,f.stats,f.mapper);
+        for(String view:List.of("CUSTOMERS","OVERVIEW","ACTIVITY")){
+            var response=f.service.query(Map.of("view",List.of(view),"sortKey",List.of("NET_CONTRIBUTION"),"currency",List.of("USDT")));
+            assertThat((List<?>)response.get("records")).hasSize(1);
+        }
+        verify(f.stats,times(3)).evaluateForQuery(any(),eq(f.scope),eq(false));verify(f.stats,never()).summarize(any());
+    }
+    @Test void netSortUsesSelectedCurrencyExactSignedDecimalsStableTiesAndUnknownLast() {
+        var totals=new LinkedHashMap<Long,List<CustomerCurrencyTotals>>();
+        totals.put(10L,netTotals("10.000001","-2",Status.AVAILABLE));
+        totals.put(2L,netTotals("10.000001","10",Status.AVAILABLE));
+        totals.put(3L,netTotals("-2","10",Status.AVAILABLE));
+        totals.put(4L,netTotals("0","0",Status.AVAILABLE));
+        totals.put(1L,netTotals("0","0",Status.UNKNOWN)); // A stale confirmed zero must remain unknown.
+        totals.put(5L,netTotals(null,null,Status.AVAILABLE));totals.put(6L,List.of());
+        assertThat(netOrder(totals,"USDT",Direction.DESC)).containsExactly(2L,10L,4L,3L,1L,5L,6L);
+        assertThat(netOrder(totals,"USDT",Direction.ASC)).containsExactly(3L,4L,2L,10L,1L,5L,6L);
+        assertThat(netOrder(totals,"NEX",Direction.DESC)).containsExactly(2L,3L,4L,10L,1L,5L,6L);
+        assertThat(netOrder(totals,"NEX",Direction.ASC)).containsExactly(10L,4L,2L,3L,1L,5L,6L);
+        for(Status status:List.of(Status.PARTIAL,Status.UNKNOWN,Status.FAILED,Status.UNAVAILABLE))
+            assertThat(SupportAnalyticsPrivateQueryService.net(netTotals("0","0",status),"USDT")).isNull();
+    }
+    private static List<CustomerCurrencyTotals> netTotals(String usdt,String nex,Status status){
+        return List.of(netTotal("USDT",usdt,status),netTotal("NEX",nex,status));
+    }
+    private static CustomerCurrencyTotals netTotal(String currency,String value,Status status){
+        var amount=value==null?null:new BigDecimal(value);
+        var money=new Money(amount,amount,null,null,null,status,status==Status.AVAILABLE?List.of():List.of("NET_SOURCE_UNVERIFIED"));
+        return new CustomerCurrencyTotals(currency,money,money,money);
+    }
+    private static List<Long> netOrder(Map<Long,List<CustomerCurrencyTotals>> totals,String currency,Direction direction){
+        var rows=new ArrayList<SupportAnalyticsPrivateQueryService.Row>();
+        totals.forEach((id,values)->rows.add(new SupportAnalyticsPrivateQueryService.Row(id,"",SupportAnalyticsPrivateQueryService.net(values,currency),Map.of())));
+        rows.sort(SupportAnalyticsPrivateQueryService.rowOrder(direction));return rows.stream().map(SupportAnalyticsPrivateQueryService.Row::id).toList();
     }
 }

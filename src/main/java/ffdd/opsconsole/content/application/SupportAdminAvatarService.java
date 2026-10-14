@@ -30,13 +30,69 @@ public class SupportAdminAvatarService {
         Long actor=superWriter();token(client);token(key);
         var limits=policy.view();if(!limits.available())throw new BizException(422,"AVATAR_POLICY_UNCONFIGURED");
         var image=SupportAttachmentService.decode(file,limits);
-        String hash=image.rawHash();var previous=mapper.prior(actor,client,key);
+        return prepareUpload(actor,client,key,image,image.rawHash(),false);
+    }
+
+    Map<String,Object> uploadSelf(Long actor,String client,String key,MultipartFile file) {
+        requirePrincipal(actor);token(client);token(key);
+        var limits=policy.view();if(!limits.available())throw new BizException(422,"AVATAR_POLICY_UNCONFIGURED");
+        var image=SupportAttachmentService.decode(file,limits);
+        return prepareUpload(actor,client,key,image,commandHash("SELF_UPLOAD|"+actor+"|"+image.rawHash()),true);
+    }
+
+    private Map<String,Object> prepareUpload(Long actor,String client,String key,SupportAttachmentService.Encoded image,String hash,boolean self) {
+        var previous=mapper.prior(actor,client,key);
         if(!previous.isEmpty()) {
             if(previous.size()!=1)throw conflict();var row=previous.get(0);
             if(!client.equals(row.clientUploadId()) || !key.equals(row.idempotencyKey()) || !hash.equals(row.requestHash()))throw conflict();
             if(!"ATTACHED".equals(row.state()))ready(row);
-            return view(row);
+            return ownedView(row,self);
         }
+        return ownedView(store(actor,client,key,hash,image),self);
+    }
+
+    @Transactional
+    public Map<String,Object> prepareDefault(String gender,String client,String key) {
+        return prepareDefaultOwned(superWriter(),gender,client,key,false);
+    }
+
+    Map<String,Object> prepareDefaultSelf(Long actor,String gender,String client,String key) {
+        requirePrincipal(actor);return prepareDefaultOwned(actor,gender,client,key,true);
+    }
+
+    private Map<String,Object> prepareDefaultOwned(Long actor,String gender,String client,String key,boolean self) {
+        token(client);token(key);String pool=SupportDefaultAvatarCatalog.gender(gender);
+        String hash=commandHash((self?"SELF_DEFAULT|":"ADMIN_DEFAULT|")+actor+"|"+pool);
+        var previous=mapper.prior(actor,client,key);
+        if(!previous.isEmpty()) {
+            if(previous.size()!=1)throw conflict();var row=previous.get(0);
+            if(!client.equals(row.clientUploadId()) || !key.equals(row.idempotencyKey()) || !hash.equals(row.requestHash()))throw conflict();
+            if(!"ATTACHED".equals(row.state()))ready(row);
+            return ownedView(row,self);
+        }
+        var selected=new SupportDefaultAvatarCatalog().select(pool,policy.view()).orElseThrow(()->new BizException(422,"AVATAR_DEFAULT_POOL_UNAVAILABLE"));
+        var result=new LinkedHashMap<>(ownedView(store(actor,client,key,hash,selected.image()),self));
+        result.put("poolEntryId",selected.poolEntryId());result.put("sourceHash",selected.sourceHash());return result;
+    }
+
+    /** A2 has a separate create-only capability; it does not authorize maker uploads. */
+    @Transactional(propagation=Propagation.MANDATORY)
+    public Map<String,Object> attachDefaultCreated(Long admin,String gender) {
+        Long actor=superWriter();SupportWorkbenchService.requireSafeId(admin);
+        if(A2ReplayContext.isReplaying())A2ReplayContext.requireDefaultAvatarTarget(actor,admin);
+        if(!"SUPPORT".equals(roles.activeRoleCode(admin)))throw new BizException(422,"AVATAR_DEFAULT_INTENT_INVALID");
+        var current=mapper.reference(admin);
+        if(current!=null && current.get("assetId")!=null)throw conflict();
+        var selected=new SupportDefaultAvatarCatalog().select(gender,policy.view());
+        if(selected.isEmpty())return Map.of("defaultAvatarStatus","MISSING");
+        var choice=selected.get();String command=UUID.randomUUID().toString();
+        var row=store(actor,command,command,commandHash("CREATE_DEFAULT|"+admin+"|"+choice.sourceHash()),choice.image());
+        attachOwned(admin,row,actor);
+        return Map.of("defaultAvatarStatus","ATTACHED","poolEntryId",choice.poolEntryId(),"sourceHash",choice.sourceHash());
+    }
+
+    private SupportAvatarAsset store(Long actor,String client,String key,String hash,SupportAttachmentService.Encoded image) {
+        var limits=policy.view();if(!limits.available())throw new BizException(422,"AVATAR_POLICY_UNCONFIGURED");
         String id=UUID.randomUUID().toString(),location="private/admin-avatar/"+UUID.randomUUID();
         var row=new SupportAvatarAsset(id,actor,client,key,hash,image.mime(),(long)image.content().length,location,"READY",null,
                 LocalDateTime.now(ZoneOffset.UTC).plusSeconds(limits.ttlSeconds()));
@@ -48,7 +104,12 @@ public class SupportAdminAvatarService {
                 }
             }
         });
-        storage.put(location,row.mime(),new ByteArrayInputStream(image.content()),row.byteCount());return view(row);
+        try{storage.put(location,row.mime(),new ByteArrayInputStream(image.content()),row.byteCount());}
+        catch(RuntimeException ex){throw storageUnavailable(ex);}return row;
+    }
+
+    private static BizException storageUnavailable(RuntimeException cause) {
+        var failure=new BizException(503,"AVATAR_STORAGE_UNAVAILABLE");failure.initCause(cause);return failure;
     }
 
     /** Called after the original account version CAS, in that same transaction. */
@@ -56,16 +117,28 @@ public class SupportAdminAvatarService {
     public void attach(Long admin,String assetId) {
         Long actor=superWriter();SupportWorkbenchService.requireSafeId(admin);
         Long uploader=A2ReplayContext.isReplaying() ? A2ReplayContext.approvedAvatarUploader(actor,admin,assetId) : actor;
-        var row=find(assetId);if(!uploader.equals(row.uploaderId()))throw missing();
+        attachOwned(admin,find(assetId),uploader);
+    }
+
+    void attachSelf(Long actor,String assetId) {requirePrincipal(actor);attachOwned(actor,find(assetId),actor);}
+
+    private void attachOwned(Long admin,SupportAvatarAsset row,Long uploader) {
+        String assetId=row.id();if(!uploader.equals(row.uploaderId()))throw missing();
         var current=mapper.reference(admin);
         if(current!=null && assetId.equals(current.get("assetId")))return;
-        ready(row);if(!storage.exists(row.objectKey()))throw new BizException(503,"AVATAR_STORAGE_UNAVAILABLE");
+        ready(row);boolean present;
+        try{present=storage.exists(row.objectKey());}catch(RuntimeException ex){throw storageUnavailable(ex);}
+        if(!present)throw new BizException(503,"AVATAR_STORAGE_UNAVAILABLE");
         if(mapper.attach(assetId,admin)!=1 || mapper.accountAvatar(admin,assetId)==0)throw conflict();
     }
 
     @Transactional
     public Map<String,Object> cancel(String assetId,String key) {
-        Long actor=superWriter();token(key);var row=find(assetId);
+        return cancelOwned(superWriter(),assetId,key,false);
+    }
+    Map<String,Object> cancelSelf(Long actor,String assetId,String key) {requirePrincipal(actor);return cancelOwned(actor,assetId,key,true);}
+    private Map<String,Object> cancelOwned(Long actor,String assetId,String key,boolean self) {
+        token(key);var row=find(assetId);
         if(!actor.equals(row.uploaderId()))throw missing();
         if("ATTACHED".equals(row.state()))throw conflict();
         if("READY".equals(row.state())) {
@@ -76,7 +149,7 @@ public class SupportAdminAvatarService {
                 }}
             });
         }
-        return view(find(assetId));
+        return ownedView(find(assetId),self);
     }
 
     @Transactional
@@ -84,6 +157,14 @@ public class SupportAdminAvatarService {
         Long actor=superWriter();var row=find(assetId);if(!actor.equals(row.uploaderId()))throw missing();
         if(!"ATTACHED".equals(row.state()))ready(row);return bytes(row);
     }
+    SupportAttachmentService.Content previewSelf(Long actor,String assetId) {
+        requirePrincipal(actor);var row=find(assetId);if(!actor.equals(row.uploaderId()))throw missing();
+        if("ATTACHED".equals(row.state()) && !actor.equals(row.attachedAdminId()))throw missing();
+        if(!"ATTACHED".equals(row.state()))ready(row);return bytes(row);
+    }
+    SupportAttachmentService.Content contentSelf(Long actor) {requirePrincipal(actor);return attachedContent(actor);}
+    private void requirePrincipal(Long actor) {if(!attachments.actor("ADMIN").equals(actor))throw new BizException(403,"AVATAR_WRITE_FORBIDDEN");}
+    private static String commandHash(String value){return SupportDefaultAvatarCatalog.sha256(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));}
     @Transactional
     public SupportAttachmentService.Content content(Long admin,boolean app) {
         SupportWorkbenchService.requireSafeId(admin);
@@ -143,6 +224,7 @@ public class SupportAdminAvatarService {
     private static void ready(SupportAvatarAsset row){if(!"READY".equals(row.state()) || !row.expiresAt().isAfter(LocalDateTime.now(ZoneOffset.UTC)))throw conflict();}
     private static void token(String value){if(value==null || !value.matches("[A-Za-z0-9_-]{8,128}"))throw new BizException(422,"AVATAR_COMMAND_INVALID");}
     private static Map<String,Object> view(SupportAvatarAsset row){return Map.of("assetId",row.id(),"status",row.state(),"expiresAt",row.expiresAt().atOffset(ZoneOffset.UTC).toString(),"previewRef","/api/admin/platform/accounts/avatar-assets/"+row.id());}
+    private static Map<String,Object> ownedView(SupportAvatarAsset row,boolean self){var value=new LinkedHashMap<>(view(row));if(self)value.put("previewRef","/api/admin/platform/accounts/self/avatar-assets/"+row.id());return value;}
     private static BizException conflict(){return new BizException(409,"AVATAR_STATE_CONFLICT");}
     private static BizException missing(){return new BizException(404,"AVATAR_NOT_FOUND");}
 }

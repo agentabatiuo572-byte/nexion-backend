@@ -110,12 +110,12 @@ class SupportBindingRuntimeTest {
         assertThat(groupMapper.qualificationCurrent(manager,"SUPERVISOR")).isNotNull();
         scopeFixtures().asSuper(boss,()->{
             var receiver=groupMapper.qualification(boss,"SUPERVISOR");
-            groups.qualification(boss,key(),new SupportGroupRequests.Qualification("SUPERVISOR","ENABLED",receiver==null?0L:receiver.version(),
+            scopeFixtures().qualification(boss,key(),new SupportGroupRequests.Qualification("SUPERVISOR","ENABLED",receiver==null?0L:receiver.version(),
                     jdbc.queryForObject("SELECT version FROM nx_admin WHERE id=?",Long.class,boss),"Real qualification receiver fixture"));
             var group=groupMapper.group(managedGroup);
-            assertThat(groups.owner(managedGroup,key(),new SupportGroupRequests.Owner(boss,group.version(),"Transfer group before qualification revocation")).getCode()).isZero();
+            assertThat(scopeFixtures().owner(managedGroup,key(),new SupportGroupRequests.Owner(boss,group.version(),"Transfer group before qualification revocation")).getCode()).isZero();
             var qualifier=groupMapper.qualification(manager,"SUPERVISOR");
-            assertThat(groups.qualification(manager,key(),new SupportGroupRequests.Qualification("SUPERVISOR","DISABLED",qualifier.version(),
+            assertThat(scopeFixtures().qualification(manager,key(),new SupportGroupRequests.Qualification("SUPERVISOR","DISABLED",qualifier.version(),
                     jdbc.queryForObject("SELECT version FROM nx_admin WHERE id=?",Long.class,manager),"Revoke actual management qualification")).getCode()).isZero();
         });
         assertThat(http("PATCH",update,managerToken,profile,profileKey).path("code").asInt()).isEqualTo(403);
@@ -686,7 +686,7 @@ class SupportBindingRuntimeTest {
         var r=mapper.rules();assertThat(bindings.updateRules(key(),new SupportRulesRequest(null,null,null,mode,depth,r.version(),"Isolated runtime configuration")).getCode()).isZero();
     }
     private SupportBindingRequest request(long target,List<Long> customers){return new SupportBindingRequest(target,customers.stream().map(id->{var r=mapper.current(id);return new SupportBindingRequest.Customer(id,r==null?null:r.id(),r==null?mapper.poolVersion(id):r.version());}).toList(),"Isolated runtime transfer");}
-    private void transfer(long target,List<Long> customers,String key){assertThat(bindings.transfer(key,request(target,customers)).getCode()).isZero();}
+    private void transfer(long target,List<Long> customers,String key){assertThat(scopeFixtures().transfer(bindings,key,request(target,customers)).getCode()).isZero();}
     private void assertPool(long id,String reason){assertThat(mapper.current(id)).isNull();assertThat(jdbc.queryForObject("SELECT reason FROM nx_support_binding_pool WHERE customer_id=?",String.class,id)).isEqualTo(reason);}
     private com.fasterxml.jackson.databind.JsonNode http(String method,String path,String token,Object body,String key) throws Exception {
         var b=java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+path)).timeout(java.time.Duration.ofSeconds(20));

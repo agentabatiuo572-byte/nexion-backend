@@ -50,6 +50,7 @@ public class AppStakingService {
     private final Clock clock;
     private final Environment environment;
     private final MarketSandboxMapper sandboxMapper;
+    private final SupportStakingFundAdapter fundAdapter;
 
     public AppStakingService(AppStakingMapper mapper, RiskDisclosureGateFacade disclosureGate,
             PlatformConfigFacade config, AdminIdempotencyService idempotency, EventOutboxService outbox,
@@ -59,11 +60,19 @@ public class AppStakingService {
                 environment, null);
     }
 
-    @Autowired
     public AppStakingService(AppStakingMapper mapper, RiskDisclosureGateFacade disclosureGate,
             PlatformConfigFacade config, AdminIdempotencyService idempotency, EventOutboxService outbox,
             AuditLogService audit, EarningsReleaseService earningsReleaseService, Clock clock,
             Environment environment, MarketSandboxMapper sandboxMapper) {
+        this(mapper, disclosureGate, config, idempotency, outbox, audit, earningsReleaseService, clock,
+                environment, sandboxMapper, null);
+    }
+
+    @Autowired
+    public AppStakingService(AppStakingMapper mapper, RiskDisclosureGateFacade disclosureGate,
+            PlatformConfigFacade config, AdminIdempotencyService idempotency, EventOutboxService outbox,
+            AuditLogService audit, EarningsReleaseService earningsReleaseService, Clock clock,
+            Environment environment, MarketSandboxMapper sandboxMapper, SupportStakingFundAdapter fundAdapter) {
         this.mapper = mapper;
         this.disclosureGate = disclosureGate;
         this.config = config;
@@ -74,6 +83,7 @@ public class AppStakingService {
         this.clock = clock;
         this.environment = environment;
         this.sandboxMapper = sandboxMapper;
+        this.fundAdapter = fundAdapter;
     }
 
     public ApiResult<Map<String, Object>> pools() {
@@ -156,6 +166,7 @@ public class AppStakingService {
         if (balance == null || balance.compareTo(request.amountUsdt()) < 0) {
             throw new BizException(409, "STAKING_WALLET_INSUFFICIENT");
         }
+        var fundBefore = fundAdapter == null ? null : fundAdapter.begin(userId, null);
         if (mapper.debitWallet(userId, request.amountUsdt()) != 1) {
             throw new BizException(409, "STAKING_WALLET_CONFLICT");
         }
@@ -182,6 +193,7 @@ public class AppStakingService {
                 "G1 staking principal lock")) != 1) {
             throw new BizException(409, "STAKING_LEDGER_CONFLICT");
         }
+        if (fundBefore != null) fundAdapter.recorded(fundBefore, positionNo, "OPEN");
         AppStakingMapper.UserAttribution attribution = requireAttribution(userId);
         Map<String, Object> event = linked(
                 "positionNo", positionNo, "tierKey", request.tierKey(), "productCode", product.productCode(),
@@ -215,6 +227,7 @@ public class AppStakingService {
             throw new BizException(409, "STAKING_POSITION_NOT_CLAIMABLE");
         }
         BigDecimal balance = requireWallet(userId);
+        var fundBefore = fundAdapter == null ? null : fundAdapter.begin(userId, positionNo);
         if (mapper.markClaimed(position.id(), userId, now) != 1) {
             throw new BizException(409, "STAKING_POSITION_STATE_CONFLICT");
         }
@@ -222,16 +235,18 @@ public class AppStakingService {
         BigDecimal principal = money(position.amountUsdt());
         BigDecimal credited = money(principal.add(interest));
         if (mapper.creditWallet(userId, principal) != 1) throw new BizException(409, "STAKING_WALLET_CONFLICT");
-        if (interest.signum() > 0) {
-            earningsReleaseService.creditReward(userId, "staking_interest", positionNo, "USDT", interest,
-                    "G1-STAKING-INTEREST-" + position.id());
-        }
         BigDecimal balanceAfter = money(balance.add(credited));
         String billNo = positionNo + "-CLAIM";
         if (mapper.insertLedger(new AppStakingMapper.LedgerWrite(
                 userId, billNo, "STAKING_CLAIM", "IN", credited, balanceAfter,
                 "G1 staking matured principal and interest")) != 1) {
             throw new BizException(409, "STAKING_LEDGER_CONFLICT");
+        }
+        // Principal and central interest retain their two real cash revisions and separate receipts.
+        if (fundBefore != null) fundAdapter.recorded(fundBefore, positionNo, "CLAIM");
+        if (interest.signum() > 0) {
+            earningsReleaseService.creditReward(userId, "staking_interest", positionNo, "USDT", interest,
+                    "G1-STAKING-INTEREST-" + position.id());
         }
         AppStakingMapper.UserAttribution attribution = requireAttribution(userId);
         Map<String, Object> event = linked(
@@ -265,6 +280,7 @@ public class AppStakingService {
             throw new BizException(409, "STAKING_POSITION_NOT_EARLY_WITHDRAWABLE");
         }
         BigDecimal balance = requireWallet(userId);
+        var fundBefore = fundAdapter == null ? null : fundAdapter.begin(userId, positionNo);
         if (mapper.markEarlyWithdrawn(position.id(), userId, now) != 1) {
             throw new BizException(409, "STAKING_POSITION_STATE_CONFLICT");
         }
@@ -280,6 +296,7 @@ public class AppStakingService {
                 "G1 early withdrawal net principal; unearned interest forfeited")) != 1) {
             throw new BizException(409, "STAKING_LEDGER_CONFLICT");
         }
+        if (fundBefore != null) fundAdapter.recorded(fundBefore, positionNo, "EARLY");
         AppStakingMapper.UserAttribution attribution = requireAttribution(userId);
         Map<String, Object> event = linked(
                 "positionNo", positionNo, "principalUsdt", money(position.amountUsdt()),

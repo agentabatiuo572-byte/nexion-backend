@@ -281,7 +281,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 .toList();
     }
 
-    /** ADMIN 权限从 Redis 缓存读（miss 回源 MySQL）；USER 仍从 JWT claim 读（本次只改管理端 RBAC）。 */
+    /** ADMIN 权限每次读取当前数据库授权；USER 仍从 JWT claim 读取。 */
     private List<SimpleGrantedAuthority> resolveAuthorities(Claims claims) {
         Object subjectTypeClaim = claims.get("subjectType");
         String subjectType = subjectTypeClaim == null ? "USER" : String.valueOf(subjectTypeClaim);

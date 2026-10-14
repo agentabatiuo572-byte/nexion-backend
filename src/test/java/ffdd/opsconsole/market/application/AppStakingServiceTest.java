@@ -35,6 +35,30 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class AppStakingServiceTest {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"OPEN","CLAIM","EARLY"})
+    void realCommandsBindTheirPrincipalIntervalBeforeIndependentInterest(String phase) {
+        var fund=mock(SupportStakingFundAdapter.class);var token=mock(SupportStakingFundAdapter.Before.class);
+        when(fund.begin(eq(42L),any())).thenReturn(token);
+        var actual=new AppStakingService(mapper,disclosureGate,config,idempotency,outbox,audit,earningsReleaseService,clock,environment,sandboxMapper,fund);
+        String no="STK-40";LocalDateTime now=LocalDateTime.now(clock);
+        var unlocked=phase.equals("CLAIM")?now.minusMinutes(1):now.plusDays(29);
+        when(mapper.lockUserPosition(42L,no)).thenReturn(new AppStakingMapper.PositionRow(40L,42L,no,2L,"USDT_30D","USDT 30D",new BigDecimal("100"),new BigDecimal("1200"),new BigDecimal("500"),30,unlocked.minusDays(30),unlocked,new BigDecimal("2.500000"),"ACTIVE",null,null));
+        when(mapper.markClaimed(any(),any(),any())).thenReturn(1);when(mapper.markEarlyWithdrawn(any(),any(),any())).thenReturn(1);when(mapper.creditWallet(eq(42L),any())).thenReturn(1);
+        if(phase.equals("OPEN"))actual.open(42L,"fund-open",new AppStakingService.OpenRequest("usdt30d",new BigDecimal("100")));
+        else if(phase.equals("CLAIM"))actual.claim(42L,no,"fund-claim");else actual.earlyWithdraw(42L,no,"fund-early");
+        var order=org.mockito.Mockito.inOrder(mapper,fund,earningsReleaseService);
+        order.verify(fund).begin(42L,phase.equals("OPEN")?null:no);
+        if(phase.equals("OPEN"))order.verify(mapper).debitWallet(42L,new BigDecimal("100.000000"));
+        else order.verify(mapper).creditWallet(42L,new BigDecimal(phase.equals("CLAIM")?"100.000000":"95.000000"));
+        var ledger=org.mockito.ArgumentCaptor.forClass(AppStakingMapper.LedgerWrite.class);order.verify(mapper).insertLedger(ledger.capture());
+        assertThat(ledger.getValue().amount()).isEqualByComparingTo(phase.equals("OPEN")?"100":phase.equals("CLAIM")?"102.5":"95");
+        assertThat(ledger.getValue().balanceAfter()).isEqualByComparingTo(phase.equals("OPEN")?"900":phase.equals("CLAIM")?"1102.5":"1095");
+        order.verify(fund).recorded(eq(token),anyString(),eq(phase));
+        if(phase.equals("CLAIM"))order.verify(earningsReleaseService).creditReward(42L,"staking_interest",no,"USDT",new BigDecimal("2.500000"),"G1-STAKING-INTEREST-40");
+        else verifyNoInteractions(earningsReleaseService);
+        verify(earningsReleaseService,never()).creditRewardInFundOperation(any(),anyString(),anyString(),anyString(),any(),anyString());
+    }
     @Test
     void openReplaysOriginalReceiptAfter24HoursWithoutAnotherDebitOrPosition() {
         var durable = new ffdd.opsconsole.shared.idempotency.ExpiredReceiptFixture();

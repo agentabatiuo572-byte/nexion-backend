@@ -10,7 +10,9 @@ BEGIN
  IF EXISTS(SELECT 1 FROM nx_support_agent_user_assignment x
    LEFT JOIN nx_admin a ON a.id=x.agent_admin_id LEFT JOIN nx_support_agent_profile p ON p.admin_id=a.id
    WHERE x.status='ACTIVE' AND x.is_deleted=0 AND (a.status<>1 OR a.is_deleted<>0 OR p.admin_id IS NULL
-     OR p.enabled<>1 OR p.is_deleted<>0 OR p.seat_type<>'DEDICATED' OR FIND_IN_SET('advisor',REPLACE(LOWER(p.service_types),' ',''))=0
+     OR p.enabled<>1 OR p.is_deleted<>0 OR NOT (
+       (p.seat_type='DEDICATED' AND FIND_IN_SET('advisor',REPLACE(LOWER(p.service_types),' ',''))>0)
+       OR (p.seat_type='GENERAL' AND FIND_IN_SET('support',REPLACE(LOWER(p.service_types),' ',''))>0))
      OR NOT EXISTS(SELECT 1 FROM nx_admin_role_relation rr JOIN nx_admin_role r ON r.id=rr.role_id
        WHERE rr.admin_id=a.id AND rr.is_deleted=0 AND r.is_deleted=0 AND r.status=1 AND r.role_code='SUPPORT'))) THEN
   SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='SUPPORT_INVALID_AGENT_REVIEW_REQUIRED';
@@ -42,7 +44,7 @@ BEGIN
 CREATE TABLE IF NOT EXISTS nx_support_rules (
  id BIGINT PRIMARY KEY, version BIGINT NOT NULL DEFAULT 1,
  dormant_days INT NULL, maintenance_days INT NULL, activity_window_days INT NULL,
- inheritance_mode VARCHAR(16) NOT NULL DEFAULT 'UNCONFIGURED', max_inheritance_depth INT NULL,
+ inheritance_mode VARCHAR(16) NOT NULL DEFAULT 'UNLIMITED', max_inheritance_depth INT NULL,
  updated_by BIGINT NULL,reason VARCHAR(200) NULL,updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
 ) ENGINE=InnoDB;
 INSERT IGNORE INTO nx_support_rules(id) VALUES(1);

@@ -92,11 +92,15 @@ public interface SupportAnalyticsMapper {
           LEFT JOIN nx_support_group g ON g.id=CASE WHEN a.activeRows=1 THEN m.groupId ELSE r.groupId END
           LEFT JOIN owners o ON o.group_id=g.id
           WHERE scope_customer.sandbox=0
+          <if test="customerId != null">AND scope_customer.id=#{customerId}</if>
         """ + SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + """
         ) SELECT customerId,category,placement,handoverRequired,ownerAgentId,currentGroupId FROM classified ORDER BY customerId
         """;
-    @Select("<script>"+CURRENT_PROJECTION+"</script>")
+    @Select("<script><bind name=\"customerId\" value=\"null\"/>"+CURRENT_PROJECTION+"</script>")
     List<CurrentCustomer> currentCustomers(@Param("scope") ReadScope scope);
+
+    @Select("<script>"+CURRENT_PROJECTION+"</script>")
+    List<CurrentCustomer> currentCustomer(@Param("scope") ReadScope scope,@Param("customerId") Long customerId);
 
     // All-history event candidates are independent of present customer membership and query dates/currency.
     @Select("<script>SELECT e.fact_id factId,e.customer_id customerId FROM nx_support_payment_attribution e WHERE "+EVENT_SCOPE+" ORDER BY e.fact_id</script>")
@@ -127,6 +131,20 @@ public interface SupportAnalyticsMapper {
           )) ORDER BY e.fact_id</script>
         """)
     List<AttributionRow> attributions(@Param("scope") ReadScope scope,@Param("factIds") Collection<String> factIds);
+
+    /** Same authorized event/current-subject boundary as the source tuple; never public all-source material. */
+    @Select("""
+        <script>SELECT e.fact_id factId,e.source_partition sourcePartition,e.capture_db_utc captureDbUtc,
+          e.source_fact_json sourceFactJson,e.attribution_evidence_json attributionEvidenceJson
+        FROM nx_support_payment_attribution e WHERE e.fact_id IN
+        <foreach collection="factIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+        AND (
+        """+EVENT_SCOPE+"""
+          OR EXISTS(SELECT 1 FROM nx_user scope_customer WHERE scope_customer.id=e.customer_id AND scope_customer.sandbox=0
+        """+SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE+"""
+          )) ORDER BY e.fact_id</script>
+        """)
+    List<AttributionProof> attributionProofs(@Param("scope") ReadScope scope,@Param("factIds") Collection<String> factIds);
 
     String READ_SCOPE="<choose><when test=\"scope != null and scope.mode.name() == 'PERSONAL'\">"+SupportGroupMapper.SCOPE_SERVICE
         +"</when><when test=\"scope != null and scope.mode.name() == 'MANAGED'\">"+SupportGroupMapper.SCOPE_SUPERVISOR
@@ -212,6 +230,7 @@ public interface SupportAnalyticsMapper {
             LocalDateTime qualificationEndsAt,Long memberId,Long groupId,LocalDateTime memberStartsAt,
             LocalDateTime memberEndsAt,LocalDateTime evaluatedDbAt,Integer compatibleRole) { }
     record EventCandidate(String factId,Long customerId) { }
+    record AttributionProof(String factId,String sourcePartition,LocalDateTime captureDbUtc,String sourceFactJson,String attributionEvidenceJson) { }
     record AttributionRow(String factId,Long customerId,String kind,String source,Long ledgerId,String sourceBusinessId,
                           String orderNo,String orderType,String originalFactId,String currency,BigDecimal amount,
                           LocalDateTime succeededAt,String sourceBusinessZone,String successTimeField,Integer fractionalSecondDigits,
@@ -257,7 +276,8 @@ public interface SupportAnalyticsMapper {
     List<RelationshipStamp> ownerStamps(@Param("scope") ReadScope scope,@Param("ids") Collection<Long> ids);
 
     @Select("""
-        <script>SELECT scope_customer.id customerId,scope_customer.nickname,CAST(scope_customer.id AS CHAR) customerNo,
+        <script>SELECT scope_customer.id customerId,scope_customer.nickname,
+          CONCAT('U', LPAD(scope_customer.id, GREATEST(8, LENGTH(CAST(scope_customer.id AS CHAR))), '0')) customerNo,
           scope_customer.status,scope_customer.created_at registeredAt,scope_customer.updated_at sourceUpdatedAt,
           (SELECT MAX(a.starts_at) FROM nx_support_agent_user_assignment a WHERE a.user_id=scope_customer.id
             AND a.status='ACTIVE' AND a.is_deleted=0 AND a.starts_at&lt;=UTC_TIMESTAMP(6) AND a.ends_at IS NULL) assignedAt,

@@ -7,7 +7,9 @@ import ffdd.opsconsole.content.mapper.SupportCustomerProfileMapper;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
+import ffdd.opsconsole.device.facade.SupportDeviceReadFacade;
 import ffdd.opsconsole.finance.application.FinanceSupportReadService;
+import ffdd.opsconsole.finance.facade.SupportFundsReadFacade;
 import ffdd.opsconsole.risk.application.OpsRiskService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -20,7 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /** One service profile for conversations/workbench/360. Unknown never becomes a guessed fact. */
 @ApplicationService
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_=@org.springframework.beans.factory.annotation.Autowired)
 public class SupportCustomerProfileService {
     private final SupportOwnershipService ownership;
     private final SupportBindingMapper bindings;
@@ -33,12 +35,27 @@ public class SupportCustomerProfileService {
     private final SupportMaintenanceService maintenance;
     private final ffdd.opsconsole.content.mapper.SupportWorkbenchMapper workbench;
     private final ffdd.opsconsole.shared.storage.ObjectStorageService storage;
+    private final SupportFundsReadFacade funds;
+    private final SupportDeviceReadFacade currentDevices;
+    private final SupportAnalyticsService analytics;
+    public SupportCustomerProfileService(SupportOwnershipService ownership,SupportBindingMapper bindings,SupportCustomerProfileMapper mapper,
+            OpsUserService users,FinanceSupportReadService finance,OpsDeviceService devices,OpsRiskService risk,CustomerProfileRepository annotations,
+            SupportMaintenanceService maintenance,ffdd.opsconsole.content.mapper.SupportWorkbenchMapper workbench,ffdd.opsconsole.shared.storage.ObjectStorageService storage) {
+        this(ownership,bindings,mapper,users,finance,devices,risk,annotations,maintenance,workbench,storage,null,null,null);
+    }
+    public SupportCustomerProfileService(SupportOwnershipService ownership,SupportBindingMapper bindings,SupportCustomerProfileMapper mapper,
+            OpsUserService users,FinanceSupportReadService finance,OpsDeviceService devices,OpsRiskService risk,CustomerProfileRepository annotations,
+            SupportMaintenanceService maintenance,ffdd.opsconsole.content.mapper.SupportWorkbenchMapper workbench,ffdd.opsconsole.shared.storage.ObjectStorageService storage,
+            SupportFundsReadFacade funds,SupportDeviceReadFacade currentDevices) {
+        this(ownership,bindings,mapper,users,finance,devices,risk,annotations,maintenance,workbench,storage,funds,currentDevices,null);
+    }
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public Map<String,Object> profile(Long customer) {
         var scope=ownership.customerQueryScope(customer);
         String evaluatedAt=Instant.now().toString();
         var result=new LinkedHashMap<String,Object>();
+        result.put("statistics",group(()->analytics==null?null:analytics.statisticsForCustomer(customer,scope)));
         var identity=group(()-> {
             var response=users.profile(customer);
             if(response.getCode()!=0) throw new BizException(response.getCode(),"SUPPORT_IDENTITY_UNAVAILABLE");
@@ -51,7 +68,11 @@ public class SupportCustomerProfileService {
             data.put("lastLoginAt",businessUtc(user.lastLoginAt()));data.put("accountStatus",user.status());return data;
         });
         result.put("identity",identity);result.put("finance",group(()-> {
-            var data=new LinkedHashMap<>(finance.totals(customer));
+            var legacy=group(()->finance.totals(customer));
+            var data=new LinkedHashMap<String,Object>();
+            if(legacy.get("data") instanceof Map<?,?> totals)totals.forEach((key,value)->data.put((String)key,value));
+            else data.put("byCurrency",List.of());
+            addNet(data,customer,(String)legacy.get("status"));
             data.put("recentFlows",group(()->finance.flows(customer,1,20,null,null,null,null)));return data;
         }));
         result.put("devices",devices(customer,1,20));
@@ -106,6 +127,36 @@ public class SupportCustomerProfileService {
         result.put("evaluatedAt",evaluatedAt);result.put("actions",actions());return SupportWorkbenchService.wire(result);
     }
 
+    /** Customer scope was authorized before this same-RR read; legacy fund fields keep their own statuses. */
+    @SuppressWarnings("unchecked") private void addNet(Map<String,Object> data,long customer,String legacyStatus) {
+        SupportFundsReadFacade.NetCustomer net=null;
+        if(funds!=null)try {
+            var snapshot=funds.readNetContributions(List.of(customer));
+            if(snapshot!=null && snapshot.customers().size()==1 && snapshot.customers().get(0).customerId()==customer
+                && snapshot.origins().stream().allMatch(o->o.customerId()==customer) && snapshot.changes().stream().allMatch(c->c.originCustomerId()==customer)) {
+                var row=snapshot.customers().get(0);
+                if(row.state()==SupportFundsReadFacade.EvidenceState.READY && row.reasons().isEmpty() && row.usdt()!=null && row.nex()!=null)net=row;
+            }
+        }catch(org.springframework.dao.DataAccessException | IllegalArgumentException | IllegalStateException ex) {
+            org.slf4j.LoggerFactory.getLogger(SupportCustomerProfileService.class).warn("Customer net contribution unavailable: {}",ex.getClass().getSimpleName());
+        }
+        if(!(data.get("byCurrency") instanceof List<?> raw))throw new IllegalStateException("SUPPORT_FINANCE_CURRENCIES_UNAVAILABLE");
+        var currencies=new LinkedHashMap<String,Map<String,Object>>();
+        for(var item:raw) {
+            if(!(item instanceof Map<?,?> source) || !(source.get("currency") instanceof String currency) || currencies.containsKey(currency))throw new IllegalStateException("SUPPORT_FINANCE_CURRENCY_INVALID");
+            currencies.put(currency,new LinkedHashMap<>((Map<String,Object>)source));
+        }
+        for(String currency:List.of("USDT","NEX")) {
+            var row=currencies.computeIfAbsent(currency,key->{var missing=new LinkedHashMap<String,Object>();missing.put("currency",key);var states=new LinkedHashMap<String,String>();
+                for(String field:List.of("creditedDepositTotal","depositRefundTotal","successfulWithdrawalPrincipalTotal","successfulWithdrawalFeeTotal","successfulWithdrawalNetTotal","processingWithdrawalPrincipalTotal","balance","availableBalance")){missing.put(field,null);states.put(field,"READY".equals(legacyStatus)?"UNKNOWN":legacyStatus);}
+                missing.put("fieldStatuses",states);return missing;});
+            var states=new LinkedHashMap<String,Object>();if(row.get("fieldStatuses") instanceof Map<?,?> old)old.forEach((key,value)->states.put(String.valueOf(key),value));
+            row.put("netContributionTotal",net==null?null:FinanceSupportReadService.decimal("USDT".equals(currency)?net.usdt():net.nex()));
+            states.put("netContributionTotal",net==null?"UNKNOWN":"READY");row.put("fieldStatuses",states);
+        }
+        data.put("byCurrency",List.copyOf(currencies.values()));
+    }
+
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public Map<String,Object> devices(Long customer,long page,int size) {
         SupportWorkbenchService.requireSafeId(customer);SupportWorkbenchService.validatePage(page,size);ownership.requireRead(customer);
@@ -123,13 +174,47 @@ public class SupportCustomerProfileService {
                 record.put("lastSeenAt",businessUtc(row.lastSeenAt()));record.put("purchasedAt",businessUtc(row.purchasedAt()));
                 record.put("activatedAt",businessUtc(row.activatedAt()));record.put("heartbeatAt",businessUtc(row.heartbeatAt()));return record;
             }).toList());data.put("total",rows.getTotal());
-            var totals=mapper.deviceTotals(customer);if(totals==null)throw new IllegalStateException("SUPPORT_DEVICE_TOTALS_UNAVAILABLE");
-            long unknown=((Number)totals.get("telemetryUnknownCount")).longValue();boolean empty=rows.getTotal()==0;
-            data.put("pageNum",page);data.put("pageSize",size);data.putAll(totals);
-            data.put("onlineCount",unknown==0?totals.get("observedOnlineCount"):null);
-            data.put("hashrateTotal",empty?"0":null);data.put("idleCount",empty?0:null);
-            data.put("fieldStatuses",Map.of("onlineCount",unknown==0?"READY":"UNKNOWN","hashrateTotal",empty?"READY":"UNKNOWN","idleCount",empty?"READY":"UNKNOWN"));return data;
+            boolean empty=rows.getTotal()==0;
+            data.put("pageNum",page);data.put("pageSize",size);data.put("hashrateTotal",empty?"0":null);
+            var statuses=new LinkedHashMap<String,String>();statuses.put("hashrateTotal",empty?"READY":"UNKNOWN");
+            addCurrentDeviceCounts(data,statuses,customer);data.put("fieldStatuses",statuses);return data;
         });
+    }
+
+    /** History pagination is independent of the current, proven production holding count. */
+    private void addCurrentDeviceCounts(Map<String,Object> data,Map<String,String> statuses,long customer) {
+        data.put("heldCount",null);data.put("observedHeldCount",null);data.put("unknownHoldingCount",null);statuses.put("heldCount","UNKNOWN");
+        data.put("onlineCount",null);data.put("observedOnlineCount",null);data.put("telemetryUnknownCount",null);statuses.put("onlineCount","UNKNOWN");
+        if(currentDevices==null)return;
+        try {
+            var snapshot=currentDevices.readCurrent(List.of(customer));
+            if(snapshot==null || snapshot.evaluatedDbAt()==null)throw new IllegalStateException("SUPPORT_DEVICE_HOLDING_UNAVAILABLE");
+            var seen=new HashSet<Long>();long held=0,unknown=0,online=0,telemetryUnknown=0;
+            for(var device:snapshot.devices()) {
+                if(device==null || device.customerId()!=customer || device.connectionStatus()==null || !seen.add(device.deviceId()))throw new IllegalStateException("SUPPORT_DEVICE_HOLDING_SCOPE_INVALID");
+                int production=SupportAnalyticsService.productionDevice(device);
+                if(production==1) {
+                    held++;
+                    switch(device.connectionStatus()) {
+                        case ONLINE -> online++;
+                        case UNKNOWN -> telemetryUnknown++;
+                        case OFFLINE, NOT_APPLICABLE -> { }
+                    }
+                }else if(production==0)unknown++;
+            }
+            for(var device:snapshot.unknownHoldingDevices()) {
+                if(device==null || device.customerId()!=customer || !seen.add(device.deviceId()))throw new IllegalStateException("SUPPORT_DEVICE_HOLDING_SCOPE_INVALID");
+                if(SupportAnalyticsService.productionDevice(device)>=0)unknown++;
+            }
+            data.put("observedHeldCount",held);data.put("unknownHoldingCount",unknown);
+            data.put("heldCount",unknown==0?held:null);statuses.put("heldCount",unknown==0?"READY":"UNKNOWN");
+            long uncertainOnline=unknown+telemetryUnknown;
+            data.put("observedOnlineCount",online);data.put("telemetryUnknownCount",uncertainOnline);
+            data.put("onlineCount",uncertainOnline==0?online:null);statuses.put("onlineCount",uncertainOnline==0?"READY":"UNKNOWN");
+        }catch(org.springframework.dao.DataAccessException | IllegalArgumentException | IllegalStateException ex) {
+            statuses.put("heldCount","ERROR");statuses.put("onlineCount","ERROR");
+            org.slf4j.LoggerFactory.getLogger(SupportCustomerProfileService.class).warn("Customer current devices unavailable: {}",ex.getClass().getSimpleName());
+        }
     }
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
@@ -152,7 +237,7 @@ public class SupportCustomerProfileService {
         return new ConversationCustomerProfile(text(identity,"userNo"),text(identity,"nickname"),text(identity,"phoneMasked"),text(identity,"level"),
             strings(annotations.get("systemTags")),strings(annotations.get("customTags")),text(risk,"level"),text(risk,"serviceExplanation"),
             amount(usdt,"creditedDepositTotal"),amount(usdt,"successfulWithdrawalPrincipalTotal"),amount(usdt,"availableBalance"),
-            service.get("ticketCount") instanceof Number n?n.intValue():null,devices.get("total")==null?null:String.valueOf(devices.get("total")),
+            service.get("ticketCount") instanceof Number n?n.intValue():null,devices.get("heldCount")==null?null:String.valueOf(devices.get("heldCount")),
             null,null,text(identity,"region"),text(identity,"registeredAt"),text(identity,"lastLoginAt"),legacyLedger(finance),notes,groups);
     }
     private static Map<String,Object> actions() {

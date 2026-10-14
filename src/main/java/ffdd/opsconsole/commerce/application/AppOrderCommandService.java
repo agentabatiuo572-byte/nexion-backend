@@ -291,6 +291,7 @@ public class AppOrderCommandService {
         }
         BigDecimal balanceAfter = fullyDiscounted ? null : wallet.usdtAvailable().subtract(order.amountUsdt());
         if (!fullyDiscounted) {
+            paymentAttribution.beforeCash(prepared);
             if (mapper.debitDevelopmentWallet(userId, order.amountUsdt(), wallet.version()) != 1) {
                 throw new BizException(409, "ORDER_WALLET_CONFLICT");
             }

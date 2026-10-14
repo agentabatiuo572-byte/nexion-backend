@@ -45,8 +45,7 @@ class PromotionGovernanceTest {
         sku.put("name","StellarBox S1");product.put("product_no","cloud-share");assertNotNull(PromotionNativeContractResolver.giftFailure(product,sku));
     }
     @Test void nativeCatalogOnlyReturnsReferencesAndExplainsUnresolvableContracts() {
-        var nativeResolver=new PromotionNativeContractResolver(org.mockito.Mockito.mock(ffdd.opsconsole.promotion.mapper.PromotionMapper.class),org.mockito.Mockito.mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class),null,null,new org.springframework.mock.env.MockEnvironment());
-        org.springframework.test.util.ReflectionTestUtils.setField(nativeResolver,"orderTtlMinutes",30);
+        var nativeResolver=new PromotionNativeContractResolver(org.mockito.Mockito.mock(ffdd.opsconsole.promotion.mapper.PromotionMapper.class),org.mockito.Mockito.mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class),null,null,new org.springframework.mock.env.MockEnvironment(),30);
         var title=values("zh","订单","en","Orders","vi","Đơn hàng");
         var available=nativeResolver.catalogOption("ORDER_CONTRACT","WALLET_ORDER_V1",title,null);
         assertEquals(true,available.get("available"));assertNull(available.get("unavailabilityReason"));assertEquals(Set.of("system","resourceId","revision","contentHash"),map(available.get("reference")).keySet());

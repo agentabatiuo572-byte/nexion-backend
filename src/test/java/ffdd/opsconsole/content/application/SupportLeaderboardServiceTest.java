@@ -34,7 +34,7 @@ class SupportLeaderboardServiceTest {
     static Candidate candidate(Context c,long id,long count){return new Candidate(id,"公开客服"+id,
         "/api/admin/content/support-workbench/leaderboard/"+id+"/avatar?assetVersion=1","当前组",SupportLeaderboard.Qualification.ACTIVE,
         new Count(count,Coverage.COMPLETE,Reason.NONE),new Count(count,Coverage.COMPLETE,Reason.NONE),
-        new Amount(null,c.currency(),c.referenceMonth(),c.board()==Board.purchase?AmountKind.PURCHASE:AmountKind.DEPOSIT,Coverage.UNKNOWN,Reason.REFUNDS_UNKNOWN,"fixture-finance-source"),null);}
+        new Amount(c.board()==Board.netContribution?BigDecimal.valueOf(count):null,c.currency(),c.referenceMonth(),AmountKind.NET_CONTRIBUTION,c.board()==Board.netContribution?Coverage.COMPLETE:Coverage.UNKNOWN,c.board()==Board.netContribution?Reason.NONE:Reason.SOURCE_INCOMPLETE,"fixture-finance-source"),null);}
     static class Harness {
         final SupportOwnershipService ownership=mock(SupportOwnershipService.class);
         final SupportLeaderboardAuthorizationMapper auth=mock(SupportLeaderboardAuthorizationMapper.class);
@@ -62,7 +62,7 @@ class SupportLeaderboardServiceTest {
             service=service(avatars);
         }
         SupportLeaderboardService service(SupportAdminAvatarService avatarService){return new SupportLeaderboardService(ownership,auth,mapper,source,publication,publicationMapper,config,avatarService,transactions);}
-        void cache(Instant at){Context c=context(Board.firstPayment,"USDT",at);Snapshot s=SupportLeaderboard.calculate(c,"cached-source",Coverage.COMPLETE,List.of(candidate(c,7,1),candidate(c,9,2)));
+        void cache(Instant at){Context c=context(Board.netContribution,"USDT",at);Snapshot s=SupportLeaderboard.calculate(c,"cached-source",Coverage.COMPLETE,List.of(candidate(c,7,1),candidate(c,9,2)));
             cached=new Publication(23,at.plusSeconds(1),s);when(publicationMapper.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));
             when(publication.latest(any(),isNull())).thenReturn(cached);}
     }
@@ -80,6 +80,10 @@ class SupportLeaderboardServiceTest {
         var detail=h.service.detail(Map.of("expectedVersion",List.of(v)),7);assertEquals(v,first.get("viewVersion"));assertEquals(v,second.get("viewVersion"));assertEquals(v,detail.get("viewVersion"));
         verify(h.publication,never()).publish(any());assertEquals("7",((Map<?,?>)detail.get("row")).get("agentId"));
         assertEquals(2,((Map<?,?>)first.get("self")).get("pageNum"));
+        assertEquals(first.get("podium"),second.get("podium"));
+        Map<?,?> podium=(Map<?,?>)second.get("podium");assertEquals(2,podium.get("total"));
+        assertEquals(2,((List<?>)podium.get("rows")).size());
+        assertFalse(((Map<?,?>)((List<?>)podium.get("rows")).get(0)).containsKey("userId"));
     }
     @Test void absentOrExpiredPublishesAndReturnsCommittedResultWithoutOuterRrReread(){for(boolean cached:List.of(false,true)){Harness h=new Harness();if(cached)h.cache(NOW.minusSeconds(400));
         var body=h.service.page(Map.of());assertEquals(NOW.toString(),body.get("asOf"));assertEquals(NOW.plusSeconds(1).toString(),body.get("publishedAt"));
@@ -143,21 +147,37 @@ class SupportLeaderboardServiceTest {
         Harness absent=new Harness();when(absent.config.activeValue(SupportLeaderboardService.REFRESH_KEY)).thenReturn(Optional.empty());assertEquals(503,assertThrows(BizException.class,()->absent.service.page(Map.of())).getCode());
         for(String valid:List.of("1","60")){Harness h=new Harness();h.cache(NOW.minusSeconds(30));when(h.config.activeValue(SupportLeaderboardService.REFRESH_KEY)).thenReturn(Optional.of(valid));assertEquals(false,h.service.page(Map.of()).get("stale"));}}
     @Test void latePublishRaceReadsWinnerInFreshTransactionRatherThanOverwriting(){Harness h=new Harness();doThrow(new BizException(409,"SUPPORT_LEADERBOARD_LATE_EVALUATION")).when(h.publication).publish(any());
-        Context c=context(Board.firstPayment,"USDT",NOW);Snapshot s=SupportLeaderboard.calculate(c,"winning-source",Coverage.COMPLETE,List.of(candidate(c,9,3)));
+        Context c=context(Board.netContribution,"USDT",NOW);Snapshot s=SupportLeaderboard.calculate(c,"winning-source",Coverage.COMPLETE,List.of(candidate(c,9,3)));
         Publication winner=new Publication(99,NOW.plusSeconds(2),s);when(h.publication.latest(any(),isNull())).thenReturn(winner);
         assertEquals(winner.snapshot().viewVersion(),h.service.page(Map.of()).get("viewVersion"));verify(h.transactions,times(3)).getTransaction(any());verify(h.transactions,times(3)).commit(any());}
     @Test void publicJsonContainsOnlyWhitelistedIdsDecimalsAndVersionBoundAvatarUrl() throws Exception {Harness h=new Harness();h.cache(NOW.minusSeconds(30));var body=h.service.page(Map.of());
         String json=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(body);for(String forbidden:List.of("qualificationBirths","customerId","orderNo","phone","email","objectKey","assetId","uploader","evidence"))assertFalse(json.contains(forbidden),forbidden);
-        var row=(Map<?,?>)((List<?>)body.get("rows")).get(0);String avatar=(String)row.get("avatarUrl");assertTrue(avatar.contains("expectedVersion="));assertTrue(avatar.contains("board=firstPayment"));assertFalse(avatar.contains("assetVersion="));
-        assertEquals("9",row.get("agentId"));assertNull(((Map<?,?>)row.get("amount")).get("value"));
+        var row=(Map<?,?>)((List<?>)body.get("rows")).get(0);String avatar=(String)row.get("avatarUrl");assertTrue(avatar.contains("expectedVersion="));assertTrue(avatar.contains("board=netContribution"));assertFalse(avatar.contains("assetVersion="));
+        assertEquals("9",row.get("agentId"));assertEquals("2",((Map<?,?>)row.get("amount")).get("value"));
     }
-    @Test void moneyWhitelistPreservesPlainDecimalPrecisionAndStringAgentIds(){Harness h=new Harness();Context c=context(Board.deposit,"USDT",NOW.minusSeconds(30));
+    @Test void moneyWhitelistPreservesPlainDecimalPrecisionAndStringAgentIds(){Harness h=new Harness();Context c=context(Board.netContribution,"USDT",NOW.minusSeconds(30));
         var candidate=new Candidate(9,"公开客服",null,"当前组",SupportLeaderboard.Qualification.ACTIVE,new Count(0L,Coverage.COMPLETE,Reason.NONE),new Count(0L,Coverage.COMPLETE,Reason.NONE),
-            new Amount(new BigDecimal("1000000000000000000.123456789"),"USDT",YearMonth.of(2026,10),AmountKind.DEPOSIT,Coverage.COMPLETE,Reason.NONE,"real-shaped-money-tuple"),null);
+            new Amount(new BigDecimal("1000000000000000000.123456789"),"USDT",YearMonth.of(2026,10),AmountKind.NET_CONTRIBUTION,Coverage.COMPLETE,Reason.NONE,"real-shaped-money-tuple"),null);
         Snapshot s=SupportLeaderboard.calculate(c,"tuple",Coverage.COMPLETE,List.of(candidate));when(h.publicationMapper.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));
         when(h.publication.latest(any(),isNull())).thenReturn(new Publication(23,c.evaluatedAt().plusSeconds(1),s));
         var row=(Map<?,?>)((List<?>)h.service.page(Map.of("board",List.of("deposit"))).get("rows")).get(0);
         assertEquals("9",row.get("agentId"));assertEquals("1000000000000000000.123456789",((Map<?,?>)row.get("amount")).get("value"));
+    }
+    @Test void defaultAndLegacyRequestsExposeOneSignedNetAmountWithoutPrivateCustomerData(){Harness h=new Harness();
+        Context c=context(Board.netContribution,"NEX",NOW.minusSeconds(30));
+        var original=candidate(c,9,1);var signed=new Candidate(original.agentId(),original.name(),null,original.groupName(),original.qualification(),original.firstPayment(),original.customers(),
+            new Amount(new BigDecimal("-35.123456"),"NEX",c.referenceMonth(),AmountKind.NET_CONTRIBUTION,Coverage.COMPLETE,Reason.NONE,"net-only"),null);
+        Snapshot s=SupportLeaderboard.calculate(c,"net-only",Coverage.COMPLETE,List.of(signed));
+        when(h.publicationMapper.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));
+        when(h.publication.latest(any(),isNull())).thenReturn(new Publication(23,c.evaluatedAt().plusSeconds(1),s));
+        for(String alias:Arrays.asList(null,"deposit","purchase","netContribution")) {
+            Map<String,List<String>> query=new HashMap<>();query.put("currency",List.of("NEX"));if(alias!=null)query.put("board",List.of(alias));
+            var body=h.service.page(query);assertEquals("netContribution",body.get("board"));
+            var row=(Map<?,?>)((List<?>)body.get("rows")).get(0);var amount=(Map<?,?>)row.get("amount");
+            assertEquals("NET_CONTRIBUTION",amount.get("kind"));assertEquals("-35.123456",amount.get("value"));
+            assertEquals(false,row.get("canViewCustomers"));assertFalse(row.containsKey("customerId"));assertFalse(row.containsKey("net"));
+        }
+        verify(h.ownership,never()).queryScope(any(),any(),any());
     }
     @Test void avatarMustBindPublicCandidateVersionAndCurrentAssetBeforeBytes(){Harness h=new Harness();h.cache(NOW.minusSeconds(30));String version=h.cached.snapshot().viewVersion();
         when(h.auth.avatarReference(9)).thenReturn(new AssetReference("private-asset",1L));when(h.avatars.publicLeaderboardContent(any())).thenReturn(new SupportAttachmentService.Content("image/png",new byte[]{1,2}));
@@ -191,7 +211,7 @@ class SupportLeaderboardServiceTest {
         Harness h=new Harness();var real=legacyPublication(h);
         SupportLeaderboardPublicationServiceTest.beginRead();try {
             var body=service(h,real).page(Map.of("board",List.of("deposit")));
-            assertEquals("support-leaderboard-v2-deposit-no-refund",body.get("definitionVersion"));
+            assertEquals(SupportLeaderboard.NET_DEFINITION,body.get("definitionVersion"));
             assertEquals(false,body.get("stale"));assertEquals(false,body.get("refreshFailed"));
             verify(real).publish(any());
         }finally {SupportLeaderboardPublicationServiceTest.endRead();}
@@ -205,7 +225,7 @@ class SupportLeaderboardServiceTest {
     @Test void sourceFailureAfterDefinitionChangeCannotFallbackToOldNetSnapshot() throws Exception {
         for(boolean selected:List.of(false,true)) {
             Harness h=new Harness();var real=legacyPublication(h);
-            doAnswer(i->{Context c=i.getArgument(0);if(!selected || c.board()==Board.deposit)throw new BizException(503,"SUPPORT_LEADERBOARD_SOURCE_FAILED");
+            doAnswer(i->{Context c=i.getArgument(0);if(!selected || c.board()==Board.netContribution)throw new BizException(503,"SUPPORT_LEADERBOARD_SOURCE_FAILED");
                 return new SupportLeaderboardSourceService.Read(c,"tuple",Coverage.COMPLETE,List.of(candidate(c,7,1)),List.of(YearMonth.of(2026,10)),null);
             }).when(h.source).readForAuthorizedLeaderboard(any());
             SupportLeaderboardPublicationServiceTest.beginRead();try {
@@ -218,7 +238,7 @@ class SupportLeaderboardServiceTest {
         return new SupportLeaderboardService(h.ownership,h.auth,h.mapper,h.source,publication,h.publicationMapper,h.config,h.avatars,h.transactions);
     }
     private static SupportLeaderboardPublicationService legacyPublication(Harness h) throws Exception {
-        Context old=new Context(Board.deposit,YearMonth.of(2026,10),YearMonth.of(2026,10),"USDT",Scope.all,Set.of(),"support-leaderboard-v1",NOW.minusSeconds(30));
+        Context old=new Context(Board.netContribution,YearMonth.of(2026,10),YearMonth.of(2026,10),"USDT",Scope.all,Set.of(),"support-leaderboard-v1",NOW.minusSeconds(30));
         Snapshot snapshot=SupportLeaderboardPublicationServiceTest.snapshot(old,Coverage.COMPLETE);
         h.cached=new Publication(23,old.evaluatedAt().plusSeconds(1),snapshot);
         when(h.publicationMapper.latest(anyString())).thenReturn(SupportLeaderboardPublicationServiceTest.stored(23,snapshot,h.cached.publishedAt()));

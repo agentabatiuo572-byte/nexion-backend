@@ -16,16 +16,14 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 class LearningAcceptanceSandboxCatalogServiceTest {
     private final LearningAcceptanceSandboxGate gate = mock(LearningAcceptanceSandboxGate.class);
     private final AppLearningMapper mapper = mock(AppLearningMapper.class);
-    private final LearningAcceptanceSandboxCatalogService service = new LearningAcceptanceSandboxCatalogService(gate, mapper);
+    private final LearningAcceptanceSandboxCatalogService service = new LearningAcceptanceSandboxCatalogService(gate, mapper, "acceptance.2026-08");
 
     @Test
     void savesAndPublishesOnlyTheRunScopedSandboxCatalog() {
-        ReflectionTestUtils.setField(service, "configuredRunId", "acceptance.2026-08");
         when(mapper.claimSandboxCatalogIdempotency(org.mockito.ArgumentMatchers.eq("acceptance.2026-08"), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString())).thenReturn(1);
         when(mapper.insertSandboxCourse(org.mockito.ArgumentMatchers.eq("acceptance.2026-08"), org.mockito.ArgumentMatchers.any())).thenReturn(1);
         when(mapper.publishSandboxCourse("acceptance.2026-08", "sandbox-course", "v1", 0)).thenReturn(1);
@@ -41,7 +39,6 @@ class LearningAcceptanceSandboxCatalogServiceTest {
 
     @Test
     void completedSandboxAdminKeyReturnsItsOriginalResultBeforeItCanMutateAgain() throws Exception {
-        ReflectionTestUtils.setField(service, "configuredRunId", "acceptance.2026-08");
         when(mapper.claimSandboxCatalogIdempotency(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString())).thenReturn(0);
         LearningCourseUpsertRequest request = new LearningCourseUpsertRequest("沙箱课程", "Sandbox course", "正文", "Body", "Basics", "Article", "Beginner", BigDecimal.TEN, "5 min", "draft", "acceptance", "verify");
         String requestHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(new ObjectMapper().writeValueAsString(request).getBytes(StandardCharsets.UTF_8)));
@@ -59,7 +56,6 @@ class LearningAcceptanceSandboxCatalogServiceTest {
 
     @Test
     void commandResultReadsTheDurableRunScopedReceipt() {
-        ReflectionTestUtils.setField(service, "configuredRunId", "acceptance.2026-08");
         when(mapper.findSandboxCatalogCommandResult("acceptance.2026-08", "LEARNING_SANDBOX_COURSE_PUBLISH:sandbox-course:v1", "sandbox-catalog-publish-001"))
                 .thenReturn(new LearningSandboxIdempotencyRow("hash", "COMPLETED", "{\"code\":0,\"message\":\"OK\",\"data\":{}}"));
 
@@ -69,7 +65,6 @@ class LearningAcceptanceSandboxCatalogServiceTest {
 
     @Test
     void commandResultMakesDurableBusinessFailureExplicitRatherThanSuccessByPresence() {
-        ReflectionTestUtils.setField(service, "configuredRunId", "acceptance.2026-08");
         when(mapper.findSandboxCatalogCommandResult("acceptance.2026-08", "LEARNING_SANDBOX_COURSE_PUBLISH:sandbox-course:v1", "sandbox-catalog-publish-001"))
                 .thenReturn(new LearningSandboxIdempotencyRow("hash", "COMPLETED", "{\"code\":409,\"message\":\"LEARNING_SANDBOX_COURSE_NOT_DRAFT\",\"data\":null}"));
 
@@ -81,7 +76,6 @@ class LearningAcceptanceSandboxCatalogServiceTest {
 
     @Test
     void sameSandboxAdminKeyWithDifferentPayloadFailsClosed() throws Exception {
-        ReflectionTestUtils.setField(service, "configuredRunId", "acceptance.2026-08");
         LearningCourseUpsertRequest request = new LearningCourseUpsertRequest("沙箱课程", "Sandbox course", "正文", "Body", "Basics", "Article", "Beginner", BigDecimal.TEN, "5 min", "draft", "acceptance", "verify");
         when(mapper.claimSandboxCatalogIdempotency(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString())).thenReturn(0);
         when(mapper.lockSandboxCatalogIdempotency(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
@@ -94,7 +88,6 @@ class LearningAcceptanceSandboxCatalogServiceTest {
 
     @Test
     void businessConflictIsCompletedAsADurableReceiptInsteadOfLeavingPending() {
-        ReflectionTestUtils.setField(service, "configuredRunId", "acceptance.2026-08");
         when(mapper.claimSandboxCatalogIdempotency(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString())).thenReturn(1);
         when(mapper.publishSandboxCourse("acceptance.2026-08", "sandbox-course", "v1", 0)).thenReturn(0);
 
@@ -104,7 +97,6 @@ class LearningAcceptanceSandboxCatalogServiceTest {
 
     @Test
     void nonExistingDraftWithNonzeroExpectedRevisionFailsWithoutAnInsert() {
-        ReflectionTestUtils.setField(service, "configuredRunId", "acceptance.2026-08");
         when(mapper.claimSandboxCatalogIdempotency(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString())).thenReturn(1);
         LearningCourseUpsertRequest request = new LearningCourseUpsertRequest("沙箱课程", "Sandbox course", "正文", "Body", "Basics", "Article", "Beginner", BigDecimal.TEN, "5 min", "draft", "acceptance", "verify", java.util.List.of(), null, null, null, null, 1L);
 
@@ -114,7 +106,6 @@ class LearningAcceptanceSandboxCatalogServiceTest {
 
     @Test
     void competingSecondVersionPublishIsRejectedByTheSinglePublishedAuthority() {
-        ReflectionTestUtils.setField(service, "configuredRunId", "acceptance.2026-08");
         when(mapper.claimSandboxCatalogIdempotency(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString())).thenReturn(1);
         when(mapper.publishSandboxCourse("acceptance.2026-08", "sandbox-course", "v1", 0)).thenReturn(1);
         when(mapper.publishSandboxCourse("acceptance.2026-08", "sandbox-course", "v2", 0)).thenReturn(0);

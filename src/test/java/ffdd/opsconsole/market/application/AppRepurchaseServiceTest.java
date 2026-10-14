@@ -37,6 +37,29 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class AppRepurchaseServiceTest {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"OPEN","CLAIM","EARLY"})
+    void realCommandsBindOneCashIntervalIncludingRepurchaseInterest(String phase) {
+        var fund=mock(SupportStakingFundAdapter.class);var token=mock(SupportStakingFundAdapter.Before.class);
+        when(fund.begin(eq(7L),any())).thenReturn(token);
+        var actual=new AppRepurchaseService(mapper,disclosureGate,config,growthRhythmFacade,idempotency,outbox,audit,clock,environment,sandboxMapper,fund);
+        String no="RPS-00000040";LocalDateTime now=LocalDateTime.now(clock),unlock=phase.equals("CLAIM")?now.minusMinutes(1):now.plusDays(89);
+        when(mapper.lockActiveUser(7L)).thenReturn(7L);when(mapper.lockProduct()).thenReturn(product());when(mapper.lockWallet(7L)).thenReturn(new BigDecimal("500"));
+        when(mapper.debitWallet(eq(7L),any())).thenReturn(1);when(mapper.creditWallet(eq(7L),any())).thenReturn(1);when(mapper.insertPosition(any())).thenReturn(1);when(mapper.insertLedger(any())).thenReturn(1);when(mapper.insertTicket(any())).thenReturn(1);
+        when(mapper.attribution(7L)).thenReturn(new AppRepurchaseMapper.UserAttribution("P1",3,"2026-W30"));
+        when(mapper.lockPosition(7L,no)).thenReturn(new AppRepurchaseMapper.PositionRow(40L,7L,no,new BigDecimal("100"),new BigDecimal("3500"),new BigDecimal("1500"),90,unlock.minusDays(90),unlock,new BigDecimal("8.630137"),"ACTIVE",null,null));
+        when(mapper.markClaimed(any(),any(),any())).thenReturn(1);when(mapper.markEarly(any(),any(),any())).thenReturn(1);
+        if(phase.equals("OPEN"))actual.open(7L,"fund-open",new AppRepurchaseService.OpenRequest(new BigDecimal("100")));
+        else if(phase.equals("CLAIM"))actual.claim(7L,no,"fund-claim");else actual.earlyWithdraw(7L,no,"fund-early");
+        var order=org.mockito.Mockito.inOrder(mapper,fund);order.verify(fund).begin(7L,phase.equals("OPEN")?null:no);
+        if(phase.equals("OPEN"))order.verify(mapper).debitWallet(7L,new BigDecimal("100.000000"));
+        else order.verify(mapper).creditWallet(7L,new BigDecimal(phase.equals("CLAIM")?"108.630137":"85.000000"));
+        var ledger=org.mockito.ArgumentCaptor.forClass(AppRepurchaseMapper.LedgerWrite.class);order.verify(mapper).insertLedger(ledger.capture());
+        assertThat(ledger.getValue().amount()).isEqualByComparingTo(phase.equals("OPEN")?"100":phase.equals("CLAIM")?"108.630137":"85");
+        assertThat(ledger.getValue().balanceAfter()).isEqualByComparingTo(phase.equals("OPEN")?"400":phase.equals("CLAIM")?"608.630137":"585");
+        order.verify(fund).recorded(eq(token),anyString(),eq(phase));
+        verify(mapper,org.mockito.Mockito.times(phase.equals("OPEN")?0:1)).creditWallet(eq(7L),any());
+    }
     @Test
     @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named = "NEXION_SNAPSHOT_RACE_IT", matches = "true")
     void openCountsMonthlyTicketsCommittedWhileWaitingForProductLock() throws Exception {

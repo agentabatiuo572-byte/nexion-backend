@@ -179,7 +179,7 @@ SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code='SUPER_ADMIN' AND p.permission_code LIKE 'finance_d2_%' AND p.status=1 AND p.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
-WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK','RISK_LEAD','SUPPORT','AUDITOR') AND p.permission_code='finance_d2_read'
+WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK','RISK_LEAD','AUDITOR') AND p.permission_code='finance_d2_read'
   AND p.status=1 AND p.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
@@ -205,7 +205,7 @@ WHERE r.role_code='RISK_LEAD'
 -- Auditors must be able to discover the read-only D2 entry.
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id,m.id FROM nx_admin_role r JOIN nx_admin_menu m
-WHERE r.role_code IN ('AUDITOR','SUPPORT','RISK_LEAD') AND m.menu_code IN ('D','D2') AND m.status=1 AND m.is_deleted=0;
+WHERE r.role_code IN ('AUDITOR','RISK_LEAD') AND m.menu_code IN ('D','D2') AND m.status=1 AND m.is_deleted=0;
 
 INSERT INTO nx_event_schema_registry
   (event_name, owner_domain, family_key, producer, consumers, is_server_authoritative,

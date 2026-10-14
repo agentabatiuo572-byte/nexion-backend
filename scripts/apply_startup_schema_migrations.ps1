@@ -298,6 +298,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261008_l6_promotion_reward_routes.sql")
   # Additive support capabilities require their schema before the current application boots.
   (Join-Path $root "scripts\migrations\20261001_support_enhancements_core.sql")
+  (Join-Path $root "scripts\migrations\20261009_support_default_avatar.sql")
   (Join-Path $root "scripts\migrations\20261001_support_enhancements_bulk.sql")
   # Group structure is safe to install; legacy qualification cutover remains an explicit reviewed operation.
   (Join-Path $root "scripts\migrations\20261007_support_groups.sql")
@@ -309,6 +310,11 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261009_admin_session_idle60.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_attribution.sql")
   (Join-Path $root "scripts\migrations\20261008_support_payment_history_birth.sql")
+  # AUTH and cash writers need the canonical fund schema before API startup.
+  (Join-Path $root "scripts\migrations\20261011_support_fund_journal.sql")
+  (Join-Path $root "scripts\migrations\20261011_support_fund_operations.sql")
+  (Join-Path $root "scripts\migrations\20261011_support_fund_operation_party.sql")
+  (Join-Path $root "scripts\migrations\20261011_support_fund_schema_reader.sql")
   (Join-Path $root "scripts\migrations\20261009_support_leaderboard_publication.sql")
   (Join-Path $root "scripts\migrations\20261003_support_ticket_creation_policy.sql")
   (Join-Path $root "scripts\migrations\20261003_support_ticket_binding_owner.sql")

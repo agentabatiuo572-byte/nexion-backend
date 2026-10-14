@@ -854,7 +854,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
         return transactionProxy(new D1BankOrderService(paymentAttribution(template.getMapper(VietnamPaymentMapper.class)), template.getMapper(D1BankOrderMapper.class),
                 template.getMapper(HdPayOrderMapper.class), template.getMapper(AppVietQrIntentMapper.class),
                 template.getMapper(VietnamPaymentMapper.class), evidence,
-                new MybatisTreasuryLedgerRepository(template.getMapper(TreasuryLedgerMapper.class), outbox),
+                new MybatisTreasuryLedgerRepository(template.getMapper(TreasuryLedgerMapper.class), outbox, ffdd.opsconsole.treasury.application.SupportCommissionTestCapture.real(template,tx.getDataSource(),json)),
                 idem, outbox, audit, properties, json, Clock.systemUTC()), D1BankOrderService.class, tx);
     }
 
@@ -922,7 +922,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                 template.getMapper(VietnamPaymentMapper.class),
                 outbox,
                 mock(AuditLogService.class),
-                new MybatisTreasuryLedgerRepository(template.getMapper(TreasuryLedgerMapper.class), outbox),
+                new MybatisTreasuryLedgerRepository(template.getMapper(TreasuryLedgerMapper.class), outbox, ffdd.opsconsole.treasury.application.SupportCommissionTestCapture.real(template,txManager.getDataSource(),new ObjectMapper().findAndRegisterModules())),
                 Clock.systemUTC(), paymentAttribution(template.getMapper(VietnamPaymentMapper.class)));
         ProxyFactory factory = new ProxyFactory(target);
         factory.setProxyTargetClass(true);

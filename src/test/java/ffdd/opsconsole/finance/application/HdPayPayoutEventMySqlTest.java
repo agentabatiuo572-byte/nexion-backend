@@ -182,7 +182,7 @@ class HdPayPayoutEventMySqlTest {
         cfg.addMapper(EventOutboxMapper.class); cfg.addMapper(TreasuryLedgerMapper.class);
         var session=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(cfg));
         var events=new EventOutboxService(session.getMapper(EventOutboxMapper.class),JSON,new OutboxProperties(),mock(A4RuntimePolicyService.class));
-        var treasury=f.proxy(new MybatisTreasuryLedgerRepository(session.getMapper(TreasuryLedgerMapper.class),events));
+        var treasury=f.proxy(new MybatisTreasuryLedgerRepository(session.getMapper(TreasuryLedgerMapper.class),events,ffdd.opsconsole.treasury.application.SupportCommissionTestCapture.real(session,f.source,JSON)));
         // Delegate existing fixture wiring to real services; validation and all writes remain in the same transaction.
         doAnswer(i->events.publish(i.getArgument(0),i.getArgument(1),i.getArgument(2),i.getArgument(3)))
                 .when(f.outbox).publish(anyString(),anyString(),anyString(),any());

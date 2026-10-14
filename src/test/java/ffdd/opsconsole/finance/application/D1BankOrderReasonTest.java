@@ -185,6 +185,8 @@ class D1BankOrderReasonTest {
         var sequence = org.mockito.Mockito.inOrder(capture, payments, orders);
         sequence.verify(capture).prepare(42L, Source.HDPAY, "VQR-MANUAL");
         sequence.verify(payments).findUsdtWalletForUpdate(42L);
+        sequence.verify(capture).beforeCash(any(Prepared.class));
+        sequence.verify(payments).creditUsdtWallet(eq(42L),any(),org.mockito.ArgumentMatchers.anyLong());
         sequence.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
         sequence.verify(orders).markManualCredited("VQR-MANUAL", 3L, amount, now);
         sequence.verify(capture).record(any(Prepared.class));

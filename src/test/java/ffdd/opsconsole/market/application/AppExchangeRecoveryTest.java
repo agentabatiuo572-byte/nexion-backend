@@ -38,7 +38,7 @@ class AppExchangeRecoveryTest {
 
     private AppExchangeService service(MockEnvironment env, Optional<AppMarketSandboxService> sandbox) {
         return new AppExchangeService(orders, config, idempotency, outbox, audit, fees, json,
-                Clock.systemUTC(), env, sandbox);
+                Clock.systemUTC(), env, sandbox,mock(SupportExchangeFundAdapter.class));
     }
 
     private AdminIdempotencyRecordEntity receipt(String state, String payload) throws Exception {

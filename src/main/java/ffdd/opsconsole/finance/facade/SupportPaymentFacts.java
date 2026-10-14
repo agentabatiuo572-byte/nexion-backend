@@ -11,9 +11,9 @@ import java.util.Set;
 /** Source facts only. No customer ownership, first-event selection, totals or ranks. */
 public final class SupportPaymentFacts {
     private SupportPaymentFacts() {}
-    public enum Kind { DEPOSIT, DEVICE_PURCHASE, DEVICE_PURCHASE_REFUND }
+    public enum Kind { DEPOSIT, DEVICE_PURCHASE, DEVICE_PURCHASE_REFUND, CONSUMPTION }
     public enum Source { DEPOSIT_ORDER, CARD_TOPUP, VIETQR, HDPAY, WALLET_ORDER, TRADE_IN,
-        CAPACITY_KEEP, TRIAL_CONVERT, ORDER_REFUND, FREE_TRIAL, UNMATCHED_LEDGER }
+        CAPACITY_KEEP, TRIAL_CONVERT, ORDER_REFUND, GENESIS_PRIMARY, GENESIS_SECONDARY, FREE_TRIAL, UNMATCHED_LEDGER }
     public enum Status { READY, UNKNOWN }
 
     /** Contradictions returned by the real ledger/source checks, unlike absent evidence or malformed JSON. */
@@ -50,11 +50,13 @@ public final class SupportPaymentFacts {
             case DEPOSIT -> "DEPOSIT:"+fact.ledgerId();
             case DEVICE_PURCHASE -> "PURCHASE:"+fact.orderNo();
             case DEVICE_PURCHASE_REFUND -> "ORDER_REFUND:"+fact.ledgerId();
+            case CONSUMPTION -> "CONSUMPTION:"+fact.orderNo();
         };
         Kind expected=switch(fact.source()) {
             case DEPOSIT_ORDER,CARD_TOPUP,VIETQR,HDPAY -> Kind.DEPOSIT;
             case WALLET_ORDER,TRADE_IN,CAPACITY_KEEP,TRIAL_CONVERT -> Kind.DEVICE_PURCHASE;
             case ORDER_REFUND -> Kind.DEVICE_PURCHASE_REFUND;
+            case GENESIS_PRIMARY,GENESIS_SECONDARY -> Kind.CONSUMPTION;
             case FREE_TRIAL,UNMATCHED_LEDGER -> null;
         };
         if(expected!=fact.kind() || !canonical.equals(fact.factId()) || (fact.kind()!=Kind.DEPOSIT && !present(fact.orderNo()))
@@ -62,6 +64,8 @@ public final class SupportPaymentFacts {
                 ? !Objects.equals(fact.originalFactId(),"PURCHASE:"+fact.orderNo()) : fact.originalFactId()!=null))return invalid;
         return null;
     }
+    public static boolean firstEligible(Kind kind) {return kind==Kind.DEPOSIT || kind==Kind.DEVICE_PURCHASE;}
+    public static boolean genesis(Source source) {return source==Source.GENESIS_PRIMARY || source==Source.GENESIS_SECONDARY;}
     private static boolean present(String value) {return value!=null && !value.isBlank();}
 
     /** SQL DATETIME values remain in the business zone; precision is not invented. */
@@ -86,15 +90,25 @@ public final class SupportPaymentFacts {
         List<String> reasons, long excludedFreeOrNonProductionRows, String adapterVersion) {
         public Coverage { reasons = List.copyOf(reasons); }
     }
+    /** Scope-specific proof. An absent row is UNKNOWN, including snapshots from old constructors. */
+    public record CustomerCoverage(long customerId, Source source, Status historyStatus,
+        Status refundStatus, Status historicalEnvironmentStatus, LocalDateTime supportedFrom, List<String> reasons) {
+        public CustomerCoverage { reasons = List.copyOf(reasons); }
+    }
     public record Snapshot(List<Fact> facts, List<Issue> issues, List<Coverage> coverage,
-        String businessZone, Instant evaluatedAt, List<FirstHistory> firstHistory) {
+        String businessZone, Instant evaluatedAt, List<FirstHistory> firstHistory, List<CustomerCoverage> customerCoverage) {
         public Snapshot(List<Fact> facts, List<Issue> issues, List<Coverage> coverage,
                 String businessZone, Instant evaluatedAt) {
-            this(facts, issues, coverage, businessZone, evaluatedAt, List.of());
+            this(facts, issues, coverage, businessZone, evaluatedAt, List.of(), List.of());
+        }
+        public Snapshot(List<Fact> facts, List<Issue> issues, List<Coverage> coverage,
+                String businessZone, Instant evaluatedAt, List<FirstHistory> firstHistory) {
+            this(facts, issues, coverage, businessZone, evaluatedAt, firstHistory, List.of());
         }
         public Snapshot {
             facts = List.copyOf(facts); issues = List.copyOf(issues); coverage = List.copyOf(coverage);
             firstHistory = List.copyOf(firstHistory);
+            customerCoverage = List.copyOf(customerCoverage);
         }
     }
 }

@@ -21,7 +21,7 @@ class MybatisTreasuryLedgerRepositoryTest {
     void withdrawalComponentsKeepRunningBalanceContinuousAndEachFirstInsertPublishesOutbox() {
         TreasuryLedgerMapper mapper = mock(TreasuryLedgerMapper.class);
         EventOutboxService outbox = mock(EventOutboxService.class);
-        MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox);
+        MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox, mock(ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade.class));
         for (String bizNo : java.util.List.of(
                 "WD-1:USDT:PRINCIPAL", "WD-1:USDT:NETWORK_FEE", "WD-1:USDT:PENALTY_FEE")) {
             when(mapper.lockLedgerMutex(uniqueKey(bizNo, "USDT", "OUT")))
@@ -75,7 +75,7 @@ class MybatisTreasuryLedgerRepositoryTest {
     void withdrawalRefundRestoresReservedUsdtAndBurnedNexWithExactPostBalances() {
         TreasuryLedgerMapper mapper = mock(TreasuryLedgerMapper.class);
         MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(
-                mapper, mock(EventOutboxService.class));
+                mapper, mock(EventOutboxService.class), mock(ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade.class));
         when(mapper.actualUserBalance(7L, "USDT")).thenReturn(new BigDecimal("20.000000"));
         when(mapper.actualUserBalance(7L, "NEX")).thenReturn(new BigDecimal("5.000000"));
         when(mapper.releasePendingWithdrawalWithNex(
@@ -106,7 +106,7 @@ class MybatisTreasuryLedgerRepositoryTest {
     void immutableLedgerRejectsSameBusinessKeyWithDifferentFingerprint() {
         TreasuryLedgerMapper mapper = mock(TreasuryLedgerMapper.class);
         MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(
-                mapper, mock(EventOutboxService.class));
+                mapper, mock(EventOutboxService.class), mock(ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade.class));
         WalletLedgerEntity existing = new WalletLedgerEntity();
         existing.setUserId(7L);
         existing.setBizType("ADJUSTMENT");
@@ -133,7 +133,7 @@ class MybatisTreasuryLedgerRepositoryTest {
     void exactReplayAfterLaterEntriesUsesStoredFingerprintAndDoesNotRecomputeBalance() {
         TreasuryLedgerMapper mapper = mock(TreasuryLedgerMapper.class);
         EventOutboxService outbox = mock(EventOutboxService.class);
-        MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox);
+        MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox, mock(ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade.class));
         WalletLedgerEntity existing = new WalletLedgerEntity();
         existing.setUserId(7L);
         existing.setBizType("ADJUSTMENT");
@@ -168,7 +168,7 @@ class MybatisTreasuryLedgerRepositoryTest {
     void duplicateInsertFromAnotherUserIsRecheckedAndNeverPublishesFalseOutbox() {
         TreasuryLedgerMapper mapper = mock(TreasuryLedgerMapper.class);
         EventOutboxService outbox = mock(EventOutboxService.class);
-        MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox);
+        MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox, mock(ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade.class));
         WalletLedgerEntity winner = new WalletLedgerEntity();
         winner.setUserId(7L);
         winner.setBizType("ADJUSTMENT");
@@ -205,7 +205,7 @@ class MybatisTreasuryLedgerRepositoryTest {
     void priorProviderRefundCannotReleaseAnotherWithdrawalReserve() {
         TreasuryLedgerMapper mapper = mock(TreasuryLedgerMapper.class);
         EventOutboxService outbox = mock(EventOutboxService.class);
-        MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox);
+        MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox, mock(ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade.class));
         WalletLedgerEntity priorRefund = providerRefundEvidence();
         when(mapper.findLedgerEntry("WD-PROVIDER:PAYOUT:USDT:REFUND", "USDT", "IN"))
                 .thenReturn(priorRefund);
@@ -237,7 +237,7 @@ class MybatisTreasuryLedgerRepositoryTest {
         for (String conflict : java.util.List.of("user", "amount", "type", "status")) {
             TreasuryLedgerMapper mapper = mock(TreasuryLedgerMapper.class);
             EventOutboxService outbox = mock(EventOutboxService.class);
-            MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox);
+            MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox, mock(ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade.class));
             WalletLedgerEntity evidence = providerRefundEvidence();
             switch (conflict) {
                 case "user" -> evidence.setUserId(8L);
