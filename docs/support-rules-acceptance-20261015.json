@@ -1,0 +1,73 @@
+{
+  "recordedAt": "2026-10-14T16:26:01.6361951Z",
+  "sourceBase": "e119949d4a5d047e3b6e943f6c6299457436d795",
+  "testSourceSha256": "47f55b66c86d4493ada00d45c93c4376e69867a59051bd0f0b3e6efc7554fed1",
+  "scope": "Test assertion correction and read-only existing-rule acceptance; no production implementation changes",
+  "compilation": {
+    "changedNativeTestClass": "SupportRulesConfigurationRuntimeTest",
+    "nativeTestExecution": "NOT_RUN",
+    "status": "PASS"
+  },
+  "minimalTests": {
+    "failed": 0,
+    "passed": 6,
+    "selections": [
+      "SupportRulesUpgradeTest (5 tests)",
+      "StartupSchemaMigrationContractTest#supportEnhancementsAreInstalledInDependencyOrderWithoutResolvingLegacyAssignments (1 test)"
+    ],
+    "skipped": 0,
+    "durationMs": 1518
+  },
+  "independentReview": {
+    "openP0": 0,
+    "role": "Java reviewer",
+    "openP2": 0,
+    "openP1": 0
+  },
+  "existingRuleReadback": {
+    "pageTextUnchanged": true,
+    "normalExistingAccountLogin": true,
+    "http": [
+      200,
+      200
+    ],
+    "before": {
+      "version": 1893,
+      "dormantDays": null,
+      "maintenanceDays": 2,
+      "activityWindowDays": null,
+      "inheritanceMode": "UNLIMITED",
+      "maxInheritanceDepth": null,
+      "unboundAssignmentMode": "SUPERVISOR",
+      "modeEffectiveAt": null
+    },
+    "observedRuleRequestMethods": [
+      "GET"
+    ],
+    "saveDisabled": true,
+    "configurationWrites": 0,
+    "after": {
+      "version": 1893,
+      "dormantDays": null,
+      "maintenanceDays": 2,
+      "activityWindowDays": null,
+      "inheritanceMode": "UNLIMITED",
+      "maxInheritanceDepth": null,
+      "unboundAssignmentMode": "SUPERVISOR",
+      "modeEffectiveAt": null
+    }
+  },
+  "notExecuted": [
+    "Fresh canonical schema initialization followed by real API/UI consumption",
+    "Physical missing-table/column negative cases",
+    "Separate full application boots twice for each finite depth; existing migration, persistence and startup-contract evidence reused"
+  ],
+  "cleanup": {
+    "ownedProcessesStopped": true,
+    "ownedFrontendPort": 33108,
+    "sharedDatabaseRedisStorageRetained": true,
+    "ownedBackendPort": 18162,
+    "portsStopped": true
+  },
+  "wholeTask": "NOT_COMPLETE"
+}
