@@ -41,7 +41,9 @@ class SupportAnalyticsPrivateQueryServiceTest {
         final SupportAnalyticsService.QueryCapture capture=new SupportAnalyticsService.QueryCapture();
         final SupportAnalyticsPrivateQueryService service=new SupportAnalyticsPrivateQueryService(ownership,stats,mapper);
         Fixture(){this(ReadMode.PERSONAL);}
-        Fixture(ReadMode mode) {
+        Fixture(boolean missingWindow){this(ReadMode.PERSONAL,missingWindow);}
+        Fixture(ReadMode mode){this(mode,false);}
+        Fixture(ReadMode mode,boolean missingWindow) {
             scope=new ReadScope(1L,mode,null,null);
             when(ownership.defaultQueryScope(null,null)).thenReturn(scope);
             when(mapper.currentReadGrants(1L)).thenReturn(List.of(new PermissionStamp(1L,2L,3L,4L,"service_m1_read",1,1)));
@@ -56,8 +58,8 @@ class SupportAnalyticsPrivateQueryServiceTest {
             capture.trees=Map.of(100L,new SupportInvitationReadFacade.Invitation(100,0,List.of(),List.of(),SupportInvitationReadFacade.Completeness.COMPLETE,Set.of()));
             capture.stock=new SupportDeviceReadFacade.Snapshot(List.of(),List.of(),T);
             capture.activityCoverage=new ActivityCoverage(T.minusDays(30),T,T);
-            capture.activityWindow=new ActivityWindow(7,T.minusDays(7),T,T.minusDays(30),1L,"INTERACTIVE_LOGIN",Status.AVAILABLE);
-            capture.activities=Map.of(100L,new CustomerActivity(T,WindowState.ACTIVE,Status.AVAILABLE,List.of()));
+            capture.activityWindow=new ActivityWindow(missingWindow?null:7,missingWindow?null:T.minusDays(7),T,T.minusDays(30),1L,"INTERACTIVE_LOGIN",missingWindow?Status.UNKNOWN:Status.AVAILABLE);
+            capture.activities=Map.of(100L,new CustomerActivity(missingWindow?null:T,missingWindow?WindowState.UNKNOWN:WindowState.ACTIVE,missingWindow?Status.UNKNOWN:Status.AVAILABLE,List.of()));
             var customer=new Customer(100,Category.BOUND,Placement.UNGROUPED,false,new FirstSelection(new FirstCandidate("DEPOSIT","DEPOSIT_ORDER",T,6,BigDecimal.TEN,"USDT",new Attribution(AttributionStatus.UNKNOWN,AttributionStatus.UNKNOWN,AttributionStatus.UNKNOWN)),Status.AVAILABLE,List.of(),FirstState.CONFIRMED),new CurrentOwner(1L,null),new CustomerMetrics(Basis.CURRENT_CUSTOMER_HISTORY,Status.UNKNOWN,List.of(),new InvitationSummary(new Count(0L,0L,Status.AVAILABLE),new Count(0L,0L,Status.AVAILABLE),List.of(),Status.AVAILABLE,List.of()),unavailableDevices(),capture.activities.get(100L)));
             var result=new Result(new Query(scope.mode(),null,null,Basis.CURRENT_CUSTOMER_HISTORY,null,null,"Asia/Shanghai",null),new CurrentScope(scope.mode(),null,null,Status.AVAILABLE,1L,1L,0L,0L,List.of()),List.of(customer),new FinancialSummary(Status.UNKNOWN,List.of(),new Count(1L,1L,Status.AVAILABLE),List.of(),List.of()),new RestrictedSummary(new Count(0L,null,Status.UNKNOWN),new Count(0L,null,Status.UNKNOWN)),List.of(),Instant.EPOCH,List.of(),unavailableCurrentMetrics(),unavailablePersonnel(),List.of());
             when(stats.evaluateForQuery(any(),eq(scope),eq(false))).thenReturn(new SupportAnalyticsService.QueryEvaluation(result,capture));
@@ -69,11 +71,59 @@ class SupportAnalyticsPrivateQueryServiceTest {
             when(mapper.assignmentStamps(eq(scope),anyCollection())).thenReturn(List.of(new RelationshipStamp("ASSIGNMENT",10L,100L,1L,null,null,"ACTIVE",0,1L,T.minusDays(1),null)));
             when(mapper.routeStamps(eq(scope),anyCollection())).thenReturn(List.of());when(mapper.memberStamps(eq(scope),anyCollection())).thenReturn(List.of());when(mapper.ownerStamps(eq(scope),anyCollection())).thenReturn(List.of());
             when(mapper.rootDisplayRows(eq(scope),anyCollection())).thenReturn(List.of(new RootDisplayRow(100L,"Customer","U00000100","ACTIVE",T.minusDays(1),T,T.minusDays(1),null,null)));
-            when(mapper.queryRules(scope)).thenReturn(new SupportRules(1L,7,7,7,"INFINITE",null,"SUPERVISOR",null));
+            when(mapper.queryRules(scope)).thenReturn(new SupportRules(1L,7,7,missingWindow?null:7,"INFINITE",null,"SUPERVISOR",null));
             when(mapper.activityIdentityRows(eq(scope),anyCollection(),eq(T))).thenReturn(List.of(new ActivityIdentityRow(100L,10L,1L,"LOGIN:10",T)));
-            when(mapper.taskRows(eq(scope),anyCollection(),eq(T),any(),any(),any(),eq(7),isNull(),eq(T))).thenReturn(List.of(new TaskRow(100L,1,1L,null,null,null,null,1,null,null,0L,0,0,null,"ACTIVE","ACTIVE",T,0,null,null,null)));
+            when(mapper.taskRows(eq(scope),anyCollection(),eq(T),any(),any(),any(),eq(7),isNull(),eq(T))).thenReturn(List.of(new TaskRow(100L,1,1L,null,null,null,null,1,null,null,0L,0,0,null,"ACTIVE",missingWindow?"UNKNOWN":"ACTIVE",T,0,null,null,null)));
             when(mapper.pendingReplyRows(eq(scope),anyCollection())).thenReturn(List.of());
         }
+    }
+    @Test void missingWindowDoesNotBlockNonemptyActiveOrFirstContactTodoButKeepsUnknownActivityAndVersion() {
+        for(String filter:List.of("ACTIVE","TODO")) {
+            var f=new Fixture(true);
+            var response=f.service.query(Map.of("view",List.of("CUSTOMERS"),"filter",List.of(filter)));
+            @SuppressWarnings("unchecked") var rows=(List<Map<String,Object>>)response.get("records");
+            assertThat(rows).singleElement().satisfies(row->{
+                assertThat(row).containsEntry("customerId","100");
+                @SuppressWarnings("unchecked") var activity=(Map<String,Object>)row.get("activity");
+                @SuppressWarnings("unchecked") var task=(Map<String,Object>)row.get("task");
+                assertThat(activity).containsEntry("state","UNKNOWN").containsEntry("status","UNKNOWN");
+                assertThat(task).containsEntry("status","COMPLETE").containsEntry("firstContact",true);
+            });
+            assertThat(response).containsEntry("versionState","UNKNOWN").containsEntry("queryVersion",null).containsEntry("total",null);
+            assertThat(f.capture.activityWindow.status()).isEqualTo(Status.UNKNOWN);
+            verify(f.mapper).taskRows(eq(f.scope),eq(Set.of(100L)),eq(T),eq(T.minusDays(30)),eq(T.minusDays(7)),isNull(),eq(7),isNull(),eq(T));
+            verify(f.mapper,never()).activityIdentityRows(any(),anyCollection(),any());
+        }
+    }
+    @Test void activeWithoutDormantRuleStillFailsClosed() {
+        var f=new Fixture(true);when(f.mapper.queryRules(f.scope)).thenReturn(new SupportRules(1L,null,7,null,"INFINITE",null,"SUPERVISOR",null));
+        assertThatThrownBy(()->f.service.query(Map.of("filter",List.of("ACTIVE")))).isInstanceOf(BizException.class)
+            .satisfies(ex->assertThat(((BizException)ex).getCode()).isEqualTo(503));
+        verify(f.ownership,times(2)).defaultQueryScope(null,null);
+    }
+    @Test void missingOrInvalidActivityCoverageDoesNotReadTasksOrInventFilteredEmptyResults() {
+        for(ActivityCoverage coverage:Arrays.asList(null,new ActivityCoverage(T.plusDays(1),T,T),new ActivityCoverage(T.minusDays(30),T,T.minusMinutes(1)))) {
+            for(String filter:List.of("ACTIVE","TODO")) {
+                var f=new Fixture(true);f.capture.activityCoverage=coverage;
+                assertThatThrownBy(()->f.service.query(Map.of("filter",List.of(filter)))).isInstanceOf(BizException.class)
+                    .satisfies(ex->assertThat(((BizException)ex).getCode()).isEqualTo(503));
+                verify(f.mapper,never()).taskRows(any(),anyCollection(),any(),any(),any(),any(),any(),any(),any());
+                verify(f.ownership,times(2)).defaultQueryScope(null,null);
+            }
+        }
+    }
+    @Test void taskSqlFailureWithoutWindowStillFailsClosedAndReauthorizes() {
+        var f=new Fixture(true);when(f.mapper.taskRows(any(),anyCollection(),any(),any(),any(),any(),any(),any(),any()))
+            .thenThrow(new org.springframework.dao.DataAccessResourceFailureException("task source unavailable"));
+        assertThatThrownBy(()->f.service.query(Map.of("filter",List.of("TODO")))).isInstanceOf(BizException.class)
+            .satisfies(ex->assertThat(((BizException)ex).getCode()).isEqualTo(503));
+        verify(f.ownership,times(2)).defaultQueryScope(null,null);
+    }
+    @Test void finalRevocationWithoutWindowWinsBeforeAnyTaskFilterIsReturned() {
+        var f=new Fixture(true);when(f.ownership.defaultQueryScope(null,null)).thenReturn(f.scope).thenThrow(new BizException(403,"SUPPORT_SCOPE_FORBIDDEN"));
+        assertThatThrownBy(()->f.service.query(Map.of("filter",List.of("TODO")))).isInstanceOf(BizException.class)
+            .satisfies(ex->assertThat(((BizException)ex).getCode()).isEqualTo(403));
+        verify(f.mapper).taskRows(any(),anyCollection(),any(),any(),any(),any(),any(),any(),any());
     }
     @Test void canonicalCustomerCodeNumericIdAndNameSearchKeepTheAuthorizedCustomerAndRejectWrongCodes() {
         var f=new Fixture();
