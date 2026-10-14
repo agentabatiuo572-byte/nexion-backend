@@ -435,6 +435,11 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getData().stats().totalAccounts()).isEqualTo(4);
         assertThat(result.getData().stats().effectiveSupers()).isEqualTo(3);
         assertThat(result.getData().roles()).hasSize(8);
+        assertThat(result.getData().roles()).filteredOn(role -> "support".equals(role.key()))
+                .singleElement().satisfies(role -> {
+                    assertThat(role.desc()).isEqualTo("默认开通专属客服资格，仅服务本人绑定客户；主管资格另行授予。");
+                    assertThat(role.scope()).isEqualTo("本人客户服务、工单与会话、公开业绩；知识库与话术只读");
+                });
         assertThat(result.getData().operators()).extracting(AdminAccountOverview.OperatorRecord::id)
                 .contains("1", "4");
         assertThat(result.getData().operators()).extracting(AdminAccountOverview.OperatorRecord::email)

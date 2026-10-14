@@ -1529,7 +1529,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             case "risk" -> "风控模型、账户限制与熔断。";
             case "content" -> "文案、课程、风险披露与公告。";
             case "growth" -> "活动、节奏、权益与触达。";
-            case "support" -> "客服中心后台角色，主管、专属、通用坐席在 M1 配置。";
+            case "support" -> "默认开通专属客服资格，仅服务本人绑定客户；主管资格另行授予。";
             case "audit" -> "审计与合规观察，禁止写操作。";
             default -> "";
         };
@@ -1543,7 +1543,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             case "risk" -> "C/K/J 风控域";
             case "content" -> "I/公告/课程";
             case "growth" -> "E/F/G/H 增长与收益";
-            case "support" -> "M/C/D/K 客服协同";
+            case "support" -> "本人客户服务、工单与会话、公开业绩；知识库与话术只读";
             case "audit" -> "A2/L 报表与审计";
             default -> "";
         };
