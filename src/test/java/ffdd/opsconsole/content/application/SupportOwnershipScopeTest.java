@@ -84,6 +84,32 @@ class SupportOwnershipScopeTest {
         assertThatThrownBy(()->service.queryScope(ReadMode.PERSONAL,8L,null)).hasMessage("SUPPORT_READ_SCOPE_INVALID");
     }
 
+    @Test void availableModesFollowIndependentQualificationsAndRecheckRevocation() {
+        login();
+        when(groups.qualificationCurrent(11L,"SUPERVISOR")).thenReturn(qualification("SUPERVISOR"));
+        assertThat(service.availableReadModes()).containsExactly(ReadMode.MANAGED);
+        when(groups.qualificationCurrent(11L,"SERVICE")).thenReturn(qualification("SERVICE"));
+        when(bindings.eligibleAgent(11L)).thenReturn(1);
+        assertThat(service.availableReadModes()).containsExactly(ReadMode.MANAGED,ReadMode.PERSONAL);
+        when(bindings.eligibleAgent(11L)).thenReturn(0);
+        assertThat(service.availableReadModes()).containsExactly(ReadMode.MANAGED);
+        assertThatThrownBy(()->service.queryScope(ReadMode.PERSONAL,null,null)).hasMessage("SUPPORT_SCOPE_FORBIDDEN");
+        when(groups.qualificationCurrent(11L,"SUPERVISOR")).thenReturn(null);
+        assertThat(service.availableReadModes()).isEmpty();
+    }
+
+    @Test void availableModesNeverInventQualificationsForSuperOrOrdinaryAccounts() {
+        login();when(bindings.roles(11L)).thenReturn(List.of("SUPER_ADMIN"));
+        assertThat(service.availableReadModes()).containsExactly(ReadMode.ALL);
+        when(bindings.roles(11L)).thenReturn(List.of("SUPPORT"));
+        when(groups.qualificationCurrent(11L,"SERVICE")).thenReturn(qualification("SERVICE"));
+        when(bindings.eligibleAgent(11L)).thenReturn(1);
+        assertThat(service.availableReadModes()).containsExactly(ReadMode.PERSONAL);
+        assertThatThrownBy(()->service.queryScope(ReadMode.MANAGED,null,null)).hasMessage("SUPPORT_SCOPE_FORBIDDEN");
+        when(groups.qualificationCurrent(11L,"SERVICE")).thenThrow(new IllegalStateException("QUALIFICATION_READ_FAILED"));
+        assertThatThrownBy(service::availableReadModes).hasMessage("QUALIFICATION_READ_FAILED");
+    }
+
     @Test void allModeRequiresCurrentDatabaseRoleAndRechecksAfterRoleRevocation() {
         login();when(bindings.roles(11L)).thenReturn(List.of("SUPER_ADMIN"),List.of());
         assertThat(service.queryScope(ReadMode.ALL,null,null).mode()).isEqualTo(ReadMode.ALL);

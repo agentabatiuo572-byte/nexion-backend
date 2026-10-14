@@ -66,6 +66,15 @@ class SupportWorkbenchServiceTest {
                 .containsEntry("dormantCutoff",null).containsEntry("windowCutoff",null);
     }
 
+    @Test void snapshotPublishesCurrentIndependentModesWithoutChangingSelectedScope() {
+        setup(new SupportRules(5L,null,2,null,"UNCONFIGURED",null),0);
+        when(ownership.defaultQueryScope(null,null)).thenReturn(new ReadScope(7L,ReadMode.MANAGED,null,null));
+        when(ownership.availableReadModes()).thenReturn(List.of(ReadMode.MANAGED,ReadMode.PERSONAL));
+        var result=service.snapshot(null,"ALL",null,1,1,null,null);
+        assertThat(map(result.get("scope"))).containsEntry("mode","MANAGED")
+                .containsEntry("availableModes",List.of("MANAGED","PERSONAL"));
+    }
+
     @Test void incompleteWindowReportsKnownCountAndNullExactTotal() {
         setup(new SupportRules(6L,30,null,7,"UNCONFIGURED",null),1);
         var result=service.snapshot(null,"WINDOW_ACTIVE",null,2,1,null,null);

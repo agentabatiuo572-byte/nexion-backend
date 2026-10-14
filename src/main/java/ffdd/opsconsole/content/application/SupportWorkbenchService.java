@@ -120,6 +120,7 @@ public class SupportWorkbenchService {
         var scope=new LinkedHashMap<String,Object>();
         scope.put("actorId",readScope.actorId()); scope.put("agentAdminId",readScope.requestedAgentId());
         scope.put("groupId",readScope.requestedGroupId()); scope.put("mode",readScope.mode().name());
+        scope.put("availableModes",ownership.availableReadModes().stream().map(Enum::name).toList());
         result.put("scope",scope);
         var ruleView=new LinkedHashMap<String,Object>();
         ruleView.put("dormantDays",rules.dormantDays()); ruleView.put("maintenanceDays",rules.maintenanceDays());

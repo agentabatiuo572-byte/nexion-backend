@@ -36,18 +36,28 @@ public class SupportOwnershipService {
         ReadScope scope;
         try { scope=new ReadScope(actor,mode,groupId,agentId); }
         catch (IllegalArgumentException ex) { throw new BizException(422,"SUPPORT_READ_SCOPE_INVALID"); }
-        boolean allowed=switch(mode) {
-            case PERSONAL -> groups.qualificationCurrent(actor,"SERVICE")!=null && mapper.eligibleAgent(actor)==1;
-            case MANAGED -> groups.qualificationCurrent(actor,"SUPERVISOR")!=null;
-            case ALL -> mapper.roles(actor).stream().anyMatch(SupportOwnershipService::superRole);
-        };
-        if(!allowed) throw new BizException(403,"SUPPORT_SCOPE_FORBIDDEN");
+        if(!allowsMode(actor,mode)) throw new BizException(403,"SUPPORT_SCOPE_FORBIDDEN");
         if(groupId!=null && groups.readableGroup(scope,groupId)==null)
             throw new BizException(404,"SUPPORT_GROUP_NOT_FOUND");
         if(agentId!=null && groups.readableAgent(scope,agentId)!=1)
             throw new BizException(404,"SUPPORT_AGENT_NOT_FOUND");
         // No owned groups is a valid empty MANAGED set, never a fallback to ALL or PERSONAL.
         return scope;
+    }
+
+    @Transactional
+    public List<ReadMode> availableReadModes() {
+        Long actor=actorId();
+        return List.of(ReadMode.ALL,ReadMode.MANAGED,ReadMode.PERSONAL).stream()
+                .filter(mode->allowsMode(actor,mode)).toList();
+    }
+
+    private boolean allowsMode(Long actor,ReadMode mode) {
+        return switch(mode) {
+            case PERSONAL -> groups.qualificationCurrent(actor,"SERVICE")!=null && mapper.eligibleAgent(actor)==1;
+            case MANAGED -> groups.qualificationCurrent(actor,"SUPERVISOR")!=null;
+            case ALL -> mapper.roles(actor).stream().anyMatch(SupportOwnershipService::superRole);
+        };
     }
 
     @Transactional
