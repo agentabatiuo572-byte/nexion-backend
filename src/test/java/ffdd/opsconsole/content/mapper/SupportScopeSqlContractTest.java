@@ -22,8 +22,37 @@ class SupportScopeSqlContractTest {
 
     @Test void nullScopeCompilesAsDenialForEverySharedReader() {
         assertThat(customer(null)).contains("1=0").doesNotContain("scope_binding.status");
-        for(String method:new String[]{"readableGroup","scopedGroups","readableAgent"})
+        for(String method:new String[]{"readableGroup","scopedGroups","groupDirectory","readableAgent"})
             assertThat(sql(SupportGroupMapper.class,method,null).getSql()).contains("1=0");
+    }
+
+    @Test void groupDirectoryKeepsScopeAndUsesSharedCurrentCustomerCategories() {
+        for(ReadScope scope:new ReadScope[]{new ReadScope(11L,ReadMode.MANAGED,null,null),new ReadScope(7L,ReadMode.ALL,null,null)}) {
+            var query=sql(SupportGroupMapper.class,"groupDirectory",scope);
+            assertThat(query.getSql()).contains("WITH directory_groups AS", "scope_group.supervisor_admin_id",
+                    "scope_member.starts_at <= UTC_TIMESTAMP(6)", "scope_member_other.id<>scope_member.id",
+                    "WHERE status='ACTIVE' AND is_deleted=0", "binding_intervals AS",
+                    "WITH assignments AS", "scope_customer.sandbox=0", "currentGroupId",
+                    "SUM(category='BOUND')", "SUM(category='PENDING')", "pendingCustomers", "THEN NULL",
+                    "NULLIF(TRIM(owner_account.nickname),'')")
+                    .doesNotContain("username", "email", "${", "nx_support_binding_pool", "COUNT(*) FROM nx_support_customer_route_history WHERE group_id");
+            if(scope.mode()==ReadMode.MANAGED)assertThat(query.getSql()).contains("scope_q.qualification_kind='SUPERVISOR'", "scope_group.supervisor_admin_id=?");
+            else assertThat(query.getSql()).contains("scope_role.role_code IN ('SUPER','SUPERADMIN','SUPER_ADMIN')");
+            assertThat(query.getParameterMappings()).allSatisfy(p->assertThat(p.getProperty()).isEqualTo("scope.actorId"));
+        }
+    }
+    @Test void directoryEmbedsExactCurrentProjectionSoRouteWithoutPoolAndSandboxMatchDrilldowns() {
+        var scope=new ReadScope(11L,ReadMode.MANAGED,null,null);
+        var directory=sql(SupportGroupMapper.class,"groupDirectory",scope).getSql().replaceAll("\\s+"," ");
+        var analytics=new Configuration();analytics.addMapper(SupportAnalyticsMapper.class);
+        var parameters=new HashMap<String,Object>();parameters.put("scope",scope);
+        var projection=analytics.getMappedStatement(SupportAnalyticsMapper.class.getName()+".currentCustomers")
+                .getBoundSql(parameters).getSql().replaceAll("\\s+"," ").trim();
+        assertThat(directory).contains(projection);
+        assertThat(projection).contains("THEN 'BOUND'", "THEN 'PENDING'", "scope_customer.sandbox=0")
+                .doesNotContain("nx_support_binding_pool");
+        assertThat(directory).contains("CASE WHEN scope_group.ownerKnown=0 OR (m.groupId IS NOT NULL AND m.memberCount IS NULL) THEN NULL ELSE COALESCE(c.boundCustomers,0) END boundCustomers")
+                .doesNotContain("COALESCE(m.memberCount,0)");
     }
 
     @Test void personalCollectionHasNoManagedOwnerOrQueueUnionAndUsesBoundActor() {
