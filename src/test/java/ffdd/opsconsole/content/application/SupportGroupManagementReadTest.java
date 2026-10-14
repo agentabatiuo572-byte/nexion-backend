@@ -31,6 +31,40 @@ class SupportGroupManagementReadTest {
     @AfterEach void logout(){SecurityContextHolder.clearContext();}
     private void login(String... permissions){SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken("7",null,
             Arrays.stream(permissions).map(SimpleGrantedAuthority::new).toList()));}
+    @Test void directoryReadsAllSummariesOnceWithoutAccountDirectoryPermission() throws Exception {
+        login("service_m1_read");
+        var scope=new ReadScope(7L,ReadMode.MANAGED,null,null);
+        when(ownership.defaultQueryScope(null,null)).thenReturn(scope);
+        var row=new ffdd.opsconsole.content.dto.SupportGroupManagementViews.GroupDirectory(8L,"组一",7L,"ENABLED",3L,"主管甲",2L,24L,6L);
+        when(mapper.groupDirectory(scope)).thenReturn(List.of(row));
+        assertThat(service.groups()).containsExactly(row);
+        verify(mapper).groupDirectory(scope);verifyNoMoreInteractions(mapper);verify(ownership,never()).requireSuperAdmin();
+        var json=new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(row);
+        assertThat(json.get("supervisorName").asText()).isEqualTo("主管甲");
+        assertThat(json.get("memberCount").asLong()).isEqualTo(2);
+        assertThat(json.get("boundCustomers").asLong()).isEqualTo(24);
+        assertThat(json.get("pendingCustomers").asLong()).isEqualTo(6);
+    }
+    @Test void unknownDirectoryFactsStayNullAndWriteGroupContractStaysSeparate() {
+        var scope=new ReadScope(7L,ReadMode.ALL,null,null);
+        when(ownership.defaultQueryScope(null,null)).thenReturn(scope);
+        var row=new ffdd.opsconsole.content.dto.SupportGroupManagementViews.GroupDirectory(8L,"组一",7L,"ENABLED",3L,null,null,null,null);
+        when(mapper.groupDirectory(scope)).thenReturn(List.of(row));
+        assertThat(service.groups().get(0)).isEqualTo(row);
+        var json=new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(row);
+        for(String field:List.of("supervisorName","memberCount","boundCustomers","pendingCustomers"))assertThat(json.get(field).isNull()).isTrue();
+        assertThat(new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(new Group(8L,"组一",7L,"ENABLED",3L)).size()).isEqualTo(5);
+    }
+    @Test void directoryDoesNotHideSourceFailureOrGivePersonalAccountsGroupAccess() {
+        var scope=new ReadScope(7L,ReadMode.MANAGED,null,null);
+        when(ownership.defaultQueryScope(null,null)).thenReturn(scope);
+        when(mapper.groupDirectory(scope)).thenThrow(new org.springframework.dao.DataAccessResourceFailureException("source unavailable"));
+        assertThatThrownBy(service::groups).isInstanceOf(org.springframework.dao.DataAccessResourceFailureException.class);
+        clearInvocations(mapper);
+        when(ownership.defaultQueryScope(null,null)).thenReturn(new ReadScope(7L,ReadMode.PERSONAL,null,null));
+        assertThatThrownBy(service::groups).hasMessage("SUPPORT_GROUP_FORBIDDEN");
+        verifyNoInteractions(mapper);
+    }
     @Test void ungroupedMemberPreservesNonzeroHistoryVersionAndDisabledAccount(){
         when(mapper.memberCurrent(13L)).thenReturn(new Member(81L,13L,null,4L,at));
         when(mapper.boundCount(13L)).thenReturn(3L);

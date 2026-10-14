@@ -148,7 +148,7 @@ class SupportGroupServiceTest {
         verify(mapper).lockAccount(1L);verify(mapper).lockAccount(2L);
         verify(mapper,never()).insertGroup(anyMap());verifyNoInteractions(audit);
     }
-    @Test void managerWithoutGroupsGetsEmptyOwnedScope(){supervisor();var scope=new ReadScope(1L,ReadMode.MANAGED,null,null);when(ownership.defaultQueryScope(null,null)).thenReturn(scope);assertThat(service.groups()).isEmpty();verify(mapper).scopedGroups(scope);verify(mapper,never()).groups(isNull());}
+    @Test void managerWithoutGroupsGetsEmptyOwnedScope(){supervisor();var scope=new ReadScope(1L,ReadMode.MANAGED,null,null);when(ownership.defaultQueryScope(null,null)).thenReturn(scope);assertThat(service.groups()).isEmpty();verify(mapper).groupDirectory(scope);verify(mapper,never()).groups(isNull());}
     @Test void cannotForgeOwner(){supervisor();assertThatThrownBy(()->service.create("key",new Create("组",2L,"合法操作原因说明"))).isInstanceOf(BizException.class);verifyNoInteractions(idempotency);}
     @Test void cannotRenameOtherOwnerGroup(){supervisor();when(mapper.lockGroup(8L)).thenReturn(new Group(8L,"Other",2L,"ENABLED",1L));assertThatThrownBy(()->service.rename(8L,"key",new Rename("new",1L,"合法操作原因说明"))).hasMessage("SUPPORT_GROUP_NOT_FOUND");verify(mapper,never()).rename(any(),any(),any(),any());}
     @Test void managerCannotTakeUngroupedMember(){supervisor();when(mapper.memberCurrent(3L)).thenReturn(new Member(1L,3L,null,1L,at));assertThatThrownBy(()->service.move(3L,"key",new Move(8L,1L,null,1L,"合法操作原因说明"))).hasMessage("SUPPORT_GROUP_FORBIDDEN");verify(mapper,never()).closeMember(any(),any(),any());}

@@ -33,11 +33,11 @@ public class SupportGroupService {
     private final SupportAgentMapper profiles;
 
     @Transactional
-    public List<Group> groups() {
+    public List<GroupDirectory> groups() {
         authority("service_m1_read");
         ReadScope scope=ownership.defaultQueryScope(null,null);
         if(scope.mode()==ReadMode.PERSONAL)forbidden();
-        return mapper.scopedGroups(scope);
+        return mapper.groupDirectory(scope);
     }
 
     @Transactional
