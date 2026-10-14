@@ -72,6 +72,7 @@ public class SupportAnalyticsPrivateQueryService {
         try {SupportAnalyticsQueryVersion.requireExpected(q,version);}
         catch(SupportAnalyticsQueryVersion.VersionConflict ex){throw new BizException(409,ex.getMessage());}
         if(q.filter()!=ServiceFilter.ALL && q.filter()!=ServiceFilter.WINDOW_ACTIVE && sources.taskRead()!=SupportAnalyticsQueryVersion.ReadState.COMPLETE)throw unavailable();
+        if((q.filter()==ServiceFilter.ACTIVE || q.filter()==ServiceFilter.DORMANT) && sources.rules().dormantDays()==null)throw unavailable();
         var selected=evaluation.result().currentCustomers().stream().filter(row->matches(q,row,sources)).toList();
         var rows=rows(q,evaluation,sources,selected);
         rows.sort(rowOrder(q.direction()));
@@ -149,13 +150,18 @@ public class SupportAnalyticsPrivateQueryService {
         var rules=mapper.queryRules(scope);if(rules==null)throw unavailable();
         Map<Long,ActivityIdentityRow> activity=Map.of();Map<Long,TaskRow> tasks=Map.of();List<PendingReplyRow> pending=List.of();
         var activityRead=c.activityWindow!=null && c.activityWindow.status()==SupportAnalyticsStats.Status.FAILED?SupportAnalyticsQueryVersion.ReadState.FAILED:SupportAnalyticsQueryVersion.ReadState.UNKNOWN;var taskRead=SupportAnalyticsQueryVersion.ReadState.UNKNOWN;
-        if(c.activityCoverage!=null && c.activityCoverage.observedThroughAt()!=null && c.activityWindow!=null && c.activityWindow.fromInclusive()!=null) {
+        if(c.activityCoverage!=null && c.activityCoverage.coverageStartAt()!=null && c.activityCoverage.observedThroughAt()!=null && c.activityCoverage.evaluatedDbAt()!=null
+                && !c.activityCoverage.coverageStartAt().isAfter(c.activityCoverage.observedThroughAt()) && !c.activityCoverage.observedThroughAt().isAfter(c.activityCoverage.evaluatedDbAt())) {
             try {
-                var w=c.activityCoverage.observedThroughAt();activity=index(checked(mapper.activityIdentityRows(scope,roots,w)),ActivityIdentityRow::customerId);
-                activityRead=SupportAnalyticsQueryVersion.ReadState.COMPLETE;
+                var w=c.activityCoverage.observedThroughAt();
+                if(c.activityWindow!=null && c.activityWindow.fromInclusive()!=null) {
+                    activity=index(checked(mapper.activityIdentityRows(scope,roots,w)),ActivityIdentityRow::customerId);
+                    activityRead=SupportAnalyticsQueryVersion.ReadState.COMPLETE;
+                }
                 var bound=new TreeSet<>(c.current.values().stream().filter(row->"BOUND".equals(row.category())).map(CurrentCustomer::customerId).toList());
+                // Task facts use the activity watermark; a missing window only leaves windowStatus unknown.
                 tasks=index(checked(mapper.taskRows(scope,bound,w,c.activityCoverage.coverageStartAt(),
-                    rules.dormantDays()==null?null:w.minusDays(rules.dormantDays()),c.activityWindow.fromInclusive(),rules.maintenanceDays(),null,c.activityCoverage.evaluatedDbAt())),TaskRow::customerId);
+                    rules.dormantDays()==null?null:w.minusDays(rules.dormantDays()),c.activityWindow==null?null:c.activityWindow.fromInclusive(),rules.maintenanceDays(),null,c.activityCoverage.evaluatedDbAt())),TaskRow::customerId);
                 pending=checked(mapper.pendingReplyRows(scope,bound));
                 taskRead=bound.equals(tasks.keySet())?SupportAnalyticsQueryVersion.ReadState.COMPLETE:SupportAnalyticsQueryVersion.ReadState.UNKNOWN;
             } catch(DataAccessException ex){activityRead=SupportAnalyticsQueryVersion.ReadState.FAILED;taskRead=SupportAnalyticsQueryVersion.ReadState.FAILED;}
