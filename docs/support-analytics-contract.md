@@ -20,6 +20,7 @@
 |---|---|
 | GET `/support-workbench/analytics` | `service_m1_read` 或 `service_m3_read`；服务端解析范围，查询版本绑定权限/事实，全量筛选排序后分页 |
 | GET `/support-workbench/overview`、`/customers`、`/customers/{id}`、`/customers/{id}/360` | 兼容快照及当前对象资料；不开放全局客户旁路 |
+| GET `/support-workbench/customers/{id}/full-profile` | `service_m1_read` 或 `service_m3_read`；正安全编号及当前客户归属校验后复用 C1 全景聚合与原角色字段裁剪，返回原 `{code,message,data}`，不授予 `user_c1hub_read` 或全域查询权 |
 | GET `/support-workbench/customers/{id}/flows`、`/devices`、`/maintenance/history` | 当前对象授权与独立分页/字段状态；不把已加载页当累计 |
 | GET `/support-agents/groups`、`/{id}`、`/members/{adminId}` | `service_m1_read` 与当前范围交集 |
 | GET `/support-agents/groups/supervisors` | `platform_a1_read` 且总管理员；真实主管目录 |
@@ -32,6 +33,8 @@
 | POST `/accounts`、PATCH `/accounts/{id}/profile`（platform 前缀） | 原 A1 权限；新建性别/默认头像及显式更换，资源ID版本持久化，旧像不自动改 |
 
 既有正式生产路径闸门保持生效；上述端点存在不代表闸门已开放或环境已经部署。
+
+`full-profile` 在聚合及查看审计之前重新校验当前客户范围；普通客服读本人合法绑定，主管读当前负责组，总管理员仍须通过客服对象授权。原归属拒绝保持 `404 SUPPORT_CUSTOMER_NOT_FOUND`，非法编号为 `422 SUPPORT_ID_INVALID`。客服提现明细及对应全景聚合仅返回合法业务字段，不含风控决策、规则、阈值、审计详情、IP 或上级身份；金额、实际费用、到账金额、状态和时间保留。合法查看沿用全景服务的事务、outbox 和强制查看审计，失败原样传播；C1 原入口权限保持。
 
 ### analytics 查询
 

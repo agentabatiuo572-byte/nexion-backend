@@ -17,7 +17,8 @@ class SupportWorkbenchAnalyticsControllerTest {
     record Fixture(MockMvc mvc,SupportAnalyticsPrivateQueryService analytics,ProductionSupportPathGuard guard) { }
     Fixture fixture() {
         var analytics=mock(SupportAnalyticsPrivateQueryService.class);var guard=mock(ProductionSupportPathGuard.class);
-        var controller=new SupportWorkbenchController(mock(SupportWorkbenchService.class),mock(SupportMaintenanceService.class),guard,mock(SupportCustomerProfileService.class),analytics);
+        var controller=new SupportWorkbenchController(mock(SupportWorkbenchService.class),mock(SupportMaintenanceService.class),guard,mock(SupportCustomerProfileService.class),analytics,
+                mock(SupportOwnershipService.class),mock(ffdd.opsconsole.user.application.OpsUser360Service.class));
         var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(new GlobalExceptionHandler(mock(AuditLogService.class))).build();
         return new Fixture(mvc,analytics,guard);
     }
