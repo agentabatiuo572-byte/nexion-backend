@@ -218,8 +218,8 @@ class SupportRulesConfigurationRuntimeTest extends SupportOwnedContractFixture {
                 assertThat(scratch.queryForObject("SELECT column_default FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_support_rules' AND column_name='inheritance_mode'",String.class)).isEqualTo("UNCONFIGURED");
                 assertThat(scratch.update("UPDATE nx_support_rules SET inheritance_mode='LIMITED',max_inheritance_depth=?,version=17,reason='Owned actual legacy finite fixture' WHERE id=1",depth)).isEqualTo(1);
                 var before=scratch.queryForMap("SELECT * FROM nx_support_rules WHERE id=1");replayCanonicalRulesMigration(scratch,ds);replayCanonicalRulesMigration(scratch,ds);assertThat(scratch.queryForMap("SELECT * FROM nx_support_rules WHERE id=1")).isEqualTo(before);evidence.put("limited"+depth,before);
-                // CREATE TABLE IF NOT EXISTS sets fresh defaults; it must not rewrite an existing schema.
-                assertThat(scratch.queryForObject("SELECT column_default FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_support_rules' AND column_name='inheritance_mode'",String.class)).isEqualTo("UNCONFIGURED");
+                // The timeout migration updates only the column default; the existing finite row stays unchanged.
+                assertThat(scratch.queryForObject("SELECT column_default FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_support_rules' AND column_name='inheritance_mode'",String.class)).isEqualTo("UNLIMITED");
             }
             assertThat(scratch.update("UPDATE nx_support_rules SET inheritance_mode='UNCONFIGURED',max_inheritance_depth=NULL,version=18 WHERE id=1")).isEqualTo(1);
             var explicit=scratch.queryForMap("SELECT * FROM nx_support_rules WHERE id=1");replayCanonicalRulesMigration(scratch,ds);replayCanonicalRulesMigration(scratch,ds);assertThat(scratch.queryForMap("SELECT * FROM nx_support_rules WHERE id=1")).isEqualTo(explicit);evidence.put("historicalUnconfiguredDDLDoesNotAutoExpand",explicit);
