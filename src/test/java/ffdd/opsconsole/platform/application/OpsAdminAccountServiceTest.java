@@ -477,6 +477,52 @@ class OpsAdminAccountServiceTest {
         });
     }
 
+    @Test void migratedAccountReadsAndBaselineUpdatesDoNotRequireDdlPermissions() {
+        var denied=new org.springframework.dao.PermissionDeniedDataAccessException("CREATE denied",null);
+        doThrow(denied).when(accountStateMapper).createAccountStateTable();
+        doThrow(denied).when(rbacActionMapper).createActionTable();
+        doThrow(denied).when(rbacGrantMapper).createGrantTable();
+        doThrow(denied).when(securityBaselineMapper).createSecurityBaselineTable();
+        var overview=service.overview();
+        assertThat(overview.getCode()).isZero();assertThat(overview.getData().operators()).hasSize(4);
+        assertThat(overview.getData().securityBaselines()).filteredOn(row->"session".equals(row.key()))
+                .singleElement().satisfies(row->{assertThat(row.value()).isEqualTo("60min / unlimited");assertThat(row.locked()).isTrue();});
+        registerTestSecurity("custom", "附加安全策略", "策略说明", "old", false, 30);
+        var changed=service.updateSecurityBaseline("baseline-no-ddl","custom",
+                new AdminAccountSecurityBaselineUpdateRequest("new","confirmed security policy change","superadmin","old"));
+        assertThat(changed.getCode()).isZero();assertThat(changed.getData().value()).isEqualTo("new");
+        verify(accountStateMapper,never()).createAccountStateTable();verify(rbacActionMapper,never()).createActionTable();
+        verify(rbacGrantMapper,never()).createGrantTable();verify(securityBaselineMapper,never()).createSecurityBaselineTable();
+    }
+    @ParameterizedTest @ValueSource(strings={"state","actions","grants","baselines"})
+    void missingAccountBusinessTableReadFailureIsNotSwallowed(String table) {
+        var missing=new org.springframework.dao.DataAccessResourceFailureException("missing A1 "+table+" table");
+        switch(table) {
+            case "state" -> when(accountStateMapper.selectActiveByAdminId(anyLong())).thenThrow(missing);
+            case "actions" -> when(rbacActionMapper.selectList(any())).thenThrow(missing);
+            case "grants" -> when(rbacGrantMapper.selectList(any())).thenThrow(missing);
+            case "baselines" -> when(securityBaselineMapper.selectActiveByKey(anyString())).thenThrow(missing);
+            default -> throw new AssertionError(table);
+        }
+        assertThatThrownBy(service::overview).isSameAs(missing);
+    }
+    @Test void accountReadPreservesMissingSafetyBaselineDefaultsAndStoredCustomValues() {
+        securityBaselineRows.clear();registerTestSecurity("custom","附加安全策略","策略说明","operator-selected",false,30);
+        when(securityBaselineMapper.upsertBaseline(anyString(),anyString(),anyString(),anyString(),anyInt(),anyInt()))
+                .thenAnswer(invocation->{registerTestSecurity(invocation.getArgument(0),invocation.getArgument(1),invocation.getArgument(2),
+                        invocation.getArgument(3),invocation.<Integer>getArgument(4)==1,invocation.getArgument(5));return 1;});
+        var result=service.overview();assertThat(result.getCode()).isZero();
+        assertThat(securityBaselineRows.get("session").getBaselineValue()).isEqualTo("60min / unlimited");
+        assertThat(securityBaselineRows.get("session").getLocked()).isEqualTo(1);
+        assertThat(securityBaselineRows.get("lock").getBaselineValue()).isEqualTo("5次 / 15min + 10次 / 24h");
+        assertThat(securityBaselineRows.get("lock").getLocked()).isEqualTo(1);
+        assertThat(securityBaselineRows.get("custom").getBaselineValue()).isEqualTo("operator-selected");
+    }
+    @Test void formalInitialSchemaOwnsTheFourAccountBusinessTables() throws Exception {
+        String schema=java.nio.file.Files.readString(java.nio.file.Path.of("scripts/schema.sql"));
+        for(String table:List.of("nx_admin_account_state","nx_admin_rbac_action","nx_admin_rbac_grant","nx_admin_security_baseline"))
+            assertThat(schema).contains("CREATE TABLE IF NOT EXISTS "+table+" (");
+    }
     @Test
     void overviewDoesNotInventA1RoleRbacOrSecurityConfigWhenDbHasNoConfigRows() {
         repository.clear();

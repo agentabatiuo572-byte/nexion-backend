@@ -131,7 +131,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     private final ffdd.opsconsole.content.application.SupportGroupService supportGroups;
 
     public ApiResult<AdminAccountOverview> overview() {
-        ensureA1BusinessTables();
+        seedSecurityBaselines();
         List<AdminAccountOverview.OperatorRecord> operators = operators();
         int active = (int) operators.stream().filter(operator -> "enabled".equals(operator.status())).count();
         int activeSessions = operators.stream().mapToInt(AdminAccountOverview.OperatorRecord::sessions).sum();
@@ -690,7 +690,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (governanceRecoveryRequired()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
         }
-        ensureA1BusinessTables();
+        seedSecurityBaselines();
         String key = normalizeText(baselineKey, "BASELINE_KEY_REQUIRED").toLowerCase(Locale.ROOT);
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("A", "baseline", key) > 0) {
@@ -737,7 +737,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (authorization != null) {
             return failLike(authorization);
         }
-        ensureA1BusinessTables();
+        seedSecurityBaselines();
         AdminAccountOverview.RbacAction action = rbacActions().stream()
                 .filter(item -> item.id().equals(actionId))
                 .findFirst()
@@ -795,7 +795,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (authorization != null) {
             return failLike(authorization);
         }
-        ensureA1BusinessTables();
+        seedSecurityBaselines();
         String action = normalizeText(request.action(), "RBAC_ACTION_REQUIRED");
         String domainGroup = normalizeDomainGroup(request.domainGroup());
         String actionId = uniqueActionId(slugFor(action));
@@ -814,14 +814,6 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
 
     private int pendingA1OperationTickets() {
         return auditCenterService.pendingOperationCountByActionMarker("(A1)");
-    }
-
-    private void ensureA1BusinessTables() {
-        accountStateMapper.createAccountStateTable();
-        rbacActionMapper.createActionTable();
-        rbacGrantMapper.createGrantTable();
-        securityBaselineMapper.createSecurityBaselineTable();
-        seedSecurityBaselines();
     }
 
     /**
