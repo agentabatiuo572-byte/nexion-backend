@@ -1201,10 +1201,6 @@ public class OpsAuditCenterService {
     }
 
     private void ensureSeedData() {
-        ticketMapper.createTicketTable();
-        historyMapper.createHistoryTable();
-        confirmCategoryMapper.createConfirmCategoryTable();
-        lockMapper.createLockTable();
         if (readTimeBusinessSeedsDisabled()) {
             return;
         }
