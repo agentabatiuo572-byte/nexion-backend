@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.mapper;
 
 import ffdd.opsconsole.content.domain.SupportGroupFacts.*;
+import ffdd.opsconsole.content.dto.SupportGroupManagementViews.GroupDirectory;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -89,6 +90,49 @@ public interface SupportGroupMapper {
     Group readableGroup(@Param("scope") ReadScope scope,@Param("id") Long id);
     @Select("<script>SELECT " + GROUP_COLUMNS + " FROM nx_support_group scope_group WHERE 1=1 " + GROUP_SCOPE_PREDICATE + " ORDER BY scope_group.id FOR SHARE</script>")
     List<Group> scopedGroups(@Param("scope") ReadScope scope);
+    // Directory aggregates share one scoped read; unknown current histories never become zero counts.
+    @Select("""
+        <script><bind name="customerId" value="null"/>
+        WITH directory_groups AS (
+          SELECT scope_group.id,scope_group.name,scope_group.supervisor_admin_id supervisorAdminId,
+            scope_group.status,scope_group.version,CASE WHEN
+        """ + CURRENT_GROUP_OWNER + """
+            THEN 1 ELSE 0 END ownerKnown
+          FROM nx_support_group scope_group WHERE 1=1
+        """ + GROUP_SCOPE_PREDICATE + """
+        ), directory_members AS (
+          SELECT scope_member.group_id groupId,scope_member.agent_admin_id agentId,
+            CASE WHEN member_account.id IS NOT NULL AND scope_member.id BETWEEN 1 AND 9007199254740991
+              AND scope_member.version BETWEEN 1 AND 9007199254740991 AND
+        """ + UNIQUE_MEMBER + """
+              THEN 1 ELSE 0 END verified
+          FROM nx_support_group_member_history scope_member
+          JOIN directory_groups g ON g.id=scope_member.group_id
+          LEFT JOIN nx_admin member_account ON member_account.id=scope_member.agent_admin_id AND member_account.is_deleted=0
+          WHERE scope_member.starts_at &lt;= UTC_TIMESTAMP(6)
+            AND (scope_member.ends_at IS NULL OR scope_member.ends_at&gt;UTC_TIMESTAMP(6))
+        ), member_totals AS (
+          SELECT groupId,CASE WHEN SUM(verified)=COUNT(*) THEN COUNT(DISTINCT agentId) ELSE NULL END memberCount
+          FROM directory_members GROUP BY groupId
+        ), directory_customers AS (
+        """ + SupportAnalyticsMapper.CURRENT_PROJECTION + """
+        ), customer_totals AS (
+          SELECT currentGroupId groupId,SUM(category='BOUND') boundCustomers,SUM(category='PENDING') pendingCustomers
+          FROM directory_customers WHERE currentGroupId IS NOT NULL GROUP BY currentGroupId
+        ) SELECT scope_group.id,scope_group.name,scope_group.supervisorAdminId,scope_group.status,scope_group.version,
+          NULLIF(TRIM(owner_account.nickname),'') supervisorName,
+          CASE WHEN scope_group.ownerKnown=0 THEN NULL WHEN m.groupId IS NOT NULL THEN m.memberCount ELSE 0 END memberCount,
+          CASE WHEN scope_group.ownerKnown=0 OR (m.groupId IS NOT NULL AND m.memberCount IS NULL)
+            THEN NULL ELSE COALESCE(c.boundCustomers,0) END boundCustomers,
+          CASE WHEN scope_group.ownerKnown=0 THEN NULL ELSE COALESCE(c.pendingCustomers,0) END pendingCustomers
+        FROM directory_groups scope_group
+        LEFT JOIN nx_admin owner_account ON owner_account.id=scope_group.supervisorAdminId AND owner_account.is_deleted=0
+        LEFT JOIN member_totals m ON m.groupId=scope_group.id
+        LEFT JOIN customer_totals c ON c.groupId=scope_group.id
+        ORDER BY scope_group.id
+        </script>
+        """)
+    List<GroupDirectory> groupDirectory(@Param("scope") ReadScope scope);
     /** AND fragment for the nx_admin scope_agent alias; unavailable members remain visible to their group. */
     String AGENT_SCOPE_PREDICATE = """
         AND scope_agent.is_deleted=0 AND (<choose>
