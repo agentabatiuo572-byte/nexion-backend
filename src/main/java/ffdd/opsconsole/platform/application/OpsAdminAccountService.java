@@ -184,7 +184,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (email != null && adminByEmail(email).isPresent()) {
             return ApiResult.fail(409, "ADMIN_EMAIL_EXISTS");
         }
-        String role = normalizeRole(request.role());
+        String role = normalizeRole(request.role() == null ? "support" : request.role());
         if (role == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
         }
@@ -216,6 +216,9 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             return ApiResult.fail(500, "ADMIN_ID_MISSING");
         }
         syncPrimaryRoleRelation(adminId, role);
+        if ("support".equals(role)) {
+            supportGroups.accountCreatedService(adminId, idempotencyKey, request.reason());
+        }
 
         String credentialStatus = PASSWORD_CHANGE_REQUIRED;
         accountStateMapper.upsertCreatedState(adminId, credentialStatus);

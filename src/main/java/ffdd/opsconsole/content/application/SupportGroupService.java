@@ -5,6 +5,7 @@ import ffdd.opsconsole.content.domain.SupportGroupFacts.*;
 import ffdd.opsconsole.content.dto.SupportGroupRequests.*;
 import ffdd.opsconsole.content.dto.SupportGroupManagementViews.*;
 import ffdd.opsconsole.content.mapper.SupportGroupMapper;
+import ffdd.opsconsole.content.mapper.SupportAgentMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -29,6 +30,7 @@ public class SupportGroupService {
     private final AdminIdempotencyService idempotency;
     private final AuditLogService audit;
     private final ApplicationEventPublisher events;
+    private final SupportAgentMapper profiles;
 
     @Transactional
     public List<Group> groups() {
@@ -282,6 +284,22 @@ public class SupportGroupService {
             var affected=new HashSet<Long>();for(Group g:locked.values())affected.add(g.supervisorAdminId());affected.add(ownership.actorId());
             events.publishEvent(new ScopeChanged(affected,r.reason().trim()));return ApiResult.ok(after);
         });
+    }
+
+    /** New account facts commit or roll back together with the A1 account and its role. */
+    @Transactional(propagation=Propagation.MANDATORY)
+    public void accountCreatedService(Long admin,String key,String reason) {
+        id(admin);authority("platform_a1_write");ownership.requireSuperAdmin();
+        Account account=mapper.lockAccount(admin);
+        if(account==null||account.status()!=1||mapper.compatibleAccount(admin)!=1)
+            throw new BizException(422,"SUPPORT_QUALIFICATION_ACCOUNT_INCOMPATIBLE");
+        if(writableQualification(admin,"SERVICE")!=null||writableQualification(admin,"SUPERVISOR")!=null||writableMember(admin)!=null)
+            throw new BizException(409,"SUPPORT_GROUP_VERSION_CONFLICT");
+        LocalDateTime at=mapper.now();
+        replaceQualification(admin,"SERVICE","ENABLED",null,at,key,reason);
+        changed(mapper.insertMember(admin,null,at,1L,ownership.actorId(),reason.trim(),operation(key)));
+        changed(profiles.ensureDefaultProfile(admin,"GENERAL","通用客服","support","账户,提现,设备",12,at));
+        record("ACCOUNT_QUALIFICATIONS_CREATED",admin,key,Map.of("qualificationKind","SERVICE","state","ENABLED"));
     }
 
     /** Called with the existing A1 account lock, before its CAS update. No account service dependency. */

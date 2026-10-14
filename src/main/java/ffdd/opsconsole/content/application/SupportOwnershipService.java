@@ -47,7 +47,14 @@ public class SupportOwnershipService {
 
     @Transactional
     public List<ReadMode> availableReadModes() {
-        Long actor=actorId();
+        return availableReadModes(actorId());
+    }
+
+    @Transactional
+    public List<ReadMode> availableReadModes(Long actor) {
+        if(!validScopeId(actor)) throw new BizException(422,"SUPPORT_ACCOUNT_INVALID");
+        List<String> roles=mapper.roles(actor);
+        if(roles.stream().noneMatch(role->"SUPPORT".equalsIgnoreCase(role) || superRole(role))) return List.of();
         return List.of(ReadMode.ALL,ReadMode.MANAGED,ReadMode.PERSONAL).stream()
                 .filter(mode->allowsMode(actor,mode)).toList();
     }

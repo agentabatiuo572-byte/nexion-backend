@@ -86,6 +86,7 @@ class SupportOwnershipScopeTest {
 
     @Test void availableModesFollowIndependentQualificationsAndRecheckRevocation() {
         login();
+        when(bindings.roles(11L)).thenReturn(List.of("SUPPORT"));
         when(groups.qualificationCurrent(11L,"SUPERVISOR")).thenReturn(qualification("SUPERVISOR"));
         assertThat(service.availableReadModes()).containsExactly(ReadMode.MANAGED);
         when(groups.qualificationCurrent(11L,"SERVICE")).thenReturn(qualification("SERVICE"));
@@ -96,6 +97,44 @@ class SupportOwnershipScopeTest {
         assertThatThrownBy(()->service.queryScope(ReadMode.PERSONAL,null,null)).hasMessage("SUPPORT_SCOPE_FORBIDDEN");
         when(groups.qualificationCurrent(11L,"SUPERVISOR")).thenReturn(null);
         assertThat(service.availableReadModes()).isEmpty();
+    }
+
+    @Test void explicitAuthenticatedActorDoesNotNeedSecurityContextAndPreservesModeOrder() {
+        when(bindings.roles(11L)).thenReturn(List.of("SUPER_ADMIN"));
+        when(groups.qualificationCurrent(11L,"SUPERVISOR")).thenReturn(qualification("SUPERVISOR"));
+        when(groups.qualificationCurrent(11L,"SERVICE")).thenReturn(qualification("SERVICE"));
+        when(bindings.eligibleAgent(11L)).thenReturn(1);
+        assertThat(service.availableReadModes(11L)).containsExactly(ReadMode.ALL,ReadMode.MANAGED,ReadMode.PERSONAL);
+        when(bindings.roles(11L)).thenReturn(List.of("SUPPORT"));
+        when(groups.qualificationCurrent(11L,"SUPERVISOR")).thenReturn(null);
+        assertThat(service.availableReadModes(11L)).containsExactly(ReadMode.PERSONAL);
+        when(groups.qualificationCurrent(11L,"SERVICE")).thenReturn(null);
+        assertThat(service.availableReadModes(11L)).isEmpty();
+    }
+
+    @Test void explicitActorRejectsInvalidIdsBeforeReadingFacts() {
+        for(Long id:new Long[]{null,0L,-1L,9007199254740992L})
+            assertThatThrownBy(()->service.availableReadModes(id)).hasMessage("SUPPORT_ACCOUNT_INVALID");
+        verifyNoInteractions(bindings,groups);
+    }
+
+    @Test void explicitActorDoesNotInventModesWhenQualificationReadFails() {
+        when(bindings.roles(11L)).thenReturn(List.of("SUPPORT"));
+        when(groups.qualificationCurrent(11L,"SUPERVISOR")).thenThrow(new IllegalStateException("QUALIFICATION_READ_FAILED"));
+        assertThatThrownBy(()->service.availableReadModes(11L)).hasMessage("QUALIFICATION_READ_FAILED");
+    }
+
+    @Test void explicitActorUsesAllEffectiveRolesAndSkipsQualificationsForUnrelatedRoles() {
+        when(bindings.roles(11L)).thenReturn(List.of("RISK","SUPPORT"));
+        when(groups.qualificationCurrent(11L,"SUPERVISOR")).thenReturn(qualification("SUPERVISOR"));
+        when(groups.qualificationCurrent(11L,"SERVICE")).thenReturn(qualification("SERVICE"));
+        when(bindings.eligibleAgent(11L)).thenReturn(1);
+        assertThat(service.availableReadModes(11L)).containsExactly(ReadMode.MANAGED,ReadMode.PERSONAL);
+        clearInvocations(groups,bindings);
+        when(bindings.roles(11L)).thenReturn(List.of("RISK","CONTENT"));
+        assertThat(service.availableReadModes(11L)).isEmpty();
+        verifyNoInteractions(groups);
+        verify(bindings,never()).eligibleAgent(anyLong());
     }
 
     @Test void availableModesNeverInventQualificationsForSuperOrOrdinaryAccounts() {

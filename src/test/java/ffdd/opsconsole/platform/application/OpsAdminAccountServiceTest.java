@@ -718,6 +718,41 @@ class OpsAdminAccountServiceTest {
         verify(auditLogService, never()).record(any(AuditLogWriteRequest.class));
     }
 
+    @ParameterizedTest @ValueSource(strings={"support","<omitted>"})
+    void createSupportAccountInitializesPersonalServiceInCreationTransaction(String role) throws Exception {
+        var result=service.createAccount("service-create",new AdminAccountCreateRequest("new.service","Service",null,
+                "<omitted>".equals(role)?null:role,null,"new service account","superadmin",null));
+        assertThat(result.getCode()).isZero();assertThat(result.getData().role()).isEqualTo("support");
+        verify(roleRelationMapper).ensurePrimaryRole(5L,"SUPPORT");
+        verify(supportGroups).accountCreatedService(5L,"service-create","new service account");
+        assertThat(OpsAdminAccountService.class.getMethod("createAccount",String.class,AdminAccountCreateRequest.class)
+                .getAnnotation(org.springframework.transaction.annotation.Transactional.class)).isNotNull();
+    }
+    @ParameterizedTest @ValueSource(strings={"","unassigned","finance","risk","super"})
+    void explicitOtherCreationRolesDoNotAcquireServiceQualification(String role) {
+        var result=service.createAccount("other-create",new AdminAccountCreateRequest("new.other","Other",null,
+                role,null,"explicit selected role","superadmin",null));
+        assertThat(result.getCode()).isZero();assertThat(result.getData().role()).isEqualTo(role.isEmpty()?"unassigned":role);
+        verify(supportGroups,never()).accountCreatedService(anyLong(),anyString(),anyString());
+    }
+    @Test void failedServiceInitializationDoesNotReturnAccountSuccess() {
+        doThrow(new BizException(409,"SUPPORT_GROUP_VERSION_CONFLICT")).when(supportGroups)
+                .accountCreatedService(5L,"service-create","new service account");
+        assertThatThrownBy(()->service.createAccount("service-create",new AdminAccountCreateRequest("new.service","Service",null,
+                "support",null,"new service account","superadmin",null))).hasMessage("SUPPORT_GROUP_VERSION_CONFLICT");
+        verify(auditLogService,never()).record(any());
+        verify(accountStateMapper,never()).upsertCreatedState(anyLong(),anyString());
+    }
+    @Test void governanceRecoveryStillRejectsDefaultServiceAndAllowsExplicitSuper() {
+        for(long id:List.of(2L,3L))upsertAccountState(id,state->state.setTfaSecretEncrypted(null));
+        var denied=service.createAccount("recovery-default",new AdminAccountCreateRequest("new.default","Default",null,
+                null,null,"recover administrator access","superadmin",null));
+        assertThat(denied.getMessage()).isEqualTo("ADMIN_GOVERNANCE_RECOVERY_ONLY");
+        var restored=service.createAccount("recovery-super",new AdminAccountCreateRequest("new.super","Super",null,
+                "super",null,"recover administrator access","superadmin",null));
+        assertThat(restored.getCode()).isZero();assertThat(restored.getData().role()).isEqualTo("super");
+        verify(supportGroups,never()).accountCreatedService(anyLong(),anyString(),anyString());
+    }
     @Test
     void createAccountPersistsRealAdminWithOneTimeServerCredentialAndWritesAudit() {
         AdminAccountCreateRequest request = new AdminAccountCreateRequest(
@@ -1510,10 +1545,10 @@ class OpsAdminAccountServiceTest {
     void a2ApprovalUncheckedExceptionDoesNotLeakContext() {
         AvatarApprovalFixture fixture = new AvatarApprovalFixture();
         String operationId = fixture.propose(fixture.updateCommand());
-        when(fixture.storage.exists(anyString())).thenThrow(new IllegalStateException("injected storage failure"));
+        fixture.avatarReadProbe = () -> { throw new IllegalStateException("injected avatar read failure"); };
 
         assertThatThrownBy(() -> fixture.approve(operationId))
-                .isInstanceOf(IllegalStateException.class).hasMessage("injected storage failure");
+                .isInstanceOf(IllegalStateException.class).hasMessage("injected avatar read failure");
 
         fixture.assertNoAvatarWrites();
         fixture.assertContextCleared();
