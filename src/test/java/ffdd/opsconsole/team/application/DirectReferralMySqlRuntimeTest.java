@@ -625,7 +625,7 @@ class DirectReferralMySqlRuntimeTest {
         jdbc.update("DELETE FROM nx_direct_referral_policy");
         var config=new MybatisConfiguration(new Environment("direct-referral-runtime",new SpringManagedTransactionFactory(),dataSource));
         var global=new GlobalConfig();global.setDbConfig(new GlobalConfig.DbConfig());global.setMetaObjectHandler(new MybatisMetaObjectHandler(clock));GlobalConfigUtils.setGlobalConfig(config,global);config.setMapUnderscoreToCamelCase(true);
-        for(Class<?> type:List.of(DirectReferralMapper.class,ffdd.opsconsole.team.mapper.TeamCommissionMapper.class,EarningsReleaseMapper.class,TreasuryLedgerMapper.class,NexMarketMapper.class,F5CommissionMapper.class,ffdd.opsconsole.risk.mapper.RiskOpsMapper.class,ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper.class))config.addMapper(type);
+        for(Class<?> type:List.of(DirectReferralMapper.class,ffdd.opsconsole.team.mapper.SupportDirectReferralReadMapper.class,ffdd.opsconsole.team.mapper.TeamCommissionMapper.class,EarningsReleaseMapper.class,TreasuryLedgerMapper.class,NexMarketMapper.class,F5CommissionMapper.class,ffdd.opsconsole.risk.mapper.RiskOpsMapper.class,ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper.class))config.addMapper(type);
         session=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));mapper=session.getMapper(DirectReferralMapper.class);
         session.getMapper(ffdd.opsconsole.risk.mapper.RiskOpsMapper.class).createMultiAccountClusterTable();
         platform=mock(PlatformConfigFacade.class);
@@ -648,11 +648,14 @@ class DirectReferralMySqlRuntimeTest {
             if("NEX".equals(call.getArgument(3))&&changeRisk.get())jdbc.update("UPDATE nx_admin_risk_multi_account_cluster SET account_count=4 WHERE cluster_id=?",marker);
             return call.callRealMethod();})
                 .when(earnings).creditReward(anyLong(),anyString(),anyString(),anyString(),any(BigDecimal.class),anyString(),anyString());
-        treasury=proxy(new MybatisTreasuryLedgerRepository(session.getMapper(TreasuryLedgerMapper.class),outbox));
+        treasury=proxy(new MybatisTreasuryLedgerRepository(session.getMapper(TreasuryLedgerMapper.class),outbox,ffdd.opsconsole.treasury.application.SupportCommissionTestCapture.real(session,dataSource,json)));
         var ledger=spy(new TreasuryLedgerPostingFacadeAdapter(treasury, null));
         doAnswer(call->{if(failRecovery.get()&&call.<String>getArgument(0).contains("-RECOVER-"))throw new IllegalStateException("injected recovery ledger failure");call.callRealMethod();return null;})
                 .when(ledger).postLedgerEntry(anyString(),anyLong(),anyString(),anyString(),anyString(),any(BigDecimal.class),anyString(),anyString());
-        service=proxy(new DirectReferralService(mapper,policies,earnings,releaseMapper,risk,ledger,outbox,json,clock));
+        var directRead=session.getMapper(ffdd.opsconsole.team.mapper.SupportDirectReferralReadMapper.class);
+        var directBinder=proxy(new ffdd.opsconsole.finance.application.SupportFundJournalBindingService(session.getMapper(ffdd.opsconsole.finance.mapper.SupportFundJournalMapper.class),dataSource,json));
+        var directCapture=proxy(new SupportDirectReferralFundAdapter(directBinder,new SupportDirectReferralReadService(directRead),directRead,json));
+        service=proxy(new DirectReferralService(mapper,policies,earnings,releaseMapper,risk,ledger,outbox,json,clock,null,null,directCapture));
         var self=mock(org.springframework.beans.factory.ObjectProvider.class);when(self.getObject()).thenReturn(service);org.springframework.test.util.ReflectionTestUtils.setField(service,"self",self);
         var idempotencyMapper=session.getMapper(ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper.class);
         var expiry=proxy(new ffdd.opsconsole.shared.idempotency.AdminIdempotencyExpiryTransitionExecutor(idempotencyMapper));

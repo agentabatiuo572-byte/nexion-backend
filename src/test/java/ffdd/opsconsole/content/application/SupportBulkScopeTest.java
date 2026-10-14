@@ -25,7 +25,7 @@ class SupportBulkScopeTest {
     final SupportBulkService service=new SupportBulkService(mapper,mock(SupportBindingMapper.class),ownership,
             mock(SupportActivityService.class),mock(FinanceSupportReadService.class),attachments,
             mock(SupportHumanMessageService.class),mock(OpsConversationService.class),mock(AdminIdempotencyService.class),
-            mock(ProductionSupportPathGuard.class),transactions,new ObjectMapper(),mock(AuditLogService.class),mock(ApplicationEventPublisher.class));
+            mock(ProductionSupportPathGuard.class),transactions,new ObjectMapper(),mock(AuditLogService.class),mock(ApplicationEventPublisher.class),300);
     @BeforeEach void setup() {
         when(attachments.actor("ADMIN")).thenReturn(7L);
         when(mapper.readerGrant(7L,false)).thenReturn(1);

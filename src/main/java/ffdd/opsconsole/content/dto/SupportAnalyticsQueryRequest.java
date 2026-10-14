@@ -20,7 +20,7 @@ public record SupportAnalyticsQueryRequest(String view, String category, String 
     public enum First { ALL, CONFIRMED, NONE, UNKNOWN }
     public enum ServiceFilter { ALL, WINDOW_ACTIVE, ACTIVE, DORMANT, UNKNOWN, DUE, WAITING_REPLY, FIRST_CONTACT, STOPPED, TODO }
     public enum Sort { REGISTERED_AT, ASSIGNED_AT, LAST_ACTIVE_AT, FIRST_SUCCEEDED_AT,
-        DIRECT_INVITATION_COUNT, TEAM_CUSTOMER_COUNT, PERSONAL_DEPOSIT, TEAM_DEPOSIT,
+        DIRECT_INVITATION_COUNT, TEAM_CUSTOMER_COUNT, PERSONAL_DEPOSIT, TEAM_DEPOSIT, NET_CONTRIBUTION,
         BOUND_CUSTOMER_COUNT, ACTIVE_CUSTOMER_COUNT, FIRST_CONFIRMED_CUSTOMER_COUNT, DEVICE_COUNT, HASHRATE,
         NEXT_DUE_AT, WAITING_SINCE_AT, STATE_CHANGED_AT, POOL_ENTERED_AT, SUCCEEDED_AT, AMOUNT }
     public enum Direction { ASC, DESC }
@@ -74,7 +74,7 @@ public record SupportAnalyticsQueryRequest(String view, String category, String 
                 || sort == Sort.STATE_CHANGED_AT && service != ServiceFilter.STOPPED
                 || sort == Sort.POOL_ENTERED_AT && c != Category.PENDING)
             invalid("SUPPORT_ANALYTICS_SORT_INVALID");
-        if ((sort == Sort.PERSONAL_DEPOSIT || sort == Sort.TEAM_DEPOSIT || sort == Sort.AMOUNT) && currency == null)
+        if ((sort == Sort.PERSONAL_DEPOSIT || sort == Sort.TEAM_DEPOSIT || sort == Sort.NET_CONTRIBUTION || sort == Sort.AMOUNT) && currency == null)
             invalid("SUPPORT_ANALYTICS_CURRENCY_REQUIRED");
         long page = number(pageNum, 1), size = number(pageSize, 20);
         if (page < 1 || page > MAX_SAFE_INTEGER || size < 1 || size > 100 || page > Long.MAX_VALUE / size)

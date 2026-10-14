@@ -240,7 +240,11 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
         return fixture.transactional(new AppTaskAssignmentService(mapper, directIdempotency(), fixture.outbox(),
                 mock(AuditLogService.class), proof, environment, Clock.fixed(Instant.parse("2026-08-31T12:00:00Z"),
-                        ZoneOffset.UTC), mock(TestComputeWorkerService.class)));
+                        ZoneOffset.UTC), mock(TestComputeWorkerService.class),
+                new SupportDeviceFundAdapter(new ffdd.opsconsole.finance.application.SupportFundJournalBindingService(
+                    fixture.mapper(ffdd.opsconsole.finance.mapper.SupportFundJournalMapper.class),fixture.jdbc().getDataSource(),new com.fasterxml.jackson.databind.ObjectMapper()),
+                    fixture.mapper(ffdd.opsconsole.device.mapper.SupportDeviceReadMapper.class),
+                    new SupportDeviceReadService(fixture.mapper(ffdd.opsconsole.device.mapper.SupportDeviceReadMapper.class)),new com.fasterxml.jackson.databind.ObjectMapper())));
     }
 
     private AppTradeinService capacityService(CanonicalEventSchemaMySqlFixture fixture) {

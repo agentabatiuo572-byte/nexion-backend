@@ -25,7 +25,7 @@ WHERE r.role_code='RISK'
 -- B 域通用看板（B1/B2 由下方精确矩阵接管）
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'overview_%'
-WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','SUPPORT','CONFIG_ADMIN')
+WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','CONFIG_ADMIN')
   AND p.permission_code NOT LIKE 'overview_b1_%'
   AND p.permission_code NOT LIKE 'overview_b2_%'
   AND p.permission_code NOT IN ('overview_b3_view_write','overview_b3_export')
@@ -86,7 +86,7 @@ WHERE r.role_code <> 'SUPER_ADMIN'
   AND p.permission_code IN ('user_c3_write','user_c3_adjust_create','user_c3_adjust_approve','user_c3_adjust_reverse');
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
-WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK','SUPPORT','AUDITOR')
+WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK','AUDITOR')
   AND p.permission_code='user_c3_read' AND p.status=1 AND p.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
@@ -94,7 +94,7 @@ WHERE r.role_code IN ('FINANCE','FINANCE_LEAD')
   AND p.permission_code='platform_a4_read' AND p.status=1 AND p.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
-WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','SUPPORT')
+WHERE r.role_code IN ('FINANCE','FINANCE_LEAD')
   AND p.permission_code='user_c3_adjust_create' AND p.status=1 AND p.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
@@ -208,7 +208,7 @@ SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code IN ('SUPER_ADMIN','FINANCE_LEAD')
   AND p.permission_code IN ('finance_d3_write','finance_d3_injection_create')
   AND p.status=1 AND p.is_deleted=0;
--- D4：全平台查询与脱敏导出分权；客服只能按用户核对；任何角色都没有 D4 写权限。
+-- D4：全平台查询与脱敏导出分权；任何角色都没有 D4 写权限。
 DELETE rp FROM nx_admin_role_permission rp
 JOIN nx_admin_role r ON r.id=rp.role_id
 JOIN nx_admin_permission p ON p.id=rp.permission_id
@@ -219,7 +219,7 @@ WHERE r.role_code IN ('SUPER_ADMIN','FINANCE','FINANCE_LEAD','RISK','AUDITOR')
   AND p.permission_code='finance_d4_read' AND p.status=1 AND p.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_permission(role_id,permission_id)
 SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
-WHERE r.role_code IN ('SUPER_ADMIN','FINANCE','FINANCE_LEAD','RISK','AUDITOR','SUPPORT')
+WHERE r.role_code IN ('SUPER_ADMIN','FINANCE','FINANCE_LEAD','RISK','AUDITOR')
   AND p.permission_code='finance_d4_user_read' AND p.status=1 AND p.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_permission(role_id,permission_id)
 SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
@@ -365,10 +365,10 @@ WHERE r.role_code='AUDITOR'
   AND p.permission_code IN ('bi_l1_read','bi_l1_write','bi_l2_read','bi_l2_write','bi_l3_read','bi_l3_write',
                             'bi_l4_read','bi_l4_write','bi_l4_export_tree','bi_l5_read','bi_l6_read')
   AND p.status=1 AND p.is_deleted=0;
--- M 域(service_)：客服+风控。风控只读；CONTENT only receives the exact M5 read/write pair.
+-- M 域(service_)：风控保持既有集合；CONTENT only receives the exact M5 read/write pair.
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'service_%'
-WHERE r.role_code IN ('SUPPORT','RISK')
+WHERE r.role_code='RISK'
   AND (r.role_code <> 'RISK' OR p.permission_code <> 'service_m5_write')
   AND p.permission_code <> 'service_m3_timeout_manage'
   AND p.status=1 AND p.is_deleted=0;
@@ -389,24 +389,15 @@ WHERE r.role_code='CONTENT'
   AND p.permission_code IN ('service_m5_read','service_m5_write')
   AND p.status=1 AND p.is_deleted=0;
 
--- SUPPORT 补充：C/E/I 域只读（客服查用户画像/设备状态/内容，辅助工单；不授予 write/high）
+-- 内置 SUPPORT 仅客服域；全局知识库/话术配置写入不随客服角色授予。
+-- 重跑 seed 收紧旧默认关系；自定义角色与其它角色的显式授权保持原集合。
+DELETE rp FROM nx_admin_role_permission rp
+JOIN nx_admin_role r ON r.id=rp.role_id AND r.role_code='SUPPORT';
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code='SUPPORT'
-  AND p.perm_type='READ' AND p.status=1 AND p.is_deleted=0
-  AND (p.permission_code LIKE 'user_%' OR p.permission_code LIKE 'device_%' OR p.permission_code LIKE 'content_%');
-
--- C5 精确客服授权：可强制下线指定/全部会话并解除短锁；不授常规写、重置密码、关闭 2FA 或长锁权限。
-INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
-SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
-WHERE r.role_code='SUPPORT'
-  AND p.permission_code IN ('user_c5_session_revoke_one','user_c5_session_revoke_all')
-  AND p.status=1 AND p.is_deleted=0;
-
-INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
-SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
-WHERE r.role_code='SUPPORT'
-  AND p.permission_code='user_c5_unlock_short'
+  AND p.permission_code IN ('service_m1_read','service_m1_write','service_m2_read','service_m2_write',
+                            'service_m3_read','service_m3_write','service_m4_read','service_m5_read')
   AND p.status=1 AND p.is_deleted=0;
 
 -- 2026-07-25 高保真真实接口同步：新增高敏权限始终显式授权，避免域前缀通配扩大权限。

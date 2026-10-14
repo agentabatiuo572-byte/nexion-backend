@@ -48,12 +48,42 @@ class SupportPaymentSourceServiceTest {
     private final DataSource dataSource=mock(DataSource.class);
     private final ObjectMapper json=new ObjectMapper();
     private final SupportPaymentCaptureHistoryFacade capturedHistory=mock(SupportPaymentCaptureHistoryFacade.class);
-    private final SupportPaymentSourceService service=new SupportPaymentSourceService(mapper,history,dataSource,json,capturedHistory);
+    private final SupportPaymentFundFixture cash=new SupportPaymentFundFixture(dataSource,json);
+    private final SupportPaymentSourceService service=new SupportPaymentSourceService(mapper,history,dataSource,json,capturedHistory,cash.fund,cash.mapper,cash.earnings,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class));
     private final LocalDateTime at=LocalDateTime.of(2026,10,8,12,0);
-    private final Object resource=new Object();
+    private final Object resource=cash.holder;
     private final Map<String,Map<String,Object>> observed=new HashMap<>();
     private final Map<BeforeSource,FreshLedgerReceipt> receipts=new IdentityHashMap<>();
+    private final Set<BeforeSource> cashStarted=Collections.newSetFromMap(new IdentityHashMap<>());
     @BeforeEach void transaction() {
+        when(mapper.historyNowUtc()).thenReturn(at.plusDays(1));
+        // Bridge existing single-source SQL doubles into the equivalent new batch projections.
+        // The dedicated batch test supplies direct batch rows and counts actual service mapper calls.
+        when(mapper.historyBeforeBatch(any(),anyList(),anyList())).thenAnswer(inv -> {
+            Source source=inv.getArgument(0);List<Long> customers=inv.getArgument(1);List<String> keys=inv.getArgument(2);
+            var rows=new ArrayList<Map<String,Object>>();
+            for(String key:keys)for(long customer:customers) {
+                var families=source==Source.WALLET_ORDER?List.of(Source.WALLET_ORDER,Source.TRADE_IN,Source.CAPACITY_KEEP,Source.ORDER_REFUND):List.of(source);
+                for(Source family:families) {
+                    var matches=mapper.before(family,customer,family==Source.ORDER_REFUND?"E4-REFUND-"+key:key);
+                    if(!matches.isEmpty()) {rows.addAll(matches);break;}
+                }
+            }
+            return rows;
+        });
+        when(mapper.historySettledBatch(any(),anyList(),anyList())).thenAnswer(inv -> {
+            Source source=inv.getArgument(0);List<Long> customers=inv.getArgument(1);List<String> keys=inv.getArgument(2);
+            var rows=new ArrayList<Map<String,Object>>();for(String key:keys)for(long customer:customers)rows.addAll(mapper.settled(source,List.of(customer),key));return rows;
+        });
+        when(mapper.historyMarkerBatch(any(),anyList(),anyList())).thenAnswer(inv -> {
+            Marker marker=inv.getArgument(0);List<Map<String,Object>> refs=inv.getArgument(2);var rows=new ArrayList<Map<String,Object>>();
+            for(var ref:refs)rows.addAll(switch(marker) {
+                case CREGIS_EVENT -> mapper.cregisEvents(((Number)ref.get("projectId")).longValue(),((Number)ref.get("cid")).longValue());
+                case DEVICE -> mapper.device(((Number)ref.get("id")).longValue());case PAYMENT -> mapper.payments((String)ref.get("key"));
+                case CARD_SETTLEMENT -> mapper.cardSettlements((String)ref.get("key"));case INTENT -> mapper.intent((String)ref.get("key"));
+                default -> throw new AssertionError(marker);
+            });return rows;
+        });
         when(mapper.currentBefore(any(),anyLong(),anyString(),anyLong())).thenAnswer(i -> {
             var row=observed.get("ROOT:"+i.getArgument(0)+":"+i.getArgument(3));
             return row==null?List.of():List.of(row);
@@ -72,7 +102,9 @@ class SupportPaymentSourceServiceTest {
             row.put("currency","USDT");row.put("direction",SupportPaymentSourceSql.ledgerDirection(source));
             row.put("status",source==Source.TRIAL_CONVERT?"POSTED":"SUCCESS");row.put("deleted",0);
             row.put("amount",write.get("amount"));row.put("balanceAfter",write.get("balanceAfter"));row.put("remark",write.get("remark"));
-            row.put("successAt",at);row.put("updatedAt",at);observed.put(Marker.LEDGER+":"+id,row);return 1;
+            row.put("successAt",at);row.put("updatedAt",at);observed.put(Marker.LEDGER+":"+id,row);
+            BigDecimal delta=(BigDecimal)write.get("amount");
+            cash.advance("OUT".equals(row.get("direction"))?delta.negate():delta,BigDecimal.ZERO);return 1;
         });
         TransactionSynchronizationManager.setActualTransactionActive(true);
         TransactionSynchronizationManager.initSynchronization();
@@ -87,7 +119,7 @@ class SupportPaymentSourceServiceTest {
         TransactionSynchronizationManager.unbindResourceIfPossible(dataSource);
         TransactionSynchronizationManager.clear();
     }
-    @Test void actualNewRegistrationPipelineProvesBothDirectionsWithoutCertifyingNetOrRefundHistory() throws Exception {
+    @Test void actualNewRegistrationPipelineProvesSourceHistoryButMissingHistoricEnvironmentKeepsPurchaseUnknown() throws Exception {
         historyTransaction();var row=historyWallet();stubHistory(historyEnvelope(row,null),row);
         when(capturedHistory.readBirths(anyCollection())).thenReturn(List.of(birth(at.minusHours(8).minusSeconds(1))));
         var sources=mock(SupportPaymentFactMapper.class);var zero=payment(Source.WALLET_ORDER,"free-voucher",0,"0");
@@ -96,7 +128,9 @@ class SupportPaymentSourceServiceTest {
         var result=actualHistory(sources).readHistory(List.of(7L));
         assertThat(result.firstHistory()).containsExactly(new FirstHistory(7,Status.READY,List.of()));
         assertThat(result.facts()).singleElement().satisfies(f->assertThat(f.amount()).isEqualByComparingTo("80"));
-        assertThat(result.coverage()).allSatisfy(c->{assertThat(c.historyStatus()).isEqualTo(Status.UNKNOWN);assertThat(c.refundStatus()).isEqualTo(Status.UNKNOWN);});
+        assertThat(result.customerCoverage()).hasSize(11).allSatisfy(c->{assertThat(c.historyStatus()).isEqualTo(Status.READY);assertThat(c.refundStatus()).isEqualTo(Status.READY);});
+        assertThat(result.customerCoverage()).filteredOn(c->c.source()==Source.WALLET_ORDER)
+            .allSatisfy(c->assertThat(c.historicalEnvironmentStatus()).isEqualTo(Status.UNKNOWN));
         verify(capturedHistory).readBirths(List.of(7L));
     }
     @Test void actualCompleteNewRegistrationWithNoPaymentDiffersFromMissingBirth() throws Exception {
@@ -105,8 +139,105 @@ class SupportPaymentSourceServiceTest {
         when(capturedHistory.readBirths(anyCollection())).thenReturn(List.of(birth(at.minusHours(8))));
         var complete=pipeline.readHistory(List.of(7L));
         assertThat(complete.facts()).isEmpty();assertThat(complete.firstHistory()).containsExactly(new FirstHistory(7,Status.READY,List.of()));
+        assertThat(complete.customerCoverage()).hasSize(11).allSatisfy(c->{assertThat(c.historyStatus()).isEqualTo(Status.READY);
+            assertThat(c.refundStatus()).isEqualTo(Status.READY);assertThat(c.historicalEnvironmentStatus()).isEqualTo(Status.READY);});
         when(capturedHistory.readBirths(anyCollection())).thenReturn(List.of());
-        assertThat(pipeline.readHistory(List.of(7L)).firstHistory()).singleElement().satisfies(h->assertThat(h.status()).isEqualTo(Status.UNKNOWN));
+        var missing=pipeline.readHistory(List.of(7L));assertThat(missing.firstHistory()).singleElement().satisfies(h->assertThat(h.status()).isEqualTo(Status.UNKNOWN));
+        assertThat(missing.customerCoverage()).allSatisfy(c->assertThat(c.historyStatus()).isEqualTo(Status.UNKNOWN));
+    }
+    @Test void futureBirthOrMissingDatabaseClockCannotCertifyEmptyPaymentsOrRefunds() throws Exception {
+        historyTransaction();when(capturedHistory.readNewFinancialProofs(anyCollection())).thenReturn(List.of());
+        when(capturedHistory.readBirths(anyCollection())).thenReturn(List.of(birth(at.plusDays(2))));
+        var pipeline=actualHistory(mock(SupportPaymentFactMapper.class));
+        var future=pipeline.readHistory(List.of(7L));
+        assertThat(future.customerCoverage()).hasSize(11).allSatisfy(c->{assertThat(c.historyStatus()).isEqualTo(Status.UNKNOWN);
+            assertThat(c.reasons()).contains("NEW_ACCOUNT_BIRTH_AFTER_HISTORY_SNAPSHOT");});
+        when(capturedHistory.readBirths(anyCollection())).thenReturn(List.of(birth(at.minusDays(1))));
+        when(mapper.historyNowUtc()).thenReturn(null);
+        assertThat(pipeline.readHistory(List.of(7L)).customerCoverage()).hasSize(11)
+            .allSatisfy(c->assertThat(c.historyStatus()).isEqualTo(Status.UNKNOWN));
+    }
+    @Test void walletEnvironmentRequiresTheActualProductionSuccessAuditNotCurrentSandboxOrGenericCapture() throws Exception {
+        historyTransaction();var row=historyWallet();stubHistory(historyEnvelope(row,null),row);
+        when(capturedHistory.readBirths(anyCollection())).thenReturn(List.of(birth(at.minusHours(8).minusSeconds(1))));
+        var sources=mock(SupportPaymentFactMapper.class);when(sources.orders(anyList())).thenReturn(List.of(row));
+        var audit=new HashMap<String,Object>();audit.put("id",11L);audit.put("customerId",7L);audit.put("validDigest",1);
+        audit.put("orderNo","order-1");audit.put("bizNo","order-1");audit.put("actorType","USER");audit.put("result","SUCCESS");
+        audit.put("resourceType","ORDER");audit.put("resourceId","order-1");
+        audit.put("actorId",7L);audit.put("method","POST");audit.put("path","/api/orders/order-1/pay");
+        audit.put("action","APP_ORDER_WALLET_PAYMENT");audit.put("auditAt",at.plusSeconds(2));
+        audit.put("paidAt",row.get("succeededAt"));audit.put("amount",new BigDecimal("80"));audit.put("paymentNo","payment-1");
+        audit.put("detail","{\"canonical\":true,\"paymentRail\":\"NEXGRID_WALLET\",\"paymentNo\":\"payment-1\",\"amountUsdt\":80}");
+        when(mapper.historyPaymentAudits(anyList())).thenReturn(List.of(audit));
+        var pipeline=actualHistory(sources);
+        assertThat(pipeline.readHistory(List.of(7L)).customerCoverage()).filteredOn(c->c.source()==Source.WALLET_ORDER).hasSize(1)
+            .allSatisfy(c->assertThat(c.historicalEnvironmentStatus()).isEqualTo(Status.READY));
+        for(String changed:List.of("digest","actor","amount","order","future","rail")) {
+            var bad=new HashMap<>(audit);
+            switch(changed) {
+                case "digest"->bad.put("validDigest",0);case "actor"->bad.put("actorType","ADMIN");
+                case "amount"->bad.put("amount",new BigDecimal("79"));case "order"->bad.put("orderNo","other");
+                case "future"->bad.put("auditAt",at.plusHours(9));case "rail"->bad.put("detail","{\"canonical\":true,\"paymentRail\":\"PSP\",\"paymentNo\":\"payment-1\",\"amountUsdt\":80}");
+            }
+            when(mapper.historyPaymentAudits(anyList())).thenReturn(List.of(bad));
+            assertThat(pipeline.readHistory(List.of(7L)).customerCoverage()).filteredOn(c->c.source()==Source.WALLET_ORDER).hasSize(1)
+                .allSatisfy(c->assertThat(c.historicalEnvironmentStatus()).as(changed).isEqualTo(Status.UNKNOWN));
+        }
+    }
+    @Test void refundOriginReadFailureDoesNotDowngradeAnyDepositSourceOrFirstHistory() throws Exception {
+        historyTransaction();when(capturedHistory.readNewFinancialProofs(anyCollection())).thenReturn(List.of());
+        when(capturedHistory.readBirths(anyCollection())).thenReturn(List.of(birth(at.minusHours(8))));
+        when(mapper.historyRefundOrigins(anyList())).thenThrow(new DataAccessResourceFailureException("private"));
+        var result=actualHistory(mock(SupportPaymentFactMapper.class)).readHistory(List.of(7L));
+        assertThat(result.firstHistory()).containsExactly(new FirstHistory(7,Status.READY,List.of()));
+        assertThat(result.customerCoverage()).filteredOn(c->Set.of(Source.DEPOSIT_ORDER,Source.CARD_TOPUP,Source.VIETQR,Source.HDPAY).contains(c.source()))
+            .hasSize(4).allSatisfy(c->{assertThat(c.historyStatus()).isEqualTo(Status.READY);assertThat(c.historicalEnvironmentStatus()).isEqualTo(Status.READY);assertThat(c.refundStatus()).isEqualTo(Status.READY);});
+        assertThat(result.customerCoverage()).filteredOn(c->c.source()==Source.ORDER_REFUND)
+            .allSatisfy(c->assertThat(c.historyStatus()).isEqualTo(Status.UNKNOWN));
+    }
+    @Test void eachExistingTradeCapacityAndTrialProductionAuditIsMatchedToItsOwnRealSourceAndLedger() throws Exception {
+        historyTransaction();when(capturedHistory.readBirths(anyCollection())).thenReturn(List.of(birth(at.minusHours(8).minusSeconds(1))));
+        for(String action:List.of("USER_TRADEIN_COMPLETED","USER_CAPACITY_REPLACEMENT_COMPLETED","USER_CAPACITY_KEEP_PURCHASE_COMPLETED","H2_TRIAL_CONVERTED")) {
+            Source source=action.equals("H2_TRIAL_CONVERTED")?Source.TRIAL_CONVERT:action.equals("USER_CAPACITY_KEEP_PURCHASE_COMPLETED")?Source.CAPACITY_KEEP:Source.TRADE_IN;
+            String key=source==Source.TRIAL_CONVERT?"claim-1:CHARGE":"order-1";
+            var row=payment(source,key,201,"80");row.put("sourceId","nx_order:1");row.put("orderNo","order-1");row.put("orderType",source.name());
+            stubHistory(historyEnvelope(row,null),row);
+            var root=rawOrder("PAID",(LocalDateTime)row.get("succeededAt"));root.put("orderType",source.name());
+            when(mapper.before(source,7,key)).thenReturn(List.of(root));
+            if(source==Source.TRADE_IN || source==Source.CAPACITY_KEEP)when(mapper.before(Source.WALLET_ORDER,7,key)).thenReturn(List.of(root));
+            if(source==Source.TRIAL_CONVERT) {
+                when(mapper.before(source,7,key)).thenReturn(List.of(Map.of("id",5L,"customerId",7L,"businessId",key,"status","REDEEMED",
+                    "amount",new BigDecimal("80"),"successAt",at,"deviceId",4L)));
+                when(mapper.device(4L)).thenReturn(List.of(Map.of("id",4L,"customerId",7L,"orderNo","order-1")));
+                when(mapper.before(Source.WALLET_ORDER,7,"order-1")).thenReturn(List.of(root));
+            }
+            var audit=new HashMap<String,Object>();audit.put("id",12L);audit.put("customerId",7L);audit.put("actorId",7L);audit.put("validDigest",1);
+            audit.put("orderNo","order-1");audit.put("bizNo",source==Source.TRIAL_CONVERT?"claim-1":"order-1");
+            audit.put("resourceId",source==Source.TRIAL_CONVERT?"claim-1":"operation-1");audit.put("actorType","USER");audit.put("result","SUCCESS");
+            audit.put("action",action);audit.put("auditAt",at.plusSeconds(2));audit.put("paidAt",row.get("succeededAt"));audit.put("amount",new BigDecimal("80"));
+            audit.put("deviceMatched",1);audit.put("method","POST");
+            Map<String,Object> detail;
+            if(source==Source.TRIAL_CONVERT) {
+                audit.put("resourceType","TRIAL_CLAIM");
+                detail=Map.of("sourceEnvironment","PRODUCTION","serverCanonical",true,"runId","","paymentRail","NEXION_USDT_WALLET","orderNo","order-1","amountUsdt",80);
+            } else if(source==Source.CAPACITY_KEEP) {
+                audit.put("resourceType","DEVICE_ORDER");audit.put("path","/api/app/trade-in/capacity-keep");
+                detail=Map.of("decisionSource","server","after",Map.of("orderNo","order-1","walletDebitUsdt",80,"targetDeviceId",4));
+            } else {
+                audit.put("resourceType","TRADEIN_APPLICATION");audit.put("path",action.equals("USER_TRADEIN_COMPLETED")?"/api/app/trade-in/submit":"/api/app/trade-in/capacity-replace");
+                detail=Map.of("decisionSource","server","pricing",Map.of("orderNo","order-1","walletDebitUsdt",80),"after",Map.of("targetDeviceId",4));
+            }
+            audit.put("detail",json.writeValueAsString(detail));when(mapper.historyPaymentAudits(anyList())).thenReturn(List.of(audit));
+            var sources=mock(SupportPaymentFactMapper.class);
+            if(source==Source.TRIAL_CONVERT)when(sources.trials(anyList())).thenReturn(List.of(row));else when(sources.orders(anyList())).thenReturn(List.of(row));
+            var pipeline=actualHistory(sources);var actual=pipeline.readHistory(List.of(7L));
+            assertThat(actual.facts()).as(action).hasSize(1);assertThat(actual.issues()).as(action).isEmpty();
+            assertThat(actual.customerCoverage()).filteredOn(c->c.source()==source).hasSize(1)
+                .allSatisfy(c->{assertThat(c.historyStatus()).as(action).isEqualTo(Status.READY);assertThat(c.historicalEnvironmentStatus()).as(action).isEqualTo(Status.READY);});
+            audit.put("action","APP_ORDER_WALLET_PAYMENT");
+            assertThat(pipeline.readHistory(List.of(7L)).customerCoverage()).filteredOn(c->c.source()==source).hasSize(1)
+                .allSatisfy(c->assertThat(c.historicalEnvironmentStatus()).as(action+" unrelated audit").isEqualTo(Status.UNKNOWN));
+        }
     }
     @Test void birthOutsideSqlDatetimeYearsCannotCertifyAnEmptyPaymentHistory() throws Exception {
         historyTransaction();when(capturedHistory.readNewFinancialProofs(anyCollection())).thenReturn(List.of());
@@ -278,7 +409,7 @@ class SupportPaymentSourceServiceTest {
         assertThat(result.coverage()).filteredOn(c->c.source()==Source.ORDER_REFUND).allSatisfy(c->assertThat(c.observedStatus()).isEqualTo(Status.UNKNOWN));
         assertThat(result.toString()).doesNotContain("private refund");
     }
-    private SupportPaymentSourceService actualHistory(SupportPaymentFactMapper sources) {return new SupportPaymentSourceService(mapper,new SupportPaymentFactService(sources),dataSource,json,capturedHistory);}
+    private SupportPaymentSourceService actualHistory(SupportPaymentFactMapper sources) {return new SupportPaymentSourceService(mapper,new SupportPaymentFactService(sources,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class)),dataSource,json,capturedHistory,cash.fund,cash.mapper,cash.earnings,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class));}
     private BirthEvidence birth(LocalDateTime born) {return new BirthEvidence(7L,"support-payment-attribution-v1","AUTH_NEW_ACCOUNT_REGISTRATION",born,0,"PRODUCTION");}
     private void stubCardHistory(Map<String,Object> card) throws Exception {
         stubHistory(historyEnvelope(card,null),card);long customer=((Number)card.get("customerId")).longValue(),ledger=((Number)card.get("ledgerId")).longValue();String key=card.get("businessId").toString();
@@ -349,7 +480,7 @@ class SupportPaymentSourceServiceTest {
             saved.evidenceCaptureMode(),saved.evidenceSchemaVersion())));
         var factMapper=mock(ffdd.opsconsole.finance.mapper.SupportPaymentFactMapper.class);
         when(factMapper.cards(anyList())).thenReturn(List.of(original));
-        var actualPipeline=new SupportPaymentSourceService(mapper,new SupportPaymentFactService(factMapper),dataSource,json,capturedHistory);
+        var actualPipeline=new SupportPaymentSourceService(mapper,new SupportPaymentFactService(factMapper,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class)),dataSource,json,capturedHistory,cash.fund,cash.mapper,cash.earnings,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class));
         var result=actualPipeline.readHistory(List.of(7L));
         assertThat(result.facts()).singleElement().satisfies(fact -> {
             assertThat(fact.factId()).isEqualTo(saved.identity().factId());
@@ -375,11 +506,11 @@ class SupportPaymentSourceServiceTest {
         historyTransaction();
         doThrow(new DataAccessResourceFailureException("private")).when(capturedHistory).readNewFinancialProofs(anyCollection());
         var snapshot=service.readHistory(List.of(7L));
-        assertThat(snapshot.issues()).hasSize(9).allSatisfy(issue -> assertThat(issue.reason()).isEqualTo("SOURCE_READ_FAILED"));
+        assertThat(snapshot.issues()).hasSize(11).allSatisfy(issue -> assertThat(issue.reason()).isEqualTo("SOURCE_READ_FAILED"));
         assertThat(snapshot.issues()).extracting(Issue::source).doesNotContain(Source.FREE_TRIAL,Source.UNMATCHED_LEDGER);
         for(String error:List.of("INVALID_CAPTURE_HISTORY_SCHEMA","INVALID_CAPTURE_HISTORY_ROW")) {
             doThrow(new IllegalStateException(error)).when(capturedHistory).readNewFinancialProofs(anyCollection());
-            assertThat(service.readHistory(List.of(7L)).issues()).hasSize(9)
+            assertThat(service.readHistory(List.of(7L)).issues()).hasSize(11)
                 .allSatisfy(issue -> assertThat(issue.reason()).isEqualTo("INVALID_PERSISTED_SOURCE_PROOF"));
         }
         doThrow(new IllegalStateException("INVALID_CAPTURE_HISTORY_SCOPE")).when(capturedHistory).readNewFinancialProofs(anyCollection());
@@ -403,14 +534,15 @@ class SupportPaymentSourceServiceTest {
         var factMapper=mock(ffdd.opsconsole.finance.mapper.SupportPaymentFactMapper.class);
         var card=payment(Source.CARD_TOPUP,"independent-card",101,"10");card.put("sourceId","nx_payment_record:9");
         when(factMapper.cards(anyList())).thenReturn(List.of(card));
-        var realPipeline=new SupportPaymentSourceService(mapper,new SupportPaymentFactService(factMapper),dataSource,json,capturedHistory);
+        var realPipeline=new SupportPaymentSourceService(mapper,new SupportPaymentFactService(factMapper,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class)),dataSource,json,capturedHistory,cash.fund,cash.mapper,cash.earnings,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class));
         when(capturedHistory.readNewFinancialProofs(anyCollection())).thenThrow(new IllegalStateException("INVALID_CAPTURE_HISTORY_SCHEMA"));
         var result=realPipeline.readHistory(List.of(7L));
         assertThat(result.facts()).singleElement().satisfies(fact -> assertThat(fact.sourceBusinessId()).isEqualTo("independent-card"));
-        assertThat(result.issues()).hasSize(9).allSatisfy(issue -> assertThat(issue.reason()).isEqualTo("INVALID_PERSISTED_SOURCE_PROOF"));
+        assertThat(result.issues()).hasSize(11).allSatisfy(issue -> assertThat(issue.reason()).isEqualTo("INVALID_PERSISTED_SOURCE_PROOF"));
         assertThat(result.coverage()).allSatisfy(coverage -> {
             assertThat(coverage.historyStatus()).isEqualTo(Status.UNKNOWN);
-            assertThat(coverage.refundStatus()).isEqualTo(Status.UNKNOWN);
+            assertThat(coverage.refundStatus()).isEqualTo(
+                Set.of(Source.DEPOSIT_ORDER,Source.CARD_TOPUP,Source.VIETQR,Source.HDPAY).contains(coverage.source())?Status.READY:Status.UNKNOWN);
             assertThat(coverage.historicalEnvironmentStatus()).isEqualTo(Status.UNKNOWN);
         });
     }
@@ -429,9 +561,11 @@ class SupportPaymentSourceServiceTest {
         root.put("amount",new BigDecimal("11"));
         assertThat(service.readHistory(List.of(7L)).issues()).extracting(Issue::reason).containsExactly("SETTLEMENT_MISMATCH");
         root.put("amount",BigDecimal.TEN);
-        event.put("projectId",73L);
+        // A different project is excluded by the original SQL WHERE too. Use a retained row
+        // with the requested project/cid but a contradictory ledger to exercise the link predicate.
+        event.put("ledgerId",102L);
         assertThat(service.readHistory(List.of(7L)).issues()).extracting(Issue::reason).containsExactly("BROKEN_CREGIS_EVENT_LINK");
-        verify(mapper,times(2)).cregisEvents(72,51);
+        verify(mapper,times(4)).historyMarkerBatch(eq(Marker.CREGIS_EVENT),eq(List.of(7L)),eq(List.of(Map.of("projectId",72L,"cid",51L))));
     }
     @Test void historicalVietqrIntentPartitionIsTheLogicalPaymentKeyAndWrongAmountRejects() throws Exception {
         historyTransaction();var row=payment(Source.VIETQR,"D1-VIETQR-recon-1",101,"10");row.put("sourceId","nx_vietqr_reconciliation:1");
@@ -450,7 +584,7 @@ class SupportPaymentSourceServiceTest {
         historyTransaction();var row=historyWallet();stubHistory(historyEnvelope(row,null),row);
         when(mapper.historyLedgers(anyList(),anyList())).thenThrow(new DataAccessResourceFailureException("private"));
         var failure=service.readHistory(List.of(7L));
-        assertThat(failure.facts()).isEmpty();assertThat(failure.issues()).hasSize(9);
+        assertThat(failure.facts()).isEmpty();assertThat(failure.issues()).hasSize(11);
         doReturn(List.of(historyLedger(row))).when(mapper).historyLedgers(anyList(),anyList());
         when(mapper.payments("order-1")).thenReturn(List.of());
         assertThat(service.readHistory(List.of(7L)).issues()).extracting(Issue::reason).containsExactly("MISSING_SOURCE_CONFIRMATION_TIME");
@@ -703,7 +837,7 @@ class SupportPaymentSourceServiceTest {
     @Test void forgedForeignServiceCrossResourceAndCompletedTokensAreRejected() {
         assertThatThrownBy(() -> service.readSettled(mock(BeforeSource.class))).hasMessage("INVALID_BEFORE_SOURCE_TRANSACTION");
         var before=wallet(false,false);
-        var other=new SupportPaymentSourceService(mapper,history,dataSource,json,capturedHistory);
+        var other=new SupportPaymentSourceService(mapper,history,dataSource,json,capturedHistory,cash.fund,cash.mapper,cash.earnings,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class));
         assertThatThrownBy(() -> other.readSettled(before)).hasMessage("INVALID_BEFORE_SOURCE_TRANSACTION");
         TransactionSynchronizationManager.unbindResource(dataSource);
         TransactionSynchronizationManager.bindResource(dataSource,new Object());
@@ -936,17 +1070,17 @@ class SupportPaymentSourceServiceTest {
             .thenReturn(List.of(rawOrder("PENDING",at)));
         var before=service.beforeSource(7,Source.WALLET_ORDER,"order-1");
         assertThat(before.oldSource()).isTrue();
-        assertThatThrownBy(() -> service.insertFreshPaymentLedger(before,BigDecimal.TEN,BigDecimal.TEN,"remark"))
+        assertThatThrownBy(() -> insertFresh(before,BigDecimal.TEN,BigDecimal.TEN,"remark"))
             .hasMessage("FRESH_LEDGER_NOT_ALLOWED");
         verify(mapper,never()).insertLedger(any(),anyMap());
     }
     @Test void zeroInsertAndMissingGeneratedKeyNeverMintAReceipt() {
         var before=wallet(false,false);
         doReturn(0).when(mapper).insertLedger(any(),anyMap());
-        assertThatThrownBy(() -> service.insertFreshPaymentLedger(before,BigDecimal.TEN,BigDecimal.TEN,"remark"))
+        assertThatThrownBy(() -> insertFresh(before,BigDecimal.TEN,BigDecimal.TEN,"remark"))
             .hasMessage("FRESH_LEDGER_INSERT_REQUIRED");
         doReturn(1).when(mapper).insertLedger(any(),anyMap());
-        assertThatThrownBy(() -> service.insertFreshPaymentLedger(before,BigDecimal.TEN,BigDecimal.TEN,"remark"))
+        assertThatThrownBy(() -> insertFresh(before,BigDecimal.TEN,BigDecimal.TEN,"remark"))
             .hasMessage("FRESH_LEDGER_GENERATED_KEY_REQUIRED");
         assertThatThrownBy(() -> service.readSettled(before,() -> 201L)).hasMessage("INVALID_FRESH_LEDGER_RECEIPT");
     }
@@ -955,25 +1089,25 @@ class SupportPaymentSourceServiceTest {
         for(var error:List.of(new org.springframework.dao.DuplicateKeyException("duplicate"),
                 new DataAccessResourceFailureException("database unavailable"))) {
             doThrow(error).when(mapper).insertLedger(any(),anyMap());
-            assertThatThrownBy(() -> service.insertFreshPaymentLedger(before,BigDecimal.TEN,BigDecimal.TEN,"remark"))
+            assertThatThrownBy(() -> insertFresh(before,BigDecimal.TEN,BigDecimal.TEN,"remark"))
                 .isSameAs(error);
             assertThatThrownBy(() -> service.readSettled(before,() -> 201L)).hasMessage("INVALID_FRESH_LEDGER_RECEIPT");
         }
     }
     @Test void receiptRejectsForgeryOtherBeforeServicePhysicalTransactionAndExpiredLifetime() {
         var before=wallet(false,false);
-        var receipt=service.insertFreshPaymentLedger(before,new BigDecimal("80"),BigDecimal.TEN,"remark");
+        var receipt=insertFresh(before,new BigDecimal("80"),BigDecimal.TEN,"remark");
         assertThat(receipt.ledgerId()).isEqualTo(201L);
         assertThatThrownBy(() -> service.readSettled(before,() -> receipt.ledgerId())).hasMessage("INVALID_FRESH_LEDGER_RECEIPT");
         var otherBefore=service.beforeSource(7,Source.CARD_TOPUP,"other-card");
         assertThatThrownBy(() -> service.readSettled(otherBefore,receipt)).hasMessage("INVALID_FRESH_LEDGER_RECEIPT");
-        var other=new SupportPaymentSourceService(mapper,history,dataSource,json,capturedHistory);
+        var other=new SupportPaymentSourceService(mapper,history,dataSource,json,capturedHistory,cash.fund,cash.mapper,cash.earnings,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class));
         assertThatThrownBy(() -> other.readSettled(before,receipt)).hasMessage("INVALID_BEFORE_SOURCE_TRANSACTION");
         TransactionSynchronizationManager.unbindResource(dataSource);TransactionSynchronizationManager.bindResource(dataSource,new Object());
         assertThatThrownBy(() -> service.readSettled(before,receipt)).hasMessage("INVALID_BEFORE_SOURCE_TRANSACTION");
         TransactionSynchronizationManager.unbindResource(dataSource);TransactionSynchronizationManager.bindResource(dataSource,resource);
         assertThat(service.readSettled(before,receipt)).isPresent();
-        assertThatThrownBy(() -> service.insertFreshPaymentLedger(before,new BigDecimal("80"),BigDecimal.TEN,"remark"))
+        assertThatThrownBy(() -> insertFresh(before,new BigDecimal("80"),BigDecimal.TEN,"remark"))
             .hasMessage("FRESH_LEDGER_NOT_ALLOWED");
         for(var synchronization:TransactionSynchronizationManager.getSynchronizations())
             synchronization.afterCompletion(TransactionSynchronization.STATUS_COMMITTED);
@@ -981,7 +1115,7 @@ class SupportPaymentSourceServiceTest {
     }
     @Test void receiptRechecksTheCompleteWrittenTupleAndActualProjectedLedger() {
         var before=wallet(false,false);
-        var receipt=service.insertFreshPaymentLedger(before,new BigDecimal("80"),BigDecimal.TEN,"remark");
+        var receipt=insertFresh(before,new BigDecimal("80"),BigDecimal.TEN,"remark");
         var written=observed.get(Marker.LEDGER+":201");
         for(String key:List.of("id","customerId","businessId","ledgerType","currency","direction","status","deleted",
                 "amount","balanceAfter","remark","successAt","updatedAt")) {
@@ -995,7 +1129,7 @@ class SupportPaymentSourceServiceTest {
     }
     @Test void missingNecessaryChainCannotBecomeSuccessDespiteTheFreshLedger() {
         var before=wallet(false,false);
-        var receipt=service.insertFreshPaymentLedger(before,new BigDecimal("80"),BigDecimal.TEN,"remark");
+        var receipt=insertFresh(before,new BigDecimal("80"),BigDecimal.TEN,"remark");
         var row=payment(Source.WALLET_ORDER,"order-1",201,"80");row.remove("sourceRootId");
         when(mapper.settled(eq(Source.WALLET_ORDER),anyList(),eq("order-1"))).thenReturn(List.of(row));
         assertThatThrownBy(() -> service.readSettled(before,receipt)).hasMessage("MISSING_SETTLED_SOURCE");
@@ -1037,9 +1171,20 @@ class SupportPaymentSourceServiceTest {
     }
     private Optional<Fact> read(BeforeSource before) {
         if(before.oldSource()) return service.readSettled(before);
-        FreshLedgerReceipt receipt=receipts.computeIfAbsent(before,b -> service.insertFreshPaymentLedger(b,
-            new BigDecimal(b.source()==Source.WALLET_ORDER?"80":b.source()==Source.ORDER_REFUND?"30":"10"),BigDecimal.TEN,"original remark"));
+        FreshLedgerReceipt receipt=receipts.computeIfAbsent(before,b -> insertFresh(b,
+            new BigDecimal(b.source()==Source.WALLET_ORDER?"80":b.source()==Source.ORDER_REFUND?"30":"10"),
+            b.source()==Source.ORDER_REFUND?new BigDecimal("30"):BigDecimal.TEN,"original remark"));
         return service.readSettled(before,receipt);
+    }
+    private FreshLedgerReceipt insertFresh(BeforeSource before,BigDecimal amount,BigDecimal balanceAfter,String remark) {
+        if(!before.oldSource() && cashStarted.add(before)) {
+            cash.arm(before);service.beforeCash(before);
+            if(before.source()==Source.WALLET_ORDER)doAnswer(i->{
+                var rows=mapper.settled(Source.WALLET_ORDER,List.of(7L),"order-1");
+                return rows.isEmpty()?List.of():List.of(cash.authority(rows.get(0)));
+            }).when(mapper).historyPaymentAudits(anyList());
+        }
+        return service.insertFreshPaymentLedger(before,amount,balanceAfter,remark);
     }
     private BeforeSource historicalRefundOfCrossSecond(Map<String,Object> original,Map<String,Object> refund) {
         String key="E4-REFUND-order-1";

@@ -66,6 +66,15 @@ class SupportWorkbenchServiceTest {
                 .containsEntry("dormantCutoff",null).containsEntry("windowCutoff",null);
     }
 
+    @Test void snapshotPublishesCurrentIndependentModesWithoutChangingSelectedScope() {
+        setup(new SupportRules(5L,null,2,null,"UNCONFIGURED",null),0);
+        when(ownership.defaultQueryScope(null,null)).thenReturn(new ReadScope(7L,ReadMode.MANAGED,null,null));
+        when(ownership.availableReadModes()).thenReturn(List.of(ReadMode.MANAGED,ReadMode.PERSONAL));
+        var result=service.snapshot(null,"ALL",null,1,1,null,null);
+        assertThat(map(result.get("scope"))).containsEntry("mode","MANAGED")
+                .containsEntry("availableModes",List.of("MANAGED","PERSONAL"));
+    }
+
     @Test void incompleteWindowReportsKnownCountAndNullExactTotal() {
         setup(new SupportRules(6L,30,null,7,"UNCONFIGURED",null),1);
         var result=service.snapshot(null,"WINDOW_ACTIVE",null,2,1,null,null);
@@ -85,7 +94,31 @@ class SupportWorkbenchServiceTest {
         setup(new SupportRules(1L,30,7,7,"UNCONFIGURED",null),0);
         when(ownership.defaultQueryScope(null,8L)).thenThrow(new BizException(403,"SUPPORT_SCOPE_FORBIDDEN"));
         assertThatThrownBy(()->service.snapshot(8L,"ALL",null,1,20,null,null)).isInstanceOf(BizException.class);
-        verifyNoInteractions(mapper);
+        verifyNoInteractions(mapper,activity,transactions);
+    }
+
+    @Test void forbiddenGroupAndTransferredCustomerDoNotCheckpointActivity() {
+        when(ownership.queryScope(ReadMode.MANAGED,10L,null)).thenThrow(new BizException(404,"SUPPORT_GROUP_NOT_FOUND"));
+        when(ownership.customerQueryScope(20L)).thenThrow(new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND"));
+        assertThatThrownBy(()->service.snapshot(ReadMode.MANAGED,10L,null,"ALL",null,1,20,null,null))
+                .isInstanceOfSatisfying(BizException.class,e->assertThat(e.getCode()).isEqualTo(404));
+        assertThatThrownBy(()->service.detail(20L))
+                .isInstanceOfSatisfying(BizException.class,e->assertThat(e.getCode()).isEqualTo(404));
+        verifyNoInteractions(activity,transactions,mapper,bindings);
+    }
+
+    @Test void customerAccessIsRecheckedAfterActivityCheckpoint() {
+        when(ownership.customerQueryScope(20L)).thenReturn(new ReadScope(7L,ReadMode.PERSONAL,null,null))
+                .thenThrow(new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND"));
+        when(activity.checkpoint()).thenReturn(new SupportActivityService.Coverage(NOW.minusDays(2),NOW));
+        when(transactions.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        assertThatThrownBy(()->service.detail(20L)).isInstanceOf(BizException.class);
+        var order=inOrder(ownership,activity,transactions);
+        order.verify(ownership).customerQueryScope(20L);
+        order.verify(activity).checkpoint();
+        order.verify(transactions).getTransaction(any());
+        order.verify(ownership).customerQueryScope(20L);
+        verifyNoInteractions(mapper,bindings);
     }
 
     @Test void managedCardsAndPageUseOneExplicitModeAndPersonalDetailUsesItsOwnMode() {
@@ -99,6 +132,20 @@ class SupportWorkbenchServiceTest {
         var personal=new ReadScope(7L,ReadMode.PERSONAL,null,null);
         when(ownership.customerQueryScope(20L)).thenReturn(personal);
         assertThat(map(service.detail(20L).get("scope"))).containsEntry("mode","PERSONAL");
+    }
+
+    @Test void customerDetailEntersReadOnlyRepeatableReadAfterActivityCheckpoint() {
+        setup(new SupportRules(1L,30,7,7,"UNCONFIGURED",null),0);
+        when(ownership.customerQueryScope(20L)).thenReturn(new ReadScope(7L,ReadMode.PERSONAL,null,null));
+        service.detail(20L);
+        var definition=ArgumentCaptor.forClass(TransactionDefinition.class);
+        var order=inOrder(ownership,activity,transactions);
+        order.verify(ownership).customerQueryScope(20L);
+        order.verify(activity).checkpoint();
+        order.verify(transactions).getTransaction(definition.capture());
+        order.verify(ownership).customerQueryScope(20L);
+        assertThat(definition.getValue().isReadOnly()).isTrue();
+        assertThat(definition.getValue().getIsolationLevel()).isEqualTo(TransactionDefinition.ISOLATION_REPEATABLE_READ);
     }
 
     @Test void historicalPerformanceUsesEventAgentScopeAndPreservesTransferredCustomerHistory() throws Exception {

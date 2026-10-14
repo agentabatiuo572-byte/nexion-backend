@@ -4,10 +4,12 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.content.application.SupportMaintenanceService;
 import ffdd.opsconsole.content.application.SupportWorkbenchService;
 import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
+import ffdd.opsconsole.content.application.SupportOwnershipService;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
 import ffdd.opsconsole.content.dto.SupportMaintenancePreferenceRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.user.application.OpsUser360Service;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -20,18 +22,15 @@ public class SupportWorkbenchController {
     private final ProductionSupportPathGuard productionPathGuard;
     private final ffdd.opsconsole.content.application.SupportCustomerProfileService profiles;
     private final ffdd.opsconsole.content.application.SupportAnalyticsPrivateQueryService analytics;
+    private final SupportOwnershipService ownership;
+    private final OpsUser360Service user360;
 
-    /** Existing four-argument construction remains compatible with legacy endpoint tests. */
-    public SupportWorkbenchController(SupportWorkbenchService workbench,SupportMaintenanceService maintenance,
-            ProductionSupportPathGuard productionPathGuard,ffdd.opsconsole.content.application.SupportCustomerProfileService profiles) {
-        this(workbench,maintenance,productionPathGuard,profiles,null);
-    }
-    @org.springframework.beans.factory.annotation.Autowired
     public SupportWorkbenchController(SupportWorkbenchService workbench,SupportMaintenanceService maintenance,
             ProductionSupportPathGuard productionPathGuard,ffdd.opsconsole.content.application.SupportCustomerProfileService profiles,
-            ffdd.opsconsole.content.application.SupportAnalyticsPrivateQueryService analytics) {
+            ffdd.opsconsole.content.application.SupportAnalyticsPrivateQueryService analytics,
+            SupportOwnershipService ownership,OpsUser360Service user360) {
         this.workbench=workbench;this.maintenance=maintenance;this.productionPathGuard=productionPathGuard;
-        this.profiles=profiles;this.analytics=analytics;
+        this.profiles=profiles;this.analytics=analytics;this.ownership=ownership;this.user360=user360;
     }
 
     @GetMapping("/analytics")
@@ -58,6 +57,14 @@ public class SupportWorkbenchController {
     public ApiResult<Map<String,Object>> detail(@PathVariable Long customerId) {
         productionPathGuard.requireOpsWriteAllowed();
         return ApiResult.ok(workbench.detail(customerId));
+    }
+    @GetMapping("/customers/{customerId}/full-profile")
+    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
+    public ApiResult<Map<String,Object>> fullProfile(@PathVariable Long customerId) {
+        productionPathGuard.requireOpsWriteAllowed();
+        SupportWorkbenchService.requireSafeId(customerId);
+        ownership.requireRead(customerId);
+        return user360.detail(customerId);
     }
     @GetMapping("/customers/{customerId}/flows")
     @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")

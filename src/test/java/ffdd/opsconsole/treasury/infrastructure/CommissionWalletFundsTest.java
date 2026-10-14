@@ -29,7 +29,8 @@ class CommissionWalletFundsTest {
     private static final BigDecimal AMOUNT = new BigDecimal("2.500000");
     private final TreasuryLedgerMapper mapper = mock(TreasuryLedgerMapper.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
-    private final MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox);
+    private final ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade capture = mock(ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade.class);
+    private final MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper, outbox, capture);
     private final Map<String, WalletLedgerEntity> ledger = new HashMap<>();
     private BigDecimal wallet = new BigDecimal("10.000000");
     private String status = "UNLOCKED";
@@ -82,6 +83,9 @@ class CommissionWalletFundsTest {
         assertThat(ledger.get("F5-COMMISSION-71-REVERSE:OUT").getBalanceAfter()).isEqualByComparingTo(wallet);
         verify(mapper, times(1)).adjustCommissionWallet(USER, asset, AMOUNT.negate());
         verify(outbox, times(2)).publish(eq("WALLET_LEDGER"), anyString(), eq("wallet.ledger_posted"), any());
+        verify(capture,times(1)).begin(USER,EVENT,"RELEASE");
+        verify(capture,times(1)).begin(USER,EVENT,"REVERSE");
+        verify(capture,times(2)).recorded(any());
     }
 
     @ParameterizedTest
@@ -104,6 +108,7 @@ class CommissionWalletFundsTest {
         assertThat(ledger).isEmpty();
         assertThat(pendingAccrual).isFalse();
         verify(mapper, never()).lockCommissionWallet(any(), anyString());
+        org.mockito.Mockito.verifyNoInteractions(capture);
     }
 
     @Test
@@ -117,6 +122,7 @@ class CommissionWalletFundsTest {
         assertThat(wallet).isEqualByComparingTo("1");
         assertThat(ledger).hasSize(1);
         verify(mapper, never()).adjustCommissionWallet(USER, "USDT", AMOUNT.negate());
+        verify(capture,never()).begin(USER,EVENT,"REVERSE");
     }
 
     @Test

@@ -25,13 +25,41 @@ import org.mockito.InOrder;
 import org.springframework.core.env.Environment;
 
 class G2ExchangeQueueBatchServiceTest {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"USDT","NEX"})
+    void geoCancelReturnsReservedSourceBeforeBindingForBothAssets(String asset){
+        when(mapper.lockQueuedBatch(1)).thenReturn(List.of(new AppExchangeMapper.QueuedRow(8L,"EX-GEO-HELD",asset,BigDecimal.TEN)));
+        when(mapper.lockActiveUserNo(8L)).thenReturn("U00000008");
+        when(mapper.lockWalletGate(8L)).thenReturn(new AppExchangeMapper.WalletGateRow(new BigDecimal("100"),new BigDecimal("100"),"KP"));
+        when(mapper.geoBlocked("KP")).thenReturn(1);when(mapper.cancelQueuedBySystem("EX-GEO-HELD")).thenReturn(1);when(mapper.sourceReservationExists("EX-GEO-HELD")).thenReturn(1);when(mapper.applyWalletDelta(eq(8L),any(),any())).thenReturn(1);when(mapper.insertLedger(any())).thenReturn(1);
+        assertThat(service.process(1)).containsEntry("skippedCount",1);
+        var ordered=inOrder(mapper,exchangeFunds);ordered.verify(exchangeFunds).begin(8L,"EX-GEO-HELD");ordered.verify(mapper).cancelQueuedBySystem("EX-GEO-HELD");
+        ordered.verify(mapper).applyWalletDelta(8L,"USDT".equals(asset)?BigDecimal.TEN:BigDecimal.ZERO,"NEX".equals(asset)?BigDecimal.TEN:BigDecimal.ZERO);
+        var ledger=org.mockito.ArgumentCaptor.forClass(AppExchangeMapper.LedgerWrite.class);ordered.verify(mapper).insertLedger(ledger.capture());
+        assertThat(ledger.getValue().bizNo()).isEqualTo("EX-GEO-HELD-REFUND");assertThat(ledger.getValue().asset()).isEqualTo(asset);assertThat(ledger.getValue().amount()).isEqualByComparingTo("10");assertThat(ledger.getValue().balanceAfter()).isEqualByComparingTo("110");
+        ordered.verify(exchangeFunds).recorded(any(),eq("EX-GEO-HELD"),eq("CANCEL"),eq(BigDecimal.ZERO));
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"USDT","NEX"})
+    void reservedCompletionCreditsOnlyTargetAndBindsAfterOriginalLedger(String asset){
+        when(mapper.lockQueuedBatch(1)).thenReturn(List.of(new AppExchangeMapper.QueuedRow(8L,"EX-COMPLETE-HELD",asset,BigDecimal.TEN)));
+        when(mapper.lockActiveUserNo(8L)).thenReturn("U00000008");when(mapper.lockWalletGate(8L)).thenReturn(new AppExchangeMapper.WalletGateRow(new BigDecimal("100"),new BigDecimal("100"),"VN"));
+        when(mapper.sourceReservationExists("EX-COMPLETE-HELD")).thenReturn(1);when(mapper.applyWalletDelta(eq(8L),any(),any())).thenReturn(1);when(mapper.completeQueued(anyString(),any(),any())).thenReturn(1);when(mapper.insertLedger(any())).thenReturn(1);when(mapper.userAttribution(8L)).thenReturn(new AppExchangeMapper.UserAttribution("P1",1,"2026-W32"));
+        assertThat(service.process(1)).containsEntry("completedCount",1);
+        var ordered=inOrder(mapper,exchangeFunds);ordered.verify(exchangeFunds).begin(8L,"EX-COMPLETE-HELD");
+        ordered.verify(mapper).applyWalletDelta(eq(8L),org.mockito.ArgumentMatchers.argThat(v->v.compareTo("USDT".equals(asset)?BigDecimal.ZERO:BigDecimal.TEN)==0),org.mockito.ArgumentMatchers.argThat(v->v.compareTo("NEX".equals(asset)?BigDecimal.ZERO:BigDecimal.TEN)==0));
+        ordered.verify(mapper).completeQueued(eq("EX-COMPLETE-HELD"),any(),any());
+        var ledger=org.mockito.ArgumentCaptor.forClass(AppExchangeMapper.LedgerWrite.class);ordered.verify(mapper).insertLedger(ledger.capture());assertThat(ledger.getValue().bizNo()).isEqualTo("EX-COMPLETE-HELD-IN");assertThat(ledger.getValue().direction()).isEqualTo("IN");
+        verify(mapper,org.mockito.Mockito.times(1)).insertLedger(any());ordered.verify(exchangeFunds).recorded(any(),eq("EX-COMPLETE-HELD"),eq("COMPLETE"),eq(BigDecimal.ZERO));
+    }
     private final AppExchangeMapper mapper = mock(AppExchangeMapper.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final G2ExchangeFeeAllocationService feeAllocation = mock(G2ExchangeFeeAllocationService.class);
     private final Environment environment = mock(Environment.class);
+    private final SupportExchangeFundAdapter exchangeFunds=mock(SupportExchangeFundAdapter.class);
     private final G2ExchangeQueueBatchService service =
-            new G2ExchangeQueueBatchService(mapper, config, outbox, feeAllocation, environment);
+            new G2ExchangeQueueBatchService(mapper, config, outbox, feeAllocation, environment,exchangeFunds);
 
     @BeforeEach
     void setUp() {
@@ -99,6 +127,11 @@ class G2ExchangeQueueBatchServiceTest {
         capOrder.verify(mapper).lockExchangeExecutionMutex();
         capOrder.verify(mapper).platformTodayUsdt();
         capOrder.verify(mapper).applyWalletDelta(any(), any(), any());
+        var bindings=inOrder(mapper,exchangeFunds);
+        bindings.verify(exchangeFunds).begin(1L,"EX-1");
+        bindings.verify(mapper).applyWalletDelta(eq(1L),any(),any());
+        bindings.verify(exchangeFunds).recorded(any(),eq("EX-1"),eq("COMPLETE"),eq(BigDecimal.ZERO));
+        verify(exchangeFunds,never()).recorded(any(),eq("EX-3"),anyString(),any());
     }
 
     @Test
@@ -149,6 +182,10 @@ class G2ExchangeQueueBatchServiceTest {
         verify(mapper).cancelQueuedBySystem("EX-GEO");
         verify(mapper, never()).applyWalletDelta(any(), any(), any());
         verify(mapper, never()).insertLedger(any());
+        var bindings=inOrder(mapper,exchangeFunds);
+        bindings.verify(exchangeFunds).begin(8L,"EX-GEO");
+        bindings.verify(mapper).cancelQueuedBySystem("EX-GEO");
+        bindings.verify(exchangeFunds).recorded(any(),eq("EX-GEO"),eq("CANCEL"),eq(BigDecimal.ZERO));
     }
 
     @Test

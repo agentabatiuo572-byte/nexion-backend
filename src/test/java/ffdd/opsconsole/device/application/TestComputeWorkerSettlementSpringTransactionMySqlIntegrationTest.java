@@ -550,7 +550,11 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         var outbox=new EventOutboxService(controlled(EventOutboxMapper.class,session.getMapper(EventOutboxMapper.class)),json,new OutboxProperties(),mock(A4RuntimePolicyService.class));
         var proof=mock(ComputeTaskProofVerifier.class);when(proof.sourceEnvironment()).thenReturn("PRODUCTION");
         worker=transactional(new TestComputeWorkerService(mapper,audit,businessClock,env));
-        var target=new AppTaskAssignmentService(mapper,idempotency,outbox,audit,proof,env,businessClock,worker);
+        var target=new AppTaskAssignmentService(mapper,idempotency,outbox,audit,proof,env,businessClock,worker,
+            new SupportDeviceFundAdapter(new ffdd.opsconsole.finance.application.SupportFundJournalBindingService(
+                session.getMapper(ffdd.opsconsole.finance.mapper.SupportFundJournalMapper.class),source,json),
+                session.getMapper(ffdd.opsconsole.device.mapper.SupportDeviceReadMapper.class),
+                new SupportDeviceReadService(session.getMapper(ffdd.opsconsole.device.mapper.SupportDeviceReadMapper.class)),json));
         app=transactional(target);
         grant=continuous ? worker.continuousGrant(continuousIdentity(),taskNo,INSTANT.minusSeconds(10).toEpochMilli(),INSTANT.plusSeconds(86400).toEpochMilli())
                 : worker.authenticate("Bearer "+TestComputeWorkerServiceTest.TOKEN);

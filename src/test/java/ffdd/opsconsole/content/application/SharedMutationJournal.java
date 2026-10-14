@@ -43,7 +43,7 @@ public final class SharedMutationJournal {
     }
     private static String env(String key) { return Objects.requireNonNull(System.getenv(key), key); }
     private static String sha(Path path) throws Exception {
-        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
+        return SupportAnalyticsSnapshot.fileHash(path);
     }
     private static Map<String,Object> reference(Path path) throws Exception {
         return Map.of("path", path.toAbsolutePath().toString(), "sha256", sha(path));
@@ -259,7 +259,7 @@ public final class SharedMutationJournal {
         try{
             JsonNode ctx=context();Path dir=Path.of(env("CS_ENHANCE_EVIDENCE_DIR"),"shared-mutations");var events=new ArrayList<JsonNode>();
             Path baseline=Path.of(ctx.path("phaseSharedBefore").path("path").asText());require(sha(baseline).equals(ctx.path("phaseSharedBefore").path("sha256").asText()),"Original phase baseline changed");
-            JsonNode before=JSON.readTree(baseline.toFile());var originals=new ArrayList<JsonNode>();for(JsonNode value:before.path("tables").path("nx_admin_role_permission").path("rows"))if(value.path("id").asText().equals(Long.toString(id)))originals.add(value);require(originals.size()==1,"Exactly one original phase permission row required");
+            JsonNode before=JSON.readTree(baseline.toFile());var originals=new ArrayList<JsonNode>();for(JsonNode value:SupportAnalyticsSnapshot.requiredRows(before,"nx_admin_role_permission"))if(value.path("id").asText().equals(Long.toString(id)))originals.add(value);require(originals.size()==1,"Exactly one original phase permission row required");
             var intents=new LinkedHashMap<String,JsonNode>();var outcomes=new LinkedHashMap<String,JsonNode>();
             if(directoryPresent(dir))try(var files=Files.list(dir)){for(Path file:files.filter(p->p.getFileName().toString().endsWith(".json")).toList()){
                 JsonNode event=JSON.readTree(file.toFile());if(!event.path("table").asText().equals("nx_admin_role_permission")||!event.path("rowId").asText().equals(Long.toString(id))||!event.path("run").asText().equals(run))continue;

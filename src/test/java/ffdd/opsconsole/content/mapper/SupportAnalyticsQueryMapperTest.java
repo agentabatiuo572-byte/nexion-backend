@@ -41,6 +41,16 @@ class SupportAnalyticsQueryMapperTest {
         assertThat(source("activityIdentityRows")).contains("e.id eventId","e.seq","e.source_ref","e.occurred_at&lt;=#{observedThroughAt}");
         for(String name:List.of("queryRules","activityIdentityRows","taskRows","pendingReplyRows"))assertThat(source(name).toUpperCase(Locale.ROOT)).doesNotContain("INSERT ","UPDATE ","DELETE ");
     }
+    @Test void customerCodeProjectionUsesTheExistingProfileIdentityWithoutChangingScopeOrBoundIds() {
+        String canonical=ffdd.opsconsole.user.mapper.UserOpsMapper.PROFILE_SELECT.lines()
+            .filter(line->line.trim().endsWith(" AS userNo,")).findFirst().orElseThrow().trim()
+            .replace(" AS userNo,"," customerNo,").replace("u.id","scope_customer.id");
+        for(ReadMode mode:ReadMode.values()) {
+            String query=sql("rootDisplayRows",mode,List.of(100L));
+            assertThat(query).contains(canonical,"scope_customer.sandbox=0","scope_customer.id IN");
+            assertThat(sql("rootDisplayRows",mode,List.of())).contains("(NULL)");
+        }
+    }
     @Test void managedGuardStaysOwnedGroupAndNoGroupsNeverFallsBackToAll() {
         assertThat(sql("currentGrantedGroupIds",ReadMode.MANAGED,List.of())).contains("supervisor_admin_id=?","FOR SHARE");
         assertThat(sql("currentGrantedGroupIds",ReadMode.PERSONAL,List.of())).contains("1=0");

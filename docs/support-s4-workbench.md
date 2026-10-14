@@ -4,12 +4,13 @@
 
 ## 查询与快照
 
-`GET /overview` 与 `GET /customers` 返回相同结构。参数：`agentId?`、`filter=ALL`、`keyword?`、`pageNum=1`、`pageSize=20`、`from?`、`to?`。普通顾问只能本人，主管可省略 agentId 审阅全体或显式选择顾问；页面 1 起、每页 1–100 条。过滤为 ALL/WINDOW_ACTIVE/ACTIVE/DORMANT/UNKNOWN/DUE/WAITING_REPLY/FIRST_CONTACT/STOPPED/TODO。
+`GET /overview` 与 `GET /customers` 返回相同结构。参数：`mode?`、`groupId?`、`agentId?`、`filter=ALL`、`keyword?`、`pageNum=1`、`pageSize=20`、`from?`、`to?`。PERSONAL 为本人合法绑定，MANAGED 为当前负责组，ALL 仅总管理员；省略 mode 时按当前资格选择默认范围。页面 1 起、每页 1–100 条。过滤为 ALL/WINDOW_ACTIVE/ACTIVE/DORMANT/UNKNOWN/DUE/WAITING_REPLY/FIRST_CONTACT/STOPPED/TODO。
 
 ```text
 data = {
   snapshotId, evaluatedAt, rulesVersion,
-  scope: {actorId, agentAdminId: number|null, mode: AGENT|SUPERVISOR_ALL},
+  scope: {actorId, agentAdminId: number|null, groupId: number|null,
+          mode: PERSONAL|MANAGED|ALL, availableModes: (PERSONAL|MANAGED|ALL)[]},
   rules: {dormantDays, maintenanceDays, activityWindowDays,
           dormantAvailable, dueAvailable, windowActiveAvailable},
   overview: {boundTotal, activeTotal, knownActiveCount, unknownWindowCount,
@@ -24,6 +25,8 @@ data = {
 ```
 
 **S5 必须原子替换同响应的 overview 与 customers。** 搜索、翻页或点击指标均重新使用这一个响应；不能保留另一请求的指标并宣称与新名单同一快照。snapshotId 是该响应标識，不是可重用查询令牌。统计与页记录在同一个数据库 REPEATABLE_READ 快照内计算，SQL 先授权与筛选再分页。
+
+availableModes 仅描述当前账号实际可读的独立范围，不是后续授权凭证。每次列表、对象及写操作仍校验当前权限。兼任主管的会话收件箱可按明确获准的 MANAGED 与 PERSONAL 分别读取并按会话号去重；纯主管不请求 PERSONAL，ALL 不重复合并。范围读取失败或撤权不得保留旧名单或降级猜测权限。
 
 evaluatedAt 是已持久活动水位，也是活动/到期标签计算的时间锚；它不是所有可变表的 AS OF 历史回放承诺。归属、偏好、首次联系、维护执行/周期为该次数据库快照事实，因此水位之后刚提交的联系事实仍可见。活动只取水位内有效事件；其后刚成功的维护周期可能已在详情可见，而活动标签需下次水位刷新。绩效也只计水位内事件。
 

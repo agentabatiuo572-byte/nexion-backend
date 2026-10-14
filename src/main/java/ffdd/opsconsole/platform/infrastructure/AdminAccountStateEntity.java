@@ -20,4 +20,5 @@ public class AdminAccountStateEntity extends BaseEntity {
     private String credentialDeliveryStatus;
     private String avatarAssetId;
     private Long avatarVersion;
+    private String avatarGender;
 }

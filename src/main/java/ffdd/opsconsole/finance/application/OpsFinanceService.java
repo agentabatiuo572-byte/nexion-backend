@@ -123,6 +123,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
     private final RiskDisclosureGateFacade disclosureGateFacade;
     private final TreasuryLedgerRepository treasuryLedgerRepository;
+    private final WithdrawalPayoutFinalizer withdrawalPayoutFinalizer;
+    private final SupportWithdrawalFundSourceService withdrawalFunds;
     private final EventOutboxService eventOutboxService;
     private final AdminOperatorRoleResolver operatorRoleResolver;
     private final AppWithdrawalMapper appWithdrawalMapper;
@@ -864,16 +866,20 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (withdrawalRepository.chainTxHashUsedByOtherWithdrawal(withdrawalNo, chainTxHash)) {
             return ApiResult.fail(409, "WITHDRAWAL_CHAIN_TX_HASH_ALREADY_USED");
         }
-        LocalDateTime confirmedAt = LocalDateTime.now(clock);
+        LocalDateTime confirmedAt = LocalDateTime.now(clock).withNano(0);
+        withdrawalPayoutFinalizer.lockCashCustomer(order.userId());
         if (!withdrawalRepository.confirmSent(
                 withdrawalNo, order.status(), chainTxHash, confirmedAt)) {
             return ApiResult.fail(409, "WITHDRAWAL_STATE_CONFLICT");
         }
+        boolean cashSettled = withdrawalPayoutFinalizer.settleManualConfirmation(
+                withdrawalNo,order.userId(),order.amount(),order.nexBurned(),confirmedAt);
         Map<String, Object> detail = linked(
                 "from", D2WithdrawalStateMachine.canonical(order.status()),
                 "to", D2WithdrawalStateMachine.CONFIRMED,
                 "chainTxHash", chainTxHash,
                 "confirmedAt", confirmedAt,
+                "cashSettlement", cashSettled ? "SETTLED" : "UNKNOWN",
                 "reason", reason);
         auditRequired(
                 "D2_WITHDRAWAL_CHAIN_CONFIRMED",
@@ -895,9 +901,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                         "operator", operator,
                         "reason", reason));
         WithdrawalOrderView updated = withdrawalRepository.findByWithdrawalNo(withdrawalNo).orElse(null);
-        return updated == null
-                ? ApiResult.fail(409, "WITHDRAWAL_RELOAD_FAILED")
-                : ApiResult.ok(updated);
+        if(updated==null) throw new ffdd.opsconsole.shared.exception.BizException(409,"WITHDRAWAL_RELOAD_FAILED");
+        return ApiResult.ok(updated);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -1093,6 +1098,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         String owner = Set.of("DELAY", "FREEZE").contains(action) ? request.owner().trim() : null;
         String period = "FREEZE".equals(action) ? request.period().trim().toUpperCase(Locale.ROOT) : null;
         String previousStatus = "FREEZE".equals(action) ? D2WithdrawalStateMachine.canonical(order.status()) : null;
+        if (Set.of("REJECT", "REFUND").contains(action)) {
+            withdrawalPayoutFinalizer.lockCashCustomer(order.userId());
+            if (!withdrawalFunds.hasCashReservation(order.withdrawalNo(),order.userId(),order.amount(),order.nexBurned()))
+                return ApiResult.fail(409,"该笔提现的预留资金尚未核实，请复核后重试");
+        }
         if ("REJECT".equals(action)) {
             if (!withdrawalRepository.transitionStatusWithLifecycle(
                     order.withdrawalNo(), order.status(), D2WithdrawalStateMachine.REVIEW_REJECTED,
@@ -1104,9 +1114,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                             "to", D2WithdrawalStateMachine.REVIEW_REJECTED,
                             "reasonCode", request.reasonCode().trim(), "reason", request.reason().trim()));
             publishD2Event(order, "withdraw.rejected", D2WithdrawalStateMachine.REVIEW_REJECTED, request.reason().trim(), request);
+            var returnBefore = withdrawalFunds.begin(order.userId());
             treasuryLedgerRepository.refundWithdrawal(
                     order.withdrawalNo(), order.userId(), order.amount(), order.asset(),
                     order.nexBurned(), request.reason().trim());
+            withdrawalFunds.returned(returnBefore,order.withdrawalNo());
             if ("BANK-VND".equals(order.chain()))
                 treasuryLedgerRepository.reverseLegacyBankWithdrawalReserve(
                         order.withdrawalNo(), order.amount(), LocalDateTime.now(clock));
@@ -1133,14 +1145,16 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                         order.withdrawalNo(), order.amount(), request.reason().trim(), authenticatedOperator, idempotencyKey);
         }
         if ("REFUND".equals(action)) {
+            var returnBefore = withdrawalFunds.begin(order.userId());
             treasuryLedgerRepository.refundWithdrawal(
                     order.withdrawalNo(), order.userId(), order.amount(), order.asset(),
                     order.nexBurned(), request.reason().trim());
+            withdrawalFunds.returned(returnBefore,order.withdrawalNo());
         }
         WithdrawalOrderView updated = withdrawalRepository.findByWithdrawalNo(order.withdrawalNo())
                 .orElse(null);
         if (updated == null) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "WITHDRAWAL_RELOAD_FAILED");
+            throw new ffdd.opsconsole.shared.exception.BizException(409,"WITHDRAWAL_RELOAD_FAILED");
         }
         Map<String, Object> detail = withdrawalReviewAuditDetail(
                 order, newStatus, dailyLimitCount, request.reason().trim(), idempotencyKey.trim());

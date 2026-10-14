@@ -62,6 +62,8 @@ class E4OrderRefundSettlementFacadeAdapterTest {
         verify(mapper).markPaymentRefunded("OD-7", 7L);
         org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
         var sequence=org.mockito.Mockito.inOrder(mapper,capture);
+        sequence.verify(mapper).lockWallet(7L);
+        sequence.verify(capture).beforeCash(org.mockito.ArgumentMatchers.any(Prepared.class));
         sequence.verify(mapper).updateWallet(7L,new BigDecimal("130.000000"),new BigDecimal("50.000000"),3L);
         sequence.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),eq(new BigDecimal("30.000000")),eq(new BigDecimal("130.000000")),anyString());
         sequence.verify(mapper).insertBill(7L,"E4-BILL-OD-7",new BigDecimal("30.000000"));

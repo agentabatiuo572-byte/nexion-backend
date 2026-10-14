@@ -334,9 +334,8 @@ public class AppBundleOrderService {
         }
         outbox.publishUserEvent("ORDER", orderNo, "checkout.started", userId,
                 normalizePhase(attribution.phase()), attribution.accountAgeMonths(), attribution.cohort(),
-                linked("userId", userId, "orderId", orderNo, "orderType", "BUNDLE",
-                        "productNos", products.stream().map(AppBundleOrderMapper.ProductRow::productNo).toList(),
-                        "itemCount", itemCount, "quantity", quantity, "amountUsdt", amount));
+                linked("userId", userId, "orderId", orderNo, "productId", products.get(0).id(),
+                        "quantity", quantity, "amountUsdt", amount));
         Map<String, Object> receipt = linked("orderNo", orderNo, "orderType", "BUNDLE", "itemCount", itemCount,
                 "quantity", quantity,
                 "productNos", products.stream().map(AppBundleOrderMapper.ProductRow::productNo).toList(),

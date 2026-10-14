@@ -11,13 +11,20 @@ class SupportLeaderboardMapperTest {
     private static String sql(String name) {try {return String.join(" ",SupportLeaderboardMapper.class.getMethod(name).getAnnotation(Select.class).value()).toUpperCase(Locale.ROOT);} catch(ReflectiveOperationException e) {throw new AssertionError(e);}}
     @Test void actualMyBatisBuildsAllReadStatementsWithoutPrivateScopeOrPaging() {
         var configuration=new Configuration();configuration.addMapper(SupportLeaderboardMapper.class);
-        for(String name:List.of("nowUtc","accounts","qualifications","memberships","groups","currentBindings","productionCustomers","attributions","attributionProofs")) {
+        for(String name:List.of("nowUtc","qualificationCutoverUtc","accounts","qualifications","memberships","groups","currentBindings","productionCustomers","attributions","attributionProofs")) {
             var statement=configuration.getMappedStatement(SupportLeaderboardMapper.class.getName()+"."+name);
             assertEquals(SqlCommandType.SELECT,statement.getSqlCommandType());var bound=statement.getBoundSql(null);
             assertTrue(bound.getParameterMappings().isEmpty());assertTrue(bound.getSql().strip().startsWith("SELECT"));
             assertFalse(sql(name).contains(" LIMIT "));assertFalse(sql(name).contains("READSCOPE"));
             assertFalse(sql(name).contains("REQUESTEDAGENT"));assertFalse(sql(name).contains("CURRENTADMIN"));
         }
+    }
+    @Test void coverageUsesTheCommittedCutoverAndOnlyDedicatedAdvisorSupportProfiles() {
+        assertTrue(sql("qualificationCutoverUtc").contains("SELECT COMMITTED_AT FROM NX_SUPPORT_MIGRATION"));
+        assertTrue(sql("qualificationCutoverUtc").contains("ID='SUPPORT-GROUPS-20261007'"));
+        String service=sql("accounts").substring(sql("accounts").indexOf("CASE WHEN"));
+        assertTrue(service.contains("P.SEAT_TYPE='DEDICATED'"));assertTrue(service.contains("FIND_IN_SET('ADVISOR'"));
+        assertTrue(service.contains("R.ROLE_CODE='SUPPORT'"));assertFalse(service.contains("SUPER_ADMIN"));
     }
     @Test void sourcePreservesFullQualificationMembershipAndCanonicalProofTuples() {
         assertTrue(sql("qualifications").contains("QUALIFICATION_KIND='SERVICE'"));assertFalse(sql("qualifications").contains("ENDS_AT IS NULL"));

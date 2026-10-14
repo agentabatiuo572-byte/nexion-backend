@@ -23,7 +23,7 @@ class IndependentUnknownHistoryRegressionTest {
     final AdminIdempotencyService keys=mock(AdminIdempotencyService.class);
     final AuditLogService audit=mock(AuditLogService.class);
     final org.springframework.context.ApplicationEventPublisher events=mock(org.springframework.context.ApplicationEventPublisher.class);
-    final SupportGroupService service=new SupportGroupService(mapper,ownership,keys,audit,events);
+    final SupportGroupService service=new SupportGroupService(mapper,ownership,keys,audit,events,mock(ffdd.opsconsole.content.mapper.SupportAgentMapper.class));
     final LocalDateTime at=LocalDateTime.of(2026,10,9,0,0);
     final ReadScope all=new ReadScope(1L,ReadMode.ALL,null,null);
     final String reason="independent required reason";

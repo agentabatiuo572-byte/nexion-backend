@@ -70,7 +70,8 @@ public class SupportLeaderboardPublicationService {
         Publication publication = decode(stored);
         // A verified legacy snapshot needs a fresh source read; it is never a fallback for the new policy.
         if (expectedVersion == null && current.definitionVersion().equals(SupportLeaderboardPolicy.DEFINITION)
-                && "support-leaderboard-v1".equals(publication.snapshot().context().definitionVersion())) return null;
+                && Set.of("support-leaderboard-v1","support-leaderboard-v2-deposit-no-refund")
+                    .contains(publication.snapshot().context().definitionVersion())) return null;
         if (!sameViewIdentity(current,publication.snapshot().context())
                 || expectedVersion != null && !expectedVersion.equals(publication.snapshot().viewVersion()))
             throw new BizException(409,"SUPPORT_LEADERBOARD_VERSION_CHANGED");

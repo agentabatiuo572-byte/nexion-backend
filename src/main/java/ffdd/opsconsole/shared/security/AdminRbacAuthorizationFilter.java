@@ -159,7 +159,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         }
         boolean reasonPolicyRead = HttpMethod.GET.matches(request.getMethod())
                 && "/api/admin/platform/audit/reason-policy".equals(path);
-        if ((reasonPolicyRead || "/api/admin/auth/activity".equals(path))
+        boolean selfAvatarRequest = isSelfAvatarRequest(path, request.getMethod());
+        if ((reasonPolicyRead || selfAvatarRequest || "/api/admin/auth/activity".equals(path))
                 && !isTrustedAuthenticatedAdmin(authentication)) {
             auditDenial(request, authentication, "ADMIN_SUBJECT_REQUIRED", null);
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_SUBJECT_REQUIRED");
@@ -170,7 +171,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_PASSWORD_CHANGE_REQUIRED");
             return;
         }
-        if (reasonPolicyRead) {
+        if (reasonPolicyRead || selfAvatarRequest) {
             filterChain.doFilter(request, response);
             return;
         }
@@ -212,6 +213,18 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         } catch (NumberFormatException ex) {
             return false;
         }
+    }
+
+    // The self service checks active eligibility and asset ownership; A1 account access stays separate.
+    private boolean isSelfAvatarRequest(String path, String method) {
+        String self = "/api/admin/platform/accounts/self/avatar";
+        String assets = "/api/admin/platform/accounts/self/avatar-assets";
+        boolean asset = pathMatcher.match(assets + "/*", path);
+        boolean read = HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
+        return read && (path.equals(self) || path.equals(self + "/content") || asset)
+                || HttpMethod.PATCH.matches(method) && path.equals(self)
+                || HttpMethod.POST.matches(method) && (path.equals(assets) || path.equals(assets + "/default"))
+                || HttpMethod.DELETE.matches(method) && asset;
     }
 
     private boolean matchesAnyAdminPath(String path) {

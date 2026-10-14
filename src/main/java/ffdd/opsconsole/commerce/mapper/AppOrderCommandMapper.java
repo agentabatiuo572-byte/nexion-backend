@@ -427,7 +427,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                    COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'NexGrid accelerator'),
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
                    CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
-                        ELSE CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) END,
+                         ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
                    COALESCE(NULLIF(s.datacenter,''),'NexGrid DC'),
                    CASE WHEN o.quantity > 0 THEN o.amount_usdt/o.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
@@ -441,8 +441,8 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                AND o.payment_status='PAID' AND o.order_status='COMPLETED'
                AND o.activation_status='ACTIVATED' AND #{unitIndex} >= 0 AND #{unitIndex} < o.quantity
                AND (UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') OR
-                    (TRIM(s.power_text) REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'
-                     AND CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) > 0))
+                     (UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP)?)?\\\\z'
+                      AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0))
             """)
     int insertDevelopmentDevice(@Param("orderNo") String orderNo,
                                 @Param("userId") Long userId,
@@ -460,7 +460,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                    COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'NexGrid accelerator'),
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
                    CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
-                        ELSE CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) END,
+                         ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
                    COALESCE(NULLIF(s.datacenter,''),'NexGrid DC'),
                    CASE WHEN oi.quantity > 0 THEN oi.line_amount_usdt/oi.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
@@ -476,8 +476,8 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                AND o.is_deleted=0 AND o.payment_status='PAID' AND o.order_status='COMPLETED'
                AND o.activation_status='ACTIVATED'
                AND (UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') OR
-                    (TRIM(s.power_text) REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'
-                     AND CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) > 0))
+                     (UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP)?)?\\\\z'
+                      AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0))
             """)
     int insertWalletDevice(@Param("orderNo") String orderNo,
                            @Param("userId") Long userId,

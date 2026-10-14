@@ -20,6 +20,9 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DuplicateKeyException;
@@ -76,7 +79,7 @@ class SupportPaymentAttributionServiceTest {
     }
     private Prepared prepare() { return service.prepare(11L,Source.WALLET_ORDER,"O-11"); }
     private Prepared ready(Prepared prepared) {
-        if(!before.oldSource())service.insertLedger(prepared,new BigDecimal("12.345678"),BigDecimal.TEN,"paid");
+        if(!before.oldSource()) {service.beforeCash(prepared);service.insertLedger(prepared,new BigDecimal("12.345678"),BigDecimal.TEN,"paid");}
         return prepared;
     }
     private Prepared paidPrepared() { return ready(prepare()); }
@@ -91,9 +94,52 @@ class SupportPaymentAttributionServiceTest {
         order.verify(mapper).members(20L);order.verify(mapper).owners(7L);
         order.verify(mapper).qualifications(10L);order.verify(mapper).qualifications(20L);
         order.verify(mapper).databaseUtc();order.verify(finance).beforeSource(11L,Source.WALLET_ORDER,"O-11",null);
+        order.verify(finance).beforeCash(before);
         order.verify(finance).insertFreshPaymentLedger(before,new BigDecimal("12.345678"),BigDecimal.TEN,"paid");
         order.verify(finance).readSettled(before,receipt);
         assertThat(captured()).extracting(StoredRow::agentAdminId,StoredRow::groupId,StoredRow::ownerAdminId).containsExactly(20L,7L,10L);
+    }
+
+    @Test void prepareDoesNotStartCashAndTrialEntryIsOnlyForwardedAsAnObservation() {
+        var prepared=prepare();verify(finance,never()).beforeCash(any());
+        service.beforeCash(prepared);service.trialReward(prepared,"ER-observed");
+        var order=inOrder(finance);order.verify(finance).beforeCash(before);order.verify(finance).trialReward(before,"ER-observed");
+        verify(finance,never()).insertFreshPaymentLedger(any(),any(),any(),any());
+    }
+
+    @Test void invalidPreparedCannotTouchFinanceCashOrReward() {
+        var forged=mock(Prepared.class);
+        assertThatThrownBy(()->service.beforeCash(forged)).hasMessage("SUPPORT_PAYMENT_PREPARED_INVALID");
+        assertThatThrownBy(()->service.trialReward(forged,"ER-observed")).hasMessage("SUPPORT_PAYMENT_PREPARED_INVALID");
+        verifyNoInteractions(finance);
+    }
+    @Test void newAccountsWithInitialVersionAreAttributed() {
+        known();
+        when(mapper.lockAdmin(20L)).thenReturn(new Admin(20L,1,0L,0));
+        when(mapper.lockAdmin(10L)).thenReturn(new Admin(10L,1,0L,0));
+        service.record(paidPrepared());var row=captured();
+        assertThat(row).extracting(StoredRow::agentAdminId,StoredRow::groupId,StoredRow::ownerAdminId).containsExactly(20L,7L,10L);
+        assertThat(row).extracting(StoredRow::agentStatus,StoredRow::groupStatus,StoredRow::ownerStatus).containsExactly("KNOWN","KNOWN","KNOWN");
+    }
+    @ParameterizedTest @NullSource @ValueSource(longs=-1L)
+    void invalidAgentAccountVersionKeepsAllAttributionUnknown(Long version) {
+        known();when(mapper.lockAdmin(20L)).thenReturn(new Admin(20L,1,version,0));
+        service.record(paidPrepared());var row=captured();
+        assertThat(row).extracting(StoredRow::agentAdminId,StoredRow::groupId,StoredRow::ownerAdminId).containsOnlyNulls();
+        assertThat(row).extracting(StoredRow::agentStatus,StoredRow::groupStatus,StoredRow::ownerStatus).containsExactly("UNKNOWN","UNKNOWN","UNKNOWN");
+    }
+    @ParameterizedTest @NullSource @ValueSource(longs=-1L)
+    void invalidSupervisorAccountVersionKeepsProvenAgentAndGroup(Long version) {
+        known();when(mapper.lockAdmin(10L)).thenReturn(new Admin(10L,1,version,0));
+        service.record(paidPrepared());var row=captured();
+        assertThat(row).extracting(StoredRow::agentAdminId,StoredRow::groupId,StoredRow::ownerAdminId).containsExactly(20L,7L,null);
+        assertThat(row).extracting(StoredRow::agentStatus,StoredRow::groupStatus,StoredRow::ownerStatus).containsExactly("KNOWN","KNOWN","UNKNOWN");
+    }
+    @Test void accountIdentityMustMatchTheLockedAdmin() {
+        known();when(mapper.lockAdmin(20L)).thenReturn(new Admin(21L,1,0L,0));
+        service.record(paidPrepared());var row=captured();
+        assertThat(row).extracting(StoredRow::agentAdminId,StoredRow::groupId,StoredRow::ownerAdminId).containsOnlyNulls();
+        assertThat(row.agentStatus()).isEqualTo("UNKNOWN");
     }
     @Test void disabledQualificationAndAccountDoNotEraseAnExistingValidBinding() {
         known();when(mapper.lockAdmin(20L)).thenReturn(new Admin(20L,0,8L,1));

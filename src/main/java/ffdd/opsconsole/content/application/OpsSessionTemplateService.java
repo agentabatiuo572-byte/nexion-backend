@@ -53,7 +53,7 @@ public class OpsSessionTemplateService {
     private static final String CONFIG_GROUP = "content-session";
     private static final List<SessionCategorySeed> CATEGORY_SEEDS = List.of(
             new SessionCategorySeed("advisor", "专属客服", "conversations.roleAdvisor", true, "增长 / 客服坐席", false),
-            new SessionCategorySeed("support", "普通客服", "conversations.roleSupport", true, "客服坐席", false),
+            new SessionCategorySeed("support", "专属客服历史兼容", "conversations.roleSupport", false, "历史兼容", true),
             new SessionCategorySeed("ai", "Nova AI 顾问", "conversations.roleAi", true, "Nova 自动(配置见 I2)", true));
     private static final List<SessionSegmentField> SEGMENT_FIELDS = List.of(
             new SessionSegmentField("vrank", "V 等级", List.of(">=", "<=", "="), List.of("V0", "V1", "V2", "V3", "V4", "V5"), null),
@@ -125,7 +125,7 @@ public class OpsSessionTemplateService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_CATEGORY_ENABLED_REQUIRED");
         }
         String key = categoryKey(seed.type());
-        boolean current = "on".equalsIgnoreCase(configValueForUpdate(key, seed.enabled() ? "on" : "off"));
+        boolean current = ConversationCategoryPolicy.enabledValue(configValueForUpdate(key, seed.enabled() ? "on" : "off"));
         if (request.expectedEnabled() != null && request.expectedEnabled() != current) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SESSION_CATEGORY_STALE");
         }
@@ -483,7 +483,7 @@ public class OpsSessionTemplateService {
     }
 
     private SessionCategoryView categoryView(SessionCategorySeed seed) {
-        boolean enabled = "on".equalsIgnoreCase(configValue(categoryKey(seed.type()), seed.enabled() ? "on" : "off"));
+        boolean enabled = !"support".equals(seed.type()) && ConversationCategoryPolicy.enabled(configFacade, seed.type());
         return new SessionCategoryView(seed.type(), seed.name(), seed.roleKey(), enabled, seed.managedBy(), seed.readOnly());
     }
 

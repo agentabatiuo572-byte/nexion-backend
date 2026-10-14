@@ -67,6 +67,8 @@ class SupportObjectEvidenceLedgerTest {
     private List<Map<String,Object>> users=new ArrayList<>();
     private List<Map<String,Object>> attachments=new ArrayList<>(), attachmentCommands=new ArrayList<>(), bulkAssets=new ArrayList<>();
     private final Map<String,Object> currentAdmin=map("id",100L,"username","isolated-admin","created_at",CREATED);
+    private Map<String,Object> defaultTarget,defaultState,defaultReceipt,defaultTicket;
+    private SupportAttachmentService.Encoded defaultImage;
     private String currentKey="private/admin-avatar/"+UUID.randomUUID(), assetId=UUID.randomUUID().toString();
     private JdbcTemplate jdbc;
     private MinioClient minio;
@@ -144,7 +146,7 @@ class SupportObjectEvidenceLedgerTest {
     @AfterEach void closeSpringOnly() {if(spring!=null)spring.close();org.springframework.security.core.context.SecurityContextHolder.clearContext();assertThat(TransactionSynchronizationManager.isSynchronizationActive()).isFalse();}
 
     @ParameterizedTest @ValueSource(strings={"SupportAdminAvatarA2RuntimeTest","SupportEnhancementCoreRuntimeTest","SupportS4RuntimeTest",
-            "SupportAdminAvatarReadRuntimeTest","SupportAvatarCompensationRuntimeTest","SupportBulkRuntimeTest"})
+            "SupportAdminAvatarReadRuntimeTest","SupportAvatarCompensationRuntimeTest","SupportBulkRuntimeTest","SupportDefaultAvatarSelfRuntimeTest"})
     void eachActualTargetImportsTheSameConfigurationAndActualPostProcessorWrapsOneConcreteBean(String name) throws Exception {
         Class<?> target=Class.forName("ffdd.opsconsole.content.application."+name,false,getClass().getClassLoader());
         assertThat(target.getAnnotation(Import.class).value()).contains(SupportObjectEvidenceLedger.Configuration.class);
@@ -699,12 +701,118 @@ class SupportObjectEvidenceLedgerTest {
     private void rewriteAdminCreator(java.util.function.Consumer<JsonNode> mutation) throws Exception {
         try(var entries=Files.list(temporary.resolve("evidence/fixture-actors"))){Path path=entries.findFirst().orElseThrow();JsonNode body=json.readTree(Files.readAllBytes(path));mutation.accept(body);Files.write(path,json.writeValueAsBytes(body));}
     }
+    @Test void defaultCreateRequiresOriginalClaimRealNewTargetAndReviewedEncodedBytes() throws Exception {
+        var request=prepareDefaultCommand("MALE");var intent=ledger.request(request);
+        ledger.direct(intent,()->new TransactionTemplate(transactions).execute(status->{
+            storage.put(currentKey,defaultImage.mime(),new ByteArrayInputStream(defaultImage.content()),defaultImage.content().length);
+            return Map.of("assetId",assetId);
+        }));
+        assertThat(delegatePuts).hasValue(1);
+        var evidence=events("PUT_INTENT").get(0).path("payload").path("defaultCreateEvidence");
+        assertThat(evidence.path("defaultTargetId").asLong()).isEqualTo(101L);
+        assertThat(evidence.path("defaultSource").path("pool").asText()).isEqualTo("MALE");
+        assertThat(evidence.path("defaultSource").path("encodedSha256").asText()).isEqualTo(sha(stored.get(currentKey)));
+        assertThat(events("PUT_INTENT").get(0).path("payload").path("exactRow").has("defaultTargetId")).isFalse();
+    }
+    @ParameterizedTest @ValueSource(strings={"wrong-receipt-hash","receipt-succeeded","actor-target","wrong-role","existing-avatar","wrong-source-pool","wrong-internal-token"})
+    void defaultEvidenceNeverUsesUploaderAloneToAuthorizeAPut(String failure) throws Exception {
+        var request=prepareDefaultCommand("MALE");
+        switch(failure) {
+            case "wrong-receipt-hash" -> defaultReceipt.put("request_hash","0".repeat(64));
+            case "receipt-succeeded" -> defaultReceipt.put("status","SUCCEEDED");
+            case "actor-target" -> defaultTarget.put("id",100L);
+            case "wrong-role" -> defaultTarget.put("role_code","RISK");
+            case "existing-avatar" -> defaultState.put("avatar_asset_id",UUID.randomUUID().toString());
+            case "wrong-source-pool" -> {request=prepareDefaultCommand("FEMALE");}
+            case "wrong-internal-token" -> avatars.get(0).put("idempotency_key",UUID.randomUUID().toString());
+            default -> throw new AssertionError(failure);
+        }
+        var intent=ledger.request(request);
+        assertThatThrownBy(()->ledger.direct(intent,()->new TransactionTemplate(transactions).execute(status->{
+            storage.put(currentKey,defaultImage.mime(),new ByteArrayInputStream(defaultImage.content()),defaultImage.content().length);return Map.of("assetId",assetId);
+        }))).isInstanceOf(IllegalStateException.class);
+        assertThat(delegatePuts).hasValue(0);
+    }
+    @Test void legacyAvatarCorrelationDoesNotGainDefaultCreatePermission() throws Exception {
+        prepareDefaultCommand("MALE");
+        var intent=request();
+        assertThatThrownBy(()->ledger.direct(intent,()->new TransactionTemplate(transactions).execute(status->{
+            storage.put(currentKey,defaultImage.mime(),new ByteArrayInputStream(defaultImage.content()),defaultImage.content().length);return Map.of("assetId",assetId);
+        }))).hasMessageContaining("Missing or multiple durable request correlations");
+        assertThat(delegatePuts).hasValue(0);
+    }
+    @Test void defaultApprovalRequiresExactFrozenTicketDistinctProvenMakerAndOriginalCheckerClaim() throws Exception {
+        var intent=ledger.request(prepareDefaultApproval());
+        ledger.direct(intent,()->new TransactionTemplate(transactions).execute(status->{
+            storage.put(currentKey,defaultImage.mime(),new ByteArrayInputStream(defaultImage.content()),defaultImage.content().length);return Map.of("assetId",assetId);
+        }));
+        assertThat(delegatePuts).hasValue(1);
+        assertThat(events("PUT_INTENT").get(0).path("payload").path("defaultCreateEvidence").path("defaultMakerCreator").path("sha256").asText()).matches("[a-f0-9]{64}");
+    }
+    @ParameterizedTest @ValueSource(strings={"frozen-ticket-changed","terminal-ticket","maker-is-checker","wrong-original-pool","wrong-claim","unproven-maker"})
+    void defaultApprovalCannotBecomeAnUnrestrictedReplayOrUploaderPermission(String failure) throws Exception {
+        var request=prepareDefaultApproval();var command=request.defaultCreate();
+        switch(failure) {
+            case "frozen-ticket-changed" -> defaultTicket.put("command_json","{}");
+            case "terminal-ticket" -> defaultTicket.put("status","approved");
+            case "wrong-claim" -> defaultReceipt.put("request_hash","0".repeat(64));
+            case "maker-is-checker","wrong-original-pool","unproven-maker" -> {
+                var frozen=(com.fasterxml.jackson.databind.node.ObjectNode)json.readTree(command.frozenCommandJson());
+                if("wrong-original-pool".equals(failure))((com.fasterxml.jackson.databind.node.ObjectNode)frozen.path("params")).put("avatarGender","FEMALE");
+                else frozen.put("avatarMakerAdminId","maker-is-checker".equals(failure)?100L:88L);
+                String changed=json.writeValueAsString(frozen);defaultTicket.put("command_json",changed);
+                request=new SupportObjectEvidenceLedger.Request(request.suite(),request.testcase(),request.kind(),request.actorType(),request.actorId(),null,null,null,request.commandKey(),null,BUCKET,false,
+                        new SupportObjectEvidenceLedger.DefaultCreateCommand(command.create(),command.operationId(),changed));
+            }
+            default -> throw new AssertionError(failure);
+        }
+        var intent=ledger.request(request);
+        assertThatThrownBy(()->ledger.direct(intent,()->new TransactionTemplate(transactions).execute(status->{
+            storage.put(currentKey,defaultImage.mime(),new ByteArrayInputStream(defaultImage.content()),defaultImage.content().length);return Map.of("assetId",assetId);
+        }))).isInstanceOf(IllegalStateException.class);
+        assertThat(delegatePuts).hasValue(0);
+    }
+    private SupportObjectEvidenceLedger.Request prepareDefaultApproval() throws Exception {
+        var request=prepareDefaultCommand("MALE");var create=request.defaultCreate().create();adminCreator(99L,"isolated-maker");
+        String ticket="WO-UNIT-DEFAULT";
+        String frozen=json.writeValueAsString(map("domain","A","op","a1_account_create","params",map("username",create.username(),"displayName",create.displayName(),"role","support","avatarGender","MALE","useDefaultAvatar",true),"avatarMakerAdminId",99L));
+        defaultTicket=map("operation_id",ticket,"status","pending","command_json",frozen);
+        defaultReceipt.put("scope","A2_COMMAND");
+        defaultReceipt.put("request_hash",sha(json.writeValueAsBytes(map("actor","isolated-admin","operation","APPROVE:"+ticket,"payload",new ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest(create.reason(),"isolated-admin")))));
+        return new SupportObjectEvidenceLedger.Request(request.suite(),request.testcase(),request.kind(),request.actorType(),request.actorId(),null,null,null,request.commandKey(),null,BUCKET,false,
+                new SupportObjectEvidenceLedger.DefaultCreateCommand(create,ticket,frozen));
+    }
+    @Test void defaultCommandCannotBeSmuggledIntoAnotherObjectKindOrUseGeneralUploadTokens() throws Exception {
+        var original=prepareDefaultCommand("MALE");
+        assertThatThrownBy(()->ledger.request(new SupportObjectEvidenceLedger.Request("LedgerTest","smuggled",SupportObjectEvidenceLedger.Kind.AVATAR,"ADMIN",100L,null,null,"client","command",null,BUCKET,false,original.defaultCreate())))
+                .hasMessageContaining("Default command required only");
+        assertThatThrownBy(()->ledger.request(new SupportObjectEvidenceLedger.Request("LedgerTest","actor-only",SupportObjectEvidenceLedger.Kind.DEFAULT_CREATE_AVATAR,"ADMIN",100L,null,null,"client","command",null,BUCKET,false,original.defaultCreate())))
+                .hasMessageContaining("actor-only/general upload");
+    }
+    private SupportObjectEvidenceLedger.Request prepareDefaultCommand(String gender) throws Exception {
+        var create=new ffdd.opsconsole.platform.dto.AdminAccountCreateRequest("default-advisor","Advisor",null,"support",null,"Unit original command","isolated-admin",null,null,gender,true);
+        defaultTarget=map("id",101L,"username",create.username(),"status",1,"is_deleted",0,"created_at",CREATED,"role_code","SUPPORT");
+        defaultState=map("avatar_asset_id",null,"avatar_version",0L,"avatar_gender",gender,"is_deleted",0);
+        defaultReceipt=map("scope","A1:ACCOUNT_CREATE:100","idempotency_key","account-create-key","request_hash",sha(("|"+create).getBytes(StandardCharsets.UTF_8)),"status","PROCESSING");
+        var resources=getClass().getClassLoader();var manifest=json.readTree(resources.getResourceAsStream("support/default-avatars/manifest.json"));var entry=manifest.path("entries").get(0);
+        byte[] source;try(var stream=resources.getResourceAsStream("support/default-avatars/"+entry.path("file").asText())){source=stream.readAllBytes();}
+        defaultImage=SupportAttachmentService.decode(new SupportDefaultAvatarCatalog.ImageFile(entry.path("file").asText(),source),new SupportAttachmentPolicy.View(true,List.of("image/png","image/jpeg"),1048576L,1000000L,300L,null));
+        avatar();String token=UUID.randomUUID().toString();avatars.get(0).put("client_upload_id",token);avatars.get(0).put("idempotency_key",token);
+        avatars.get(0).put("request_hash",sha(("CREATE_DEFAULT|101|"+entry.path("sha256").asText()).getBytes(StandardCharsets.UTF_8)));
+        avatars.get(0).put("mime",defaultImage.mime());avatars.get(0).put("byte_count",(long)defaultImage.content().length);
+        return new SupportObjectEvidenceLedger.Request("LedgerTest","default-create",SupportObjectEvidenceLedger.Kind.DEFAULT_CREATE_AVATAR,"ADMIN",100L,null,null,null,"account-create-key",null,BUCKET,false,new SupportObjectEvidenceLedger.DefaultCreateCommand(create,null,null));
+    }
     private void avatar(){avatars=new ArrayList<>();avatars.add(map("id",assetId,"uploader_id",100L,"client_upload_id","client","idempotency_key","command","request_hash","raw-hash","mime","image/png","byte_count",(long)BYTES.length,"object_key",currentKey,"state","READY","attached_admin_id",null,"expires_at","2099-01-01 00:00:00","created_at",CREATED));}
     private Object rows(String sql,Object[] arguments) throws Exception {
         if(sql.startsWith("SELECT DATABASE()"))return List.of(map("database_name","cs_enhance_20261001","database_port",33329,"server_uuid","isolated-server","connection_id",101L));
         if(sql.startsWith("SELECT id,created_at FROM nx_admin"))return same(currentAdmin.get("id"),argument(arguments,1))
-                ?List.of(map("id",currentAdmin.get("id"),"created_at",currentAdmin.get("created_at"))):List.of();
+                ?List.of(map("id",currentAdmin.get("id"),"created_at",currentAdmin.get("created_at"))):defaultTicket!=null&&same(99L,argument(arguments,1))?List.of(map("id",99L,"created_at",CREATED)):List.of();
         if(sql.startsWith("SELECT username FROM nx_admin"))return List.of(map("username",currentAdmin.get("username")));
+        if(sql.startsWith("SELECT scope,idempotency_key,request_hash,status FROM nx_admin_idempotency_record"))return defaultReceipt==null?List.of():List.of(new LinkedHashMap<>(defaultReceipt));
+        if(sql.startsWith("SELECT operation_id,status,command_json FROM nx_audit_operation_ticket"))return defaultTicket==null?List.of():List.of(new LinkedHashMap<>(defaultTicket));
+        if(sql.startsWith("SELECT id,username,status,is_deleted,created_at FROM nx_admin WHERE username=?"))return defaultTarget!=null&&same(defaultTarget.get("username"),argument(arguments,1))?List.of(new LinkedHashMap<>(defaultTarget)):List.of();
+        if(sql.startsWith("SELECT r.role_code FROM nx_admin_role_relation rr"))return defaultTarget==null?List.of():List.of(map("role_code",defaultTarget.get("role_code")));
+        if(sql.startsWith("SELECT avatar_asset_id,avatar_version,avatar_gender,is_deleted FROM nx_admin_account_state"))return defaultState==null?List.of():List.of(new LinkedHashMap<>(defaultState));
         if(sql.contains(" FROM nx_support_admin_avatar_asset "))return matching(avatars,sql.contains("object_key=?")?"object_key":"id",argument(arguments,1));
         if(sql.contains(" FROM nx_user "))return matching(users,sql.contains("avatar_url=?")?"avatar_url":sql.contains("referral_code=?")?"referral_code":"id",argument(arguments,1));
         if(sql.contains(" FROM nx_support_attachment_command "))return attachmentCommands.stream()
@@ -726,14 +834,15 @@ class SupportObjectEvidenceLedgerTest {
     private static List<Map<String,Object>> matching(List<Map<String,Object>> rows,String column,Object value){return rows.stream().filter(row->same(row.get(column),value)).<Map<String,Object>>map(row->new LinkedHashMap<>(row)).toList();}
     private static boolean same(Object left,Object right){return left==null?right==null:right!=null&&String.valueOf(left).equals(String.valueOf(right));}
     private static Object argument(Object[] arguments,int index){return arguments.length==2&&arguments[1] instanceof Object[] array?array[index-1]:arguments[index];}
-    private void adminCreator(long id) throws Exception {
-        String operation=UUID.randomUUID().toString();Map<String,Object> request=map("username","isolated-admin");
+    private void adminCreator(long id) throws Exception {adminCreator(id,"isolated-admin");}
+    private void adminCreator(long id,String username) throws Exception {
+        String operation=UUID.randomUUID().toString();Map<String,Object> request=map("username",username);
         JsonNode intent=save(temporary.resolve("evidence/fixture-actor-intents/"+operation+".json"),
                 map("event","CREATE_INTENT","operationId",operation,"contextSha256",environment.get("CS_ENHANCE_ACTOR_CONTEXT_SHA256"),"request",request));
-        Map<String,Object> body=map("schemaVersion",3,"event","CREATED","ownsActor",true,"operationId",operation,"adminId",id,"originalUsername","isolated-admin","createdAt",CREATED,
-                "actor",map("id",id,"username","isolated-admin","createdAt",CREATED),"contextSha256",environment.get("CS_ENHANCE_ACTOR_CONTEXT_SHA256"),"intent",intent,
+        Map<String,Object> body=map("schemaVersion",3,"event","CREATED","ownsActor",true,"operationId",operation,"adminId",id,"originalUsername",username,"createdAt",CREATED,
+                "actor",map("id",id,"username",username,"createdAt",CREATED),"contextSha256",environment.get("CS_ENHANCE_ACTOR_CONTEXT_SHA256"),"intent",intent,
                 "create",map("kind","SQL_INSERT_COMMIT","successfulExactResponse",true,"transactionOutcome","COMMIT_RETURNED","request",request,
-                        "response",map("generatedKey",id,"affectedRows",1),"committedReadback",map("id",id,"username","isolated-admin","created_at",CREATED)));
+                        "response",map("generatedKey",id,"affectedRows",1),"committedReadback",map("id",id,"username",username,"created_at",CREATED)));
         for(String field:List.of("identity","candidate","windowId","resourceIdentity","businessDeadline","hardDeadline","leaseSha256","businessReleaseSha256"))body.put(field,context.get(field));
         save(temporary.resolve("evidence/fixture-actors/"+operation+"-"+id+".json"),body);
     }

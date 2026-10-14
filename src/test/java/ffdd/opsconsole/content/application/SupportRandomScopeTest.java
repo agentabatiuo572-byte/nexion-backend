@@ -31,7 +31,7 @@ class SupportRandomScopeTest {
     private final AdminIdempotencyService idempotency=mock(AdminIdempotencyService.class);
     private final PlatformTransactionManager transactions=mock(PlatformTransactionManager.class);
     private final SupportBindingRandomService service=new SupportBindingRandomService(bindings,mapper,ownership,bindingService,
-            idempotency,mock(AuditLogService.class),new ObjectMapper().findAndRegisterModules(),transactions,mock(ProductionSupportPathGuard.class));
+            idempotency,mock(AuditLogService.class),new ObjectMapper().findAndRegisterModules(),transactions,mock(ProductionSupportPathGuard.class),300);
     private final SupportRandomRequest.Confirm request=new SupportRandomRequest.Confirm(UUID.randomUUID().toString(),1L,"Owned group random assignment proof");
     private void actor() {when(ownership.actorId()).thenReturn(11L);when(transactions.getTransaction(any())).thenReturn(new SimpleTransactionStatus());}
 

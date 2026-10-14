@@ -13,6 +13,11 @@ public interface FinanceSupportPaymentFactsFacade extends DomainFacade {
         return beforeSource(customer,source,stableBusinessKey,null);
     }
     BeforeSource beforeSource(long customer, SupportPaymentFacts.Source source, String stableBusinessKey,String sourcePartition);
+    /** At the writer's existing wallet lock, immediately before its first asset write. */
+    void beforeCash(BeforeSource before);
+    void beforeGenesisCash(BeforeSource before,Collection<Long> customerIds,String holdingNo);
+    /** An observed entry number is not authority; finance rereads the actual trial reward. */
+    void trialReward(BeforeSource before,String entryNo);
     Optional<SupportPaymentFacts.Fact> readSettled(BeforeSource before);
     FreshLedgerReceipt insertFreshPaymentLedger(BeforeSource before,BigDecimal amount,BigDecimal balanceAfter,String remark);
     Optional<SupportPaymentFacts.Fact> readSettled(BeforeSource before,FreshLedgerReceipt receipt);

@@ -427,7 +427,7 @@ class SupportAnalyticsServiceTest {
         assertUnknown(result);
         when(finance.readHistory(any())).thenReturn(snapshot);
         result=service.summarize(history("USDT"));
-        assertThat(result.financialSummary().currencies().get(0).deposits().observedAmount()).isZero();
+        assertThat(result.financialSummary().currencies().get(0).deposits().observedAmount()).isNull();
         assertThat(result.financialSummary().currencies().get(0).deposits().confirmedAmount()).isNull();
         assertThat(result.currentCustomers().get(0).first().reasons()).containsExactly("HISTORY_UNVERIFIED");
     }
@@ -540,6 +540,58 @@ class SupportAnalyticsServiceTest {
         }).when(invitations).readInvitations(any());
         when(devices.readCurrent(any())).thenReturn(new ffdd.opsconsole.device.facade.SupportDeviceReadFacade.Snapshot(List.of(),List.of(),AT));
         return new SupportAnalyticsService(ownership,finance,mapper,invitations,devices);
+    }
+    @Test void singleCustomerProfileReadsOnlyAuthorizedRootAndAggregatesHiddenDescendantsSeparately() {
+        var complete=enriched();long hidden=9009009L;
+        when(mapper.currentCustomer(PERSONAL,1L)).thenReturn(List.of(metricsCurrent(1,7L,100L,"BOUND","GROUPED")));
+        when(finance.readHistory(List.of(1L))).thenReturn(withFirstHistory(List.of(fact(1,101,Kind.DEPOSIT,"NEX","3.123456",AT,null),
+            fact(1,102,Kind.DEPOSIT,"USDT","1",AT.plusSeconds(1),null)),
+            List.of(new SupportPaymentFacts.FirstHistory(1,SupportPaymentFacts.Status.READY,List.of()))));
+        when(finance.readHistory(List.of(hidden))).thenReturn(snapshot(List.of(fact(hidden,999,Kind.DEPOSIT,"USDT","500.000001",AT,null))));
+        doReturn(List.of(new ffdd.opsconsole.team.facade.SupportInvitationReadFacade.Invitation(1,0,List.of(hidden),List.of(hidden),
+            ffdd.opsconsole.team.facade.SupportInvitationReadFacade.Completeness.COMPLETE,Set.of()))).when(invitations).readInvitations(any());
+        var result=complete.statisticsForCustomer(1L,PERSONAL);
+        assertThat(result).containsOnlyKeys("first","lifetime","lifetimeStatus","invitations","activity");
+        var first=(Map<?,?>)result.get("first");assertThat(first.get("state")).isEqualTo("CONFIRMED");
+        assertThat(first.get("kind")).isEqualTo("DEPOSIT");assertThat(first.get("currency")).isEqualTo("NEX");assertThat(first.get("amount")).isEqualTo("3.123456");
+        assertThat((List<?>)result.get("lifetime")).hasSize(2);
+        assertThat(result.toString()).contains("500.000001").doesNotContain("9009009","customerId","factId","owner");
+        verify(mapper).currentCustomer(PERSONAL,1L);verify(mapper,never()).currentCustomers(any());
+        verify(invitations).readInvitations(List.of(1L));verify(devices).readCurrent(List.of(1L));
+        verify(finance).readHistory(List.of(1L));verify(finance).readHistory(List.of(hidden));verifyNoMoreInteractions(finance);
+    }
+    @Test void singleCustomerProfileKeepsUnknownFirstCandidateAndUnprovenAmounts() {
+        var complete=enriched();
+        when(mapper.currentCustomer(PERSONAL,1L)).thenReturn(List.of(metricsCurrent(1,7L,100L,"BOUND","GROUPED")));
+        when(finance.readHistory(List.of(1L))).thenReturn(snapshot(List.of(fact(1,101,Kind.DEPOSIT,"USDT","10",AT,null))));
+        var result=complete.statisticsForCustomer(1L,PERSONAL);
+        var first=(Map<?,?>)result.get("first");assertThat(first.get("state")).isEqualTo("UNKNOWN");assertThat(first.get("amount")).isEqualTo("10");
+        var money=(Map<?,?>)((Map<?,?>)((List<?>)result.get("lifetime")).get(0)).get("deposits");
+        assertThat(money.get("confirmed")).isNull();assertThat(money.get("observed")).isEqualTo("10");
+    }
+    @Test void singleCustomerProfileRejectsMissingForeignExtraRootsBeforeAnyFinancialRead() {
+        var complete=enriched();
+        for(var rows:List.of(List.<SupportAnalyticsMapper.CurrentCustomer>of(),List.of(metricsCurrent(2,7L,100L,"BOUND","GROUPED")),
+                List.of(metricsCurrent(1,7L,100L,"BOUND","GROUPED"),metricsCurrent(2,7L,100L,"BOUND","GROUPED")),
+                List.of(metricsCurrent(1,8L,100L,"BOUND","GROUPED")))) {
+            when(mapper.currentCustomer(PERSONAL,1L)).thenReturn(rows);
+            assertThatThrownBy(()->complete.statisticsForCustomer(1L,PERSONAL)).isInstanceOf(IllegalStateException.class);
+        }
+        verifyNoInteractions(finance,invitations,devices);verify(mapper,never()).currentCustomers(any());
+    }
+    @ParameterizedTest @ValueSource(strings={"PERSONAL","MANAGED","ALL"})
+    void singleCustomerStatisticsDoNotReadUnrelatedPersonnelButListsKeepTheirRoster(String mode) {
+        var complete=enriched();var scope=new ReadScope(7L,ReadMode.valueOf(mode),null,null);
+        when(mapper.currentCustomer(scope,1L)).thenReturn(List.of(metricsCurrent(1,7L,100L,"BOUND","GROUPED")));
+        when(finance.readHistory(List.of(1L))).thenReturn(snapshot(List.of()));
+        assertThat(complete.statisticsForCustomer(1L,scope)).containsKeys("first","lifetime","invitations","activity");
+        verify(mapper,never()).scopedGroupRows(any());verify(mapper,never()).serviceAccountRows(any());verify(mapper,never()).supervisorAccountRows(any());
+        if(!"PERSONAL".equals(mode)) {
+            when(ownership.queryScope(scope.mode(),null,null)).thenReturn(scope);
+            when(mapper.scopedGroupRows(scope)).thenThrow(new DataAccessResourceFailureException("unrelated roster unavailable"));
+            complete.summarize(new Query(scope.mode(),null,null,Basis.CURRENT_CUSTOMER_HISTORY,null,null,"Asia/Shanghai",null));
+            verify(mapper).scopedGroupRows(scope);
+        }
     }
     @Test void lifetimeAndOverlappingInvitationFactsStaySeparateFromOwnTotalsFirstAndRestrictedIdentities() {
         var complete=enriched();long hidden=9009009L;
@@ -774,6 +826,18 @@ class SupportAnalyticsServiceTest {
             assertThat(result.personnel().serviceAccounts().confirmedValue()).isEqualTo(1);assertThat(result.personnel().supervisors().confirmedValue()).isEqualTo(2);assertThat(result.personnel().people().confirmedValue()).isEqualTo(2);
             assertThat(result.personnel().partitions()).filteredOn(p->p.dimension().equals("SUPERVISOR_ACCOUNT") && p.value().equals("DISABLED")).singleElement().satisfies(p->assertThat(p.accounts().confirmedValue()).isEqualTo(1));
             verify(mapper).supervisorAccountRows(all);
+            var groups=mapper.scopedGroupRows(all);var services=mapper.serviceAccountRows(all);var supervisors=mapper.supervisorAccountRows(all);
+            var selected=new ReadScope(8L,ReadMode.ALL,100L,null);
+            when(ownership.queryScope(ReadMode.ALL,100L,null)).thenReturn(selected);
+            when(mapper.scopedGroupRows(selected)).thenReturn(groups);
+            when(mapper.serviceAccountRows(selected)).thenReturn(services);
+            when(mapper.supervisorAccountRows(selected)).thenReturn(supervisors);
+            var single=complete.summarize(new Query(ReadMode.ALL,100L,null,Basis.CURRENT_CUSTOMER_HISTORY,null,null,"UTC","USDT"));
+            assertThat(single.personnel().supervisors().confirmedValue()).isEqualTo(1);
+            assertThat(single.personnel().serviceAccounts().confirmedValue()).isEqualTo(1);
+            assertThat(single.personnel().people().confirmedValue()).isEqualTo(1);
+            assertThat(single.personnel().groups().confirmedValue()).isEqualTo(1);
+            assertThat(single.personnel()).isEqualTo(single.groups().get(0).personnel());
         }finally{SecurityContextHolder.clearContext();}
     }
     @Test void legacyConstructorDoesNotMakeAbsentMetricsAvailableZero() {

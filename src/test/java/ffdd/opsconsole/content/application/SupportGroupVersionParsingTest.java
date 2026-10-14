@@ -70,7 +70,7 @@ class SupportGroupVersionParsingTest {
         if(!required)return;
         var mapper=mock(SupportGroupMapper.class);var ownership=mock(SupportOwnershipService.class);
         var keys=mock(AdminIdempotencyService.class);var audit=mock(AuditLogService.class);
-        var events=mock(ApplicationEventPublisher.class);var service=new SupportGroupService(mapper,ownership,keys,audit,events);
+        var events=mock(ApplicationEventPublisher.class);var service=new SupportGroupService(mapper,ownership,keys,audit,events,mock(ffdd.opsconsole.content.mapper.SupportAgentMapper.class));
         assertThatThrownBy(()->{
             if(parsed instanceof Rename r)service.rename(8L,"null-version",r);
             else if(parsed instanceof Status r)service.status(8L,"null-version",r);

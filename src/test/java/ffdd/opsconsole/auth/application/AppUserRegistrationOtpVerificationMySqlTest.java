@@ -38,6 +38,7 @@ class AppUserRegistrationOtpVerificationMySqlTest {
     private final MockEnvironment environment = new MockEnvironment();
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final UserOpsMapper users = mock(UserOpsMapper.class);
+    private final AuthNewAccountCreator accountCreator = mock(AuthNewAccountCreator.class);
     private final PasswordEncoder passwords = mock(PasswordEncoder.class);
     private final UserOtpDeliveryService delivery = mock(UserOtpDeliveryService.class);
     private final AppUserAuthService auth = mock(AppUserAuthService.class);
@@ -53,13 +54,13 @@ class AppUserRegistrationOtpVerificationMySqlTest {
                 mapper, users, passwords, delivery, auth, outbox,
                 mock(AppUserRegistrationTransactionExecutor.class), environment,
                 mock(OpsReferralRewardService.class), config, mock(UserLoginGuardMapper.class),
-                mock(CaptchaOtpGate.class), mock(DayOneInstanceFacade.class), org.mockito.Mockito.mock(ffdd.opsconsole.content.facade.SupportRegistrationFacade.class)));
+                mock(CaptchaOtpGate.class), mock(DayOneInstanceFacade.class), org.mockito.Mockito.mock(ffdd.opsconsole.content.facade.SupportRegistrationFacade.class), accountCreator));
     }
 
     @AfterEach
     void tearDown() throws Exception {
         try {
-            verifyNoInteractions(users, passwords, delivery, auth, outbox);
+            verifyNoInteractions(users, passwords, delivery, auth, outbox, accountCreator);
         } finally {
             if (fixture != null) fixture.close();
         }

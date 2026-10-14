@@ -30,6 +30,7 @@ public class G2ExchangeQueueBatchService {
     private final EventOutboxService outbox;
     private final G2ExchangeFeeAllocationService feeAllocationService;
     private final Environment environment;
+    private final SupportExchangeFundAdapter exchangeFunds;
 
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public Map<String,Object> process(int requestedLimit) {
@@ -68,10 +69,12 @@ public class G2ExchangeQueueBatchService {
                 skipped.add(item(row.exchangeNo(),"SKIPPED","QUEUED","USER_CAP_EXCEEDED","用户当日额度已用尽，本单仍在队列")); continue;
             }
             if (mapper.geoBlocked(wallet.countryCode()) > 0) {
+                var fundBefore=exchangeFunds.begin(row.userId(),row.exchangeNo());
                 if (mapper.cancelQueuedBySystem(row.exchangeNo()) != 1) throw new BizException(409,"EXCHANGE_QUEUE_STATE_CONFLICT");
                 refundReservation(row, wallet);
                 outbox.publish("EXCHANGE_ORDER",row.exchangeNo(),"exchange.queue_cancelled",
                         linked("exchangeNo",row.exchangeNo(),"status","CANCELLED","cancelledBy","SYSTEM_G2_BATCH","reasonCode","GEO_BLOCKED"));
+                exchangeFunds.recorded(fundBefore,row.exchangeNo(),"CANCEL",BigDecimal.ZERO);
                 skipped.add(item(row.exchangeNo(),"SKIPPED","CANCELLED","GEO_BLOCKED","所在地域已封锁，本单已取消")); continue;
             }
             BigDecimal feeRate = number("wallet.exchange.fee_pct","0");
@@ -88,6 +91,7 @@ public class G2ExchangeQueueBatchService {
                     ? (sourceReserved ? BigDecimal.ZERO : row.fromAmount().negate()) : toAmount;
             BigDecimal nexDelta = "NEX".equals(row.fromAsset())
                     ? (sourceReserved ? BigDecimal.ZERO : row.fromAmount().negate()) : toAmount;
+            var fundBefore=exchangeFunds.begin(row.userId(),row.exchangeNo());
             if (mapper.applyWalletDelta(row.userId(),usdtDelta,nexDelta) != 1) {
                 if (mapper.failQueuedInsufficient(row.exchangeNo()) != 1) throw new BizException(409,"EXCHANGE_QUEUE_STATE_CONFLICT");
                 failed.add(item(row.exchangeNo(),"FAILED","FAILED","WALLET_BALANCE_CONFLICT","钱包余额不足或状态已变化，本单已终止")); continue;
@@ -107,6 +111,7 @@ public class G2ExchangeQueueBatchService {
                     a.accountAgeMonths(),a.cohort(),linked("exchangeNo",row.exchangeNo(),"fromAsset",row.fromAsset(),
                             "toAsset",toAsset,"fromAmount",row.fromAmount(),"toAmount",toAmount,"rate",price,
                             "grossUsdt",gross,"feeUsdt",fee,"status","COMPLETED"));
+            exchangeFunds.recorded(fundBefore,row.exchangeNo(),"COMPLETE",fee);
             platformUsed = platformUsed.add(gross);
             completed.add(item(row.exchangeNo(),"COMPLETED","COMPLETED","",""));
         }

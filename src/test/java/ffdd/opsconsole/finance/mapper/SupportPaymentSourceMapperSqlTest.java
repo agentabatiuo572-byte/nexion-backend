@@ -10,6 +10,17 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.*;
 
 class SupportPaymentSourceMapperSqlTest {
+    @Test void historicalMoneyProofReadsHotAndValidatedColdAuditWithoutInventingRefundSource() {
+        var p=Map.<String,Object>of("customerIds",List.of(7L,8L));
+        var payment=bound("historyPaymentAudits",p);
+        assertThat(payment).contains("APP_ORDER_WALLET_PAYMENT","nx_audit_log_archive","SHA2(CAST(cold_payload AS CHAR),256)",
+            "o.payment_no paymentNo","o.paid_at paidAt","a.customerId IN").doesNotContain("FOR UPDATE","FOR SHARE","${");
+        var refund=bound("historyRefundOrigins",p);
+        assertThat(refund).contains("E4_ORDER_REFUNDED","nx_order_state_history","h.to_state='refunded'","a.actorType='ADMIN'",
+            "'$.refundChannel'","='WALLET'","'$.idempotencyKey'","l.amount=o.amount_usdt","l.status='SUCCESS'",
+            "l.direction='IN'","l.asset='USDT'","l.is_deleted=0","COUNT(DISTINCT a.id)","o.user_id IN");
+        assertThat(refund).doesNotContain("PSP_NOT_AVAILABLE"," LIMIT ","FOR UPDATE","FOR SHARE","${");
+    }
     private final Configuration configuration=new Configuration();
     SupportPaymentSourceMapperSqlTest() { configuration.addMapper(SupportPaymentSourceMapper.class); }
     @Test void candidatesNeverLockMissingRangesAndOnlyCurrentReadsLockKnownPrimaryKeys() {
@@ -18,7 +29,13 @@ class SupportPaymentSourceMapperSqlTest {
             var p=parameters(Source.WALLET_ORDER,"order-1");p.put("orderNo","order-1");p.put("id",2L);
             p.put("partition",100L);p.put("cid",23L);p.put("factId","PURCHASE:order-1");p.put("marker",SupportPaymentSourceMapper.Marker.LEDGER);
             p.put("ledger",Map.of("customer",7L,"key","order-1","amount",10,"balanceAfter",20,"remark","original remark"));
+            if(method.getName().startsWith("history") && method.getName().endsWith("Batch")) {
+                p.put("keys",List.of("order-1"));p.put("marker",SupportPaymentSourceMapper.Marker.PAYMENT);p.put("refs",List.of(Map.of("key","order-1")));
+            }
             var bound=statement.getBoundSql(p);String sql=bound.getSql();
+            if(method.getName().equals("historyNowUtc")) {
+                assertThat(sql).isEqualTo("SELECT UTC_TIMESTAMP(6)");assertThat(statement.isUseCache()).isFalse();continue;
+            }
             assertThat(sql).contains("?").doesNotContain("${","SKIP LOCKED","LIMIT 1","nx_support_agent","nx_support_group","agent_admin_id","group_id","owner_admin_id");
             if(method.getName().equals("insertLedger")) {
                 assertThat(statement.getSqlCommandType()).isEqualTo(SqlCommandType.INSERT);
@@ -27,9 +44,15 @@ class SupportPaymentSourceMapperSqlTest {
             }
             assertThat(statement.getSqlCommandType()).isEqualTo(SqlCommandType.SELECT);
             assertThat(statement.isUseCache()).isFalse();assertThat(statement.isFlushCacheRequired()).isTrue();
-            if(method.getName().startsWith("current") || method.getName().equals("settledVietqrCounterpart")) assertThat(sql).contains("FOR SHARE");
+            if(method.getName().startsWith("current") || method.getName().equals("settledVietqrCounterpart") || method.getName().equals("trialFundSource")) assertThat(sql).contains("FOR SHARE");
             else assertThat(sql).doesNotContain("FOR SHARE");
         }
+    }
+    @Test void trialFundReadsActualClaimRewardsAndProductionIdentityWithCurrentSharedLocks() {
+        String sql=bound("trialFundSource",Map.of("customerId",7L,"claimNo","claim-1"));
+        assertThat(sql).contains("c.remainder_usdt remainderUsdt","c.shadow_accrued_nex shadowNex","d.source_environment deviceEnvironment",
+            "d.id=c.user_device_id","o.order_no=d.source_order_no","u.id=c.user_id","c.user_id=? AND c.claim_no=? FOR SHARE OF c,d,o,u")
+            .doesNotContain("FOR UPDATE","LIMIT","${");
     }
     @Test void retainedVietqrReceiptReadsItsIndependentProviderTimeEvenAfterSoftDelete() {
         assertThat(bound("before",parameters(Source.VIETQR,"D1-VIETQR-r-1")))
@@ -37,7 +60,7 @@ class SupportPaymentSourceMapperSqlTest {
     }
     @Test void allCanonicalFamiliesCurrentReadEveryNecessaryAliasByItsExactId() {
         for(Source source:Source.values()) {
-            if(source==Source.FREE_TRIAL || source==Source.UNMATCHED_LEDGER) continue;
+            if(source==Source.FREE_TRIAL || source==Source.UNMATCHED_LEDGER || ffdd.opsconsole.finance.facade.SupportPaymentFacts.genesis(source)) continue;
             var p=parameters(source,key(source));
             var candidate=bound("settled",p);assertThat(candidate).contains("sourceRootId","sourceLinked","ledgerRecordedAt","succeededAt").doesNotContain("FOR SHARE");
             var current=bound("currentSettled",p);
@@ -87,7 +110,7 @@ class SupportPaymentSourceMapperSqlTest {
     }
     @Test void freshInsertKeepsTheOriginalMoneyTupleAndSourceTimestampPrecision() {
         for(Source source:Source.values()) {
-            if(source==Source.FREE_TRIAL || source==Source.UNMATCHED_LEDGER) continue;
+            if(source==Source.FREE_TRIAL || source==Source.UNMATCHED_LEDGER || ffdd.opsconsole.finance.facade.SupportPaymentFacts.genesis(source)) continue;
             var p=parameters(source,key(source));p.put("ledger",Map.of("customer",7L,"key",key(source),"amount",10,"balanceAfter",20,"remark","original remark"));
             var sql=bound("insertLedger",p);
             assertThat(sql).startsWith("INSERT INTO nx_wallet_ledger").contains("'"+SupportPaymentSourceSql.ledgerType(source)+"'","'USDT'","'"+SupportPaymentSourceSql.ledgerDirection(source)+"'")

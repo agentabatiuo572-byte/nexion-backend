@@ -134,6 +134,77 @@ class OpsAdminAccountServiceTest {
                     adminSessionRegistry, permissionCache, auditCenterService, lockMapper, platformRoleService,
                     configFacade,mock(ffdd.opsconsole.content.application.SupportAdminAvatarService.class),supportGroups);
 
+    @Test void explicitDefaultCreatePersistsGenderAndUsesOnlyRealCreatedId() {
+        var avatars=mock(SupportAdminAvatarService.class);
+        when(avatars.attachDefaultCreated(5L,"MALE")).thenReturn(Map.of("defaultAvatarStatus","MISSING"));
+        when(accountStateMapper.updateAvatarGender(anyLong(),anyString())).thenAnswer(invocation->{upsertAccountState(invocation.getArgument(0),state->state.setAvatarGender(invocation.getArgument(1)));return 1;});
+        var accounts=new OpsAdminAccountService(auditLogService,adminMapper,roleRelationMapper,roleMapper,accountStateMapper,rbacActionMapper,rbacGrantMapper,securityBaselineMapper,passwordEncoder,
+                adminSessionRegistry,permissionCache,auditCenterService,lockMapper,platformRoleService,configFacade,avatars,supportGroups);
+        var result=accounts.createAccount("default-create-key",new AdminAccountCreateRequest("new.advisor","Advisor",null,"support",null,"reason","Super Admin",null,null,"MALE",true));
+        assertThat(result.getCode()).isZero();assertThat(result.getData().id()).isEqualTo("5");assertThat(result.getData().avatarGender()).isEqualTo("MALE");
+        assertThat(result.getData().avatarAssetId()).isNull();verify(avatars).attachDefaultCreated(5L,"MALE");
+        var snapshot=accounts.overview().getData().operators().stream().filter(row->"5".equals(row.id())).findFirst().orElseThrow();
+        assertThat(snapshot.avatarGender()).isEqualTo("MALE");verify(avatars,times(1)).attachDefaultCreated(anyLong(),any());
+    }
+    @Test void defaultCreationAuditFailurePropagatesRatherThanReturningSuccess() {
+        var avatars=mock(SupportAdminAvatarService.class);
+        when(avatars.attachDefaultCreated(5L,null)).thenReturn(Map.of("defaultAvatarStatus","MISSING"));
+        var accounts=new OpsAdminAccountService(auditLogService,adminMapper,roleRelationMapper,roleMapper,accountStateMapper,rbacActionMapper,rbacGrantMapper,securityBaselineMapper,passwordEncoder,
+                adminSessionRegistry,permissionCache,auditCenterService,lockMapper,platformRoleService,configFacade,avatars,supportGroups);
+        doThrow(new IllegalStateException("AUDIT_WRITE_FAILED")).when(auditLogService).recordRequired(any());
+        assertThatThrownBy(()->accounts.createAccount("default-create-audit",new AdminAccountCreateRequest(
+                "new.advisor","Advisor",null,"support",null,"reason","Super Admin",null,null,null,true)))
+                .hasMessage("AUDIT_WRITE_FAILED");
+        verify(auditLogService,never()).record(any());
+    }
+    @Test void missingLegacyStateIsInitializedWithoutAssigningAnAvatar() {
+        assertThat(accountStates).doesNotContainKey(4L);
+        when(accountStateMapper.updateAvatarGender(4L,"FEMALE")).thenAnswer(invocation->{
+            var state=accountStates.get(4L);if(state==null)return 0;state.setAvatarGender("FEMALE");return 1;
+        });
+        var current=service.overview().getData().operators().stream().filter(row->"4".equals(row.id())).findFirst().orElseThrow();
+        var result=service.updateProfile("legacy-gender","4",new AdminAccountProfileUpdateRequest(
+                current.username(),current.name(),current.email(),"reason","Super Admin",current.version(),null,"FEMALE"));
+        assertThat(result.getCode()).isZero();assertThat(result.getData().avatarGender()).isEqualTo("FEMALE");
+        assertThat(result.getData().avatarAssetId()).isNull();assertThat(result.getData().avatarVersion()).isZero();
+        verify(accountStateMapper).initializeMissingAvatarState(4L);
+    }
+    @Test void zeroGenderUpdateFailsInsteadOfReportingSuccess() {
+        var current=service.overview().getData().operators().stream().filter(row->"4".equals(row.id())).findFirst().orElseThrow();
+        when(accountStateMapper.updateAvatarGender(4L,"FEMALE")).thenReturn(0);
+        assertThatThrownBy(()->service.updateProfile("failed-gender","4",new AdminAccountProfileUpdateRequest(
+                current.username(),current.name(),current.email(),"reason","Super Admin",current.version(),null,"FEMALE")))
+                .hasMessage("AVATAR_GENDER_WRITE_FAILED");
+        verify(auditLogService,never()).record(any());verify(auditLogService,never()).recordRequired(any());
+    }
+    @Test void defaultCreationRejectsFailedGenderWriteBeforeSelectingPool() {
+        var avatars=mock(SupportAdminAvatarService.class);
+        var accounts=new OpsAdminAccountService(auditLogService,adminMapper,roleRelationMapper,roleMapper,accountStateMapper,rbacActionMapper,rbacGrantMapper,securityBaselineMapper,passwordEncoder,
+                adminSessionRegistry,permissionCache,auditCenterService,lockMapper,platformRoleService,configFacade,avatars,supportGroups);
+        when(accountStateMapper.updateAvatarGender(5L,"MALE")).thenReturn(0);
+        assertThatThrownBy(()->accounts.createAccount("failed-create-gender",new AdminAccountCreateRequest(
+                "new.advisor","Advisor",null,"support",null,"reason","Super Admin",null,null,"MALE",true)))
+                .hasMessage("AVATAR_GENDER_WRITE_FAILED");
+        verify(avatars,never()).attachDefaultCreated(anyLong(),any());
+    }
+    @Test void defaultCreateRejectsNonSupportAndSimultaneousUploadBeforeAccountWrite() {
+        var wrongRole=service.createAccount("default-create-key",new AdminAccountCreateRequest("new.finance","Finance",null,"finance",null,"reason","Super Admin",null,null,"MALE",true));
+        var ambiguous=service.createAccount("default-create-key2",new AdminAccountCreateRequest("new.advisor","Advisor",null,"support",null,"reason","Super Admin",null,"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","MALE",true));
+        assertThat(wrongRole.getMessage()).isEqualTo("AVATAR_DEFAULT_INTENT_INVALID");assertThat(ambiguous.getMessage()).isEqualTo("AVATAR_DEFAULT_INTENT_INVALID");verify(adminMapper,never()).insert(any(AdminEntity.class));
+    }
+    @Test void profileGenderChangePersistsWithoutSelectingOrReplacingExistingAvatar() {
+        var avatars=mock(SupportAdminAvatarService.class);
+        when(accountStateMapper.updateAvatarGender(anyLong(),anyString())).thenAnswer(invocation->{upsertAccountState(invocation.getArgument(0),state->state.setAvatarGender(invocation.getArgument(1)));return 1;});
+        upsertAccountState(4L,state->{state.setAvatarAssetId("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");state.setAvatarVersion(3L);state.setAvatarGender("FEMALE");});
+        var accounts=new OpsAdminAccountService(auditLogService,adminMapper,roleRelationMapper,roleMapper,accountStateMapper,rbacActionMapper,rbacGrantMapper,securityBaselineMapper,passwordEncoder,
+                adminSessionRegistry,permissionCache,auditCenterService,lockMapper,platformRoleService,configFacade,avatars,supportGroups);
+        var current=accounts.overview().getData().operators().stream().filter(row->"4".equals(row.id())).findFirst().orElseThrow();
+        var result=accounts.updateProfile("gender-edit-key","4",new AdminAccountProfileUpdateRequest(current.username(),current.name(),current.email(),"reason","Super Admin",current.version(),null,"UNSPECIFIED"));
+        assertThat(result.getCode()).isZero();assertThat(result.getData().avatarGender()).isEqualTo("UNSPECIFIED");
+        assertThat(result.getData().avatarAssetId()).isEqualTo(current.avatarAssetId());assertThat(result.getData().avatarVersion()).isEqualTo(current.avatarVersion());
+        verify(avatars,never()).attachDefaultCreated(anyLong(),any());verify(avatars,never()).attach(anyLong(),anyString());
+    }
+
     @BeforeEach
     void setUp() {
         SecurityContextHolder.clearContext();
@@ -174,6 +245,10 @@ class OpsAdminAccountServiceTest {
         when(roleRelationMapper.ensurePrimaryRole(any(Long.class), any(String.class))).thenAnswer(invocation -> {
             roleRelations.put(invocation.getArgument(0), invocation.getArgument(1));
             return 1;
+        });
+        when(accountStateMapper.initializeMissingAvatarState(anyLong())).thenAnswer(invocation->{
+            Long id=invocation.getArgument(0);if(accountStates.containsKey(id))return 0;
+            upsertAccountState(id,state->{state.setTfaRequired(1);state.setCredentialDeliveryStatus("ACTIVE");});return 1;
         });
         when(accountStateMapper.selectActiveByAdminId(any(Long.class)))
                 .thenAnswer(invocation -> accountStates.get(invocation.getArgument(0)));
@@ -360,6 +435,11 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getData().stats().totalAccounts()).isEqualTo(4);
         assertThat(result.getData().stats().effectiveSupers()).isEqualTo(3);
         assertThat(result.getData().roles()).hasSize(8);
+        assertThat(result.getData().roles()).filteredOn(role -> "support".equals(role.key()))
+                .singleElement().satisfies(role -> {
+                    assertThat(role.desc()).isEqualTo("默认开通专属客服资格，仅服务本人绑定客户；主管资格另行授予。");
+                    assertThat(role.scope()).isEqualTo("本人客户服务、工单与会话、公开业绩；知识库与话术只读");
+                });
         assertThat(result.getData().operators()).extracting(AdminAccountOverview.OperatorRecord::id)
                 .contains("1", "4");
         assertThat(result.getData().operators()).extracting(AdminAccountOverview.OperatorRecord::email)
@@ -402,6 +482,52 @@ class OpsAdminAccountServiceTest {
         });
     }
 
+    @Test void migratedAccountReadsAndBaselineUpdatesDoNotRequireDdlPermissions() {
+        var denied=new org.springframework.dao.PermissionDeniedDataAccessException("CREATE denied",null);
+        doThrow(denied).when(accountStateMapper).createAccountStateTable();
+        doThrow(denied).when(rbacActionMapper).createActionTable();
+        doThrow(denied).when(rbacGrantMapper).createGrantTable();
+        doThrow(denied).when(securityBaselineMapper).createSecurityBaselineTable();
+        var overview=service.overview();
+        assertThat(overview.getCode()).isZero();assertThat(overview.getData().operators()).hasSize(4);
+        assertThat(overview.getData().securityBaselines()).filteredOn(row->"session".equals(row.key()))
+                .singleElement().satisfies(row->{assertThat(row.value()).isEqualTo("60min / unlimited");assertThat(row.locked()).isTrue();});
+        registerTestSecurity("custom", "附加安全策略", "策略说明", "old", false, 30);
+        var changed=service.updateSecurityBaseline("baseline-no-ddl","custom",
+                new AdminAccountSecurityBaselineUpdateRequest("new","confirmed security policy change","superadmin","old"));
+        assertThat(changed.getCode()).isZero();assertThat(changed.getData().value()).isEqualTo("new");
+        verify(accountStateMapper,never()).createAccountStateTable();verify(rbacActionMapper,never()).createActionTable();
+        verify(rbacGrantMapper,never()).createGrantTable();verify(securityBaselineMapper,never()).createSecurityBaselineTable();
+    }
+    @ParameterizedTest @ValueSource(strings={"state","actions","grants","baselines"})
+    void missingAccountBusinessTableReadFailureIsNotSwallowed(String table) {
+        var missing=new org.springframework.dao.DataAccessResourceFailureException("missing A1 "+table+" table");
+        switch(table) {
+            case "state" -> when(accountStateMapper.selectActiveByAdminId(anyLong())).thenThrow(missing);
+            case "actions" -> when(rbacActionMapper.selectList(any())).thenThrow(missing);
+            case "grants" -> when(rbacGrantMapper.selectList(any())).thenThrow(missing);
+            case "baselines" -> when(securityBaselineMapper.selectActiveByKey(anyString())).thenThrow(missing);
+            default -> throw new AssertionError(table);
+        }
+        assertThatThrownBy(service::overview).isSameAs(missing);
+    }
+    @Test void accountReadPreservesMissingSafetyBaselineDefaultsAndStoredCustomValues() {
+        securityBaselineRows.clear();registerTestSecurity("custom","附加安全策略","策略说明","operator-selected",false,30);
+        when(securityBaselineMapper.upsertBaseline(anyString(),anyString(),anyString(),anyString(),anyInt(),anyInt()))
+                .thenAnswer(invocation->{registerTestSecurity(invocation.getArgument(0),invocation.getArgument(1),invocation.getArgument(2),
+                        invocation.getArgument(3),invocation.<Integer>getArgument(4)==1,invocation.getArgument(5));return 1;});
+        var result=service.overview();assertThat(result.getCode()).isZero();
+        assertThat(securityBaselineRows.get("session").getBaselineValue()).isEqualTo("60min / unlimited");
+        assertThat(securityBaselineRows.get("session").getLocked()).isEqualTo(1);
+        assertThat(securityBaselineRows.get("lock").getBaselineValue()).isEqualTo("5次 / 15min + 10次 / 24h");
+        assertThat(securityBaselineRows.get("lock").getLocked()).isEqualTo(1);
+        assertThat(securityBaselineRows.get("custom").getBaselineValue()).isEqualTo("operator-selected");
+    }
+    @Test void formalInitialSchemaOwnsTheFourAccountBusinessTables() throws Exception {
+        String schema=java.nio.file.Files.readString(java.nio.file.Path.of("scripts/schema.sql"));
+        for(String table:List.of("nx_admin_account_state","nx_admin_rbac_action","nx_admin_rbac_grant","nx_admin_security_baseline"))
+            assertThat(schema).contains("CREATE TABLE IF NOT EXISTS "+table+" (");
+    }
     @Test
     void overviewDoesNotInventA1RoleRbacOrSecurityConfigWhenDbHasNoConfigRows() {
         repository.clear();
@@ -643,6 +769,41 @@ class OpsAdminAccountServiceTest {
         verify(auditLogService, never()).record(any(AuditLogWriteRequest.class));
     }
 
+    @ParameterizedTest @ValueSource(strings={"support","<omitted>"})
+    void createSupportAccountInitializesPersonalServiceInCreationTransaction(String role) throws Exception {
+        var result=service.createAccount("service-create",new AdminAccountCreateRequest("new.service","Service",null,
+                "<omitted>".equals(role)?null:role,null,"new service account","superadmin",null));
+        assertThat(result.getCode()).isZero();assertThat(result.getData().role()).isEqualTo("support");
+        verify(roleRelationMapper).ensurePrimaryRole(5L,"SUPPORT");
+        verify(supportGroups).accountCreatedService(5L,"service-create","new service account");
+        assertThat(OpsAdminAccountService.class.getMethod("createAccount",String.class,AdminAccountCreateRequest.class)
+                .getAnnotation(org.springframework.transaction.annotation.Transactional.class)).isNotNull();
+    }
+    @ParameterizedTest @ValueSource(strings={"","unassigned","finance","risk","super"})
+    void explicitOtherCreationRolesDoNotAcquireServiceQualification(String role) {
+        var result=service.createAccount("other-create",new AdminAccountCreateRequest("new.other","Other",null,
+                role,null,"explicit selected role","superadmin",null));
+        assertThat(result.getCode()).isZero();assertThat(result.getData().role()).isEqualTo(role.isEmpty()?"unassigned":role);
+        verify(supportGroups,never()).accountCreatedService(anyLong(),anyString(),anyString());
+    }
+    @Test void failedServiceInitializationDoesNotReturnAccountSuccess() {
+        doThrow(new BizException(409,"SUPPORT_GROUP_VERSION_CONFLICT")).when(supportGroups)
+                .accountCreatedService(5L,"service-create","new service account");
+        assertThatThrownBy(()->service.createAccount("service-create",new AdminAccountCreateRequest("new.service","Service",null,
+                "support",null,"new service account","superadmin",null))).hasMessage("SUPPORT_GROUP_VERSION_CONFLICT");
+        verify(auditLogService,never()).record(any());
+        verify(accountStateMapper,never()).upsertCreatedState(anyLong(),anyString());
+    }
+    @Test void governanceRecoveryStillRejectsDefaultServiceAndAllowsExplicitSuper() {
+        for(long id:List.of(2L,3L))upsertAccountState(id,state->state.setTfaSecretEncrypted(null));
+        var denied=service.createAccount("recovery-default",new AdminAccountCreateRequest("new.default","Default",null,
+                null,null,"recover administrator access","superadmin",null));
+        assertThat(denied.getMessage()).isEqualTo("ADMIN_GOVERNANCE_RECOVERY_ONLY");
+        var restored=service.createAccount("recovery-super",new AdminAccountCreateRequest("new.super","Super",null,
+                "super",null,"recover administrator access","superadmin",null));
+        assertThat(restored.getCode()).isZero();assertThat(restored.getData().role()).isEqualTo("super");
+        verify(supportGroups,never()).accountCreatedService(anyLong(),anyString(),anyString());
+    }
     @Test
     void createAccountPersistsRealAdminWithOneTimeServerCredentialAndWritesAudit() {
         AdminAccountCreateRequest request = new AdminAccountCreateRequest(
@@ -1435,10 +1596,10 @@ class OpsAdminAccountServiceTest {
     void a2ApprovalUncheckedExceptionDoesNotLeakContext() {
         AvatarApprovalFixture fixture = new AvatarApprovalFixture();
         String operationId = fixture.propose(fixture.updateCommand());
-        when(fixture.storage.exists(anyString())).thenThrow(new IllegalStateException("injected storage failure"));
+        fixture.avatarReadProbe = () -> { throw new IllegalStateException("injected avatar read failure"); };
 
         assertThatThrownBy(() -> fixture.approve(operationId))
-                .isInstanceOf(IllegalStateException.class).hasMessage("injected storage failure");
+                .isInstanceOf(IllegalStateException.class).hasMessage("injected avatar read failure");
 
         fixture.assertNoAvatarWrites();
         fixture.assertContextCleared();

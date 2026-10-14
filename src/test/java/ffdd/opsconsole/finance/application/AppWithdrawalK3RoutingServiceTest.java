@@ -58,7 +58,7 @@ class AppWithdrawalK3RoutingServiceTest {
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
     private final MockEnvironment environment = productionEnvironment();
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment, clock,
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, mock(SupportWithdrawalFundSourceService.class), null, environment, clock,
             mock(ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.class), new WithdrawalRiskTimePolicy(environment, config));
 
     private static MockEnvironment productionEnvironment() {

@@ -538,6 +538,60 @@ class OpsUser360ServiceTest {
         assertThat(result.getData()).doesNotContainKeys("security", "sessions", "audit", "deposits", "withdrawals", "ledger");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"SUPPORT", "SUPER_ADMIN"})
+    @SuppressWarnings("unchecked")
+    void currentSupportWithdrawalRowsUseTheSameSafeProjectionInTheHub(String role) throws Exception {
+        when(roleResolver.resolveCode()).thenReturn(role);
+        when(supportOwnership.currentSupportReader()).thenReturn(true);
+        when(userService.profile(52L)).thenReturn(ApiResult.ok(profile(52L)));
+        var withdrawal = sensitiveWithdrawal();
+        when(financeService.withdrawals(any())).thenReturn(ApiResult.ok(new PageResult<>(1, 1, 30, List.of(withdrawal))));
+
+        var result = service.detail(52L);
+        var section = (Map<String, Object>) result.getData().get("withdrawals");
+        var records = (List<Map<String, Object>>) section.get("records");
+        assertThat(records).hasSize(1);
+        assertThat(records.get(0)).containsEntry("withdrawalNo", "WD-52")
+                .containsEntry("amount", new BigDecimal("50"))
+                .containsEntry("actualFee", new BigDecimal("1"))
+                .containsEntry("netReceive", new BigDecimal("49"))
+                .containsEntry("status", "SUCCESS");
+        var hub = (Map<String, Object>) result.getData().get("hub");
+        assertThat(hub.get("withdrawal")).isSameAs(section);
+        var json = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules().writeValueAsString(result);
+        assertThat(json).doesNotContain("riskDecisionId", "riskScore", "hitRules", "riskReason", "auditTrail",
+                "riskScoreBreakdown", "k4BandLowMax", "k4BandHighMin", "k4AutoEscalateScore", "k3RiskRoute",
+                "ipSegment", "referralPosition", "PRIVATE-WITHDRAWAL", "2001:db8::52");
+        verify(supportOwnership).requireRead(52L);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"FINANCE", "SUPER_ADMIN"})
+    @SuppressWarnings("unchecked")
+    void originalFinancialAndFullRolesRetainTheirWithdrawalRows(String role) {
+        when(roleResolver.resolveCode()).thenReturn(role);
+        when(userService.profile(52L)).thenReturn(ApiResult.ok(profile(52L)));
+        var withdrawal = sensitiveWithdrawal();
+        when(financeService.withdrawals(any())).thenReturn(ApiResult.ok(new PageResult<>(1, 1, 30, List.of(withdrawal))));
+        var result = service.detail(52L);
+        var section = (Map<String, Object>) result.getData().get("withdrawals");
+        assertThat((List<WithdrawalOrderView>) section.get("records")).containsExactly(withdrawal);
+    }
+
+    private WithdrawalOrderView sensitiveWithdrawal() {
+        return new com.fasterxml.jackson.databind.ObjectMapper().convertValue(Map.ofEntries(
+                Map.entry("id", 10), Map.entry("userId", 52), Map.entry("withdrawalNo", "WD-52"),
+                Map.entry("asset", "USDT"), Map.entry("amount", "50"), Map.entry("actualFee", "1"),
+                Map.entry("netReceive", "49"), Map.entry("status", "SUCCESS"), Map.entry("riskDecisionId", 999),
+                Map.entry("riskScore", 99), Map.entry("hitRules", "PRIVATE-WITHDRAWAL-HIT"),
+                Map.entry("riskReason", "PRIVATE-WITHDRAWAL-REASON"), Map.entry("auditTrail", "PRIVATE-WITHDRAWAL-AUDIT"),
+                Map.entry("riskScoreBreakdown", "PRIVATE-WITHDRAWAL-BREAKDOWN"),
+                Map.entry("k4BandLowMax", 33), Map.entry("k4BandHighMin", 66), Map.entry("k4AutoEscalateScore", 88),
+                Map.entry("k3RiskRoute", "PRIVATE-WITHDRAWAL-ROUTE"), Map.entry("ipSegment", "2001:db8::52"),
+                Map.entry("referralPosition", "PRIVATE-WITHDRAWAL-SPONSOR")), WithdrawalOrderView.class);
+    }
+
     private UserAccountView profile(Long id) {
         return new UserAccountView(
                 id, "U00000052", "用户52", "138****0052", "86", "ACTIVE",

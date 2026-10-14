@@ -14,13 +14,12 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.test.util.ReflectionTestUtils;
 
 class OpsLearningAcceptanceObservationControllerTest {
     private final LearningAcceptanceSandboxGate gate = mock(LearningAcceptanceSandboxGate.class);
     private final AppLearningMapper mapper = mock(AppLearningMapper.class);
     private final OpsLearningAcceptanceObservationController controller =
-            new OpsLearningAcceptanceObservationController(gate, mapper);
+            new OpsLearningAcceptanceObservationController(gate, mapper, "run-001");
 
     @Test
     void observationUsesTheSeededI7ReadAuthority() throws Exception {
@@ -35,7 +34,6 @@ class OpsLearningAcceptanceObservationControllerTest {
     void anyProductionLearningDownstreamWriteIsReturnedAsAViolation() {
         LocalDateTime fromAt = LocalDateTime.of(2026, 8, 12, 10, 0);
         LocalDateTime toAt = fromAt.plusMinutes(5);
-        ReflectionTestUtils.setField(controller, "configuredRunId", "run-001");
         when(mapper.sandboxObservationWindow("run-001"))
                 .thenReturn(new LearningSandboxObservationWindow(1, fromAt, toAt));
         when(mapper.productionLearningEventDelta("run-001", fromAt, toAt)).thenReturn(1);

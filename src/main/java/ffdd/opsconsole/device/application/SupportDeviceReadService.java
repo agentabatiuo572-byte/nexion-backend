@@ -12,6 +12,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 
 /** The authorized caller owns the read transaction; this evidence reader never creates a transaction. */
@@ -22,6 +23,19 @@ public class SupportDeviceReadService implements SupportDeviceReadFacade {
     private static final Set<String> RUNNING = Set.of("ONLINE", "BUSY", "RUNNING", "ACTIVE", "OFFLINE");
     private static final Set<String> NOT_STARTED = Set.of("INVENTORY", "PENDING", "PENDING_ACTIVATION");
     private final SupportDeviceReadMapper mapper;
+
+    @Override public FundEarnings readFundEarnings(Collection<Long> ids) {
+        if(ids==null||ids.size()>4096||ids.stream().anyMatch(id->id==null||id<=0))throw new IllegalArgumentException("INVALID_SUPPORT_DEVICE_SCOPE");
+        var scope=List.copyOf(new TreeSet<>(ids));if(scope.isEmpty())return new FundEarnings(List.of(),List.of(),List.of(),List.of());
+        var receipts=mapper.fundReceipts(scope);var tasks=mapper.fundTasks(scope);var ledgers=mapper.fundLedgers(scope);var events=mapper.fundEvents(scope);
+        for(var rows:java.util.Arrays.asList(receipts,tasks,ledgers,events)){if(rows==null||rows.stream().anyMatch(r->r==null||!(r.get("customerId") instanceof Number n)||!scope.contains(n.longValue())))throw new IllegalStateException("INVALID_SUPPORT_DEVICE_FUND_ROWS");}
+        return new FundEarnings(receipts,tasks,ledgers,events);
+    }
+    @Override public Map<String,Integer> timePrecisions(){
+        var rows=mapper.fundTimePrecisions();if(rows==null)throw new IllegalStateException("INVALID_SUPPORT_DEVICE_PRECISION");var result=new TreeMap<String,Integer>();
+        var allowed=Set.of("nx_compute_receipt.completed_at","nx_compute_task.completed_at","nx_compute_task.proof_consumed_at","nx_wallet_ledger.created_at","nx_earning_event.wallet_posted_at","nx_earning_event.created_at");
+        for(var row:rows){if(row==null||!(row.get("precision") instanceof Number n))throw new IllegalStateException("INVALID_SUPPORT_DEVICE_PRECISION");String key=row.get("tableName")+"."+row.get("columnName");int p=new java.math.BigDecimal(n.toString()).intValueExact();if(!allowed.contains(key)||p<0||p>6||result.put(key,p)!=null)throw new IllegalStateException("INVALID_SUPPORT_DEVICE_PRECISION");}return Map.copyOf(result);
+    }
 
     @Override
     public Snapshot readCurrent(Collection<Long> customerIds) {

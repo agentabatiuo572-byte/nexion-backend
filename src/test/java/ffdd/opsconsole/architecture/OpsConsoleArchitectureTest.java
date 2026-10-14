@@ -2,6 +2,10 @@ package ffdd.opsconsole.architecture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.sun.source.tree.ClassTree;
+import com.sun.source.tree.VariableTree;
+import com.sun.source.util.JavacTask;
+import com.sun.source.util.TreeScanner;
 import ffdd.opsconsole.NexionOpsConsoleApplication;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.common.api.OpsErrorCode;
@@ -13,6 +17,7 @@ import ffdd.opsconsole.common.domain.OpsDomain;
 import ffdd.opsconsole.common.domain.OpsDomainCatalog;
 import java.nio.file.Path;
 import java.nio.file.Files;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -21,6 +26,12 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import javax.xml.parsers.DocumentBuilderFactory;
+import javax.lang.model.element.Modifier;
+import javax.tools.Diagnostic;
+import javax.tools.DiagnosticCollector;
+import javax.tools.JavaFileObject;
+import javax.tools.SimpleJavaFileObject;
+import javax.tools.ToolProvider;
 import org.junit.jupiter.api.Test;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -35,13 +46,9 @@ class OpsConsoleArchitectureTest {
             Pattern.compile("(?m)@(?:Autowired|Resource|Inject)(?:\\s*\\([^)]*\\))?\\s+"
                     + "(?:(?:private|protected|public)\\s+)?(?!static\\b)(?![^;\\r\\n]*\\()[^;\\r\\n]+;");
     private static final Pattern SPRING_BEAN_PATTERN =
-            Pattern.compile("@(?:RestController|Controller|RestControllerAdvice|ControllerAdvice|Service|Component|Repository|Configuration|ApplicationService)\\b");
+            Pattern.compile("@(?:[A-Za-z_$][A-Za-z0-9_$]*\\.)*(?:RestController|Controller|RestControllerAdvice|ControllerAdvice|Service|Component|Repository|Configuration|ApplicationService)\\b");
     private static final Pattern FINAL_INSTANCE_FIELD_PATTERN =
             Pattern.compile("(?m)^\\s*private\\s+final\\s+[^=;]+\\s+[A-Za-z0-9_]+\\s*;");
-    private static final Pattern NON_FINAL_INSTANCE_FIELD_PATTERN =
-            Pattern.compile("(?m)^\\s*private\\s+(?!static\\b)(?!final\\b)[^\\r\\n=;()]+\\s+[A-Za-z0-9_]+\\s*(?:=|;)");
-    private static final Pattern SIMPLE_CONFIG_FINAL_FIELD_PATTERN =
-            Pattern.compile("^\\s*private\\s+final\\s+(?:String|boolean|Boolean|int|Integer|long|Long|BigDecimal)\\s+[A-Za-z0-9_]+\\s*;");
     private static final Pattern REQUIRED_ARGS_CONSTRUCTOR_PATTERN =
             Pattern.compile("@RequiredArgsConstructor\\b");
     private static final Pattern CONFIGURATION_PROPERTIES_PATTERN =
@@ -200,10 +207,7 @@ class OpsConsoleArchitectureTest {
             if (!SPRING_BEAN_PATTERN.matcher(source).find()) {
                 continue;
             }
-            if (!CONFIGURATION_PROPERTIES_PATTERN.matcher(source).find()
-                    && NON_FINAL_INSTANCE_FIELD_PATTERN.matcher(source).find()) {
-                mutableBeanFieldViolations.add(displayPath(file));
-            }
+            for (String field : mutableBeanFields(source)) mutableBeanFieldViolations.add(displayPath(file) + " " + field);
             if (!FINAL_INSTANCE_FIELD_PATTERN.matcher(source).find()) {
                 continue;
             }
@@ -253,24 +257,98 @@ class OpsConsoleArchitectureTest {
             if (!SPRING_BEAN_PATTERN.matcher(source).find()) {
                 continue;
             }
-            List<String> lines = Files.readAllLines(file);
-            for (int index = 0; index < lines.size(); index++) {
-                String line = lines.get(index);
-                if (!SIMPLE_CONFIG_FINAL_FIELD_PATTERN.matcher(line).find()) {
-                    continue;
-                }
-                String previous = previousNonBlank(lines, index);
-                if (!line.contains("@Value(")
-                        && !previous.contains("@Value(")
-                        && !previous.contains("@SuppressWarnings(\"ArchitectureConfigField\")")) {
-                    violations.add(displayPath(file) + ":" + (index + 1) + " " + line.trim());
-                }
-            }
+            for (String field : unconfiguredBeanFields(source)) violations.add(displayPath(file) + " " + field);
         }
 
         assertThat(violations)
                 .as("Spring Bean simple final config values must carry @Value when Lombok generates constructors")
                 .isEmpty();
+    }
+
+    @Test
+    void beanConfigDetectorChecksTheDeclaringClassAndFieldAnnotations() throws Exception {
+        assertThat(unconfiguredBeanFields("@Service class Example { private final String config; }"))
+                .containsExactly("Example.config");
+        assertThat(unconfiguredBeanFields("@Service class Example { private static class Token { private final String nonce; private final boolean birth; } }"))
+                .isEmpty();
+        assertThat(unconfiguredBeanFields("class Example { @Service static class Nested { private final boolean config; } }"))
+                .containsExactly("Nested.config");
+        assertThat(unconfiguredBeanFields("@org.springframework.stereotype.Service class Qualified { private final int config; }"))
+                .containsExactly("Qualified.config");
+        assertThat(SPRING_BEAN_PATTERN.matcher("@org.springframework.stereotype.Service class Qualified {}").find()).isTrue();
+        assertThat(unconfiguredBeanFields("@Service class Example { @Value(\"${x}\") private final String config; }"))
+                .isEmpty();
+        assertThat(unconfiguredBeanFields("@Service class Example { @SuppressWarnings(\"ArchitectureConfigField\") private final String config; }"))
+                .isEmpty();
+        assertThat(unconfiguredBeanFields("@Service class Example { @Value(\"${x}\") private final String permitted; private final String missing; }"))
+                .containsExactly("Example.missing");
+        assertThat(unconfiguredBeanFields("@Service class Example { private static final String constant=\"x\"; private final int initialized=1; }"))
+                .isEmpty();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> unconfiguredBeanFields("@Service class Broken {"))
+                .isInstanceOf(AssertionError.class);
+    }
+
+    private static List<String> unconfiguredBeanFields(String source) throws Exception {
+        return beanFieldViolations(source, true);
+    }
+
+    private static List<String> mutableBeanFields(String source) throws Exception {
+        return beanFieldViolations(source, false);
+    }
+
+    @Test
+    void mutableBeanDetectorChecksOnlyTheActualDeclaringBean() throws Exception {
+        assertThat(mutableBeanFields("@Service class Example { private final Object dependency=null; private static class Token { private Object cash; } }"))
+                .isEmpty();
+        assertThat(mutableBeanFields("@Service class Example { private Object dependency; }"))
+                .containsExactly("Example.dependency");
+        assertThat(mutableBeanFields("class Example { @Service static class Nested { private Object dependency; } }"))
+                .containsExactly("Nested.dependency");
+        assertThat(mutableBeanFields("@Service @ConfigurationProperties class Config { private String value; } @Service class Example { private Object dependency; }"))
+                .containsExactly("Example.dependency");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mutableBeanFields("@Service class Broken {"))
+                .isInstanceOf(AssertionError.class);
+    }
+
+    private static List<String> beanFieldViolations(String source, boolean configurationValues) throws Exception {
+        var compiler = ToolProvider.getSystemJavaCompiler();
+        assertThat(compiler).as("Architecture verification requires a JDK").isNotNull();
+        var diagnostics = new DiagnosticCollector<JavaFileObject>();
+        var file = new SimpleJavaFileObject(URI.create("string:///Architecture.java"), JavaFileObject.Kind.SOURCE) {
+            @Override public CharSequence getCharContent(boolean ignoreEncodingErrors) { return source; }
+        };
+        List<String> violations = new ArrayList<>();
+        try (var manager = compiler.getStandardFileManager(diagnostics, null, null)) {
+            var task = (JavacTask) compiler.getTask(null, manager, diagnostics, List.of("-proc:none", "--class-path", ""), null, List.of(file));
+            for (var unit : task.parse()) new TreeScanner<Void, Void>() {
+                @Override public Void visitClass(ClassTree bean, Void unused) {
+                    if (bean.getModifiers().getAnnotations().stream().anyMatch(a -> SPRING_BEAN_PATTERN.matcher(
+                            "@" + a.getAnnotationType().toString().replaceFirst("^.*\\.", "")).find())) {
+                        for (var member : bean.getMembers()) if (member instanceof VariableTree field) {
+                            var flags = field.getModifiers().getFlags();
+                            if (!configurationValues) {
+                                boolean binder = bean.getModifiers().getAnnotations().stream().anyMatch(a -> CONFIGURATION_PROPERTIES_PATTERN.matcher("@" + a.getAnnotationType().toString().replaceFirst("^.*\\.", "")).find());
+                                if (flags.contains(Modifier.PRIVATE) && !flags.contains(Modifier.FINAL) && !flags.contains(Modifier.STATIC) && !binder)
+                                    violations.add(bean.getSimpleName() + "." + field.getName());
+                                continue;
+                            }
+                            if (!flags.contains(Modifier.PRIVATE) || !flags.contains(Modifier.FINAL) || flags.contains(Modifier.STATIC)
+                                    || field.getInitializer() != null || !Set.of("String", "boolean", "Boolean", "int", "Integer", "long", "Long", "BigDecimal")
+                                        .contains(field.getType().toString().replaceFirst("^.*\\.", ""))) continue;
+                            boolean configured = field.getModifiers().getAnnotations().stream().anyMatch(a -> {
+                                String name = a.getAnnotationType().toString().replaceFirst("^.*\\.", "");
+                                return name.equals("Value") || name.equals("SuppressWarnings") && a.getArguments().toString().contains("\"ArchitectureConfigField\"");
+                            });
+                            if (!configured) violations.add(bean.getSimpleName() + "." + field.getName());
+                        }
+                    }
+                    return super.visitClass(bean, unused);
+                }
+            }.scan(unit, null);
+            assertThat(diagnostics.getDiagnostics().stream().filter(d -> d.getKind() == Diagnostic.Kind.ERROR).toList())
+                    .as("Architecture source parsing must succeed").isEmpty();
+        }
+        return violations;
     }
 
     @Test
@@ -325,11 +403,20 @@ class OpsConsoleArchitectureTest {
         assertThat(hasHandWrittenJdbc("src/main/java/other/Reader.java", holder)).isTrue();
         assertThat(hasHandWrittenJdbc(reader, holder + "\nimport org.springframework.jdbc.core.JdbcTemplate;")).isTrue();
         assertThat(hasHandWrittenJdbc(reader, holder + "\nNamedParameterJdbcTemplate query;")).isTrue();
+        for (String participant : List.of(
+                "src/main/java/ffdd/opsconsole/finance/application/SupportFundJournalBindingService.java",
+                "src/main/java/ffdd/opsconsole/auth/application/AuthNewAccountCreator.java")) {
+            assertThat(hasHandWrittenJdbc(participant, holder)).isFalse();
+            assertThat(hasHandWrittenJdbc(participant, holder + "\nimport org.springframework.jdbc.core.JdbcTemplate;")).isTrue();
+            assertThat(hasHandWrittenJdbc(participant, holder + "\norg.springframework.jdbc.core.JdbcOperations query;")).isTrue();
+        }
     }
 
     private static boolean hasHandWrittenJdbc(String path, String source) {
         // This reader only inspects its existing transaction isolation; SQL still belongs to MyBatis.
-        if (path.equals("src/main/java/ffdd/opsconsole/finance/application/SupportPaymentSourceService.java"))
+        if (path.equals("src/main/java/ffdd/opsconsole/finance/application/SupportPaymentSourceService.java")
+                || path.equals("src/main/java/ffdd/opsconsole/finance/application/SupportFundJournalBindingService.java")
+                || path.equals("src/main/java/ffdd/opsconsole/auth/application/AuthNewAccountCreator.java"))
             source = source.replace("import org.springframework.jdbc.datasource.ConnectionHolder;", "");
         return HAND_WRITTEN_JDBC_PATTERN.matcher(source).find();
     }
@@ -408,13 +495,40 @@ class OpsConsoleArchitectureTest {
         List<Path> files = new ArrayList<>(sourceFiles());
         if (Files.exists(MAIN_RESOURCES_ROOT)) {
             try (Stream<Path> resourceFiles = Files.walk(MAIN_RESOURCES_ROOT)) {
-                files.addAll(resourceFiles
+                for(Path resource:resourceFiles
                         .filter(Files::isRegularFile)
                         .filter(path -> !path.getFileName().toString().endsWith(".class"))
-                        .toList());
+                        .toList()) {
+                    // Only reviewed manifest-bound binaries leave the text scan; JSON/source records remain.
+                    if(!reviewedAvatarBinary(resource))files.add(resource);
+                }
             }
         }
         return files;
+    }
+
+    private static boolean reviewedAvatarBinary(Path path) throws Exception {
+        Path directory=MAIN_RESOURCES_ROOT.resolve("support/default-avatars");
+        if(!path.getParent().equals(directory) || !path.getFileName().toString().matches("(?:male|female)-[0-9]{2}\\.(?:png|jpg|jpeg)"))return false;
+        Path manifest=directory.resolve("manifest.json");if(!Files.isRegularFile(manifest))return false;
+        var entries=new com.fasterxml.jackson.databind.ObjectMapper().readTree(Files.readString(manifest)).path("entries");
+        for(var entry:entries)if(path.getFileName().toString().equals(entry.path("file").asText())
+                && entry.path("reviewed").isBoolean() && entry.path("reviewed").asBoolean()
+                && "PASS".equals(entry.path("review").path("visual").asText())
+                && entry.path("sha256").asText().equals(java.util.HexFormat.of().formatHex(
+                        java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)))))return true;
+        return false;
+    }
+
+    @Test void avatarTextScanExceptionRequiresReviewedManifestBindingAndKeepsMetadataInScan()throws Exception {
+        var directory=MAIN_RESOURCES_ROOT.resolve("support/default-avatars");
+        assertThat(reviewedAvatarBinary(directory.resolve("manifest.json"))).isFalse();
+        assertThat(reviewedAvatarBinary(directory.resolve("SOURCE.md"))).isFalse();
+        assertThat(reviewedAvatarBinary(MAIN_RESOURCES_ROOT.resolve("male-01.jpg"))).isFalse();
+        assertThat(reviewedAvatarBinary(directory.resolve("male-99.jpg"))).isFalse();
+        var scanned=javaAndResourceFiles();assertThat(scanned).contains(directory.resolve("manifest.json"),directory.resolve("SOURCE.md"));
+        var entries=new com.fasterxml.jackson.databind.ObjectMapper().readTree(Files.readString(directory.resolve("manifest.json"))).path("entries");
+        for(var entry:entries)assertThat(reviewedAvatarBinary(directory.resolve(entry.path("file").asText()))).isTrue();
     }
 
     private static List<Path> scriptFiles() throws Exception {

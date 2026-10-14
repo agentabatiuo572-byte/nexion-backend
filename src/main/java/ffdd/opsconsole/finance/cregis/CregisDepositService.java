@@ -761,6 +761,7 @@ public class CregisDepositService {
         if (wallet == null) throw new IllegalStateException("CREGIS_WALLET_MISSING");
         requireReviewProofFresh(proof);
         BigDecimal after = ((BigDecimal) wallet.get("usdtAvailable")).add(net);
+        paymentAttribution.beforeCash(prepared);
         if (db.creditWallet(net, userId, ((Number) wallet.get("version")).longValue()) != 1)
             throw new IllegalStateException("CREGIS_WALLET_CONFLICT");
         String bizNo = "CR-" + cid;
@@ -846,6 +847,7 @@ public class CregisDepositService {
             Map<String, Object> wallet = db.lockWallet(userId);
             if (wallet == null) throw new IllegalStateException("CREGIS_WALLET_MISSING");
             BigDecimal after = ((BigDecimal) wallet.get("usdtAvailable")).add(net);
+            paymentAttribution.beforeCash(prepared);
             if (db.creditWallet(net, userId, ((Number) wallet.get("version")).longValue()) != 1)
                 throw new IllegalStateException("CREGIS_WALLET_CONFLICT");
             String bizNo = "CR-" + cid;

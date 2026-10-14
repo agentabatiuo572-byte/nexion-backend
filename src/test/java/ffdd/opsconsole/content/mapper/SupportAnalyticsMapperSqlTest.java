@@ -38,6 +38,16 @@ class SupportAnalyticsMapperSqlTest {
         assertThat(query).contains("THEN a.agentId ELSE NULL END ownerAgentId","ELSE NULL END currentGroupId");
     }
 
+    @Test void singleCurrentCustomerBindsExactRootAndRetainsEveryRoleScope() {
+        for(var mode:ReadMode.values()) {
+            var parameters=new HashMap<String,Object>();parameters.put("scope",new ReadScope(7L,mode,null,null));parameters.put("customerId",1L);
+            var bound=configuration.getMappedStatement(SupportAnalyticsMapper.class.getName()+".currentCustomer").getBoundSql(parameters);
+            assertThat(bound.getSql()).contains("AND scope_customer.id=?","scope_customer.sandbox=0","scope_customer.is_deleted=0");
+            assertThat(bound.getParameterMappings()).extracting(p->p.getProperty()).contains("customerId","scope.actorId");
+        }
+        assertThat(sql("currentCustomers",new ReadScope(7L,ReadMode.PERSONAL,null,null))).doesNotContain("AND scope_customer.id=?");
+    }
+
     @Test void platformLegacyEnumerationIncludesUnboundAndDeletedHistoricalProductionSubjectsWithoutGrantingOtherModes() {
         String all=sql("legacyProductionCustomers",new ReadScope(8L,ReadMode.ALL,null,null));
         assertThat(all).contains("SELECT u.id FROM nx_user u WHERE u.sandbox=0", "scope_role.role_code IN ('SUPER','SUPERADMIN','SUPER_ADMIN')");

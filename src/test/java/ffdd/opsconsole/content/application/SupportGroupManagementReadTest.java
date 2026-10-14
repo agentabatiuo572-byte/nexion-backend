@@ -18,7 +18,7 @@ class SupportGroupManagementReadTest {
     final SupportGroupMapper mapper=mock(SupportGroupMapper.class);
     final SupportOwnershipService ownership=mock(SupportOwnershipService.class);
     final SupportGroupService service=new SupportGroupService(mapper,ownership,mock(AdminIdempotencyService.class),
-            mock(AuditLogService.class),mock(org.springframework.context.ApplicationEventPublisher.class));
+            mock(AuditLogService.class),mock(org.springframework.context.ApplicationEventPublisher.class),mock(ffdd.opsconsole.content.mapper.SupportAgentMapper.class));
     final LocalDateTime at=LocalDateTime.of(2026,10,9,0,0);
     final ReadScope all=new ReadScope(7L,ReadMode.ALL,null,13L);
     @BeforeEach void setup(){

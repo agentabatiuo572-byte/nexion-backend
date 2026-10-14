@@ -7,12 +7,6 @@ import org.apache.ibatis.annotations.Select;
 // Read-only cross-table projections; generic entity CRUD would widen this mapper's contract.
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportCustomerProfileMapper {
-    @Select("SELECT COUNT(*) total,COALESCE(SUM(CASE WHEN "+ffdd.opsconsole.device.mapper.DeviceOpsMapper.E5_ACTIVATED_OWNED+
-        " AND "+ffdd.opsconsole.device.mapper.DeviceOpsMapper.E5_RUNTIME_ONLINE+" THEN 1 ELSE 0 END),0) observedOnlineCount,"+
-        "COALESCE(SUM(CASE WHEN "+ffdd.opsconsole.device.mapper.DeviceOpsMapper.E5_ACTIVATED_OWNED+
-        " AND "+ffdd.opsconsole.device.mapper.DeviceOpsMapper.E5_RUNTIME_UNKNOWN+" THEN 1 ELSE 0 END),0) telemetryUnknownCount "+
-        "FROM nx_user_device d LEFT JOIN nx_user_device_runtime r ON r.user_device_id=d.id AND r.is_deleted=0 WHERE d.user_id=#{customer} AND d.is_deleted=0")
-    Map<String,Object> deviceTotals(Long customer);
     @Select("SELECT coverage_start_at coverageStartAt,observed_through_at observedThroughAt FROM nx_support_activity_coverage WHERE id=1")
     ffdd.opsconsole.content.application.SupportActivityService.Coverage coverage();
     @Select("SELECT avatar_url FROM nx_user WHERE id=#{customer} AND is_deleted=0")

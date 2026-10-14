@@ -41,7 +41,11 @@ public record AdminAccountOverview(
             List<SessionRecord> sessionDetails,
             List<RoleHistoryRecord> roleHistory,
             String version,
-            String temporaryPassword,String avatarAssetId,Long avatarVersion) {
+            String temporaryPassword,String avatarAssetId,Long avatarVersion,String avatarGender) {
+        public OperatorRecord(String id,String name,String username,String email,String role,boolean tfa,String status,String lastLogin,int sessions,String tfaResetAt,
+                String credentialDeliveryStatus,List<SessionRecord> sessionDetails,List<RoleHistoryRecord> roleHistory,String version,String temporaryPassword,String avatarAssetId,Long avatarVersion) {
+            this(id,name,username,email,role,tfa,status,lastLogin,sessions,tfaResetAt,credentialDeliveryStatus,sessionDetails,roleHistory,version,temporaryPassword,avatarAssetId,avatarVersion,null);
+        }
         public OperatorRecord(String id,String name,String username,String email,String role,boolean tfa,String status,String lastLogin,int sessions,String tfaResetAt,
                 String credentialDeliveryStatus,List<SessionRecord> sessionDetails,List<RoleHistoryRecord> roleHistory,String version,String temporaryPassword) {
             this(id,name,username,email,role,tfa,status,lastLogin,sessions,tfaResetAt,credentialDeliveryStatus,sessionDetails,roleHistory,version,temporaryPassword,null,0L);

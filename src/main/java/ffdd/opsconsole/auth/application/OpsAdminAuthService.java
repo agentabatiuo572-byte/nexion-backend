@@ -10,6 +10,7 @@ import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.content.application.SupportOwnershipService;
 import ffdd.opsconsole.platform.infrastructure.AdminAccountStateEntity;
 import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -60,6 +61,7 @@ public class OpsAdminAuthService {
     private final AdminMfaChallengeRegistry mfaChallenges;
     private final AdminMfaProperties mfaProperties;
     private final AdminLoginGuard loginGuard;
+    private final SupportOwnershipService supportOwnership;
 
     public ApiResult<AdminLoginResponse> login(AdminLoginRequest request) {
         return login(request, "unknown", "unknown");
@@ -345,6 +347,9 @@ public class OpsAdminAuthService {
             List<String> authorities,
             boolean passwordChangeRequired) {
         String roleCode = effectiveRoleCode(admin);
+        List<String> supportReadModes = !passwordChangeRequired
+                ? supportOwnership.availableReadModes(admin.getId()).stream().map(Enum::name).toList()
+                : List.of();
         List<AdminLoginResponse.EffectiveMenuNode> effectiveMenuNodes = passwordChangeRequired
                 ? List.of()
                 : superAdmin(admin)
@@ -365,7 +370,8 @@ public class OpsAdminAuthService {
                 effectiveMenus,
                 safeMenuNodes,
                 passwordChangeRequired,
-                adminSessionRegistry.isIdleDisabled());
+                adminSessionRegistry.isIdleDisabled(),
+                supportReadModes);
     }
 
     private boolean passwordChangeRequired(Long adminId) {

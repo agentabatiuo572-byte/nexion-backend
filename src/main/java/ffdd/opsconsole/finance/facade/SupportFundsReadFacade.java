@@ -9,6 +9,18 @@ import java.util.List;
 /** Internal evidence only. The caller authorizes all IDs and owns the repeatable-read snapshot. */
 public interface SupportFundsReadFacade extends DomainFacade {
     Snapshot readCurrent(Collection<Long> customerIds);
+    NetSnapshot readNetContributions(Collection<Long> customerIds);
+
+    record NetSnapshot(List<NetCustomer> customers,List<ContributionOrigin> origins,List<ContributionChange> changes) {
+        public NetSnapshot {customers=List.copyOf(customers);origins=List.copyOf(origins);changes=List.copyOf(changes);}
+    }
+    record NetCustomer(long customerId,EvidenceState state,List<String> reasons,BigDecimal usdt,BigDecimal nex) {
+        public NetCustomer {reasons=List.copyOf(reasons);}
+    }
+    record ContributionOrigin(String contributionId,long customerId,String paymentFactId,LocalDateTime formedAt,
+                              String businessZone,int fractionalSecondDigits,String sourceReference) {}
+    record ContributionChange(String contributionId,long originCustomerId,String currency,BigDecimal amount,
+                              LocalDateTime succeededAt,String businessZone,int fractionalSecondDigits,String sourceReference) {}
 
     enum ReadState { READY, PARTIAL, UNKNOWN, FAILED }
     enum EvidenceState { READY, UNKNOWN }

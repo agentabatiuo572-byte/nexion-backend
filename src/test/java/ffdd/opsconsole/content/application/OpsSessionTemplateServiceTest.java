@@ -69,6 +69,7 @@ class OpsSessionTemplateServiceTest {
         assertThat(result.getData().categories()).anySatisfy(category -> {
             assertThat(category.type()).isEqualTo("support");
             assertThat(category.enabled()).isFalse();
+            assertThat(category.readOnly()).isTrue();
         });
         assertThat(result.getData().advisorPolicy().delayMs()).isEqualTo(2500);
         assertThat(result.getData().workbenchPolicy().timeoutFallback()).isTrue();
@@ -77,6 +78,29 @@ class OpsSessionTemplateServiceTest {
         assertThat(result.getData().sources()).contains("nx_config_item:content-session", "nx_help_article:session_script");
     }
 
+    @Test
+    void retiredSupportCategoryKeepsReadContractButCannotExposeAnotherEditableHumanGate() {
+        configFacade.values.put("I.session.cat.support.enabled", "on");
+        var category = service.overview().getData().categories().stream()
+                .filter(row -> "support".equals(row.type())).findFirst().orElseThrow();
+        assertThat(category.enabled()).isFalse(); assertThat(category.readOnly()).isTrue();
+        var result = service.updateCategory("support", "original-legacy-toggle-key", null);
+        assertThat(result.getMessage()).isEqualTo("SESSION_CATEGORY_READONLY");
+        assertThat(configFacade.values.get("I.session.cat.support.enabled")).isEqualTo("on");
+    }
+    @Test
+    void advisorGateReadAndMutationUseTheSameSupportedBooleanValues() {
+        for (String enabled : List.of("on", "true", "1", "enabled", " TRUE ")) {
+            configFacade.values.put("I.session.cat.advisor.enabled", enabled);
+            assertThat(service.overview().getData().categories().stream().filter(c -> "advisor".equals(c.type()))
+                    .findFirst().orElseThrow().enabled()).isTrue();
+            var result = service.updateCategory("advisor", "gate-alias-" + enabled.trim(),
+                    new SessionCategoryToggleRequest(false, true, "superadmin", "验证统一人工开关布尔配置"));
+            assertThat(result.getCode()).isZero();
+            assertThat(result.getData().enabled()).isFalse();
+            assertThat(configFacade.values.get("I.session.cat.advisor.enabled")).isEqualTo("off");
+        }
+    }
     @Test
     void overviewKeepsAdvisorAutopushEffectivelyOffWithoutAnExecutor() {
         assertThat(service.overview().getData().advisorPolicy().enabled()).isFalse();

@@ -47,10 +47,18 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /** Test-context-only evidence. Intent, an object name, or a successful HEAD never grants ownership. */
 public final class SupportObjectEvidenceLedger {
-    enum Kind { AVATAR, ATTACHMENT, BULK_ASSET, CUSTOMER_AVATAR }
+    enum Kind { AVATAR, DEFAULT_CREATE_AVATAR, ATTACHMENT, BULK_ASSET, CUSTOMER_AVATAR }
     record Request(String suite, String testcase, Kind kind, String actorType, Long actorId,
             Long customerId, Long assignmentId, String clientUploadId, String commandKey,
-            String exactKey, String expectedBucket, boolean expectedMissingBucket) {}
+            String exactKey, String expectedBucket, boolean expectedMissingBucket, DefaultCreateCommand defaultCreate) {
+        Request(String suite,String testcase,Kind kind,String actorType,Long actorId,Long customerId,
+                Long assignmentId,String clientUploadId,String commandKey,String exactKey,String expectedBucket,boolean expectedMissingBucket) {
+            this(suite,testcase,kind,actorType,actorId,customerId,assignmentId,clientUploadId,commandKey,exactKey,expectedBucket,expectedMissingBucket,null);
+        }
+    }
+    /** Original typed create and, only for approval, the complete frozen server command captured before HTTP. */
+    record DefaultCreateCommand(ffdd.opsconsole.platform.dto.AdminAccountCreateRequest create,
+            String operationId,String frozenCommandJson) {}
     record CustomerInsert(long generatedId, int affectedRows, long referralLookupId) {}
     record Intent(String id, Request request, JsonNode reference) {}
     /** Explicit isolated-test bean only; business contexts do not define it and consume the real environment. */
@@ -58,7 +66,7 @@ public final class SupportObjectEvidenceLedger {
         IsolatedEnvironment { values=Map.copyOf(values); }
     }
     private record Entry(JsonNode body, JsonNode reference) {}
-    private record Located(Kind kind, String id, String key, String table, Map<String,Object> row) {}
+    private record Located(Kind kind,String id,String key,String table,Map<String,Object> row,Map<String,Object> defaultEvidence) { Located(Kind kind,String id,String key,String table,Map<String,Object> row) { this(kind,id,key,table,row,new LinkedHashMap<>()); } }
     private record Creation(Intent intent, Located located, JsonNode creator, JsonNode putIntent,
             long threadId, boolean transactional) {}
     private final SupportRuntimeTarget target;
@@ -163,6 +171,8 @@ public final class SupportObjectEvidenceLedger {
         Objects.requireNonNull(request); text(request.suite(), "suite"); text(request.testcase(), "testcase");
         Objects.requireNonNull(request.kind()); text(request.actorType(), "actor type"); text(request.expectedBucket(), "expected bucket");
         require(Set.of("ADMIN", "USER", "UNKNOWN").contains(request.actorType()), "Known actor type or explicit UNKNOWN required");
+        require((request.kind()==Kind.DEFAULT_CREATE_AVATAR)==(request.defaultCreate()!=null),"Default command required only for default-create evidence");
+        if(request.defaultCreate()!=null)validateDefaultCommand(request);
         beforeBusiness();
         // Invalid business requests still reach the real HTTP service; creator evidence is required only at PUT.
         String id = UUID.randomUUID().toString();
@@ -176,7 +186,8 @@ public final class SupportObjectEvidenceLedger {
     void httpOutcome(Intent intent, int status, JsonNode body) {
         requireIntent(intent); require(status >= 100 && status <= 599, "Actual HTTP status required");
         Integer code = body != null && body.path("code").isIntegralNumber() ? body.path("code").intValue() : null;
-        String resultId = resultId(body);
+        String resultId = intent.request().kind()==Kind.DEFAULT_CREATE_AVATAR && Integer.valueOf(0).equals(code)
+                ? defaultResultId(intent.request(),body) : resultId(body);
         List<Entry> attempts = forRequest(readEntries(), intent.id(), "PUT_INTENT");
         JsonNode creation = null; String classification; RuntimeException unresolved = null;
         if (status >= 200 && status < 300 && Integer.valueOf(0).equals(code)) {
@@ -327,7 +338,7 @@ public final class SupportObjectEvidenceLedger {
         JsonNode putIntent = append("PUT_INTENT", intent, creator, object,
                 map("request", request, "exactRow", located.row(), "rowTable", located.table(), "databaseIdentity", database,
                         "transactionActive", transactional, "before", absence, "contentType", type,
-                        "sizeBytes", size, "ownership", "UNPROVEN"));
+                        "sizeBytes", size, "defaultCreateEvidence", located.defaultEvidence(), "ownership", "UNPROVEN"));
         Creation creation = new Creation(intent, located, creator, putIntent, Thread.currentThread().getId(), transactional);
         require(pending.putIfAbsent(key, creation) == null, "Object already has a pending put");
         if (transactional) {
@@ -353,6 +364,8 @@ public final class SupportObjectEvidenceLedger {
                     && size == result.getSizeBytes(), "Original storage result does not match the exact attempted object");
             Map<String,Object> content = content(original, key);
             require(((Number) content.get("bytes")).longValue() == size, "Actual stored byte count differs from real PUT input size");
+            if(request.kind()==Kind.DEFAULT_CREATE_AVATAR)
+                require(Objects.equals(located.defaultEvidence().get("defaultEncodedSha256"),content.get("sha256")),"Real default object differs from its independently verified source encoding");
             append("PUT_RETURNED", intent, creator, object, map("delegated", true,
                     "returned", map("bucket", result.getBucket(), "objectKey", result.getObjectKey(), "contentType", result.getContentType(), "sizeBytes", result.getSizeBytes()),
                     "content", content, "ownership", "UNPROVEN"));
@@ -394,6 +407,12 @@ public final class SupportObjectEvidenceLedger {
             require(forRequest(entries, intent.id(), "HTTP_OUTCOME").isEmpty()
                     && forRequest(entries, intent.id(), "REQUEST_UNKNOWN").isEmpty(), "Closed request cannot correlate a new PUT");
             Request request = intent.request();
+            if(request.kind()==Kind.DEFAULT_CREATE_AVATAR && located.kind()==Kind.AVATAR) {
+                if(defaultCorrelation(request,located)) {
+                    require(forRequest(entries,intent.id(),"PUT_INTENT").isEmpty(),"Default command already attempted a PUT");matches.add(intent);
+                }
+                continue;
+            }
             if (request.kind() != located.kind()) continue;
             Map<String,Object> row = located.row(); boolean match;
             switch (located.kind()) {
@@ -422,6 +441,118 @@ public final class SupportObjectEvidenceLedger {
         }
         require(matches.size() == 1, "Missing or multiple durable request correlations; no PUT permission");
         return matches.get(0);
+    }
+
+    private void validateDefaultCommand(Request request) {
+        var command=request.defaultCreate();var create=command.create();
+        require("ADMIN".equals(request.actorType()) && request.actorId()!=null && request.actorId()>0
+                && request.customerId()==null && request.assignmentId()==null && request.clientUploadId()==null && request.exactKey()==null,
+                "Default create cannot use an actor-only/general upload request");
+        text(request.commandKey(),"original account command key");
+        require(create!=null && Boolean.TRUE.equals(create.useDefaultAvatar()) && "support".equals(create.role())
+                && create.avatarAssetId()==null && create.username()!=null && create.username().matches("[a-zA-Z0-9_.-]{3,32}"),
+                "Exact explicit support default-create intent required");
+        SupportDefaultAvatarCatalog.gender(create.avatarGender());
+        require((command.operationId()==null)==(command.frozenCommandJson()==null),"Complete A2 frozen binding or A1 only required");
+        if(command.operationId()!=null)require(command.operationId().matches("WO-[A-Z0-9-]+"),"Canonical original approval ticket required");
+    }
+
+    private boolean defaultCorrelation(Request request,Located located) {
+        validateDefaultCommand(request);var command=request.defaultCreate();var create=command.create();var row=located.row();
+        if(!sameNumber(request.actorId(),row.get("uploader_id")))return false;
+        require(TransactionSynchronizationManager.isActualTransactionActive(),"Default target and asset must be observed in their actual inserting transaction");
+        String actor=string(one(jdbc.queryForList("SELECT username FROM nx_admin WHERE id=?",request.actorId()),"default actor"),"username");
+        String scope,hash;
+        if(command.operationId()==null) {
+            scope="A1:ACCOUNT_CREATE:"+request.actorId();hash=sha(("|"+create).getBytes(StandardCharsets.UTF_8));
+        } else {
+            scope="A2_COMMAND";
+            require(actor.equals(create.operator()),"Approval command must use authenticated checker identity");
+            var ticket=one(jdbc.queryForList("SELECT operation_id,status,command_json FROM nx_audit_operation_ticket WHERE operation_id=?",command.operationId()),"frozen approval");
+            require("pending".equals(string(ticket,"status")) && command.frozenCommandJson().equals(string(ticket,"command_json")),"Original pending frozen approval required in inserting transaction");
+            var frozen=parse(command.frozenCommandJson());var params=frozen.path("params");
+            require("A".equals(frozen.path("domain").asText()) && "a1_account_create".equals(frozen.path("op").asText())
+                    && frozen.path("avatarMakerAdminId").isIntegralNumber() && frozen.path("avatarMakerAdminId").asLong()>0
+                    && frozen.path("avatarMakerAdminId").asLong()!=request.actorId()
+                    && create.username().equals(params.path("username").asText()) && "support".equals(params.path("role").asText())
+                    && params.path("useDefaultAvatar").isBoolean() && params.path("useDefaultAvatar").asBoolean()
+                    && params.path("avatarAssetId").isMissingNode()
+                    && Objects.equals(create.displayName(),params.path("displayName").isMissingNode()?null:params.path("displayName").asText())
+                    && Objects.equals(create.email(),params.path("email").isMissingNode()?null:params.path("email").asText())
+                    && Objects.equals(create.initialPassword(),params.path("initialPassword").isMissingNode()?null:params.path("initialPassword").asText())
+                    && Objects.equals(create.avatarGender(),params.path("avatarGender").isMissingNode()?null:params.path("avatarGender").asText()),
+                    "Default approval is bound to frozen maker/checker and exact requested pool/target");
+            located.defaultEvidence().put("defaultMakerCreator",creator("ADMIN",frozen.path("avatarMakerAdminId").asLong()));
+            var envelope=map("actor",actor,"operation","APPROVE:"+command.operationId(),"payload",
+                    new ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest(create.reason(),actor));
+            try{hash=sha(json.writeValueAsBytes(envelope));}catch(IOException failure){throw new UncheckedIOException(failure);}
+        }
+        var receipt=one(jdbc.queryForList("SELECT scope,idempotency_key,request_hash,status FROM nx_admin_idempotency_record WHERE scope=? AND idempotency_key=? AND is_deleted=0",scope,request.commandKey()),"original default command receipt");
+        require(scope.equals(string(receipt,"scope")) && request.commandKey().equals(string(receipt,"idempotency_key"))
+                && hash.equals(string(receipt,"request_hash")) && "PROCESSING".equals(string(receipt,"status")),"Original account command hash/claim must match, not uploader alone");
+        var target=one(jdbc.queryForList("SELECT id,username,status,is_deleted,created_at FROM nx_admin WHERE username=?",create.username()),"same-transaction new default target");
+        long targetId=number(target,"id");require(absentId("nx_admin",String.valueOf(targetId)) && targetId!=request.actorId()
+                && number(target,"status")==1 && number(target,"is_deleted")==0,"Historical/actor targets cannot be default creations");
+        for(var old:before.path("tables").path("nx_admin"))require(!create.username().equals(old.path("username").asText()),"Default username existed in independent before");
+        var roles=jdbc.queryForList("SELECT r.role_code FROM nx_admin_role_relation rr JOIN nx_admin_role r ON r.id=rr.role_id WHERE rr.admin_id=? AND rr.is_deleted=0 AND r.is_deleted=0",targetId);
+        require(roles.size()==1 && "SUPPORT".equals(string(roles.get(0),"role_code")),"Real new target must have the exact requested support role");
+        var state=one(jdbc.queryForList("SELECT avatar_asset_id,avatar_version,avatar_gender,is_deleted FROM nx_admin_account_state WHERE admin_id=?",targetId),"initial default state");
+        require(state.get("avatar_asset_id")==null && number(state,"avatar_version")==0 && number(state,"is_deleted")==0
+                && Objects.equals(create.avatarGender(),state.get("avatar_gender")),"Default asset must bind the initial same-command state, not a pre-existing avatar");
+        require("READY".equals(string(row,"state")) && row.get("attached_admin_id")==null,"Default PUT must precede real READY to ATTACHED binding");
+        requireUuid(string(row,"client_upload_id"));
+        require(string(row,"client_upload_id").equals(string(row,"idempotency_key")),"Independent default token must match its original internal command");
+        var source=defaultSource(targetId,create.avatarGender(),string(row,"request_hash"));
+        require(number(row,"byte_count")==((Number)source.get("encodedBytes")).longValue() && Objects.equals(row.get("mime"),source.get("mime")),"Default SQL metadata differs from reviewed source encoding");
+        located.defaultEvidence().put("defaultTargetId",targetId);located.defaultEvidence().put("defaultCommandReceipt",receipt);located.defaultEvidence().put("defaultSource",source);
+        located.defaultEvidence().put("defaultEncodedSha256",source.get("encodedSha256"));return true;
+    }
+
+    private Map<String,Object> defaultSource(long target,String gender,String requestHash) {
+        var limits=new SupportAttachmentPolicy.View(true,List.of("image/png","image/jpeg"),1048576L,1000000L,300L,null);
+        var matches=new ArrayList<Map<String,Object>>();var ids=new LinkedHashSet<String>();var hashes=new LinkedHashSet<String>();
+        try(var stream=getClass().getClassLoader().getResourceAsStream("support/default-avatars/manifest.json")) {
+            require(stream!=null,"Default manifest missing");var manifest=json.readTree(stream);
+            require(manifest.path("schemaVersion").asInt()==1 && "FICTIONAL_SYNTHETIC_ADULT_PORTRAITS".equals(manifest.path("subjectKind").asText())
+                    && manifest.path("entries").size()==8,"Exactly the approved synthetic default source bundle required");
+            for(var entry:manifest.path("entries")) {
+                String file=entry.path("file").asText(),source=entry.path("sha256").asText(),pool=entry.path("pool").asText();
+                require(file.matches("(male|female)-[0-9]{2}\\.(jpg|jpeg|png)") && ids.add(entry.path("poolEntryId").asText())
+                        && hashes.add(source) && entry.path("reviewed").isBoolean() && entry.path("reviewed").asBoolean()
+                        && "PASS".equals(entry.path("review").path("visual").asText()) && "SOURCE.md".equals(entry.path("source").asText())
+                        && Set.of("MALE","FEMALE").contains(pool),"Default source is unsigned or duplicated");
+                try(var image=getClass().getClassLoader().getResourceAsStream("support/default-avatars/"+file)) {
+                    require(image!=null,"Reviewed default source missing");byte[] bytes=image.readNBytes(1048577);
+                    require(bytes.length==entry.path("bytes").asLong() && source.equals(sha(bytes)),"Default source actual hash/size mismatch");
+                    var encoded=SupportAttachmentService.decode(new SupportDefaultAvatarCatalog.ImageFile(file,bytes),limits);
+                    require(encoded.width()==entry.path("width").asInt() && encoded.height()==entry.path("height").asInt(),"Default source dimensions mismatch");
+                    if(sha(("CREATE_DEFAULT|"+target+"|"+source).getBytes(StandardCharsets.UTF_8)).equals(requestHash)) {
+                        require(gender==null || "UNSPECIFIED".equals(gender) || gender.equals(pool),"Default source pool differs from explicit gender");
+                        matches.add(map("poolEntryId",entry.path("poolEntryId").asText(),"sourceSha256",source,"pool",pool,
+                                "encodedSha256",sha(encoded.content()),"encodedBytes",encoded.content().length,"mime",encoded.mime()));
+                    }
+                }
+            }
+            try(var source=getClass().getClassLoader().getResourceAsStream("support/default-avatars/SOURCE.md")) {require(source!=null,"Default provenance record missing");}
+        } catch(IOException failure){throw new UncheckedIOException(failure);}
+        require(matches.size()==1,"Exactly one reviewed source must explain this real new target's default request hash");return matches.get(0);
+    }
+
+    private String defaultResultId(Request request,JsonNode body) {
+        validateDefaultCommand(request);var command=request.defaultCreate();
+        var target=one(jdbc.queryForList("SELECT id FROM nx_admin WHERE username=?",command.create().username()),"committed default account");
+        long admin=number(target,"id");var state=one(jdbc.queryForList("SELECT avatar_asset_id FROM nx_admin_account_state WHERE admin_id=?",admin),"committed default avatar");
+        String asset=string(state,"avatar_asset_id");requireUuid(asset);
+        var audit=jdbc.queryForList("SELECT resource_id FROM nx_audit_log WHERE action='A1_OPERATOR_CREATED' AND resource_id=? AND actor_id=? AND result='SUCCESS' AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.idempotencyKey'))=?",String.valueOf(admin),request.actorId(),request.commandKey());
+        require(audit.size()==1,"Exact actual creation success audit required");
+        if(command.operationId()==null)require(body.path("data").path("id").asLong(-1)==admin && asset.equals(body.path("data").path("avatarAssetId").asText()),"Actual create response must match its committed target and independent asset");
+        else {
+            require(command.operationId().equals(body.path("data").path("id").asText()) && "approved".equals(body.path("data").path("status").asText()),"Actual original approval response required");
+            var ticket=one(jdbc.queryForList("SELECT status,command_json FROM nx_audit_operation_ticket WHERE operation_id=?",command.operationId()),"committed approval");
+            require("approved".equals(ticket.get("status")) && command.frozenCommandJson().equals(ticket.get("command_json")),"Committed frozen ticket mismatch");
+            require(jdbc.queryForList("SELECT id FROM nx_audit_log WHERE action='A2_OPERATION_APPROVED' AND resource_id=? AND actor_id=? AND result='SUCCESS' AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.idempotencyKey'))=?",command.operationId(),request.actorId(),request.commandKey()).size()==1,"Original checker approval audit required");
+        }
+        return asset;
     }
 
     private JsonNode creator(String type, Long id) {
@@ -781,6 +912,7 @@ public final class SupportObjectEvidenceLedger {
                     && Objects.equals(original.assignmentId(), request.assignmentId()) && Objects.equals(original.clientUploadId(), request.clientUploadId())
                     && Objects.equals(original.expectedBucket(), request.expectedBucket());
             if (request.kind() != Kind.ATTACHMENT) same = same && Objects.equals(original.commandKey(), request.commandKey());
+            if(request.kind()==Kind.DEFAULT_CREATE_AVATAR) same=same && Objects.equals(original.defaultCreate(),request.defaultCreate());
             if (same && committed(entry, entries)) matches.add(entry);
         }
         return matches;

@@ -90,8 +90,10 @@ public class SupportLeaderboardService {
             if(agent!=null) body.put("row",row(SupportLeaderboard.publicSummary(snapshot,agent,r.query().expectedVersion()),r.query(),snapshot.viewVersion(),initial.actor()));
             else {
                 Page p=SupportLeaderboard.page(snapshot,r.query().keyword(),r.query().pageNum(),r.query().pageSize(),r.query().expectedVersion(),initial.actor());
+                Podium podium=SupportLeaderboard.podium(snapshot);
                 body.putAll(map("total",p.total(),"ranked",p.ranked(),"unranked",p.unranked(),"matched",p.matched(),
                     "pageNum",p.pageNum(),"pageSize",p.pageSize(),"rows",p.rows().stream().map(x->row(x,r.query(),p.viewVersion(),initial.actor())).toList(),
+                    "podium",map("total",podium.total(),"rows",podium.rows().stream().map(x->row(x,r.query(),p.viewVersion(),initial.actor())).toList()),
                     "self",map("row",p.self().row()==null?null:row(p.self().row(),r.query(),p.viewVersion(),initial.actor()),
                         "gap",p.self().gap()==null?null:p.self().gap().toPlainString(),"reason",p.self().reason().name(),"pageNum",p.self().pageNum())));
             }

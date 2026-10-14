@@ -14,6 +14,9 @@ import java.math.BigDecimal;
 import java.time.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import static org.assertj.core.api.Assertions.*;
 import static ffdd.opsconsole.content.application.SupportAnalyticsQueryVersion.*;
 
@@ -26,6 +29,111 @@ class SupportAnalyticsQueryVersionTest {
         return SupportAnalyticsQueryRequest.fromParameters(m).normalize(Set.of("USDT"),EnumSet.allOf(SupportAnalyticsQueryRequest.Sort.class));
     }
     private String token(Builder b) { var v = evaluate(query(Map.of()), b.build()); assertThat(v.status()).isEqualTo(SupportAnalyticsQueryVersion.Status.READY); return v.value(); }
+
+    private Evidence netEvidence(ffdd.opsconsole.finance.facade.SupportFundsReadFacade.NetSnapshot net,ReadState state,List<ffdd.opsconsole.content.mapper.SupportAnalyticsMapper.AttributionProof> proofs) {
+        var e=new Builder().build();return new Evidence(e.reads(),e.authority(),e.candidateCustomerIds(),e.customers(),e.eventCandidates(),e.rules(),e.finance(),e.attributions(),e.first(),e.invitations(),e.devices(),e.unknownHoldingDevices(),e.activityCoverage(),e.activities(),e.tasks(),e.legacyCandidateCustomerIds(),e.descendantFinance(),e.descendantFinanceRead(),e.profiles(),e.profilesRead(),e.funds(),e.fundsRead(),net,state,proofs);
+    }
+    @Test void actualNetObservationIsVersionEvidenceAndMissingOrUnknownRootsCannotBeReady() {
+        var zero=new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.NetSnapshot(List.of(new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.NetCustomer(100,ffdd.opsconsole.finance.facade.SupportFundsReadFacade.EvidenceState.READY,List.of(),BigDecimal.ZERO,BigDecimal.ZERO)),List.of(),List.of());
+        var ready=evaluate(query(Map.of()),netEvidence(zero,ReadState.COMPLETE,List.of()));assertThat(ready.status()).isEqualTo(SupportAnalyticsQueryVersion.Status.READY);
+        assertThat(ready.value()).isNotEqualTo(token(new Builder()));
+        assertThat(evaluate(query(Map.of()),netEvidence(zero,ReadState.NOT_REQUESTED,List.of())).status()).isEqualTo(SupportAnalyticsQueryVersion.Status.UNKNOWN);
+        assertThat(evaluate(query(Map.of()),netEvidence(new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.NetSnapshot(List.of(),List.of(),List.of()),ReadState.COMPLETE,List.of())).status()).isEqualTo(SupportAnalyticsQueryVersion.Status.UNKNOWN);
+        assertThat(evaluate(query(Map.of()),netEvidence(zero,ReadState.FAILED,List.of())).status()).isEqualTo(SupportAnalyticsQueryVersion.Status.FAILED);
+    }
+    @Test void netVersionIncludesActualChangeTimeRawProofAndEqualLotMultiplicity() {
+        var origin=new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ContributionOrigin("lot7",100,"DEPOSIT:7",T,"Asia/Shanghai",6,"raw7");
+        var formation=new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ContributionChange("lot7",100,"USDT",BigDecimal.TEN,T,"Asia/Shanghai",6,"raw7");
+        var reversal=new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ContributionChange("lot7",100,"USDT",new BigDecimal("-3"),T.plusDays(7),"Asia/Shanghai",6,"withdrawal9");
+        var customer=new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.NetCustomer(100,ffdd.opsconsole.finance.facade.SupportFundsReadFacade.EvidenceState.READY,List.of(),new BigDecimal("7"),BigDecimal.ZERO);
+        var proof=new ffdd.opsconsole.content.mapper.SupportAnalyticsMapper.AttributionProof("DEPOSIT:7",null,T,"{\"factId\":\"DEPOSIT:7\"}","{\"captureMode\":\"NEW_SUCCESS\"}");
+        var original=new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.NetSnapshot(List.of(customer),List.of(origin),List.of(formation,reversal));
+        var a=evaluate(query(Map.of()),netEvidence(original,ReadState.COMPLETE,List.of(proof)));assertThat(a.status()).isEqualTo(SupportAnalyticsQueryVersion.Status.READY);
+        var later=new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ContributionChange(reversal.contributionId(),100,"USDT",reversal.amount(),T.plusDays(8),"Asia/Shanghai",6,reversal.sourceReference());
+        var b=evaluate(query(Map.of()),netEvidence(new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.NetSnapshot(List.of(customer),List.of(origin),List.of(later,formation)),ReadState.COMPLETE,List.of(proof)));
+        assertThat(b.value()).isNotEqualTo(a.value());
+        var half=new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ContributionChange("lot7",100,"USDT",new BigDecimal("5"),T,"Asia/Shanghai",6,"raw7");
+        var c=evaluate(query(Map.of()),netEvidence(new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.NetSnapshot(List.of(customer),List.of(origin),List.of(half,reversal,half)),ReadState.COMPLETE,List.of(proof)));
+        assertThat(c.status()).isEqualTo(SupportAnalyticsQueryVersion.Status.READY);assertThat(c.value()).isNotEqualTo(a.value());
+        var shuffled=evaluate(query(Map.of()),netEvidence(new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.NetSnapshot(List.of(customer),List.of(origin),List.of(reversal,half,half)),ReadState.COMPLETE,List.of(proof)));assertThat(shuffled.value()).isEqualTo(c.value());
+        assertThat(evaluate(query(Map.of()),netEvidence(original,ReadState.COMPLETE,List.of())).status()).isEqualTo(SupportAnalyticsQueryVersion.Status.UNKNOWN);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"ROOT,HISTORY", "ROOT,REFUND", "ROOT,ENVIRONMENT", "ROOT,SUPPORTED_FROM", "ROOT,REASONS",
+        "DESCENDANT,HISTORY", "DESCENDANT,REFUND", "DESCENDANT,ENVIRONMENT", "DESCENDANT,SUPPORTED_FROM", "DESCENDANT,REASONS"})
+    void customerAmountProofChangesInvalidateExpectedVersion(String domain,String field) {
+        Builder before = new Builder(), after = new Builder();
+        long id = domain.equals("ROOT") ? 100 : 200;
+        var old = new CustomerCoverage(id,Source.DEPOSIT_ORDER,SupportPaymentFacts.Status.UNKNOWN,
+            SupportPaymentFacts.Status.UNKNOWN,SupportPaymentFacts.Status.UNKNOWN,T,List.of("HISTORY_UNPROVEN"));
+        var changed = new CustomerCoverage(id,old.source(),field.equals("HISTORY") ? SupportPaymentFacts.Status.READY : old.historyStatus(),
+            field.equals("REFUND") ? SupportPaymentFacts.Status.READY : old.refundStatus(),
+            field.equals("ENVIRONMENT") ? SupportPaymentFacts.Status.READY : old.historicalEnvironmentStatus(),
+            field.equals("SUPPORTED_FROM") ? T.minusDays(1) : old.supportedFrom(),
+            field.equals("REASONS") ? List.of("ENVIRONMENT_UNPROVEN") : old.reasons());
+        amountProof(before,domain,List.of(old)); amountProof(after,domain,List.of(changed));
+        String previous = token(before);
+        assertThat(token(after)).isNotEqualTo(previous);
+        var nextPage = query(Map.of("pageNum","2","expectedVersion",previous));
+        assertThatThrownBy(() -> requireExpected(nextPage,evaluate(nextPage,after.build())))
+            .isInstanceOf(VersionConflict.class).hasMessage("SUPPORT_ANALYTICS_QUERY_CHANGED");
+    }
+    @ParameterizedTest
+    @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER"},mode=EnumSource.Mode.EXCLUDE)
+    void eachAmountSourceAndMissingProofParticipateInVersion(Source source) {
+        Builder absent = new Builder(), present = new Builder();
+        var proof = new CustomerCoverage(100,source,SupportPaymentFacts.Status.READY,SupportPaymentFacts.Status.READY,
+            SupportPaymentFacts.Status.READY,T,List.of());
+        amountProof(present,"ROOT",List.of(proof));
+        assertThat(token(present)).isNotEqualTo(token(absent));
+        for(Source other : Source.values()) if(other != source) {
+            Builder changed = new Builder();
+            amountProof(changed,"ROOT",List.of(new CustomerCoverage(100,other,proof.historyStatus(),proof.refundStatus(),
+                proof.historicalEnvironmentStatus(),proof.supportedFrom(),proof.reasons())));
+            assertThat(token(changed)).as("%s versus %s",source,other).isNotEqualTo(token(present));
+        }
+    }
+    @Test void customerProofOrderReasonsAndIdenticalDuplicatesAreStableButConflictingIdentityFails() {
+        var first = new CustomerCoverage(100,Source.DEPOSIT_ORDER,SupportPaymentFacts.Status.READY,SupportPaymentFacts.Status.UNKNOWN,
+            SupportPaymentFacts.Status.UNKNOWN,T,List.of("A","B"));
+        var equivalent = new CustomerCoverage(100,first.source(),first.historyStatus(),first.refundStatus(),
+            first.historicalEnvironmentStatus(),T,List.of("B","A","A"));
+        var second = new CustomerCoverage(100,Source.WALLET_ORDER,first.historyStatus(),first.refundStatus(),
+            first.historicalEnvironmentStatus(),T,List.of());
+        Builder a = new Builder(), b = new Builder();
+        amountProof(a,"ROOT",List.of(first,second)); amountProof(b,"ROOT",List.of(second,equivalent,first));
+        assertThat(token(a)).isEqualTo(token(b));
+        var conflict = new CustomerCoverage(100,first.source(),SupportPaymentFacts.Status.UNKNOWN,first.refundStatus(),
+            first.historicalEnvironmentStatus(),T,first.reasons());
+        amountProof(b,"ROOT",List.of(first,conflict));
+        assertThatThrownBy(() -> evaluate(query(Map.of()),b.build())).isInstanceOf(IllegalArgumentException.class);
+    }
+    @Test void rootAndDescendantCustomerProofsRemainSeparateDomains() {
+        Builder a = new Builder(), b = new Builder();
+        for(Builder value : List.of(a,b)) amountProof(value,"DESCENDANT",List.of());
+        var root = new CustomerCoverage(100,Source.DEPOSIT_ORDER,SupportPaymentFacts.Status.READY,SupportPaymentFacts.Status.UNKNOWN,
+            SupportPaymentFacts.Status.READY,T,List.of());
+        var descendant = new CustomerCoverage(200,root.source(),root.historyStatus(),root.refundStatus(),root.historicalEnvironmentStatus(),T,List.of());
+        amountProof(a,"ROOT",List.of(root)); amountProof(b,"DESCENDANT",List.of(descendant));
+        assertThat(token(a)).isNotEqualTo(token(b));
+    }
+    @Test void oldEmptyCoverageAndUnrequestedNullFinanceDoNotCrash() {
+        Builder old = new Builder(), explicit = new Builder(); amountProof(explicit,"ROOT",List.of());
+        assertThat(token(old)).isEqualTo(token(explicit));
+        old.candidateIds=List.of(); old.customers=List.of(); old.first=List.of(); old.invitations=List.of(); old.activities=List.of(); old.finance=null;
+        old.reads=new Reads(ReadState.COMPLETE,ReadState.COMPLETE,ReadState.NOT_REQUESTED,ReadState.COMPLETE,
+            ReadState.COMPLETE,ReadState.COMPLETE,ReadState.COMPLETE,ReadState.NOT_REQUESTED);
+        assertThat(token(old)).startsWith("saq-v1:");
+    }
+    private static void amountProof(Builder b,String domain,List<CustomerCoverage> rows) {
+        Snapshot original = b.finance;
+        if(domain.equals("DESCENDANT")) {
+            b.invitations=List.of(new Invitation(100,0,List.of(200L),List.of(200L),Completeness.COMPLETE,Set.of()));
+            b.descendantFinance=new Snapshot(List.of(),List.of(),original.coverage(),original.businessZone(),original.evaluatedAt(),
+                List.of(new FirstHistory(200,SupportPaymentFacts.Status.READY,List.of())),rows);
+        } else b.finance=new Snapshot(original.facts(),original.issues(),original.coverage(),original.businessZone(),original.evaluatedAt(),original.firstHistory(),rows);
+    }
 
     @Test void evaluatedClockDoesNotChangeTokenButSavedWatermarkDoes() {
         Builder a = new Builder(), b = new Builder();
@@ -53,6 +161,13 @@ class SupportAnalyticsQueryVersionTest {
         var filtered = query(Map.of("keyword","Customer"));
         assertThat(evaluate(filtered,a.build()).value()).isNotEqualTo(evaluate(filtered,b.build()).value());
         assertThat(evaluate(filtered,b.build()).status()).isEqualTo(SupportAnalyticsQueryVersion.Status.READY);
+        var root = new CustomerCoverage(100,Source.DEPOSIT_ORDER,SupportPaymentFacts.Status.READY,SupportPaymentFacts.Status.READY,
+            SupportPaymentFacts.Status.READY,T,List.of());
+        var other = new CustomerCoverage(200,root.source(),root.historyStatus(),root.refundStatus(),root.historicalEnvironmentStatus(),T,List.of());
+        amountProof(b,"ROOT",List.of(root)); String rootOnly = token(b);
+        amountProof(b,"ROOT",List.of(other)); assertThat(token(b)).isNotEqualTo(rootOnly);
+        amountProof(b,"ROOT",List.of(root,other)); String both = token(b);
+        amountProof(b,"ROOT",List.of(other,root,other)); assertThat(token(b)).isEqualTo(both);
     }
     @Test void canonicalSourceChangesInvalidateEvenWhenCountAmountCustomerAndFirstIdAreUnchanged() {
         Builder a = new Builder(), b = new Builder();

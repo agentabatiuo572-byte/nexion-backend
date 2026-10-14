@@ -672,7 +672,10 @@ public class OpsConversationService {
                 request.attachmentId(),request.expectedAssignmentId());
         if(prepared.previousMessageId()!=null) return new MessageCommandResult(
                 ApiResult.ok(conversationRepository.findByConversationNoForUpdate(prepared.previousConversationNo()).orElseThrow()),prepared.previousMessageId());
-        String type = normalizeConversationType(request.conversationType());
+        if (!ConversationCategoryPolicy.enabled(configFacade, "advisor")) {
+            throw new ffdd.opsconsole.shared.exception.BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "CONVERSATION_CATEGORY_DISABLED");
+        }
+        String type = "advisor";
         String actor = persistedActor==null ? operator(request.operator()) : "admin:"+persistedActor;
         AdvisorRoutingDecision routing = routingDecision(type, request, actor);
         String ownerName = routing.targetName();
@@ -910,7 +913,7 @@ public class OpsConversationService {
     }
 
     private String normalizeConversationType(String conversationType) {
-        return StringUtils.hasText(conversationType) ? conversationType.trim().toLowerCase(Locale.ROOT) : "support";
+        return StringUtils.hasText(conversationType) ? conversationType.trim().toLowerCase(Locale.ROOT) : "advisor";
     }
 
     private String normalizeStatus(String status) {

@@ -24,6 +24,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
@@ -296,18 +297,17 @@ public class AppSupportService {
                 || !SupportHumanMessageService.validContent(request.kind(),request.openingText())) {
             return validation("CONVERSATION_INPUT_INVALID");
         }
-        String requestedType = normalizeLower(request.conversationType());
-        boolean categoryEnabled = conversationCategoryEnabled(requestedType);
-        if (!categoryEnabled) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "CONVERSATION_CATEGORY_DISABLED");
-        }
         return idempotent("APP_CONVERSATION_CREATE:" + userId, idempotencyKey, hash(request), () -> {
             LocalDateTime now = LocalDateTime.now(clock);
-            String type = requestedType;
+            String type = "advisor";
             ownership.lockCustomer(userId);
             var prepared=humanMessages.prepare(userId,"USER",userId,idempotencyKey,"CREATE",request,
                     request.clientMessageId(),request.kind(),"SERVICE",request.attachmentId(),request.expectedAssignmentId());
             if(prepared.previousMessageId()!=null) return replayConversation(userId,prepared.previousConversationNo());
+            // Original payload/hash and durable legacy messages replay before the new-entry gate.
+            if (!conversationCategoryEnabled("advisor")) {
+                throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "CONVERSATION_CATEGORY_DISABLED");
+            }
             DedicatedAdvisorBindingView advisor = supportAgentRepository.findActiveDedicatedAdvisor(userId).orElse(null);
             String ownerId = advisor == null ? null : String.valueOf(advisor.adminId());
             String ownerName = advisor == null ? "待分配" : advisor.name();
@@ -442,7 +442,7 @@ public class AppSupportService {
         if (!validUser(userId)) return forbidden();
         return ApiResult.ok(List.of(
                 new ConversationCategoryAvailability("advisor", conversationCategoryEnabled("advisor")),
-                new ConversationCategoryAvailability("support", conversationCategoryEnabled("support")),
+                new ConversationCategoryAvailability("support", false),
                 new ConversationCategoryAvailability("ai", conversationCategoryEnabled("ai"))));
     }
 

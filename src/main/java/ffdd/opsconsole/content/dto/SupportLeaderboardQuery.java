@@ -29,7 +29,8 @@ public record SupportLeaderboardQuery(String board, String month, String currenc
         Objects.requireNonNull(now); Objects.requireNonNull(serverCoveredMonths); Objects.requireNonNull(serverCurrencies);
         Objects.requireNonNull(serverAllowedScopes);
         if (!serverCurrencies.contains(serverDefaultCurrency)) throw new IllegalArgumentException("Server currency policy required");
-        Board b = enumeration(board, Board.class, Board.firstPayment);
+        Board b = enumeration(board, Board.class, Board.netContribution);
+        if(b==Board.deposit || b==Board.purchase)b=Board.netContribution;
         Scope s = enumeration(scope, Scope.class, Scope.all);
         Set<Long> serverApprovedGroups = serverAllowedScopes.get(s);
         if (serverApprovedGroups == null || s != Scope.all && serverApprovedGroups.isEmpty())

@@ -103,7 +103,16 @@ public final class SupportAnalyticsQueryVersion {
             List<Device> unknownHoldingDevices, ActivityCoverage activityCoverage,
             List<Activity> activities, List<Task> tasks,List<Long> legacyCandidateCustomerIds,
             SupportPaymentFacts.Snapshot descendantFinance,ReadState descendantFinanceRead,
-            List<Profile> profiles,ReadState profilesRead,SupportFundsReadFacade.Snapshot funds,ReadState fundsRead) {
+            List<Profile> profiles,ReadState profilesRead,SupportFundsReadFacade.Snapshot funds,ReadState fundsRead,
+            SupportFundsReadFacade.NetSnapshot net,ReadState netRead,List<ffdd.opsconsole.content.mapper.SupportAnalyticsMapper.AttributionProof> netProofs) {
+        public Evidence(Reads reads,Authority authority,List<Long> candidateCustomerIds,List<Customer> customers,List<EventCandidate> eventCandidates,SupportRules rules,
+                SupportPaymentFacts.Snapshot finance,List<Attribution> attributions,List<First> first,List<SupportInvitationReadFacade.Invitation> invitations,
+                List<Device> devices,List<Device> unknownHoldingDevices,ActivityCoverage activityCoverage,List<Activity> activities,List<Task> tasks,
+                List<Long> legacyCandidateCustomerIds,SupportPaymentFacts.Snapshot descendantFinance,ReadState descendantFinanceRead,
+                List<Profile> profiles,ReadState profilesRead,SupportFundsReadFacade.Snapshot funds,ReadState fundsRead) {
+            this(reads,authority,candidateCustomerIds,customers,eventCandidates,rules,finance,attributions,first,invitations,devices,unknownHoldingDevices,
+                activityCoverage,activities,tasks,legacyCandidateCustomerIds,descendantFinance,descendantFinanceRead,profiles,profilesRead,funds,fundsRead,null,ReadState.NOT_REQUESTED,List.of());
+        }
         public Evidence(Reads reads,Authority authority,List<Long> candidateCustomerIds,List<Customer> customers,List<EventCandidate> eventCandidates,SupportRules rules,
                 SupportPaymentFacts.Snapshot finance,List<Attribution> attributions,List<First> first,List<SupportInvitationReadFacade.Invitation> invitations,
                 List<Device> devices,List<Device> unknownHoldingDevices,ActivityCoverage activityCoverage,List<Activity> activities,List<Task> tasks,
@@ -128,7 +137,10 @@ public final class SupportAnalyticsQueryVersion {
         if (input.reads() == null) return new Version(Status.UNKNOWN, null);
         Reads r = input.reads();
         if(input.profilesRead()!=ReadState.COMPLETE && input.profilesRead()!=ReadState.NOT_REQUESTED
-                || input.fundsRead()!=ReadState.COMPLETE && input.fundsRead()!=ReadState.NOT_REQUESTED)return new Version(Status.UNKNOWN,null);
+                || input.fundsRead()!=ReadState.COMPLETE && input.fundsRead()!=ReadState.NOT_REQUESTED
+                || input.netRead()!=ReadState.COMPLETE && input.netRead()!=ReadState.NOT_REQUESTED)return new Version(Status.UNKNOWN,null);
+        if(input.netRead()==ReadState.NOT_REQUESTED && input.net()!=null || input.netRead()==ReadState.COMPLETE && (input.candidateCustomerIds()==null || input.candidateCustomerIds().stream().anyMatch(Objects::isNull) || netObservation(input.net(),new TreeSet<>(input.candidateCustomerIds()),input.netProofs())!=ReadState.COMPLETE))
+            return new Version(Status.UNKNOWN,null);
         boolean emptyFinance=input.candidateCustomerIds()!=null && input.candidateCustomerIds().isEmpty() && input.finance()==null && r.finance()==ReadState.NOT_REQUESTED;
         List<ReadState> required = new ArrayList<>(Arrays.asList(r.authority(), r.candidates(),
                 r.attribution(), r.invitations(), r.devices(), r.activity()));
@@ -212,13 +224,14 @@ public final class SupportAnalyticsQueryVersion {
             e.n(p.customerId());e.time(p.sourceUpdatedAt());e.s(p.avatarObjectKey());e.s(p.vRank());e.s(p.userLevel());
             e.rows("tags",p.tags(),Tag::id,t->bytes(x->{x.n(t.id());x.s(t.tag());x.time(t.createdAt());x.time(t.updatedAt());}));}));
         out.s("currentFunds");out.en(input.fundsRead());if(input.fundsRead()==ReadState.COMPLETE)funds(out,input.funds());
+        if(input.netRead()!=ReadState.NOT_REQUESTED){out.s("netContributions");out.en(input.netRead());net(out,input.net(),input.netProofs());}
         return new Version(Status.READY, "saq-v1:" + sha256(out.bytes()));
     }
 
     private static boolean failed(Evidence input) {
         Reads r=input.reads();
         if(r!=null && Arrays.asList(r.authority(),r.candidates(),r.finance(),r.attribution(),r.invitations(),r.devices(),r.activity(),r.tasks()).contains(ReadState.FAILED)
-                || input.descendantFinanceRead()==ReadState.FAILED || input.profilesRead()==ReadState.FAILED || input.fundsRead()==ReadState.FAILED
+                || input.descendantFinanceRead()==ReadState.FAILED || input.profilesRead()==ReadState.FAILED || input.fundsRead()==ReadState.FAILED || input.netRead()==ReadState.FAILED
                 || failedFunds(input.funds()) || failedFinance(input.finance()) || failedFinance(input.descendantFinance()))return true;
         if(input.first()!=null && input.first().stream().filter(Objects::nonNull).anyMatch(f->readFailed(f.reasons())))return true;
         return input.invitations()!=null && input.invitations().stream().filter(Objects::nonNull).anyMatch(t->
@@ -230,6 +243,48 @@ public final class SupportAnalyticsQueryVersion {
             || snapshot.firstHistory().stream().anyMatch(h->readFailed(h.reasons())));
     }
     private static boolean readFailed(Collection<String> reasons) {return reasons!=null && reasons.stream().anyMatch(r->r!=null && r.contains("READ_FAILED"));}
+
+    static ReadState netObservation(SupportFundsReadFacade.NetSnapshot snapshot,Set<Long> roots,List<ffdd.opsconsole.content.mapper.SupportAnalyticsMapper.AttributionProof> proofs) {
+        if(snapshot==null || proofs==null)return ReadState.UNKNOWN;
+        var customers=new TreeMap<Long,SupportFundsReadFacade.NetCustomer>();
+        for(var c:snapshot.customers()) {
+            if(c.customerId()<=0 || !roots.contains(c.customerId()) || customers.putIfAbsent(c.customerId(),c)!=null
+                || c.state()!=SupportFundsReadFacade.EvidenceState.READY || !c.reasons().isEmpty() || c.usdt()==null || c.nex()==null)return ReadState.UNKNOWN;
+        }
+        if(!customers.keySet().equals(roots))return ReadState.UNKNOWN;
+        var origins=new TreeMap<String,SupportFundsReadFacade.ContributionOrigin>();var facts=new TreeSet<String>();
+        for(var o:snapshot.origins()) {
+            if(o.contributionId()==null || o.contributionId().isBlank() || !roots.contains(o.customerId()) || o.paymentFactId()==null || o.paymentFactId().isBlank()
+                || origins.putIfAbsent(o.contributionId(),o)!=null || !netStamp(o.formedAt(),o.businessZone(),o.fractionalSecondDigits(),o.sourceReference()))return ReadState.UNKNOWN;
+            facts.add(o.paymentFactId());
+        }
+        var proofIds=new TreeSet<String>();
+        for(var p:proofs)if(p==null || p.factId()==null || !proofIds.add(p.factId()) || p.captureDbUtc()==null || p.sourceFactJson()==null || p.attributionEvidenceJson()==null)return ReadState.UNKNOWN;
+        if(!proofIds.equals(facts))return ReadState.UNKNOWN;
+        var totals=new HashMap<String,BigDecimal>();
+        for(var d:snapshot.changes()) {
+            if(d.contributionId()==null || d.currency()==null)return ReadState.UNKNOWN;
+            var o=origins.get(d.contributionId());
+            if(o==null || o.customerId()!=d.originCustomerId() || !Set.of("USDT","NEX").contains(d.currency()) || d.amount()==null
+                || !netStamp(d.succeededAt(),d.businessZone(),d.fractionalSecondDigits(),d.sourceReference()) || d.succeededAt().isBefore(o.formedAt()))return ReadState.UNKNOWN;
+            totals.merge(d.originCustomerId()+":"+d.currency(),d.amount(),BigDecimal::add);
+        }
+        for(var c:customers.values())if(c.usdt().compareTo(totals.getOrDefault(c.customerId()+":USDT",BigDecimal.ZERO))!=0
+            || c.nex().compareTo(totals.getOrDefault(c.customerId()+":NEX",BigDecimal.ZERO))!=0)return ReadState.UNKNOWN;
+        return ReadState.COMPLETE;
+    }
+    private static boolean netStamp(LocalDateTime at,String zone,int digits,String source) {
+        return at!=null && SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId().equals(zone) && digits>=0 && digits<=9
+            && at.getNano()%(int)Math.pow(10,9-digits)==0 && source!=null && !source.isBlank();
+    }
+    private static void net(Encoder out,SupportFundsReadFacade.NetSnapshot s,List<ffdd.opsconsole.content.mapper.SupportAnalyticsMapper.AttributionProof> proofs) {
+        out.rows("netCustomers",s.customers(),SupportFundsReadFacade.NetCustomer::customerId,c->bytes(e->{e.n(c.customerId());e.en(c.state());e.strings(c.reasons());e.decimal(c.usdt());e.decimal(c.nex());}));
+        out.rows("netOrigins",s.origins(),SupportFundsReadFacade.ContributionOrigin::contributionId,o->bytes(e->{e.s(o.contributionId());e.n(o.customerId());e.s(o.paymentFactId());e.s(o.formedAt().toString());e.s(o.businessZone());e.n(o.fractionalSecondDigits());e.s(o.sourceReference());}));
+        // Multiple equal change rows can represent distinct source lots. Preserve multiplicity.
+        var changes=s.changes().stream().map(d->bytes(e->{e.s(d.contributionId());e.n(d.originCustomerId());e.s(d.currency());e.decimal(d.amount());e.s(d.succeededAt().toString());e.s(d.businessZone());e.n(d.fractionalSecondDigits());e.s(d.sourceReference());})).sorted(Arrays::compareUnsigned).toList();
+        out.s("netChanges");out.n(changes.size());changes.forEach(out::raw);
+        out.rows("netAttributionProofs",proofs,ffdd.opsconsole.content.mapper.SupportAnalyticsMapper.AttributionProof::factId,p->bytes(e->{e.s(p.factId());e.s(p.sourcePartition());e.time(p.captureDbUtc());e.s(p.sourceFactJson());e.s(p.attributionEvidenceJson());}));
+    }
 
     private static boolean failedFunds(SupportFundsReadFacade.Snapshot s) {
         return s!=null && (s.wallets()!=null && (s.wallets().state()==SupportFundsReadFacade.ReadState.FAILED || s.wallets().reasons().contains(SupportFundsReadFacade.Reason.WALLET_READ_FAILED)
@@ -406,6 +461,9 @@ public final class SupportAnalyticsQueryVersion {
         e.rowsByBytes("issues", s.issues(), i -> bytes(x -> { x.en(i.source()); x.s(i.sourceId()); x.s(i.reason()); x.n(i.customerId()); }));
         e.rows("firstHistory", s.firstHistory(), SupportPaymentFacts.FirstHistory::customerId,
                 h -> bytes(x -> { x.n(h.customerId()); x.en(h.status()); x.strings(h.reasons()); }));
+        e.rows("customerCoverage", s.customerCoverage(), c -> c.customerId()+":"+c.source(), c -> bytes(x -> {
+            x.n(c.customerId()); x.en(c.source()); x.en(c.historyStatus()); x.en(c.refundStatus()); x.en(c.historicalEnvironmentStatus());
+            x.time(c.supportedFrom()); x.strings(c.reasons()); }));
     }
     private static byte[] attribution(Attribution a) { return bytes(e -> {
         e.s(a.factId()); e.n(a.customerId()); e.s(a.kind()); e.s(a.source()); e.n(a.ledgerId()); e.s(a.sourceBusinessId());

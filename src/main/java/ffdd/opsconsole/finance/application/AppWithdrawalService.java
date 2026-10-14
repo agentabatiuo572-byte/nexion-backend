@@ -60,6 +60,7 @@ public class AppWithdrawalService {
     private final EventOutboxService outbox;
     private final WithdrawalRiskRuleFacade withdrawalRiskRuleFacade;
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
+    private final SupportWithdrawalFundSourceService withdrawalFunds;
     private final EarningsReleaseService earningsReleaseService;
     private final Environment environment;
     private final Clock clock;
@@ -497,6 +498,7 @@ public class AppWithdrawalService {
                 : fastTrack ? "H1_COOLDOWN_FAST_TRACK"
                 : riskRouteEvidence(k4Score, riskFacts, riskDecision);
         LocalDateTime payoutDueAt = holdUntil.plusHours(policy.payoutSlaHours());
+        var fundBefore = bankQuote==null ? withdrawalFunds.begin(userId) : null;
         if (mapper.reserveFunds(userId, amount, nexBurned, wallet.version()) != 1) {
             throw new BizException(409, "WITHDRAWAL_WALLET_CONFLICT");
         }
@@ -529,6 +531,11 @@ public class AppWithdrawalService {
             postPositiveLedger(withdrawalNo + ":USDT:BANK_FEE", userId, "WITHDRAW_BANK_FEE", "USDT", actualFee, "D7 bank payout fee");
         }
 
+        if(bankQuote==null) {
+            if (mapper.commitWithdrawalAttempt(userId, idempotencyKey, withdrawalNo) != 1)
+                throw new BizException(409, "WITHDRAWAL_ATTEMPT_COMMIT_CONFLICT");
+            withdrawalFunds.reserved(fundBefore, withdrawalNo);
+        }
         Attribution at = mapper.attribution(userId);
         if (at == null || at.accountAgeMonths() == null || !StringUtils.hasText(at.cohort())) {
             throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");

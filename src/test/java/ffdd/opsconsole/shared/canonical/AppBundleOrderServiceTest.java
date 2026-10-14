@@ -97,6 +97,7 @@ class AppBundleOrderServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     void pricesAndPersistsOneServerAuthoritativeBundle() {
         AppBundleOrderMapper mapper = mock(AppBundleOrderMapper.class);
         AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
@@ -125,6 +126,38 @@ class AppBundleOrderServiceTest {
                 .containsEntry("discountUsdt", new BigDecimal("15.000000"))
                 .containsEntry("amountUsdt", new BigDecimal("285.000000"));
         verify(mapper, times(2)).insertBundleItem(anyString(), any(), anyInt(), anyInt(), anyBoolean(), any());
+        String orderNo = (String) result.getData().get("orderNo");
+        var payload = org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+        verify(outbox).publishUserEvent(eq("ORDER"), eq(orderNo), eq("checkout.started"),
+                eq(7L), eq("P1"), eq(1), eq("2026-W33"), payload.capture());
+        verify(mapper).insertBundleOrder(eq(7L), eq(orderNo), eq(2L), eq(2), eq(2),
+                eq(new BigDecimal("300.000000")), eq(new BigDecimal("15.000000")), eq(new BigDecimal("285.000000")));
+        assertThat(result.getData()).containsEntry("itemCount", 2).containsEntry("quantity", 2)
+                .containsEntry("productNos", List.of("stellarbox-pro", "stellarbox-s1"));
+
+        var schemaMapper = mock(ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.class);
+        when(schemaMapper.findActiveSchema("checkout.started"))
+                .thenReturn(new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaGateRow("conversion", 32, true));
+        when(schemaMapper.listActiveProperties("checkout.started")).thenReturn(List.of(
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("user_id", "id", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("order_id", "id", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("product_id", "id", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("quantity", "number", true),
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow("amount_usdt", "number", true)));
+        var registeredOutbox = new EventOutboxService(schemaMapper, new com.fasterxml.jackson.databind.ObjectMapper(),
+                new ffdd.opsconsole.shared.outbox.OutboxProperties(),
+                mock(ffdd.opsconsole.platform.application.A4RuntimePolicyService.class));
+        org.junit.jupiter.api.Assertions.assertAll(
+                () -> assertThat(payload.getValue()).containsOnlyKeys("userId", "orderId", "productId", "quantity", "amountUsdt")
+                        .containsEntry("userId", 7L).containsEntry("orderId", orderNo).containsEntry("productId", 2L)
+                        .containsEntry("quantity", 2).containsEntry("amountUsdt", new BigDecimal("285.000000")),
+                () -> {
+                    assertThat(registeredOutbox.publishUserEvent("ORDER", orderNo, "checkout.started", 7L,
+                            "P1", 1, "2026-W33", payload.getValue())).isNotBlank();
+                    verify(schemaMapper).insertEvent(anyString(), eq("ORDER"), eq(orderNo), eq("checkout.started"),
+                            eq("checkout.started"), eq("conversion"), eq("P1"), eq(1), eq("2026-W33"),
+                            eq(true), eq(32), eq(true), eq(true), anyString());
+                });
     }
 
     @Test

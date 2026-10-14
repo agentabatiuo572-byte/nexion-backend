@@ -22,6 +22,7 @@ public interface AdminAccountStateMapper extends BaseMapper<AdminAccountStateEnt
               credential_delivery_status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
               avatar_asset_id VARCHAR(36) NULL,
               avatar_version BIGINT NOT NULL DEFAULT 0,
+              avatar_gender VARCHAR(16) NULL,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
               is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -32,6 +33,13 @@ public interface AdminAccountStateMapper extends BaseMapper<AdminAccountStateEnt
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createAccountStateTable();
+
+    /** Creates only a missing state row; duplicate rows retain every existing state field. */
+    @Insert("INSERT IGNORE INTO nx_admin_account_state (admin_id) VALUES (#{adminId})")
+    int initializeMissingAvatarState(@Param("adminId") Long adminId);
+
+    @Update("UPDATE nx_admin_account_state SET avatar_gender=#{gender} WHERE admin_id=#{adminId} AND is_deleted=0")
+    int updateAvatarGender(@Param("adminId") Long adminId,@Param("gender") String gender);
 
     @Select("""
             SELECT *

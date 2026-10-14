@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -77,6 +79,7 @@ class OpsNexMarketServiceTest {
     private final AdminPermissionCache permissionCache = mock(AdminPermissionCache.class);
     private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
+    private final SupportExchangeFundAdapter exchangeFunds=mock(SupportExchangeFundAdapter.class);
     private final OpsNexMarketService service = service();
 
     private OpsNexMarketService service() {
@@ -97,7 +100,7 @@ class OpsNexMarketServiceTest {
                 seedPolicy,
                 permissionCache,
                 lockMapper,
-                exchangeOrderMapper);
+                exchangeOrderMapper,exchangeFunds);
         return service;
     }
 
@@ -389,6 +392,12 @@ class OpsNexMarketServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("G2_EXCHANGE_QUEUE_ORDER_CANCELLED");
+        var bindings=org.mockito.Mockito.inOrder(exchangeOrderMapper,exchangeFunds,auditLogService);
+        bindings.verify(exchangeFunds).begin(10001L,"EX-Q-1");
+        bindings.verify(exchangeOrderMapper).cancelQueued("EX-Q-1");
+        bindings.verify(exchangeOrderMapper).creditWalletForQueuedCancellation(10001L,new BigDecimal("20"),BigDecimal.ZERO);
+        bindings.verify(auditLogService).recordRequired(any());
+        bindings.verify(exchangeFunds).recorded(any(),eq("EX-Q-1"),eq("CANCEL"),eq(BigDecimal.ZERO));
     }
 
     @Test

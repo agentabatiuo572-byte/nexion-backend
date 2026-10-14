@@ -104,8 +104,8 @@ class AppTradeinEligibilityMapperSqlContractTest {
                     .contains("FROM nx_admin_device_sku s")
                     .contains("s.sku_id=#{row.productNo}")
                     .contains("TRIM(s.datacenter) <> ''")
-                    .contains("TRIM(s.power_text) REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'")
-                    .contains("CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) > 0");
+                    .contains("UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP)?)?\\\\z'")
+                    .contains("CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0");
         }
     }
 }

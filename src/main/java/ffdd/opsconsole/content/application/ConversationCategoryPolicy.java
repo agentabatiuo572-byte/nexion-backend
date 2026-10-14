@@ -11,11 +11,16 @@ final class ConversationCategoryPolicy {
 
     private ConversationCategoryPolicy() {}
 
+    static boolean enabledValue(String value) {
+        return value != null && ENABLED_VALUES.contains(value.trim().toLowerCase(Locale.ROOT));
+    }
+
     static boolean enabled(PlatformConfigFacade configFacade, String type) {
         if (configFacade == null || !StringUtils.hasText(type)) return false;
-        return configFacade.activeValue("I.session.cat." + type.trim().toLowerCase(Locale.ROOT) + ".enabled")
-                .map(String::trim)
-                .map(value -> ENABLED_VALUES.contains(value.toLowerCase(Locale.ROOT)))
+        String category = type.trim().toLowerCase(Locale.ROOT);
+        if ("support".equals(category)) category = "advisor";
+        return configFacade.activeValue("I.session.cat." + category + ".enabled")
+                .map(ConversationCategoryPolicy::enabledValue)
                 .orElse(true);
     }
 }

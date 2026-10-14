@@ -10,6 +10,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.dto.AdminLoginRequest;
@@ -20,6 +21,8 @@ import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.content.application.SupportOwnershipService;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
 import ffdd.opsconsole.platform.infrastructure.AdminAccountStateEntity;
 import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -59,6 +62,7 @@ class OpsAdminAuthServiceTest {
     private final AdminMfaChallengeRegistry mfaChallenges = mock(AdminMfaChallengeRegistry.class);
     private final AdminMfaProperties mfaProperties = mock(AdminMfaProperties.class);
     private final AdminLoginGuard loginGuard = mock(AdminLoginGuard.class);
+    private final SupportOwnershipService supportOwnership = mock(SupportOwnershipService.class);
     private final OpsAdminAuthService service =
             new OpsAdminAuthService(
                     adminMapper,
@@ -72,7 +76,8 @@ class OpsAdminAuthServiceTest {
                     mfaCipher,
                     mfaChallenges,
                     mfaProperties,
-                    loginGuard);
+                    loginGuard,
+                    supportOwnership);
 
     private JwtProperties jwtProperties() {
         JwtProperties properties = new JwtProperties();
@@ -85,6 +90,7 @@ class OpsAdminAuthServiceTest {
     void loginIssuesAdminTokenFromStoredHashAndEffectiveAuthorities() {
         AdminEntity admin = activeSuperAdmin(passwordEncoder.encode("ValidPass@123"));
         when(adminMapper.selectOne(any())).thenReturn(admin);
+        when(supportOwnership.availableReadModes(1L)).thenReturn(List.of(ReadMode.ALL));
         when(permissionCache.getPermissionCodes(1L))
                 .thenReturn(new LinkedHashSet<>(List.of("PERM_SYSTEM_READ", "PERM_USER_READ")));
         when(adminSessionRegistry.createSession(1L, "superadmin")).thenReturn("admin-session-1");
@@ -99,6 +105,7 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getData().session().operator()).isEqualTo("Super Admin");
         assertThat(result.getData().session().role()).isEqualTo("superadmin");
         assertThat(result.getData().session().passwordChangeRequired()).isFalse();
+        assertThat(result.getData().session().supportReadModes()).containsExactly("ALL");
         // super 桥接已删除：authorities 完全来自 permissionCache（DB/Redis），不再追加旧 PERM_SYSTEM_WRITE
         assertThat(result.getData().session().authorities())
                 .contains("PERM_SYSTEM_READ", "PERM_USER_READ")
@@ -200,6 +207,8 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().session().role()).isEqualTo("risk");
         assertThat(result.getData().session().roleCode()).isEqualTo("RISK");
+        assertThat(result.getData().session().supportReadModes()).isEmpty();
+        verify(supportOwnership).availableReadModes(4L);
         assertThat(result.getData().session().effectiveMenus()).containsExactly("risk", "risk_cases");
         assertThat(result.getData().session().authorities())
                 .containsExactly("PERM_RISK_READ", "PERM_RISK_WRITE");
@@ -268,6 +277,8 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getData().session().authorities()).isEmpty();
         assertThat(result.getData().session().effectiveMenus()).isEmpty();
         assertThat(result.getData().session().effectiveMenuNodes()).isEmpty();
+        assertThat(result.getData().session().supportReadModes()).isEmpty();
+        verifyNoInteractions(supportOwnership);
         Claims claims = tokenProvider.parse(result.getData().accessToken());
         assertThat(claims.get("authorities", List.class)).isEmpty();
     }
@@ -505,6 +516,52 @@ class OpsAdminAuthServiceTest {
         verify(adminSessionRegistry, never()).createSession(any(), anyString(), anyString(), anyString());
     }
 
+    @Test void currentSupportSessionRechecksIndependentQualificationsWithoutChangingGlobalRole() {
+        when(adminMapper.selectById(1456L)).thenReturn(activeAdmin(1456L,"support","客服","synthetic"));
+        when(roleRelationMapper.activeRoleCode(1456L)).thenReturn("SUPPORT");
+        when(supportOwnership.availableReadModes(1456L)).thenReturn(
+                List.of(ReadMode.MANAGED,ReadMode.PERSONAL),List.of(ReadMode.PERSONAL),List.of());
+        var identity = new UsernamePasswordAuthenticationToken("1456",null,List.of(new SimpleGrantedAuthority("service_m1_read")));
+        identity.setDetails(Map.of("subjectType","ADMIN","sessionId","sid"));
+        assertThat(service.current(identity).getData().supportReadModes()).containsExactly("MANAGED","PERSONAL");
+        assertThat(service.current(identity).getData().supportReadModes()).containsExactly("PERSONAL");
+        var revoked = service.current(identity).getData();
+        assertThat(revoked.supportReadModes()).isEmpty();
+        assertThat(revoked.role()).isEqualTo("support");
+        assertThat(revoked.roleCode()).isEqualTo("SUPPORT");
+        assertThat(revoked.authorities()).containsExactly("service_m1_read");
+    }
+
+    @Test void currentSupportSessionDoesNotConvertQualificationFailureIntoValidModes() {
+        when(adminMapper.selectById(1456L)).thenReturn(activeAdmin(1456L,"support","客服","synthetic"));
+        when(roleRelationMapper.activeRoleCode(1456L)).thenReturn("SUPPORT");
+        when(supportOwnership.availableReadModes(1456L)).thenThrow(new IllegalStateException("QUALIFICATION_READ_FAILED"));
+        var identity = new UsernamePasswordAuthenticationToken("1456",null,List.of());
+        identity.setDetails(Map.of("subjectType","ADMIN","sessionId","sid"));
+        assertThatThrownBy(()->service.current(identity)).hasMessage("QUALIFICATION_READ_FAILED");
+    }
+
+    @Test void currentMultiRoleSessionKeepsSupportModesWhenDisplayedRoleIsRisk() {
+        when(adminMapper.selectById(1456L)).thenReturn(activeAdmin(1456L,"dual","值班","synthetic"));
+        when(roleRelationMapper.activeRoleCode(1456L)).thenReturn("RISK");
+        when(supportOwnership.availableReadModes(1456L)).thenReturn(List.of(ReadMode.MANAGED,ReadMode.PERSONAL));
+        var identity = new UsernamePasswordAuthenticationToken("1456",null,List.of(new SimpleGrantedAuthority("service_m1_read")));
+        identity.setDetails(Map.of("subjectType","ADMIN","sessionId","sid"));
+        var session = service.current(identity).getData();
+        assertThat(session.roleCode()).isEqualTo("RISK");
+        assertThat(session.role()).isEqualTo("risk");
+        assertThat(session.supportReadModes()).containsExactly("MANAGED","PERSONAL");
+        assertThat(session.authorities()).containsExactly("service_m1_read");
+    }
+
+    @Test void legacySessionConstructorsExposeAnExplicitEmptySupportModeList() {
+        var old = new AdminLoginResponse.AdminSession(1L,"a","a","support","SUPPORT",List.of(),List.of(),List.of(),false);
+        var idle = new AdminLoginResponse.AdminSession(1L,"a","a","support","SUPPORT",List.of(),List.of(),List.of(),false,true);
+        assertThat(old.supportReadModes()).isEmpty();
+        assertThat(idle.supportReadModes()).isEmpty();
+        assertThat(idle.idleTimeoutDisabled()).isTrue();
+    }
+
     @Test void completedMfaLoginReportsDisabledModeAndChallengeStillCarriesNoSession() {
         var admin = activeSuperAdmin(passwordEncoder.encode("ValidPass@123"));
         when(adminMapper.selectOne(any())).thenReturn(admin);
@@ -674,6 +731,64 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getData()).isNull();
         verify(accountStateMapper, never()).recordAuthenticatedLogin(any());
         verify(adminSessionRegistry).revokeSession(1L, "fresh-login-session");
+    }
+
+    @Test
+    void supportModeFailureDuringBypassLoginDeliversNoSessionAndRevokesOnlyFreshSession() {
+        prepareBypassLogin();
+        when(supportOwnership.availableReadModes(1L))
+                .thenThrow(new IllegalStateException("synthetic qualification failure"));
+
+        var result = service.login(new AdminLoginRequest("superadmin", "ValidPass@123"));
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("ADMIN_AUTH_UNAVAILABLE");
+        assertThat(result.getData()).isNull();
+        verify(supportOwnership).availableReadModes(1L);
+        verify(tokenProvider).createToken(1L, "ADMIN", "superadmin", List.of(), "fresh-login-session");
+        verify(accountStateMapper, never()).recordAuthenticatedLogin(any());
+        verify(adminSessionRegistry).revokeSession(1L, "fresh-login-session");
+        verify(adminSessionRegistry, never()).revokeSessions(any());
+        verify(adminSessionRegistry, never()).revokeSessionsExcept(any(), anyString());
+    }
+
+    @Test
+    void supportModeFailureDuringMfaDeliversNoSessionAndRevokesOnlyFreshSession() {
+        var admin = activeAdmin(1456L, "support.shift", "客服", passwordEncoder.encode("SupportShift@123"));
+        when(adminMapper.selectOne(any())).thenReturn(admin);
+        when(roleRelationMapper.activeRoleCode(1456L)).thenReturn("SUPPORT");
+        when(supportOwnership.availableReadModes(1456L))
+                .thenThrow(new IllegalStateException("synthetic qualification failure"));
+
+        var result = loginWithMfa(admin, "support.shift", "SupportShift@123", null);
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("ADMIN_MFA_UNAVAILABLE");
+        assertThat(result.getData()).isNull();
+        verify(mfaChallenges).consume("challenge-1456");
+        verify(supportOwnership).availableReadModes(1456L);
+        verify(tokenProvider).createToken(1456L, "ADMIN", "support.shift", List.of(), "admin-session-1456");
+        verify(accountStateMapper, never()).recordAuthenticatedLogin(any());
+        verify(adminSessionRegistry).revokeSession(1456L, "admin-session-1456");
+        verify(adminSessionRegistry, never()).revokeSessions(any());
+        verify(adminSessionRegistry, never()).revokeSessionsExcept(any(), anyString());
+    }
+
+    @Test
+    void supportInitialPasswordChangeDoesNotReadQualifications() {
+        var admin = activeAdmin(1456L, "support.shift", "客服", passwordEncoder.encode("SupportShift@123"));
+        var state = boundState(1456L);
+        state.setCredentialDeliveryStatus("PASSWORD_CHANGE_REQUIRED");
+        when(adminMapper.selectOne(any())).thenReturn(admin);
+        when(roleRelationMapper.activeRoleCode(1456L)).thenReturn("SUPPORT");
+
+        var result = loginWithMfa(admin, "support.shift", "SupportShift@123", state);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().session().roleCode()).isEqualTo("SUPPORT");
+        assertThat(result.getData().session().passwordChangeRequired()).isTrue();
+        assertThat(result.getData().session().supportReadModes()).isEmpty();
+        verifyNoInteractions(supportOwnership);
     }
 
     @Test

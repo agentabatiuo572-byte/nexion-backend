@@ -1,9 +1,11 @@
 package ffdd.opsconsole.platform.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
@@ -166,9 +168,6 @@ class OpsAuditCenterServiceTest {
                 .sorted(Comparator.comparing(AuditConfirmCategoryEntity::getSortOrder).thenComparing(AuditConfirmCategoryEntity::getId))
                 .toList());
 
-        doAnswer(invocation -> null).when(ticketMapper).createTicketTable();
-        doAnswer(invocation -> null).when(historyMapper).createHistoryTable();
-        doAnswer(invocation -> null).when(confirmCategoryMapper).createConfirmCategoryTable();
         // 批0: approve 回放目标域,dispatch 须返回成功(code=0)否则 NPE/fail
         doReturn(ApiResult.ok()).when(replayDispatcher).dispatch(any(), any());
         doReturn(ApiResult.ok()).when(replayBusinessPermissionGuard).validateProposal(any());
@@ -182,6 +181,34 @@ class OpsAuditCenterServiceTest {
     @AfterEach
     void clearSecurityContext() {
         SecurityContextHolder.clearContext();
+    }
+
+    @Test
+    void migratedAuditReadsDoNotRequireDdlPermissions() {
+        var denied = new org.springframework.dao.PermissionDeniedDataAccessException("CREATE denied", null);
+        doThrow(denied).when(ticketMapper).createTicketTable();
+        doThrow(denied).when(historyMapper).createHistoryTable();
+        doThrow(denied).when(confirmCategoryMapper).createConfirmCategoryTable();
+        doThrow(denied).when(lockMapper).createLockTable();
+        putTicket("WO-A1", "后台账号治理(A1)", "pending", "acct", false, false);
+        putTicket("WO-A2", "提现放行", "pending", "fund", false, false);
+
+        assertThat(service.pendingOperationCountByActionMarker(" (A1) ")).isEqualTo(1);
+        assertThat(service.overview().getCode()).isZero();
+        verify(ticketMapper, never()).createTicketTable();
+        verify(historyMapper, never()).createHistoryTable();
+        verify(confirmCategoryMapper, never()).createConfirmCategoryTable();
+        verify(lockMapper, never()).createLockTable();
+    }
+
+    @Test
+    void missingAuditBusinessTableReadFailureIsNotSwallowed() {
+        var missing = new org.springframework.jdbc.BadSqlGrammarException("read audit tickets", "SELECT",
+                new java.sql.SQLException("Table nx_audit_operation_ticket doesn't exist", "42S02", 1146));
+        when(ticketMapper.selectList(any())).thenThrow(missing);
+
+        assertThatThrownBy(() -> service.pendingOperationCountByActionMarker("(A1)")).isSameAs(missing);
+        assertThatThrownBy(service::overview).isSameAs(missing);
     }
 
     @Test

@@ -13,6 +13,55 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} FOR UPDATE")
+    @org.apache.ibatis.annotations.Options(useCache=false, flushCache=org.apache.ibatis.annotations.Options.FlushCachePolicy.TRUE)
+    Long lockCashCustomer(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT o.id,o.withdrawal_no withdrawalNo,o.user_id userId,o.asset,o.chain,o.amount,
+                   o.d2_net_receive netReceive,o.d2_actual_fee actualFee,o.d2_network_fee networkFee,
+                   o.d2_nex_burned nexBurned,o.d2_idempotency_key idempotencyKey,o.status,
+                   o.chain_tx_hash chainTxHash,o.created_at createdAt,o.completed_at completedAt,
+                   o.failed_at failedAt,o.d5_provider_cid providerCid,o.d5_payout_source payoutSource,
+                   u.sandbox userSandbox,u.is_deleted userDeleted,
+                   a.user_id attemptUserId,a.idempotency_key attemptKey,a.request_hash attemptHash,
+                   a.status attemptStatus,a.withdrawal_no attemptWithdrawalNo,a.created_at attemptCreatedAt
+              FROM nx_withdrawal_order o JOIN nx_user u ON u.id=o.user_id
+              LEFT JOIN nx_withdrawal_attempt_control a ON a.user_id=o.user_id
+                   AND a.idempotency_key=o.d2_idempotency_key
+             WHERE o.withdrawal_no=#{withdrawalNo} AND o.is_deleted=0 FOR UPDATE
+            """)
+    @org.apache.ibatis.annotations.Options(useCache=false, flushCache=org.apache.ibatis.annotations.Options.FlushCachePolicy.TRUE)
+    java.util.Map<String,Object> fundOrder(@Param("withdrawalNo") String withdrawalNo);
+
+    @Select("""
+            SELECT id,user_id userId,biz_no bizNo,biz_type bizType,asset,direction,amount,
+                   balance_after balanceAfter,status,created_at createdAt,is_deleted isDeleted
+              FROM nx_wallet_ledger
+             WHERE biz_no IN (CONCAT(#{withdrawalNo},':USDT:PRINCIPAL'),CONCAT(#{withdrawalNo},':USDT:NETWORK_FEE'),
+                   CONCAT(#{withdrawalNo},':USDT:PENALTY_FEE'),CONCAT(#{withdrawalNo},':USDT:BANK_FEE'),
+                   CONCAT(#{withdrawalNo},':NEX:OFFSET')) ORDER BY id FOR SHARE
+            """)
+    @org.apache.ibatis.annotations.Options(useCache=false, flushCache=org.apache.ibatis.annotations.Options.FlushCachePolicy.TRUE)
+    List<java.util.Map<String,Object>> fundReservationLedgers(@Param("withdrawalNo") String withdrawalNo);
+
+    @Select("""
+            SELECT p.withdrawal_no withdrawalNo,p.user_id userId,p.quote_no quoteNo,p.state,
+                   q.amount_usdt amount,q.fee_usdt fee,q.net_usdt net,q.created_at quoteCreatedAt,
+                   p.created_at createdAt,q.beneficiary_no beneficiaryNo,q.d7_version d7Version,q.d5_version d5Version
+              FROM nx_hdpay_payout p JOIN nx_bank_payout_quote q ON q.quote_no=p.quote_no AND q.user_id=p.user_id
+                   AND q.withdrawal_no=p.withdrawal_no
+             WHERE p.withdrawal_no=#{withdrawalNo} FOR SHARE
+            """)
+    java.util.Map<String,Object> fundBankReservation(@Param("withdrawalNo") String withdrawalNo);
+
+    @Select("""
+            SELECT id,user_id userId,actor_id actorId,actor_type actorType,result,detail_json detailJson,created_at createdAt
+              FROM nx_audit_log WHERE action='D2_WITHDRAWAL_SUBMITTED' AND resource_type='WITHDRAWAL'
+                   AND resource_id=#{withdrawalNo} AND biz_no=#{withdrawalNo} AND is_deleted=0 ORDER BY id FOR SHARE
+            """)
+    List<java.util.Map<String,Object>> fundSubmissionAudits(@Param("withdrawalNo") String withdrawalNo);
+
     @Select("""
             SELECT withdrawal_no withdrawalNo,user_id userId,chain,target_address targetAddress,
                    amount,d2_net_receive netReceive,d2_nex_burned nexBurned,status,

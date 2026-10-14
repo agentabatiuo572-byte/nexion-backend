@@ -149,6 +149,8 @@ class TopupCardLifecycleServiceTest {
         var captureOrder = org.mockito.Mockito.inOrder(capture, mapper);
         captureOrder.verify(capture).prepare(42L, Source.CARD_TOPUP, "pay-100");
         captureOrder.verify(mapper).selectWalletForUpdate(42L);
+        captureOrder.verify(capture).beforeCash(any(Prepared.class));
+        captureOrder.verify(mapper).updateWallet(eq(42L),any(),any(),org.mockito.ArgumentMatchers.anyLong());
         captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString());
         captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
         org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));

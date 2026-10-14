@@ -137,6 +137,8 @@ class SupportPaymentCaptureMySqlIntegrationTest {
     private SupportPaymentHistoryBirthService birth;
     private AuditLogService audit;
     private SupportPaymentSourceMapper sourceMapper;
+    private ffdd.opsconsole.finance.mapper.SupportFundJournalMapper fundMapper;
+    private ffdd.opsconsole.finance.mapper.EarningsReleaseMapper earningsMapper;
     private E4OrderRefundMapper refundMapper;
     private SupportPaymentFactService history;
     private SupportPaymentCaptureHistoryMapper historyMapper;
@@ -181,6 +183,8 @@ class SupportPaymentCaptureMySqlIntegrationTest {
             new SpringManagedTransactionFactory(),dataSource));
         configuration.setMapUnderscoreToCamelCase(true);
         configuration.addMapper(SupportPaymentSourceMapper.class);
+        configuration.addMapper(ffdd.opsconsole.finance.mapper.SupportFundJournalMapper.class);
+        configuration.addMapper(ffdd.opsconsole.finance.mapper.EarningsReleaseMapper.class);
         configuration.addMapper(SupportPaymentFactMapper.class);
         configuration.addMapper(SupportPaymentCaptureHistoryMapper.class);
         configuration.addMapper(E4OrderRefundMapper.class);
@@ -201,6 +205,8 @@ class SupportPaymentCaptureMySqlIntegrationTest {
         transaction.setTimeout(30);
         audit=mock(AuditLogService.class);
         sourceMapper=template.getMapper(SupportPaymentSourceMapper.class);
+        fundMapper=template.getMapper(ffdd.opsconsole.finance.mapper.SupportFundJournalMapper.class);
+        earningsMapper=template.getMapper(ffdd.opsconsole.finance.mapper.EarningsReleaseMapper.class);
         refundMapper=template.getMapper(E4OrderRefundMapper.class);
         history=proxy(new SupportPaymentFactService(template.getMapper(SupportPaymentFactMapper.class)));
         historyMapper=template.getMapper(SupportPaymentCaptureHistoryMapper.class);
@@ -1921,7 +1927,8 @@ class SupportPaymentCaptureMySqlIntegrationTest {
 
     private FinanceSupportPaymentFactsFacade historyReader(SupportPaymentCaptureHistoryMapper mapper) {
         SupportPaymentCaptureHistoryFacade reader=proxy(new SupportPaymentCaptureHistoryService(mapper,birthMapper));
-        return proxy(new SupportPaymentSourceService(sourceMapper,history,dataSource,json,reader));
+        var journal=proxy(new ffdd.opsconsole.finance.application.SupportFundJournalBindingService(fundMapper,dataSource,json));
+        return proxy(new SupportPaymentSourceService(sourceMapper,history,dataSource,json,reader,journal,fundMapper,earningsMapper));
     }
 
     private void assertCapturedHistory(Fixture fixture,Map<String,String> saved,Snapshot result) {
@@ -1953,7 +1960,8 @@ class SupportPaymentCaptureMySqlIntegrationTest {
     private static void assertUnknownCoverage(Snapshot result) {
         assertThat(result.coverage()).hasSize(Source.values().length).allSatisfy(coverage -> {
             assertThat(coverage.historyStatus()).isEqualTo(Status.UNKNOWN);
-            assertThat(coverage.refundStatus()).isEqualTo(Status.UNKNOWN);
+            assertThat(coverage.refundStatus()).isEqualTo(
+                java.util.Set.of(Source.DEPOSIT_ORDER,Source.CARD_TOPUP,Source.VIETQR,Source.HDPAY).contains(coverage.source())?Status.READY:Status.UNKNOWN);
             assertThat(coverage.historicalEnvironmentStatus()).isEqualTo(Status.UNKNOWN);
             assertThat(coverage.supportedFrom()).isNull();
         });
@@ -2206,7 +2214,8 @@ class SupportPaymentCaptureMySqlIntegrationTest {
         assertThat(result.financialSummary().firstCandidates().status()).isEqualTo(SupportAnalyticsStats.Status.UNKNOWN);
         assertThat(result.currentCustomers()).allSatisfy(c -> assertThat(c.first().status()).isEqualTo(SupportAnalyticsStats.Status.UNKNOWN));
         assertThat(result.coverage()).hasSize(Source.values().length).allSatisfy(c -> {
-            assertThat(c.historyStatus()).isEqualTo("UNKNOWN");assertThat(c.refundStatus()).isEqualTo("UNKNOWN");
+            assertThat(c.historyStatus()).isEqualTo("UNKNOWN");assertThat(c.refundStatus()).isEqualTo(
+                java.util.Set.of("DEPOSIT_ORDER","CARD_TOPUP","VIETQR","HDPAY").contains(c.source())?"READY":"UNKNOWN");
             assertThat(c.historicalEnvironmentStatus()).isEqualTo("UNKNOWN");assertThat(c.supportedFrom()).isNull();
         });
         assertThat(result.financialSummary().currencies()).allSatisfy(c -> {

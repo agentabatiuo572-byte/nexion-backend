@@ -38,7 +38,8 @@ public final class A2ReplayContext {
 
     static boolean isAvatarCommand(AuditReplayCommand command) {
         return command != null && "A".equals(command.domain()) && command.params() != null
-                && command.params().get("avatarAssetId") != null
+                && (command.params().get("avatarAssetId") != null
+                    || ("a1_account_create".equals(command.op()) && Boolean.TRUE.equals(command.params().get("useDefaultAvatar"))))
                 && ("a1_account_create".equals(command.op()) || "a1_account_update_profile".equals(command.op()));
     }
 
@@ -103,6 +104,23 @@ public final class A2ReplayContext {
         if (!created && !String.valueOf(admin).equals(avatarTarget(approval.command).id()))
             throw avatarForbidden();
         approval.target = admin;
+    }
+
+    static void bindDefaultAvatarTarget(long admin) {
+        var approval=currentAvatar();
+        if(admin<=0 || admin>9_007_199_254_740_991L || approval==null || !approval.matched || approval.target!=null
+                || !"a1_account_create".equals(approval.command.op())
+                || !Boolean.TRUE.equals(approval.command.params().get("useDefaultAvatar"))
+                || approval.command.params().get("avatarAssetId")!=null)throw avatarForbidden();
+        approval.target=admin;
+    }
+
+    public static void requireDefaultAvatarTarget(long checker,long admin) {
+        var approval=currentAvatar();
+        if(approval==null || !approval.matched || approval.target==null || approval.target!=admin
+                || approval.checker!=checker || !"a1_account_create".equals(approval.command.op())
+                || !Boolean.TRUE.equals(approval.command.params().get("useDefaultAvatar"))
+                || approval.command.params().get("avatarAssetId")!=null)throw avatarForbidden();
     }
 
     /** Read-only attachment capability; a replay flag or operation ID alone never grants ownership. */

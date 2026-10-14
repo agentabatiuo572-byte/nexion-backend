@@ -86,7 +86,7 @@ class BankWithdrawalMySqlTest {
             var session = new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(cfg));
             bank = session.getMapper(BankWithdrawalMapper.class);
             treasuryMapper = session.getMapper(ffdd.opsconsole.treasury.mapper.TreasuryLedgerMapper.class);
-            treasury = proxy(new ffdd.opsconsole.treasury.infrastructure.MybatisTreasuryLedgerRepository(treasuryMapper, outbox));
+            treasury = proxy(new ffdd.opsconsole.treasury.infrastructure.MybatisTreasuryLedgerRepository(treasuryMapper, outbox, ffdd.opsconsole.treasury.application.SupportCommissionTestCapture.real(session, source, new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules())));
             reviews = session.getMapper(WithdrawalOrderMapper.class);
             addresses = session.getMapper(AppPayoutAddressMapper.class); payouts = session.getMapper(WithdrawalPayoutMapper.class); users = session.getMapper(AppWithdrawalMapper.class);
             jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,status VARCHAR(32),sandbox TINYINT,is_deleted TINYINT)");
@@ -137,7 +137,7 @@ class BankWithdrawalMySqlTest {
                     .when(ledger).settleBankWithdrawalReserve(anyString(),any(),anyLong(),any());
             doAnswer(i -> { treasury.reverseLegacyBankWithdrawalReserve(i.getArgument(0),i.getArgument(1),i.getArgument(2)); return null; })
                     .when(ledger).reverseLegacyBankWithdrawalReserve(anyString(),any(),any());
-            var finalizer = proxy(new WithdrawalPayoutFinalizer(payouts, audit, ledger, CLOCK));
+            var finalizer = proxy(new WithdrawalPayoutFinalizer(payouts, audit, ledger, CLOCK,mock(SupportWithdrawalFundSourceService.class)));
             transactions = proxy(new HdPayPayoutTransactions(bank, mock(BankAccountRoutingGate.class), users, payouts, finalizer, cipher, transport, properties, config,
                     mock(OpsFinanceService.class), audit, outbox, CLOCK));
             var withdrawals = mock(AppWithdrawalService.class);
@@ -150,7 +150,7 @@ class BankWithdrawalMySqlTest {
             when(accountRouting.contractConfirmed()).thenReturn(true);
             service = proxy(new BankWithdrawalService(bank, accountRouting, users, addresses,
                     delivery,proxy(new PayoutAddressOtpAttemptService(addresses)),
-                    cipher,withdrawals,config,transport,properties,idempotency,audit,env,CLOCK));
+                    cipher,withdrawals,config,transport,properties,idempotency,audit,env,CLOCK,mock(SupportWithdrawalFundSourceService.class)));
         }
         @SuppressWarnings("unchecked") <T> T proxy(T target) {
             ProxyFactory proxy = new ProxyFactory(target);

@@ -49,10 +49,11 @@ class AppTaskAssignmentServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final ComputeTaskProofVerifier proofVerifier = mock(ComputeTaskProofVerifier.class);
     private final Environment environment = mock(Environment.class);
+    private final SupportDeviceFundAdapter deviceFunds = mock(SupportDeviceFundAdapter.class);
     private final AppTaskAssignmentService service = new AppTaskAssignmentService(
             mapper, idempotency, outbox, audit, proofVerifier,
             environment,
-            Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), mock(TestComputeWorkerService.class));
+            Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), mock(TestComputeWorkerService.class), deviceFunds);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -91,6 +92,14 @@ class AppTaskAssignmentServiceTest {
                 org.mockito.ArgumentMatchers.eq(30), anyString(), any(), anyString(), any(), any());
         verify(mapper).bindRuntimeTask(any(), anyString(), any(), any());
         verify(audit).recordRequired(any());
+    }
+
+    @Test void actualUsdtWriterMustBindItsRealFundReceipt(){completionCreditsReceiptLedgerAndLockExactlyOnceAcrossDifferentKeys();verify(deviceFunds).begin(7L);verify(deviceFunds).afterUsdt(any());verify(deviceFunds).recorded(any(),eq("CTR-CTA-1"));}
+    @Test void actualDailyNexWriterMustRemainInTheSameReceiptAsUsdt(){paidCloudShareCreditsPurchasedDailyNexSnapshotOnlyOnFirstProofVerifiedReceiptOfUtcDay();verify(deviceFunds,times(2)).begin(7L);verify(deviceFunds,times(2)).afterUsdt(any());verify(deviceFunds).recorded(any(),eq("CTR-CTA-1"));verify(deviceFunds).recorded(any(),eq("CTR-CTA-2"));}
+    @Test void legalZeroUsdtStillWritesOriginalCashVersionLedgerAndEarningBeforeBinding(){
+        var zero=new BigDecimal("0.000000");when(mapper.lockAssignment(7L,"CTA-1","PRODUCTION")).thenReturn(assignment("RUNNING",null,null,zero));when(mapper.deviceInstanceNo(7L,11L)).thenReturn("DEV-11");when(proofVerifier.verify(anyLong(),anyString(),anyLong(),anyString(),anyString(),any(),any())).thenReturn(new ComputeTaskProofVerifier.Verification(false,"b".repeat(64)));
+        when(mapper.insertReceipt(any(),any(),any(),anyString(),anyString(),any(),anyString(),anyString(),any())).thenReturn(1);when(mapper.creditWallet(any(),any(),any(),any())).thenReturn(1);when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.000000"));when(mapper.insertWalletLedger(any(),any(),anyString(),any(),any(),any())).thenReturn(1);when(mapper.insertEarningEvent(anyString(),any(),any(),anyString(),any(),any())).thenReturn(1);when(mapper.completeAssignment(any(),anyString(),anyString(),anyString(),any())).thenReturn(1);when(mapper.userEventAttribution(7L)).thenReturn(new AppTaskAssignmentMapper.UserEventAttribution("P3",8,"2026-W30"));
+        assertThat(service.complete(7L,"CTA-1","complete-usdt-zero",validProof()).getData().status()).isEqualTo("COMPLETED");var order=org.mockito.Mockito.inOrder(mapper,deviceFunds);order.verify(deviceFunds).begin(7L);order.verify(mapper).creditWallet(7L,11L,zero,NOW);order.verify(mapper).insertWalletLedger(7L,11L,"CTA-1",zero,new BigDecimal("10.000000"),NOW);order.verify(mapper).insertEarningEvent("EARN-CTA-1",7L,11L,"CTR-CTA-1",zero,NOW);order.verify(deviceFunds).afterUsdt(any());order.verify(deviceFunds).recorded(any(),eq("CTR-CTA-1"));verify(mapper,never()).creditCloudShareNex(anyLong(),anyLong(),anyString(),any(),any());
     }
 
     @Test

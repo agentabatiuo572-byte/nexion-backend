@@ -23,6 +23,10 @@ public interface SupportAdminAvatarMapper {
     int accountAvatar(@Param("admin") Long admin,@Param("id") String id);
     @Select("SELECT avatar_asset_id AS assetId,avatar_version AS version FROM nx_admin_account_state WHERE admin_id=#{admin} AND is_deleted=0")
     Map<String,Object> reference(Long admin);
+    @Select("SELECT avatar_asset_id AS assetId,avatar_version AS avatarVersion,avatar_gender AS avatarGender FROM nx_admin_account_state WHERE admin_id=#{admin} AND is_deleted=0 FOR UPDATE")
+    Map<String,Object> selfReference(Long admin);
+    @Select("SELECT admin_id FROM nx_support_agent_profile WHERE admin_id=#{admin} AND enabled=1 AND is_deleted=0 FOR SHARE")
+    Long enabledServiceProfile(Long admin);
     @Select("""
       SELECT a.id FROM nx_admin a JOIN nx_support_agent_profile p ON p.admin_id=a.id AND p.is_deleted=0
       WHERE a.id=#{admin} AND a.is_deleted=0 FOR SHARE

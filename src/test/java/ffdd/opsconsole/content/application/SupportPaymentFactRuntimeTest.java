@@ -71,7 +71,8 @@ class SupportPaymentFactRuntimeTest {
             assertThat(snapshot.facts()).filteredOn(f -> f.ledgerId()==cardLedger).extracting(Fact::providerPaidAt).containsExactly(CREATED);
             assertThat(snapshot.facts()).filteredOn(f -> f.ledgerId()==hdLedger).hasSize(1);
             assertThat(facts.read(users).facts()).isEqualTo(snapshot.facts());
-            assertThat(snapshot.coverage()).allMatch(c -> c.refundStatus()==Status.UNKNOWN && c.historyStatus()==Status.UNKNOWN
+            assertThat(snapshot.coverage()).allMatch(c -> c.refundStatus()==(
+                Set.of(Source.DEPOSIT_ORDER,Source.CARD_TOPUP,Source.VIETQR,Source.HDPAY).contains(c.source())?Status.READY:Status.UNKNOWN) && c.historyStatus()==Status.UNKNOWN
                 && c.supportedFrom()==null && c.historicalEnvironmentStatus()==Status.UNKNOWN);
         });
     }

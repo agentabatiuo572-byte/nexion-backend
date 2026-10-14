@@ -494,13 +494,13 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                pending_deactivate,created_at,updated_at,is_deleted)
             SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},
                #{row.instanceNo},#{row.productName},#{row.deviceType},#{row.generation},#{row.gpuModel},
-               #{row.vramTotalGb},CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)),
+               #{row.vramTotalGb},CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
                s.datacenter,#{row.targetPriceUsdt},'OWNED','TRADE_IN','ACTIVE',#{row.hashrate},
                #{row.dailyUsdt},#{row.dailyNex},NOW(),NOW(),NOW(),0,NOW(),NOW(),0
               FROM nx_admin_device_sku s
              WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0 AND TRIM(s.datacenter) <> ''
-               AND TRIM(s.power_text) REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'
-               AND CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) > 0
+               AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP)?)?\\\\z'
+               AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0
             """)
     int insertTargetDevice(@Param("row") DeliveredDeviceWrite row);
 
@@ -512,13 +512,13 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                pending_deactivate,created_at,updated_at,is_deleted)
             SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},
                #{row.instanceNo},#{row.productName},#{row.deviceType},#{row.generation},#{row.gpuModel},
-               #{row.vramTotalGb},CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)),
+               #{row.vramTotalGb},CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
                s.datacenter,#{row.targetPriceUsdt},'OWNED','ORDER','INACTIVE',#{row.hashrate},
                #{row.dailyUsdt},#{row.dailyNex},NOW(),NULL,NULL,0,NOW(),NOW(),0
               FROM nx_admin_device_sku s
              WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0 AND TRIM(s.datacenter) <> ''
-               AND TRIM(s.power_text) REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'
-               AND CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) > 0
+               AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP)?)?\\\\z'
+               AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0
             """)
     int insertInventoryTargetDevice(@Param("row") DeliveredDeviceWrite row);
 

@@ -78,6 +78,7 @@ public class AppExchangeService {
 
     /** The sandbox ledger is absent from production-only deployments. */
     private final Optional<AppMarketSandboxService> sandbox;
+    private final SupportExchangeFundAdapter exchangeFunds;
     private final Object marketHistoryCacheLock = new Object();
     private final AtomicReference<CachedMarketHistory> marketHistoryCache = new AtomicReference<>();
 
@@ -269,6 +270,7 @@ public class AppExchangeService {
         String toAsset = "USDT".equals(request.fromAsset()) ? "NEX" : "USDT";
         BigDecimal usdtDelta = "USDT".equals(request.fromAsset()) ? request.fromAmount().negate() : toAmount;
         BigDecimal nexDelta = "NEX".equals(request.fromAsset()) ? request.fromAmount().negate() : toAmount;
+        var fundBefore=exchangeFunds.begin(userId);
         if (mapper.applyWalletDelta(userId, usdtDelta, nexDelta) != 1) {
             throw new BizException(409, "EXCHANGE_WALLET_INSUFFICIENT_OR_CONFLICT");
         }
@@ -296,6 +298,7 @@ public class AppExchangeService {
         String receiptId = outbox.publishUserEvent("EXCHANGE_ORDER", exchangeNo, "exchange.swapped", userId,
                 normalizePhase(attribution.phase()), attribution.accountAgeMonths(), attribution.cohort(), event);
         recordUserAudit(userId, exchangeNo, idempotencyKey, event, "/api/exchange");
+        exchangeFunds.recorded(fundBefore,exchangeNo,"IMMEDIATE",fee);
         Map<String, Object> result = stateMap(userId, mapper.lockWalletGate(userId));
         result.put("order", orderMap(write));
         result.put("feeUsdt", fee);
@@ -315,11 +318,13 @@ public class AppExchangeService {
         return executeOnce("CANCEL:" + normalized + ":USER:" + userId, idempotencyKey, normalized, () -> {
             AppExchangeMapper.QueuedRow queued = mapper.lockOwnQueued(userId, normalized);
             if (queued == null) throw new BizException(409, "EXCHANGE_NOT_CANCELLABLE");
+            var fundBefore=exchangeFunds.begin(userId,normalized);
             if (mapper.cancelOwnQueued(userId, normalized) != 1) throw new BizException(409, "EXCHANGE_NOT_CANCELLABLE");
             refundReservedSource(queued);
             Map<String, Object> event = linked("exchangeNo", normalized, "status", "CANCELLED", "cancelledBy", "USER");
             String receiptId = outbox.publish("EXCHANGE_ORDER", normalized, "exchange.queue_cancelled", event);
             recordUserAudit(userId, normalized, idempotencyKey, event, "/api/exchange/" + normalized + "/cancel");
+            exchangeFunds.recorded(fundBefore,normalized,"CANCEL",BigDecimal.ZERO);
             Map<String, Object> result = stateMap(userId, mapper.lockWalletGate(userId));
             result.put("receiptId", receiptId);
             return ApiResult.ok(result);
@@ -338,6 +343,7 @@ public class AppExchangeService {
         AppExchangeMapper.ExchangeWrite write = new AppExchangeMapper.ExchangeWrite(userId, exchangeNo,
                 request.fromAsset(), "USDT".equals(request.fromAsset()) ? "NEX" : "USDT",
                 request.fromAmount(), toAmount, price, status);
+        var fundBefore=queueable?exchangeFunds.begin(userId):null;
         if (queueable) {
             BigDecimal usdtHold = "USDT".equals(request.fromAsset()) ? request.fromAmount().negate() : BigDecimal.ZERO;
             BigDecimal nexHold = "NEX".equals(request.fromAsset()) ? request.fromAmount().negate() : BigDecimal.ZERO;
@@ -359,6 +365,7 @@ public class AppExchangeService {
                 "grossUsdt", grossUsdt);
         String receiptId = outbox.publish("EXCHANGE_ORDER", exchangeNo, "exchange.gated", event);
         recordUserAudit(userId, exchangeNo, idempotencyKey, event, "/api/exchange");
+        if(queueable)exchangeFunds.recorded(fundBefore,exchangeNo,"HOLD",BigDecimal.ZERO);
         Map<String, Object> result = stateMap(userId, mapper.lockWalletGate(userId));
         result.put("order", orderMap(write));
         result.put("gate", gate);

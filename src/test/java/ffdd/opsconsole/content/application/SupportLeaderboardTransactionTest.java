@@ -54,7 +54,9 @@ class SupportLeaderboardTransactionTest {
             when(sourceMapper.nowUtc()).thenReturn(LocalDateTime.ofInstant(NOW,ZoneOffset.UTC));
             if(selectedFailure)when(sourceMapper.accounts()).thenReturn(List.of()).thenThrow(new DataAccessResourceFailureException("fixture source unavailable"));
             else when(sourceMapper.accounts()).thenThrow(new DataAccessResourceFailureException("fixture source unavailable"));
-            source=proxy(new SupportLeaderboardSourceService(sourceMapper,finance),manager);
+            var funds=mock(ffdd.opsconsole.finance.facade.SupportFundsReadFacade.class);
+            when(funds.readNetContributions(any())).thenReturn(new ffdd.opsconsole.finance.facade.SupportFundsReadFacade.NetSnapshot(List.of(),List.of(),List.of()));
+            source=proxy(new SupportLeaderboardSourceService(sourceMapper,finance,funds),manager);
             if(prior)h.cache(NOW.minusSeconds(400));
             api=proxy(new SupportLeaderboardService(h.ownership,h.auth,h.mapper,source,h.publication,h.publicationMapper,h.config,h.avatars,manager),manager);
         }

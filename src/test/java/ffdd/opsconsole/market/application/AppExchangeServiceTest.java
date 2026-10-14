@@ -98,7 +98,7 @@ class AppExchangeServiceTest {
         var actual = new AppExchangeService(mapper, config, durable.service, outbox, audit,
                 feeAllocationService, new ObjectMapper(),
                 Clock.fixed(Instant.parse("2026-07-22T10:00:00Z"), ZoneOffset.UTC), environment,
-                java.util.Optional.empty());
+                java.util.Optional.empty(),mock(SupportExchangeFundAdapter.class));
         var request = new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), false);
         var first = actual.swap(7L, "late-exchange-retry", request);
         durable.advanceBeyondLease();
@@ -187,6 +187,7 @@ class AppExchangeServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final G2ExchangeFeeAllocationService feeAllocationService = mock(G2ExchangeFeeAllocationService.class);
     private final Environment environment = mock(Environment.class);
+    private final SupportExchangeFundAdapter exchangeFunds = mock(SupportExchangeFundAdapter.class);
     private AppExchangeService service;
 
     @BeforeEach
@@ -194,7 +195,7 @@ class AppExchangeServiceTest {
         service = new AppExchangeService(mapper, config, idempotency, outbox, audit,
                 feeAllocationService, new ObjectMapper(),
                 Clock.fixed(Instant.parse("2026-07-22T10:00:00Z"), ZoneOffset.UTC), environment,
-                java.util.Optional.empty());
+                java.util.Optional.empty(),exchangeFunds);
         doAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).executeRetained(anyString(), anyString(), anyString(), any(), any());
         when(config.activeValue(anyString())).thenReturn(Optional.empty());
@@ -234,6 +235,10 @@ class AppExchangeServiceTest {
         capOrder.verify(mapper).lockExchangeExecutionMutex();
         capOrder.verify(mapper).platformTodayUsdt();
         capOrder.verify(mapper).applyWalletDelta(eq(7L), any(), any());
+        var bindingOrder=inOrder(mapper,exchangeFunds);
+        bindingOrder.verify(exchangeFunds).begin(7L);
+        bindingOrder.verify(mapper).applyWalletDelta(eq(7L),any(),any());
+        bindingOrder.verify(exchangeFunds).recorded(any(),anyString(),eq("IMMEDIATE"),any(BigDecimal.class));
     }
 
     @Test
@@ -251,6 +256,10 @@ class AppExchangeServiceTest {
                 org.mockito.ArgumentMatchers.argThat(value -> value.compareTo(BigDecimal.ZERO) == 0));
         order.verify(mapper).insertOrder(any());
         verify(mapper).insertLedger(any(AppExchangeMapper.LedgerWrite.class));
+        var bindingOrder=inOrder(mapper,exchangeFunds);
+        bindingOrder.verify(exchangeFunds).begin(7L);
+        bindingOrder.verify(mapper).applyWalletDelta(eq(7L),any(),any());
+        bindingOrder.verify(exchangeFunds).recorded(any(),anyString(),eq("HOLD"),eq(BigDecimal.ZERO));
     }
 
     @Test
@@ -272,7 +281,7 @@ class AppExchangeServiceTest {
         var retainedService = new AppExchangeService(mapper, config, durable.service, outbox, audit,
                 feeAllocationService, new ObjectMapper(),
                 Clock.fixed(Instant.parse("2026-07-22T10:00:00Z"), ZoneOffset.UTC), environment,
-                java.util.Optional.empty());
+                java.util.Optional.empty(),exchangeFunds);
         when(mapper.lockOwnQueued(7L, "EX-RESERVED-1234")).thenReturn(
                 new AppExchangeMapper.QueuedRow(7L, "EX-RESERVED-1234", "USDT", new BigDecimal("20")));
         when(mapper.sourceReservationExists("EX-RESERVED-1234")).thenReturn(1);
@@ -286,6 +295,11 @@ class AppExchangeServiceTest {
         verify(mapper).applyWalletDelta(7L, new BigDecimal("20"), BigDecimal.ZERO);
         verify(mapper).insertLedger(any(AppExchangeMapper.LedgerWrite.class));
         verify(mapper).cancelOwnQueued(7L, "EX-RESERVED-1234");
+        var bindingOrder=inOrder(mapper,exchangeFunds);
+        bindingOrder.verify(exchangeFunds).begin(7L,"EX-RESERVED-1234");
+        bindingOrder.verify(mapper).cancelOwnQueued(7L,"EX-RESERVED-1234");
+        bindingOrder.verify(mapper).applyWalletDelta(7L,new BigDecimal("20"),BigDecimal.ZERO);
+        bindingOrder.verify(exchangeFunds).recorded(any(),eq("EX-RESERVED-1234"),eq("CANCEL"),eq(BigDecimal.ZERO));
         verify(durable.records, never()).resetExpiredById(any(), anyString(), any());
     }
 

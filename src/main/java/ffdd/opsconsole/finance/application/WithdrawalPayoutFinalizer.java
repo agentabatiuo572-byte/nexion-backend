@@ -23,6 +23,30 @@ public class WithdrawalPayoutFinalizer {
     private final AuditLogService audit;
     private final TreasuryLedgerPostingFacade ledger;
     private final Clock clock;
+    private final SupportWithdrawalFundSourceService withdrawalFunds;
+
+    /** Keep the same customer-first lock order as withdrawal submission. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
+    public void lockCashCustomer(Long userId) {
+        if (userId == null || !userId.equals(mapper.lockCashCustomer(userId)))
+            throw new BizException(409,"提现账户暂不可处理，请复核后重试");
+    }
+
+    /** Called only after the existing D2 SENT CAS, inside that same transaction. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
+    public boolean settleManualConfirmation(String withdrawalNo, Long userId, BigDecimal amount,
+                                             BigDecimal nexBurned, LocalDateTime confirmedAt) {
+        lockCashCustomer(userId);
+        if (!withdrawalFunds.hasCashReservation(withdrawalNo,userId,amount,nexBurned)) return false;
+        var before = withdrawalFunds.begin(userId);
+        settlePending(userId,amount,confirmedAt);
+        withdrawalFunds.confirmed(before,withdrawalNo,confirmedAt);
+        return true;
+    }
+
+    private void settlePending(Long userId, BigDecimal gross, LocalDateTime at) {
+        if (mapper.settlePending(userId,gross,at)!=1) throw new BizException(409,"WITHDRAWAL_PENDING_SETTLEMENT_CONFLICT");
+    }
 
     @Transactional(rollbackFor = Exception.class)
     public boolean submitted(WithdrawalPayoutMapper.PayoutRow row, long providerCid, String source) {
@@ -106,7 +130,11 @@ public class WithdrawalPayoutFinalizer {
         if (!"CONFIRMED".equals(status) && !"FAILED".equals(status)) {
             throw new BizException(422, "WITHDRAWAL_PAYOUT_TERMINAL_STATUS_INVALID");
         }
-        LocalDateTime now = LocalDateTime.now(clock);
+        LocalDateTime now = LocalDateTime.now(clock).withNano(0);
+        lockCashCustomer(row.userId());
+        if (!withdrawalFunds.hasCashReservation(row.withdrawalNo(),row.userId(),row.amount(),row.nexBurned()))
+            throw new BizException(409,"该笔提现的预留资金尚未核实，请复核后重试");
+        var fundBefore = productionSource(source) ? withdrawalFunds.begin(row.userId()) : null;
         if (mapper.insertPayoutLedger(eventNo, row.withdrawalNo(), providerCid, "CALLBACK", status,
                 source, row.netReceive(), txid, payloadHash, now) != 1) {
             throw new BizException(409, "WITHDRAWAL_PAYOUT_CALLBACK_REPLAY_CONFLICT");
@@ -118,9 +146,8 @@ public class WithdrawalPayoutFinalizer {
         if ("CONFIRMED".equals(status)) {
             if ("BANK-VND".equals(row.chain()) && "hdpay".equals(source))
                 ledger.settleBankWithdrawalReserve(row.withdrawalNo(), row.amount(), providerCid, now);
-            if (mapper.settlePending(row.userId(), row.amount(), now) != 1) {
-                throw new BizException(409, "WITHDRAWAL_PENDING_SETTLEMENT_CONFLICT");
-            }
+            settlePending(row.userId(),row.amount(),now);
+            if(fundBefore!=null)withdrawalFunds.confirmed(fundBefore,row.withdrawalNo(),now);
         } else {
             if ("BANK-VND".equals(row.chain()) && "hdpay".equals(source))
                 ledger.reverseLegacyBankWithdrawalReserve(row.withdrawalNo(), row.amount(), now);
@@ -136,6 +163,7 @@ public class WithdrawalPayoutFinalizer {
                         "WITHDRAW_PAYOUT_NEX_REFUND", "NEX", "IN", nexBurned, "POSTED",
                         "Provider payout failed; NEX fee offset returned");
             }
+            if(fundBefore!=null)withdrawalFunds.returned(fundBefore,row.withdrawalNo());
         }
         audit.recordRequired(AuditLogWriteRequest.builder()
                 .action("CONFIRMED".equals(status) ? "D5_WITHDRAWAL_PAYOUT_CONFIRMED" : "D5_WITHDRAWAL_PAYOUT_FAILED")
@@ -198,6 +226,8 @@ public class WithdrawalPayoutFinalizer {
     private int attempts(WithdrawalPayoutMapper.PayoutRow row) {
         return row.attempts() == null ? 1 : row.attempts() + 1;
     }
+
+    private boolean productionSource(String source) { return "provider".equals(source) || "hdpay".equals(source); }
 
     private String safeError(String value) {
         String safe = value == null || value.isBlank() ? "CREGIS_PROVIDER_UNAVAILABLE" : value.trim();

@@ -389,7 +389,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
                status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,created_at,updated_at,is_deleted,
                gpu_model,vram_total_gb,dc_location)
             SELECT #{userId},#{sourceOrderNo},p.id,p.product_no,#{productTier},NULL,#{instanceNo},#{deviceName},
-               #{deviceType},1,CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)),
+               #{deviceType},1,CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
                #{priceUsdt},'OWNED','TRIAL','ACTIVE',0,p.estimated_daily_usdt,p.daily_nex,NOW(),NOW(),NOW(),NOW(),0,
                p.gpu_model,p.vram_total_gb,s.datacenter
               FROM nx_product p
@@ -397,8 +397,8 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
              WHERE p.id=#{productId} AND p.product_no=#{productCode} AND p.is_deleted=0
                AND p.estimated_daily_usdt>0 AND p.daily_nex>0
                AND TRIM(p.gpu_model)<>'' AND p.vram_total_gb>0 AND TRIM(s.datacenter)<>''
-               AND s.power_text REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'
-               AND CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6))>0
+               AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP)?)?\\\\z'
+               AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6))>0
             """)
     int insertPurchasedDevice(
             @Param("userId") Long userId,

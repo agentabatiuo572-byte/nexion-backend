@@ -1547,6 +1547,20 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             """)
     int ensureRegisteredUserWallet(@Param("userId") Long userId, @Param("sandbox") int sandbox);
 
+    /** INSERT-only nonce: the duplicate branch preserves both existing money and fund identity. */
+    @Insert("""
+            INSERT INTO nx_user_wallet
+              (user_id,usdt_available,nex_available,pending_withdraw,lifetime_earned,version,
+               sandbox,fund_incarnation,created_at,updated_at,is_deleted)
+            VALUES (#{userId},0,0,0,0,0,#{sandbox},#{incarnation},NOW(),NOW(),0)
+            ON DUPLICATE KEY UPDATE
+                is_deleted = 0,
+                sandbox = VALUES(sandbox),
+                updated_at = NOW()
+            """)
+    int ensureNewRegisteredUserWallet(@Param("userId") Long userId, @Param("sandbox") int sandbox,
+                                  @Param("incarnation") String incarnation);
+
     /**
      * A losing concurrent OAuth creator must not leave a sandbox account or
      * wallet behind after the identity unique key is won by another request.

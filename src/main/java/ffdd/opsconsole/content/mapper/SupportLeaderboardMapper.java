@@ -9,6 +9,8 @@ import org.apache.ibatis.annotations.Select;
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportLeaderboardMapper {
     @Select("SELECT UTC_TIMESTAMP(6)") LocalDateTime nowUtc();
+    @Select("SELECT committed_at FROM nx_support_migration WHERE id='support-groups-20261007'")
+    LocalDateTime qualificationCutoverUtc();
     @Select("""
         SELECT a.id,a.nickname,a.status,a.is_deleted isDeleted,a.version,
           p.enabled profileEnabled,p.is_deleted profileDeleted,p.version profileVersion,p.seat_type profileSeatType,
@@ -16,7 +18,12 @@ public interface SupportLeaderboardMapper {
           v.state avatarState,v.attached_admin_id avatarAdminId,
           EXISTS(SELECT 1 FROM nx_admin_role_relation rr JOIN nx_admin_role r ON r.id=rr.role_id
             WHERE rr.admin_id=a.id AND rr.is_deleted=0 AND r.is_deleted=0 AND r.status=1
-              AND r.role_code IN ('SUPPORT','SUPER_ADMIN')) compatibleRole
+              AND r.role_code IN ('SUPPORT','SUPER_ADMIN')) compatibleRole,
+          CASE WHEN p.is_deleted=0 AND p.seat_type='DEDICATED'
+            AND FIND_IN_SET('advisor',REPLACE(LOWER(p.service_types),' ',''))>0
+            AND EXISTS(SELECT 1 FROM nx_admin_role_relation rr JOIN nx_admin_role r ON r.id=rr.role_id
+              WHERE rr.admin_id=a.id AND rr.is_deleted=0 AND r.is_deleted=0 AND r.status=1 AND r.role_code='SUPPORT')
+            THEN 1 ELSE 0 END serviceProfile
         FROM nx_admin a LEFT JOIN nx_support_agent_profile p ON p.admin_id=a.id
           LEFT JOIN nx_admin_account_state s ON s.admin_id=a.id AND s.is_deleted=0
           LEFT JOIN nx_support_admin_avatar_asset v ON v.id=s.avatar_asset_id
@@ -65,7 +72,7 @@ public interface SupportLeaderboardMapper {
 
     record Account(Long id,String nickname,Integer status,Integer isDeleted,Long version,
                    Integer profileEnabled,Integer profileDeleted,Long profileVersion,String profileSeatType,
-                   String avatarAssetId,Long avatarVersion,String avatarState,Long avatarAdminId,Integer compatibleRole) { }
+                   String avatarAssetId,Long avatarVersion,String avatarState,Long avatarAdminId,Integer compatibleRole,Integer serviceProfile) { }
     record QualificationInterval(Long id,Long agentId,String state,Long version,LocalDateTime startsAt,LocalDateTime endsAt) { }
     record MemberInterval(Long id,Long agentId,Long groupId,Long version,LocalDateTime startsAt,LocalDateTime endsAt) { }
     record Group(Long id,String name,String status,Long supervisorId,Long version,LocalDateTime createdAt,LocalDateTime updatedAt) { }

@@ -2,6 +2,8 @@ package ffdd.opsconsole.market.application;
 
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
+import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.market.mapper.AppGenesisMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -35,7 +37,7 @@ import org.springframework.util.StringUtils;
 
 /** G4 user boundary. Every displayed entitlement and every mutation is server authoritative. */
 @Service
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_=@org.springframework.beans.factory.annotation.Autowired)
 public class AppGenesisService {
     private static final String KILL_KEY = "killswitch.genesis";
     private static final String LEGACY_KILL_KEY = "J.killswitch.genesis";
@@ -57,6 +59,14 @@ public class AppGenesisService {
 
     /** Separate sandbox rail; production mapper is never reused for sandbox mutations. */
     private final Optional<AppMarketSandboxService> sandbox;
+    private final SupportPaymentAttributionFacade paymentAttribution;
+
+    /** Read-only/retained-command construction compatibility; successful production payments require attribution. */
+    public AppGenesisService(AppGenesisMapper mapper,PlatformConfigFacade config,AdminIdempotencyService idempotency,
+            EventOutboxService outbox,AuditLogService audit,Clock clock,GenesisCatalogService catalogService,
+            Environment environment,Optional<AppMarketSandboxService> sandbox) {
+        this(mapper,config,idempotency,outbox,audit,clock,catalogService,environment,sandbox,null);
+    }
 
     public ApiResult<Map<String, Object>> state() {
         RuntimeMode mode = runtimeMode();
@@ -189,11 +199,13 @@ public class AppGenesisService {
                 : catalogService.priceForSold(sold);
         BigDecimal amount = money(unitPrice.multiply(BigDecimal.valueOf(quantity)));
         BigDecimal beforeBalance = requireWallet(userId);
+        String orderNo = randomNo("G4P");
+        var prepared = requirePaymentAttribution().prepare(userId, Source.GENESIS_PRIMARY, orderNo);
+        paymentAttribution.beforeGenesisCash(prepared, List.of(userId), null);
         if (beforeBalance.compareTo(amount) < 0 || mapper.debitWallet(userId, amount) != 1) {
             throw new BizException(409, "GENESIS_WALLET_INSUFFICIENT");
         }
-        LocalDateTime now = LocalDateTime.now(clock);
-        String orderNo = randomNo("G4P");
+        LocalDateTime now = LocalDateTime.now(clock).withNano(0);
         AppGenesisMapper.OrderWrite order = new AppGenesisMapper.OrderWrite(
                 orderNo, idempotencyKey.trim(), userId, series.seriesCode(), quantity,
                 unitPrice, amount, "PRIMARY", null, null, BigDecimal.ZERO, now);
@@ -206,9 +218,9 @@ public class AppGenesisService {
             }
         }
         BigDecimal balanceAfter = money(beforeBalance.subtract(amount));
-        if (mapper.insertLedger(new AppGenesisMapper.LedgerWrite(
-                userId, orderNo, "GENESIS_PURCHASE", "OUT", amount, balanceAfter,
-                "G4 Genesis primary purchase")) != 1) throw new BizException(409, "GENESIS_LEDGER_CONFLICT");
+        if (paymentAttribution.insertLedger(prepared, amount, balanceAfter,
+                "G4 Genesis primary purchase") != 1) throw new BizException(409, "GENESIS_LEDGER_CONFLICT");
+        paymentAttribution.record(prepared);
         AppGenesisMapper.UserPolicyRow policy = requirePolicy(userId);
         Map<String, Object> event = linked("orderNo", orderNo, "seriesCode", series.seriesCode(),
                 "quantity", quantity, "unitPriceUsdt", unitPrice, "amountUsdt", amount,
@@ -241,10 +253,11 @@ public class AppGenesisService {
 
     private ApiResult<Map<String, Object>> listInternal(Long userId, String holdingNo, String key, BigDecimal price) {
         if (!marketEnabled()) throw new BizException(409, "GENESIS_MARKET_PAUSED");
+        if (mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         AppGenesisMapper.HoldingRow holding = requireHolding(holdingNo);
         if (!userId.equals(holding.userId())) throw new BizException(403, "GENESIS_HOLDING_OWNER_REQUIRED");
         AppGenesisMapper.SeriesRow series = requireSeries();
-        requireEligibleUser(userId, series, salePolicy(series), 0);
+        requireEligibleLockedUser(userId, series, salePolicy(series), 0);
         if (!"ACTIVE".equals(holding.status()) || mapper.listHolding(holding.id(), userId, price, LocalDateTime.now(clock)) != 1) {
             throw new BizException(409, "GENESIS_HOLDING_NOT_LISTABLE");
         }
@@ -295,7 +308,9 @@ public class AppGenesisService {
 
     private ApiResult<Map<String, Object>> buyListingInternal(Long userId, String holdingNo, String key, BigDecimal expectedPrice) {
         if (!marketEnabled()) throw new BizException(409, "GENESIS_MARKET_PAUSED");
-        AppGenesisMapper.HoldingRow holding = requireHolding(holdingNo);
+        AppGenesisMapper.HoldingRow route = mapper.routeHolding(holdingNo);
+        if (route == null) throw new BizException(404, "GENESIS_HOLDING_NOT_FOUND");
+        AppGenesisMapper.HoldingRow holding = route;
         if (!"LISTED".equals(holding.status()) || holding.listingPriceUsdt() == null) {
             throw new BizException(409, "GENESIS_LISTING_NOT_ACTIVE");
         }
@@ -310,19 +325,32 @@ public class AppGenesisService {
         if (series == null || !series.seriesCode().equals(holding.seriesCode())) {
             throw new BizException(409, "GENESIS_SERIES_UNAVAILABLE");
         }
-        requireEligibleUser(userId, series, salePolicy(series), 1);
+        var parties = java.util.stream.Stream.of(userId, holding.userId()).sorted().toList();
+        for (Long party : parties) if (mapper.lockActiveUser(party) == null) throw new BizException(404, "USER_NOT_FOUND");
+        requireEligibleLockedUser(userId, series, salePolicy(series), 1);
+        var balances = new java.util.LinkedHashMap<Long,BigDecimal>();
+        for (Long party : parties) balances.put(party, requireWallet(party));
+        holding = requireHolding(holdingNo);
+        if (!java.util.Objects.equals(route.id(), holding.id()) || !java.util.Objects.equals(route.userId(), holding.userId())
+                || !java.util.Objects.equals(route.orderNo(), holding.orderNo()) || !java.util.Objects.equals(route.seriesCode(), holding.seriesCode())
+                || !"LISTED".equals(holding.status()) || holding.listingPriceUsdt() == null
+                || holding.listingPriceUsdt().compareTo(expectedPrice) != 0) {
+            throw new BizException(409, "GENESIS_LISTING_CONFLICT");
+        }
         BigDecimal price = money(holding.listingPriceUsdt());
         BigDecimal royalty = price.multiply(BigDecimal.valueOf(series.royaltyBps()))
                 .divide(BigDecimal.valueOf(10_000), 6, RoundingMode.HALF_UP);
         BigDecimal sellerNet = money(price.subtract(royalty));
-        BigDecimal buyerBefore = requireWallet(userId);
-        BigDecimal sellerBefore = requireWallet(holding.userId());
+        BigDecimal buyerBefore = balances.get(userId);
+        BigDecimal sellerBefore = balances.get(holding.userId());
+        String orderNo = randomNo("G4S");
+        var prepared = requirePaymentAttribution().prepare(userId, Source.GENESIS_SECONDARY, orderNo);
+        paymentAttribution.beforeGenesisCash(prepared, parties, holdingNo);
         if (buyerBefore.compareTo(price) < 0 || mapper.debitWallet(userId, price) != 1) {
             throw new BizException(409, "GENESIS_WALLET_INSUFFICIENT");
         }
         if (mapper.creditWallet(holding.userId(), sellerNet) != 1) throw new BizException(409, "GENESIS_SELLER_WALLET_CONFLICT");
-        LocalDateTime now = LocalDateTime.now(clock);
-        String orderNo = randomNo("G4S");
+        LocalDateTime now = LocalDateTime.now(clock).withNano(0);
         if (mapper.insertOrder(new AppGenesisMapper.OrderWrite(orderNo, key.trim(), userId, series.seriesCode(),
                 1, price, price, "SECONDARY", holding.userId(), holdingNo, royalty, now)) != 1) {
             throw new BizException(409, "GENESIS_ORDER_CONFLICT");
@@ -332,13 +360,13 @@ public class AppGenesisService {
         }
         BigDecimal buyerAfter = money(buyerBefore.subtract(price));
         BigDecimal sellerAfter = money(sellerBefore.add(sellerNet));
-        if (mapper.insertLedger(new AppGenesisMapper.LedgerWrite(userId, orderNo + "-BUY", "GENESIS_SECONDARY_BUY",
-                "OUT", price, buyerAfter, "G4 internal P2P purchase")) != 1
+        if (paymentAttribution.insertLedger(prepared, price, buyerAfter, "G4 internal P2P purchase") != 1
                 || mapper.insertLedger(new AppGenesisMapper.LedgerWrite(holding.userId(), orderNo + "-SELL",
                 "GENESIS_SECONDARY_SELL", "IN", sellerNet, sellerAfter,
                 "G4 internal P2P sale net of royalty")) != 1) {
             throw new BizException(409, "GENESIS_LEDGER_CONFLICT");
         }
+        paymentAttribution.record(prepared);
         AppGenesisMapper.UserPolicyRow buyerPolicy = requirePolicy(userId);
         Map<String, Object> event = linked("orderNo", orderNo, "holdingNo", holdingNo,
                 "priceUsdt", price,
@@ -350,6 +378,11 @@ public class AppGenesisService {
         response.put("trade", event);
         response.put("receiptId", receipt);
         return ApiResult.ok(response);
+    }
+
+    private SupportPaymentAttributionFacade requirePaymentAttribution() {
+        if (paymentAttribution == null) throw new BizException(503, "GENESIS_PAYMENT_CAPTURE_UNAVAILABLE");
+        return paymentAttribution;
     }
 
     private Map<String, Object> accountView(Long userId, AppGenesisMapper.SeriesRow series) {
@@ -440,6 +473,11 @@ public class AppGenesisService {
                                      int acquiringQuantity) {
         if (!salePolicy.available()) throw new BizException(503, "GENESIS_SALE_POLICY_UNAVAILABLE");
         if (mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        requireEligibleLockedUser(userId,series,salePolicy,acquiringQuantity);
+    }
+    private void requireEligibleLockedUser(Long userId, AppGenesisMapper.SeriesRow series, SalePolicy salePolicy,
+                                     int acquiringQuantity) {
+        if (!salePolicy.available()) throw new BizException(503, "GENESIS_SALE_POLICY_UNAVAILABLE");
         AppGenesisMapper.UserPolicyRow policy = requirePolicy(userId);
         int ageDays = policy.accountAgeDays() == null ? 0 : Math.max(0, policy.accountAgeDays());
         if (salePolicy.eligibilityEnabled() && ageDays < salePolicy.minAccountAgeDays()) {

@@ -199,9 +199,9 @@ WHERE p.permission_code IN ('content_i7_read','content_i7_write','content_i7_cou
 -- A 默认仅 superadmin(+审计)，RISK 仅补 A 父级和 A2 只读跟踪入口，不开放其他 A 域页面。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m WHERE r.role_code IN ('SUPER_ADMIN','AUDITOR');
--- C: support+risk
+-- C: risk
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'C%' WHERE r.role_code IN ('SUPPORT','RISK');
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'C%' WHERE r.role_code='RISK';
 -- C1 跨职能入口；财务另需 C3 作为 D4 唯一纠错回链。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('C','C1') WHERE r.role_code IN ('FINANCE','GROWTH');
@@ -219,9 +219,9 @@ SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('H','H1')
 WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK');
--- E: growth+support
+-- E: growth
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'E%' WHERE r.role_code IN ('GROWTH','SUPPORT');
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'E%' WHERE r.role_code='GROWTH';
 -- F: growth
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'F%' WHERE r.role_code='GROWTH';
@@ -231,9 +231,9 @@ SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 
 -- H: growth
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'H%' WHERE r.role_code='GROWTH';
--- I: content+support
+-- I: content
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'I%' WHERE r.role_code IN ('CONTENT','SUPPORT');
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'I%' WHERE r.role_code='CONTENT';
 -- J: risk
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'J%' WHERE r.role_code='RISK';
@@ -243,19 +243,25 @@ SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 
 -- RISK: 可追踪自己发起的 C2/K1 待确认工单，只开放 A 父级和 A2。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('A','A2') WHERE r.role_code='RISK';
--- M: support+risk. CONTENT is limited to the M5 content-management surface;
+-- M: RISK retains its existing menus. CONTENT is limited to the M5 content-management surface;
 -- it must not inherit M1-M4 operational menus.
 DELETE rm FROM nx_admin_role_menu rm
 JOIN nx_admin_role r ON r.id=rm.role_id AND r.role_code='CONTENT'
 JOIN nx_admin_menu m ON m.id=rm.menu_id
 WHERE m.menu_code LIKE 'M%';
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'M%' WHERE r.role_code IN ('SUPPORT','RISK');
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'M%' WHERE r.role_code='RISK';
+-- 内置 SUPPORT 仅客服域；重跑 seed 收紧旧默认关系，不改其它角色或账号角色关系。
+DELETE rm FROM nx_admin_role_menu rm
+JOIN nx_admin_role r ON r.id=rm.role_id AND r.role_code='SUPPORT';
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m
+WHERE r.role_code='SUPPORT' AND m.menu_code IN ('M','M1','M2','M3','M4','M5');
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('M','M5') WHERE r.role_code='CONTENT';
--- B: 全角色态势概览。
+-- B: 非客服业务角色态势概览。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'B%' WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','SUPPORT','CONFIG_ADMIN');
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'B%' WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','CONFIG_ADMIN');
 
 -- L: 按职能最小可见；清理旧版全角色可见的宽授权。
 DELETE rm FROM nx_admin_role_menu rm

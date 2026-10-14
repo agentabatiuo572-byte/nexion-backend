@@ -32,10 +32,11 @@ class BankWithdrawalServiceTest {
     final PayoutAddressOtpAttemptService otp = mock(PayoutAddressOtpAttemptService.class);
     final UserOtpDeliveryService delivery = mock(UserOtpDeliveryService.class);
     final FinanceSensitiveDataCipher cipher = mock(FinanceSensitiveDataCipher.class);
+    final SupportWithdrawalFundSourceService withdrawalFunds = mock(SupportWithdrawalFundSourceService.class);
     final BankWithdrawalService service=new BankWithdrawalService(bank,accountRouting,wallet,addresses,delivery,
             otp,cipher,withdrawals,
             d7,mock(HdPayProperties.class),payout,idem,
-            mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC),ZoneOffset.UTC));
+            mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC),ZoneOffset.UTC),withdrawalFunds);
     BankWithdrawalMapper.Quote quote(long owner) {
         return new BankWithdrawalMapper.Quote(qn,owner,"BNK-fixture",1L,"VCB","***6789","cipher",new BigDecimal("100"),
                 BigDecimal.ONE,new BigDecimal("99"),new BigDecimal("25000"),new BigDecimal("2475000"),1L,"d5-v1",now,now.plusMinutes(5),null);
@@ -161,13 +162,13 @@ class BankWithdrawalServiceTest {
         var manager = new org.springframework.jdbc.datasource.DataSourceTransactionManager(source);
         var attributes = new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource();
         var capacityTarget = new AppWithdrawalService(wallet, mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class),
-                null, idem, null, null, null, null, null, env, Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC), bank, mock(WithdrawalRiskTimePolicy.class));
+                null, idem, null, null, null, null, withdrawalFunds, null, env, Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC), bank, mock(WithdrawalRiskTimePolicy.class));
         var capacityProxy = new org.springframework.aop.framework.ProxyFactory(capacityTarget);
         capacityProxy.setProxyTargetClass(true);
         capacityProxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager, attributes));
         var target = new BankWithdrawalService(bank,accountRouting,wallet,addresses,delivery,otp,cipher,
                 (AppWithdrawalService)capacityProxy.getProxy(),d7,mock(HdPayProperties.class),payout,idem,
-                mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC));
+                mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC),withdrawalFunds);
         var configProxy = new org.springframework.aop.framework.ProxyFactory(target);
         configProxy.setProxyTargetClass(true);
         configProxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager, attributes));

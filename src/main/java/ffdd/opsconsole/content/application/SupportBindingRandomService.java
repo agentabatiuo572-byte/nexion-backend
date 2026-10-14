@@ -35,7 +35,7 @@ public class SupportBindingRandomService {
     private final ObjectMapper json;
     private final PlatformTransactionManager transactions;
     private final ProductionSupportPathGuard production;
-    @Value("${nexion.support.binding.preview-ttl-seconds:300}") private long previewTtlSeconds;
+    @Value("${nexion.support.binding.preview-ttl-seconds:300}") private final long previewTtlSeconds;
 
     public Preview preview(SupportRandomRequest.Preview request) {
         production.requireOpsWriteAllowed();

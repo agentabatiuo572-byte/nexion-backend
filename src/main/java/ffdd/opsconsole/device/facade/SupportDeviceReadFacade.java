@@ -5,10 +5,20 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.Collections;
 
 /** Internal current-device evidence; the caller authorizes the complete customer scope and owns its snapshot. */
 public interface SupportDeviceReadFacade extends DomainFacade {
     Snapshot readCurrent(Collection<Long> customerIds);
+    FundEarnings readFundEarnings(Collection<Long> customerIds);
+    Map<String,Integer> timePrecisions();
+    record FundEarnings(List<Map<String,Object>> receipts,List<Map<String,Object>> tasks,
+        List<Map<String,Object>> ledgers,List<Map<String,Object>> earningEvents) {
+        public FundEarnings {receipts=copy(receipts);tasks=copy(tasks);ledgers=copy(ledgers);earningEvents=copy(earningEvents);}
+        private static List<Map<String,Object>> copy(List<Map<String,Object>> rows){return rows.stream().map(r->Collections.unmodifiableMap(new LinkedHashMap<>(r))).toList();}
+    }
 
     enum ConnectionStatus { ONLINE, OFFLINE, UNKNOWN, NOT_APPLICABLE }
 

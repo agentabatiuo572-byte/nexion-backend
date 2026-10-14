@@ -47,7 +47,7 @@ public class SupportBulkService {
     private final ObjectMapper json;
     private final AuditLogService audit;
     private final ApplicationEventPublisher events;
-    @Value("${nexion.support.bulk.preview-ttl-seconds:300}") private long previewTtlSeconds;
+    @Value("${nexion.support.bulk.preview-ttl-seconds:300}") private final long previewTtlSeconds;
 
     @Transactional(isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public SupportBulk.Preview preview(SupportBulkRequest.Preview request) {

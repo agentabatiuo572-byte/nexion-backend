@@ -15,12 +15,14 @@ import java.util.*;
 public final class SupportLeaderboard {
     private SupportLeaderboard() { }
     public static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
-    public enum Board { firstPayment, deposit, purchase, customers }
+    public static final String NET_DEFINITION = "support-leaderboard-v3-net-contribution";
+    // Legacy values remain decodable in immutable publications; request normalization retires their algorithms.
+    public enum Board { netContribution, firstPayment, deposit, purchase, customers }
     public enum Scope { all, ownGroup, managedGroups }
     public enum Coverage { COMPLETE, PARTIAL, UNKNOWN, FAILED }
     public enum State { COMPLETE, PROVISIONAL }
     public enum Qualification { ACTIVE, DISABLED, REMOVED, HANDOVER_REQUIRED, UNKNOWN }
-    public enum AmountKind { DEPOSIT, PURCHASE }
+    public enum AmountKind { NET_CONTRIBUTION, DEPOSIT, PURCHASE }
     public enum Reason { NONE, SOURCE_INCOMPLETE, HISTORY_UNKNOWN, ATTRIBUTION_UNKNOWN,
         REFUNDS_UNKNOWN, SOURCE_FAILED, CANDIDATES_INCOMPLETE, METRIC_INCOMPLETE,
         HISTORICAL_MONTH, MONTH_START, NO_BASELINE, DEFINITION_CHANGED, SCOPE_CHANGED,
@@ -28,12 +30,16 @@ public final class SupportLeaderboard {
     public enum MovementKind { UP, DOWN, SAME, NEW, UNAVAILABLE }
 
     public record Count(Long value, Coverage coverage, Reason reason) {
-        public Count { validateMetric(value == null ? null : BigDecimal.valueOf(value), coverage, reason); }
+        public Count {
+            if(value!=null && value<0)throw invalid();
+            validateMetric(value == null ? null : BigDecimal.valueOf(value), coverage, reason);
+        }
     }
     public record Amount(BigDecimal value, String currency, YearMonth month, AmountKind kind,
                          Coverage coverage, Reason reason, String sourceVersion) {
         public Amount {
             validateMetric(value, coverage, reason);
+            if(value!=null && value.signum()<0 && kind!=AmountKind.NET_CONTRIBUTION)throw invalid();
             if (currency == null || !currency.matches("[A-Z][A-Z0-9]{1,15}") || month == null || kind == null)
                 throw invalid();
             requireToken(sourceVersion);
@@ -66,7 +72,7 @@ public final class SupportLeaderboard {
                     || scope == Scope.ownGroup && approvedGroupIds.size() != 1
                     || approvedGroupIds.stream().anyMatch(id -> id <= 0)) throw invalid();
         }
-        public String rankCurrency() { return board == Board.deposit || board == Board.purchase ? currency : null; }
+        public String rankCurrency() { return board == Board.netContribution || board == Board.deposit || board == Board.purchase ? currency : null; }
     }
     public record Movement(MovementKind kind, Integer places, Integer previousRank, Instant baselineAt,
                            String baselineVersion, Reason reason) { }
@@ -93,6 +99,15 @@ public final class SupportLeaderboard {
                        int unranked, int matched, long pageNum, int pageSize, List<Row> rows, Self self) {
         public Page { rows = List.copyOf(rows); }
     }
+    public record Podium(int total, List<Row> rows) {
+        public Podium { rows = List.copyOf(rows); }
+    }
+
+    public static Podium podium(Snapshot snapshot) {
+        if (snapshot.state() != State.COMPLETE) return new Podium(0,List.of());
+        List<Row> winners=snapshot.rows().stream().filter(row -> row.rank()!=null && row.rank()>=1 && row.rank()<=3).toList();
+        return new Podium(winners.size(),winners.stream().limit(4).toList());
+    }
 
     public static Snapshot calculate(Context context, String sourceVersion, Coverage candidateCoverage,
                                      List<Candidate> fullCandidates) {
@@ -105,7 +120,9 @@ public final class SupportLeaderboard {
         for (Candidate c : candidates) {
             if (!ids.add(c.agentId())) throw invalid();
             if (!c.amount().currency().equals(context.currency()) || !c.amount().month().equals(context.referenceMonth())
-                    || c.amount().kind() != (context.board() == Board.purchase ? AmountKind.PURCHASE : AmountKind.DEPOSIT))
+                    || c.amount().kind()!=AmountKind.NET_CONTRIBUTION && (context.board()==Board.netContribution
+                        || NET_DEFINITION.equals(context.definitionVersion())
+                        || c.amount().kind()!=(context.board()==Board.purchase?AmountKind.PURCHASE:AmountKind.DEPOSIT)))
                 throw invalid();
             if (c.qualificationBirth() != null) {
                 if (c.qualificationBirth().isAfter(context.evaluatedAt())) throw invalid();
@@ -235,7 +252,7 @@ public final class SupportLeaderboard {
     private static BigDecimal metric(Row r, Board b) { return b == Board.firstPayment ? decimal(r.firstPayment()) : b == Board.customers ? decimal(r.customers()) : r.amount().value(); }
     private static BigDecimal decimal(Count c) { return c.value() == null ? null : BigDecimal.valueOf(c.value()); }
     private static void validateMetric(BigDecimal value, Coverage coverage, Reason reason) {
-        if (coverage == null || reason == null || value != null && value.signum() < 0
+        if (coverage == null || reason == null
                 || coverage == Coverage.COMPLETE && (value == null || reason != Reason.NONE)
                 || coverage != Coverage.COMPLETE && reason == Reason.NONE
                 || (coverage == Coverage.UNKNOWN || coverage == Coverage.FAILED) && value != null) throw invalid();

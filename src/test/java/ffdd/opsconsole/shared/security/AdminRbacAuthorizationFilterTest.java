@@ -1113,6 +1113,77 @@ class AdminRbacAuthorizationFilterTest {
         assertThat(invoked).isFalse();assertThat(response.getStatus()).isEqualTo(403);
     }
 
+    @Test
+    void selfAvatarRoutesReachTheirOwnerServiceWithoutPlatformAccountPermissions() throws Exception {
+        authenticateTrustedAdmin("7", "service_m3_read");
+        for (String route : List.of("GET self/avatar", "HEAD self/avatar", "PATCH self/avatar",
+                "GET self/avatar/content", "HEAD self/avatar/content", "POST self/avatar-assets",
+                "POST self/avatar-assets/default", "GET self/avatar-assets/own-asset",
+                "HEAD self/avatar-assets/own-asset", "DELETE self/avatar-assets/own-asset")) {
+            String[] parts = route.split(" ", 2);
+            AtomicBoolean invoked = new AtomicBoolean(false);
+            filter.doFilter(request(parts[0], "/api/admin/platform/accounts/" + parts[1]),
+                    new MockHttpServletResponse(), mark(invoked));
+            assertThat(invoked).as(route).isTrue();
+        }
+    }
+
+    @Test
+    void selfAvatarExceptionDoesNotOpenAccountOrUnsupportedRoutes() throws Exception {
+        authenticateTrustedAdmin("7", "service_m3_read");
+        for (String route : List.of("GET overview", "GET 42/avatar", "GET avatar-assets/own-asset",
+                "POST avatar-assets/default", "POST accounts", "PATCH 42/profile", "GET self/profile",
+                "PUT self/avatar", "POST self/avatar", "PATCH self/avatar/content",
+                "POST self/avatar-assets/own-asset", "GET self/avatar-assets/own-asset/extra")) {
+            String[] parts = route.split(" ", 2);
+            AtomicBoolean invoked = new AtomicBoolean(false);
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(request(parts[0], "/api/admin/platform/accounts/" + parts[1]), response, mark(invoked));
+            assertThat(invoked).as(route).isFalse();
+            assertThat(response.getStatus()).as(route).isEqualTo(403);
+        }
+    }
+
+    @Test
+    void selfAvatarStillRequiresCredentialRotation() throws Exception {
+        authenticateTrustedAdmin("7", "service_m3_read");
+        for (String status : List.of("PASSWORD_CHANGE_REQUIRED", "MAIL_DISPATCHED", "HANDOFF_PENDING")) {
+            AdminAccountStateEntity state = new AdminAccountStateEntity();
+            state.setAdminId(7L);state.setCredentialDeliveryStatus(status);
+            when(accountStateMapper.selectActiveByAdminId(7L)).thenReturn(state);
+            AtomicBoolean invoked = new AtomicBoolean(false);
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(request("GET", "/api/admin/platform/accounts/self/avatar/content"), response, mark(invoked));
+            assertThat(invoked).as(status).isFalse();
+            assertThat(response.getStatus()).isEqualTo(403);
+            assertThat(response.getContentAsString()).contains("ADMIN_PASSWORD_CHANGE_REQUIRED");
+        }
+    }
+
+    @Test
+    void selfAvatarRejectsNonAdminOrMissingSubjects() throws Exception {
+        for (String subject : List.of("USER", "MISSING", "ANONYMOUS")) {
+            authenticateAs("7", "service_m3_read");
+            if (subject.equals("USER")) {
+                ((UsernamePasswordAuthenticationToken) SecurityContextHolder.getContext().getAuthentication())
+                        .setDetails(Map.of("subjectType", "USER"));
+            } else if (subject.equals("ANONYMOUS")) {
+                SecurityContextHolder.getContext().setAuthentication(new AnonymousAuthenticationToken(
+                        "anonymous", "7", List.of(new SimpleGrantedAuthority("service_m3_read"))));
+            }
+            AtomicBoolean invoked = new AtomicBoolean(false);
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(request("GET", "/api/admin/platform/accounts/self/avatar/content"), response, mark(invoked));
+            assertThat(invoked).as(subject).isFalse();assertThat(response.getStatus()).isEqualTo(403);
+            assertThat(response.getContentAsString()).contains("ADMIN_SUBJECT_REQUIRED");
+        }
+        SecurityContextHolder.clearContext();
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        filter.doFilter(request("GET", "/api/admin/platform/accounts/self/avatar/content"), response, mark(invoked));
+        assertThat(invoked).isFalse();assertThat(response.getStatus()).isEqualTo(401);
+    }
+
     private void authenticateTrustedAdmin(String principal, String... authorities) {
         authenticateAs(principal, authorities);
         ((UsernamePasswordAuthenticationToken) SecurityContextHolder.getContext().getAuthentication())

@@ -131,7 +131,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     private final ffdd.opsconsole.content.application.SupportGroupService supportGroups;
 
     public ApiResult<AdminAccountOverview> overview() {
-        ensureA1BusinessTables();
+        seedSecurityBaselines();
         List<AdminAccountOverview.OperatorRecord> operators = operators();
         int active = (int) operators.stream().filter(operator -> "enabled".equals(operator.status())).count();
         int activeSessions = operators.stream().mapToInt(AdminAccountOverview.OperatorRecord::sessions).sum();
@@ -184,13 +184,16 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (email != null && adminByEmail(email).isPresent()) {
             return ApiResult.fail(409, "ADMIN_EMAIL_EXISTS");
         }
-        String role = normalizeRole(request.role());
+        String role = normalizeRole(request.role() == null ? "support" : request.role());
         if (role == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
         }
         if (governanceRecoveryRequired() && !"super".equals(role)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
         }
+        ffdd.opsconsole.content.application.SupportDefaultAvatarCatalog.gender(request.avatarGender());
+        if(Boolean.TRUE.equals(request.useDefaultAvatar()) && (request.avatarAssetId()!=null || !"support".equals(role)))
+            return ApiResult.fail(422,"AVATAR_DEFAULT_INTENT_INVALID");
         String initialPassword = generateTemporaryPassword();
         AdminEntity admin = new AdminEntity();
         admin.setUsername(username);
@@ -201,6 +204,8 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         admin.setStatus(1);
         admin.setIsDeleted(0);
         int inserted = adminMapper.insert(admin);
+        if(Boolean.TRUE.equals(request.useDefaultAvatar()) && (inserted!=1 || admin.getId()==null))
+            throw new ffdd.opsconsole.shared.exception.BizException(500,"ADMIN_ID_MISSING");
         if (A2ReplayContext.isReplaying() && request.avatarAssetId() != null && (inserted != 1 || admin.getId() == null))
             throw new ffdd.opsconsole.shared.exception.BizException(500, "ADMIN_ID_MISSING");
         Long adminId = admin.getId();
@@ -211,9 +216,18 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             return ApiResult.fail(500, "ADMIN_ID_MISSING");
         }
         syncPrimaryRoleRelation(adminId, role);
+        if ("support".equals(role)) {
+            supportGroups.accountCreatedService(adminId, idempotencyKey, request.reason());
+        }
 
         String credentialStatus = PASSWORD_CHANGE_REQUIRED;
         accountStateMapper.upsertCreatedState(adminId, credentialStatus);
+        if(request.avatarGender()!=null)persistAvatarGender(adminId,request.avatarGender());
+        java.util.Map<String,Object> defaultAvatarAudit=java.util.Map.of();
+        if(Boolean.TRUE.equals(request.useDefaultAvatar())) {
+            if(A2ReplayContext.isReplaying())A2ReplayContext.bindDefaultAvatarTarget(adminId);
+            defaultAvatarAudit=avatars.attachDefaultCreated(adminId,request.avatarGender());
+        }
         if(request.avatarAssetId()!=null) {
             if(A2ReplayContext.isReplaying()) A2ReplayContext.bindAvatarTarget(adminId,request.avatarAssetId(),true);
             avatars.attach(adminId,request.avatarAssetId());
@@ -223,7 +237,9 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         AdminAccountOverview.OperatorRecord created = requireOperator(accountId);
         var creationAudit=new java.util.LinkedHashMap<String,Object>(Map.of("username",username,"role",role,"credentialDeliveryStatus",credentialStatus));
         if(created.avatarAssetId()!=null){creationAudit.put("avatarAssetId",created.avatarAssetId());creationAudit.put("avatarVersion",created.avatarVersion());}
-        audit("A1_OPERATOR_CREATED", "A1_ADMIN_ACCOUNT", accountId, request.operator(), request.reason(), idempotencyKey,creationAudit);
+        creationAudit.putAll(defaultAvatarAudit);
+        if(request.avatarGender()!=null)creationAudit.put("avatarGender",request.avatarGender());
+        audit("A1_OPERATOR_CREATED", "A1_ADMIN_ACCOUNT", accountId, request.operator(), request.reason(), idempotencyKey,creationAudit,Boolean.TRUE.equals(request.useDefaultAvatar()));
         return ApiResult.ok(new AdminAccountOverview.OperatorRecord(
                 created.id(),
                 created.name(),
@@ -239,7 +255,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                 created.sessionDetails(),
                 created.roleHistory(),
                 created.version(),
-                initialPassword,created.avatarAssetId(),created.avatarVersion()));
+                initialPassword,created.avatarAssetId(),created.avatarVersion(),created.avatarGender()));
     }
 
     @Transactional
@@ -299,8 +315,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         boolean usernameChanged = !username.equals(current.username());
         boolean displayNameChanged = !displayName.equals(current.name());
         boolean emailChanged = !firstText(email).equals(firstText(current.email()));
+        ffdd.opsconsole.content.application.SupportDefaultAvatarCatalog.gender(request.avatarGender());
+        boolean genderChanged=request.avatarGender()!=null && !request.avatarGender().equals(current.avatarGender());
         boolean avatarChanged = request.avatarAssetId()!=null && !request.avatarAssetId().equals(current.avatarAssetId());
-        if (!usernameChanged && !displayNameChanged && !emailChanged && !avatarChanged) {
+        if (!usernameChanged && !displayNameChanged && !emailChanged && !avatarChanged && !genderChanged) {
             return ApiResult.ok(current);
         }
 
@@ -308,6 +326,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (adminMapper.updateProfileIfVersion(adminId, accountVersionNumber(current.version()), username, displayName, firstText(email)) != 1) {
             return ApiResult.fail(409, "ACCOUNT_VERSION_STALE");
         }
+        if(genderChanged)persistAvatarGender(adminId,request.avatarGender());
         if(avatarChanged) {
             if(A2ReplayContext.isReplaying()) A2ReplayContext.bindAvatarTarget(adminId,request.avatarAssetId(),false);
             avatars.attach(adminId,request.avatarAssetId());
@@ -325,11 +344,12 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                         "fromEmail", firstText(current.email()),
                         "toEmail", firstText(email)));
         AdminAccountOverview.OperatorRecord updated = requireOperator(current.id());
+        if(genderChanged){profileAudit.put("fromAvatarGender",current.avatarGender());profileAudit.put("toAvatarGender",updated.avatarGender());}
         if(avatarChanged) {
             profileAudit.put("fromAvatarAssetId",current.avatarAssetId());profileAudit.put("toAvatarAssetId",updated.avatarAssetId());
             profileAudit.put("fromAvatarVersion",current.avatarVersion());profileAudit.put("toAvatarVersion",updated.avatarVersion());
         }
-        audit("A1_OPERATOR_PROFILE_UPDATED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(),idempotencyKey,profileAudit);
+        audit("A1_OPERATOR_PROFILE_UPDATED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(),idempotencyKey,profileAudit,avatarChanged || genderChanged);
         return ApiResult.ok(updated);
     }
 
@@ -670,7 +690,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (governanceRecoveryRequired()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
         }
-        ensureA1BusinessTables();
+        seedSecurityBaselines();
         String key = normalizeText(baselineKey, "BASELINE_KEY_REQUIRED").toLowerCase(Locale.ROOT);
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("A", "baseline", key) > 0) {
@@ -717,7 +737,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (authorization != null) {
             return failLike(authorization);
         }
-        ensureA1BusinessTables();
+        seedSecurityBaselines();
         AdminAccountOverview.RbacAction action = rbacActions().stream()
                 .filter(item -> item.id().equals(actionId))
                 .findFirst()
@@ -775,7 +795,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (authorization != null) {
             return failLike(authorization);
         }
-        ensureA1BusinessTables();
+        seedSecurityBaselines();
         String action = normalizeText(request.action(), "RBAC_ACTION_REQUIRED");
         String domainGroup = normalizeDomainGroup(request.domainGroup());
         String actionId = uniqueActionId(slugFor(action));
@@ -794,14 +814,6 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
 
     private int pendingA1OperationTickets() {
         return auditCenterService.pendingOperationCountByActionMarker("(A1)");
-    }
-
-    private void ensureA1BusinessTables() {
-        accountStateMapper.createAccountStateTable();
-        rbacActionMapper.createActionTable();
-        rbacGrantMapper.createGrantTable();
-        securityBaselineMapper.createSecurityBaselineTable();
-        seedSecurityBaselines();
     }
 
     /**
@@ -935,6 +947,11 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         return authenticatedOperator(operators());
     }
 
+    // Support identity reads must not initialize unrelated account-management tables.
+    public List<AdminAccountOverview.OperatorRecord> operatorsForSupport() {
+        return operators();
+    }
+
     /** Replay is a read of privileged command results, so current authorization still applies. */
     public String commandActor(String scope,String target,Object request) {
         var actor=currentOperator().orElseThrow(()->new ffdd.opsconsole.shared.exception.BizException(403,"ACCOUNT_COMMAND_FORBIDDEN"));
@@ -1035,7 +1052,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                         .toList(),
                 roleHistory(id, role),
                 accountVersion(admin, state),
-                null,state==null?null:state.getAvatarAssetId(),state==null || state.getAvatarVersion()==null?0L:state.getAvatarVersion());
+                null,state==null?null:state.getAvatarAssetId(),state==null || state.getAvatarVersion()==null?0L:state.getAvatarVersion(),state==null?null:state.getAvatarGender());
     }
 
     private String accountVersion(AdminEntity admin, AdminAccountStateEntity state) {
@@ -1287,6 +1304,17 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), message);
     }
 
+    private void persistAvatarGender(Long adminId,String gender) {
+        int initialized=accountStateMapper.initializeMissingAvatarState(adminId);
+        if(initialized<0 || initialized>1 || accountStateMapper.updateAvatarGender(adminId,gender)!=1)
+            throw new ffdd.opsconsole.shared.exception.BizException(500,"AVATAR_GENDER_WRITE_FAILED");
+    }
+
+    private void audit(String action,String resourceType,String resourceId,String operator,
+            String reason,String idempotencyKey,Map<String,Object> extraDetail) {
+        audit(action,resourceType,resourceId,operator,reason,idempotencyKey,extraDetail,false);
+    }
+
     private void audit(
             String action,
             String resourceType,
@@ -1294,11 +1322,11 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             String operator,
             String reason,
             String idempotencyKey,
-            Map<String, Object> extraDetail) {
+            Map<String, Object> extraDetail,boolean required) {
         Map<String, Object> detail = new LinkedHashMap<>(extraDetail);
         detail.put("reason", reason.trim());
         detail.put("idempotencyKey", idempotencyKey.trim());
-        auditLogService.record(AuditLogWriteRequest.builder()
+        var write=AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType(resourceType)
                 .resourceId(resourceId)
@@ -1307,7 +1335,8 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                 .result("SUCCESS")
                 .riskLevel("HIGH")
                 .detail(detail)
-                .build());
+                .build();
+        if(required)auditLogService.recordRequired(write);else auditLogService.record(write);
     }
 
     private ApiResult<Void> requireMutation(String idempotencyKey, String reason, String operator) {
@@ -1500,7 +1529,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             case "risk" -> "风控模型、账户限制与熔断。";
             case "content" -> "文案、课程、风险披露与公告。";
             case "growth" -> "活动、节奏、权益与触达。";
-            case "support" -> "客服中心后台角色，主管、专属、通用坐席在 M1 配置。";
+            case "support" -> "默认开通专属客服资格，仅服务本人绑定客户；主管资格另行授予。";
             case "audit" -> "审计与合规观察，禁止写操作。";
             default -> "";
         };
@@ -1514,7 +1543,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             case "risk" -> "C/K/J 风控域";
             case "content" -> "I/公告/课程";
             case "growth" -> "E/F/G/H 增长与收益";
-            case "support" -> "M/C/D/K 客服协同";
+            case "support" -> "本人客户服务、工单与会话、公开业绩；知识库与话术只读";
             case "audit" -> "A2/L 报表与审计";
             default -> "";
         };
@@ -1616,7 +1645,8 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                         str(p, "role"),
                         null,                       // ignoredCredentialDelivery
                         reason, operator,
-                        str(p, "initialPassword"),str(p,"avatarAssetId"));
+                        str(p, "initialPassword"),str(p,"avatarAssetId"),str(p,"avatarGender"),
+                        p.get("useDefaultAvatar")==null?null:Boolean.valueOf(str(p,"useDefaultAvatar")));
                 return createAccount(idem, req);
             }
             case "a1_account_update_profile" -> {
@@ -1624,7 +1654,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                         str(p, "username"),
                         str(p, "displayName"),
                         str(p, "email"),
-                        reason, operator, str(p, "expectedVersion"),str(p,"avatarAssetId"));
+                        reason, operator, str(p, "expectedVersion"),str(p,"avatarAssetId"),str(p,"avatarGender"));
                 return updateProfile(idem, str(p, "accountId"), req);
             }
             case "a1_account_change_role" -> {

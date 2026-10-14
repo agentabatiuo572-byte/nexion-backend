@@ -44,6 +44,9 @@ public class SupportWorkbenchService {
         String selected=filter==null?"ALL":filter;
         if(!FILTERS.contains(selected)) throw new BizException(422,"SUPPORT_FILTER_INVALID");
         if(keyword!=null && keyword.length()>200) throw new BizException(422,"SUPPORT_KEYWORD_TOO_LONG");
+        // Reject inaccessible scopes before the activity write; recheck in the response transaction.
+        if(mode==null) ownership.defaultQueryScope(groupId,agentId);
+        else ownership.queryScope(mode,groupId,agentId);
         var coverage=activity.checkpoint();
         return transaction().execute(status -> {
             ReadScope scopedAgent=mode==null ? ownership.defaultQueryScope(groupId,agentId) : ownership.queryScope(mode,groupId,agentId);
@@ -75,8 +78,11 @@ public class SupportWorkbenchService {
 
     public Map<String,Object> detail(Long customer) {
         requireSafeId(customer);
+        ownership.customerQueryScope(customer);
         var coverage=activity.checkpoint();
-        return transaction().execute(status -> {
+        var read=transaction();
+        read.setReadOnly(true);
+        return read.execute(status -> {
             ReadScope scopedAgent=ownership.customerQueryScope(customer);
             var rules=bindings.rules();
             var q=query(scopedAgent,customer,rules,coverage);
@@ -114,6 +120,7 @@ public class SupportWorkbenchService {
         var scope=new LinkedHashMap<String,Object>();
         scope.put("actorId",readScope.actorId()); scope.put("agentAdminId",readScope.requestedAgentId());
         scope.put("groupId",readScope.requestedGroupId()); scope.put("mode",readScope.mode().name());
+        scope.put("availableModes",ownership.availableReadModes().stream().map(Enum::name).toList());
         result.put("scope",scope);
         var ruleView=new LinkedHashMap<String,Object>();
         ruleView.put("dormantDays",rules.dormantDays()); ruleView.put("maintenanceDays",rules.maintenanceDays());

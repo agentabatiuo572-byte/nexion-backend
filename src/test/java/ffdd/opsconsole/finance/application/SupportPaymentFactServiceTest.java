@@ -17,7 +17,7 @@ import static ffdd.opsconsole.finance.facade.SupportPaymentFacts.*;
 
 class SupportPaymentFactServiceTest {
     private final SupportPaymentFactMapper mapper = mock(SupportPaymentFactMapper.class);
-    private final SupportPaymentFactService service = new SupportPaymentFactService(mapper);
+    private final SupportPaymentFactService service = new SupportPaymentFactService(mapper,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class));
     private final LocalDateTime at = LocalDateTime.of(2026,10,7,12,0,0);
     @BeforeEach void emptySources() {
         when(mapper.deposits(any())).thenReturn(List.of()); when(mapper.cards(any())).thenReturn(List.of());
@@ -51,7 +51,8 @@ class SupportPaymentFactServiceTest {
         var result=service.readWithCapturedHistory(List.of(7L),captured(order,Source.WALLET_ORDER));
         assertThat(result.facts()).hasSize(1);
         assertThat(result.issues()).isEmpty();
-        assertThat(result.coverage()).allMatch(c -> c.historyStatus()==Status.UNKNOWN && c.refundStatus()==Status.UNKNOWN
+        assertThat(result.coverage()).allMatch(c -> c.historyStatus()==Status.UNKNOWN && c.refundStatus()==
+            (Set.of(Source.DEPOSIT_ORDER,Source.CARD_TOPUP,Source.VIETQR,Source.HDPAY).contains(c.source())?Status.READY:Status.UNKNOWN)
             && c.historicalEnvironmentStatus()==Status.UNKNOWN && c.supportedFrom()==null);
     }
     @Test void verifiedNewHistoryCannotOverrideConflictingLegacyIdentity() {
@@ -111,7 +112,7 @@ class SupportPaymentFactServiceTest {
             .isInstanceOf(IllegalArgumentException.class).hasMessage("Captured customer outside explicit scope");
     }
     @ParameterizedTest
-    @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER","ORDER_REFUND"},mode=EnumSource.Mode.EXCLUDE)
+    @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER","ORDER_REFUND","GENESIS_PRIMARY","GENESIS_SECONDARY"},mode=EnumSource.Mode.EXCLUDE)
     void verifiedFinancialRootResolvesOnlyItsOwnUnmatchedLedger(Source source) {
         Kind kind=Set.of(Source.DEPOSIT_ORDER,Source.CARD_TOPUP,Source.VIETQR,Source.HDPAY).contains(source)
             ?Kind.DEPOSIT:Kind.DEVICE_PURCHASE;
@@ -123,7 +124,8 @@ class SupportPaymentFactServiceTest {
         var result=service.readWithCapturedHistory(List.of(7L),captured(valid,source));
         assertThat(result.facts()).hasSize(1);
         assertThat(result.issues()).isEmpty();
-        assertThat(result.coverage()).allMatch(c -> c.historyStatus()==Status.UNKNOWN && c.refundStatus()==Status.UNKNOWN);
+        assertThat(result.coverage()).allMatch(c -> c.historyStatus()==Status.UNKNOWN && c.refundStatus()==
+            (Set.of(Source.DEPOSIT_ORDER,Source.CARD_TOPUP,Source.VIETQR,Source.HDPAY).contains(c.source())?Status.READY:Status.UNKNOWN));
     }
     @Test void independentlyValidLegacyRootAlsoResolvesItsMatchingLedger() {
         var valid=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");
@@ -297,12 +299,12 @@ class SupportPaymentFactServiceTest {
         assertThat(snapshot.facts()).hasSize(1);
         assertThat(snapshot.issues()).extracting(Issue::reason).contains("UNPROVEN_ORIGINAL_PAYMENT","REFUND_EXCEEDS_ORIGINAL_AMOUNT");
     }
-    @Test void missingFinalDepositRefundHistoryNeverReturnsZeroOrReadyCoverage() {
+    @Test void nonRefundableDepositPolicyDoesNotCertifyPaymentHistory() {
         when(mapper.cards(any())).thenReturn(List.of(row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10")));
         var snapshot=service.read(List.of(7L));
         assertThat(snapshot.coverage()).filteredOn(c -> c.source()==Source.CARD_TOPUP)
-            .allSatisfy(c -> {assertThat(c.refundStatus()).isEqualTo(Status.UNKNOWN);assertThat(c.historyStatus()).isEqualTo(Status.UNKNOWN);
-                assertThat(c.supportedFrom()).isNull();assertThat(c.reasons()).contains("FINAL_DEPOSIT_REFUND_SOURCE_UNAVAILABLE");});
+            .allSatisfy(c -> {assertThat(c.refundStatus()).isEqualTo(Status.READY);assertThat(c.historyStatus()).isEqualTo(Status.UNKNOWN);
+                assertThat(c.supportedFrom()).isNull();assertThat(c.reasons()).contains("SUCCESSFUL_DEPOSITS_NON_REFUNDABLE").doesNotContain("FINAL_DEPOSIT_REFUND_SOURCE_UNAVAILABLE");});
         assertThat(snapshot.facts()).noneMatch(f -> f.kind()==Kind.DEVICE_PURCHASE_REFUND);
     }
     @Test void failedSourceIsVisibleAndDoesNotExposePrivateExceptionOrInventZero() {
@@ -330,5 +332,86 @@ class SupportPaymentFactServiceTest {
             case TRIAL_CONVERT->"TRIAL_CHARGE";case TRADE_IN->"TRADE_IN_PURCHASE";case CAPACITY_KEEP->"DEVICE_PURCHASE";
             case VIETQR,HDPAY->"VIETQR_DEPOSIT";case DEPOSIT_ORDER->"CHAIN_TOPUP";default->"ORDER_PURCHASE";});
         return r;
+    }
+    private SupportPaymentFactService.CapturedFinancialHistory proven(List<Map<String,Object>> rows,List<Map<String,Object>> origins) {
+        var candidates=rows.stream().map(r -> new SupportPaymentFactService.VerifiedCandidate(
+            SupportPaymentFactService.fact(r,Source.valueOf(r.get("source").toString())),r.get("businessId").toString())).toList();
+        return new SupportPaymentFactService.CapturedFinancialHistory(candidates,List.of(),Set.of(),Map.of(7L,List.of()),
+            Map.of(7L,at.minusDays(1)),candidates.stream().map(c->c.fact().factId()).collect(java.util.stream.Collectors.toSet()),origins);
+    }
+    private CustomerCoverage scoped(Snapshot snapshot,long customer,Source source) {
+        return snapshot.customerCoverage().stream().filter(c->c.customerId()==customer && c.source()==source).findFirst().orElseThrow();
+    }
+    @Test void knownZeroBelongsToTheProvenCustomerAndNeverErasesALegacyCustomersGap() {
+        var result=service.readWithCapturedHistory(List.of(7L,8L),proven(List.of(),List.of()));
+        assertThat(scoped(result,7,Source.CARD_TOPUP).historyStatus()).isEqualTo(Status.READY);
+        assertThat(scoped(result,7,Source.CARD_TOPUP).historicalEnvironmentStatus()).isEqualTo(Status.READY);
+        assertThat(scoped(result,8,Source.CARD_TOPUP).historyStatus()).isEqualTo(Status.UNKNOWN);
+        assertThat(result.coverage()).filteredOn(c->c.source()==Source.CARD_TOPUP).allMatch(c->c.historyStatus()==Status.UNKNOWN);
+    }
+    @Test void everyObservedPaymentNeedsItsOwnNewProofEvenWhenBirthIsReal() {
+        var card=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");when(mapper.cards(any())).thenReturn(List.of(card));
+        var result=service.readWithCapturedHistory(List.of(7L),proven(List.of(),List.of()));
+        assertThat(result.facts()).hasSize(1);
+        assertThat(scoped(result,7,Source.CARD_TOPUP).reasons()).contains("PAYMENT_NEW_SUCCESS_NOT_PROVEN");
+        assertThat(scoped(result,7,Source.WALLET_ORDER).historyStatus()).isEqualTo(Status.READY);
+    }
+    @Test void conflictingCaptureCannotVanishAndLeaveAProvenZero() {
+        var card=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"card-1","10");var bad=new HashMap<>(card);bad.put("ledgerAmount",new BigDecimal("9"));
+        when(mapper.cards(any())).thenReturn(List.of(bad));
+        var result=service.readWithCapturedHistory(List.of(7L),proven(List.of(card),List.of()));
+        assertThat(result.facts()).isEmpty();assertThat(scoped(result,7,Source.CARD_TOPUP).reasons()).contains("CAPTURED_PAYMENT_NOT_RECONCILED");
+    }
+    @Test void firstHistoryDoesNotProveRefundActorAndOriginalStatusHistory() {
+        var order=row(Source.WALLET_ORDER,Kind.DEVICE_PURCHASE,201,"order-1","80");order.put("orderNo","order-1");
+        var refund=row(Source.ORDER_REFUND,Kind.DEVICE_PURCHASE_REFUND,301,"E4-REFUND-order-1","80");refund.put("orderNo","order-1");
+        when(mapper.orders(any())).thenReturn(List.of(order));when(mapper.refunds(any())).thenReturn(List.of(refund));
+        var result=service.readWithCapturedHistory(List.of(7L),proven(List.of(order,refund),List.of()));
+        assertThat(result.firstHistory()).containsExactly(new FirstHistory(7,Status.READY,List.of()));
+        assertThat(scoped(result,7,Source.ORDER_REFUND).historyStatus()).isEqualTo(Status.UNKNOWN);
+        assertThat(scoped(result,7,Source.WALLET_ORDER).refundStatus()).isEqualTo(Status.UNKNOWN);
+        assertThat(result.facts()).hasSize(2);
+    }
+    @Test void onlySuccessfulFullBackendOriginalRefundCanCertifyNetAndDoesNotRemoveFirstPayment() {
+        var order=row(Source.WALLET_ORDER,Kind.DEVICE_PURCHASE,201,"order-1","80");order.put("orderNo","order-1");
+        var refund=row(Source.ORDER_REFUND,Kind.DEVICE_PURCHASE_REFUND,301,"E4-REFUND-order-1","80");refund.put("orderNo","order-1");
+        when(mapper.orders(any())).thenReturn(List.of(order));when(mapper.refunds(any())).thenReturn(List.of(refund));
+        var origin=Map.<String,Object>of("customerId",7L,"orderNo","order-1","amount",new BigDecimal("80"),"ledgerId",301L,"ledgerAt",at,"proofCount",1);
+        var result=service.readWithCapturedHistory(List.of(7L),proven(List.of(order,refund),List.of(origin)));
+        assertThat(scoped(result,7,Source.ORDER_REFUND).historyStatus()).isEqualTo(Status.READY);
+        assertThat(result.facts()).filteredOn(f->f.kind()==Kind.DEVICE_PURCHASE).hasSize(1);
+        assertThat(result.firstHistory()).containsExactly(new FirstHistory(7,Status.READY,List.of()));
+        for(String changed:List.of("actorProof","amount","ledger","time")) {
+            var bad=new HashMap<>(origin);
+            switch(changed) {case "actorProof"->bad.put("proofCount",0);case "amount"->bad.put("amount",new BigDecimal("79"));
+                case "ledger"->bad.put("ledgerId",302L);case "time"->bad.put("ledgerAt",at.plusSeconds(1));}
+            var rejected=service.readWithCapturedHistory(List.of(7L),proven(List.of(order,refund),List.of(bad)));
+            assertThat(scoped(rejected,7,Source.ORDER_REFUND).historyStatus()).as(changed).isEqualTo(Status.UNKNOWN);
+        }
+    }
+    @Test void backendSuccessWithoutItsLedgerCannotBeHiddenByAnEmptyRefundFactList() {
+        var origin=Map.<String,Object>of("customerId",7L,"orderNo","order-1","amount",new BigDecimal("80"),"proofCount",0);
+        var result=service.readWithCapturedHistory(List.of(7L),proven(List.of(),List.of(origin)));
+        assertThat(scoped(result,7,Source.ORDER_REFUND).reasons()).contains("BACKEND_REFUND_NOT_RECONCILED");
+        assertThat(result.firstHistory()).containsExactly(new FirstHistory(7,Status.READY,List.of()));
+    }
+    @Test void refundReadFailureDoesNotDowngradeDepositButDepositReadFailureDoesNotDowngradePurchase() {
+        when(mapper.refunds(any())).thenThrow(new DataAccessResourceFailureException("private"));
+        var result=service.readWithCapturedHistory(List.of(7L),proven(List.of(),List.of()));
+        assertThat(scoped(result,7,Source.CARD_TOPUP).historyStatus()).isEqualTo(Status.READY);
+        assertThat(scoped(result,7,Source.CARD_TOPUP).historicalEnvironmentStatus()).isEqualTo(Status.READY);
+        assertThat(scoped(result,7,Source.ORDER_REFUND).historyStatus()).isEqualTo(Status.UNKNOWN);
+        doReturn(List.of()).when(mapper).refunds(any());when(mapper.cards(any())).thenThrow(new DataAccessResourceFailureException("private"));
+        var depositFailure=service.readWithCapturedHistory(List.of(7L),proven(List.of(),List.of()));
+        assertThat(scoped(depositFailure,7,Source.CARD_TOPUP).historyStatus()).isEqualTo(Status.UNKNOWN);
+        assertThat(scoped(depositFailure,7,Source.WALLET_ORDER).historyStatus()).isEqualTo(Status.READY);
+        assertThat(scoped(depositFailure,7,Source.ORDER_REFUND).historyStatus()).isEqualTo(Status.READY);
+    }
+    @Test void unmatchedDepositCannotTurnDepositIntoZeroAndDoesNotPollutePurchaseOnlyCoverage() {
+        when(mapper.unmatched(any())).thenReturn(List.of(Map.of("customerId",7L,"source","UNMATCHED_LEDGER","sourceId","nx_wallet_ledger:9","kind","DEPOSIT")));
+        var result=service.readWithCapturedHistory(List.of(7L),proven(List.of(),List.of()));
+        assertThat(scoped(result,7,Source.CARD_TOPUP).historyStatus()).isEqualTo(Status.UNKNOWN);
+        assertThat(scoped(result,7,Source.WALLET_ORDER).historyStatus()).isEqualTo(Status.READY);
+        assertThat(result.firstHistory()).singleElement().satisfies(h->assertThat(h.status()).isEqualTo(Status.UNKNOWN));
     }
 }
