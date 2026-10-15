@@ -12,6 +12,35 @@ import org.junit.jupiter.api.Test;
 class TreasuryLedgerBillViewTest {
 
     @Test
+    void earlyExitPrincipalCreditsAreRefundsOnlyForTheTwoExactTypesAndInDirection() {
+        for (String type : List.of("STAKING_EARLY_WITHDRAW", "REPURCHASE_EARLY_WITHDRAW",
+                " staking_early_withdraw ", " repurchase_early_withdraw ")) {
+            for (String direction : List.of("IN", " in ")) {
+                TreasuryLedgerBillView value = row(type, direction);
+                assertThat(value.billType()).isEqualTo("refund");
+                assertThat(value.bizType()).isEqualTo(type);
+                assertThat(value.direction()).isEqualTo(direction);
+                assertThat(value.subtype()).isEqualTo(type.trim().toLowerCase(java.util.Locale.ROOT));
+                assertThat(value.amount()).isEqualByComparingTo(BigDecimal.ONE);
+                assertThat(value.balanceAfter()).isEqualByComparingTo(BigDecimal.ONE);
+            }
+            for (String direction : List.of("OUT", "DEBIT", "CREDIT", "UNKNOWN", "")) {
+                assertThat(row(type, direction).billType()).isEqualTo("withdraw");
+            }
+            assertThat(row(type, null).billType()).isEqualTo("withdraw");
+        }
+        for (String type : List.of("WITHDRAWAL", "PAYOUT", "STAKING_EARLY_WITHDRAW_EXTRA",
+                "OTHER_REPURCHASE_EARLY_WITHDRAW")) {
+            assertThat(row(type).billType()).isEqualTo("withdraw");
+            assertThat(row(type, "OUT").billType()).isEqualTo("withdraw");
+        }
+        assertThat(row("STAKING_EARLY_WITHDRAW_REFUND", "OUT").billType()).isEqualTo("refund");
+        assertThat(row("WITHDRAW_FEE_OFFSET_REFUND").billType()).isEqualTo("refund");
+        assertThat(row("CHARGEBACK_RECOVERY").billType()).isEqualTo("refund");
+        assertThat(row("WALLET_REINVEST", "OUT").billType()).isEqualTo("earning");
+    }
+
+    @Test
     void exposesOnlyTheEightCanonicalBillTypesAndPreservesRawSubtype() {
         List<String> rawTypes = List.of(
                 "EXCHANGE", "CARD_TOPUP", "WITHDRAWAL", "ADJUSTMENT",

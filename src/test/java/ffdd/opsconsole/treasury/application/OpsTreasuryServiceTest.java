@@ -1346,6 +1346,44 @@ class OpsTreasuryServiceTest {
         return (Map<String, Object>) detail;
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void earlyPrincipalReturnsUseRefundInRowsSummaryAndCsvWithoutChangingFinancialFacts() {
+        LocalDateTime time = LocalDateTime.now(CLOCK);
+        ledgerRepository.bills.addAll(List.of(
+                new TreasuryLedgerBillView(1L, 10001L, "U00010001", "user", "STK-1-EARLY", "STAKING_EARLY_WITHDRAW",
+                        "USDT", "IN", new BigDecimal("19.000000"), new BigDecimal("119.000000"), "SUCCESS", "G1", time, time),
+                new TreasuryLedgerBillView(2L, 10001L, "U00010001", "user", "RPS-2-EARLY", "REPURCHASE_EARLY_WITHDRAW",
+                        "USDT", "IN", new BigDecimal("85.000000"), new BigDecimal("204.000000"), "SUCCESS", "G7", time, time),
+                new TreasuryLedgerBillView(3L, 10001L, "U00010001", "user", "WD-3", "WITHDRAWAL",
+                        "USDT", "OUT", new BigDecimal("50.000000"), new BigDecimal("154.000000"), "SUCCESS", "withdraw", time, time),
+                new TreasuryLedgerBillView(4L, 10001L, "U00010001", "user", "WD-3-REFUND", "WITHDRAW_FEE_OFFSET_REFUND",
+                        "USDT", "IN", new BigDecimal("5.000000"), new BigDecimal("159.000000"), "SUCCESS", "refund", time, time)));
+        List<TreasuryLedgerBillView> before = List.copyOf(ledgerRepository.bills);
+        ledgerRepository.actualBalances.put("10001:USDT", new BigDecimal("159.000000"));
+        var query = new TreasuryLedgerQueryRequest(null, 10001L, null, 1, 20);
+        var page = service.ledgerBills(query).getData();
+        assertThat(page.getTotal()).isEqualTo(4);
+        assertThat(page.getRecords()).extracting(TreasuryLedgerBillView::billType)
+                .containsExactly("refund", "refund", "withdraw", "refund");
+        Map<String, Object> summary = service.userLedger(10001L).getData();
+        assertThat((Map<String, BigDecimal>) summary.get("categorySums"))
+                .containsEntry("refund:USDT", new BigDecimal("109.000000"))
+                .containsEntry("withdraw:USDT", new BigDecimal("-50.000000"));
+        assertThat((Map<String, BigDecimal>) summary.get("sums"))
+                .containsEntry("USDT", new BigDecimal("59.000000"));
+        String csv = new String(service.ledgerBillsCsv(query, "D4 principal return classification regression"),
+                java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(csv)
+                .contains("\"refund\",\"staking_early_withdraw\",\"USDT\",\"IN\",\"19.000000\",\"119.000000\"")
+                .contains("\"refund\",\"repurchase_early_withdraw\",\"USDT\",\"IN\",\"85.000000\",\"204.000000\"")
+                .contains("\"withdraw\",\"withdrawal\",\"USDT\",\"OUT\",\"50.000000\"")
+                .contains("\"refund\",\"withdraw_fee_offset_refund\"")
+                .doesNotContain("U00010001");
+        assertThat(ledgerRepository.bills).containsExactlyElementsOf(before);
+        assertThat(ledgerRepository.actualBalances.get("10001:USDT")).isEqualByComparingTo("159");
+    }
+
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
         private final Map<String, String> values = new LinkedHashMap<>();
         private final List<String> upsertedKeys = new ArrayList<>();

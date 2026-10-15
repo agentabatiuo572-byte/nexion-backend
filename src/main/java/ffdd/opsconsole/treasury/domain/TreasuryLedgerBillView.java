@@ -26,6 +26,8 @@ public record TreasuryLedgerBillView(
         String raw = bizType == null ? "" : bizType.trim().toUpperCase(Locale.ROOT);
         if (raw.contains("REFUND") || raw.contains("CHARGEBACK") || raw.contains("REVERSAL")) return "refund";
         String rawDirection = direction == null ? "" : direction.trim().toUpperCase(Locale.ROOT);
+        if (rawDirection.equals("IN") && (raw.equals("STAKING_EARLY_WITHDRAW")
+                || raw.equals("REPURCHASE_EARLY_WITHDRAW"))) return "refund";
         if (raw.equals("ORDER_PURCHASE") && (rawDirection.equals("OUT") || rawDirection.equals("DEBIT"))) return "purchase";
         if (raw.equals("COMPUTE_TASK_REWARD")) return "earning";
         if (raw.equals("DAILY_CHECK_IN")) return "bonus";
