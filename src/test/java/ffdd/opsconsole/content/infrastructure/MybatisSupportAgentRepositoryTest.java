@@ -52,7 +52,7 @@ class MybatisSupportAgentRepositoryTest {
             var read = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(6L, mode, null, null);
             var scope = new SupportOperatorScope(null, List.of(2L), List.of(), false, read);
             var sql = statement.getBoundSql(java.util.Map.of("scope", scope, "directoryIds", List.of(7L))).getSql().replaceAll("\\s+", " ");
-            assertThat(sql).contains("scope_agent.id IN", "a.id=scope_agent.id", "a.status=1", "p.enabled=1",
+            assertThat(sql).contains("scope_agent.id IN", "a.id=scope_agent.id", "a.status=1", "p.enabled=1", "p.is_deleted=0",
                     "scope_q.qualification_kind='SERVICE'", "scope_q.state='ENABLED'", "scope_q.ends_at IS NULL",
                     "scope_q_other.starts_at <= UTC_TIMESTAMP(6)", "scope_q_other.ends_at>UTC_TIMESTAMP(6)")
                     .doesNotContain("p.busy", "p.transferable", "${", "&lt;");

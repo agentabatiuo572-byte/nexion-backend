@@ -36,11 +36,53 @@ class SupportAgentGroupQueryTest {
         var oldRequest=new SupportAgentQueryRequest(1L,20L);assertThat(oldRequest.groupId()).isNull();
         assertThat(service.agents(oldRequest).getData().total()).isZero();verify(ownership).defaultQueryScope(null,null);
     }
+    @Test void qualifiedSuperAdminWithoutProfileIsInitializedBeforeAssignmentEligibilityIsRead(){
+        var scope=new ReadScope(7L,ReadMode.ALL,null,null);
+        var operators=new SupportOperatorScope(null,List.of(),List.of(),false,scope);
+        var profile=new ffdd.opsconsole.content.domain.SupportAgentProfileRecord(7L,"GENERAL","通用客服",
+                List.of("support"),List.of(),10,true,true,false,"2026-10-15T00:00:00");
+        when(ownership.defaultQueryScope(null,null)).thenReturn(scope);
+        when(repository.scopedSupportOperators(scope)).thenReturn(operators);
+        when(repository.countSupportOperators(operators)).thenReturn(1L);
+        when(repository.pageSupportOperators(operators,20L,0L)).thenReturn(List.of(
+                new SupportAgentRepository.SupportOperatorRecord(7L,"Qualified superadmin","",null,0L)));
+        when(repository.listProfiles(List.of(7L))).thenReturn(List.of(),List.of(profile));
+        when(repository.listAssignmentEligibleAgentIds(List.of(7L),scope)).thenReturn(List.of(7L));
+
+        var result=service.agents(new SupportAgentQueryRequest(1L,20L)).getData();
+
+        assertThat(result.total()).isEqualTo(1L);
+        assertThat(result.records()).singleElement().satisfies(agent->{
+            assertThat(agent.adminId()).isEqualTo(7L);assertThat(agent.assignmentEligible()).isTrue();
+        });
+        var order=inOrder(repository);
+        order.verify(repository).listProfiles(List.of(7L));
+        order.verify(repository).ensureDefaultProfile(eq(7L),anyString(),anyString(),anyList(),anyList(),anyInt(),any());
+        order.verify(repository).listProfiles(List.of(7L));
+        order.verify(repository).listAssignmentEligibleAgentIds(List.of(7L),scope);
+    }
     @Test void externalOrRevokedGroupAndUnsafeIdsStopBeforeRepositoryReads(){
         for(Long group:List.of(9L,0L,9007199254740992L)) {
             when(ownership.defaultQueryScope(group,null)).thenThrow(new BizException(group==9L?404:422,"SUPPORT_SCOPE_DENIED"));
             assertThatThrownBy(()->service.agents(new SupportAgentQueryRequest(1L,20L,group))).hasMessage("SUPPORT_SCOPE_DENIED");
         }
         verifyNoInteractions(repository);
+    }
+    @Test void profileDeletedAfterDirectorySelectionRemainsAbsentAndUnassignable(){
+        var scope=new ReadScope(7L,ReadMode.ALL,null,null);
+        var operators=new SupportOperatorScope(null,List.of(),List.of(),false,scope);
+        when(ownership.defaultQueryScope(null,null)).thenReturn(scope);
+        when(repository.scopedSupportOperators(scope)).thenReturn(operators);
+        when(repository.countSupportOperators(operators)).thenReturn(1L);
+        when(repository.pageSupportOperators(operators,20L,0L)).thenReturn(List.of(
+                new SupportAgentRepository.SupportOperatorRecord(7L,"Qualified superadmin","",null,0L)));
+        when(repository.listProfiles(List.of(7L))).thenReturn(List.of());
+        when(repository.listAssignmentEligibleAgentIds(List.of(7L),scope)).thenReturn(List.of());
+
+        var result=service.agents(new SupportAgentQueryRequest(1L,20L)).getData();
+
+        assertThat(result.records()).isEmpty();
+        verify(repository,times(2)).listProfiles(List.of(7L));
+        verify(repository).listAssignmentEligibleAgentIds(List.of(7L),scope);
     }
 }

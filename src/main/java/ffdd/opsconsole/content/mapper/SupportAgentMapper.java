@@ -49,6 +49,16 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                    </when>
                    <otherwise>1=0</otherwise>
                  </choose>
+                 OR EXISTS (SELECT 1 FROM nx_support_account_qualification_history scope_q
+                   JOIN nx_admin_role_relation service_rr ON service_rr.admin_id=scope_q.admin_id AND service_rr.is_deleted=0
+                   JOIN nx_admin_role service_role ON service_role.id=service_rr.role_id AND service_role.status=1
+                     AND service_role.is_deleted=0 AND service_role.role_code IN ('SUPPORT','SUPER_ADMIN')
+                   WHERE scope_q.admin_id=scope_agent.id AND scope_agent.status=1
+                     AND scope_q.qualification_kind='SERVICE' AND scope_q.state='ENABLED' AND
+            """ + SupportGroupMapper.UNIQUE_QUALIFICATION + """
+                     AND NOT EXISTS (SELECT 1 FROM nx_support_agent_profile directory_profile
+                       WHERE directory_profile.admin_id=scope_agent.id AND directory_profile.is_deleted != 0)
+                   FOR SHARE)
                  <if test='scope != null and scope.superFallbackToSupport'>
                    OR (scope_agent.super_admin = 1 AND (primary_role.id IS NULL
                      <if test='scope.unusablePrimaryRoleIds != null and scope.unusablePrimaryRoleIds.size() > 0'>
@@ -355,6 +365,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
             """)
     SupportAgentProfileRow findProfile(@Param("adminId") Long adminId);
 
+    // Defaults initialize missing rows; restoring an existing profile requires a separate authorized command.
     @Insert("""
             INSERT INTO nx_support_agent_profile (
               admin_id, seat_type, position, service_types, tags, max_concurrent, enabled, transferable, busy,
@@ -364,7 +375,6 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
               #{now}, #{now}, 0
             )
             ON DUPLICATE KEY UPDATE
-              is_deleted=0,
               updated_at=updated_at
             """)
     int ensureDefaultProfile(@Param("adminId") Long adminId,
