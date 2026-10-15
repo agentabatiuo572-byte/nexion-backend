@@ -33,6 +33,18 @@ class SupportGroupMapperSqlTest {
         assertThat(SupportBindingMapper.ELIGIBLE_AGENT_FROM).contains("scope_q.qualification_kind='SERVICE'")
                 .doesNotContain("seat_type","nx_support_migration");
     }
+    @Test void versionedBindingPreflightUsesTheCurrentServiceEligibilityWithoutWriting() throws Exception {
+        String preflight=Files.readString(Path.of("scripts/manual_migrations/20261015_support_binding_current_preflight.sql"))
+                .replaceAll("(?m)--[^\\r\\n]*","");
+        var configuration=new Configuration();
+        String eligibility=render(configuration,"SELECT 1 "+SupportBindingMapper.ELIGIBLE_AGENT_FROM+" AND a.id=x.agent_admin_id",Map.of())
+                .replace(" FOR SHARE","");
+        assertThat(preflight.replaceAll("\\s+","")).contains(eligibility.replaceAll("\\s+",""));
+        assertThat(preflight).contains("u.id IS NULL OR u.is_deleted<>0")
+                .doesNotContain("seat_type","service_types","INSERT","UPDATE","DELETE","ALTER","CREATE","CALL","SOURCE");
+        String startup=Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        assertThat(startup).doesNotContain("20261015_support_binding_current_preflight.sql");
+    }
     @Test void unavailableHandoverCountAndRowsUseTheCurrentServiceEligibilityContract(){
         var configuration=new Configuration();configuration.addMapper(SupportBindingMapper.class);
         String eligibility=render(configuration,"SELECT 1 "+SupportBindingMapper.ELIGIBLE_AGENT_FROM+" AND a.id=x.agent_admin_id",Map.of());

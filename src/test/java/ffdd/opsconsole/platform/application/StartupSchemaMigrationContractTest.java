@@ -8,6 +8,30 @@ import org.junit.jupiter.api.Test;
 
 class StartupSchemaMigrationContractTest {
     @Test
+    void currentRulesSchemaPrecedesImmutableS3InitializationOnEveryFreshPath() throws Exception {
+        String prerequisite = "20260929_support_binding_rules_schema_20261015.sql";
+        String history = "20260929_support_binding_s3.sql";
+        String schema = Files.readString(Path.of("scripts/migrations", prerequisite))
+                .replaceAll("(?m)--[^\\r\\n]*", "").trim();
+        assertThat(schema).startsWith("CREATE TABLE IF NOT EXISTS nx_support_rules (")
+                .contains("inheritance_mode VARCHAR(16) NOT NULL DEFAULT 'UNLIMITED'")
+                .doesNotContain("INSERT", "UPDATE", "DELETE", "ALTER", "CALL", "SOURCE");
+        assertThat(schema.chars().filter(character -> character == ';').count()).isEqualTo(1);
+        // The once-only publisher sorts file names, including on an empty history.
+        assertThat(prerequisite.compareTo(history)).isNegative();
+        String fresh = Files.readString(Path.of("scripts/support-redesign-s3-env.ps1"));
+        assertThat(fresh).contains(prerequisite, history);
+        assertThat(fresh.indexOf(prerequisite)).isLessThan(fresh.indexOf(history));
+        String startup = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        assertThat(startup).contains(prerequisite);
+        assertThat(startup.indexOf(prerequisite)).isLessThan(startup.indexOf("20261001_support_enhancements_core.sql"));
+        // Existing rule values still use the approved operator; no automatic sentinel conversion.
+        assertThat(startup).contains("20261009_support_rules_unconfigured_upgrade.ps1");
+        assertThat(Files.readString(Path.of("scripts/migrations/20261009_support_timeout_segment.sql")))
+                .contains("ALTER TABLE nx_support_rules ALTER COLUMN inheritance_mode SET DEFAULT 'UNLIMITED'");
+    }
+
+    @Test
     void supportQualificationCutoverStaysOutsideTheAutomaticMigrationCatalog() throws Exception {
         try (var migrations = Files.list(Path.of("scripts/migrations"))) {
             assertThat(migrations.filter(Files::isRegularFile)

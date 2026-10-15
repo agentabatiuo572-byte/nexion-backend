@@ -228,6 +228,7 @@ class SupportRulesConfigurationRuntimeTest extends SupportOwnedContractFixture {
         observed("canonical-rules-migration",json.writeValueAsString(evidence));gap("BE-CFG-01-browser","Scratch proves real canonical initialization; fresh application API/page initialization still root-owned separate evidence");finish("rules-canonical-migration-runtime.json");
     }
     private void replayCanonicalRulesMigration(org.springframework.jdbc.core.JdbcTemplate scratch,javax.sql.DataSource ds) throws Exception {
+        try(var connection=ds.getConnection()){org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,new org.springframework.core.io.FileSystemResource("scripts/migrations/20260929_support_binding_rules_schema_20261015.sql"));}
         String source=Files.readString(Path.of("scripts/migrations/20260929_support_binding_s3.sql"));int start=source.indexOf("CREATE PROCEDURE support_binding_s3_migrate()"),end=source.indexOf("END$$",start);assertThat(start).isGreaterThan(0);assertThat(end).isGreaterThan(start);
         scratch.execute(source.substring(start,end+3));try{scratch.execute("CALL support_binding_s3_migrate()");}finally{scratch.execute("DROP PROCEDURE support_binding_s3_migrate");}
         try(var connection=ds.getConnection()){org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,new org.springframework.core.io.FileSystemResource("scripts/migrations/20261009_support_timeout_segment.sql"));}
