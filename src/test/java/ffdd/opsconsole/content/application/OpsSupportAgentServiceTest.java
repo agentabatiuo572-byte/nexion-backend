@@ -498,6 +498,75 @@ class OpsSupportAgentServiceTest {
         verifyNoInteractions(accountService);
     }
 
+    private FakeSupportAgentRepository qualifiedSuperProfileTarget() {
+        var fake = (FakeSupportAgentRepository) repository;
+        var target = operator("99396", "SuAdmin", "super", "enabled");
+        when(accountService.operatorsForSupport()).thenReturn(List.of(target));
+        fake.operators.add(target);
+        fake.serviceQualificationCounts.put(99396L, 1);
+        fake.updateProfile(99396L, "GENERAL", "通用客服", List.of("support"), List.of(),
+                12, true, true, false, now());
+        return fake;
+    }
+
+    private SupportAgentProfileUpdateRequest superProfileRequest(long version) {
+        return new SupportAgentProfileUpdateRequest("专属客服", List.of("advisor"), List.of("已复核"),
+                14, true, true, false, version, "superadmin", "仅调整标签和容量");
+    }
+
+    @Test
+    void qualifiedSuperAdminCanConfigureProfileWithoutChangingIdentityOrBindingCustomers() {
+        var fake = qualifiedSuperProfileTarget();
+        var result = service.updateProfile(99396L, "super-profile", superProfileRequest(1L));
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().adminId()).isEqualTo(99396L);
+        var after = fake.findProfile(99396L).orElseThrow();
+        assertThat(after.version()).isEqualTo(2L);
+        assertThat(after.tags()).containsExactly("已复核");
+        assertThat(after.maxConcurrent()).isEqualTo(14);
+        assertThat(after.seatType()).isEqualTo("GENERAL");
+        assertThat(accountService.operatorsForSupport().get(0).role()).isEqualTo("super");
+        assertThat(fake.assignments).isEmpty();
+        verifyNoInteractions(binding);
+        verify(groups).validateLegacySeat(99396L, "GENERAL");
+    }
+
+    @Test
+    void superProfileRejectsAbsentRevokedOrAmbiguousServiceBeforeReceipt() {
+        var fake = qualifiedSuperProfileTarget();
+        for (int currentCount : List.of(0, 2)) {
+            fake.serviceQualificationCounts.put(99396L, currentCount);
+            var result = service.updateProfile(99396L, "old-super-profile", superProfileRequest(1L));
+            assertThat(result.getCode()).isEqualTo(404);
+        }
+        assertThat(fake.findProfile(99396L).orElseThrow().version()).isEqualTo(1L);
+        verifyNoInteractions(idempotencyService, binding);
+    }
+
+    @Test
+    void superProfileRejectsDisabledOrDeletedAccountAndDeletedDirectoryEntry() {
+        var fake = qualifiedSuperProfileTarget();
+        when(accountService.operatorsForSupport()).thenReturn(List.of(operator("99396", "SuAdmin", "super", "disabled")));
+        assertThat(service.updateProfile(99396L, "disabled-super", superProfileRequest(1L)).getCode()).isEqualTo(404);
+        when(accountService.operatorsForSupport()).thenReturn(List.of());
+        assertThat(service.updateProfile(99396L, "deleted-super", superProfileRequest(1L)).getCode()).isEqualTo(404);
+        when(accountService.operatorsForSupport()).thenReturn(List.of(operator("99396", "SuAdmin", "super", "enabled")));
+        fake.operators.clear(); // SQL excludes an explicitly deleted profile from the directory.
+        assertThat(service.updateProfile(99396L, "deleted-profile", superProfileRequest(1L)).getCode()).isEqualTo(404);
+        verifyNoInteractions(idempotencyService, binding);
+    }
+
+    @Test
+    void superProfileKeepsVersionConflictAndPersonalScopeDenial() {
+        var fake = qualifiedSuperProfileTarget();
+        assertThat(service.updateProfile(99396L, "stale-super", superProfileRequest(2L)).getMessage())
+                .isEqualTo("SUPPORT_AGENT_PROFILE_VERSION_CONFLICT");
+        when(ownership.defaultQueryScope(null,null)).thenReturn(new ReadScope(1L, ReadMode.PERSONAL, null, null));
+        assertThat(service.updateProfile(99396L, "personal-super", superProfileRequest(1L)).getCode()).isEqualTo(403);
+        assertThat(fake.findProfile(99396L).orElseThrow().version()).isEqualTo(1L);
+        verifyNoInteractions(binding);
+    }
+
     @Test
     void profileReplayRechecksCurrentTargetBeforeRetainedReceipt() {
         when(ownership.canReadAgent(1L, 2L)).thenReturn(false);
@@ -1008,7 +1077,9 @@ class OpsSupportAgentServiceTest {
         }
 
         private List<AdminAccountOverview.OperatorRecord> visibleOperators(SupportOperatorScope scope) {
-            return operators.stream().filter(row -> "support".equalsIgnoreCase(row.role()))
+            return operators.stream().filter(row -> "support".equalsIgnoreCase(row.role())
+                    || ("super".equals(row.role()) && "enabled".equals(row.status())
+                    && serviceQualificationCounts.getOrDefault(Long.valueOf(row.id()), 0) == 1))
                     .filter(row -> scope.visibleAdminId() == null || scope.visibleAdminId().toString().equals(row.id()))
                     .filter(row -> visibleAgent(Long.valueOf(row.id()),scope.readScope()))
                     .sorted(java.util.Comparator.comparingLong(row -> Long.parseLong(row.id()))).toList();
