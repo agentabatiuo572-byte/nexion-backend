@@ -36,6 +36,51 @@ import org.junit.jupiter.api.Test;
 
 class AppStakingServiceTest {
     @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"REPURCHASE_90D", "USDT_45D", "USDT_30D_LEGACY"})
+    void exitCommandsRejectOtherProductsBeforeWalletOrFundWork(String productCode) {
+        var fund = mock(SupportStakingFundAdapter.class);
+        var actual = new AppStakingService(mapper, disclosureGate, config, idempotency, outbox, audit,
+                earningsReleaseService, clock, environment, sandboxMapper, fund);
+        // A syntactically valid STK number is not proof of product ownership.
+        String number = "STK-OTHER-PRODUCT";
+        LocalDateTime now = LocalDateTime.now(clock);
+        for (boolean claim : List.of(true, false)) {
+            var unlock = claim ? now.minusDays(1) : now.plusDays(30);
+            when(mapper.lockUserPosition(42L, number)).thenReturn(new AppStakingMapper.PositionRow(
+                    36L, 42L, number, 9L, productCode, "Other product", new BigDecimal("100"),
+                    new BigDecimal("1200"), new BigDecimal("500"), 90, unlock.minusDays(90), unlock,
+                    new BigDecimal("3"), "ACTIVE", null, null));
+            assertThatThrownBy(() -> {
+                if (claim) actual.claim(42L, number, "other-claim");
+                else actual.earlyWithdraw(42L, number, "other-early");
+            }).isInstanceOf(BizException.class).hasMessageContaining("STAKING_POSITION_NOT_FOUND");
+        }
+        verify(mapper, never()).lockWalletBalance(any());
+        verify(mapper, never()).markClaimed(any(), any(), any());
+        verify(mapper, never()).markEarlyWithdrawn(any(), any(), any());
+        verify(mapper, never()).creditWallet(any(), any());
+        verify(mapper, never()).insertLedger(any());
+        verifyNoInteractions(fund, outbox, earningsReleaseService, audit);
+    }
+
+    @Test
+    void openRejectsRepurchaseTierAndMismatchedProductWithoutDebiting() {
+        assertThatThrownBy(() -> service.open(42L, "wrong-tier",
+                new AppStakingService.OpenRequest("repurchase90d", new BigDecimal("100"))))
+                .hasMessageContaining("STAKING_TIER_INVALID");
+        when(mapper.lockProductByTier("usdt30d")).thenReturn(new AppStakingMapper.ProductRow(
+                9L, "REPURCHASE_90D", "Repurchase", "USDT", 90,
+                new BigDecimal("1200"), new BigDecimal("500"), BigDecimal.TEN, "ACTIVE"));
+        assertThatThrownBy(() -> service.open(42L, "wrong-product",
+                new AppStakingService.OpenRequest("usdt30d", new BigDecimal("100"))))
+                .hasMessageContaining("STAKING_POOL_NOT_ACTIVE");
+        verify(mapper, never()).lockWalletBalance(any());
+        verify(mapper, never()).debitWallet(any(), any());
+        verify(mapper, never()).insertPosition(any());
+        verifyNoInteractions(outbox, earningsReleaseService, audit);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(strings={"OPEN","CLAIM","EARLY"})
     void realCommandsBindTheirPrincipalIntervalBeforeIndependentInterest(String phase) {
         var fund=mock(SupportStakingFundAdapter.class);var token=mock(SupportStakingFundAdapter.Before.class);

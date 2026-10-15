@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
@@ -21,6 +22,85 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 @EnabledIfEnvironmentVariable(named = "NEXION_FUNDS_HISTORY_SNAPSHOT_IT", matches = "true")
 class FundsHistorySnapshotMySqlTest {
     private static final String OPTIONS = "?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8";
+
+    @Test
+    void stakingReadsAndStateChangesStayInTheirProductDomain() throws Exception {
+        inSchema(schema -> {
+            try (Connection connection = connect(schema)) {
+                createSchema(connection);
+                connection.createStatement().execute("ALTER TABLE nx_staking_position ADD updated_at DATETIME");
+                // Position 35/36 reproduce the live G1 exit plus active G7 combination.
+                insertPosition(connection, 35, 1, "USDT_30D", "STK-35");
+                insertPosition(connection, 36, 1, "REPURCHASE_90D", "RPS-36");
+                for (int index = 0; index < 4; index++) {
+                    insertPosition(connection, 40 + index, 1,
+                            List.of("USDT_30D", "USDT_90D", "USDT_180D", "usdt_365d").get(index), "STK-" + (40 + index));
+                }
+                insertPosition(connection, 50, 2, "USDT_30D", "STK-OTHER");
+                insertPosition(connection, 60, 1, "USDT_30D", "STK-DELETED");
+                insertPosition(connection, 70, 1, "REPURCHASE_90D", "STK-G7-PREFIX");
+                insertPosition(connection, 80, 1, "USDT_45D", "STK-UNKNOWN");
+                connection.createStatement().execute("UPDATE nx_staking_position SET status='EARLY_WITHDRAWN' WHERE id=35");
+                connection.createStatement().execute("UPDATE nx_staking_position SET is_deleted=1 WHERE id=60");
+                assertThat(scalar(connection, sql(AppStakingMapper.class, "maxIssuedHistoryId", Long.class), 1)).isEqualTo(60);
+                assertThat(scalar(connection, sql(AppStakingMapper.class, "countUserPositions", Long.class), 1)).isEqualTo(5);
+                assertThat(scalar(connection, sql(AppStakingMapper.class, "countUserPositionsAt", Long.class, long.class), 1, 60)).isEqualTo(5);
+                String history = sql(AppStakingMapper.class, "listUserPositionsAt", Long.class, long.class, int.class, Long.class);
+                // Keep ordering deterministic even if the fixture crosses a wall-clock second.
+                connection.createStatement().execute("UPDATE nx_staking_position SET created_at='2026-10-16 00:00:00'");
+                assertThat(rowsPage(connection, history, "positionNo", 1, 60, 0, 2)).containsExactly("STK-43", "STK-42");
+                assertThat(rowsPage(connection, history, "positionNo", 1, 60, 2, 10)).containsExactly("STK-41", "STK-40", "STK-35");
+                assertThat(rows(connection, history, "status", 1, 60)).containsExactly("ACTIVE", "ACTIVE", "ACTIVE", "ACTIVE", "EARLY_WITHDRAWN");
+                String locked = sql(AppStakingMapper.class, "lockUserPosition", Long.class, String.class);
+                for (String number : List.of("RPS-36", "STK-G7-PREFIX", "STK-UNKNOWN", "STK-OTHER", "STK-DELETED")) {
+                    try (var statement = connection.prepareStatement(bindable(locked))) {
+                        statement.setLong(1, 1); statement.setString(2, number);
+                        try (var result = statement.executeQuery()) { assertThat(result.next()).isFalse(); }
+                    }
+                }
+                var now = java.time.LocalDateTime.of(2026, 10, 16, 0, 0);
+                connection.createStatement().execute("UPDATE nx_staking_position SET unlock_at='2026-10-15 00:00:00'");
+                assertThat(mutatePosition(connection, AppStakingMapper.class, "matureDuePositions", 0, now)).isEqualTo(4);
+                for (long id : new long[]{35, 36, 50, 60, 70, 80}) {
+                    assertThat(mutatePosition(connection, AppStakingMapper.class, "markClaimed", id, now)).isZero();
+                }
+                assertThat(mutatePosition(connection, AppStakingMapper.class, "markClaimed", 40, now)).isEqualTo(1);
+                assertThat(mutatePosition(connection, AppStakingMapper.class, "markClaimed", 40, now)).isZero();
+                // G7 remains ACTIVE until its own mapper processes it; its claim remains usable.
+                assertThat(scalar(connection, "SELECT COUNT(*) FROM nx_staking_position WHERE id IN (36,70) AND status='ACTIVE'")).isEqualTo(2);
+                assertThat(mutatePosition(connection, AppRepurchaseMapper.class, "matureDue", 0, now)).isEqualTo(2);
+                assertThat(mutatePosition(connection, AppRepurchaseMapper.class, "markClaimed", 36, now)).isEqualTo(1);
+                connection.createStatement().execute("UPDATE nx_staking_position SET status='ACTIVE',unlock_at='2027-01-01 00:00:00' WHERE id<>35");
+                for (long id : new long[]{35, 36, 50, 60, 70, 80}) {
+                    assertThat(mutatePosition(connection, AppStakingMapper.class, "markEarlyWithdrawn", id, now)).isZero();
+                }
+                assertThat(mutatePosition(connection, AppStakingMapper.class, "markEarlyWithdrawn", 41, now)).isEqualTo(1);
+                assertThat(mutatePosition(connection, AppStakingMapper.class, "markEarlyWithdrawn", 41, now)).isZero();
+                assertThat(mutatePosition(connection, AppRepurchaseMapper.class, "markEarly", 70, now)).isEqualTo(1);
+                assertThat(mutatePosition(connection, AppRepurchaseMapper.class, "markEarly", 42, now)).isZero();
+            }
+        });
+    }
+
+    private static int mutatePosition(Connection connection, Class<?> mapper, String method, long id,
+                                      java.time.LocalDateTime now) throws Exception {
+        Class<?>[] types = id == 0 ? new Class<?>[]{Long.class, java.time.LocalDateTime.class}
+                : new Class<?>[]{Long.class, Long.class, java.time.LocalDateTime.class};
+        String sql = String.join(" ", mapper.getMethod(method, types).getAnnotation(Update.class).value());
+        try (var statement = connection.prepareStatement(bindable(sql))) {
+            var parameters = java.util.regex.Pattern.compile("#\\{([^}]+)}").matcher(sql);
+            int index = 1;
+            while (parameters.find()) {
+                switch (parameters.group(1)) {
+                    case "now" -> statement.setObject(index++, now);
+                    case "id" -> statement.setLong(index++, id);
+                    case "userId" -> statement.setLong(index++, 1);
+                    default -> throw new IllegalArgumentException("Unknown position parameter");
+                }
+            }
+            return statement.executeUpdate();
+        }
+    }
 
     @Test
     void highWaterPagesAndTotalsRemainStableAfterNewRowsAndNeverCrossAccounts() throws Exception {
@@ -58,9 +138,9 @@ class FundsHistorySnapshotMySqlTest {
     }
 
     private static void stakingPositionsStayAtTheirFirstHighWater(Connection connection) throws Exception {
-        insertPosition(connection, 150, 1, "STAKE_30D", "STK-150");
-        insertPosition(connection, 200, 1, "STAKE_30D", "STK-200");
-        insertPosition(connection, 190, 2, "STAKE_30D", "STK-OTHER");
+        insertPosition(connection, 150, 1, "USDT_30D", "STK-150");
+        insertPosition(connection, 200, 1, "USDT_30D", "STK-200");
+        insertPosition(connection, 190, 2, "USDT_30D", "STK-OTHER");
         long boundary = scalar(connection, sql(AppStakingMapper.class, "maxIssuedHistoryId", Long.class), 1L);
         assertThat(boundary).isEqualTo(200L);
         assertThat(rows(connection, sql(AppStakingMapper.class, "listUserPositionsAt", Long.class, long.class, int.class, Long.class),
@@ -69,7 +149,7 @@ class FundsHistorySnapshotMySqlTest {
 
         assertThat(rowsPage(connection, sql(AppStakingMapper.class, "listUserPositionsAt", Long.class, long.class, int.class, Long.class),
                 "positionNo", 1L, boundary, 0, 1)).containsExactly("STK-200");
-        insertPosition(connection, 201, 1, "STAKE_30D", "STK-201");
+        insertPosition(connection, 201, 1, "USDT_30D", "STK-201");
         assertThat(rowsPage(connection, sql(AppStakingMapper.class, "listUserPositionsAt", Long.class, long.class, int.class, Long.class),
                 "positionNo", 1L, boundary, 1, 1)).containsExactly("STK-150");
         assertThat(rows(connection, sql(AppStakingMapper.class, "listUserPositionsAt", Long.class, long.class, int.class, Long.class),
@@ -200,7 +280,7 @@ class FundsHistorySnapshotMySqlTest {
     }
 
     private static void insertPosition(Connection connection, long id, long userId, String productCode, String number) throws Exception {
-        try (PreparedStatement statement = connection.prepareStatement("INSERT INTO nx_staking_position VALUES (?,?,?,1,?,'Product',25,1000,200,30,NOW(),DATE_ADD(NOW(),INTERVAL 30 DAY),1,'ACTIVE',NULL,NULL,0,NOW())")) {
+        try (PreparedStatement statement = connection.prepareStatement("INSERT INTO nx_staking_position (id,user_id,position_no,product_id,product_code,product_name,amount_usdt,apy_bps,early_penalty_bps,term_days,locked_at,unlock_at,estimated_interest_usdt,status,claimed_at,early_withdrawn_at,is_deleted,created_at) VALUES (?,?,?,1,?,'Product',25,1000,200,30,NOW(),DATE_ADD(NOW(),INTERVAL 30 DAY),1,'ACTIVE',NULL,NULL,0,NOW())")) {
             statement.setLong(1, id); statement.setLong(2, userId); statement.setString(3, number); statement.setString(4, productCode);
             statement.executeUpdate();
         }

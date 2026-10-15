@@ -183,7 +183,8 @@ public class AppStakingService {
     private ApiResult<Map<String, Object>> openInternal(Long userId, String idempotencyKey, OpenRequest request) {
         if (mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         AppStakingMapper.ProductRow product = mapper.lockProductByTier(request.tierKey());
-        if (product == null || !"USDT".equalsIgnoreCase(product.asset())
+        if (product == null || !isStakingProduct(product.productCode())
+                || !request.tierKey().equals(tierKey(product.productCode())) || !"USDT".equalsIgnoreCase(product.asset())
                 || !"ACTIVE".equalsIgnoreCase(product.status())) {
             throw new BizException(409, "STAKING_POOL_NOT_ACTIVE");
         }
@@ -630,14 +631,19 @@ public class AppStakingService {
 
     private AppStakingMapper.PositionRow findPosition(Long userId, String positionNo) {
         AppStakingMapper.PositionRow row = mapper.lockUserPosition(userId, positionNo);
-        if (row == null) throw new BizException(409, "STAKING_POSITION_PROJECTION_MISSING");
+        if (row == null || !isStakingProduct(row.productCode())) throw new BizException(409, "STAKING_POSITION_PROJECTION_MISSING");
         return row;
     }
 
     private AppStakingMapper.PositionRow requirePosition(Long userId, String positionNo) {
         AppStakingMapper.PositionRow row = mapper.lockUserPosition(userId, positionNo);
-        if (row == null) throw new BizException(404, "STAKING_POSITION_NOT_FOUND");
+        if (row == null || !isStakingProduct(row.productCode())) throw new BizException(404, "STAKING_POSITION_NOT_FOUND");
         return row;
+    }
+
+    private boolean isStakingProduct(String productCode) {
+        return productCode != null && List.of("USDT_30D", "USDT_90D", "USDT_180D", "USDT_365D")
+                .contains(productCode.toUpperCase(Locale.ROOT));
     }
 
     private BigDecimal requireWallet(Long userId) {
