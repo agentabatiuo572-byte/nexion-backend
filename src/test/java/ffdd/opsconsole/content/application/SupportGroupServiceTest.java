@@ -155,6 +155,38 @@ class SupportGroupServiceTest {
     @Test void staleVersionCannotMutate(){Group g=new Group(8L,"Own",1L,"ENABLED",2L);when(mapper.group(8L)).thenReturn(g);when(mapper.lockGroup(8L)).thenReturn(g);assertThatThrownBy(()->service.rename(8L,"key",new Rename("new",1L,"合法操作原因说明"))).hasMessage("SUPPORT_GROUP_VERSION_CONFLICT");verifyNoInteractions(audit);}
     @Test void nonemptyGroupCannotDisable(){Group g=new Group(8L,"Own",1L,"ENABLED",1L);when(mapper.group(8L)).thenReturn(g);when(mapper.lockGroup(8L)).thenReturn(g);when(mapper.memberCount(8L)).thenReturn(1L);assertThatThrownBy(()->service.status(8L,"key",new Status("DISABLED",1L,"合法操作原因说明"))).hasMessage("SUPPORT_GROUP_HANDOVER_REQUIRED");}
     @Test void activeRouteAlsoBlocksExit(){Group g=new Group(8L,"Own",1L,"DISABLED",1L);when(mapper.group(8L)).thenReturn(g);when(mapper.lockGroup(8L)).thenReturn(g);when(mapper.routeCount(8L)).thenReturn(1L);assertThatThrownBy(()->service.status(8L,"key",new Status("ARCHIVED",1L,"合法操作原因说明"))).hasMessage("SUPPORT_GROUP_HANDOVER_REQUIRED");}
+    @Test void emptyDisabledGroupArchivesWithCasAuditAndPreservedHistory() {
+        var before=new Group(8L,"Own",1L,"DISABLED",7L);
+        var archived=new Group(8L,"Own",1L,"ARCHIVED",8L);
+        var current=new java.util.concurrent.atomic.AtomicReference<>(before);
+        var request=new Status("ARCHIVED",7L,"空组归档验收原因");
+        when(mapper.group(8L)).thenAnswer(i->current.get());
+        when(mapper.lockGroup(8L)).thenReturn(before);
+        when(mapper.memberCount(8L)).thenReturn(0L);
+        when(mapper.routeCount(8L)).thenReturn(0L);
+        when(mapper.pendingGroupOperations(8L)).thenReturn(0L);
+        when(mapper.status(8L,"ARCHIVED",7L,at)).thenAnswer(i->{current.set(archived);return 1;});
+
+        assertThat(service.status(8L,"archive-key",request).getData()).isEqualTo(archived);
+        verify(mapper).status(8L,"ARCHIVED",7L,at);
+        verify(audit).recordRequired(argThat(r->
+                "SUPPORT_GROUP_STATUS_CHANGED".equals(r.getAction())
+                && "SUPPORT_GROUP".equals(r.getResourceType())
+                && "8".equals(r.getResourceId()) && Long.valueOf(1L).equals(r.getActorId())
+                && "SUCCESS".equals(r.getResult())
+                && Map.of("operationId","archive-key","change",
+                        Map.of("request",request,"before",before,"after",archived)).equals(r.getDetail())));
+        verify(events).publishEvent(new ScopeChanged(Set.of(1L),request.reason()));
+        verify(mapper,times(3)).group(8L);
+        verify(mapper).lockGroup(8L);
+        verify(mapper).lockAccount(1L);
+        verify(mapper).memberCount(8L);
+        verify(mapper).routeCount(8L);
+        verify(mapper).pendingGroupOperations(8L);
+        verify(mapper).now();
+        // The status CAS is the only mapper write: no relationship/history mutation or deletion.
+        verifyNoMoreInteractions(mapper);
+    }
     @Test void unfinishedPreviewOrOperationBlocksExitEvenWithNoMembersAndRoutes(){Group g=new Group(8L,"Own",1L,"DISABLED",1L);when(mapper.group(8L)).thenReturn(g);when(mapper.lockGroup(8L)).thenReturn(g);when(mapper.pendingGroupOperations(8L)).thenReturn(1L);assertThatThrownBy(()->service.status(8L,"key",new Status("ARCHIVED",1L,"合法操作原因说明"))).hasMessage("SUPPORT_GROUP_HANDOVER_REQUIRED");verify(mapper,never()).status(any(),any(),any(),any());verifyNoInteractions(events);}
     @Test void groupRouteIsSuperOnlyAndCannotBorrowSupervisorPersonalRead(){supervisor();assertThatThrownBy(()->service.route(20L,"route-key",new ffdd.opsconsole.content.dto.SupportGroupRequests.Route(8L,0L,null,1L,"合法操作原因说明"))).hasMessage("SUPER_REQUIRED");verifyNoInteractions(idempotency);verify(mapper,never()).insertRoute(any(),any(),any(),any(),any(),any(),any());}
     @Test void ordinaryAccountDisableEmitsActorInvalidationWithoutMovingAssets(){service.accountChanged(3L,null,true,"disable","合法操作原因说明");verify(events).publishEvent(new ScopeChanged(Set.of(3L),"合法操作原因说明"));verify(mapper,never()).closeMember(any(),any(),any());}
