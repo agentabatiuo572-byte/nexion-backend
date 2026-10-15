@@ -11,10 +11,79 @@ import java.util.Map;
 import org.apache.ibatis.mapping.BoundSql;
 import org.apache.ibatis.scripting.xmltags.XMLLanguageDriver;
 import org.apache.ibatis.session.Configuration;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 
 class SupportAgentMapperTicketAssigneeCandidateSqlContractTest {
+    @Test
+    void qualifiedServiceDirectoryRequiresCurrentRoleAndUniqueQualificationButNotAnExistingProfile() throws Exception {
+        var read = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(6L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.ALL, null, null);
+        var scope = new SupportOperatorScope(null, List.of(), List.of(), false, read);
+        for (String method : List.of("countSupportOperators", "pageSupportOperators")) {
+            String query = boundSql(method, scope).getSql().replaceAll("\\s+", " ");
+            assertThat(query).contains("1=0 OR EXISTS (SELECT 1 FROM nx_support_account_qualification_history scope_q");
+            String qualification = query.substring(query.indexOf("OR EXISTS"), query.indexOf("AND scope_agent.is_deleted=0"));
+            assertThat(qualification).contains("service_rr.admin_id=scope_q.admin_id", "service_rr.is_deleted=0",
+                    "service_role.id=service_rr.role_id", "service_role.status=1", "service_role.is_deleted=0",
+                    "service_role.role_code IN ('SUPPORT','SUPER_ADMIN')",
+                    "scope_q.admin_id=scope_agent.id", "scope_agent.status=1",
+                    "scope_q.qualification_kind='SERVICE'", "scope_q.state='ENABLED'",
+                    "scope_q.starts_at <= UTC_TIMESTAMP(6)", "scope_q.ends_at IS NULL",
+                    "NOT EXISTS", "scope_q_other.admin_id=scope_q.admin_id",
+                    "scope_q_other.qualification_kind=scope_q.qualification_kind", "scope_q_other.id<>scope_q.id",
+                    "scope_q_other.starts_at <= UTC_TIMESTAMP(6)", "scope_q_other.ends_at>UTC_TIMESTAMP(6)", "FOR SHARE")
+                    .doesNotContain("primary_role", "super_admin", "JOIN nx_support_agent_profile", "profile.enabled", "${", "&lt;");
+        }
+    }
+
+    @Test
+    void qualifiedDirectoryRejectsSoftDeletedProfilesWithoutLockingAbsentProfiles() throws Exception {
+        var read = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(6L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.ALL, null, null);
+        var scope = new SupportOperatorScope(null, List.of(2L), List.of(), false, read);
+        for (String method : List.of("countSupportOperators", "pageSupportOperators")) {
+            String query = boundSql(method, scope).getSql().replaceAll("\\s+", " ");
+            String qualification = query.substring(query.indexOf("OR EXISTS"), query.indexOf("AND scope_agent.is_deleted=0"));
+            assertThat(qualification).contains("AND NOT EXISTS (SELECT 1 FROM nx_support_agent_profile directory_profile"
+                    + " WHERE directory_profile.admin_id=scope_agent.id AND directory_profile.is_deleted != 0)")
+                    .doesNotContain("JOIN nx_support_agent_profile", "directory_profile.enabled");
+            assertThat(query.substring(0, query.indexOf("OR EXISTS")))
+                    .contains("primary_role.id IN ( ? )").doesNotContain("directory_profile");
+        }
+    }
+
+    @Test
+    void defaultProfileInitializationCreatesMissingRowsButNeverRestoresOrResetsAnExistingProfile() {
+        Method method = Arrays.stream(SupportAgentMapper.class.getDeclaredMethods())
+                .filter(candidate -> candidate.getName().equals("ensureDefaultProfile")).findFirst().orElseThrow();
+        String query = String.join(" ", method.getAnnotation(Insert.class).value()).replaceAll("\\s+", " ").trim();
+        assertThat(query).startsWith("INSERT INTO nx_support_agent_profile (")
+                .contains("enabled, transferable, busy, created_at, updated_at, is_deleted",
+                        "#{maxConcurrent}, 1, 1, 0, #{now}, #{now}, 0");
+        assertThat(query.substring(query.indexOf("ON DUPLICATE KEY UPDATE")))
+                .isEqualTo("ON DUPLICATE KEY UPDATE updated_at=updated_at");
+    }
+
+    @Test
+    void qualifiedServiceAlternativeCannotBypassSharedObjectAndGroupScope() throws Exception {
+        for (var mode : ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.values()) {
+            var read = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(6L, mode,
+                    mode == ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.PERSONAL ? null : 10L, 6L);
+            var scope = new SupportOperatorScope(null, List.of(), List.of(), false, read);
+            String scopeScript = "<script>SELECT 1 FROM nx_admin scope_agent WHERE 1=1 "
+                    + SupportGroupMapper.AGENT_SCOPE_PREDICATE + "</script>";
+            String scopeSql = new XMLLanguageDriver().createSqlSource(new Configuration(), scopeScript, Map.class)
+                    .getBoundSql(Map.of("scope", scope)).getSql().replaceAll("\\s+", " ").trim();
+            scopeSql = scopeSql.substring(scopeSql.indexOf("AND scope_agent.is_deleted=0"));
+            for (String method : List.of("countSupportOperators", "pageSupportOperators")) {
+                assertThat(boundSql(method, scope).getSql().replaceAll("\\s+", " "))
+                        .contains("FOR SHARE) ) " + scopeSql);
+            }
+        }
+    }
+
     @Test
     void appAdvisorParsesEscapedEligibilityIntoOneSnapshotStatement() throws Exception {
         Method method = SupportAgentMapper.class.getDeclaredMethod("findAppAdvisor", Long.class);
