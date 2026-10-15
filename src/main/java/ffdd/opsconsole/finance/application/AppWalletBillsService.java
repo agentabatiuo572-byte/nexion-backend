@@ -251,6 +251,9 @@ public class AppWalletBillsService {
         if ("TRIAL_CHARGE".equals(value)) return "purchase";
         if ("TRIAL_BONUS".equals(value) || "DAILY_CHECK_IN".equals(value)) return "bonus";
         if (value.matches(".*(DEPOSIT|TOPUP|RECHARGE).*$")) return "topup";
+        // These credits return locked principal to the wallet; they are not external payouts.
+        if ("IN".equals(normalizedDirection) && ("STAKING_EARLY_WITHDRAW".equals(value)
+                || "REPURCHASE_EARLY_WITHDRAW".equals(value))) return "unstake";
         if (value.matches(".*(WITHDRAW|PAYOUT).*$")) return "withdraw";
         if (value.matches(".*(REFERRAL|COMMISSION|UNILEVEL|BINARY|LEADERSHIP).*$")) return "refer";
         if (value.matches(".*(STAKE|STAKING).*$")) return "IN".equals(normalizedDirection) ? "unstake" : "stake";

@@ -23,6 +23,76 @@ import org.springframework.mock.env.MockEnvironment;
 
 class AppWalletBillsServiceTest {
     @Test
+    void earlyExitCreditsUseUnlockPresentationAcrossLegacyOffsetAndCursorReads() {
+        for (String bizType : List.of("STAKING_EARLY_WITHDRAW", "REPURCHASE_EARLY_WITHDRAW")) {
+            AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+            LocalDateTime createdAt = LocalDateTime.of(2026, 10, 16, 6, 12);
+            var row = new AppWalletBillsMapper.LedgerRow(3726L, "POSITION-7-EARLY", bizType, "USDT", "IN",
+                    new BigDecimal("19.000001"), new BigDecimal("4735.010001"), "SUCCESS",
+                    "early exit net principal", createdAt);
+            when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+            when(mapper.count(7L)).thenReturn(1L);
+            when(mapper.rows(7L, 200)).thenReturn(List.of(row));
+            when(mapper.rows(7L, 50, 0)).thenReturn(List.of(row));
+            when(mapper.rowsAfter(7L, 51, null, null, null, null, null)).thenReturn(List.of(row));
+            var service = new AppWalletBillsService(mapper, environment("prod"));
+
+            for (Map<String, Object> result : List.of(service.list(7L).getData(),
+                    service.list(7L, 1, 50).getData(),
+                    service.list(7L, 1, 50, null, null, null, "start").getData())) {
+                assertThat((List<?>) result.get("bills")).singleElement()
+                        .isInstanceOfSatisfying(Map.class, bill -> assertThat(bill)
+                                .containsEntry("category", "unstake")
+                                .containsEntry("presentationCode", "unstake")
+                                .containsEntry("id", "WL-3726")
+                                .containsEntry("bizNo", row.bizNo())
+                                .containsEntry("bizType", bizType)
+                                .containsEntry("asset", "USDT")
+                                .containsEntry("direction", "IN")
+                                .containsEntry("amount", row.amount())
+                                .containsEntry("amountExact", "19.000001")
+                                .containsEntry("balanceAfter", row.balanceAfter())
+                                .containsEntry("balanceAfterExact", "4735.010001")
+                                .containsEntry("status", "SUCCESS")
+                                .containsEntry("remark", row.remark())
+                                .containsEntry("createdAt", "2026-10-15T22:12:00Z")
+                                .containsEntry("publicReference", null));
+            }
+        }
+    }
+
+    @Test
+    void earlyExitMappingDoesNotReclassifyWithdrawalsLookalikesOrDebitRows() {
+        String[][] cases = {
+                {"WITHDRAWAL", "OUT", "withdraw"},
+                {"WITHDRAW_PAYOUT", "OUT", "withdraw"},
+                {"WITHDRAW_REFUND", "IN", "withdraw"},
+                {"STAKING_EARLY_WITHDRAW_FEE", "IN", "withdraw"},
+                {"FUTURE_STAKING_EARLY_WITHDRAW", "IN", "withdraw"},
+                {"REPURCHASE_EARLY_WITHDRAW_OTHER", "IN", "withdraw"},
+                {"STAKING_EARLY_WITHDRAW", "OUT", "withdraw"},
+                {"REPURCHASE_EARLY_WITHDRAW", "OUT", "withdraw"},
+                {"STAKING_OPEN", "OUT", "stake"},
+                {"STAKING_CLAIM", "IN", "unstake"},
+                {"REPURCHASE_CLAIM", "IN", "earn"}
+        };
+        for (String[] input : cases) {
+            AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+            when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+            when(mapper.rows(7L, 200)).thenReturn(List.of(new AppWalletBillsMapper.LedgerRow(
+                    3727L, "REFERENCE-7", input[0], "USDT", input[1], new BigDecimal("19"),
+                    new BigDecimal("4735"), "SUCCESS", "", LocalDateTime.of(2026, 10, 16, 6, 12))));
+            var result = new AppWalletBillsService(mapper, environment("prod")).list(7L).getData();
+            assertThat((List<?>) result.get("bills")).singleElement()
+                    .isInstanceOfSatisfying(Map.class, bill -> assertThat(bill)
+                            .as("%s / %s keeps its existing projection", input[0], input[1])
+                            .containsEntry("category", input[2])
+                            .containsEntry("direction", input[1])
+                            .containsEntry("amount", new BigDecimal("19")));
+        }
+    }
+
+    @Test
     void exactDecimalCompanionsSurviveJsonForBothAssetsAndEveryBillReadPath() throws Exception {
         ObjectMapper json = new ObjectMapper();
         for (String asset : List.of("USDT", "NEX")) {
