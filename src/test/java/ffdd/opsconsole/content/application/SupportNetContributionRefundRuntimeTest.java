@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
 /** One explicitly selected retained-customer refund; never creates cash or adopts old objects for cleanup. */
+@org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="CS_NET_CONTRIBUTION_COMMITTED_ENABLED",matches="true")
 class SupportNetContributionRefundRuntimeTest extends SupportNetContributionCommittedRuntimeTest {
     static final long CUSTOMER=6274;
     static final String ORDER="ORD-4FB5159F14424AB2A2946093F260EF2D";

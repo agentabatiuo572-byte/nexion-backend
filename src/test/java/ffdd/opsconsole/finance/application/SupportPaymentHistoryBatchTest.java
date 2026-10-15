@@ -20,10 +20,12 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.springframework.jdbc.datasource.ConnectionHolder;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import static ffdd.opsconsole.finance.facade.SupportPaymentFacts.*;
+import static ffdd.opsconsole.finance.application.SupportPaymentBatchCoverageExpectations.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-/** Real source/history services; SQL-shaped mutable rows and immutable capture inputs. No DB claims. */
+/** Frozen 74f per-item source checks vs current batched source checks, sharing the current fact service.
+ * New c81 coverage has independent expectations; this is not a complete legacy-pipeline oracle. No DB claims. */
 class SupportPaymentHistoryBatchTest {
     private static final LocalDateTime AT=LocalDateTime.of(2026,10,8,12,0);
     private static final String ZONE=DateTimeFormatConfig.BUSINESS_ZONE.getId();
@@ -76,65 +78,140 @@ class SupportPaymentHistoryBatchTest {
         TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);TransactionSynchronizationManager.bindResource(ds,new ConnectionHolder(connection));
     }
     @AfterEach void clear(){TransactionSynchronizationManager.unbindResourceIfPossible(ds);TransactionSynchronizationManager.clear();}
-    private FinanceSupportPaymentFactsFacade service(boolean legacy) throws Exception {
+    private FinanceSupportPaymentFactsFacade service(boolean perItemReference) throws Exception {
         var history=new SupportPaymentFactService(facts,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class));var fund=mock(SupportFundJournalFacade.class);var journal=mock(SupportFundJournalMapper.class);var earnings=mock(EarningsReleaseMapper.class);
-        if(!legacy)return new SupportPaymentSourceService(mapper,history,ds,json,captured,fund,journal,earnings,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class));
-        var type=Class.forName("ffdd.opsconsole.finance.application.LegacySupportPaymentSourceService");
-        return (FinanceSupportPaymentFactsFacade)type.getConstructor(SupportPaymentSourceMapper.class,SupportPaymentFactService.class,DataSource.class,ObjectMapper.class,
-            SupportPaymentCaptureHistoryFacade.class,SupportFundJournalFacade.class,SupportFundJournalMapper.class,EarningsReleaseMapper.class).newInstance(mapper,history,ds,json,captured,fund,journal,earnings);
+        if(!perItemReference)return new SupportPaymentSourceService(mapper,history,ds,json,captured,fund,journal,earnings,mock(ffdd.opsconsole.market.facade.SupportGenesisReadFacade.class));
+        return new FrozenPreBatchPaymentSourceService74f(mapper,history,ds,json,captured);
     }
-    private Snapshot read(boolean legacy) throws Exception{return service(legacy).readHistory(List.of(7L));}
-    private void equivalent() throws Exception {
+    @Test void frozenPerItemReferencePreservesCommitted74fSourceAndStaysOutsideProduction() throws Exception {
+        String source=java.nio.file.Files.readString(java.nio.file.Path.of("src/test/java/ffdd/opsconsole/finance/application/FrozenPreBatchPaymentSourceService74f.java"))
+            .replace("\r\n","\n");
+        String original=source.substring(source.indexOf("// END LEGACY PROVENANCE\n\n")+"// END LEGACY PROVENANCE\n\n".length())
+            .replaceAll("(?s)\n    // BEGIN TEST-ONLY INTERFACE ADAPTERS.*?    // END TEST-ONLY INTERFACE ADAPTERS\n","")
+            .replace("FrozenPreBatchPaymentSourceService74f","SupportPaymentSourceService")
+            .replace("final class SupportPaymentSourceService","public class SupportPaymentSourceService")
+            .replace("import com.fasterxml.jackson.databind.ObjectMapper;\n","import com.fasterxml.jackson.databind.ObjectMapper;\nimport ffdd.opsconsole.common.boundary.ApplicationService;\n")
+            .replace("@RequiredArgsConstructor\n","@ApplicationService\n@RequiredArgsConstructor\n");
+        assertEquals("04b36a9c4a5fb8ede5dbd142e174d3a78d26aaaa36524c96d756f9cc36672af1",
+            java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(original.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+        assertFalse(FrozenPreBatchPaymentSourceService74f.class.isAnnotationPresent(ffdd.opsconsole.common.boundary.ApplicationService.class));
+        assertTrue(FrozenPreBatchPaymentSourceService74f.class.getProtectionDomain().getCodeSource().getLocation().toString().endsWith("/test-classes/"));
+    }
+    private Snapshot read(boolean perItemReference) throws Exception{return service(perItemReference).readHistory(List.of(7L));}
+    private void equivalent(SupportPaymentBatchCoverageExpectations coverage) throws Exception {
         var expected=read(true);var actual=read(false);
-        assertEquals(expected.facts(),actual.facts());assertEquals(expected.issues(),actual.issues().stream().filter(i->!ffdd.opsconsole.finance.facade.SupportPaymentFacts.genesis(i.source())).toList());assertEquals(expected.coverage(),actual.coverage());
-        assertEquals(expected.customerCoverage(),actual.customerCoverage());assertEquals(expected.firstHistory(),actual.firstHistory());assertEquals(expected.businessZone(),actual.businessZone());
+        assertEquals(expected.facts(),actual.facts());
+        assertEquals(expected.issues(),actual.issues().stream().filter(i->!ffdd.opsconsole.finance.facade.SupportPaymentFacts.genesis(i.source())).toList());
+        assertEquals(expected.businessZone(),actual.businessZone());
+        coverage.assertMatches(actual);
+    }
+    private static SupportPaymentBatchCoverageExpectations healthy(Source source) {
+        return source==Source.ORDER_REFUND?empty().paid(Source.WALLET_ORDER).refundUnknown(Status.READY,REFUND_ORIGIN):empty().paid(source);
+    }
+    private static SupportPaymentBatchCoverageExpectations rejectedPayment(Source source,String reason,boolean ordinaryRetained) {
+        var expected=empty().rejected(source,reason,ordinaryRetained);
+        return ordinaryRetained?expected.firstUnknown(reason,PAYMENT_UNPROVEN):expected.firstUnknown(reason);
+    }
+    @Test void independentOracleRejectsEnvironmentRefundAndFirstHistoryPollution() throws Exception {
+        add(Source.WALLET_ORDER,1);
+        var expected=healthy(Source.WALLET_ORDER);var observed=read(false);expected.assertMatches(observed);
+        var global=new ArrayList<>(observed.coverage());var wallet=global.get(4);
+        global.set(4,new Coverage(wallet.source(),wallet.observedStatus(),wallet.historyStatus(),wallet.refundStatus(),
+            Status.READY,wallet.supportedFrom(),wallet.reasons(),wallet.excludedFreeOrNonProductionRows(),wallet.adapterVersion()));
+        assertThrows(AssertionError.class,()->expected.assertMatches(new Snapshot(observed.facts(),observed.issues(),global,
+            observed.businessZone(),observed.evaluatedAt(),observed.firstHistory(),observed.customerCoverage())));
+        var scoped=new ArrayList<>(observed.customerCoverage());var emptyTrade=scoped.get(5);
+        scoped.set(5,new CustomerCoverage(7L,Source.TRADE_IN,emptyTrade.historyStatus(),Status.UNKNOWN,
+            emptyTrade.historicalEnvironmentStatus(),emptyTrade.supportedFrom(),emptyTrade.reasons()));
+        assertThrows(AssertionError.class,()->expected.assertMatches(new Snapshot(observed.facts(),observed.issues(),observed.coverage(),
+            observed.businessZone(),observed.evaluatedAt(),observed.firstHistory(),scoped)));
+        assertThrows(AssertionError.class,()->expected.assertMatches(new Snapshot(observed.facts(),observed.issues(),observed.coverage(),
+            observed.businessZone(),observed.evaluatedAt(),List.of(new FirstHistory(7L,Status.UNKNOWN,List.of("NEW_ACCOUNT_BIRTH_NOT_PROVEN"))),observed.customerCoverage())));
     }
     @ParameterizedTest @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER","GENESIS_PRIMARY","GENESIS_SECONDARY"},mode=EnumSource.Mode.EXCLUDE)
-    void everyHealthySourceRetainsTheOriginalHistoryResult(Source source) throws Exception {add(source,1);assertTrue(read(false).issues().isEmpty(),read(false).issues().toString());assertEquals(source==Source.ORDER_REFUND?2:1,read(false).facts().size());equivalent();}
+    void everyHealthySourceRetainsTheOriginalHistoryResult(Source source) throws Exception {add(source,1);assertTrue(read(false).issues().isEmpty(),read(false).issues().toString());assertEquals(source==Source.ORDER_REFUND?2:1,read(false).facts().size());equivalent(healthy(source));}
     @ParameterizedTest @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER","GENESIS_PRIMARY","GENESIS_SECONDARY"},mode=EnumSource.Mode.EXCLUDE)
-    void everySourceRetainsRootIdentityContradiction(Source source) throws Exception {add(source,1);roots.get(rootSource(source)).get(0).put("customerId",8L);assertFalse(read(false).issues().isEmpty());equivalent();}
+    void everySourceRetainsRootIdentityContradiction(Source source) throws Exception {
+        add(source,1);roots.get(rootSource(source)).get(0).put("customerId",8L);assertFalse(read(false).issues().isEmpty());
+        equivalent(source==Source.ORDER_REFUND?empty().rejected(Source.WALLET_ORDER,"SETTLEMENT_MISMATCH",false)
+            .refundUnknown(Status.UNKNOWN,"SETTLEMENT_MISMATCH").firstUnknown("SETTLEMENT_MISMATCH")
+            :rejectedPayment(source,"SETTLEMENT_MISMATCH",false));
+    }
     @ParameterizedTest @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER","GENESIS_PRIMARY","GENESIS_SECONDARY"},mode=EnumSource.Mode.EXCLUDE)
-    void everySourceRetainsDuplicateRootFailure(Source source) throws Exception {add(source,1);var values=roots.get(rootSource(source));values.add(new HashMap<>(values.get(0)));assertFalse(read(false).issues().isEmpty());equivalent();}
+    void everySourceRetainsDuplicateRootFailure(Source source) throws Exception {
+        add(source,1);var values=roots.get(rootSource(source));values.add(new HashMap<>(values.get(0)));assertFalse(read(false).issues().isEmpty());
+        equivalent(source==Source.ORDER_REFUND?empty().rejected(Source.WALLET_ORDER,"CONFLICTING_CAPTURED_SOURCE_PROJECTION",false)
+            .refundUnknown(Status.UNKNOWN,"CONFLICTING_CAPTURED_SOURCE_PROJECTION").firstUnknown("CONFLICTING_CAPTURED_SOURCE_PROJECTION")
+            :rejectedPayment(source,"CONFLICTING_CAPTURED_SOURCE_PROJECTION",false));
+    }
     @ParameterizedTest @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER","GENESIS_PRIMARY","GENESIS_SECONDARY"},mode=EnumSource.Mode.EXCLUDE)
-    void everySourceRetainsActualLedgerContradiction(Source source) throws Exception {add(source,1);ledgers.get(0).put("amount",new BigDecimal("9"));assertFalse(read(false).issues().isEmpty());equivalent();}
+    void everySourceRetainsActualLedgerContradiction(Source source) throws Exception {
+        add(source,1);ledgers.get(0).put("amount",new BigDecimal("9"));assertFalse(read(false).issues().isEmpty());
+        equivalent(source==Source.ORDER_REFUND?empty().rejected(Source.WALLET_ORDER,"SETTLEMENT_MISMATCH",false)
+            .refundUnknown(Status.UNKNOWN,"CAPTURED_PAYMENT_NOT_RECONCILED","UNPROVEN_ORIGINAL_PAYMENT").firstUnknown("SETTLEMENT_MISMATCH")
+            :rejectedPayment(source,"SETTLEMENT_MISMATCH",false));
+    }
     @Test void oneThousandCapturesMustUseBoundedPlainReadQueries() throws Exception {
         for(int i=1;i<=1000;i++)add(Source.WALLET_ORDER,i);calls.clear();var result=read(false);assertEquals(1000,result.facts().size());assertTrue(result.issues().isEmpty());
         int total=calls.values().stream().mapToInt(Integer::intValue).sum();assertEquals(18,total,"Queries="+total+" "+calls);
         System.out.println("BATCH_WALLET_1000_QUERIES="+total);
         for(String perFact:List.of("before","settled","payments","cregisEvents","cardSettlements","intent","device"))assertEquals(0,calls.getOrDefault(perFact,0),perFact);
+        healthy(Source.WALLET_ORDER).assertMatches(result);
     }
     @Test void oneCaptureUsesTheSameQueryCountAsOneThousand() throws Exception {
-        add(Source.WALLET_ORDER,1);calls.clear();assertEquals(1,read(false).facts().size());assertEquals(18,calls.values().stream().mapToInt(Integer::intValue).sum());
+        add(Source.WALLET_ORDER,1);calls.clear();var result=read(false);assertEquals(1,result.facts().size());assertEquals(18,calls.values().stream().mapToInt(Integer::intValue).sum());
+        for(String perFact:List.of("before","settled","payments","cregisEvents","cardSettlements","intent","device"))assertEquals(0,calls.getOrDefault(perFact,0),perFact);
+        healthy(Source.WALLET_ORDER).assertMatches(result);
     }
     @Test void allNineSourceFamiliesTogetherRemainBounded() throws Exception {
         int index=1;for(Source source:Source.values())if(source!=Source.FREE_TRIAL && source!=Source.UNMATCHED_LEDGER && !ffdd.opsconsole.finance.facade.SupportPaymentFacts.genesis(source))add(source,index++);
         calls.clear();var result=read(false);assertTrue(result.issues().isEmpty(),result.issues().toString());assertEquals(10,result.facts().size());
         int total=calls.values().stream().mapToInt(Integer::intValue).sum();assertEquals(35,total,calls.toString());
-        System.out.println("BATCH_ALL_NINE_QUERIES="+total);equivalent();
+        for(String perFact:List.of("before","settled","payments","cregisEvents","cardSettlements","intent","device"))assertEquals(0,calls.getOrDefault(perFact,0),perFact);
+        System.out.println("BATCH_ALL_NINE_QUERIES="+total);
+        equivalent(empty().paid(Source.DEPOSIT_ORDER).paid(Source.CARD_TOPUP).paid(Source.VIETQR).paid(Source.HDPAY)
+            .paid(Source.WALLET_ORDER).paid(Source.TRADE_IN).paid(Source.CAPACITY_KEEP).paid(Source.TRIAL_CONVERT)
+            .refundUnknown(Status.READY,REFUND_ORIGIN));
     }
     @ParameterizedTest @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER","GENESIS_PRIMARY","GENESIS_SECONDARY"},mode=EnumSource.Mode.EXCLUDE)
     void everyRootBatchFailureRetainsLegacyFailureAndOtherSourceResults(Source source) throws Exception {
         add(source,1);add(source==Source.CARD_TOPUP?Source.DEPOSIT_ORDER:Source.CARD_TOPUP,2);failedRoots.add(rootSource(source));
-        assertTrue(read(false).issues().stream().anyMatch(i->i.reason().equals("SOURCE_READ_FAILED")));equivalent();
+        assertTrue(read(false).issues().stream().anyMatch(i->i.reason().equals("SOURCE_READ_FAILED")));
+        var other=source==Source.CARD_TOPUP?Source.DEPOSIT_ORDER:Source.CARD_TOPUP;
+        equivalent(source==Source.ORDER_REFUND?empty().paid(other).rejected(Source.WALLET_ORDER,"SOURCE_READ_FAILED",true)
+            .refundUnknown(Status.UNKNOWN,"SOURCE_READ_FAILED",PAYMENT_UNPROVEN,REFUND_ORIGIN).firstUnknown("SOURCE_READ_FAILED",PAYMENT_UNPROVEN)
+            :rejectedPayment(source,"SOURCE_READ_FAILED",true).paid(other));
     }
     @ParameterizedTest @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER","GENESIS_PRIMARY","GENESIS_SECONDARY"},mode=EnumSource.Mode.EXCLUDE)
     void everySettledBatchFailureRetainsLegacyFailure(Source source) throws Exception {
-        add(source,1);failedProjections.add(source);assertTrue(read(false).issues().stream().anyMatch(i->i.reason().equals("SOURCE_READ_FAILED")));equivalent();
+        add(source,1);failedProjections.add(source);assertTrue(read(false).issues().stream().anyMatch(i->i.reason().equals("SOURCE_READ_FAILED")));
+        equivalent(source==Source.ORDER_REFUND?empty().paid(Source.WALLET_ORDER)
+            .refundUnknown(Status.UNKNOWN,"SOURCE_READ_FAILED",PAYMENT_UNPROVEN,REFUND_ORIGIN)
+            :rejectedPayment(source,"SOURCE_READ_FAILED",true));
     }
     @ParameterizedTest @EnumSource(value=Source.class,names={"DEPOSIT_ORDER","CARD_TOPUP","VIETQR","HDPAY","WALLET_ORDER","TRIAL_CONVERT"})
     void eachMarkerBatchFailureRetainsLegacyFailure(Source source) throws Exception {
-        add(source,1);failedMarkers.add(markers.keySet().iterator().next());assertTrue(read(false).issues().stream().anyMatch(i->i.reason().equals("SOURCE_READ_FAILED")));equivalent();
+        add(source,1);failedMarkers.add(markers.keySet().iterator().next());assertTrue(read(false).issues().stream().anyMatch(i->i.reason().equals("SOURCE_READ_FAILED")));
+        equivalent(rejectedPayment(source,"SOURCE_READ_FAILED",true));
     }
     @Test void anEarlierLedgerContradictionStillTakesPriorityOverAPrefetchedSourceFailure() throws Exception {
         add(Source.WALLET_ORDER,1);ledgers.get(0).put("amount",BigDecimal.ONE);failedRoots.add(Source.WALLET_ORDER);failedProjections.add(Source.WALLET_ORDER);
-        failedMarkers.add(SupportPaymentSourceMapper.Marker.PAYMENT);equivalent();assertFalse(read(false).issues().stream().anyMatch(i->i.reason().equals("SOURCE_READ_FAILED")));
+        failedMarkers.add(SupportPaymentSourceMapper.Marker.PAYMENT);equivalent(rejectedPayment(Source.WALLET_ORDER,"SETTLEMENT_MISMATCH",false));assertFalse(read(false).issues().stream().anyMatch(i->i.reason().equals("SOURCE_READ_FAILED")));
     }
-    @Test void missingWalletConfirmationCannotBeReplacedByTheSettledProjection() throws Exception {add(Source.WALLET_ORDER,1);markers.clear();assertFalse(read(false).issues().isEmpty());equivalent();}
-    @Test void missingCregisEventCannotBeReplacedByTheSettledProjection() throws Exception {add(Source.DEPOSIT_ORDER,1);markers.clear();assertFalse(read(false).issues().isEmpty());equivalent();}
-    @Test void missingTrialDeviceCannotBeReplacedByTheCapturedFact() throws Exception {add(Source.TRIAL_CONVERT,1);markers.clear();assertFalse(read(false).issues().isEmpty());equivalent();}
+    @Test void missingWalletConfirmationCannotBeReplacedByTheSettledProjection() throws Exception {add(Source.WALLET_ORDER,1);markers.clear();assertFalse(read(false).issues().isEmpty());equivalent(rejectedPayment(Source.WALLET_ORDER,"MISSING_SOURCE_CONFIRMATION_TIME",true));}
+    @Test void missingCregisEventCannotBeReplacedByTheSettledProjection() throws Exception {add(Source.DEPOSIT_ORDER,1);markers.clear();assertFalse(read(false).issues().isEmpty());equivalent(rejectedPayment(Source.DEPOSIT_ORDER,"MISSING_AUTHORITATIVE_SOURCE",true));}
+    @Test void missingTrialDeviceCannotBeReplacedByTheCapturedFact() throws Exception {add(Source.TRIAL_CONVERT,1);markers.clear();assertFalse(read(false).issues().isEmpty());equivalent(rejectedPayment(Source.TRIAL_CONVERT,"MISSING_AUTHORITATIVE_SOURCE",true));}
     @ParameterizedTest @MethodSource("markerContradictions")
     void eachIndependentMarkerPredicateRetainsLegacyRejection(Source source,String field,Object invalid) throws Exception {
-        add(source,1);markers.values().iterator().next().get(0).put(field,invalid);assertFalse(read(false).issues().isEmpty(),source+" "+field);equivalent();
+        add(source,1);markers.values().iterator().next().get(0).put(field,invalid);assertFalse(read(false).issues().isEmpty(),source+" "+field);
+        String reason=switch(source) {
+            case DEPOSIT_ORDER->Set.of("projectId","cid").contains(field)?"MISSING_AUTHORITATIVE_SOURCE":"BROKEN_CREGIS_EVENT_LINK";
+            case CARD_TOPUP,WALLET_ORDER->"SETTLEMENT_MISMATCH";
+            case VIETQR,HDPAY->"BROKEN_INTENT_IDENTITY";
+            case TRIAL_CONVERT->"id".equals(field)?"MISSING_AUTHORITATIVE_SOURCE":"BROKEN_SOURCE_LINK";
+            default->throw new AssertionError(source);
+        };
+        equivalent(rejectedPayment(source,reason,"MISSING_AUTHORITATIVE_SOURCE".equals(reason)));
     }
     private static java.util.stream.Stream<Arguments> markerContradictions(){
         var result=new ArrayList<Arguments>();
@@ -153,14 +230,25 @@ class SupportPaymentHistoryBatchTest {
         return result.stream();
     }
     @ParameterizedTest @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER","GENESIS_PRIMARY","GENESIS_SECONDARY"},mode=EnumSource.Mode.EXCLUDE)
-    void absentRootRetainsOriginalSourceSpecificBehavior(Source source) throws Exception {add(source,1);roots.get(rootSource(source)).clear();equivalent();}
+    void absentRootRetainsOriginalSourceSpecificBehavior(Source source) throws Exception {
+        add(source,1);roots.get(rootSource(source)).clear();
+        equivalent(switch(source) {
+            case CARD_TOPUP->rejectedPayment(source,"SETTLEMENT_MISMATCH",false);
+            case VIETQR,HDPAY->rejectedPayment(source,"BROKEN_INTENT_IDENTITY",false);
+            case ORDER_REFUND->rejectedPayment(Source.WALLET_ORDER,"MISSING_AUTHORITATIVE_SOURCE",true).refundUnknown(Status.READY,REFUND_ORIGIN);
+            default->rejectedPayment(source,"MISSING_AUTHORITATIVE_SOURCE",true);
+        });
+    }
     @ParameterizedTest @EnumSource(value=Source.class,names={"FREE_TRIAL","UNMATCHED_LEDGER","GENESIS_PRIMARY","GENESIS_SECONDARY"},mode=EnumSource.Mode.EXCLUDE)
-    void absentOrdinaryProjectionRetainsCapturedSourceChecks(Source source) throws Exception {add(source,1);projections.get(source).clear();equivalent();}
-    @Test void duplicateMarkerCannotCollapseToAValidSingleRow() throws Exception {add(Source.CARD_TOPUP,1);var values=markers.values().iterator().next();values.add(new HashMap<>(values.get(0)));assertFalse(read(false).issues().isEmpty());equivalent();}
+    void absentOrdinaryProjectionRetainsCapturedSourceChecks(Source source) throws Exception {add(source,1);projections.get(source).clear();equivalent(healthy(source));}
+    @Test void duplicateMarkerCannotCollapseToAValidSingleRow() throws Exception {add(Source.CARD_TOPUP,1);var values=markers.values().iterator().next();values.add(new HashMap<>(values.get(0)));assertFalse(read(false).issues().isEmpty());equivalent(rejectedPayment(Source.CARD_TOPUP,"SETTLEMENT_MISMATCH",false));}
     @Test void immutableCapturedProofTypeFailureStillRejectsBeforeSourceReads() throws Exception {
         add(Source.WALLET_ORDER,1);var old=captures.get(0);var source=(com.fasterxml.jackson.databind.node.ObjectNode)json.readTree(old.sourceFactJson());source.put("customerId",true);
         captures.set(0,new Envelope(old.identity(),old.sourcePartition(),old.captureDbUtc(),old.captureMode(),old.captureSchemaVersion(),source.toString(),old.beforeSourceJson(),old.evidenceCaptureMode(),old.evidenceSchemaVersion()));
-        assertFalse(read(false).issues().isEmpty());equivalent();
+        assertFalse(read(false).issues().isEmpty());
+        for(String sourceRead:List.of("before","settled","payments","cregisEvents","cardSettlements","intent","device",
+                "historyBeforeBatch","historySettledBatch","historyMarkerBatch"))assertEquals(0,calls.getOrDefault(sourceRead,0),sourceRead);
+        equivalent(rejectedPayment(Source.WALLET_ORDER,"INVALID_PERSISTED_SOURCE_PROOF",true));
     }
 
     private List<Map<String,Object>> rootRows(Source source,String key){if(failedRoots.contains(rootSource(source)))throw new org.springframework.dao.DataAccessResourceFailureException("root");String raw=source==Source.ORDER_REFUND?key.substring("E4-REFUND-".length()):key;return roots.getOrDefault(rootSource(source),List.of()).stream().filter(r->Objects.equals(raw,r.get("businessId"))).toList();}

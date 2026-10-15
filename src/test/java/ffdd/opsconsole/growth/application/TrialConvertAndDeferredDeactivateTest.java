@@ -161,10 +161,13 @@ class TrialConvertAndDeferredDeactivateTest {
                 .containsEntry("shadowNex", new BigDecimal("195.000000"))
                 .containsEntry("offsetUsdt", new BigDecimal("50.000000"))
                 .containsEntry("remainderUsdt", new BigDecimal("65.560000"));
-        verify(earningsRelease).creditReward(eq(7L), eq("H2_TRIAL_REMAINDER"), eq("TRIAL-1:REMAINDER"),
+        verify(earningsRelease).creditRewardInFundOperation(eq(7L), eq("H2_TRIAL_REMAINDER"), eq("TRIAL-1:REMAINDER"),
                 eq("USDT"), eq(new BigDecimal("65.560000")), eq("H2:TRIAL-1:REMAINDER:USDT"));
-        verify(earningsRelease).creditReward(eq(7L), eq("H2_TRIAL_BONUS"), eq("TRIAL-1:NEX"),
+        verify(earningsRelease).creditRewardInFundOperation(eq(7L), eq("H2_TRIAL_BONUS"), eq("TRIAL-1:NEX"),
                 eq("NEX"), eq(new BigDecimal("195.000000")), eq("H2:TRIAL-1:NEX"));
+        verify(capture).trialReward(any(Prepared.class), eq("ER-LEGACY-USDT"));
+        verify(capture).trialReward(any(Prepared.class), eq("ER-LEGACY-NEX"));
+        verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
         verify(mapper).insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
                 eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")));
         verify(mapper).markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(),
@@ -184,6 +187,7 @@ class TrialConvertAndDeferredDeactivateTest {
         assertThat(result.getMessage()).isEqualTo("TRIAL_DAILY_YIELD_INVALID");
         verify(mapper, never()).settleWallet(anyLong(), any(), any(), any());
         verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
+        verify(earningsRelease, never()).creditRewardInFundOperation(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
         verify(mapper, never()).decrementProductStock(anyLong());
         verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
     }
@@ -210,6 +214,10 @@ class TrialConvertAndDeferredDeactivateTest {
     }
 
     private void stubLegacyConversion() {
+        when(earningsRelease.creditRewardInFundOperation(eq(7L), eq("H2_TRIAL_REMAINDER"), eq("TRIAL-1:REMAINDER"),
+                eq("USDT"), eq(new BigDecimal("65.560000")), eq("H2:TRIAL-1:REMAINDER:USDT"))).thenReturn("ER-LEGACY-USDT");
+        when(earningsRelease.creditRewardInFundOperation(eq(7L), eq("H2_TRIAL_BONUS"), eq("TRIAL-1:NEX"),
+                eq("NEX"), eq(new BigDecimal("195.000000")), eq("H2:TRIAL-1:NEX"))).thenReturn("ER-LEGACY-NEX");
         when(mapper.lockHardwarePurchaseTiers("stellarbox-s1")).thenReturn(List.of(
                 new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Tier(
                         1L, "S1", "stellarbox-s1", 0, BigDecimal.ZERO, 10, "ALL", 1)));

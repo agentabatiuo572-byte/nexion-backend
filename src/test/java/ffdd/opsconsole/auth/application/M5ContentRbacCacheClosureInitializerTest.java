@@ -35,13 +35,17 @@ class M5ContentRbacCacheClosureInitializerTest {
     private static final String RISK_KEY = "rbac:v2:admin:perms:" + RISK_ADMIN_ID;
 
     @Test
-    void startupClosureEvictsOnlyContentLegacyCacheThenNextAuthorizationUsesClosedM5Grant() {
+    void startupClosureEvictsOnlyContentLegacyCacheThenAuthorizationReadsCurrentDatabaseGrants() {
         CacheFixture fixture = new CacheFixture();
         fixture.seed(CONTENT_ADMIN_ID, Set.of("service_m1_read", "service_m4_write", "service_m5_read"));
         fixture.seed(SUPPORT_ADMIN_ID, Set.of("service_m1_read", "service_m5_write"));
         fixture.seed(RISK_ADMIN_ID, Set.of("service_m1_read", "service_m4_read", "service_m5_read"));
         when(fixture.permissionMapper.selectActivePermissionCodes(CONTENT_ADMIN_ID))
                 .thenReturn(List.of("service_m5_read", "service_m5_write"));
+        when(fixture.permissionMapper.selectActivePermissionCodes(SUPPORT_ADMIN_ID))
+                .thenReturn(List.of("service_m1_read", "service_m5_read"));
+        when(fixture.permissionMapper.selectActivePermissionCodes(RISK_ADMIN_ID))
+                .thenReturn(List.of("service_m1_read", "service_m4_read", "service_m5_read"));
 
         M5ContentRbacCacheClosureInitializer initializer = fixture.initializer();
         initializer.enforceContentM5Closure();
@@ -52,13 +56,18 @@ class M5ContentRbacCacheClosureInitializerTest {
         assertThat(hasAuthority(contentAuthorities, "service_m5_read")).isTrue();
         assertThat(hasAuthority(contentAuthorities, "service_m5_write")).isTrue();
         assertThat(fixture.cache.getPermissionCodes(SUPPORT_ADMIN_ID))
-                .containsExactlyInAnyOrder("service_m1_read", "service_m5_write");
+                .containsExactlyInAnyOrder("service_m1_read", "service_m5_read")
+                .doesNotContain("service_m5_write");
         assertThat(fixture.cache.getPermissionCodes(RISK_ADMIN_ID))
                 .containsExactlyInAnyOrder("service_m1_read", "service_m4_read", "service_m5_read");
         verify(fixture.redisTemplate).delete(CONTENT_KEY);
         verify(fixture.redisTemplate, never()).delete(SUPPORT_KEY);
         verify(fixture.redisTemplate, never()).delete(RISK_KEY);
         verify(fixture.redisTemplate, never()).keys(anyString());
+        verify(fixture.permissionMapper).selectActivePermissionCodes(CONTENT_ADMIN_ID);
+        verify(fixture.permissionMapper).selectActivePermissionCodes(SUPPORT_ADMIN_ID);
+        verify(fixture.permissionMapper).selectActivePermissionCodes(RISK_ADMIN_ID);
+        verify(fixture.setOperations, never()).members(anyString());
     }
 
     @Test

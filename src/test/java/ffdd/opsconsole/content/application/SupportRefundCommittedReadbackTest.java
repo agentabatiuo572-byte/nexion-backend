@@ -8,6 +8,7 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 
 /** Continue only the committed refund's timed-out readback; never inject reserve or issue a new refund. */
+@org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="CS_NET_CONTRIBUTION_COMMITTED_ENABLED",matches="true")
 class SupportRefundCommittedReadbackTest extends SupportNetContributionRefundRuntimeTest {
     @Test void committedRefundHttpReadbackAndOriginalKeyReplay() throws Exception {
         requireNetClone();

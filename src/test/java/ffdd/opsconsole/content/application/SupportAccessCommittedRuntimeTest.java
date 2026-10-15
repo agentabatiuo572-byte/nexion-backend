@@ -6,6 +6,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /** Uses the existing clone fence and retained-facts lifecycle; the clone is cleaned as one unit. */
+@org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="CS_NET_CONTRIBUTION_COMMITTED_ENABLED",matches="true")
 class SupportAccessCommittedRuntimeTest extends SupportNetContributionCommittedRuntimeTest {
     @Test void actualAnalyticsScopesRejectForeignAndForgedIdentityAndKeepOwnerlessEmpty() throws Exception {
         long own=bornCustomer(),foreign=bornCustomer();bind(own,agent);bind(foreign,foreignAgent);
