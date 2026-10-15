@@ -268,21 +268,22 @@ public class OpsSupportAgentService {
         if (authorization != null) {
             return authorization;
         }
+        AdminAccountOverview.OperatorRecord operator = profileOperator(adminId).orElse(null);
+        if (operator == null) {
+            return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
+        }
         return idempotentCommand(
                 "M5_SUPPORT_AGENT_PROFILE_UPDATE",
                 idempotencyKey,
                 requestHash(String.valueOf(adminId), String.valueOf(request)),
-                () -> updateProfileOnce(adminId, idempotencyKey, request));
+                () -> updateProfileOnce(adminId, idempotencyKey, request, operator));
     }
 
     private ApiResult<SupportAgentProfileView> updateProfileOnce(
             Long adminId,
             String idempotencyKey,
-            SupportAgentProfileUpdateRequest request) {
-        AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
-        if (operator == null) {
-            return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
-        }
+            SupportAgentProfileUpdateRequest request,
+            AdminAccountOverview.OperatorRecord operator) {
         SupportAgentProfileRecord currentProfile = repository.findProfile(adminId).orElse(null);
         if (currentProfile != null && !currentProfile.version().equals(request.expectedVersion())) {
             return ApiResult.fail(409, "SUPPORT_AGENT_PROFILE_VERSION_CONFLICT");
@@ -660,6 +661,27 @@ public class OpsSupportAgentService {
         return supportOperators().stream()
                 .filter(operator -> operator.id().equals(String.valueOf(adminId)))
                 .findFirst();
+    }
+
+    /** Profile configuration also accepts explicitly qualified admins from the current directory. */
+    private Optional<AdminAccountOverview.OperatorRecord> profileOperator(Long adminId) {
+        Optional<AdminAccountOverview.OperatorRecord> support = supportOperator(adminId);
+        if (support.isPresent()) {
+            return support;
+        }
+        Optional<AdminAccountOverview.OperatorRecord> admin = accountService.operatorsForSupport().stream()
+                .filter(operator -> String.valueOf(adminId).equals(operator.id()))
+                .filter(operator -> Set.of("super", "superadmin").contains(normalizedRole(operator.role())))
+                .filter(operator -> "enabled".equalsIgnoreCase(operator.status()))
+                .findFirst();
+        if (admin.isEmpty()) {
+            return Optional.empty();
+        }
+        ReadScope scope = ownership.defaultQueryScope(null, null);
+        ReadScope targetScope = new ReadScope(scope.actorId(), scope.mode(), scope.requestedGroupId(), adminId);
+        // The shared directory requires a unique active SERVICE fact and excludes deleted profiles.
+        return repository.countSupportOperators(repository.scopedSupportOperators(targetScope)) == 1
+                ? admin : Optional.empty();
     }
 
     private ApiResult<SupportAgentAssignmentView> requireAdvisorAssignmentAuthorization(Long targetAdminId) {
