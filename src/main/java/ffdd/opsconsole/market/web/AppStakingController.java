@@ -33,6 +33,16 @@ public class AppStakingController {
         return userId == null ? forbidden() : service.positionsSnapshot(userId, pageNum, pageSize, snapshotId);
     }
 
+    @GetMapping("/api/stakes/open-status")
+    public ApiResult<Map<String, Object>> openStatus(
+            @RequestParam String tierKey,
+            @RequestParam String amountUsdt,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.openStatus(userId, idempotencyKey, tierKey, amountUsdt);
+    }
+
     @PostMapping("/api/stakes")
     public ApiResult<Map<String, Object>> open(
             @RequestBody AppStakingService.OpenRequest request,

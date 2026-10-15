@@ -128,10 +128,48 @@ public class AppRepurchaseService {
         if (isSandbox()) return sandboxOpen(userId, key, request);
         requireCanonicalProductionRuntime();
         requireUser(userId);
-        BigDecimal amount = request == null ? null : request.amountUsdt();
-        if (amount == null || amount.signum() <= 0) throw new BizException(422, "REPURCHASE_AMOUNT_INVALID");
-        OpenRequest normalized = new OpenRequest(money(amount));
+        OpenRequest normalized = normalizeOpen(request == null ? null : request.amountUsdt());
         return once("OPEN", userId, key, normalized, () -> openInternal(userId, key, normalized));
+    }
+
+    /** Status projection only: no claim, retry, financial action or historical wallet response. */
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public ApiResult<Map<String, Object>> openStatus(Long userId, String key, String amountUsdt) {
+        requireCanonicalProductionRuntime();
+        requireUser(userId);
+        if (!StringUtils.hasText(key)) throw new BizException(422, "IDEMPOTENCY_KEY_REQUIRED");
+        key = key.trim();
+        if (key.length() > 128) throw new BizException(422, "IDEMPOTENCY_KEY_INVALID");
+        OpenRequest normalized = normalizeStatusAmount(amountUsdt);
+        return ApiResult.ok(linked("status", idempotency.recoveryStatus(
+                "APP:G7_REPURCHASE_OPEN:USER:" + userId, key, sha256(String.valueOf(normalized))).name(),
+                "repurchaseCommandProtocol", 1, "sourceEnvironment", "PRODUCTION", "runId", ""));
+    }
+
+    private OpenRequest normalizeStatusAmount(String text) {
+        // Bound parsing and scale work before normalization/hash; canonical G7 storage is DECIMAL(18,6).
+        if (text == null || text.length() > 64) throw new BizException(422, "REPURCHASE_AMOUNT_INVALID");
+        BigDecimal amount;
+        try {
+            amount = new BigDecimal(text);
+        } catch (NumberFormatException ex) {
+            throw new BizException(422, "REPURCHASE_AMOUNT_INVALID");
+        }
+        if (amount.precision() > 32 || amount.scale() < -12 || amount.scale() > 18
+                || (long) amount.precision() - amount.scale() > 12) {
+            throw new BizException(422, "REPURCHASE_AMOUNT_INVALID");
+        }
+        OpenRequest normalized = normalizeOpen(amount);
+        if (normalized.amountUsdt().signum() <= 0
+                || normalized.amountUsdt().compareTo(new BigDecimal("999999999999.999999")) > 0) {
+            throw new BizException(422, "REPURCHASE_AMOUNT_INVALID");
+        }
+        return normalized;
+    }
+
+    private OpenRequest normalizeOpen(BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0) throw new BizException(422, "REPURCHASE_AMOUNT_INVALID");
+        return new OpenRequest(money(amount));
     }
 
     private ApiResult<Map<String, Object>> openInternal(Long userId, String key, OpenRequest request) {

@@ -854,6 +854,51 @@ class SupportAnalyticsServiceTest {
         assertThat(result.personnel().groupMembers().confirmedValue()).isZero();assertThat(result.personnel().supervisors().confirmedValue()).isEqualTo(1);assertThat(result.personnel().people().confirmedValue()).isEqualTo(1);
         verifyNoInteractions(finance,devices,invitations);verify(mapper,never()).activityEvents(any(),any(),any());verify(mapper,never()).legacyProductionCustomers(any());
     }
+    @ParameterizedTest
+    @ValueSource(strings={"UNKNOWN","PARTIAL","AVAILABLE","FAILED"})
+    void emptyActivityScopeConfirmsZeroOnlyWithAvailableCoverage(String coverageStatus) {
+        var complete=enriched();
+        when(mapper.currentCustomers(any())).thenReturn(List.of());
+        switch(coverageStatus) {
+            case "UNKNOWN" -> when(mapper.activityCoverage(any())).thenReturn(null);
+            case "PARTIAL" -> when(mapper.activityCoverage(any())).thenReturn(new SupportAnalyticsMapper.ActivityCoverage(AT.minusDays(1),AT,AT));
+            case "FAILED" -> when(mapper.activityCoverage(any())).thenThrow(new DataAccessResourceFailureException("unavailable"));
+            default -> { }
+        }
+        var activity=complete.summarize(history("USDT")).currentMetrics().activity();
+        Status status=coverageStatus.equals("AVAILABLE")?Status.AVAILABLE:coverageStatus.equals("FAILED")?Status.FAILED:Status.PARTIAL;
+        Long observed=status==Status.FAILED?null:0L;
+        Long confirmed=status==Status.AVAILABLE?0L:null;
+        assertThat(activity.window().status()).isEqualTo(Status.valueOf(coverageStatus));
+        assertThat(activity.status()).isEqualTo(status);
+        assertThat(activity.active()).isEqualTo(new Count(observed,confirmed,status));
+        assertThat(activity.inactive()).isEqualTo(new Count(observed,confirmed,status));
+        assertThat(activity.partitions()).hasSize(Category.values().length).allSatisfy(p->{
+            assertThat(p.active()).isEqualTo(new Count(observed,confirmed,status));
+            assertThat(p.inactive()).isEqualTo(new Count(observed,confirmed,status));
+        });
+        verify(mapper,never()).activityEvents(any(),any(),any());
+    }
+    @Test void partialCoverageKeepsObservedActivityWithoutCertifyingTotalsOrEmptyCategories() {
+        var complete=enriched();
+        when(finance.readHistory(any())).thenReturn(snapshot(List.of()));
+        when(mapper.activityCoverage(any())).thenReturn(new SupportAnalyticsMapper.ActivityCoverage(AT.minusDays(1),AT,AT));
+        when(mapper.activityEvents(any(),any(),eq(AT))).thenReturn(List.of(new SupportAnalyticsMapper.ActivityRow(1L,AT)));
+        var result=complete.summarize(history("USDT"));
+        var activity=result.currentMetrics().activity();
+        assertThat(result.currentCustomers().get(0).metrics().activity().state()).isEqualTo(WindowState.ACTIVE);
+        assertThat(activity.active()).isEqualTo(new Count(1L,null,Status.PARTIAL));
+        assertThat(activity.inactive()).isEqualTo(new Count(0L,null,Status.PARTIAL));
+        assertThat(activity.unknown()).isEqualTo(new Count(0L,0L,Status.AVAILABLE));
+        assertThat(activity.partitions()).allSatisfy(p->{
+            assertThat(p.active().status()).isEqualTo(Status.PARTIAL);
+            assertThat(p.active().confirmedValue()).isNull();
+            assertThat(p.inactive().status()).isEqualTo(Status.PARTIAL);
+            assertThat(p.inactive().confirmedValue()).isNull();
+        });
+        assertThat(activity.partitions()).filteredOn(p->p.category()==Category.BOUND).singleElement()
+            .satisfies(p->assertThat(p.active().observedValue()).isEqualTo(1));
+    }
     @Test void missingOrFailedNewSourcesStayUnknownOrFailedAndCannotConfirmZero() {
         var complete=enriched();when(finance.readHistory(any())).thenReturn(snapshot(List.of()));when(mapper.activityCoverage(any())).thenReturn(null);
         when(devices.readCurrent(any())).thenThrow(new DataAccessResourceFailureException("hidden 9009009"));
