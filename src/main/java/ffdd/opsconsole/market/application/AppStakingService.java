@@ -128,6 +128,38 @@ public class AppStakingService {
                 requestedPageNum, requestedPageSize);
     }
 
+    /** Original command state only: no risk gate, claim, maturity update or financial action. */
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public ApiResult<Map<String, Object>> openStatus(Long userId, String key, String tierKey, String amountUsdt) {
+        requireCanonicalProductionRuntime();
+        requireUser(userId);
+        if (!StringUtils.hasText(key)) throw new BizException(422, "IDEMPOTENCY_KEY_REQUIRED");
+        key = key.trim();
+        if (key.length() > 128) throw new BizException(422, "IDEMPOTENCY_KEY_INVALID");
+        if (tierKey == null || tierKey.length() > 32) throw new BizException(422, "STAKING_TIER_INVALID");
+        String tier = normalizeTier(tierKey);
+        if (amountUsdt == null || amountUsdt.length() > 64) throw new BizException(422, "STAKING_AMOUNT_INVALID");
+        BigDecimal amount;
+        try {
+            amount = new BigDecimal(amountUsdt);
+        } catch (NumberFormatException ex) {
+            throw new BizException(422, "STAKING_AMOUNT_INVALID");
+        }
+        // Bound scale work before using the original POST's DECIMAL(18,6) normalization/hash.
+        if (amount.precision() > 32 || amount.scale() < -12 || amount.scale() > 18
+                || (long) amount.precision() - amount.scale() > 12 || amount.signum() <= 0) {
+            throw new BizException(422, "STAKING_AMOUNT_INVALID");
+        }
+        OpenRequest normalized = new OpenRequest(tier, money(amount));
+        if (normalized.amountUsdt().signum() <= 0
+                || normalized.amountUsdt().compareTo(new BigDecimal("999999999999.999999")) > 0) {
+            throw new BizException(422, "STAKING_AMOUNT_INVALID");
+        }
+        return ApiResult.ok(linked("status", idempotency.recoveryStatus(
+                "APP:G1_STAKING_OPEN:USER:" + userId, key, sha256(String.valueOf(normalized))).name(),
+                "stakingCommandProtocol", 1, "sourceEnvironment", "PRODUCTION", "runId", ""));
+    }
+
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> open(Long userId, String idempotencyKey, OpenRequest request) {
         if (isSandbox()) return sandboxOpen(userId, idempotencyKey, request);

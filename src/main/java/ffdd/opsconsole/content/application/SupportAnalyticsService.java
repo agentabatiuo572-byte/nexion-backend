@@ -741,19 +741,20 @@ public class SupportAnalyticsService {
         long inactive=customers.stream().filter(c->c.metrics().activity().state()==WindowState.INACTIVE).count();
         long unknown=customers.size()-active-inactive;
         boolean sourceFailed=window.status()==Status.FAILED;
-        Status status=sourceFailed?Status.FAILED:unknown>0 || window.status()!=Status.AVAILABLE?Status.PARTIAL:Status.AVAILABLE;
+        boolean coverageIncomplete=window.status()!=Status.AVAILABLE;
+        Status status=sourceFailed?Status.FAILED:unknown>0 || coverageIncomplete?Status.PARTIAL:Status.AVAILABLE;
         var partitions=new ArrayList<ActivityPartition>();
         for(var category:Category.values()) {
             var rows=customers.stream().filter(c->c.category()==category).toList();
             long categoryActive=rows.stream().filter(c->c.metrics().activity().state()==WindowState.ACTIVE).count();
             long categoryInactive=rows.stream().filter(c->c.metrics().activity().state()==WindowState.INACTIVE).count();
             long categoryUnknown=rows.size()-categoryActive-categoryInactive;
-            Status categoryStatus=sourceFailed?Status.FAILED:categoryUnknown>0?Status.PARTIAL:Status.AVAILABLE;
-            partitions.add(new ActivityPartition(category,new Count(sourceFailed?null:categoryActive,sourceFailed || categoryUnknown>0?null:categoryActive,categoryStatus),
-                new Count(sourceFailed?null:categoryInactive,sourceFailed || categoryUnknown>0?null:categoryInactive,categoryStatus),sourceFailed?new Count(null,null,Status.FAILED):exact(categoryUnknown)));
+            Status categoryStatus=sourceFailed?Status.FAILED:categoryUnknown>0 || coverageIncomplete?Status.PARTIAL:Status.AVAILABLE;
+            partitions.add(new ActivityPartition(category,new Count(sourceFailed?null:categoryActive,categoryStatus==Status.AVAILABLE?categoryActive:null,categoryStatus),
+                new Count(sourceFailed?null:categoryInactive,categoryStatus==Status.AVAILABLE?categoryInactive:null,categoryStatus),sourceFailed?new Count(null,null,Status.FAILED):exact(categoryUnknown)));
         }
-        return new ActivitySummary(new Count(sourceFailed?null:active,sourceFailed || unknown>0?null:active,status),
-            new Count(sourceFailed?null:inactive,sourceFailed || unknown>0?null:inactive,status),sourceFailed?new Count(null,null,Status.FAILED):exact(unknown),
+        return new ActivitySummary(new Count(sourceFailed?null:active,status==Status.AVAILABLE?active:null,status),
+            new Count(sourceFailed?null:inactive,status==Status.AVAILABLE?inactive:null,status),sourceFailed?new Count(null,null,Status.FAILED):exact(unknown),
             window,status,status==Status.AVAILABLE?List.of():List.of(sourceFailed?"ACTIVITY_SOURCE_READ_FAILED":"ACTIVITY_COVERAGE_UNVERIFIED"),partitions);
     }
     private static CurrentMetrics currentMetrics(Query query,List<Customer> customers,Collection<Fact> facts,Snapshot snapshot,

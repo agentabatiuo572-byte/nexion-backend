@@ -33,6 +33,14 @@ public class AppRepurchaseController {
         return userId == null ? forbidden() : service.ordersSnapshot(userId, pageNum, pageSize, snapshotId);
     }
 
+    @GetMapping("/api/repurchase/orders/open-status")
+    public ApiResult<Map<String, Object>> openStatus(@RequestParam String amountUsdt,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.openStatus(userId, idempotencyKey, amountUsdt);
+    }
+
     @PostMapping("/api/repurchase/orders")
     public ApiResult<Map<String, Object>> open(@RequestBody AppRepurchaseService.OpenRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
