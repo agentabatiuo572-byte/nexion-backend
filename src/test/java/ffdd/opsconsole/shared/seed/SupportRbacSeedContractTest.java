@@ -58,7 +58,7 @@ class SupportRbacSeedContractTest {
     }
 
     @Test
-    void actualStartupSequenceCannotRestoreHistoricalSupportGrantsAfterTheClassicSeed() throws Exception {
+    void actualStartupSequenceRetiresImmutableHistoricalSupportGrantsAfterTheClassicSeed() throws Exception {
         String installer = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"), StandardCharsets.UTF_8);
         var paths = Pattern.compile("\"(scripts\\\\migrations\\\\[^\"]+\\.sql)\"").matcher(installer);
         var migrations = new java.util.ArrayList<Path>();
@@ -70,12 +70,21 @@ class SupportRbacSeedContractTest {
         for (Path migration : migrations) sequence.addAll(expandedStatements(migration));
         var permissions = supportSources(sequence, "nx_admin_role_permission");
         var menus = supportSources(sequence, "nx_admin_role_menu");
-        assertThat(permissions).hasSize(1);
+        assertThat(permissions).hasSize(2);
         assertThat(values(permissions.get(0), "p.permission_code")).containsExactly(
                 "service_m1_read", "service_m1_write", "service_m2_read", "service_m2_write",
                 "service_m3_read", "service_m3_write", "service_m4_read", "service_m5_read");
-        assertThat(menus).hasSize(1);
+        assertThat(menus).hasSize(2);
         assertThat(values(menus.get(0), "m.menu_code")).containsExactly("M", "M1", "M2", "M3", "M4", "M5");
+        assertThat(permissions.get(1)).contains("p.permission_code='finance_d2_read'");
+        assertThat(values(menus.get(1), "m.menu_code")).containsExactly("D", "D2");
+        var retirement = statements(Path.of("scripts/migrations/20261015_support_d2_grant_retirement.sql"));
+        assertThat(retirement).containsExactly(
+                "DELETE rp FROM nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE r.role_code='SUPPORT' AND p.permission_code='finance_d2_read'",
+                "DELETE rm FROM nx_admin_role_menu rm JOIN nx_admin_role r ON r.id=rm.role_id JOIN nx_admin_menu m ON m.id=rm.menu_id WHERE r.role_code='SUPPORT' AND m.menu_code IN ('D','D2')");
+        assertThat(sequence).containsAll(retirement);
+        assertThat(sequence.indexOf(retirement.get(0))).isGreaterThan(sequence.indexOf(permissions.get(1)));
+        assertThat(sequence.indexOf(retirement.get(1))).isGreaterThan(sequence.indexOf(menus.get(1)));
     }
 
     private static List<String> expandedStatements(Path path) throws Exception {

@@ -37,6 +37,12 @@ R08：工单新增 `sourceConversationNo`（DIRECT/真实会话号/null）和 `c
 
 ## 迁移和恢复
 
+2026-10-15 历史完整性修复：已登记的 D2、S3 及原 S3 preflight 保持登记时原始字节，升级环境禁止重放。当前资格核验使用 `scripts/manual_migrations/20261015_support_binding_current_preflight.sql`，依据显式 SERVICE 资格，不由 GENERAL/DEDICATED 标签推定资格；本文件不进行补资格、建组或转绑。
+
+全新初始化在原 S3 建表/建行前使用 `20260929_support_binding_rules_schema_20261015.sql`。前缀只用于满足已登记历史的依赖排序，`20261015` 后缀表明本次新增；发布 catalog 和 S3 初始化清单采用同一顺序。它仅 `CREATE TABLE IF NOT EXISTS`，使全新规则表默认为 UNLIMITED，现存规则行和默认值完全不动；后续 timeout 迁移继续维护列默认值，存量 UNCONFIGURED 仍走原受控操作路径。`20261015_support_d2_grant_retirement.sql` 仅前向撤销 SUPPORT 的历史 D2 读权限及 D/D2 菜单，保留其他角色授权。
+
+以下 1–3 是原 S3 首次迁移流程及其历史证据，不能作为已升级环境重放授权：
+
 1. 备份数据库并保留原始 `20260929_support_binding_s3_preflight.sql` 输出。
 2. 执行 `20260929_support_binding_s3.sql`。重复 ACTIVE、失效顾问或孤儿先拒绝，绝不自动选赢家。保留邀请/团队/财务以及原消息作者；旧单绑定保留 ID 并补 MIGRATED 新段元数据，首次迁移回复游标只初始化一次。
 3. 执行 `20260929_support_ticket_source_s3.sql`。热/归档审计共同核验真实工单及同客户来源；同一审计 ID 的冲突副本涉及的所有工单均排除回填，其他独立证据不能掩盖冲突。唯一可靠普通创建证据为 DIRECT，转换为会话号，坏数据/多源/缺证保持 null 受限。输出分类总数和待核验清单。

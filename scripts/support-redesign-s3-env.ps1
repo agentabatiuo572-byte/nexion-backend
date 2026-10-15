@@ -41,7 +41,7 @@ $env:S3_EVIDENCE_DIR="$evidence/s3"
 if($Migrate) {
  $env:MYSQL_PWD=$db.password
  $client='D:/WORKS/PLAN/.local-runtime/phone-calibration-tools/mysql-verified/mysql-8.4.6-winx64/bin/mysql.exe'
- try { foreach($file in @('20260929_support_binding_s3_preflight.sql','20260929_support_binding_s3.sql','20260929_support_ticket_source_s3.sql')) {
+ try { foreach($file in @('20260929_support_binding_s3_preflight.sql','20260929_support_binding_rules_schema_20261015.sql','20260929_support_binding_s3.sql','20260929_support_ticket_source_s3.sql')) {
   $sql=(Join-Path $PSScriptRoot "migrations/$file").Replace('\','/')
   $stamp=Get-Date -Format 'yyyyMMddTHHmmssfff'
   Get-Content -Raw -LiteralPath $sql | & $client --no-defaults --default-character-set=utf8mb4 --protocol=tcp --host=127.0.0.1 --port=33329 --user=cs_runner cs_redesign *> "$evidence/s3/$stamp-$file.log"

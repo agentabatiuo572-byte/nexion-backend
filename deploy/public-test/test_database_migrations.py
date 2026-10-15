@@ -107,9 +107,12 @@ class MigrationTests(unittest.TestCase):
         # These hashes are already recorded in TEST state; forward SQL repairs content.
         expected = {
             '20260720_e2_task_pricing_closure.sql': '35e54c420ab6145b8a91d876c8e6b79ddfd231fb3dd8b25d56dbfbdb83109913',
+            '20260720_d2_withdrawal_closure.sql': '85599621161deb07b4aa96652b91586fad44ddf866663af0aa38452b8d44fce8',
             '20260722_i2_nova_closure.sql': '85627dddea64cc9fa00404564f59c8b053a4c9f1f251c40e1ac5fc2d691e4e6c',
             '20260722_i3_notification_campaign_closure.sql': '89686ab72fd9f448c36bd58095ecb99ad904e17fabe1d32386c09f12c81aee59',
             '20260920_i5_published_disclosure_provisioning.sql': 'daf68564fabfeb02d3db3bfef25db4546936f13c68e96b11e067dd76d1a94114',
+            '20260929_support_binding_s3.sql': '1036587af29bb356a3305ce7cebb5aa5b2e1a44d5275f8298b36867aed168037',
+            '20260929_support_binding_s3_preflight.sql': '396d96715f6ca184e953481e6d5b92fd96ce5e08e455cdf891d8ff02b68e74af',
             '20261009_e4_wallet_bill_schema.sql': '3d5fe9ce37d07fdefc1fd64e78a0e65e3f38b1ab386a12be4e37e2c84cee458d',
         }
         directory = Path(__file__).resolve().parents[2] / 'scripts' / 'migrations'
@@ -117,6 +120,29 @@ class MigrationTests(unittest.TestCase):
             # core.autocrlf may expand LF in a Windows checkout; Git's tar archive uses LF.
             data = (directory / name).read_bytes().replace(b'\r\n', b'\n')
             self.assertEqual(m.digest(data), sha, name)
+
+    def test_support_forward_catalog_preserves_history_and_only_queues_new_files(self):
+        directory = Path(__file__).resolve().parents[2] / 'scripts' / 'migrations'
+        history = {
+            '20260720_d2_withdrawal_closure.sql': ('85599621161deb07b4aa96652b91586fad44ddf866663af0aa38452b8d44fce8', 'BASELINE_NOT_REPLAYED'),
+            '20260929_support_binding_s3.sql': ('1036587af29bb356a3305ce7cebb5aa5b2e1a44d5275f8298b36867aed168037', 'APPLIED'),
+            '20260929_support_binding_s3_preflight.sql': ('396d96715f6ca184e953481e6d5b92fd96ce5e08e455cdf891d8ff02b68e74af', 'APPLIED'),
+        }
+        prerequisite = '20260929_support_binding_rules_schema_20261015.sql'
+        retirement = '20261015_support_d2_grant_retirement.sql'
+        names = [*history, prerequisite, retirement]
+        files = {name: (directory / name).read_bytes().replace(b'\r\n', b'\n') for name in names}
+        state = {'version': 1, 'database': 'nexion', 'scripts': {
+            name: {'sha256': sha, 'status': status} for name, (sha, status) in history.items()}}
+        self.assertEqual([name for name, _ in m.pending_scripts(state, files)], [prerequisite, retirement])
+        fresh = {'version': 1, 'database': 'nexion', 'scripts': {}}
+        fresh_names = [name for name, _ in m.pending_scripts(fresh, files)]
+        self.assertLess(fresh_names.index(prerequisite), fresh_names.index('20260929_support_binding_s3.sql'))
+        for name in (prerequisite, retirement):
+            m.validate_sql(files[name])
+        for name in history:
+            with self.assertRaisesRegex(m.MigrationError, 'MIGRATION_HISTORY_CHANGED_ADD_NEW_FILE'):
+                m.pending_scripts(state, {**files, name: files[name] + b'\n-- changed\n'})
 
     def test_e4_applied_history_queues_forward_and_fresh_catalog_keeps_order(self):
         directory = Path(__file__).resolve().parents[2] / 'scripts' / 'migrations'

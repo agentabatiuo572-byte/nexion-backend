@@ -36,6 +36,8 @@ $migrations = @(
   # migrations below address columns created by this rerunnable prerequisite,
   # so a fresh database must apply it before the 20260807 hard blockers.
   (Join-Path $root "scripts\migrations\20260720_d2_withdrawal_closure.sql"),
+  # Historical D2 bytes are registered; narrow its SUPPORT grants with a forward step.
+  (Join-Path $root "scripts\migrations\20261015_support_d2_grant_retirement.sql"),
   # The classic seed still contains three historical D3 threshold permissions.
   # Apply the authoritative D3 closure immediately afterwards so those retired
   # capabilities cannot be resurrected in a fresh acceptance database.
@@ -301,6 +303,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261007_voucher_zero_payment.sql")
   (Join-Path $root "scripts\migrations\20261008_l6_promotion_reward_routes.sql")
   # Additive support capabilities require their schema before the current application boots.
+  # Current fresh S3 initialization uses the same structure prerequisite before creating rules.
+  (Join-Path $root "scripts\migrations\20260929_support_binding_rules_schema_20261015.sql")
   (Join-Path $root "scripts\migrations\20261001_support_enhancements_core.sql")
   (Join-Path $root "scripts\migrations\20261009_support_default_avatar.sql")
   (Join-Path $root "scripts\migrations\20261001_support_enhancements_bulk.sql")
