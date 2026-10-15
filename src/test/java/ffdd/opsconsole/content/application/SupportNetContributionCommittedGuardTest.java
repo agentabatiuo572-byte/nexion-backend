@@ -12,6 +12,18 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /** No Spring boot, database, credentials or business commands in these adversarial probes. */
 class SupportNetContributionCommittedGuardTest {
+    @Test void everyCommittedRuntimeClassDeclaresItsOwnExplicitOptInBeforeSpringStartup() {
+        for (Class<?> runtime : List.of(SupportNetContributionCommittedRuntimeTest.class,
+                SupportNetContributionRefundRuntimeTest.class, SupportNetContributionSettlementRuntimeTest.class,
+                SupportNetContributionEarningsRuntimeTest.class, SupportAccessCommittedRuntimeTest.class,
+                SupportRefundCommittedReadbackTest.class)) {
+            var condition = runtime.getDeclaredAnnotation(org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable.class);
+            assertThat(condition).as("explicit opt-in on %s", runtime.getSimpleName()).isNotNull();
+            assertThat(condition.named()).isEqualTo("CS_NET_CONTRIBUTION_COMMITTED_ENABLED");
+            assertThat(condition.matches()).isEqualTo("true");
+        }
+    }
+
     private final ObjectMapper json=new ObjectMapper();
     @org.junit.jupiter.api.io.TempDir java.nio.file.Path syntheticDirectory;
     private static final String UUID="01234567-89ab-cdef-0123-456789abcdef";

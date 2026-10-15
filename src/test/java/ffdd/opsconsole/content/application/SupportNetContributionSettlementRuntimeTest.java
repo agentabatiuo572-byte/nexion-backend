@@ -21,6 +21,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** Production cash/NET transaction integration; address, risk, approval/dispatch and provider inputs are test prerequisites. */
+@org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="CS_NET_CONTRIBUTION_COMMITTED_ENABLED",matches="true")
 class SupportNetContributionSettlementRuntimeTest extends SupportNetContributionCommittedRuntimeTest {
     static final BigDecimal RECHARGE=new BigDecimal("1000"), REQUESTED_GROSS=new BigDecimal("100");
     static final String TEST_NETWORK="USDT-BEP20";

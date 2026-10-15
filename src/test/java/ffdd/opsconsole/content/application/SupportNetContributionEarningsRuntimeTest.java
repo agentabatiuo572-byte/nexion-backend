@@ -31,6 +31,7 @@ import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 
 /** Two retained cases only. No cash/task reward seeds, external payout or reserve injection. */
 @Import(SupportNetContributionEarningsRuntimeTest.FundOnlyStartup.class)
+@org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="CS_NET_CONTRIBUTION_COMMITTED_ENABLED",matches="true")
 class SupportNetContributionEarningsRuntimeTest extends SupportNetContributionSettlementRuntimeTest {
     static final long RETAINED_EARNINGS_CUSTOMER=6281;
     static final String RETAINED_EARNINGS_NAME="an12_e61c85d608";

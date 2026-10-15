@@ -160,7 +160,7 @@ class SupportFundJournalMigrationContractTest {
     @Test void legacyIncarnationInitializationUsesReplayableBinlogSafeStagesWithoutHistoryReset() throws Exception {
         String source = sql();
         String add = "ADD COLUMN fund_incarnation CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL";
-        String seed = "UPDATE nx_user_wallet SET fund_incarnation=UUID() WHERE fund_incarnation IS NULL";
+        String seed = "UPDATE nx_user_wallet SET fund_incarnation=UUID(),updated_at=updated_at WHERE fund_incarnation IS NULL";
         String harden = "MODIFY COLUMN fund_incarnation CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL";
         String defaultOnly = "ALTER COLUMN fund_incarnation SET DEFAULT (UUID())";
         assertThat(source).contains(add, seed, harden, defaultOnly,
@@ -173,6 +173,9 @@ class SupportFundJournalMigrationContractTest {
         assertThat(source.indexOf(add)).isLessThan(source.indexOf(seed));
         assertThat(source.indexOf(seed)).isLessThan(source.indexOf(harden));
         assertThat(source.indexOf(harden)).isLessThan(source.indexOf(defaultOnly));
+        assertThat(source.replaceAll("\\s+", " ")).contains(
+                "SET @fund_sql=IF(@fund_incarnation_missing=1 OR @fund_incarnation_transition=1, '"
+                        + seed + "','SELECT 1');");
         assertThat(source).doesNotContain("NOT NULL DEFAULT (UUID())'", "SET SESSION binlog_format",
                 "sql_log_bin=0", "SET fund_incarnation=UUID()'", "SET fund_revision=0");
         assertThat(source).contains("@fund_incarnation_transition=1", "@fund_incarnation_missing=1");
