@@ -96,6 +96,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260820_i4_homepage_trust_content.sql"),
   (Join-Path $root "scripts\migrations\20260821_h2_trial_card_offer.sql"),
   (Join-Path $root "scripts\migrations\20260823_withdrawal_terminal_refund_projection.sql"),
+  # Add missing order snapshots without replaying historical event or risk rewrites.
+  (Join-Path $root "scripts\migrations\20261015_withdrawal_order_schema_readiness.sql"),
   (Join-Path $root "scripts\migrations\20260823_team_hardware_quota_product_alignment.sql"),
   (Join-Path $root "scripts\migrations\20260823_withdrawal_submitted_schema_alignment.sql"),
   (Join-Path $root "scripts\migrations\20260823_d2_lifecycle_event_schema_alignment.sql"),
@@ -176,6 +178,8 @@ $migrations = @(
   # D1 orders and bank registration require the independent ADMIN confirmation fact.
   (Join-Path $root "scripts\migrations\20261004_hdpay_manual_confirmation.sql"),
   (Join-Path $root "scripts\migrations\20260915_hdpay_bank_withdrawal.sql"),
+  # Every withdrawal submission checks retained bank-quote expiry records.
+  (Join-Path $root "scripts\migrations\20260916_bank_beneficiary_verification.sql"),
   (Join-Path $root "scripts\migrations\20260916_hdpay_shared_config_request_ip.sql"),
   (Join-Path $root "scripts\migrations\20260915_l6_bank_withdrawal_route.sql"),
   # The inbox dismissal table entered the automatic migration chain as a
@@ -386,6 +390,26 @@ try {
   Write-Host "Support schema installed. After the API starts, run scripts/manual_migrations/20261009_support_rules_unconfigured_upgrade.ps1 with an authorized administrator, saved operation ID and proof file. Installation is not ready until that command reads back LIMITED/UNLIMITED; it preserves existing explicit configuration and never creates a missing row."
 
   $databaseSqlLiteral = $database.Replace("'", "''")
+  $withdrawalOrderColumns = @(
+    'id', 'user_id', 'withdrawal_no', 'asset', 'chain', 'amount', 'fee', 'target_address', 'status',
+    'd2_idempotency_key', 'd2_version', 'd2_hold_until', 'd5_payout_due_at', 'd2_penalty_fee_rate',
+    'd2_gross_fee', 'd2_nex_burned', 'd2_network_fee_rate', 'd2_network_fee_min', 'd2_network_fee_max',
+    'd2_network_fee', 'd2_nex_fee_offset_rate', 'd2_fee_waived', 'd2_actual_fee', 'd2_net_receive',
+    'd5_policy_version', 'd5_use_nex_fee_offset', 'd2_lifecycle_owner', 'd2_freeze_period',
+    'd2_routing_priority', 'd2_k3_risk_route', 'd2_k4_risk_score', 'd2_k4_model_version', 'd2_k4_as_of',
+    'd2_k4_band_low_max', 'd2_k4_band_high_min', 'd2_k4_auto_escalate_score', 'failure_reason',
+    'd2_previous_status', 'terminal_reason', 'retriable', 'created_at', 'updated_at', 'is_deleted'
+  )
+  $withdrawalOrderColumnSql = ($withdrawalOrderColumns | ForEach-Object { "'$_'" }) -join ','
+  $requiredWithdrawalColumnCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_withdrawal_order' AND COLUMN_NAME IN ($withdrawalOrderColumnSql);"
+  if ($LASTEXITCODE -ne 0 -or (@($requiredWithdrawalColumnCount) -join "`n").Trim() -ne [string]$withdrawalOrderColumns.Count) {
+    throw "Withdrawal order schema startup postcondition failed: all $($withdrawalOrderColumns.Count) required columns must exist. Apply scripts/migrations/20261015_withdrawal_order_schema_readiness.sql and the controlled startup prerequisites. Backend startup has been stopped."
+  }
+  $requiredQuoteExpiryColumnCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_bank_payout_quote_expiry' AND COLUMN_NAME IN ('quote_no','expired_at');"
+  if ($LASTEXITCODE -ne 0 -or (@($requiredQuoteExpiryColumnCount) -join "`n").Trim() -ne "2") {
+    throw "Withdrawal quote expiry schema startup postcondition failed: quote_no and expired_at are required. Apply scripts/migrations/20260916_bank_beneficiary_verification.sql. Backend startup has been stopped."
+  }
+
   # INSERT IGNORE keeps operator-owned versions immutable. Pair it with an
   # explicit postcondition so a conflicting draft/revoked v6 cannot be
   # silently mistaken for a usable production publication.
