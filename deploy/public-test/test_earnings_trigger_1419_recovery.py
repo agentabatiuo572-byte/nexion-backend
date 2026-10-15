@@ -85,8 +85,10 @@ def fixture():
         (install/'config.json').write_bytes(r.encoded(config))
         stack.enter_context(patch.object(r,'OLD_LOCK',r.digest(r.encoded(lock))))
         stack.enter_context(patch.object(r,'OLD_CONFIG',r.digest(r.encoded(config))))
-        # Actual approved runner bytes are independently pinned and compiled.
+        # Exercise the current runner in this unit fixture; keep the historical
+        # production recovery pin unchanged. The fixture binds its own exact bytes.
         r.RUNNER_STAGE.write_bytes((Path(__file__).parent/'database_migrations.py').read_bytes().replace(b'\r\n',b'\n'))
+        stack.enter_context(patch.object(r, 'NEW_RUNNER', r.digest(r.RUNNER_STAGE.read_bytes())))
         original_runner=r.runner()
         original_runner.GUARD=r.GUARD
         context={'version':'8.4.11','database':'nexion','principal':'app@%','log_bin':1,'trust':0,

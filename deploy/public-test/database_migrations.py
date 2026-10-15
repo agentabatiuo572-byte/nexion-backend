@@ -202,6 +202,7 @@ def scoped_account(user, password):
     require(grants and any(' ON `nexion`.* TO ' in row for row in grants), 'MIGRATION_DB_GRANT_MISSING')
     require(all(re.fullmatch(r'GRANT USAGE ON \*\.\* TO .+', row)
                 or (' ON `nexion`.* TO ' in row and 'WITH GRANT OPTION' not in row)
+                or (user == 'nexion_app' and row == support_show_grant(SUPPORT_EXECUTE_GRANTS[1]))
                 for row in grants), 'MIGRATION_PRIVILEGES_NOT_DATABASE_SCOPED')
 
 
@@ -349,6 +350,376 @@ def migration_preflight(pending, user, password, root_password):
                 and 'SET_ANY_DEFINER' in root_privileges,
                 'MIGRATION_TRIGGER_ROOT_CAPABILITIES_MISSING')
     return {**context, 'root_install': root_install}
+
+
+# Reviewed source bytes and CREATE slices. New SQL needs a separate fixed contract;
+# this never permits an arbitrary archive program to run as root.
+SUPPORT_PINS = {'20261011_support_fund_journal.sql': 'bd78b16a586887e02c7125918f950e80a99c33577c39b8e2c1ce825182574ec4',
+ '20261011_support_fund_operations.sql': '3be7938cff645df2f30e45087f0e1a5444da83242f3c1974be484478e0129044',
+ '20261011_support_fund_operation_party.sql': '23de0c28476a826dc33ca863df0da0d540ef1539788e526f86c74167f30b60a2',
+ '20261011_support_fund_schema_reader.sql': 'e953d9df7afb43c1683289153dbcae73c5e28df14d196106df2ec663fd0fc425'}
+SUPPORT_PROGRAMS = {'20261011_support_fund_journal.sql': (('nx_support_wallet_journal_ai_v1',
+                                        'TRIGGER',
+                                        17467,
+                                        1363,
+                                        '41c8d5155e779ae3cc1c533897a77175902baaf8e453f396da4b00dee32d402f'),
+                                       ('nx_support_wallet_journal_bu_v1',
+                                        'TRIGGER',
+                                        20551,
+                                        883,
+                                        '3c80725716fd770ccd7abbf9edf07465998b815d9c684cbc78910d61a2c75ed9'),
+                                       ('nx_support_wallet_journal_au_v1',
+                                        'TRIGGER',
+                                        22629,
+                                        1097,
+                                        '4d005fac299666274ad9344bf93c5bddba2eefb51e59aa1075cb889d57223943')),
+ '20261011_support_fund_operations.sql': (('nx_support_fund_operation_bu_v1',
+                                           'TRIGGER',
+                                           15364,
+                                           191,
+                                           '8f1853de6818af58cfc214699dd59c5d03360724f229c893efefb4ae95b5be75'),
+                                          ('nx_support_fund_operation_bd_v1',
+                                           'TRIGGER',
+                                           16152,
+                                           191,
+                                           'd3f14dd317c3642544a158cecc9a0317950efad187675fd535daf2719b6742f1'),
+                                          ('nx_support_fund_leg_bu_v1',
+                                           'TRIGGER',
+                                           16940,
+                                           189,
+                                           '62d62652b2ae64e04c7b9dc32c80e9bfe5c501a5d0cab6d1d08b54b8bde957d0'),
+                                          ('nx_support_fund_leg_bd_v1',
+                                           'TRIGGER',
+                                           17718,
+                                           189,
+                                           '70ca1afb2b55223ba322b7a5a9cb1db1d34e3042df546f1eb0b105e544378dc3')),
+ '20261011_support_fund_operation_party.sql': (('nx_support_fund_party_bu_v1',
+                                                'TRIGGER',
+                                                5457,
+                                                193,
+                                                '288d82c357d97f7cde2984902e056a5a253ffa0d055ba4f39795d49cd9c23691'),
+                                               ('nx_support_fund_party_bd_v1',
+                                                'TRIGGER',
+                                                5650,
+                                                193,
+                                                '926a6e5794edc9a3307f5bf4ced5e85b542214fc81347907ebd0903721403890')),
+ '20261011_support_fund_schema_reader.sql': (('nx_support_fund_schema_ready_v1',
+                                              'FUNCTION',
+                                              35549,
+                                              32281,
+                                              '7b9f0780c813a3e3e9fa1cf316737f5ac21d93afa5f6c7a9f228aeb3733b37c9'),)}
+
+SUPPORT_APP = 'nexion_app@%'
+SUPPORT_SCHEMA = 'nexion_support_schema@localhost'
+SUPPORT_GRANTEE = "'nexion_support_schema'@'localhost'"
+SUPPORT_TABLES = ('nx_user_wallet', 'nx_support_fund_operation',
+                  'nx_support_fund_operation_leg', 'nx_support_fund_operation_party', 'nx_support_wallet_journal')
+# REFERENCES exposes column/key metadata; TRIGGER exposes trigger bodies.
+# Neither grant lets this locked metadata account select business rows.
+SUPPORT_METADATA_GRANTS = tuple('GRANT REFERENCES, TRIGGER ON `nexion`.`' + table + '` TO ' + SUPPORT_GRANTEE + ';\n'
+                                for table in SUPPORT_TABLES)
+SUPPORT_EXECUTE_GRANTS = (
+    'GRANT EXECUTE ON FUNCTION `nexion`.`nx_support_fund_schema_ready_v1` TO ' + SUPPORT_GRANTEE + ';\n',
+    "GRANT EXECUTE ON FUNCTION `nexion`.`nx_support_fund_schema_ready_v1` TO 'nexion_app'@'%';\n")
+
+def support_require(condition, reason):
+    require(condition, 'MIGRATION_SUPPORT_' + reason)
+
+
+def support_prepare(pending):
+    """Only the four byte-pinned first-install scripts use the fixed program lane."""
+    sources = dict(pending)
+    if not any(name in SUPPORT_PROGRAMS for name in sources):
+        return None
+    support_require(set(SUPPORT_PROGRAMS) <= sources.keys(), 'COMPLETE_FIRST_INSTALL_REQUIRED')
+    for name in SUPPORT_PROGRAMS:
+        validate_sql(sources[name])
+        support_segments(name, sources[name])
+    # Keep unrelated migrations in their original positions. Fix only the known
+    # dependency order, which differs from the alphabetic party/operations names.
+    ordered = iter(SUPPORT_PROGRAMS)
+    return [(next(ordered) if name in SUPPORT_PROGRAMS else name) for name, _ in pending]
+
+
+def support_segments(name, raw):
+    support_require(name in SUPPORT_PINS and digest(raw) == SUPPORT_PINS[name], 'FIXED_SOURCE_CHANGED')
+    result, cursor = [], 0
+    for program, kind, start, length, expected in SUPPORT_PROGRAMS.get(name, ()):
+        support_require(cursor <= start and start + length <= len(raw), 'PROGRAM_OFFSET_REJECTED')
+        if cursor < start:
+            result.append({'data': raw[cursor:start], 'program': '', 'kind': ''})
+        block = raw[start:start + length]
+        support_require(digest(block) == expected, 'PROGRAM_BLOCK_CHANGED')
+        result.append({'data': block, 'program': program, 'kind': kind})
+        cursor = start + length
+    if cursor < len(raw):
+        result.append({'data': raw[cursor:], 'program': '', 'kind': ''})
+    migration_preflight([(name, part['data']) for part in result if not part['program']], None, None, None)
+    return result
+
+
+def support_template(name, program, raw):
+    """Accept exact fixed source only; return one CREATE block, never a whole file."""
+    parts = [part for part in support_segments(name, raw) if part['program'] == program]
+    support_require(len(parts) == 1, 'PROGRAM_NAME_REJECTED')
+    part = parts[0]
+    if part['kind'] == 'FUNCTION':
+        old = b'CREATE DEFINER=CURRENT_USER FUNCTION IF NOT EXISTS '
+        new = b'CREATE DEFINER=`nexion_support_schema`@`localhost` FUNCTION IF NOT EXISTS '
+    else:
+        old = b'CREATE TRIGGER IF NOT EXISTS '
+        new = b'CREATE DEFINER=`nexion_app`@`%` TRIGGER IF NOT EXISTS '
+    support_require(part['data'].count(old) == 1, 'PROGRAM_HEADER_REJECTED')
+    return part['data'].replace(old, new, 1)
+
+
+def support_show_grant(sql):
+    return sql.strip().rstrip(';').replace("'", '`')
+
+
+def support_preflight(user, password, root_password):
+    """Read actual capabilities and first-install state before the existing hold."""
+    app = server_context(user, password)
+    root = server_context('root', root_password)
+    support_require(user == 'nexion_app' and app['principal'] == SUPPORT_APP
+                    and root['principal'] in ('root@localhost', 'root@%')
+                    and app['version'] == root['version'] and app['version'].startswith('8.4.')
+                    and app['log_bin'] == root['log_bin'] == 1
+                    and app['trust'] == root['trust'] == 0
+                    and all(app[key] == root[key] for key in ('mode', 'charset', 'collation')),
+                    'LIVE_CONTEXT_REJECTED')
+    for actor, secret in ((user, password), ('root', root_password)):
+        support_require(probe(actor, secret, 'SELECT @@SESSION.binlog_format;', as_json=False) == ['ROW'],
+                        'LIVE_BINLOG_FORMAT_REJECTED')
+    root_grants = probe('root', root_password, 'SHOW GRANTS FOR CURRENT_USER();', as_json=False)
+    privileges = grant_privileges(root_grants, '*.*')
+    support_require(('ALL PRIVILEGES' in privileges
+                     or {'SUPER', 'TRIGGER', 'REFERENCES', 'CREATE ROUTINE', 'CREATE USER', 'EXECUTE'} <= privileges)
+                    and 'SET_ANY_DEFINER' in privileges
+                    and any('WITH GRANT OPTION' in row for row in root_grants), 'FIXED_CREATOR_CAPABILITIES_MISSING')
+    account = probe('root', root_password,
+        "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('user',User,'host',Host,'locked',account_locked)),JSON_ARRAY()) "
+        "FROM mysql.user WHERE User='nexion_support_schema';")
+    support_require(account in ([], [{'user': 'nexion_support_schema', 'host': 'localhost', 'locked': 'Y'}]),
+                    'EXACT_LOCKED_LOCAL_SCHEMA_ACCOUNT_REQUIRED')
+    if account:
+        schema_grants = probe('root', root_password, 'SHOW GRANTS FOR ' + SUPPORT_GRANTEE + ';', as_json=False)
+        support_require(schema_grants == ['GRANT USAGE ON *.* TO `nexion_support_schema`@`localhost`'],
+                        'UNKNOWN_SCHEMA_GRANTS_OR_PARTIAL_INSTALL')
+    inventory = probe('root', root_password,
+        "SELECT JSON_OBJECT('fund_tables',(SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME IN ('nx_support_wallet_journal','nx_support_fund_operation','nx_support_fund_operation_leg','nx_support_fund_operation_party')),"
+        "'wallet_metadata',(SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='nx_user_wallet' AND COLUMN_NAME IN ('fund_revision','fund_incarnation')),"
+        "'reader',(SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=DATABASE() AND ROUTINE_NAME='nx_support_fund_schema_ready_v1'),"
+        "'wallet_triggers',(SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND EVENT_OBJECT_TABLE='nx_user_wallet'));")
+    support_require(inventory == {'fund_tables': 0, 'wallet_metadata': 0, 'reader': 0, 'wallet_triggers': 1},
+                    'PARTIAL_OBJECTS_OR_UNKNOWN_TRIGGERS_REQUIRE_INSPECTION')
+    verify_earnings_trigger(user, password, app, required=True)
+    return {**app, 'root_context': root, 'create_schema_account': not account,
+            'app_grants_before': probe(user, password, 'SHOW GRANTS FOR CURRENT_USER();', as_json=False)}
+
+
+class SupportMysqlSession:
+    """One mysql process per original file; GET_LOCK/@variables survive barriers.
+
+    Output is spooled privately; only a random exact barrier is read internally.
+    A lost response is uncertain and raises into the existing persistent hold.
+    """
+    def __init__(self, folder, name, user, password):
+        self.folder, self.name, self.serial = folder, name, 0
+        self.closed = False
+        self.nonce = os.urandom(16).hex()
+        self.output = folder / (name + '.session.stdout')
+        self.out = self.output.open('xb')
+        self.err = (folder / (name + '.session.stderr')).open('xb')
+        if os.name != 'nt':
+            os.fchmod(self.out.fileno(), 0o600)
+            os.fchmod(self.err.fileno(), 0o600)
+        self.process = None
+        try:
+            self.process = subprocess.Popen(mysql_args(user) + ['--unbuffered'], stdin=subprocess.PIPE,
+                stdout=self.out, stderr=self.err, env={**os.environ, 'MYSQL_PWD': password})
+            self.reader = self.output.open('rb')
+            self.buffer = b''
+        except BaseException:
+            if self.process is not None and self.process.poll() is None:
+                self.process.kill()
+                self.process.wait(timeout=30)
+            self.out.close()
+            self.err.close()
+            raise
+
+    def send(self, data, timeout=180):
+        self.serial += 1
+        marker = ('SUPPORT_BARRIER_' + self.nonce + '_' + str(self.serial)).encode()
+        support_require(marker not in data, 'BARRIER_COLLISION')
+        try:
+            self.process.stdin.write(data + b"\nSELECT '" + marker + b"';\n")
+            self.process.stdin.flush()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                self.buffer += self.reader.read(65536)
+                support_require(len(self.buffer) <= 1024**2, 'SESSION_OUTPUT_LIMIT')
+                lines = self.buffer.split(b'\n')
+                self.buffer = lines.pop()
+                if marker in [line.rstrip(b'\r') for line in lines]:
+                    support_require(self.process.poll() is None, 'SESSION_DIED_AT_BARRIER')
+                    return
+                support_require(self.process.poll() is None, 'SESSION_FAILED_OR_LOST_ACK')
+                time.sleep(0.02)
+            raise MigrationError('MIGRATION_SUPPORT_SESSION_TIMEOUT_UNCERTAIN')
+        except (BrokenPipeError, OSError):
+            raise MigrationError('MIGRATION_SUPPORT_SESSION_IO_UNCERTAIN') from None
+
+    def close(self, *, success):
+        if self.closed:
+            return
+        try:
+            if success:
+                self.process.stdin.close()
+                support_require(self.process.wait(timeout=30) == 0, 'SESSION_EXIT_FAILED')
+            elif self.process.poll() is None:
+                self.process.kill()
+                self.process.wait(timeout=30)
+        finally:
+            if self.process.poll() is None:
+                self.process.kill()
+                self.process.wait(timeout=30)
+            self.closed = True
+            self.reader.close()
+            self.out.close()
+            self.err.close()
+
+
+def support_expected_body(name, part, raw):
+    if part['kind'] == 'FUNCTION':
+        token = b"SET @fund_schema_reader_expected_body='"
+        text = raw[raw.index(token) + len(token):].decode()
+        result, index = [], 0
+        while index < len(text):
+            if text[index] != "'":
+                result.append(text[index]); index += 1
+            elif text[index:index + 2] == "''":
+                result.append("'"); index += 2
+            else:
+                return ''.join(result)
+        raise MigrationError('MIGRATION_SUPPORT_EXPECTED_BODY_LITERAL_REJECTED')
+    text = part['data'].decode()
+    if text.startswith('DELIMITER $$\n'):
+        return text[text.index('\nBEGIN\n') + 1:text.index('END$$') + 3]
+    return text.split('FOR EACH ROW\n', 1)[1].rstrip().removesuffix(';')
+
+
+def support_verify_program(name, part, raw, user, password, context):
+    program = part['program']
+    support_require(any(program == contract[0] for contract in SUPPORT_PROGRAMS[name]), 'PROGRAM_NAME_REJECTED')
+    expected = support_expected_body(name, part, raw)
+    if part['kind'] == 'TRIGGER':
+        rows = probe(user, password,
+            "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('name',TRIGGER_NAME,'body',ACTION_STATEMENT,'definer',DEFINER,"
+            "'mode',SQL_MODE,'charset',CHARACTER_SET_CLIENT,'collation',COLLATION_CONNECTION,"
+            "'table',EVENT_OBJECT_TABLE,'timing',ACTION_TIMING,'event',EVENT_MANIPULATION,'orientation',ACTION_ORIENTATION)),JSON_ARRAY()) "
+            "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME='" + program + "';")
+        definer = SUPPORT_APP
+    else:
+        rows = probe(user, password,
+            "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('name',ROUTINE_NAME,'body',ROUTINE_DEFINITION,'definer',DEFINER,"
+            "'mode',SQL_MODE,'charset',CHARACTER_SET_CLIENT,'collation',COLLATION_CONNECTION,'type',ROUTINE_TYPE,"
+            "'return',DTD_IDENTIFIER,'deterministic',IS_DETERMINISTIC,'access',SQL_DATA_ACCESS,'security',SECURITY_TYPE,"
+            "'args',(SELECT COUNT(*) FROM information_schema.PARAMETERS WHERE SPECIFIC_SCHEMA=DATABASE() "
+            "AND SPECIFIC_NAME='nx_support_fund_schema_ready_v1' AND ORDINAL_POSITION>0))),JSON_ARRAY()) "
+            "FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=DATABASE() AND ROUTINE_NAME='nx_support_fund_schema_ready_v1';")
+        definer = SUPPORT_SCHEMA
+    support_require(isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict), 'PROGRAM_POSTCHECK_MISSING')
+    row = rows[0]
+    support_require(row.get('name') == program and row.get('body') == expected and row.get('definer') == definer
+                    and all(row.get(key) == context[key] for key in ('mode', 'charset', 'collation')),
+                    'PROGRAM_POSTCHECK_CHANGED')
+    if part['kind'] == 'FUNCTION':
+        support_require(all(row.get(key) == value for key, value in
+            {'type': 'FUNCTION', 'return': 'tinyint unsigned', 'deterministic': 'NO',
+             'access': 'READS SQL DATA', 'security': 'DEFINER', 'args': 0}.items()), 'FUNCTION_SHAPE_CHANGED')
+    else:
+        header = re.search(r'(BEFORE|AFTER) (INSERT|UPDATE|DELETE) ON (\w+) FOR EACH ROW', part['data'].decode())
+        support_require(header and row.get('timing') == header[1] and row.get('event') == header[2]
+                        and row.get('table') == header[3] and row.get('orientation') == 'ROW', 'TRIGGER_SHAPE_CHANGED')
+
+
+def support_session_settings(context):
+    support_require(re.fullmatch(r'[A-Z0-9_,]+', context['mode']) and context['charset'] == 'utf8mb4'
+                    and re.fullmatch(r'[A-Za-z0-9_]+', context['collation']), 'SESSION_SETTINGS_REJECTED')
+    return ("SET SESSION sql_mode='" + context['mode'] + "'; SET NAMES utf8mb4 COLLATE "
+            + context['collation'] + ';\n').encode()
+
+
+def execute_support_file(name, raw, folder, user, password, root_password, context, journal):
+    """Install fixed programs inside the existing backup/hold/journal lifecycle."""
+    parts = support_segments(name, raw)
+    session = SupportMysqlSession(folder, name, user, password)
+    success = False
+
+    def stage(label):
+        journal['support_segment'] = label
+        save(ROOT / 'active.json', journal)
+        save(folder / 'receipt.json', journal)
+
+    def root_write(label, fixed_sql):
+        current = server_context('root', root_password)
+        support_require(current == context['root_context'], 'ROOT_CONTEXT_CHANGED_BEFORE_WRITE')
+        execute_sql(label, support_session_settings(context) + fixed_sql, folder, 'root', root_password)
+
+    try:
+        if name == next(iter(SUPPORT_PROGRAMS)) and context['create_schema_account']:
+            stage('LOCKED_SCHEMA_ACCOUNT')
+            root_write(name + '.schema-account',
+                       b"CREATE USER 'nexion_support_schema'@'localhost' ACCOUNT LOCK;\n")
+        if name.endswith('fund_schema_reader.sql'):
+            stage('EXACT_METADATA_GRANTS')
+            for index, sql in enumerate(SUPPORT_METADATA_GRANTS):
+                root_write(name + '.metadata-grant-' + str(index), sql.encode())
+        session.send(b'SET SESSION lock_wait_timeout=30; SET SESSION innodb_lock_wait_timeout=30;\n'
+                     + support_session_settings(context))
+        for index, part in enumerate(parts):
+            stage(str(index) + ':' + (part['program'] or 'APP_SOURCE'))
+            if not part['program']:
+                data = part['data']
+                if name.endswith('fund_schema_reader.sql'):
+                    # Exact pinned source; replace only the two definer comparisons,
+                    # never CREATE-body/literal bytes. App cannot see another definer's
+                    # ROUTINE_DEFINITION; root already checks the entire body before
+                    # the suffix, and App still calls the actual reader readiness guard.
+                    support_require(data.count(b'DEFINER=CURRENT_USER()') == 1, 'READER_BINDING_COUNT_CHANGED')
+                    data = data.replace(b'DEFINER=CURRENT_USER()', b"DEFINER='nexion_support_schema@localhost'")
+                    body_check = b' AND BINARY ROUTINE_DEFINITION=BINARY @fund_schema_reader_expected_body'
+                    support_require(data.count(body_check) == 1, 'READER_BODY_CHECK_COUNT_CHANGED')
+                    data = data.replace(body_check, b'')
+                session.send(data)
+            else:
+                root_write(name + '.' + part['program'], support_template(name, part['program'], raw))
+                support_verify_program(name, part, raw, 'root', root_password, context)
+                if part['kind'] == 'FUNCTION':
+                    stage('EXACT_FUNCTION_EXECUTE_GRANTS')
+                    for grant_index, sql in enumerate(SUPPORT_EXECUTE_GRANTS):
+                        root_write(name + '.execute-grant-' + str(grant_index), sql.encode())
+        if name.endswith('fund_schema_reader.sql'):
+            account = probe('root', root_password,
+                "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('user',User,'host',Host,'locked',account_locked)),JSON_ARRAY()) "
+                "FROM mysql.user WHERE User='nexion_support_schema';")
+            support_require(account == [{'user': 'nexion_support_schema', 'host': 'localhost', 'locked': 'Y'}],
+                            'SCHEMA_ACCOUNT_POSTCHECK_CHANGED')
+            expected = {'GRANT USAGE ON *.* TO `nexion_support_schema`@`localhost`'}
+            expected.update(support_show_grant(sql) for sql in (*SUPPORT_METADATA_GRANTS, SUPPORT_EXECUTE_GRANTS[0]))
+            support_require(set(probe('root', root_password, 'SHOW GRANTS FOR ' + SUPPORT_GRANTEE + ';', as_json=False)) == expected,
+                            'SCHEMA_GRANTS_POSTCHECK_CHANGED')
+            after = set(probe(user, password, 'SHOW GRANTS FOR CURRENT_USER();', as_json=False))
+            expected_app = set(context['app_grants_before']) | {support_show_grant(SUPPORT_EXECUTE_GRANTS[1])}
+            support_require(after == expected_app, 'APP_EXACT_EXECUTE_POSTCHECK_CHANGED')
+        session.close(success=True)
+        success = True
+    finally:
+        if not success:
+            session.close(success=False)
 
 
 def stop_backend():
@@ -515,9 +886,16 @@ def apply(sha, *, rollback_check=False):
     require(not rollback_check, 'MIGRATION_NEEDS_FORWARD_DEPLOY_NOT_ROLLBACK_CHECK')
     for _, data in pending:
         validate_sql(data)
+    support_order = support_prepare(pending)
     user, password, root_password = credentials()
     scoped_account(user, password)
-    trigger_context = migration_preflight(pending, user, password, root_password)
+    trigger_context = migration_preflight(
+        [(name, data) for name, data in pending if not support_order or name not in SUPPORT_PROGRAMS],
+        user, password, root_password)
+    if support_order:
+        support_context = support_preflight(user, password, root_password)
+        sources = dict(pending)
+        pending = [(name, sources[name]) for name in support_order]
     trusted(BACKUPS)
     folder = BACKUPS / (time.strftime('%Y%m%d-%H%M%S', time.gmtime()) + '-' + sha[:12])
     folder.mkdir(mode=0o700)
@@ -540,10 +918,13 @@ def apply(sha, *, rollback_check=False):
                 stream.flush()
                 os.fsync(stream.fileno())
             journal.pop('segment', None)
+            journal.pop('support_segment', None)
             journal.update(phase='SQL_APPLYING', current=name)
             save(ROOT / 'active.json', journal)
             sql_started = True
-            if name == EARNINGS_FILE and trigger_context['root_install']:
+            if support_order and name in SUPPORT_PROGRAMS:
+                execute_support_file(name, data, folder, user, password, root_password, support_context, journal)
+            elif name == EARNINGS_FILE and trigger_context['root_install']:
                 execute_earnings_recovery(data, folder, user, password, root_password, trigger_context, journal)
             else:
                 execute_sql(name, data, folder, user, password)
