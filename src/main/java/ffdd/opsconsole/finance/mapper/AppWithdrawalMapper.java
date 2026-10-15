@@ -16,6 +16,19 @@ import org.apache.ibatis.annotations.Update;
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface AppWithdrawalMapper {
 
+    @Select("""
+            SELECT COLUMN_NAME FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_withdrawal_order'
+            """)
+    List<String> withdrawalOrderColumns();
+
+    @Select("""
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_bank_payout_quote_expiry'
+               AND COLUMN_NAME IN ('quote_no','expired_at')
+            """)
+    int withdrawalQuoteExpiryColumnCount();
+
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_withdrawal_attempt_control (
               id BIGINT AUTO_INCREMENT PRIMARY KEY,
