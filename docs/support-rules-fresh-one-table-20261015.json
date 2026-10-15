@@ -1,0 +1,124 @@
+{
+  "scope": "CFG-01 canonical single-table first initialization and replay",
+  "status": "PASS",
+  "sourceHead": "e22f64f4fbc5fd9abe8a473cd7debd8eb956a4f7",
+  "startedAt": "2026-10-15T02:47:40.342Z",
+  "finishedAt": "2026-10-15T02:47:41.743Z",
+  "elapsedMs": 1401,
+  "target": {
+    "mysqlVersion": "8.4.6",
+    "port": 33338,
+    "temporarySchema": "cs_rules_init_20261015",
+    "serverUuid": "abe359c0-c621-11f1-97ea-a40c6626953d"
+  },
+  "runnerSHA256": "7659d98065843640b0720b5bafb9d0930f5e04b5beb0cd98de4787321fe4b19f",
+  "sources": [
+    {
+      "path": "scripts/migrations/20260929_support_binding_s3.sql",
+      "sha256": "d89ad06e8a33d98ac435a7d2053b7cfcec5d8ca89ea5a7d4750e1603d95995cf"
+    },
+    {
+      "path": "scripts/migrations/20261001_support_enhancements_core.sql",
+      "sha256": "fc88322babe7382a54f0a11be86a454aa660df940998a1c412f49b48e8090631"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/content/mapper/SupportBindingMapper.java",
+      "sha256": "91edd6b06f6fe9325a28b9f38786a126ffb908cef634ca05511791f6bda81b56"
+    }
+  ],
+  "sql": {
+    "init": "CREATE TABLE IF NOT EXISTS nx_support_rules (\r\n id BIGINT PRIMARY KEY, version BIGINT NOT NULL DEFAULT 1,\r\n dormant_days INT NULL, maintenance_days INT NULL, activity_window_days INT NULL,\r\n inheritance_mode VARCHAR(16) NOT NULL DEFAULT 'UNLIMITED', max_inheritance_depth INT NULL,\r\n updated_by BIGINT NULL,reason VARCHAR(200) NULL,updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)\r\n) ENGINE=InnoDB;\r\nINSERT IGNORE INTO nx_support_rules(id) VALUES(1);",
+    "alter": "ALTER TABLE nx_support_rules ADD COLUMN unbound_assignment_mode VARCHAR(16) NOT NULL DEFAULT 'SUPERVISOR', ADD COLUMN mode_effective_at DATETIME(6) NULL;",
+    "read": "SELECT version,dormant_days dormantDays,maintenance_days maintenanceDays,activity_window_days activityWindowDays,inheritance_mode inheritanceMode,max_inheritance_depth maxInheritanceDepth,unbound_assignment_mode unboundAssignmentMode,mode_effective_at modeEffectiveAt FROM nx_support_rules WHERE id=1 FOR SHARE"
+  },
+  "steps": [
+    {
+      "name": "canonical initialization first",
+      "sqlSHA256": "0112cdfde56cd2b7fdcaf7f60e7437114c7c9a011705b3b2631ebedf7c327a0b",
+      "status": "CONFIRMED"
+    },
+    {
+      "name": "canonical rule field additions",
+      "sqlSHA256": "b9786e3c06c2c4392badfddc369b4f7231f555702cb7274dc201b983a8139c42",
+      "status": "CONFIRMED"
+    },
+    {
+      "name": "read initial row",
+      "sqlSHA256": "6cfb3d60086e8729db0850ecd6bf2544a7b8b9e4d12bc038a9961e3a44841e41",
+      "status": "CONFIRMED"
+    },
+    {
+      "name": "read column default",
+      "sqlSHA256": "e184736beb69d6218e369ed1b1180b376c189e742c7375174ddf58d4fac7c723",
+      "status": "CONFIRMED"
+    },
+    {
+      "name": "canonical mapper projection",
+      "sqlSHA256": "62717d26befd56c28635eb6e9d20f7b990f5c85963da2ff62027eaa63f6eddef",
+      "status": "CONFIRMED"
+    },
+    {
+      "name": "canonical initialization second",
+      "sqlSHA256": "0112cdfde56cd2b7fdcaf7f60e7437114c7c9a011705b3b2631ebedf7c327a0b",
+      "status": "CONFIRMED"
+    },
+    {
+      "name": "read repeated row",
+      "sqlSHA256": "6cfb3d60086e8729db0850ecd6bf2544a7b8b9e4d12bc038a9961e3a44841e41",
+      "status": "CONFIRMED"
+    }
+  ],
+  "columnDefault": "UNLIMITED",
+  "first": {
+    "id": 1,
+    "reason": null,
+    "version": 1,
+    "updatedAt": "2026-10-15 10:47:40.813046",
+    "updatedBy": null,
+    "dormantDays": null,
+    "inheritanceMode": "UNLIMITED",
+    "maintenanceDays": null,
+    "modeEffectiveAt": null,
+    "activityWindowDays": null,
+    "maxInheritanceDepth": null,
+    "unboundAssignmentMode": "SUPERVISOR"
+  },
+  "second": {
+    "id": 1,
+    "reason": null,
+    "version": 1,
+    "updatedAt": "2026-10-15 10:47:40.813046",
+    "updatedBy": null,
+    "dormantDays": null,
+    "inheritanceMode": "UNLIMITED",
+    "maintenanceDays": null,
+    "modeEffectiveAt": null,
+    "activityWindowDays": null,
+    "maxInheritanceDepth": null,
+    "unboundAssignmentMode": "SUPERVISOR"
+  },
+  "mapperProjection": "1\tNULL\tNULL\tNULL\tUNLIMITED\tNULL\tSUPERVISOR\tNULL",
+  "cleanup": "CONFIRMED_ABSENT",
+  "existingRule": {
+    "afterSHA256": "f30dbcd4ff371f1dcdc8398270ad09157c72a9c5967e309690aa36ed0e916758",
+    "unchanged": true,
+    "beforeSHA256": "f30dbcd4ff371f1dcdc8398270ad09157c72a9c5967e309690aa36ed0e916758"
+  },
+  "maintenanceGrants": {
+    "beforeSHA256": "fbb2a016ee72601cddc21596233458ef0899ebf6f83508dde82a57d81969c535",
+    "afterSHA256": "fbb2a016ee72601cddc21596233458ef0899ebf6f83508dde82a57d81969c535"
+  },
+  "independentReview": {
+    "openP1": 0,
+    "openP0": 0,
+    "reviewer": "/root/one_table_init_review",
+    "openP2": 0,
+    "verdict": "PASS within canonical single-table SQL scope"
+  },
+  "notCovered": [
+    "Whole migration procedure or its unrelated tables",
+    "Fresh application start, HTTP/UI consumption, or Java result mapping",
+    "SupportRulesConfigurationRuntimeTest execution",
+    "Physical missing-table/column negatives or new finite-depth restarts"
+  ]
+}

@@ -69,5 +69,10 @@
     "ownedBackendPort": 18162,
     "portsStopped": true
   },
-  "wholeTask": "NOT_COMPLETE"
+  "wholeTask": "NOT_COMPLETE",
+  "followUp": {
+    "evidence": "support-rules-fresh-one-table-20261015.json",
+    "scope": "Canonical first initialization and replay in one approved temporary table passed; temporary schema removed",
+    "boundary": "This historical report is unchanged. The new SQL proof does not execute SupportRulesConfigurationRuntimeTest or prove fresh application/API/UI consumption."
+  }
 }
