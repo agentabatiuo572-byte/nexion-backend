@@ -29,6 +29,7 @@ public interface AppStakingMapper {
                    UPPER(status) AS status
               FROM nx_staking_product
              WHERE is_deleted=0 AND LOWER(REPLACE(product_code,'_',''))=#{tierKey}
+               AND UPPER(product_code) IN ('USDT_30D','USDT_90D','USDT_180D','USDT_365D')
              LIMIT 1 FOR UPDATE
             """)
     ProductRow lockProductByTier(@Param("tierKey") String tierKey);
@@ -83,6 +84,7 @@ public interface AppStakingMapper {
                    UPPER(status) AS status,claimed_at AS claimedAt,early_withdrawn_at AS earlyWithdrawnAt
               FROM nx_staking_position
              WHERE user_id=#{userId} AND is_deleted=0
+               AND UPPER(product_code) IN ('USDT_30D','USDT_90D','USDT_180D','USDT_365D')
                AND (#{snapshotId} IS NULL OR id <= #{snapshotId})
              ORDER BY created_at DESC,id DESC
              LIMIT #{offset},#{limit}
@@ -95,13 +97,13 @@ public interface AppStakingMapper {
         return listUserPositionsAt(userId, offset, limit, null);
     }
 
-    @Select("SELECT COALESCE(MAX(id),0) FROM nx_staking_position WHERE user_id=#{userId}")
+    @Select("SELECT COALESCE(MAX(id),0) FROM nx_staking_position WHERE user_id=#{userId} AND UPPER(product_code) IN ('USDT_30D','USDT_90D','USDT_180D','USDT_365D')")
     long maxIssuedHistoryId(@Param("userId") Long userId);
 
-    @Select("SELECT COUNT(*) FROM nx_staking_position WHERE user_id=#{userId} AND is_deleted=0 AND id <= #{snapshotId}")
+    @Select("SELECT COUNT(*) FROM nx_staking_position WHERE user_id=#{userId} AND is_deleted=0 AND id <= #{snapshotId} AND UPPER(product_code) IN ('USDT_30D','USDT_90D','USDT_180D','USDT_365D')")
     long countUserPositionsAt(@Param("userId") Long userId, @Param("snapshotId") long snapshotId);
 
-    @Select("SELECT COUNT(*) FROM nx_staking_position WHERE user_id=#{userId} AND is_deleted=0")
+    @Select("SELECT COUNT(*) FROM nx_staking_position WHERE user_id=#{userId} AND is_deleted=0 AND UPPER(product_code) IN ('USDT_30D','USDT_90D','USDT_180D','USDT_365D')")
     long countUserPositions(@Param("userId") Long userId);
 
     @Select("""
@@ -112,6 +114,7 @@ public interface AppStakingMapper {
                    UPPER(status) AS status,claimed_at AS claimedAt,early_withdrawn_at AS earlyWithdrawnAt
               FROM nx_staking_position
              WHERE user_id=#{userId} AND position_no=#{positionNo} AND is_deleted=0
+               AND UPPER(product_code) IN ('USDT_30D','USDT_90D','USDT_180D','USDT_365D')
              LIMIT 1 FOR UPDATE
             """)
     PositionRow lockUserPosition(@Param("userId") Long userId, @Param("positionNo") String positionNo);
@@ -119,12 +122,14 @@ public interface AppStakingMapper {
     @Update("""
             UPDATE nx_staking_position SET status='MATURE_UNCLAIMED',updated_at=NOW()
              WHERE user_id=#{userId} AND is_deleted=0 AND UPPER(status)='ACTIVE' AND unlock_at<=#{now}
+               AND UPPER(product_code) IN ('USDT_30D','USDT_90D','USDT_180D','USDT_365D')
             """)
     int matureDuePositions(@Param("userId") Long userId, @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_staking_position SET status='CLAIMED',claimed_at=#{now},updated_at=NOW()
              WHERE id=#{id} AND user_id=#{userId} AND is_deleted=0
+               AND UPPER(product_code) IN ('USDT_30D','USDT_90D','USDT_180D','USDT_365D')
                AND UPPER(status) IN ('ACTIVE','MATURE_UNCLAIMED') AND unlock_at<=#{now}
             """)
     int markClaimed(@Param("id") Long id, @Param("userId") Long userId, @Param("now") LocalDateTime now);
@@ -132,6 +137,7 @@ public interface AppStakingMapper {
     @Update("""
             UPDATE nx_staking_position SET status='EARLY_WITHDRAWN',early_withdrawn_at=#{now},updated_at=NOW()
              WHERE id=#{id} AND user_id=#{userId} AND is_deleted=0
+               AND UPPER(product_code) IN ('USDT_30D','USDT_90D','USDT_180D','USDT_365D')
                AND UPPER(status)='ACTIVE' AND unlock_at>#{now}
             """)
     int markEarlyWithdrawn(@Param("id") Long id, @Param("userId") Long userId, @Param("now") LocalDateTime now);
