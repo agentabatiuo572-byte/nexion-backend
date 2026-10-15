@@ -1,0 +1,550 @@
+{
+  "mode": "SYNTHETIC_SOURCES_FIXED_TIME_REAL_MYSQL_PUBLICATION_MOCKMVC",
+  "evaluatedAt": "2026-10-09T02:00:00Z",
+  "schema": "cs_rank_complete_32b7e43d11bb4389b03d049bf26505a0",
+  "sourceRecords": {
+    "reductions": 4,
+    "payments": 6,
+    "agents": 3,
+    "customers": 3
+  },
+  "streams": [
+    {
+      "sameVersionAfterRecreation": true,
+      "rows": [
+        {
+          "agentId": "7",
+          "name": "测试客服7",
+          "avatarUrl": null,
+          "groupName": "测试组",
+          "qualification": "ACTIVE",
+          "rank": 1,
+          "isTied": false,
+          "rankMetricCoverage": "COMPLETE",
+          "firstPayment": {
+            "value": 2,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "customers": {
+            "value": 2,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "amount": {
+            "value": "110",
+            "currency": "USDT",
+            "month": "2026-10",
+            "kind": "NET_CONTRIBUTION",
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "movement": {
+            "kind": "UNAVAILABLE",
+            "places": null,
+            "previousRank": null,
+            "baselineAt": null,
+            "baselineVersion": null,
+            "reason": "NO_BASELINE"
+          },
+          "canViewCustomers": true
+        },
+        {
+          "agentId": "8",
+          "name": "测试客服8",
+          "avatarUrl": null,
+          "groupName": "测试组",
+          "qualification": "ACTIVE",
+          "rank": 2,
+          "isTied": false,
+          "rankMetricCoverage": "COMPLETE",
+          "firstPayment": {
+            "value": 1,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "customers": {
+            "value": 1,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "amount": {
+            "value": "150",
+            "currency": "USDT",
+            "month": "2026-10",
+            "kind": "NET_CONTRIBUTION",
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "movement": {
+            "kind": "UNAVAILABLE",
+            "places": null,
+            "previousRank": null,
+            "baselineAt": null,
+            "baselineVersion": null,
+            "reason": "NO_BASELINE"
+          },
+          "canViewCustomers": false
+        },
+        {
+          "agentId": "9",
+          "name": "测试客服9",
+          "avatarUrl": null,
+          "groupName": "测试组",
+          "qualification": "ACTIVE",
+          "rank": 3,
+          "isTied": false,
+          "rankMetricCoverage": "COMPLETE",
+          "firstPayment": {
+            "value": 0,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "customers": {
+            "value": 0,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "amount": {
+            "value": "0",
+            "currency": "USDT",
+            "month": "2026-10",
+            "kind": "NET_CONTRIBUTION",
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "movement": {
+            "kind": "UNAVAILABLE",
+            "places": null,
+            "previousRank": null,
+            "baselineAt": null,
+            "baselineVersion": null,
+            "reason": "NO_BASELINE"
+          },
+          "canViewCustomers": false
+        }
+      ],
+      "viewVersion": "slb-v1:7777385bf5663cfccf3f8c93371ad41aa61f27efc30307521458a4ab442a39a2",
+      "board": "firstPayment",
+      "currency": "USDT",
+      "publicationId": 1
+    },
+    {
+      "sameVersionAfterRecreation": true,
+      "rows": [
+        {
+          "agentId": "7",
+          "name": "测试客服7",
+          "avatarUrl": null,
+          "groupName": "测试组",
+          "qualification": "ACTIVE",
+          "rank": 1,
+          "isTied": false,
+          "rankMetricCoverage": "COMPLETE",
+          "firstPayment": {
+            "value": 2,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "customers": {
+            "value": 2,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "amount": {
+            "value": "11",
+            "currency": "NEX",
+            "month": "2026-10",
+            "kind": "NET_CONTRIBUTION",
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "movement": {
+            "kind": "UNAVAILABLE",
+            "places": null,
+            "previousRank": null,
+            "baselineAt": null,
+            "baselineVersion": null,
+            "reason": "NO_BASELINE"
+          },
+          "canViewCustomers": true
+        },
+        {
+          "agentId": "8",
+          "name": "测试客服8",
+          "avatarUrl": null,
+          "groupName": "测试组",
+          "qualification": "ACTIVE",
+          "rank": 2,
+          "isTied": false,
+          "rankMetricCoverage": "COMPLETE",
+          "firstPayment": {
+            "value": 1,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "customers": {
+            "value": 1,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "amount": {
+            "value": "5",
+            "currency": "NEX",
+            "month": "2026-10",
+            "kind": "NET_CONTRIBUTION",
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "movement": {
+            "kind": "UNAVAILABLE",
+            "places": null,
+            "previousRank": null,
+            "baselineAt": null,
+            "baselineVersion": null,
+            "reason": "NO_BASELINE"
+          },
+          "canViewCustomers": false
+        },
+        {
+          "agentId": "9",
+          "name": "测试客服9",
+          "avatarUrl": null,
+          "groupName": "测试组",
+          "qualification": "ACTIVE",
+          "rank": 3,
+          "isTied": false,
+          "rankMetricCoverage": "COMPLETE",
+          "firstPayment": {
+            "value": 0,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "customers": {
+            "value": 0,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "amount": {
+            "value": "0",
+            "currency": "NEX",
+            "month": "2026-10",
+            "kind": "NET_CONTRIBUTION",
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "movement": {
+            "kind": "UNAVAILABLE",
+            "places": null,
+            "previousRank": null,
+            "baselineAt": null,
+            "baselineVersion": null,
+            "reason": "NO_BASELINE"
+          },
+          "canViewCustomers": false
+        }
+      ],
+      "viewVersion": "slb-v1:b1b7b0b75872e3b7ab1e35a3519ff351098bac5cbd47801e215772ec0e153151",
+      "board": "firstPayment",
+      "currency": "NEX",
+      "publicationId": 2
+    },
+    {
+      "sameVersionAfterRecreation": true,
+      "rows": [
+        {
+          "agentId": "8",
+          "name": "测试客服8",
+          "avatarUrl": null,
+          "groupName": "测试组",
+          "qualification": "ACTIVE",
+          "rank": 1,
+          "isTied": false,
+          "rankMetricCoverage": "COMPLETE",
+          "firstPayment": {
+            "value": 1,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "customers": {
+            "value": 1,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "amount": {
+            "value": "150",
+            "currency": "USDT",
+            "month": "2026-10",
+            "kind": "NET_CONTRIBUTION",
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "movement": {
+            "kind": "UNAVAILABLE",
+            "places": null,
+            "previousRank": null,
+            "baselineAt": null,
+            "baselineVersion": null,
+            "reason": "NO_BASELINE"
+          },
+          "canViewCustomers": false
+        },
+        {
+          "agentId": "7",
+          "name": "测试客服7",
+          "avatarUrl": null,
+          "groupName": "测试组",
+          "qualification": "ACTIVE",
+          "rank": 2,
+          "isTied": false,
+          "rankMetricCoverage": "COMPLETE",
+          "firstPayment": {
+            "value": 2,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "customers": {
+            "value": 2,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "amount": {
+            "value": "110",
+            "currency": "USDT",
+            "month": "2026-10",
+            "kind": "NET_CONTRIBUTION",
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "movement": {
+            "kind": "UNAVAILABLE",
+            "places": null,
+            "previousRank": null,
+            "baselineAt": null,
+            "baselineVersion": null,
+            "reason": "NO_BASELINE"
+          },
+          "canViewCustomers": true
+        },
+        {
+          "agentId": "9",
+          "name": "测试客服9",
+          "avatarUrl": null,
+          "groupName": "测试组",
+          "qualification": "ACTIVE",
+          "rank": 3,
+          "isTied": false,
+          "rankMetricCoverage": "COMPLETE",
+          "firstPayment": {
+            "value": 0,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "customers": {
+            "value": 0,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "amount": {
+            "value": "0",
+            "currency": "USDT",
+            "month": "2026-10",
+            "kind": "NET_CONTRIBUTION",
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "movement": {
+            "kind": "UNAVAILABLE",
+            "places": null,
+            "previousRank": null,
+            "baselineAt": null,
+            "baselineVersion": null,
+            "reason": "NO_BASELINE"
+          },
+          "canViewCustomers": false
+        }
+      ],
+      "viewVersion": "slb-v1:829f8f1e183a4d2b73349bfffc60f5df81af5b362d205cb519379039cb77ea08",
+      "board": "netContribution",
+      "currency": "USDT",
+      "publicationId": 3
+    },
+    {
+      "sameVersionAfterRecreation": true,
+      "rows": [
+        {
+          "agentId": "7",
+          "name": "测试客服7",
+          "avatarUrl": null,
+          "groupName": "测试组",
+          "qualification": "ACTIVE",
+          "rank": 1,
+          "isTied": false,
+          "rankMetricCoverage": "COMPLETE",
+          "firstPayment": {
+            "value": 2,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "customers": {
+            "value": 2,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "amount": {
+            "value": "11",
+            "currency": "NEX",
+            "month": "2026-10",
+            "kind": "NET_CONTRIBUTION",
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "movement": {
+            "kind": "UNAVAILABLE",
+            "places": null,
+            "previousRank": null,
+            "baselineAt": null,
+            "baselineVersion": null,
+            "reason": "NO_BASELINE"
+          },
+          "canViewCustomers": true
+        },
+        {
+          "agentId": "8",
+          "name": "测试客服8",
+          "avatarUrl": null,
+          "groupName": "测试组",
+          "qualification": "ACTIVE",
+          "rank": 2,
+          "isTied": false,
+          "rankMetricCoverage": "COMPLETE",
+          "firstPayment": {
+            "value": 1,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "customers": {
+            "value": 1,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "amount": {
+            "value": "5",
+            "currency": "NEX",
+            "month": "2026-10",
+            "kind": "NET_CONTRIBUTION",
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "movement": {
+            "kind": "UNAVAILABLE",
+            "places": null,
+            "previousRank": null,
+            "baselineAt": null,
+            "baselineVersion": null,
+            "reason": "NO_BASELINE"
+          },
+          "canViewCustomers": false
+        },
+        {
+          "agentId": "9",
+          "name": "测试客服9",
+          "avatarUrl": null,
+          "groupName": "测试组",
+          "qualification": "ACTIVE",
+          "rank": 3,
+          "isTied": false,
+          "rankMetricCoverage": "COMPLETE",
+          "firstPayment": {
+            "value": 0,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "customers": {
+            "value": 0,
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "amount": {
+            "value": "0",
+            "currency": "NEX",
+            "month": "2026-10",
+            "kind": "NET_CONTRIBUTION",
+            "coverage": "COMPLETE",
+            "reason": "NONE"
+          },
+          "movement": {
+            "kind": "UNAVAILABLE",
+            "places": null,
+            "previousRank": null,
+            "baselineAt": null,
+            "baselineVersion": null,
+            "reason": "NO_BASELINE"
+          },
+          "canViewCustomers": false
+        }
+      ],
+      "viewVersion": "slb-v1:7af8faf829ea3eaa121463db05b1a7ffb48af426020d52901654e99da910d4b0",
+      "board": "netContribution",
+      "currency": "NEX",
+      "publicationId": 4
+    }
+  ],
+  "publicationRows": 4,
+  "databaseBytes": 81920,
+  "passed": true,
+  "schemaRemoved": true,
+  "execution": {
+    "compileExit": 0,
+    "testExit": 0,
+    "error": null,
+    "elapsedMs": 5045,
+    "selectedTests": 1,
+    "sourceDrift": []
+  },
+  "sourceManifest": [
+    {
+      "path": "src/main/java/ffdd/opsconsole/content/application/SupportLeaderboardSourceService.java",
+      "sha256": "7cb621719ebd9b76866e831ec983628c83a588853f433e3bb465ae72e3f32ae2"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/content/application/SupportLeaderboardService.java",
+      "sha256": "9e66334bb4d694a0fb49b20fd01d184090f3a03c88b17c9248aad6e73e46e5a3"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/content/application/SupportLeaderboardPublicationService.java",
+      "sha256": "b27912d85f1ef6c298eac8e97d7f5f8f1188f3bcf9fed33b3204d3b28075ace1"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/content/application/SupportLeaderboardPolicy.java",
+      "sha256": "741f9b239f1e5f4b15aebfc17a00abf94df9bcc8b5b368c8484b6a32c7702852"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/content/domain/SupportLeaderboard.java",
+      "sha256": "ef5cd977a7cc1b0636e9cee2bc1642ed85f4118143974a61dbf9418ce809826b"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/content/dto/SupportLeaderboardQuery.java",
+      "sha256": "ed8959bb524f7fc87e51972d29cb72843b43650ebeff1d07fc19c7d0cbcded95"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/content/mapper/SupportLeaderboardPublicationMapper.java",
+      "sha256": "11d10703dc43cf143e338e26d6a3683120b93fd00b2841c23209c9e8af12ff41"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/content/web/SupportLeaderboardController.java",
+      "sha256": "bc68dbc6ab937fc8341c2d391428ce11b17f0ee7f48d3dba28e7102373d5ffbf"
+    },
+    {
+      "path": "src/test/java/ffdd/opsconsole/content/application/SupportLeaderboardCompletePublicationIntegrationTest.java",
+      "sha256": "130d9ac4b665bb75594ccb9534107c7de0a96386d264aaa3e1b195de62782f8b"
+    }
+  ],
+  "independentReview": {
+    "result": "PASS",
+    "zeroAssertionFixVerified": true,
+    "agent": "rank_complete_java_review_1015",
+    "testsRerun": false,
+    "openFindings": 0
+  }
+}
