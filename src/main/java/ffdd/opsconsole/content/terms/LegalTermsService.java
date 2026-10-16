@@ -57,7 +57,7 @@ public class LegalTermsService {
                 // another locale: the receipt is per-locale, but the statement
                 // is about the version. Without this fallback, switching the
                 // interface language re-asks for terms the user already accepted.
-                if (ack.isEmpty()) {
+                if (ack.isEmpty() || !resolved.version.version().equals(ack.get().version())) {
                     ack = repository.findAckByVersion(userId, env.name(), runId,
                             resolved.locale, resolved.jurisdiction, resolved.version.version());
                 }

@@ -142,6 +142,42 @@ class LegalTermsServiceTest {
     }
 
     @Test
+    void staleLocaleReceiptDoesNotHideCurrentVersionAcceptedInAnotherLocale() {
+        when(repository.findPublished("en", "VN")).thenReturn(java.util.Optional.of(version("en", "VN", "v6")));
+        when(repository.findAck(42L, "PRODUCTION", "", "en", "VN"))
+                .thenReturn(java.util.Optional.of(new LegalTermsRepository.LegalTermsAcknowledgement(
+                        "v5", LocalDateTime.parse("2026-08-16T00:00:00"), "idem-en-v5")));
+        LocalDateTime acceptedAt = LocalDateTime.parse("2026-08-17T00:00:00");
+        when(repository.findAckByVersion(42L, "PRODUCTION", "", "en", "VN", "v6"))
+                .thenReturn(java.util.Optional.of(new LegalTermsRepository.LegalTermsAcknowledgement(
+                        "v6", acceptedAt, "idem-zh-v6")));
+
+        ApiResult<LegalTermsCurrentView> result = service.current("en", "VN", 42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().acknowledged()).isTrue();
+        assertThat(result.getData().acknowledgedAt()).isEqualTo(acceptedAt);
+        assertThat(result.getData().resolvedLocale()).isEqualTo("en");
+        verify(repository, never()).saveAck(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void currentLocaleReceiptKeepsItsOriginalAcceptanceTimeWithoutCrossLocaleLookup() {
+        when(repository.findPublished("en", "VN")).thenReturn(java.util.Optional.of(version("en", "VN", "v6")));
+        LocalDateTime acceptedAt = LocalDateTime.parse("2026-08-16T00:00:00");
+        when(repository.findAck(42L, "PRODUCTION", "", "en", "VN"))
+                .thenReturn(java.util.Optional.of(new LegalTermsRepository.LegalTermsAcknowledgement(
+                        "v6", acceptedAt, "idem-en-v6")));
+
+        ApiResult<LegalTermsCurrentView> result = service.current("en", "VN", 42L);
+
+        assertThat(result.getData().acknowledged()).isTrue();
+        assertThat(result.getData().acknowledgedAt()).isEqualTo(acceptedAt);
+        verify(repository, never()).findAckByVersion(any(), any(), any(), any(), any(), any());
+        verify(repository, never()).saveAck(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
     void acknowledgementUnderAnotherLocaleRecordsThisLocaleWithoutConflict() {
         LegalTermsVersionView current = version("en", "VN", "v6");
         when(repository.findPublished("en", "VN")).thenReturn(java.util.Optional.of(current));
