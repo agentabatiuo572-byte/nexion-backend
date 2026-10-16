@@ -63,6 +63,13 @@ import org.springframework.util.StringUtils;
 /** Real user claim/join/check-in/milestone commands for H3-H7. */
 @Service
 public class AppGrowthEngagementService {
+    private WeeklyQuestSnapshotService weeklySnapshots;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setWeeklySnapshots(WeeklyQuestSnapshotService weeklySnapshots) {
+        this.weeklySnapshots = weeklySnapshots;
+    }
+
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final ZoneId H5_BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
     private static final ObjectReader VOUCHER_LIST_READER = new ObjectMapper().readerFor(List.class)
@@ -166,7 +173,14 @@ public class AppGrowthEngagementService {
             if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
         }
         requireReadableUser(userId);
-        GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
+        ffdd.opsconsole.growth.mapper.WeeklyQuestSnapshotMapper.Header weekly = null;
+        if (weeklySnapshots != null) {
+            try { weekly = weeklySnapshots.current(); }
+            catch (BizException failure) {
+                if (!"H1_RHYTHM_UNAVAILABLE".equals(failure.getMessage())) throw failure;
+            }
+        }
+        GrowthRhythmSnapshot rhythm = weekly == null ? growthRhythmFacade.snapshot() : null;
         boolean liveRhythmAvailable = rhythm != null && rhythm.reliable() && rhythm.currentMonth() > 0
                 && rhythm.questBonusMultiplier() != null && rhythm.questBonusMultiplier().signum() > 0;
         DayOneSnapshot dayOneSnapshot = mapper.findLatestDayOneSnapshot(userId);
@@ -174,7 +188,7 @@ public class AppGrowthEngagementService {
         boolean completeDayOneSnapshot = validDayOneSnapshot(dayOneSnapshot);
         // A persisted header is sufficient to read its own history even when the
         // current H1 dial is unavailable; weekly rows remain unavailable in that case.
-        if (!liveRhythmAvailable && !completeDayOneSnapshot) {
+        if (!liveRhythmAvailable && !completeDayOneSnapshot && weekly == null) {
             throw conflict("H1_RHYTHM_UNAVAILABLE");
         }
         Map<String, Object> promo = mapper.questPromoBanner();
@@ -188,7 +202,7 @@ public class AppGrowthEngagementService {
                 .filter(row -> !"DAY_ONE".equalsIgnoreCase(String.valueOf(row.get("layer")))).toList());
         // A market can close after a mission was published. Preserve completed
         // history, but stop advertising a pending Genesis action while closed.
-        if (rawQuests.stream().anyMatch(row -> "weekly_t2_genesis_browse".equals(row.get("questCode"))
+        if (weekly == null && rawQuests.stream().anyMatch(row -> "weekly_t2_genesis_browse".equals(row.get("questCode"))
                 && "PENDING".equals(row.get("status")))
                 && !streakPerkAvailability.genesisAvailableForMissionPublication()) {
             rawQuests.removeIf(row -> "weekly_t2_genesis_browse".equals(row.get("questCode"))
@@ -197,13 +211,20 @@ public class AppGrowthEngagementService {
         // The exchange page and execution gate use the same canonical caps.
         // A paused definition projects unresolved instances as EXPIRED.
         // Withhold both unresolved states; earned and claimable history stays visible.
-        if (rawQuests.stream().anyMatch(row -> "weekly_t2_nex_swap".equals(row.get("questCode"))
+        if (weekly == null && rawQuests.stream().anyMatch(row -> "weekly_t2_nex_swap".equals(row.get("questCode"))
                 && Set.of("PENDING", "EXPIRED").contains(String.valueOf(row.get("status"))))
                 && !streakPerkAvailability.exchangeAvailableForMissionPublication()) {
             rawQuests.removeIf(row -> "weekly_t2_nex_swap".equals(row.get("questCode"))
                     && Set.of("PENDING", "EXPIRED").contains(String.valueOf(row.get("status"))));
         }
-        if (!liveRhythmAvailable) {
+        if (weekly != null) {
+            List<String> legacyCodes = weeklySnapshots.legacyProgressCodes(weekly,userId);
+            rawQuests.removeIf(row -> String.valueOf(row.get("layer")).startsWith("WEEKLY_")
+                    && !(legacyCodes.contains(String.valueOf(row.get("questCode")))
+                    && Set.of("COMPLETED","CLAIMABLE","CLAIMED").contains(String.valueOf(row.get("status")))));
+            rawQuests.addAll(weeklySnapshots.state(weekly, userId, contentLocale(locale)));
+        }
+        if (!liveRhythmAvailable && weekly == null) {
             rawQuests.removeIf(row -> !"DAY_ONE".equalsIgnoreCase(String.valueOf(row.get("layer"))));
         }
         String dayOneSnapshotStatus = "LEGACY_UNVERIFIED";
@@ -222,7 +243,7 @@ public class AppGrowthEngagementService {
                 dayOneReward = dayOneBaseReward(dayOneSnapshot, businessNow())
                         .multiply(positive(dayOneSnapshot.questBonusMultiplier()))
                         .setScale(6, RoundingMode.DOWN);
-            } else if (!liveRhythmAvailable) {
+            } else if (!liveRhythmAvailable && weekly == null) {
                 // Never label malformed members as a usable snapshot-only H1 fallback.
                 throw conflict("H1_RHYTHM_UNAVAILABLE");
             } else {
@@ -233,12 +254,12 @@ public class AppGrowthEngagementService {
         }
         List<Map<String, Object>> quests = rawQuests.stream()
                 .map(this::projectQuestRewardPolicy).toList();
-        BigDecimal responseMultiplier = liveRhythmAvailable
+        BigDecimal responseMultiplier = weekly != null ? weekly.questBonusMultiplier() : liveRhythmAvailable
                 ? positiveOrOne(rhythm.questBonusMultiplier())
                 : positive(dayOneSnapshot.questBonusMultiplier());
-        int responseRhythmMonth = liveRhythmAvailable ? rhythm.currentMonth()
+        int responseRhythmMonth = weekly != null ? weekly.rhythmMonth() : liveRhythmAvailable ? rhythm.currentMonth()
                 : dayOneSnapshot.rhythmMonth();
-        String stateSource = liveRhythmAvailable
+        String stateSource = weekly != null ? "nx_mission + nx_user_mission + nx_growth_day_one_instance + nx_growth_weekly_definition + nx_growth_weekly_definition_item" : liveRhythmAvailable
                 ? "nx_mission + nx_user_mission + nx_growth_day_one_instance + nx_growth_day_one_instance_item + nx_growth_promo_banner + H1 rhythm"
                 : "nx_mission + nx_user_mission + nx_growth_day_one_instance + nx_growth_day_one_instance_item + day_one_snapshot_only";
         return ApiResult.ok(productionResponse(linked(
@@ -451,7 +472,16 @@ public class AppGrowthEngagementService {
             if (instanceKey.startsWith("DAY_ONE:")) {
                 return claimDayOneSnapshot(userId, code, instanceKey);
             }
-            QuestReward reward = mapper.lockClaimableQuest(userId, code, instanceKey);
+            var weekly = weeklySnapshots == null ? null : weeklySnapshots.current();
+            if (weekly != null && !weekly.instanceKey().equals(instanceKey)) return ApiResult.fail(409, "QUEST_EXPIRED");
+            var frozenReward = weekly == null ? null : weeklySnapshots.lockReward(weekly, code, userId);
+            QuestReward reward = weekly == null ? mapper.lockClaimableQuest(userId, code, instanceKey)
+                    : frozenReward == null ? null : new QuestReward(frozenReward.missionId(), frozenReward.questCode(),
+                            frozenReward.layer(), frozenReward.rewardNex(), weekly.instanceKey(), null, 0L, 0L);
+            if (reward == null && weekly != null && weeklySnapshots.legacyClaimEligible(weekly,userId,code)) {
+                // Deployment compatibility only: retain the old verified fact/CAS contract for pre-snapshot progress.
+                reward = mapper.lockClaimableQuest(userId,code,instanceKey);
+            }
             if (reward == null) return ApiResult.fail(409,
                     claimFailure(mapper.lockQuestClaimState(userId, code, instanceKey)));
             if (!instanceKey.equals(reward.instanceKey())) throw conflict("QUEST_INSTANCE_MISMATCH");
@@ -462,9 +492,9 @@ public class AppGrowthEngagementService {
             if (mapper.claimQuest(userId, reward.missionId(), reward.instanceKey()) != 1) {
                 throw conflict("QUEST_CLAIM_CONFLICT");
             }
-            GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
-            if (rhythm == null || rhythm.currentMonth() <= 0) throw conflict("H1_RHYTHM_UNAVAILABLE");
-            BigDecimal multiplier = positiveOrOne(rhythm.questBonusMultiplier());
+            GrowthRhythmSnapshot rhythm = weekly == null ? growthRhythmFacade.snapshot() : null;
+            if (weekly == null && (rhythm == null || rhythm.currentMonth() <= 0)) throw conflict("H1_RHYTHM_UNAVAILABLE");
+            BigDecimal multiplier = weekly == null ? positiveOrOne(rhythm.questBonusMultiplier()) : weekly.questBonusMultiplier();
             BigDecimal baseReward = reward.rewardNex();
             BigDecimal amount = positive(baseReward).multiply(multiplier)
                     .setScale(6, RoundingMode.DOWN);
@@ -473,7 +503,7 @@ public class AppGrowthEngagementService {
                     "QUEST_REWARD", amount, "H3 quest claim");
             Map<String, Object> detail = linked(
                     "layer", reward.layer(), "rewardNex", amount, "multiplier", multiplier,
-                    "rhythmMonth", rhythm.currentMonth(), "instanceKey", reward.instanceKey());
+                    "rhythmMonth", weekly == null ? rhythm.currentMonth() : weekly.rhythmMonth(), "instanceKey", reward.instanceKey());
             audit("H3_QUEST_CLAIMED", "USER_MISSION", code, code, userId, detail);
             publish("MISSION", code, "quest.claimed", userId, attribution(userId), detail);
             return ApiResult.ok(linked("questId", code, "rewardNex", amount, "status", "CLAIMED",

@@ -30,6 +30,23 @@ class QuestCanonicalEventConsumerTest {
             bindingMapper, dayOneInstances, deliveryService, projector, new ObjectMapper());
 
     @Test
+    void publishedEmptyWeekReachesTerminalProjectorInsteadOfWaitingForLaterBindings() {
+        var weekly = mock(WeeklyQuestSnapshotService.class);
+        consumer.setWeeklySnapshots(weekly);
+        EventOutboxMessage message = event("evt-empty-week", "H3_COMPUTE_COMPLETED_50");
+        message.setServerAuthoritative(true);
+        message.setEventTs(LocalDateTime.now(ZoneId.of("Asia/Shanghai")));
+        when(weekly.publishedFor(message.getEventTs())).thenReturn(true);
+        when(deliveryService.claim(message,QuestCanonicalEventConsumer.CONSUMER_GROUP,
+                QuestCanonicalEventConsumer.TOPIC,"evt-empty-week",0)).thenReturn(
+                new EventConsumerDeliveryService.ConsumerClaim(true,"evt-empty-week","PROCESSING",1));
+        consumer.onOutboxMessage(message);
+        verify(projector).project(message,"evt-empty-week");
+        verify(deliveryService,never()).claimPendingBinding(message,QuestCanonicalEventConsumer.CONSUMER_GROUP,
+                QuestCanonicalEventConsumer.TOPIC,"evt-empty-week",0);
+    }
+
+    @Test
     void configuredCanonicalEventUsesDurableClaimBeforeProjection() {
         EventOutboxMessage message = event("evt-order-1", "checkout.started");
         when(bindingMapper.countActiveBindings("checkout.started")).thenReturn(1);

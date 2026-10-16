@@ -14,7 +14,9 @@ class EventOutboxMapperWeeklyWaitContractTest {
                         String.class, String.class, String.class)
                 .getAnnotation(Update.class).value()).replaceAll("\\s+", " ");
         assertThat(sql).contains("d.status = #{pendingBindingStatus}",
-                "m.id IS NOT NULL OR (o.is_server_authoritative=1",
+                "m.id IS NOT NULL OR EXISTS (", "FROM nx_growth_weekly_definition_binding wb",
+                "wb.instance_key=CONCAT('WEEK:',DATE_FORMAT(o.event_ts,'%x-W%v'))",
+                "OR (o.is_server_authoritative=1",
                 "DATE_FORMAT(o.event_ts,'%x-W%v')<>",
                 "DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v')");
     }

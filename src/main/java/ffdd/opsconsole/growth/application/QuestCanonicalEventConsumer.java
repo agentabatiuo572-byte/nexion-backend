@@ -24,6 +24,13 @@ import org.springframework.util.StringUtils;
  */
 @Component
 public class QuestCanonicalEventConsumer {
+    private WeeklyQuestSnapshotService weeklySnapshots;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setWeeklySnapshots(WeeklyQuestSnapshotService weeklySnapshots) {
+        this.weeklySnapshots = weeklySnapshots;
+    }
+
     static final String CONSUMER_GROUP = "h3-quest-completion";
     static final String TOPIC = "spring-local-h3-quest-completion";
     private static final ZoneId WEEK_ZONE = ZoneId.of("Asia/Shanghai");
@@ -86,6 +93,10 @@ public class QuestCanonicalEventConsumer {
             return;
         }
         boolean activeBinding = bindingMapper.countActiveBindings(eventType) > 0;
+        boolean frozenWeeklyBinding = weeklySnapshots != null && Boolean.TRUE.equals(message.getServerAuthoritative())
+                && !weeklySnapshots.bindings(eventType,message.getEventTs()).isEmpty();
+        boolean publishedWeeklyWindow = weeklySnapshots != null && Boolean.TRUE.equals(message.getServerAuthoritative())
+                && WEEKLY_THRESHOLD_EVENTS.contains(eventType) && weeklySnapshots.publishedFor(message.getEventTs());
         boolean frozenDayOneBinding = false;
         if (dayOneInstanceMapper != null && objectMapper != null && message.getEventTs() != null) {
             List<Long> userIds = snapshotCandidateUserIds(message.getPayload());
@@ -93,7 +104,7 @@ public class QuestCanonicalEventConsumer {
                     : dayOneInstanceMapper.listInWindowSnapshotBindings(userIds, eventType, message.getEventTs());
             frozenDayOneBinding = bindings != null && !bindings.isEmpty();
         }
-        if (!activeBinding && !frozenDayOneBinding) {
+        if (!activeBinding && !frozenDayOneBinding && !frozenWeeklyBinding && !publishedWeeklyWindow) {
             if (!EventOutboxDispatchScheduler.H3_BINDING_WAIT_EVENT_TYPES.contains(eventType)) {
                 return;
             }

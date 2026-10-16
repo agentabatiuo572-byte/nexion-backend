@@ -998,6 +998,20 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void h3RewardChangePublishesTheOldWeekBeforeChangingItsReward() {
+        var weekly = mock(WeeklyQuestSnapshotService.class);
+        service.setWeeklySnapshots(weekly);
+        when(questEventMapper.missionRewardByCode("weekly_t2_browse_store")).thenReturn(50);
+        when(questEventMapper.updateMissionRewardByCode("weekly_t2_browse_store",50,60)).thenReturn(1);
+        var result = service.updateQuestConfig("weekly-freeze","mission.weekly_t2_browse_store.reward",
+                new GrowthConfigUpdateRequest("mission.weekly_t2_browse_store.reward","60","change next week","superadmin","50"));
+        assertThat(result.getCode()).isZero();
+        var order = org.mockito.Mockito.inOrder(weekly,questEventMapper);
+        order.verify(weekly).beforeConfigurationChange();
+        order.verify(questEventMapper).updateMissionRewardByCode("weekly_t2_browse_store",50,60);
+    }
+
+    @Test
     void updateQuestConfigWritesAllowedConfigAndAudits() {
         seedQuestBusinessRows();
 
