@@ -1,6 +1,8 @@
 package ffdd.opsconsole.finance.application;
 
 import ffdd.opsconsole.auth.application.UserOtpDeliveryService;
+import ffdd.opsconsole.growth.application.H3DayOneBusinessFactService;
+import ffdd.opsconsole.growth.application.H3DayOneBusinessFactContract;
 import ffdd.opsconsole.finance.hdpay.*;
 import ffdd.opsconsole.finance.mapper.AppPayoutAddressMapper;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper;
@@ -40,6 +42,7 @@ public class BankWithdrawalService {
     private final Environment environment;
     private final Clock clock;
     private final SupportWithdrawalFundSourceService withdrawalFunds;
+    private final H3DayOneBusinessFactService dayOneFacts;
 
     public record BindRequest(String bankCode, String account, String holder, String challengeNo, String code,
                               Boolean accountRoutingConfirmed) {
@@ -161,6 +164,7 @@ public class BankWithdrawalService {
                     .actorUsername("user:" + userId).riskLevel("CRITICAL").result("SUCCESS")
                     .detail(map("bankCode", request.bankCode(), "maskedAccount", masked, "version", version,
                             "effectiveAt", now)).build());
+            dayOneFacts.record(userId, H3DayOneBusinessFactContract.CARD_BOUND);
             return ApiResult.ok(map("beneficiary", beneficiaryView(bank.beneficiary(userId))));
         });
     }
