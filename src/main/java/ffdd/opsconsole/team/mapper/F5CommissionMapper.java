@@ -46,6 +46,21 @@ public interface F5CommissionMapper {
                             AND l.biz_no LIKE CONCAT('F4-POOL-%-', e.id))
                           OR (LOWER(e.commission_type) = 'cultivation'
                             AND l.biz_no = CONCAT('F1-VRANKREWARD-', e.id))
+                          OR (LOWER(e.commission_type) IN ('direct_purchase', 'direct_device_earning', 'network')
+                            AND l.asset = UPPER(e.currency) AND l.status = 'SUCCESS'
+                            AND EXISTS (
+                              SELECT 1 FROM nx_direct_referral_settlement s
+                               WHERE s.beneficiary_user_id = e.user_id
+                                 AND s.source_type = LOWER(e.commission_type)
+                                 AND ((UPPER(e.currency) = 'USDT' AND s.usdt_event_id = e.id)
+                                   OR (UPPER(e.currency) = 'NEX' AND s.nex_event_id = e.id))
+                                 AND ((l.direction = 'IN' AND l.biz_no = CONCAT(s.settlement_no, '-RELEASE'))
+                                   OR (l.direction = 'OUT'
+                                     AND LEFT(l.biz_no, CHAR_LENGTH(CONCAT(s.settlement_no, '-RECOVER-', UPPER(e.currency), '-')))
+                                       = CONCAT(s.settlement_no, '-RECOVER-', UPPER(e.currency), '-')
+                                     AND SUBSTRING(l.biz_no, CHAR_LENGTH(CONCAT(s.settlement_no, '-RECOVER-', UPPER(e.currency), '-')) + 1)
+                                       REGEXP '^[0-9]+([.][0-9]+)?$'))
+                            ))
                           OR l.biz_no = CONCAT('F5-REISSUE-', e.id)
                           OR l.biz_no IN (CONCAT('F5-COMMISSION-', e.id, '-RELEASE'),
                                          CONCAT('F5-COMMISSION-', e.id, '-REVERSE'))
