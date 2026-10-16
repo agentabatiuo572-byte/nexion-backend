@@ -15,17 +15,32 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/** Protected, explicit writer entrypoints used by F3 operations and acceptance fixtures. */
+/** Protected assignment reads and explicit F3 operation writers. */
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/teams/binary")
 @RequiredArgsConstructor
 public class OpsBinarySettlementController {
     private final BinaryCommissionSettlementService service;
+
+    @GetMapping("/assignments")
+    @PreAuthorize("hasAuthority('network_f3_read')")
+    public ApiResult<BinaryCommissionSettlementService.AssignmentPage> assignments(
+            @RequestParam Long ownerUserId,
+            @RequestParam(required = false) Long memberUserId,
+            @RequestParam(defaultValue = "ALL") String status,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int pageSize,
+            Authentication authentication) {
+        authenticatedAdmin(authentication);
+        return ApiResult.ok(service.assignments(ownerUserId, memberUserId, status, page, pageSize));
+    }
 
     @PostMapping("/assignments")
     @PreAuthorize("hasAuthority('network_f3_write')")

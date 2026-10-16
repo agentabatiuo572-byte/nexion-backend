@@ -54,6 +54,24 @@ public class BinaryCommissionSettlementService {
     private final EventOutboxService eventOutboxService;
     private final AdminIdempotencyService idempotencyService;
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public AssignmentPage assignments(Long ownerUserId, Long memberUserId, String status, int page, int pageSize) {
+        if (ownerUserId == null || ownerUserId <= 0 || (memberUserId != null && memberUserId <= 0)
+                || !List.of("ALL", "ASSIGNED", "UNASSIGNED").contains(status == null ? "" : status)
+                || page < 1 || pageSize < 1 || pageSize > 100) {
+            throw new BizException(400, "BINARY_ASSIGNMENT_QUERY_INVALID");
+        }
+        if (mapper.userSandbox(ownerUserId) == null) {
+            throw new BizException(404, "BINARY_OWNER_NOT_ACTIVE");
+        }
+        long total = mapper.countAssignmentMembers(ownerUserId, memberUserId, status);
+        var records = mapper.listAssignmentMembers(ownerUserId, memberUserId, status, ((long) page - 1) * pageSize, pageSize);
+        return new AssignmentPage(ownerUserId, status, page, pageSize, total, records);
+    }
+
+    public record AssignmentPage(Long ownerUserId, String status, int page, int pageSize, long total,
+                                 List<BinaryCommissionSettlementMapper.AssignmentMemberRow> records) { }
+
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public AssignmentResult assignLeg(
             Long ownerUserId, Long memberUserId, String rawLeg,
