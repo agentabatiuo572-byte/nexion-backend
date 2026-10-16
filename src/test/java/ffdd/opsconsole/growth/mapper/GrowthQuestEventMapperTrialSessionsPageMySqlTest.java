@@ -80,6 +80,11 @@ class GrowthQuestEventMapperTrialSessionsPageMySqlTest {
             seed(jdbc, expected, 13, "CLAIMED", null, "claimed");
             seed(jdbc, expected, 14, "active", -1, "grace");
             jdbc.execute("INSERT INTO nx_trial_claim VALUES(15,'DELETED','ACTIVE',40,5,3,120,15,NOW(),NOW(),NULL,1)");
+            jdbc.execute("ALTER TABLE nx_trial_claim ADD user_id BIGINT");
+            jdbc.execute("UPDATE nx_trial_claim SET user_id=1000+id");
+            jdbc.execute("UPDATE nx_trial_claim SET user_id=1001 WHERE id=14");
+            jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,nickname VARCHAR(80),mobile VARCHAR(30),is_deleted INT)");
+            jdbc.execute("INSERT INTO nx_user VALUES(1001,'Fixture owner','18700000001',0),(1002,'Deleted owner','18700000002',1)");
             var persistedBefore = jdbc.queryForList("SELECT * FROM nx_trial_claim ORDER BY id");
 
             Configuration configuration = new Configuration(new Environment("h2-trial-page-fixture",
@@ -92,6 +97,17 @@ class GrowthQuestEventMapperTrialSessionsPageMySqlTest {
                 assertThat(rows).hasSize(14).allSatisfy(row ->
                         assertThat(row.get("state")).isEqualTo(expected.get(row.get("sid"))));
                 assertThat(mapper.countTrialSessions()).isEqualTo(14);
+                for (var projected : java.util.List.of(rows, mapper.trialSessions(100))) {
+                    assertThat(projected).hasSize(14);
+                    for (var row : projected) {
+                        int id = Integer.parseInt(row.get("sid").toString().replace("trial-CASE-", ""));
+                        assertThat(row.get("userId")).isInstanceOf(Number.class);
+                        assertThat(((Number)row.get("userId")).longValue()).isEqualTo(id == 14 ? 1001L : 1000L + id);
+                        assertThat(row.get("displayName")).isEqualTo(id == 1 || id == 14 ? "Fixture owner" : null);
+                        assertThat(row).doesNotContainKeys("mobile", "phone", "password");
+                        assertThat(row.get("cardTok")).isEqualTo("CASE-" + id);
+                    }
+                }
                 assertThat(mapper.trialSessionsPage(0, 10)).containsExactlyElementsOf(rows.subList(0, 10));
                 assertThat(mapper.trialSessionsPage(10, 10)).containsExactlyElementsOf(rows.subList(10, 14));
                 assertThat(mapper.trialSessionsPage(14, 10)).isEmpty();

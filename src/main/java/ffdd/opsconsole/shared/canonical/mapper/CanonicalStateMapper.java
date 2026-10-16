@@ -862,8 +862,10 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                               ORDER BY pr.id DESC LIMIT 1),
                             CASE WHEN o.order_type IN ('TRADE_IN','CAPACITY_KEEP') THEN 'USDT_WALLET' ELSE 'PENDING' END) AS paymentMethod,
                    o.payment_status AS paymentStatus,
-                   o.order_status AS orderStatus,
-                   o.activation_status AS activationStatus,
+                   CASE WHEN """ + TrialConversionReadSql.LEGACY_FULFILLED + """
+                        THEN 'COMPLETED' ELSE o.order_status END AS orderStatus,
+                   CASE WHEN """ + TrialConversionReadSql.LEGACY_FULFILLED + """
+                        THEN 'ACTIVATED' ELSE o.activation_status END AS activationStatus,
                    o.order_type AS orderType,
                    o.created_at AS placedAt,
                    o.paid_at AS paidAt,

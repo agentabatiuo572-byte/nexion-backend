@@ -350,38 +350,26 @@ class OpsTeamServiceTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    void podiumDropsMembersBelowTheConfiguredLeaderboardMinimum() {
-        // #133: 8 名参赛者本期 GV 全为 0、奖池为 0 时,页面仍固定展示第 1/2/3 名。
-        // 领奖台必须与结算同口径套用 F.leaderboard.minUsd,零业绩不得产生名次。
-        configFacade.values.put("team.ui.F.leaderboard.minUsd", "100");
+    void leaderboardNeverFallsBackToLegacyMemberGvWhenCanonicalPeriodIsMissing() {
         commissionRepository.leaderboardPodium.add(Map.of(
-                "rank", 1, "memberUserId", 11L, "userId", "U00000011",
-                "volume", new BigDecimal("0"), "gmvLabel", "$0", "tip", "本期 GV", "className", "r-1"));
-        commissionRepository.leaderboardPodium.add(Map.of(
-                "rank", 2, "memberUserId", 12L, "userId", "U00000012",
-                "volume", new BigDecimal("250"), "gmvLabel", "$250", "tip", "本期 GV", "className", "r-2"));
-
-        Map<String, Object> pool = leadershipPool(service);
-
-        assertThat((List<Map<String, Object>>) pool.get("podium"))
-                .singleElement()
-                .satisfies(row -> assertThat(row).containsEntry("memberUserId", 12L));
+                "rank", 1, "memberUserId", 21L, "userId", "U00000021",
+                "volume", new BigDecimal("5000"), "gmvLabel", "$5000", "tip", "本期 GV", "className", "r-1"));
+        assertThat((List<?>) leadershipPool(service).get("podium")).isEmpty();
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    void podiumKeepsEveryPositiveMemberWhenNoMinimumIsConfigured() {
-        // 未配置最小额时退化为 0 门槛:有真实业绩的成员仍正常上榜。
-        commissionRepository.leaderboardPodium.add(Map.of(
-                "rank", 1, "memberUserId", 21L, "userId", "U00000021",
-                "volume", new BigDecimal("5"), "gmvLabel", "$5", "tip", "本期 GV", "className", "r-1"));
-
-        Map<String, Object> pool = leadershipPool(service);
-
-        assertThat((List<Map<String, Object>>) pool.get("podium"))
-                .singleElement()
-                .satisfies(row -> assertThat(row).containsEntry("memberUserId", 21L));
+    void leaderboardOverviewUsesOneCanonicalFourPeriodProjection() {
+        var snapshots = org.mockito.Mockito.mock(LeaderboardPauseSnapshotService.class);
+        org.mockito.Mockito.when(snapshots.current()).thenReturn(LeaderboardPauseSnapshotService.State.live());
+        Map<String, Object> week = Map.of("poolUsd", new BigDecimal("1000"), "participantCount", 1,
+                "podium", List.of(Map.of("memberUserId", 21L, "gmvLabel", "$195.80")));
+        Map<String, Map<String, Object>> periods = Map.of("week", week, "all", week);
+        org.mockito.Mockito.when(snapshots.pcLeaderboards(org.mockito.ArgumentMatchers.any())).thenReturn(periods);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "pauseSnapshots", snapshots);
+        var pool = leadershipPool(service);
+        assertThat(pool).containsEntry("leaderboardPeriods", periods).containsEntry("leaderboardParticipantCount", 1)
+                .containsEntry("podium", week.get("podium"));
+        org.mockito.Mockito.verify(snapshots).pcLeaderboards(org.mockito.ArgumentMatchers.any());
     }
 
     @Test

@@ -297,6 +297,64 @@ class OnboardingCalibrationServiceTest {
     }
 
     @Test
+    void bindingStatusIsAnAuthenticatedScopeReadWithoutExecutionOrRowLocks() {
+        when(mapper.hasPhoneBinding(9L, "PRODUCTION", "")).thenReturn(false, true);
+        assertThat(service.bindingStatus(9L).getData()).containsEntry("hasBinding", false);
+        assertThat(service.bindingStatus(9L).getData()).containsEntry("hasBinding", true);
+        verify(mapper, never()).lockUserSandbox(any());
+        verify(mapper, never()).phoneBinding(any(), any(), any());
+        verify(mapper, never()).claimPhoneExecution(any(), any());
+        assertThat(service.bindingStatus(null).getCode()).isEqualTo(403);
+        when(mapper.userSandbox(999L)).thenReturn(null);
+        assertThatThrownBy(() -> service.bindingStatus(999L)).hasMessage("ONBOARDING_USER_ENVIRONMENT_MISMATCH");
+    }
+
+    @Test
+    void initialOnlyDeferPersistsWithoutBindingAndReplaysWithoutAnotherMutation() {
+        var before = actionRow(9L, "dev-phone", null, 4L, "CALIBRATED", null, null);
+        var command = new OnboardingCalibrationService.ActionRequest("dev-phone", 4L, "first-only", true);
+        when(mapper.findForUpdate(9L, "dev-phone")).thenReturn(before);
+        when(mapper.updateActivation(eq(9L), eq("dev-phone"), eq(4L), eq(null), eq("DEFERRED"), eq("first-only"), any())).thenReturn(1);
+        when(mapper.find(9L, "dev-phone")).thenReturn(actionRow(9L, "dev-phone", null, 5L, "DEFERRED", "first-only", "temporary"));
+        assertThat(service.defer(9L, command).getCode()).isZero();
+        var hash = ArgumentCaptor.forClass(String.class);
+        verify(mapper).updateActivation(eq(9L), eq("dev-phone"), eq(4L), eq(null), eq("DEFERRED"), eq("first-only"), hash.capture());
+        var order = org.mockito.Mockito.inOrder(mapper);
+        order.verify(mapper).lockUserSandbox(9L);
+        order.verify(mapper).phoneBinding(9L, "PRODUCTION", "");
+        order.verify(mapper).updateActivation(eq(9L), eq("dev-phone"), eq(4L), eq(null), eq("DEFERRED"), eq("first-only"), any());
+        when(mapper.findForUpdate(9L, "dev-phone")).thenReturn(actionRow(9L, "dev-phone", null, 5L, "DEFERRED", "first-only", hash.getValue()));
+        assertThat(service.defer(9L, command).getCode()).isZero();
+        assertThat(service.defer(9L, new OnboardingCalibrationService.ActionRequest("dev-phone", 4L, "first-only")).getCode()).isEqualTo(409);
+        verify(mapper, times(1)).updateActivation(any(), any(), any(), any(), any(), any(), any());
+        verify(mapper, never()).savePhoneBinding(any(), any(), any(), any(), any(), any());
+        assertThat(service.activate(9L, new OnboardingCalibrationService.ActionRequest("dev-phone", 4L, "wrong-target", true)).getCode()).isEqualTo(422);
+    }
+
+    @Test
+    void initialOnlyDeferCannotStopAnExistingBindingAfterTheClientRead() {
+        var before = actionRow(9L, "dev-phone", null, 4L, "CALIBRATED", null, null);
+        when(mapper.findForUpdate(9L, "dev-phone")).thenReturn(before);
+        when(mapper.phoneBinding(9L, "PRODUCTION", "")).thenReturn(
+                new OnboardingCalibrationMapper.PhoneBindingRow("other-install", 33L, "", 1L, 1L));
+        assertThatThrownBy(() -> service.defer(9L,
+                new OnboardingCalibrationService.ActionRequest("dev-phone", 4L, "first-only", true)))
+                .hasMessage("PHONE_INITIAL_DEFER_REQUIRES_UNBOUND");
+        verify(mapper, never()).deactivatePhoneDevice(any(), any(), any(), any());
+        verify(mapper, never()).updateActivation(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void initialOnlyDeferCannotStopALegacyLinkedPhoneWithoutABindingRow() {
+        when(mapper.findForUpdate(9L, "dev-phone"))
+                .thenReturn(actionRow(9L, "dev-phone", 44L, 4L, "CALIBRATED", null, null));
+        assertThatThrownBy(() -> service.defer(9L,
+                new OnboardingCalibrationService.ActionRequest("dev-phone", 4L, "first-only", true)))
+                .hasMessage("PHONE_INITIAL_DEFER_REQUIRES_UNBOUND");
+        verify(mapper, never()).deactivatePhoneDevice(any(), any(), any(), any());
+    }
+
+    @Test
     void deferDeactivatesBoundPhoneBeforePublishingDeferredState() {
         CalibrationRow active = actionRow(9L, "dev-phone", 44L, 4L, "ACTIVE", null, null);
         CalibrationRow deferred = actionRow(9L, "dev-phone", 44L, 5L, "DEFERRED", "phone-defer-001", "hash");

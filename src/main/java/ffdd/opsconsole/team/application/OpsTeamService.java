@@ -1815,8 +1815,9 @@ public class OpsTeamService implements AuditReplayable {
                 : boolConfig(uiConfigKey("F.leaderboard.paused"), false)
                     ? LeaderboardPauseSnapshotService.State.unavailable("PRE_SNAPSHOT_PAUSE")
                     : LeaderboardPauseSnapshotService.State.live();
-        Map<String, Object> displayLeaderboard = "FROZEN".equals(pause.mode())
-                ? pauseSnapshots.pcSummary(pause) : pause.paused() ? Map.of() : leaderboard;
+        Map<String, Map<String, Object>> leaderboardPeriods = pauseSnapshots == null ? Map.of()
+                : pauseSnapshots.pcLeaderboards(pause);
+        Map<String, Object> displayLeaderboard = leaderboardPeriods.getOrDefault("week", Map.of());
         Map<String, Object> pool = new LinkedHashMap<>();
         // Read-only projection of the same mandatory CAS version consumed by
         // LeadershipPoolConfigGuard; never synthesize a browser/default version.
@@ -1877,8 +1878,8 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("leaderboardDisqualified", "disqualified".equalsIgnoreCase(leaderboardStatus));
         pool.put("leaderboardPeriodStatus", leaderboardStatus);
         pause.metadata(pool, true);
-        pool.put("podium", !pause.available() ? List.of() : "FROZEN".equals(pause.mode())
-                ? pauseSnapshots.pcPodium(pause).stream().map(this::normalizePodium).toList() : leaderboardPodium());
+        pool.put("leaderboardPeriods", leaderboardPeriods);
+        pool.put("podium", displayLeaderboard.getOrDefault("podium", List.of()));
         pool.put("voteWeights", voteWeights());
         return pool;
     }

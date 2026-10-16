@@ -19,6 +19,21 @@ class OnboardingCalibrationControllerTest {
     private final OnboardingCalibrationController controller = new OnboardingCalibrationController(
             service, new PhoneInstallationService(mapper));
 
+    @Test void bindingStatusOnlyReadsTheAuthenticatedUserAndRejectsOtherSubjects() {
+        when(service.bindingStatus(42L)).thenReturn(ApiResult.ok(Map.of("hasBinding", false)));
+        assertThat(controller.bindingStatus(auth("USER")).getData()).containsEntry("hasBinding", false);
+        assertThat(controller.bindingStatus(auth("ADMIN")).getCode()).isEqualTo(403);
+        assertThat(controller.bindingStatus(null).getCode()).isEqualTo(403);
+        verify(service).bindingStatus(42L);
+        verifyNoMoreInteractions(service);
+        verifyNoInteractions(mapper);
+    }
+
+    @Test void initialOnlySurvivesNormalHeaderIdempotencyFallback() {
+        controller.defer(new OnboardingCalibrationService.ActionRequest("phone", 3, null, true), "first-key", auth("USER"));
+        verify(service).defer(42L, new OnboardingCalibrationService.ActionRequest("phone", 3, "first-key", true));
+    }
+
     @Test void ordinaryUserCanCalibrateActivateAndDeferWithoutAProofSession() {
         var user = auth("USER");
         var action = new OnboardingCalibrationService.ActionRequest("phone", 0, "action-key");

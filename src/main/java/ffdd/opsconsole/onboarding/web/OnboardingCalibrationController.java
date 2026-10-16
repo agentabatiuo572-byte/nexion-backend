@@ -35,6 +35,12 @@ public class OnboardingCalibrationController {
         return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED") : service.calibrate(userId, request);
     }
 
+    @GetMapping("/binding-status")
+    public ApiResult<Map<String, Object>> bindingStatus(Authentication authentication) {
+        Long userId = authenticatedUserId(authentication);
+        return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED") : service.bindingStatus(userId);
+    }
+
     @GetMapping("/result")
     public ApiResult<Map<String, Object>> result(@RequestParam String deviceId, Authentication authentication) {
         Long userId = authenticatedUserId(authentication);
@@ -67,7 +73,7 @@ public class OnboardingCalibrationController {
             OnboardingCalibrationService.ActionRequest request, String idempotencyKey) {
         if (request == null || request.idempotencyKey() != null && !request.idempotencyKey().isBlank()) return request;
         return new OnboardingCalibrationService.ActionRequest(
-                request.deviceId(), request.expectedRevision(), idempotencyKey);
+                request.deviceId(), request.expectedRevision(), idempotencyKey, request.initialOnly());
     }
 
     private Long authenticatedUserId(Authentication authentication) {

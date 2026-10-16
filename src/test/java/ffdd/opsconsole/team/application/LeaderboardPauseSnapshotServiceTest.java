@@ -107,9 +107,9 @@ class LeaderboardPauseSnapshotServiceTest {
         assertThat(second).containsEntry("snapshotVersion", captured.version()).containsEntry("paused", true);
         assertThatThrownBy(() -> restartedApp.leaderboard(7L, period, 2, 20, captured.capturedAt(), "b".repeat(64)))
                 .isInstanceOf(BizException.class).hasMessage("TEAM_LEADERBOARD_SNAPSHOT_STALE");
-        assertThat(service.pcSummary(restartedSnapshots.current())).containsEntry("poolUsd", new BigDecimal("9E+2"))
-                .containsEntry("participantCount", 88);
-        assertThat(service.pcPodium(restartedSnapshots.current())).hasSize(2);
+        assertThat((BigDecimal) service.pcSummary(restartedSnapshots.current()).get("poolUsd")).isEqualByComparingTo("120.50");
+        assertThat(service.pcSummary(restartedSnapshots.current())).containsEntry("participantCount", 21);
+        assertThat(service.pcPodium(restartedSnapshots.current())).hasSize(3);
         verify(appMapper, never()).leaderboardEligible(anyString(), any(), any(), any(), any(), anyInt(), any());
         service.resume(); paused.set("off");
         assertThat(restartedSnapshots.current().mode()).isEqualTo("LIVE");
@@ -120,13 +120,14 @@ class LeaderboardPauseSnapshotServiceTest {
         verify(mapper, times(1)).insert(anyString(), anyString());
     }
 
-    @Test void pcAndAppKeepTheirExistingMinimumParsingAndDistinctAmounts() throws Exception {
-        var captured = capture("$90"); // PC invalid plain decimal => zero; App strips currency => 90.
-        assertThat(service.pcPodium(captured)).hasSize(2);
+    @Test void pcAndAppUseTheSameMinimumAndPoolWithoutRewritingLegacyEnvelope() throws Exception {
+        var captured = capture("$90"); // Canonical commission threshold strips the configured currency prefix.
+        assertThat(service.pcPodium(captured)).hasSize(3);
         assertThat(captured.appRows("week", json)).hasSize(10);
         assertThat(captured.envelope().path("appPeriods").path("week").path("poolUsd").decimalValue())
                 .isEqualByComparingTo("120.50");
-        assertThat(service.pcSummary(captured).get("poolUsd")).isEqualTo(new BigDecimal("9E+2"));
+        assertThat((BigDecimal) service.pcSummary(captured).get("poolUsd")).isEqualByComparingTo("120.50");
+        assertThat(captured.envelope().path("pcProjection").path("summary").path("poolUsd").decimalValue()).isEqualByComparingTo("900");
         assertThat(captured.appRows("week", json).get(9).rank()).isEqualTo(10);
     }
 
@@ -206,4 +207,12 @@ class LeaderboardPauseSnapshotServiceTest {
         assertThat(p).containsEntry("todayLimit", 20).containsEntry("weekLimit", 50)
                 .containsEntry("monthLimit", 100).containsEntry("allLimit", 100).containsEntry("sandbox", 0);
     }
+    @Test void livePcReadsTheSameWeekFactsAndPoolInsteadOfLegacyGvSummaryWithoutWritingSnapshot() throws Exception {
+        when(mapper.capture(anyMap())).thenReturn(facts("0"));
+        var summary=service.pcSummary(LeaderboardPauseSnapshotService.State.live());
+        assertThat(summary).containsEntry("participantCount",21);
+        assertThat((BigDecimal)summary.get("poolUsd")).isEqualByComparingTo("120.50");
+        verify(mapper,never()).insert(anyString(),anyString());verifyNoInteractions(config);
+    }
+
 }

@@ -1,5 +1,7 @@
 package ffdd.opsconsole.device.mapper;
 
+import ffdd.opsconsole.shared.canonical.mapper.TrialConversionReadSql;
+
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderFacts;
@@ -134,6 +136,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               WHEN UPPER(COALESCE(o.order_status,'')) = 'PROVISIONING_FAILED'
                 OR UPPER(COALESCE(o.activation_status,'')) = 'PROVISIONING_FAILED' THEN 'provisioning_failed'
               WHEN UPPER(COALESCE(o.order_status,'')) IN ('CANCELLED','CANCELED') THEN 'cancelled'
+              WHEN """ + TrialConversionReadSql.LEGACY_FULFILLED + """
+                THEN 'activated'
               WHEN UPPER(COALESCE(o.order_status,'')) = 'COMPLETED'
                 OR UPPER(COALESCE(o.activation_status,'')) = 'ACTIVATED' THEN 'activated'
               WHEN UPPER(COALESCE(o.order_status,'')) IN ('PROVISIONING','ALLOCATING')
@@ -1491,8 +1495,11 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    COALESCE((SELECT pr.provider FROM nx_payment_record pr
                               WHERE pr.order_no=o.order_no AND pr.is_deleted=0 ORDER BY pr.id DESC LIMIT 1),
                             CASE WHEN o.payment_no IS NULL THEN 'USDT_WALLET' ELSE 'UNKNOWN' END) AS paymentMethod,
-                   o.payment_status AS paymentStatus, o.order_status AS orderStatus,
-                   o.activation_status AS activationStatus, o.product_id AS productId,
+                   o.payment_status AS paymentStatus,
+                   CASE WHEN """ + TrialConversionReadSql.LEGACY_FULFILLED + """
+                        THEN 'COMPLETED' ELSE o.order_status END AS orderStatus,
+                   CASE WHEN """ + TrialConversionReadSql.LEGACY_FULFILLED + """
+                        THEN 'ACTIVATED' ELSE o.activation_status END AS activationStatus, o.product_id AS productId,
                    COALESCE((SELECT oi.product_no FROM nx_order_item oi
                               WHERE oi.order_no=o.order_no AND oi.is_deleted=0 ORDER BY oi.sort_order,oi.id LIMIT 1),
                             p.product_no) AS productNo,
@@ -1532,7 +1539,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               UNION ALL
               SELECT 'D4_LEDGER',wl.biz_no,wl.status,wl.direction,wl.amount,wl.created_at
                 FROM nx_wallet_ledger wl
-               WHERE wl.is_deleted=0 AND (wl.biz_no=#{orderNo} OR wl.biz_no=CONCAT('E4-REFUND-',#{orderNo}))
+               WHERE wl.is_deleted=0 AND (wl.biz_no=#{orderNo} OR wl.biz_no=CONCAT('E4-REFUND-',#{orderNo})
+                 OR\s""" + TrialConversionReadSql.TRIAL_CHARGE + """
+               )
               UNION ALL
               SELECT 'D4_BILL',wb.bill_no,'SUCCESS',wb.direction,wb.amount,wb.occurred_at
                 FROM nx_wallet_bill wb

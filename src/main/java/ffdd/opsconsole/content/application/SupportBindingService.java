@@ -72,7 +72,7 @@ public class SupportBindingService {
         if (r == null) throw new BizException(422,"SUPPORT_RULES_REQUIRED");
         validateCommand(key,r.reason());
         if (r.expectedVersion() == null || r.expectedVersion() < 1
-                || !Set.of("LIMITED","UNLIMITED").contains(String.valueOf(r.inheritanceMode()))
+                || !Set.of("LIMITED","UNLIMITED","UNCONFIGURED").contains(String.valueOf(r.inheritanceMode()))
                 || ("LIMITED".equals(r.inheritanceMode()) ? r.maxInheritanceDepth()==null || r.maxInheritanceDepth()<0 : r.maxInheritanceDepth()!=null)
                 || invalidDays(r.dormantDays()) || invalidDays(r.maintenanceDays()) || invalidDays(r.activityWindowDays())
                 || (r.dormantDays()!=null && r.activityWindowDays()!=null && r.activityWindowDays()>r.dormantDays()))
@@ -84,6 +84,12 @@ public class SupportBindingService {
             ownership.requireSuperAdmin();
             if(mapper.rulesWriteGrant(ownership.actorId()).isEmpty())throw new BizException(403,"SUPPORT_RULES_FORBIDDEN");
             SupportRules before=mapper.rules();
+            if("UNCONFIGURED".equals(r.inheritanceMode())) {
+                if(before==null || !Objects.equals(before.version(),r.expectedVersion()))
+                    throw new BizException(409,"SUPPORT_RULES_VERSION_CONFLICT");
+                if(!"UNCONFIGURED".equals(before.inheritanceMode()))
+                    throw new BizException(422,"SUPPORT_RULES_INVALID");
+            }
             if(mapper.updateRules(r.dormantDays(),r.maintenanceDays(),r.activityWindowDays(),r.inheritanceMode(),r.maxInheritanceDepth(),r.expectedVersion(),ownership.actorId(),r.reason().trim(),r.unboundAssignmentMode())!=1)
                 throw new BizException(409,"SUPPORT_RULES_VERSION_CONFLICT");
             SupportRules after=mapper.rules();
@@ -237,7 +243,8 @@ public class SupportBindingService {
             ticketOwners.synchronizeCurrentOwner(customer);
             return;
         }
-        mapper.enterPool(customer,reason);
+        if ("DEPTH_LIMIT".equals(reason)) mapper.enterDepthLimitedPool(customer,parent.agentAdminId());
+        else mapper.enterPool(customer,reason);
         if(!"MIGRATION_REVIEW".equals(reason) && rules!=null && "AUTO_RANDOM".equals(rules.unboundAssignmentMode())
                 && production.productionSupportAutomationAllowed() && mapper.canonicalCustomer(customer)==1) {
             mapper.eligiblePool(customer,rules.version(),"registration:"+customer);
@@ -294,7 +301,7 @@ public class SupportBindingService {
             mapper.attemptPool(customer,"WAITING_ROUTE","GROUP_SCOPE_CHANGED");return null;
         }
         if(supervisor!=null)ownership.requireManagingCustomer(customer);
-        List<Candidate> facts=groups.candidates(group.id());
+        List<Candidate> facts=randomCandidates(customer,group.id());
         if(frozen!=null) {
             ReadScope scope=managementScope(null,null);
             FrozenCustomer current=freezeRandomScope(frozen.customer(),scope);
@@ -380,7 +387,19 @@ public class SupportBindingService {
         Qualification actor=scope.mode()==ReadMode.MANAGED?groups.qualificationCurrent(scope.actorId(),"SUPERVISOR"):null;
         if(scope.mode()==ReadMode.MANAGED && actor==null)throw new BizException(403,"SUPPORT_MANAGEMENT_FORBIDDEN");
         return new FrozenCustomer(customer,route.id(),route.version(),group.id(),group.version(),owner.supervisorAdminId(),
-                owner.id(),owner.version(),actor==null?null:actor.id(),actor==null?null:actor.version(),groups.candidates(group.id()));
+                owner.id(),owner.version(),actor==null?null:actor.id(),actor==null?null:actor.version(),randomCandidates(customer.id(),group.id()));
+    }
+
+    /** The exclusion belongs to the original depth-limit decision, not the inviter's later binding. */
+    private List<Candidate> randomCandidates(Long customer,Long group) {
+        Map<String,Object> pool=mapper.poolAttempt(customer);
+        if(pool!=null && "DEPTH_LIMIT".equals(pool.get("reason"))) {
+            Object original=pool.get("excludedAgentAdminId");
+            // Legacy rows carry no proven exclusion identity. Keep them pending rather than guess.
+            if(!(original instanceof Number id) || id.longValue()<1) return List.of();
+            return groups.candidates(group).stream().filter(candidate->!Objects.equals(candidate.agentId(),id.longValue())).toList();
+        }
+        return groups.candidates(group);
     }
 
     private void closeQueueRoute(Long customer) {

@@ -151,7 +151,7 @@ public class LeadershipPoolService {
     /** 每分钟补齐所有已结束周期；持久化 checkpoint 使午夜停机后仍可追赶。 */
     @Transactional(rollbackFor = Exception.class)
     public int settleClosedLeaderboardPeriods(ZonedDateTime nowUtc) {
-        ZonedDateTime now = nowUtc.withSecond(0).withNano(0);
+        ZonedDateTime now = nowUtc.withZoneSameInstant(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE).withSecond(0).withNano(0);
         LocalDate today = now.toLocalDate();
         int settled = catchUpDaily(today);
         settled += catchUpWeekly(today);
@@ -234,7 +234,7 @@ public class LeadershipPoolService {
             throw new BizException(422, "F4_LEADERBOARD_PERIOD_INVALID");
         }
         if (normalizedReason.length() < 8) throw new BizException(422, "F4_SETTLEMENT_REASON_REQUIRED");
-        LocalDate today = LocalDate.now(java.time.ZoneOffset.UTC);
+        LocalDate today = LocalDate.now(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE);
         LocalDateTime from = null;
         LocalDateTime to = today.plusDays(1).atStartOfDay();
         String key;

@@ -183,7 +183,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    CONCAT(
                        'created:', DATE_FORMAT(w.created_at, '%Y-%m-%d %H:%i'),
                        '; status:', w.status,
-                       IF(w.chain_submitted_at IS NULL, '', CONCAT('; chain:', DATE_FORMAT(w.chain_submitted_at, '%Y-%m-%d %H:%i'))),
+                       IF(w.chain_submitted_at IS NULL, '', CONCAT(IF(w.chain='BANK-VND', '; payout:', '; chain:'), DATE_FORMAT(w.chain_submitted_at, '%Y-%m-%d %H:%i'))),
                        IF(w.completed_at IS NULL, '', CONCAT('; completed:', DATE_FORMAT(w.completed_at, '%Y-%m-%d %H:%i'))),
                        IF(w.failed_at IS NULL, '', CONCAT('; failed:', DATE_FORMAT(w.failed_at, '%Y-%m-%d %H:%i'))),
                        IF(w.updated_at IS NULL, '', CONCAT('; updated:', DATE_FORMAT(w.updated_at, '%Y-%m-%d %H:%i')))
@@ -199,7 +199,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    CASE WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) IS NULL THEN 'K4评分不可用'
                         ELSE CONCAT('提交快照=',COALESCE(CAST(w.d2_k4_risk_score AS CHAR),'无'),'; 当前模型=',COALESCE(CAST(k4.model_score AS CHAR),'无'),'; 人工覆盖=',COALESCE(CAST(k4o.override_score AS CHAR),'无'),'; 决策=',COALESCE(rd.decision,'无'),'; 规则=',COALESCE(rd.rule_codes,hit.hit_rules,'无'))
                    END AS riskScoreBreakdown,
-                   (SELECT GROUP_CONCAT(CONCAT(w3.withdrawal_no,'/',w3.status,'/',w3.amount,' ',w3.asset,'@',DATE_FORMAT(w3.created_at,'%Y-%m-%d %H:%i')) ORDER BY w3.created_at DESC SEPARATOR ' | ')
+                   (SELECT GROUP_CONCAT(CONCAT(w3.withdrawal_no,'/',COALESCE(w3.chain,''),'/',w3.status,'/',w3.amount,' ',w3.asset,'@',DATE_FORMAT(w3.created_at,'%Y-%m-%d %H:%i')) ORDER BY w3.created_at DESC SEPARATOR ' | ')
                       FROM nx_withdrawal_order w3 WHERE w3.user_id=w.user_id AND w3.is_deleted=0) AS withdrawalHistory,
                    w.d2_penalty_fee_rate AS penaltyFeeRate,
                    w.d2_gross_fee AS grossFee,
@@ -397,7 +397,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    CONCAT(
                        'created:', DATE_FORMAT(w.created_at, '%Y-%m-%d %H:%i'),
                        '; status:', w.status,
-                       IF(w.chain_submitted_at IS NULL, '', CONCAT('; chain:', DATE_FORMAT(w.chain_submitted_at, '%Y-%m-%d %H:%i'))),
+                       IF(w.chain_submitted_at IS NULL, '', CONCAT(IF(w.chain='BANK-VND', '; payout:', '; chain:'), DATE_FORMAT(w.chain_submitted_at, '%Y-%m-%d %H:%i'))),
                        IF(w.completed_at IS NULL, '', CONCAT('; completed:', DATE_FORMAT(w.completed_at, '%Y-%m-%d %H:%i'))),
                        IF(w.failed_at IS NULL, '', CONCAT('; failed:', DATE_FORMAT(w.failed_at, '%Y-%m-%d %H:%i'))),
                        IF(w.updated_at IS NULL, '', CONCAT('; updated:', DATE_FORMAT(w.updated_at, '%Y-%m-%d %H:%i')))
@@ -413,7 +413,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    CASE WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) IS NULL THEN 'K4评分不可用'
                         ELSE CONCAT('提交快照=',COALESCE(CAST(w.d2_k4_risk_score AS CHAR),'无'),'; 当前模型=',COALESCE(CAST(k4.model_score AS CHAR),'无'),'; 人工覆盖=',COALESCE(CAST(k4o.override_score AS CHAR),'无'),'; 决策=',COALESCE(rd.decision,'无'),'; 规则=',COALESCE(rd.rule_codes,hit.hit_rules,'无'))
                    END AS riskScoreBreakdown,
-                   (SELECT GROUP_CONCAT(CONCAT(w3.withdrawal_no,'/',w3.status,'/',w3.amount,' ',w3.asset,'@',DATE_FORMAT(w3.created_at,'%Y-%m-%d %H:%i')) ORDER BY w3.created_at DESC SEPARATOR ' | ')
+                   (SELECT GROUP_CONCAT(CONCAT(w3.withdrawal_no,'/',COALESCE(w3.chain,''),'/',w3.status,'/',w3.amount,' ',w3.asset,'@',DATE_FORMAT(w3.created_at,'%Y-%m-%d %H:%i')) ORDER BY w3.created_at DESC SEPARATOR ' | ')
                       FROM nx_withdrawal_order w3 WHERE w3.user_id=w.user_id AND w3.is_deleted=0) AS withdrawalHistory,
                    w.d2_penalty_fee_rate AS penaltyFeeRate,
                    w.d2_gross_fee AS grossFee,

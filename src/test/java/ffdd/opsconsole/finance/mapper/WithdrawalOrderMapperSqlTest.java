@@ -8,6 +8,18 @@ import org.junit.jupiter.api.Test;
 
 class WithdrawalOrderMapperSqlTest {
     @Test
+    void historiesKeepEachOrdersChannelAndNameBankDispatchSeparately() {
+        for (var method : WithdrawalOrderMapper.class.getMethods()) {
+            if (!java.util.Set.of("page", "findByWithdrawalNo").contains(method.getName())) continue;
+            String sql = String.join("\n", method.getAnnotation(Select.class).value());
+            assertThat(sql)
+                    .contains("CONCAT(w3.withdrawal_no,'/',COALESCE(w3.chain,''),'/',w3.status,'/'")
+                    .contains("IF(w.chain='BANK-VND', '; payout:', '; chain:')")
+                    .doesNotContain("CONCAT(w3.withdrawal_no,'/',w3.status,'/'");
+        }
+    }
+
+    @Test
     void findByWithdrawalNoAnnotationEscapesXmlUnsafeComparisonOperators() throws Exception {
         String sql = String.join("\n", WithdrawalOrderMapper.class
                 .getMethod("findByWithdrawalNo", String.class)

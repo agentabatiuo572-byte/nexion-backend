@@ -172,7 +172,7 @@ public class AppTeamInsightsService {
         LocalDateTime nextUnlock = null;
         Map<String, Map<String, Object>> byKind = new LinkedHashMap<>();
         int eventCount = 0;
-        for (String kind : List.of("unilevel", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning")) {
+        for (String kind : List.of("unilevel", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning", "promotion", "other")) {
             byKind.put(kind, new LinkedHashMap<>(Map.of("usdt", BigDecimal.ZERO, "nex", BigDecimal.ZERO, "count", 0)));
         }
         for (var bucket : buckets) {
@@ -567,7 +567,7 @@ public class AppTeamInsightsService {
     private String kind(String value) { String normalized=value==null?"":value.toLowerCase(); return switch(normalized){
         case "direct_purchase", "direct_device_earning" -> normalized;
         case "direct","network","unilevel" -> "unilevel"; case "binary" -> "binary"; case "peer" -> "peer";
-        case "cultivation" -> "cultivation"; case "leadership","leaderboard_prize" -> "leadership"; default -> "genesis"; }; }
+        case "cultivation" -> "cultivation"; case "leadership","leaderboard_prize" -> "leadership"; case "genesis" -> "genesis"; case "vrank_reward" -> "promotion"; default -> "other"; }; }
     private String status(String value) { String normalized=value==null?"":value.toUpperCase(); return switch(normalized){
         case "UNLOCKED","AVAILABLE" -> "unlocked";
         case "SETTLED","PAID","WITHDRAWN" -> "withdrawn";
