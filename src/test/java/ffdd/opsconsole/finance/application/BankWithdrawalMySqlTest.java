@@ -150,7 +150,8 @@ class BankWithdrawalMySqlTest {
             when(accountRouting.contractConfirmed()).thenReturn(true);
             service = proxy(new BankWithdrawalService(bank, accountRouting, users, addresses,
                     delivery,proxy(new PayoutAddressOtpAttemptService(addresses)),
-                    cipher,withdrawals,config,transport,properties,idempotency,audit,env,CLOCK,mock(SupportWithdrawalFundSourceService.class)));
+                    cipher,withdrawals,config,transport,properties,idempotency,audit,env,CLOCK,mock(SupportWithdrawalFundSourceService.class),
+                    mock(ffdd.opsconsole.growth.application.H3DayOneBusinessFactService.class)));
         }
         @SuppressWarnings("unchecked") <T> T proxy(T target) {
             ProxyFactory proxy = new ProxyFactory(target);

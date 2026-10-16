@@ -33,10 +33,16 @@ class BankWithdrawalServiceTest {
     final UserOtpDeliveryService delivery = mock(UserOtpDeliveryService.class);
     final FinanceSensitiveDataCipher cipher = mock(FinanceSensitiveDataCipher.class);
     final SupportWithdrawalFundSourceService withdrawalFunds = mock(SupportWithdrawalFundSourceService.class);
+    final ffdd.opsconsole.growth.mapper.DayOneInstanceMapper dayOneInstances = mock(ffdd.opsconsole.growth.mapper.DayOneInstanceMapper.class);
+    final ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper dayOneMissions = mock(ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper.class);
+    final ffdd.opsconsole.growth.mapper.H3DayOneBusinessFactReceiptMapper dayOneReceipts = mock(ffdd.opsconsole.growth.mapper.H3DayOneBusinessFactReceiptMapper.class);
+    final ffdd.opsconsole.shared.outbox.EventOutboxService dayOneOutbox = mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class);
+    final ffdd.opsconsole.growth.application.H3DayOneBusinessFactService dayOneFacts = new ffdd.opsconsole.growth.application.H3DayOneBusinessFactService(
+            dayOneInstances, dayOneMissions, dayOneReceipts, dayOneOutbox, Clock.fixed(now.toInstant(ZoneOffset.UTC),ZoneOffset.UTC));
     final BankWithdrawalService service=new BankWithdrawalService(bank,accountRouting,wallet,addresses,delivery,
             otp,cipher,withdrawals,
             d7,mock(HdPayProperties.class),payout,idem,
-            mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC),ZoneOffset.UTC),withdrawalFunds);
+            mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC),ZoneOffset.UTC),withdrawalFunds,dayOneFacts);
     BankWithdrawalMapper.Quote quote(long owner) {
         return new BankWithdrawalMapper.Quote(qn,owner,"BNK-fixture",1L,"VCB","***6789","cipher",new BigDecimal("100"),
                 BigDecimal.ONE,new BigDecimal("99"),new BigDecimal("25000"),new BigDecimal("2475000"),1L,"d5-v1",now,now.plusMinutes(5),null);
@@ -46,6 +52,60 @@ class BankWithdrawalServiceTest {
         when(idem.executeRetained(anyString(),anyString(),anyString(),any(),any())).thenAnswer(i->((Supplier<?>)i.getArgument(4)).get());
     }
     private void enableBindingForLegacyContractTests() { when(accountRouting.contractConfirmed()).thenReturn(true); }
+
+    private static final String DAY_ONE_KEY = "DAY_ONE:20260915T000000";
+    private static final String CARD_EVENT = "H3_DAY_ONE_CARD_BOUND";
+    private void prepareDayOneCardBinding() {
+        enableBindingForLegacyContractTests();
+        when(cipher.encrypt(anyString(), anyString())).thenReturn("encrypted-fixture");
+        when(bank.saveBeneficiary(anyLong(), anyString(), anyString(), anyString(), anyString(), any(), any(), anyLong(), any())).thenReturn(1);
+        when(dayOneMissions.lockActiveUser(71L)).thenReturn(71L);
+        when(dayOneInstances.listInWindowSnapshotBindings(eq(List.of(71L)), eq(CARD_EVENT), eq(now)))
+                .thenReturn(List.of(new ffdd.opsconsole.growth.mapper.DayOneInstanceMapper.DayOneSnapshotBinding(
+                        19L, 71L, DAY_ONE_KEY, 7L, "bind_bank_card", "BUSINESS", "SYSTEM", CARD_EVENT, "user_id", "{}")));
+        when(dayOneMissions.lockDayOneSnapshotMissionAt(71L, 7L, "bind_bank_card", DAY_ONE_KEY, now))
+                .thenReturn(new ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper.MissionDefinition(7L, "bind_bank_card", "DAY_ONE", DAY_ONE_KEY));
+        when(dayOneMissions.attribution(71L)).thenReturn(Map.of("phase", "1", "accountAgeMonths", 0, "cohort", "2026-W38"));
+        when(dayOneReceipts.insertIfAbsent(71L, DAY_ONE_KEY, CARD_EVENT)).thenReturn(1, 0);
+    }
+
+    @Test void formalBankBindingPublishesTheFrozenDayOneFactOnlyOncePerInstance() {
+        prepareDayOneCardBinding();
+        assertEquals(0, service.bind(71, emptyBinding(), "first-card-fact").getCode());
+        // A distinct accepted bind still shares the task-instance receipt, never a second reward fact.
+        assertEquals(0, service.bind(71, emptyBinding(), "another-card-fact").getCode());
+        var order = inOrder(bank, dayOneOutbox);
+        order.verify(bank).saveBeneficiary(eq(71L), anyString(), eq(""), anyString(), anyString(), eq(now), eq(now), eq(0L), eq(now));
+        order.verify(dayOneOutbox).publishUserEventAt(eq("H3_DAY_ONE_BUSINESS"), eq("71:" + DAY_ONE_KEY + ":CARD_BOUND"),
+                eq(CARD_EVENT), eq(71L), eq("P1"), eq(0), eq("2026-W38"), eq(now),
+                eq(Map.of("questCode", "bind_bank_card", "instanceKey", DAY_ONE_KEY)));
+        verify(dayOneOutbox, times(1)).publishUserEventAt(any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test void bankBindingFactFailurePropagatesToTheExistingCommandTransaction() {
+        prepareDayOneCardBinding();
+        doThrow(new IllegalStateException("outbox unavailable")).when(dayOneOutbox)
+                .publishUserEventAt(any(), any(), any(), any(), any(), any(), any(), any(), any());
+        assertEquals("outbox unavailable", assertThrows(IllegalStateException.class,
+                () -> service.bind(71, emptyBinding(), "failed-card-fact")).getMessage());
+    }
+
+    @Test void rejectedOrReplayedBankBindingCannotCreateAnewDayOneFact() {
+        prepareDayOneCardBinding();
+        when(bank.saveBeneficiary(anyLong(), anyString(), anyString(), anyString(), anyString(), any(), any(), anyLong(), any())).thenReturn(0);
+        assertThrows(RuntimeException.class, () -> service.bind(71, emptyBinding(), "failed-save"));
+        verifyNoInteractions(dayOneMissions, dayOneInstances, dayOneReceipts, dayOneOutbox);
+        doReturn(ApiResult.ok(Map.of())).when(idem).executeRetained(anyString(), anyString(), anyString(), any(), any());
+        assertEquals(0, service.bind(71, emptyBinding(), "retained-success").getCode());
+        verifyNoInteractions(dayOneMissions, dayOneInstances, dayOneReceipts, dayOneOutbox);
+    }
+
+    @Test void bankBindingOutsideAFrozenTaskWindowDoesNotBackfillTaskProgress() {
+        prepareDayOneCardBinding();
+        when(dayOneInstances.listInWindowSnapshotBindings(eq(List.of(71L)), eq(CARD_EVENT), eq(now))).thenReturn(List.of());
+        assertEquals(0, service.bind(71, emptyBinding(), "outside-window").getCode());
+        verifyNoInteractions(dayOneReceipts, dayOneOutbox);
+    }
     @Test void quoteRecoveryCannotExposeAnotherUsersRecipientOrAmounts() {
         when(bank.quote(qn)).thenReturn(quote(72));
         assertThrows(RuntimeException.class,()->service.recoverQuote(71,qn));
@@ -168,7 +228,7 @@ class BankWithdrawalServiceTest {
         capacityProxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager, attributes));
         var target = new BankWithdrawalService(bank,accountRouting,wallet,addresses,delivery,otp,cipher,
                 (AppWithdrawalService)capacityProxy.getProxy(),d7,mock(HdPayProperties.class),payout,idem,
-                mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC),withdrawalFunds);
+                mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC),withdrawalFunds,dayOneFacts);
         var configProxy = new org.springframework.aop.framework.ProxyFactory(target);
         configProxy.setProxyTargetClass(true);
         configProxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager, attributes));
