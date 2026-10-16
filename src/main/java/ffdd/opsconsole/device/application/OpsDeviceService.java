@@ -294,6 +294,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return ApiResult.ok(page);
     }
 
+    public ApiResult<PageResult<DeviceSkuView>> recommendableSkus(DeviceSkuQueryRequest request) {
+        return ApiResult.ok(catalogRepository.pageRecommendableSkus(request));
+    }
+
     public ApiResult<DeviceSkuView> sku(String skuId) {
         String normalized = normalizeId(skuId);
         if (!StringUtils.hasText(normalized)) {

@@ -4180,6 +4180,11 @@ class OpsDeviceServiceTest {
         }
 
         @Override
+        public PageResult<DeviceSkuView> pageRecommendableSkus(DeviceSkuQueryRequest request) {
+            throw new UnsupportedOperationException("Support recommendation tests use the SQL repository");
+        }
+
+        @Override
         public Optional<DeviceSkuView> findSku(String skuId) {
             if (skus.containsKey(skuId)) {
                 return Optional.of(skus.get(skuId));
