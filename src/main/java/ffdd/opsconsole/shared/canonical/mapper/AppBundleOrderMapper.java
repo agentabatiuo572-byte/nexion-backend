@@ -72,7 +72,7 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
                AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
                AND UPPER(COALESCE(o.activation_status,'WAITING_PAYMENT')) NOT IN
                    ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
-            """)
+            """ + CanonicalStateMapper.EXCLUDE_FULFILLED_LEGACY_TRIAL)
     int reservedDeviceOrderCount(@Param("userId") Long userId);
 
     @Select("""

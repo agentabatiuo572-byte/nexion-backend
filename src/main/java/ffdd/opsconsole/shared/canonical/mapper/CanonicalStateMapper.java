@@ -14,6 +14,26 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     // All purchase entrypoints count unfulfilled gift promises against the same account slots.
+    /** Old trial conversions already fulfilled a single device but used PAID/ACTIVE.
+     * Preserve history and require the exact settled claim/device/order relationship.
+     * A later legitimate deactivation must not resurrect the order reservation.
+     */
+    String EXCLUDE_FULFILLED_LEGACY_TRIAL = """
+            AND NOT EXISTS (
+                SELECT 1 FROM nx_trial_claim tc
+                JOIN nx_user_device td ON td.id=tc.user_device_id
+                WHERE UPPER(o.order_type)='TRIAL_CONVERT' AND o.quantity=1 AND o.item_count=1
+                  AND UPPER(o.payment_status)='PAID' AND UPPER(o.order_status)='PAID'
+                  AND UPPER(o.activation_status)='ACTIVE'
+                  AND tc.user_id=o.user_id AND tc.is_deleted=0
+                  AND UPPER(tc.status)='REDEEMED' AND tc.settled_at IS NOT NULL
+                  AND td.user_id=o.user_id AND td.source_order_no=o.order_no
+                  AND td.product_id=o.product_id AND td.is_deleted=0
+                  AND td.source_channel='TRIAL' AND td.source_environment='PRODUCTION' AND td.run_id=''
+                  AND (td.activated_at IS NOT NULL OR td.deactivated_at IS NOT NULL)
+            )
+            """;
+
     String PROMOTION_RESERVED_SLOTS = """
             COALESCE((SELECT SUM(r.amount) FROM nx_promotion_reservation r
                        WHERE r.beneficiary_id=#{userId} AND r.asset='DEVICE'
@@ -227,7 +247,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
                AND UPPER(COALESCE(o.activation_status, 'WAITING_PAYMENT')) NOT IN
                    ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
-            """)
+            """ + EXCLUDE_FULFILLED_LEGACY_TRIAL)
     int reservedDeviceOrderCount(@Param("userId") Long userId);
 
     @Select("""
@@ -256,7 +276,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
                AND UPPER(COALESCE(o.activation_status,'WAITING_PAYMENT')) NOT IN
                    ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
-            """)
+            """ + EXCLUDE_FULFILLED_LEGACY_TRIAL)
     int developmentReservedDeviceOrderCount(@Param("userId") Long userId);
 
     @Select("""

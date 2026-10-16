@@ -1,6 +1,7 @@
 package ffdd.opsconsole.promotion.mapper;
 
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.util.*;
 import org.apache.ibatis.annotations.*;
@@ -62,11 +63,10 @@ public interface PromotionMapper extends BaseMapper<Object> {
               AND deactivated_at IS NULL AND pending_deactivate=0 FOR UPDATE
             """,account).size();
         for(Map<String,Object> order:list("""
-            SELECT order_no,product_id,quantity FROM nx_order WHERE user_id=? AND is_deleted=0
-              AND UPPER(order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
-              AND UPPER(COALESCE(activation_status,'WAITING_PAYMENT')) NOT IN ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
-              ORDER BY id FOR UPDATE
-            """,account)) {
+            SELECT o.order_no,o.product_id,o.quantity FROM nx_order o WHERE o.user_id=? AND o.is_deleted=0
+              AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
+              AND UPPER(COALESCE(o.activation_status,'WAITING_PAYMENT')) NOT IN ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
+            """ + CanonicalStateMapper.EXCLUDE_FULFILLED_LEGACY_TRIAL + " ORDER BY o.id FOR UPDATE",account)) {
             List<Map<String,Object>> lines=list("SELECT product_id,quantity FROM nx_order_item WHERE order_no=? AND is_deleted=0 ORDER BY id FOR UPDATE",order.get("order_no"));
             if(lines.isEmpty())lines=List.of(order);
             for(Map<String,Object> line:lines){
