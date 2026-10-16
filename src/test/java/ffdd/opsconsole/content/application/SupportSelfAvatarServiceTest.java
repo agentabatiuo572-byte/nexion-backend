@@ -30,7 +30,7 @@ class SupportSelfAvatarServiceTest {
     final AdminIdempotencyService idempotency=mock(AdminIdempotencyService.class);
     final AuditLogService audit=mock(AuditLogService.class);
     final ObjectStorageService storage=mock(ObjectStorageService.class);
-    final SupportAdminAvatarService avatars=new SupportAdminAvatarService(mapper,roles,ownership,attachments,policy,storage);
+    final SupportAdminAvatarService avatars=new SupportAdminAvatarService(mapper,roles,ownership,attachments,policy,storage,mock(ffdd.opsconsole.content.mapper.SupportGroupMapper.class));
     final SupportSelfAvatarService service=new SupportSelfAvatarService(avatars,mapper,attachments,policy,ownership,admins,roles,groups,locks,idempotency,audit);
     final String oldAsset="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",newAsset="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
     AdminEntity admin;

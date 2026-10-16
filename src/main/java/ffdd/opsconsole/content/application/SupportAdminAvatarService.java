@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.content.domain.SupportAvatarAsset;
 import ffdd.opsconsole.content.mapper.SupportAdminAvatarMapper;
+import ffdd.opsconsole.content.mapper.SupportGroupMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -24,6 +25,7 @@ public class SupportAdminAvatarService {
     private final SupportAttachmentService attachments;
     private final SupportAttachmentPolicy policy;
     private final ObjectStorageService storage;
+    private final SupportGroupMapper groups;
 
     @Transactional
     public Map<String,Object> upload(String client,String key,MultipartFile file) {
@@ -188,9 +190,16 @@ public class SupportAdminAvatarService {
         } else {
             if(!roster)throw new BizException(403,"AVATAR_READ_FORBIDDEN");
             if(!ownership.canReadAgent(actor,admin))throw missing();
-            if(mapper.rosterAdminForShare(admin)==null || !"SUPPORT".equals(roles.activeRoleCode(admin)))throw missing();
+            if(!rosterTarget(admin))throw missing();
         }
         return attachedContent(admin);
+    }
+    private boolean rosterTarget(Long admin) {
+        String role=roles.activeRoleCode(admin);
+        // Existing SUPPORT roster reads include disabled seats visible to their manager.
+        if("SUPPORT".equals(role))return mapper.rosterAdminForShare(admin)!=null;
+        return "SUPER_ADMIN".equals(role) && (groups.qualificationCurrent(admin,"SUPERVISOR")!=null
+                || (groups.qualificationCurrent(admin,"SERVICE")!=null && mapper.enabledServiceProfile(admin)!=null));
     }
     /** Only the current public service can construct this authorization; private avatar scopes are unchanged. */
     @Transactional(propagation=Propagation.MANDATORY)
