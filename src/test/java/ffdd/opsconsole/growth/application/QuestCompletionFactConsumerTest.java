@@ -28,6 +28,27 @@ class QuestCompletionFactConsumerTest {
     private final QuestCompletionFactConsumer consumer = new QuestCompletionFactConsumer(mapper, audit, outbox, null);
 
     @Test
+    void frozenWeeklyMissionCompletesAfterLiveDefinitionPauseAndReplayDoesNotWriteAgain() {
+        var weekly = mock(WeeklyQuestSnapshotService.class);
+        consumer.setWeeklySnapshots(weekly);
+        String code = "weekly_t2_browse_store";
+        String key = "WEEK:2026-W42";
+        LocalDateTime at = LocalDateTime.of(2026,10,16,8,0);
+        when(mapper.lockActiveUser(42L)).thenReturn(42L);
+        when(weekly.isWeekly(code)).thenReturn(true);
+        when(weekly.mission(code,at)).thenReturn(new MissionDefinition(7L,code,"WEEKLY_T2",key));
+        when(mapper.insertFact(eq("SYSTEM"),eq("frozen-event"),anyString(),eq(42L),eq(7L),eq(code),eq(key))).thenReturn(1);
+        when(mapper.markMissionCompleted(42L,7L,key)).thenReturn(1);
+        when(mapper.attribution(42L)).thenReturn(Map.of("phase","P3","accountAgeMonths",1,"cohort","2026-W42"));
+        var command = new QuestCompletionCommand("SYSTEM","frozen-event",42L,code,at);
+        assertThat(consumer.consume(command).replay()).isFalse();
+        when(mapper.lockUserMissionStatus(42L,7L,key)).thenReturn("CLAIMED");
+        assertThat(consumer.consume(command).replay()).isTrue();
+        verify(mapper).markMissionCompleted(42L,7L,key);
+        verify(mapper,never()).lockMissionInstanceAt(42L,code,at);
+    }
+
+    @Test
     void developmentRuntimeCompletesMissionForActiveCanonicalAccount() {
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("dev");

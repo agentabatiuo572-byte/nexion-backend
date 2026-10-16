@@ -25,6 +25,13 @@ import org.springframework.util.StringUtils;
 /** Atomically completes all H3 missions bound to one canonical outbox fact. */
 @Component
 public class QuestCanonicalEventProjector {
+    private WeeklyQuestSnapshotService weeklySnapshots;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setWeeklySnapshots(WeeklyQuestSnapshotService weeklySnapshots) {
+        this.weeklySnapshots = weeklySnapshots;
+    }
+
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
     /** PC only permits these canonical identity slots.  Never scan every instance. */
     static final List<String> SNAPSHOT_USER_ID_FIELDS = List.of("user_id", "inviter_user_id");
@@ -78,6 +85,12 @@ public class QuestCanonicalEventProjector {
         Map<String, Object> payload = readPayload(message.getPayload());
         List<CanonicalQuestEventBinding> bindings = bindingMapper.listActiveBindings(message.getEventType());
         if (bindings == null) bindings = List.of();
+        if (weeklySnapshots != null) {
+            var selected = new java.util.ArrayList<>(bindings.stream()
+                    .filter(binding -> !String.valueOf(binding.missionType()).startsWith("WEEKLY_")).toList());
+            selected.addAll(weeklySnapshots.bindings(message.getEventType(),message.getEventTs()));
+            bindings = selected;
+        }
         List<DayOneSnapshotBinding> snapshotBindings = matchingSnapshotBindings(message, payload);
         boolean dayOnePageObservation = H3DayOnePageObservationContract.forEventType(message.getEventType()) != null
                 || H3DayOneBusinessFactContract.forEventType(message.getEventType()) != null;
@@ -92,6 +105,12 @@ public class QuestCanonicalEventProjector {
         // A stale wrong-slot/quest binding is not a completion route. Keep the
         // source fact pending so a later exact PC binding can project it.
         if (effectiveBindings.isEmpty() && snapshotBindings.isEmpty()) {
+            if (weeklySnapshots != null && WEEKLY_EVENT_QUESTS.containsKey(message.getEventType())
+                    && weeklySnapshots.publishedFor(message.getEventTs())) {
+                deliveryService.markSkipped(QuestCanonicalEventConsumer.CONSUMER_GROUP, deliveryEventId,
+                        "H3_WEEKLY_BINDING_NOT_PUBLISHED");
+                return;
+            }
             if (EventOutboxDispatchScheduler.H3_BINDING_WAIT_EVENT_TYPES.contains(message.getEventType())) {
                 deliveryService.markPendingBinding(
                         QuestCanonicalEventConsumer.CONSUMER_GROUP, deliveryEventId);

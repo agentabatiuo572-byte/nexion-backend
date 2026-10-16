@@ -35,6 +35,37 @@ class QuestCanonicalEventProjectorTest {
             bindingMapper, dayOneInstances, factConsumer, deliveryService, new ObjectMapper());
 
     @Test
+    void newMidweekBindingOutsidePublishedEmptyWeekTerminatesWithoutRewardOrRetryLoop() {
+        var weekly = mock(WeeklyQuestSnapshotService.class);
+        projector.setWeeklySnapshots(weekly);
+        String type = "H3_STOREFRONT_THREE_PRODUCTS_VIEWED";
+        when(bindingMapper.listActiveBindings(type)).thenReturn(List.of(
+                new CanonicalQuestEventBinding("NEW","SYSTEM",type,"weekly_t2_browse_store","user_id","WEEKLY_T2")));
+        when(weekly.publishedFor(EVENT_TS)).thenReturn(true);
+        projector.project(event("evt-not-in-week",type,"{\"user_id\":990725}"),"evt-not-in-week");
+        verify(factConsumer,never()).consume(any());
+        verify(deliveryService).markSkipped(QuestCanonicalEventConsumer.CONSUMER_GROUP,
+                "evt-not-in-week","H3_WEEKLY_BINDING_NOT_PUBLISHED");
+        verify(deliveryService,never()).markPendingBinding(any(),any());
+    }
+
+    @Test
+    void pausedFrozenWeeklyBindingWinsAndNewLiveWeeklyBindingCannotEnterThePublishedWeek() {
+        var weekly = mock(WeeklyQuestSnapshotService.class);
+        projector.setWeeklySnapshots(weekly);
+        String type = "H3_STOREFRONT_THREE_PRODUCTS_VIEWED";
+        when(bindingMapper.listActiveBindings(type)).thenReturn(List.of(
+                new CanonicalQuestEventBinding("NEW","SYSTEM",type,"weekly_t2_browse_store","user_id","WEEKLY_T2")));
+        when(weekly.bindings(type,EVENT_TS)).thenReturn(List.of(
+                new CanonicalQuestEventBinding("FROZEN","SYSTEM",type,"weekly_t2_browse_store","user_id","WEEKLY_T2")));
+        projector.project(event("evt-frozen",type,"{\"user_id\":990725}"),"evt-frozen");
+        verify(factConsumer).consume(new QuestCompletionCommand("SYSTEM","evt-frozen:FROZEN",990725L,
+                "weekly_t2_browse_store",EVENT_TS));
+        verify(factConsumer,never()).consume(new QuestCompletionCommand("SYSTEM","evt-frozen:NEW",990725L,
+                "weekly_t2_browse_store",EVENT_TS));
+    }
+
+    @Test
     void routesOrderReferralLearningDeviceAndCommissionFactsToStableQuestCodes() {
         List<TestRoute> routes = List.of(
                 new TestRoute("ORDER_STARTED", "ORDER", "checkout.started", "H3_FIRST_ORDER_STARTED", "user_id"),

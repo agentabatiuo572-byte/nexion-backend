@@ -29,6 +29,13 @@ import org.springframework.util.StringUtils;
  */
 @Service
 public class QuestCompletionFactConsumer {
+    private WeeklyQuestSnapshotService weeklySnapshots;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setWeeklySnapshots(WeeklyQuestSnapshotService weeklySnapshots) {
+        this.weeklySnapshots = weeklySnapshots;
+    }
+
     private static final Set<String> TRUSTED_PRODUCERS = Set.of(
             "ORDER", "REFERRAL", "LEARNING", "DEVICE", "COMMISSION", "SYSTEM", "SHARE");
 
@@ -102,7 +109,9 @@ public class QuestCompletionFactConsumer {
         MissionDefinition mission = snapshotTarget
                 ? mapper.lockDayOneSnapshotMissionAt(userId, command.sourceMissionId(), questCode,
                         targetInstanceKey, command.occurredAt())
-                : command.occurredAt() == null
+                : weeklySnapshots != null && weeklySnapshots.isWeekly(questCode)
+                        ? weeklySnapshots.mission(questCode, command.occurredAt())
+                        : command.occurredAt() == null
                         ? mapper.lockMissionInstance(userId, questCode)
                         : mapper.lockMissionInstanceAt(userId, questCode, command.occurredAt());
         if (mission == null) {

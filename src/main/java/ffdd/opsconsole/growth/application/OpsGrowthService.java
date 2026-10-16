@@ -64,6 +64,13 @@ import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
 public class OpsGrowthService implements AuditReplayable {
+    private WeeklyQuestSnapshotService weeklySnapshots;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setWeeklySnapshots(WeeklyQuestSnapshotService weeklySnapshots) {
+        this.weeklySnapshots = weeklySnapshots;
+    }
+
     private static final String PHASE_CONFIG_KEY = "platform.phase.config";
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
     private static final String CURRENT_PHASE_KEY = "growth.phase.current";
@@ -279,6 +286,7 @@ public class OpsGrowthService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         ensureRhythmSeedData();
         try {
             if (questEventMapper.isEmpty()
@@ -345,6 +353,7 @@ public class OpsGrowthService implements AuditReplayable {
         }
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> updatePhaseDial(
             String idempotencyKey,
             String dialKey,
@@ -353,6 +362,7 @@ public class OpsGrowthService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         String normalizedKey = normalizePhaseDialKey(dialKey);
         if (RETIRED_KEYS.contains(normalizedKey)) {
             return retiredFeature();
@@ -373,6 +383,7 @@ public class OpsGrowthService implements AuditReplayable {
         return phases();
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> updatePhaseMonthDial(
             String idempotencyKey,
             int month,
@@ -382,6 +393,7 @@ public class OpsGrowthService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         if (month < 1 || month > rhythmTotalMonths()) {
             return validation("MONTH_OUT_OF_RANGE");
         }
@@ -804,6 +816,7 @@ public class OpsGrowthService implements AuditReplayable {
             String action, boolean exists, boolean deleting) {
         ApiResult<Map<String, Object>> guard = requireCommand(key, request == null ? null : request.reason());
         if (guard != null) return guard;
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         try {
             GrowthQuestEventMapper mapper = questEventMapper.get();
@@ -1044,6 +1057,7 @@ public class OpsGrowthService implements AuditReplayable {
         }
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> createMission(
             String idempotencyKey,
             GrowthMissionRequest request) {
@@ -1051,6 +1065,7 @@ public class OpsGrowthService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         if (questEventMapper.isEmpty()) {
             return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         }
@@ -1165,6 +1180,7 @@ public class OpsGrowthService implements AuditReplayable {
             String idempotencyKey, String taskCode, GrowthMissionEditRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) return guard;
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         try {
             String code = normalizeMissionCode(taskCode);
@@ -1198,6 +1214,7 @@ public class OpsGrowthService implements AuditReplayable {
         ApiResult<Map<String, Object>> guard = requireCommand(
                 idempotencyKey, request == null ? null : request.reason());
         if (guard != null) return guard;
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         try {
             String code = normalizeMissionCode(taskCode);
@@ -1238,6 +1255,7 @@ public class OpsGrowthService implements AuditReplayable {
             String idempotencyKey, String taskCode, GrowthMissionStatusRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) return guard;
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         try {
             String code = normalizeMissionCode(taskCode);
@@ -1297,6 +1315,7 @@ public class OpsGrowthService implements AuditReplayable {
             String idempotencyKey, String taskCode, GrowthMissionStatusRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) return guard;
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         try {
             String code = normalizeMissionCode(taskCode);
@@ -1325,6 +1344,7 @@ public class OpsGrowthService implements AuditReplayable {
             String idempotencyKey, String taskCode, GrowthMissionStatusRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) return guard;
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         try {
             String code = normalizeMissionCode(taskCode);
@@ -1785,6 +1805,7 @@ public class OpsGrowthService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
+        if (weeklySnapshots != null) weeklySnapshots.beforeConfigurationChange();
         if (questEventMapper.isEmpty()) {
             return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         }

@@ -321,7 +321,12 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
              WHERE o.event_type = #{eventType}
                AND o.status = #{publishedStatus}
                AND o.is_deleted = 0
-               AND (m.id IS NOT NULL OR (o.is_server_authoritative=1
+               AND (m.id IS NOT NULL OR EXISTS (
+                     SELECT 1 FROM nx_growth_weekly_definition_binding wb
+                      WHERE wb.event_type=o.event_type AND o.is_server_authoritative=1
+                        AND wb.instance_key=CONCAT('WEEK:',DATE_FORMAT(o.event_ts,'%x-W%v'))
+                        AND wb.instance_key=CONCAT('WEEK:',DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v'))
+                   ) OR (o.is_server_authoritative=1
                     AND o.event_type IN ('H3_STOREFRONT_THREE_PRODUCTS_VIEWED',
                                          'H3_GENESIS_SECONDARY_MARKET_VIEWED',
                                          'H3_COMPUTE_COMPLETED_50',
