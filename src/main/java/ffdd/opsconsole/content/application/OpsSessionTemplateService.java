@@ -245,6 +245,8 @@ public class OpsSessionTemplateService {
         LocalDateTime now = LocalDateTime.now(clock);
         String scriptId = uniqueContentId("AS", now);
         SessionScriptView created = templateRepository.createScript(scriptId, normalizeScriptRequest(request), now);
+        i18nLearningRepository.saveMessagePair("conversation.script." + created.id().toLowerCase(Locale.ROOT),
+                created.text(), "", "", "draft", now);
         audit("M5_SESSION_SCRIPT_CREATED", created.id(), request.operator(), detail(
                 "scriptGroup", created.scriptGroup(),
                 "ctaPath", created.ctaPath(),
@@ -356,6 +358,8 @@ public class OpsSessionTemplateService {
         LocalDateTime now = LocalDateTime.now(clock);
         String templateId = uniqueContentId("RT", now);
         SessionReplyTemplateView created = templateRepository.createReplyTemplate(templateId, normalizeReplyTemplateRequest(request), now);
+        i18nLearningRepository.saveMessagePair("conversation.template." + created.id().toLowerCase(Locale.ROOT),
+                created.text(), "", "", "draft", now);
         audit("M5_SESSION_REPLY_TEMPLATE_CREATED", created.id(), request.operator(), detail(
                 "type", created.type(),
                 "status", created.status(),

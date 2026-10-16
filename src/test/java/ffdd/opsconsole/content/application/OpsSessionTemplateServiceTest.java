@@ -259,6 +259,9 @@ class OpsSessionTemplateServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().id()).startsWith("AS-");
+        verify(i18nLearningRepository).saveMessagePair(
+                "conversation.script." + result.getData().id().toLowerCase(java.util.Locale.ROOT),
+                result.getData().text(), "", "", "draft", LocalDateTime.of(2026, 6, 18, 0, 0));
         assertThat(result.getData().ctaPath()).isEqualTo("/store");
         assertThat(templateRepository.scripts).hasSize(2);
         assertAuditAction("M5_SESSION_SCRIPT_CREATED");
@@ -351,6 +354,9 @@ class OpsSessionTemplateServiceTest {
 
         assertThat(created.getCode()).isZero();
         assertThat(created.getData().id()).startsWith("RT-");
+        verify(i18nLearningRepository).saveMessagePair(
+                "conversation.template." + created.getData().id().toLowerCase(java.util.Locale.ROOT),
+                created.getData().text(), "", "", "draft", LocalDateTime.of(2026, 6, 18, 0, 0));
         when(i18nLearningRepository.findPublishedMessagePair(
                 "conversation.template." + created.getData().id().toLowerCase()))
                 .thenReturn(Optional.of(new I18nMessagePairView(
@@ -370,6 +376,59 @@ class OpsSessionTemplateServiceTest {
 
         assertThat(status.getCode()).isZero();
         assertThat(status.getData().status()).isEqualTo("published");
+    }
+
+    @Test
+    void newTemplateCanCompleteExistingI6SavePublishThenM5PublishFlow() {
+        var current = new java.util.concurrent.atomic.AtomicReference<I18nMessagePairView>();
+        var version = new java.util.concurrent.atomic.AtomicInteger();
+        when(i18nLearningRepository.saveMessagePair(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+                    var row = new I18nMessagePairView(call.getArgument(0), "conversation",
+                            call.getArgument(2), call.getArgument(1), call.getArgument(3), call.getArgument(4),
+                            "v" + version.incrementAndGet(), List.of("{user}"));
+                    current.set(row);
+                    return row;
+                });
+        when(i18nLearningRepository.findMessagePair(org.mockito.ArgumentMatchers.anyString()))
+                .thenAnswer(call -> Optional.ofNullable(current.get()).filter(row -> row.messageKey().equals(call.getArgument(0))));
+        when(i18nLearningRepository.findMessagePairForUpdate(org.mockito.ArgumentMatchers.anyString()))
+                .thenAnswer(call -> i18nLearningRepository.findMessagePair(call.getArgument(0)));
+        when(i18nLearningRepository.findPublishedMessagePair(org.mockito.ArgumentMatchers.anyString()))
+                .thenAnswer(call -> i18nLearningRepository.findMessagePair(call.getArgument(0)).filter(row -> "published".equals(row.status())));
+        when(i18nLearningRepository.saveMessageDraftCas(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any())).thenCallRealMethod();
+        var created = service.createReplyTemplate("create-i6-flow", new SessionReplyTemplateCreateRequest(
+                "advisor", "你好 {user}，请返回原会话继续核对。", "draft", "superadmin", "新增三语发布链路回复模板"));
+        String key = "conversation.template." + created.getData().id().toLowerCase(java.util.Locale.ROOT);
+        assertThat(current.get()).isNotNull();
+        assertThat(current.get().en()).isEmpty();
+        assertThat(current.get().vi()).isEmpty();
+        assertThat(current.get().status()).isEqualTo("draft");
+        var publish = new SessionReplyTemplateStatusRequest("published", "superadmin", "发布已核对三语的回复模板");
+        assertThat(service.updateReplyTemplateStatus(created.getData().id(), "missing-copy", publish).getMessage())
+                .isEqualTo("SESSION_TEMPLATE_I18N_NOT_PUBLISHED");
+        var i6 = new OpsI18nLearningService(i18nLearningRepository, auditLogService,
+                mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class),
+                Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class), eventOutboxService);
+        String en = "Hello {user}, please return to the original conversation to continue.";
+        String vi = "Xin chào {user}, vui lòng quay lại cuộc trò chuyện ban đầu để tiếp tục.";
+        var copy = new ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest(created.getData().text(), en, vi,
+                current.get().version(), "superadmin", "填写并核对真实三语回复内容");
+        assertThat(i6.saveLocalizedDraft(key, "save-i6-copy", copy).getCode()).isZero();
+        assertThat(service.updateReplyTemplateStatus(created.getData().id(), "draft-copy", publish).getMessage())
+                .isEqualTo("SESSION_TEMPLATE_I18N_NOT_PUBLISHED");
+        copy = new ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest(created.getData().text(), en, vi,
+                current.get().version(), "superadmin", "发布已核对三语的翻译内容");
+        assertThat(i6.publishLocalizedMessage(key, "publish-i6-copy", copy).getCode()).isZero();
+        assertThat(service.updateReplyTemplateStatus(created.getData().id(), "publish-m5-copy", publish).getData().status())
+                .isEqualTo("published");
     }
 
     @Test
