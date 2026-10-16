@@ -305,7 +305,7 @@ public interface OnboardingCalibrationMapper {
               JOIN nx_user_device d ON d.id=r.user_device_id AND d.user_id=#{userId}
                SET r.active_task_no=NULL,r.online_status='OFFLINE',
                    r.paused_reason=CASE WHEN r.paused_reason IS NULL OR r.paused_reason IN ('','PHONE_LOW_BATTERY','PHONE_OFFLINE','PHONE_REPLACED') THEN 'PHONE_REPLACED' ELSE r.paused_reason END,
-                   r.heartbeat_at=NULL,
+                   r.network_reachable=0,
                    r.updated_at=NOW(6)
              WHERE d.id<>#{keepUserDeviceId} AND d.source_channel='ONBOARDING'
                AND d.source_environment='PRODUCTION' AND d.run_id=''
@@ -318,7 +318,7 @@ public interface OnboardingCalibrationMapper {
 
     @Update("""
             UPDATE nx_user_device_runtime r JOIN nx_user_device d ON d.id=r.user_device_id
-               SET r.paused_reason=NULL,r.online_status='OFFLINE',r.heartbeat_at=NULL,r.updated_at=NOW(6)
+               SET r.paused_reason=NULL,r.online_status='OFFLINE',r.network_reachable=0,r.updated_at=NOW(6)
              WHERE d.user_id=#{userId} AND d.id=#{userDeviceId} AND d.source_channel='ONBOARDING'
                AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.is_deleted=0 AND r.is_deleted=0
                AND UPPER(d.device_type) IN ('MOBILE','PHONE') AND r.paused_reason='PHONE_REPLACED'
