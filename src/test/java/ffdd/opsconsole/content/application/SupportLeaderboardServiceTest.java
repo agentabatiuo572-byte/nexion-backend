@@ -192,7 +192,7 @@ class SupportLeaderboardServiceTest {
         when(attachments.actor("ADMIN")).thenReturn(7L);when(avatarMapper.reference(9L)).thenReturn(Map.of("assetId",asset,"version",1L));
         when(avatarMapper.lock(asset)).thenReturn(new SupportAvatarAsset(asset,7L,"client-id","idem-key","digest","image/png",3L,"private-key","ATTACHED",9L,NOW.plusSeconds(100).atOffset(ZoneOffset.UTC).toLocalDateTime()));
         when(storage.get("private-key")).thenReturn(new ByteArrayInputStream(new byte[]{1,2,3}));
-        var real=new SupportAdminAvatarService(avatarMapper,mock(ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper.class),h.ownership,attachments,mock(SupportAttachmentPolicy.class),storage);
+        var real=new SupportAdminAvatarService(avatarMapper,mock(ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper.class),h.ownership,attachments,mock(SupportAttachmentPolicy.class),storage,mock(ffdd.opsconsole.content.mapper.SupportGroupMapper.class));
         TransactionSynchronizationManager.setActualTransactionActive(true);assertEquals(3,h.service(real).avatar(Map.of("expectedVersion",List.of(h.cached.snapshot().viewVersion())),9).bytes().length);
         assertEquals(404,assertThrows(BizException.class,()->real.supportContent(9L,null)).getCode());
         verify(storage,times(1)).get("private-key");assertEquals(403,assertThrows(BizException.class,()->real.publicLeaderboardContent(null)).getCode());

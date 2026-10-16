@@ -2008,7 +2008,7 @@ class OpsAdminAccountServiceTest {
                     mock(ProductionSupportPathGuard.class), mock(PlatformTransactionManager.class),
                     mock(SupportBulkMapper.class), new ObjectMapper());
             avatars = new SupportAdminAvatarService(avatarMapper, roleRelationMapper, ownership,
-                    attachments, policy, storage);
+                    attachments, policy, storage,mock(ffdd.opsconsole.content.mapper.SupportGroupMapper.class));
             accounts = new OpsAdminAccountService(auditLogService, adminMapper, roleRelationMapper, roleMapper,
                     accountStateMapper, rbacActionMapper, rbacGrantMapper, securityBaselineMapper, passwordEncoder,
                     adminSessionRegistry, permissionCache, auditCenterService, lockMapper, platformRoleService,

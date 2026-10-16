@@ -29,7 +29,7 @@ class SupportDefaultAvatarServiceTest {
         when(attachments.actor("ADMIN")).thenReturn(1L);when(roles.activeRoleCode(anyLong())).thenReturn("SUPPORT");
         when(mapper.attach(anyString(),anyLong())).thenReturn(1);when(mapper.accountAvatar(anyLong(),anyString())).thenReturn(1);when(storage.exists(anyString())).thenReturn(true);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken("1","ignored",List.of(new SimpleGrantedAuthority("platform_a1_write"))));
-        TransactionSynchronizationManager.initSynchronization();service=new SupportAdminAvatarService(mapper,roles,ownership,attachments,policy,storage);
+        TransactionSynchronizationManager.initSynchronization();service=new SupportAdminAvatarService(mapper,roles,ownership,attachments,policy,storage,mock(ffdd.opsconsole.content.mapper.SupportGroupMapper.class));
     }
     @AfterEach void clear(){TransactionSynchronizationManager.clearSynchronization();SecurityContextHolder.clearContext();}
     @Test void eachCreatedAccountGetsIndependentPrivateAssetAndSourceAudit() {

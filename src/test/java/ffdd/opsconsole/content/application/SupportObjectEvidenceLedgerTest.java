@@ -303,7 +303,7 @@ class SupportObjectEvidenceLedgerTest {
         var attachments=mock(SupportAttachmentService.class);when(attachments.actor("ADMIN")).thenReturn(100L);
         var policy=new SupportAttachmentPolicy();policy.setAllowedMimeTypes(List.of("image/png"));policy.setMaxBytes(1048576L);policy.setMaxPixels(1000L);policy.setTtlSeconds(3600L);
         var service=new SupportAdminAvatarService(mapper,mock(ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper.class),
-                mock(SupportOwnershipService.class),attachments,policy,storage);
+                mock(SupportOwnershipService.class),attachments,policy,storage,mock(ffdd.opsconsole.content.mapper.SupportGroupMapper.class));
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
                 new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("100",null,
                         List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("platform_a1_write"))));
