@@ -16,6 +16,42 @@ import org.apache.ibatis.annotations.Delete;
 @Mapper
 public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
 
+    /** Same owner/member scope for count and rows; EXISTS avoids duplicate team links. */
+    String ASSIGNMENT_READ_SCOPE = """
+              FROM nx_user u
+              LEFT JOIN nx_binary_leg_assignment a
+                ON a.owner_user_id=#{ownerUserId} AND a.member_user_id=u.id
+             WHERE u.status='ACTIVE' AND u.is_deleted=0
+               AND EXISTS (SELECT 1 FROM nx_user owner
+                            WHERE owner.id=#{ownerUserId} AND owner.status='ACTIVE' AND owner.is_deleted=0)
+               AND EXISTS (SELECT 1 FROM nx_team_member m
+                            WHERE m.user_id=#{ownerUserId} AND m.member_user_id=u.id
+                              AND m.level=1 AND m.is_deleted=0)
+               AND (#{memberUserId} IS NULL OR u.id=#{memberUserId})
+               AND (#{status}='ALL' OR (#{status}='ASSIGNED' AND a.id IS NOT NULL)
+                    OR (#{status}='UNASSIGNED' AND a.id IS NULL))
+            """;
+
+    @Select("SELECT COUNT(*) " + ASSIGNMENT_READ_SCOPE)
+    long countAssignmentMembers(@Param("ownerUserId") Long ownerUserId,
+                                @Param("memberUserId") Long memberUserId,
+                                @Param("status") String status);
+
+    @Select("""
+            SELECT #{ownerUserId} ownerUserId,u.id memberUserId,a.leg,
+                   a.assigned_by assignedBy,a.assigned_at assignedAt,
+                   CASE WHEN a.id IS NULL THEN NULL
+                        WHEN a.assigned_by='SYSTEM_AUTO_PLACEMENT' THEN 'AUTO'
+                        ELSE 'MANUAL' END assignmentSource
+            """ + ASSIGNMENT_READ_SCOPE + " ORDER BY u.id LIMIT #{limit} OFFSET #{offset}")
+    List<AssignmentMemberRow> listAssignmentMembers(@Param("ownerUserId") Long ownerUserId,
+                                                   @Param("memberUserId") Long memberUserId,
+                                                   @Param("status") String status,
+                                                   @Param("offset") long offset,
+                                                   @Param("limit") int limit);
+
+    record AssignmentMemberRow(Long ownerUserId, Long memberUserId, String leg,
+                               String assignedBy, LocalDateTime assignedAt, String assignmentSource) { }
     @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Integer userSandbox(@Param("userId") Long userId);
 
