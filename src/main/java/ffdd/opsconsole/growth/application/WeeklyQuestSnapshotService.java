@@ -22,18 +22,20 @@ public class WeeklyQuestSnapshotService {
     private final WeeklyQuestSnapshotMapper mapper;
     private final GrowthRhythmFacade rhythm;
     private final Clock clock;
-    private ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade availability;
+    private final ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade availability;
 
-    @Autowired
-    public void setAvailability(ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade availability) {
-        this.availability = availability;
+    /** Legacy direct construction; Spring uses the complete constructor below. */
+    public WeeklyQuestSnapshotService(WeeklyQuestSnapshotMapper mapper, GrowthRhythmFacade rhythm, Clock clock) {
+        this(mapper, rhythm, clock, null);
     }
 
     @Autowired
-    public WeeklyQuestSnapshotService(WeeklyQuestSnapshotMapper mapper, GrowthRhythmFacade rhythm, Clock clock) {
+    public WeeklyQuestSnapshotService(WeeklyQuestSnapshotMapper mapper, GrowthRhythmFacade rhythm, Clock clock,
+            ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade availability) {
         this.mapper = mapper;
         this.rhythm = rhythm;
         this.clock = clock;
+        this.availability = availability;
     }
 
     public static String weekKey(LocalDateTime time) {

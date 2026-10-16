@@ -1000,7 +1000,11 @@ class OpsGrowthServiceTest {
     @Test
     void h3RewardChangePublishesTheOldWeekBeforeChangingItsReward() {
         var weekly = mock(WeeklyQuestSnapshotService.class);
-        service.setWeeklySnapshots(weekly);
+        var service = new OpsGrowthService(configFacade, emergencyRepository, coverageFacade,
+                ledgerPostingFacade, auditLogService, new ObjectMapper(),
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                Optional.empty(), Optional.of(questEventMapper), Optional.empty(), lockMapper,
+                null, Optional.empty(), missionAvailability, null, weekly);
         when(questEventMapper.missionRewardByCode("weekly_t2_browse_store")).thenReturn(50);
         when(questEventMapper.updateMissionRewardByCode("weekly_t2_browse_store",50,60)).thenReturn(1);
         var result = service.updateQuestConfig("weekly-freeze","mission.weekly_t2_browse_store.reward",

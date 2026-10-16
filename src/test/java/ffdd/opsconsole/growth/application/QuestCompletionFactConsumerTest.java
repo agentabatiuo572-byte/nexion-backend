@@ -30,7 +30,7 @@ class QuestCompletionFactConsumerTest {
     @Test
     void frozenWeeklyMissionCompletesAfterLiveDefinitionPauseAndReplayDoesNotWriteAgain() {
         var weekly = mock(WeeklyQuestSnapshotService.class);
-        consumer.setWeeklySnapshots(weekly);
+        var consumer = new QuestCompletionFactConsumer(mapper, audit, outbox, null, null, weekly);
         String code = "weekly_t2_browse_store";
         String key = "WEEK:2026-W42";
         LocalDateTime at = LocalDateTime.of(2026,10,16,8,0);

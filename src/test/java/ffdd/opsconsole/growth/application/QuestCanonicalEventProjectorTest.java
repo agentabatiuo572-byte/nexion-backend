@@ -37,7 +37,7 @@ class QuestCanonicalEventProjectorTest {
     @Test
     void newMidweekBindingOutsidePublishedEmptyWeekTerminatesWithoutRewardOrRetryLoop() {
         var weekly = mock(WeeklyQuestSnapshotService.class);
-        projector.setWeeklySnapshots(weekly);
+        var projector = new QuestCanonicalEventProjector(bindingMapper, dayOneInstances, factConsumer, deliveryService, new ObjectMapper(), weekly);
         String type = "H3_STOREFRONT_THREE_PRODUCTS_VIEWED";
         when(bindingMapper.listActiveBindings(type)).thenReturn(List.of(
                 new CanonicalQuestEventBinding("NEW","SYSTEM",type,"weekly_t2_browse_store","user_id","WEEKLY_T2")));
@@ -52,7 +52,7 @@ class QuestCanonicalEventProjectorTest {
     @Test
     void pausedFrozenWeeklyBindingWinsAndNewLiveWeeklyBindingCannotEnterThePublishedWeek() {
         var weekly = mock(WeeklyQuestSnapshotService.class);
-        projector.setWeeklySnapshots(weekly);
+        var projector = new QuestCanonicalEventProjector(bindingMapper, dayOneInstances, factConsumer, deliveryService, new ObjectMapper(), weekly);
         String type = "H3_STOREFRONT_THREE_PRODUCTS_VIEWED";
         when(bindingMapper.listActiveBindings(type)).thenReturn(List.of(
                 new CanonicalQuestEventBinding("NEW","SYSTEM",type,"weekly_t2_browse_store","user_id","WEEKLY_T2")));

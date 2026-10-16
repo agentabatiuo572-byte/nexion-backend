@@ -63,12 +63,7 @@ import org.springframework.util.StringUtils;
 /** Real user claim/join/check-in/milestone commands for H3-H7. */
 @Service
 public class AppGrowthEngagementService {
-    private WeeklyQuestSnapshotService weeklySnapshots;
-
-    @org.springframework.beans.factory.annotation.Autowired
-    public void setWeeklySnapshots(WeeklyQuestSnapshotService weeklySnapshots) {
-        this.weeklySnapshots = weeklySnapshots;
-    }
+    private final WeeklyQuestSnapshotService weeklySnapshots;
 
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final ZoneId H5_BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
@@ -131,7 +126,7 @@ public class AppGrowthEngagementService {
                 Clock.system(DateTimeFormatConfig.BUSINESS_ZONE));
     }
 
-    @Autowired
+    /** Legacy direct construction; Spring uses the complete constructor below. */
     public AppGrowthEngagementService(
             AppGrowthEngagementMapper mapper,
             VoucherGrantFacade voucherGrantFacade,
@@ -147,6 +142,26 @@ public class AppGrowthEngagementService {
             Optional<AppGrowthVoucherSandboxService> voucherSandboxService,
             Environment environment,
             Clock clock) {
+        this(mapper, voucherGrantFacade, growthRhythmFacade, coverageFacade, idempotencyService, auditLogService, outboxService, earningsReleaseService, sandboxService, questFactConsumer, streakPerkAvailability, voucherSandboxService, environment, clock, null);
+    }
+
+    @Autowired
+    public AppGrowthEngagementService(
+            AppGrowthEngagementMapper mapper,
+            VoucherGrantFacade voucherGrantFacade,
+            GrowthRhythmFacade growthRhythmFacade,
+            TreasuryCoverageFacade coverageFacade,
+            AdminIdempotencyService idempotencyService,
+            AuditLogService auditLogService,
+            EventOutboxService outboxService,
+            EarningsReleaseService earningsReleaseService,
+            AppGrowthWheelSandboxService sandboxService,
+            QuestCompletionFactConsumer questFactConsumer,
+            StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
+            Optional<AppGrowthVoucherSandboxService> voucherSandboxService,
+            Environment environment,
+            Clock clock,
+            WeeklyQuestSnapshotService weeklySnapshots) {
         this.mapper = mapper;
         this.voucherGrantFacade = voucherGrantFacade;
         this.growthRhythmFacade = growthRhythmFacade;
@@ -161,6 +176,7 @@ public class AppGrowthEngagementService {
         this.voucherSandboxService = voucherSandboxService;
         this.environment = environment;
         this.clock = clock;
+        this.weeklySnapshots = weeklySnapshots;
     }
 
     public ApiResult<Map<String, Object>> questState(Long userId) {

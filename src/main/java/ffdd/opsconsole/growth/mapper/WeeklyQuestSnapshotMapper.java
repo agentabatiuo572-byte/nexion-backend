@@ -1,5 +1,7 @@
 package ffdd.opsconsole.growth.mapper;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+
 import ffdd.opsconsole.growth.mapper.QuestCanonicalEventBindingMapper.CanonicalQuestEventBinding;
 import ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper.MissionDefinition;
 import java.math.BigDecimal;
@@ -10,7 +12,7 @@ import org.apache.ibatis.annotations.*;
 
 /** Published weekly definitions, distinct from mutable per-user completion progress. */
 @Mapper
-public interface WeeklyQuestSnapshotMapper {
+public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
     @Select("""
             SELECT instance_key instanceKey,eligible_from eligibleFrom,eligible_until eligibleUntil,
                    quest_bonus_multiplier questBonusMultiplier,rhythm_month rhythmMonth,
