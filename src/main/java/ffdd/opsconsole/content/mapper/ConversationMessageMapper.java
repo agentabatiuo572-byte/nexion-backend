@@ -10,6 +10,16 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Insert;
 
 public interface ConversationMessageMapper extends BaseMapper<ConversationMessageEntity> {
+    // Only legacy task actor references are resolved; ordinary historical display names stay unchanged.
+    String ADMIN_DISPLAY_NAME = "COALESCE(NULLIF(TRIM(display_admin.nickname),''),NULLIF(TRIM(display_admin.username),''))";
+    String SENDER_NAME = "CASE WHEN sender_type='agent' AND sender_name=CONCAT('admin:',sender_id) "
+        + "THEN COALESCE((SELECT " + ADMIN_DISPLAY_NAME
+        + " FROM nx_admin display_admin WHERE display_admin.id=sender_id AND display_admin.is_deleted=0),'客服') "
+        + "ELSE sender_name END AS senderName";
+
+    @Select("SELECT " + ADMIN_DISPLAY_NAME + " FROM nx_admin display_admin WHERE display_admin.id=#{adminId} AND display_admin.is_deleted=0")
+    String senderDisplayName(@Param("adminId") Long adminId);
+
     String TARGET_AVAILABILITY="CASE WHEN h.kind='SKU' THEN CASE WHEN EXISTS(SELECT 1 FROM nx_product p WHERE p.product_no=h.sku_id AND p.is_deleted=0 AND p.store_visible=1 AND p.price_usdt>0 AND ("+
         ffdd.opsconsole.device.mapper.DeviceCatalogMapper.SKU_STATUS_SQL+")='on' AND "+ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate.PUBLISHABLE_SQL+") THEN 'AVAILABLE' ELSE 'UNAVAILABLE' END "+
         "WHEN h.kind='LINK' THEN CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(h.link_target_json,'$.type')) IN ('HOME','WALLET','SUPPORT') THEN 'AVAILABLE' ELSE 'UNAVAILABLE' END ELSE NULL END AS targetAvailability ";
@@ -32,7 +42,8 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
               msg.conversation_no AS conversationNo,
               sender_id AS senderId,
               sender_type AS senderType,
-              sender_name AS senderName,
+              """ + SENDER_NAME + """
+              ,
               content,
               COALESCE(receipt.receipt_status, CASE WHEN msg.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
               msg.created_at AS createdAt,
@@ -55,7 +66,8 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
 
     @Select("""
             SELECT msg.id,msg.conversation_id AS conversationId,msg.conversation_no AS conversationNo,
-                   sender_id AS senderId,sender_type AS senderType,sender_name AS senderName,content,
+                   sender_id AS senderId,sender_type AS senderType,""" + SENDER_NAME + """
+              ,content,
                    COALESCE(receipt.receipt_status, CASE WHEN msg.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
                    msg.created_at AS createdAt,
               h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
@@ -79,7 +91,8 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
     @Select("""
             <script>
             SELECT recent.id,recent.conversation_id AS conversationId,recent.conversation_no AS conversationNo,
-                   recent.sender_id AS senderId,recent.sender_type AS senderType,recent.sender_name AS senderName,
+                   recent.sender_id AS senderId,recent.sender_type AS senderType,""" + SENDER_NAME + """
+              ,
                    recent.content,
                    COALESCE(receipt.receipt_status, CASE WHEN recent.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
                    recent.created_at AS createdAt,
@@ -113,7 +126,8 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
 
     @Select("""
             SELECT recent.id,recent.conversation_id AS conversationId,recent.conversation_no AS conversationNo,
-                   recent.sender_id AS senderId,recent.sender_type AS senderType,recent.sender_name AS senderName,
+                   recent.sender_id AS senderId,recent.sender_type AS senderType,""" + SENDER_NAME + """
+              ,
                    recent.content,
                    COALESCE(receipt.receipt_status, CASE WHEN recent.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
                    recent.created_at AS createdAt,

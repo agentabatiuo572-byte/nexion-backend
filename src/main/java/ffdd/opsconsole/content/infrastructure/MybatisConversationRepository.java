@@ -460,6 +460,10 @@ public class MybatisConversationRepository implements ConversationRepository {
         message.setConversationNo(conversationNo);
         message.setSenderId(senderId);
         message.setSenderType(senderType);
+        if ("agent".equals(senderType) && ("admin:" + senderId).equals(senderName)) {
+            String displayName = messageMapper.senderDisplayName(senderId);
+            senderName = org.springframework.util.StringUtils.hasText(displayName) ? displayName : "客服";
+        }
         message.setSenderName(senderName);
         message.setContent(content);
         message.setCreatedAt(now);
