@@ -71,6 +71,10 @@ public class SupportBulkService {
         for(var row:candidates) {
             Long customer=number(row,"customerId");found.add(customer);
             String reason=excludedIds.contains(customer)?"EXPLICITLY_EXCLUDED":exclusion(row,filters);
+            if(reason==null) {
+                var current=mapper.conversation(customer);
+                reason=current==null?null:conversationExclusion(current);
+            }
             if(reason==null) accepted.add(new SupportBulk.Customer(customer,number(row,"assignmentId")));
             else excluded.add(new SupportBulk.Excluded(customer,reason));
         }
@@ -307,7 +311,9 @@ public class SupportBulkService {
             } else if(failure instanceof BizException b) {
                 String code=b.getMessage();boolean skipped=b.getCode()==401 || b.getCode()==403 || b.getCode()==404
                     || Set.of("SUPPORT_ASSIGNMENT_CHANGED","SUPPORT_MAINTENANCE_STOPPED","SUPPORT_AGENT_UNAVAILABLE",
-                        "SUPPORT_CUSTOMER_NOT_FOUND","SUPPORT_WRITE_FORBIDDEN","SUPPORT_PRODUCTION_PATH_FORBIDDEN").contains(code);
+                        "SUPPORT_CUSTOMER_NOT_FOUND","SUPPORT_WRITE_FORBIDDEN","SUPPORT_PRODUCTION_PATH_FORBIDDEN",
+                        "CONVERSATION_CLOSED","CONVERSATION_TRANSFERRED","CONVERSATION_ARCHIVED","CONVERSATION_CONVERTED",
+                        "SUPPORT_BULK_CONVERSATION_CHANGED").contains(code);
                 outcome(batch,customer,skipped?"SKIPPED":"FAILED","KNOWN",null,null,code,!skipped && (b.getCode()==503 || "SUPPORT_SKU_UNAVAILABLE".equals(code)),1);
             } else {
                 // A database commit exception may have committed. Preserve uncertainty until a real message lookup.
@@ -457,7 +463,8 @@ public class SupportBulkService {
     private static String conversationExclusion(Map<String,Object> current) {
         if(truth(current.get("converted")))return "CONVERSATION_CONVERTED";
         if(truth(current.get("archived")))return "CONVERSATION_ARCHIVED";
-        if(Set.of("CLOSED","TRANSFERRED").contains(text(current,"status")))return "CONVERSATION_NOT_WRITABLE";
+        if("CLOSED".equals(text(current,"status")))return "CONVERSATION_CLOSED";
+        if("TRANSFERRED".equals(text(current,"status")))return "CONVERSATION_TRANSFERRED";
         return null;
     }
 
