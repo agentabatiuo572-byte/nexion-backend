@@ -115,6 +115,17 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
+    public PageResult<DeviceSkuView> pageRecommendableSkus(DeviceSkuQueryRequest request) {
+        String keyword = request == null ? null : normalize(request.keyword());
+        long pageNum = normalizePage(request == null ? null : request.pageNum());
+        long pageSize = normalizeSize(request == null ? null : request.pageSize());
+        long total = mapper.countRecommendableSkus(keyword);
+        List<DeviceSkuView> records = mapper.pageRecommendableSkus(keyword, pageSize, (pageNum - 1) * pageSize)
+                .stream().map(this::skuView).toList();
+        return new PageResult<>(total, pageNum, pageSize, records);
+    }
+
+    @Override
     public Optional<DeviceSkuView> findSku(String skuId) {
         return Optional.ofNullable(mapper.findSku(skuId)).map(this::skuView);
     }

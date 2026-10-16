@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 
 import ffdd.opsconsole.device.application.OpsDeviceService;
+import ffdd.opsconsole.device.dto.DeviceSkuQueryRequest;
 import ffdd.opsconsole.content.application.OpsSupportAgentService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -17,8 +18,21 @@ import org.springframework.security.access.prepost.PreAuthorize;
 class OpsSupportWorkbenchControllerTest {
     private final OpsUserService users = mock(OpsUserService.class);
     private final OpsSupportAgentService agents = mock(OpsSupportAgentService.class);
-    private final OpsSupportWorkbenchController controller = new OpsSupportWorkbenchController(mock(OpsDeviceService.class), users, agents,
+    private final OpsDeviceService devices = mock(OpsDeviceService.class);
+    private final OpsSupportWorkbenchController controller = new OpsSupportWorkbenchController(devices, users, agents,
             ffdd.opsconsole.content.SupportTestDependencies.ownership(),mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class));
+
+    @Test
+    void skuPickerUsesTheSendableCatalogAndKeepsReadPermissions() throws Exception {
+        var query = new DeviceSkuQueryRequest("off", "Lumen", 2L, 8L);
+        when(devices.recommendableSkus(query)).thenReturn(ApiResult.ok(new PageResult<>(17, 2, 8, List.of())));
+        assertThat(controller.skus(query).getData().getTotal()).isEqualTo(17);
+        verify(devices).recommendableSkus(query);
+        verify(devices, never()).skus(any());
+        assertThat(OpsSupportWorkbenchController.class.getMethod("skus", DeviceSkuQueryRequest.class)
+                .getAnnotation(PreAuthorize.class).value())
+                .isEqualTo("hasAnyAuthority('service_m1_read','service_m3_read')");
+    }
 
     @Test
     void usersRouteUsesTheScopedPhoneSearchAndKeepsCanonicalPagination() {

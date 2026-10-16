@@ -18,6 +18,8 @@ import ffdd.opsconsole.device.domain.OnboardingYieldComparisonView;
 public interface DeviceCatalogRepository {
     PageResult<DeviceSkuView> pageSkus(DeviceSkuQueryRequest request);
 
+    PageResult<DeviceSkuView> pageRecommendableSkus(DeviceSkuQueryRequest request);
+
     Optional<DeviceSkuView> findSku(String skuId);
 
     List<DeviceSkuView> findSkusByAiUnlocks(String taskId);

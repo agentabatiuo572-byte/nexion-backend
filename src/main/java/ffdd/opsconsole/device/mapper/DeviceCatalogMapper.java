@@ -949,6 +949,41 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     List<SkuRow> pageSkus(@Param("status") String status, @Param("keyword") String keyword,
                           @Param("limit") long limit, @Param("offset") long offset);
 
+    // Java 17 String.isBlank whitespace; ICU [:space:] also excludes names Java accepts (for example NBSP).
+    String SKU_NONBLANK_NAME_REGEX = "[^\\x{0009}-\\x{000D}\\x{001C}-\\x{0020}\\x{1680}"
+            + "\\x{2000}-\\x{2006}\\x{2008}-\\x{200A}\\x{2028}\\x{2029}\\x{205F}\\x{3000}]";
+
+    // Match the existing support send gate before pagination; E1 still exposes withheld rows for operators.
+    String RECOMMENDABLE_SKU_WHERE = """
+             <bind name="nonblankNamePattern" value="@ffdd.opsconsole.device.mapper.DeviceCatalogMapper@SKU_NONBLANK_NAME_REGEX" />
+             WHERE p.is_deleted=0 AND p.store_visible=1 AND p.price_usdt>0
+               AND REGEXP_LIKE(p.name, #{nonblankNamePattern})
+               AND CHAR_LENGTH(p.product_no) BETWEEN 1 AND 64
+               AND NOT REGEXP_LIKE(p.product_no, '[^A-Za-z0-9_-]', 'c')
+               AND (
+            """ + SKU_STATUS_SQL + ")='on' AND " + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
+             <if test='keyword != null and keyword != ""'>
+               AND (p.product_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.name LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.tagline LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.gpu_model LIKE CONCAT('%', #{keyword}, '%'))
+             </if>
+            """;
+
+    @Select("<script>SELECT COUNT(*) FROM nx_product p " + RECOMMENDABLE_SKU_WHERE + "</script>")
+    long countRecommendableSkus(@Param("keyword") String keyword);
+
+    @Select("<script>SELECT " + SKU_COLUMNS + """
+              FROM nx_product p
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+            """ + RECOMMENDABLE_SKU_WHERE + """
+             ORDER BY p.updated_at DESC, p.id DESC
+             LIMIT #{limit} OFFSET #{offset}
+            </script>
+            """)
+    List<SkuRow> pageRecommendableSkus(@Param("keyword") String keyword,
+                                      @Param("limit") long limit, @Param("offset") long offset);
+
     @Select("""
             SELECT
             """ + SKU_COLUMNS + """
