@@ -239,6 +239,8 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT CONCAT('trial-', claim_no) AS sid,
+                   user_id AS userId,
+                   (SELECT u.nickname FROM nx_user u WHERE u.id = nx_trial_claim.user_id AND u.is_deleted = 0) AS displayName,
                    CASE
                      WHEN UPPER(status) IN ('CLAIMED','ACTIVE') AND expires_at <= NOW() THEN 'grace'
                      ELSE LOWER(status)
@@ -286,6 +288,8 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT CONCAT('trial-', claim_no) AS sid,
+                   user_id AS userId,
+                   (SELECT u.nickname FROM nx_user u WHERE u.id = nx_trial_claim.user_id AND u.is_deleted = 0) AS displayName,
                    CASE
                      WHEN UPPER(status) IN ('CLAIMED','ACTIVE') AND expires_at <= NOW() THEN 'grace'
                      ELSE LOWER(status)

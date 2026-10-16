@@ -83,7 +83,8 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
             + "(SELECT CAST(read_route.id AS CHAR) "+POOL_ROUTE_FACT+" FOR SHARE) routeId,"
             + "(SELECT CAST(read_route.group_id AS CHAR) "+POOL_ROUTE_FACT+" FOR SHARE) routeGroupId,"
             + "(SELECT read_route.version "+POOL_ROUTE_FACT+" FOR SHARE) routeVersion,";
-    @Select("<script>SELECT "+POOL_ROUTE_COLUMNS+"p.customer_id customerId,p.reason,p.version,p.entered_at enteredAt,p.auto_eligible autoEligible,p.auto_rule_version autoRuleVersion,p.auto_attempt_state autoAttemptState,p.attempts,p.last_attempt_at lastAttemptAt,p.last_outcome lastOutcome,p.operation_id operationId,scope_customer.sponsor_user_id inviterId,scope_customer.nickname "+SCOPED_POOL_FILTER+" ORDER BY p.customer_id LIMIT #{limit} OFFSET #{offset} FOR SHARE</script>")
+    // Pool clocks are UTC DATETIME(6); return explicit UTC strings without JDBC/session-zone conversion.
+    @Select("<script>SELECT "+POOL_ROUTE_COLUMNS+"p.customer_id customerId,p.reason,p.version,DATE_FORMAT(p.entered_at,'%Y-%m-%dT%H:%i:%s.%fZ') enteredAt,p.auto_eligible autoEligible,p.auto_rule_version autoRuleVersion,p.auto_attempt_state autoAttemptState,p.attempts,DATE_FORMAT(p.last_attempt_at,'%Y-%m-%dT%H:%i:%s.%fZ') lastAttemptAt,p.last_outcome lastOutcome,p.operation_id operationId,scope_customer.sponsor_user_id inviterId,scope_customer.nickname "+SCOPED_POOL_FILTER+" ORDER BY p.customer_id LIMIT #{limit} OFFSET #{offset} FOR SHARE</script>")
     List<Map<String,Object>> scopedPool(@Param("scope") ReadScope scope,@Param("reason") String reason,@Param("keyword") String keyword,@Param("offset") long offset,@Param("limit") int limit);
     String SCOPED_HANDOVER_FILTER="FROM nx_support_agent_user_assignment x JOIN nx_user scope_customer ON scope_customer.id=x.user_id LEFT JOIN nx_admin a ON a.id=x.agent_admin_id LEFT JOIN nx_support_agent_profile p ON p.admin_id=a.id WHERE x.status='ACTIVE' AND x.is_deleted=0 " + CUSTOMER_SCOPE_PREDICATE
             + " <if test='unavailable'>AND NOT EXISTS(SELECT 1 " + SupportBindingMapper.ELIGIBLE_AGENT_FROM + " AND a.id=x.agent_admin_id FOR SHARE)</if> ";
@@ -221,6 +222,8 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
 
     @Insert("INSERT INTO nx_support_binding_pool(customer_id,reason,version,entered_at) VALUES(#{id},#{reason},1,UTC_TIMESTAMP(6))")
     int enterPool(@Param("id") Long id,@Param("reason") String reason);
+    @Insert("INSERT INTO nx_support_binding_pool(customer_id,reason,excluded_agent_admin_id,version,entered_at) VALUES(#{id},'DEPTH_LIMIT',#{originalAgent},1,UTC_TIMESTAMP(6))")
+    int enterDepthLimitedPool(@Param("id") Long id,@Param("originalAgent") Long originalAgent);
     @Update("UPDATE nx_support_binding_pool SET auto_eligible=1,auto_rule_version=#{version},auto_attempt_state='WAITING_CANDIDATE',operation_id=#{operation} WHERE customer_id=#{id}")
     int eligiblePool(@Param("id") Long id,@Param("version") Long version,@Param("operation") String operation);
     @Update("UPDATE nx_support_binding_pool SET auto_attempt_state=#{state},attempts=attempts+1,last_attempt_at=UTC_TIMESTAMP(6),last_outcome=#{outcome},version=version+1 WHERE customer_id=#{id}")
@@ -233,7 +236,7 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
     Long poolVersion(Long id);
     @Select("SELECT reason FROM nx_support_binding_pool WHERE customer_id=#{id} FOR SHARE")
     String poolReason(Long id);
-    @Select("SELECT customer_id customerId,reason,auto_eligible autoEligible,auto_rule_version autoRuleVersion,auto_attempt_state autoAttemptState,attempts,last_attempt_at lastAttemptAt,last_outcome lastOutcome,operation_id operationId FROM nx_support_binding_pool WHERE customer_id=#{id}")
+    @Select("SELECT customer_id customerId,reason,excluded_agent_admin_id excludedAgentAdminId,auto_eligible autoEligible,auto_rule_version autoRuleVersion,auto_attempt_state autoAttemptState,attempts,last_attempt_at lastAttemptAt,last_outcome lastOutcome,operation_id operationId FROM nx_support_binding_pool WHERE customer_id=#{id} FOR SHARE")
     Map<String,Object> poolAttempt(Long id);
     @Delete("DELETE FROM nx_support_binding_pool WHERE customer_id=#{id}")
     int leavePool(Long id);

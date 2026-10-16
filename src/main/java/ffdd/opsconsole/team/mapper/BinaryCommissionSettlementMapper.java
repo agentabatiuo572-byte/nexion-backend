@@ -41,7 +41,8 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
             SELECT #{ownerUserId} ownerUserId,u.id memberUserId,a.leg,
                    a.assigned_by assignedBy,a.assigned_at assignedAt,
                    CASE WHEN a.id IS NULL THEN NULL
-                        WHEN a.assigned_by='SYSTEM_AUTO_PLACEMENT' THEN 'AUTO'
+                        WHEN """ + BinaryPlacementSourceSql.AUTOMATIC + """
+                          THEN 'AUTO'
                         ELSE 'MANUAL' END assignmentSource
             """ + ASSIGNMENT_READ_SCOPE + " ORDER BY u.id LIMIT #{limit} OFFSET #{offset}")
     List<AssignmentMemberRow> listAssignmentMembers(@Param("ownerUserId") Long ownerUserId,
@@ -121,10 +122,9 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT COUNT(1)
-              FROM nx_binary_leg_assignment
-             WHERE owner_user_id=#{ownerUserId}
-               AND assigned_by='SYSTEM_AUTO_PLACEMENT'
-            """)
+              FROM nx_binary_leg_assignment a
+             WHERE a.owner_user_id=#{ownerUserId}
+               AND """ + BinaryPlacementSourceSql.AUTOMATIC)
     int countAutoPlacedMembers(@Param("ownerUserId") Long ownerUserId);
 
     @Select("""

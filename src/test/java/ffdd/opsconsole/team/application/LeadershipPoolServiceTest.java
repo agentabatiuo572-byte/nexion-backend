@@ -96,6 +96,29 @@ class LeadershipPoolServiceTest {
     }
 
     @Test
+    void closedLeaderboardWeekUsesTheSameShanghaiBoundaryAsAppAndPc() {
+        Map<String, String> checkpoints = new HashMap<>(Map.of(
+                "today", "2026-08-08", "week", "2026-07-27", "month", "2026-07"));
+        when(configFacade.activeValue(anyString())).thenAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            return key.startsWith("team.runtime.F.leaderboard.lastSettled.")
+                    ? Optional.ofNullable(checkpoints.get(key.substring(key.lastIndexOf('.') + 1))) : Optional.empty();
+        });
+        org.mockito.Mockito.doAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            checkpoints.put(key.substring(key.lastIndexOf('.') + 1), invocation.getArgument(1));
+            return null;
+        }).when(configFacade).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
+        when(teamCommissionMapper.lockLeadershipSettlementMutex(anyInt())).thenReturn(1L);
+        var mondayShanghai = ZonedDateTime.of(2026, 8, 9, 16, 0, 0, 0, ZoneOffset.UTC);
+        service.settleClosedLeaderboardPeriods(mondayShanghai);
+        assertThat(checkpoints).containsEntry("today", "2026-08-09").containsEntry("week", "2026-08-03");
+        service.settleClosedLeaderboardPeriods(mondayShanghai.plusMinutes(1));
+        verify(configFacade).upsertAdminValue("team.runtime.F.leaderboard.lastSettled.week", "2026-08-03",
+                "TEXT", "team_runtime", "F16 leaderboard settlement checkpoint");
+    }
+
+    @Test
     void settle_distributesPoolByVotesRatio() {
         stubValidSettlementConfig();
         // user1 votes=1, user2 votes=3;pool=$400 → 100 + 300(按 votes 比例)

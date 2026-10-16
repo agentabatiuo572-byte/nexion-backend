@@ -144,6 +144,15 @@ public class OnboardingCalibrationService {
         return row == null ? ApiResult.fail(404, "ONBOARDING_CALIBRATION_NOT_FOUND") : ApiResult.ok(project(row));
     }
 
+    public ApiResult<Map<String, Object>> bindingStatus(Long userId) {
+        if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
+        Scope scope = scope(userId);
+        Boolean hasBinding = mapper.hasPhoneBinding(userId, scope.sourceEnvironment(), scope.runId());
+        if (hasBinding == null) throw new BizException(503, "PHONE_BINDING_STATUS_UNAVAILABLE");
+        return ApiResult.ok(Map.of("serverCanonical", true, "sourceEnvironment", scope.sourceEnvironment(),
+                "runId", scope.runId(), "hasBinding", hasBinding));
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> activate(Long userId, ActionRequest request) {
         return transition(userId, request, "ACTIVE");
@@ -170,6 +179,19 @@ public class OnboardingCalibrationService {
                 : mapper.findForUpdate(userId, deviceId);
         if (current != null && !deviceId.equals(current.deviceId())) {
             throw new BizException(409, "PHONE_INSTALLATION_ID_MISMATCH");
+        }
+        if (Boolean.TRUE.equals(request.initialOnly())) {
+            if (!"DEFERRED".equals(target)) return ApiResult.fail(422, "ONBOARDING_ACTIVATION_REQUEST_INVALID");
+            // A successful retry remains a read of its existing receipt. Every
+            // new initial deferral rechecks under the same user lock as binding.
+            if (current != null && key.equals(current.activationIdempotencyKey())) {
+                return hash.equals(current.activationRequestHash()) ? ApiResult.ok(project(current))
+                        : ApiResult.fail(409, "ONBOARDING_ACTIVATION_IDEMPOTENCY_CONFLICT");
+            }
+            if (mapper.phoneBinding(userId, scope.sourceEnvironment(), scope.runId()) != null
+                    || current != null && (current.userDeviceId() != null || "ACTIVE".equals(current.activationStatus()))) {
+                throw new BizException(409, "PHONE_INITIAL_DEFER_REQUIRES_UNBOUND");
+            }
         }
         if (current == null) {
             if (!"DEFERRED".equals(target)) {
@@ -459,7 +481,8 @@ public class OnboardingCalibrationService {
 
     private String actionHash(Long userId, ActionRequest request, String target, Scope scope) {
         return sha256(userId + "|" + scope.sourceEnvironment() + "|" + scope.runId() + "|"
-                + request.deviceId().trim() + "|" + request.expectedRevision() + "|" + target);
+                + request.deviceId().trim() + "|" + request.expectedRevision() + "|" + target
+                + (Boolean.TRUE.equals(request.initialOnly()) ? "|INITIAL_ONLY" : ""));
     }
 
     private String sha256(String canonical) {
@@ -606,7 +629,11 @@ public class OnboardingCalibrationService {
     }
 
     public record Request(String deviceId, long expectedRevision, String idempotencyKey, Signals signals) { }
-    public record ActionRequest(String deviceId, long expectedRevision, String idempotencyKey) { }
+    public record ActionRequest(String deviceId, long expectedRevision, String idempotencyKey, Boolean initialOnly) {
+        public ActionRequest(String deviceId, long expectedRevision, String idempotencyKey) {
+            this(deviceId, expectedRevision, idempotencyKey, null);
+        }
+    }
     public record Signals(Double memGB, Integer cores, String model, String brand, String gpu, Double pxDensity,
                           Double pingMs, Integer batteryLevel, Boolean charging, Boolean networkReachable,
                           String platform, String soc) {

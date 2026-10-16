@@ -401,6 +401,11 @@ public interface OnboardingCalibrationMapper {
             """)
     List<HardwareGroup> pendingHardware();
 
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_phone_binding WHERE user_id=#{userId} "
+            + "AND source_environment=#{sourceEnvironment} AND run_id=#{runId})")
+    Boolean hasPhoneBinding(@Param("userId") Long userId, @Param("sourceEnvironment") String sourceEnvironment,
+                            @Param("runId") String runId);
+
     @Select("""
             SELECT installation_id installationId,user_device_id userDeviceId,hardware_key hardwareKey,
                    CAST(UNIX_TIMESTAMP(changed_at)*1000 AS UNSIGNED) changedAt,version

@@ -38,8 +38,8 @@ class SupportRulesUpgradeTest {
                 new SupportRules(10L,30,15,7,"UNLIMITED",null,"SUPERVISOR",null));
         when(mapper.updateRules(30,15,7,"UNLIMITED",null,9L,7L,"Controlled install upgrade","SUPERVISOR")).thenReturn(1);
     }
-    @Test void sentinelCannotBeWrittenThroughManagementApiAndRulesStillRequireEightCharacters(){
-        assertThatThrownBy(()->service.updateRules("original-key",request("UNCONFIGURED",null,"Controlled install upgrade"))).isInstanceOf(BizException.class).hasMessage("SUPPORT_RULES_INVALID");
+    @Test void unknownModeCannotBeWrittenThroughManagementApiAndRulesStillRequireEightCharacters(){
+        assertThatThrownBy(()->service.updateRules("original-key",request("UNKNOWN_MODE",null,"Controlled install upgrade"))).isInstanceOf(BizException.class).hasMessage("SUPPORT_RULES_INVALID");
         assertThatThrownBy(()->service.updateRules("original-key",request("UNLIMITED",null,"六字有效理由"))).isInstanceOf(BizException.class);
         verifyNoInteractions(idempotency,audit);
         verify(mapper,times(2)).rulesWriteGrantSnapshot(7L);verifyNoMoreInteractions(mapper);
@@ -77,4 +77,50 @@ class SupportRulesUpgradeTest {
         verify(mapper,never()).updateRules(any(),any(),any(),any(),any(),any(),any(),any(),any());
         verifyNoInteractions(audit);
     }
+    SupportRulesRequest preserve(Long version){return new SupportRulesRequest(null,null,null,"UNCONFIGURED",null,version,"Change only unbound assignment","AUTO_RANDOM");}
+    @Test void unconfiguredInheritanceCanRemainUnconfiguredWhileChangingIndependentAssignmentPolicy(){
+        var before=new SupportRules(1L,null,null,null,"UNCONFIGURED",null,"SUPERVISOR",null);
+        var after=new SupportRules(2L,null,null,null,"UNCONFIGURED",null,"AUTO_RANDOM",null);
+        when(mapper.rules()).thenReturn(before,after);
+        when(mapper.updateRules(null,null,null,"UNCONFIGURED",null,1L,7L,"Change only unbound assignment","AUTO_RANDOM")).thenReturn(1);
+        assertThat(service.updateRules("preserve-key",preserve(1L)).getData()).isEqualTo(after);
+        verify(mapper).lockRules();verify(ownership).requireSuperAdmin();
+        verify(audit).recordRequired(any());
+        verify(mapper).updateRules(null,null,null,"UNCONFIGURED",null,1L,7L,"Change only unbound assignment","AUTO_RANDOM");
+    }
+    @Test void configuredInheritanceCannotBeResetToUnconfiguredThroughIndependentPolicyUpdate(){
+        for(String mode:java.util.List.of("LIMITED","UNLIMITED")){
+            when(mapper.rules()).thenReturn(new SupportRules(1L,30,15,7,mode,"LIMITED".equals(mode)?2:null,"SUPERVISOR",null));
+            assertThatThrownBy(()->service.updateRules("preserve-key",preserve(1L)))
+                .isInstanceOf(BizException.class).hasMessage("SUPPORT_RULES_INVALID");
+        }
+        verify(mapper,never()).updateRules(any(),any(),any(),any(),any(),any(),any(),any(),any());
+        verifyNoInteractions(audit);
+    }
+    @Test void staleOrMissingRuleCannotBePreservedAndCannotWrite(){
+        when(mapper.rules()).thenReturn(new SupportRules(2L,30,15,7,"UNLIMITED",null,"SUPERVISOR",null));
+        assertThatThrownBy(()->service.updateRules("preserve-key",preserve(1L)))
+            .isInstanceOf(BizException.class).hasMessage("SUPPORT_RULES_VERSION_CONFLICT");
+        when(mapper.rules()).thenReturn(null);
+        assertThatThrownBy(()->service.updateRules("preserve-key",preserve(1L)))
+            .isInstanceOf(BizException.class).hasMessage("SUPPORT_RULES_VERSION_CONFLICT");
+        verify(mapper,never()).updateRules(any(),any(),any(),any(),any(),any(),any(),any(),any());
+        verifyNoInteractions(audit);
+    }
+    @Test void preservationDoesNotRelaxDepthOrDayValidation(){
+        for(var invalid:java.util.List.of(
+          new SupportRulesRequest(null,null,null,"UNCONFIGURED",0,1L,"Controlled install upgrade","AUTO_RANDOM"),
+          new SupportRulesRequest(0,null,null,"UNCONFIGURED",null,1L,"Controlled install upgrade","AUTO_RANDOM"),
+          new SupportRulesRequest(2,1,3,"UNCONFIGURED",null,1L,"Controlled install upgrade","AUTO_RANDOM"),
+          new SupportRulesRequest(null,null,null,"UNCONFIGURED",null,1L,"Controlled install upgrade","OTHER")))
+            assertThatThrownBy(()->service.updateRules("preserve-key",invalid)).isInstanceOf(BizException.class).hasMessage("SUPPORT_RULES_INVALID");
+        verifyNoInteractions(idempotency,audit);verify(mapper,never()).lockRules();
+    }
+    @Test void successfulRetainedReplayDoesNotReapplyOrReadChangedRule(){
+        var after=new SupportRules(2L,null,null,null,"UNCONFIGURED",null,"AUTO_RANDOM",null);
+        doReturn(ApiResult.ok(after)).when(idempotency).executeRetained(anyString(),anyString(),anyString(),eq(ApiResult.class),any());
+        assertThat(service.updateRules("preserve-key",preserve(1L)).getData()).isEqualTo(after);
+        verify(mapper,never()).lockRules();verify(mapper,never()).rules();verifyNoInteractions(audit);
+    }
+
 }

@@ -47,6 +47,17 @@ public class LeaderboardPauseSnapshotService {
             throw new BizException(409, "A2_CONFIRMATION_REQUIRED");
         }
         Instant at = Instant.now();
+        ObjectNode envelope = captureEnvelope(at, operation);
+        String hash = hash(envelope);
+        envelope.put("contentHash", hash);
+        String key = "pause-" + digest(operation);
+        if (mapper.insert(key, write(envelope)) != 1) throw new BizException(503, "F4_LEADERBOARD_SNAPSHOT_CAPTURE_FAILED");
+        config.upsertAdminValue(POINTER_KEY, write(Map.of("key", key, "hash", hash, "schemaVersion", 1)),
+                "JSON", "team_runtime", "F4 current immutable display pause snapshot");
+        return new State(true, "FROZEN", "", key, at.toString(), hash, envelope);
+    }
+
+    private ObjectNode captureEnvelope(Instant at, String operation) {
         Map<String, Object> parameters = captureParameters(at);
         // A minimum removes only the tail of a descending ranking. Capture the original
         // bounded queries at minimum zero, then apply the same minimum from this statement's
@@ -95,13 +106,7 @@ public class LeaderboardPauseSnapshotService {
         }
         envelope.set("configInputs", settings);
         requireCapture(projectionsValid(envelope));
-        String hash = hash(envelope);
-        envelope.put("contentHash", hash);
-        String key = "pause-" + digest(operation);
-        if (mapper.insert(key, write(envelope)) != 1) throw new BizException(503, "F4_LEADERBOARD_SNAPSHOT_CAPTURE_FAILED");
-        config.upsertAdminValue(POINTER_KEY, write(Map.of("key", key, "hash", hash, "schemaVersion", 1)),
-                "JSON", "team_runtime", "F4 current immutable display pause snapshot");
-        return new State(true, "FROZEN", "", key, at.toString(), hash, envelope);
+        return envelope;
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
@@ -138,21 +143,47 @@ public class LeaderboardPauseSnapshotService {
         }
     }
 
-    public Map<String, Object> pcSummary(State state) {
-        if (!"FROZEN".equals(state.mode())) return Map.of();
-        JsonNode row = state.envelope().path("pcProjection").path("summary");
-        return Map.of("poolUsd", row.path("poolUsd").decimalValue(), "participantCount", row.path("participantCount").asInt());
+    /** PC and App share the exact published ranking, prize and bounded participant set. */
+    public Map<String, Map<String, Object>> pcLeaderboards(State state) {
+        if (!state.available()) return Map.of();
+        JsonNode envelope = "FROZEN".equals(state.mode()) ? state.envelope()
+                : captureEnvelope(Instant.now(), "display-read-only");
+        Instant at = Instant.parse(envelope.path("capturedAt").asText());
+        Map<String, Object> bounds = captureParameters(at);
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        for (String period : PERIODS) {
+            JsonNode projection = envelope.path("appPeriods").path(period);
+            List<Map<String, Object>> podium = new ArrayList<>();
+            for (JsonNode row : projection.path("rows")) {
+                if (podium.size() == 3) break;
+                int rank = row.path("rank").asInt();
+                podium.add(Map.of("rank", rank, "memberUserId", row.path("userId").asLong(),
+                        "userId", "U" + row.path("userId").asText(),
+                        "gmvLabel", "$" + row.path("earnedUsdt").decimalValue().toPlainString(),
+                        "tip", (state.paused() ? "冻结时 · " : "") + "本期已解锁 USDT 佣金",
+                        "className", "r-" + rank));
+            }
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("poolUsd", projection.path("poolUsd").decimalValue());
+            value.put("participantCount", projection.path("rows").size());
+            value.put("topN", projection.path("topN").asInt());
+            value.put("podium", List.copyOf(podium));
+            value.put("snapshotAt", at.toString());
+            value.put("timezone", DateTimeFormatConfig.BUSINESS_ZONE.getId());
+            value.put("fromInclusive", bounds.get(period + "FromInclusive"));
+            value.put("toExclusive", bounds.get(period + "ToExclusive"));
+            result.put(period, value);
+        }
+        return result;
     }
 
+    public Map<String, Object> pcSummary(State state) {
+        return pcLeaderboards(state).getOrDefault("week", Map.of());
+    }
+
+    @SuppressWarnings("unchecked")
     public List<Map<String, Object>> pcPodium(State state) {
-        if (!"FROZEN".equals(state.mode())) return List.of();
-        List<Map<String, Object>> rows = new ArrayList<>();
-        state.envelope().path("pcProjection").path("podium").forEach(row -> {
-            Map<String, Object> value = json.convertValue(row, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { });
-            value.put("tip", "冻结时 · " + value.getOrDefault("tip", ""));
-            rows.add(value);
-        });
-        return rows;
+        return (List<Map<String, Object>>) pcSummary(state).getOrDefault("podium", List.of());
     }
 
     static Map<String, Object> captureParameters(Instant at) {
