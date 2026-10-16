@@ -180,6 +180,41 @@ class MybatisConversationRepositoryTest {
         verifyNoInteractions(mapper,messageMapper);
     }
 
+    @Test void bulkCreateAndReplyPersistDisplayNameButKeepExplicitSenderAndOwner() {
+        when(messageMapper.senderDisplayName(7L)).thenReturn("Task Advisor");
+        when(mapper.replyConversation("CV-RACE", "hello", "OPEN", 0L, now)).thenReturn(1);
+        when(mapper.insertTimeoutSnapshot("CV-RACE")).thenReturn(1);
+        when(messageMapper.insert(any(ConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ConversationMessageEntity message = invocation.getArgument(0);
+            assertThat(message.getSenderId()).isEqualTo(7L);
+            assertThat(message.getSenderName()).isEqualTo("Task Advisor");
+            message.setId(77L);
+            return 1;
+        });
+        assertThat(repository.replyAndReturnMessageId(openConversation(), "hello", 7L, "admin:7", now)).isEqualTo(77L);
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            var created = repository.createConversationWithMessage("CV-RACE", 1001L, "support",
+                    "9", "Current Owner", "hello", 7L, "admin:7", now);
+            assertThat(created.messageId()).isEqualTo(77L);
+            assertThat(created.conversation().ownerAgentId()).isEqualTo("9");
+            assertThat(created.conversation().ownerAgentName()).isEqualTo("Current Owner");
+        } finally {
+            org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    @Test void missingBulkSenderNameUsesServiceLabelAndOrdinaryNamesStayUnchanged() {
+        when(mapper.replyConversation("CV-RACE", "hello", "OPEN", 0L, now)).thenReturn(1);
+        repository.replyAndReturnMessageId(openConversation(), "hello", 7L, "admin:7", now);
+        repository.replyAndReturnMessageId(openConversation(), "hello", 8L, "Original Name", now);
+        var messages = org.mockito.ArgumentCaptor.forClass(ConversationMessageEntity.class);
+        org.mockito.Mockito.verify(messageMapper, org.mockito.Mockito.times(2)).insert(messages.capture());
+        assertThat(messages.getAllValues()).extracting(ConversationMessageEntity::getSenderName)
+                .containsExactly("客服", "Original Name");
+        org.mockito.Mockito.verify(messageMapper, org.mockito.Mockito.never()).senderDisplayName(8L);
+    }
+
     private ContentConversationView openConversation() {
         return new ContentConversationView(
                 1L, "CV-RACE", 1001L, "support", "OPEN", "agent-1", "Agent One", 0,

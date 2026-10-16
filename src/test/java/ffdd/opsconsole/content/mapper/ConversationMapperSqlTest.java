@@ -9,6 +9,33 @@ import org.apache.ibatis.annotations.Update;
 import org.junit.jupiter.api.Test;
 
 class ConversationMapperSqlTest {
+    @Test void everyHistoryReadResolvesLegacyActorLabelsWithoutChangingIdentityOrVisibility() {
+        var configuration = new org.apache.ibatis.session.Configuration();
+        configuration.addMapper(ConversationMessageMapper.class);
+        for (String method : java.util.List.of("listByConversationNo", "listUserVisibleByConversationNo",
+                "selectRecentVisible", "listRecentUserVisibleByConversationNoBefore")) {
+            var parameters = new java.util.HashMap<String,Object>();
+            parameters.put("conversationNo", "CV-BULK");
+            parameters.put("limit", 20);
+            parameters.put("beforeMessageId", 90L);
+            parameters.put("currentRead", true);
+            var bound = configuration.getMappedStatement(ConversationMessageMapper.class.getName() + "." + method)
+                    .getBoundSql(parameters);
+            assertThat(bound.getSql()).contains(ConversationMessageMapper.SENDER_NAME)
+                    .contains("sender_id AS senderId", "sender_type AS senderType", "is_deleted=0")
+                    .doesNotContain("JOIN nx_admin display_admin");
+            assertThat(bound.getParameterMappings()).extracting(org.apache.ibatis.mapping.ParameterMapping::getProperty)
+                    .contains("conversationNo");
+            if (!"listByConversationNo".equals(method)) assertThat(bound.getSql()).contains("sender_type IN ('user','agent')");
+            if (method.contains("Recent")) assertThat(bound.getSql()).contains("ORDER BY id DESC LIMIT ?");
+            if ("selectRecentVisible".equals(method)) assertThat(bound.getSql()).contains("FOR SHARE");
+        }
+        assertThat(ConversationMessageMapper.SENDER_NAME)
+                .contains("sender_type='agent' AND sender_name=CONCAT('admin:',sender_id)")
+                .contains("display_admin.id=sender_id AND display_admin.is_deleted=0")
+                .contains("ELSE sender_name END", "'客服'");
+    }
+
     @Test
     void stateCommandsAcquireHeaderThenPendingTransferLocks() throws Exception {
         String headerSql = String.join("\n", ConversationMapper.class
