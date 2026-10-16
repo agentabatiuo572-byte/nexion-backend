@@ -98,7 +98,7 @@ class AppGrowthEngagementServiceTest {
         when(mapper.questState(42L, "en")).thenReturn(List.of(issued), List.of());
         var snapshots = mock(WeeklyQuestSnapshotService.class);
         var header = weeklyHeader();
-        service.setWeeklySnapshots(snapshots);
+        var service = serviceWithWeekly(snapshots);
         when(snapshots.current()).thenReturn(header);
         when(snapshots.state(header,42L,"en")).thenReturn(List.of(issued));
 
@@ -107,6 +107,12 @@ class AppGrowthEngagementServiceTest {
 
         assertThat(before).hasSize(1);
         assertThat(after).isEqualTo(before);
+    }
+
+    private AppGrowthEngagementService serviceWithWeekly(WeeklyQuestSnapshotService snapshots) {
+        return new AppGrowthEngagementService(mapper, voucher, rhythm, coverage, idempotency, audit, outbox,
+                null, null, null, availability, java.util.Optional.empty(), null,
+                Clock.system(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE), snapshots);
     }
 
     private ffdd.opsconsole.growth.mapper.WeeklyQuestSnapshotMapper.Header weeklyHeader() {
@@ -119,7 +125,7 @@ class AppGrowthEngagementServiceTest {
     void frozenWeeklyRewardAndMultiplierSurviveTemplateAndLiveH1Changes() {
         var snapshots = mock(WeeklyQuestSnapshotService.class);
         var header = weeklyHeader();
-        service.setWeeklySnapshots(snapshots);
+        var service = serviceWithWeekly(snapshots);
         when(snapshots.current()).thenReturn(header);
         when(snapshots.lockReward(header,"weekly_t2_browse_store",42L)).thenReturn(
                 new ffdd.opsconsole.growth.mapper.WeeklyQuestSnapshotMapper.Reward(
@@ -140,7 +146,7 @@ class AppGrowthEngagementServiceTest {
     void missingFrozenMemberCannotFallbackToNewLiveMissionOrPreviousWeek() {
         var snapshots = mock(WeeklyQuestSnapshotService.class);
         var header = weeklyHeader();
-        service.setWeeklySnapshots(snapshots);
+        var service = serviceWithWeekly(snapshots);
         when(snapshots.current()).thenReturn(header);
         assertThat(service.claimQuest(42L,"new-midweek",header.instanceKey(),"missing-frozen").getCode()).isEqualTo(409);
         assertThat(service.claimQuest(42L,"old","WEEK:2026-W41","old-week").getMessage()).isEqualTo("QUEST_EXPIRED");
@@ -153,7 +159,7 @@ class AppGrowthEngagementServiceTest {
     void verifiedPreSnapshotCompletedHistoryKeepsItsExistingClaimContract() {
         var snapshots = mock(WeeklyQuestSnapshotService.class);
         var header = weeklyHeader();
-        service.setWeeklySnapshots(snapshots);
+        var service = serviceWithWeekly(snapshots);
         when(snapshots.current()).thenReturn(header);
         when(snapshots.legacyClaimEligible(header,42L,"paused-before-deployment")).thenReturn(true);
         when(mapper.lockClaimableQuest(42L,"paused-before-deployment",header.instanceKey())).thenReturn(
@@ -169,7 +175,7 @@ class AppGrowthEngagementServiceTest {
     void frozenPendingMarketRowAndLegacyClaimedHistoryStayVisibleWithH1Unavailable() {
         var snapshots = mock(WeeklyQuestSnapshotService.class);
         var header = weeklyHeader();
-        service.setWeeklySnapshots(snapshots);
+        var service = serviceWithWeekly(snapshots);
         when(snapshots.current()).thenReturn(header);
         when(rhythm.snapshot()).thenReturn(null);
         var frozen = Map.<String,Object>of("questCode","weekly_t2_genesis_browse","layer","WEEKLY_T2",

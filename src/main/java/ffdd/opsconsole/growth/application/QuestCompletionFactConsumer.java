@@ -29,12 +29,7 @@ import org.springframework.util.StringUtils;
  */
 @Service
 public class QuestCompletionFactConsumer {
-    private WeeklyQuestSnapshotService weeklySnapshots;
-
-    @org.springframework.beans.factory.annotation.Autowired
-    public void setWeeklySnapshots(WeeklyQuestSnapshotService weeklySnapshots) {
-        this.weeklySnapshots = weeklySnapshots;
-    }
+    private final WeeklyQuestSnapshotService weeklySnapshots;
 
     private static final Set<String> TRUSTED_PRODUCERS = Set.of(
             "ORDER", "REFERRAL", "LEARNING", "DEVICE", "COMMISSION", "SYSTEM", "SHARE");
@@ -45,18 +40,30 @@ public class QuestCompletionFactConsumer {
     private final AppGrowthWheelSandboxService sandboxService;
     private final Environment environment;
 
-    @Autowired
+    /** Legacy direct construction; Spring uses the complete constructor below. */
     public QuestCompletionFactConsumer(
             QuestCompletionFactMapper mapper,
             AuditLogService auditLogService,
             EventOutboxService outboxService,
             AppGrowthWheelSandboxService sandboxService,
             Environment environment) {
+        this(mapper, auditLogService, outboxService, sandboxService, environment, null);
+    }
+
+    @Autowired
+    public QuestCompletionFactConsumer(
+            QuestCompletionFactMapper mapper,
+            AuditLogService auditLogService,
+            EventOutboxService outboxService,
+            AppGrowthWheelSandboxService sandboxService,
+            Environment environment,
+            WeeklyQuestSnapshotService weeklySnapshots) {
         this.mapper = mapper;
         this.auditLogService = auditLogService;
         this.outboxService = outboxService;
         this.sandboxService = sandboxService;
         this.environment = environment;
+        this.weeklySnapshots = weeklySnapshots;
     }
 
     QuestCompletionFactConsumer(

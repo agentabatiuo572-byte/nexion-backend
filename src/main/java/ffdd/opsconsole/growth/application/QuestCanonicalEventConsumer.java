@@ -24,12 +24,7 @@ import org.springframework.util.StringUtils;
  */
 @Component
 public class QuestCanonicalEventConsumer {
-    private WeeklyQuestSnapshotService weeklySnapshots;
-
-    @org.springframework.beans.factory.annotation.Autowired
-    public void setWeeklySnapshots(WeeklyQuestSnapshotService weeklySnapshots) {
-        this.weeklySnapshots = weeklySnapshots;
-    }
+    private final WeeklyQuestSnapshotService weeklySnapshots;
 
     static final String CONSUMER_GROUP = "h3-quest-completion";
     static final String TOPIC = "spring-local-h3-quest-completion";
@@ -45,18 +40,30 @@ public class QuestCanonicalEventConsumer {
     private final QuestCanonicalEventProjector projector;
     private final ObjectMapper objectMapper;
 
-    @Autowired
+    /** Legacy direct construction; Spring uses the complete constructor below. */
     public QuestCanonicalEventConsumer(
             QuestCanonicalEventBindingMapper bindingMapper,
             DayOneInstanceMapper dayOneInstanceMapper,
             EventConsumerDeliveryService deliveryService,
             QuestCanonicalEventProjector projector,
             ObjectMapper objectMapper) {
+        this(bindingMapper, dayOneInstanceMapper, deliveryService, projector, objectMapper, null);
+    }
+
+    @Autowired
+    public QuestCanonicalEventConsumer(
+            QuestCanonicalEventBindingMapper bindingMapper,
+            DayOneInstanceMapper dayOneInstanceMapper,
+            EventConsumerDeliveryService deliveryService,
+            QuestCanonicalEventProjector projector,
+            ObjectMapper objectMapper,
+            WeeklyQuestSnapshotService weeklySnapshots) {
         this.bindingMapper = bindingMapper;
         this.dayOneInstanceMapper = dayOneInstanceMapper;
         this.deliveryService = deliveryService;
         this.projector = projector;
         this.objectMapper = objectMapper;
+        this.weeklySnapshots = weeklySnapshots;
     }
 
     QuestCanonicalEventConsumer(

@@ -25,12 +25,7 @@ import org.springframework.util.StringUtils;
 /** Atomically completes all H3 missions bound to one canonical outbox fact. */
 @Component
 public class QuestCanonicalEventProjector {
-    private WeeklyQuestSnapshotService weeklySnapshots;
-
-    @org.springframework.beans.factory.annotation.Autowired
-    public void setWeeklySnapshots(WeeklyQuestSnapshotService weeklySnapshots) {
-        this.weeklySnapshots = weeklySnapshots;
-    }
+    private final WeeklyQuestSnapshotService weeklySnapshots;
 
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
     /** PC only permits these canonical identity slots.  Never scan every instance. */
@@ -48,18 +43,30 @@ public class QuestCanonicalEventProjector {
     private final EventConsumerDeliveryService deliveryService;
     private final ObjectMapper objectMapper;
 
-    @Autowired
+    /** Legacy direct construction; Spring uses the complete constructor below. */
     public QuestCanonicalEventProjector(
             QuestCanonicalEventBindingMapper bindingMapper,
             DayOneInstanceMapper dayOneInstanceMapper,
             QuestCompletionFactConsumer factConsumer,
             EventConsumerDeliveryService deliveryService,
             ObjectMapper objectMapper) {
+        this(bindingMapper, dayOneInstanceMapper, factConsumer, deliveryService, objectMapper, null);
+    }
+
+    @Autowired
+    public QuestCanonicalEventProjector(
+            QuestCanonicalEventBindingMapper bindingMapper,
+            DayOneInstanceMapper dayOneInstanceMapper,
+            QuestCompletionFactConsumer factConsumer,
+            EventConsumerDeliveryService deliveryService,
+            ObjectMapper objectMapper,
+            WeeklyQuestSnapshotService weeklySnapshots) {
         this.bindingMapper = bindingMapper;
         this.dayOneInstanceMapper = dayOneInstanceMapper;
         this.factConsumer = factConsumer;
         this.deliveryService = deliveryService;
         this.objectMapper = objectMapper;
+        this.weeklySnapshots = weeklySnapshots;
     }
 
     QuestCanonicalEventProjector(

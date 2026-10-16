@@ -20,12 +20,26 @@ class QuestCanonicalEventWiringTest {
             context.registerBean(QuestCompletionFactConsumer.class, () -> mock(QuestCompletionFactConsumer.class));
             context.registerBean(EventConsumerDeliveryService.class, () -> mock(EventConsumerDeliveryService.class));
             context.registerBean(ObjectMapper.class, () -> new ObjectMapper());
-            context.register(QuestCanonicalEventProjector.class, QuestCanonicalEventConsumer.class);
+            context.registerBean(ffdd.opsconsole.growth.mapper.WeeklyQuestSnapshotMapper.class,
+                    () -> mock(ffdd.opsconsole.growth.mapper.WeeklyQuestSnapshotMapper.class));
+            context.registerBean(ffdd.opsconsole.growth.facade.GrowthRhythmFacade.class,
+                    () -> mock(ffdd.opsconsole.growth.facade.GrowthRhythmFacade.class));
+            context.registerBean(ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade.class,
+                    () -> mock(ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade.class));
+            context.registerBean(java.time.Clock.class, java.time.Clock::systemUTC);
+            context.register(WeeklyQuestSnapshotService.class, QuestCanonicalEventProjector.class, QuestCanonicalEventConsumer.class);
 
             context.refresh();
 
             assertThat(context.getBean(QuestCanonicalEventProjector.class)).isNotNull();
             assertThat(context.getBean(QuestCanonicalEventConsumer.class)).isNotNull();
+            var weekly = context.getBean(WeeklyQuestSnapshotService.class);
+            for (Class<?> type : new Class<?>[]{QuestCanonicalEventProjector.class, QuestCanonicalEventConsumer.class}) {
+                assertThat(org.springframework.test.util.ReflectionTestUtils.getField(context.getBean(type), "weeklySnapshots"))
+                        .isSameAs(weekly);
+            }
+            assertThat(org.springframework.test.util.ReflectionTestUtils.getField(weekly, "availability"))
+                    .isSameAs(context.getBean(ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade.class));
         }
     }
 }

@@ -83,8 +83,8 @@ class WeeklyQuestSnapshotBoundaryTest {
                 "/pages/wallet/exchange", 30, 13L, "exchange-binding", "SYSTEM", "H3_EXCHANGE_COMPLETED", "user_id");
         when(mapper.lockDefinitions()).thenReturn(List.of(genesis, exchange, browse));
         when(rhythm.snapshot()).thenReturn(rhythmSnapshot());
-        var service = serviceAt("2026-10-16T00:00:00Z");
-        service.setAvailability(availability);
+        var service = new WeeklyQuestSnapshotService(mapper, rhythm,
+                Clock.fixed(Instant.parse("2026-10-16T00:00:00Z"), ZoneOffset.UTC), availability);
 
         Header first = service.current();
         when(availability.genesisAvailableForMissionPublication()).thenReturn(true);

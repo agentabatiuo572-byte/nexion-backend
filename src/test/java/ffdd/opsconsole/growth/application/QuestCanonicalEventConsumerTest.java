@@ -32,7 +32,7 @@ class QuestCanonicalEventConsumerTest {
     @Test
     void publishedEmptyWeekReachesTerminalProjectorInsteadOfWaitingForLaterBindings() {
         var weekly = mock(WeeklyQuestSnapshotService.class);
-        consumer.setWeeklySnapshots(weekly);
+        var consumer = new QuestCanonicalEventConsumer(bindingMapper, dayOneInstances, deliveryService, projector, new ObjectMapper(), weekly);
         EventOutboxMessage message = event("evt-empty-week", "H3_COMPUTE_COMPLETED_50");
         message.setServerAuthoritative(true);
         message.setEventTs(LocalDateTime.now(ZoneId.of("Asia/Shanghai")));

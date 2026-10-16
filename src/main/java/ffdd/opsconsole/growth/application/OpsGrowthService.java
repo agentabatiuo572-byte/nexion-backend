@@ -64,12 +64,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
 public class OpsGrowthService implements AuditReplayable {
-    private WeeklyQuestSnapshotService weeklySnapshots;
-
-    @org.springframework.beans.factory.annotation.Autowired
-    public void setWeeklySnapshots(WeeklyQuestSnapshotService weeklySnapshots) {
-        this.weeklySnapshots = weeklySnapshots;
-    }
+    private final WeeklyQuestSnapshotService weeklySnapshots;
 
     private static final String PHASE_CONFIG_KEY = "platform.phase.config";
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
@@ -218,7 +213,7 @@ public class OpsGrowthService implements AuditReplayable {
     private final StreakPerkBusinessAvailabilityFacade streakPerkAvailability;
     private final ffdd.opsconsole.promotion.application.PromotionAdminService promotionAdmin;
 
-    @org.springframework.beans.factory.annotation.Autowired
+    /** Legacy direct construction; Spring uses the complete constructor below. */
     public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,
             TreasuryCoverageFacade coverageFacade, TreasuryLedgerPostingFacade ledgerPostingFacade,
             AuditLogService auditLogService, ObjectMapper objectMapper, OpsReadTimeSeedPolicy readTimeSeedPolicy,
@@ -227,12 +222,26 @@ public class OpsGrowthService implements AuditReplayable {
             AppTrialLifecycleService appTrialLifecycleService, Optional<OpsReferralRewardService> referralRewardService,
             StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
             ffdd.opsconsole.promotion.application.PromotionAdminService promotionAdmin) {
+        this(configFacade, emergencyRepository, coverageFacade, ledgerPostingFacade, auditLogService, objectMapper, readTimeSeedPolicy, deviceCatalogRepository, questEventMapper, voucherMapper, lockMapper, appTrialLifecycleService, referralRewardService, streakPerkAvailability, promotionAdmin, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,
+            TreasuryCoverageFacade coverageFacade, TreasuryLedgerPostingFacade ledgerPostingFacade,
+            AuditLogService auditLogService, ObjectMapper objectMapper, OpsReadTimeSeedPolicy readTimeSeedPolicy,
+            Optional<DeviceCatalogRepository> deviceCatalogRepository, Optional<GrowthQuestEventMapper> questEventMapper,
+            Optional<GrowthVoucherMapper> voucherMapper, AuditObjectLockMapper lockMapper,
+            AppTrialLifecycleService appTrialLifecycleService, Optional<OpsReferralRewardService> referralRewardService,
+            StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
+            ffdd.opsconsole.promotion.application.PromotionAdminService promotionAdmin,
+            WeeklyQuestSnapshotService weeklySnapshots) {
         this.configFacade=configFacade;this.emergencyRepository=emergencyRepository;this.coverageFacade=coverageFacade;
         this.ledgerPostingFacade=ledgerPostingFacade;this.auditLogService=auditLogService;this.objectMapper=objectMapper;
         this.readTimeSeedPolicy=readTimeSeedPolicy;this.deviceCatalogRepository=deviceCatalogRepository;
         this.questEventMapper=questEventMapper;this.voucherMapper=voucherMapper;this.lockMapper=lockMapper;
         this.appTrialLifecycleService=appTrialLifecycleService;this.referralRewardService=referralRewardService;
         this.streakPerkAvailability=streakPerkAvailability;this.promotionAdmin=promotionAdmin;
+        this.weeklySnapshots = weeklySnapshots;
     }
 
     public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,
