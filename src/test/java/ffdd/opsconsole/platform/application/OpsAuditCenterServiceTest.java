@@ -60,9 +60,10 @@ class OpsAuditCenterServiceTest {
             mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
     private final AuditReplayBusinessPermissionGuard replayBusinessPermissionGuard = mock(AuditReplayBusinessPermissionGuard.class);
     private final A2AccessPolicy accessPolicy = mock(A2AccessPolicy.class);
-    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
     private final ffdd.opsconsole.shared.idempotency.AdminIdempotencyService idempotencyService =
             mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.class);
+    private final ffdd.opsconsole.device.application.OpsDeviceService devices = mock(ffdd.opsconsole.device.application.OpsDeviceService.class);
     private final OpsAuditCenterService service =
             new OpsAuditCenterService(
                     repository,
@@ -76,7 +77,7 @@ class OpsAuditCenterServiceTest {
                     replayDispatcher,
                     accessPolicy,
                     objectMapper,
-                    idempotencyService);
+                    idempotencyService, null, devices);
     private final Map<String, AuditOperationTicketEntity> ticketRows = new LinkedHashMap<>();
     private final List<AuditOperationHistoryEntity> historyRows = new ArrayList<>();
     private final List<AuditConfirmCategoryEntity> categoryRows = new ArrayList<>();
@@ -705,6 +706,54 @@ class OpsAuditCenterServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat(result.getMessage()).isEqualTo("A2_OPERATION_ALREADY_TERMINAL");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"e1_sku_create", "e1_sku_update"})
+    void skuFullReviewSurvivesStorageReadbackApprovalAndAudit(String operation) throws Exception {
+        authenticate("41", "sku.maker");
+        String features = "完整新规格。".repeat(100);
+        var command = new AuditReplayCommand("E", operation,
+                Map.of("skuId", "uvelbox-s1-trade-in", "price", 1499, "stock", "1"));
+        var input = objectMapper.convertValue(Map.of("skuId", "uvelbox-s1-trade-in", "price", 1499,
+                "stock", "1", "features", List.of(features)), ffdd.opsconsole.device.dto.DeviceSkuUpsertRequest.class);
+        var old = "e1_sku_update".equals(operation) ? objectMapper.convertValue(
+                Map.of("skuId", "uvelbox-s1-trade-in", "price", 1299, "features", List.of("真实原规格")),
+                ffdd.opsconsole.device.domain.DeviceSkuView.class) : null;
+        when(devices.skuProposalReview(command)).thenReturn(
+                new ffdd.opsconsole.device.application.OpsDeviceService.SkuProposalReview("uvelbox-s1-trade-in", old, input));
+        String clientBefore = "伪造旧值".repeat(100);
+        String clientAfter = "伪造新值".repeat(100);
+        var result = service.createProposal("sku-full-" + operation, new AuditOperationProposalRequest(
+                "完整商品变更", "uvelbox-s1-trade-in", clientBefore, clientAfter, "sku.maker", "超管", "param",
+                false, false, "超管", "完整保留商品规格提交审批", "E1", command, null, null));
+        assertThat(result.getCode()).isZero();
+        String before = result.getData().beforeValue();
+        String after = result.getData().afterValue();
+        assertThat(after).contains(features).doesNotContain("伪造");
+        assertThat(before).doesNotContain("伪造");
+        assertThat(objectMapper.readTree(after).path("price").decimalValue()).isEqualByComparingTo("1499");
+        if (old != null) assertThat(objectMapper.readTree(before).path("price").decimalValue()).isEqualByComparingTo("1299");
+        else assertThat(objectMapper.readTree(before).isEmpty()).isTrue();
+        var stored = ticketRows.get(result.getData().id());
+        assertThat(stored.getBeforeValue().length()).isLessThanOrEqualTo(128);
+        assertThat(stored.getAfterValue().length()).isLessThanOrEqualTo(128);
+        assertThat(objectMapper.readTree(stored.getCommandJson()).get("params"))
+                .isEqualTo(objectMapper.valueToTree(command.params()));
+        var reread = service.overview(null).getData().operationQueue().stream()
+                .filter(row -> row.id().equals(stored.getOperationId())).findFirst().orElseThrow();
+        assertThat(reread.beforeValue()).isEqualTo(before);
+        assertThat(reread.afterValue()).isEqualTo(after);
+        authenticate("52", "sku.checker");
+        var approved = service.approve("sku-approve-" + operation, stored.getOperationId(),
+                new AuditOperationDecisionRequest("完整核对全部商品规格后批准", "sku.checker"));
+        assertThat(approved.getCode()).isZero();
+        verify(replayDispatcher).dispatch(org.mockito.ArgumentMatchers.eq(command), any());
+        var audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService, org.mockito.Mockito.atLeast(2)).recordRequired(audit.capture());
+        assertThat(audit.getAllValues().stream().filter(row -> row.getAction().startsWith("A2_OPERATION_")))
+                .allSatisfy(row -> assertThat(detailMap(row.getDetail()))
+                        .containsEntry("before", before).containsEntry("after", after));
     }
 
     @Test

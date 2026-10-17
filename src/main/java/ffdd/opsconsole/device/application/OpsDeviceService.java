@@ -1711,6 +1711,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         List<String> phaseOrder = phases.stream().map(DevicePhaseView::p).toList();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "E1");
+        response.put("skuReviewContractVersion", 1);
         response.put("phaseOrder", phaseOrder);
         response.put("phases", phases);
         response.put("platformMonth", platformMonth);
@@ -5190,6 +5191,30 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
         }
     }
+
+    /** Read-only review of the same typed inputs used by SKU replay; never trust client summary text. */
+    public SkuProposalReview skuProposalReview(AuditReplayCommand command) {
+        Map<String, Object> params = command.params();
+        boolean create = "e1_sku_create".equals(command.op());
+        DeviceSkuUpsertRequest input = buildSkuUpsertRequest(params, null, null);
+        String skuId = create ? normalizeSkuId(input.skuId(), input.name()) : normalizeId(input.skuId());
+        DeviceSkuView before = catalogRepository.findSku(skuId).orElse(null);
+        if (create && before != null) throw new BizException(422, "SKU_ALREADY_EXISTS");
+        if (!create) {
+            if (before == null) throw new BizException(404, "SKU_NOT_FOUND");
+            SkuRevision revision = parseSkuRevision(str(params, "expectedUpdatedAt"));
+            if (revision.error() != null) throw new BizException(409, revision.error());
+            if (!Objects.equals(before.updatedAt(), revision.value()))
+                throw new BizException(409, "SKU_VERSION_CONFLICT");
+        }
+        DeviceSkuUpsertRequest after = normalizeSkuPhaseRequest(input,
+                before == null || before.sold() == null ? 0L : before.sold());
+        if (after.trialEligible() == null)
+            after = withTrialEligible(after, before != null && Boolean.TRUE.equals(before.trialEligible()));
+        return new SkuProposalReview(skuId, before, after);
+    }
+
+    public record SkuProposalReview(String skuId, DeviceSkuView before, DeviceSkuUpsertRequest after) { }
 
     /** 从 replay params 重建 DeviceSkuUpsertRequest(e1_sku_create/update 复用)。 */
     private static DeviceSkuUpsertRequest buildSkuUpsertRequest(Map<String, Object> p, String reason, String operator) {
