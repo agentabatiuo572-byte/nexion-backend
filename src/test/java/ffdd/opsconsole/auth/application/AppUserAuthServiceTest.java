@@ -45,6 +45,7 @@ import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 
@@ -743,8 +744,9 @@ class AppUserAuthServiceTest {
         verify(sessions).markRefreshRotated(eq(101L), eq(rotated.getRefreshTokenId()));
     }
 
-    @Test
-    void interruptedCookieRotationRecoversOnlyItsImmediateLiveSuccessorWithTheSameNonce() {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void interruptedRotationRecoversOnlyItsImmediateLiveSuccessorWithTheSameNonce(boolean cookieMode) {
         String nonce = "a".repeat(64);
         UserEntity user = activeUser();
         UserSessionEntity original = new UserSessionEntity();
@@ -760,7 +762,7 @@ class AppUserAuthServiceTest {
         when(sessions.findRefreshForUpdate(any())).thenReturn(original);
         when(sessions.markRefreshRotated(eq(101L), any())).thenReturn(1);
 
-        var first = service.refresh(new UserRefreshRequest("original-cookie"), nonce, true);
+        var first = service.refresh(new UserRefreshRequest("original-cookie"), nonce, cookieMode);
         assertThat(first.getCode()).isZero();
         assertThat(first.getData().refreshToken()).isEqualTo("successor-cookie");
         ArgumentCaptor<UserSessionEntity> inserted = ArgumentCaptor.forClass(UserSessionEntity.class);
@@ -772,7 +774,7 @@ class AppUserAuthServiceTest {
         original.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         when(sessions.findRefreshForUpdate(original.getRotatedToId())).thenReturn(successor);
 
-        var recovered = service.refresh(new UserRefreshRequest("original-cookie"), nonce, true);
+        var recovered = service.refresh(new UserRefreshRequest("original-cookie"), nonce, cookieMode);
 
         assertThat(recovered.getCode()).isZero();
         assertThat(recovered.getData().refreshToken()).isEqualTo("successor-cookie");
@@ -781,8 +783,9 @@ class AppUserAuthServiceTest {
         verify(sessions, never()).revokeRefreshChain(any());
     }
 
-    @Test
-    void copiedOldCookieWithoutTheOriginalNonceStillRevokesTheChain() {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void copiedOldCookieWithoutTheOriginalNonceStillRevokesTheChain(boolean cookieMode) {
         UserSessionEntity old = new UserSessionEntity();
         old.setUserId(42L);
         old.setSessionChainId("chain-42");
@@ -790,15 +793,16 @@ class AppUserAuthServiceTest {
         old.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         when(sessions.findRefreshForUpdate(any())).thenReturn(old);
 
-        var result = service.refresh(new UserRefreshRequest("old-cookie"), null, true);
+        var result = service.refresh(new UserRefreshRequest("old-cookie"), null, cookieMode);
 
         assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_REUSE_DETECTED");
         verify(sessions).revokeRefreshChain("chain-42");
         verify(tokens, never()).refreshSuccessor(any(), any());
     }
 
-    @Test
-    void wrongNonceForRotatedCookieStillTriggersReuseDetection() {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void wrongNonceForRotatedCookieStillTriggersReuseDetection(boolean cookieMode) {
         UserSessionEntity old = new UserSessionEntity();
         old.setUserId(42L);
         old.setSessionChainId("chain-42");
@@ -807,14 +811,15 @@ class AppUserAuthServiceTest {
         when(sessions.findRefreshForUpdate(any())).thenReturn(old);
         when(tokens.refreshSuccessor("old-cookie", "b".repeat(64))).thenReturn("wrong-successor");
 
-        var result = service.refresh(new UserRefreshRequest("old-cookie"), "b".repeat(64), true);
+        var result = service.refresh(new UserRefreshRequest("old-cookie"), "b".repeat(64), cookieMode);
 
         assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_REUSE_DETECTED");
         verify(sessions).revokeRefreshChain("chain-42");
     }
 
-    @Test
-    void expiredActiveCookieRevokesItsChain() {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void expiredActiveCookieRevokesItsChain(boolean cookieMode) {
         UserSessionEntity expired = new UserSessionEntity();
         expired.setUserId(42L);
         expired.setSessionChainId("chain-42");
@@ -822,30 +827,32 @@ class AppUserAuthServiceTest {
         expired.setExpiresAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).minusSeconds(1));
         when(sessions.findRefreshForUpdate(any())).thenReturn(expired);
 
-        var result = service.refresh(new UserRefreshRequest("expired-cookie"), "a".repeat(64), true);
+        var result = service.refresh(new UserRefreshRequest("expired-cookie"), "a".repeat(64), cookieMode);
 
         assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_EXPIRED");
         verify(sessions).revokeRefreshChain("chain-42");
         verify(sessions, never()).insert(any(UserSessionEntity.class));
     }
 
-    @Test
-    void revokedUnrotatedCookieCannotRecoverWithANonce() {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void revokedUnrotatedCookieCannotRecoverWithANonce(boolean cookieMode) {
         UserSessionEntity revoked = new UserSessionEntity();
         revoked.setUserId(42L);
         revoked.setSessionChainId("chain-42");
         revoked.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         when(sessions.findRefreshForUpdate(any())).thenReturn(revoked);
 
-        var result = service.refresh(new UserRefreshRequest("logged-out-cookie"), "a".repeat(64), true);
+        var result = service.refresh(new UserRefreshRequest("logged-out-cookie"), "a".repeat(64), cookieMode);
 
         assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_REUSE_DETECTED");
         verify(sessions).revokeRefreshChain("chain-42");
         verify(sessions, never()).insert(any(UserSessionEntity.class));
     }
 
-    @Test
-    void retryOfSupersededRotationDoesNotRevokeItsLiveDescendant() {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void retryOfSupersededRotationDoesNotRevokeItsLiveDescendant(boolean cookieMode) {
         String firstNonce = "a".repeat(64);
         String secondNonce = "b".repeat(64);
         UserEntity user = activeUser();
@@ -863,7 +870,7 @@ class AppUserAuthServiceTest {
         when(sessions.markRefreshRotated(any(), any())).thenReturn(1);
         when(sessions.findRefreshForUpdate(any())).thenReturn(first);
 
-        var firstRotation = service.refresh(new UserRefreshRequest("first-cookie"), firstNonce, true);
+        var firstRotation = service.refresh(new UserRefreshRequest("first-cookie"), firstNonce, cookieMode);
         assertThat(firstRotation.getCode()).isZero();
         ArgumentCaptor<UserSessionEntity> inserted = ArgumentCaptor.forClass(UserSessionEntity.class);
         verify(sessions).insert(inserted.capture());
@@ -874,13 +881,13 @@ class AppUserAuthServiceTest {
         first.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         when(sessions.findRefreshForUpdate(any())).thenReturn(second, first, second);
 
-        var secondRotation = service.refresh(new UserRefreshRequest("second-cookie"), secondNonce, true);
+        var secondRotation = service.refresh(new UserRefreshRequest("second-cookie"), secondNonce, cookieMode);
         assertThat(secondRotation.getCode()).isZero();
         second.setRotatedToId("third-hash");
         second.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         second.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
 
-        var staleRetry = service.refresh(new UserRefreshRequest("first-cookie"), firstNonce, true);
+        var staleRetry = service.refresh(new UserRefreshRequest("first-cookie"), firstNonce, cookieMode);
         assertThat(staleRetry.getCode()).isEqualTo(409);
         assertThat(staleRetry.getMessage()).isEqualTo("USER_REFRESH_ROTATION_SUPERSEDED");
         verify(sessions, never()).revokeRefreshChain(any());
@@ -888,8 +895,9 @@ class AppUserAuthServiceTest {
         verify(outbox, never()).publish(any(), any(), any(), any());
     }
 
-    @Test
-    void legacyCookieClientWithoutNonceCanRotateAnActiveCookie() {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void legacyCookieClientWithoutNonceCanRotateAnActiveCookie(boolean cookieMode) {
         UserSessionEntity current = new UserSessionEntity();
         current.setId(101L);
         current.setUserId(42L);
@@ -902,12 +910,77 @@ class AppUserAuthServiceTest {
         when(tokens.createUserToken(eq(42L), any(), eq(List.of()), any(),
                 any(Duration.class), eq(UserAuthEnvironment.PRODUCTION))).thenReturn("access");
 
-        var result = service.refresh(new UserRefreshRequest("legacy-cookie"), null, true);
+        var result = service.refresh(new UserRefreshRequest("legacy-cookie"), null, cookieMode);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().refreshToken()).isNotBlank();
         verify(tokens, never()).refreshSuccessor(any(), any());
         verify(sessions).insert(any(UserSessionEntity.class));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void malformedRotationKeyCannotRotateAnActiveCredential(boolean cookieMode) {
+        when(sessions.findRefreshForUpdate(any())).thenReturn(new UserSessionEntity());
+
+        var result = service.refresh(new UserRefreshRequest("active-token"), "not-a-rotation-key", cookieMode);
+
+        assertThat(result.getCode()).isEqualTo(400);
+        assertThat(result.getMessage()).isEqualTo("USER_REFRESH_ROTATION_KEY_INVALID");
+        verify(sessions, never()).markRefreshRotated(any(), any());
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+        verify(sessions, never()).revokeRefreshChain(any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"other-user", "other-chain", "revoked", "expired", "idle", "blocked", "password-reset"})
+    void nativeRecoveryCannotBypassSuccessorOrAccountAuthority(String invalidState) {
+        String nonce = "a".repeat(64);
+        UserEntity user = activeUser();
+        UserSessionEntity original = new UserSessionEntity();
+        original.setId(101L);
+        original.setUserId(42L);
+        original.setSessionChainId("chain-42");
+        original.setLastActiveAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        original.setExpiresAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).plusDays(1));
+        when(users.selectById(42L)).thenReturn(user);
+        when(tokens.refreshSuccessor("original-token", nonce)).thenReturn("successor-token");
+        when(tokens.createUserToken(eq(42L), any(), eq(List.of()), any(),
+                any(Duration.class), eq(UserAuthEnvironment.PRODUCTION))).thenReturn("access");
+        when(sessions.findRefreshForUpdate(any())).thenReturn(original);
+        when(sessions.markRefreshRotated(eq(101L), any())).thenReturn(1);
+        assertThat(service.refresh(new UserRefreshRequest("original-token"), nonce, false).getCode()).isZero();
+        ArgumentCaptor<UserSessionEntity> inserted = ArgumentCaptor.forClass(UserSessionEntity.class);
+        verify(sessions).insert(inserted.capture());
+        UserSessionEntity successor = inserted.getValue();
+        original.setRotatedToId(successor.getRefreshTokenId());
+        original.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        original.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        when(sessions.findRefreshForUpdate(original.getRotatedToId())).thenReturn(successor);
+        switch (invalidState) {
+            case "other-user" -> successor.setUserId(99L);
+            case "other-chain" -> successor.setSessionChainId("another-chain");
+            case "revoked" -> successor.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+            case "expired" -> successor.setExpiresAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).minusSeconds(1));
+            case "idle" -> successor.setLastActiveAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).minusDays(31));
+            case "blocked" -> when(blocklistVerifier.isBlocked(42L)).thenReturn(true);
+            case "password-reset" -> when(users.isPasswordResetRequired(42L)).thenReturn(true);
+            default -> throw new AssertionError(invalidState);
+        }
+
+        var result = service.refresh(new UserRefreshRequest("original-token"), nonce, false);
+
+        assertThat(result.getCode()).isIn(401, 403, 409);
+        assertThat(result.getData()).isNull();
+        verify(sessions, times(1)).insert(any(UserSessionEntity.class));
+        verify(tokens, times(1)).createUserToken(eq(42L), any(), eq(List.of()), any(),
+                any(Duration.class), eq(UserAuthEnvironment.PRODUCTION));
+        if (List.of("other-user", "other-chain", "revoked").contains(invalidState)) {
+            assertThat(result.getMessage()).isEqualTo("USER_REFRESH_ROTATION_SUPERSEDED");
+            verify(sessions, never()).revokeRefreshChain(any());
+        } else {
+            verify(sessions).revokeRefreshChain("chain-42");
+        }
     }
 
     @Test
