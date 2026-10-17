@@ -308,7 +308,10 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_user_device_runtime
-               SET online_status='OFFLINE',paused_reason='USER_DEACTIVATED',active_task_no=NULL,updated_at=#{now}
+               SET online_status='OFFLINE',
+                   paused_reason=CASE WHEN NULLIF(TRIM(paused_reason),'') IS NULL
+                                      THEN 'USER_DEACTIVATED' ELSE paused_reason END,
+                   active_task_no=NULL,updated_at=#{now}
              WHERE user_device_id=#{userDeviceId} AND is_deleted=0
                AND EXISTS (SELECT 1 FROM nx_user_device d JOIN nx_user u ON u.id=d.user_id
                             WHERE d.id=#{userDeviceId} AND d.user_id=#{userId}

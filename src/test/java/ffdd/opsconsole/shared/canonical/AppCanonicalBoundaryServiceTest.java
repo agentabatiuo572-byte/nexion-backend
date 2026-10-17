@@ -1559,6 +1559,11 @@ class AppCanonicalBoundaryServiceTest {
         assertThat(activated.getCode()).isZero();
         assertThat(activated.getData()).containsEntry("rowVersion", 2L).containsEntry("alreadyActive", false);
         verify(mapper).activateOwnedDeviceCas(42L, 9L, 1L, 3);
+        var activationOrder = inOrder(mapper, outbox);
+        activationOrder.verify(mapper).activateOwnedDeviceCas(42L, 9L, 1L, 3);
+        activationOrder.verify(mapper).resumeUserDeactivatedRuntime(42L, 9L);
+        activationOrder.verify(outbox).publishUserEvent(eq("USER_DEVICE"), eq("DEV-9"), eq("device.activated"),
+                eq(42L), eq("P3"), eq(5), eq("2026-W06"), any());
         verify(outbox).publishUserEvent(eq("USER_DEVICE"), eq("DEV-9"), eq("device.activated"),
                 eq(42L), eq("P3"), eq(5), eq("2026-W06"), any());
         verify(audit).recordRequiredForTrustedActor(any());
@@ -1573,6 +1578,47 @@ class AppCanonicalBoundaryServiceTest {
         assertThat(replay.getCode()).isZero();
         assertThat(replay.getData()).containsEntry("rowVersion", 2L).containsEntry("alreadyActive", true);
         verify(mapper, never()).activateOwnedDeviceCas(any(), any(), any(), any());
+        verify(mapper, never()).resumeUserDeactivatedRuntime(any(), any());
+        verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(), any(), anyString(), any(), anyString(), any());
+        verify(audit, never()).recordRequiredForTrustedActor(any());
+    }
+
+    @Test
+    void failedActivationCasCannotResumeRuntimeOrPublishAnActivation() {
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 1L));
+        when(mapper.deviceSlotCap()).thenReturn(3);
+        when(mapper.userEventAttribution(42L)).thenReturn(
+                new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
+        assertThatThrownBy(() -> service.activateDevice(42L, 9L, 1L, null, "cas-failed"))
+                .isInstanceOf(BizException.class);
+        verify(mapper, never()).resumeUserDeactivatedRuntime(any(), any());
+        verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(), any(), anyString(), any(), anyString(), any());
+    }
+
+    @Test
+    void firstActivationDoesNotClearAnExistingRuntimePause() {
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "UNACTIVATED", "OWNED", 1L));
+        when(mapper.deviceSlotCap()).thenReturn(3);
+        when(mapper.activateOwnedDeviceCas(42L, 9L, 1L, 3)).thenReturn(1);
+        when(mapper.userEventAttribution(42L)).thenReturn(
+                new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
+        assertThat(service.activateDevice(42L, 9L, 1L, null, "first-activation").getCode()).isZero();
+        verify(mapper, never()).resumeUserDeactivatedRuntime(any(), any());
+    }
+
+    @Test
+    void runtimeRecoveryFailureDoesNotReportSuccessfulActivation() {
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 1L));
+        when(mapper.deviceSlotCap()).thenReturn(3);
+        when(mapper.activateOwnedDeviceCas(42L, 9L, 1L, 3)).thenReturn(1);
+        when(mapper.userEventAttribution(42L)).thenReturn(
+                new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
+        when(mapper.resumeUserDeactivatedRuntime(42L, 9L)).thenThrow(new IllegalStateException("runtime unavailable"));
+        assertThatThrownBy(() -> service.activateDevice(42L, 9L, 1L, null, "runtime-failed"))
+                .isInstanceOf(IllegalStateException.class).hasMessage("runtime unavailable");
         verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(), any(), anyString(), any(), anyString(), any());
         verify(audit, never()).recordRequiredForTrustedActor(any());
     }

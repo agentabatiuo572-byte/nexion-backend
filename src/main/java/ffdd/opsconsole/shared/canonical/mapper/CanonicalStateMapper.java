@@ -387,13 +387,30 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
 
     @Update("""
             UPDATE nx_user_device_runtime
-               SET online_status = 'OFFLINE', paused_reason = 'USER_DEACTIVATED',
+               SET online_status = 'OFFLINE',
+                   paused_reason = CASE WHEN NULLIF(TRIM(paused_reason),'') IS NULL
+                                        THEN 'USER_DEACTIVATED' ELSE paused_reason END,
                    active_task_no = NULL, updated_at = NOW()
              WHERE user_device_id = #{deviceId} AND is_deleted = 0
                AND EXISTS (SELECT 1 FROM nx_user_device d JOIN nx_user u ON u.id=d.user_id
                             WHERE d.id=#{deviceId} AND COALESCE(u.sandbox,0)=0)
             """)
     int markDeviceRuntimeDeactivated(@Param("deviceId") Long deviceId);
+
+    @Update("""
+            UPDATE nx_user_device_runtime r
+              JOIN nx_user_device d ON d.id = r.user_device_id
+              JOIN nx_user u ON u.id = d.user_id
+               SET r.online_status = 'ONLINE', r.paused_reason = NULL, r.updated_at = NOW()
+             WHERE d.id = #{deviceId} AND d.user_id = #{userId}
+               AND d.is_deleted = 0 AND r.is_deleted = 0 AND u.is_deleted = 0
+               AND COALESCE(u.sandbox,0) = 0
+               AND UPPER(d.ownership_status) = 'OWNED' AND UPPER(d.status) = 'ACTIVE'
+               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
+               AND UPPER(COALESCE(d.device_type,'')) NOT IN ('PHONE','MOBILE')
+               AND BINARY r.paused_reason = BINARY 'USER_DEACTIVATED'
+            """)
+    int resumeUserDeactivatedRuntime(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
     @Select("""
             SELECT config_key AS configKey, config_value AS configValue
