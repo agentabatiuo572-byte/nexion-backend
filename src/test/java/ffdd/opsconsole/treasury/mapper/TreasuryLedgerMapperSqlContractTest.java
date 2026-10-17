@@ -13,6 +13,22 @@ import org.junit.jupiter.api.Test;
 
 class TreasuryLedgerMapperSqlContractTest {
     @Test
+    void d4ReadProjectionsOnlyRenameExactOwnPhoneDefaultNames() {
+        for (String name : List.of("pageLedgerBills", "userLedgerRows")) {
+            Method method = java.util.Arrays.stream(TreasuryLedgerMapper.class.getMethods())
+                    .filter(candidate -> candidate.getName().equals(name)).findFirst().orElseThrow();
+            String sql = String.join("\n", method.getAnnotation(Select.class).value());
+            assertThat(sql).contains(
+                    "RIGHT(u.phone,4) REGEXP '^[0-9]{4}$'",
+                    "CAST(u.nickname AS BINARY) = CAST(CONCAT('NexGrid ',RIGHT(u.phone,4)) AS BINARY)",
+                    "THEN CONCAT('UVEL ',RIGHT(u.phone,4)) ELSE u.nickname END AS nickname",
+                    "LEFT JOIN nx_user u ON u.id = l.user_id AND u.is_deleted = 0",
+                    "l.amount", "l.balance_after AS balanceAfter", "l.remark");
+            assertThat(sql).doesNotContain("TRIM(u.nickname)", "LOWER(u.nickname)");
+        }
+    }
+
+    @Test
     void reconciliationGapIncludesWalletOnlyAndLedgerOnlyUsers() throws Exception {
         Method method = TreasuryLedgerMapper.class.getMethod("walletLedgerReconciliationGapUsdt");
         String sql = String.join("\n", method.getAnnotation(Select.class).value());
@@ -85,7 +101,8 @@ class TreasuryLedgerMapperSqlContractTest {
         Map<String, Object> rawType = Map.of("type", "COMPUTE_TASK_REWARD", "pageSize", 20, "offset", 0);
         assertThat(countSource.getBoundSql(rawType).getSql())
                 .contains("AND UPPER(l.biz_type) = UPPER(?)").doesNotContain("CASE");
-        assertThat(pageSource.getBoundSql(rawType).getSql())
+        String rawPageSql = pageSource.getBoundSql(rawType).getSql();
+        assertThat(rawPageSql.substring(rawPageSql.indexOf("WHERE l.is_deleted")))
                 .contains("AND UPPER(l.biz_type) = UPPER(?)").doesNotContain("CASE");
     }
 
