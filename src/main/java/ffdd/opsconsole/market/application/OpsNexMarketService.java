@@ -2244,7 +2244,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private String repurchaseStatusLabel(String status) {
         return switch (status) {
             case "pending_lock" -> "待确认";
-            case "active" -> "90 天锁仓中";
+            case "active" -> "锁仓中";
             case "mature_unclaimed" -> "到期未领取";
             case "claimed" -> "已领取";
             case "early_withdrawn" -> "提前赎回";
