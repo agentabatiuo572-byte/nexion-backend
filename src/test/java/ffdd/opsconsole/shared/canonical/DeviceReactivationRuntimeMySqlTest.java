@@ -91,11 +91,12 @@ class DeviceReactivationRuntimeMySqlTest {
                 assertThat(jdbc.queryForMap("SELECT online_status,paused_reason FROM nx_user_device_runtime WHERE user_device_id=9"))
                         .containsEntry("online_status", "OFFLINE").containsEntry("paused_reason", "USER_DEACTIVATED");
                 reset(outbox);
-                var heartbeat = jdbc.queryForObject("SELECT heartbeat_at FROM nx_user_device_runtime WHERE user_device_id=9", java.sql.Timestamp.class);
+                var telemetryBefore = jdbc.queryForMap("SELECT heartbeat_at,active_task_no FROM nx_user_device_runtime WHERE user_device_id=9");
                 assertThat(actual.activateDevice(42L, 9L, 1L, null, "success").getCode()).isZero();
-                assertThat(jdbc.queryForMap("SELECT online_status,paused_reason,heartbeat_at,active_task_no FROM nx_user_device_runtime WHERE user_device_id=9"))
-                        .containsEntry("online_status", "ONLINE").containsEntry("paused_reason", null)
-                        .containsEntry("heartbeat_at", heartbeat).containsEntry("active_task_no", null);
+                assertThat(jdbc.queryForMap("SELECT online_status,paused_reason FROM nx_user_device_runtime WHERE user_device_id=9"))
+                        .containsEntry("online_status", "ONLINE").containsEntry("paused_reason", null);
+                assertThat(jdbc.queryForMap("SELECT heartbeat_at,active_task_no FROM nx_user_device_runtime WHERE user_device_id=9"))
+                        .isEqualTo(telemetryBefore);
                 // Same-state invocation cannot silently repair or clear a runtime pause.
                 jdbc.update("UPDATE nx_user_device_runtime SET paused_reason='USER_DEACTIVATED',online_status='OFFLINE'");
                 assertThat(actual.activateDevice(42L, 9L, 2L, null, "already-active").getCode()).isZero();
