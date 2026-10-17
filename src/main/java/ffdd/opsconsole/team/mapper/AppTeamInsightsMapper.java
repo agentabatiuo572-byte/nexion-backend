@@ -102,6 +102,18 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
     UserScope userScope(@Param("userId") Long userId);
 
     @Select("""
+            <script>
+            SELECT id userId,RIGHT(phone,4) phoneSuffix FROM nx_user
+             WHERE sandbox=#{sandbox} AND is_deleted=0 AND id IN
+             <foreach collection="userIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<LeaderboardNameIdentity> leaderboardNameIdentities(@Param("userIds") List<Long> userIds,
+                                                           @Param("sandbox") Integer sandbox);
+
+    record LeaderboardNameIdentity(Long userId, String phoneSuffix) {}
+
+    @Select("""
             SELECT COUNT(*) FROM nx_user u
              WHERE u.id=#{userId}
                AND REPLACE(TRIM(COALESCE(u.country_code,'')),'+','')=REPLACE(#{countryCode},'+','')
