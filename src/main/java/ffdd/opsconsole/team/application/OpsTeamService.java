@@ -45,6 +45,8 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -60,6 +62,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.scheduling.support.CronExpression;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -1822,8 +1825,12 @@ public class OpsTeamService implements AuditReplayable {
         // Read-only projection of the same mandatory CAS version consumed by
         // LeadershipPoolConfigGuard; never synthesize a browser/default version.
         pool.put("configVersion", configText("F.pool.configVersion", ""));
+        pool.put("nextSettlementAt", "");
         try {
             var settlementConfig = new LeadershipPoolConfigGuard(configFacade).requireValid();
+            var nextSettlement = CronExpression.parse(settlementConfig.springCron())
+                    .next(ZonedDateTime.now(ZoneOffset.UTC));
+            pool.put("nextSettlementAt", nextSettlement == null ? "" : nextSettlement.toInstant().toString());
             weeklyInjectedUsd = LeadershipPoolProjection.amount(summary, settlementConfig);
             unlockRank = settlementConfig.unlockRank();
             participantCount = ranks.stream()
@@ -1854,8 +1861,9 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("topN", topN);
         pool.put("topSharePct", leadershipTopConcentrationPct(ranks, topN));
         pool.put("unlockRank", unlockRank);
-        pool.put("settlementWindow", "周日 23:59 UTC");
-        pool.put("settlementDispatchWindow", "周一 00:00 UTC");
+        // Retain legacy response keys without promising a nonexistent two-stage payout.
+        pool.put("settlementWindow", "");
+        pool.put("settlementDispatchWindow", "");
         pool.put("quotaRows", quotaRows);
         pool.put("quotaUsages", commissionRepository.quotaUsages(30));
         pool.put("quotaMonthlyStockLabel", String.valueOf(quotaCap));

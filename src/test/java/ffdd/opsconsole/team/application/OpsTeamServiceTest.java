@@ -222,8 +222,9 @@ class OpsTeamServiceTest {
         Map<String, Object> leadershipPool = (Map<String, Object>) result.getData().get("leadershipPool");
         assertThat(leadershipPool)
                 .containsKeys("quotaRows", "ambassadorBands", "podium", "voteWeights")
-                .containsEntry("settlementWindow", "周日 23:59 UTC")
-                .containsEntry("settlementDispatchWindow", "周一 00:00 UTC");
+                .containsEntry("nextSettlementAt", "")
+                .containsEntry("settlementWindow", "")
+                .containsEntry("settlementDispatchWindow", "");
     }
 
     @Test
@@ -313,8 +314,9 @@ class OpsTeamServiceTest {
                 .containsEntry("weeklyGmvUsd", 0)
                 .containsEntry("weeklyInjectedUsd", 0)
                 .containsEntry("monthlyCapUsd", 0)
-                .containsEntry("settlementWindow", "周日 23:59 UTC")
-                .containsEntry("settlementDispatchWindow", "周一 00:00 UTC");
+                .containsEntry("nextSettlementAt", "")
+                .containsEntry("settlementWindow", "")
+                .containsEntry("settlementDispatchWindow", "");
         assertThat((List<Map<String, Object>>) pool.getData().get("quotaRows")).isEmpty();
         assertThat((List<Map<String, Object>>) pool.getData().get("ambassadorBands")).isEmpty();
         assertThat((List<Map<String, Object>>) pool.getData().get("podium")).isEmpty();
@@ -434,8 +436,9 @@ class OpsTeamServiceTest {
                 .containsEntry("weeklyGmvUsd", 0)
                 .containsEntry("weeklyInjectedUsd", 0)
                 .containsEntry("participantCount", 0)
-                .containsEntry("settlementWindow", "周日 23:59 UTC")
-                .containsEntry("settlementDispatchWindow", "周一 00:00 UTC");
+                .containsEntry("nextSettlementAt", "")
+                .containsEntry("settlementWindow", "")
+                .containsEntry("settlementDispatchWindow", "");
         assertThat((List<Map<String, Object>>) result.getData().get("quotaRows")).isEmpty();
         assertThat((List<Map<String, Object>>) result.getData().get("ambassadorBands")).isEmpty();
         assertThat((List<Map<String, Object>>) result.getData().get("podium")).isEmpty();
@@ -1388,6 +1391,25 @@ class OpsTeamServiceTest {
                 .containsEntry("settlementConfigStatus", "READY")
                 .containsEntry("settlementConfigUnavailableKey", "")
                 .containsEntry("settlementConfigUnavailableReason", "");
+
+        var next = java.time.Instant.parse((String) service.leadershipPool().getData().get("nextSettlementAt"))
+                .atZone(java.time.ZoneOffset.UTC);
+        assertThat(next.getDayOfWeek()).isEqualTo(java.time.DayOfWeek.SUNDAY);
+        assertThat(next.getHour()).isEqualTo(23);
+        assertThat(next.getMinute()).isEqualTo(59);
+
+        configFacade.values.put("team.ui.F.pool.settleCron", "7 13 * * 1");
+        var beforeRead = new LinkedHashMap<>(configFacade.values);
+        var changed = service.leadershipPool().getData();
+        next = java.time.Instant.parse((String) changed.get("nextSettlementAt")).atZone(java.time.ZoneOffset.UTC);
+        assertThat(next.getDayOfWeek()).isEqualTo(java.time.DayOfWeek.MONDAY);
+        assertThat(next.getHour()).isEqualTo(13);
+        assertThat(next.getMinute()).isEqualTo(7);
+        assertThat(changed).containsEntry("settlementWindow", "").containsEntry("settlementDispatchWindow", "");
+        assertThat(configFacade.values).isEqualTo(beforeRead);
+
+        configFacade.values.put("team.ui.F.pool.settleCron", "0 0 0 31 2 *");
+        assertThat(service.leadershipPool().getData()).containsEntry("nextSettlementAt", "");
     }
 
     @Test
@@ -1400,6 +1422,7 @@ class OpsTeamServiceTest {
 
         assertThat(service.leadershipPool().getData())
                 .containsEntry("settlementConfigStatus", "HOLD")
+                .containsEntry("nextSettlementAt", "")
                 .containsEntry("settlementConfigUnavailableKey", "F.pool.settleCron")
                 .containsEntry("settlementConfigUnavailableReason", "INVALID_CRON");
     }
