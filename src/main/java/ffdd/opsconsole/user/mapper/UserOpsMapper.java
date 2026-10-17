@@ -750,7 +750,11 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Select("""
             SELECT COALESCE(u.id, tm.member_user_id) AS memberUserId,
                    tm.member_no AS memberNo,
-                   COALESCE(u.nickname, tm.nickname) AS nickname,
+                   CASE WHEN RIGHT(u.phone,4) REGEXP '^[0-9]{4}$'
+                             AND CAST(u.nickname AS BINARY) = CAST(CONCAT('NexGrid ',RIGHT(u.phone,4)) AS BINARY)
+                        THEN CONCAT('UVEL ',RIGHT(u.phone,4))
+                        ELSE COALESCE(u.nickname, tm.nickname)
+                   END AS nickname,
                    tm.v_rank AS vRank,
                    tm.level,
                    tm.volume,

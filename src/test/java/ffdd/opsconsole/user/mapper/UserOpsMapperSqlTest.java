@@ -184,7 +184,7 @@ class UserOpsMapperSqlTest {
                 .contains("WHEN tm.member_no REGEXP '^U[0-9]{8,}$'")
                 .contains("THEN CAST(SUBSTRING(tm.member_no, 2) AS UNSIGNED)")
                 .contains("ELSE tm.member_user_id")
-                .contains("COALESCE(u.nickname, tm.nickname) AS nickname")
+                .contains("ELSE COALESCE(u.nickname, tm.nickname)")
                 .as("不能再把反规范化列当作唯一来源")
                 .doesNotContain("                   nickname,");
     }
