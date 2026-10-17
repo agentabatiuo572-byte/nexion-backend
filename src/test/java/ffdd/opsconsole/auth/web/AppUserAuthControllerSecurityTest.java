@@ -342,4 +342,24 @@ class AppUserAuthControllerSecurityTest {
 
         verify(refreshCookieService, org.mockito.Mockito.never()).clear(any());
     }
+
+    @Test
+    void nativeRefreshPassesRotationProofWithoutSelectingCookieMode() throws Exception {
+        var credential = new ffdd.opsconsole.auth.dto.UserRefreshRequest("native-token");
+        when(refreshCookieService.resolve(any(), any())).thenReturn(credential);
+        when(authService.refresh(eq(credential), eq("a".repeat(64)), eq(false)))
+                .thenReturn(ApiResult.fail(409, "USER_REFRESH_ROTATION_SUPERSEDED"));
+        when(refreshCookieService.issue(any(), any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        mockMvc.perform(post("/auth/users/refresh")
+                        .header(AppUserRefreshCookieService.ROTATION_KEY_HEADER, "a".repeat(64))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refreshToken\":\"native-token\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(409))
+                .andExpect(header().doesNotExist("Set-Cookie"));
+
+        verify(authService).refresh(eq(credential), eq("a".repeat(64)), eq(false));
+        verify(refreshCookieService, org.mockito.Mockito.never()).clear(any());
+    }
 }

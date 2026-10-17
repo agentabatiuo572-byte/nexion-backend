@@ -484,7 +484,8 @@ public class AppUserAuthService {
         UserSessionEntity current = sessionMapper.findRefreshForUpdate(tokenId);
         if (current == null) return ApiResult.fail(401, "USER_REFRESH_TOKEN_INVALID");
         String recoveredRaw = null;
-        boolean nonceRotation = cookieMode && validRotationNonce(rotationNonce);
+        // Both credential transports can recover only the same authenticated rotation intent.
+        boolean nonceRotation = validRotationNonce(rotationNonce);
         if (current.getRotationRedeemedAt() != null || current.getRevokedAt() != null) {
             if (nonceRotation && current.getRotationRedeemedAt() != null
                     && StringUtils.hasText(current.getRotatedToId())) {
@@ -516,7 +517,7 @@ public class AppUserAuthService {
                             "detectedAt", LocalDateTime.now().toString()));
             return ApiResult.fail(401, "USER_REFRESH_TOKEN_REUSE_DETECTED");
         }
-        if (cookieMode && StringUtils.hasText(rotationNonce) && !nonceRotation) {
+        if (StringUtils.hasText(rotationNonce) && !nonceRotation) {
             return ApiResult.fail(400, "USER_REFRESH_ROTATION_KEY_INVALID");
         }
         LocalDateTime now = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
