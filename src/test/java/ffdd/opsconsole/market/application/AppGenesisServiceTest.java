@@ -37,6 +37,75 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.env.MockEnvironment;
 
 class AppGenesisServiceTest {
+    @ParameterizedTest
+    @ValueSource(ints = {0, 250})
+    void secondaryTradePublishesBothActualPartiesThroughStrictOutboxSchema(int royaltyBps) throws Exception {
+        var events = mock(ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.class);
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        var publisher = new EventOutboxService(events, json,
+                new ffdd.opsconsole.shared.outbox.OutboxProperties(),
+                mock(ffdd.opsconsole.platform.application.A4RuntimePolicyService.class));
+        // Current TEST registry233/rev68 ACTIVE/full, read on 2026-10-17:
+        // GENESIS-SECONDARY-CURRENT-SCHEMA-RESULT.json confirms all seven fields required.
+        when(events.findActiveSchema("genesis.secondary_traded")).thenReturn(
+                new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaGateRow("genesis",68,true));
+        when(events.findLifecycleState("genesis.secondary_traded")).thenReturn("full");
+        when(events.listActiveProperties("genesis.secondary_traded")).thenReturn(
+                java.util.stream.Stream.of("order_no","holding_no","buyer_user_id","seller_user_id",
+                        "price_usdt","royalty_usdt","seller_net_usdt")
+                        .map(name -> new ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.SchemaPropertyGateRow(
+                                name,name.endsWith("usdt")?"number":"id",true)).toList());
+        var actual = new AppGenesisService(mapper,config,idempotency,publisher,audit,
+                Clock.fixed(Instant.parse("2026-07-22T04:00:00Z"), ZoneOffset.UTC),catalog,environment,
+                Optional.empty(),payments);
+        var acquired = LocalDateTime.parse("2026-07-22T03:00:00");
+        var listing = new AppGenesisMapper.HoldingRow(1L,"GEN-FIXTURE",7L,"GEN-ORDER","genesis-main",
+                BigDecimal.ONE,"LISTED",BigDecimal.ONE,acquired,acquired);
+        when(mapper.routeHolding("GEN-FIXTURE")).thenReturn(listing);
+        when(mapper.lockHolding("GEN-FIXTURE")).thenReturn(listing);
+        when(mapper.lockActiveSeries()).thenReturn(new AppGenesisMapper.SeriesRow(1L,"genesis-main","Genesis Node",
+                1000,new BigDecimal("7999"),royaltyBps,new BigDecimal("0.1"),"ACTIVE"));
+        when(mapper.lockWallet(7L)).thenReturn(BigDecimal.TEN);
+        when(mapper.debitWallet(org.mockito.ArgumentMatchers.eq(42L),any())).thenReturn(1);
+        when(mapper.creditWallet(org.mockito.ArgumentMatchers.eq(7L),any())).thenReturn(1);
+        when(mapper.transferHolding(anyLong(),anyLong(),anyLong(),anyString(),any(),any())).thenReturn(1);
+        var result = actual.buyListing(42L,"GEN-FIXTURE","strict-parties-"+royaltyBps,new AppGenesisService.BuyRequest(BigDecimal.ONE));
+        assertThat(result.getCode()).isZero();
+        var payload = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(events).insertEvent(anyString(),org.mockito.ArgumentMatchers.eq("GENESIS_ORDER"),anyString(),
+                org.mockito.ArgumentMatchers.eq("genesis.secondary_traded"),org.mockito.ArgumentMatchers.eq("genesis.secondary_traded"),
+                org.mockito.ArgumentMatchers.eq("genesis"),anyString(),org.mockito.ArgumentMatchers.anyInt(),anyString(),
+                org.mockito.ArgumentMatchers.eq(true),org.mockito.ArgumentMatchers.eq(68),org.mockito.ArgumentMatchers.eq(true),
+                org.mockito.ArgumentMatchers.eq(true),payload.capture());
+        var event = json.readTree(payload.getValue());
+        assertThat(event.path("buyer_user_id").asLong()).isEqualTo(42L);
+        assertThat(event.path("seller_user_id").asLong()).isEqualTo(7L);
+        assertThat(event.path("holding_no").asText()).isEqualTo("GEN-FIXTURE");
+        assertThat(event.path("price_usdt").decimalValue()).isEqualByComparingTo("1");
+        var fee = BigDecimal.valueOf(royaltyBps).movePointLeft(4);
+        assertThat(event.path("royalty_usdt").decimalValue()).isEqualByComparingTo(fee);
+        assertThat(event.path("seller_net_usdt").decimalValue()).isEqualByComparingTo(BigDecimal.ONE.subtract(fee));
+        var order = org.mockito.ArgumentCaptor.forClass(AppGenesisMapper.OrderWrite.class);
+        verify(mapper).insertOrder(order.capture());
+        assertThat(event.path("order_no").asText()).isEqualTo(order.getValue().orderNo());
+        assertThat(order.getValue().userId()).isEqualTo(42L);
+        assertThat(order.getValue().sellerUserId()).isEqualTo(7L);
+        assertThat(((Map<?,?>)result.getData().get("trade")).containsKey("buyerUserId")).isFalse();
+        assertThat(((Map<?,?>)result.getData().get("trade")).containsKey("sellerUserId")).isFalse();
+        clearInvocations(events);
+        for (String missing : List.of("buyer", "seller")) {
+            var incomplete = (com.fasterxml.jackson.databind.node.ObjectNode)event.deepCopy();
+            incomplete.remove(List.of(missing+"UserId",missing+"_user_id"));
+            assertThatThrownBy(() -> publisher.publishUserEvent("GENESIS_ORDER","negative-"+missing,
+                    "genesis.secondary_traded",42L,"P1",0,"2026-W30",incomplete))
+                    .isInstanceOf(BizException.class).hasMessage("A4_SCHEMA_REQUIRED_PROPERTY_MISSING");
+        }
+        verify(events,never()).insertEvent(anyString(),anyString(),anyString(),anyString(),anyString(),anyString(),
+                anyString(),org.mockito.ArgumentMatchers.anyInt(),anyString(),org.mockito.ArgumentMatchers.anyBoolean(),
+                org.mockito.ArgumentMatchers.anyInt(),org.mockito.ArgumentMatchers.anyBoolean(),
+                org.mockito.ArgumentMatchers.anyBoolean(),anyString());
+    }
+
     @Test
     void recoveryDerivesTheAccountScopeAndNeverReadsOrWritesFinancialProjections() {
         when(idempotency.recoveryStatus(anyString(), anyString(), anyString()))

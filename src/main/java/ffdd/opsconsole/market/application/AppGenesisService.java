@@ -371,7 +371,10 @@ public class AppGenesisService {
         Map<String, Object> event = linked("orderNo", orderNo, "holdingNo", holdingNo,
                 "priceUsdt", price,
                 "royaltyUsdt", royalty, "sellerNetUsdt", sellerNet);
-        String receipt = publishUser("GENESIS_ORDER", orderNo, "genesis.secondary_traded", buyerPolicy, event);
+        Map<String, Object> outboxEvent = new java.util.LinkedHashMap<>(event);
+        outboxEvent.put("buyerUserId", userId);
+        outboxEvent.put("sellerUserId", holding.userId());
+        String receipt = publishUser("GENESIS_ORDER", orderNo, "genesis.secondary_traded", buyerPolicy, outboxEvent);
         recordAudit("USER_GENESIS_SECONDARY_PURCHASED", "GENESIS_ORDER", orderNo, userId, key,
                 orderNo, "/api/genesis/listings/" + holdingNo + "/buy", event);
         Map<String, Object> response = accountView(userId, series);
