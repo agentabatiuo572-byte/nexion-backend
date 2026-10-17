@@ -341,8 +341,8 @@ public class LeadershipPoolService {
             if (eventId == null) throw new IllegalStateException("F4_LEADERBOARD_EVENT_INSERT_FAILED");
             ledgerPostingFacade.releaseCommissionFunds(eventId);
             eventOutboxService.publish("LEADERBOARD_PRIZE", "F4-LB-" + settlementKey + "-" + eventId,
-                    "commission.paid", linked("userId", userId, "amount", share,
-                            "period", period, "settlementKey", settlementKey));
+                    "commission.paid", linked("userId", userId, "kind", COMMISSION_LEADERBOARD_PRIZE,
+                            "currency", CURRENCY_USDT, "amount", share, "commissionEventId", eventId));
             allocated = allocated.add(share);
             if (index < 5) allocatedTop5 = allocatedTop5.add(share);
             settled++;
