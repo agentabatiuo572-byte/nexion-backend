@@ -228,7 +228,7 @@ public class AppWalletBillsService {
         item.put("bizNo", row.bizNo()); // retained for an older App API client; new clients use publicReference.
         item.put("bizType", row.bizType());
         item.put("category", category);
-        item.put("presentationCode", presentationCode(row.bizType(), category));
+        item.put("presentationCode", presentationCode(row.bizType(), row.bizNo(), category));
         item.put("publicReference", publicReference(row.bizType(), row.bizNo()));
         item.put("asset", row.asset());
         item.put("direction", row.direction());
@@ -249,7 +249,7 @@ public class AppWalletBillsService {
         String normalizedDirection = direction == null ? "" : direction.toUpperCase(Locale.ROOT);
         if ("ORDER_REFUND".equals(value.trim())) return "refund";
         if ("TRIAL_CHARGE".equals(value)) return "purchase";
-        if ("TRIAL_BONUS".equals(value) || "DAILY_CHECK_IN".equals(value)) return "bonus";
+        if ("TRIAL_BONUS".equals(value) || "DAILY_CHECK_IN".equals(value) || "REFERRAL_REWARD".equals(value)) return "bonus";
         if (value.matches(".*(DEPOSIT|TOPUP|RECHARGE).*$")) return "topup";
         // These credits return locked principal to the wallet; they are not external payouts.
         if ("IN".equals(normalizedDirection) && ("STAKING_EARLY_WITHDRAW".equals(value)
@@ -269,9 +269,15 @@ public class AppWalletBillsService {
      * This is an App presentation contract, not the immutable ledger remark.
      * Unknown business types deliberately collapse to the honest generic entry.
      */
-    private String presentationCode(String bizType, String category) {
+    private String presentationCode(String bizType, String bizNo, String category) {
         String value = bizType == null ? "" : bizType.trim().toUpperCase(Locale.ROOT);
         return switch (value) {
+            case "REFERRAL_REWARD" -> {
+                // Only the canonical H8 settlement reference identifies the reward beneficiary.
+                if (bizNo != null && bizNo.matches("REF-[A-F0-9]{24}:NEWCOMER")) yield "newcomerReward";
+                if (bizNo != null && bizNo.matches("REF-[A-F0-9]{24}:INVITER")) yield "inviterReward";
+                yield "referralReward";
+            }
             case "COMPUTE_TASK_REWARD" -> "computeTaskReward";
             case "DAILY_CHECK_IN" -> "dailyCheckIn";
             case "TRIAL_CHARGE" -> "trialCharge";
