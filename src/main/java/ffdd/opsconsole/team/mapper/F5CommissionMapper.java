@@ -319,10 +319,10 @@ public interface F5CommissionMapper {
              WHERE is_deleted=0
                AND (commission_type IS NULL OR LOWER(commission_type) NOT IN
                    ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning',
-                    'vrank_reward'))
+                    'vrank_reward', 'leaderboard_prize'))
             """)
-    // vrank_reward is the authoritative F1 self-reward event, not one of F5's six commission classes.
-    // It is intentionally excluded from F5 totals but is known, so it must not trip the unknown-kind fuse.
+    // F1 self rewards and F4 leaderboard prizes are legitimate independent rewards outside F5's eight kinds.
+    // Keep query/count/export/aggregates unchanged; only truly unknown kinds trip the full-table fuse.
     long unknownCommissionKindCount();
 
     @Select("""

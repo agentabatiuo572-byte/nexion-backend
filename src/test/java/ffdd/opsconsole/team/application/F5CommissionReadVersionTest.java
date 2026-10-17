@@ -124,6 +124,15 @@ class F5CommissionReadVersionTest {
                 .hasMessage("F5_COMMISSION_KIND_UNKNOWN");
     }
 
+    @Test
+    void independentLeaderboardKindRemainsOutsideF5Filter() {
+        F5CommissionMapper mapper = mock(F5CommissionMapper.class);
+        assertThatThrownBy(() -> service(mapper).overview(
+                new F5CommissionQuery("leaderboard_prize", null, null, null, null, null, 20)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessage("COMMISSION_KIND_INVALID");
+        org.mockito.Mockito.verifyNoInteractions(mapper);
+    }
+
     private static F5CommissionService service(F5CommissionMapper mapper) {
         PlatformConfigFacade config = mock(PlatformConfigFacade.class);
         TreasuryCoverageFacade coverage = mock(TreasuryCoverageFacade.class);
