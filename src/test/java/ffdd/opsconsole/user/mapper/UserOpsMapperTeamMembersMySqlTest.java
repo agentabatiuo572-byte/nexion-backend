@@ -35,15 +35,40 @@ class UserOpsMapperTeamMembersMySqlTest {
         String endpoint = System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT");
         JdbcTemplate admin = new JdbcTemplate(new DriverManagerDataSource(url(endpoint, ""), "root", ""));
         admin.execute("CREATE DATABASE " + schema);
+        System.out.println("BRAND_READ_SCHEMA_CREATED " + schema);
         SingleConnectionDataSource dataSource = null;
         try {
             dataSource = new SingleConnectionDataSource(
                     new DriverManagerDataSource(url(endpoint, schema), "root", "").getConnection(), true);
             JdbcTemplate jdbc = new JdbcTemplate(dataSource);
-            jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,nickname VARCHAR(100),is_deleted TINYINT NOT NULL)");
+            jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,nickname VARCHAR(100),is_deleted TINYINT NOT NULL,phone VARCHAR(32))");
             jdbc.execute("CREATE TABLE nx_team_member(id BIGINT PRIMARY KEY,user_id BIGINT NOT NULL,member_user_id BIGINT NOT NULL,member_no VARCHAR(64) NOT NULL,nickname VARCHAR(100),v_rank VARCHAR(16),level INT,volume DECIMAL(20,2),created_at DATETIME,is_deleted TINYINT NOT NULL)");
-            jdbc.update("INSERT INTO nx_user VALUES(60723153012,'Turbo Pulse 36',0),(9831,'Wrong live user',0)");
+            jdbc.update("INSERT INTO nx_user(id,nickname,is_deleted) VALUES(60723153012,'Turbo Pulse 36',0),(9831,'Wrong live user',0)");
             jdbc.update("INSERT INTO nx_team_member VALUES(1,7,9831,'U60723153012','NexGrid 9831','V1',1,0,NOW(),0)");
+
+            record NameCase(String live, String phone, String fallback, int deleted, String expected) { }
+            var names = java.util.List.of(
+                    new NameCase("NexGrid 1057", "18000001057", "Old", 0, "UVEL 1057"),
+                    new NameCase("NexGrid 1057", "18000009999", "Old", 0, "NexGrid 1057"),
+                    new NameCase("NexGrid 1057", null, "Old", 0, "NexGrid 1057"),
+                    new NameCase("Custom NexGrid 1057", "18000001057", "Old", 0, "Custom NexGrid 1057"),
+                    new NameCase("nexgrid 1057", "18000001057", "Old", 0, "nexgrid 1057"),
+                    new NameCase("NexGrid 1057 ", "18000001057", "Old", 0, "NexGrid 1057 "),
+                    new NameCase("NexGrid1057", "18000001057", "Old", 0, "NexGrid1057"),
+                    new NameCase("NexGrid  1057", "18000001057", "Old", 0, "NexGrid  1057"),
+                    new NameCase("Nexion3778", "18000003778", "Old", 0, "Nexion3778"),
+                    new NameCase("NexGrid 10x7", "180000010x7", "Old", 0, "NexGrid 10x7"),
+                    new NameCase(null, "18000001057", "NexGrid 1057", 0, "NexGrid 1057"),
+                    new NameCase("", "18000001057", "NexGrid 1057", 0, ""),
+                    new NameCase(null, "18000001057", null, 0, null),
+                    new NameCase("NexGrid 1057", "18000001057", "NexGrid 1057", 1, "NexGrid 1057"));
+            for (int index = 0; index < names.size(); index++) {
+                var sample = names.get(index);
+                long id = 500000000L + index;
+                jdbc.update("INSERT INTO nx_user(id,nickname,is_deleted,phone) VALUES(?,?,?,?)", id, sample.live(), sample.deleted(), sample.phone());
+                jdbc.update("INSERT INTO nx_team_member VALUES(?,8,? ,?,?, 'V1',1,19.90,NOW(),0)", id, id, "U" + id, sample.fallback());
+            }
+            jdbc.update("INSERT INTO nx_team_member VALUES(999,9,999,'legacy','NexGrid 1057','V1',1,0,NOW(),0)");
 
             Configuration configuration = new Configuration(
                     new Environment("isolated-c1-team", new JdbcTransactionFactory(), dataSource));
@@ -57,10 +82,25 @@ class UserOpsMapperTeamMembersMySqlTest {
                             assertThat(member.memberNo()).isEqualTo("U60723153012");
                             assertThat(member.nickname()).isEqualTo("Turbo Pulse 36");
                         });
+                var rows = session.getMapper(UserOpsMapper.class).teamMembers(8L, 30);
+                assertThat(rows).hasSize(names.size());
+                for (int index = 0; index < names.size(); index++) {
+                    long id = 500000000L + index;
+                    var sample = names.get(index);
+                    var row = rows.stream().filter(member -> member.memberNo().equals("U" + id)).findFirst().orElseThrow();
+                    assertThat(row.nickname()).as("nickname case %s", index).isEqualTo(sample.expected());
+                    assertThat(row.volume()).isEqualByComparingTo("19.90");
+                    assertThat(jdbc.queryForObject("SELECT nickname FROM nx_user WHERE id=?", String.class, id)).isEqualTo(sample.live());
+                    assertThat(jdbc.queryForObject("SELECT nickname FROM nx_team_member WHERE id=?", String.class, id)).isEqualTo(sample.fallback());
+                }
+                assertThat(session.getMapper(UserOpsMapper.class).teamMembers(9L, 10)).singleElement()
+                        .satisfies(member -> assertThat(member.nickname()).isEqualTo("NexGrid 1057"));
             }
         } finally {
             if (dataSource != null) dataSource.destroy();
             admin.execute("DROP DATABASE IF EXISTS " + schema);
+            assertThat(admin.queryForObject("SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name=?", Integer.class, schema)).isZero();
+            System.out.println("BRAND_READ_SCHEMA_DROPPED " + schema);
         }
     }
 

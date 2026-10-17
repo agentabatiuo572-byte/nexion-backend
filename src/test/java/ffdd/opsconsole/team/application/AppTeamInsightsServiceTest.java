@@ -47,7 +47,7 @@ class AppTeamInsightsServiceTest {
                 .replaceAll("\\s+", " ");
 
         assertThat(sql).contains("CASE WHEN ce.source_user_name REGEXP '[^[:space:]]' THEN ce.source_user_name END",
-                "source.nickname) sourceUserName", "LEFT JOIN nx_user u ON u.id=ce.user_id",
+                "source.nickname)", "END sourceUserName", "LEFT JOIN nx_user u ON u.id=ce.user_id",
                 "LEFT JOIN nx_user source ON source.id=ce.source_user_id",
                 "source.sandbox=u.sandbox", "source.is_deleted=0",
                 "WHERE ce.user_id=#{userId} AND ce.is_deleted=0 AND ce.created_at <= #{snapshotAt}",

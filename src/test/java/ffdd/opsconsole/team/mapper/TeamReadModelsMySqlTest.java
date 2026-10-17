@@ -85,9 +85,9 @@ class TeamReadModelsMySqlTest {
     @EnabledIfEnvironmentVariable(named = "NEXION_TEAM_READ_IT", matches = "true")
     void genericCommissionSourceNamesPreserveSnapshotsRowsNamespaceAndPagination() throws Exception {
         inSchema((jdbc, configuration) -> {
-            jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,nickname VARCHAR(120),sandbox TINYINT,status VARCHAR(16),is_deleted TINYINT)");
+            jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,nickname VARCHAR(120),sandbox TINYINT,status VARCHAR(16),is_deleted TINYINT,phone VARCHAR(32))");
             jdbc.execute("CREATE TABLE nx_commission_event(id BIGINT PRIMARY KEY,user_id BIGINT,commission_type VARCHAR(32),source_user_id BIGINT,source_user_name VARCHAR(120),layer_no INT,order_no VARCHAR(80),order_amount_usd DECIMAL(20,6),amount_usdt DECIMAL(20,6),amount_nex DECIMAL(20,6),status VARCHAR(32),created_at DATETIME,unlock_at DATETIME,is_deleted TINYINT)");
-            jdbc.update("INSERT INTO nx_user VALUES(7,'Beneficiary',0,'ACTIVE',0),(8,'NexGrid 1051',0,'ACTIVE',0),(9,'Deleted source',0,'ACTIVE',1),(10,'Other namespace',1,'ACTIVE',0),(11,'',0,'ACTIVE',0),(12,NULL,0,'ACTIVE',0),(13,'Former source',0,'INACTIVE',0),(17,'Sandbox beneficiary',1,'ACTIVE',0),(18,'Sandbox source',1,'ACTIVE',0)");
+            jdbc.update("INSERT INTO nx_user(id,nickname,sandbox,status,is_deleted) VALUES(7,'Beneficiary',0,'ACTIVE',0),(8,'NexGrid 1051',0,'ACTIVE',0),(9,'Deleted source',0,'ACTIVE',1),(10,'Other namespace',1,'ACTIVE',0),(11,'',0,'ACTIVE',0),(12,NULL,0,'ACTIVE',0),(13,'Former source',0,'INACTIVE',0),(17,'Sandbox beneficiary',1,'ACTIVE',0),(18,'Sandbox source',1,'ACTIVE',0),(27,'Brand beneficiary',0,'ACTIVE',0)");
             var cutoff = LocalDateTime.of(2026, 10, 5, 19, 48, 21);
             record SourceCase(long id, Long sourceId, String snapshot, String expected) { }
             var cases = List.of(
@@ -112,6 +112,32 @@ class TeamReadModelsMySqlTest {
             jdbc.update(insert, 60L, 7L, 8L, null, "DELETED-EVENT", cutoff, cutoff.plusDays(30), 1);
             jdbc.update(insert, 61L, 7L, 8L, null, "AFTER-SNAPSHOT", cutoff.plusSeconds(1), cutoff.plusDays(30), 0);
             jdbc.update(insert, 62L, 99L, 8L, null, "MISSING-BENEFICIARY", cutoff, cutoff.plusDays(30), 0);
+            record BrandCase(String snapshot, String live, String phone, int deleted, int sandbox, String expected) { }
+            var brands = List.of(
+                    new BrandCase("NexGrid 1057", "Custom current", "18000001057", 0, 0, "UVEL 1057"),
+                    new BrandCase(null, "NexGrid 1057", "18000001057", 0, 0, "UVEL 1057"),
+                    new BrandCase(" \t\n", "NexGrid 1057", "18000001057", 0, 0, "UVEL 1057"),
+                    new BrandCase("Custom NexGrid 1057", "NexGrid 1057", "18000001057", 0, 0, "Custom NexGrid 1057"),
+                    new BrandCase("NexGrid 1057", "NexGrid 1057", "18000009999", 0, 0, "NexGrid 1057"),
+                    new BrandCase("NexGrid 1057", "NexGrid 1057", null, 0, 0, "NexGrid 1057"),
+                    new BrandCase("nexgrid 1057", "NexGrid 1057", "18000001057", 0, 0, "nexgrid 1057"),
+                    new BrandCase("NexGrid 1057 ", "NexGrid 1057", "18000001057", 0, 0, "NexGrid 1057 "),
+                    new BrandCase("NexGrid1057", "NexGrid 1057", "18000001057", 0, 0, "NexGrid1057"),
+                    new BrandCase("NexGrid  1057", "NexGrid 1057", "18000001057", 0, 0, "NexGrid  1057"),
+                    new BrandCase("Nexion3778", "NexGrid 3778", "18000003778", 0, 0, "Nexion3778"),
+                    new BrandCase("NexGrid 1057", "NexGrid 1057", "18000001057", 1, 0, "NexGrid 1057"),
+                    new BrandCase("NexGrid 1057", "NexGrid 1057", "18000001057", 0, 1, "NexGrid 1057"),
+                    new BrandCase(null, "NexGrid 1057", "18000001057", 1, 0, null),
+                    new BrandCase(null, "NexGrid 1057", "18000001057", 0, 1, null),
+                    new BrandCase(null, "", "18000001057", 0, 0, ""),
+                    new BrandCase(null, null, "18000001057", 0, 0, null),
+                    new BrandCase("NexGrid 10x7", "NexGrid 10x7", "180000010x7", 0, 0, "NexGrid 10x7"));
+            for (int index = 0; index < brands.size(); index++) {
+                var sample = brands.get(index);
+                long id = 100 + index;
+                jdbc.update("INSERT INTO nx_user VALUES(?,?,?,'ACTIVE',?,?)", id, sample.live(), sample.sandbox(), sample.deleted(), sample.phone());
+                jdbc.update(insert, id, 27L, id, sample.snapshot(), "BRAND-" + id, cutoff, cutoff.plusDays(30), 0);
+            }
             configuration.addMapper(AppTeamInsightsMapper.class);
             try (var session = new MybatisSqlSessionFactoryBuilder().build(configuration).openSession(true)) {
                 var mapper = session.getMapper(AppTeamInsightsMapper.class);
@@ -132,6 +158,20 @@ class TeamReadModelsMySqlTest {
                         .extracting(AppTeamInsightsMapper.CommissionRow::sourceUserName).containsExactly("Sandbox source");
                 assertThat(mapper.commissionEvents(99L, cutoff, 0, 100)).hasSize(1)
                         .allSatisfy(row -> assertThat(row.sourceUserName()).isNull());
+                var brandedRows = mapper.commissionEvents(27L, cutoff, 0, 100);
+                assertThat(brandedRows).hasSize(brands.size());
+                for (int index = 0; index < brands.size(); index++) {
+                    long id = 100 + index;
+                    var sample = brands.get(index);
+                    var row = brandedRows.stream().filter(item -> item.id() == id).findFirst().orElseThrow();
+                    assertThat(row.sourceUserName()).as("brand case %s", index).isEqualTo(sample.expected());
+                    assertThat(row.sourceUserId()).isEqualTo(id);
+                    assertThat(row.amountUsdt()).isEqualByComparingTo("1.99");
+                    assertThat(row.status()).isEqualTo("COOLING");
+                    assertThat(row.unlockAt()).isEqualTo(cutoff.plusDays(30));
+                    assertThat(jdbc.queryForObject("SELECT source_user_name FROM nx_commission_event WHERE id=?", String.class, id)).isEqualTo(sample.snapshot());
+                    assertThat(jdbc.queryForObject("SELECT nickname FROM nx_user WHERE id=?", String.class, id)).isEqualTo(sample.live());
+                }
             }
         });
     }
@@ -270,6 +310,7 @@ class TeamReadModelsMySqlTest {
         JdbcTemplate admin = new JdbcTemplate(new DriverManagerDataSource(url(endpoint, ""), "root", ""));
         assertThat(admin.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13306);
         admin.execute("CREATE DATABASE " + schema);
+        System.out.println("BRAND_READ_SCHEMA_CREATED " + schema);
         SingleConnectionDataSource dataSource = null;
         try {
             dataSource = new SingleConnectionDataSource(new DriverManagerDataSource(url(endpoint, schema), "root", "").getConnection(), true);
@@ -279,6 +320,8 @@ class TeamReadModelsMySqlTest {
         } finally {
             if (dataSource != null) dataSource.destroy();
             admin.execute("DROP DATABASE " + schema);
+            assertThat(admin.queryForObject("SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name=?", Integer.class, schema)).isZero();
+            System.out.println("BRAND_READ_SCHEMA_DROPPED " + schema);
         }
     }
 

@@ -141,11 +141,11 @@ class AppTeamInsightsMySqlRuntimeTest {
             var jdbc = new JdbcTemplate(dataSource);
             assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(url.substring(url.lastIndexOf('/') + 1, url.indexOf('?')));
             assertThat(jdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13306);
-            jdbc.execute("CREATE TABLE IF NOT EXISTS nx_user(id BIGINT PRIMARY KEY,nickname VARCHAR(120),sandbox TINYINT,status VARCHAR(16),is_deleted TINYINT,v_rank VARCHAR(8))");
+            jdbc.execute("CREATE TABLE IF NOT EXISTS nx_user(id BIGINT PRIMARY KEY,nickname VARCHAR(120),sandbox TINYINT,status VARCHAR(16),is_deleted TINYINT,v_rank VARCHAR(8),phone VARCHAR(32))");
             jdbc.execute("CREATE TABLE IF NOT EXISTS nx_commission_event(id BIGINT PRIMARY KEY,user_id BIGINT,commission_type VARCHAR(32),source_user_id BIGINT,source_user_name VARCHAR(120),layer_no INT,order_no VARCHAR(80),order_amount_usd DECIMAL(20,6),amount_usdt DECIMAL(20,6),amount_nex DECIMAL(20,6),status VARCHAR(32),created_at DATETIME,unlock_at DATETIME,is_deleted TINYINT)");
             jdbc.execute("CREATE TABLE IF NOT EXISTS nx_direct_referral_settlement(source_ref VARCHAR(96),source_device_id BIGINT,recovery_pending_usdt DECIMAL(20,6),recovery_pending_nex DECIMAL(20,6),usdt_event_id BIGINT,nex_event_id BIGINT)");
             jdbc.update("DELETE FROM nx_commission_event"); jdbc.update("DELETE FROM nx_user");
-            jdbc.update("INSERT INTO nx_user VALUES(7,'Owner',0,'ACTIVE',0,'V0'),(8,'Other',0,'ACTIVE',0,'V0'),(18,'Source',0,'ACTIVE',0,'V0')");
+            jdbc.update("INSERT INTO nx_user(id,nickname,sandbox,status,is_deleted,v_rank) VALUES(7,'Owner',0,'ACTIVE',0,'V0'),(8,'Other',0,'ACTIVE',0,'V0'),(18,'Source',0,'ACTIVE',0,'V0')");
             var configuration = new Configuration(new Environment("isolated-team-summary", new JdbcTransactionFactory(), dataSource));
             configuration.setMapUnderscoreToCamelCase(true); configuration.addMapper(AppTeamInsightsMapper.class);
             try (var session = new MybatisSqlSessionFactoryBuilder().build(configuration).openSession(true)) {
