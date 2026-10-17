@@ -8,6 +8,19 @@ import org.junit.jupiter.api.Test;
 
 class AppTeamNetworkMapperContractTest {
     @Test
+    void defaultNameProjectionKeepsExactPhoneProofAndNetworkScope() throws Exception {
+        String sql = String.join("\n", AppTeamNetworkMapper.class
+                .getMethod("membersPage", Long.class, long.class, int.class).getAnnotation(Select.class).value());
+        assertThat(sql).contains("CAST(u.nickname AS BINARY)",
+                "CAST(CONCAT('NexGrid ',RIGHT(u.phone,4)) AS BINARY)",
+                "RIGHT(u.phone,4) REGEXP '^[0-9]{4}$'",
+                "THEN CONCAT('UVEL ',RIGHT(u.phone,4)) ELSE u.nickname END nickname",
+                "child.sandbox=owner.sandbox", "child.sandbox=parent.sandbox",
+                "owner.status='ACTIVE' AND owner.is_deleted=0",
+                "child.status='ACTIVE' AND child.is_deleted=0");
+    }
+
+    @Test
     void binaryMembersConsumeCanonicalABLegAssignments() throws Exception {
         Method method = AppTeamNetworkMapper.class.getMethod("membersPage", Long.class, long.class, int.class);
         String sql = String.join("\n", method.getAnnotation(Select.class).value());
