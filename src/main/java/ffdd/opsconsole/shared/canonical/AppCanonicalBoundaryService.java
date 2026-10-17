@@ -219,6 +219,9 @@ public class AppCanonicalBoundaryService {
         if (mapper.activateOwnedDeviceCas(userId, deviceId, expectedVersion, cap) != 1) {
             throw new BizException(409, "DEVICE_VERSION_CONFLICT");
         }
+        if ("DEACTIVATED".equals(status)) {
+            mapper.resumeUserDeactivatedRuntime(userId, deviceId);
+        }
         long nextVersion = expectedVersion + 1;
         Map<String, Object> state = linked(
                 "deviceId", device.id(), "instanceNo", device.instanceNo(), "status", "ACTIVE",

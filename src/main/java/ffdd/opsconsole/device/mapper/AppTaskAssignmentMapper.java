@@ -1110,7 +1110,9 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     Long deviceRowVersion(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
     @Update("""
-            UPDATE nx_user_device_runtime SET online_status='OFFLINE',paused_reason='USER_DEACTIVATED',updated_at=#{now}
+            UPDATE nx_user_device_runtime SET online_status='OFFLINE',
+                   paused_reason=CASE WHEN NULLIF(TRIM(paused_reason),'') IS NULL
+                                      THEN 'USER_DEACTIVATED' ELSE paused_reason END,updated_at=#{now}
              WHERE user_device_id=#{deviceId} AND is_deleted=0
                AND EXISTS (SELECT 1 FROM nx_user_device d JOIN nx_user u ON u.id = d.user_id
                             AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
