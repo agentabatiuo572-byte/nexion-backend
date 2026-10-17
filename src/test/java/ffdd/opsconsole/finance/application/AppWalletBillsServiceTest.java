@@ -23,6 +23,87 @@ import org.springframework.mock.env.MockEnvironment;
 
 class AppWalletBillsServiceTest {
     @Test
+    void h8RewardsPreserveLedgerFactsAcrossListPaginationAndRecentSummary() {
+        for (String role : List.of("NEWCOMER", "INVITER")) {
+            for (String asset : List.of("USDT", "NEX")) {
+                for (String direction : List.of("IN", "OUT")) {
+                    AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+                    var row = new AppWalletBillsMapper.LedgerRow(597L,
+                            "REF-4D75281049274C0DA1521B30:" + role, "REFERRAL_REWARD", asset, direction,
+                            new BigDecimal("0.015000"), new BigDecimal("10.015000"), "SUCCESS",
+                            "unchanged ledger remark", LocalDateTime.of(2026, 10, 17, 12, 0));
+                    when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+                    when(mapper.count(7L)).thenReturn(1L);
+                    when(mapper.rows(7L, 200)).thenReturn(List.of(row));
+                    when(mapper.rows(7L, 50, 0)).thenReturn(List.of(row));
+                    when(mapper.rowsAfter(7L, 51, null, null, null, null, null)).thenReturn(List.of(row));
+                    when(mapper.recentNexRows(7L, 10)).thenReturn(List.of(row));
+                    var service = new AppWalletBillsService(mapper, environment("prod"));
+                    for (Map<String, Object> result : List.of(service.list(7L).getData(),
+                            service.list(7L, 1, 50).getData(),
+                            service.list(7L, 1, 50, null, null, null, "start").getData(),
+                            service.summary(7L).getData())) {
+                        String rowsKey = result.containsKey("bills") ? "bills" : "recentNexBills";
+                        assertThat((List<?>) result.get(rowsKey)).singleElement()
+                                .isInstanceOfSatisfying(Map.class, bill -> assertThat(bill)
+                                        .containsEntry("category", "bonus")
+                                        .containsEntry("presentationCode", "NEWCOMER".equals(role) ? "newcomerReward" : "inviterReward")
+                                        .containsEntry("id", "WL-597")
+                                        .containsEntry("bizType", row.bizType())
+                                        .containsEntry("bizNo", row.bizNo())
+                                        .containsEntry("publicReference", null)
+                                        .containsEntry("asset", asset)
+                                        .containsEntry("direction", direction)
+                                        .containsEntry("amount", row.amount())
+                                        .containsEntry("amountExact", "0.015000")
+                                        .containsEntry("balanceAfter", row.balanceAfter())
+                                        .containsEntry("balanceAfterExact", "10.015000")
+                                        .containsEntry("status", "SUCCESS")
+                                        .containsEntry("remark", row.remark())
+                                        .containsEntry("createdAt", "2026-10-17T04:00:00Z"));
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void unknownReferralRewardReferencesStayNeutralAndActualCommissionsKeepTheirDirection() {
+        String canonical = "REF-4D75281049274C0DA1521B30:NEWCOMER";
+        String[][] cases = {
+                {"REFERRAL_REWARD", null, "bonus", "referralReward"},
+                {"REFERRAL_REWARD", "", "bonus", "referralReward"},
+                {"REFERRAL_REWARD", "legacy:NEWCOMER", "bonus", "referralReward"},
+                {"REFERRAL_REWARD", "SBX-" + canonical, "bonus", "referralReward"},
+                {"REFERRAL_REWARD", canonical + ":OTHER", "bonus", "referralReward"},
+                {"REFERRAL_REWARD", "REF-4D75281049274C0DA1521B30:OTHER", "bonus", "referralReward"},
+                {"REFERRAL_COMMISSION", canonical, "refer", "refer"},
+                {"UNILEVEL_COMMISSION", canonical, "refer", "refer"},
+                {"BINARY_COMMISSION", canonical, "refer", "refer"},
+                {"LEADERSHIP_COMMISSION", canonical, "refer", "refer"},
+                {"REFERRAL_REWARD_OTHER", canonical, "refer", "refer"}
+        };
+        for (String[] input : cases) {
+            for (String direction : List.of("IN", "OUT")) {
+                AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+                when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+                when(mapper.rows(7L, 200)).thenReturn(List.of(new AppWalletBillsMapper.LedgerRow(
+                        598L, input[1], input[0], "NEX", direction, new BigDecimal("0.015000"),
+                        BigDecimal.ONE, "SUCCESS", "新用户邀请奖励", LocalDateTime.of(2026, 10, 17, 12, 0))));
+                var result = new AppWalletBillsService(mapper, environment("prod")).list(7L).getData();
+                assertThat((List<?>) result.get("bills")).singleElement()
+                        .isInstanceOfSatisfying(Map.class, bill -> assertThat(bill)
+                                .as("%s / %s / %s", input[0], input[1], direction)
+                                .containsEntry("category", input[2])
+                                .containsEntry("presentationCode", input[3])
+                                .containsEntry("direction", direction)
+                                .containsEntry("amountExact", "0.015000")
+                                .containsEntry("remark", "新用户邀请奖励"));
+            }
+        }
+    }
+
+    @Test
     void earlyExitCreditsUseUnlockPresentationAcrossLegacyOffsetAndCursorReads() {
         for (String bizType : List.of("STAKING_EARLY_WITHDRAW", "REPURCHASE_EARLY_WITHDRAW")) {
             AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
