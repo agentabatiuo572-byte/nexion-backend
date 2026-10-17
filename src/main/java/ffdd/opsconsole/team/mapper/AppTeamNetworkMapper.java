@@ -42,7 +42,11 @@ public interface AppTeamNetworkMapper extends BaseMapper<Object> {
                  AND child.id<>child.sponsor_user_id
                  AND LOCATE(CONCAT(',',child.id,','),n.path)=0
             )
-            SELECT u.id memberUserId,u.nickname,u.avatar_url avatarUrl,u.v_rank vRank,n.level,
+            SELECT u.id memberUserId,
+                   CASE WHEN RIGHT(u.phone,4) REGEXP '^[0-9]{4}$'
+                             AND CAST(u.nickname AS BINARY) = CAST(CONCAT('NexGrid ',RIGHT(u.phone,4)) AS BINARY)
+                        THEN CONCAT('UVEL ',RIGHT(u.phone,4)) ELSE u.nickname END nickname,
+                   u.avatar_url avatarUrl,u.v_rank vRank,n.level,
                    CASE UPPER(a.leg)
                      WHEN 'A' THEN 'A' WHEN 'LEFT' THEN 'A'
                      WHEN 'B' THEN 'B' WHEN 'RIGHT' THEN 'B'
