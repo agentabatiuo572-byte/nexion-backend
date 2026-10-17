@@ -19,6 +19,30 @@ class MybatisDeviceCatalogRepositoryTest {
     private final LocalDateTime now = LocalDateTime.of(2026, 8, 15, 12, 0);
 
     @Test
+    void existingPurchaseGateColumnPreservesExplicitNoGateOnEveryStartup() {
+        when(mapper.countSkuPurchaseGateColumn()).thenReturn(1);
+
+        repository.ensureSchema();
+        repository.ensureSchema();
+
+        verify(mapper, never()).addSkuPurchaseGateColumn();
+        verify(mapper, never()).seedGen2PurchaseGatesIfMissing();
+    }
+
+    @Test
+    void legacySchemaGetsDefaultsOnlyWhenThePurchaseGateColumnIsIntroduced() {
+        when(mapper.countSkuPurchaseGateColumn()).thenReturn(0, 1);
+
+        repository.ensureSchema();
+        repository.ensureSchema();
+
+        var ordered = org.mockito.Mockito.inOrder(mapper);
+        ordered.verify(mapper).addSkuPurchaseGateColumn();
+        ordered.verify(mapper).seedGen2PurchaseGatesIfMissing();
+        verify(mapper, org.mockito.Mockito.times(1)).seedGen2PurchaseGatesIfMissing();
+    }
+
+    @Test
     void rollbackOrderAssetsRestocksEveryDistinctOrderItemProductForBundles() {
         when(mapper.orderRestockPlan("OD-BUNDLE")).thenReturn(
                 new DeviceCatalogMapper.OrderRestockPlan("BUNDLE", 2, 2, 2L, 2L, 0L, 2L));
