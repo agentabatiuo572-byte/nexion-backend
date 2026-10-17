@@ -4,12 +4,15 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
+import ffdd.opsconsole.shared.outbox.EventConsumerDeliveryService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.VRankPromotionContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 /**
  * F1 V-Rank 晋升事件消费者(Sprint4)。
@@ -31,11 +34,15 @@ import org.springframework.stereotype.Component;
 @Slf4j
 public class VRankPromotionEventConsumer {
 
+    static final String CONSUMER_GROUP = "f1-vrank-promotion-cascade";
+
     private final ObjectMapper objectMapper;
     private final TeamCommissionRepository commissionRepository;
     private final VRankPromotionEngine vRankPromotionEngine;
+    private final EventConsumerDeliveryService deliveryService;
 
     @EventListener
+    @Transactional(rollbackFor = Exception.class)
     public void onPromotionCompleted(EventOutboxMessage message) {
         if (message == null || !VRankPromotionEngine.PROMOTION_EVENT_TYPE.equals(message.getEventType())) {
             return;
@@ -54,16 +61,32 @@ public class VRankPromotionEventConsumer {
                 log.warn("VRANK_PROMOTION_COMPLETED payload missing userId, skip: eventId={}", message.getEventId());
                 return;
             }
+            if (!StringUtils.hasText(message.getEventId())) {
+                throw new IllegalArgumentException("VRANK_PROMOTION_EVENT_ID_REQUIRED");
+            }
+            // Claim, promotion and completion share this transaction. A dispatcher ACK
+            // failure may replay the event, but must not advance the sponsor again.
+            var claim = deliveryService.claim(message, CONSUMER_GROUP,
+                    "spring-outbox", message.getEventId(), 0);
+            if (!claim.claimed()) {
+                if ("SUCCESS".equals(claim.status())) {
+                    return;
+                }
+                throw new IllegalStateException("VRANK_PROMOTION_DELIVERY_NOT_COMPLETE:" + claim.status());
+            }
             // 级联:找 L1 上级 sponsor(findSponsorUserId 含 nx_sponsorship→nx_team_member L1 fallback)
             Long sponsorUserId = commissionRepository.findSponsorUserId(userId);
             if (sponsorUserId == null) {
                 log.debug("VRANK_PROMOTION_COMPLETED cascade ends (no L1 sponsor): user={} toCode={}", userId, toCode);
+                deliveryService.markSuccess(CONSUMER_GROUP, claim.eventId(), 0);
                 return;
             }
             log.info("VRANK_PROMOTION_COMPLETED cascade: re-evaluate sponsor={} (descendant={} → {})",
                     sponsorUserId, userId, toCode);
-            // evaluate 幂等:上级稳态不变则 return(不发新事件→链终止)
-            String sponsorRank = vRankPromotionEngine.evaluate(VRankPromotionContext.systemEvaluation(sponsorUserId));
+            String sponsorRank = vRankPromotionEngine.evaluate(new VRankPromotionContext(
+                    sponsorUserId, VRankPromotionContext.TriggerType.SYSTEM_EVALUATION,
+                    claim.eventId(), "ENGINE"));
+            deliveryService.markSuccess(CONSUMER_GROUP, claim.eventId(), 0);
             log.info("VRANK_PROMOTION_COMPLETED cascade done: sponsor={} evaluated rank={}", sponsorUserId, sponsorRank);
         } catch (JsonProcessingException ex) {
             log.error("VRANK_PROMOTION_COMPLETED payload parse failed: eventId={}, err={}",
