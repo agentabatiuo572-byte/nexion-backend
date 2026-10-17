@@ -1,0 +1,9 @@
+-- H8 configuration and settlement share this row until transaction completion.
+-- Fresh schema already seeds it; upgraded databases need this forward migration.
+-- Provision only the mutex, preserving reward configuration and financial data.
+CREATE TABLE IF NOT EXISTS nx_admin_operation_mutex (
+    lock_key VARCHAR(64) PRIMARY KEY,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO nx_admin_operation_mutex (lock_key) VALUES ('H8_REWARD');
