@@ -101,6 +101,7 @@ public class OpsAuditCenterService {
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     private final AdminIdempotencyService idempotencyService;
     private final PromotionOrderService promotions;
+    private final ffdd.opsconsole.device.application.OpsDeviceService devices;
 
     public OpsAuditCenterService(PlatformConfigRepository configRepository, AuditLogService auditLogService,
             OpsReadTimeSeedPolicy readTimeSeedPolicy, AuditOperationTicketMapper ticketMapper,
@@ -110,7 +111,7 @@ public class OpsAuditCenterService {
             com.fasterxml.jackson.databind.ObjectMapper objectMapper, AdminIdempotencyService idempotencyService) {
         this(configRepository, auditLogService, readTimeSeedPolicy, ticketMapper, historyMapper,
                 confirmCategoryMapper, lockMapper, replayBusinessPermissionGuard, replayDispatcher,
-                accessPolicy, objectMapper, idempotencyService, null);
+                accessPolicy, objectMapper, idempotencyService, null, null);
     }
 
     public ApiResult<AuditCenterOverview> overview() {
@@ -200,8 +201,8 @@ public class OpsAuditCenterService {
             operationType = normalizeOperationType(request.type());
             action = normalizeLimitedText(request.action(), "ACTION_REQUIRED", 160);
             objectText = normalizeLimitedText(request.obj(), "OBJECT_REQUIRED", 255);
-            beforeValue = normalizeOptionalText(request.beforeValue(), "—", 128);
-            afterValue = normalizeOptionalText(request.afterValue(), "—", 128);
+            beforeValue = isSkuReviewCommand(request.command()) ? "商品完整旧值" : normalizeOptionalText(request.beforeValue(), "—", 128);
+            afterValue = isSkuReviewCommand(request.command()) ? "商品完整新值" : normalizeOptionalText(request.afterValue(), "—", 128);
             operator = normalizeLimitedText(authenticatedOperator, "OPERATOR_REQUIRED", 128);
             operatorRole = normalizeOptionalText(request.operatorRole(), "operator", 32);
             roleGate = normalizeOptionalText(request.roleGate(), "超管", 255);
@@ -279,6 +280,20 @@ public class OpsAuditCenterService {
         if (command != null) {
             try {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
+                if (isSkuReviewCommand(command)) {
+                    var review = devices.skuProposalReview(command);
+                    com.fasterxml.jackson.databind.node.ObjectNode after = objectMapper.valueToTree(review.after());
+                    after.remove(List.of("reason", "operator", "imagePreviewUrl"));
+                    after.put("skuId", review.skuId());
+                    com.fasterxml.jackson.databind.node.ObjectNode before = objectMapper.createObjectNode();
+                    if (review.before() != null) {
+                        com.fasterxml.jackson.databind.JsonNode current = objectMapper.valueToTree(review.before());
+                        after.fieldNames().forEachRemaining(key -> before.set(key, current.path(key)));
+                    }
+                    var metadata = stored.putObject("skuReview");
+                    metadata.put("before", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(before));
+                    metadata.put("after", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(after));
+                }
                 if (A2ReplayContext.isAvatarCommand(command)) {
                     Long maker = A2ReplayContext.authenticatedAdminId();
                     if (maker == null || !A2ReplayContext.hasAuthority("platform_a1_write"))
@@ -287,6 +302,8 @@ public class OpsAuditCenterService {
                     stored.put("avatarMakerAdminId", maker);
                 }
                 ticket.setCommandJson(objectMapper.writeValueAsString(stored));
+            } catch (BizException ex) {
+                return ApiResult.fail(ex.getCode(), ex.getMessage());
             } catch (Exception ex) {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_SERIALIZE_FAILED");
             }
@@ -356,8 +373,8 @@ public class OpsAuditCenterService {
                         "operationId", ticket.getOperationId(),
                         "action", ticket.getAction(),
                         "resource", ticket.getObjectText(),
-                        "before", ticket.getBeforeValue(),
-                        "after", ticket.getAfterValue(),
+                        "before", reviewValue(ticket, "before"),
+                        "after", reviewValue(ticket, "after"),
                         "type", ticket.getOperationType(),
                         "sourceDomain", sourceDomain,
                         "reason", ticket.getReason(),
@@ -443,8 +460,8 @@ public class OpsAuditCenterService {
                         "operationId", ticket.getOperationId(),
                         "action", ticket.getAction(),
                         "resource", ticket.getObjectText(),
-                        "before", ticket.getBeforeValue(),
-                        "after", ticket.getAfterValue(),
+                        "before", reviewValue(ticket, "before"),
+                        "after", reviewValue(ticket, "after"),
                         "type", ticket.getOperationType(),
                         "sourceDomain", sourceDomain,
                         "reason", ticket.getReason(),
@@ -763,9 +780,9 @@ public class OpsAuditCenterService {
         detail.put("status", status);
         detail.put("action", ticket.getAction());
         detail.put("resource", ticket.getObjectText());
-        detail.put("before", ticket.getBeforeValue());
-        detail.put("after", ticket.getAfterValue());
-        detail.put("delta", ticket.getBeforeValue() + " -> " + ticket.getAfterValue());
+        detail.put("before", reviewValue(ticket, "before"));
+        detail.put("after", reviewValue(ticket, "after"));
+        detail.put("delta", reviewValue(ticket, "before") + " -> " + reviewValue(ticket, "after"));
         detail.put("type", ticket.getOperationType());
         detail.put("amplifies", isTrue(ticket.getAmplifies()));
         detail.put("sos", isTrue(ticket.getSos()));
@@ -850,10 +867,28 @@ public class OpsAuditCenterService {
         try {
             com.fasterxml.jackson.databind.node.ObjectNode stored = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(commandJson);
             stored.remove("avatarMakerAdminId");
+            stored.remove("skuReview");
             return objectMapper.treeToValue(stored, AuditReplayCommand.class);
         } catch (Exception ex) {
             return null;
         }
+    }
+
+    private boolean isSkuReviewCommand(AuditReplayCommand command) {
+        return command != null && "E".equals(command.domain())
+                && ("e1_sku_create".equals(command.op()) || "e1_sku_update".equals(command.op()));
+    }
+
+    private String reviewValue(AuditOperationTicketEntity ticket, String side) {
+        if (isSkuReviewCommand(deserializeCommand(ticket.getCommandJson()))) {
+            try {
+                var value = objectMapper.readTree(ticket.getCommandJson()).path("skuReview").path(side);
+                if (value.isTextual()) return value.textValue();
+            } catch (Exception ignored) {
+                // Historical tickets without review metadata retain their original summaries.
+            }
+        }
+        return "before".equals(side) ? ticket.getBeforeValue() : ticket.getAfterValue();
     }
 
     private Long avatarMakerId(String commandJson) {
@@ -890,8 +925,8 @@ public class OpsAuditCenterService {
                 row.getOperationId(),
                 row.getAction(),
                 row.getObjectText(),
-                row.getBeforeValue(),
-                row.getAfterValue(),
+                reviewValue(row, "before"),
+                reviewValue(row, "after"),
                 row.getOperatorName(),
                 row.getOperatorRole(),
                 row.getOperationType(),

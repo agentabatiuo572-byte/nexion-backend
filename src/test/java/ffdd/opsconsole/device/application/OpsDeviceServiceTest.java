@@ -980,6 +980,57 @@ class OpsDeviceServiceTest {
         assertThat(invalidStatus.getMessage()).isEqualTo("DATACENTER_STATUS_INVALID");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"e1_sku_create", "e1_sku_update"})
+    void skuReviewUsesCurrentSnapshotAndExactlyTheReplayInputs(String operation) {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        boolean update = operation.endsWith("update");
+        DeviceSkuView original = update ? withTrialEligible(sku("uvel-s1", "UVEL old", "pending"), true) : null;
+        catalogRepository.sku = original;
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+        Map<String, Object> params = mapper.convertValue(skuRequest("uvel-s1", "UVEL S1", "pending"),
+                new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { });
+        params.put("features", List.of("完整规格".repeat(100), "最后一个字段仍在"));
+        params.put("sold", 99999);
+        params.put("trialEligible", true);
+        params.put("expectedUpdatedAt", "2026-06-17T00:00:00");
+        params.put("imagePreviewUrl", "https://client.invalid/forged.png");
+        var command = new AuditReplayCommand("E", operation, params);
+        var review = service.skuProposalReview(command);
+        assertThat(review.before()).isSameAs(original);
+        assertThat(catalogRepository.sku).isSameAs(original);
+        assertThat(catalogRepository.lastSkuRequest).isNull();
+        assertThat(review.after().sold()).isEqualTo(update ? 1L : 0L);
+        assertThat(review.after().features()).containsExactly("完整规格".repeat(100), "最后一个字段仍在");
+        assertThat(review.after().imagePreviewUrl()).isNull();
+        var executed = service.replay(command, new AuditReplayContext("superadmin", "完整核对SKU规格后批准", "review-idem"));
+        assertThat(executed.getCode()).isZero();
+        assertThat(catalogRepository.lastSkuRequest).usingRecursiveComparison()
+                .ignoringFields("reason", "operator").isEqualTo(review.after());
+    }
+
+    @Test
+    void skuReviewRejectsStaleOrMissingSnapshotAndDoesNotWrite() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        var params = new LinkedHashMap<String, Object>();
+        params.put("skuId", "uvel-s1");
+        params.put("name", "UVEL S1");
+        params.put("tier", "Entry");
+        params.put("unlockPhase", "P1");
+        params.put("expectedUpdatedAt", "2026-06-16T00:00:00");
+        var update = new AuditReplayCommand("E", "e1_sku_update", params);
+        assertThatThrownBy(() -> service.skuProposalReview(update)).hasMessage("SKU_NOT_FOUND");
+        var original = withTrialEligible(sku("uvel-s1", "UVEL old", "pending"), true);
+        catalogRepository.sku = original;
+        assertThatThrownBy(() -> service.skuProposalReview(update)).hasMessage("SKU_VERSION_CONFLICT");
+        assertThatThrownBy(() -> service.skuProposalReview(new AuditReplayCommand("E", "e1_sku_create", params)))
+                .hasMessage("SKU_ALREADY_EXISTS");
+        params.put("expectedUpdatedAt", "2026-06-17T00:00:00");
+        assertThat(service.skuProposalReview(update).after().trialEligible()).isTrue();
+        assertThat(catalogRepository.sku).isSameAs(original);
+        assertThat(catalogRepository.lastSkuRequest).isNull();
+    }
+
     @Test
     void createSkuRequiresCommandAndAudits() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
@@ -1968,7 +2019,7 @@ class OpsDeviceServiceTest {
 
         ApiResult<Map<String, Object>> result = service.e1GenerationGates();
 
-        assertThat(result.getData()).containsEntry("phaseCurrent", "1");
+        assertThat(result.getData()).containsEntry("phaseCurrent", "1").containsEntry("skuReviewContractVersion", 1);
         assertThat(result.getData().get("h1Rhythm"))
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .containsEntry("currentPhase", "1")
