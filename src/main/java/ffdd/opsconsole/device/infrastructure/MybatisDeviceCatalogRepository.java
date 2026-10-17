@@ -57,8 +57,9 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         }
         if (mapper.countSkuPurchaseGateColumn() == 0) {
             mapper.addSkuPurchaseGateColumn();
+            // Only the legacy schema migration needs defaults; existing null is an approved no-gate value.
+            mapper.seedGen2PurchaseGatesIfMissing();
         }
-        mapper.seedGen2PurchaseGatesIfMissing();
         mapper.widenSkuUnlockPhaseColumn();
         if (mapper.countSkuUnlockPhaseIdColumn() == 0) {
             mapper.addSkuUnlockPhaseIdColumn();
