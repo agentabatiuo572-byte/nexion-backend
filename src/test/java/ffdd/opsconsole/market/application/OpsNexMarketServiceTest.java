@@ -811,6 +811,26 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void repurchaseStatusSummaryDoesNotAssignTheDefaultTermToHistoricalOrders() {
+        LocalDateTime lockedAt = LocalDateTime.parse("2026-06-17T00:00:00");
+        marketRepository.repurchasePositions = List.of(
+                FakeNexMarketRepository.stakingPosition(101L, "RPI-1D", "REPURCHASE_90D", "复投激励",
+                        "100", "3500", "1500", 1, "ACTIVE", lockedAt, lockedAt.plusDays(1), "0.10", null),
+                FakeNexMarketRepository.stakingPosition(102L, "RPI-90D", "REPURCHASE_90D", "复投激励",
+                        "100", "3500", "1500", 90, "ACTIVE", lockedAt, lockedAt.plusDays(90), "8.63", null));
+
+        Map<String, Object> overview = service.repurchaseOverview().getData();
+
+        Map<String, Object> active = detailMap(((List<?>) overview.get("statusBreakdown")).get(0));
+        assertThat(active).containsEntry("status", "active")
+                .containsEntry("label", "锁仓中")
+                .containsEntry("count", 2L)
+                .containsEntry("principalUsd", new BigDecimal("200"));
+        assertThat(detailMap(overview.get("stats")))
+                .containsEntry("matureUsd", new BigDecimal("208.73"));
+    }
+
+    @Test
     void repurchaseOverviewDoesNotSeedMissingDbBeforeReadingPositionsAndBuckets() {
         marketRepository.repurchasePositions = List.of();
 
