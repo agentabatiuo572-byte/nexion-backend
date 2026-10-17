@@ -164,6 +164,46 @@ class F5DirectReferralLedgerMySqlTest {
         assertThat(biz(106)).isEqualTo("DR-NETWORK-RELEASE");
     }
 
+    @Test void legitimateIndependentRewardsDoNotBlockOrLeakIntoF5EightKindReads() {
+        event(110, "leaderboard_prize", "USDT");
+        event(95, "leaderboard_prize", "USDT");
+        event(85, "vrank_reward", "USDT");
+        jdbc.update("UPDATE nx_commission_event SET amount_usdt=999");
+        assertThat(mapper.unknownCommissionKindCount()).isZero();
+        assertThat(rows()).isEmpty();
+        assertThat(mapper.countEvents(null,null,null,null,null)).isZero();
+        assertThat(mapper.queryExportEvents(null,null,null,null,null,null,100)).isEmpty();
+        assertThat(mapper.aggregateCommissionKinds()).isEmpty();
+        assertThat(mapper.aggregateCommissionStatuses()).isEmpty();
+
+        event(100, "direct_purchase", "USDT"); event(90, "leadership", "USDT"); event(80, "cultivation", "NEX");
+        jdbc.update("UPDATE nx_commission_event SET amount_usdt=10 WHERE id=100");
+        jdbc.update("UPDATE nx_commission_event SET amount_usdt=20 WHERE id=90");
+        jdbc.update("UPDATE nx_commission_event SET amount_nex=50 WHERE id=80");
+        assertThat(mapper.unknownCommissionKindCount()).isZero();
+        assertThat(mapper.queryEvents(null,null,null,null,null,null,2))
+                .extracting(row -> ((Number)row.get("eventId")).longValue()).containsExactly(100L,90L);
+        assertThat(mapper.queryEvents(null,null,null,null,null,90L,2))
+                .extracting(row -> ((Number)row.get("eventId")).longValue()).containsExactly(80L);
+        assertThat(mapper.countEvents(null,null,null,null,null)).isEqualTo(3);
+        assertThat(mapper.queryExportEvents(null,null,null,null,null,null,100))
+                .extracting(row -> ((Number)row.get("eventId")).longValue()).containsExactly(100L,90L,80L);
+        assertThat(mapper.aggregateCommissionKinds()).hasSize(3)
+                .extracting(row -> row.get("kind")).containsExactlyInAnyOrder("direct_purchase","leadership","cultivation");
+        var statuses = mapper.aggregateCommissionStatuses();
+        assertThat(statuses).hasSize(2);
+        assertThat(statuses.stream().filter(row -> "USDT".equals(row.get("currency"))).findFirst().orElseThrow().get("amount"))
+                .isEqualTo(new java.math.BigDecimal("30.000000"));
+        assertThat(statuses.stream().filter(row -> "NEX".equals(row.get("currency"))).findFirst().orElseThrow().get("amount"))
+                .isEqualTo(new java.math.BigDecimal("50.000000"));
+
+        event(1, "unregistered_reward", "USDT"); event(2, null, "USDT");
+        assertThat(mapper.unknownCommissionKindCount()).isEqualTo(2);
+        jdbc.update("UPDATE nx_commission_event SET is_deleted=1 WHERE id IN (1,2)");
+        assertThat(mapper.unknownCommissionKindCount()).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_commission_event WHERE commission_type='leaderboard_prize' AND amount_usdt=999", Long.class)).isEqualTo(2);
+    }
+
     private List<Map<String,Object>> rows() { return mapper.queryEvents(null,null,3778L,null,null,null,100); }
     private Object biz(long id) { return rows().stream().filter(row -> ((Number) row.get("eventId")).longValue()==id).findFirst().orElseThrow().get("ledgerBizNo"); }
     private void event(long id,String kind,String asset) { jdbc.update("INSERT INTO nx_commission_event(id,user_id,commission_type,currency) VALUES(?,3778,?,?)",id,kind,asset); }
