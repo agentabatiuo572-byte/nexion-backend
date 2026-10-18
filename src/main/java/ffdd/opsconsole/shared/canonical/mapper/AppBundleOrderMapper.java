@@ -17,15 +17,15 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
     @Select("""
             <script>
             SELECT p.id,p.product_no productNo,p.name,p.price_usdt priceUsdt,p.stock,
+                   (SELECT s.purchase_gate_json FROM nx_admin_device_sku s
+                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) purchaseGateJson,
+                   p.unlock_phase unlockPhase,
                    p.product_type AS productType,p.inventory_mode AS inventoryMode,
                    p.gpu_model AS gpuModel,p.vram_total_gb AS vramTotalGb,
                    (SELECT s.power_text FROM nx_admin_device_sku s
                      WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) power,
                    (SELECT s.datacenter FROM nx_admin_device_sku s
-                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) datacenter,
-                   p.unlock_phase unlockPhase,
-                   (SELECT s.purchase_gate_json FROM nx_admin_device_sku s
-                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) purchaseGateJson
+                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) datacenter
               FROM nx_product p
              WHERE is_deleted=0 AND COALESCE(store_visible,1)=1
                AND UPPER(status) IN ('ACTIVE','ON_SALE') AND price_usdt > 0
