@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.application;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -170,6 +171,7 @@ public class LeaderboardPauseSnapshotService {
             value.put("podium", List.copyOf(podium));
             value.put("snapshotAt", at.toString());
             value.put("timezone", DateTimeFormatConfig.BUSINESS_ZONE.getId());
+            value.put("businessTimezone", VietnamBusinessPeriod.ZONE.getId());
             value.put("fromInclusive", bounds.get(period + "FromInclusive"));
             value.put("toExclusive", bounds.get(period + "ToExclusive"));
             result.put(period, value);
@@ -187,7 +189,7 @@ public class LeaderboardPauseSnapshotService {
     }
 
     static Map<String, Object> captureParameters(Instant at) {
-        LocalDate today = at.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toLocalDate();
+        LocalDate today = VietnamBusinessPeriod.dateAt(at);
         LocalDate monday = today.with(DayOfWeek.MONDAY);
         Map<String, Object> p = new LinkedHashMap<>();
         p.put("snapshotAt", LocalDateTime.ofInstant(at, DateTimeFormatConfig.BUSINESS_ZONE));
@@ -196,12 +198,12 @@ public class LeaderboardPauseSnapshotService {
             p.put(period + "ActionPeriod", "all".equals(period) ? "allTime" : period);
             p.put(period + "Limit", "today".equals(period) ? 20 : "week".equals(period) ? 50 : 100);
             p.put(period + "FromInclusive", switch (period) {
-                case "today" -> today.atStartOfDay(); case "week" -> monday.atStartOfDay();
-                case "month" -> today.withDayOfMonth(1).atStartOfDay(); default -> null;
+                case "today" -> VietnamBusinessPeriod.storageBoundary(today); case "week" -> VietnamBusinessPeriod.storageBoundary(monday);
+                case "month" -> VietnamBusinessPeriod.storageBoundary(today.withDayOfMonth(1)); default -> null;
             });
             p.put(period + "ToExclusive", switch (period) {
-                case "today" -> today.plusDays(1).atStartOfDay(); case "week" -> monday.plusWeeks(1).atStartOfDay();
-                case "month" -> today.withDayOfMonth(1).plusMonths(1).atStartOfDay(); default -> null;
+                case "today" -> VietnamBusinessPeriod.storageBoundary(today.plusDays(1)); case "week" -> VietnamBusinessPeriod.storageBoundary(monday.plusWeeks(1));
+                case "month" -> VietnamBusinessPeriod.storageBoundary(today.withDayOfMonth(1).plusMonths(1)); default -> null;
             });
         }
         return p;

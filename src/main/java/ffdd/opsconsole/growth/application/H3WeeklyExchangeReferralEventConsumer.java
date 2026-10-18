@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.growth.mapper.H3WeeklyExchangeReferralMapper;
@@ -162,9 +163,7 @@ public class H3WeeklyExchangeReferralEventConsumer {
     }
 
     static String weeklyInstance(Instant observedAt) {
-        LocalDate date = observedAt.atZone(WEEK_ZONE).toLocalDate();
-        return String.format(Locale.ROOT, "WEEK:%d-W%02d",
-                date.get(IsoFields.WEEK_BASED_YEAR), date.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR));
+        return VietnamBusinessPeriod.weekKey(LocalDateTime.ofInstant(observedAt, WEEK_ZONE));
     }
 
     private enum SourceKind { EXCHANGE, REFERRAL }

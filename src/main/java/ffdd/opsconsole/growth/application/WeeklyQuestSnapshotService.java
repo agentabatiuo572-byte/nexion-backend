@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.growth.mapper.WeeklyQuestSnapshotMapper;
@@ -39,8 +40,7 @@ public class WeeklyQuestSnapshotService {
     }
 
     public static String weekKey(LocalDateTime time) {
-        return String.format(Locale.ROOT, "WEEK:%04d-W%02d", time.get(WeekFields.ISO.weekBasedYear()),
-                time.get(WeekFields.ISO.weekOfWeekBasedYear()));
+        return VietnamBusinessPeriod.weekKey(time);
     }
 
     private LocalDateTime now() { return LocalDateTime.now(clock.withZone(ZONE)); }
@@ -84,8 +84,9 @@ public class WeeklyQuestSnapshotService {
         }
         Map<Long,Definition> items = new LinkedHashMap<>();
         for (Definition definition : definitions) items.putIfAbsent(definition.missionId(), definition);
-        LocalDateTime start = current.toLocalDate().with(java.time.DayOfWeek.MONDAY).atStartOfDay();
-        Header header = new Header(key,start,start.plusWeeks(1),policy.questBonusMultiplier(),
+        LocalDate monday = VietnamBusinessPeriod.calendarTime(current).toLocalDate().with(DayOfWeek.MONDAY);
+        LocalDateTime start = VietnamBusinessPeriod.storageBoundary(monday);
+        Header header = new Header(key,start,VietnamBusinessPeriod.storageBoundary(monday.plusWeeks(1)),policy.questBonusMultiplier(),
                 policy.currentMonth(),items.size());
         mapper.insertHeader(header);
         int ordinal = 0;

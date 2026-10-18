@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.application;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
@@ -34,7 +35,7 @@ import org.springframework.transaction.annotation.Propagation;
 /**
  * F4 领导池结算引擎。
  *
- * <p>周结算(周日 23:59 UTC,poolSettleCron):平台周交易额 × F.pool.ratio 注入池
+ * <p>周结算(周一 00:00 Asia/Ho_Chi_Minh 或周期结束后,poolSettleCron):平台已结束周交易额 × F.pool.ratio 注入池
  * → 按配置门槛以上用户的 leadership_votes 票权比例分配
  * → commission_event(leadership,UNLOCKED)+ D4 + A4。
  *
@@ -80,6 +81,16 @@ public class LeadershipPoolService {
     public int injectAndSettleCurrentWeek() {
         return injectAndSettleTrusted(
                 teamCommissionMapper.currentYearWeek(), null, "SYSTEM", "SYSTEM", "系统周期结算");
+    }
+
+    /** Automatic schedule settles only the latest closed week, never the live week or pre-cutover backlog. */
+    @Transactional(rollbackFor = Exception.class)
+    public int injectAndSettleLastClosedWeek(java.time.Instant now) {
+        LocalDate monday = VietnamBusinessPeriod.dateAt(now).with(DayOfWeek.MONDAY).minusWeeks(1);
+        if (monday.plusWeeks(1).isBefore(VietnamBusinessPeriod.FIRST_VIETNAM_BOUNDARY)) return -1;
+        int weekCode = monday.get(java.time.temporal.IsoFields.WEEK_BASED_YEAR) * 100
+                + monday.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR);
+        return injectAndSettleTrusted(weekCode, null, "SYSTEM", "SYSTEM", "系统已结束周结算");
     }
 
     /** F4 提前结算是资金动作,必须由 A2 双人审批后的 replay 调用。 */
@@ -151,8 +162,8 @@ public class LeadershipPoolService {
     /** 每分钟补齐所有已结束周期；持久化 checkpoint 使午夜停机后仍可追赶。 */
     @Transactional(rollbackFor = Exception.class)
     public int settleClosedLeaderboardPeriods(ZonedDateTime nowUtc) {
-        ZonedDateTime now = nowUtc.withZoneSameInstant(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE).withSecond(0).withNano(0);
-        LocalDate today = now.toLocalDate();
+        ZonedDateTime now = nowUtc.withZoneSameInstant(VietnamBusinessPeriod.ZONE).withSecond(0).withNano(0);
+        LocalDate today = VietnamBusinessPeriod.dateAt(now.toInstant());
         int settled = catchUpDaily(today);
         settled += catchUpWeekly(today);
         settled += catchUpMonthly(today);
@@ -167,7 +178,7 @@ public class LeadershipPoolService {
         int settled = 0;
         for (LocalDate period = last.plusDays(1); !period.isAfter(latestClosed); period = period.plusDays(1)) {
             settled += settleLeaderboardPrize("today", "today:" + period,
-                    period.atStartOfDay(), period.plusDays(1).atStartOfDay(),
+                    VietnamBusinessPeriod.storageBoundary(period), VietnamBusinessPeriod.storageBoundary(period.plusDays(1)),
                     null, "SYSTEM", "SYSTEM", "排行榜日榜自动/补偿结算");
             persistLastSettled("today", period.toString());
         }
@@ -183,7 +194,7 @@ public class LeadershipPoolService {
         int settled = 0;
         for (LocalDate period = last.plusWeeks(1); !period.isAfter(latestClosed); period = period.plusWeeks(1)) {
             settled += settleLeaderboardPrize("week", "week:" + period,
-                    period.atStartOfDay(), period.plusWeeks(1).atStartOfDay(),
+                    VietnamBusinessPeriod.storageBoundary(period), VietnamBusinessPeriod.storageBoundary(period.plusWeeks(1)),
                     null, "SYSTEM", "SYSTEM", "排行榜周榜自动/补偿结算");
             persistLastSettled("week", period.toString());
         }
@@ -199,7 +210,7 @@ public class LeadershipPoolService {
         for (YearMonth period = last.plusMonths(1); !period.isAfter(latestClosed); period = period.plusMonths(1)) {
             LocalDate start = period.atDay(1);
             settled += settleLeaderboardPrize("month", "month:" + period,
-                    start.atStartOfDay(), period.plusMonths(1).atDay(1).atStartOfDay(),
+                    VietnamBusinessPeriod.storageBoundary(start), VietnamBusinessPeriod.storageBoundary(period.plusMonths(1).atDay(1)),
                     null, "SYSTEM", "SYSTEM", "排行榜月榜自动/补偿结算");
             persistLastSettled("month", period.toString());
         }
@@ -234,30 +245,30 @@ public class LeadershipPoolService {
             throw new BizException(422, "F4_LEADERBOARD_PERIOD_INVALID");
         }
         if (normalizedReason.length() < 8) throw new BizException(422, "F4_SETTLEMENT_REASON_REQUIRED");
-        LocalDate today = LocalDate.now(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE);
+        LocalDate today = VietnamBusinessPeriod.dateAt(java.time.Instant.now());
         LocalDateTime from = null;
-        LocalDateTime to = today.plusDays(1).atStartOfDay();
+        LocalDateTime to = VietnamBusinessPeriod.storageBoundary(today.plusDays(1));
         String key;
         if ("today".equals(canonical)) {
             LocalDate date = parseDateOrNull(requestedPeriodKey);
             if (date == null || !date.isBefore(today)) throw new BizException(422, "F4_CLOSED_PERIOD_REQUIRED");
-            from = date.atStartOfDay();
-            to = date.plusDays(1).atStartOfDay();
+            from = VietnamBusinessPeriod.storageBoundary(date);
+            to = VietnamBusinessPeriod.storageBoundary(date.plusDays(1));
             key = "today:" + date;
         } else if ("week".equals(canonical)) {
             LocalDate monday = parseDateOrNull(requestedPeriodKey);
             if (monday == null || monday.getDayOfWeek() != DayOfWeek.MONDAY
                     || monday.plusWeeks(1).isAfter(today)) throw new BizException(422, "F4_CLOSED_PERIOD_REQUIRED");
-            from = monday.atStartOfDay();
-            to = monday.plusWeeks(1).atStartOfDay();
+            from = VietnamBusinessPeriod.storageBoundary(monday);
+            to = VietnamBusinessPeriod.storageBoundary(monday.plusWeeks(1));
             key = "week:" + monday;
         } else if ("month".equals(canonical)) {
             YearMonth month = parseMonthOrNull(requestedPeriodKey);
             if (month == null || !month.isBefore(YearMonth.from(today))) {
                 throw new BizException(422, "F4_CLOSED_PERIOD_REQUIRED");
             }
-            from = month.atDay(1).atStartOfDay();
-            to = month.plusMonths(1).atDay(1).atStartOfDay();
+            from = VietnamBusinessPeriod.storageBoundary(month.atDay(1));
+            to = VietnamBusinessPeriod.storageBoundary(month.plusMonths(1).atDay(1));
             key = "month:" + month;
         } else {
             key = "allTime:lifetime";

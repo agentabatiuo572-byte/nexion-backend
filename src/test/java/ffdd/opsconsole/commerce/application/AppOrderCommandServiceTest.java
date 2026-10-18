@@ -28,6 +28,40 @@ import org.mockito.ArgumentCaptor;
 
 class AppOrderCommandServiceTest {
     private final SupportPaymentAttributionFacade capture = paymentAttribution();
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "2026-10-31T16:59:59,2026-10-01T00:00:00,2026-10-31T17:00:00",
+            "2026-10-31T17:00:00,2026-10-31T17:00:00,2026-11-30T17:00:00"})
+    void paymentUsesOneVietnamPeriodForFactsAndQuota(String event, String start, String end) {
+        var now = java.time.LocalDateTime.parse(event);
+        var from = java.time.LocalDateTime.parse(start);
+        var until = java.time.LocalDateTime.parse(end);
+        var mapper = mock(AppOrderCommandMapper.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.findDevelopmentPayOrderOwner("ORD-BOUNDARY")).thenReturn(7L);
+        when(mapper.lockDevelopmentPayOrder("ORD-BOUNDARY")).thenReturn(new AppOrderCommandMapper.DevelopmentPayOrder(
+                "ORD-BOUNDARY", 7L, 18L, 1, BigDecimal.TEN, null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockOrderMonthlyQuotas("ORD-BOUNDARY")).thenReturn(List.of(
+                new AppOrderCommandMapper.MonthlyQuota(1L, "PRO", "SKU", 2, 0, BigDecimal.TEN, "ALL", 1, 1)));
+        when(mapper.purchaseQuotaFacts(eq(7L), any(), any())).thenReturn(new AppOrderCommandMapper.PurchaseQuotaFacts(0L, BigDecimal.TEN));
+        when(mapper.lockMonthlyQuotaUsage(eq(1L), any(), any())).thenReturn(List.of(2));
+        doAnswer(call -> ((Supplier<?>) call.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        try (var clock = mockStatic(java.time.LocalDateTime.class, CALLS_REAL_METHODS)) {
+            clock.when(() -> java.time.LocalDateTime.now(java.time.ZoneOffset.UTC)).thenReturn(now);
+            var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                    null, null, null, capture).pay(7L, "ORD-BOUNDARY", "boundary-key");
+            assertThat(result.getMessage()).isEqualTo("ORDER_MONTHLY_QUOTA_EXHAUSTED");
+        }
+        verify(mapper).purchaseQuotaFacts(7L, from.plusHours(8), until.plusHours(8));
+        verify(mapper).lockMonthlyQuotaUsage(1L, from, until);
+        verify(mapper, never()).debitDevelopmentWallet(any(), any(), any());
+        verify(mapper, never()).consumeMonthlyQuota(any(), any(), any(), any());
+    }
     @Test
     void monthlyQuotaExhaustionNeverDebitsWalletOrCreatesDevices() {
         var mapper = mock(AppOrderCommandMapper.class);
@@ -64,7 +98,7 @@ class AppOrderCommandServiceTest {
         when(mapper.lockOrderMonthlyQuotas("ORD-F4B-ALL")).thenReturn(List.of(
                 new AppOrderCommandMapper.MonthlyQuota(1L, "PRO", "stellarbox-pro", 10, 2,
                         new BigDecimal("1000"), "ALL", 1, 1)));
-        when(mapper.purchaseQuotaFacts(7L)).thenReturn(new AppOrderCommandMapper.PurchaseQuotaFacts(1L, new BigDecimal("800")));
+        when(mapper.purchaseQuotaFacts(eq(7L), any(), any())).thenReturn(new AppOrderCommandMapper.PurchaseQuotaFacts(1L, new BigDecimal("800")));
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
@@ -94,7 +128,7 @@ class AppOrderCommandServiceTest {
         when(mapper.lockOrderMonthlyQuotas("ORD-F4B-EITHER")).thenReturn(List.of(
                 new AppOrderCommandMapper.MonthlyQuota(1L, "PRO", "stellarbox-pro", 10, 2,
                         new BigDecimal("1000"), "EITHER", 1, 1)));
-        when(mapper.purchaseQuotaFacts(7L)).thenReturn(new AppOrderCommandMapper.PurchaseQuotaFacts(2L, BigDecimal.ZERO));
+        when(mapper.purchaseQuotaFacts(eq(7L), any(), any())).thenReturn(new AppOrderCommandMapper.PurchaseQuotaFacts(2L, BigDecimal.ZERO));
         when(mapper.lockMonthlyQuotaUsage(eq(1L), any(), any())).thenReturn(List.of(10));
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
@@ -123,7 +157,7 @@ class AppOrderCommandServiceTest {
         when(mapper.lockOrderMonthlyQuotas("ORD-F4B-CURRENT-MONTH")).thenReturn(List.of(
                 new AppOrderCommandMapper.MonthlyQuota(1L, "PRO", "stellarbox-pro", 10, 2,
                         new BigDecimal("1000"), "ALL", 1, 1)));
-        when(mapper.purchaseQuotaFacts(7L)).thenReturn(
+        when(mapper.purchaseQuotaFacts(eq(7L), any(), any())).thenReturn(
                 new AppOrderCommandMapper.PurchaseQuotaFacts(2L, new BigDecimal("1000")));
         when(mapper.lockMonthlyQuotaUsage(eq(1L), any(), any())).thenReturn(List.of(10));
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
@@ -139,17 +173,16 @@ class AppOrderCommandServiceTest {
     }
 
     @Test
-    void f4bMonthlyVolumeMapperUsesUtcMonthBoundaryForPlusEightDatetimeStorage()
+    void f4bMonthlyVolumeMapperUsesCapturedPlusEightDatetimeBounds()
             throws NoSuchMethodException {
         String sql = AppOrderCommandMapper.class
-                .getMethod("purchaseQuotaFacts", Long.class)
+                .getMethod("purchaseQuotaFacts", Long.class, java.time.LocalDateTime.class, java.time.LocalDateTime.class)
                 .getAnnotation(Select.class)
                 .value()[0];
 
-        assertThat(sql).contains("COALESCE(o.paid_at,o.created_at)", "UTC_TIMESTAMP()",
-                        "INTERVAL 8 HOUR", "INTERVAL 1 MONTH",
+        assertThat(sql).contains("COALESCE(o.paid_at,o.created_at)>=#{from}", "COALESCE(o.paid_at,o.created_at)<#{until}",
                         "o.payment_status IN ('PAID','CONFIRMED','SUCCESS')", "o.order_status NOT IN ('REFUNDED','CHARGEBACK')")
-                .doesNotContain("SUM(tm.volume)", "DATE_FORMAT(NOW()");
+                .doesNotContain("SUM(tm.volume)", "DATE_FORMAT(NOW()", "UTC_TIMESTAMP()");
     }
 
     @Test
@@ -563,6 +596,8 @@ class AppOrderCommandServiceTest {
         verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());
         verify(mapper, never()).insertDevelopmentDevice(anyString(), anyLong(), anyString(), anyInt());
         verify(mapper, never()).countNonCancellableHdPaySessions("ORD-DEV-PAID");
+        verify(mapper, never()).lockOrderMonthlyQuotas(anyString());
+        verify(mapper, never()).consumeMonthlyQuota(any(), any(), any(), any());
         org.mockito.Mockito.verify(capture, org.mockito.Mockito.never()).record(org.mockito.ArgumentMatchers.any());
     }
 

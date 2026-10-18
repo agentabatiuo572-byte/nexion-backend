@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -28,6 +29,14 @@ class H3WeeklyExchangeReferralEventConsumerTest {
     private final H3WeeklyExchangeReferralEventConsumer consumer = new H3WeeklyExchangeReferralEventConsumer(
             mapper, deliveries, outbox, new ObjectMapper(),
             Clock.fixed(Instant.parse("2026-09-07T01:00:00Z"), ZoneOffset.UTC));
+
+    @Test
+    void vietnamWeekUsesTheSameBoundaryAsParticipationWithoutChangingSourceTimestamp() {
+        assertThat(H3WeeklyExchangeReferralEventConsumer.weeklyInstance(java.time.Instant.parse("2026-10-18T16:59:59Z")))
+                .isEqualTo("WEEK:2026-W42");
+        assertThat(H3WeeklyExchangeReferralEventConsumer.weeklyInstance(java.time.Instant.parse("2026-10-18T17:00:00Z")))
+                .isEqualTo("WEEK:2026-W43");
+    }
 
     @Test
     void completedCanonicalExchangeEmitsOneBoundedSystemFactForTheOrderOwner() {

@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.canonical.mapper;
 
+import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.canonical.infrastructure.CanonicalUserEntity;
 import java.math.BigDecimal;
@@ -143,9 +144,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     int purchaseQuotaActiveDirect(@Param("userId") Long userId);
 
     /**
-     * F4b month_volume_usd is paid network-order volume in the current UTC
-     * month. nx_order.paid_at is a timezone-less DATETIME written through the
-     * +08 application connection, so its UTC boundaries are stored at 08:00.
+     * F4b month_volume_usd uses the same versioned month as quota usage.
+     * nx_order.paid_at remains a +08 DATETIME; quota usage remains UTC.
      * E1 retains its established accumulated nx_team_member volume definition.
      */
     @Select("""
@@ -171,20 +171,23 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
               LEFT JOIN nx_order o ON o.user_id=s.member_user_id
                AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
                AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
-               AND COALESCE(o.paid_at,o.created_at)>=DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 8 HOUR)
-               AND COALESCE(o.paid_at,o.created_at)<DATE_ADD(
-                    DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 1 MONTH),INTERVAL 8 HOUR)
+               AND COALESCE(o.paid_at,o.created_at)>=""" + HardwareQuotaPeriod.SQL_MONTH_START_ORDER_STORAGE + """
+
+               AND COALESCE(o.paid_at,o.created_at)<""" + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_ORDER_STORAGE + """
+
                AND o.is_deleted=0
             """)
     BigDecimal purchaseQuotaMonthlyVolume(@Param("userId") Long userId);
 
-    /** All F4b rules tied to this SKU, in settlement lock order, with current UTC-month usage. */
+    /** All F4b rules tied to this SKU, in settlement lock order, with current versioned Vietnam-month usage. */
     @Select("""
             SELECT t.quota_code AS quotaCode, t.direct_refs AS directRefs,
                    t.month_volume_usd AS monthVolumeUsd, t.monthly_quota AS monthlyQuota,
                    COALESCE(SUM(CASE WHEN u.is_deleted=0 AND UPPER(u.status)='ACTIVE'
-                         AND u.occurred_at>=DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
-                         AND u.occurred_at<DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH)
+                         AND u.occurred_at>=""" + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
+
+                         AND u.occurred_at<""" + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
+
                          THEN u.quantity ELSE 0 END),0) AS usedThisMonth,
                    t.unlock_mode AS unlockMode, t.status
               FROM nx_team_hardware_quota_tier t

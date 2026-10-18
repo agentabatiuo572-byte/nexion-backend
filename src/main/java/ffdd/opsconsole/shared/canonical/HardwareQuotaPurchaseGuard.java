@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.canonical;
 
+import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
@@ -17,9 +18,9 @@ public final class HardwareQuotaPurchaseGuard {
         boolean needsFacts = tiers.stream().anyMatch(tier -> tier != null
                 && ((tier.directRefs() != null && tier.directRefs() > 0)
                 || (tier.monthVolumeUsd() != null && tier.monthVolumeUsd().signum() > 0)));
-        var facts = needsFacts ? mapper.hardwarePurchaseFacts(userId) : null;
+        var month = HardwareQuotaPeriod.atUtc(occurredAtUtc);
+        var facts = needsFacts ? mapper.hardwarePurchaseFacts(userId, month.fromOrderStorage(), month.untilOrderStorage()) : null;
         if (needsFacts && facts == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
-        LocalDateTime month = occurredAtUtc.withDayOfMonth(1).toLocalDate().atStartOfDay();
         for (var tier : tiers) {
             if (tier == null || tier.id() == null || tier.monthlyQuota() == null || tier.monthlyQuota() < 0) {
                 throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
@@ -29,7 +30,7 @@ public final class HardwareQuotaPurchaseGuard {
                     facts == null ? null : facts.activeDirect(), facts == null ? null : facts.monthlyVolumeUsd())) {
                 throw new BizException(409, "ORDER_MONTHLY_QUOTA_REQUIREMENTS_NOT_MET");
             }
-            var usage = mapper.lockHardwarePurchaseUsage(tier.id(), month, month.plusMonths(1));
+            var usage = mapper.lockHardwarePurchaseUsage(tier.id(), month.fromUtc(), month.untilUtc());
             if (usage == null || usage.stream().anyMatch(value -> value == null || value < 0)) {
                 throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
             }

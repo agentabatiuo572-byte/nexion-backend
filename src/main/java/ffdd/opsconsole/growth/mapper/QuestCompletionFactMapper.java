@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.mapper;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriodSql;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
@@ -24,7 +25,8 @@ public interface QuestCompletionFactMapper {
             SELECT m.id missionId,m.mission_code questCode,m.mission_type layer,
                    CASE WHEN m.mission_type='DAY_ONE'
                         THEN CONCAT('DAY_ONE:',DATE_FORMAT(u.created_at,'%Y%m%dT%H%i%s'))
-                        ELSE CONCAT('WEEK:',DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v'))
+                        ELSE CONCAT('WEEK:',DATE_FORMAT(""" + VietnamBusinessPeriodSql.NOW + """
+,'%x-W%v'))
                    END instanceKey
               FROM nx_mission m
               JOIN nx_user u ON u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0
@@ -52,7 +54,8 @@ public interface QuestCompletionFactMapper {
             SELECT m.id missionId,m.mission_code questCode,m.mission_type layer,
                    CASE WHEN m.mission_type='DAY_ONE'
                         THEN CONCAT('DAY_ONE:',DATE_FORMAT(u.created_at,'%Y%m%dT%H%i%s'))
-                        ELSE CONCAT('WEEK:',DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v'))
+                        ELSE CONCAT('WEEK:',DATE_FORMAT(""" + VietnamBusinessPeriodSql.NOW + """
+,'%x-W%v'))
                    END instanceKey
               FROM nx_mission m
               JOIN nx_user u ON u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0

@@ -1833,7 +1833,7 @@ public class OpsTeamService implements AuditReplayable {
         try {
             var settlementConfig = new LeadershipPoolConfigGuard(configFacade).requireValid();
             var nextSettlement = CronExpression.parse(settlementConfig.springCron())
-                    .next(ZonedDateTime.now(ZoneOffset.UTC));
+                    .next(ZonedDateTime.now(ffdd.opsconsole.shared.config.VietnamBusinessPeriod.ZONE));
             pool.put("nextSettlementAt", nextSettlement == null ? "" : nextSettlement.toInstant().toString());
             weeklyInjectedUsd = LeadershipPoolProjection.amount(summary, settlementConfig);
             unlockRank = settlementConfig.unlockRank();

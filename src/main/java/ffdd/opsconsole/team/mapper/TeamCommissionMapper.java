@@ -1,5 +1,7 @@
 package ffdd.opsconsole.team.mapper;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriodSql;
+import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
 import java.util.List;
@@ -345,7 +347,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                       WHERE o.payment_status IN ('PAID', 'CONFIRMED', 'SUCCESS')
                         AND o.order_status NOT IN ('REFUNDED', 'CHARGEBACK')
                         AND o.paid_at IS NOT NULL
-                        AND YEARWEEK(o.paid_at, 1) = YEARWEEK(NOW(), 1)
+                        AND YEARWEEK(CASE WHEN o.paid_at < '2026-10-19 00:00:00' THEN o.paid_at ELSE DATE_SUB(o.paid_at, INTERVAL 1 HOUR) END, 1) = YEARWEEK(""" + VietnamBusinessPeriodSql.NOW + """
+                        , 1)
                         AND o.is_deleted = 0
                    ) AS weeklyGmvUsd,
                    (
@@ -353,19 +356,21 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                        FROM nx_commission_event e
                       WHERE e.is_deleted = 0
                         AND LOWER(e.commission_type) = 'leadership'
-                        AND e.remark LIKE CONCAT('%', YEARWEEK(NOW(), 1), '%')
+                        AND e.remark LIKE CONCAT('%', YEARWEEK(""" + VietnamBusinessPeriodSql.NOW + """
+                        , 1), '%')
                    ) AS weeklyInjectedUsd,
                    (
                      SELECT COUNT(*) FROM nx_commission_event e
                       WHERE e.is_deleted = 0 AND LOWER(e.commission_type) = 'leadership'
-                        AND e.remark LIKE CONCAT('%', YEARWEEK(NOW(), 1), '%')
+                        AND e.remark LIKE CONCAT('%', YEARWEEK(""" + VietnamBusinessPeriodSql.NOW + """
+                        , 1), '%')
                    ) AS weeklySettledCount,
                    (
                      SELECT COALESCE(SUM(e.amount_usdt), 0)
                        FROM nx_commission_event e
                       WHERE e.is_deleted = 0
                         AND LOWER(e.commission_type) = 'leadership'
-                        AND e.created_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+                        AND e.created_at >= """ + VietnamBusinessPeriodSql.MONTH_START + """
                    ) AS monthLeadershipUsd,
                    COUNT(DISTINCT CASE
                      WHEN m.user_id = m.member_user_id
@@ -427,8 +432,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
               FROM nx_team_hardware_quota_tier t
               LEFT JOIN nx_team_hardware_quota_usage u
                 ON u.quota_tier_id = t.id
-               AND u.occurred_at >= DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
-               AND u.occurred_at < DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH)
+               AND u.occurred_at >= """ + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
+               AND u.occurred_at < """ + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
              WHERE t.is_deleted = 0
                AND t.status = 1
              GROUP BY t.id, t.display_name, t.quota_code, t.product_no, t.direct_refs,
@@ -450,8 +455,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
               JOIN nx_team_hardware_quota_tier t ON t.id = u.quota_tier_id
              WHERE u.is_deleted = 0
                AND UPPER(u.status) = 'ACTIVE'
-               AND u.occurred_at >= DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
-               AND u.occurred_at < DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH)
+               AND u.occurred_at >= """ + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
+               AND u.occurred_at < """ + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
              ORDER BY u.occurred_at DESC, u.id DESC
              LIMIT #{limit}
             """)
@@ -470,8 +475,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                      WHERE u.quota_tier_id = nx_team_hardware_quota_tier.id
                        AND u.is_deleted = 0
                        AND UPPER(u.status) = 'ACTIVE'
-                        AND u.occurred_at >= DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
-                        AND u.occurred_at < DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH)
+                        AND u.occurred_at >= """ + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
+                        AND u.occurred_at < """ + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
                )
             """)
     int updateHardwareQuotaTierCas(@Param("quotaCode") String quotaCode,
@@ -591,7 +596,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                         WHERE risk_signal.user_id = ranked.member_user_id
                           AND risk_signal.is_deleted = 0
                           AND risk_signal.signal_type = 'risk.leaderboard_velocity_flagged'
-                          AND risk_signal.created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+                          AND risk_signal.created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
                      ) THEN 'K2 刷榜信号 · 待 F4 处置'
                      ELSE '本期 GV'
                    END AS tip,
@@ -602,7 +607,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                         WHERE risk_signal.user_id = ranked.member_user_id
                           AND risk_signal.is_deleted = 0
                           AND risk_signal.signal_type = 'risk.leaderboard_velocity_flagged'
-                          AND risk_signal.created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+                          AND risk_signal.created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
                      ) THEN CONCAT('r-', ranked.rank_no, ' risk')
                      ELSE CONCAT('r-', ranked.rank_no)
                    END AS className
@@ -647,7 +652,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                                FROM nx_risk_signal
                               WHERE is_deleted = 0
                                 AND signal_type = 'risk.leaderboard_velocity_flagged'
-                                AND created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+                                AND created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
                             ) flags
                    ) AS fraudHitCount,
                    (
@@ -655,7 +660,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                        FROM nx_commission_event
                       WHERE is_deleted = 0
                         AND LOWER(commission_type) = 'leadership'
-                        AND created_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+                        AND created_at >= """ + VietnamBusinessPeriodSql.MONTH_START + """
                    ) AS poolUsd,
                    CASE
                      WHEN (
@@ -670,7 +675,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                          FROM nx_risk_signal
                         WHERE is_deleted = 0
                           AND signal_type = 'risk.leaderboard_velocity_flagged'
-                          AND created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+                          AND created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
                      ) > 0 THEN 'flagged'
                      WHEN (
                        SELECT COUNT(1)
@@ -717,15 +722,17 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
               SELECT (SELECT TRIM(config_value) FROM nx_config_item
                        WHERE config_key='team.ui.F.binary.residualPolicy'
                          AND status=1 AND is_deleted=0 LIMIT 1) policy,
-                     DATE(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00')) business_date
+                     """ + VietnamBusinessPeriodSql.TODAY + """
+                      business_date
             ), captured AS (
               SELECT v.owner_user_id,
                      SUM(CASE WHEN v.leg='A' THEN v.amount_usdt ELSE 0 END) track_a,
                      SUM(CASE WHEN v.leg='B' THEN v.amount_usdt ELSE 0 END) track_b
                 FROM nx_binary_paid_order_volume v CROSS JOIN residual_settings p
                WHERE v.status='ACTIVE' AND v.is_deleted=0
-                 AND v.paid_at<DATE_ADD(p.business_date,INTERVAL 1 DAY)
-                 AND (p.policy='转结' OR v.paid_at>=DATE_FORMAT(p.business_date,'%Y-%m-01'))
+                 AND v.paid_at<""" + VietnamBusinessPeriodSql.DAY_END + """
+                 AND (p.policy='转结' OR v.paid_at>=""" + VietnamBusinessPeriodSql.MONTH_START + """
+                  )
                  AND (p.policy<>'每次对碰清零' OR v.id>COALESCE((
                       SELECT MAX(c.through_volume_id_inclusive) FROM nx_binary_volume_cursor c
                        WHERE c.owner_user_id=v.owner_user_id),0))
@@ -742,11 +749,13 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             SELECT COUNT(DISTINCT user_id) AS participantCount,
                    SUM(CASE WHEN UPPER(status) IN ('BLOCKED', 'REJECTED', 'FAILED', 'FROZEN') THEN 1 ELSE 0 END) AS blockedCount,
                    COALESCE(ROUND(SUM(CASE
-                     WHEN settlement_date >= DATE_FORMAT(CURDATE(), '%Y-%m-01') THEN matched_volume
+                     WHEN settlement_date >= """ + VietnamBusinessPeriodSql.MONTH_DATE + """
+                          THEN matched_volume
                      ELSE 0
                    END), 0), 0) AS monthlyMatchedUsd,
                    COALESCE(ROUND(SUM(CASE
-                     WHEN settlement_date = CURDATE() THEN matched_volume
+                     WHEN settlement_date = """ + VietnamBusinessPeriodSql.TODAY + """
+                          THEN matched_volume
                      ELSE 0
                    END), 0), 0) AS dailyMatchUsd,
                    (SELECT COUNT(1)
@@ -1295,7 +1304,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                 ON o.user_id = s.member_user_id
                AND o.payment_status IN ('PAID', 'CONFIRMED', 'SUCCESS')
                AND o.order_status NOT IN ('REFUNDED', 'CHARGEBACK')
-               AND DATE_FORMAT(COALESCE(o.paid_at, o.created_at), '%Y-%m') = DATE_FORMAT(NOW(), '%Y-%m')
+               AND COALESCE(o.paid_at, o.created_at) >= """ + VietnamBusinessPeriodSql.MONTH_START + """
+               AND COALESCE(o.paid_at, o.created_at) < """ + VietnamBusinessPeriodSql.NEXT_MONTH_START + """
                AND o.is_deleted = 0
             """)
     java.math.BigDecimal monthlyNetworkVolume(@Param("userId") Long userId);
@@ -1347,13 +1357,13 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE payment_status IN ('PAID', 'CONFIRMED', 'SUCCESS')
                AND order_status NOT IN ('REFUNDED', 'CHARGEBACK')
                AND paid_at IS NOT NULL
-               AND YEARWEEK(paid_at, 1) = #{weekCode}
+               AND YEARWEEK(CASE WHEN paid_at < '2026-10-19 00:00:00' THEN paid_at ELSE DATE_SUB(paid_at, INTERVAL 1 HOUR) END, 1) = #{weekCode}
                AND is_deleted = 0
             """)
     java.math.BigDecimal weeklyPlatformVolume(@Param("weekCode") int weekCode);
 
     /** F4: 当前 ISO YEARWEEK(NOW,1)。 */
-    @Select("SELECT YEARWEEK(NOW(), 1)")
+    @Select("SELECT YEARWEEK(" + VietnamBusinessPeriodSql.NOW + ", 1)")
     int currentYearWeek();
 
     /** F4: one-row-per-week mutex; unique week_code + FOR UPDATE is the durable CAS boundary. */
@@ -1376,7 +1386,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             SELECT COALESCE(SUM(amount_usdt), 0)
               FROM nx_commission_event
              WHERE LOWER(commission_type) = 'leadership'
-               AND created_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+               AND created_at >= """ + VietnamBusinessPeriodSql.MONTH_START + """
                AND is_deleted = 0
             """)
     java.math.BigDecimal monthlyLeadershipAmount();

@@ -65,6 +65,29 @@ class LeadershipPoolServiceTest {
     }
 
     @Test
+    void automaticSettlementNeverBackfillsBeforeTheNewBoundaryAndTargetsOnlyClosedWeek() {
+        assertThat(service.injectAndSettleLastClosedWeek(java.time.Instant.parse("2026-10-18T16:59:59Z"))).isEqualTo(-1);
+        org.mockito.Mockito.verifyNoInteractions(teamCommissionMapper,commissionRepository,configFacade,ledgerPostingFacade);
+        stubValidSettlementConfig();
+        when(teamCommissionMapper.lockLeadershipSettlementMutex(202642)).thenReturn(1L);
+        when(teamCommissionMapper.countLeadershipByWeek("202642")).thenReturn(1);
+        assertThat(service.injectAndSettleLastClosedWeek(java.time.Instant.parse("2026-10-18T17:00:00Z"))).isEqualTo(-1);
+        verify(teamCommissionMapper).countLeadershipByWeek("202642");
+        verify(teamCommissionMapper,never()).weeklyPlatformVolume(anyInt());
+        org.mockito.Mockito.verifyNoInteractions(ledgerPostingFacade,commissionRepository);
+    }
+
+    @Test
+    void automaticClosedWeekIsoYearDoesNotReadTheNewCalendarWeek() {
+        stubValidSettlementConfig();
+        when(teamCommissionMapper.lockLeadershipSettlementMutex(202653)).thenReturn(1L);
+        when(teamCommissionMapper.countLeadershipByWeek("202653")).thenReturn(1);
+        service.injectAndSettleLastClosedWeek(java.time.Instant.parse("2027-01-03T17:00:00Z"));
+        verify(teamCommissionMapper).countLeadershipByWeek("202653");
+        verify(teamCommissionMapper,never()).currentYearWeek();
+    }
+
+    @Test
     void periodPrizeReadsIndependentAmountsForAllFourPeriods() {
         when(configFacade.activeValue("team.ui.F.pool.periodPrize"))
                 .thenReturn(Optional.of(
@@ -116,6 +139,29 @@ class LeadershipPoolServiceTest {
         service.settleClosedLeaderboardPeriods(mondayShanghai.plusMinutes(1));
         verify(configFacade).upsertAdminValue("team.runtime.F.leaderboard.lastSettled.week", "2026-08-03",
                 "TEXT", "team_runtime", "F16 leaderboard settlement checkpoint");
+    }
+
+    @Test
+    void transitionWeekWaitsUntilVietnamMidnightAndPersistsItsOriginalKeyOnce() {
+        Map<String,String> checkpoints=new HashMap<>(Map.of("today","2026-10-17","week","2026-10-05","month","2026-09"));
+        when(configFacade.activeValue(anyString())).thenAnswer(call -> {
+            String key=call.getArgument(0);
+            return key.startsWith("team.runtime.F.leaderboard.lastSettled.")
+                    ? Optional.ofNullable(checkpoints.get(key.substring(key.lastIndexOf('.')+1))) : Optional.empty();
+        });
+        org.mockito.Mockito.doAnswer(call -> {
+            String key=call.getArgument(0);
+            checkpoints.put(key.substring(key.lastIndexOf('.')+1),call.getArgument(1));return null;
+        }).when(configFacade).upsertAdminValue(anyString(),anyString(),anyString(),anyString(),anyString());
+        when(teamCommissionMapper.lockLeadershipSettlementMutex(anyInt())).thenReturn(1L);
+        service.settleClosedLeaderboardPeriods(ZonedDateTime.parse("2026-10-18T16:59:59Z"));
+        assertThat(checkpoints.get("week")).isEqualTo("2026-10-05");
+        service.settleClosedLeaderboardPeriods(ZonedDateTime.parse("2026-10-18T17:00:00Z"));
+        assertThat(checkpoints.get("week")).isEqualTo("2026-10-12");
+        service.settleClosedLeaderboardPeriods(ZonedDateTime.parse("2026-10-18T17:01:00Z"));
+        verify(configFacade).upsertAdminValue("team.runtime.F.leaderboard.lastSettled.week","2026-10-12",
+                "TEXT","team_runtime","F16 leaderboard settlement checkpoint");
+        verify(commissionRepository,never()).insertCommissionEvent(anyLong(),anyString(),any(),anyString(),any(),any(),anyString(),anyInt(),anyString());
     }
 
     @Test

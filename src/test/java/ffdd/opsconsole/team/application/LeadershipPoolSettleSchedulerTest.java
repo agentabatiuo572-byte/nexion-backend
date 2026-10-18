@@ -14,6 +14,25 @@ import org.junit.jupiter.api.Test;
 class LeadershipPoolSettleSchedulerTest {
 
     @Test
+    void canonicalMondayCronUsesInjectedClockAndOnlyTheClosedWeekEntryPoint() {
+        var pool=mock(LeadershipPoolService.class);
+        var guard=mock(LeadershipPoolConfigGuard.class);
+        when(guard.requireValid()).thenReturn(new LeadershipPoolConfigGuard.SettlementConfig(
+                1,java.math.BigDecimal.ONE,3,new java.math.BigDecimal("5000"),"0 0 0 * * MON","fixture"));
+        var alert=mock(LeadershipPoolConfigAlertService.class);
+        var before=new LeadershipPoolSettleScheduler(pool,guard,alert,java.time.Clock.fixed(
+                java.time.Instant.parse("2026-10-18T16:59:00Z"),java.time.ZoneOffset.UTC));
+        before.weeklySettle();
+        org.mockito.Mockito.verifyNoInteractions(pool);
+        var boundary=java.time.Instant.parse("2026-10-18T17:00:00Z");
+        var after=new LeadershipPoolSettleScheduler(pool,guard,alert,java.time.Clock.fixed(boundary,java.time.ZoneOffset.UTC));
+        after.weeklySettle();
+        after.weeklySettle();
+        verify(pool).injectAndSettleLastClosedWeek(boundary);
+        verify(pool,never()).injectAndSettleCurrentWeek();
+    }
+
+    @Test
     void invalidPersistedCronFailsSafeWithoutInvokingSettlement() {
         LeadershipPoolService poolService = mock(LeadershipPoolService.class);
         PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
@@ -28,7 +47,7 @@ class LeadershipPoolSettleSchedulerTest {
         new LeadershipPoolSettleScheduler(
                 poolService, new LeadershipPoolConfigGuard(configFacade), alertService).weeklySettle();
 
-        verify(poolService, never()).injectAndSettleCurrentWeek();
+        org.mockito.Mockito.verifyNoInteractions(poolService);
     }
 
     @Test
@@ -51,7 +70,7 @@ class LeadershipPoolSettleSchedulerTest {
         verify(alertService, times(1)).recordBlocked(
                 org.mockito.ArgumentMatchers.any(LeadershipPoolConfigGuard.ConfigUnavailableException.class),
                 org.mockito.ArgumentMatchers.eq("scheduler"));
-        verify(poolService, never()).injectAndSettleCurrentWeek();
+        org.mockito.Mockito.verifyNoInteractions(poolService);
     }
 
     @Test

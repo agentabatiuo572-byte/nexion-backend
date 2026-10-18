@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.application;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
@@ -49,16 +50,14 @@ public class AppBinaryProjectionService {
     private final Environment environment;
     private final Clock clock;
 
-    private static LocalDateTime storageMidnight(LocalDate utcDate) {
-        return utcDate.atStartOfDay(ZoneOffset.UTC)
-                .withZoneSameInstant(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE)
-                .toLocalDateTime();
+    private static LocalDateTime storageMidnight(LocalDate businessDate) {
+        return VietnamBusinessPeriod.storageBoundary(businessDate);
     }
 
     public Map<String, Object> snapshot(Long userId) {
         if (userId == null || userId <= 0) throw new IllegalArgumentException("F3_APP_USER_REQUIRED");
         Scope scope = scope(userId);
-        LocalDate today = LocalDate.now(clock.withZone(ZoneOffset.UTC));
+        LocalDate today = VietnamBusinessPeriod.dateAt(clock.instant());
         LocalDateTime monthStart = storageMidnight(today.withDayOfMonth(1));
         LocalDateTime windowEnd = storageMidnight(today.plusDays(1));
 
@@ -92,8 +91,12 @@ public class AppBinaryProjectionService {
         }
         trackA = money(trackA);
         trackB = money(trackB);
-        if ("转结".equals(residualPolicy)) {
-            BigDecimal consumed = money(mapper.consumedMatchedBefore(userId, today.plusDays(1)));
+        BigDecimal monthlyGrossA = trackA;
+        BigDecimal monthlyGrossB = trackB;
+        if ("转结".equals(residualPolicy) || "每月清零".equals(residualPolicy)) {
+            BigDecimal consumed = money("转结".equals(residualPolicy)
+                    ? mapper.consumedMatchedBefore(userId, today.plusDays(1))
+                    : mapper.consumedMatchedInMonth(userId, today.withDayOfMonth(1)));
             trackA = trackA.subtract(consumed).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
             trackB = trackB.subtract(consumed).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
         }
@@ -108,9 +111,14 @@ public class AppBinaryProjectionService {
         int trackBMembers = mapper.countAssignmentsByLeg(userId, "B");
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         String blockedReason = blockedReason(
-                today, paused, settlePeriod, threshold, trackA, trackB,
+                today, paused, settlePeriod, threshold,
+                "每月清零".equals(residualPolicy) ? monthlyGrossA : trackA,
+                "每月清零".equals(residualPolicy) ? monthlyGrossB : trackB,
                 directMembers, trackAMembers, trackBMembers,
                 mapper.countReversalRequiredVolumes(userId), coverage);
+        if (blockedReason.isBlank() && trackA.min(trackB).signum() <= 0) {
+            blockedReason = "BINARY_NO_AVAILABLE_MATCHED_VOLUME";
+        }
         int days = periodDays(today, settlePeriod);
         BigDecimal periodCap = money(rhythm.binaryDailyCap().multiply(BigDecimal.valueOf(days)));
         BigDecimal estimate = money(trackA.min(trackB).multiply(matchRate)).min(periodCap);

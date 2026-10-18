@@ -4970,10 +4970,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     var after = config.publish(proposal);
                     auditRequired("phone.calibration_policy_published", "PHONE_CALIBRATION_POLICY", "phone-calibration",
                             operator, detail("before", before, "after", after, "reason", reason, "idempotencyKey", idem));
-                    var published = after.scheduled() == null ? after.current() : after.scheduled();
                     outboxService.publish("E6_COMPUTE_CONFIG", "phone-calibration",
-                            "compute.config_changed", detail("version", published.version(),
-                                    "effectiveAt", published.effectiveAt(), "operator", operator));
+                            "compute.config_changed", detail("param_key", ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService.KEY,
+                                    "before", before, "after", after, "operator", operator, "reason", reason));
                     return ApiResult.ok(after);
                 });
             }

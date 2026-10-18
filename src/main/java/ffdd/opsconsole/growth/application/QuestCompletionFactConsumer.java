@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper;
 import ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper.CompletionFact;
 import ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper.MissionDefinition;
@@ -201,10 +202,7 @@ public class QuestCompletionFactConsumer {
                 || !mission.layer().toUpperCase(Locale.ROOT).startsWith("WEEKLY")) {
             return;
         }
-        WeekFields iso = WeekFields.ISO;
-        int year = occurredAt.toLocalDate().get(iso.weekBasedYear());
-        int week = occurredAt.toLocalDate().get(iso.weekOfWeekBasedYear());
-        String occurredInstance = "WEEK:" + String.format(Locale.ROOT, "%04d-W%02d", year, week);
+        String occurredInstance = VietnamBusinessPeriod.weekKey(occurredAt);
         if (!occurredInstance.equals(mission.instanceKey())) {
             throw new BizException(409, "QUEST_COMPLETION_STALE_INSTANCE_EVENT");
         }

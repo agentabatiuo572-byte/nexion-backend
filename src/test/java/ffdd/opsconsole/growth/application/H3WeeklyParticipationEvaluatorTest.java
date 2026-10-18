@@ -25,6 +25,20 @@ class H3WeeklyParticipationEvaluatorTest {
     private final H3WeeklyParticipationEvaluator evaluator = new H3WeeklyParticipationEvaluator(mapper, outbox, clock);
 
     @Test
+    void vietnamThresholdKeyChangesAtSeventeenUtcButOccurrenceStaysInStorageZone() {
+        assertThat(H3WeeklyParticipationEvaluator.weeklyInstance(Instant.parse("2026-10-18T16:59:59Z"))).isEqualTo("WEEK:2026-W42");
+        assertThat(H3WeeklyParticipationEvaluator.weeklyInstance(Instant.parse("2026-10-18T17:00:00Z"))).isEqualTo("WEEK:2026-W43");
+        String key = "WEEK:2026-W42";
+        when(mapper.lockThreshold(42L,key,"H3_GENESIS_SECONDARY_MARKET_VIEWED"))
+                .thenReturn(new H3WeeklyParticipationMapper.ThresholdRow(1L,null));
+        var current = new H3WeeklyParticipationEvaluator(mapper,outbox,
+                Clock.fixed(Instant.parse("2026-10-18T16:30:00Z"),ZoneOffset.UTC));
+        current.recordGenesisSecondaryMarketView(42L);
+        verify(mapper).insertObservation(42L,key,"GENESIS_SECONDARY_MARKET","SECONDARY_MARKET",LocalDateTime.of(2026,10,19,0,30));
+        verify(outbox,never()).publishUserEventAt(any(),any(),any(),any(),any(),any(),any(),any(),any());
+    }
+
+    @Test
     void thirdDistinctStorefrontProductEmitsOneThresholdFactForTheCurrentWeek() {
         when(mapper.insertObservation(eq(42L), eq("WEEK:2026-W37"), eq("STOREFRONT_PRODUCT_DETAIL"), eq("NX-A"), any()))
                 .thenReturn(1);

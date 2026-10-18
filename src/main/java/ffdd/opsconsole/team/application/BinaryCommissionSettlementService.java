@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.application;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -189,8 +190,8 @@ public class BinaryCommissionSettlementService {
         }
 
         LocalDate month = settlementDate.withDayOfMonth(1);
-        LocalDateTime monthStart = month.atStartOfDay();
-        LocalDateTime settlementWindowEnd = settlementDate.plusDays(1).atStartOfDay();
+        LocalDateTime monthStart = VietnamBusinessPeriod.storageBoundary(month);
+        LocalDateTime settlementWindowEnd = VietnamBusinessPeriod.storageBoundary(settlementDate.plusDays(1));
         try {
             capturePaidOrders(ownerUserId, monthStart, settlementWindowEnd);
         } catch (SettlementBlocked ex) {
