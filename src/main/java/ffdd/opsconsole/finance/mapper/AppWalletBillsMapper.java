@@ -156,6 +156,7 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
                   CASE
                     WHEN UPPER(COALESCE(biz_type,''))='TRIAL_CHARGE' THEN 'purchase'
                     WHEN UPPER(COALESCE(biz_type,'')) IN ('TRIAL_BONUS','DAILY_CHECK_IN') THEN 'reward'
+                    WHEN CAST(UPPER(COALESCE(biz_type,'')) AS BINARY)=CAST('COMPUTE_TASK_REWARD' AS BINARY) THEN 'reward'
                     WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'DEPOSIT|TOPUP|RECHARGE' THEN 'topup'
                     WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'WITHDRAW|PAYOUT' THEN 'withdraw'
                     WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'REFERRAL|COMMISSION|UNILEVEL|BINARY|LEADERSHIP' THEN 'refer'

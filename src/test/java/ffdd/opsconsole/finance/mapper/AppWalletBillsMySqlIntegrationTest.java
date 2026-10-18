@@ -21,6 +21,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.mapping.Environment;
 import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.session.SqlSessionFactory;
@@ -57,6 +58,53 @@ class AppWalletBillsMySqlIntegrationTest {
     private String fixtureDatabase;
     private boolean fixtureDatabaseCreated;
     private AppWalletBillsMapper mapper;
+
+    @Test
+    void canonicalComputeFastPathPreservesAllEightSummaryFieldsAcrossExactAndLookalikeTypes() throws Exception {
+        String[] types = {null, "COMPUTE_TASK_REWARD", "compute_task_reward", "Compute_Task_Reward",
+                " COMPUTE_TASK_REWARD", "COMPUTE_TASK_REWARD ", "COMPUTE_TASK_RÉWARD",
+                "COMPUTE_TÁSK_REWARD", "CÓMPUTE_TASK_REWARD", "XCOMPUTE_TASK_REWARD", "COMPUTE_TASK_REWARDX",
+                "DEPOSIT_COMPUTE_TASK_REWARD", "COMPUTE_TASK_REWARD_WITHDRAW", "REFERRAL_COMPUTE_TASK_REWARD",
+                "STAKING_COMPUTE_TASK_REWARD", "EXCHANGE_COMPUTE_TASK_REWARD", "QUEST_COMPUTE_TASK_REWARD",
+                "TRIAL_CHARGE", "TRIAL_BONUS", "DAILY_CHECK_IN", "TASK", "REWARD", "ADJUSTMENT", ""};
+        for (int index = 0; index < types.length; index++) {
+            ledger(USER, "TYPE-" + index, types[index], index % 2 == 0 ? "NEX" : "USDT", "IN",
+                    "1.123456", "0", "SUCCESS", DAY.plusHours(1).plusSeconds(index), 0);
+        }
+        ledger(USER, "NULL-DIRECTION", "COMPUTE_TASK_REWARD", "NEX", null, "9.000001", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "OUT", "COMPUTE_TASK_REWARD", "NEX", "OUT", "2.123456", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "ZERO", "COMPUTE_TASK_REWARD", "NEX", "IN", "0", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "NEGATIVE", "COMPUTE_TASK_REWARD", "NEX", "IN", "-3.123456", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "NULL-AMOUNT", "COMPUTE_TASK_REWARD", "NEX", "IN", null, "0", "SUCCESS", DAY, 0);
+        ledger(USER, "PENDING", "COMPUTE_TASK_REWARD", "NEX", "IN", "4.123456", "0", "PENDING", DAY, 0);
+        ledger(USER, "NULL-STATUS", "COMPUTE_TASK_REWARD", "NEX", "IN", "5.123456", "0", null, DAY, 0);
+        ledger(USER, "CANCELLED-COMMISSION", "TEAM_COMMISSION", "NEX", "IN", "6.123456", "0", "CANCELLED", DAY, 0);
+        ledger(USER, "FEE", "WITHDRAW_FEE_OFFSET", "NEX", "OUT", "7.123456", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "FEE-REFUND", "WITHDRAW_FEE_OFFSET_REFUND", "NEX", "IN", "1.123456", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "PRINCIPAL-REFUND", "WITHDRAW_PAYOUT_NEX_REFUND", "NEX", "IN", "2.123456", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "NEXT-DAY", "COMPUTE_TASK_REWARD", "NEX", "IN", "8.123456", "0", "SUCCESS", DAY.plusDays(1), 0);
+        ledger(OTHER_USER, "OTHER", "COMPUTE_TASK_REWARD", "NEX", "IN", "999", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "DELETED", "COMPUTE_TASK_REWARD", "NEX", "IN", "999", "0", "SUCCESS", DAY, 1);
+
+        String sql = String.join("\n", AppWalletBillsMapper.class.getMethod("summary", Long.class,
+                LocalDateTime.class, LocalDateTime.class, LocalDateTime.class, LocalDateTime.class)
+                .getAnnotation(Select.class).value());
+        String baseline = sql.replace("WHEN CAST(UPPER(COALESCE(biz_type,'')) AS BINARY)"
+                + "=CAST('COMPUTE_TASK_REWARD' AS BINARY) THEN 'reward'", "")
+                .replaceAll("#\\{[^}]+}", "?");
+        var actual = mapper.summary(USER, DAY, DAY.plusDays(1), DAY.withDayOfMonth(1), DAY.withDayOfMonth(1).plusMonths(1));
+        var expected = jdbc.queryForObject(baseline, (rs, row) -> new AppWalletBillsMapper.SummaryRow(
+                rs.getBigDecimal("rewardsUsdt"), rs.getBigDecimal("rewardsNex"),
+                rs.getObject("latestRewardAt", LocalDateTime.class), rs.getBigDecimal("todayNexEarn"),
+                rs.getBigDecimal("pendingNex"), rs.getLong("monthBillCount"), rs.getBigDecimal("settledRewardsNex"),
+                rs.getBigDecimal("withdrawalOffsetNexSpent")), DAY, DAY.plusDays(1), DAY.withDayOfMonth(1),
+                DAY.withDayOfMonth(1).plusMonths(1), USER);
+        assertThat(actual).usingRecursiveComparison()
+                .withComparatorForType(BigDecimal::compareTo, BigDecimal.class).isEqualTo(expected);
+        // Accent-insensitive equality must never promote the TASK-only lookalike to a reward.
+        assertThat(jdbc.queryForObject("SELECT CAST(UPPER('COMPUTE_TASK_RÉWARD') AS BINARY)"
+                + "=CAST('COMPUTE_TASK_REWARD' AS BINARY)", Integer.class)).isZero();
+    }
 
     @Test
     void orderRefundRemainsIncomeWithoutInflatingRewardsOrChangingCursorIdentity() {
