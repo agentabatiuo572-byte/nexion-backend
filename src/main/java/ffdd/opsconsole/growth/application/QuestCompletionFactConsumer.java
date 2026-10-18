@@ -114,11 +114,14 @@ public class QuestCompletionFactConsumer {
         String targetInstanceKey = snapshotTarget
                 ? reference(command.instanceKey(), 64, "QUEST_SNAPSHOT_TARGET_INVALID")
                 : null;
+        boolean weeklyTarget = weeklySnapshots != null && weeklySnapshots.isWeekly(questCode);
         MissionDefinition mission = snapshotTarget
-                ? mapper.lockDayOneSnapshotMissionAt(userId, command.sourceMissionId(), questCode,
-                        targetInstanceKey, command.occurredAt())
-                : weeklySnapshots != null && weeklySnapshots.isWeekly(questCode)
-                        ? weeklySnapshots.mission(questCode, command.occurredAt())
+                ? targetInstanceKey.startsWith("WEEK:") && weeklySnapshots != null
+                        ? weeklySnapshots.mission(userId, questCode, command.occurredAt(), targetInstanceKey)
+                        : mapper.lockDayOneSnapshotMissionAt(userId, command.sourceMissionId(), questCode,
+                                targetInstanceKey, command.occurredAt())
+                : weeklyTarget
+                        ? weeklySnapshots.mission(userId, questCode, command.occurredAt(), null)
                         : command.occurredAt() == null
                         ? mapper.lockMissionInstance(userId, questCode)
                         : mapper.lockMissionInstanceAt(userId, questCode, command.occurredAt());
@@ -131,7 +134,10 @@ public class QuestCompletionFactConsumer {
             }
             throw new BizException(409, "QUEST_NOT_CONFIGURED");
         }
-        validateEventInstance(command.occurredAt(), mission);
+        if (snapshotTarget && !command.sourceMissionId().equals(mission.missionId())) {
+            throw new BizException(409, "QUEST_NOT_ELIGIBLE_FOR_SNAPSHOT_INSTANCE");
+        }
+        validateEventInstance(userId, command.occurredAt(), mission);
 
         String currentStatus = mapper.lockUserMissionStatus(
                 userId, mission.missionId(), mission.instanceKey());
@@ -197,9 +203,15 @@ public class QuestCompletionFactConsumer {
         return phase.matches("P[1-6]") ? phase : "P1";
     }
 
-    private void validateEventInstance(LocalDateTime occurredAt, MissionDefinition mission) {
+    private void validateEventInstance(Long userId, LocalDateTime occurredAt, MissionDefinition mission) {
         if (occurredAt == null || mission == null || mission.layer() == null
                 || !mission.layer().toUpperCase(Locale.ROOT).startsWith("WEEKLY")) {
+            return;
+        }
+        if (weeklySnapshots != null) {
+            if (!weeklySnapshots.publishedFor(userId, occurredAt, mission.instanceKey())) {
+                throw new BizException(409, "QUEST_COMPLETION_STALE_INSTANCE_EVENT");
+            }
             return;
         }
         String occurredInstance = VietnamBusinessPeriod.weekKey(occurredAt);

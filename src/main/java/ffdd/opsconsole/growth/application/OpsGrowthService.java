@@ -65,6 +65,7 @@ import org.springframework.transaction.annotation.Transactional;
 @ApplicationService
 public class OpsGrowthService implements AuditReplayable {
     private final WeeklyQuestSnapshotService weeklySnapshots;
+    private final WeeklyRegionPolicyService weeklyRegionPolicies;
 
     private static final String PHASE_CONFIG_KEY = "platform.phase.config";
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
@@ -225,7 +226,6 @@ public class OpsGrowthService implements AuditReplayable {
         this(configFacade, emergencyRepository, coverageFacade, ledgerPostingFacade, auditLogService, objectMapper, readTimeSeedPolicy, deviceCatalogRepository, questEventMapper, voucherMapper, lockMapper, appTrialLifecycleService, referralRewardService, streakPerkAvailability, promotionAdmin, null);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
     public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,
             TreasuryCoverageFacade coverageFacade, TreasuryLedgerPostingFacade ledgerPostingFacade,
             AuditLogService auditLogService, ObjectMapper objectMapper, OpsReadTimeSeedPolicy readTimeSeedPolicy,
@@ -235,6 +235,21 @@ public class OpsGrowthService implements AuditReplayable {
             StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
             ffdd.opsconsole.promotion.application.PromotionAdminService promotionAdmin,
             WeeklyQuestSnapshotService weeklySnapshots) {
+        this(configFacade, emergencyRepository, coverageFacade, ledgerPostingFacade, auditLogService, objectMapper,
+                readTimeSeedPolicy, deviceCatalogRepository, questEventMapper, voucherMapper, lockMapper,
+                appTrialLifecycleService, referralRewardService, streakPerkAvailability, promotionAdmin, weeklySnapshots, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,
+            TreasuryCoverageFacade coverageFacade, TreasuryLedgerPostingFacade ledgerPostingFacade,
+            AuditLogService auditLogService, ObjectMapper objectMapper, OpsReadTimeSeedPolicy readTimeSeedPolicy,
+            Optional<DeviceCatalogRepository> deviceCatalogRepository, Optional<GrowthQuestEventMapper> questEventMapper,
+            Optional<GrowthVoucherMapper> voucherMapper, AuditObjectLockMapper lockMapper,
+            AppTrialLifecycleService appTrialLifecycleService, Optional<OpsReferralRewardService> referralRewardService,
+            StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
+            ffdd.opsconsole.promotion.application.PromotionAdminService promotionAdmin,
+            WeeklyQuestSnapshotService weeklySnapshots, WeeklyRegionPolicyService weeklyRegionPolicies) {
         this.configFacade=configFacade;this.emergencyRepository=emergencyRepository;this.coverageFacade=coverageFacade;
         this.ledgerPostingFacade=ledgerPostingFacade;this.auditLogService=auditLogService;this.objectMapper=objectMapper;
         this.readTimeSeedPolicy=readTimeSeedPolicy;this.deviceCatalogRepository=deviceCatalogRepository;
@@ -242,6 +257,7 @@ public class OpsGrowthService implements AuditReplayable {
         this.appTrialLifecycleService=appTrialLifecycleService;this.referralRewardService=referralRewardService;
         this.streakPerkAvailability=streakPerkAvailability;this.promotionAdmin=promotionAdmin;
         this.weeklySnapshots = weeklySnapshots;
+        this.weeklyRegionPolicies = weeklyRegionPolicies;
     }
 
     public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,
@@ -5563,6 +5579,23 @@ public class OpsGrowthService implements AuditReplayable {
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
+            case "h3_weekly_region_policy" -> {
+                if (!A2ReplayContext.isReplaying()) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+                if (weeklyRegionPolicies == null || weeklySnapshots == null) {
+                    return ApiResult.fail(503, "WEEKLY_REGION_POLICY_UNAVAILABLE");
+                }
+                ApiResult<Map<String, Object>> guard = requireCommand(idem, reason);
+                if (guard != null) return guard;
+                var proposal = weeklyRegionPolicies.proposal(p);
+                var before = weeklyRegionPolicies.read();
+                var candidate = weeklyRegionPolicies.candidate(proposal, before);
+                // A2 owns the outer transaction. Core holds H3_CONFIG and never locks user rows here.
+                weeklySnapshots.beforeRegionPolicyChange(WeeklyRegionPolicyService.zones(candidate.mappings()));
+                var after = weeklyRegionPolicies.publish(proposal);
+                audit("growth.weekly_region_policy_published", "H3_WEEKLY_REGION_POLICY", WeeklyRegionPolicyService.TARGET,
+                        operator, row("before", before, "after", after, "reason", reason, "idempotencyKey", idem));
+                return ApiResult.ok(after);
+            }
             case "promotion_reward_correction" -> {
                 if(promotionAdmin==null)return ApiResult.fail(503,"PROMOTION_GOVERNANCE_UNAVAILABLE");
                 return promotionAdmin.approveCorrection(p,ctx);
@@ -5616,6 +5649,11 @@ public class OpsGrowthService implements AuditReplayable {
                 return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
             }
         }
+    }
+
+    public ApiResult<WeeklyRegionPolicyService.View> weeklyRegionPolicy() {
+        if (weeklyRegionPolicies == null) return ApiResult.fail(503, "WEEKLY_REGION_POLICY_UNAVAILABLE");
+        return ApiResult.ok(weeklyRegionPolicies.overview());
     }
 
     /** 从 replay params 取字符串,null 安全。 */

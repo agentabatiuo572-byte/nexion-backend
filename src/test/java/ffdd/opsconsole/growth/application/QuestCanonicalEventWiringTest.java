@@ -26,6 +26,9 @@ class QuestCanonicalEventWiringTest {
                     () -> mock(ffdd.opsconsole.growth.facade.GrowthRhythmFacade.class));
             context.registerBean(ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade.class,
                     () -> mock(ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade.class));
+            context.registerBean(WeeklyRegionPolicyService.class,()->mock(WeeklyRegionPolicyService.class));
+            context.registerBean(ffdd.opsconsole.user.facade.UserWeeklyRegionFacade.class,
+                    ()->mock(ffdd.opsconsole.user.facade.UserWeeklyRegionFacade.class));
             context.registerBean(java.time.Clock.class, java.time.Clock::systemUTC);
             context.register(WeeklyQuestSnapshotService.class, QuestCanonicalEventProjector.class, QuestCanonicalEventConsumer.class);
 
@@ -38,6 +41,10 @@ class QuestCanonicalEventWiringTest {
                 assertThat(org.springframework.test.util.ReflectionTestUtils.getField(context.getBean(type), "weeklySnapshots"))
                         .isSameAs(weekly);
             }
+            assertThat(org.springframework.test.util.ReflectionTestUtils.getField(weekly,"regionPolicy"))
+                    .isSameAs(context.getBean(WeeklyRegionPolicyService.class));
+            assertThat(org.springframework.test.util.ReflectionTestUtils.getField(weekly,"users"))
+                    .isSameAs(context.getBean(ffdd.opsconsole.user.facade.UserWeeklyRegionFacade.class));
             assertThat(org.springframework.test.util.ReflectionTestUtils.getField(weekly, "availability"))
                     .isSameAs(context.getBean(ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade.class));
         }

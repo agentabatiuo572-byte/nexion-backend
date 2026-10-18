@@ -191,7 +191,7 @@ public class AppGrowthEngagementService {
         requireReadableUser(userId);
         ffdd.opsconsole.growth.mapper.WeeklyQuestSnapshotMapper.Header weekly = null;
         if (weeklySnapshots != null) {
-            try { weekly = weeklySnapshots.current(); }
+            try { weekly = weeklySnapshots.current(userId); }
             catch (BizException failure) {
                 if (!"H1_RHYTHM_UNAVAILABLE".equals(failure.getMessage())) throw failure;
             }
@@ -216,6 +216,9 @@ public class AppGrowthEngagementService {
         // supplies the only frozen Day One rows below.
         List<Map<String, Object>> rawQuests = new ArrayList<>(liveRows.stream()
                 .filter(row -> !"DAY_ONE".equalsIgnoreCase(String.valueOf(row.get("layer")))).toList());
+        if (weeklySnapshots != null && weekly == null) {
+            rawQuests.removeIf(row -> String.valueOf(row.get("layer")).startsWith("WEEKLY_"));
+        }
         // A market can close after a mission was published. Preserve completed
         // history, but stop advertising a pending Genesis action while closed.
         if (weekly == null && rawQuests.stream().anyMatch(row -> "weekly_t2_genesis_browse".equals(row.get("questCode"))
@@ -488,7 +491,7 @@ public class AppGrowthEngagementService {
             if (instanceKey.startsWith("DAY_ONE:")) {
                 return claimDayOneSnapshot(userId, code, instanceKey);
             }
-            var weekly = weeklySnapshots == null ? null : weeklySnapshots.current();
+            var weekly = weeklySnapshots == null ? null : weeklySnapshots.current(userId);
             if (weekly != null && !weekly.instanceKey().equals(instanceKey)) return ApiResult.fail(409, "QUEST_EXPIRED");
             var frozenReward = weekly == null ? null : weeklySnapshots.lockReward(weekly, code, userId);
             QuestReward reward = weekly == null ? mapper.lockClaimableQuest(userId, code, instanceKey)

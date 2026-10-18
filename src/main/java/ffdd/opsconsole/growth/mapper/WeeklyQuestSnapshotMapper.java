@@ -6,6 +6,7 @@ import ffdd.opsconsole.growth.mapper.QuestCanonicalEventBindingMapper.CanonicalQ
 import ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper.MissionDefinition;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.*;
@@ -13,10 +14,14 @@ import org.apache.ibatis.annotations.*;
 /** Published weekly definitions, distinct from mutable per-user completion progress. */
 @Mapper
 public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
+    String HEADER_COLUMNS = "instance_key instanceKey,eligible_from eligibleFrom,eligible_until eligibleUntil,"
+            + "quest_bonus_multiplier questBonusMultiplier,rhythm_month rhythmMonth,required_task_count requiredTaskCount,"
+            + "business_timezone businessTimezone,local_week_start localWeekStart,calendar_version calendarVersion";
     @Select("""
             SELECT instance_key instanceKey,eligible_from eligibleFrom,eligible_until eligibleUntil,
                    quest_bonus_multiplier questBonusMultiplier,rhythm_month rhythmMonth,
-                   required_task_count requiredTaskCount
+                   required_task_count requiredTaskCount,business_timezone businessTimezone,
+                   local_week_start localWeekStart,calendar_version calendarVersion
               FROM nx_growth_weekly_definition WHERE instance_key=#{key}
             """)
     Header find(@Param("key") String key);
@@ -24,10 +29,64 @@ public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
     @Select("""
             SELECT instance_key instanceKey,eligible_from eligibleFrom,eligible_until eligibleUntil,
                    quest_bonus_multiplier questBonusMultiplier,rhythm_month rhythmMonth,
-                   required_task_count requiredTaskCount
-              FROM nx_growth_weekly_definition WHERE instance_key=#{key} FOR UPDATE
+                   required_task_count requiredTaskCount,business_timezone businessTimezone,
+                   local_week_start localWeekStart,calendar_version calendarVersion
+              FROM nx_growth_weekly_definition WHERE instance_key=#{key} FOR SHARE
             """)
     Header findAfterLock(@Param("key") String key);
+
+    @Select("SELECT " + HEADER_COLUMNS + " FROM nx_growth_weekly_definition WHERE instance_key=#{key} FOR SHARE")
+    Header findPublished(@Param("key") String key);
+
+    @Select("SELECT " + HEADER_COLUMNS + " FROM nx_growth_weekly_definition WHERE "
+            + "instance_key REGEXP '^WEEK:[0-9]{4}-W[0-9]{2}$' AND eligible_from<=#{now} AND eligible_until>#{now} FOR SHARE")
+    List<Header> openLegacy(@Param("now") LocalDateTime now);
+
+    @Select("SELECT " + HEADER_COLUMNS + " FROM nx_growth_weekly_definition WHERE "
+            + "instance_key REGEXP '^WEEK:[0-9]{4}-W[0-9]{2}$' AND eligible_from<=#{now} AND eligible_until>#{now}")
+    List<Header> legacySnapshot(@Param("now") LocalDateTime now);
+
+
+    @Select("SELECT " + HEADER_COLUMNS + " FROM nx_growth_weekly_definition WHERE calendar_version=#{version} "
+            + "AND business_timezone=#{zone} AND local_week_start=#{monday} AND eligible_from=#{from} AND eligible_until=#{until} FOR SHARE")
+    Header regional(@Param("version") String version,@Param("zone") String zone,@Param("monday") LocalDate monday,
+                    @Param("from") LocalDateTime from,@Param("until") LocalDateTime until);
+
+    @Select("SELECT " + HEADER_COLUMNS + " FROM nx_growth_weekly_definition WHERE calendar_version=#{version} "
+            + "AND business_timezone=#{zone} AND local_week_start=#{monday} ORDER BY created_at,instance_key LIMIT 1 FOR SHARE")
+    Header template(@Param("version") String version,@Param("zone") String zone,@Param("monday") LocalDate monday);
+
+    @Select("SELECT business_timezone FROM nx_growth_weekly_definition WHERE business_timezone IS NOT NULL FOR SHARE")
+    List<String> publishedZones();
+
+    @Select("SELECT user_id userId,local_week_start localWeekStart,instance_key instanceKey,"
+            + "country_calling_code countryCallingCode,mapping_version mappingVersion FROM nx_growth_account_weekly_period "
+            + "WHERE user_id=#{userId} ORDER BY local_week_start DESC LIMIT 1 FOR UPDATE")
+    Assignment latestAssignment(@Param("userId") Long userId);
+
+    @Select("SELECT COUNT(*) FROM nx_growth_account_weekly_period WHERE user_id=#{userId} AND instance_key=#{key} FOR SHARE")
+    int assigned(@Param("userId") Long userId,@Param("key") String key);
+
+    @Insert("INSERT INTO nx_growth_account_weekly_period(user_id,local_week_start,instance_key,country_calling_code,mapping_version) "
+            + "VALUES(#{a.userId},#{a.localWeekStart},#{a.instanceKey},#{a.countryCallingCode},#{a.mappingVersion})")
+    int insertAssignment(@Param("a") Assignment assignment);
+
+    @Insert("INSERT INTO nx_growth_weekly_definition_item(instance_key,source_mission_id,quest_code,name,layer,category,action_route,reward_points,ordinal) "
+            + "SELECT #{to},source_mission_id,quest_code,name,layer,category,action_route,reward_points,ordinal "
+            + "FROM nx_growth_weekly_definition_item WHERE instance_key=#{from}")
+    int copyItems(@Param("from") String from,@Param("to") String to);
+
+    @Insert("INSERT INTO nx_growth_weekly_definition_binding(instance_key,source_mission_id,source_binding_id,binding_code,producer,event_type,user_id_field) "
+            + "SELECT #{to},source_mission_id,source_binding_id,binding_code,producer,event_type,user_id_field "
+            + "FROM nx_growth_weekly_definition_binding WHERE instance_key=#{from}")
+    int copyBindings(@Param("from") String from,@Param("to") String to);
+
+    @Insert("INSERT INTO nx_growth_weekly_definition(instance_key,eligible_from,eligible_until,quest_bonus_multiplier,"
+            + "rhythm_month,required_task_count,business_timezone,local_week_start,calendar_version,localized_content) "
+            + "SELECT #{h.instanceKey},#{h.eligibleFrom},#{h.eligibleUntil},quest_bonus_multiplier,rhythm_month,required_task_count,"
+            + "#{h.businessTimezone},#{h.localWeekStart},#{h.calendarVersion},localized_content "
+            + "FROM nx_growth_weekly_definition WHERE instance_key=#{source}")
+    int insertHeaderFromTemplate(@Param("h") Header header,@Param("source") String source);
 
     @Select("SELECT instance_key FROM nx_growth_weekly_definition WHERE instance_key=#{key} FOR SHARE")
     String publishedKey(@Param("key") String key);
@@ -59,9 +118,10 @@ public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
 
     @Insert("""
             INSERT INTO nx_growth_weekly_definition
-              (instance_key,eligible_from,eligible_until,quest_bonus_multiplier,rhythm_month,required_task_count,localized_content)
+              (instance_key,eligible_from,eligible_until,quest_bonus_multiplier,rhythm_month,required_task_count,
+               business_timezone,local_week_start,calendar_version,localized_content)
             VALUES(#{h.instanceKey},#{h.eligibleFrom},#{h.eligibleUntil},#{h.questBonusMultiplier},
-                   #{h.rhythmMonth},#{h.requiredTaskCount},
+                   #{h.rhythmMonth},#{h.requiredTaskCount},#{h.businessTimezone},#{h.localWeekStart},#{h.calendarVersion},
                    (SELECT config_value FROM nx_config_item WHERE config_key='growth.content.localized'
                      AND status=1 AND is_deleted=0 LIMIT 1))
             """)
@@ -88,7 +148,7 @@ public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
                        CASE WHEN JSON_VALID(h.localized_content) THEN h.localized_content ELSE '{}' END,
                        CONCAT('$.mission."',i.quest_code,'"."',#{locale},'".name'))),''),i.name) name,
                    i.layer,i.reward_points rewardNex,LOWER(i.category) category,i.action_route actionRoute,
-                   h.instance_key instanceKey,
+                   h.instance_key instanceKey,h.business_timezone businessTimezone,
                    DATE_FORMAT(h.eligible_from,'%Y-%m-%dT%H:%i:%s+08:00') eligibleFrom,
                    DATE_FORMAT(h.eligible_until,'%Y-%m-%dT%H:%i:%s+08:00') eligibleUntil,
                    1 eligible,CASE UPPER(COALESCE(um.mission_status,'PENDING'))
@@ -121,7 +181,12 @@ public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
             """)
     int liveWeeklyBindingCount(@Param("eventType") String eventType);
 
-    @Select("SELECT COUNT(*) FROM nx_mission WHERE mission_code=#{code} AND mission_type IN ('WEEKLY_T1','WEEKLY_T2')")
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_growth_weekly_definition_binding WHERE event_type=#{eventType})")
+    boolean frozenEventBindings(@Param("eventType") String eventType);
+
+
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_mission WHERE mission_code=#{code} AND mission_type IN ('WEEKLY_T1','WEEKLY_T2')) "
+            + "OR EXISTS(SELECT 1 FROM nx_growth_weekly_definition_item WHERE quest_code=#{code})")
     int weeklyCode(@Param("code") String code);
 
     @Select("""
@@ -171,7 +236,17 @@ public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
     Long legacyClaimMission(@Param("key") String key,@Param("userId") Long userId,@Param("code") String code);
 
     record Header(String instanceKey,LocalDateTime eligibleFrom,LocalDateTime eligibleUntil,
-                  BigDecimal questBonusMultiplier,int rhythmMonth,int requiredTaskCount) {}
+                  BigDecimal questBonusMultiplier,int rhythmMonth,int requiredTaskCount,
+                  String businessTimezone,LocalDate localWeekStart,String calendarVersion) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public Header {
+            if (questBonusMultiplier!=null) questBonusMultiplier=questBonusMultiplier.stripTrailingZeros();
+        }
+        public Header(String key,LocalDateTime from,LocalDateTime until,BigDecimal multiplier,int month,int count) {
+            this(key,from,until,multiplier,month,count,null,null,null);
+        }
+    }
+    record Assignment(Long userId,LocalDate localWeekStart,String instanceKey,String countryCallingCode,long mappingVersion) {}
     record Definition(Long missionId,String questCode,String name,String layer,String category,String actionRoute,
                       int rewardPoints,Long bindingId,String bindingCode,String producer,String eventType,String userIdField) {}
     record Reward(Long missionId,String questCode,String layer,BigDecimal rewardNex) {}

@@ -1,6 +1,5 @@
 package ffdd.opsconsole.growth.mapper;
 
-import ffdd.opsconsole.shared.config.VietnamBusinessPeriodSql;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
@@ -170,18 +169,25 @@ public interface AppGrowthEngagementMapper {
                            WHEN 'weekly_t2_nex_swap' THEN 'H3_EXCHANGE_COMPLETED'
                            WHEN 'weekly_t2_ai_jobs_50' THEN 'H3_COMPUTE_COMPLETED_50'
                            WHEN 'weekly_t2_genesis_browse' THEN 'H3_GENESIS_SECONDARY_MARKET_VIEWED' END
-                         AND cf.instance_key=CONCAT('WEEK:',DATE_FORMAT(CASE WHEN o.event_ts < '2026-10-19 00:00:00' THEN o.event_ts ELSE DATE_SUB(o.event_ts, INTERVAL 1 HOUR) END,'%x-W%v'))
+                       JOIN nx_growth_account_weekly_period proof_period
+                         ON proof_period.user_id=cf.user_id AND proof_period.instance_key=cf.instance_key
+                       JOIN nx_growth_weekly_definition proof_week ON proof_week.instance_key=proof_period.instance_key
+                         AND proof_week.eligible_from<=o.event_ts AND proof_week.eligible_until>o.event_ts
+                         AND o.event_ts<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
                        WHERE cf.user_id=um.user_id AND cf.mission_id=um.mission_id
                          AND cf.instance_key=um.instance_key AND cf.quest_code=m.mission_code
                          AND cf.event_id LIKE CONCAT(o.event_id,':%')
                          AND cf.producer='SYSTEM' AND cf.is_deleted=0)))
               JOIN nx_user u ON u.id=um.user_id AND u.status='ACTIVE' AND u.is_deleted=0
+              LEFT JOIN nx_growth_account_weekly_period wp ON wp.user_id=um.user_id AND wp.instance_key=um.instance_key
+              LEFT JOIN nx_growth_weekly_definition wh ON wh.instance_key=wp.instance_key
+                AND wh.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                AND wh.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
              WHERE um.user_id=#{userId} AND m.mission_code=#{questCode}
                AND um.instance_key=#{instanceKey}
                AND um.instance_key=CASE
                      WHEN m.mission_type='DAY_ONE' THEN CONCAT('DAY_ONE:',DATE_FORMAT(u.created_at,'%Y%m%dT%H%i%s'))
-                     ELSE CONCAT('WEEK:',DATE_FORMAT(""" + VietnamBusinessPeriodSql.NOW + """
-,'%x-W%v'))
+                     ELSE wh.instance_key
                    END
                AND (m.mission_type<>'DAY_ONE' OR NOW()<DATE_ADD(u.created_at,INTERVAL COALESCE((
                      SELECT CASE WHEN c.config_value REGEXP '^[0-9]{1,3}$'
@@ -212,14 +218,16 @@ public interface AppGrowthEngagementMapper {
                          FROM nx_config_item c
                         WHERE c.config_key='growth.quest.day_one.eligibility_hours'
                           AND c.status=1 AND c.is_deleted=0 LIMIT 1),72) HOUR) THEN 1
-                     WHEN m.mission_type<>'DAY_ONE' AND um.instance_key<>
-                       CONCAT('WEEK:',DATE_FORMAT(""" + VietnamBusinessPeriodSql.NOW + """
-,'%x-W%v')) THEN 1
+                     WHEN m.mission_type<>'DAY_ONE' AND wh.instance_key IS NULL THEN 1
                      ELSE 0
                    END expired
               FROM nx_user_mission um
               JOIN nx_mission m ON m.id=um.mission_id AND m.is_deleted=0
               JOIN nx_user u ON u.id=um.user_id AND u.status='ACTIVE' AND u.is_deleted=0
+              LEFT JOIN nx_growth_account_weekly_period wp ON wp.user_id=um.user_id AND wp.instance_key=um.instance_key
+              LEFT JOIN nx_growth_weekly_definition wh ON wh.instance_key=wp.instance_key
+                AND wh.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                AND wh.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
              WHERE um.user_id=#{userId} AND m.mission_code=#{questCode}
                AND um.instance_key=#{instanceKey} AND um.is_deleted=0
              LIMIT 1 FOR UPDATE
@@ -269,20 +277,27 @@ public interface AppGrowthEngagementMapper {
                    DATE_FORMAT(q.eligible_from,'%Y-%m-%dT%H:%i:%s+08:00') eligibleFrom,
                    DATE_FORMAT(q.eligible_until,'%Y-%m-%dT%H:%i:%s+08:00') eligibleUntil,
                    CASE WHEN q.definition_status<>1 AND q.paused_claim_verified=1
-                                  AND q.instance_key=CONCAT('WEEK:',DATE_FORMAT(""" + VietnamBusinessPeriodSql.NOW + """
-,'%x-W%v'))
+                                  AND q.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                                  AND q.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
                                   AND UPPER(COALESCE(um.mission_status,'PENDING')) IN ('COMPLETED','CLAIMABLE') THEN 1
                         WHEN q.definition_status<>1 THEN 0
-                        WHEN q.mission_type='DAY_ONE' AND NOW()>=q.eligible_until THEN 0 ELSE 1 END eligible,
+                        WHEN q.mission_type='DAY_ONE' AND NOW()>=q.eligible_until THEN 0
+                        WHEN q.mission_type<>'DAY_ONE' AND (q.instance_key IS NULL
+                             OR q.eligible_from>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                             OR q.eligible_until<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')) THEN 0 ELSE 1 END eligible,
                    CASE WHEN q.definition_status<>1 THEN CASE
                           WHEN UPPER(COALESCE(um.mission_status,'PENDING'))='CLAIMED' THEN 'CLAIMED'
                           WHEN q.paused_claim_verified=1
-                               AND q.instance_key=CONCAT('WEEK:',DATE_FORMAT(""" + VietnamBusinessPeriodSql.NOW + """
-,'%x-W%v'))
+                               AND q.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                               AND q.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
                                AND UPPER(COALESCE(um.mission_status,'PENDING')) IN ('COMPLETED','CLAIMABLE') THEN 'CLAIMABLE'
                           ELSE 'EXPIRED' END
                         WHEN q.mission_type='DAY_ONE' AND NOW()>=q.eligible_until
                                   AND UPPER(COALESCE(um.mission_status, 'PENDING'))<>'CLAIMED' THEN 'EXPIRED'
+                        WHEN q.mission_type<>'DAY_ONE' AND (q.instance_key IS NULL
+                             OR q.eligible_from>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                             OR q.eligible_until<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00'))
+                             AND UPPER(COALESCE(um.mission_status,'PENDING'))<>'CLAIMED' THEN 'EXPIRED'
                         ELSE CASE UPPER(COALESCE(um.mission_status, 'PENDING'))
                           WHEN 'COMPLETED' THEN 'COMPLETED'
                           WHEN 'CLAIMABLE' THEN 'CLAIMABLE'
@@ -305,7 +320,11 @@ public interface AppGrowthEngagementMapper {
                                           WHEN 'weekly_t2_nex_swap' THEN 'H3_EXCHANGE_COMPLETED'
                                           WHEN 'weekly_t2_ai_jobs_50' THEN 'H3_COMPUTE_COMPLETED_50'
                                           WHEN 'weekly_t2_genesis_browse' THEN 'H3_GENESIS_SECONDARY_MARKET_VIEWED' END
-                                        AND cf.instance_key=CONCAT('WEEK:',DATE_FORMAT(CASE WHEN o.event_ts < '2026-10-19 00:00:00' THEN o.event_ts ELSE DATE_SUB(o.event_ts, INTERVAL 1 HOUR) END,'%x-W%v'))
+                                       JOIN nx_growth_account_weekly_period proof_period
+                                         ON proof_period.user_id=cf.user_id AND proof_period.instance_key=cf.instance_key
+                                       JOIN nx_growth_weekly_definition proof_week ON proof_week.instance_key=proof_period.instance_key
+                                         AND proof_week.eligible_from<=o.event_ts AND proof_week.eligible_until>o.event_ts
+                                         AND o.event_ts<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
                                       WHERE cf.user_id=u.id AND cf.mission_id=m.id
                                         AND cf.instance_key=historical.instance_key AND cf.quest_code=m.mission_code
                                         AND cf.event_id LIKE CONCAT(o.event_id,':%')
@@ -322,13 +341,13 @@ public interface AppGrowthEngagementMapper {
                            CASE
                              WHEN m.status<>1 THEN historical.instance_key
                              WHEN m.mission_type='DAY_ONE' THEN CONCAT('DAY_ONE:',DATE_FORMAT(u.created_at,'%Y%m%dT%H%i%s'))
-                             ELSE CONCAT('WEEK:',DATE_FORMAT(""" + VietnamBusinessPeriodSql.NOW + """
-,'%x-W%v'))
+                             ELSE current_week.instance_key
                            END instance_key,
                            CASE WHEN m.mission_type='DAY_ONE' THEN u.created_at
-                                WHEN m.status<>1 THEN COALESCE((SELECT eligible_from FROM nx_growth_weekly_definition WHERE instance_key=historical.instance_key),STR_TO_DATE(CONCAT(SUBSTRING(historical.instance_key,6),'-1'),'%x-W%v-%w'))
-                                ELSE """ + VietnamBusinessPeriodSql.WEEK_START + """
-
+                                WHEN m.status<>1 THEN COALESCE(history_week.eligible_from,
+                                    CASE WHEN historical.instance_key REGEXP '^WEEK:[0-9]{4}-W[0-9]{2}$'
+                                      THEN STR_TO_DATE(CONCAT(SUBSTRING(historical.instance_key,6),'-1'),'%x-W%v-%w') END)
+                                ELSE current_week.eligible_from
                            END eligible_from,
                            CASE WHEN m.mission_type='DAY_ONE' THEN DATE_ADD(u.created_at,INTERVAL COALESCE((
                                   SELECT CASE WHEN c.config_value REGEXP '^[0-9]{1,3}$'
@@ -337,22 +356,28 @@ public interface AppGrowthEngagementMapper {
                                     FROM nx_config_item c
                                    WHERE c.config_key='growth.quest.day_one.eligibility_hours'
                                      AND c.status=1 AND c.is_deleted=0 LIMIT 1),72) HOUR)
-                                WHEN m.status<>1 THEN COALESCE((SELECT eligible_until FROM nx_growth_weekly_definition WHERE instance_key=historical.instance_key),DATE_ADD(
-                                      STR_TO_DATE(CONCAT(SUBSTRING(historical.instance_key,6),'-1'),'%x-W%v-%w'),INTERVAL 7 DAY))
-                                ELSE """ + VietnamBusinessPeriodSql.NEXT_WEEK_START + """
-
+                                WHEN m.status<>1 THEN COALESCE(history_week.eligible_until,
+                                    CASE WHEN historical.instance_key REGEXP '^WEEK:[0-9]{4}-W[0-9]{2}$'
+                                      THEN DATE_ADD(STR_TO_DATE(CONCAT(SUBSTRING(historical.instance_key,6),'-1'),'%x-W%v-%w'),INTERVAL 7 DAY) END)
+                                ELSE current_week.eligible_until
                            END eligible_until
                      FROM nx_mission m
                       JOIN nx_user u ON u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0
+                      LEFT JOIN (nx_growth_account_weekly_period current_period
+                        JOIN nx_growth_weekly_definition current_week ON current_week.instance_key=current_period.instance_key
+                         AND current_week.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                         AND current_week.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00'))
+                        ON current_period.user_id=u.id
                       LEFT JOIN nx_user_mission historical
                         ON historical.id=(SELECT candidate.id FROM nx_user_mission candidate
                            WHERE candidate.user_id=#{userId} AND candidate.mission_id=m.id
                              AND candidate.is_deleted=0
-                           ORDER BY (candidate.instance_key=CONCAT('WEEK:',DATE_FORMAT(""" + VietnamBusinessPeriodSql.NOW + """
-,'%x-W%v'))) DESC,
+                           ORDER BY (candidate.instance_key=current_week.instance_key) DESC,
                                     candidate.updated_at DESC,candidate.id DESC LIMIT 1)
+                      LEFT JOIN nx_growth_weekly_definition history_week ON history_week.instance_key=historical.instance_key
                      WHERE m.is_deleted=0 AND (m.status=1 OR historical.id IS NOT NULL)
                        AND m.mission_type IN ('DAY_ONE','WEEKLY_T1','WEEKLY_T2')
+                       AND (m.mission_type='DAY_ONE' OR m.status<>1 OR current_week.instance_key IS NOT NULL)
                        AND (m.status<>1 OR m.mission_code NOT IN
                             ('weekly_t2_browse_store','weekly_t2_invite_friend','weekly_t2_nex_swap',
                              'weekly_t2_ai_jobs_50','weekly_t2_genesis_browse')
@@ -447,6 +472,12 @@ public interface AppGrowthEngagementMapper {
             UPDATE nx_user_mission SET mission_status='CLAIMED',updated_at=NOW()
              WHERE user_id=#{userId} AND mission_id=#{missionId} AND instance_key=#{instanceKey}
                AND UPPER(mission_status) IN ('COMPLETED','CLAIMABLE') AND is_deleted=0
+               AND (instance_key LIKE 'DAY_ONE:%' OR EXISTS (
+                 SELECT 1 FROM nx_growth_account_weekly_period wp
+                 JOIN nx_growth_weekly_definition wh ON wh.instance_key=wp.instance_key
+                  AND wh.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                  AND wh.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                 WHERE wp.user_id=#{userId} AND wp.instance_key=#{instanceKey}))
             """)
     int claimQuest(
             @Param("userId") Long userId,

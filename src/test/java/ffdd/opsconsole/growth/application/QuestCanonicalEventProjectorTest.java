@@ -39,9 +39,11 @@ class QuestCanonicalEventProjectorTest {
         var weekly = mock(WeeklyQuestSnapshotService.class);
         var projector = new QuestCanonicalEventProjector(bindingMapper, dayOneInstances, factConsumer, deliveryService, new ObjectMapper(), weekly);
         String type = "H3_STOREFRONT_THREE_PRODUCTS_VIEWED";
+        when(weekly.hasEventBindings(type)).thenReturn(true);
+        when(weekly.lockAccountsForProjection(any())).thenAnswer(call->call.getArgument(0));
         when(bindingMapper.listActiveBindings(type)).thenReturn(List.of(
                 new CanonicalQuestEventBinding("NEW","SYSTEM",type,"weekly_t2_browse_store","user_id","WEEKLY_T2")));
-        when(weekly.publishedFor(EVENT_TS)).thenReturn(true);
+        when(weekly.publishedFor(990725L,EVENT_TS,null)).thenReturn(true);
         projector.project(event("evt-not-in-week",type,"{\"user_id\":990725}"),"evt-not-in-week");
         verify(factConsumer,never()).consume(any());
         verify(deliveryService).markSkipped(QuestCanonicalEventConsumer.CONSUMER_GROUP,
@@ -54,13 +56,18 @@ class QuestCanonicalEventProjectorTest {
         var weekly = mock(WeeklyQuestSnapshotService.class);
         var projector = new QuestCanonicalEventProjector(bindingMapper, dayOneInstances, factConsumer, deliveryService, new ObjectMapper(), weekly);
         String type = "H3_STOREFRONT_THREE_PRODUCTS_VIEWED";
+        when(weekly.hasEventBindings(type)).thenReturn(true);
+        when(weekly.lockAccountsForProjection(any())).thenAnswer(call->call.getArgument(0));
         when(bindingMapper.listActiveBindings(type)).thenReturn(List.of(
                 new CanonicalQuestEventBinding("NEW","SYSTEM",type,"weekly_t2_browse_store","user_id","WEEKLY_T2")));
-        when(weekly.bindings(type,EVENT_TS)).thenReturn(List.of(
+        when(weekly.bindings(990725L,type,EVENT_TS,null)).thenReturn(List.of(
                 new CanonicalQuestEventBinding("FROZEN","SYSTEM",type,"weekly_t2_browse_store","user_id","WEEKLY_T2")));
+        when(weekly.mission(990725L,"weekly_t2_browse_store",EVENT_TS,null)).thenReturn(
+                new ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper.MissionDefinition(
+                        9L,"weekly_t2_browse_store","WEEKLY_T2","WEEK:2026-W42"));
         projector.project(event("evt-frozen",type,"{\"user_id\":990725}"),"evt-frozen");
         verify(factConsumer).consume(new QuestCompletionCommand("SYSTEM","evt-frozen:FROZEN",990725L,
-                "weekly_t2_browse_store",EVENT_TS));
+                "weekly_t2_browse_store",EVENT_TS,9L,"WEEK:2026-W42"));
         verify(factConsumer,never()).consume(new QuestCompletionCommand("SYSTEM","evt-frozen:NEW",990725L,
                 "weekly_t2_browse_store",EVENT_TS));
     }

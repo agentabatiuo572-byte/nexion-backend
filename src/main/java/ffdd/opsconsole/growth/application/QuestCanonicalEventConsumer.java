@@ -83,10 +83,21 @@ public class QuestCanonicalEventConsumer {
         // The current product window never backfills expired weeks. A late
         // authoritative threshold fact must terminate once, before it can wait
         // for a binding or repeatedly fail the current-week instance check.
+        Map<String,Object> payload = readPayload(message.getPayload());
+        List<Long> users = QuestCanonicalEventProjector.weeklyCandidateUserIds(eventType,payload);
+        String expectedWeek = QuestCanonicalEventProjector.expectedWeeklyInstance(eventType,payload);
+        boolean authoritative = Boolean.TRUE.equals(message.getServerAuthoritative());
+        Long weeklyUser = QuestCanonicalEventProjector.positiveLongStatic(payload.get("user_id"));
+        boolean missingRegionalKey=weeklySnapshots!=null && authoritative && WEEKLY_THRESHOLD_EVENTS.contains(eventType)
+                && weeklyUser!=null && expectedWeek==null && weeklySnapshots.current(weeklyUser).calendarVersion()!=null;
+        boolean expiredWeek = missingRegionalKey || (!authoritative || !WEEKLY_THRESHOLD_EVENTS.contains(eventType) ? false : weeklySnapshots == null
+                ? message.getEventTs() != null && !sameIsoWeek(message.getEventTs(), LocalDateTime.now(WEEK_ZONE))
+                : weeklyUser != null && message.getEventTs() != null
+                    && !weeklySnapshots.publishedFor(weeklyUser, message.getEventTs(), expectedWeek));
         if (WEEKLY_THRESHOLD_EVENTS.contains(eventType)
                 && Boolean.TRUE.equals(message.getServerAuthoritative())
                 && message.getEventTs() != null
-                && !sameIsoWeek(message.getEventTs(), LocalDateTime.now(WEEK_ZONE))) {
+                && expiredWeek) {
             EventConsumerDeliveryService.ConsumerClaim expired = deliveryService.claim(
                     message, CONSUMER_GROUP, TOPIC, message.getEventId(), 0);
             boolean claimed = expired.claimed();
@@ -94,17 +105,21 @@ public class QuestCanonicalEventConsumer {
                 claimed = deliveryService.resumePendingBinding(CONSUMER_GROUP, expired.eventId());
             }
             if (claimed) {
-                deliveryService.markSkipped(CONSUMER_GROUP, expired.eventId(), EXPIRED_WEEK_REASON);
+                deliveryService.markSkipped(CONSUMER_GROUP, expired.eventId(), missingRegionalKey?"H3_WEEKLY_INSTANCE_REQUIRED":EXPIRED_WEEK_REASON);
             } else if (!"SUCCESS".equals(expired.status()) && !"SKIPPED".equals(expired.status())) {
                 throw new IllegalStateException("QUEST_CANONICAL_DELIVERY_NOT_COMPLETE:" + expired.status());
             }
             return;
         }
         boolean activeBinding = bindingMapper.countActiveBindings(eventType) > 0;
-        boolean frozenWeeklyBinding = weeklySnapshots != null && Boolean.TRUE.equals(message.getServerAuthoritative())
-                && !weeklySnapshots.bindings(eventType,message.getEventTs()).isEmpty();
+        boolean weeklyBound=weeklySnapshots != null && authoritative && weeklySnapshots.hasEventBindings(eventType);
+        List<Long> activeWeeklyUsers=weeklyBound?weeklySnapshots.lockAccountsForProjection(users):List.of();
+        boolean frozenWeeklyBinding = weeklyBound
+                && activeWeeklyUsers.stream().anyMatch(user -> !weeklySnapshots.bindings(
+                        user,eventType,message.getEventTs(),expectedWeek).isEmpty());
         boolean publishedWeeklyWindow = weeklySnapshots != null && Boolean.TRUE.equals(message.getServerAuthoritative())
-                && WEEKLY_THRESHOLD_EVENTS.contains(eventType) && weeklySnapshots.publishedFor(message.getEventTs());
+                && WEEKLY_THRESHOLD_EVENTS.contains(eventType) && weeklyUser != null
+                && weeklySnapshots.publishedFor(weeklyUser,message.getEventTs(),expectedWeek);
         boolean frozenDayOneBinding = false;
         if (dayOneInstanceMapper != null && objectMapper != null && message.getEventTs() != null) {
             List<Long> userIds = snapshotCandidateUserIds(message.getPayload());
@@ -152,11 +167,16 @@ public class QuestCanonicalEventConsumer {
     }
 
     private List<Long> snapshotCandidateUserIds(String rawPayload) {
+        return QuestCanonicalEventProjector.snapshotCandidateUserIds(readPayload(rawPayload));
+    }
+
+    private Map<String,Object> readPayload(String rawPayload) {
+        if (objectMapper == null) return Map.of();
         try {
-            Map<String, Object> payload = objectMapper.readValue(rawPayload, new TypeReference<>() { });
-            return QuestCanonicalEventProjector.snapshotCandidateUserIds(payload);
+            Map<String,Object> payload=objectMapper.readValue(rawPayload,new TypeReference<>() { });
+            return payload==null?Map.of():payload;
         } catch (Exception ex) {
-            return List.of();
+            return Map.of();
         }
     }
 }

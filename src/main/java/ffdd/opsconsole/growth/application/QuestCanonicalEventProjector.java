@@ -92,28 +92,41 @@ public class QuestCanonicalEventProjector {
         Map<String, Object> payload = readPayload(message.getPayload());
         List<CanonicalQuestEventBinding> bindings = bindingMapper.listActiveBindings(message.getEventType());
         if (bindings == null) bindings = List.of();
-        if (weeklySnapshots != null) {
-            var selected = new java.util.ArrayList<>(bindings.stream()
-                    .filter(binding -> !String.valueOf(binding.missionType()).startsWith("WEEKLY_")).toList());
-            selected.addAll(weeklySnapshots.bindings(message.getEventType(),message.getEventTs()));
-            bindings = selected;
+        var routed = new java.util.ArrayList<BindingTarget>();
+        for (CanonicalQuestEventBinding binding:bindings) {
+            if (weeklySnapshots==null || !String.valueOf(binding.missionType()).startsWith("WEEKLY_"))
+                routed.add(new BindingTarget(binding,null,null,null));
+        }
+        String expectedWeek=expectedWeeklyInstance(message.getEventType(),payload);
+        if (weeklySnapshots!=null && weeklySnapshots.hasEventBindings(message.getEventType())) {
+            List<Long> weeklyUsers=weeklyCandidateUserIds(message.getEventType(),payload);
+            List<Long> activeUsers=weeklySnapshots.lockAccountsForProjection(weeklyUsers);
+            for (Long userId:activeUsers) {
+                for (CanonicalQuestEventBinding binding:weeklySnapshots.bindings(
+                        userId,message.getEventType(),message.getEventTs(),expectedWeek)) {
+                    if (!userId.equals(positiveLong(payload.get(binding.userIdField())))) continue;
+                    var mission=weeklySnapshots.mission(userId,binding.questCode(),message.getEventTs(),expectedWeek);
+                    if (mission!=null) routed.add(new BindingTarget(binding,userId,mission.missionId(),mission.instanceKey()));
+                }
+            }
         }
         List<DayOneSnapshotBinding> snapshotBindings = matchingSnapshotBindings(message, payload);
         boolean dayOnePageObservation = H3DayOnePageObservationContract.forEventType(message.getEventType()) != null
                 || H3DayOneBusinessFactContract.forEventType(message.getEventType()) != null;
-        List<CanonicalQuestEventBinding> effectiveBindings = bindings.stream()
-                .filter(binding -> !dayOnePageObservation || fixedDayOneRuleMatches(
-                        binding.producer(), message.getEventType(), binding.questCode(), binding.userIdField()))
-                .filter(binding -> !WEEKLY_EVENT_QUESTS.containsKey(message.getEventType())
-                        || ("SYSTEM".equals(binding.producer())
-                        && "user_id".equals(binding.userIdField())
-                        && WEEKLY_EVENT_QUESTS.get(message.getEventType()).equals(binding.questCode())))
+        List<BindingTarget> effectiveBindings = routed.stream()
+                .filter(target -> !dayOnePageObservation || fixedDayOneRuleMatches(
+                        target.binding().producer(), message.getEventType(), target.binding().questCode(), target.binding().userIdField()))
+                .filter(target -> !WEEKLY_EVENT_QUESTS.containsKey(message.getEventType())
+                        || ("SYSTEM".equals(target.binding().producer())
+                        && "user_id".equals(target.binding().userIdField())
+                        && WEEKLY_EVENT_QUESTS.get(message.getEventType()).equals(target.binding().questCode())))
                 .toList();
         // A stale wrong-slot/quest binding is not a completion route. Keep the
         // source fact pending so a later exact PC binding can project it.
         if (effectiveBindings.isEmpty() && snapshotBindings.isEmpty()) {
             if (weeklySnapshots != null && WEEKLY_EVENT_QUESTS.containsKey(message.getEventType())
-                    && weeklySnapshots.publishedFor(message.getEventTs())) {
+                    && positiveLong(payload.get("user_id"))!=null
+                    && weeklySnapshots.publishedFor(positiveLong(payload.get("user_id")),message.getEventTs(),expectedWeek)) {
                 deliveryService.markSkipped(QuestCanonicalEventConsumer.CONSUMER_GROUP, deliveryEventId,
                         "H3_WEEKLY_BINDING_NOT_PUBLISHED");
                 return;
@@ -145,7 +158,8 @@ public class QuestCanonicalEventProjector {
             snapshotUsers.add(userId);
             processed += 1;
         }
-        for (CanonicalQuestEventBinding binding : effectiveBindings) {
+        for (BindingTarget target : effectiveBindings) {
+            CanonicalQuestEventBinding binding=target.binding();
             validateBinding(binding, message.getEventType());
             Long userId = positiveLong(payload.get(binding.userIdField()));
             if (userId == null) {
@@ -159,13 +173,13 @@ public class QuestCanonicalEventProjector {
                     && dayOneInstanceMapper.findLatestByUserId(userId) != null))) {
                 continue;
             }
-            String factEventId = message.getEventId() + ":" + binding.bindingCode();
+            String factEventId = weeklyFactEventId(message.getEventId(),target);
             if (factEventId.length() > 96) {
                 throw new IllegalArgumentException("QUEST_CANONICAL_FACT_EVENT_ID_TOO_LONG");
             }
             factConsumer.consume(new QuestCompletionCommand(
                     binding.producer(), factEventId, userId, binding.questCode(),
-                    message.getEventTs()));
+                    message.getEventTs(),target.missionId(),target.instanceKey()));
             processed += 1;
         }
         deliveryService.markSuccess(
@@ -268,7 +282,42 @@ public class QuestCanonicalEventProjector {
         return positiveLongStatic(value);
     }
 
-    private static Long positiveLongStatic(Object value) {
+    private String weeklyFactEventId(String eventId,BindingTarget target) {
+        String legacy=eventId+":"+target.binding().bindingCode();
+        if (target.instanceKey()==null || target.instanceKey().matches("WEEK:[0-9]{4}-W[0-9]{2}")) return legacy;
+        String identity=legacy+":"+target.userId()+":"+target.instanceKey()+":"+target.missionId();
+        try {
+            return "WQ:"+java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(identity.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable",exception);
+        }
+    }
+
+    private record BindingTarget(CanonicalQuestEventBinding binding,Long userId,Long missionId,String instanceKey) { }
+
+    static List<Long> weeklyCandidateUserIds(String eventType,Map<String,Object> payload) {
+        if (WEEKLY_EVENT_QUESTS.containsKey(eventType)) {
+            Long user=positiveLongStatic(payload.get("user_id"));
+            return user==null?List.of():List.of(user);
+        }
+        return snapshotCandidateUserIds(payload).stream().sorted().toList();
+    }
+
+    static String expectedWeeklyInstance(String eventType,Map<String,Object> payload) {
+        Object camel=payload.get("instanceKey"), snake=payload.get("instance_key");
+        if (camel!=null && snake!=null && !camel.equals(snake))
+            throw new IllegalArgumentException("QUEST_CANONICAL_INSTANCE_MISMATCH");
+        Object value=camel==null?snake:camel;
+        if (value==null) return null;
+        if (!WEEKLY_EVENT_QUESTS.containsKey(eventType) && !String.valueOf(value).startsWith("WEEK:")) return null;
+        String key=String.valueOf(value);
+        if (!key.startsWith("WEEK:") || key.length()>48 || !key.matches("[A-Za-z0-9._:-]+"))
+            throw new IllegalArgumentException("QUEST_CANONICAL_WEEKLY_INSTANCE_INVALID");
+        return key;
+    }
+
+    static Long positiveLongStatic(Object value) {
         try {
             long parsed = value instanceof Number number
                     ? number.longValue()

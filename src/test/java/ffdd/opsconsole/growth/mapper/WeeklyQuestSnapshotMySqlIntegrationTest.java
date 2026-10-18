@@ -147,6 +147,8 @@ class WeeklyQuestSnapshotMySqlFixture {
     JdbcTemplate jdbc;
     TransactionTemplate transaction;
     WeeklyQuestSnapshotMapper mapper;
+    DataSource fixtureSource;
+    SqlSessionTemplate fixtureSessions;
 
     @BeforeAll
     void createFixture() throws Exception {
@@ -167,26 +169,29 @@ class WeeklyQuestSnapshotMySqlFixture {
         String fixtureUrl = query < 0 ? serverUrl + fixtureSchema
                 : serverUrl.substring(0, query) + fixtureSchema + serverUrl.substring(query);
         DataSource dataSource = fixtureDataSource(fixtureUrl, username, password);
+        fixtureSource=dataSource;
         jdbc = new JdbcTemplate(dataSource);
         createDependencies();
         Path root = Path.of(System.getProperty("nexion.repo.root", ".")).toAbsolutePath().normalize();
         try (Connection connection = dataSource.getConnection()) {
             ScriptUtils.executeSqlScript(connection, new FileSystemResource(
                     root.resolve("scripts/migrations/20261016_h3_weekly_definition_snapshot.sql")));
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource(
+                    root.resolve("scripts/migrations/20261018_h3_regional_weekly_period.sql")));
         }
         Configuration configuration = new Configuration(new Environment("h3-weekly-snapshot-it",
                 new SpringManagedTransactionFactory(), dataSource));
         configuration.setMapUnderscoreToCamelCase(true);
         configuration.addMapper(WeeklyQuestSnapshotMapper.class);
-        mapper = new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(configuration))
-                .getMapper(WeeklyQuestSnapshotMapper.class);
+        fixtureSessions=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(configuration));
+        mapper = fixtureSessions.getMapper(WeeklyQuestSnapshotMapper.class);
         transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
         transaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
     }
 
     @BeforeEach
     void clearFixtureRows() {
-        for (String table : List.of("nx_growth_weekly_definition_binding", "nx_growth_weekly_definition_item",
+        for (String table : List.of("nx_growth_account_weekly_period","nx_growth_weekly_definition_binding", "nx_growth_weekly_definition_item",
                 "nx_growth_weekly_definition", "nx_user_mission", "nx_growth_quest_event_binding", "nx_mission", "nx_config_item", "nx_admin_operation_mutex")) {
             jdbc.update("DELETE FROM " + table);
         }

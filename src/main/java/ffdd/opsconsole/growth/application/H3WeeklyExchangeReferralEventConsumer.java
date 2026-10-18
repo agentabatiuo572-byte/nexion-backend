@@ -15,7 +15,7 @@ import java.time.ZoneId;
 import java.time.temporal.IsoFields;
 import java.util.Locale;
 import java.util.Map;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,7 +27,6 @@ import org.springframework.util.StringUtils;
  * are deliberately never H3 bindable.
  */
 @Component
-@RequiredArgsConstructor
 public class H3WeeklyExchangeReferralEventConsumer {
     static final String CONSUMER_GROUP = "h3-weekly-exchange-referral-evaluator";
     static final String TOPIC = "spring-local-h3-weekly-exchange-referral";
@@ -44,6 +43,24 @@ public class H3WeeklyExchangeReferralEventConsumer {
     private final EventOutboxService outbox;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final WeeklyQuestSnapshotService weeklySnapshots;
+
+    public H3WeeklyExchangeReferralEventConsumer(H3WeeklyExchangeReferralMapper mapper,
+            EventConsumerDeliveryService deliveryService, EventOutboxService outbox, ObjectMapper objectMapper, Clock clock) {
+        this(mapper, deliveryService, outbox, objectMapper, clock, null);
+    }
+
+    @Autowired
+    public H3WeeklyExchangeReferralEventConsumer(H3WeeklyExchangeReferralMapper mapper,
+            EventConsumerDeliveryService deliveryService, EventOutboxService outbox, ObjectMapper objectMapper, Clock clock,
+            WeeklyQuestSnapshotService weeklySnapshots) {
+        this.mapper = mapper;
+        this.deliveryService = deliveryService;
+        this.outbox = outbox;
+        this.objectMapper = objectMapper;
+        this.clock = clock;
+        this.weeklySnapshots = weeklySnapshots;
+    }
 
     @Transactional(rollbackFor = Exception.class)
     @EventListener
@@ -68,14 +85,20 @@ public class H3WeeklyExchangeReferralEventConsumer {
             if (rolloutEffectiveAt == null) {
                 throw new IllegalStateException("H3_WEEKLY_EXCHANGE_REFERRAL_ROLLOUT_UNAVAILABLE");
             }
-            if (fact.occurredAt().isBefore(rolloutEffectiveAt)
-                    || !weeklyInstance(fact.occurredAt().atZone(WEEK_ZONE).toInstant())
-                    .equals(weeklyInstance(clock.instant()))) {
+            var period = weeklySnapshots == null ? null : weeklySnapshots.current(fact.ownerUserId());
+            boolean inCurrentWeek = weeklySnapshots == null
+                    ? weeklyInstance(fact.occurredAt().atZone(WEEK_ZONE).toInstant()).equals(weeklyInstance(clock.instant()))
+                    : weeklySnapshots.eligible(fact.ownerUserId(), period, fact.occurredAt());
+            if (fact.occurredAt().isBefore(rolloutEffectiveAt) || !inCurrentWeek) {
                 deliveryService.markSkipped(CONSUMER_GROUP, claim.eventId(), SKIPPED_OUTSIDE_CURRENT_ROLLOUT_WEEK);
                 return;
             }
             H3WeeklyExchangeReferralMapper.UserAttribution attribution = mapper.userAttribution(fact.ownerUserId());
             Attribution checkedAttribution = Attribution.from(attribution);
+            Map<String, Object> details = new java.util.LinkedHashMap<>(Map.of(
+                    "source", SOURCE, "sourceEventId", claim.eventId(),
+                    "subject", fact.subject(), "sourceOccurredAt", fact.occurredAt().toString()));
+            if (period != null) details.put("instanceKey", period.instanceKey());
             outbox.publishUserEventAt(
                     SOURCE,
                     source.name() + ":" + claim.eventId(),
@@ -84,11 +107,7 @@ public class H3WeeklyExchangeReferralEventConsumer {
                     checkedAttribution.phase(),
                     checkedAttribution.accountAgeMonths(),
                     checkedAttribution.cohort(), fact.occurredAt(),
-                    Map.of(
-                            "source", SOURCE,
-                            "sourceEventId", claim.eventId(),
-                            "subject", fact.subject(),
-                            "sourceOccurredAt", fact.occurredAt().toString()));
+                    details);
             deliveryService.markSuccess(CONSUMER_GROUP, claim.eventId(), 1);
         } catch (RuntimeException ex) {
             deliveryService.markFailure(CONSUMER_GROUP, claim.eventId(), 0, ex.getMessage());
