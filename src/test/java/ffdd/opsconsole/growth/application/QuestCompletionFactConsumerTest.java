@@ -36,7 +36,8 @@ class QuestCompletionFactConsumerTest {
         LocalDateTime at = LocalDateTime.of(2026,10,19,0,30);
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
         when(weekly.isWeekly(code)).thenReturn(true);
-        when(weekly.mission(code,at)).thenReturn(new MissionDefinition(7L,code,"WEEKLY_T2",key));
+        when(weekly.mission(42L,code,at,null)).thenReturn(new MissionDefinition(7L,code,"WEEKLY_T2",key));
+        when(weekly.publishedFor(42L,at,key)).thenReturn(true);
         when(mapper.insertFact(eq("SYSTEM"),eq("frozen-event"),anyString(),eq(42L),eq(7L),eq(code),eq(key))).thenReturn(1);
         when(mapper.markMissionCompleted(42L,7L,key)).thenReturn(1);
         when(mapper.attribution(42L)).thenReturn(Map.of("phase","P3","accountAgeMonths",1,"cohort","2026-W42"));

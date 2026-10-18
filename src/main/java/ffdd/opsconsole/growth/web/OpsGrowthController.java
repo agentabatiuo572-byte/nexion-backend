@@ -44,6 +44,12 @@ public class OpsGrowthController {
     private final OpsGrowthCommandBoundary commandBoundary;
     private final GrowthPublicStatsService publicStatsService;
 
+    @GetMapping("/quest-events/weekly-region-policy")
+    @PreAuthorize("hasAuthority('growth_h3_read')")
+    public ApiResult<ffdd.opsconsole.growth.application.WeeklyRegionPolicyService.View> weeklyRegionPolicy() {
+        return growthService.weeklyRegionPolicy();
+    }
+
     @GetMapping("/public-stats")
     @PreAuthorize("hasAuthority('growth_h9_read')")
     public ApiResult<Map<String, Object>> publicStats() {

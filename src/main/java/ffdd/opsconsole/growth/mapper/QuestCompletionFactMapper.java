@@ -1,6 +1,5 @@
 package ffdd.opsconsole.growth.mapper;
 
-import ffdd.opsconsole.shared.config.VietnamBusinessPeriodSql;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
@@ -25,13 +24,20 @@ public interface QuestCompletionFactMapper {
             SELECT m.id missionId,m.mission_code questCode,m.mission_type layer,
                    CASE WHEN m.mission_type='DAY_ONE'
                         THEN CONCAT('DAY_ONE:',DATE_FORMAT(u.created_at,'%Y%m%dT%H%i%s'))
-                        ELSE CONCAT('WEEK:',DATE_FORMAT(""" + VietnamBusinessPeriodSql.NOW + """
-,'%x-W%v'))
+                        ELSE wh.instance_key
                    END instanceKey
               FROM nx_mission m
               JOIN nx_user u ON u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0
+              LEFT JOIN (nx_growth_account_weekly_period wp
+                JOIN nx_growth_weekly_definition wh ON wh.instance_key=wp.instance_key
+                 AND wh.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                 AND wh.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00'))
+                ON wp.user_id=u.id
+              LEFT JOIN nx_growth_weekly_definition_item wi
+                ON wi.instance_key=wh.instance_key AND wi.source_mission_id=m.id AND wi.quest_code=m.mission_code
              WHERE m.mission_code=#{questCode} AND m.status=1 AND m.is_deleted=0
                AND m.mission_type IN ('DAY_ONE','WEEKLY_T1','WEEKLY_T2')
+               AND (m.mission_type='DAY_ONE' OR wi.instance_key IS NOT NULL)
                AND (m.mission_type<>'DAY_ONE' OR NOW()<DATE_ADD(u.created_at,INTERVAL COALESCE((
                      SELECT CASE WHEN c.config_value REGEXP '^[0-9]{1,3}$'
                                       AND CAST(c.config_value AS UNSIGNED) BETWEEN 24 AND 720
@@ -54,13 +60,22 @@ public interface QuestCompletionFactMapper {
             SELECT m.id missionId,m.mission_code questCode,m.mission_type layer,
                    CASE WHEN m.mission_type='DAY_ONE'
                         THEN CONCAT('DAY_ONE:',DATE_FORMAT(u.created_at,'%Y%m%dT%H%i%s'))
-                        ELSE CONCAT('WEEK:',DATE_FORMAT(""" + VietnamBusinessPeriodSql.NOW + """
-,'%x-W%v'))
+                        ELSE wh.instance_key
                    END instanceKey
               FROM nx_mission m
               JOIN nx_user u ON u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0
+              LEFT JOIN (nx_growth_account_weekly_period wp
+                JOIN nx_growth_weekly_definition wh ON wh.instance_key=wp.instance_key
+                 AND wh.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                 AND wh.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                 AND wh.eligible_from<=#{occurredAt} AND wh.eligible_until>#{occurredAt}
+                 AND #{occurredAt}<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00'))
+                ON wp.user_id=u.id
+              LEFT JOIN nx_growth_weekly_definition_item wi
+                ON wi.instance_key=wh.instance_key AND wi.source_mission_id=m.id AND wi.quest_code=m.mission_code
              WHERE m.mission_code=#{questCode} AND m.status=1 AND m.is_deleted=0
                AND m.mission_type IN ('DAY_ONE','WEEKLY_T1','WEEKLY_T2')
+               AND (m.mission_type='DAY_ONE' OR wi.instance_key IS NOT NULL)
                AND (m.mission_type<>'DAY_ONE' OR (
                      #{occurredAt}>=u.created_at
                  AND #{occurredAt}<=NOW(3)

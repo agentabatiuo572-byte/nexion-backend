@@ -32,7 +32,7 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 @ApplicationService
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AuditReplayBusinessPermissionGuard {
 
     private static final Set<String> SENSITIVE_TRUST_SECTIONS = Set.of(
@@ -100,6 +100,14 @@ public class AuditReplayBusinessPermissionGuard {
     private final EmergencyControlRepository emergencyControlRepository;
     private final org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.team.application.DirectReferralPolicyService> directPolicies;
     private final PlatformConfigFacade configFacade;
+    private final ffdd.opsconsole.growth.application.WeeklyRegionPolicyService weeklyRegionPolicies;
+
+    public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
+            AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
+            org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.team.application.DirectReferralPolicyService> directPolicies,
+            PlatformConfigFacade configFacade) {
+        this(trustDisclosureRepository, roleResolver, emergencyControlRepository, directPolicies, configFacade, null);
+    }
 
     public record DelegatedProposalDescriptor(
             String action,
@@ -155,6 +163,14 @@ public class AuditReplayBusinessPermissionGuard {
                         proposal.thresholds(), proposal.rules()).validate();
             } catch (RuntimeException invalid) {
                 return ApiResult.fail(422, "PHONE_CALIBRATION_PROPOSAL_INVALID");
+            }
+        }
+        if ("H".equalsIgnoreCase(command.domain()) && "h3_weekly_region_policy".equals(operation)) {
+            if (weeklyRegionPolicies == null) return ApiResult.fail(503, "WEEKLY_REGION_POLICY_UNAVAILABLE");
+            try {
+                weeklyRegionPolicies.candidate(weeklyRegionPolicies.proposal(command.params()), weeklyRegionPolicies.read());
+            } catch (ffdd.opsconsole.shared.exception.BizException invalid) {
+                return ApiResult.fail(invalid.getCode(), invalid.getMessage());
             }
         }
         if ("E".equalsIgnoreCase(command.domain()) && "e6_compute_config_batch".equals(operation)) {
@@ -493,6 +509,15 @@ public class AuditReplayBusinessPermissionGuard {
      * 提交给 A2；实际快照是否仍有效由回放服务再次用数据库状态校验。
      */
     private DelegatedProposalDescriptor delegatedHDescriptor(String operation, Map<String, Object> params) {
+        if ("h3_weekly_region_policy".equals(operation)) {
+            if (weeklyRegionPolicies == null) throw new ffdd.opsconsole.shared.exception.BizException(503, "WEEKLY_REGION_POLICY_UNAVAILABLE");
+            var before = weeklyRegionPolicies.read();
+            var after = weeklyRegionPolicies.candidate(weeklyRegionPolicies.proposal(params), before);
+            return new DelegatedProposalDescriptor("调整每周任务地区映射",
+                    ffdd.opsconsole.growth.application.WeeklyRegionPolicyService.TARGET,
+                    weeklyRegionPolicies.encode(before), weeklyRegionPolicies.encode(after), "H", "acct", true,
+                    new AuditLockTarget("H", "config", ffdd.opsconsole.growth.application.WeeklyRegionPolicyService.TARGET));
+        }
         if("promotion_reward_correction".equals(operation)) {
             if(!promotionCorrectionValid(params))return null;
             String id=value(params,"obligationId"),action=value(params,"action");
@@ -1015,6 +1040,7 @@ public class AuditReplayBusinessPermissionGuard {
                 default -> null;
             };
             case "H" -> switch (operation) {
+                case "h3_weekly_region_policy" -> "growth_h3_write";
                 case "promotion_reward_correction" -> "CANCEL".equals(value(command.params(),"action"))
                         ?"growth_promotion_reward_cancel":"growth_promotion_reward_reverse";
                 case "h1_phase_dial" -> "growth_h1_write";

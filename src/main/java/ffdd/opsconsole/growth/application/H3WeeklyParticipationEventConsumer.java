@@ -48,9 +48,7 @@ public class H3WeeklyParticipationEventConsumer {
                     throw new IllegalStateException("H3_WEEKLY_PARTICIPATION_ROLLOUT_UNAVAILABLE");
                 }
                 if (!completion.completedAt().isAfter(rolloutEffectiveAt)
-                        || !H3WeeklyParticipationEvaluator.weeklyInstance(
-                                completion.completedAt().atZone(H3WeeklyParticipationEvaluator.WEEK_ZONE).toInstant())
-                                .equals(evaluator.currentWeeklyInstance())) {
+                        || !evaluator.acceptsWeeklyEvent(userId, completion.completedAt())) {
                     deliveryService.markSkipped(CONSUMER_GROUP, claim.eventId(), "H3_COMPUTE_COMPLETION_OUTSIDE_CURRENT_ROLLOUT_WEEK");
                     return;
                 }

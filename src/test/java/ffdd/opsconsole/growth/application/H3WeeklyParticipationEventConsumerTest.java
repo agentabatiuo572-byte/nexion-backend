@@ -27,7 +27,7 @@ class H3WeeklyParticipationEventConsumerTest {
         when(mapper.verifiedProductionCompletedTask(42L, "CTA-9"))
                 .thenReturn(new H3WeeklyParticipationMapper.VerifiedProductionCompletion(LocalDateTime.of(2026, 9, 7, 8, 0)));
         when(mapper.rolloutEffectiveAt()).thenReturn(LocalDateTime.of(2026, 9, 7, 7, 0));
-        when(evaluator.currentWeeklyInstance()).thenReturn("WEEK:2026-W37");
+        when(evaluator.acceptsWeeklyEvent(42L,LocalDateTime.of(2026,9,7,8,0))).thenReturn(true);
 
         consumer.onOutboxMessage(message);
 
@@ -89,7 +89,7 @@ class H3WeeklyParticipationEventConsumerTest {
         when(mapper.verifiedProductionCompletedTask(42L, "CTA-OLD-WEEK"))
                 .thenReturn(new H3WeeklyParticipationMapper.VerifiedProductionCompletion(LocalDateTime.of(2026, 9, 6, 20, 0)));
         when(mapper.rolloutEffectiveAt()).thenReturn(LocalDateTime.of(2026, 9, 6, 16, 0));
-        when(evaluator.currentWeeklyInstance()).thenReturn("WEEK:2026-W37");
+        when(evaluator.acceptsWeeklyEvent(42L,LocalDateTime.of(2026,9,6,20,0))).thenReturn(false);
 
         consumer.onOutboxMessage(message);
 

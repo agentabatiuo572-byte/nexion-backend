@@ -82,7 +82,7 @@ class AppGrowthEngagementMapperUserScopeContractTest {
 
         assertThat(sql)
                 .contains("left join nx_user_mission historical")
-                .contains("order by (candidate.instance_key=concat('week:'")
+                .contains("order by (candidate.instance_key=current_week.instance_key)")
                 .contains("m.status=1 or historical.id is not null")
                 .contains("when q.definition_status<>1 then 0")
                 .contains("when q.definition_status<>1 then case")
@@ -100,7 +100,8 @@ class AppGrowthEngagementMapperUserScopeContractTest {
                 .getAnnotation(Select.class).value()).replaceAll("\\s+", " ").toLowerCase();
         for (String sql : new String[] {state, lock}) {
             assertThat(sql).contains("nx_growth_quest_completion_fact cf", "nx_event_outbox o",
-                    "o.is_server_authoritative=1", "cf.instance_key=concat('week:'",
+                    "o.is_server_authoritative=1", "proof_period.user_id=cf.user_id",
+                    "proof_period.instance_key=cf.instance_key", "proof_week.eligible_from<=o.event_ts", "proof_week.eligible_until>o.event_ts",
                     "cf.producer='system'", "cf.quest_code=m.mission_code");
         }
         assertThat(lock).contains("m.status=0", "um.instance_key=case",

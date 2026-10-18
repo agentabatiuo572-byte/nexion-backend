@@ -11,7 +11,7 @@ import java.time.ZoneId;
 import java.time.temporal.IsoFields;
 import java.util.Locale;
 import java.util.Map;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -21,7 +21,6 @@ import org.springframework.util.StringUtils;
  * Raw visits and task.completed are deliberately not H3-bindable event types.
  */
 @Service
-@RequiredArgsConstructor
 public class H3WeeklyParticipationEvaluator {
     static final ZoneId WEEK_ZONE = ZoneId.of("Asia/Shanghai");
     static final String STOREFRONT_PRODUCT_DETAIL = "STOREFRONT_PRODUCT_DETAIL";
@@ -34,6 +33,20 @@ public class H3WeeklyParticipationEvaluator {
     private final H3WeeklyParticipationMapper mapper;
     private final EventOutboxService outbox;
     private final Clock clock;
+    private final WeeklyQuestSnapshotService weeklySnapshots;
+
+    public H3WeeklyParticipationEvaluator(H3WeeklyParticipationMapper mapper, EventOutboxService outbox, Clock clock) {
+        this(mapper, outbox, clock, null);
+    }
+
+    @Autowired
+    public H3WeeklyParticipationEvaluator(H3WeeklyParticipationMapper mapper, EventOutboxService outbox, Clock clock,
+            WeeklyQuestSnapshotService weeklySnapshots) {
+        this.mapper = mapper;
+        this.outbox = outbox;
+        this.clock = clock;
+        this.weeklySnapshots = weeklySnapshots;
+    }
 
     @Transactional(rollbackFor = Exception.class)
     public boolean recordStorefrontProductDetail(Long userId, String productNo) {
@@ -57,6 +70,14 @@ public class H3WeeklyParticipationEvaluator {
         return weeklyInstance(clock.instant());
     }
 
+    public boolean acceptsWeeklyEvent(Long userId, LocalDateTime occurredAt) {
+        if (occurredAt == null) return false;
+        if (weeklySnapshots == null) {
+            return weeklyInstance(occurredAt.atZone(WEEK_ZONE).toInstant()).equals(currentWeeklyInstance());
+        }
+        return weeklySnapshots.eligible(userId, weeklySnapshots.current(userId), occurredAt);
+    }
+
     static String weeklyInstance(Instant observedAt) {
         return VietnamBusinessPeriod.weekKey(LocalDateTime.ofInstant(observedAt, WEEK_ZONE));
     }
@@ -65,8 +86,15 @@ public class H3WeeklyParticipationEvaluator {
                            Instant observed) {
         if (userId == null || userId <= 0) throw new IllegalArgumentException("H3_PARTICIPATION_USER_INVALID");
         if (observed == null) throw new IllegalArgumentException("H3_PARTICIPATION_TIME_INVALID");
-        String instanceKey = weeklyInstance(observed);
         LocalDateTime observedAt = LocalDateTime.ofInstant(observed, WEEK_ZONE);
+        String instanceKey;
+        if (weeklySnapshots != null) {
+            var period = weeklySnapshots.current(userId);
+            if (!weeklySnapshots.eligible(userId, period, observedAt)) return false;
+            instanceKey = period.instanceKey();
+        } else {
+            instanceKey = weeklyInstance(observed);
+        }
         // The marker row is the per-user/week/type mutex. Its INSERT ... ON
         // DUPLICATE KEY UPDATE takes the write lock before any observation or
         // current read, so concurrent 49th/50th completions serialize.

@@ -44,7 +44,10 @@ class QuestCanonicalEventConsumerTest {
         EventOutboxMessage message = event("evt-empty-week", "H3_COMPUTE_COMPLETED_50");
         message.setServerAuthoritative(true);
         message.setEventTs(LocalDateTime.now(ZoneId.of("Asia/Shanghai")));
-        when(weekly.publishedFor(message.getEventTs())).thenReturn(true);
+        message.setPayload("{\"user_id\":42}");
+        when(weekly.current(42L)).thenReturn(new ffdd.opsconsole.growth.mapper.WeeklyQuestSnapshotMapper.Header(
+                "WEEK:2026-W42",message.getEventTs().minusDays(1),message.getEventTs().plusDays(1),java.math.BigDecimal.ONE,3,0));
+        when(weekly.publishedFor(42L,message.getEventTs(),null)).thenReturn(true);
         when(deliveryService.claim(message,QuestCanonicalEventConsumer.CONSUMER_GROUP,
                 QuestCanonicalEventConsumer.TOPIC,"evt-empty-week",0)).thenReturn(
                 new EventConsumerDeliveryService.ConsumerClaim(true,"evt-empty-week","PROCESSING",1));

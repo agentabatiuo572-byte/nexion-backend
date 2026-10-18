@@ -99,7 +99,7 @@ class AppGrowthEngagementServiceTest {
         var snapshots = mock(WeeklyQuestSnapshotService.class);
         var header = weeklyHeader();
         var service = serviceWithWeekly(snapshots);
-        when(snapshots.current()).thenReturn(header);
+        when(snapshots.current(42L)).thenReturn(header);
         when(snapshots.state(header,42L,"en")).thenReturn(List.of(issued));
 
         var before = (List<?>) service.questState(42L).getData().get("quests");
@@ -126,7 +126,7 @@ class AppGrowthEngagementServiceTest {
         var snapshots = mock(WeeklyQuestSnapshotService.class);
         var header = weeklyHeader();
         var service = serviceWithWeekly(snapshots);
-        when(snapshots.current()).thenReturn(header);
+        when(snapshots.current(42L)).thenReturn(header);
         when(snapshots.lockReward(header,"weekly_t2_browse_store",42L)).thenReturn(
                 new ffdd.opsconsole.growth.mapper.WeeklyQuestSnapshotMapper.Reward(
                         7L,"weekly_t2_browse_store","WEEKLY_T2",new BigDecimal("50")));
@@ -147,7 +147,7 @@ class AppGrowthEngagementServiceTest {
         var snapshots = mock(WeeklyQuestSnapshotService.class);
         var header = weeklyHeader();
         var service = serviceWithWeekly(snapshots);
-        when(snapshots.current()).thenReturn(header);
+        when(snapshots.current(42L)).thenReturn(header);
         assertThat(service.claimQuest(42L,"new-midweek",header.instanceKey(),"missing-frozen").getCode()).isEqualTo(409);
         assertThat(service.claimQuest(42L,"old","WEEK:2026-W41","old-week").getMessage()).isEqualTo("QUEST_EXPIRED");
         verify(mapper,never()).lockClaimableQuest(anyLong(),anyString(),anyString());
@@ -160,7 +160,7 @@ class AppGrowthEngagementServiceTest {
         var snapshots = mock(WeeklyQuestSnapshotService.class);
         var header = weeklyHeader();
         var service = serviceWithWeekly(snapshots);
-        when(snapshots.current()).thenReturn(header);
+        when(snapshots.current(42L)).thenReturn(header);
         when(snapshots.legacyClaimEligible(header,42L,"paused-before-deployment")).thenReturn(true);
         when(mapper.lockClaimableQuest(42L,"paused-before-deployment",header.instanceKey())).thenReturn(
                 new QuestReward(7L,"paused-before-deployment","WEEKLY_T2",new BigDecimal("10"),header.instanceKey(),null,0L,0L));
@@ -176,7 +176,7 @@ class AppGrowthEngagementServiceTest {
         var snapshots = mock(WeeklyQuestSnapshotService.class);
         var header = weeklyHeader();
         var service = serviceWithWeekly(snapshots);
-        when(snapshots.current()).thenReturn(header);
+        when(snapshots.current(42L)).thenReturn(header);
         when(rhythm.snapshot()).thenReturn(null);
         var frozen = Map.<String,Object>of("questCode","weekly_t2_genesis_browse","layer","WEEKLY_T2",
                 "status","PENDING","instanceKey",header.instanceKey(),"rewardNex",50);
