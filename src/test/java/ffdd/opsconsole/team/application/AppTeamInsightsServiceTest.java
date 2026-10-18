@@ -668,4 +668,35 @@ class AppTeamInsightsServiceTest {
         verifyNoMoreInteractions(mapper);
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"vrank_reward,promotion", "VRANK_REWARD,promotion", "genesis,genesis",
+        "future_reward,other", "'',other", "network,unilevel", "direct,unilevel", "unilevel,unilevel", "binary,binary",
+        "peer,peer", "cultivation,cultivation", "leadership,leadership", "leaderboard_prize,leadership"})
+    void rewardKindPreservesEventAndAggregateWithoutInventingGenesis(String rawType, String expectedKind) {
+        var mapper = mock(AppTeamInsightsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0,"V2"));
+        var created = LocalDateTime.of(2026,10,6,15,23,14);
+        var unlock = LocalDateTime.of(2026,11,5,15,23,14);
+        when(mapper.commissionEventCount(eq(7L),any())).thenReturn(2L);
+        when(mapper.commissionEvents(eq(7L),any(),eq(0L),eq(20L))).thenReturn(List.of(
+            new AppTeamInsightsMapper.CommissionRow(389L,rawType,7L,"Rank V1",null,"PROMOTION-1",BigDecimal.ZERO,new BigDecimal("100"),BigDecimal.ZERO,"PENDING",created,unlock),
+            new AppTeamInsightsMapper.CommissionRow(390L,rawType,7L,"Rank V1",null,"PROMOTION-1",BigDecimal.ZERO,BigDecimal.ZERO,new BigDecimal("50"),"PENDING",created,unlock)));
+        when(mapper.commissionSummary(eq(7L),any())).thenReturn(new AppTeamInsightsMapper.CommissionSummaryRow(
+            new BigDecimal("100"),new BigDecimal("50"),BigDecimal.ZERO,new BigDecimal("100"),1));
+        when(mapper.commissionBuckets(eq(7L),any(),any(),any(),any(),any())).thenReturn(List.of(
+            new AppTeamInsightsMapper.CommissionBucket(rawType,"PENDING",2,new BigDecimal("100"),new BigDecimal("50"),new BigDecimal("100"),new BigDecimal("50"),BigDecimal.ZERO,unlock)));
+        var data = service(mapper,new MockEnvironment()).commissions(7L).getData();
+        @SuppressWarnings("unchecked") var events=(List<Map<String,Object>>) data.get("events");
+        assertThat(events).allSatisfy(e -> assertThat(e).containsEntry("kind",expectedKind).containsEntry("status","cooling")
+            .containsEntry("orderId","PROMOTION-1").containsEntry("withdrawable",false)
+            .containsEntry("ts",created.atZone(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli())
+            .containsEntry("unlockAt",unlock.atZone(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli()));
+        assertThat(events.get(0)).containsEntry("id","CM-389").containsEntry("amountUSDT",new BigDecimal("100")).containsEntry("amountNEX",BigDecimal.ZERO);
+        assertThat(events.get(1)).containsEntry("id","CM-390").containsEntry("amountUSDT",BigDecimal.ZERO).containsEntry("amountNEX",new BigDecimal("50"));
+        @SuppressWarnings("unchecked") var aggregate=(Map<String,Object>)data.get("aggregate");
+        @SuppressWarnings("unchecked") var kinds=(Map<String,Map<String,Object>>)aggregate.get("byKind");
+        assertThat(kinds.get(expectedKind)).containsEntry("usdt",new BigDecimal("100")).containsEntry("nex",new BigDecimal("50")).containsEntry("count",2);
+        if(!expectedKind.equals("genesis")) assertThat(kinds.get("genesis")).containsEntry("count",0).containsEntry("usdt",BigDecimal.ZERO).containsEntry("nex",BigDecimal.ZERO);
+        assertThat(aggregate).containsEntry("totalUSDT",new BigDecimal("100")).containsEntry("totalNEX",new BigDecimal("50")).containsEntry("coolingUSDT",new BigDecimal("100"));
+    }
 }
