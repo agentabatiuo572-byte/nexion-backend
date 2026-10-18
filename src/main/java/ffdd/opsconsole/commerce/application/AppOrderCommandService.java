@@ -1,5 +1,6 @@
 package ffdd.opsconsole.commerce.application;
 
+import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper;
@@ -247,14 +248,14 @@ public class AppOrderCommandService {
         // checkout against the tier row and use current locking reads, not an
         // earlier repeatable-read snapshot. Pending/cancelled orders consume none.
         var quotaOccurredAt = java.time.LocalDateTime.now(java.time.ZoneOffset.UTC);
-        var quotaMonth = quotaOccurredAt.withDayOfMonth(1).toLocalDate().atStartOfDay();
+        var quotaMonth = HardwareQuotaPeriod.atUtc(quotaOccurredAt);
         var monthlyQuotas = mapper.lockOrderMonthlyQuotas(orderNo);
         if (monthlyQuotas == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
         boolean quotaPrerequisitesRequired = monthlyQuotas.stream().anyMatch(tier -> tier != null
                 && ((tier.directRefs() != null && tier.directRefs() > 0)
                 || (tier.monthVolumeUsd() != null && tier.monthVolumeUsd().signum() > 0)));
         AppOrderCommandMapper.PurchaseQuotaFacts quotaFacts = quotaPrerequisitesRequired
-                ? mapper.purchaseQuotaFacts(userId) : null;
+                ? mapper.purchaseQuotaFacts(userId, quotaMonth.fromOrderStorage(), quotaMonth.untilOrderStorage()) : null;
         if (quotaPrerequisitesRequired && quotaFacts == null) {
             throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
         }
@@ -267,7 +268,7 @@ public class AppOrderCommandService {
             if (quotaPrerequisitesRequired && !hardwareQuotaPrerequisitesMet(tier, quotaFacts)) {
                 return ApiResult.fail(409, "ORDER_MONTHLY_QUOTA_REQUIREMENTS_NOT_MET");
             }
-            var usages = mapper.lockMonthlyQuotaUsage(tier.id(), quotaMonth, quotaMonth.plusMonths(1));
+            var usages = mapper.lockMonthlyQuotaUsage(tier.id(), quotaMonth.fromUtc(), quotaMonth.untilUtc());
             if (usages == null || usages.stream().anyMatch(q -> q == null || q < 0)) {
                 throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
             }

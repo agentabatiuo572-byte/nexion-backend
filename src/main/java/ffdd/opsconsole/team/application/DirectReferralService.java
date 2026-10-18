@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.application;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.finance.mapper.EarningsReleaseMapper;
@@ -414,8 +415,8 @@ public class DirectReferralService {
     public Map<String,Object> insightsV2(Long userId,String period,long page,long pageSize,String rawSnapshot,String filter){
         if(!Set.of("all","purchase","device_earning","direct_device_earning").contains(filter))throw new BizException(422,"DIRECT_REFERRAL_QUERY_INVALID");
         var result=insights(userId,period,page,pageSize,rawSnapshot);var scope=policies.scope();Instant snapshot=Instant.parse((String)result.get("snapshotAt"));
-        LocalDate day=snapshot.atZone(ZoneOffset.UTC).toLocalDate();LocalDate first=switch(period){case "today"->day;case "week"->day.minusDays(day.getDayOfWeek().getValue()-1);case "month"->day.withDayOfMonth(1);default->null;};
-        LocalDateTime from=first==null?null:LocalDateTime.ofInstant(first.atStartOfDay(ZoneOffset.UTC).toInstant(),DateTimeFormatConfig.BUSINESS_ZONE);
+        LocalDate day=VietnamBusinessPeriod.dateAt(snapshot);LocalDate first=switch(period){case "today"->day;case "week"->day.minusDays(day.getDayOfWeek().getValue()-1);case "month"->day.withDayOfMonth(1);default->null;};
+        LocalDateTime from=first==null?null:VietnamBusinessPeriod.storageBoundary(first);
         LocalDateTime at=LocalDateTime.ofInstant(snapshot,DateTimeFormatConfig.BUSINESS_ZONE);String kind="all".equals(filter)?null:"purchase".equals(filter)?"direct_purchase":"direct_device_earning";
         var sums=mapper.filteredSums(userId,scope.sourceEnvironment(),scope.runId(),at,from,kind);var summary=new LinkedHashMap<String,Object>();long count=0;
         for(String key:List.of("amountUSDT","amountNEX","creditedUSDT","creditedNEX","pendingUSDT","pendingNEX"))summary.put(key,sums.stream().map(row->money(row,key)).reduce(BigDecimal.ZERO,BigDecimal::add));
@@ -434,9 +435,9 @@ public class DirectReferralService {
         Instant snapshot;
         try{snapshot=rawSnapshot==null||rawSnapshot.isBlank()?clock.instant():Instant.parse(rawSnapshot);}catch(RuntimeException e){throw new BizException(422,"TEAM_SNAPSHOT_INVALID");}
         if(snapshot.isAfter(clock.instant().plusSeconds(5)))throw new BizException(422,"TEAM_SNAPSHOT_INVALID");
-        LocalDate day=snapshot.atZone(ZoneOffset.UTC).toLocalDate();
+        LocalDate day=VietnamBusinessPeriod.dateAt(snapshot);
         LocalDate first=switch(period){case "today"->day;case "week"->day.minusDays(day.getDayOfWeek().getValue()-1);case "month"->day.withDayOfMonth(1);default->null;};
-        LocalDateTime from=first==null?null:LocalDateTime.ofInstant(first.atStartOfDay(ZoneOffset.UTC).toInstant(),DateTimeFormatConfig.BUSINESS_ZONE);
+        LocalDateTime from=first==null?null:VietnamBusinessPeriod.storageBoundary(first);
         LocalDateTime boundary=LocalDateTime.ofInstant(snapshot,DateTimeFormatConfig.BUSINESS_ZONE);
         var sums=mapper.sums(userId,scope.sourceEnvironment(),scope.runId(),boundary,from);
         Map<String,Object> split=new LinkedHashMap<>();long total=0;

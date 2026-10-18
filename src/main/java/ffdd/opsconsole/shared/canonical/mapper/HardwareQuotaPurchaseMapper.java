@@ -48,12 +48,12 @@ public interface HardwareQuotaPurchaseMapper {
               LEFT JOIN nx_order o ON o.user_id=s.member_user_id
                AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
                AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
-               AND COALESCE(o.paid_at,o.created_at)>=DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 8 HOUR)
-               AND COALESCE(o.paid_at,o.created_at)<DATE_ADD(
-                    DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 1 MONTH),INTERVAL 8 HOUR)
+               AND COALESCE(o.paid_at,o.created_at)>=#{from}
+               AND COALESCE(o.paid_at,o.created_at)<#{until}
                AND o.is_deleted=0
             """)
-    Facts hardwarePurchaseFacts(@Param("userId") Long userId);
+    Facts hardwarePurchaseFacts(@Param("userId") Long userId,
+            @Param("from") LocalDateTime from, @Param("until") LocalDateTime until);
 
     @Select("""
             SELECT quantity FROM nx_team_hardware_quota_usage

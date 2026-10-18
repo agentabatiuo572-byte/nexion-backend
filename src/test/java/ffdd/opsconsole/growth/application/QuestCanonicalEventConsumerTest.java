@@ -30,6 +30,14 @@ class QuestCanonicalEventConsumerTest {
             bindingMapper, dayOneInstances, deliveryService, projector, new ObjectMapper());
 
     @Test
+    void vietnamWeekFenceKeepsTheTransitionHourInOldWeekAndIsolatesNextWeek() {
+        assertThat(QuestCanonicalEventConsumer.sameIsoWeek(java.time.LocalDateTime.parse("2026-10-18T23:59:59"),
+                java.time.LocalDateTime.parse("2026-10-19T00:59:59"))).isTrue();
+        assertThat(QuestCanonicalEventConsumer.sameIsoWeek(java.time.LocalDateTime.parse("2026-10-19T00:59:59"),
+                java.time.LocalDateTime.parse("2026-10-19T01:00:00"))).isFalse();
+    }
+
+    @Test
     void publishedEmptyWeekReachesTerminalProjectorInsteadOfWaitingForLaterBindings() {
         var weekly = mock(WeeklyQuestSnapshotService.class);
         var consumer = new QuestCanonicalEventConsumer(bindingMapper, dayOneInstances, deliveryService, projector, new ObjectMapper(), weekly);

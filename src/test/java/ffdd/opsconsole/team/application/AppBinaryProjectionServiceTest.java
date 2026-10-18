@@ -62,6 +62,52 @@ class AppBinaryProjectionServiceTest {
     }
 
     @Test
+    void monthlyClearThresholdUsesGrossVolumeButEstimateUsesUnconsumedResidual() {
+        seed("team.ui.F.binary.residualPolicy","每月清零");
+        seed("team.ui.F.binary.settlePeriod","每日");
+        seed("team.ui.F.binary.threshold","50");
+        when(mapper.countDirectMembers(41L)).thenReturn(2);
+        when(mapper.countAssignmentsByLeg(41L,"A")).thenReturn(1);
+        when(mapper.countAssignmentsByLeg(41L,"B")).thenReturn(1);
+        service=new AppBinaryProjectionService(mapper,config,mock(OpsReadTimeSeedPolicy.class),coverage,
+                new MockEnvironment(),java.time.Clock.fixed(java.time.Instant.parse("2026-10-18T16:30:00Z"),java.time.ZoneOffset.UTC));
+        when(mapper.listPaidOrderCandidates(eq(41L),any(),any())).thenReturn(List.of(
+                new PaidOrderVolumeCandidate("A",51L,51L,"A",new BigDecimal("100"),LocalDateTime.of(2026,10,1,0,30),1),
+                new PaidOrderVolumeCandidate("B",52L,52L,"B",new BigDecimal("100"),LocalDateTime.of(2026,10,1,0,30),1)));
+        when(mapper.consumedMatchedInMonth(41L,java.time.LocalDate.of(2026,10,1))).thenReturn(new BigDecimal("80"));
+        var result=service.snapshot(41L);
+        assertThat(result.get("blockedReason")).isEqualTo("");
+        assertThat((BigDecimal)result.get("trackA")).isEqualByComparingTo("20");
+        assertThat((BigDecimal)result.get("estimatedAmountUsdt")).isEqualByComparingTo("2.6");
+    }
+
+    @Test
+    void monthlyProjectionSubtractsAlreadyConsumedVolumeAcrossTheTransitionHour() {
+        seed("team.ui.F.binary.residualPolicy","每月清零");
+        service=new AppBinaryProjectionService(mapper,config,mock(OpsReadTimeSeedPolicy.class),coverage,
+                new MockEnvironment(),java.time.Clock.fixed(java.time.Instant.parse("2026-10-18T16:30:00Z"),java.time.ZoneOffset.UTC));
+        when(mapper.listPaidOrderCandidates(eq(41L),any(),any())).thenReturn(List.of(
+                new PaidOrderVolumeCandidate("A-OLD",51L,51L,"A",new BigDecimal("1000"),LocalDateTime.of(2026,10,1,0,30),1),
+                new PaidOrderVolumeCandidate("B-OLD",52L,52L,"B",new BigDecimal("1000"),LocalDateTime.of(2026,10,1,0,30),1)));
+        when(mapper.consumedMatchedInMonth(41L,java.time.LocalDate.of(2026,10,1))).thenReturn(new BigDecimal("1000"));
+        var result=service.snapshot(41L);
+        assertThat((BigDecimal)result.get("trackA")).isZero();
+        assertThat((BigDecimal)result.get("trackB")).isZero();
+        assertThat((BigDecimal)result.get("estimatedAmountUsdt")).isZero();
+        org.mockito.Mockito.verify(mapper).listPaidOrderCandidates(41L,LocalDateTime.of(2026,10,1,0,0),LocalDateTime.of(2026,10,19,1,0));
+    }
+
+    @Test
+    void vietnamNewMonthUsesOneAmStorageAndNewMonthCap() {
+        service = new AppBinaryProjectionService(mapper,config,mock(OpsReadTimeSeedPolicy.class),coverage,
+                new MockEnvironment(),java.time.Clock.fixed(java.time.Instant.parse("2026-10-31T17:00:00Z"),java.time.ZoneOffset.UTC));
+        var result=service.snapshot(41L);
+        assertThat(result.get("asOfDate")).isEqualTo(java.time.LocalDate.of(2026,11,1));
+        assertThat((BigDecimal)result.get("periodCap")).isEqualByComparingTo("150000");
+        org.mockito.Mockito.verify(mapper).listPaidOrderCandidates(41L,LocalDateTime.of(2026,11,1,1,0),LocalDateTime.of(2026,11,2,1,0));
+    }
+
+    @Test
     void projectsOnlyServerPaidOrdersAssignmentsH1AndCommissionEvents() {
         seed("team.ui.F.binary.settlePeriod", "每日");
         when(mapper.listPaidOrderCandidates(eq(41L), any(), any())).thenReturn(List.of(
@@ -127,15 +173,15 @@ class AppBinaryProjectionServiceTest {
     }
 
     @Test
-    void monthAndPeriodCapStayInUtcWhenTheJvmHasAlreadyEnteredSeptember() {
+    void monthAndPeriodCapStayInVietnamWhenStorageAndJvmHaveEnteredNovember() {
         service = new AppBinaryProjectionService(mapper, config, mock(OpsReadTimeSeedPolicy.class),
                 coverage, new MockEnvironment(), java.time.Clock.fixed(
-                        java.time.Instant.parse("2026-08-31T16:30:00Z"), java.time.ZoneId.of("Asia/Tokyo")));
+                        java.time.Instant.parse("2026-10-31T16:30:00Z"), java.time.ZoneId.of("Asia/Tokyo")));
         var result = service.snapshot(41L);
-        assertThat(result.get("asOfDate")).isEqualTo(java.time.LocalDate.of(2026, 8, 31));
+        assertThat(result.get("asOfDate")).isEqualTo(java.time.LocalDate.of(2026, 10, 31));
         assertThat((BigDecimal) result.get("periodCap")).isEqualByComparingTo("155000");
         org.mockito.Mockito.verify(mapper).listPaidOrderCandidates(eq(41L), any(),
-                eq(LocalDateTime.of(2026, 9, 1, 8, 0)));
+                eq(LocalDateTime.of(2026, 11, 1, 1, 0)));
     }
 
     @Test

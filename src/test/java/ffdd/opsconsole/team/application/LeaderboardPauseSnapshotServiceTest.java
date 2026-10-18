@@ -120,6 +120,18 @@ class LeaderboardPauseSnapshotServiceTest {
         verify(mapper, times(1)).insert(anyString(), anyString());
     }
 
+    @Test
+    void captureAndSettlementShareVietnamPeriodStorageBounds() {
+        var before=LeaderboardPauseSnapshotService.captureParameters(Instant.parse("2026-10-18T16:59:59Z"));
+        assertThat(before).containsEntry("weekFromInclusive",java.time.LocalDateTime.parse("2026-10-12T00:00:00"))
+                .containsEntry("weekToExclusive",java.time.LocalDateTime.parse("2026-10-19T01:00:00"));
+        var after=LeaderboardPauseSnapshotService.captureParameters(Instant.parse("2026-10-18T17:00:00Z"));
+        assertThat(after).containsEntry("weekFromInclusive",java.time.LocalDateTime.parse("2026-10-19T01:00:00"))
+                .containsEntry("weekToExclusive",java.time.LocalDateTime.parse("2026-10-26T01:00:00"))
+                .containsEntry("monthFromInclusive",java.time.LocalDateTime.parse("2026-10-01T00:00:00"))
+                .containsEntry("monthToExclusive",java.time.LocalDateTime.parse("2026-11-01T01:00:00"));
+    }
+
     @Test void pcAndAppUseTheSameMinimumAndPoolWithoutRewritingLegacyEnvelope() throws Exception {
         var captured = capture("$90"); // Canonical commission threshold strips the configured currency prefix.
         assertThat(service.pcPodium(captured)).hasSize(3);

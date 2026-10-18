@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.application;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -178,7 +179,7 @@ public class AppTeamInsightsService {
                 "directUSDT", zero(summary == null ? null : summary.directUsdt()),
                 "extendedUSDT", zero(summary == null ? null : summary.extendedUsdt()),
                 "contributorCount", count(summary == null ? null : summary.contributorCount())));
-        LocalDate snapshotBusinessDate = snapshotBoundary.toLocalDate();
+        LocalDate snapshotBusinessDate = VietnamBusinessPeriod.calendarTime(snapshotBoundary).toLocalDate();
         SettlementWindow month = settlementWindow("month", snapshotBusinessDate);
         SettlementWindow today = settlementWindow("today", snapshotBusinessDate);
         var buckets = mapper.commissionBuckets(userId, month.fromInclusive(), month.toExclusive(),
@@ -244,7 +245,7 @@ public class AppTeamInsightsService {
                     TeamSandboxFactGenerator.unilevel(scope.runId(), userId, period), requestedPage, requestedPageSize));
         }
         LocalDateTime snapshotBoundary = LocalDateTime.ofInstant(snapshotAt, BUSINESS_ZONE);
-        SettlementWindow window = settlementWindow(period, snapshotBoundary.toLocalDate());
+        SettlementWindow window = settlementWindow(period, VietnamBusinessPeriod.calendarTime(snapshotBoundary).toLocalDate());
         long totalRows = mapper.unilevelEventCount(userId, scope.sandbox(), snapshotBoundary,
                 window.fromInclusive(), window.toExclusive());
         long offset = (requestedPage - 1) * requestedPageSize;
@@ -288,7 +289,7 @@ public class AppTeamInsightsService {
         Scope scope = scope(userId);
         Instant snapshot = snapshotAt(requestedSnapshotAt);
         LocalDateTime boundary = LocalDateTime.ofInstant(snapshot, BUSINESS_ZONE);
-        SettlementWindow window = settlementWindow(period, boundary.toLocalDate());
+        SettlementWindow window = settlementWindow(period, VietnamBusinessPeriod.calendarTime(boundary).toLocalDate());
         Map<String, Object> direct = purchaseSummary(null), extended = purchaseSummary(null);
         for (var row : mapper.purchaseSummary(userId, scope.sandbox(), scope.sourceEnvironment(), scope.runId(),
                 boundary, window.fromInclusive(), window.toExclusive())) {
@@ -421,7 +422,7 @@ public class AppTeamInsightsService {
                 "vRank", count(row.vRank()), "people", count(row.people()), "votes", count(row.votes()))).toList();
         List<Map<String, Object>> history = mapper.leadershipHistory(userId, window.fromInclusive()).stream().map(row -> Map.<String, Object>of(
                 "weekId", row.weekId(), "payoutUSDT", zero(row.payoutUsdt()))).toList();
-        ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC);
+        ZonedDateTime now = ZonedDateTime.now(VietnamBusinessPeriod.ZONE);
         ZonedDateTime next = CronExpression.parse(config.springCron()).next(now);
         Map<String, Object> result = provenance(scope);
         result.put("currentWeekPoolUSDT", pool); result.put("myRank", myRank); result.put("myVotes", myVotes);
@@ -542,7 +543,7 @@ public class AppTeamInsightsService {
             candidates = List.of();
         } else {
             SettlementWindow window = settlementWindow(period,
-                    LocalDateTime.ofInstant(snapshotAt, BUSINESS_ZONE).toLocalDate());
+                    VietnamBusinessPeriod.dateAt(snapshotAt));
             candidates = List.copyOf(mapper.leaderboardEligible(
                     leaderboardActionPeriod(period), scope.sandbox(), window.fromInclusive(), window.toExclusive(),
                     configuredMoney("team.ui.F.leaderboard.minUsd"), leaderboardTopN(period),
@@ -628,23 +629,23 @@ public class AppTeamInsightsService {
                 .orElse(false);
     }
     /**
-     * Same UTC calendar construction used by F4's settlement service. The
+     * Same versioned Vietnam calendar construction used by F4's settlement service. The
      * datasource pins MySQL sessions to +08:00, so the mapper receives these
      * explicit LocalDateTime bounds instead of deriving a separate CURDATE/NOW
      * boundary from that session clock.
      */
     private SettlementWindow settlementWindow(String period) {
-        return settlementWindow(period, LocalDate.now(BUSINESS_ZONE));
+        return settlementWindow(period, VietnamBusinessPeriod.dateAt(Instant.now()));
     }
     private SettlementWindow settlementWindow(String period, LocalDate today) {
         return switch (period) {
-            case "today" -> new SettlementWindow(today.atStartOfDay(), today.plusDays(1).atStartOfDay());
+            case "today" -> new SettlementWindow(VietnamBusinessPeriod.storageBoundary(today), VietnamBusinessPeriod.storageBoundary(today.plusDays(1)));
             case "week" -> {
                 LocalDate monday = today.with(DayOfWeek.MONDAY);
-                yield new SettlementWindow(monday.atStartOfDay(), monday.plusWeeks(1).atStartOfDay());
+                yield new SettlementWindow(VietnamBusinessPeriod.storageBoundary(monday), VietnamBusinessPeriod.storageBoundary(monday.plusWeeks(1)));
             }
-            case "month" -> new SettlementWindow(today.withDayOfMonth(1).atStartOfDay(),
-                    today.withDayOfMonth(1).plusMonths(1).atStartOfDay());
+            case "month" -> new SettlementWindow(VietnamBusinessPeriod.storageBoundary(today.withDayOfMonth(1)),
+                    VietnamBusinessPeriod.storageBoundary(today.withDayOfMonth(1).plusMonths(1)));
             default -> new SettlementWindow(null, null);
         };
     }

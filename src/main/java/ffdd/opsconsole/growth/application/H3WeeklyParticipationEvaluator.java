@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.growth.mapper.H3WeeklyParticipationMapper;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Clock;
@@ -57,9 +58,7 @@ public class H3WeeklyParticipationEvaluator {
     }
 
     static String weeklyInstance(Instant observedAt) {
-        LocalDate date = observedAt.atZone(WEEK_ZONE).toLocalDate();
-        return String.format(Locale.ROOT, "WEEK:%d-W%02d",
-                date.get(IsoFields.WEEK_BASED_YEAR), date.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR));
+        return VietnamBusinessPeriod.weekKey(LocalDateTime.ofInstant(observedAt, WEEK_ZONE));
     }
 
     private boolean record(Long userId, String observationType, String subjectKey, String thresholdEventType, int threshold,

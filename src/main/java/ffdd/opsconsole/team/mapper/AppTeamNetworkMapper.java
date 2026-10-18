@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.mapper;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriodSql;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -58,9 +59,8 @@ public interface AppTeamNetworkMapper extends BaseMapper<Object> {
                        AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
                        AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
                        AND o.is_deleted=0
-                       AND COALESCE(o.paid_at,o.created_at)>=DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 8 HOUR)
-                       AND COALESCE(o.paid_at,o.created_at)<DATE_ADD(
-                            DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 1 MONTH),INTERVAL 8 HOUR)
+                       AND COALESCE(o.paid_at,o.created_at)>=""" + VietnamBusinessPeriodSql.MONTH_START + """
+                       AND COALESCE(o.paid_at,o.created_at)<""" + VietnamBusinessPeriodSql.NEXT_MONTH_START + """
                    ) monthVolumeUsdt,NULL lifetimeVolumeUsdt,
                    CASE WHEN u.status='ACTIVE' THEN 'ACTIVE' ELSE 'OFFLINE' END status,u.region
               FROM network n JOIN nx_user u ON u.id=n.member_user_id

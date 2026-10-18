@@ -30,6 +30,7 @@ class F4L6AcceptanceSchemaMigrationContractTest {
                 "src/main/java/ffdd/opsconsole/team/mapper/TeamCommissionMapper.java"));
 
         assertThat(mapper).doesNotContain("u.period_month");
-        assertThat(mapper).contains("u.occurred_at >= DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')");
+        assertThat(mapper).contains("u.occurred_at >=", "HardwareQuotaPeriod.SQL_MONTH_START_UTC",
+                "u.occurred_at <", "HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC");
     }
 }

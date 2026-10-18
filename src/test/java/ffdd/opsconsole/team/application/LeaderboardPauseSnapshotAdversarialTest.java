@@ -58,14 +58,22 @@ class LeaderboardPauseSnapshotAdversarialTest {
         }
     }
 
-    @ParameterizedTest @ValueSource(strings={"2026-10-08T12:00:00Z", "2026-10-08T17:00:00Z", "2026-10-11T17:00:00Z", "2026-10-31T17:00:00Z"})
-    void captureMustPreserveExistingAppBusinessZoneAndPeriodWindows(String raw) {
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "2026-10-08T12:00:00Z,2026-10-08T00:00,2026-10-05T00:00,2026-10-01T00:00",
+        "2026-10-08T17:00:00Z,2026-10-09T00:00,2026-10-05T00:00,2026-10-01T00:00",
+        "2026-10-11T17:00:00Z,2026-10-12T00:00,2026-10-12T00:00,2026-10-01T00:00",
+        "2026-10-18T16:59:59Z,2026-10-18T00:00,2026-10-12T00:00,2026-10-01T00:00",
+        "2026-10-18T17:00:00Z,2026-10-19T01:00,2026-10-19T01:00,2026-10-01T00:00",
+        "2026-10-31T17:00:00Z,2026-11-01T01:00,2026-10-26T01:00,2026-11-01T01:00"
+    })
+    void capturePreservesStorageCutoffAndVersionedBusinessPeriodWindows(String raw,String day,String week,String month) {
         Instant at=Instant.parse(raw);
         var p=LeaderboardPauseSnapshotService.captureParameters(at);
-        LocalDateTime local=LocalDateTime.ofInstant(at, DateTimeFormatConfig.BUSINESS_ZONE);
-        LocalDate today=local.toLocalDate(), monday=today.with(DayOfWeek.MONDAY);
-        System.out.println("ZONE_PROBE at="+raw+" actualCutoff="+p.get("snapshotAt")+" expectedCutoff="+local+" actualToday="+p.get("todayFromInclusive")+" expectedToday="+today.atStartOfDay()+" actualWeek="+p.get("weekFromInclusive")+" expectedWeek="+monday.atStartOfDay()+" actualMonth="+p.get("monthFromInclusive")+" expectedMonth="+today.withDayOfMonth(1).atStartOfDay());
-        assertThat(p).containsEntry("snapshotAt", local).containsEntry("todayFromInclusive", today.atStartOfDay()).containsEntry("weekFromInclusive", monday.atStartOfDay()).containsEntry("monthFromInclusive", today.withDayOfMonth(1).atStartOfDay());
+        assertThat(p).containsEntry("snapshotAt",LocalDateTime.ofInstant(at,DateTimeFormatConfig.BUSINESS_ZONE))
+                .containsEntry("todayFromInclusive",LocalDateTime.parse(day))
+                .containsEntry("weekFromInclusive",LocalDateTime.parse(week))
+                .containsEntry("monthFromInclusive",LocalDateTime.parse(month));
     }
 
     @Test void missingPcSummaryWithCorrectHashMustBeUnavailable() throws Exception {

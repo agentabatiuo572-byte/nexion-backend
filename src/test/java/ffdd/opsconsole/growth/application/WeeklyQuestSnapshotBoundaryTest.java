@@ -32,6 +32,37 @@ class WeeklyQuestSnapshotBoundaryTest {
     private final GrowthRhythmFacade rhythm = mock(GrowthRhythmFacade.class);
 
     @Test
+    void existingUnclaimedRewardKeepsItsFrozenIdentityAndAmountUntilVietnamRollover() {
+        Header frozen = new Header(KEY, LocalDateTime.of(2026,10,12,0,0),
+                LocalDateTime.of(2026,10,19,1,0), BigDecimal.ONE, 3, 1);
+        var reward = new WeeklyQuestSnapshotMapper.Reward(7L,"weekly_t2_browse_store","WEEKLY_T2",new BigDecimal("50"));
+        when(mapper.find(KEY)).thenReturn(frozen);
+        when(mapper.lockReward(KEY,"weekly_t2_browse_store",60723153009L)).thenReturn(reward);
+        var before = serviceAt("2026-10-18T16:59:59Z");
+        assertThat(before.current()).isSameAs(frozen);
+        assertThat(before.lockReward(frozen,"weekly_t2_browse_store",60723153009L)).isSameAs(reward);
+        assertThat(serviceAt("2026-10-18T17:00:00Z").lockReward(frozen,"weekly_t2_browse_store",60723153009L)).isNull();
+        verify(mapper,never()).insertHeader(any());
+        verifyNoInteractions(rhythm);
+    }
+
+    @Test
+    void nextVietnamWeekPublishesOnceAndRejectsPriorWeekEvents() {
+        retainInsertedHeader();
+        when(mapper.lockDefinitions()).thenReturn(List.of());
+        when(rhythm.snapshot()).thenReturn(rhythmSnapshot());
+        var service = serviceAt("2026-10-18T17:00:00Z");
+        Header next = service.current();
+        assertThat(next.instanceKey()).isEqualTo("WEEK:2026-W43");
+        assertThat(next.eligibleFrom()).isEqualTo("2026-10-19T01:00:00");
+        assertThat(next.eligibleUntil()).isEqualTo("2026-10-26T01:00:00");
+        assertThat(service.bindings(EVENT, LocalDateTime.of(2026,10,19,0,59,59))).isEmpty();
+        assertThat(service.mission("weekly_t2_browse_store",LocalDateTime.of(2026,10,19,0,59,59))).isNull();
+        verify(mapper,never()).mission(anyString(),anyString(),any());
+        verify(mapper,times(1)).insertHeader(any());
+    }
+
+    @Test
     void emptyWeekRemainsPublishedEvenWhenDefinitionsAreAddedLater() {
         AtomicReference<Header> persisted = retainInsertedHeader();
         when(mapper.lockDefinitions()).thenReturn(List.of());
@@ -136,7 +167,7 @@ class WeeklyQuestSnapshotBoundaryTest {
     }
 
     @Test
-    void firstHeaderUsesTheWholeBeijingWeekHalfOpenWindow() {
+    void transitionHeaderPreservesLegacyStartAndExtendsOnlyTheOpenWeekEnd() {
         retainInsertedHeader();
         when(mapper.lockDefinitions()).thenReturn(List.of());
         when(rhythm.snapshot()).thenReturn(rhythmSnapshot());
@@ -145,7 +176,7 @@ class WeeklyQuestSnapshotBoundaryTest {
 
         assertThat(header.instanceKey()).isEqualTo(KEY);
         assertThat(header.eligibleFrom()).isEqualTo(LocalDateTime.of(2026, 10, 12, 0, 0));
-        assertThat(header.eligibleUntil()).isEqualTo(LocalDateTime.of(2026, 10, 19, 0, 0));
+        assertThat(header.eligibleUntil()).isEqualTo(LocalDateTime.of(2026, 10, 19, 1, 0));
     }
 
     @Test

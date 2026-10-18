@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.util.List;
@@ -36,16 +37,17 @@ class HardwareQuotaMemberIsolationMySqlTest {
                 configuration.addMapper(ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.class);
                 configuration.addMapper(ffdd.opsconsole.device.mapper.AppTradeinMapper.class);
                 try (var session = new MybatisSqlSessionFactoryBuilder().build(configuration).openSession(connection)) {
+                    var month = ffdd.opsconsole.shared.config.HardwareQuotaPeriod.atUtc(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
                     var payment = session.getMapper(AppOrderCommandMapper.class);
                     var storefront = session.getMapper(CanonicalStateMapper.class);
                     // Valid direct 2 and descendant 20 contribute 100 + 25. Invalid roots and
                     // their otherwise valid descendants must contribute nothing.
-                    assertThat(payment.purchaseQuotaFacts(1L).monthlyVolumeUsd()).isEqualByComparingTo("125");
-                    assertThat(payment.purchaseQuotaFacts(1L).activeDirect()).isEqualTo(1L);
+                    assertThat(payment.purchaseQuotaFacts(1L, month.fromOrderStorage(), month.untilOrderStorage()).monthlyVolumeUsd()).isEqualByComparingTo("125");
+                    assertThat(payment.purchaseQuotaFacts(1L, month.fromOrderStorage(), month.untilOrderStorage()).activeDirect()).isEqualTo(1L);
                     assertThat(storefront.purchaseQuotaMonthlyVolume(1L)).isEqualByComparingTo("125");
-                    assertThat(payment.purchaseQuotaFacts(9L).monthlyVolumeUsd()).isEqualByComparingTo("40");
+                    assertThat(payment.purchaseQuotaFacts(9L, month.fromOrderStorage(), month.untilOrderStorage()).monthlyVolumeUsd()).isEqualByComparingTo("40");
                     assertThat(storefront.purchaseQuotaMonthlyVolume(9L)).isEqualByComparingTo("40");
-                    assertThat(payment.purchaseQuotaFacts(99L).monthlyVolumeUsd()).isEqualByComparingTo("0");
+                    assertThat(payment.purchaseQuotaFacts(99L, month.fromOrderStorage(), month.untilOrderStorage()).monthlyVolumeUsd()).isEqualByComparingTo("0");
                     assertThat(storefront.purchaseQuotaMonthlyVolume(99L)).isEqualByComparingTo("0");
                     var quota = storefront.purchaseHardwareQuotas("stellarbox-pro").get(0);
                     assertThat(quota.quotaCode()).isEqualTo("PRO");
@@ -59,8 +61,8 @@ class HardwareQuotaMemberIsolationMySqlTest {
                             session.getMapper(ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.class),
                             session.getMapper(ffdd.opsconsole.device.mapper.AppTradeinMapper.class));
                     for (var settlementMapper : settlementMappers) {
-                        assertThat(settlementMapper.hardwarePurchaseFacts(1L).monthlyVolumeUsd()).isEqualByComparingTo("125");
-                        assertThat(settlementMapper.hardwarePurchaseFacts(1L).activeDirect()).isEqualTo(1L);
+                        assertThat(settlementMapper.hardwarePurchaseFacts(1L, month.fromOrderStorage(), month.untilOrderStorage()).monthlyVolumeUsd()).isEqualByComparingTo("125");
+                        assertThat(settlementMapper.hardwarePurchaseFacts(1L, month.fromOrderStorage(), month.untilOrderStorage()).activeDirect()).isEqualTo(1L);
                         assertThat(settlementMapper.lockHardwarePurchaseTiers("stellarbox-pro")).hasSize(1);
                         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                                 ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard.reserve(settlementMapper,
@@ -111,7 +113,7 @@ class HardwareQuotaMemberIsolationMySqlTest {
             // A deleted relationship is also excluded. Its user is not a direct sponsor.
             sql.execute("UPDATE nx_user SET sponsor_user_id=NULL WHERE id=6");
             sql.execute("INSERT INTO nx_team_member VALUES (1,2,1,0),(1,3,1,0),(1,4,1,0),(1,5,1,0),(1,6,1,1),(2,20,1,0),(3,30,1,0),(4,40,1,0),(5,50,1,0),(9,10,1,0)");
-            String month = "DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 9 HOUR)";
+            String month = "DATE_ADD(" + HardwareQuotaPeriod.SQL_MONTH_START_ORDER_STORAGE + ",INTERVAL 1 HOUR)";
             for (int member : new int[]{2,3,4,5,6,10,20,30,40,50}) {
                 int amount = member == 2 ? 100 : member == 20 ? 25 : member == 10 ? 40 : 1000;
                 sql.execute("INSERT INTO nx_order VALUES (" + member + "," + amount + ",'PAID','COMPLETED'," + month + "," + month + ",0)");

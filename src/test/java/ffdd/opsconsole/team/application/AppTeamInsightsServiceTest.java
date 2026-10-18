@@ -584,11 +584,11 @@ class AppTeamInsightsServiceTest {
         verify(mapper).commissionBuckets(eq(7L), fromMonth.capture(), toMonth.capture(),
                 fromToday.capture(), toToday.capture(), any(LocalDateTime.class));
 
-        assertThat(fromMonth.getValue()).isEqualTo(fromMonth.getValue().toLocalDate().atStartOfDay());
+        assertThat(fromMonth.getValue()).isEqualTo(ffdd.opsconsole.shared.config.VietnamBusinessPeriod.storageBoundary(fromMonth.getValue().toLocalDate()));
         assertThat(fromMonth.getValue().getDayOfMonth()).isEqualTo(1);
-        assertThat(toMonth.getValue()).isEqualTo(fromMonth.getValue().plusMonths(1));
-        assertThat(fromToday.getValue()).isEqualTo(fromToday.getValue().toLocalDate().atStartOfDay());
-        assertThat(toToday.getValue()).isEqualTo(fromToday.getValue().plusDays(1));
+        assertThat(toMonth.getValue()).isEqualTo(ffdd.opsconsole.shared.config.VietnamBusinessPeriod.storageBoundary(fromMonth.getValue().toLocalDate().plusMonths(1)));
+        assertThat(fromToday.getValue()).isEqualTo(ffdd.opsconsole.shared.config.VietnamBusinessPeriod.storageBoundary(fromToday.getValue().toLocalDate()));
+        assertThat(toToday.getValue()).isEqualTo(ffdd.opsconsole.shared.config.VietnamBusinessPeriod.storageBoundary(fromToday.getValue().toLocalDate().plusDays(1)));
         assertThat(fromToday.getValue()).isBetween(fromMonth.getValue(), toMonth.getValue().minusNanos(1));
     }
 

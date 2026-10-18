@@ -1411,7 +1411,7 @@ class OpsTeamServiceTest {
                 .containsEntry("settlementConfigUnavailableReason", "");
 
         var next = java.time.Instant.parse((String) service.leadershipPool().getData().get("nextSettlementAt"))
-                .atZone(java.time.ZoneOffset.UTC);
+                .atZone(java.time.ZoneId.of("Asia/Ho_Chi_Minh"));
         assertThat(next.getDayOfWeek()).isEqualTo(java.time.DayOfWeek.SUNDAY);
         assertThat(next.getHour()).isEqualTo(23);
         assertThat(next.getMinute()).isEqualTo(59);
@@ -1419,7 +1419,8 @@ class OpsTeamServiceTest {
         configFacade.values.put("team.ui.F.pool.settleCron", "7 13 * * 1");
         var beforeRead = new LinkedHashMap<>(configFacade.values);
         var changed = service.leadershipPool().getData();
-        next = java.time.Instant.parse((String) changed.get("nextSettlementAt")).atZone(java.time.ZoneOffset.UTC);
+        next = java.time.Instant.parse((String) changed.get("nextSettlementAt"))
+                .atZone(java.time.ZoneId.of("Asia/Ho_Chi_Minh"));
         assertThat(next.getDayOfWeek()).isEqualTo(java.time.DayOfWeek.MONDAY);
         assertThat(next.getHour()).isEqualTo(13);
         assertThat(next.getMinute()).isEqualTo(7);

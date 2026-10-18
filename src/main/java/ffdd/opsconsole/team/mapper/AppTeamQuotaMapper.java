@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.mapper;
 
+import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
 import java.util.List;
@@ -56,8 +57,10 @@ public interface AppTeamQuotaMapper extends BaseMapper<Object> {
                    t.direct_refs AS directRefs, t.month_volume_usd AS monthVolumeUsd,
                    t.monthly_quota AS monthlyQuota, t.unlock_mode AS unlockMode,
                    COALESCE(SUM(CASE WHEN u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE'
-                         AND u.occurred_at >= DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
-                         AND u.occurred_at < DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH)
+                         AND u.occurred_at >= """ + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
+
+                         AND u.occurred_at < """ + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
+
                          THEN u.quantity ELSE 0 END), 0) AS soldThisMonth
               FROM nx_team_hardware_quota_tier t
               LEFT JOIN nx_team_hardware_quota_usage u ON u.quota_tier_id = t.id

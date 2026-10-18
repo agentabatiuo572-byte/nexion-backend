@@ -76,6 +76,29 @@ class BinaryCommissionSettlementServiceTest {
     }
 
     @Test
+    void transitionKeepsConsumedOctoberVolumeAndDoesNotPostItAgain() {
+        LocalDate date=LocalDate.of(2026,10,18);
+        when(mapper.lockSettlementMutex(OWNER,date)).thenReturn(1L);
+        when(mapper.consumedMatchedInMonth(OWNER,date.withDayOfMonth(1))).thenReturn(new BigDecimal("80"));
+        var result=service.settle(OWNER,date);
+        assertThat(result.reason()).isEqualTo("BINARY_NO_AVAILABLE_MATCHED_VOLUME");
+        verify(mapper).listPaidOrderCandidates(OWNER,java.time.LocalDateTime.of(2026,10,1,0,0),java.time.LocalDateTime.of(2026,10,19,1,0));
+        verify(mapper).monthlyLegVolumes(OWNER,java.time.LocalDateTime.of(2026,10,1,0,0),java.time.LocalDateTime.of(2026,10,19,1,0));
+        verify(mapper,never()).insertBinaryCommissionEvent(any());
+        verify(ledgerFacade,never()).postLedgerEntry(any(),any(),any(),any(),any(),any(),any(),any());
+    }
+
+    @Test
+    void newVietnamMonthExcludesTheExtendedOctoberTail() {
+        LocalDate date=LocalDate.of(2026,11,1);
+        when(mapper.lockSettlementMutex(OWNER,date)).thenReturn(1L);
+        when(mapper.consumedMatchedInMonth(OWNER,date.withDayOfMonth(1))).thenReturn(new BigDecimal("80"));
+        service.settle(OWNER,date);
+        verify(mapper).listPaidOrderCandidates(OWNER,java.time.LocalDateTime.of(2026,11,1,1,0),java.time.LocalDateTime.of(2026,11,2,1,0));
+        verify(mapper,never()).insertBinaryCommissionEvent(any());
+    }
+
+    @Test
     void assignmentRequiresAnExistingOwnerL1MemberAndIsImmutable() {
         when(mapper.lockDirectMember(OWNER, 990686L)).thenReturn(39L);
         when(mapper.findAssignmentForUpdate(OWNER, 990686L)).thenReturn(null);

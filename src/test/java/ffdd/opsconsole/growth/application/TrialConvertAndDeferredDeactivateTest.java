@@ -312,7 +312,7 @@ class TrialConvertAndDeferredDeactivateTest {
         when(mapper.lockHardwarePurchaseTiers("stellarbox-pro")).thenReturn(List.of(
                 new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Tier(
                         1L, "PRO", "stellarbox-pro", 2, new BigDecimal("1000"), 10, "ALL", 1)));
-        when(mapper.hardwarePurchaseFacts(7L)).thenReturn(
+        when(mapper.hardwarePurchaseFacts(eq(7L), any(), any())).thenReturn(
                 new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Facts(
                         exhausted ? 2L : 0L, exhausted ? new BigDecimal("1000") : BigDecimal.ZERO));
         when(mapper.lockHardwarePurchaseUsage(eq(1L), any(), any())).thenReturn(List.of(10));

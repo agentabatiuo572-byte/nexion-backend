@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.growth.mapper.QuestCanonicalEventBindingMapper;
 import ffdd.opsconsole.growth.mapper.DayOneInstanceMapper;
 import ffdd.opsconsole.shared.outbox.EventConsumerDeliveryService;
@@ -147,10 +148,7 @@ public class QuestCanonicalEventConsumer {
     }
 
     static boolean sameIsoWeek(LocalDateTime source, LocalDateTime current) {
-        WeekFields iso = WeekFields.ISO;
-        return source.toLocalDate().get(iso.weekBasedYear()) == current.toLocalDate().get(iso.weekBasedYear())
-                && source.toLocalDate().get(iso.weekOfWeekBasedYear())
-                == current.toLocalDate().get(iso.weekOfWeekBasedYear());
+        return VietnamBusinessPeriod.weekKey(source).equals(VietnamBusinessPeriod.weekKey(current));
     }
 
     private List<Long> snapshotCandidateUserIds(String rawPayload) {

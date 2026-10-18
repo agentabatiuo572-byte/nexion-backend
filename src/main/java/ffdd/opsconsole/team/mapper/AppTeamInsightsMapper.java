@@ -16,7 +16,7 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
         WITH reward_sources AS (
           SELECT g.settlement_no rewardId,g.source_user_id sourceUserId,
                  COALESCE(NULLIF(TRIM(g.source_user_name),''),source.nickname) sourceUserName,
-                 g.layer_no layerNo,g.source_ref orderNo,DATE_FORMAT(g.created_at,'%x-W%v') cycle,
+                 g.layer_no layerNo,g.source_ref orderNo,DATE_FORMAT(CASE WHEN g.created_at &lt; '2026-10-19 00:00:00' THEN g.created_at ELSE DATE_SUB(g.created_at, INTERVAL 1 HOUR) END,'%x-W%v') cycle,
                  o.subtotal_usdt orderAmountUsd,g.amount_usdt amountUsdt,g.amount_nex amountNex,
                  'DUAL' currency,g.status,g.created_at createdAt,g.release_at unlockAt,
                  g.source_type kind,g.source_ref sourceRef,g.policy_version policyVersion,
@@ -39,7 +39,7 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
           UNION ALL
           SELECT CONCAT('CM-',ce.id),ce.source_user_id,
                  COALESCE(NULLIF(TRIM(ce.source_user_name),''),source.nickname),
-                 ce.layer_no,ce.order_no,DATE_FORMAT(ce.created_at,'%x-W%v'),
+                 ce.layer_no,ce.order_no,DATE_FORMAT(CASE WHEN ce.created_at &lt; '2026-10-19 00:00:00' THEN ce.created_at ELSE DATE_SUB(ce.created_at, INTERVAL 1 HOUR) END,'%x-W%v'),
                  ce.order_amount_usd,ce.amount_usdt,ce.amount_nex,ce.currency,ce.status,ce.created_at,ce.unlock_at,
                  LOWER(ce.commission_type),ce.order_no,NULL,NULL,0,0,0,0,NULL,NULL,ce.status,ce.status
             FROM nx_commission_event ce JOIN nx_user u ON u.id=ce.user_id
@@ -223,7 +223,7 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
     @Select("""
             SELECT ce.id,ce.source_user_id sourceUserId,COALESCE(ce.source_user_name,source.nickname) sourceUserName,
                    ce.layer_no layerNo,ce.order_no orderNo,
-                   DATE_FORMAT(ce.created_at,'%x-W%v') cycle,
+                   DATE_FORMAT(CASE WHEN ce.created_at < '2026-10-19 00:00:00' THEN ce.created_at ELSE DATE_SUB(ce.created_at, INTERVAL 1 HOUR) END,'%x-W%v') cycle,
                    ce.order_amount_usd orderAmountUsd,ce.amount_usdt amountUsdt,ce.amount_nex amountNex,
                    ce.currency,ce.status,ce.created_at createdAt,ce.unlock_at unlockAt
               FROM nx_commission_event ce JOIN nx_user u ON u.id=ce.user_id
@@ -304,11 +304,11 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
     java.util.Map<String, Object> leadershipPoolSummary();
 
     @Select("""
-            SELECT DATE_FORMAT(created_at,'%x-W%v') weekId,SUM(amount_usdt) payoutUsdt
+            SELECT DATE_FORMAT(CASE WHEN created_at < '2026-10-19 00:00:00' THEN created_at ELSE DATE_SUB(created_at, INTERVAL 1 HOUR) END,'%x-W%v') weekId,SUM(amount_usdt) payoutUsdt
               FROM nx_commission_event
              WHERE user_id=#{userId} AND is_deleted=0 AND LOWER(commission_type)='leadership'
                AND created_at<#{beforeExclusive}
-             GROUP BY DATE_FORMAT(created_at,'%x-W%v') ORDER BY weekId DESC LIMIT 12
+             GROUP BY DATE_FORMAT(CASE WHEN created_at < '2026-10-19 00:00:00' THEN created_at ELSE DATE_SUB(created_at, INTERVAL 1 HOUR) END,'%x-W%v') ORDER BY weekId DESC LIMIT 12
             """)
     List<LeadershipHistoryRow> leadershipHistory(@Param("userId") Long userId,
                                                  @Param("beforeExclusive") LocalDateTime beforeExclusive);
