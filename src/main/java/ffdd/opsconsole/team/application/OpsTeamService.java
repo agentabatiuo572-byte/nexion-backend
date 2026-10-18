@@ -3767,6 +3767,10 @@ public class OpsTeamService implements AuditReplayable {
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
+            case "f_seven_layer_activation" -> {
+                return ApiResult.ok(directPolicies.getObject().activation(idem,
+                        ffdd.opsconsole.team.dto.SevenLayerActivationRequest.from(p),reason));
+            }
             case "f_direct_referral_policy" -> {
                 var params = new java.util.LinkedHashMap<String, Object>(p);
                 params.put("reason", reason);

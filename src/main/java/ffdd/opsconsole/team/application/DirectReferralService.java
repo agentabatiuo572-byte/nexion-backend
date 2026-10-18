@@ -142,7 +142,9 @@ public class DirectReferralService {
         if(claimedUserId==null||!claimedUserId.equals(source.userId()))throw new BizException(409,"DIRECT_REFERRAL_SOURCE_USER_MISMATCH");
         if(!Integer.valueOf(scope.sandbox()).equals(source.sandbox()))throw new BizException(409,"DIRECT_REFERRAL_SOURCE_ENVIRONMENT_MISMATCH");
         if(source.sourceOccurredAt()==null)throw new BizException(409,"DIRECT_REFERRAL_SOURCE_NOT_CONFIRMED");
-        if("direct_purchase".equals(kind)&&(policies.sevenLayerActive(source.sourceOccurredAt())||mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),ref)!=null||mapper.historicalNetwork(ref)>0||mapper.historicalDirect(ref)>0))return settleSeven(ref,source,scope);
+        // The same revision lock serializes first-generation selection with activation and pause approvals.
+        if("direct_purchase".equals(kind))policies.lockSevenLayerRevision();
+        if("direct_purchase".equals(kind)&&(policies.sevenLayerActiveForUpdate(source.sourceOccurredAt())||mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),ref)!=null||mapper.historicalNetwork(ref)>0||mapper.historicalDirect(ref)>0))return settleSeven(ref,source,scope);
         String existing=mapper.existing(scope.sourceEnvironment(),scope.runId(),kind,ref);
         if(existing!=null)return 0;
         var policy=policies.atForUpdate(source.sourceOccurredAt());
@@ -179,6 +181,7 @@ public class DirectReferralService {
             long revision=policies.lockSevenLayerRevision();
             int network=mapper.historicalNetwork(ref),direct=mapper.historicalDirect(ref);
             String mode=network>0&&direct>0?"CONFLICT":network>0?"LEGACY_7":direct>0?"DIRECT_ONLY_V1":"SEVEN_V2";
+            if("SEVEN_V2".equals(mode)&&policies.sevenLayerPausedForUpdate())throw new BizException(409,DirectReferralPolicyService.PAUSED_ERROR);
             var policy=policies.atForUpdate(source.sourceOccurredAt());
             var plan="SEVEN_V2".equals(mode)?requireUnilevel().prepareBudget(source.userId(),source.sponsorUserId(),zero(mapper.purchaseSubtotal(ref))):Map.<String,Object>of();
             if("SEVEN_V2".equals(mode))for(var item:(List<Map<String,Object>>)plan.get("layers")){

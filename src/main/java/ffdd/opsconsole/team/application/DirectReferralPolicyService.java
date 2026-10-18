@@ -32,6 +32,8 @@ public class DirectReferralPolicyService {
     static final String VERSION_KEY = "team.direct-referral.policy-version";
     public static final String SEVEN_REVISION_KEY = "team.seven-layer.revision";
     public static final String CUTOVER_KEY = "team.seven-layer.cutover-at";
+    public static final String PAUSED_KEY = "team.seven-layer.paused";
+    public static final String PAUSED_ERROR = "SEVEN_LAYER_NEW_SOURCES_PAUSED";
     private final DirectReferralMapper mapper;
     private final PlatformConfigFacade config;
     private final NexMarketMapper prices;
@@ -69,11 +71,24 @@ public class DirectReferralPolicyService {
         return json.readValue(raw,DirectReferralPolicy.Rule.class);
     }
     public Instant cutoverAt() {
-        var raw=config.activeValue(CUTOVER_KEY).orElse(null);
+        return cutoverAt(false);
+    }
+    private Instant cutoverAt(boolean currentRead) {
+        var raw=(currentRead?config.activeValueForUpdate(CUTOVER_KEY):config.activeValue(CUTOVER_KEY)).orElse(null);
         if(raw==null||raw.isBlank())return null;
         try{return Instant.parse(raw);}catch(RuntimeException e){throw new BizException(503,"SEVEN_LAYER_CUTOVER_INVALID");}
     }
     public boolean sevenLayerActive(LocalDateTime at) { var boundary=cutoverAt();return boundary!=null&&!at.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().isBefore(boundary); }
+    public boolean sevenLayerActiveForUpdate(LocalDateTime at) {var boundary=cutoverAt(true);return boundary!=null&&!at.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().isBefore(boundary);}
+    public boolean sevenLayerPaused() {
+        return sevenLayerPaused(false);
+    }
+    public boolean sevenLayerPausedForUpdate(){return sevenLayerPaused(true);}
+    private boolean sevenLayerPaused(boolean currentRead) {
+        var value=(currentRead?config.activeValueForUpdate(PAUSED_KEY):config.activeValue(PAUSED_KEY)).orElse("false");
+        if(!Set.of("true","false").contains(value))throw new BizException(503,"SEVEN_LAYER_PAUSE_CONFIG_INVALID");
+        return Boolean.parseBoolean(value);
+    }
     public void requireSchema(Integer version) { if(version!=null&&!Set.of(1,2).contains(version))throw new BizException(422,"TEAM_SCHEMA_VERSION_UNSUPPORTED");if(sevenLayerActive(now())&&!Integer.valueOf(2).equals(version))throw new BizException(409,"TEAM_SCHEMA_UPDATE_REQUIRED"); }
     public long sevenLayerRevision() {return config.activeValue(SEVEN_REVISION_KEY).map(Long::parseLong).orElse(0L);}
     public long lockSevenLayerRevision() {
@@ -103,7 +118,70 @@ public class DirectReferralPolicyService {
         var p=at(now());if(sevenLayerActive(now()))out.remove("purchase");out.put("schemaVersion",2);out.put("purchaseSplitConfigured",p.schemaVersion()==2);
         out.put("purchaseSplit",Map.of("enabled",p.schemaVersion()==2&&p.purchase().enabled(),"usdtSharePct",p.schemaVersion()==2?p.purchase().usdtSharePct():new BigDecimal("50")));
         out.put("sevenLayerReference",sevenLayerReference());out.put("sevenLayerRevision",sevenLayerRevision());
-        boolean enabled=sevenLayerActive(now());out.put("settlementMode",enabled?"SEVEN_V2":"DIRECT_ONLY_V1");out.put("sevenLayerEnabled",enabled);out.put("cutoverAt",cutoverAt());return out;
+        boolean enabled=sevenLayerActive(now());out.put("settlementMode",enabled?"SEVEN_V2":"DIRECT_ONLY_V1");out.put("sevenLayerEnabled",enabled);out.put("cutoverAt",cutoverAt());
+        out.put("sevenLayerPaused",sevenLayerPaused());out.put("sevenLayerActivationContractVersion",1);return out;
+    }
+    public Map<String,Object> activationPreview(ffdd.opsconsole.team.dto.SevenLayerActivationRequest request) {
+        var state=current(2);
+        checkActivation(request,sevenLayerRevision(),mapper.latestVersion(),false);
+        return state;
+    }
+    /** Failure metadata can commit after RESUME. The existing recovery scheduler closes that race. */
+    @Transactional(rollbackFor=Exception.class)
+    public int recoverPausedDeliveries() {
+        if(cutoverAt()==null)return 0;
+        lockSevenLayerRevision();
+        if(cutoverAt(true)==null||sevenLayerPausedForUpdate())return 0;
+        int rows=mapper.resumePausedDeliveries();
+        if(rows>0)audit.recordRequired(AuditLogWriteRequest.builder().action("F_SEVEN_LAYER_PAUSE_RECOVERY")
+                .resourceType("TEAM_POLICY").resourceId("seven_layer_activation/current").actorUsername("SYSTEM")
+                .riskLevel("HIGH").detail(Map.of("cutoverAt",cutoverAt().toString(),"resumedDeliveryRows",rows,
+                        "recoveryScope","direct-referral-settlement/checkout.completed/ORDER/"+PAUSED_ERROR)).build());
+        return rows;
+    }
+    private void checkActivation(ffdd.opsconsole.team.dto.SevenLayerActivationRequest request,long revision,long version,boolean currentRead) {
+        if(revision!=request.expectedSevenLayerRevision())throw new BizException(409,"SEVEN_LAYER_REVISION_CONFLICT");
+        if(version!=request.expectedPolicyVersion())throw new BizException(409,"DIRECT_REFERRAL_VERSION_CONFLICT");
+        var t=cutoverAt(currentRead);boolean paused=sevenLayerPaused(currentRead);
+        boolean valid=switch(request.action()){
+            case "ACTIVATE" -> t==null&&!paused;
+            case "PAUSE" -> t!=null&&!clock.instant().isBefore(t)&&!paused;
+            case "RESUME" -> t!=null&&!clock.instant().isBefore(t)&&paused;
+            default -> false;
+        };
+        if(!valid)throw new BizException(409,"SEVEN_LAYER_ACTIVATION_STATE_CONFLICT");
+    }
+    @Transactional(rollbackFor=Exception.class)
+    public Map<String,Object> activation(String key,ffdd.opsconsole.team.dto.SevenLayerActivationRequest request,String reason) {
+        if(key==null||key.isBlank())throw new BizException(400,"IDEMPOTENCY_KEY_REQUIRED");
+        if(!A2ReplayContext.isReplaying()||A2ReplayContext.operationId()==null)throw new BizException(409,"A2_CONFIRMATION_REQUIRED");
+        var auth=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if(auth==null||!auth.isAuthenticated()||!auth.getAuthorities().stream().anyMatch(a->"network_f2_policy_amplify".equals(a.getAuthority()))
+                ||!auth.getAuthorities().stream().anyMatch(a->"platform_a2_operation_approve".equals(a.getAuthority())))
+            throw new BizException(403,"A2_BUSINESS_PERMISSION_DENIED:network_f2_policy_amplify");
+        if(reason==null||reason.trim().length()<8||reason.trim().length()>200)throw new BizException(422,"SEVEN_LAYER_ACTIVATION_REQUEST_INVALID");
+        scope();
+        long revision=lockSevenLayerRevision();
+        config.activeValueForUpdate(VERSION_KEY).orElseThrow(()->new BizException(503,"DIRECT_REFERRAL_VERSION_UNAVAILABLE"));
+        checkActivation(request,revision,mapper.latestVersionForUpdate(),true);
+        var before=current(2);
+        if(!"PAUSE".equals(request.action())){
+            var c=coverage.snapshot();
+            if(c==null||!c.reliable()||c.coverageRatio()==null||c.redlinePct()==null)throw new BizException(503,"COVERAGE_SNAPSHOT_UNAVAILABLE");
+            if(c.coverageRatio().compareTo(c.redlinePct())<0)throw new BizException(409,"COVERAGE_BELOW_REDLINE");
+        }
+        if("ACTIVATE".equals(request.action()))config.upsertAdminValue(CUTOVER_KEY,
+                clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS).toString(),"STRING","team","七层结算首次批准切换时间，不可删除或移动");
+        config.upsertAdminValue(PAUSED_KEY,Boolean.toString("PAUSE".equals(request.action())),"BOOLEAN","team","仅暂停首次七层来源准备，保留原事件和既有快照");
+        long next=Math.addExact(revision,1);
+        config.upsertAdminValue(SEVEN_REVISION_KEY,Long.toString(next),"NUMBER","team","七层配置一致性版本锁");
+        int redriven="RESUME".equals(request.action())?mapper.resumePausedDeliveries():0;
+        var after=current(2);
+        audit.recordRequired(AuditLogWriteRequest.builder().action("F_SEVEN_LAYER_"+request.action()+"_APPROVED").resourceType("TEAM_POLICY")
+                .resourceId("seven_layer_activation/current").actorUsername(AdminActorResolver.resolve("A2")).riskLevel("HIGH")
+                .detail(Map.of("operationId",A2ReplayContext.operationId(),"reason",reason.trim(),"before",before,"after",after,
+                        "resumedDeliveryRows",redriven,"recoveryScope","direct-referral-settlement/checkout.completed/ORDER/"+PAUSED_ERROR)).build());
+        after.put("operationId",A2ReplayContext.operationId());after.put("resumedDeliveryRows",redriven);return after;
     }
     public static void validate(DirectReferralPolicyRequest request,Instant now) {
         if(request==null||request.expectedVersion()==null||request.expectedVersion()<0
