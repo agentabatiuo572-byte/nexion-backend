@@ -12,14 +12,24 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.growth.mapper.QuestCanonicalEventBindingMapper;
 import ffdd.opsconsole.growth.mapper.DayOneInstanceMapper;
 import ffdd.opsconsole.growth.mapper.DayOneInstanceMapper.DayOneSnapshotBinding;
+import ffdd.opsconsole.growth.mapper.WeeklyQuestSnapshotMapper;
+import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
+import ffdd.opsconsole.user.facade.UserWeeklyRegionFacade;
+import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.shared.outbox.EventConsumerDeliveryService;
 import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
 import java.time.LocalDateTime;
-import java.time.LocalDate;
-import java.time.LocalTime;
+import java.time.Clock;
+import java.time.DayOfWeek;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.math.BigDecimal;
 import java.time.ZoneId;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.mock.env.MockEnvironment;
 
 class QuestCanonicalEventConsumerTest {
     private final QuestCanonicalEventBindingMapper bindingMapper = mock(QuestCanonicalEventBindingMapper.class);
@@ -139,16 +149,35 @@ class QuestCanonicalEventConsumerTest {
         verify(projector, org.mockito.Mockito.times(1)).project(message, "evt-late");
     }
 
-    @Test
-    void sundayThresholdDeliveredNextWeekIsTerminallySkippedAndNeverRetried() {
-        LocalDateTime sunday = LocalDateTime.of(2026, 9, 20, 23, 59, 59);
-        LocalDateTime monday = LocalDateTime.of(2026, 9, 21, 0, 0);
-        assertThat(QuestCanonicalEventConsumer.sameIsoWeek(sunday, monday)).isFalse();
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void sundayThresholdDeliveredNextWeekIsTerminallySkippedAndNeverRetried(boolean accountPeriod) {
+        LocalDateTime sunday = LocalDateTime.of(2026, 10, 18, 23, 59, 59);
+        LocalDateTime monday = LocalDateTime.of(2026, 10, 19, 0, 0);
+        var snapshots = mock(WeeklyQuestSnapshotMapper.class);
+        var users = mock(UserWeeklyRegionFacade.class);
+        var environment = new MockEnvironment();
+        environment.setActiveProfiles("dev");
+        var weekly = new WeeklyQuestSnapshotService(snapshots, mock(GrowthRhythmFacade.class),
+                Clock.fixed(Instant.parse("2026-10-18T16:00:00Z"), ZoneOffset.UTC), null,
+                mock(WeeklyRegionPolicyService.class), users, environment);
+        var header = new WeeklyQuestSnapshotMapper.Header("WEEK:2026-W42", monday.minusWeeks(1), monday,
+                BigDecimal.ONE, 3, 1);
+        when(users.lockActiveRegisteredCallingCode(42L, false))
+                .thenReturn(new UserWeeklyRegionFacade.RegisteredCallingCode(42L, "84", false));
+        when(snapshots.lockMutex()).thenReturn("H3_CONFIG");
+        when(snapshots.findPublished(header.instanceKey())).thenReturn(header);
+        when(snapshots.assigned(42L, header.instanceKey())).thenReturn(1);
+        var consumer = accountPeriod ? new QuestCanonicalEventConsumer(bindingMapper, dayOneInstances, deliveryService,
+                projector, new ObjectMapper(), weekly) : this.consumer;
 
         EventOutboxMessage message = event("evt-expired-week", "H3_COMPUTE_COMPLETED_50");
         message.setServerAuthoritative(true);
-        message.setEventTs(LocalDateTime.of(LocalDate.now(ZoneId.of("Asia/Shanghai")).minusWeeks(1),
-                LocalTime.of(23, 59, 59)));
+        // The legacy fixture must choose the previous business week even during the +08/+07 transition hour.
+        var currentMonday = VietnamBusinessPeriod.calendarTime(LocalDateTime.now(ZoneId.of("Asia/Shanghai")))
+                .toLocalDate().with(DayOfWeek.MONDAY);
+        message.setEventTs(accountPeriod ? sunday : VietnamBusinessPeriod.storageBoundary(currentMonday).minusSeconds(1));
+        message.setPayload("{\"user_id\":42,\"instanceKey\":\"WEEK:2026-W42\"}");
         when(deliveryService.claim(message, QuestCanonicalEventConsumer.CONSUMER_GROUP,
                 QuestCanonicalEventConsumer.TOPIC, "evt-expired-week", 0))
                 .thenReturn(new EventConsumerDeliveryService.ConsumerClaim(true, "evt-expired-week", "PROCESSING", 1),
