@@ -9,6 +9,18 @@ import org.apache.ibatis.annotations.*;
 
 @Mapper
 public interface DirectReferralMapper extends BaseMapper<Object> {
+    /** Resume only original deliveries held by this operator pause, including exhausted retries. */
+    @Update("""
+        UPDATE nx_event_consumer_delivery d JOIN nx_event_outbox o ON o.event_id=d.event_id
+           SET d.status='FAILED',d.attempt_count=0,d.dead_at=NULL,d.next_retry_at=NOW(),d.updated_at=NOW(),
+               o.status='FAILED',o.retry_count=0,o.next_retry_at=NOW(),o.updated_at=NOW()
+         WHERE BINARY d.consumer_group='direct-referral-settlement' AND BINARY d.event_type='checkout.completed'
+           AND BINARY d.aggregate_type='ORDER' AND d.status IN ('FAILED','DEAD')
+           AND BINARY d.last_error='SEVEN_LAYER_NEW_SOURCES_PAUSED' AND d.is_deleted=0
+           AND BINARY o.event_type='checkout.completed' AND BINARY o.aggregate_type='ORDER' AND BINARY o.aggregate_id=BINARY d.aggregate_id
+           AND o.status IN ('FAILED','DEAD') AND o.is_deleted=0
+        """)
+    int resumePausedDeliveries();
     @Select("SELECT usdt_rate*100 usdtPct,nex_per_usd nexReward FROM nx_commission_rule WHERE commission_type='UNILEVEL' AND layer_no=1 AND status=1 AND is_deleted=0 ORDER BY id LIMIT 1")
     List<Map<String,Object>> sevenLayerReference();
     @Select("SELECT policy_version policyVersion,effective_at effectiveAt,purchase_json purchaseJson,device_earning_json deviceEarningJson FROM nx_direct_referral_policy WHERE effective_at<=#{at} ORDER BY effective_at DESC,policy_version DESC LIMIT 1")

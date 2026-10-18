@@ -17,6 +17,8 @@ public class DirectReferralRecoveryScheduler {
     @Scheduled(fixedDelayString="${nexion.f5.recovery-delay-ms:600000}",initialDelayString="${nexion.f5.recovery-initial-delay-ms:300000}")
     public void recover(){
         var scope=policies.scope();
+        try{policies.recoverPausedDeliveries();}
+        catch(RuntimeException failure){log.warn("Paused source delivery recovery remains pending reason={}",failure.getMessage());}
         var calculations=mapper.waitingCalculation(scope.sourceEnvironment(),scope.runId(),calculationCursor.get());
         if(calculations.isEmpty()&&!calculationCursor.get().isEmpty()){calculationCursor.set("");calculations=mapper.waitingCalculation(scope.sourceEnvironment(),scope.runId(),"");}
         for(String no:calculations){try{service.resumeGroup(no);}catch(RuntimeException failure){log.warn("Reward calculation remains pending settlement={} reason={}",no,failure.getMessage());}finally{calculationCursor.set(no);}}

@@ -1238,6 +1238,55 @@ class OpsAuditCenterServiceTest {
         return row;
     }
 
+    @Test
+    void sevenLayerActivationUsesNormalMakerCheckerOriginalTicketAndStableServerTime() {
+        var mapper=mock(ffdd.opsconsole.team.mapper.DirectReferralMapper.class);
+        var config=mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
+        Map<String,String> values=new LinkedHashMap<>(Map.of("team.seven-layer.revision","0","team.direct-referral.policy-version","4"));
+        when(config.activeValue(any())).thenAnswer(i->Optional.ofNullable(values.get(i.getArgument(0))));
+        when(config.activeValueForUpdate(any())).thenAnswer(i->Optional.ofNullable(values.get(i.getArgument(0))));
+        doAnswer(i->{values.put(i.getArgument(0),i.getArgument(1));return null;}).when(config).upsertAdminValue(any(),any(),any(),any(),any());
+        when(mapper.latestVersion()).thenReturn(4L);when(mapper.latestVersionForUpdate()).thenReturn(4L);
+        var coverage=mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class);
+        when(coverage.snapshot()).thenReturn(new ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot(new java.math.BigDecimal("200"),new java.math.BigDecimal("100"),true));
+        var env=new org.springframework.mock.env.MockEnvironment();env.setActiveProfiles("prod");
+        var policies=new ffdd.opsconsole.team.application.DirectReferralPolicyService(mapper,config,mock(ffdd.opsconsole.market.mapper.NexMarketMapper.class),coverage,
+                mock(AuditLogService.class),objectMapper,java.time.Clock.fixed(java.time.Instant.parse("2026-10-18T05:01:02.123456789Z"),java.time.ZoneOffset.UTC),env);
+        var provider=mock(org.springframework.beans.factory.ObjectProvider.class);when(provider.getObject()).thenReturn(policies);
+        var guard=new AuditReplayBusinessPermissionGuard(mock(ffdd.opsconsole.content.domain.TrustDisclosureRepository.class),
+                mock(ffdd.opsconsole.shared.security.AdminOperatorRoleResolver.class),mock(ffdd.opsconsole.emergency.domain.EmergencyControlRepository.class),provider,config);
+        when(replayBusinessPermissionGuard.validateProposalContext(any())).thenAnswer(i->guard.validateProposalContext(i.getArgument(0)));
+        when(replayBusinessPermissionGuard.validateProposal(any())).thenAnswer(i->guard.validateProposal(i.getArgument(0)));
+        when(replayBusinessPermissionGuard.validateApproval(any())).thenAnswer(i->guard.validateApproval(i.getArgument(0)));
+        var team=new ffdd.opsconsole.team.application.OpsTeamService(config,coverage,null,null,
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.disabledForDirectConstruction(),null,null,null,lockMapper,null,null,null,null,null,idempotencyService,provider,null,null,null);
+        var dispatcher=new AuditReplayDispatcher(List.of(team));
+        doAnswer(i->dispatcher.dispatch(i.getArgument(0),i.getArgument(1))).when(replayDispatcher).dispatch(any(),any());
+        var command=new AuditReplayCommand("F","f_seven_layer_activation",Map.of("action","ACTIVATE","expectedSevenLayerRevision",0,"expectedPolicyVersion",4));
+        var request=new AuditOperationProposalRequest("forged title","current","old","new","spoofed","ADMIN","fund",true,false,
+                "TWO_PERSON","按现有已配置七层规则批准启用","F2",command,new ffdd.opsconsole.platform.domain.AuditLockTarget("F","seven_layer_activation","current"),null);
+        var grants=List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("network_f2_policy_amplify"),new org.springframework.security.core.authority.SimpleGrantedAuthority("platform_a2_operation_approve"));
+        authenticate("41","activation.maker");var maker=SecurityContextHolder.getContext().getAuthentication();
+        var makerAuth=new UsernamePasswordAuthenticationToken(maker.getPrincipal(),null,grants);makerAuth.setDetails(maker.getDetails());SecurityContextHolder.getContext().setAuthentication(makerAuth);
+        var proposed=service.createProposal("same-activation-proposal",request);assertThat(proposed.getCode()).isZero();
+        String operation=proposed.getData().id();assertThat(ticketRows.get(operation).getAction()).isEqualTo("七层结算启用");
+        assertThat(policies.cutoverAt()).isNull();
+        assertThat(service.approve("self-check",operation,new AuditOperationDecisionRequest("不允许申请人自己批准启用","other")).getMessage()).isEqualTo("A2_MAKER_CHECKER_REQUIRED");
+        authenticate("52","activation.checker");var checker=SecurityContextHolder.getContext().getAuthentication();
+        var checkerAuth=new UsernamePasswordAuthenticationToken(checker.getPrincipal(),null,grants);checkerAuth.setDetails(checker.getDetails());SecurityContextHolder.getContext().setAuthentication(checkerAuth);
+        // The normal platform idempotency receipt is modelled here; its executor/CAS has its own behavioral suite.
+        Map<String,Object> receipts=new LinkedHashMap<>();
+        doAnswer(i->{String key=i.getArgument(1);if(receipts.containsKey(key))return receipts.get(key);Object result=((java.util.function.Supplier<?>)i.getArgument(4)).get();receipts.put(key,result);return result;}).when(idempotencyService).execute(any(),any(),any(),any(),any());
+        var decision=new AuditOperationDecisionRequest("另一管理员独立批准按原规则启用","spoofed-maker");
+        var approved=service.approve("same-activation-approval",operation,decision);assertThat(approved.getCode()).isZero();
+        var t=policies.cutoverAt();assertThat(t).isEqualTo(java.time.Instant.parse("2026-10-18T05:01:02.123456Z"));
+        // Lost HTTP response: same intent returns the original ticket without a second replay or a new T.
+        assertThat(service.approve("same-activation-approval",operation,decision).getData().id()).isEqualTo(operation);
+        assertThat(policies.cutoverAt()).isEqualTo(t);assertThat(policies.sevenLayerRevision()).isEqualTo(1);
+        verify(replayDispatcher,org.mockito.Mockito.times(1)).dispatch(any(),any());
+        assertThat(ticketRows.get(operation).getStatus()).isEqualTo("approved");
+    }
+
     private AuditOperationProposalRequest proposal(String operator) {
         return new AuditOperationProposalRequest(
                 "A6 role grants", "role:9", "read", "write", operator, "ADMIN", "param",

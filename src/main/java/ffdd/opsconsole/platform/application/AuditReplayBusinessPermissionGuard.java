@@ -374,7 +374,7 @@ public class AuditReplayBusinessPermissionGuard {
             AuditOperationProposalRequest request) {
         boolean delegated = delegatedProposal();
         AuditReplayCommand command = request == null ? null : request.command();
-        if (command != null && "f_direct_referral_policy".equals(command.op())
+        if (command != null && Set.of("f_direct_referral_policy","f_seven_layer_activation").contains(command.op())
                 && (request.reason() == null || request.reason().trim().length() < 8 || request.reason().trim().length() > 200)) {
             return ApiResult.fail(422, "DIRECT_REFERRAL_POLICY_REQUEST_INVALID");
         }
@@ -526,6 +526,18 @@ public class AuditReplayBusinessPermissionGuard {
 
     private DelegatedProposalDescriptor delegatedFDescriptor(
             String operation, Map<String, Object> params) {
+        if ("f_seven_layer_activation".equals(operation)) {
+            var request=ffdd.opsconsole.team.dto.SevenLayerActivationRequest.from(params);
+            var state=directPolicies.getObject().activationPreview(request);
+            String label=switch(request.action()){case "ACTIVATE"->"启用";case "PAUSE"->"暂停";default->"恢复";};
+            boolean amplifies=!"PAUSE".equals(request.action());
+            return new DelegatedProposalDescriptor("七层结算"+label,"current",
+                    "七层版本 "+request.expectedSevenLayerRevision()+"；政策版本 "+request.expectedPolicyVersion()+"；启用时间 "+state.get("cutoverAt")+"；暂停 "+state.get("sevenLayerPaused"),
+                    "ACTIVATE".equals(request.action())?"批准时以服务器时间首次启用；旧来源不改、不补历史层级":
+                            "PAUSE".equals(request.action())?"仅暂停尚无冻结的七层新来源；保留因暂停滞留的原来源；既有快照继续":
+                                    "保持原启用时间，恢复新来源及因本次暂停滞留的原来源；不重复处理已完成来源",
+                    "F2",amplifies?"fund":"param",amplifies,new AuditLockTarget("F","seven_layer_activation","current"));
+        }
         if ("f_direct_referral_policy".equals(operation)) {
             var values = new LinkedHashMap<String,Object>(params);
             values.put("reason", "A2 policy proposal");
@@ -1040,6 +1052,7 @@ public class AuditReplayBusinessPermissionGuard {
             // A1 批1a 修复3:F5 佣金事件 A2 越权守卫(原无 F 域 case → 持 platform_a2_proposal_create/approve 可任意处置佣金)。
             // 按 params.value 目标状态分流 dispose/reject;细分由 OpsTeamService.updateCommissionEventStatus 二次校验兜底。
             case "F" -> switch (operation) {
+                case "f_seven_layer_activation" -> "network_f2_policy_amplify";
                 case "f_direct_referral_policy" -> "network_f2_royalty_rate";
                 case "f_config", "f_ui_config", "f_unilevel_rule" ->
                         fConfigAuthority(operation, command.params());
