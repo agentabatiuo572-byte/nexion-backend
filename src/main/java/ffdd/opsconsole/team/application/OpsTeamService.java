@@ -1705,7 +1705,7 @@ public class OpsTeamService implements AuditReplayable {
                         "两轨均达到结算门槛", ""),
                 f3Metric("blockedUsers", "阻塞用户(轨不平衡)", String.valueOf(intValue(summary.get("blockedCount"), 0)),
                         "来自结算状态聚合", intValue(summary.get("blockedCount"), 0) > 0 ? "warn" : ""),
-                f3Metric("residualPool", "沉淀池(未匹配)", moneyCompact(intValue(summary.get("residualPoolUsd"), 0)),
+                f3Metric("residualPool", "沉淀池(未匹配)", f3ResidualPool(summary),
                         "来自左右轨未匹配差额", "cyan"));
     }
 
@@ -1743,7 +1743,7 @@ public class OpsTeamService implements AuditReplayable {
         config.put("gvResetCron", configText("F.binary.gvResetCron", ""));
         config.put("settlePeriod", configText("F.binary.settlePeriod", ""));
         config.put("residualPolicy", configText("F.binary.residualPolicy", ""));
-        config.put("residualPool", moneyCompact(intValue(summary.get("residualPoolUsd"), 0)));
+        config.put("residualPool", f3ResidualPool(summary));
         config.put("residualSub", "未匹配体量按当前沉淀策略处理");
         return config;
     }
@@ -1768,6 +1768,10 @@ public class OpsTeamService implements AuditReplayable {
         return commissionRepository.binarySettlements(100).stream()
                 .map(this::normalizeBinarySettlementMap)
                 .toList();
+    }
+
+    private String f3ResidualPool(Map<String, Object> summary) {
+        return summary.get("residualPoolUsd") == null ? "" : moneyCompact(intValue(summary.get("residualPoolUsd"), 0));
     }
 
     private Map<String, Object> binarySettlementSummary() {

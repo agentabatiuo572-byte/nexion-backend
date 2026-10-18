@@ -713,6 +713,32 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     List<Map<String, Object>> binarySettlements(@Param("limit") int limit);
 
     @Select("""
+            WITH residual_settings AS (
+              SELECT (SELECT TRIM(config_value) FROM nx_config_item
+                       WHERE config_key='team.ui.F.binary.residualPolicy'
+                         AND status=1 AND is_deleted=0 LIMIT 1) policy,
+                     DATE(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00')) business_date
+            ), captured AS (
+              SELECT v.owner_user_id,
+                     SUM(CASE WHEN v.leg='A' THEN v.amount_usdt ELSE 0 END) track_a,
+                     SUM(CASE WHEN v.leg='B' THEN v.amount_usdt ELSE 0 END) track_b
+                FROM nx_binary_paid_order_volume v CROSS JOIN residual_settings p
+               WHERE v.status='ACTIVE' AND v.is_deleted=0
+                 AND v.paid_at<DATE_ADD(p.business_date,INTERVAL 1 DAY)
+                 AND (p.policy='转结' OR v.paid_at>=DATE_FORMAT(p.business_date,'%Y-%m-01'))
+                 AND (p.policy<>'每次对碰清零' OR v.id>COALESCE((
+                      SELECT MAX(c.through_volume_id_inclusive) FROM nx_binary_volume_cursor c
+                       WHERE c.owner_user_id=v.owner_user_id),0))
+               GROUP BY v.owner_user_id
+            ), consumed AS (
+              SELECT s.user_id,SUM(s.matched_volume) matched
+                FROM nx_binary_commission_settlement s CROSS JOIN residual_settings p
+               WHERE s.is_deleted=0 AND s.status<>'BLOCKED'
+                 AND ((p.policy='转结' AND s.settlement_date<DATE_ADD(p.business_date,INTERVAL 1 DAY))
+                   OR (p.policy='每月清零' AND s.settlement_date>=DATE_FORMAT(p.business_date,'%Y-%m-01')
+                     AND s.settlement_date<DATE_ADD(DATE_FORMAT(p.business_date,'%Y-%m-01'),INTERVAL 1 MONTH)))
+               GROUP BY s.user_id
+            )
             SELECT COUNT(DISTINCT user_id) AS participantCount,
                    SUM(CASE WHEN UPPER(status) IN ('BLOCKED', 'REJECTED', 'FAILED', 'FROZEN') THEN 1 ELSE 0 END) AS blockedCount,
                    COALESCE(ROUND(SUM(CASE
@@ -730,7 +756,11 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                        AND a.assigned_at <= NOW()) AS autoPlacement7dCount,
                    COALESCE(ROUND(MAX(daily_cap_usdt), 0), 0) AS maxDailyCapUsd,
                    COALESCE(ROUND(MAX(GREATEST(left_volume, right_volume)), 0), 0) AS maxTrackGmv,
-                   COALESCE(ROUND(SUM(GREATEST(left_volume, right_volume) - matched_volume), 0), 0) AS residualPoolUsd
+                   (SELECT CASE WHEN p.policy IN ('转结','每月清零','每次对碰清零') THEN
+                     (SELECT COALESCE(ROUND(SUM(GREATEST(c.track_a-COALESCE(s.matched,0),
+                                                       c.track_b-COALESCE(s.matched,0),0)),0),0)
+                        FROM captured c LEFT JOIN consumed s ON s.user_id=c.owner_user_id)
+                     ELSE NULL END FROM residual_settings p) AS residualPoolUsd
               FROM nx_binary_commission_settlement
              WHERE is_deleted = 0
             """)

@@ -247,6 +247,24 @@ class OpsTeamServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void unavailableResidualPoolStaysBlankForBothF3Consumers() {
+        commissionRepository.binarySettlements.add(Map.of("user", "U7", "trackA", 0, "trackB", 743, "matchAmount", 0));
+        commissionRepository.residualPoolUnavailable = true;
+        Map<String, Object> data = service.binary().getData();
+        assertThat((Map<String, Object>) data.get("config")).containsEntry("residualPool", "");
+        assertThat((List<Map<String, Object>>) data.get("metrics"))
+                .filteredOn(row -> "residualPool".equals(row.get("id")))
+                .extracting(row -> row.get("value")).containsExactly("");
+        commissionRepository.residualPoolUnavailable = false;
+        data = service.binary().getData();
+        assertThat((Map<String, Object>) data.get("config")).containsEntry("residualPool", "$743");
+        assertThat((List<Map<String, Object>>) data.get("metrics"))
+                .filteredOn(row -> "residualPool".equals(row.get("id")))
+                .extracting(row -> row.get("value")).containsExactly("$743");
+    }
+
+    @Test
     void binaryReadsCurrentRhythmFromH1() {
         configFacade.values.put("H1.rhythm.currentMonth", "10");
         configFacade.values.put("growth.phase.current", "P5");
@@ -2089,6 +2107,7 @@ class OpsTeamServiceTest {
     }
 
     private static final class FakeTeamCommissionRepository implements TeamCommissionRepository {
+        private boolean residualPoolUnavailable;
         private final List<Map<String, Object>> binarySettlements = new ArrayList<>();
         private final List<Map<String, Object>> vRankRows = new ArrayList<>();
         private final List<Map<String, Object>> f2Metrics = new ArrayList<>();
@@ -2155,14 +2174,16 @@ class OpsTeamServiceTest {
                             ((Number) row.getOrDefault("trackB", 0)).intValue())
                             - ((Number) row.getOrDefault("matchAmount", 0)).intValue())
                     .sum();
-            return Map.of(
+            Map<String, Object> summary = new LinkedHashMap<>(Map.of(
                     "participantCount", participantCount,
                     "blockedCount", 0,
                     "monthlyMatchedUsd", monthlyMatchedUsd,
                     "dailyMatchUsd", monthlyMatchedUsd,
                     "autoPlacement7dCount", 0,
                     "maxTrackGmv", maxTrackGmv,
-                    "residualPoolUsd", residualPoolUsd);
+                    "residualPoolUsd", residualPoolUsd));
+            if (residualPoolUnavailable) summary.remove("residualPoolUsd");
+            return summary;
         }
 
         @Override
