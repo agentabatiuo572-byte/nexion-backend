@@ -27,14 +27,14 @@ public class StorefrontPurchaseGatePolicy {
             BigDecimal volume = decimal(gate, "teamVolumeMin");
             Integer cap = integer(gate, "quotaCap");
             Integer sold = integer(gate, "quotaSold");
-            if (rank == null && gate.has("rankMin") || direct == null && gate.has("activeDirectMin")
-                    || volume == null && gate.has("teamVolumeMin") || cap == null && gate.has("quotaCap")
-                    || sold == null && gate.has("quotaSold")) return Decision.closed("PURCHASE_GATE_INVALID");
+            if (rank == null && gate.hasNonNull("rankMin") || direct == null && gate.hasNonNull("activeDirectMin")
+                    || volume == null && gate.hasNonNull("teamVolumeMin") || cap == null && gate.hasNonNull("quotaCap")
+                    || sold == null && gate.hasNonNull("quotaSold")) return Decision.closed("PURCHASE_GATE_INVALID");
             if ((cap != null && sold == null) || (cap == null && sold != null)) return Decision.closed("PURCHASE_GATE_INVALID");
             if (rank != null && (rank < 0 || rank > 12) || direct != null && (direct < 0 || direct > 1_000_000) || cap != null && cap < 1
                     || sold != null && sold < 0 || cap != null && sold != null && sold > cap
                     || volume != null && volume.signum() < 0) return Decision.closed("PURCHASE_GATE_INVALID");
-            if (gate.has("quotaPeriod") && (!gate.path("quotaPeriod").isTextual()
+            if (gate.hasNonNull("quotaPeriod") && (!gate.path("quotaPeriod").isTextual()
                     || !"lifetime".equals(gate.path("quotaPeriod").asText()))) {
                 return Decision.closed("PURCHASE_GATE_INVALID");
             }
@@ -115,7 +115,7 @@ public class StorefrontPurchaseGatePolicy {
         try {
             JsonNode gate = objectMapper.readTree(raw);
             return validGate(gate) && gate.path("enforce").asBoolean()
-                    && gate.has("quotaCap") && gate.has("quotaSold");
+                    && gate.hasNonNull("quotaCap") && gate.hasNonNull("quotaSold");
         } catch (Exception ex) {
             return false;
         }
@@ -132,14 +132,16 @@ public class StorefrontPurchaseGatePolicy {
         BigDecimal volume = decimal(gate, "teamVolumeMin");
         Integer cap = integer(gate, "quotaCap");
         Integer sold = integer(gate, "quotaSold");
-        if (rank == null && gate.has("rankMin") || direct == null && gate.has("activeDirectMin")
-                || volume == null && gate.has("teamVolumeMin") || cap == null && gate.has("quotaCap")
-                || sold == null && gate.has("quotaSold")) return false;
+        // Optional DTO fields serialize as null; only non-null values require a valid type.
+        if (rank == null && gate.hasNonNull("rankMin") || direct == null && gate.hasNonNull("activeDirectMin")
+                || volume == null && gate.hasNonNull("teamVolumeMin") || cap == null && gate.hasNonNull("quotaCap")
+                || sold == null && gate.hasNonNull("quotaSold")) return false;
         if ((cap != null && sold == null) || (cap == null && sold != null)) return false;
         if (rank != null && (rank < 0 || rank > 12) || direct != null && (direct < 0 || direct > 1_000_000)
                 || cap != null && cap < 1 || sold != null && sold < 0
                 || cap != null && sold != null && sold > cap || volume != null && volume.signum() < 0) return false;
-        return !gate.has("quotaPeriod") || gate.path("quotaPeriod").isTextual()
+        return !gate.has("quotaPeriod") || (gate.path("quotaPeriod").isNull() && cap == null)
+                || gate.path("quotaPeriod").isTextual()
                 && "lifetime".equals(gate.path("quotaPeriod").asText());
     }
 
