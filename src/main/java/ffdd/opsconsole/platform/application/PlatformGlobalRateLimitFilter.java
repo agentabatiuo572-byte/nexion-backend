@@ -35,7 +35,8 @@ public class PlatformGlobalRateLimitFilter extends OncePerRequestFilter {
         boolean protectedProviderCallback =
                 "/openapi/v1/payments/hdpay/pay-in/callback".equals(uri)
                 || "/openapi/v1/payments/hdpay/payout/callback".equals(uri)
-                || "/api/cregis/callbacks/deposit".equals(uri);
+                || "/api/cregis/callbacks/deposit".equals(uri)
+                || "/openapi/v1/withdrawals/cregis/callbacks/payout".equals(uri);
         return "OPTIONS".equalsIgnoreCase(request.getMethod())
                 || !(uri.startsWith("/api/") || uri.startsWith("/auth/")
                 || protectedProviderCallback);

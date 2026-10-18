@@ -90,6 +90,29 @@ class ReleaseBrokerTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_cregis_payout_requires_separate_root_approval(self):
+        policy = Path(__file__).parents[2] / 'src/main/resources/public-test-policy.properties'
+        (self.root / 'public-test-policy.properties').write_bytes(policy.read_bytes())
+        payin = self.root / 'cregis-pay-in-approved'
+        payout = self.root / 'cregis-payout-approved'
+        real_path = Path
+        def local_path(value):
+            if str(value) == '/srv/nexgrid/secrets/cregis-pay-in-approved': return payin
+            if str(value) == '/srv/nexgrid/secrets/cregis-payout-approved': return payout
+            return real_path(value)
+        with patch.object(b, 'INSTALL', self.root), patch.object(b, 'Path', side_effect=local_path), patch.object(b, 'trusted_root_path'):
+            self.assertNotIn('--nexion.deployment.cregis-payout-approved=true', b.backend_dropin())
+            payin.write_bytes(b'PROVIDER\n')
+            self.assertIn('--nexion.finance.cregis.payout-enabled=false', b.backend_dropin())
+            payout.write_bytes(b'PROVIDER\n')
+            dropin = b.backend_dropin()
+            self.assertIn('--nexion.finance.cregis.payout-enabled=true', dropin)
+            self.assertIn('--nexion.deployment.cregis-payout-approved=true', dropin)
+            self.assertIn('--nexion.finance.funds-sandbox.mode=DISABLED', dropin)
+            payin.unlink()
+            with self.assertRaisesRegex(b.Rejected, 'CREGIS_PAY_IN_APPROVAL_REQUIRED'):
+                b.backend_dropin()
+
     def archive(self, name='server.js', kind=tarfile.REGTYPE, link='', mode=0o644):
         source = self.root / 'payload.tgz'
         with tarfile.open(source, 'w:gz') as archive:

@@ -15,9 +15,8 @@ public final class CregisGatewayRouter {
     }
 
     public boolean payoutEnabled() {
-        // Current product scope has bank withdrawals only. Provider chain payout
-        // cannot be enabled by an environment flag or by the pay-in gate.
-        return properties.getMode() == CregisProperties.Mode.LOCAL_SANDBOX;
+        return properties.getMode() == CregisProperties.Mode.LOCAL_SANDBOX
+                || properties.getMode() == CregisProperties.Mode.PROVIDER && properties.isPayoutEnabled();
     }
 
     public CregisGateway provider() {

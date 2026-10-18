@@ -20,6 +20,7 @@ public class CregisDepositSwitchService {
     private final CregisDepositMapper db;
     private final AuditLogService audit;
     private final PlatformTransactionManager txManager;
+    private final CregisPayoutControl payouts;
 
     public List<Map<String, Object>> cases() {
         return config.getMode() == CregisProperties.Mode.PROVIDER
@@ -27,6 +28,11 @@ public class CregisDepositSwitchService {
     }
 
     public Map<String, Object> propose(long actor, long version, boolean assign, boolean credit, String reason) {
+        return propose(actor, version, assign, credit, null, reason);
+    }
+
+    public Map<String, Object> propose(long actor, long version, boolean assign, boolean credit,
+                                       Boolean payout, String reason) {
         require(actor, reason);
         if (version < 0 || config.getMode() != CregisProperties.Mode.PROVIDER)
             throw new BizException(409, "CREGIS_SWITCH_CONFIG_INVALID");
@@ -34,13 +40,14 @@ public class CregisDepositSwitchService {
             Map<String, Object> gate = db.lockProvisionGate();
             if (gate == null || ((Number) gate.get("version")).longValue() != version)
                 throw new BizException(409, "CREGIS_SWITCH_VERSION_CHANGED");
+            boolean proposedPayout = payout == null ? on(gate.get("payoutEnabled")) : payout;
             if (db.createSwitchCase(config.getProjectId(), version, assign ? 1 : 0,
-                    credit ? 1 : 0, reason.trim(), actor) != 1)
+                    credit ? 1 : 0, proposedPayout ? 1 : 0, reason.trim(), actor) != 1)
                 throw new IllegalStateException("CREGIS_SWITCH_CASE_INSERT_FAILED");
             Long id = db.lastInsertId();
             if (id == null) throw new IllegalStateException("CREGIS_SWITCH_CASE_MISSING");
             audit.recordRequired(entry("CREGIS_SWITCH_PROPOSED", id, actor, Map.of(
-                    "assign", assign, "credit", credit, "payout", false,
+                    "assign", assign, "credit", credit, "payout", proposedPayout,
                     "expectedVersion", version, "reason", reason.trim())));
             return Map.of("caseId", id, "status", "MAKER_DONE");
         });
@@ -66,7 +73,16 @@ public class CregisDepositSwitchService {
                     throw new BizException(409, "CREGIS_SWITCH_VERSION_CHANGED");
                 int assign = ((Number) proposal.get("assignEnabled")).intValue();
                 int credit = ((Number) proposal.get("creditEnabled")).intValue();
-                if ((assign != 0 || credit != 0)
+                int payout = on(proposal.get("payoutEnabled")) ? 1 : 0;
+                boolean opensAssign = assign != 0 && !on(gate.get("assignEnabled"));
+                boolean opensCredit = credit != 0 && !on(gate.get("creditEnabled"));
+                boolean opensPayout = payout != 0 && !on(gate.get("payoutEnabled"));
+                boolean closes = (assign == 0 && on(gate.get("assignEnabled")))
+                        || (credit == 0 && on(gate.get("creditEnabled")))
+                        || (payout == 0 && on(gate.get("payoutEnabled")));
+                boolean onlyCloses = !opensAssign && !opensCredit && !opensPayout && closes;
+                boolean restores = !"IDLE".equals(gate.get("state")) && !onlyCloses;
+                if ((opensAssign || opensCredit || (restores && (assign != 0 || credit != 0)))
                         && (!config.isDepositEnabled() || !config.isDepositCreditEnabled()
                             || db.unresolvedExposure(config.getProjectId()).compareTo(new BigDecimal("500")) >= 0
                             || db.criticalHeldDepositCount(config.getProjectId()) != 0
@@ -78,15 +94,19 @@ public class CregisDepositSwitchService {
                             || !db.providerMissing(config.getProjectId()).isEmpty()
                             || !db.failedDeliveries(config.getProjectId()).isEmpty()))
                     throw new BizException(409, "CREGIS_SWITCH_RECOVERY_NOT_SAFE");
-                if (assign != 0 || credit != 0) db.resolveManualEmergencyAlerts(config.getProjectId());
-                if (db.setSwitches(assign, credit, 0, reason.trim(), expected) != 1)
+                if ((opensPayout || (restores && payout != 0))
+                        && (!payouts.configured() || payouts.recoveryReason() != null))
+                    throw new BizException(409, "CREGIS_SWITCH_RECOVERY_NOT_SAFE");
+                if (opensAssign || opensCredit || opensPayout || restores)
+                    db.resolveManualEmergencyAlerts(config.getProjectId());
+                if (db.setSwitches(assign, credit, payout, reason.trim(), expected) != 1)
                     throw new BizException(409, "CREGIS_SWITCH_VERSION_CHANGED");
             }
             if (db.checkSwitchCase(caseId, config.getProjectId(), actor, status) != 1)
                 throw new BizException(409, "CREGIS_SWITCH_CASE_CHANGED");
             audit.recordRequired(entry("CREGIS_SWITCH_" + decision, caseId, actor, Map.of(
                     "reason", reason.trim(), "assign", proposal.get("assignEnabled"),
-                    "credit", proposal.get("creditEnabled"), "payout", false)));
+                    "credit", proposal.get("creditEnabled"), "payout", on(proposal.get("payoutEnabled")))));
             return Map.of("caseId", caseId, "status", status);
         });
     }
@@ -131,5 +151,9 @@ public class CregisDepositSwitchService {
         if (actor <= 0) throw new BizException(401, "ADMIN_AUTH_REQUIRED");
         if (reason == null || reason.trim().length() < 10 || reason.trim().length() > 255)
             throw new BizException(400, "CREGIS_SWITCH_REASON_REQUIRED");
+    }
+
+    private static boolean on(Object value) {
+        return Boolean.TRUE.equals(value) || value instanceof Number number && number.intValue() == 1;
     }
 }

@@ -137,7 +137,7 @@ class BankWithdrawalMySqlTest {
                     .when(ledger).settleBankWithdrawalReserve(anyString(),any(),anyLong(),any());
             doAnswer(i -> { treasury.reverseLegacyBankWithdrawalReserve(i.getArgument(0),i.getArgument(1),i.getArgument(2)); return null; })
                     .when(ledger).reverseLegacyBankWithdrawalReserve(anyString(),any(),any());
-            var finalizer = proxy(new WithdrawalPayoutFinalizer(payouts, audit, ledger, CLOCK,mock(SupportWithdrawalFundSourceService.class)));
+            var finalizer = proxy(new WithdrawalPayoutFinalizer(payouts, audit, ledger, CLOCK,mock(SupportWithdrawalFundSourceService.class), mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class)));
             transactions = proxy(new HdPayPayoutTransactions(bank, mock(BankAccountRoutingGate.class), users, payouts, finalizer, cipher, transport, properties, config,
                     mock(OpsFinanceService.class), audit, outbox, CLOCK));
             var withdrawals = mock(AppWithdrawalService.class);

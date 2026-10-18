@@ -76,8 +76,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
                     WHERE u.id=nx_withdrawal_order.user_id
                       AND u.is_deleted=0 AND u.sandbox=0 AND u.status='ACTIVE'
                )
-               AND ((status='REVIEW_PASSED' AND (next_broadcast_at IS NULL OR next_broadcast_at<=#{now}))
-                 OR (status='PROCESSING' AND d5_payout_lease_until<=#{now}))
+               AND status='REVIEW_PASSED' AND (next_broadcast_at IS NULL OR next_broadcast_at<=#{now})
              ORDER BY COALESCE(d5_payout_due_at,created_at),id LIMIT #{limit}
             """)
     List<PayoutRow> claimable(@Param("now") LocalDateTime now, @Param("limit") int limit);
@@ -144,6 +143,48 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
     int claim(@Param("withdrawalNo") String withdrawalNo, @Param("now") LocalDateTime now,
               @Param("leaseUntil") LocalDateTime leaseUntil);
 
+    @Update("""
+            UPDATE nx_withdrawal_order
+               SET status='PROCESSING',d5_payout_lease_until=#{leaseUntil},
+                   d5_provider_idempotency_key=COALESCE(d5_provider_idempotency_key,withdrawal_no),
+                   chain_broadcast_attempts=chain_broadcast_attempts+1,
+                   last_broadcast_error=NULL,updated_at=#{now}
+             WHERE withdrawal_no=#{withdrawalNo} AND is_deleted=0
+               AND chain IN ('USDT-TRC20','USDT-BEP20','USDT-ERC20')
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_withdrawal_order.user_id
+                           AND u.is_deleted=0 AND u.sandbox=0 AND u.status='ACTIVE')
+               AND status='REVIEW_PASSED' AND (next_broadcast_at IS NULL OR next_broadcast_at<=#{now})
+            """)
+    int claimNewPayout(@Param("withdrawalNo") String withdrawalNo, @Param("now") LocalDateTime now,
+                       @Param("leaseUntil") LocalDateTime leaseUntil);
+
+    @Update("""
+            UPDATE nx_withdrawal_order SET d5_payout_source='provider',updated_at=#{now}
+             WHERE withdrawal_no=#{withdrawalNo} AND status='PROCESSING' AND is_deleted=0
+               AND d5_provider_cid IS NULL AND (d5_payout_source IS NULL OR d5_payout_source='provider')
+            """)
+    int markProviderIntent(@Param("withdrawalNo") String withdrawalNo,@Param("now") LocalDateTime now);
+
+    @Select("SELECT d5_payout_source FROM nx_withdrawal_order WHERE withdrawal_no=#{withdrawalNo} AND is_deleted=0 FOR UPDATE")
+    @org.apache.ibatis.annotations.Options(useCache=false, flushCache=org.apache.ibatis.annotations.Options.FlushCachePolicy.TRUE)
+    String lockPayoutSource(@Param("withdrawalNo") String withdrawalNo);
+
+    @Select("SELECT d2_k4_risk_score FROM nx_withdrawal_order WHERE withdrawal_no=#{withdrawalNo} AND is_deleted=0")
+    Integer payoutRiskScore(@Param("withdrawalNo") String withdrawalNo);
+
+    @Select("""
+            SELECT withdrawal_no withdrawalNo,user_id userId,chain,target_address targetAddress,
+                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,status,
+                   d5_payout_due_at payoutDueAt,d5_provider_cid providerCid,
+                   d5_provider_idempotency_key providerIdempotencyKey,
+                   d5_payout_source payoutSource,chain_broadcast_attempts attempts
+              FROM nx_withdrawal_order
+             WHERE status='PROCESSING' AND d5_payout_lease_until<=#{now} AND is_deleted=0
+               AND chain='USDT-BEP20' AND (d5_payout_source IS NULL OR d5_payout_source='provider')
+             ORDER BY id LIMIT #{limit}
+            """)
+    List<PayoutRow> expiredProviderAttempts(@Param("now") LocalDateTime now, @Param("limit") int limit);
+
     @Select("""
             SELECT withdrawal_no withdrawalNo,user_id userId,chain,target_address targetAddress,
                    amount,d2_net_receive netReceive,d2_nex_burned nexBurned,status,
@@ -178,6 +219,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
     @Update("""
             UPDATE nx_withdrawal_order
                SET status='REVIEW_PASSED',d5_payout_lease_until=NULL,
+                   d5_payout_source=NULL,d5_provider_cid=NULL,
                    next_broadcast_at=DATE_ADD(#{now},INTERVAL 5 MINUTE),
                    last_broadcast_error=#{error},failure_reason=#{error},updated_at=#{now}
              WHERE withdrawal_no=#{withdrawalNo} AND status='PROCESSING' AND is_deleted=0
@@ -219,10 +261,13 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_withdrawal_order
-               SET status='SENT',d5_provider_cid=#{providerCid},failure_reason=NULL,
-                   last_broadcast_error=NULL,updated_at=#{now}
-             WHERE withdrawal_no=#{withdrawalNo} AND status='TX_ORPHANED'
-               AND d5_payout_source='provider' AND d5_provider_idempotency_key=#{providerKey}
+               SET status='SENT',d5_provider_cid=#{providerCid},d5_payout_source='provider',
+                   d5_payout_lease_until=NULL,chain_submitted_at=COALESCE(chain_submitted_at,#{now}),
+                   failure_reason=NULL,last_broadcast_error=NULL,updated_at=#{now}
+             WHERE withdrawal_no=#{withdrawalNo} AND status IN ('PROCESSING','TX_ORPHANED')
+               AND (d5_payout_source IS NULL OR d5_payout_source='provider')
+               AND (d5_provider_cid IS NULL OR d5_provider_cid=#{providerCid})
+               AND d5_provider_idempotency_key=#{providerKey}
                AND is_deleted=0
             """)
     int recoverOrphanToSent(@Param("withdrawalNo") String withdrawalNo,

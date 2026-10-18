@@ -228,7 +228,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     @Update("""
             UPDATE nx_cregis_provision_gate
                SET assign_enabled=#{assign},credit_enabled=#{credit},payout_enabled=#{payout},
-                   state=IF(#{assign}=1 OR #{credit}=1,'IDLE','BLOCKED'),
+                   state=IF(#{assign}=1 OR #{credit}=1 OR #{payout}=1,'IDLE','BLOCKED'),
                    switch_reason=#{reason},version=version+1
              WHERE id=1 AND version=#{expectedVersion}
             """)
@@ -842,17 +842,17 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                         @Param("status") String status, @Param("expectedVersion") long expectedVersion);
     @Insert("""
             INSERT INTO nx_cregis_switch_case
-              (project_id,expected_version,assign_enabled,credit_enabled,reason,maker_id,status)
-            VALUES(#{projectId},#{version},#{assign},#{credit},#{reason},#{makerId},'MAKER_DONE')
+              (project_id,expected_version,assign_enabled,credit_enabled,payout_enabled,reason,maker_id,status)
+            VALUES(#{projectId},#{version},#{assign},#{credit},#{payout},#{reason},#{makerId},'MAKER_DONE')
             """)
     int createSwitchCase(@Param("projectId") long projectId, @Param("version") long version,
-                         @Param("assign") int assign, @Param("credit") int credit,
+                         @Param("assign") int assign, @Param("credit") int credit, @Param("payout") int payout,
                          @Param("reason") String reason, @Param("makerId") long makerId);
     @Select("SELECT LAST_INSERT_ID()")
     Long lastInsertId();
     @Select("""
             SELECT id,project_id AS projectId,expected_version AS expectedVersion,
-              assign_enabled AS assignEnabled,credit_enabled AS creditEnabled,
+              assign_enabled AS assignEnabled,credit_enabled AS creditEnabled,payout_enabled AS payoutEnabled,
               reason,maker_id AS makerId,status
             FROM nx_cregis_switch_case WHERE id=#{id} FOR UPDATE
             """)

@@ -29,12 +29,12 @@ class SupportWithdrawalFundSourceServiceTest {
             return 1;
         });
         when(fixture.mapper.settlePending(eq(7L),eq(GROSS),any())).thenReturn(1);
-        var row=new WithdrawalPayoutMapper.PayoutRow("WD1",7L,"USDT-TRC20","address",GROSS,new BigDecimal("90"),
+        var row=new WithdrawalPayoutMapper.PayoutRow("WD1",7L,"USDT-BEP20","0x"+"c".repeat(40),GROSS,new BigDecimal("90"),
                 BigDecimal.ZERO,"SENT",expected,1L,"WD1","provider",0);
         var finalizer=new WithdrawalPayoutFinalizer(fixture.mapper,mock(ffdd.opsconsole.shared.audit.AuditLogService.class),
-                mock(ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade.class),clock,fixture.service);
-        assertThat(finalizer.terminal(row,1L,"provider","event1","hash1","CONFIRMED","tx1",null)).isTrue();
-        verify(fixture.mapper).terminalOrder("WD1",1L,"CONFIRMED","tx1",null,expected);
+                mock(ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade.class),clock,fixture.service, mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class));
+        assertThat(finalizer.confirmProviderChain(row,"0x"+"a".repeat(64),new ffdd.opsconsole.finance.cregis.BscDepositProof.Proof(1,100,"0x"+"b".repeat(64),15),15)).isTrue();
+        verify(fixture.mapper).terminalOrder("WD1",1L,"CONFIRMED","0x"+"a".repeat(64),null,expected);
         verify(fixture.mapper).settlePending(7L,GROSS,expected);
         assertThat(fixture.order.get("completedAt")).isEqualTo(expected);
         assertThat(fixture.receipt().phase()).isEqualTo("CONFIRM");

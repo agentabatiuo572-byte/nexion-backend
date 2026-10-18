@@ -156,6 +156,37 @@ class WithdrawalPayoutCallbackServiceTest {
         return value;
     }
 
+    @Test
+    void signedCallbackRecoversLostCreateResponseOnlyAfterIndependentSnapshotQuery() {
+        var mapper = mock(WithdrawalPayoutMapper.class);
+        var finalizer = mock(WithdrawalPayoutFinalizer.class);
+        var router = mock(CregisGatewayRouter.class);
+        var gateway = mock(CregisGateway.class);
+        var sent = row();
+        var unknown = new WithdrawalPayoutMapper.PayoutRow(sent.withdrawalNo(),sent.userId(),sent.chain(),
+                sent.targetAddress(),sent.amount(),sent.netReceive(),sent.nexBurned(),"TX_ORPHANED",null,
+                null,sent.providerIdempotencyKey(),"provider",1);
+        when(mapper.payoutByProviderKey(sent.providerIdempotencyKey())).thenReturn(unknown);
+        when(mapper.claimCallbackInbox(anyString(),any(),any())).thenReturn(1);
+        when(mapper.payout(sent.withdrawalNo())).thenReturn(unknown,sent);
+        when(router.provider()).thenReturn(gateway);
+        when(gateway.queryPayout(any())).thenReturn(new CregisGateway.PayoutOrder(9001L,
+                CregisConstants.USDT_BEP20_CURRENCY,CregisConstants.BSC_CHAIN_ID,CregisConstants.USDT_BEP20_TOKEN_ID,
+                sent.targetAddress(),sent.netReceive(),sent.providerIdempotencyKey(),CregisGateway.PayoutStatus.SUCCEEDED,
+                "0x"+"a".repeat(64)));
+        when(finalizer.recoverProviderSubmission(unknown,9001L)).thenReturn(true);
+        var callback = callback();
+        var signer = new CregisSigner();
+        callback.put("sign",signer.sign(properties().getApiKey(),callback));
+        var result = new WithdrawalPayoutCallbackService(mapper,properties(),signer,finalizer,router,CLOCK).receive(callback);
+        assertThat(result.getData()).containsEntry("status","CHAIN_CONFIRMATION_PENDING");
+        var ordered = org.mockito.Mockito.inOrder(gateway,finalizer);
+        ordered.verify(gateway).queryPayout(new CregisGateway.PayoutQuery(9001L,sent.providerIdempotencyKey(),
+                sent.targetAddress(),sent.netReceive()));
+        ordered.verify(finalizer).recoverProviderSubmission(unknown,9001L);
+        verify(gateway,never()).createPayout(any());
+    }
+
     private WithdrawalPayoutCallbackService service(WithdrawalPayoutMapper mapper, CregisProperties properties,
                                                      CregisSigner signer, WithdrawalPayoutFinalizer finalizer,
                                                      WithdrawalPayoutMapper.PayoutRow row,

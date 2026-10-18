@@ -12,6 +12,8 @@ import static org.mockito.Mockito.*;
 import static org.assertj.core.api.Assertions.*;
 
 class WithdrawalCashClosureTest {
+    private static final String TX="0x"+"a".repeat(64);
+    private static final ffdd.opsconsole.finance.cregis.BscDepositProof.Proof PROOF=new ffdd.opsconsole.finance.cregis.BscDepositProof.Proof(1,100,"0x"+"b".repeat(64),15);
     private final WithdrawalPayoutMapper mapper=mock(WithdrawalPayoutMapper.class);
     private final SupportWithdrawalFundSourceService funds=mock(SupportWithdrawalFundSourceService.class);
     private final LocalDateTime at=LocalDateTime.of(2026,10,11,0,0);
@@ -23,9 +25,9 @@ class WithdrawalCashClosureTest {
         unreservedTerminal("FAILED");
     }
     private void unreservedTerminal(String status) {
-        var finalizer=new WithdrawalPayoutFinalizer(mapper,mock(AuditLogService.class),mock(TreasuryLedgerPostingFacade.class),Clock.systemUTC(),funds);
-        var row=new WithdrawalPayoutMapper.PayoutRow("OLD",7L,"USDT-TRC20","address",new BigDecimal("100"),new BigDecimal("90"),BigDecimal.ZERO,"SENT",at,9L,"OLD","provider",1);
-        assertThatThrownBy(()->finalizer.terminal(row,9L,"provider","event","hash",status,null,"failure"))
+        var finalizer=new WithdrawalPayoutFinalizer(mapper,mock(AuditLogService.class),mock(TreasuryLedgerPostingFacade.class),Clock.systemUTC(),funds, mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class));
+        var row=new WithdrawalPayoutMapper.PayoutRow("OLD",7L,"USDT-BEP20","0x"+"c".repeat(40),new BigDecimal("100"),new BigDecimal("90"),BigDecimal.ZERO,"SENT",at,9L,"OLD","provider",1);
+        assertThatThrownBy(()->{ if("CONFIRMED".equals(status)) finalizer.confirmProviderChain(row,TX,PROOF,15); else finalizer.terminal(row,9L,"provider","event","hash",status,null,"failure"); })
                 .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
                 .hasMessage("该笔提现的预留资金尚未核实，请复核后重试");
         verify(mapper,never()).insertPayoutLedger(any(),any(),anyLong(),any(),any(),any(),any(),any(),any(),any());
@@ -64,7 +66,7 @@ class WithdrawalCashClosureTest {
     }
     @Test void genuineOldReservationCanConfirmCashWithoutAnyOriginalFundReceipt() throws Exception {
         var f=new TerminalFixture("CONFIRMED");f.legacyReservation();
-        assertThat(f.finalizer.terminal(f.row,9,"provider","event","hash","CONFIRMED","txid",null)).isTrue();
+        assertThat(f.finalizer.confirmProviderChain(f.row,TX,PROOF,15)).isTrue();
         assertThat(f.pending.get()).isEqualByComparingTo("100");
         assertThat(f.available.get()).isEqualByComparingTo("900");
         assertThat(f.receipts).hasSize(1);
@@ -85,8 +87,8 @@ class WithdrawalCashClosureTest {
     }
     @Test void callbackReplayCannotClearTheSecondOrdersPending() {
         var f=new TerminalFixture("CONFIRMED");
-        f.finalizer.terminal(f.row,9,"provider","event","hash","CONFIRMED","txid",null);
-        f.finalizer.terminal(f.row,9,"provider","event","hash","CONFIRMED","txid",null);
+        f.finalizer.confirmProviderChain(f.row,TX,PROOF,15);
+        f.finalizer.confirmProviderChain(f.row,TX,PROOF,15);
         assertThat(f.pending.get()).isEqualByComparingTo("100");
         assertThat(f.receipts).hasSize(1);
         verify(f.source.mapper).settlePending(7L,new BigDecimal("100"),at);
@@ -94,14 +96,14 @@ class WithdrawalCashClosureTest {
     @Test void zeroCashCasRollsBackOrderCallbackAndReceiptInTheSpringTransaction() {
         var f=new TerminalFixture("CONFIRMED");
         when(f.source.mapper.settlePending(7L,new BigDecimal("100"),at)).thenReturn(0);
-        assertThatThrownBy(()->f.finalizer.terminal(f.row,9,"provider","event","hash","CONFIRMED","txid",null))
+        assertThatThrownBy(()->f.finalizer.confirmProviderChain(f.row,TX,PROOF,15))
                 .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
         f.assertRolledBack();
     }
     @Test void requiredAuditFailureRollsBackSuccessfulCashOrderCallbackAndReceipt() {
         var f=new TerminalFixture("CONFIRMED");
         doThrow(new IllegalStateException("audit unavailable")).when(f.audit).recordRequired(any());
-        assertThatThrownBy(()->f.finalizer.terminal(f.row,9,"provider","event","hash","CONFIRMED","txid",null))
+        assertThatThrownBy(()->f.finalizer.confirmProviderChain(f.row,TX,PROOF,15))
                 .isInstanceOf(IllegalStateException.class).hasMessage("audit unavailable");
         f.assertRolledBack();
     }
@@ -114,13 +116,13 @@ class WithdrawalCashClosureTest {
     }
     @Test void sourceProofLocksBeforeWalletAndOrderCashMutation() {
         var f=new TerminalFixture("CONFIRMED");
-        f.finalizer.terminal(f.row,9,"provider","event","hash","CONFIRMED","txid",null);
+        f.finalizer.confirmProviderChain(f.row,TX,PROOF,15);
         var sequence=inOrder(f.source.mapper,f.source.journal);
         sequence.verify(f.source.mapper).lockCashCustomer(7L);
         sequence.verify(f.source.mapper).fundOrder("WD1");
         sequence.verify(f.source.mapper).fundReservationLedgers("WD1");
         sequence.verify(f.source.journal).lockWallet(7L);
-        sequence.verify(f.source.mapper).terminalOrder(eq("WD1"),eq(9L),eq("CONFIRMED"),eq("txid"),isNull(),eq(at));
+        sequence.verify(f.source.mapper).terminalOrder(eq("WD1"),eq(9L),eq("CONFIRMED"),eq(TX),isNull(),eq(at));
     }
 
     /** Exercises real transaction advice; storage is an explicit rollback-capable double, not SQL. */
@@ -147,12 +149,12 @@ class WithdrawalCashClosureTest {
         final java.util.Map<String,String> callbacks=new java.util.HashMap<>();
         final java.util.List<String> receipts=new java.util.ArrayList<>(),refunds=new java.util.ArrayList<>();
         final WithdrawalPayoutFinalizer finalizer;
-        final WithdrawalPayoutMapper.PayoutRow row=new WithdrawalPayoutMapper.PayoutRow("WD1",7L,"USDT-TRC20","address",new BigDecimal("100"),new BigDecimal("90"),BigDecimal.ZERO,"SENT",at,9L,"WD1","provider",1);
+        final WithdrawalPayoutMapper.PayoutRow row=new WithdrawalPayoutMapper.PayoutRow("WD1",7L,"USDT-BEP20","0x"+"c".repeat(40),new BigDecimal("100"),new BigDecimal("90"),BigDecimal.ZERO,"SENT",at,9L,"WD1","provider",1);
         TerminalFixture(String status) {
             source=new SupportWithdrawalFundSourceServiceTest.Fixture("FAILED".equals(status)?"RETURN":"CONFIRM",BigDecimal.ZERO);
             source.before.put("pendingWithdraw",new BigDecimal("200"));source.after.put("pendingWithdraw",new BigDecimal("100"));
             source.raw.put("oldPendingWithdraw",new BigDecimal("200"));source.raw.put("newPendingWithdraw",new BigDecimal("100"));
-            source.order.put("status","SENT");
+            source.order.put("status","SENT");source.order.put("chain","USDT-BEP20");
             when(source.mapper.lockCashCustomer(7L)).thenReturn(7L);
             when(source.mapper.payoutLedgerPayloadHash(anyString())).thenAnswer(i->callbacks.get(i.getArgument(0)));
             when(source.mapper.insertPayoutLedger(any(),any(),anyLong(),any(),any(),any(),any(),any(),any(),any()))
@@ -166,14 +168,14 @@ class WithdrawalCashClosureTest {
             doAnswer(i->{var input=i.getArgument(1,ffdd.opsconsole.finance.facade.SupportFundJournalFacade.ReceiptInput.class);
                 receipts.add(input.operationKey());return new ffdd.opsconsole.finance.facade.SupportFundJournalFacade.BoundReceipt(1,input.operationKey(),"a".repeat(64),1);})
                     .when(source.fund).bind(any(),any());
-            var target=new WithdrawalPayoutFinalizer(source.mapper,audit,ledger,Clock.fixed(at.toInstant(ZoneOffset.UTC),ZoneOffset.UTC),source.service);
+            var target=new WithdrawalPayoutFinalizer(source.mapper,audit,ledger,Clock.fixed(at.toInstant(ZoneOffset.UTC),ZoneOffset.UTC),source.service, mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class));
             var manager=new MemoryTransactionManager(()->{},()->{pending.set(new BigDecimal("200"));available.set(new BigDecimal("900"));
-                source.order.put("status","SENT");callbacks.clear();receipts.clear();refunds.clear();});
+                source.order.put("status","SENT");source.order.put("chain","USDT-BEP20");callbacks.clear();receipts.clear();refunds.clear();});
             finalizer=transactionProxy(target,manager);
         }
         void legacyReservation() throws Exception {
             source.order.remove("attemptStatus");
-            String detail=source.json.writeValueAsString(java.util.Map.of("withdrawal_id","WD1","chain","USDT-TRC20",
+            String detail=source.json.writeValueAsString(java.util.Map.of("withdrawal_id","WD1","chain","USDT-BEP20",
                     "amount_usdt",new BigDecimal("100"),"net_receive",new BigDecimal("90"),"actual_fee",new BigDecimal("10"),"nex_burned",BigDecimal.ZERO));
             when(source.mapper.fundSubmissionAudits("WD1")).thenReturn(java.util.List.of(java.util.Map.of("userId",7L,"actorId",7L,
                     "actorType","USER","result","SUCCESS","detailJson",detail)));
@@ -182,14 +184,7 @@ class WithdrawalCashClosureTest {
             assertThat(source.order.get("status")).isEqualTo("SENT");assertThat(callbacks).isEmpty();assertThat(receipts).isEmpty();assertThat(refunds).isEmpty();}
     }
     private void settle(String no,BigDecimal gross,BigDecimal nex) throws Exception {
-        var constructor=WithdrawalPayoutFinalizer.class.getConstructors()[0];
-        Object[] args=constructor.getParameterCount()==4?new Object[]{mapper,mock(AuditLogService.class),mock(TreasuryLedgerPostingFacade.class),Clock.systemUTC()}:
-                new Object[]{mapper,mock(AuditLogService.class),mock(TreasuryLedgerPostingFacade.class),Clock.systemUTC(),funds};
-        var finalizer=constructor.newInstance(args);
-        try {
-            WithdrawalPayoutFinalizer.class.getMethod("settleManualConfirmation",String.class,Long.class,BigDecimal.class,BigDecimal.class,LocalDateTime.class)
-                    .invoke(finalizer,no,7L,gross,nex,at);
-        } catch(NoSuchMethodException oldSource) { /* Original D2 has no finalizer cash closure. */ }
-        catch(java.lang.reflect.InvocationTargetException failure){if(failure.getCause() instanceof RuntimeException runtime)throw runtime;throw failure;}
+        var finalizer=new WithdrawalPayoutFinalizer(mapper,mock(AuditLogService.class),mock(TreasuryLedgerPostingFacade.class),Clock.systemUTC(),funds,mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class));
+        finalizer.settleManualConfirmation(no,7L,gross,nex,at);
     }
 }

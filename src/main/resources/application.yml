@@ -115,6 +115,7 @@ nexion:
       callback-source-ips: ${NEXION_CREGIS_CALLBACK_SOURCE_IPS:}
       bsc-rpc-url: ${NEXION_CREGIS_BSC_RPC_URL:}
       deposit-confirmations: ${NEXION_CREGIS_DEPOSIT_CONFIRMATIONS:15}
+      chain-scan-blocks: ${NEXION_CREGIS_CHAIN_SCAN_BLOCKS:500}
     hdpay:
       # DISABLED preserves the existing manual VietQR rail. PROVIDER enables
       # hosted BANKQR order creation only when every server-side field is ready.

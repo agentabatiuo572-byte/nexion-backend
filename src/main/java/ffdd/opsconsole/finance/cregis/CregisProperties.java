@@ -33,7 +33,7 @@ public class CregisProperties {
     private boolean depositEnabled;
     /** Pauses new wallet credits while callback, provider query and chain observation continue. */
     private boolean depositCreditEnabled;
-    /** Production crypto payout is outside the accepted pay-in/bank-withdrawal scope. */
+    /** Provider payout transport approval; the independent D1 maker/checker database switch is also required. */
     private boolean payoutEnabled;
     /** Comma-separated, explicitly approved pilot user IDs. Empty means no users. */
     private String depositPilotUserIds = "";
@@ -43,4 +43,11 @@ public class CregisProperties {
     @ToString.Exclude
     private String bscRpcUrl = "";
     private int depositConfirmations = 15;
+    /** Historical RPC batch includes the existing 100-block overlap. */
+    private int chainScanBlocks = 500;
+
+    public int getChainScanBlocks() {
+        if (chainScanBlocks <= 100) throw new IllegalStateException("CREGIS_CHAIN_SCAN_BLOCKS_INVALID");
+        return chainScanBlocks;
+    }
 }

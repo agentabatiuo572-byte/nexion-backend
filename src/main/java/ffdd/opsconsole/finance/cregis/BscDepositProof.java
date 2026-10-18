@@ -54,7 +54,7 @@ public final class BscDepositProof {
 
     /** Narrow finalized Transfer scan of already allocated addresses. */
     public List<Observation> scan(long from, long to, List<String> addresses) {
-        if (from < 0 || to < from || to - from >= 500 || addresses == null
+        if (from < 0 || to < from || to - from >= properties.getChainScanBlocks() || addresses == null
                 || addresses.isEmpty() || addresses.size() > 60) throw invalid();
         StringBuilder recipients = new StringBuilder();
         for (String address : addresses) {
@@ -114,8 +114,19 @@ public final class BscDepositProof {
     }
 
     public Optional<Proof> verify(String txid, String address, BigDecimal amount, long callbackHeight) {
+        return verifyTransfer(txid, address, amount, callbackHeight, true);
+    }
+
+    /** A payout height comes from the real receipt; pending canonical confirmations remain observable. */
+    public Optional<Proof> verifyPayout(String txid, String address, BigDecimal amount) {
+        String normalized = txid != null && txid.matches("(?i)[0-9a-f]{64}") ? "0x" + txid : txid;
+        return verifyTransfer(normalized, address, amount, null, false);
+    }
+
+    private Optional<Proof> verifyTransfer(String txid, String address, BigDecimal amount,
+                                           Long callbackHeight, boolean requireFinality) {
         if (properties.getDepositConfirmations() < 15) throw invalid();
-        if (!txid.matches("(?i)0x[0-9a-f]{64}") || !address.matches("(?i)0x[0-9a-f]{40}")
+        if (txid == null || address == null || !txid.matches("(?i)0x[0-9a-f]{64}") || !address.matches("(?i)0x[0-9a-f]{40}")
                 || amount == null || amount.signum() <= 0 || amount.scale() > 6) throw invalid();
         JsonNode receipt = call("eth_getTransactionReceipt", "[\"" + txid + "\"]");
         if (receipt.isNull()) return Optional.empty();
@@ -123,12 +134,14 @@ public final class BscDepositProof {
                 || !txid.equalsIgnoreCase(receipt.path("transactionHash").asText())) throw invalid();
         long blockNumber = hexLong(receipt.path("blockNumber").asText());
         String blockHash = hash(receipt.path("blockHash").asText());
-        if (blockNumber != callbackHeight) throw invalid();
+        if (callbackHeight != null && blockNumber != callbackHeight) throw invalid();
         Head head = head();
-        if (head.number() < blockNumber || head.number() - blockNumber + 1 < properties.getDepositConfirmations())
+        if (head.number() < blockNumber || (requireFinality
+                && head.number() - blockNumber + 1 < properties.getDepositConfirmations()))
             return Optional.empty();
         JsonNode block = call("eth_getBlockByNumber", "[\"" + hex(blockNumber) + "\",false]");
-        if (!block.isObject() || !blockHash.equalsIgnoreCase(hash(block.path("hash").asText()))) throw invalid();
+        if (!block.isObject() || hexLong(block.path("number").asText()) != blockNumber
+                || !blockHash.equalsIgnoreCase(hash(block.path("hash").asText()))) throw invalid();
         JsonNode decimals = call("eth_call", "[{\"to\":\"" + CregisConstants.USDT_BEP20_TOKEN_ID
                 + "\",\"data\":\"0x313ce567\"},\"latest\"]");
         if (hexLong(decimals.asText()) != 18) throw invalid();
@@ -147,7 +160,9 @@ public final class BscDepositProof {
             if (!raw.matches("(?i)0x[0-9a-f]{64}")) throw invalid();
             BigDecimal transferred = new BigDecimal(new BigInteger(raw.substring(2), 16), 18);
             if (transferred.compareTo(amount) != 0) continue;
-            if (log.path("removed").asBoolean(false) || !blockHash.equalsIgnoreCase(log.path("blockHash").asText()))
+            if (log.path("removed").asBoolean(false) || !blockHash.equalsIgnoreCase(log.path("blockHash").asText())
+                    || !txid.equalsIgnoreCase(log.path("transactionHash").asText())
+                    || hexLong(log.path("blockNumber").asText()) != blockNumber)
                 throw invalid();
             long index = hexLong(log.path("logIndex").asText());
             if (index > Integer.MAX_VALUE || found != null) throw invalid();

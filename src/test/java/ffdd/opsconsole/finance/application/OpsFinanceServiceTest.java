@@ -521,6 +521,21 @@ class OpsFinanceServiceTest {
     }
 
     @Test
+    void providerAttemptCannotBeRefundedFrozenOrResetThroughGenericD2Review() {
+        for (String state : List.of("PROCESSING","SENT","TX_ORPHANED")) {
+            for (String action : List.of("REFUND","FREEZE","REJECT","UNFREEZE")) {
+                withdrawalRepository.order = withdrawal("WD-CREGIS",state);
+                when(withdrawalPayoutFinalizer.providerDispatchStarted("WD-CREGIS",withdrawalRepository.order.userId())).thenReturn(true);
+                var result = service.reviewWithdrawal("WD-CREGIS","provider-"+state+action,
+                        new WithdrawalReviewRequest(action,"superadmin","provider outcome must remain authoritative"));
+                assertThat(result.getMessage()).isEqualTo("CREGIS_PAYOUT_ALREADY_DISPATCHED");
+                assertThat(withdrawalRepository.lastStatus).isNull();
+            }
+        }
+        org.mockito.Mockito.verifyNoInteractions(treasuryLedgerRepository);
+    }
+
+    @Test
     void bankRejectionCannotRefundAnAlreadyDispatchedOrUnknownOrder() {
         for (String state : List.of("PROCESSING", "SENT", "TX_ORPHANED", "CONFIRMED")) {
             withdrawalRepository.order = new WithdrawalOrderView(1L,1001L,"WD-BANK","USDT","BANK-VND",
@@ -2177,7 +2192,7 @@ class OpsFinanceServiceTest {
             when(cashMapper.lockCashCustomer(1001L)).thenReturn(1001L);
             when(cashMapper.settlePending(eq(1001L),any(),any())).thenAnswer(i->{pending.set(pending.get().subtract(i.getArgument(1)));return 1;});
             org.mockito.Mockito.doAnswer(i->{receipts.add(i.getArgument(1));return null;}).when(withdrawalFunds).confirmed(any(),anyString(),any());
-            var finalizer=new WithdrawalPayoutFinalizer(cashMapper,auditLogService,mock(ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade.class),Clock.systemUTC(),withdrawalFunds);
+            var finalizer=new WithdrawalPayoutFinalizer(cashMapper,auditLogService,mock(ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade.class),Clock.systemUTC(),withdrawalFunds, mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class));
             var target=new OpsFinanceService(configFacade,growthRhythmFacade,emergencyRepository,coverageFacade,withdrawalRepository,
                     depositOpsRepository,riskOpsRepository,auditLogService,idempotencyService,OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
                     lockMapper,disclosureGateFacade,treasuryLedgerRepository,finalizer,withdrawalFunds,eventOutboxService,operatorRoleResolver,

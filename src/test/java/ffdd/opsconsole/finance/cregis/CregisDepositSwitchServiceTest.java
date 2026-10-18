@@ -64,6 +64,33 @@ class CregisDepositSwitchServiceTest {
                 "expectedVersion", 4L, "assignEnabled", 1, "creditEnabled", 0);
     }
 
+    @Test
+    void closingOnlyPayoutRetainsDepositBitsDespiteStaleReconcileAndRiskHold() {
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        when(db.lockSwitchCase(9)).thenReturn(Map.of("projectId",88L,"status","MAKER_DONE","makerId",7L,
+                "expectedVersion",4L,"assignEnabled",1,"creditEnabled",1,"payoutEnabled",0));
+        when(db.lockProvisionGate()).thenReturn(Map.of("version",4L,"state","IDLE",
+                "assignEnabled",1,"creditEnabled",1,"payoutEnabled",1));
+        when(db.unresolvedExposure(88)).thenReturn(new BigDecimal("700"));
+        when(db.setSwitches(1,1,0,"Close outbound only",4)).thenReturn(1);
+        when(db.checkSwitchCase(9,88,8,"RESOLVED")).thenReturn(1);
+        assertThat(service(db).check(8,9,"APPROVE","Close outbound only"))
+                .containsEntry("status","RESOLVED");
+        verify(db).setSwitches(1,1,0,"Close outbound only",4);
+        verify(db,never()).recentCompleteReconcileCount(88);
+        verify(db,never()).resolveManualEmergencyAlerts(88);
+    }
+
+    @Test
+    void omittedPayoutPreservesLockedBitInsteadOfTurningItOff() {
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        when(db.lockProvisionGate()).thenReturn(Map.of("version",4L,"payoutEnabled",1));
+        when(db.createSwitchCase(88,4,1,0,1,"Change inbound",7)).thenReturn(1);
+        when(db.lastInsertId()).thenReturn(9L);
+        service(db).propose(7,4,true,false,"Change inbound");
+        verify(db).createSwitchCase(88,4,1,0,1,"Change inbound",7);
+    }
+
     private static CregisDepositSwitchService service(CregisDepositMapper db) {
         CregisProperties config = new CregisProperties();
         config.setMode(CregisProperties.Mode.PROVIDER);
@@ -72,6 +99,6 @@ class CregisDepositSwitchServiceTest {
         config.setDepositCreditEnabled(true);
         PlatformTransactionManager tx = mock(PlatformTransactionManager.class);
         when(tx.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
-        return new CregisDepositSwitchService(config, db, mock(AuditLogService.class), tx);
+        return new CregisDepositSwitchService(config, db, mock(AuditLogService.class), tx, mock(CregisPayoutControl.class));
     }
 }
