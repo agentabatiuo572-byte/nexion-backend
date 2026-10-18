@@ -23,9 +23,14 @@ class BscDepositProofTest {
     private static final String TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
     private final ObjectMapper json = new ObjectMapper();
     private HttpServer server;
+    private CregisProperties properties;
+    private boolean logsRpcError;
+    private final AtomicReference<String> scanTo = new AtomicReference<>();
     private String head = "0x72";
     private String received = "1000000000000000000";
     private String balance = "0x0";
+    private String canonicalHash = HASH;
+    private String logTx = TX;
     private final AtomicReference<String> userAgent = new AtomicReference<>();
     private final AtomicInteger unavailableResponses = new AtomicInteger();
 
@@ -55,6 +60,37 @@ class BscDepositProofTest {
     }
 
     @Test
+    void payoutDerivesHeightFromReceiptAndObservesPendingWithoutCrediting() throws Exception {
+        BscDepositProof proof = local();
+        head = "0x71";
+        assertThat(proof.verifyPayout(TX.substring(2),TO,BigDecimal.ONE))
+                .contains(new BscDepositProof.Proof(2,100,HASH,14));
+        assertThat(proof.verify(TX,TO,BigDecimal.ONE,100)).isEmpty();
+        canonicalHash = "0x" + "d".repeat(64);
+        assertThatThrownBy(() -> proof.verifyPayout(TX,TO,BigDecimal.ONE))
+                .hasMessage("CREGIS_BSC_PROOF_INVALID");
+        canonicalHash = HASH;
+        logTx = "0x" + "e".repeat(64);
+        assertThatThrownBy(() -> proof.verifyPayout(TX,TO,BigDecimal.ONE))
+                .hasMessage("CREGIS_BSC_PROOF_INVALID");
+    }
+
+    @Test
+    void defaultAndConfiguredScanUseSameInclusiveRpcRangeLimit() throws Exception {
+        var proof = local();
+        assertThat(proof.scan(100,599,java.util.List.of(TO))).hasSize(1);
+        assertThatThrownBy(() -> proof.scan(100,600,java.util.List.of(TO))).hasMessage("CREGIS_BSC_PROOF_INVALID");
+        properties.setChainScanBlocks(20000);
+        assertThat(proof.scan(100,20099,java.util.List.of(TO))).hasSize(1);
+        assertThat(scanTo).hasValue("0x4e83");
+        assertThatThrownBy(() -> proof.scan(100,20100,java.util.List.of(TO))).hasMessage("CREGIS_BSC_PROOF_INVALID");
+        logsRpcError = true;
+        assertThatThrownBy(() -> proof.scan(100,20099,java.util.List.of(TO))).hasMessage("CREGIS_BSC_PROOF_UNAVAILABLE");
+        properties.setChainScanBlocks(100);
+        assertThatThrownBy(properties::getChainScanBlocks).hasMessage("CREGIS_CHAIN_SCAN_BLOCKS_INVALID");
+    }
+
+    @Test
     void transientRpcFailureRetriesOnceThenFailsClosed() throws Exception {
         BscDepositProof proof = local();
         unavailableResponses.set(1);
@@ -74,10 +110,12 @@ class BscDepositProofTest {
             userAgent.set(exchange.getRequestHeaders().getFirst("User-Agent"));
             JsonNode request = json.readTree(exchange.getRequestBody());
             String method = request.path("method").asText();
+            if ("eth_getLogs".equals(method)) scanTo.set(request.path("params").get(0).path("toBlock").asText());
             String result = switch (method) {
                 case "eth_chainId" -> "\"0x38\"";
                 case "eth_blockNumber" -> "\"" + head + "\"";
-                case "eth_getBlockByNumber" -> "{\"hash\":\"" + HASH + "\"}";
+                case "eth_getBlockByNumber" -> "{\"hash\":\"" + canonicalHash + "\",\"number\":\""
+                        + request.path("params").get(0).asText() + "\"}";
                 case "eth_call" -> request.path("params").get(0).path("data").asText()
                         .startsWith("0x70a08231") ? "\"" + balance + "\"" : "\"0x12\"";
                 case "eth_getTransactionReceipt" -> "{\"status\":\"0x1\",\"transactionHash\":\"" + TX
@@ -85,7 +123,9 @@ class BscDepositProofTest {
                 case "eth_getLogs" -> "[" + log() + "]";
                 default -> "null";
             };
-            byte[] bytes = ("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":" + result + "}")
+            byte[] bytes = (logsRpcError && "eth_getLogs".equals(method)
+                    ? "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32602,\"message\":\"fixture range unavailable\"}}"
+                    : "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":" + result + "}")
                     .getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, bytes.length);
@@ -93,7 +133,7 @@ class BscDepositProofTest {
             exchange.close();
         });
         server.start();
-        CregisProperties properties = new CregisProperties();
+        properties = new CregisProperties();
         properties.setBscRpcUrl("http://127.0.0.1:" + server.getAddress().getPort());
         properties.setDepositConfirmations(15);
         return new BscDepositProof(properties, json, HttpClient.newHttpClient(), true);
@@ -106,6 +146,6 @@ class BscDepositProofTest {
                 + "\",\"0x" + "0".repeat(24) + TO.substring(2) + "\"],\"data\":\"0x"
                 + "0".repeat(64 - value.length()) + value
                 + "\",\"logIndex\":\"0x2\",\"blockNumber\":\"0x64\",\"blockHash\":\"" + HASH
-                + "\",\"transactionHash\":\"" + TX + "\",\"removed\":false}";
+                + "\",\"transactionHash\":\"" + logTx + "\",\"removed\":false}";
     }
 }

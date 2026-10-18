@@ -12,6 +12,7 @@ final class PublicTestDeploymentSafety {
     private static final String HDPAY_PAY_IN_APPROVED = "nexion.deployment.hdpay-pay-in-approved";
     private static final String CREGIS_MODE = "nexion.finance.cregis.mode";
     private static final String CREGIS_PAY_IN_APPROVED = "nexion.deployment.cregis-pay-in-approved";
+    private static final String CREGIS_PAYOUT_APPROVED = "nexion.deployment.cregis-payout-approved";
 
     private PublicTestDeploymentSafety() { }
 
@@ -51,7 +52,8 @@ final class PublicTestDeploymentSafety {
                     && "DISABLED".equals(expected)
                     && "PROVIDER".equals(actual)
                     && "true".equals(environment.getProperty(CREGIS_PAY_IN_APPROVED))
-                    && !environment.getProperty("nexion.finance.cregis.payout-enabled", Boolean.class, false);
+                    && (!environment.getProperty("nexion.finance.cregis.payout-enabled", Boolean.class, false)
+                        || "true".equals(environment.getProperty(CREGIS_PAYOUT_APPROVED)));
             if (!expected.equals(actual) && !approvedHdPay && !approvedCregis) {
                 // Never log user-controlled values or environment contents.
                 throw new IllegalStateException("PUBLIC_TEST_POLICY_REJECTED: " + key);

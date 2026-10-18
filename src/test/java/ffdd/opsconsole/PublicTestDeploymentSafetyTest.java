@@ -95,6 +95,17 @@ class PublicTestDeploymentSafetyTest {
     }
 
     @Test
+    void cregisPayoutRequiresSeparateExactHostApprovalAndKeepsOtherPins() {
+        var approved = safe().withProperty("nexion.finance.cregis.mode","PROVIDER")
+                .withProperty("nexion.deployment.cregis-pay-in-approved","true")
+                .withProperty("nexion.finance.cregis.payout-enabled","true")
+                .withProperty("nexion.deployment.cregis-payout-approved","true");
+        assertThatCode(() -> processor.validate(approved)).doesNotThrowAnyException();
+        assertThatThrownBy(() -> processor.validate(approved.withProperty("nexion.finance.funds-sandbox.mode","LOCAL")))
+                .hasMessageContaining("PUBLIC_TEST_POLICY_REJECTED: nexion.finance.funds-sandbox.mode");
+    }
+
+    @Test
     void approvedHdPayTransportAlsoSupportsBankPayoutWithoutLegacyPayoutSwitches() {
         var env = safe().withProperty("nexion.finance.hdpay.mode", "PROVIDER")
                 .withProperty("nexion.deployment.hdpay-pay-in-approved", "true");

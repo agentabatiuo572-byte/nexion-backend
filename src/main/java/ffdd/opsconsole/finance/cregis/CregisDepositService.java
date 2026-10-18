@@ -37,13 +37,14 @@ public class CregisDepositService {
     private final TreasuryLedgerRepository treasury;
     private final FinanceWithdrawalControlFacade withdrawalControl;
     private final SupportPaymentAttributionFacade paymentAttribution;
+    private final CregisPayoutControl payouts;
 
     public CregisDepositService(CregisProperties config, CregisGatewayRouter router,
                                 BscDepositProof chain, CregisSigner signer, ObjectMapper json,
                                 CregisDepositMapper db, PlatformTransactionManager txManager,
                                 TreasuryLedgerRepository treasury,
                                 FinanceWithdrawalControlFacade withdrawalControl,
-                                SupportPaymentAttributionFacade paymentAttribution) {
+                                SupportPaymentAttributionFacade paymentAttribution, CregisPayoutControl payouts) {
         this.config = config;
         this.router = router;
         this.chain = chain;
@@ -54,6 +55,7 @@ public class CregisDepositService {
         this.treasury = treasury;
         this.withdrawalControl = withdrawalControl;
         this.paymentAttribution = java.util.Objects.requireNonNull(paymentAttribution);
+        this.payouts = payouts;
     }
 
     public Map<String, Object> address(long userId) {
@@ -195,6 +197,7 @@ public class CregisDepositService {
         if (config.getMode() != CregisProperties.Mode.PROVIDER) return Map.ofEntries(
                 Map.entry("mode", "DISABLED"), Map.entry("depositEnabled", false),
                 Map.entry("depositCreditEnabled", false),
+                Map.entry("providerPayout", payouts.capability()),
                 Map.entry("provisionGate", Map.of("state", "DISABLED")),
                 Map.entry("uncertainAddresses", List.of()), Map.entry("heldDeposits", List.of()),
                 Map.entry("failedDeliveries", List.of()), Map.entry("pendingAcceptedDeliveries", 0),
@@ -206,6 +209,7 @@ public class CregisDepositService {
         status.put("mode", "PROVIDER");
         status.put("depositEnabled", config.isDepositEnabled());
         status.put("depositCreditEnabled", config.isDepositCreditEnabled());
+        status.put("providerPayout", payouts.capability());
         status.put("provisionGate", gate == null ? Map.of("state", "MISSING") : gate);
         status.put("unresolvedExposureUsdt", db.unresolvedExposure(config.getProjectId()));
         status.put("riskAlerts", db.riskAlerts(config.getProjectId()));
@@ -418,7 +422,7 @@ public class CregisDepositService {
         db.ensureCursor(first);
         long cursor = db.cursor();
         long from = Math.max(first, cursor - 100);
-        long to = Math.min(cursor + 399, finalized);
+        long to = Math.min(cursor + (long) config.getChainScanBlocks() - 101, finalized);
         if (to >= from) {
             List<String> addresses = allocations.stream().map(row -> (String) row.get("address")).toList();
             for (BscDepositProof.Observation log : chain.scan(from, to, addresses)) {

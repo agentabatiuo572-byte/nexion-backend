@@ -538,6 +538,12 @@ def backend_dropin():
             policy[key] = value
     require(len(policy) >= 20, 'POLICY_INCOMPLETE')
     cregis_approval = Path('/srv/nexgrid/secrets/cregis-pay-in-approved')
+    cregis_payout_approval = Path('/srv/nexgrid/secrets/cregis-payout-approved')
+    payout_approved = cregis_payout_approval.exists()
+    if payout_approved:
+        trusted_root_path(cregis_payout_approval)
+        require(cregis_payout_approval.read_bytes() == b'PROVIDER\n', 'CREGIS_PAYOUT_APPROVAL_INVALID')
+        require(cregis_approval.exists(), 'CREGIS_PAY_IN_APPROVAL_REQUIRED')
     if cregis_approval.exists():
         trusted_root_path(cregis_approval)
         require(cregis_approval.read_bytes() == b'PROVIDER\n', 'CREGIS_APPROVAL_INVALID')
@@ -548,7 +554,9 @@ def backend_dropin():
     if cregis_approval.exists():
         args += ['--nexion.finance.cregis.mode=PROVIDER',
                  '--nexion.deployment.cregis-pay-in-approved=true',
-                 '--nexion.finance.cregis.payout-enabled=false']
+                 '--nexion.finance.cregis.payout-enabled=' + ('true' if payout_approved else 'false')]
+        if payout_approved:
+            args += ['--nexion.deployment.cregis-payout-approved=true']
     return ('[Service]\nWorkingDirectory=/srv/nexgrid/cd/backend/current\nExecStart=\n'
             'ExecStart=/usr/bin/java -Xms1g -Xmx4g -XX:+ExitOnOutOfMemoryError '
             '-jar /srv/nexgrid/cd/backend/current/nexion-backend.jar ' + ' '.join(args) + '\n')

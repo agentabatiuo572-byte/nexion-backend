@@ -1,9 +1,12 @@
 package ffdd.opsconsole.finance.application;
 
 import ffdd.opsconsole.finance.mapper.WithdrawalPayoutMapper;
+import ffdd.opsconsole.finance.cregis.BscDepositProof;
+import ffdd.opsconsole.finance.cregis.CregisConstants;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -24,6 +27,7 @@ public class WithdrawalPayoutFinalizer {
     private final TreasuryLedgerPostingFacade ledger;
     private final Clock clock;
     private final SupportWithdrawalFundSourceService withdrawalFunds;
+    private final EventOutboxService outbox;
 
     /** Keep the same customer-first lock order as withdrawal submission. */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
@@ -36,12 +40,54 @@ public class WithdrawalPayoutFinalizer {
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
     public boolean settleManualConfirmation(String withdrawalNo, Long userId, BigDecimal amount,
                                              BigDecimal nexBurned, LocalDateTime confirmedAt) {
+        if (requiresProviderProof(withdrawalNo)) throw new BizException(409,"PROVIDER_CHAIN_CONFIRMATION_REQUIRED");
         lockCashCustomer(userId);
         if (!withdrawalFunds.hasCashReservation(withdrawalNo,userId,amount,nexBurned)) return false;
         var before = withdrawalFunds.begin(userId);
         settlePending(userId,amount,confirmedAt);
         withdrawalFunds.confirmed(before,withdrawalNo,confirmedAt);
         return true;
+    }
+
+    public boolean requiresProviderProof(String withdrawalNo) {
+        var row = mapper.payout(withdrawalNo);
+        return row != null && "provider".equals(row.payoutSource());
+    }
+
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean providerDispatchStarted(String withdrawalNo, Long userId) {
+        lockCashCustomer(userId);
+        return "provider".equals(mapper.lockPayoutSource(withdrawalNo));
+    }
+
+    /** Only an independently queried canonical BSC Transfer may settle a provider payout. */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean confirmProviderChain(WithdrawalPayoutMapper.PayoutRow row, String txid,
+                                        BscDepositProof.Proof proof, int requiredConfirmations) {
+        if (proof == null || requiredConfirmations < 15 || proof.confirmations() < requiredConfirmations
+                || !"USDT-BEP20".equals(row.chain()) || !"provider".equals(row.payoutSource())
+                || row.providerCid() == null || !"SENT".equals(row.status())
+                || txid == null || !txid.matches("(?i)(?:0x)?[0-9a-f]{64}"))
+            throw new BizException(409,"CREGIS_CHAIN_PROOF_REQUIRED");
+        txid = "0x" + txid.replaceFirst("(?i)^0x", "").toLowerCase(java.util.Locale.ROOT);
+        String hash = sha(row.withdrawalNo() + "|" + row.providerCid() + "|" + txid
+                + "|" + proof.blockHash() + "|" + proof.logIndex());
+        String eventNo = "CREGIS-BSC-" + hash.substring(0,48);
+        String existing = mapper.payoutLedgerPayloadHash(eventNo);
+        if (existing != null) {
+            if (!existing.equals(hash)) throw new BizException(409,"WITHDRAWAL_PAYOUT_EVENT_HASH_CONFLICT");
+            return true;
+        }
+        audit.recordRequired(AuditLogWriteRequest.builder()
+                .action("D5_WITHDRAWAL_PAYOUT_CHAIN_PROOF").resourceType("WITHDRAWAL")
+                .resourceId(row.withdrawalNo()).bizNo(row.withdrawalNo()).userId(row.userId())
+                .actorType("SYSTEM").actorUsername("bsc-payout-observer").riskLevel("CRITICAL").result("SUCCESS")
+                .detail(Map.of("txid",txid,"blockNumber",proof.blockNumber(),"blockHash",proof.blockHash(),
+                        "logIndex",proof.logIndex(),"confirmations",proof.confirmations(),
+                        "requiredConfirmations",requiredConfirmations,"recipient",row.targetAddress(),
+                        "amount",row.netReceive(),"token",CregisConstants.USDT_BEP20_TOKEN_ID,
+                        "providerCid",row.providerCid())).build());
+        return terminalChecked(row,row.providerCid(),"provider",eventNo,hash,"CONFIRMED",txid,null);
     }
 
     private void settlePending(Long userId, BigDecimal gross, LocalDateTime at) {
@@ -65,6 +111,19 @@ public class WithdrawalPayoutFinalizer {
                 .riskLevel("CRITICAL").result("SUCCESS")
                 .detail(Map.of("providerCid", providerCid, "providerIdempotencyKey", row.providerIdempotencyKey(),
                         "source", source, "amount", row.netReceive())).build());
+        return true;
+    }
+
+    /** Caller has queried the vendor using CID plus the original immutable payout snapshot. */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean recoverProviderSubmission(WithdrawalPayoutMapper.PayoutRow row, long providerCid) {
+        if (mapper.recoverOrphanToSent(row.withdrawalNo(),providerCid,row.providerIdempotencyKey(),
+                LocalDateTime.now(clock)) != 1) return false;
+        audit.recordRequired(AuditLogWriteRequest.builder()
+                .action("D5_WITHDRAWAL_PAYOUT_SUBMISSION_RECOVERED").resourceType("WITHDRAWAL")
+                .resourceId(row.withdrawalNo()).bizNo(row.withdrawalNo()).userId(row.userId())
+                .actorType("SYSTEM").actorUsername("cregis-query-recovery").riskLevel("CRITICAL").result("SUCCESS")
+                .detail(Map.of("providerCid",providerCid,"providerIdempotencyKey",row.providerIdempotencyKey())).build());
         return true;
     }
 
@@ -122,6 +181,15 @@ public class WithdrawalPayoutFinalizer {
     @Transactional(rollbackFor = Exception.class)
     public boolean terminal(WithdrawalPayoutMapper.PayoutRow row, long providerCid, String source,
                             String eventNo, String payloadHash, String status, String txid, String failureReason) {
+        if ("provider".equals(source) && "CONFIRMED".equals(status))
+            throw new BizException(409,"CREGIS_CHAIN_PROOF_REQUIRED");
+        return terminalChecked(row,providerCid,source,eventNo,payloadHash,status,txid,failureReason);
+    }
+
+    private boolean terminalChecked(WithdrawalPayoutMapper.PayoutRow row, long providerCid, String source,
+                            String eventNo, String payloadHash, String status, String txid, String failureReason) {
+        // Lock before the first consistent read, including under MySQL REPEATABLE_READ.
+        lockCashCustomer(row.userId());
         String existingHash = mapper.payoutLedgerPayloadHash(eventNo);
         if (existingHash != null) {
             if (!existingHash.equals(payloadHash)) throw new BizException(409, "WITHDRAWAL_PAYOUT_EVENT_HASH_CONFLICT");
@@ -131,7 +199,9 @@ public class WithdrawalPayoutFinalizer {
             throw new BizException(422, "WITHDRAWAL_PAYOUT_TERMINAL_STATUS_INVALID");
         }
         LocalDateTime now = LocalDateTime.now(clock).withNano(0);
-        lockCashCustomer(row.userId());
+        if ("provider".equals(source) && "FAILED".equals(status)
+                && mapper.hasProviderSuccessEvidence(row.withdrawalNo()))
+            throw new BizException(409,"CREGIS_FAILURE_CONFLICTS_WITH_SUCCESS_EVIDENCE");
         if (!withdrawalFunds.hasCashReservation(row.withdrawalNo(),row.userId(),row.amount(),row.nexBurned()))
             throw new BizException(409,"该笔提现的预留资金尚未核实，请复核后重试");
         var fundBefore = productionSource(source) ? withdrawalFunds.begin(row.userId()) : null;
@@ -172,12 +242,30 @@ public class WithdrawalPayoutFinalizer {
                 .riskLevel("CRITICAL").result("CONFIRMED".equals(status) ? "SUCCESS" : "FAILED")
                 .detail(Map.of("providerCid", providerCid, "source", source, "eventNo", eventNo,
                         "status", status, "txid", txid == null ? "" : txid)).build());
+        if ("provider".equals(source)) {
+            Map<String,Object> payload = new java.util.LinkedHashMap<>();
+            payload.put("withdrawal_id",row.withdrawalNo()); payload.put("user_id",row.userId());
+            payload.put("amount",row.amount()); payload.put("currency","USDT"); payload.put("state",status);
+            payload.put("operator","cregis-payout");
+            payload.put("reason","CONFIRMED".equals(status) ? "CREGIS_CHAIN_CONFIRMED" : safeError(failureReason));
+            if ("CONFIRMED".equals(status)) {
+                payload.put("chain_tx_hash",txid); payload.put("confirmed_at",now.toString());
+            } else {
+                payload.put("address_hash",sha(row.targetAddress().trim()));
+                payload.put("risk_score",mapper.payoutRiskScore(row.withdrawalNo()));
+            }
+            if ("CONFIRMED".equals(status))
+                outbox.publish("WITHDRAWAL",row.withdrawalNo(),"withdraw.confirmed",payload);
+            else outbox.publish("WITHDRAWAL",row.withdrawalNo(),"withdraw.refunded",payload);
+        }
         return true;
     }
 
     @Transactional(rollbackFor = Exception.class)
     public boolean providerProgress(WithdrawalPayoutMapper.PayoutRow row, long providerCid,
                                     String eventNo, String payloadHash, int providerStatus, String txid) {
+        // Serialize success evidence with a concurrent pre-broadcast failure refund.
+        lockCashCustomer(row.userId());
         String existingHash = mapper.payoutLedgerPayloadHash(eventNo);
         if (existingHash != null) {
             if (!existingHash.equals(payloadHash)) throw new BizException(409, "WITHDRAWAL_PAYOUT_EVENT_HASH_CONFLICT");

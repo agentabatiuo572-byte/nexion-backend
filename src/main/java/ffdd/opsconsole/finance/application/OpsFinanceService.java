@@ -854,6 +854,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         WithdrawalOrderView order = withdrawalRepository.findByWithdrawalNo(withdrawalNo).orElse(null);
         if (order == null) return ApiResult.fail(404, "WITHDRAWAL_NOT_FOUND");
         if ("BANK-VND".equals(order.chain())) return ApiResult.fail(409, "BANK_PAYOUT_PROVIDER_CONFIRMATION_REQUIRED");
+        if (withdrawalPayoutFinalizer.requiresProviderProof(withdrawalNo))
+            return ApiResult.fail(409, "PROVIDER_CHAIN_CONFIRMATION_REQUIRED");
         if (!D2WithdrawalStateMachine.SENT.equals(D2WithdrawalStateMachine.canonical(order.status()))) {
             return ApiResult.fail(
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
@@ -1024,6 +1026,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         String action = request.action().trim().toUpperCase(Locale.ROOT);
         D2CurrentRisk currentRisk = null;
+        if (withdrawalPayoutFinalizer.providerDispatchStarted(withdrawalNo,order.userId()))
+            return ApiResult.fail(409,"CREGIS_PAYOUT_ALREADY_DISPATCHED");
         // A bank failure is already atomically refunded by its provider finalizer. An unknown
         // result may still be paid: the generic D2 refund must never consume another order's reserve.
         if ("BANK-VND".equals(order.chain()) && "REFUND".equals(action))

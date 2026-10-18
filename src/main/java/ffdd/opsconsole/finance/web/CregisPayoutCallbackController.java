@@ -10,13 +10,14 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/openapi/v1/withdrawals/cregis/callbacks")
+@RequestMapping({"/openapi/v1/withdrawals/cregis/callbacks", "/api/cregis/callbacks"})
 @RequiredArgsConstructor
 public class CregisPayoutCallbackController {
     private final WithdrawalPayoutCallbackService service;
 
-    @PostMapping("/payout")
-    public ApiResult<Map<String, Object>> payout(@RequestBody(required = false) Map<String, Object> callback) {
-        return service.receive(callback);
+    @PostMapping(value="/payout",produces=org.springframework.http.MediaType.TEXT_PLAIN_VALUE)
+    public String payout(@RequestBody(required = false) Map<String, Object> callback) {
+        ApiResult<Map<String,Object>> receipt = service.receive(callback);
+        return receipt.getCode() == 0 ? "success" : "rejected";
     }
 }

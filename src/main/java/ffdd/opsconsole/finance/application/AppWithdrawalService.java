@@ -66,6 +66,7 @@ public class AppWithdrawalService {
     private final Clock clock;
     private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper;
     private final WithdrawalRiskTimePolicy riskTimePolicy;
+    private final ffdd.opsconsole.finance.cregis.CregisPayoutControl providerPayout;
 
     public ApiResult<Map<String, Object>> list(Long userId) {
         return list(userId, 1, 50);
@@ -133,7 +134,8 @@ public class AppWithdrawalService {
                 "policyVersion", policy.policyVersion(),
                 "cooldownDays", rhythm.withdrawCooldownDays(),
                 "complianceHoldEnabled", rhythm.complianceHoldEnabled(),
-                "enabledNetworks", policy.enabledNetworks(), "currentPhase", rhythm.currentPhase(),
+                "enabledNetworks", policy.enabledNetworks(), "providerPayout", providerPayout.capability(),
+                "currentPhase", rhythm.currentPhase(),
                 "currentMonth", rhythm.currentMonth(), "withdrawalEnabled", withdrawalEnabled,
                 "gateSource", "J1", "source", "D5+H1"));
     }
@@ -771,9 +773,11 @@ public class AppWithdrawalService {
                 || payoutSlaHours < 1 || payoutSlaHours > 168) {
             throw new BizException(503, "D5_WD01_CONFIG_INVALID");
         }
-        List<String> enabled = cryptoPayoutAllowed()
-                ? CHAINS.stream().sorted().filter(this::networkEnabled).toList() : List.of();
-        if (enabled.isEmpty() && cryptoPayoutAllowed()) throw new BizException(503, "D5_NETWORK_CONFIG_UNAVAILABLE");
+        boolean payoutAllowed = cryptoPayoutAllowed();
+        List<String> enabled = payoutAllowed
+                ? CHAINS.stream().sorted().filter(chain -> !providerMode() || "USDT-BEP20".equals(chain))
+                    .filter(this::networkEnabled).toList() : List.of();
+        if (enabled.isEmpty() && payoutAllowed) throw new BizException(503, "D5_NETWORK_CONFIG_UNAVAILABLE");
         String versionMaterial = version + "|" + fees + "|" + nexOffsetRate.stripTrailingZeros().toPlainString()
                 + "|" + smallAmountThresholdUsd.stripTrailingZeros().toPlainString()
                 + "|" + payoutSlaHours + "|" + enabled;
@@ -795,8 +799,11 @@ public class AppWithdrawalService {
     }
 
     private boolean cryptoPayoutAllowed() {
-        String mode = environment.getProperty("nexion.finance.cregis.mode", "DISABLED");
-        return !"PROVIDER".equalsIgnoreCase(mode);
+        return !providerMode() || providerPayout.enabled();
+    }
+
+    private boolean providerMode() {
+        return "PROVIDER".equalsIgnoreCase(environment.getProperty("nexion.finance.cregis.mode", "DISABLED"));
     }
 
     private boolean withdrawGateEnabled() {

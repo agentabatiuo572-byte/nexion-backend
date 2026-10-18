@@ -72,7 +72,7 @@ class AppWithdrawalServiceTest {
         when(release.withdrawableAmount(eq(7L), any())).thenReturn(new BigDecimal("50"));
         when(release.withdrawableAmountForUpdate(eq(7L), any())).thenReturn(new BigDecimal("50"));
         AppWithdrawalService guarded = new AppWithdrawalService(mapper, config, rhythmFacade, idempotency,
-                audit, outbox, k3, ledger, withdrawalFunds, release, environment, clock, bank, new WithdrawalRiskTimePolicy(environment, config));
+                audit, outbox, k3, ledger, withdrawalFunds, release, environment, clock, bank, new WithdrawalRiskTimePolicy(environment, config), providerPayout);
         when(mapper.walletForEligibility(7L)).thenReturn(new WalletRow(
                 7L, new BigDecimal("500"), new BigDecimal("50"), BigDecimal.ZERO, 3L));
         when(mapper.payoutAddressForEligibility(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
@@ -98,7 +98,7 @@ class AppWithdrawalServiceTest {
         when(release.withdrawableAmount(eq(7L), any())).thenReturn(new BigDecimal("50"));
         var capacityClock = java.time.Clock.fixed(java.time.Instant.parse("2026-09-16T12:00:00Z"), java.time.ZoneOffset.UTC);
         var guarded = new AppWithdrawalService(mapper, config, rhythmFacade, idempotency,
-                audit, outbox, k3, ledger, withdrawalFunds, release, environment, capacityClock, bank, new WithdrawalRiskTimePolicy(environment, config));
+                audit, outbox, k3, ledger, withdrawalFunds, release, environment, capacityClock, bank, new WithdrawalRiskTimePolicy(environment, config), providerPayout);
         when(mapper.walletForEligibility(7L)).thenReturn(new WalletRow(7L, new BigDecimal("500"), BigDecimal.ZERO, BigDecimal.ZERO, 3L));
         when(mapper.countBusinessDay(eq(7L), any(), any())).thenReturn(1);
         var capacity = guarded.bankCapacity(7L);
@@ -134,8 +134,9 @@ class AppWithdrawalServiceTest {
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
     private final SupportWithdrawalFundSourceService withdrawalFunds = mock(SupportWithdrawalFundSourceService.class);
     private final MockEnvironment environment = productionEnvironment();
+    private final ffdd.opsconsole.finance.cregis.CregisPayoutControl providerPayout = mock(ffdd.opsconsole.finance.cregis.CregisPayoutControl.class);
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, withdrawalFunds, null, environment, clock, bank, new WithdrawalRiskTimePolicy(environment, config));
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, withdrawalFunds, null, environment, clock, bank, new WithdrawalRiskTimePolicy(environment, config), providerPayout);
 
     private static MockEnvironment productionEnvironment() {
         MockEnvironment environment = new MockEnvironment();
@@ -489,6 +490,18 @@ class AppWithdrawalServiceTest {
                 .containsEntry("source", "D5+H1")
                 .containsKey("policyVersion")
                 .doesNotContainKeys("networkFeeRate", "networkFeeMin", "networkFeeMax", "penaltyFeeRate");
+    }
+
+    @Test
+    void providerPolicyExposesOnlyApprovedBep20AndClosedBitDisablesSubmission() {
+        environment.setProperty("nexion.finance.cregis.mode","PROVIDER");
+        assertThat(service.policy(7L).getData()).containsEntry("enabledNetworks",java.util.List.of());
+        when(providerPayout.enabled()).thenReturn(true);
+        assertThat(service.policy(7L).getData()).containsEntry("enabledNetworks",java.util.List.of("USDT-BEP20"));
+        when(providerPayout.enabled()).thenReturn(false);
+        assertThat(service.submit(7L,new BigDecimal("100"),"USDT-BEP20","0x"+"a".repeat(40),"closed-provider").getMessage())
+                .isEqualTo("WITHDRAWAL_NETWORK_DISABLED");
+        verify(mapper,never()).reserveFunds(any(),any(),any(),any());
     }
 
     @Test

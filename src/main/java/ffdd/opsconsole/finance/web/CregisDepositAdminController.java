@@ -97,7 +97,7 @@ public class CregisDepositAdminController {
         long id = admin(auth);
         try {
             return ApiResult.ok(switches.propose(id, request.expectedVersion(),
-                    request.assignEnabled(), request.creditEnabled(), request.reason()));
+                    request.assignEnabled(), request.creditEnabled(), request.payoutEnabled(), request.reason()));
         } catch (BizException rejected) {
             switches.auditRejected(id, "PROPOSE", rejected.getMessage());
             throw rejected;
@@ -173,7 +173,7 @@ public class CregisDepositAdminController {
     public record ReviewProposal(long cid, String reason, String evidenceHash) { }
     public record ReviewDecision(long expectedVersion, String decision, String reason) { }
     public record SwitchProposal(long expectedVersion, boolean assignEnabled,
-                                 boolean creditEnabled, String reason) { }
+                                 boolean creditEnabled, Boolean payoutEnabled, String reason) { }
     public record SwitchDecision(String decision, String reason) { }
     public record EmergencyOff(long expectedVersion, String reason) { }
 }

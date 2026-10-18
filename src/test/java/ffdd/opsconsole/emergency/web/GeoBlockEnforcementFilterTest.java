@@ -110,10 +110,12 @@ class GeoBlockEnforcementFilterTest {
         verifyNoInteractions(policyService);
     }
 
-    @Test
-    void exactHdPayPostReachesSignatureValidationWithoutUserGeoMetadata() throws Exception {
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"/openapi/v1/payments/hdpay/pay-in/callback",
+            "/api/cregis/callbacks/payout","/openapi/v1/withdrawals/cregis/callbacks/payout"})
+    void exactProviderPostReachesSignatureValidationWithoutUserGeoMetadata(String path) throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest(
-                "POST", "/openapi/v1/payments/hdpay/pay-in/callback");
+                "POST", path);
         request.setRemoteAddr("198.51.100.10");
         request.addHeader("X-Nexion-Edge-Country", "ZZ");
         MockHttpServletResponse response = new MockHttpServletResponse();

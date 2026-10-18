@@ -5,6 +5,8 @@ import ffdd.opsconsole.finance.cregis.CregisGateway;
 import ffdd.opsconsole.finance.cregis.CregisGatewayException;
 import ffdd.opsconsole.finance.cregis.CregisGatewayRouter;
 import ffdd.opsconsole.finance.cregis.CregisProperties;
+import ffdd.opsconsole.finance.cregis.BscDepositProof;
+import ffdd.opsconsole.finance.cregis.CregisPayoutControl;
 import ffdd.opsconsole.finance.mapper.WithdrawalPayoutMapper;
 import java.time.LocalDateTime;
 import java.nio.charset.StandardCharsets;
@@ -12,16 +14,29 @@ import java.security.MessageDigest;
 import java.util.HexFormat;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.context.annotation.Profile;
+import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.Condition;
+import org.springframework.context.annotation.ConditionContext;
+import org.springframework.core.type.AnnotatedTypeMetadata;
+import org.springframework.core.env.Profiles;
 import org.springframework.stereotype.Component;
 
 @Component
-@Profile("!dev | prod")
+@Conditional(WithdrawalPayoutExecutor.RuntimeEnabled.class)
 @RequiredArgsConstructor
 public class WithdrawalPayoutExecutor {
+    static final class RuntimeEnabled implements Condition {
+        @Override public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
+            var env = context.getEnvironment();
+            return !env.acceptsProfiles(Profiles.of("dev")) || env.acceptsProfiles(Profiles.of("prod"))
+                    || env.getProperty("nexion.deployment.public-test", Boolean.class, false);
+        }
+    }
     private final WithdrawalPayoutMapper mapper;
     private final CregisGatewayRouter router;
     private final WithdrawalPayoutFinalizer finalizer;
+    private final BscDepositProof chain;
+    private final CregisPayoutControl payouts;
 
     @Scheduled(fixedDelayString = "${nexion.finance.withdrawal-payout-poll-ms:30000}")
     public void process() {
@@ -29,11 +44,15 @@ public class WithdrawalPayoutExecutor {
         // The local gateway is an acceptance probe only. It must never consume real wallet orders.
         if (mode == CregisProperties.Mode.LOCAL_SANDBOX) return;
         if (mode == CregisProperties.Mode.PROVIDER) {
+            for (var expired : mapper.expiredProviderAttempts(LocalDateTime.now(),50))
+                finalizer.orphaned(expired,expired.providerCid(),"provider","CREGIS_SUBMISSION_UNKNOWN");
             for (var submitted : mapper.incompleteProviderSubmissions(50)) reconcileProvider(submitted);
         }
+        // Existing submitted orders keep being observed when the operator closes new payouts.
+        if (mode == CregisProperties.Mode.PROVIDER && !payouts.enabled()) return;
         LocalDateTime now = LocalDateTime.now();
         for (var candidate : mapper.claimable(now, 50)) {
-            if (mapper.claim(candidate.withdrawalNo(), now, now.plusMinutes(2)) != 1) continue;
+            if (mapper.claimNewPayout(candidate.withdrawalNo(), now, now.plusMinutes(2)) != 1) continue;
             WithdrawalPayoutMapper.PayoutRow claimed = mapper.payout(candidate.withdrawalNo());
             if (claimed == null) continue;
             dispatch(claimed);
@@ -45,8 +64,7 @@ public class WithdrawalPayoutExecutor {
             CregisGateway.PayoutOrder payout = router.provider().queryPayout(new CregisGateway.PayoutQuery(
                     row.providerCid(), row.providerIdempotencyKey(), row.targetAddress(), row.netReceive()));
             if ("TX_ORPHANED".equals(row.status())) {
-                if (mapper.recoverOrphanToSent(row.withdrawalNo(), payout.cid(), payout.thirdPartyId(),
-                        LocalDateTime.now()) != 1) return;
+                if (!finalizer.recoverProviderSubmission(row,payout.cid())) return;
                 row = mapper.payout(row.withdrawalNo());
                 if (row == null || !"SENT".equals(row.status())) return;
             }
@@ -55,6 +73,11 @@ public class WithdrawalPayoutExecutor {
             String eventNo = "CREGIS-QRY-" + payloadHash.substring(0, 48);
             if (code == 0 || code == 1 || code == 5 || code == 6) {
                 finalizer.providerProgress(row, row.providerCid(), eventNo, payloadHash, code, payout.txid());
+                if (code == 6 && payout.txid() != null) {
+                    var proof = chain.verifyPayout(payout.txid(),row.targetAddress(),row.netReceive());
+                    if (proof.isPresent() && proof.get().confirmations() >= payouts.requiredConfirmations())
+                        finalizer.confirmProviderChain(row,payout.txid(),proof.get(),payouts.requiredConfirmations());
+                }
             } else if (code == 7 || payout.txid() != null
                     || mapper.hasProviderSuccessEvidence(row.withdrawalNo())) {
                 finalizer.holdAmbiguousCallback(row, row.providerCid(), eventNo, payloadHash, code, payout.txid());
@@ -77,7 +100,7 @@ public class WithdrawalPayoutExecutor {
             finalizer.retry(row, "CREGIS_PROVIDER_DISABLED");
             return;
         }
-        if (!router.payoutEnabled()) {
+        if (!router.payoutEnabled() || (mode == CregisProperties.Mode.PROVIDER && !payouts.enabled())) {
             finalizer.retry(row, "CREGIS_PAYOUT_DISABLED");
             return;
         }
@@ -86,6 +109,9 @@ public class WithdrawalPayoutExecutor {
         try {
             gateway = mode == CregisProperties.Mode.LOCAL_SANDBOX
                     ? router.isolatedLocalSandbox() : router.provider();
+            // Persist intent before the HTTP request. D2 locks the same order before any manual reset.
+            if (mode == CregisProperties.Mode.PROVIDER
+                    && mapper.markProviderIntent(row.withdrawalNo(),LocalDateTime.now()) != 1) return;
             CregisGateway.PayoutSubmission submission = gateway.createPayout(new CregisGateway.PayoutRequest(
                     CregisConstants.USDT_BEP20_CURRENCY,
                     row.targetAddress(),

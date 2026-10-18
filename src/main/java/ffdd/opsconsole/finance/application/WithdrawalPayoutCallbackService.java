@@ -36,13 +36,18 @@ public class WithdrawalPayoutCallbackService {
         String providerKey = text(callback == null ? null : callback.get("third_party_id"));
         if (providerKey == null) return ApiResult.fail(422, "CREGIS_CALLBACK_SCHEMA_INVALID");
         WithdrawalPayoutMapper.PayoutRow row = mapper.payoutByProviderKey(providerKey);
-        if (row == null || row.providerCid() == null || !"provider".equals(row.payoutSource())) {
+        if (row == null || !"USDT-BEP20".equals(row.chain())
+                || (row.payoutSource() != null && !"provider".equals(row.payoutSource()))) {
             return ApiResult.fail(404, "CREGIS_PAYOUT_NOT_FOUND");
         }
+        Long cid = row.providerCid();
+        if (cid == null && ("PROCESSING".equals(row.status()) || "TX_ORPHANED".equals(row.status()))
+                && callback.get("cid") instanceof Number number) cid = number.longValue();
+        if (cid == null) return ApiResult.fail(404,"CREGIS_PAYOUT_NOT_FOUND");
         CregisCallbackVerifier verifier = new CregisCallbackVerifier(
                 signer, properties.getProjectId(), properties.getApiKey(), clock, Duration.ofMinutes(5));
         CregisCallbackVerifier.Verification verification = verifier.verifyPayout(callback,
-                new CregisCallbackVerifier.ExpectedPayout(row.providerCid(), row.providerIdempotencyKey(),
+                new CregisCallbackVerifier.ExpectedPayout(cid, row.providerIdempotencyKey(),
                         row.targetAddress(), row.netReceive()));
         if (!verification.valid()) return ApiResult.fail(401, "CREGIS_CALLBACK_" + verification.reason());
 
@@ -51,9 +56,9 @@ public class WithdrawalPayoutCallbackService {
         String payloadHash = callbackHash(callback);
         String eventNo = "CREGIS-CB-" + payloadHash.substring(0, 48);
         LocalDateTime now = LocalDateTime.now(clock);
-        mapper.insertCallbackInbox(eventNo, row.withdrawalNo(), row.providerCid(), providerStatus, txid, payloadHash, now);
+        mapper.insertCallbackInbox(eventNo, row.withdrawalNo(), cid, providerStatus, txid, payloadHash, now);
         String resultStatus = processOne(new WithdrawalPayoutMapper.CallbackInboxRow(
-                eventNo, row.withdrawalNo(), row.providerCid(), providerStatus, txid, payloadHash), now);
+                eventNo, row.withdrawalNo(), cid, providerStatus, txid, payloadHash), now);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("withdrawalNo", row.withdrawalNo());
         response.put("status", resultStatus);
@@ -72,6 +77,16 @@ public class WithdrawalPayoutCallbackService {
         if (mapper.claimCallbackInbox(event.eventNo(), now, now.plusMinutes(2)) != 1) return "ACCEPTED";
         try {
             WithdrawalPayoutMapper.PayoutRow row = mapper.payout(event.withdrawalNo());
+            if (row != null && ("PROCESSING".equals(row.status()) || "TX_ORPHANED".equals(row.status()))
+                    && (row.providerCid() == null || row.providerCid().equals(event.providerCid()))) {
+                // A signed callback can recover a lost create response only after an independent query
+                // binds CID to the original business key, recipient and exact net amount. Never resend create.
+                router.provider().queryPayout(new CregisGateway.PayoutQuery(event.providerCid(),
+                        row.providerIdempotencyKey(),row.targetAddress(),row.netReceive()));
+                if (!finalizer.recoverProviderSubmission(row,event.providerCid()))
+                    throw new IllegalStateException("CREGIS_PAYOUT_RECOVERY_CONFLICT");
+                row = mapper.payout(event.withdrawalNo());
+            }
             if (row == null || row.providerCid() == null || !row.providerCid().equals(event.providerCid())
                     || !"provider".equals(row.payoutSource())) {
                 throw new IllegalStateException("CREGIS_PAYOUT_SNAPSHOT_MISSING");

@@ -74,7 +74,9 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
         if ("POST".equals(request.getMethod())
                 && ("/openapi/v1/payments/hdpay/pay-in/callback".equals(path)
                     || "/openapi/v1/payments/hdpay/payout/callback".equals(path)
-                    || "/api/cregis/callbacks/deposit".equals(path))) {
+                    || "/api/cregis/callbacks/deposit".equals(path)
+                    || "/api/cregis/callbacks/payout".equals(path)
+                    || "/openapi/v1/withdrawals/cregis/callbacks/payout".equals(path))) {
             return true;
         }
         if (!properties.isEnabled() || path == null
