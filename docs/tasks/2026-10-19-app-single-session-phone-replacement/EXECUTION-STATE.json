@@ -1,0 +1,346 @@
+{
+  "format": "nexion-handoff-progress-v1",
+  "taskId": "2026-10-19-app-single-session-phone-replacement",
+  "note": "Initial handoff tracker, not a workflow v2 execution receipt. No implementation checks have run.",
+  "productApproval": "approved",
+  "implementationStatus": "not_started",
+  "steps": [
+    {
+      "id": "00",
+      "spec": "specs/SPEC-00-baseline-contract.md",
+      "dependsOn": [],
+      "status": "pending",
+      "owner": null,
+      "commits": {},
+      "checks": [],
+      "independentReview": null,
+      "blockers": []
+    },
+    {
+      "id": "01",
+      "spec": "specs/SPEC-01-backend-app-session.md",
+      "dependsOn": [
+        "00"
+      ],
+      "status": "pending",
+      "owner": null,
+      "commits": {},
+      "checks": [],
+      "independentReview": null,
+      "blockers": []
+    },
+    {
+      "id": "02",
+      "spec": "specs/SPEC-02-backend-phone-replacement.md",
+      "dependsOn": [
+        "00"
+      ],
+      "status": "pending",
+      "owner": null,
+      "commits": {},
+      "checks": [],
+      "independentReview": null,
+      "blockers": []
+    },
+    {
+      "id": "03",
+      "spec": "specs/SPEC-03-backend-operations.md",
+      "dependsOn": [
+        "01",
+        "02"
+      ],
+      "status": "pending",
+      "owner": null,
+      "commits": {},
+      "checks": [],
+      "independentReview": null,
+      "blockers": []
+    },
+    {
+      "id": "04",
+      "spec": "specs/SPEC-04-app-interactions.md",
+      "dependsOn": [
+        "01",
+        "02",
+        "03"
+      ],
+      "status": "pending",
+      "owner": null,
+      "commits": {},
+      "checks": [],
+      "independentReview": null,
+      "blockers": []
+    },
+    {
+      "id": "05",
+      "spec": "specs/SPEC-05-h5-isolation-sync.md",
+      "dependsOn": [
+        "04"
+      ],
+      "status": "pending",
+      "owner": null,
+      "commits": {},
+      "checks": [],
+      "independentReview": null,
+      "blockers": []
+    },
+    {
+      "id": "06",
+      "spec": "specs/SPEC-06-admin-e6-c5.md",
+      "dependsOn": [
+        "03"
+      ],
+      "status": "pending",
+      "owner": null,
+      "commits": {},
+      "checks": [],
+      "independentReview": null,
+      "blockers": []
+    },
+    {
+      "id": "07",
+      "spec": "specs/SPEC-07-integration-release.md",
+      "dependsOn": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06"
+      ],
+      "status": "pending",
+      "owner": null,
+      "commits": {},
+      "checks": [],
+      "independentReview": null,
+      "blockers": []
+    },
+    {
+      "id": "08",
+      "spec": "specs/SPEC-08-prd-writeback-cleanup.md",
+      "dependsOn": [
+        "07"
+      ],
+      "status": "pending",
+      "owner": null,
+      "commits": {},
+      "checks": [],
+      "independentReview": null,
+      "blockers": []
+    }
+  ],
+  "boundaryResults": [
+    {
+      "id": "S01",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S02",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S03",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S04",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S05",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S06",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S07",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S08",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S09",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S10",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S11",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S12",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S13",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S14",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S15",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S16",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S17",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S18",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S19",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S20",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S21",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S22",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S23",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S24",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S25",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S26",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S27",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S28",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S29",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S30",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S31",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S32",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S33",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S34",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S35",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S36",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S37",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S38",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S39",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S40",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "S41",
+      "status": "pending",
+      "evidence": []
+    }
+  ],
+  "artifacts": [],
+  "cleanup": {
+    "status": "not_eligible",
+    "prdsPushed": false,
+    "permanentContractPushed": false,
+    "remoteVerified": false
+  }
+}
