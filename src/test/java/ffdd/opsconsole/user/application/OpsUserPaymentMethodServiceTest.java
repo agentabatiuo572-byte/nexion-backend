@@ -88,7 +88,7 @@ class OpsUserPaymentMethodServiceTest {
 
         assertThat(result).containsEntry("status", "UNBOUND").containsEntry("providerRevocation", "PENDING")
                 .containsEntry("source", "provider").containsEntry("sandbox", false);
-        verify(mapper).queueNotification(eq(42L), eq("PAYMENT_METHOD_UNBOUND:8:idem-2"), anyString(), anyString(), anyString());
+        verify(mapper).queueNotification(eq(42L), eq("PAYMENT_METHOD_UNBOUND:8:idem-2"), anyString(), eq("尾号 4242 的支付方式已从 UVEL 账户解绑，不再用于后续扣款。"), anyString());
         verify(mapper).promoteFallbackDefault(42L, "PRODUCTION");
         verify(mapper, never()).promoteFallbackDefault(42L, "SANDBOX");
         verify(audit).recordRequired(any());
@@ -117,8 +117,32 @@ class OpsUserPaymentMethodServiceTest {
                 new UserPaymentMethodCommandRequest(
                         "inappropriate nickname confirmed", null, "old-name", "superadmin"));
 
-        assertThat(result.get("nickname").toString()).startsWith("NexGrid-").hasSize(16);
+        assertThat(result.get("nickname").toString()).matches("UVEL-[0-9A-F]{8}");
         verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void nicknameResetKeepsRawLegacyNicknameAsTheCompareAndSetValue() {
+        when(mapper.currentNickname(42L)).thenReturn("NexGrid-F343FA44");
+        when(mapper.resetNickname(eq(42L), anyString(), eq("NexGrid-F343FA44"))).thenReturn(1);
+
+        Map<String, Object> result = service.resetNickname(42L, "idem-legacy-nick",
+                new UserPaymentMethodCommandRequest(
+                        "inappropriate nickname confirmed", null, "NexGrid-F343FA44", "superadmin"));
+
+        assertThat(result.get("nickname").toString()).matches("UVEL-[0-9A-F]{8}");
+        verify(mapper).resetNickname(42L, result.get("nickname").toString(), "NexGrid-F343FA44");
+    }
+
+    @Test
+    void displayAliasCannotBypassNicknameVersionCheck() {
+        when(mapper.currentNickname(42L)).thenReturn("NexGrid-F343FA44");
+        assertThatThrownBy(() -> service.resetNickname(42L, "idem-alias-nick",
+                new UserPaymentMethodCommandRequest(
+                        "inappropriate nickname confirmed", null, "UVEL-F343FA44", "superadmin")))
+                .isInstanceOf(BizException.class).hasMessage("NICKNAME_VERSION_CONFLICT");
+        verify(mapper, never()).resetNickname(any(), anyString(), anyString());
+        verify(audit, never()).recordRequired(any());
     }
 
     @Test

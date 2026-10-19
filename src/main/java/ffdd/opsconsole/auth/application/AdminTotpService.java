@@ -55,7 +55,7 @@ public class AdminTotpService {
     }
 
     public String provisioningUri(String issuer, String username, String secret) {
-        String safeIssuer = encode(StringUtils.hasText(issuer) ? issuer.trim() : "NexGrid Ops");
+        String safeIssuer = encode(StringUtils.hasText(issuer) ? issuer.trim() : "UVEL Ops");
         String safeUsername = encode(StringUtils.hasText(username) ? username.trim() : "admin");
         return "otpauth://totp/" + safeIssuer + ":" + safeUsername
                 + "?secret=" + secret + "&issuer=" + safeIssuer + "&algorithm=SHA1&digits=6&period=30";

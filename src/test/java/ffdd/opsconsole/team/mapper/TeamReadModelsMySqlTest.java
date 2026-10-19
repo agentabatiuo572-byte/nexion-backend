@@ -114,6 +114,10 @@ class TeamReadModelsMySqlTest {
             jdbc.update(insert, 62L, 99L, 8L, null, "MISSING-BENEFICIARY", cutoff, cutoff.plusDays(30), 0);
             record BrandCase(String snapshot, String live, String phone, int deleted, int sandbox, String expected) { }
             var brands = List.of(
+                    new BrandCase("NexGrid-F343FA44", "Custom current", null, 0, 0, "UVEL-F343FA44"),
+                    new BrandCase(null, "NexGrid-F343FA44", null, 0, 0, "UVEL-F343FA44"),
+                    new BrandCase("NexGrid-f343fa44", "Custom current", null, 0, 0, "NexGrid-f343fa44"),
+                    new BrandCase("NexGrid-F343FA44 ", "Custom current", null, 0, 0, "NexGrid-F343FA44 "),
                     new BrandCase("NexGrid 1057", "Custom current", "18000001057", 0, 0, "UVEL 1057"),
                     new BrandCase(null, "NexGrid 1057", "18000001057", 0, 0, "UVEL 1057"),
                     new BrandCase(" \t\n", "NexGrid 1057", "18000001057", 0, 0, "UVEL 1057"),

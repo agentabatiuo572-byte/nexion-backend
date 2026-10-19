@@ -245,7 +245,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                         trustField("footnote.vi", "Ghi chú", "Ảnh chụp thử nghiệm máy chủ Sandbox biệt lập"),
                         trustField("footnote.en", "Footnote", "Server-owned snapshot for the isolated Sandbox"))),
                 sandboxTrustSection("leadership", "Run-scoped leadership disclosure", "Verified people", List.of(
-                        trustField("leader1Name", "Name", "NexGrid Sandbox Team"),
+                        trustField("leader1Name", "Name", "UVEL Sandbox Team"),
                         trustField("leader1Role.zh", "角色", "Sandbox 运营团队"),
                         trustField("leader1Role.vi", "Vai trò", "Nhóm vận hành Sandbox"),
                         trustField("leader1Role.en", "Role", "Sandbox operations team"),

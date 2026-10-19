@@ -354,7 +354,7 @@ public class AppTrialLifecycleService {
         BigDecimal usdtAfter = wallet.usdt().subtract(amount).add(settlement.remainderUsdt());
         BigDecimal nexAfter = wallet.nex().add(settlement.shadowNex());
         if (amount.signum() > 0 && paymentAttribution.insertLedger(prepared, amount,
-                wallet.usdt().subtract(amount), "H2 conversion via NexGrid USDT wallet") != 1) {
+                wallet.usdt().subtract(amount), "H2 conversion via UVEL USDT wallet") != 1) {
             throw new BizException(409, "TRIAL_CHARGE_LEDGER_CONFLICT");
         }
         if (settlement.remainderUsdt().signum() > 0) mapper.insertLedger(

@@ -109,7 +109,7 @@ class AppUserAuthServiceTest {
         ArgumentCaptor<UserSessionEntity> saved = ArgumentCaptor.forClass(UserSessionEntity.class);
         verify(sessions).insert(saved.capture());
         assertThat(saved.getValue().getUserId()).isEqualTo(42L);
-        assertThat(saved.getValue().getDeviceName()).isEqualTo("NexGrid Phone App");
+        assertThat(saved.getValue().getDeviceName()).isEqualTo("UVEL Phone App");
         assertThat(saved.getValue().getRefreshTokenId()).isNotBlank();
         assertThat(saved.getValue().getExpiresAt()).isNotNull();
         verify(supportActivity).interactiveLogin(42L,saved.getValue().getSessionChainId());
@@ -125,7 +125,7 @@ class AppUserAuthServiceTest {
         assertThat(result.getCode()).isZero();
         ArgumentCaptor<UserSessionEntity> saved = ArgumentCaptor.forClass(UserSessionEntity.class);
         verify(sessions).insert(saved.capture());
-        assertThat(saved.getValue().getDeviceName()).isEqualTo("NexGrid H5");
+        assertThat(saved.getValue().getDeviceName()).isEqualTo("UVEL H5");
     }
 
     @Test
@@ -457,7 +457,7 @@ class AppUserAuthServiceTest {
         verify(users).consumeValidLoginOtp(42L, challengeNo, "123456");
         ArgumentCaptor<UserSessionEntity> saved = ArgumentCaptor.forClass(UserSessionEntity.class);
         verify(sessions).insert(saved.capture());
-        assertThat(saved.getValue().getDeviceName()).isEqualTo("NexGrid Phone App");
+        assertThat(saved.getValue().getDeviceName()).isEqualTo("UVEL Phone App");
     }
 
     @Test
@@ -493,7 +493,7 @@ class AppUserAuthServiceTest {
         verify(users).consumeValidLoginOtp(eq(42L), eq(sent.getData().challengeNo()), eq("123456"));
         ArgumentCaptor<UserSessionEntity> saved = ArgumentCaptor.forClass(UserSessionEntity.class);
         verify(sessions).insert(saved.capture());
-        assertThat(saved.getValue().getDeviceName()).isEqualTo("NexGrid Phone App");
+        assertThat(saved.getValue().getDeviceName()).isEqualTo("UVEL Phone App");
     }
 
     @Test
@@ -740,7 +740,7 @@ class AppUserAuthServiceTest {
                 LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).minusMinutes(1),
                 LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).plusMinutes(1));
         assertThat(rotated.getSessionChainId()).isEqualTo(initial.getSessionChainId());
-        assertThat(rotated.getDeviceName()).isEqualTo("NexGrid Phone App");
+        assertThat(rotated.getDeviceName()).isEqualTo("UVEL Phone App");
         verify(sessions).markRefreshRotated(eq(101L), eq(rotated.getRefreshTokenId()));
     }
 

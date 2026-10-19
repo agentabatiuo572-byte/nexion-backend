@@ -35,7 +35,7 @@ import org.springframework.util.StringUtils;
 public class CommerceSandboxTrialService {
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final String TRIAL_PRODUCT = "stellarbox-s1";
-    private static final String TRIAL_DEVICE = "NexGridBox S1";
+    private static final String TRIAL_DEVICE = "UVELBox S1";
     private static final int TRIAL_DAYS = 3;
     private static final int GRACE_DAYS = 7;
     private static final BigDecimal DAILY_USDT = new BigDecimal("38.520000");

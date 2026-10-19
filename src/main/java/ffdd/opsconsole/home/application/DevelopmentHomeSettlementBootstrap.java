@@ -58,7 +58,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
     private static final String FIXED_COUNTRY_CODE = "+86";
     private static final String FIXED_PHONE = "18708173775";
-    private static final String CLIENT_NAME = "NexGrid Development Workload";
+    private static final String CLIENT_NAME = "UVEL Development Workload";
     private static final String TASK_PREFIX = "DEV-TASK-";
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final Set<String> TASK_CLASSES = Set.of("IG", "VG", "LL", "FT", "EM", "SP");

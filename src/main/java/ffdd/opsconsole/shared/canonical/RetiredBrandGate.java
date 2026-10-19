@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
  * own shape (locale coverage, placeholder parity); none of them looked at brand.
  *
  * <p>Detection is deliberately a whole-token match. {@code Nexion} must not fire
- * on unrelated substrings, and the current brand {@code NexGrid} must never match.
+ * on unrelated substrings, and the current brand {@code UVEL} must never match.
  * The token list is the only place a retired brand is declared; callers derive
  * both the SQL predicate and the Java verdict from it so a domain can never
  * disagree with the gate about the vocabulary.
@@ -41,7 +41,7 @@ public final class RetiredBrandGate {
     private static final Pattern RETIRED_BRAND = Pattern.compile(RETIRED_BRAND_REGEX, Pattern.CASE_INSENSITIVE);
 
     /** The brand every user-facing string must use. */
-    public static final String CURRENT_BRAND = "NexGrid";
+    public static final String CURRENT_BRAND = "UVEL";
 
     /** SQL predicate over one text column/expression, for MyBatis interpolation. */
     public static String matchesSql(String expression) {

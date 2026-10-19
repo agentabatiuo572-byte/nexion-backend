@@ -373,7 +373,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                created_at,updated_at,is_deleted)
             VALUES
               (#{userId},#{orderNo},'ORDER_PURCHASE','USDT','OUT',#{amount},#{balanceAfter},'SUCCESS',
-               'NexGrid wallet order settlement',NOW(6),NOW(6),0)
+               'UVEL wallet order settlement',NOW(6),NOW(6),0)
             """)
     int insertDevelopmentPurchaseLedger(@Param("orderNo") String orderNo,
                                         @Param("userId") Long userId,
@@ -425,11 +425,11 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,created_at,updated_at,is_deleted)
             SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),#{instanceNo},p.name,
                    COALESCE(NULLIF(p.product_type,''),'BOX'),GREATEST(COALESCE(p.generation,1),1),
-                   COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'NexGrid accelerator'),
+                   COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'UVEL accelerator'),
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
                    CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
                          ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
-                   COALESCE(NULLIF(s.datacenter,''),'NexGrid DC'),
+                   COALESCE(NULLIF(s.datacenter,''),'UVEL DC'),
                    CASE WHEN o.quantity > 0 THEN o.amount_usdt/o.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
@@ -458,11 +458,11 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,created_at,updated_at,is_deleted)
             SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),#{instanceNo},p.name,
                    COALESCE(NULLIF(p.product_type,''),'BOX'),GREATEST(COALESCE(p.generation,1),1),
-                   COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'NexGrid accelerator'),
+                   COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'UVEL accelerator'),
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
                    CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
                          ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
-                   COALESCE(NULLIF(s.datacenter,''),'NexGrid DC'),
+                   COALESCE(NULLIF(s.datacenter,''),'UVEL DC'),
                    CASE WHEN oi.quantity > 0 THEN oi.line_amount_usdt/oi.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
@@ -507,7 +507,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
             INSERT IGNORE INTO nx_order_state_history
               (order_no,from_state,to_state,reason,operator,idempotency_key,created_at)
             VALUES
-              (#{orderNo},#{fromState},#{toState},'NexGrid wallet checkout',
+              (#{orderNo},#{fromState},#{toState},'UVEL wallet checkout',
                'system:wallet-checkout',#{idempotencyKey},NOW(6))
             """)
     int insertDevelopmentOrderHistory(@Param("orderNo") String orderNo,

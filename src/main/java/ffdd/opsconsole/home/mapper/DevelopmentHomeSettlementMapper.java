@@ -105,8 +105,8 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT d.user_id AS userId, d.id AS userDeviceId, d.instance_no AS instanceNo,
-                   COALESCE(NULLIF(d.name, ''), NULLIF(d.product_code, ''), 'NexGrid Box') AS deviceName,
-                   COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'NexGrid accelerator') AS modelName,
+                   COALESCE(NULLIF(d.name, ''), NULLIF(d.product_code, ''), 'UVEL Box') AS deviceName,
+                   COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'UVEL accelerator') AS modelName,
                    d.product_code AS productCode, d.device_type AS deviceType,
                    d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    GREATEST(COALESCE(d.daily_usdt, 0), 0) AS dailyUsdt
@@ -127,8 +127,8 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT d.user_id AS userId, d.id AS userDeviceId, d.instance_no AS instanceNo,
-                   COALESCE(NULLIF(d.name, ''), NULLIF(d.product_code, ''), 'NexGrid device') AS deviceName,
-                   COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'NexGrid accelerator') AS modelName,
+                   COALESCE(NULLIF(d.name, ''), NULLIF(d.product_code, ''), 'UVEL device') AS deviceName,
+                   COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'UVEL accelerator') AS modelName,
                     d.product_code AS productCode, d.device_type AS deviceType, d.status AS status,
                     d.row_version AS rowVersion,
                     COALESCE(d.vram_total_gb, 0) AS vramTotalGb,
@@ -170,8 +170,8 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT d.user_id AS userId, d.id AS userDeviceId, d.instance_no AS instanceNo,
-                   COALESCE(NULLIF(d.name, ''), NULLIF(d.product_code, ''), 'NexGrid device') AS deviceName,
-                   COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'NexGrid accelerator') AS modelName,
+                   COALESCE(NULLIF(d.name, ''), NULLIF(d.product_code, ''), 'UVEL device') AS deviceName,
+                   COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'UVEL accelerator') AS modelName,
                     d.product_code AS productCode, d.device_type AS deviceType, d.status AS status,
                     d.row_version AS rowVersion,
                     COALESCE(d.vram_total_gb, 0) AS vramTotalGb,
@@ -379,7 +379,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                required_seconds,task_lock_minutes,source_environment,client_name,status,
                started_at,worker_ack_at,proof_consumed_at,completed_at,created_at,updated_at,is_deleted)
             SELECT #{taskNo},#{userId},#{userDeviceId},'LLM_INFERENCE','Development device compute settlement',
-                   #{modelName},#{rewardUsdt},60,0,'PRODUCTION','NexGrid Development Workload','COMPLETED',
+                   #{modelName},#{rewardUsdt},60,0,'PRODUCTION','UVEL Development Workload','COMPLETED',
                    #{startedAt},#{startedAt},#{completedAt},#{completedAt},#{completedAt},#{completedAt},0
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
@@ -396,7 +396,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
               (user_id,user_device_id,task_no,receipt_no,task_type,client_name,reward_usdt,reward_nex,
                earning_status,source_environment,proof_hash,completed_at,created_at,updated_at,is_deleted)
             SELECT #{userId},#{userDeviceId},#{taskNo},#{receiptNo},'LLM_INFERENCE',
-                   'NexGrid Development Workload',#{rewardUsdt},0,'SETTLED','PRODUCTION',#{proofHash},
+                   'UVEL Development Workload',#{rewardUsdt},0,'SETTLED','PRODUCTION',#{proofHash},
                    #{completedAt},#{completedAt},#{completedAt},0
               FROM nx_compute_task t
              WHERE t.task_no=#{taskNo} AND t.user_id=#{userId} AND t.user_device_id=#{userDeviceId}

@@ -112,7 +112,7 @@ public class AppTeamInsightsService {
             var row = source.get(index);
             BigDecimal earned = zero(row.earnedUsdt());
             Map<String, Object> item = new LinkedHashMap<>();
-            String displayName = row.nickname();
+            String displayName = ffdd.opsconsole.shared.canonical.DisplayBranding.resetNickname(row.nickname());
             if (displayName != null && displayName.equals(verifiedLegacyNames.get(row.userId()))) {
                 displayName = "UVEL " + displayName.substring("NexGrid ".length());
             }

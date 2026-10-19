@@ -42,7 +42,7 @@ class ItnioSmsClientTest {
                         {
                           "appId":"sms-app",
                           "numbers":"84901234567",
-                          "content":"Mã xác minh của bạn là 654321, có hiệu lực trong 5 phút. [NexGrid]",
+                          "content":"Mã xác minh của bạn là 654321, có hiệu lực trong 5 phút. [UVEL]",
                           "trackClicks":0
                         }
                         """, true))
@@ -69,7 +69,7 @@ class ItnioSmsClientTest {
         server.expect(requestTo("https://api.itniotech.com/sms/sendSms"))
                 .andExpect(content().json("{\"senderId\":\"NexGrid\"}", false))
                 .andExpect(content().json("""
-                        {"content":"Mã xác minh của bạn là 654321, có hiệu lực trong 5 phút. [NexGrid]"}
+                        {"content":"Mã xác minh của bạn là 654321, có hiệu lực trong 5 phút. [UVEL]"}
                         """, false))
                 .andRespond(withSuccess("""
                         {"status":"0","reason":"success","success":"1","fail":"0",

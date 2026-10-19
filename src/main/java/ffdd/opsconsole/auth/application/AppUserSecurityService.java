@@ -330,7 +330,7 @@ public class AppUserSecurityService {
         }
         return new AppSecurityStateResponse.Session(
                 row.getRefreshTokenId(),
-                StringUtils.hasText(row.getDeviceName()) ? row.getDeviceName().trim() : "NexGrid App / H5",
+                ffdd.opsconsole.shared.canonical.DisplayBranding.sessionName(row.getDeviceName()),
                 maskIp(row.getClientIp()),
                 lastActiveAt,
                 current);

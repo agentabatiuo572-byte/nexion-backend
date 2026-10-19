@@ -451,7 +451,7 @@ class AppOrderCommandServiceTest {
                 .containsEntry("runId", "")
                 .containsEntry("walletBalanceAfterUsdt", new BigDecimal("801.000000"));
         verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("1199.000000"), 4L);
-        verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), eq(new BigDecimal("1199.000000")), eq(new BigDecimal("801.000000")), eq("NexGrid wallet order settlement"));
+        verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), eq(new BigDecimal("1199.000000")), eq(new BigDecimal("801.000000")), eq("UVEL wallet order settlement"));
         verify(mapper).insertDevelopmentDevice(eq("ORD-DEV-1"), eq(7L), startsWith("NEX-ORD-"), eq(0));
         verify(outbox).publishUserEvent(eq("DEVICE"), eq("91"), eq("admin.device_activated"), eq(7L),
                 eq("P3"), eq(0), eq("2026-W34"), argThat(payload -> payload instanceof Map<?, ?> map
@@ -1129,7 +1129,7 @@ class AppOrderCommandServiceTest {
                 .containsEntry("canonicalStatus", "activated")
                 .containsEntry("walletBalanceAfterUsdt", new BigDecimal("15.000000"));
         verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("10.000000"), 2L);
-        verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), eq(new BigDecimal("10.000000")), eq(new BigDecimal("15.000000")), eq("NexGrid wallet order settlement"));
+        verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), eq(new BigDecimal("10.000000")), eq(new BigDecimal("15.000000")), eq("UVEL wallet order settlement"));
         verify(audit).recordRequired(any());
         var settlement = inOrder(promotions, mapper, capture);
         settlement.verify(mapper).findDevelopmentPayOrderOwner("ORD-1");
@@ -1140,7 +1140,7 @@ class AppOrderCommandServiceTest {
         settlement.verify(capture).beforeCash(any(Prepared.class));
         settlement.verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("10.000000"), 2L);
         settlement.verify(capture).insertLedger(any(Prepared.class), eq(new BigDecimal("10.000000")),
-                eq(new BigDecimal("15.000000")), eq("NexGrid wallet order settlement"));
+                eq(new BigDecimal("15.000000")), eq("UVEL wallet order settlement"));
         settlement.verify(mapper).markDevelopmentOrderActivated(eq("ORD-1"), eq(7L), anyString());
         settlement.verify(promotions).afterPaid(7L, "ORD-1");
         settlement.verify(capture).record(any(Prepared.class));
