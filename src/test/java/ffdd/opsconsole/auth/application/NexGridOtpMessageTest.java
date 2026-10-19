@@ -12,7 +12,7 @@ class NexGridOtpMessageTest {
         String content = NexGridOtpMessage.render("+84", "LOGIN-abc", "654321", 5);
 
         assertThat(content).isEqualTo(
-                "Mã xác minh của bạn là 654321, có hiệu lực trong 5 phút. [NexGrid]");
+                "Mã xác minh của bạn là 654321, có hiệu lực trong 5 phút. [UVEL]");
         assertThat(content).hasSizeLessThanOrEqualTo(70);
         assertThat(content).doesNotContain("NEXION", "Nexion");
     }
@@ -20,10 +20,10 @@ class NexGridOtpMessageTest {
     @Test
     void vietnameseTemplateNeverExposesTheChallengeNumber() {
         assertThat(NexGridOtpMessage.render("84", "REG-secret-challenge", "123456", 5))
-                .isEqualTo("Mã xác minh của bạn là 123456, có hiệu lực trong 5 phút. [NexGrid]")
+                .isEqualTo("Mã xác minh của bạn là 123456, có hiệu lực trong 5 phút. [UVEL]")
                 .doesNotContain("REG-secret-challenge");
         assertThat(NexGridOtpMessage.render("+84", "RESET-secret-challenge", "123456", 1))
-                .isEqualTo("Mã xác minh của bạn là 123456, có hiệu lực trong 1 phút. [NexGrid]")
+                .isEqualTo("Mã xác minh của bạn là 123456, có hiệu lực trong 1 phút. [UVEL]")
                 .doesNotContain("RESET-secret-challenge");
         assertThat(NexGridOtpMessage.render("+84", "PAYOUT-secret-challenge", "123456", 5))
                 .startsWith("Mã xác minh của bạn là 123456")
@@ -33,8 +33,8 @@ class NexGridOtpMessageTest {
     @Test
     void keepsTheExistingEnglishTemplateForTheChinaDevelopmentRoute() {
         assertThat(NexGridOtpMessage.render("+86", "LOGIN-hidden", "654321", 5))
-                .isEqualTo("NexGrid verification code: 654321. Expires in 5 min. "
-                        + "Never share this code with anyone, including NexGrid Support.");
+                .isEqualTo("UVEL verification code: 654321. Expires in 5 min. "
+                        + "Never share this code with anyone, including UVEL Support.");
     }
 
     @Test

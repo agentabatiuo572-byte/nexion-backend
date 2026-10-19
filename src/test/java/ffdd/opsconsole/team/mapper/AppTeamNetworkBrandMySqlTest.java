@@ -35,6 +35,10 @@ class AppTeamNetworkBrandMySqlTest {
             jdbc.update("INSERT INTO nx_user(id,nickname) VALUES(1,'Owner')");
             record NameCase(String raw, String phone, String expected) { }
             var names = List.of(
+                    new NameCase("NexGrid-F343FA44", null, "UVEL-F343FA44"),
+                    new NameCase("NexGrid-f343fa44", null, "NexGrid-f343fa44"),
+                    new NameCase("NexGrid-F343FA44 ", null, "NexGrid-F343FA44 "),
+                    new NameCase("NexGrid-F343FA4G", null, "NexGrid-F343FA4G"),
                     new NameCase("NexGrid 1051", "18000001051", "UVEL 1051"),
                     new NameCase("NexGrid 1055", "18000001055", "UVEL 1055"),
                     new NameCase("NexGrid 1051", "18000009999", "NexGrid 1051"),
@@ -74,7 +78,7 @@ class AppTeamNetworkBrandMySqlTest {
                     assertThat(jdbc.queryForObject("SELECT nickname FROM nx_user WHERE id=?", String.class, 100 + i)).isEqualTo(names.get(i).raw());
                 }
                 assertThat(mapper.membersPage(1L, 105, 2)).extracting(AppTeamNetworkMapper.MemberRow::memberUserId).containsExactly(106L, 107L);
-                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user", Integer.class)).isEqualTo(20);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user", Integer.class)).isEqualTo(names.size() + 5);
             }
         } finally {
             admin.execute("DROP DATABASE " + schema);

@@ -948,7 +948,7 @@ class AppTrialLifecycleServiceTest {
         var result = fixedService.convert(7L, "stellarbox-s1", new BigDecimal("1239.00"), "direct-reward-conversion");
         assertThat(result.getCode()).isZero();
         verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), eq(new BigDecimal("1239.000000")),
-                eq(new BigDecimal("761.000000")), eq("H2 conversion via NexGrid USDT wallet"));
+                eq(new BigDecimal("761.000000")), eq("H2 conversion via UVEL USDT wallet"));
         verify(mapper,never()).insertLedger(anyLong(),anyString(),eq("TRIAL_CHARGE"),anyString(),anyString(),any(),any(),anyString());
         var sequence=org.mockito.Mockito.inOrder(capture,mapper);
         sequence.verify(capture).prepare(7L,Source.TRIAL_CONVERT,"USER:7");

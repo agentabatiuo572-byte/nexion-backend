@@ -158,7 +158,7 @@ public class CregisDepositService {
             if (db.insertPoolAttempt(config.getProjectId(), CHAIN, requestId, creationBlock) != 1)
                 throw new IllegalStateException("CREGIS_ADDRESS_ATTEMPT_INSERT_FAILED");
             submitted = true;
-            CregisGateway.Address created = router.provider().createAddress(CHAIN, "NexGrid USDT BEP20",
+            CregisGateway.Address created = router.provider().createAddress(CHAIN, "UVEL USDT BEP20",
                     router.depositCallbackUrl(), requestId);
             if (!CHAIN.equals(created.chainId()) || created.address() == null
                     || !created.address().matches("(?i)0x[0-9a-f]{40}"))

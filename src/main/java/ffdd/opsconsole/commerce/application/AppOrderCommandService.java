@@ -297,7 +297,7 @@ public class AppOrderCommandService {
                 throw new BizException(409, "ORDER_WALLET_CONFLICT");
             }
             if (paymentAttribution.insertLedger(prepared, order.amountUsdt(), balanceAfter,
-                    "NexGrid wallet order settlement") != 1) {
+                    "UVEL wallet order settlement") != 1) {
                 throw new BizException(409, "ORDER_WALLET_LEDGER_CONFLICT");
             }
         }
@@ -407,7 +407,7 @@ public class AppOrderCommandService {
         detail.put("afterStatus", "ACTIVE");
         detail.put("mode", paymentRail);
         detail.put("operator", "system:wallet-checkout");
-        detail.put("reason", "NexGrid wallet checkout activated device");
+        detail.put("reason", "UVEL wallet checkout activated device");
         detail.put("ts", Instant.now().toString());
         outbox.publishUserEvent("DEVICE", String.valueOf(device.deviceId()), "admin.device_activated",
                 userId, phase, accountAgeMonths, String.valueOf(attribution.get("cohort")), detail);

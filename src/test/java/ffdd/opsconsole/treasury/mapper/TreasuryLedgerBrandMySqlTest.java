@@ -33,6 +33,10 @@ class TreasuryLedgerBrandMySqlTest {
             jdbc.execute("CREATE TABLE nx_wallet_ledger(id BIGINT PRIMARY KEY,user_id BIGINT,biz_no VARCHAR(100),biz_type VARCHAR(40),asset VARCHAR(10),direction VARCHAR(10),amount DECIMAL(20,6),balance_after DECIMAL(20,6),status VARCHAR(20),remark VARCHAR(200),created_at DATETIME,updated_at DATETIME,is_deleted INT DEFAULT 0)");
             record NameCase(String raw, String phone, String expected) { }
             var names = List.of(
+                    new NameCase("NexGrid-F343FA44", null, "UVEL-F343FA44"),
+                    new NameCase("NexGrid-f343fa44", null, "NexGrid-f343fa44"),
+                    new NameCase("NexGrid-F343FA44 ", null, "NexGrid-F343FA44 "),
+                    new NameCase("NexGrid-F343FA4G", null, "NexGrid-F343FA4G"),
                     new NameCase("NexGrid 1058", "18000001058", "UVEL 1058"),
                     new NameCase("NexGrid 1058", "18000009999", "NexGrid 1058"),
                     new NameCase("NexGrid 1058", null, "NexGrid 1058"),

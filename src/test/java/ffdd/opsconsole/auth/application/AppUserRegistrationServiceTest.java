@@ -320,6 +320,7 @@ class AppUserRegistrationServiceTest {
 
         ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
         verify(userMapper).insert(inserted.capture());
+        assertThat(inserted.getValue().getNickname()).isEqualTo("UVEL " + inserted.getValue().getPhone().substring(inserted.getValue().getPhone().length() - 4));
         verify(dayOneInstanceFacade).provisionForRegisteredUser(99L);
         verify(userMapper).ensureRegisteredUserWallet(99L, 1);
         assertThat(result.getCode()).isZero();
@@ -349,6 +350,7 @@ class AppUserRegistrationServiceTest {
 
         ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
         verify(userMapper).insert(inserted.capture());
+        assertThat(inserted.getValue().getNickname()).isEqualTo("UVEL " + inserted.getValue().getPhone().substring(inserted.getValue().getPhone().length() - 4));
         verify(userMapper).ensureRegisteredUserWallet(99L, 1);
         verify(mapper).insertTeamMemberProjection(99L, 99L, 0, 1);
         verify(authService).issueRegisteredSession(inserted.getValue(), "127.0.0.3", AppSessionSurface.APP);
@@ -494,6 +496,7 @@ class AppUserRegistrationServiceTest {
 
         ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
         verify(userMapper).insert(inserted.capture());
+        assertThat(inserted.getValue().getNickname()).isEqualTo("UVEL " + inserted.getValue().getPhone().substring(inserted.getValue().getPhone().length() - 4));
         verify(userMapper).ensureNewRegisteredUserWallet(eq(99L), eq(0), any(String.class));
         assertThat(result.getCode()).isZero();
         assertThat(inserted.getValue().getSandbox()).isZero();
@@ -554,6 +557,7 @@ class AppUserRegistrationServiceTest {
         ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
         verify(mapper).findSponsorForUpdate(sponsorCode.capture());
         verify(userMapper).insert(inserted.capture());
+        assertThat(inserted.getValue().getNickname()).isEqualTo("UVEL " + inserted.getValue().getPhone().substring(inserted.getValue().getPhone().length() - 4));
         verify(userMapper).ensureNewRegisteredUserWallet(eq(99L), eq(0), any(String.class));
         verify(mapper).insertTeamMemberProjection(99L, 99L, 0, 0);
         verify(mapper).insertTeamMemberProjection(41L, 99L, 1, 0);

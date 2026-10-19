@@ -185,11 +185,11 @@ public class AppVRankController {
     }
 
     private String configuredPrizeName() {
-        if (configFacade == null) return "NexGrid V-Rank";
+        if (configFacade == null) return "UVEL V-Rank";
         return configFacade.activeValue("team.ui.F.prize.name")
                 .map(String::trim)
                 .filter(value -> !value.isBlank())
-                .orElse("NexGrid V-Rank");
+                .orElse("UVEL V-Rank");
     }
 
     private Map<Integer, String> configuredRankTitles() {

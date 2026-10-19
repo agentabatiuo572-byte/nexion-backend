@@ -4,7 +4,7 @@ import java.util.Locale;
 
 final class NexGridOtpMessage {
     private static final String SECURITY_NOTICE =
-            "Never share this code with anyone, including NexGrid Support.";
+            "Never share this code with anyone, including UVEL Support.";
 
     private NexGridOtpMessage() {
     }
@@ -18,11 +18,11 @@ final class NexGridOtpMessage {
                 : countryCode.trim().replace(" ", "").replaceFirst("^\\+", "");
         if ("84".equals(normalizedCountryCode)) {
             return String.format(Locale.ROOT,
-                    "Mã xác minh của bạn là %s, có hiệu lực trong %d phút. [NexGrid]",
+                    "Mã xác minh của bạn là %s, có hiệu lực trong %d phút. [UVEL]",
                     code, ttlMinutes);
         }
         return String.format(Locale.ROOT,
-                "NexGrid verification code: %s. Expires in %d min. %s",
+                "UVEL verification code: %s. Expires in %d min. %s",
                 code, ttlMinutes, SECURITY_NOTICE);
     }
 }
