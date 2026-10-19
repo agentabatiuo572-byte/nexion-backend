@@ -118,7 +118,12 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                         WHERE m.conversation_no=c.conversation_no AND m.sender_type IN ('user','agent')
                           AND m.id>sm.id)
                   )
-              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind, c.archived
+              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind, c.archived,
+              (SELECT COUNT(*) FROM nx_conversation_message pending_message
+                LEFT JOIN nx_support_reply_cursor reply_cursor ON reply_cursor.conversation_no=pending_message.conversation_no
+                WHERE pending_message.conversation_no=c.conversation_no AND pending_message.is_deleted=0
+                  AND pending_message.sender_type='user'
+                  AND pending_message.id>COALESCE(reply_cursor.through_message_id,0)) AS pendingReplyCount
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -193,7 +198,13 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                     <if test="currentRead">FOR SHARE</if>
                   )
                 <if test="currentRead">FOR SHARE</if>
-              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind, c.archived
+              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind, c.archived,
+              (SELECT COUNT(*) FROM nx_conversation_message pending_message
+                LEFT JOIN nx_support_reply_cursor reply_cursor ON reply_cursor.conversation_no=pending_message.conversation_no
+                WHERE pending_message.conversation_no=c.conversation_no AND pending_message.is_deleted=0
+                  AND pending_message.sender_type='user'
+                  AND pending_message.id>COALESCE(reply_cursor.through_message_id,0)
+                <if test='currentRead'>FOR SHARE</if>) AS pendingReplyCount
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -248,7 +259,12 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               (SELECT COALESCE(MAX(m.id),0) FROM nx_conversation_message m
                 WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0
                   AND m.sender_type IN ('user','agent')) AS lastPublicMessageId,
-              NULL AS lastMessageKind, c.archived
+              NULL AS lastMessageKind, c.archived,
+              (SELECT COUNT(*) FROM nx_conversation_message pending_message
+                LEFT JOIN nx_support_reply_cursor reply_cursor ON reply_cursor.conversation_no=pending_message.conversation_no
+                WHERE pending_message.conversation_no=c.conversation_no AND pending_message.is_deleted=0
+                  AND pending_message.sender_type='user'
+                  AND pending_message.id>COALESCE(reply_cursor.through_message_id,0)) AS pendingReplyCount
             FROM nx_conversation c
             JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
