@@ -76,6 +76,7 @@ INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'user_%'
 WHERE r.role_code='RISK'
   AND (p.permission_code NOT LIKE 'user_c3_%' OR p.permission_code='user_c3_read')
+  AND p.permission_code NOT IN ('user_c5_phone_replacement_exception_grant','user_c5_phone_replacement_exception_revoke')
   AND p.status=1 AND p.is_deleted=0;
 
 -- C3 exact matrix: view is cross-functional; execution and reversal follow the amount boundary.

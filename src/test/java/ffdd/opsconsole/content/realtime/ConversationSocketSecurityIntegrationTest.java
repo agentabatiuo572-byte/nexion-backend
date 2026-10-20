@@ -169,7 +169,8 @@ class ConversationSocketSecurityIntegrationTest {
         @Bean JwtAuthenticationFilter jwtAuthenticationFilter(JwtTokenProvider tokens, AuthSessionMapper sessions, UserOpsMapper users,
                 org.springframework.core.env.Environment env, GatewaySecurityProperties gateway, AdminSessionRegistry admins,
                 AdminPermissionCache permissions, ImpersonationSessionVerifier impersonation, PlatformConfigFacade config) {
-            return new JwtAuthenticationFilter(tokens, sessions, users, env, gateway, admins, permissions, impersonation, config);
+            return new JwtAuthenticationFilter(tokens, sessions, users, env, gateway, admins, permissions, impersonation, config,
+                    mock(UserAccountBlocklistVerifier.class), mock(UserSessionRevocationService.class));
         }
         @Bean AuditLogService auditLogService() { return mock(AuditLogService.class); }
         @Bean AdminAccountStateMapper adminAccountStateMapper() { return mock(AdminAccountStateMapper.class); }

@@ -757,6 +757,50 @@ class OpsAuditCenterServiceTest {
     }
 
     @Test
+    void phonePolicyCanonicalSummarySurvivesStorageReadbackAndLaterPolicyChanges() throws Exception {
+        authenticate("41", "phone.maker");
+        var policy = mock(ffdd.opsconsole.common.boundary.PhoneReplacementContract.class);
+        when(policy.currentPolicy()).thenReturn(new ffdd.opsconsole.common.boundary.PhoneReplacementContract.Policy(true, true, 1L, 30, 2, 3L));
+        var realGuard = new AuditReplayBusinessPermissionGuard(
+                mock(ffdd.opsconsole.content.domain.TrustDisclosureRepository.class),
+                mock(ffdd.opsconsole.shared.security.AdminOperatorRoleResolver.class),
+                mock(ffdd.opsconsole.emergency.domain.EmergencyControlRepository.class), null,
+                mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), null, policy);
+        when(replayBusinessPermissionGuard.validateProposalContext(any()))
+                .thenAnswer(invocation -> realGuard.validateProposalContext(invocation.getArgument(0)));
+        String prefix = "E.compute.phoneBinding.";
+        Map<String, Object> values = Map.of(prefix + "allowReplacement", "on", prefix + "minReplacementIntervalDays", "1",
+                prefix + "replacementWindowDays", "31", prefix + "maxReplacementsInWindow", "2");
+        var targets = values.keySet().stream().sorted()
+                .map(key -> new ffdd.opsconsole.platform.domain.AuditLockTarget("E", "e6_compute_config", key)).toList();
+        var command = new AuditReplayCommand("E", "e6_compute_config_batch", Map.of("values", values, "expectedPolicyVersion", 3L));
+        var result = service.createProposal("phone-policy-review", new AuditOperationProposalRequest(
+                "forged action", String.join(",", new java.util.TreeSet<>(values.keySet())), "forged before", "forged after",
+                "phone.maker", "custom", "param", false, false, "gate", "review all four phone policy values",
+                "E6", command, null, targets));
+        assertThat(result.getCode()).isZero();
+        String before = "策略版本 3；允许换机：是；最短间隔：1天；滚动窗口：30天；窗口上限：2次";
+        String after = "预期版本 3；允许换机：是；最短间隔：1天；滚动窗口：31天；窗口上限：2次";
+        assertThat(result.getData().beforeValue()).isEqualTo(before);
+        assertThat(result.getData().afterValue()).isEqualTo(after);
+        var stored = ticketRows.get(result.getData().id());
+        assertThat(stored.getBeforeValue()).isEqualTo(before);
+        assertThat(stored.getAfterValue()).isEqualTo(after);
+        // Compare both sides after JSON parsing: Jackson may narrow a serialized Long to IntNode.
+        assertThat(objectMapper.readTree(stored.getCommandJson()))
+                .isEqualTo(objectMapper.readTree(objectMapper.writeValueAsString(command)));
+        when(policy.currentPolicy()).thenReturn(new ffdd.opsconsole.common.boundary.PhoneReplacementContract.Policy(true, false, 7L, 40, 6, 4L));
+        var reread = service.overview(null).getData().operationQueue().stream()
+                .filter(row -> row.id().equals(stored.getOperationId())).findFirst().orElseThrow();
+        assertThat(reread.beforeValue()).isEqualTo(before);
+        assertThat(reread.afterValue()).isEqualTo(after);
+        verify(policy, org.mockito.Mockito.times(1)).currentPolicy();
+        var audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(detailMap(audit.getValue().getDetail())).containsEntry("before", before).containsEntry("after", after);
+    }
+
+    @Test
     void createProposalPersistsBackendPendingTicketAndWritesAudit() {
         AuditOperationProposalRequest request = new AuditOperationProposalRequest(
                 "Phase dial 调整",

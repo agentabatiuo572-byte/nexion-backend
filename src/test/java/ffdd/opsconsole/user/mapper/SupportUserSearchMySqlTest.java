@@ -49,7 +49,7 @@ class SupportUserSearchMySqlTest {
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(UserOpsMapper.class);
         session = new SqlSessionFactoryBuilder().build(config).openSession(connection);
-        repository = new MybatisUserOpsRepository(session.getMapper(UserOpsMapper.class));
+        repository = new MybatisUserOpsRepository(session.getMapper(UserOpsMapper.class), org.mockito.Mockito.mock(ffdd.opsconsole.shared.security.UserSessionRevocationService.class));
     }
 
     @AfterEach
@@ -63,7 +63,7 @@ class SupportUserSearchMySqlTest {
     void phoneSuffixFullInternationalNameAndUserCodeFindTheSameRealUser() {
         String digits = phone.replaceAll("[^0-9]", "");
         for (String keyword : List.of(digits.substring(digits.length() - 4), phone,
-                "+" + countryCode.replaceAll("[^0-9]", "") + " " + phone, nickname, "U" + userId)) {
+                "+" + countryCode.replaceAll("[^0-9]", "") + " " + phone, nickname, String.format(java.util.Locale.ROOT, "U%08d", userId))) {
             var result = repository.pageSupportProfiles(UserQueryRequest.basic(keyword, null, null, 1, 8, null));
             assertThat(result.getTotal()).isPositive();
             assertThat(result.getRecords()).extracting(UserAccountView::id).contains(userId);

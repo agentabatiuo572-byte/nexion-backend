@@ -2,6 +2,8 @@ package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.common.boundary.PhoneReplacementContract;
+import ffdd.opsconsole.common.boundary.PhoneReplacementContract.Policy;
 import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustSectionView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
@@ -13,6 +15,7 @@ import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.PhoneReplacementException;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -101,12 +104,21 @@ public class AuditReplayBusinessPermissionGuard {
     private final org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.team.application.DirectReferralPolicyService> directPolicies;
     private final PlatformConfigFacade configFacade;
     private final ffdd.opsconsole.growth.application.WeeklyRegionPolicyService weeklyRegionPolicies;
+    private final PhoneReplacementContract phoneReplacement;
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
             AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
             org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.team.application.DirectReferralPolicyService> directPolicies,
             PlatformConfigFacade configFacade) {
-        this(trustDisclosureRepository, roleResolver, emergencyControlRepository, directPolicies, configFacade, null);
+        this(trustDisclosureRepository, roleResolver, emergencyControlRepository, directPolicies, configFacade, null, null);
+    }
+
+    public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
+            AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
+            org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.team.application.DirectReferralPolicyService> directPolicies,
+            PlatformConfigFacade configFacade,
+            ffdd.opsconsole.growth.application.WeeklyRegionPolicyService weeklyRegionPolicies) {
+        this(trustDisclosureRepository, roleResolver, emergencyControlRepository, directPolicies, configFacade, weeklyRegionPolicies, null);
     }
 
     public record DelegatedProposalDescriptor(
@@ -732,6 +744,9 @@ public class AuditReplayBusinessPermissionGuard {
 
     private DelegatedProposalDescriptor computeConfigDescriptor(Map<String, Object> params) {
         String paramKey = value(params, "paramKey");
+        if (paramKey.startsWith("E.compute.phoneBinding.")) {
+            return phonePolicyDescriptor(params, java.util.Collections.singletonMap(paramKey, params.get("value")), true);
+        }
         String nextValue = value(params, "value");
         if (!ComputeConfigRegistry.isFlagParamKey(paramKey)
                 || !Set.of("on", "off").contains(nextValue)) {
@@ -754,6 +769,9 @@ public class AuditReplayBusinessPermissionGuard {
         if (values == null) {
             return null;
         }
+        if (values.keySet().stream().anyMatch(key -> key.startsWith("E.compute.phoneBinding."))) {
+            return phonePolicyDescriptor(params, values, false);
+        }
         String objectId = String.join(",", values.keySet());
         return new DelegatedProposalDescriptor(
                 "批量更新算力配置参数 · " + values.size() + " 项",
@@ -764,6 +782,70 @@ public class AuditReplayBusinessPermissionGuard {
                 "param",
                 false,
                 null);
+    }
+
+    /** Persist a reviewable snapshot of the actual command, never the maker's display text. */
+    private DelegatedProposalDescriptor phonePolicyDescriptor(Map<String, Object> params, Map<String, Object> values, boolean single) {
+        String prefix = "E.compute.phoneBinding.";
+        Set<String> keys = Set.of(prefix + "allowReplacement", prefix + "minReplacementIntervalDays",
+                prefix + "replacementWindowDays", prefix + "maxReplacementsInWindow");
+        if ((single ? values.size() != 1 || !keys.containsAll(values.keySet()) : !keys.equals(values.keySet()))
+                || values.values().stream().anyMatch(value -> !(value instanceof String))) {
+            throw new PhoneReplacementException(422, "INVALID_POLICY", Map.of("policy", "请提交完整合法的手机策略参数"));
+        }
+        Object rawVersion = params.get("expectedPolicyVersion");
+        long expected;
+        try {
+            if (!(rawVersion instanceof Byte || rawVersion instanceof Short || rawVersion instanceof Integer
+                    || rawVersion instanceof Long || rawVersion instanceof java.math.BigInteger)) throw new ArithmeticException();
+            expected = new java.math.BigInteger(rawVersion.toString()).longValueExact();
+            if (expected < 1 || expected >= 9_007_199_254_740_991L) throw new ArithmeticException();
+        } catch (ArithmeticException invalid) {
+            throw new PhoneReplacementException(422, "INVALID_POLICY", Map.of("policyVersion", "请提供可发布的整数策略版本"));
+        }
+        if (phoneReplacement == null) throw new PhoneReplacementException(503, "PHONE_REPLACEMENT_POLICY_UNAVAILABLE");
+        Policy before = phoneReplacement.currentPolicy();
+        if (before == null || before.policyVersion() == null || single && !before.available())
+            throw new PhoneReplacementException(503, "PHONE_REPLACEMENT_POLICY_UNAVAILABLE");
+        if (before.policyVersion() != expected) throw new PhoneReplacementException(409, "POLICY_VERSION_CHANGED");
+        Map<String, Object> merged = new LinkedHashMap<>();
+        if (before.available()) {
+            merged.put(prefix + "allowReplacement", Boolean.TRUE.equals(before.allowReplacement()) ? "on" : "off");
+            merged.put(prefix + "minReplacementIntervalDays", String.valueOf(before.minReplacementIntervalDays()));
+            merged.put(prefix + "replacementWindowDays", String.valueOf(before.replacementWindowDays()));
+            merged.put(prefix + "maxReplacementsInWindow", String.valueOf(before.maxReplacementsInWindow()));
+        }
+        merged.putAll(values);
+        Policy after;
+        try {
+            String flag = (String) merged.get(prefix + "allowReplacement");
+            if (!Set.of("on", "off").contains(flag)) throw new IllegalArgumentException();
+            after = new Policy(true, "on".equals(flag), phonePolicyInteger(merged, prefix + "minReplacementIntervalDays"),
+                    Math.toIntExact(phonePolicyInteger(merged, prefix + "replacementWindowDays")),
+                    Math.toIntExact(phonePolicyInteger(merged, prefix + "maxReplacementsInWindow")), expected + 1);
+        } catch (IllegalArgumentException | ArithmeticException invalid) {
+            throw new PhoneReplacementException(422, "INVALID_POLICY", Map.of("policy", "手机策略值必须为开关或非负整数字符串"));
+        }
+        Map<String, String> errors = phoneReplacement.validatePolicy(after, System.currentTimeMillis());
+        if (!errors.isEmpty()) throw new PhoneReplacementException(422, "INVALID_POLICY", errors);
+        String objectId = String.join(",", new java.util.TreeSet<>(values.keySet()));
+        return new DelegatedProposalDescriptor("发布手机换机策略", objectId,
+                "策略版本 " + expected + "；" + phonePolicySummary(before),
+                "预期版本 " + expected + "；" + phonePolicySummary(after), "E6", "param", false,
+                single ? new AuditLockTarget("E", "e6_compute_config", objectId) : null);
+    }
+
+    private static long phonePolicyInteger(Map<String, Object> values, String key) {
+        Object value = values.get(key);
+        if (!(value instanceof String text) || !text.matches("[0-9]{1,16}")) throw new IllegalArgumentException();
+        return Long.parseLong(text);
+    }
+
+    private static String phonePolicySummary(Policy policy) {
+        return "允许换机：" + (policy.allowReplacement() == null ? "未配置" : policy.allowReplacement() ? "是" : "否")
+                + "；最短间隔：" + (policy.minReplacementIntervalDays() == null ? "未配置" : policy.minReplacementIntervalDays()) + "天"
+                + "；滚动窗口：" + (policy.replacementWindowDays() == null ? "未配置" : policy.replacementWindowDays()) + "天"
+                + "；窗口上限：" + (policy.maxReplacementsInWindow() == null ? "未配置" : policy.maxReplacementsInWindow()) + "次";
     }
 
     private List<AuditLockTarget> delegatedTargets(AuditReplayCommand command) {

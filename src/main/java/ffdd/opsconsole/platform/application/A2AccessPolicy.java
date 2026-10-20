@@ -44,10 +44,29 @@ public class A2AccessPolicy {
             Pattern.compile("^WO-[A-Z0-9]+(?:-[A-Z0-9]+)*$");
     private final AdminOperatorRoleResolver roleResolver;
     private final AuditOperationTicketMapper ticketMapper;
+    private final ffdd.opsconsole.shared.security.AdminPermissionCache permissions;
+
+    /** Rechecks current DB authority even when invoked outside the HTTP filter. */
+    public long requireProposalReader() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || !(auth.getDetails() instanceof Map<?, ?> details)
+                || !"ADMIN".equals(details.get("subjectType")))
+            throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
+        try {
+            long id = Long.parseLong(auth.getName());
+            if (roleResolver.isActiveAdministrator(id)
+                    && permissions.getPermissionCodes(id).contains("platform_a2_read")) return id;
+        } catch (NumberFormatException ignored) { }
+        throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
+    }
 
     public Scope current() {
         String role = roleResolver.resolveCode();
         String actor = AdminActorResolver.resolve(null);
+        return scope(role, actor, authorityDomains());
+    }
+
+    private Scope scope(String role, String actor, List<String> domains) {
         return switch (role == null ? "" : role.toUpperCase(Locale.ROOT)) {
             case "SUPER_ADMIN", "AUDITOR" -> new Scope(role, actor, null, false);
             case "FINANCE" -> new Scope(role, actor, List.of("D"), false);
@@ -55,8 +74,17 @@ public class A2AccessPolicy {
             case "GROWTH" -> new Scope(role, actor, List.of("E", "H"), false);
             case "CONTENT" -> new Scope(role, actor, List.of("I"), false);
             case "SUPPORT" -> new Scope(role, actor, null, true);
-            default -> new Scope(role, actor, authorityDomains(), false);
+            default -> new Scope(role, actor, domains, false);
         };
+    }
+
+    public boolean canAccessRecoveredProposal(AuditOperationTicketEntity ticket, long actorId) {
+        if (ticket == null || !StringUtils.hasText(ticket.getSourceDomain())) return false;
+        var scope = scope(roleResolver.resolveCode(), AdminActorResolver.resolve(null),
+                authorityDomains(permissions.getPermissionCodes(actorId)));
+        String domain = ticket.getSourceDomain().trim().substring(0, 1).toUpperCase(Locale.ROOT);
+        // Exact maker ID was already matched by the durable proposal lookup.
+        return domain.matches("[A-M]") && (scope.ownActorOnly() || scope.canSee(domain, ticket.getOperatorName()));
     }
 
     public AuditLogQueryRequest constrain(AuditLogQueryRequest request) {
@@ -123,9 +151,12 @@ public class A2AccessPolicy {
         if (authentication == null || authentication.getAuthorities() == null) {
             return List.of("__NONE__");
         }
+        return authorityDomains(authentication.getAuthorities().stream().map(GrantedAuthority::getAuthority).toList());
+    }
+
+    private List<String> authorityDomains(java.util.Collection<String> authorities) {
         Set<String> allowed = new LinkedHashSet<>();
-        for (GrantedAuthority granted : authentication.getAuthorities()) {
-            String authority = granted == null ? null : granted.getAuthority();
+        for (String authority : authorities) {
             if (!StringUtils.hasText(authority)) {
                 continue;
             }

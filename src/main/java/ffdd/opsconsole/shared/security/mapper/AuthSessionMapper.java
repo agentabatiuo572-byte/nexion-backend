@@ -14,6 +14,102 @@ import org.springframework.transaction.interceptor.TransactionAspectSupport;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
+    record SessionSummary(String sessionGroup,String installationId,Long appSessionVersion,boolean executionSupported,
+                          long sessionCount,java.time.LocalDateTime lastActiveAt) { }
+    @Select("SELECT session_group sessionGroup,installation_id installationId,app_session_version appSessionVersion,"
+            +"execution_supported executionSupported,COUNT(*) sessionCount,MAX(last_active_at) lastActiveAt FROM nx_user_session "
+            +"WHERE user_id=#{userId} AND is_deleted=0 AND revoked_at IS NULL AND session_ended_reason IS NULL "
+            +"AND expires_at>DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR) "
+            +"AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY) "
+            +"AND (session_group='H5' OR (session_group='APP' AND EXISTS(SELECT 1 FROM nx_app_session_state a "
+            +"WHERE a.user_id=nx_user_session.user_id AND a.app_session_version=nx_user_session.app_session_version "
+            +"AND a.session_chain_id=nx_user_session.session_chain_id AND a.installation_id=nx_user_session.installation_id "
+            +"AND a.execution_supported=nx_user_session.execution_supported))) "
+            +"GROUP BY session_group,installation_id,app_session_version,execution_supported ORDER BY session_group,installation_id")
+    List<SessionSummary> adminSessionSummary(@Param("userId") long userId,@Param("idleDays") int idleDays);
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_user_security WHERE user_id=#{id} AND is_deleted=0 AND password_reset_required=1)")
+    boolean passwordResetRequired(long id);
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} FOR UPDATE")
+    @org.apache.ibatis.annotations.Options(flushCache = org.apache.ibatis.annotations.Options.FlushCachePolicy.TRUE)
+    Long lockSecurityAccount(@Param("userId") long userId);
+
+    @Update("UPDATE nx_user_session SET session_ended_reason=COALESCE(session_ended_reason,#{reason}) WHERE user_id=#{userId}")
+    int endAllChains(@Param("userId") long userId, @Param("reason") String reason);
+
+    @Select("SELECT COUNT(*) FROM nx_user_session WHERE user_id=#{userId} AND session_group='APP' "
+            + "AND session_ended_reason IS NULL AND revoked_at IS NULL AND is_deleted=0 "
+            + "AND session_chain_id<>(SELECT session_chain_id FROM nx_user_session WHERE refresh_token_id=#{sessionId} AND user_id=#{userId} LIMIT 1 FOR UPDATE) FOR UPDATE")
+    int countAppOutsideChain(@Param("userId") long userId, @Param("sessionId") String sessionId);
+
+    @Update("UPDATE nx_user_session SET session_ended_reason=COALESCE(session_ended_reason,'SECURITY_REVOKED') "
+            + "WHERE user_id=#{userId} AND session_chain_id<>(SELECT session_chain_id FROM "
+            + "(SELECT session_chain_id FROM nx_user_session WHERE refresh_token_id=#{sessionId} AND user_id=#{userId} LIMIT 1) current_chain)")
+    int endOtherChains(@Param("userId") long userId, @Param("sessionId") String sessionId);
+
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
+    @org.apache.ibatis.annotations.Options(flushCache = org.apache.ibatis.annotations.Options.FlushCachePolicy.TRUE)
+    Long lockAccount(@Param("userId") long userId);
+
+    @Select("SELECT * FROM nx_user_session WHERE refresh_token_id=#{sessionId} AND is_deleted=0")
+    UserSessionEntity findSession(@Param("sessionId") String sessionId);
+
+    @Select("SELECT * FROM nx_user_session WHERE refresh_token_id=#{sessionId} AND user_id=#{userId} AND is_deleted=0")
+    UserSessionEntity findOwnedSession(@Param("sessionId") String sessionId, @Param("userId") long userId);
+
+    @org.apache.ibatis.annotations.Insert("INSERT IGNORE INTO nx_app_session_state(user_id,app_session_version) VALUES(#{userId},0)")
+    int initializeAppState(@Param("userId") long userId);
+
+    @Select("SELECT app_session_version FROM nx_app_session_state WHERE user_id=#{userId} FOR UPDATE")
+    Long lockAppVersion(@Param("userId") long userId);
+
+    @Select("SELECT installation_id FROM nx_app_session_state WHERE user_id=#{userId} FOR UPDATE")
+    String appInstallation(@Param("userId") long userId);
+
+    @Update("""
+        UPDATE nx_app_session_state SET app_session_version=#{version},session_chain_id=#{chainId},
+          installation_id=#{installationId},execution_supported=#{executionSupported}
+        WHERE user_id=#{userId}
+        """)
+    int advanceAppState(@Param("userId") long userId, @Param("version") long version,
+            @Param("chainId") String chainId, @Param("installationId") String installationId,
+            @Param("executionSupported") boolean executionSupported);
+
+    @Update("""
+        UPDATE nx_user_session SET revoked_at=COALESCE(revoked_at,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR)),
+          session_ended_reason='APP_REPLACED',updated_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR)
+        WHERE user_id=#{userId} AND session_group='APP' AND is_deleted=0
+          AND session_ended_reason IS NULL
+        """)
+    int replaceAppSessions(@Param("userId") long userId);
+
+    @Update("UPDATE nx_user_session SET session_ended_reason=#{reason} WHERE session_chain_id=#{chainId} AND session_ended_reason IS NULL")
+    int endChain(@Param("chainId") String chainId, @Param("reason") String reason);
+
+    String FIXED_CONTEXT = "(session_group='H5' OR (session_group='APP' AND EXISTS (SELECT 1 FROM nx_app_session_state a "
+            + "WHERE a.user_id=nx_user_session.user_id AND a.app_session_version=nx_user_session.app_session_version "
+            + "AND a.session_chain_id=nx_user_session.session_chain_id AND a.installation_id=nx_user_session.installation_id AND a.execution_supported=nx_user_session.execution_supported FOR UPDATE)))";
+
+    @Select("SELECT COUNT(*) FROM nx_user_session WHERE refresh_token_id=#{sessionId} AND user_id=#{userId} "
+            + "AND is_deleted=0 AND session_ended_reason IS NULL AND " + FIXED_CONTEXT + " FOR UPDATE")
+    int countFixedContext(@Param("sessionId") String sessionId, @Param("userId") long userId);
+
+    @Select("SELECT * FROM nx_user_session WHERE refresh_token_id=#{sessionId} AND user_id=#{userId} "
+            + "AND is_deleted=0 AND session_ended_reason IS NULL AND " + FIXED_CONTEXT
+            + " AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)"
+            + " AND ((revoked_at IS NULL AND expires_at>DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR)) "
+            + "OR (rotation_redeemed_at>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 10 SECOND) "
+            + "AND EXISTS(SELECT 1 FROM nx_user_session live WHERE live.user_id=nx_user_session.user_id "
+            + "AND live.session_chain_id=nx_user_session.session_chain_id AND live.revoked_at IS NULL "
+            + "AND live.is_deleted=0 AND live.expires_at>DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR) FOR UPDATE))) FOR UPDATE")
+    UserSessionEntity findAuthorizedSession(@Param("sessionId") String sessionId, @Param("userId") long userId, @Param("idleDays") int idleDays);
+
+    @Select("SELECT COUNT(*) FROM nx_user_session WHERE user_id=#{userId} AND installation_id=#{installationId} "
+            + "AND session_group='APP' AND execution_supported=1 AND revoked_at IS NULL AND is_deleted=0 "
+            + "AND expires_at>DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR) "
+            + "AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY) "
+            + "AND session_ended_reason IS NULL AND " + FIXED_CONTEXT + " FOR UPDATE")
+    int countExecutionOwner(@Param("userId") long userId, @Param("installationId") String installationId, @Param("idleDays") int idleDays);
+
     // nx_user_session DATETIME values use UTC+08; SQL session time_zone can differ on a host.
     @Select("""
             SELECT * FROM nx_user_session
@@ -85,6 +181,7 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Session activity requires a transaction");
         }
+        if (lockAccount(userId) == null || countFixedContext(sessionId, userId) == 0) return 0;
         if (lockActiveUserSession(sessionId, userId) == 0) return 0;
         // Re-evaluate deadlines in a fresh statement after acquiring the unique-token row lock.
         return touchLockedActiveUserSession(sessionId, userId, idleDays);
@@ -120,6 +217,7 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Session grace requires a transaction");
         }
+        if (lockAccount(userId) == null || countFixedContext(sessionId, userId) == 0) return 0;
         UserSessionEntity issued = findRecentUserSessionRotation(sessionId, userId);
         if (issued == null) return 0;
         // Only the matching live row is locked. READ_COMMITTED releases nonmatching

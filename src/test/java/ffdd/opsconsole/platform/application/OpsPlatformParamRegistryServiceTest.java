@@ -197,8 +197,8 @@ class OpsPlatformParamRegistryServiceTest {
         });
         assertThat(overview.sources().get(0).status()).isEqualTo("PARTIAL");
         assertThat(overview.sources().get(0).detail()).contains("2 项", "未展示");
-        assertThat(overview.sources().get(0).rowCount()).isEqualTo(4);
-        assertThat(overview.stats().registeredCount()).isEqualTo(4);
+        assertThat(overview.sources().get(0).rowCount()).isEqualTo(6);
+        assertThat(overview.stats().registeredCount()).isEqualTo(6);
         assertThat(overview.toString()).doesNotContain("private-configuration-payload");
     }
 
@@ -232,9 +232,9 @@ class OpsPlatformParamRegistryServiceTest {
         assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).singleElement()
                 .satisfies(row -> assertThat(row.canonicalKey()).isEqualTo("emergency.gate.exchange"));
         assertThat(overview.sources().get(0).status()).isEqualTo("PARTIAL");
-        assertThat(overview.sources().get(0).rowCount()).isEqualTo(3);
+        assertThat(overview.sources().get(0).rowCount()).isEqualTo(5);
         assertThat(overview.sources().get(1).rowCount()).isEqualTo(1);
-        assertThat(overview.stats().registeredCount()).isEqualTo(4);
+        assertThat(overview.stats().registeredCount()).isEqualTo(6);
         assertThat(overview.toString()).doesNotContain("private-provider-value", "future.provider.credentials");
     }
 
@@ -261,8 +261,8 @@ class OpsPlatformParamRegistryServiceTest {
             assertThat(row.canonicalKey()).isEqualTo("growth.public_stats.version");
             assertThat(row.ownerCode()).isEqualTo("H9");
         });
-        assertThat(overview.stats().registeredCount()).isEqualTo(4);
-        assertThat(overview.sources().get(0).rowCount()).isEqualTo(4);
+        assertThat(overview.stats().registeredCount()).isEqualTo(6);
+        assertThat(overview.sources().get(0).rowCount()).isEqualTo(6);
     }
 
     @Test
@@ -341,7 +341,7 @@ class OpsPlatformParamRegistryServiceTest {
         when(source.findAllActive()).thenReturn(List.of(item("E.compute.h5BaseFactor", "0.9", "e6_compute")));
         when(emergency.currentKillSwitches()).thenReturn(List.of());
         var rows = service.overview().getData().rows();
-        assertThat(rows).hasSize(4);
+        assertThat(rows).hasSize(6);
         assertThat(rows).filteredOn(row -> row.canonicalKey().equals("E.compute.phoneCalibration.policy"))
                 .singleElement().satisfies(row -> {
                     assertThat(row.currentValue()).isEqualTo("尚未发布 · 前往 E6 配置");
@@ -350,7 +350,11 @@ class OpsPlatformParamRegistryServiceTest {
         assertThat(rows).filteredOn(row -> row.canonicalKey().equals("E.compute.phoneBinding.allowReplacement"))
                 .singleElement().satisfies(row -> assertThat(row.currentValue()).isEqualTo("off"));
         assertThat(rows).filteredOn(row -> row.canonicalKey().equals("E.compute.phoneBinding.minReplacementIntervalDays"))
-                .singleElement().satisfies(row -> assertThat(row.currentValue()).isEqualTo("0"));
+                .singleElement().satisfies(row -> assertThat(row.currentValue()).isEqualTo("1"));
+        assertThat(rows).filteredOn(row -> row.canonicalKey().equals("E.compute.phoneBinding.replacementWindowDays"))
+                .singleElement().satisfies(row -> assertThat(row.currentValue()).isEqualTo("30"));
+        assertThat(rows).filteredOn(row -> row.canonicalKey().equals("E.compute.phoneBinding.maxReplacementsInWindow"))
+                .singleElement().satisfies(row -> assertThat(row.currentValue()).isEqualTo("2"));
         assertThat(rows).filteredOn(row -> row.canonicalKey().equals("E.compute.h5BaseFactor"))
                 .singleElement().satisfies(row -> {
                     assertThat(row.currentValue()).isEqualTo("0");

@@ -17,10 +17,11 @@ public class PhoneInstallationController {
     public record InstallationRequest(String deviceId) { }
 
     @PostMapping("/login")
+    @org.springframework.transaction.annotation.Transactional
     public ApiResult<Map<String, Object>> login(@RequestBody(required = false) InstallationRequest request,
             Authentication authentication) {
         String deviceId = request == null ? null : request.deviceId();
-        service.require(authentication, deviceId);
+        service.requireCurrent(authentication, deviceId, true);
         return ApiResult.ok(calibration.phoneLogin(Long.valueOf(String.valueOf(authentication.getPrincipal())), deviceId));
     }
 

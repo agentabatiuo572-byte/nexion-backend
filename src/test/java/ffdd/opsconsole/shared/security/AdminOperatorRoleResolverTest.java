@@ -33,6 +33,18 @@ class AdminOperatorRoleResolverTest {
         assertThat(resolver.resolve()).isEqualTo("超管");
     }
 
+    @Test void activeAdministratorReadUsesCurrentStatusAndDeletionFlag() {
+        AdminEntity admin=activeAdmin(41L,0);
+        when(adminMapper.selectById(41L)).thenReturn(admin);
+        assertThat(resolver.isActiveAdministrator(41L)).isTrue();
+        admin.setStatus(0);
+        assertThat(resolver.isActiveAdministrator(41L)).isFalse();
+        admin.setStatus(1); admin.setIsDeleted(1);
+        assertThat(resolver.isActiveAdministrator(41L)).isFalse();
+        assertThat(resolver.isActiveAdministrator(42L)).isFalse();
+        assertThat(resolver.isActiveAdministrator(0L)).isFalse();
+    }
+
     @Test
     void resolvesRiskRoleFromAuthenticatedRoleRelation() {
         authenticate("52");

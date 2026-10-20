@@ -40,7 +40,9 @@ class AppUserSecurityServiceTest {
     private final UserOpsMapper users = mock(UserOpsMapper.class);
     private final BCryptPasswordEncoder passwords = new BCryptPasswordEncoder();
     private final AppUserSecurityService service = new AppUserSecurityService(
-            security, sessions, passwords, audit, otpDelivery, verificationGuard, users);
+            security, sessions, passwords, audit, otpDelivery, verificationGuard, users,
+            new ffdd.opsconsole.shared.security.UserSessionRevocationService(sessions,
+                    mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class)));
 
     @BeforeEach
     void defaults() {
@@ -209,6 +211,7 @@ class AppUserSecurityServiceTest {
                 .hasMessage("CURRENT_SESSION_REVOKE_FORBIDDEN");
         verify(sessions, never()).revokeOwnedUserSession(any(), any());
 
+        when(sessions.findSession("other")).thenReturn(session("other","Other H5","203.0.113.8",LocalDateTime.now()));
         when(sessions.revokeOwnedUserSession(42L, "other")).thenReturn(1);
         var result = service.revokeSession(42L, "current", "other");
 

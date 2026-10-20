@@ -13,7 +13,8 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 
 class PhoneInstallationServiceTest {
     private final PhoneInstallationMapper mapper = mock(PhoneInstallationMapper.class);
-    private final PhoneInstallationService service = new PhoneInstallationService(mapper);
+    private final PhoneInstallationService service = new PhoneInstallationService(mapper,
+            mock(ffdd.opsconsole.shared.security.CurrentAppSessionService.class));
 
     @BeforeEach void activeUser() {
         when(mapper.lockUser(42L)).thenReturn(42L);

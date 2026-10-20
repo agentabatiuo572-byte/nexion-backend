@@ -57,6 +57,7 @@ import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.transaction.interceptor.TransactionAspectSupport;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
@@ -116,6 +117,16 @@ public class OpsAuditCenterService {
 
     public ApiResult<AuditCenterOverview> overview() {
         return overview(new AuditLogQueryRequest());
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<AuditOperationTicket> proposalByIdempotencyKey(String key) {
+        long actorId = accessPolicy.requireProposalReader();
+        String operationId = auditLogService.findA2ProposalId(actorId, key);
+        if (operationId == null) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
+        AuditOperationTicketEntity ticket = ticketMapper.selectActiveByOperationId(operationId);
+        if (ticket == null || !accessPolicy.canAccessRecoveredProposal(ticket, actorId)) return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
+        return ApiResult.ok(toTicket(ticket));
     }
 
     public ApiResult<AuditCenterOverview> overview(AuditLogQueryRequest filter) {
@@ -590,6 +601,9 @@ public class OpsAuditCenterService {
                     "A2_COMMAND", idempotencyKey, commandHash(actor, operation, request), AuditOperationTicket.class,
                     () -> requireSuccess(action.get()));
             return ApiResult.ok(result);
+        } catch (ffdd.opsconsole.shared.exception.PhoneReplacementException ex) {
+            // Preserve the phone command conflict contract through A2 and roll back its approval transaction.
+            throw ex;
         } catch (BizException ex) {
             return ApiResult.fail(ex.getCode(), ex.getMessage());
         }

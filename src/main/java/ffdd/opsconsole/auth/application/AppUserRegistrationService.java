@@ -213,13 +213,20 @@ public class AppUserRegistrationService {
 
     public ApiResult<UserLoginResponse> register(
             UserRegistrationRequest request, String clientAddress, AppSessionSurface surface) {
+        return register(request, clientAddress, AppLoginContext.unavailable(surface));
+    }
+
+    public ApiResult<UserLoginResponse> register(
+            UserRegistrationRequest request, String clientAddress, AppLoginContext context) {
+        ApiResult<UserLoginResponse> recovered = authService.recoverCompletedLogin(context);
+        if (recovered != null) return recovered;
         Integer sandbox = sandboxForNewRegistration();
         if (sandbox == null) {
             return ApiResult.fail(503, "USER_REGISTRATION_PROFILE_FORBIDDEN");
         }
         for (int attempt = 1; attempt <= 3; attempt++) {
             try {
-                return transactionExecutor.execute(() -> registerInTransaction(request, clientAddress, sandbox, surface));
+                return transactionExecutor.execute(() -> registerInTransaction(request, clientAddress, sandbox, context));
             } catch (PessimisticLockingFailureException exception) {
                 log.warn("Registration lock conflict; rolled back attempt {}/3 before retry", attempt);
             }
@@ -231,7 +238,7 @@ public class AppUserRegistrationService {
             UserRegistrationRequest request,
             String clientAddress,
             int sandbox,
-            AppSessionSurface surface) {
+            AppLoginContext context) {
         if (request == null
                 || !validCountryCode(request.countryCode())
                 || !validPhone(request.countryCode(), request.phone())
@@ -252,6 +259,9 @@ public class AppUserRegistrationService {
         AppOtpPolicy policy = AppOtpPolicy.load(configFacade);
         if (mapper.consumeValidChallengeInEnvironment(
                 challengeNo, countryCode, phone, audience.name(), code, policy.maxVerifyAttempts()) != 1) {
+            // The consume waits for a concurrent winner. READ_COMMITTED now exposes its receipt.
+            ApiResult<UserLoginResponse> recovered = authService.recoverCompletedLogin(context);
+            if (recovered != null) return recovered;
             mapper.recordInvalidAttemptInEnvironment(
                     challengeNo, countryCode, phone, audience.name(), policy.maxVerifyAttempts());
             return ApiResult.fail(422, "USER_REGISTRATION_OTP_INVALID");
@@ -357,9 +367,7 @@ public class AppUserRegistrationService {
                             "sponsorUserId", sponsor.getId(),
                             "source", "nx_user.sponsor_user_id"));
         }
-        ApiResult<UserLoginResponse> session = surface == AppSessionSurface.UNKNOWN
-                ? authService.issueRegisteredSession(user, clientAddress)
-                : authService.issueRegisteredSession(user, clientAddress, surface);
+        ApiResult<UserLoginResponse> session = authService.issueRegisteredSession(user, clientAddress, context);
         if (session.getData() == null || sponsor == null) return session;
         return new ApiResult<>(session.getCode(), session.getMessage(),
                 session.getData().withRegistrationReceipt(registrationReceipt(sponsor, sandbox)));

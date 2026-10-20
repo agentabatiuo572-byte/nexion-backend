@@ -86,6 +86,7 @@ public class AppTaskAssignmentService {
     private final Clock clock;
     private final TestComputeWorkerService testWorker;
     private final SupportDeviceFundAdapter deviceFunds;
+    private final ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract phoneSessions;
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> testWorkerClaim(Grant grant, String taskNo, String key) {
@@ -434,6 +435,7 @@ public class AppTaskAssignmentService {
         lockProductionUser(userId);
         Long deviceId = mapper.activePhoneDeviceId(userId, request.calibrationDeviceId().trim());
         if (deviceId == null || deviceId <= 0) throw new BizException(409, "TASK_ASSIGNMENT_PHONE_BINDING_INVALID");
+        phoneSessions.requireExecutionOwner(userId, deviceId);
         DeviceRow device = mapper.lockOwnedDevice(userId, deviceId);
         if (device == null || !phone(device)) throw new BizException(409, "TASK_ASSIGNMENT_PHONE_BINDING_INVALID");
         if (device.activatedAt() == null || !activeDevice(device.status())) {
@@ -578,6 +580,7 @@ public class AppTaskAssignmentService {
     private ApiResult<AppTaskAssignmentView> claimInternal(Long userId, Long deviceId, String sourceEnvironment, Grant grant) {
         LocalDateTime now = now();
         lockProductionUser(userId);
+        if (grant == null) phoneSessions.requireExecutionOwner(userId, deviceId);
         DeviceRow device = mapper.lockOwnedDevice(userId, deviceId);
         if (grant != null) {
             testWorker.requireDevice(grant, device);
@@ -696,6 +699,7 @@ public class AppTaskAssignmentService {
         lockProductionUser(userId);
         Long deviceId = mapper.assignmentDeviceId(userId, taskNo, sourceEnvironment);
         if (deviceId == null) throw new BizException(404, "TASK_ASSIGNMENT_NOT_FOUND");
+        if (grant == null) phoneSessions.requireExecutionOwner(userId, deviceId);
         DeviceRow activeBinding = mapper.lockOwnedDevice(userId, deviceId);
         AssignmentRow task = mapper.lockAssignment(userId, taskNo, sourceEnvironment);
         if (task == null) throw new BizException(404, "TASK_ASSIGNMENT_NOT_FOUND");

@@ -17,7 +17,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 class MybatisUserOpsRepositoryTest {
     private final UserOpsMapper mapper = mock(UserOpsMapper.class);
-    private final MybatisUserOpsRepository repository = new MybatisUserOpsRepository(mapper);
+    private final MybatisUserOpsRepository repository = new MybatisUserOpsRepository(mapper, org.mockito.Mockito.mock(ffdd.opsconsole.shared.security.UserSessionRevocationService.class));
 
     @Test
     void supportCountAndPageCarryTheSameManagedScopeIncludingLargeOffset() {

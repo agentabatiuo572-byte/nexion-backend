@@ -60,6 +60,7 @@ public class AppUserPasswordResetService {
     private final Environment environment;
     private final PlatformConfigFacade configFacade;
     private final CaptchaOtpGate captchaGate;
+    private final ffdd.opsconsole.shared.security.UserSessionRevocationService revocations;
 
     @Transactional
     public ApiResult<UserOtpLoginChallengeResponse> send(
@@ -166,7 +167,7 @@ public class AppUserPasswordResetService {
                 || securityMapper.markPasswordChanged(user.getId()) < 1) {
             throw new IllegalStateException("USER_PASSWORD_RESET_STATE_CHANGED");
         }
-        int revoked = sessionMapper.revokeAllUserSessions(user.getId());
+        int revoked = revocations.revokeAll(user.getId());
         audit.recordRequired(AuditLogWriteRequest.builder()
                 .action("USER_PASSWORD_RESET_BY_OTP")
                 .resourceType("USER_SECURITY")

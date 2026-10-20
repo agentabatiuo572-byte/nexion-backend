@@ -31,7 +31,8 @@ class LegalTermsControllerAuthenticationTest {
     @BeforeEach void setup() {
         var environment=new MockEnvironment(); environment.setActiveProfiles("dev");
         var filter=new JwtAuthenticationFilter(tokens,sessions,users,environment,new GatewaySecurityProperties(),
-                mock(AdminSessionRegistry.class),mock(AdminPermissionCache.class),mock(ImpersonationSessionVerifier.class),mock(PlatformConfigFacade.class));
+                mock(AdminSessionRegistry.class),mock(AdminPermissionCache.class),mock(ImpersonationSessionVerifier.class),mock(PlatformConfigFacade.class),
+                mock(UserAccountBlocklistVerifier.class),mock(UserSessionRevocationService.class));
         mvc=MockMvcBuilders.standaloneSetup(new LegalTermsController(service)).addFilters(filter,
             (request,response,chain)->chain.doFilter(new HttpServletRequestWrapper((HttpServletRequest)request) {
                 @Override public Principal getUserPrincipal() { return SecurityContextHolder.getContext().getAuthentication(); }
@@ -39,6 +40,7 @@ class LegalTermsControllerAuthenticationTest {
         when(service.current("zh","GLOBAL",null)).thenReturn(ApiResult.ok(null));
         when(service.current("zh","GLOBAL",7L)).thenReturn(ApiResult.ok(null));
         var user=new UserEntity(); user.setId(7L);user.setCountryCode("+86");user.setPhone("13800000007");user.setSandbox(0);
+        user.setStatus("ACTIVE"); user.setIsDeleted(0);
         when(users.selectById(7L)).thenReturn(user);
     }
     @AfterEach void cleanup() { SecurityContextHolder.clearContext(); }

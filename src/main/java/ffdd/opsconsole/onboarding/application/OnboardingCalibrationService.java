@@ -17,6 +17,9 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
+import ffdd.opsconsole.common.boundary.PhoneReplacementContract;
+import ffdd.opsconsole.common.boundary.PhoneActivationCapacityContract;
+import org.springframework.security.core.Authentication;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import java.time.Clock;
 import java.math.BigDecimal;
@@ -41,7 +44,7 @@ import org.springframework.transaction.annotation.Transactional;
  */
 @Service
 @RequiredArgsConstructor
-public class OnboardingCalibrationService {
+public class OnboardingCalibrationService implements ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final OnboardingCalibrationMapper mapper;
@@ -51,6 +54,16 @@ public class OnboardingCalibrationService {
     private final EventOutboxService outboxService;
     private final PlatformConfigFacade configFacade;
     private final Clock clock;
+    private final PhoneInstallationService installations;
+    private final PhoneReplacementService replacements;
+    private final PhoneActivationCapacityContract capacity;
+    private final ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract terms;
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void requireExecutionOwner(long userId, long userDeviceId) {
+        installations.requireSystemExecution(userId, userDeviceId);
+    }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> calibrate(Long userId, Request request) {
@@ -144,6 +157,30 @@ public class OnboardingCalibrationService {
         return row == null ? ApiResult.fail(404, "ONBOARDING_CALIBRATION_NOT_FOUND") : ApiResult.ok(project(row));
     }
 
+    /** Read the same prerequisites enforced by activation without changing calibration or binding. */
+    List<String> activationBlockReasons(Long userId, String installationId) {
+        Scope scope = scope(userId);
+        List<String> blocks = new java.util.ArrayList<>();
+        var termsBlock = terms.checkTerms(userId);
+        if (termsBlock != null) {
+            if (termsBlock.getCode() >= 500) throw new BizException(termsBlock.getCode(), termsBlock.getMessage());
+            blocks.add(termsBlock.getMessage());
+        }
+        CalibrationRow row = scope.sandbox()
+                ? mapper.findScoped(userId, installationId, scope.sourceEnvironment(), scope.runId())
+                : mapper.find(userId, installationId);
+        if (row == null) blocks.add("ONBOARDING_CALIBRATION_REQUIRED");
+        else {
+            try {
+                validateCurrentCalibration(row);
+            } catch (BizException blocked) {
+                if (blocked.getCode() != 409) throw blocked;
+                blocks.add(blocked.getMessage());
+            }
+        }
+        return List.copyOf(blocks);
+    }
+
     public ApiResult<Map<String, Object>> bindingStatus(Long userId) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         Scope scope = scope(userId);
@@ -155,7 +192,96 @@ public class OnboardingCalibrationService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> activate(Long userId, ActionRequest request) {
-        return transition(userId, request, "ACTIVE");
+        return activate(userId, request, org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> activate(Long userId, ActionRequest request, Authentication authentication) {
+        if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
+        if (!validAction(request) || Boolean.TRUE.equals(request.initialOnly()))
+            return ApiResult.fail(422, "ONBOARDING_ACTIVATION_REQUEST_INVALID");
+        if (authentication == null || !authentication.isAuthenticated()
+                || !String.valueOf(userId).equals(String.valueOf(authentication.getPrincipal())))
+            throw new BizException(403, "USER_AUTH_REQUIRED");
+        var policy = replacements.lockPolicy();
+        Integer sandbox = mapper.lockUserSandbox(userId);
+        if (sandbox == null || !accountEnvironment().acceptsSandbox(sandbox))
+            throw new BizException(403, "ONBOARDING_USER_ENVIRONMENT_MISMATCH");
+        Scope scope = scope(userId);
+        String deviceId = request.deviceId().trim();
+        var account = new PhoneReplacementContract.Account(userId, scope.sourceEnvironment(), scope.runId());
+        var locked = replacements.lockAccount(policy, account, () -> installations.requireCurrent(authentication, deviceId, true));
+        var command = replacements.openOperation(locked, new PhoneReplacementContract.Actor("USER", userId),
+                "PHONE_ACTIVATE", request.idempotencyKey().trim(), request);
+        // An original committed result precedes current calibration, policy, binding and grant checks.
+        if (command.replay()) return activationReceipt(replacements.receipt(command.operation()));
+        var termsBlock = terms.checkTerms(userId);
+        if (termsBlock != null) throw new BizException(termsBlock.getCode(), termsBlock.getMessage());
+        CalibrationRow current = scope.sandbox()
+                ? mapper.findForUpdateScoped(userId, deviceId, scope.sourceEnvironment(), scope.runId())
+                : mapper.findForUpdate(userId, deviceId);
+        PhoneReplacementService.ActivationPermit permit;
+        try {
+            if (current == null) throw new BizException(409, "ONBOARDING_CALIBRATION_REQUIRED");
+            if (!deviceId.equals(current.deviceId())) throw new BizException(409, "PHONE_INSTALLATION_ID_MISMATCH");
+            if (request.expectedRevision() != current.rowVersion())
+                throw new BizException(409, "ONBOARDING_CALIBRATION_REVISION_CONFLICT");
+            validateCurrentCalibration(current);
+            List<String> hardBlocks = List.of();
+            if (locked.binding() != null && PhoneReplacementPolicy.isReplacement(locked.binding().installationId(),
+                    locked.binding().hardwareKey(), deviceId, hardwareKey(current))) {
+                mapper.lockPhoneDevices(userId);
+                if (mapper.phoneReplacementHardPause(userId, locked.binding().userDeviceId()) != null)
+                    hardBlocks = List.of("PHONE_REPLACEMENT_RISK_PAUSED");
+            }
+            permit = replacements.prepareActivation(locked, new PhoneReplacementService.ActivationInput(
+                    request.expectedBindingVersion(), request.bindingVersionPresent(), request.expectedPolicyVersion(),
+                    Boolean.TRUE.equals(request.replacementConfirmed()), deviceId, hardwareKey(current), request.exceptionGrantId()), hardBlocks);
+            capacity.requireCapacity(userId, locked.binding() == null ? null : locked.binding().userDeviceId());
+        } catch (BizException rejection) {
+            // No device/binding write has occurred. Persist only determinate business rejection receipts.
+            if (rejection.getCode() != 409 && rejection.getCode() != 422) throw rejection;
+            return ApiResult.fail(rejection.getCode(), rejection.getMessage(),
+                    receiptMap(replacements.reject(locked, command, rejection.getMessage())));
+        }
+        Long device = bindPhoneDevice(userId, current, scope);
+        if (mapper.savePhoneBinding(userId, deviceId, device, hardwareKey(current), scope.sourceEnvironment(), scope.runId()) < 1)
+            throw new BizException(503, "ONBOARDING_PHONE_BIND_FAILED");
+        if (!scope.sandbox()) mapper.restoreBoundPhoneRuntime(userId, device);
+        String key = request.idempotencyKey().trim();
+        String hash = actionHash(userId, request, "ACTIVE", scope);
+        int changed = scope.sandbox()
+                ? mapper.updateActivationScoped(userId, deviceId, scope.sourceEnvironment(), scope.runId(), current.rowVersion(), device, "ACTIVE", key, hash)
+                : mapper.updateActivation(userId, deviceId, current.rowVersion(), device, "ACTIVE", key, hash);
+        if (changed != 1) throw new BizException(409, "ONBOARDING_CALIBRATION_REVISION_CONFLICT");
+        CalibrationRow saved = scope.sandbox()
+                ? mapper.findScoped(userId, deviceId, scope.sourceEnvironment(), scope.runId()) : mapper.find(userId, deviceId);
+        var binding = mapper.phoneBinding(userId, scope.sourceEnvironment(), scope.runId());
+        if (saved == null || binding == null) throw new BizException(503, "ONBOARDING_ACTIVATION_READBACK_FAILED");
+        var result = replacements.recordActivationSuccess(locked, permit, command,
+                new PhoneReplacementContract.Binding(binding.installationId(), binding.userDeviceId(), binding.hardwareKey(),
+                        binding.changedAt(), binding.version()), project(saved));
+        return activationReceipt(result);
+    }
+
+    private ApiResult<Map<String,Object>> activationReceipt(PhoneReplacementContract.Receipt receipt) {
+        if ("FAILED".equals(receipt.status())) {
+            Object reason = receipt.originalResult() instanceof Map<?,?> result ? result.get("conflictType") : null;
+            return ApiResult.fail(409, reason == null ? "PHONE_ACTIVATION_FAILED" : String.valueOf(reason), receiptMap(receipt));
+        }
+        return ApiResult.ok(receiptMap(receipt));
+    }
+
+    private Map<String,Object> receiptMap(PhoneReplacementContract.Receipt receipt) {
+        Map<String,Object> result = new LinkedHashMap<>();
+        if (receipt.originalResult() instanceof Map<?,?> original)
+            original.forEach((key, value) -> result.put(String.valueOf(key), value));
+        result.put("operationId", receipt.operationId());
+        result.put("operationStatus", receipt.status());
+        result.put("originalResult", receipt.originalResult());
+        result.put("currentBinding", receipt.currentResource());
+        result.put("auditRef", receipt.auditRef());
+        return result;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -236,21 +362,9 @@ public class OnboardingCalibrationService {
             return ApiResult.fail(409, "ONBOARDING_CALIBRATION_REVISION_CONFLICT");
         }
         Long userDeviceId = current.userDeviceId();
-        if ("ACTIVE".equals(target)) {
-            validateCurrentCalibration(current);
-            validateReplacement(userId, current, scope);
-            userDeviceId = bindPhoneDevice(userId, current, scope);
-            if (mapper.savePhoneBinding(userId, deviceId, userDeviceId, hardwareKey(current),
-                    scope.sourceEnvironment(), scope.runId()) < 1) {
-                throw new BizException(503, "ONBOARDING_PHONE_BIND_FAILED");
-            }
-            if (!scope.sandbox()) mapper.restoreBoundPhoneRuntime(userId, userDeviceId);
-        } else {
-            // The deterministic instance identity also finds this phone when a
-            // legacy calibration has lost its user_device_id link.
-            mapper.deactivatePhoneDevice(userId, phoneInstanceNo(userId, scope, deviceId),
-                    scope.sourceEnvironment(), scope.runId());
-        }
+        // The deterministic identity also finds legacy calibrations without a device link.
+        mapper.deactivatePhoneDevice(userId, phoneInstanceNo(userId, scope, deviceId),
+                scope.sourceEnvironment(), scope.runId());
         int changed = scope.sandbox()
                 ? mapper.updateActivationScoped(userId, deviceId, scope.sourceEnvironment(), scope.runId(),
                         current.rowVersion(), userDeviceId, target, key, hash)
@@ -312,31 +426,33 @@ public class OnboardingCalibrationService {
         }
     }
 
-    private void validateReplacement(Long userId, CalibrationRow row, Scope scope) {
-        var binding = mapper.phoneBinding(userId, scope.sourceEnvironment(), scope.runId());
+    /** The auth transaction already holds user then session locks. Binding is retained on takeover. */
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void authenticatedApp(long userId, String installationId, boolean executionSupported) {
+        Integer sandbox = mapper.lockUserSandbox(userId);
+        if (sandbox == null) throw new BizException(403,"USER_AUTH_REQUIRED");
+        if (sandbox != 0) return;
+        var binding = mapper.phoneBinding(userId,"PRODUCTION","");
         if (binding == null) return;
-        if (binding.installationId().equals(row.deviceId())
-                && (binding.hardwareKey().isBlank() || binding.hardwareKey().equals(hardwareKey(row)))) return;
-        validateReplacementPolicy(binding.changedAt());
+        mapper.claimPhoneExecution(userId, executionSupported && installationId.equals(binding.installationId())
+                ? installationId : "");
+        if (executionSupported && installationId.equals(binding.installationId())) {
+            mapper.lockPhoneDevices(userId);
+            mapper.restoreBoundPhoneRuntime(userId,binding.userDeviceId());
+        } else cancelReplacedPhoneTasks(userId,-1L);
     }
 
-    private void validateReplacementPolicy(long changedAt) {
-        if (!"on".equals(configFacade.activeValue("E.compute.phoneBinding.allowReplacement").orElse("off"))) {
-            throw new BizException(409, "PHONE_REPLACEMENT_DISABLED");
-        }
-        String days = configFacade.activeValue("E.compute.phoneBinding.minReplacementIntervalDays").orElse("");
-        try {
-            if (!days.matches("[0-9]+")) throw new NumberFormatException();
-            long interval = Math.multiplyExact(Long.parseLong(days), 86400000L);
-            if (clock.millis() < Math.addExact(changedAt, interval)) {
-                throw new BizException(409, "PHONE_REPLACEMENT_COOLDOWN");
-            }
-        } catch (NumberFormatException | ArithmeticException invalid) {
-            throw new BizException(503, "PHONE_REPLACEMENT_POLICY_UNAVAILABLE");
-        }
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void endedApp(long userId) {
+        var binding = mapper.phoneBinding(userId,"PRODUCTION","");
+        if (binding == null) return;
+        mapper.claimPhoneExecution(userId, "");
+        cancelReplacedPhoneTasks(userId,-1L);
     }
 
-    /** An authenticated installation login changes execution ownership, never activation or the replacement clock. */
+    /** Only the guarded current APP may call this; it never claims or stops another installation. */
     @Transactional(rollbackFor = Exception.class)
     public Map<String,Object> phoneLogin(Long userId, String deviceId) {
         if (deviceId == null || !deviceId.matches("[A-Za-z0-9._:-]{1,128}")) throw new BizException(422,"ONBOARDING_DEVICE_INVALID");
@@ -344,22 +460,14 @@ public class OnboardingCalibrationService {
         if (sandbox == null || sandbox != 0) throw new BizException(403,"ONBOARDING_USER_ENVIRONMENT_MISMATCH");
         var binding = mapper.phoneBinding(userId,"PRODUCTION","");
         if (binding == null) return Map.of("status","NEEDS_CALIBRATION");
-        mapper.claimPhoneExecution(userId,deviceId);
-        if (!deviceId.equals(binding.installationId())) {
-            cancelReplacedPhoneTasks(userId,-1L);
-            try { validateReplacementPolicy(binding.changedAt()); }
-            catch (BizException denied) {
-                // Keep the stop committed even when replacement is disabled or still cooling down.
-                return Map.of("status",denied.getMessage());
-            }
-            return Map.of("status","REPLACEMENT_REQUIRED");
-        }
+        if (!deviceId.equals(binding.installationId())) return Map.of("status","REPLACEMENT_REQUIRED");
         CalibrationRow current = mapper.find(userId,deviceId);
+        mapper.lockPhoneDevices(userId);
         mapper.restoreBoundPhoneRuntime(userId,binding.userDeviceId());
         return Map.of("status",current != null && "ACTIVE".equals(current.activationStatus()) ? "BOUND" : "NEEDS_CALIBRATION");
     }
 
-    private String hardwareKey(CalibrationRow row) {
+    String hardwareKey(CalibrationRow row) {
         try {
             Signals signals = JSON.readValue(row.signalJson(), Signals.class);
             return sha256(writeJson(List.of(PhoneCalibrationPolicy.normalize(signals.platform()),
@@ -376,6 +484,7 @@ public class OnboardingCalibrationService {
     }
 
     private void cancelReplacedPhoneTasks(Long userId, Long keepUserDeviceId) {
+        mapper.lockPhoneDevices(userId);
         List<ReplacedPhoneTask> tasks = mapper.lockOtherPhoneTasks(userId, keepUserDeviceId);
         if (tasks == null) throw new BizException(503, "ONBOARDING_PHONE_TASK_READ_FAILED");
         for (ReplacedPhoneTask task : tasks) {
@@ -629,9 +738,41 @@ public class OnboardingCalibrationService {
     }
 
     public record Request(String deviceId, long expectedRevision, String idempotencyKey, Signals signals) { }
-    public record ActionRequest(String deviceId, long expectedRevision, String idempotencyKey, Boolean initialOnly) {
+    public record ActionRequest(String deviceId, long expectedRevision, String idempotencyKey, Boolean initialOnly,
+                                Long expectedBindingVersion, Long expectedPolicyVersion, String exceptionGrantId,
+                                Boolean replacementConfirmed, boolean bindingVersionPresent) {
+        public ActionRequest(String deviceId, long expectedRevision, String idempotencyKey, Boolean initialOnly) {
+            this(deviceId, expectedRevision, idempotencyKey, initialOnly, null, null, null, null, false);
+        }
         public ActionRequest(String deviceId, long expectedRevision, String idempotencyKey) {
             this(deviceId, expectedRevision, idempotencyKey, null);
+        }
+        @com.fasterxml.jackson.annotation.JsonCreator(mode = com.fasterxml.jackson.annotation.JsonCreator.Mode.DELEGATING)
+        public static ActionRequest fromJson(com.fasterxml.jackson.databind.JsonNode node) {
+            Long revision = integer(node, "expectedRevision");
+            return new ActionRequest(text(node, "deviceId"), revision == null ? 0 : revision,
+                    text(node, "idempotencyKey"), flag(node, "initialOnly"), integer(node, "expectedBindingVersion"),
+                    integer(node, "expectedPolicyVersion"), text(node, "exceptionGrantId"), flag(node, "replacementConfirmed"),
+                    node.has("expectedBindingVersion"));
+        }
+        private static String text(com.fasterxml.jackson.databind.JsonNode node, String name) {
+            var value = node.get(name);
+            if (value == null || value.isNull()) return null;
+            if (!value.isTextual()) throw new IllegalArgumentException(name + " must be a string");
+            return value.textValue();
+        }
+        private static Long integer(com.fasterxml.jackson.databind.JsonNode node, String name) {
+            var value = node.get(name);
+            if (value == null || value.isNull()) return null;
+            if (!value.isIntegralNumber() || !value.canConvertToLong() || value.longValue() < 0)
+                throw new IllegalArgumentException(name + " must be a nonnegative integer");
+            return value.longValue();
+        }
+        private static Boolean flag(com.fasterxml.jackson.databind.JsonNode node, String name) {
+            var value = node.get(name);
+            if (value == null || value.isNull()) return null;
+            if (!value.isBoolean()) throw new IllegalArgumentException(name + " must be a boolean");
+            return value.booleanValue();
         }
     }
     public record Signals(Double memGB, Integer cores, String model, String brand, String gpu, Double pxDensity,

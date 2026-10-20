@@ -53,7 +53,7 @@ class PasswordResetEventSchemaMySqlIntegrationTest {
     @BeforeEach
     void setUp() throws Exception {
         fixture = new CanonicalEventSchemaMySqlFixture(
-                "nx_user", "nx_user_security", "nx_user_session", "nx_user_otp_challenge");
+                "nx_user", "nx_user_security", "nx_user_session", "nx_user_otp_challenge", "nx_config_item");
         users = fixture.mapper(UserOpsMapper.class);
         security = fixture.mapper(AppUserSecurityMapper.class);
         sessions = fixture.mapper(AuthSessionMapper.class);
@@ -65,7 +65,9 @@ class PasswordResetEventSchemaMySqlIntegrationTest {
                 users, security, sessions, fixture.mapper(ffdd.opsconsole.auth.mapper.UserLoginGuardMapper.class),
                 passwords, blocklist, mock(UserOtpDeliveryService.class), mock(AuditLogService.class),
                 fixture.outbox(), environment, mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class),
-                mock(ffdd.opsconsole.auth.captcha.CaptchaOtpGate.class)));
+                mock(ffdd.opsconsole.auth.captcha.CaptchaOtpGate.class),
+                new ffdd.opsconsole.shared.security.UserSessionRevocationService(sessions,
+                        mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class))));
         seedUserAndResetChallenge();
     }
 
@@ -166,6 +168,9 @@ class PasswordResetEventSchemaMySqlIntegrationTest {
     }
 
     private void seedUserAndResetChallenge() {
+        // OTP verification/consumption reads the real configured attempt limit in UserOpsMapper.
+        fixture.jdbc().update("INSERT INTO nx_config_item(config_key,config_value,value_type,config_group,status,is_deleted) "
+                + "VALUES('auth.risk.otp_max_verify_attempts','5','NUMBER','auth_risk',1,0)");
         fixture.jdbc().update("""
                 INSERT INTO nx_user(id,country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox,
                                     created_at,updated_at,is_deleted)

@@ -47,7 +47,9 @@ class AppUserPasswordResetServiceTest {
     private final ffdd.opsconsole.platform.facade.PlatformConfigFacade configFacade = mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
     private final CaptchaOtpGate captchaGate = mock(CaptchaOtpGate.class);
     private final AppUserPasswordResetService service = new AppUserPasswordResetService(
-            users, security, sessions, guards, passwords, blocklist, delivery, audit, outbox, environment, configFacade, captchaGate);
+            users, security, sessions, guards, passwords, blocklist, delivery, audit, outbox, environment, configFacade, captchaGate,
+            new ffdd.opsconsole.shared.security.UserSessionRevocationService(sessions,
+                    mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class)));
 
     @BeforeEach
     void defaults() {

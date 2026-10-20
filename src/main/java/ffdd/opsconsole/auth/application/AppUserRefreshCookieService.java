@@ -48,7 +48,9 @@ public class AppUserRefreshCookieService {
         write(response, data.refreshToken(), COOKIE_TTL);
         UserLoginResponse redacted = new UserLoginResponse(
                 data.accessToken(), data.tokenType(), data.user(), data.challengeNo(),
-                data.deliveryHint(), null, data.registrationReceipt(), data.sessionSyncKey());
+                data.deliveryHint(), null, data.registrationReceipt(), data.sessionSyncKey(), data.sessionGroup(), data.installationId(), data.appSessionVersion(),
+                data.sessionChainId(), data.loginAttemptId(), data.sessionEndedReason(), data.executionSupported(),
+                data.loginAttemptStatus());
         return new ApiResult<>(result.getCode(), result.getMessage(), redacted);
     }
 
@@ -65,7 +67,9 @@ public class AppUserRefreshCookieService {
         write(response, data.refreshToken(), COOKIE_TTL);
         UserOAuthExchangeResponse redacted = new UserOAuthExchangeResponse(
                 data.accessToken(), data.tokenType(), data.user(), null, data.source(), data.sandbox(),
-                data.sessionSyncKey());
+                data.sessionSyncKey(), data.sessionGroup(), data.installationId(), data.appSessionVersion(),
+                data.sessionChainId(), data.loginAttemptId(), data.sessionEndedReason(), data.executionSupported(),
+                data.loginAttemptStatus());
         return new ApiResult<>(result.getCode(), result.getMessage(), redacted);
     }
 

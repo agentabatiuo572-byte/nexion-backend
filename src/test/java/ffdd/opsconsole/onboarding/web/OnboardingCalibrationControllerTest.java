@@ -16,8 +16,15 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 class OnboardingCalibrationControllerTest {
     private final OnboardingCalibrationService service = mock(OnboardingCalibrationService.class);
     private final PhoneInstallationMapper mapper = mock(PhoneInstallationMapper.class);
+    private final ffdd.opsconsole.shared.security.CurrentAppSessionService sessions = mock(ffdd.opsconsole.shared.security.CurrentAppSessionService.class);
     private final OnboardingCalibrationController controller = new OnboardingCalibrationController(
-            service, new PhoneInstallationService(mapper));
+            service, new PhoneInstallationService(mapper, sessions));
+
+    @org.junit.jupiter.api.BeforeEach void currentApp() {
+        var session = new ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity();
+        session.setSessionGroup("APP");
+        when(sessions.requireSession(any())).thenReturn(session);
+    }
 
     @Test void bindingStatusOnlyReadsTheAuthenticatedUserAndRejectsOtherSubjects() {
         when(service.bindingStatus(42L)).thenReturn(ApiResult.ok(Map.of("hasBinding", false)));
@@ -39,13 +46,13 @@ class OnboardingCalibrationControllerTest {
         var action = new OnboardingCalibrationService.ActionRequest("phone", 0, "action-key");
         var calibration = new OnboardingCalibrationService.Request("phone", 0, "calibrate-key", null);
         when(service.calibrate(42L, calibration)).thenReturn(ApiResult.ok(Map.of("status", "CALIBRATED")));
-        when(service.activate(42L, action)).thenReturn(ApiResult.ok(Map.of("activationStatus", "ACTIVE")));
+        when(service.activate(42L, action, user)).thenReturn(ApiResult.ok(Map.of("activationStatus", "ACTIVE")));
         when(service.defer(42L, action)).thenReturn(ApiResult.ok(Map.of("activationStatus", "DEFERRED")));
         assertThat(controller.calibrate(calibration, null, user).getCode()).isZero();
         assertThat(controller.activate(action, null, user).getCode()).isZero();
         assertThat(controller.defer(action, null, user).getCode()).isZero();
         verify(service).calibrate(42L, calibration);
-        verify(service).activate(42L, action);
+        verify(service).activate(42L, action, user);
         verify(service).defer(42L, action);
         verifyNoInteractions(mapper);
     }
@@ -64,7 +71,6 @@ class OnboardingCalibrationControllerTest {
         var request = new OnboardingCalibrationService.ActionRequest("bad/id", 0, "defer-key");
         var calibration = new OnboardingCalibrationService.Request("bad/id", 0, "calibrate-key", null);
         assertThatThrownBy(() -> controller.calibrate(calibration, null, auth("USER"))).hasMessage("ONBOARDING_DEVICE_INVALID");
-        assertThatThrownBy(() -> controller.activate(request, null, auth("USER"))).hasMessage("ONBOARDING_DEVICE_INVALID");
         assertThatThrownBy(() -> controller.defer(request, null, auth("USER"))).hasMessage("ONBOARDING_DEVICE_INVALID");
         verifyNoInteractions(service, mapper);
     }

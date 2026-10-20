@@ -2035,7 +2035,7 @@ class OpsAdminAccountServiceTest {
             audit = new OpsAuditCenterService(repository, auditLogService,
                     OpsReadTimeSeedPolicy.disabledForDirectConstruction(), tickets,
                     mock(AuditOperationHistoryMapper.class), mock(AuditConfirmCategoryMapper.class), lockMapper,
-                    permissions, new AuditReplayDispatcher(List.of(replayTarget.apply(accounts))), new A2AccessPolicy(roleResolver, tickets),
+                    permissions, new AuditReplayDispatcher(List.of(replayTarget.apply(accounts))), new A2AccessPolicy(roleResolver, tickets, mock(AdminPermissionCache.class)),
                     new ObjectMapper(), idempotency);
             when(tickets.insert(any(AuditOperationTicketEntity.class))).thenAnswer(invocation -> {
                 AuditOperationTicketEntity row = invocation.getArgument(0);

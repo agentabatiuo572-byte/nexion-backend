@@ -50,16 +50,24 @@ public class AppUserOAuthService {
         identityMapper.createTable();
     }
 
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<UserOAuthExchangeResponse> exchange(
             UserOAuthExchangeRequest request, String clientAddress, String requestOrigin) {
         return exchange(request, clientAddress, requestOrigin, AppSessionSurface.UNKNOWN);
     }
 
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<UserOAuthExchangeResponse> exchange(
             UserOAuthExchangeRequest request, String clientAddress, String requestOrigin,
             AppSessionSurface surface) {
+        return exchange(request, clientAddress, requestOrigin, AppLoginContext.unavailable(surface));
+    }
+
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public ApiResult<UserOAuthExchangeResponse> exchange(
+            UserOAuthExchangeRequest request, String clientAddress, String requestOrigin, AppLoginContext context) {
+        ApiResult<UserLoginResponse> recovered = authService.recoverCompletedLogin(context);
+        if (recovered != null) return recoveredExchange(recovered);
         var resolved = UserAuthEnvironment.resolve(environment);
         if (resolved.isEmpty()) return ApiResult.fail(503, "OAUTH_PROFILE_FORBIDDEN");
         UserAuthEnvironment authEnvironment = resolved.get();
@@ -87,6 +95,8 @@ public class AppUserOAuthService {
         String sourceEnvironment = authEnvironment.name();
         String subject = sandboxChallengeService.consume(provider, request.challengeNo()).orElse(null);
         if (!StringUtils.hasText(subject)) {
+            recovered = authService.recoverCompletedLogin(context);
+            if (recovered != null) return recoveredExchange(recovered);
             return ApiResult.fail(401, developmentPasskey
                     ? "OAUTH_DEVELOPMENT_CHALLENGE_INVALID"
                     : "OAUTH_SANDBOX_CHALLENGE_INVALID");
@@ -96,7 +106,7 @@ public class AppUserOAuthService {
             if (!isActiveInEnvironment(developmentUser, authEnvironment)) {
                 return ApiResult.fail(503, "OAUTH_DEVELOPMENT_ACCOUNT_NOT_FOUND");
             }
-            return issueDevelopmentSession(developmentUser, provider, subject, clientAddress, surface,
+            return issueDevelopmentSession(developmentUser, provider, subject, clientAddress, context,
                     false, authEnvironment == UserAuthEnvironment.SANDBOX);
         }
         UserOAuthIdentityEntity identity = identityMapper.findForUpdate(provider, subject, sourceEnvironment);
@@ -137,15 +147,23 @@ public class AppUserOAuthService {
                 if (!isActiveInEnvironment(user, authEnvironment)) return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
             }
         }
-        return issueDevelopmentSession(user, provider, subject, clientAddress, surface, created, true);
+        return issueDevelopmentSession(user, provider, subject, clientAddress, context, created, true);
+    }
+
+    private ApiResult<UserOAuthExchangeResponse> recoveredExchange(ApiResult<UserLoginResponse> recovered) {
+        if (recovered.getCode() != 0) return ApiResult.fail(recovered.getCode(), recovered.getMessage());
+        UserLoginResponse login = recovered.getData();
+        boolean sandbox = UserAuthEnvironment.resolve(environment).orElse(null) == UserAuthEnvironment.SANDBOX;
+        return ApiResult.ok(new UserOAuthExchangeResponse(login.accessToken(), login.tokenType(), login.user(),
+                login.refreshToken(), sandbox ? "mock" : "development", sandbox, login.sessionSyncKey(),
+                login.sessionGroup(), login.installationId(), login.appSessionVersion(), login.sessionChainId(),
+                login.loginAttemptId(), login.sessionEndedReason(), login.executionSupported(), login.loginAttemptStatus()));
     }
 
     private ApiResult<UserOAuthExchangeResponse> issueDevelopmentSession(
             UserEntity user, String provider, String subject, String clientAddress,
-            AppSessionSurface surface, boolean created, boolean sandbox) {
-        ApiResult<UserLoginResponse> session = surface == AppSessionSurface.UNKNOWN
-                ? authService.issueRegisteredSession(user, clientAddress)
-                : authService.issueRegisteredSession(user, clientAddress, surface);
+            AppLoginContext context, boolean created, boolean sandbox) {
+        ApiResult<UserLoginResponse> session = authService.issueRegisteredSession(user, clientAddress, context);
         if (session.getCode() != 0 || session.getData() == null) {
             return ApiResult.fail(session.getCode(), session.getMessage());
         }
@@ -157,7 +175,9 @@ public class AppUserOAuthService {
                 Map.of("userId", user.getId(), "provider", provider, "source", source, "sandbox", sandbox,
                         "subjectHash", hashSubject(provider + ":" + subject)));
         return ApiResult.ok(new UserOAuthExchangeResponse(login.accessToken(), login.tokenType(), login.user(),
-                login.refreshToken(), source, sandbox, login.sessionSyncKey()));
+                login.refreshToken(), source, sandbox, login.sessionSyncKey(), login.sessionGroup(), login.installationId(), login.appSessionVersion(),
+                login.sessionChainId(), login.loginAttemptId(), login.sessionEndedReason(), login.executionSupported(),
+                login.loginAttemptStatus()));
     }
 
     private UserEntity developmentPasskeyAccount(UserAuthEnvironment authEnvironment) {

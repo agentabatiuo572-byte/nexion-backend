@@ -1852,6 +1852,124 @@ class OpsUserServiceTest {
     }
 
     @Test
+    void securityOverviewRejectsUnassignedTargetBeforeAnyPrivateRepositoryRead() {
+        var repository = mock(UserOpsRepository.class);
+        when(supportOwnership.currentSupportReader()).thenReturn(true);
+        var denied = new BizException(404, "SUPPORT_CUSTOMER_NOT_FOUND");
+        when(supportOwnership.customerQueryScope(900003L)).thenThrow(denied);
+        assertThatThrownBy(() -> serviceWith(repository).securityOverview(null, 900003L, 1, 10, null))
+                .isSameAs(denied);
+        verify(repository).lockedSecurityUsers(anyInt(), anyInt(), anyInt(), anyInt(), anyInt());
+        verify(repository).lockUser(900003L);
+        org.mockito.Mockito.verifyNoMoreInteractions(repository);
+    }
+
+    @Test
+    void securityOverviewLookupKeyCannotBypassCustomerScope() {
+        var repository = mock(UserOpsRepository.class);
+        when(repository.findUserIdByLookupKey("U00900003")).thenReturn(Optional.of(900003L));
+        when(supportOwnership.currentSupportReader()).thenReturn(true);
+        when(supportOwnership.customerQueryScope(900003L)).thenThrow(new BizException(404, "SUPPORT_CUSTOMER_NOT_FOUND"));
+        assertThatThrownBy(() -> serviceWith(repository).securityOverview("U00900003", null, 1, 10, null))
+                .isInstanceOf(BizException.class).hasMessage("SUPPORT_CUSTOMER_NOT_FOUND");
+        verify(repository).findUserIdByLookupKey("U00900003");
+        verify(repository).lockedSecurityUsers(anyInt(), anyInt(), anyInt(), anyInt(), anyInt());
+        verify(repository).lockUser(900003L);
+        org.mockito.Mockito.verifyNoMoreInteractions(repository);
+    }
+
+    @Test
+    void supportSecurityOverviewWithoutTargetHidesLockedIdentitiesButKeepsAggregateSemantics() {
+        userRepository.loadSecuritySessionFixtures();
+        var before = service.securityOverview(null, null, 1, 10, null).getData();
+        assertThat(before.lockedUsers()).isNotEmpty();
+        when(supportOwnership.currentSupportReader()).thenReturn(true);
+        when(supportOwnership.availableReadModes()).thenReturn(List.of());
+        var result = service.securityOverview(null, null, 1, 10, null).getData();
+        assertThat(result.selectedUser()).isNull();
+        assertThat(result.sessions().getRecords()).isEmpty();
+        assertThat(result.lockedUsers()).isEmpty();
+        assertThat(result.stats()).isEqualTo(before.stats());
+    }
+
+    @Test
+    void supportSecurityOverviewUsesScopedProfileAndFiltersLockedUsersAcrossPermittedModes() {
+        userRepository.loadSecuritySessionFixtures();
+        var account = userRepository.findById(2231L).orElseThrow();
+        var repository = org.mockito.Mockito.spy(userRepository);
+        var personal = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(4L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.PERSONAL, null, null);
+        var managed = new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(4L,
+                ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED, null, null);
+        when(supportOwnership.currentSupportReader()).thenReturn(true);
+        when(supportOwnership.customerQueryScope(2231L)).thenReturn(personal);
+        when(supportOwnership.availableReadModes()).thenReturn(List.of(personal.mode(), managed.mode()));
+        when(supportOwnership.queryScope(personal.mode(), null, null)).thenReturn(personal);
+        when(supportOwnership.queryScope(managed.mode(), null, null)).thenReturn(managed);
+        org.mockito.Mockito.doReturn(Optional.of(account)).when(repository).findById(2231L, personal);
+        org.mockito.Mockito.doReturn(0L).when(repository).countReadableSupportCustomers(any(), any());
+        org.mockito.Mockito.doReturn(1L).when(repository).countReadableSupportCustomers(List.of(3315L), managed);
+        var result = serviceWith(repository).securityOverview(null, 2231L, 1, 10, null).getData();
+        assertThat(result.selectedUser().userId()).isEqualTo(2231L);
+        assertThat(result.sessions().getRecords()).isNotEmpty();
+        assertThat(result.lockedUsers()).extracting(UserSecurityUserRow::userId).containsExactly(3315L);
+        verify(repository).findById(2231L, personal);
+        verify(repository, org.mockito.Mockito.never()).findById(anyLong());
+        verify(repository, org.mockito.Mockito.never()).search(null, null, 200);
+    }
+
+    @Test
+    void supportSecurityScopeReadFailureDoesNotFallBackToUnscopedData() {
+        var repository = mock(UserOpsRepository.class);
+        when(supportOwnership.currentSupportReader()).thenReturn(true);
+        var failure = new org.springframework.dao.DataAccessResourceFailureException("scope database unavailable");
+        when(supportOwnership.customerQueryScope(900003L)).thenThrow(failure);
+        assertThatThrownBy(() -> serviceWith(repository).securityOverview(null, 900003L, 1, 10, null)).isSameAs(failure);
+        verify(repository).lockedSecurityUsers(anyInt(), anyInt(), anyInt(), anyInt(), anyInt());
+        verify(repository).lockUser(900003L);
+        org.mockito.Mockito.verifyNoMoreInteractions(repository);
+    }
+
+    @Test
+    void securityOverviewLocksTheFixedCustomerUnionAscendingBeforeAdminAuthorization() {
+        var repository = mock(UserOpsRepository.class);
+        var five = new UserSecurityUserRow(5L, "U5", "five", false, 5, true, false, "SHORT", "", "", "");
+        var one = new UserSecurityUserRow(1L, "U1", "one", false, 5, true, false, "SHORT", "", "", "");
+        when(repository.lockedSecurityUsers(anyInt(), anyInt(), anyInt(), anyInt(), anyInt()))
+                .thenReturn(List.of(five, one, five));
+        when(supportOwnership.currentSupportReader()).thenReturn(true);
+        when(supportOwnership.customerQueryScope(3L)).thenThrow(new BizException(404, "SUPPORT_CUSTOMER_NOT_FOUND"));
+        assertThatThrownBy(() -> serviceWith(repository).securityOverview(null, 3L, 1, 10, null))
+                .hasMessage("SUPPORT_CUSTOMER_NOT_FOUND");
+        var order = org.mockito.Mockito.inOrder(repository, supportOwnership);
+        order.verify(repository).lockedSecurityUsers(anyInt(), anyInt(), anyInt(), anyInt(), anyInt());
+        order.verify(repository).lockUser(1L);
+        order.verify(repository).lockUser(3L);
+        order.verify(repository).lockUser(5L);
+        order.verify(supportOwnership).currentSupportReader();
+        order.verify(supportOwnership).customerQueryScope(3L);
+        order.verifyNoMoreInteractions();
+    }
+
+    @Test
+    void securityOverviewWithoutTargetLocksTheSameCandidateListBeforeAdminReads() {
+        var repository = mock(UserOpsRepository.class);
+        var five = new UserSecurityUserRow(5L, "U5", "five", false, 5, true, false, "SHORT", "", "", "");
+        var one = new UserSecurityUserRow(1L, "U1", "one", false, 5, true, false, "SHORT", "", "", "");
+        when(repository.lockedSecurityUsers(anyInt(), anyInt(), anyInt(), anyInt(), anyInt()))
+                .thenReturn(List.of(five, one));
+        when(supportOwnership.currentSupportReader()).thenReturn(true);
+        when(supportOwnership.availableReadModes()).thenReturn(List.of());
+        assertThat(serviceWith(repository).securityOverview(null, null, 1, 10, null).getData().lockedUsers()).isEmpty();
+        var order = org.mockito.Mockito.inOrder(repository, supportOwnership);
+        order.verify(repository).lockedSecurityUsers(anyInt(), anyInt(), anyInt(), anyInt(), anyInt());
+        order.verify(repository).lockUser(1L);
+        order.verify(repository).lockUser(5L);
+        order.verify(supportOwnership).currentSupportReader();
+        verify(repository).lockedSecurityUsers(anyInt(), anyInt(), anyInt(), anyInt(), anyInt());
+    }
+
+    @Test
     void securityOverviewReadsExistingC5BusinessRows() {
         userRepository.sessions.clear();
         userRepository.loadSecuritySessionFixtures();

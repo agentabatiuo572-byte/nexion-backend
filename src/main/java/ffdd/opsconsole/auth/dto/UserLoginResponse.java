@@ -10,7 +10,14 @@ public record UserLoginResponse(
         String deliveryHint,
         String refreshToken,
         RegistrationReceipt registrationReceipt,
-        String sessionSyncKey) {
+        String sessionSyncKey,
+        String sessionGroup, String installationId, Long appSessionVersion, String sessionChainId,
+        String loginAttemptId, String sessionEndedReason, Boolean executionSupported, String loginAttemptStatus) {
+    public UserLoginResponse(String accessToken, String tokenType, UserSession user, String challengeNo,
+            String deliveryHint, String refreshToken, RegistrationReceipt registrationReceipt, String sessionSyncKey) {
+        this(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, registrationReceipt, sessionSyncKey,
+                null, null, null, null, null, null, null, null);
+    }
     public UserLoginResponse(String accessToken, String tokenType, UserSession user,
                              String challengeNo, String deliveryHint, String refreshToken,
                              RegistrationReceipt registrationReceipt) {
@@ -29,13 +36,27 @@ public record UserLoginResponse(
         this(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, null);
     }
 
+    /** A failed refresh returns only its verified session's termination reason, never credentials or identity. */
+    public static UserLoginResponse ended(String reason) {
+        return new UserLoginResponse(null, null, null, null, null, null, null, null,
+                null, null, null, null, null, reason, null, null);
+    }
+
     public static UserLoginResponse challenge(UserSession user, String challengeNo, String deliveryHint) {
         return new UserLoginResponse(null, "Challenge", user, challengeNo, deliveryHint, null, null);
     }
 
     public UserLoginResponse withRegistrationReceipt(RegistrationReceipt receipt) {
         return new UserLoginResponse(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, receipt,
-                sessionSyncKey);
+                sessionSyncKey, sessionGroup, installationId, appSessionVersion, sessionChainId, loginAttemptId,
+                sessionEndedReason, executionSupported, loginAttemptStatus);
+    }
+
+    public UserLoginResponse withContext(ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity session, String status) {
+        return new UserLoginResponse(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, registrationReceipt,
+                sessionSyncKey, session.getSessionGroup(), session.getInstallationId(), session.getAppSessionVersion(),
+                session.getSessionChainId(), session.getLoginAttemptId(), session.getSessionEndedReason(),
+                session.getExecutionSupported(), status);
     }
 
     public record UserSession(Long userId, String countryCode, String phone, String nickname,

@@ -31,7 +31,10 @@ class OnboardingCalibrationSandboxServiceTest {
     private final Environment environment = mock(Environment.class);
     private final OnboardingCalibrationService service = new OnboardingCalibrationService(
             mapper, profile, environment, mock(AuditLogService.class), mock(EventOutboxService.class),
-            mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), java.time.Clock.systemUTC());
+            mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), java.time.Clock.systemUTC(),
+            mock(PhoneInstallationService.class), mock(PhoneReplacementService.class),
+            mock(ffdd.opsconsole.common.boundary.PhoneActivationCapacityContract.class),
+            mock(ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract.class));
 
     @BeforeEach
     void sandboxScope() {

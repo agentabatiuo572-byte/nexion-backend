@@ -104,6 +104,17 @@ class OutboxRecordOnlyRetirementTest {
     }
 
     @Test
+    void phoneSessionAndReplacementFactsRemainQueryableWithoutAConsumerBacklog() {
+        assertThat(EventOutboxService.RECORD_ONLY_EVENT_TYPES)
+                .contains("account.app_session_replaced", "phone.replacement_succeeded",
+                        "phone.replacement_rejected", "phone.replacement_request_created",
+                        "admin.phone_replacement_policy_updated", "admin.phone_replacement_grant_issued",
+                        "admin.phone_replacement_grant_consumed", "admin.phone_replacement_grant_revoked",
+                        "admin.phone_replacement_grant_expired", "admin.phone_replacement_grant_stale",
+                        "admin.phone_replacement_grant_rejected", "admin.phone_replacement_request_closed");
+    }
+
+    @Test
     void aRetiredFactIsNotLeftWaitingForARetry() {
         when(service.retireRecordOnlyPending(anyInt())).thenReturn(1);
 

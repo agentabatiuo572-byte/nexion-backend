@@ -314,6 +314,11 @@ public interface OnboardingCalibrationMapper {
     int clearReplacedPhoneRuntime(@Param("userId") Long userId,
                                   @Param("keepUserDeviceId") Long keepUserDeviceId);
 
+    @Select("SELECT id FROM nx_user_device WHERE user_id=#{userId} AND source_channel='ONBOARDING' "
+            + "AND source_environment='PRODUCTION' AND run_id='' AND UPPER(device_type) IN ('MOBILE','PHONE') "
+            + "AND is_deleted=0 ORDER BY id FOR UPDATE")
+    List<Long> lockPhoneDevices(@Param("userId") Long userId);
+
     record ReplacedPhoneTask(String taskNo, Long userDeviceId) { }
 
     @Update("""
@@ -431,6 +436,16 @@ public interface OnboardingCalibrationMapper {
                          @Param("sourceEnvironment") String sourceEnvironment, @Param("runId") String runId);
 
     record PhoneBindingRow(String installationId, Long userDeviceId, String hardwareKey, long changedAt, long version) { }
+
+    @Select("""
+        SELECT r.paused_reason FROM nx_user_device_runtime r
+          JOIN nx_user_device d ON d.id=r.user_device_id
+         WHERE d.user_id=#{userId} AND d.id=#{deviceId} AND d.is_deleted=0 AND r.is_deleted=0
+           AND NULLIF(TRIM(r.paused_reason),'') IS NOT NULL
+           AND r.paused_reason NOT IN ('PHONE_REPLACED','PHONE_LOW_BATTERY','PHONE_OFFLINE')
+         FOR SHARE
+        """)
+    String phoneReplacementHardPause(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
     @Update("UPDATE nx_phone_binding SET execution_installation_id=#{deviceId} "
             + "WHERE user_id=#{userId} AND source_environment='PRODUCTION' AND run_id=''")

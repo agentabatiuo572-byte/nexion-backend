@@ -19,8 +19,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
      * Preserve history and require the exact settled claim/device/order relationship.
      * A later legitimate deactivation must not resurrect the order reservation.
      */
-    String EXCLUDE_FULFILLED_LEGACY_TRIAL = """
-            AND NOT EXISTS (
+    String FULFILLED_LEGACY_TRIAL = """
                 SELECT 1 FROM nx_trial_claim tc
                 JOIN nx_user_device td ON td.id=tc.user_device_id
                 WHERE UPPER(o.order_type)='TRIAL_CONVERT' AND o.quantity=1 AND o.item_count=1
@@ -32,20 +31,22 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                   AND td.product_id=o.product_id AND td.is_deleted=0
                   AND td.source_channel='TRIAL' AND td.source_environment='PRODUCTION' AND td.run_id=''
                   AND (td.activated_at IS NOT NULL OR td.deactivated_at IS NOT NULL)
-            )
             """;
+    String EXCLUDE_FULFILLED_LEGACY_TRIAL = " AND NOT EXISTS (" + FULFILLED_LEGACY_TRIAL + ") ";
 
-    String PROMOTION_RESERVED_SLOTS = """
-            COALESCE((SELECT SUM(r.amount) FROM nx_promotion_reservation r
+    String PROMOTION_RESERVED_AMOUNT = """
+            SELECT SUM(r.amount) FROM nx_promotion_reservation r
                        WHERE r.beneficiary_id=#{userId} AND r.asset='DEVICE'
                          AND r.status IN ('RESERVED','COMMITTED')
-                         AND NOT EXISTS (
+            """;
+    String FULFILLED_PROMOTION_RESERVATION = """
                            SELECT 1 FROM nx_promotion_reward rw
                              LEFT JOIN nx_promotion_device_receipt dr ON dr.obligation_id=rw.obligation_id
                             WHERE rw.reservation_id=r.reservation_id
                               AND (rw.status IN ('CANCELLED','REVERSED') OR dr.device_id IS NOT NULL)
-                         )),0)
             """;
+    String PROMOTION_RESERVED_SLOTS = "COALESCE((" + PROMOTION_RESERVED_AMOUNT + " AND NOT EXISTS ("
+            + FULFILLED_PROMOTION_RESERVATION + ")),0) ";
     @Select("""
             SELECT status
               FROM nx_trial_claim
@@ -198,99 +199,97 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             """)
     List<HardwareQuota> purchaseHardwareQuotas(@Param("productNo") String productNo);
 
-    @Select("""
-            SELECT COUNT(1)
-             FROM nx_user_device d
-             JOIN nx_user u ON u.id = d.user_id AND COALESCE(u.sandbox,0)=0
-             WHERE d.user_id = #{userId} AND d.is_deleted = 0
-               AND d.source_environment='PRODUCTION' AND d.run_id=''
-               AND UPPER(d.ownership_status) = 'OWNED'
-               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
-               AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
-               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
-            """)
-    int activeDeviceCount(@Param("userId") Long userId);
-
-    @Select("""
-            SELECT COUNT(1)
-              FROM nx_user_device d
-              JOIN nx_user u ON u.id=d.user_id AND u.sandbox=1
+    String ACTIVE_DEVICE_COUNT = """
+            SELECT COUNT(1) FROM nx_user_device d
+              JOIN nx_user u ON u.id=d.user_id
              WHERE d.user_id=#{userId} AND d.is_deleted=0
                AND d.source_environment='PRODUCTION' AND d.run_id=''
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate=0
-            """)
+            """;
+
+    @Select(ACTIVE_DEVICE_COUNT + " AND COALESCE(u.sandbox,0)=0")
+    int activeDeviceCount(@Param("userId") Long userId);
+
+    @Select(ACTIVE_DEVICE_COUNT + " AND u.sandbox=1")
     int developmentActiveDeviceCount(@Param("userId") Long userId);
 
-    @Select("""
-            SELECT COALESCE(SUM(
-                     CASE WHEN EXISTS (
-                              SELECT 1 FROM nx_order_item present_item
-                               WHERE present_item.order_no=o.order_no AND present_item.is_deleted=0
-                            ) THEN COALESCE((
-                              SELECT SUM(CASE
-                                  WHEN UPPER(COALESCE(NULLIF(item_product.product_type,''),'DEVICE'))='SHARE'
-                                  THEN 0 ELSE order_item.quantity END)
-                                FROM nx_order_item order_item
-                                LEFT JOIN nx_product item_product
-                                  ON item_product.id=order_item.product_id AND item_product.is_deleted=0
-                               WHERE order_item.order_no=o.order_no AND order_item.is_deleted=0
-                            ),0)
-                          WHEN UPPER(COALESCE(NULLIF(header_product.product_type,''),'DEVICE'))='SHARE'
-                          THEN 0 ELSE o.quantity END
-                   ), 0) +
-            """ + PROMOTION_RESERVED_SLOTS + """
-              FROM nx_order o
-              JOIN nx_user u ON u.id=o.user_id AND COALESCE(u.sandbox,0)=0
-              LEFT JOIN nx_product header_product
-                ON header_product.id=o.product_id AND header_product.is_deleted=0
-             WHERE o.user_id = #{userId} AND o.is_deleted = 0
-               AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
-               AND UPPER(COALESCE(o.activation_status, 'WAITING_PAYMENT')) NOT IN
-                   ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
-            """ + EXCLUDE_FULFILLED_LEGACY_TRIAL)
-    int reservedDeviceOrderCount(@Param("userId") Long userId);
+    /** Current reads are required even when the caller already established a REPEATABLE READ snapshot. */
+    @Select(ACTIVE_DEVICE_COUNT + " AND COALESCE(u.sandbox,0)=#{sandbox} FOR SHARE")
+    int lockActiveDeviceCount(@Param("userId") Long userId, @Param("sandbox") boolean sandbox);
 
     @Select("""
-            SELECT COALESCE(SUM(
-                     CASE WHEN EXISTS (
-                              SELECT 1 FROM nx_order_item present_item
-                               WHERE present_item.order_no=o.order_no AND present_item.is_deleted=0
-                            ) THEN COALESCE((
-                              SELECT SUM(CASE
-                                  WHEN UPPER(COALESCE(NULLIF(item_product.product_type,''),'DEVICE'))='SHARE'
-                                  THEN 0 ELSE order_item.quantity END)
-                                FROM nx_order_item order_item
-                                LEFT JOIN nx_product item_product
-                                  ON item_product.id=order_item.product_id AND item_product.is_deleted=0
-                               WHERE order_item.order_no=o.order_no AND order_item.is_deleted=0
-                            ),0)
-                          WHEN UPPER(COALESCE(NULLIF(header_product.product_type,''),'DEVICE'))='SHARE'
-                          THEN 0 ELSE o.quantity END
-                   ),0) +
-            """ + PROMOTION_RESERVED_SLOTS + """
+            SELECT d.id FROM nx_user_device d
+             WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+               AND d.source_channel='ONBOARDING' AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND UPPER(d.device_type) IN ('PHONE','MOBILE') AND UPPER(d.ownership_status)='OWNED'
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
+               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate=0
+             FOR UPDATE
+            """)
+    Long lockOccupiedOnboardingPhone(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+
+    String PRESENT_ORDER_ITEMS = """
+            SELECT 1 FROM nx_order_item present_item
+             WHERE present_item.order_no=o.order_no AND present_item.is_deleted=0
+            """;
+    String RESERVED_ORDER_ITEM_QUANTITY = """
+            SELECT SUM(CASE
+                WHEN UPPER(COALESCE(NULLIF(item_product.product_type,''),'DEVICE'))='SHARE'
+                THEN 0 ELSE order_item.quantity END)
+              FROM nx_order_item order_item
+              LEFT JOIN nx_product item_product
+                ON item_product.id=order_item.product_id AND item_product.is_deleted=0
+             WHERE order_item.order_no=o.order_no AND order_item.is_deleted=0
+            """;
+    String RESERVED_ORDER_HEADER_QUANTITY = """
+            ),0)
+              WHEN UPPER(COALESCE(NULLIF(header_product.product_type,''),'DEVICE'))='SHARE'
+              THEN 0 ELSE o.quantity END),0) +
+            """;
+    String RESERVED_ORDER_SOURCE = """
               FROM nx_order o
-              JOIN nx_user u ON u.id=o.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=o.user_id
               LEFT JOIN nx_product header_product
                 ON header_product.id=o.product_id AND header_product.is_deleted=0
              WHERE o.user_id=#{userId} AND o.is_deleted=0
                AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
                AND UPPER(COALESCE(o.activation_status,'WAITING_PAYMENT')) NOT IN
                    ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
-            """ + EXCLUDE_FULFILLED_LEGACY_TRIAL)
+            """;
+    String RESERVED_DEVICE_ORDERS = "SELECT COALESCE(SUM(CASE WHEN EXISTS (" + PRESENT_ORDER_ITEMS
+            + ") THEN COALESCE((" + RESERVED_ORDER_ITEM_QUANTITY + RESERVED_ORDER_HEADER_QUANTITY
+            + PROMOTION_RESERVED_SLOTS + RESERVED_ORDER_SOURCE + EXCLUDE_FULFILLED_LEGACY_TRIAL;
+
+    @Select(RESERVED_DEVICE_ORDERS + " AND COALESCE(u.sandbox,0)=0")
+    int reservedDeviceOrderCount(@Param("userId") Long userId);
+
+    @Select(RESERVED_DEVICE_ORDERS + " AND u.sandbox=1")
     int developmentReservedDeviceOrderCount(@Param("userId") Long userId);
 
-    @Select("""
-            SELECT COALESCE((
-                SELECT CAST(config_value AS UNSIGNED)
-                  FROM nx_config_item
-                 WHERE config_key = 'device.max_active_slots' AND status = 1 AND is_deleted = 0
-                 LIMIT 1
-            ), 3)
-            """)
+    // Lock every nested query block: an outer locking SELECT does not refresh its scalar/EXISTS subqueries.
+    @Select("SELECT COALESCE(SUM(CASE WHEN EXISTS (" + PRESENT_ORDER_ITEMS + " FOR SHARE"
+            + ") THEN COALESCE((" + RESERVED_ORDER_ITEM_QUANTITY + " FOR SHARE" + RESERVED_ORDER_HEADER_QUANTITY
+            + "COALESCE((" + PROMOTION_RESERVED_AMOUNT + " AND NOT EXISTS ("
+            + FULFILLED_PROMOTION_RESERVATION + " FOR SHARE) FOR SHARE),0) "
+            + RESERVED_ORDER_SOURCE + " AND NOT EXISTS (" + FULFILLED_LEGACY_TRIAL + " FOR SHARE) "
+            + " AND COALESCE(u.sandbox,0)=#{sandbox} FOR SHARE")
+    int lockReservedDeviceOrderCount(@Param("userId") Long userId, @Param("sandbox") boolean sandbox);
+
+    String DEVICE_SLOT_CAP = """
+            SELECT CAST(config_value AS UNSIGNED)
+              FROM nx_config_item
+             WHERE config_key = 'device.max_active_slots' AND status = 1 AND is_deleted = 0
+             LIMIT 1
+            """;
+
+    @Select("SELECT COALESCE((" + DEVICE_SLOT_CAP + "),3)")
     int deviceSlotCap();
+
+    @Select("SELECT COALESCE((" + DEVICE_SLOT_CAP + " FOR SHARE),3)")
+    int lockDeviceSlotCap();
 
     @Update("""
             UPDATE nx_user_device

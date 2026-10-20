@@ -1,9 +1,13 @@
 package ffdd.opsconsole.platform.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.common.boundary.PhoneReplacementContract;
+import ffdd.opsconsole.common.boundary.PhoneReplacementContract.Policy;
+import ffdd.opsconsole.shared.exception.PhoneReplacementException;
 import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustSectionView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
@@ -1057,6 +1061,117 @@ class AuditReplayBusinessPermissionGuardTest {
 
         assertThat(guard.validateProposalContext(spoofedTarget).getMessage())
                 .isEqualTo("A2_BUSINESS_CONTEXT_MISMATCH");
+    }
+
+    private static final String PHONE_PREFIX = "E.compute.phoneBinding.";
+
+    private AuditReplayBusinessPermissionGuard phoneGuard(PhoneReplacementContract policy) {
+        return new AuditReplayBusinessPermissionGuard(repository, roleResolver, emergencyRepository, null,
+                mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), null, policy);
+    }
+
+    private Map<String, Object> phoneValues() {
+        return Map.of(PHONE_PREFIX + "allowReplacement", "on", PHONE_PREFIX + "minReplacementIntervalDays", "1",
+                PHONE_PREFIX + "replacementWindowDays", "31", PHONE_PREFIX + "maxReplacementsInWindow", "2");
+    }
+
+    private AuditOperationProposalRequest phoneRequest(Map<String, Object> values, Object version, boolean single) {
+        var params = new java.util.LinkedHashMap<String, Object>();
+        params.put("expectedPolicyVersion", version);
+        if (single) {
+            params.put("paramKey", values.keySet().iterator().next());
+            params.put("value", values.values().iterator().next());
+        } else params.put("values", values);
+        var targets = values.keySet().stream().sorted()
+                .map(key -> new AuditLockTarget("E", "e6_compute_config", key)).toList();
+        return new AuditOperationProposalRequest("forged action", String.join(",", new java.util.TreeSet<>(values.keySet())),
+                "forged before", "forged after", "maker", "custom", "param", false, false, "gate",
+                "review phone policy changes", "E6", new AuditReplayCommand("E",
+                single ? "e6_compute_config" : "e6_compute_config_batch", params),
+                single ? targets.get(0) : null, single ? null : targets);
+    }
+
+    @Test
+    void phoneBatchReviewUsesServerSnapshotAndValidatedCommandNotMakerCopy() {
+        var policy = mock(PhoneReplacementContract.class);
+        when(policy.currentPolicy()).thenReturn(new Policy(true, true, 1L, 30, 2, 3L));
+        var result = phoneGuard(policy).validateProposalContext(phoneRequest(phoneValues(), 3L, false));
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().beforeValue()).isEqualTo("策略版本 3；允许换机：是；最短间隔：1天；滚动窗口：30天；窗口上限：2次");
+        assertThat(result.getData().afterValue()).isEqualTo("预期版本 3；允许换机：是；最短间隔：1天；滚动窗口：31天；窗口上限：2次");
+        assertThat(result.getData().action()).isEqualTo("发布手机换机策略");
+        org.mockito.Mockito.verify(policy).validatePolicy(org.mockito.ArgumentMatchers.eq(new Policy(true, true, 1L, 31, 2, 4L)),
+                org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"allowReplacement,off,允许换机：否", "minReplacementIntervalDays,4,最短间隔：4天",
+            "replacementWindowDays,31,滚动窗口：31天", "maxReplacementsInWindow,5,窗口上限：5次"})
+    void compatibleSinglePhoneParameterReviewIncludesCompleteMergedPolicy(String key, String value, String expected) {
+        var policy = mock(PhoneReplacementContract.class);
+        when(policy.currentPolicy()).thenReturn(new Policy(true, true, 1L, 30, 2, 3L));
+        var result = phoneGuard(policy).validateProposalContext(phoneRequest(Map.of(PHONE_PREFIX + key, value), 3L, true));
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().beforeValue()).contains("策略版本 3", "允许换机：是", "最短间隔：1天", "滚动窗口：30天", "窗口上限：2次");
+        assertThat(result.getData().afterValue()).contains("预期版本 3", expected, "允许换机：", "最短间隔：", "滚动窗口：", "窗口上限：");
+        assertThat(result.getData().target().id()).isEqualTo(PHONE_PREFIX + key);
+    }
+
+    @Test
+    void phoneReviewRejectsMissingNonIntegerOrStaleVersion() {
+        var policy = mock(PhoneReplacementContract.class);
+        when(policy.currentPolicy()).thenReturn(new Policy(true, true, 1L, 30, 2, 3L));
+        var realGuard = phoneGuard(policy);
+        for (Object version : new Object[]{null, "3", 3.0, 0L, 9_007_199_254_740_991L, new java.math.BigInteger("9223372036854775808")}) {
+            assertThatThrownBy(() -> realGuard.validateProposalContext(phoneRequest(phoneValues(), version, false)))
+                    .isInstanceOf(PhoneReplacementException.class).hasMessage("INVALID_POLICY");
+        }
+        assertThatThrownBy(() -> realGuard.validateProposalContext(phoneRequest(phoneValues(), 2L, false)))
+                .isInstanceOf(PhoneReplacementException.class).hasMessage("POLICY_VERSION_CHANGED");
+    }
+
+    @Test
+    void phoneReviewRejectsNonStringTargetsMalformedNumbersPartialAndMixedGroups() {
+        var policy = mock(PhoneReplacementContract.class);
+        when(policy.currentPolicy()).thenReturn(new Policy(true, true, 1L, 30, 2, 3L));
+        var realGuard = phoneGuard(policy);
+        for (Object bad : new Object[]{31, true, Map.of("value", "31"), "31.0", "-1", "2147483648"}) {
+            var values = new java.util.LinkedHashMap<>(phoneValues());
+            values.put(PHONE_PREFIX + "replacementWindowDays", bad);
+            assertThatThrownBy(() -> realGuard.validateProposalContext(phoneRequest(values, 3L, false)))
+                    .isInstanceOf(PhoneReplacementException.class).hasMessage("INVALID_POLICY");
+        }
+        var mixed = new java.util.LinkedHashMap<>(phoneValues());
+        mixed.put("E.compute.download.enTitle", "unrelated");
+        for (var values : List.of(mixed, Map.<String, Object>of(PHONE_PREFIX + "allowReplacement", "on"))) {
+            assertThatThrownBy(() -> realGuard.validateProposalContext(phoneRequest(values, 3L, false)))
+                    .isInstanceOf(PhoneReplacementException.class).hasMessage("INVALID_POLICY");
+        }
+    }
+
+    @Test
+    void phoneReviewPropagatesExistingDomainPolicyValidation() {
+        var policy = mock(PhoneReplacementContract.class);
+        when(policy.currentPolicy()).thenReturn(new Policy(true, true, 1L, 30, 2, 3L));
+        when(policy.validatePolicy(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong()))
+                .thenReturn(Map.of("replacementWindowDays", "滚动窗口须为1至365天"));
+        var values = new java.util.LinkedHashMap<>(phoneValues());
+        values.put(PHONE_PREFIX + "replacementWindowDays", "366");
+        assertThatThrownBy(() -> phoneGuard(policy).validateProposalContext(phoneRequest(values, 3L, false)))
+                .isInstanceOfSatisfying(PhoneReplacementException.class,
+                        error -> assertThat(error.details().fieldErrors()).containsKey("replacementWindowDays"));
+    }
+
+    @Test
+    void unavailablePhonePolicyCanOnlyBeReviewedAsCompleteRepairWithKnownVersion() {
+        var policy = mock(PhoneReplacementContract.class);
+        when(policy.currentPolicy()).thenReturn(new Policy(false, null, null, null, null, 3L));
+        var realGuard = phoneGuard(policy);
+        var repair = realGuard.validateProposalContext(phoneRequest(phoneValues(), 3L, false));
+        assertThat(repair.getCode()).isZero();
+        assertThat(repair.getData().beforeValue()).contains("策略版本 3", "未配置");
+        assertThatThrownBy(() -> realGuard.validateProposalContext(phoneRequest(Map.of(PHONE_PREFIX + "allowReplacement", "on"), 3L, true)))
+                .isInstanceOf(PhoneReplacementException.class).hasMessage("PHONE_REPLACEMENT_POLICY_UNAVAILABLE");
     }
 
     @Test

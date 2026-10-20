@@ -18,7 +18,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 class MybatisUserOpsRepositoryPaginationTest {
     private final UserOpsMapper mapper = mock(UserOpsMapper.class);
-    private final MybatisUserOpsRepository repository = new MybatisUserOpsRepository(mapper);
+    private final MybatisUserOpsRepository repository = new MybatisUserOpsRepository(mapper, org.mockito.Mockito.mock(ffdd.opsconsole.shared.security.UserSessionRevocationService.class));
 
     @ParameterizedTest
     @CsvSource(value = {"42949674,NULL", "107374184,1", "85899347,NULL"}, nullValues = "NULL")

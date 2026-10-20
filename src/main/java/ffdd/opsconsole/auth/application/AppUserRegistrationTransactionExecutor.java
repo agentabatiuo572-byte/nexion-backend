@@ -21,6 +21,7 @@ public class AppUserRegistrationTransactionExecutor {
     public <T> T execute(Supplier<T> attempt) {
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        transaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         return transaction.execute(status -> attempt.get());
     }
 }

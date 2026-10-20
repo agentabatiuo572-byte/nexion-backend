@@ -61,7 +61,7 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .exceptionHandling(errors -> errors
                         .authenticationEntryPoint((request, response, exception) ->
-                                writeJsonError(response, HttpServletResponse.SC_UNAUTHORIZED, "AUTH_REQUIRED"))
+                                writeAuthenticationRequired(request, response))
                         .accessDeniedHandler((request, response, exception) ->
                                 writeJsonError(response, HttpServletResponse.SC_FORBIDDEN, "ACCESS_DENIED")))
                 .authorizeHttpRequests(auth -> auth
@@ -112,6 +112,7 @@ public class SecurityConfig {
                                 "/auth/login",
                                 "/auth/register",
                                 "/auth/users/login",
+                                "/auth/users/login/attempts/*/recover",
                                 "/auth/users/login/2fa",
                                 "/auth/users/login/otp/send",
                                 "/auth/users/login/otp/verify",
@@ -168,6 +169,21 @@ public class SecurityConfig {
                 new FilterRegistrationBean<>(filter);
         registration.setEnabled(false);
         return registration;
+    }
+
+    static void writeAuthenticationRequired(jakarta.servlet.http.HttpServletRequest request,
+            HttpServletResponse response) throws IOException {
+        Object reason = request.getAttribute(JwtAuthenticationFilter.SESSION_ENDED_REASON);
+        if (reason == null) {
+            writeJsonError(response, HttpServletResponse.SC_UNAUTHORIZED, "AUTH_REQUIRED");
+            return;
+        }
+        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setHeader("Cache-Control", "no-store");
+        response.getWriter().write("{\"code\":401,\"message\":\"AUTH_REQUIRED\",\"data\":{\"sessionEndedReason\":\""
+                + reason + "\"}}");
     }
 
     static void writeJsonError(HttpServletResponse response, int status, String message) throws IOException {

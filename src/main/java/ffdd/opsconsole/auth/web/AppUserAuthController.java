@@ -2,6 +2,9 @@ package ffdd.opsconsole.auth.web;
 
 import ffdd.opsconsole.auth.application.AppUserAuthService;
 import ffdd.opsconsole.auth.application.AppSessionSurface;
+import ffdd.opsconsole.auth.application.AppLoginContext;
+import ffdd.opsconsole.shared.exception.BizException;
+import org.springframework.web.bind.annotation.PathVariable;
 import ffdd.opsconsole.auth.application.AppUserRegistrationService;
 import ffdd.opsconsole.auth.application.AppUserRefreshCookieService;
 import ffdd.opsconsole.auth.application.AppUserPasswordResetService;
@@ -58,7 +61,7 @@ public class AppUserAuthController {
             HttpServletRequest servletRequest,
             HttpServletResponse servletResponse) {
         return refreshCookieService.issue(
-                registrationService.register(request, servletRequest.getRemoteAddr(), surface(servletRequest)),
+                registrationService.register(request, servletRequest.getRemoteAddr(), context(servletRequest, "REGISTRATION", request == null ? null : request.countryCode() + ":" + request.phone())),
                 servletRequest, servletResponse);
     }
 
@@ -67,7 +70,7 @@ public class AppUserAuthController {
             @RequestBody(required = false) UserLoginRequest request,
             HttpServletRequest servletRequest,
             HttpServletResponse servletResponse) {
-        return refreshCookieService.issue(authService.login(request, servletRequest.getRemoteAddr(), surface(servletRequest)),
+        return refreshCookieService.issue(authService.login(request, servletRequest.getRemoteAddr(), context(servletRequest, "PASSWORD", request == null ? null : request.countryCode() + ":" + request.phone())),
                 servletRequest, servletResponse);
     }
 
@@ -78,7 +81,7 @@ public class AppUserAuthController {
             HttpServletResponse servletResponse) {
         return refreshCookieService.issueOAuth(
                 oauthService.exchange(request, servletRequest.getRemoteAddr(),
-                        servletRequest.getHeader("Origin"), surface(servletRequest)),
+                        servletRequest.getHeader("Origin"), context(servletRequest, "OAUTH", request == null ? null : request.provider() + ":" + request.challengeNo())),
                 servletRequest, servletResponse);
     }
 
@@ -95,7 +98,7 @@ public class AppUserAuthController {
             HttpServletRequest servletRequest,
             HttpServletResponse servletResponse) {
         return refreshCookieService.issue(
-                authService.completeOtpLogin(request, servletRequest.getRemoteAddr(), surface(servletRequest)),
+                authService.completeOtpLogin(request, servletRequest.getRemoteAddr(), context(servletRequest, "OTP", request == null ? null : request.challengeNo())),
                 servletRequest, servletResponse);
     }
 
@@ -125,7 +128,7 @@ public class AppUserAuthController {
             HttpServletRequest servletRequest,
             HttpServletResponse servletResponse) {
         return refreshCookieService.issue(
-                authService.completeTwoFactorLogin(request, servletRequest.getRemoteAddr(), surface(servletRequest)),
+                authService.completeTwoFactorLogin(request, servletRequest.getRemoteAddr(), context(servletRequest, "TWO_FACTOR", request == null ? null : request.challengeNo())),
                 servletRequest, servletResponse);
     }
 
@@ -165,6 +168,32 @@ public class AppUserAuthController {
         } finally {
             refreshCookieService.clear(servletResponse);
         }
+    }
+
+    public record LoginRecoveryRequest(String installationId, Boolean executionSupported, String recoveryProof,
+            String authMethod, String authReference) { }
+
+    @PostMapping("/login/attempts/{loginAttemptId}/recover")
+    public ApiResult<UserLoginResponse> recover(@PathVariable String loginAttemptId,
+            @RequestBody LoginRecoveryRequest request, HttpServletRequest servletRequest,
+            HttpServletResponse servletResponse) {
+        AppSessionSurface group = surface(servletRequest);
+        if (request.executionSupported() == null) throw new BizException(422, "LOGIN_EXECUTION_CONTEXT_INVALID");
+        return refreshCookieService.issue(authService.recoverLogin(new AppLoginContext(group, request.installationId(),
+                request.executionSupported(), loginAttemptId, request.recoveryProof(), request.authMethod(),
+                request.authReference())), servletRequest, servletResponse);
+    }
+
+    private AppLoginContext context(HttpServletRequest request, String method, String reference) {
+        AppSessionSurface group = surface(request);
+        String capability = request.getHeader("X-NexGrid-Execution-Supported");
+        if (!"true".equals(capability) && !"false".equals(capability))
+            throw new BizException(422, "LOGIN_EXECUTION_CONTEXT_INVALID");
+        AppLoginContext context = new AppLoginContext(group, request.getHeader("X-NexGrid-Installation-Id"),
+                Boolean.parseBoolean(capability), request.getHeader("X-NexGrid-Login-Attempt-Id"),
+                request.getHeader("X-NexGrid-Login-Recovery-Key"), method, reference);
+        context.validate();
+        return context;
     }
 
     private AppSessionSurface surface(HttpServletRequest request) {

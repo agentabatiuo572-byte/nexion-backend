@@ -34,6 +34,7 @@ import org.springframework.stereotype.Repository;
 @RequiredArgsConstructor
 public class MybatisUserOpsRepository implements UserOpsRepository {
     private final UserOpsMapper mapper;
+    private final ffdd.opsconsole.shared.security.UserSessionRevocationService revocations;
 
     @Override
     public Map<String, Object> overview() {
@@ -322,7 +323,9 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     }
 
     @Override
+    @org.springframework.transaction.annotation.Transactional
     public void upsertAccountList(Long userId, String kind, String reason, String operator, LocalDateTime expiresAt) {
+        revocations.lockAccount(userId);
         mapper.upsertAccountList(userId, kind, reason, operator, expiresAt);
     }
 
@@ -404,26 +407,31 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
 
     @Override
     public boolean revokeSession(String refreshTokenId, String reason) {
-        return mapper.revokeSession(refreshTokenId) == 1;
+        var session = mapper.findSession(refreshTokenId);
+        return session != null && revocations.revokeOwned(session.userId(), refreshTokenId) > 0;
     }
 
     @Override
     public void revokeUserSessions(Long userId, String reason) {
-        mapper.revokeUserSessions(userId);
+        revocations.revokeAll(userId);
     }
 
     @Override
     public void revokeActiveUserSessions(Long userId, String reason, int idleDays) {
-        mapper.revokeActiveUserSessions(userId, Math.max(1, Math.min(idleDays, 90)));
+        revocations.revokeAll(userId);
     }
 
     @Override
+    @org.springframework.transaction.annotation.Transactional
     public boolean disableTwoFactor(Long userId) {
+        revocations.lockAccount(userId);
         return mapper.disableTwoFactor(userId) == 1;
     }
 
     @Override
+    @org.springframework.transaction.annotation.Transactional
     public boolean markPasswordResetRequired(Long userId, String resetMarker) {
+        revocations.lockAccount(userId);
         // MySQL reports 2 affected rows when ON DUPLICATE KEY UPDATE changes an existing
         // security row; both the insert (1) and update (2) paths are successful writes.
         return mapper.markPasswordResetRequired(userId) > 0;

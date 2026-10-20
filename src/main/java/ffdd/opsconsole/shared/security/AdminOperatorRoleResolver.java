@@ -17,6 +17,13 @@ public class AdminOperatorRoleResolver {
     private final AdminMapper adminMapper;
     private final AdminRoleRelationMapper roleRelationMapper;
 
+    public boolean isActiveAdministrator(long adminId) {
+        if (adminId < 1) return false;
+        AdminEntity admin = adminMapper.selectById(adminId);
+        return admin != null && Integer.valueOf(0).equals(admin.getIsDeleted())
+                && Integer.valueOf(1).equals(admin.getStatus());
+    }
+
     public String resolve() {
         String roleCode = resolveCode();
         if ("SUPER_ADMIN".equals(roleCode)) {

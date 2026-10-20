@@ -1,6 +1,6 @@
 package ffdd.opsconsole.auth.application;
 
-/** A client-declared label for the session list, never an authorization signal. */
+/** Authentication-entry hint only. Persisted session context is authoritative after issuance. */
 public enum AppSessionSurface {
     H5("UVEL H5"),
     APP("UVEL Phone App"),

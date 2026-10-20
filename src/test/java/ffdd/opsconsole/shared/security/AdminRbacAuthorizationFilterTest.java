@@ -40,6 +40,24 @@ class AdminRbacAuthorizationFilterTest {
         SecurityContextHolder.clearContext();
     }
 
+    @Test void verificationRecoveryUsesExactGrantInsteadOfUnrelatedC5Read() throws Exception {
+        String path="/api/admin/users/profiles/71/phone-replacement-verifications/by-idempotency-key";
+        for(String method:List.of("GET","HEAD")) {
+            authenticateTrustedAdmin("7","user_c5_phone_replacement_exception_grant");
+            var invoked=new AtomicBoolean(false);
+            filter.doFilter(request(method,path),new MockHttpServletResponse(),mark(invoked));
+            assertThat(invoked).isTrue();
+            authenticateTrustedAdmin("7","user_c5_read");
+            invoked.set(false);var denied=new MockHttpServletResponse();
+            filter.doFilter(request(method,path),denied,mark(invoked));
+            assertThat(invoked).isFalse();assertThat(denied.getStatus()).isEqualTo(403);
+        }
+        authenticateTrustedAdmin("7","user_c5_phone_replacement_exception_grant");
+        var invoked=new AtomicBoolean(false);
+        filter.doFilter(request("GET","/api/admin/users/profiles/71/phone-binding"),new MockHttpServletResponse(),mark(invoked));
+        assertThat(invoked).isFalse();
+    }
+
     @Test void activityNeedsAnAdminSubjectButNoBusinessGrant() throws Exception {
         authenticateTrustedAdmin("7");
         AtomicBoolean invoked=new AtomicBoolean(false);

@@ -607,6 +607,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.ok(page);
     }
 
+    @Transactional
     public ApiResult<UserSecurityOverview> securityOverview(
             String userKey,
             Long userId,
@@ -617,13 +618,23 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
         Long selectedUserId = resolveSecurityUserId(userKey, userId);
-        if (selectedUserId == null) {
-            if (StringUtils.hasText(userKey) || userId != null) {
-                return ApiResult.fail(404, "USER_NOT_FOUND");
-            }
-            return ApiResult.ok(emptySecurityOverview(pageNum, pageSize, limit));
+        if (selectedUserId == null && (StringUtils.hasText(userKey) || userId != null)) {
+            return ApiResult.fail(404, "USER_NOT_FOUND");
         }
-        UserSecurityOverview overview = loadSecurityOverview(selectedUserId, pageNum, pageSize, limit);
+        // Match support transfer's customer -> admin order, including the fixed overview candidates.
+        List<UserSecurityUserRow> lockedUsers = lockedSecurityUsers();
+        var customerIds = new java.util.TreeSet<Long>();
+        if (selectedUserId != null) customerIds.add(selectedUserId);
+        lockedUsers.stream().map(UserSecurityUserRow::userId).filter(java.util.Objects::nonNull).forEach(customerIds::add);
+        customerIds.forEach(userRepository::lockUser);
+        boolean scoped = supportReader();
+        if (selectedUserId == null) {
+            return ApiResult.ok(emptySecurityOverview(pageNum, pageSize, limit, scoped, lockedUsers));
+        }
+        var scope = scoped ? supportOwnership.customerQueryScope(selectedUserId) : null;
+        var account = scoped ? userRepository.findById(selectedUserId, scope) : userRepository.findById(selectedUserId);
+        if (scoped && account.isEmpty()) return ApiResult.fail(404, "USER_NOT_FOUND");
+        UserSecurityOverview overview = loadSecurityOverview(selectedUserId, account.orElse(null), pageNum, pageSize, limit, scoped, lockedUsers);
         return ApiResult.ok(overview);
     }
 
@@ -638,41 +649,36 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return userRepository.findUserIdByLookupKey(lookupKey).orElse(null);
     }
 
-    private UserSecurityOverview emptySecurityOverview(Integer pageNum, Integer pageSize, Integer limit) {
+    private UserSecurityOverview emptySecurityOverview(Integer pageNum, Integer pageSize, Integer limit, boolean scoped, List<UserSecurityUserRow> lockedUsers) {
         int normalizedPageNum = normalizePageNum(pageNum);
         int normalizedPageSize = pageSize == null ? normalizeLimit(limit, 10, 100) : normalizeLimit(pageSize, 10, 100);
-        List<UserSecurityUserRow> lockedUsers = lockedSecurityUsers();
         return new UserSecurityOverview(
-                securityStats(userRepository.search(null, null, 200), lockedUsers),
+                securityStats(lockedUsers),
                 CREDENTIAL_PARAM_DEFINITIONS.stream().map(this::credentialParamView).toList(),
                 null,
                 new PageResult<>(0L, normalizedPageNum, normalizedPageSize, List.of()),
                 0L,
-                lockedUsers,
+                visibleLockedSecurityUsers(lockedUsers, scoped),
                 List.of("nx_user", "nx_user_security", "nx_user_session", "nx_config_item:auth.session.*"),
                 List.of("C5 writes require Idempotency-Key and Confirm-with-Reason",
                         "2FA disable and password reset require secondary identity verification",
                         "Passwords are never visible to operators; reset only invalidates the old hash"));
     }
 
-    private UserSecurityOverview loadSecurityOverview(Long selectedUserId, Integer pageNum, Integer pageSize, Integer limit) {
+    private UserSecurityOverview loadSecurityOverview(Long selectedUserId, UserAccountView account, Integer pageNum, Integer pageSize, Integer limit, boolean scoped, List<UserSecurityUserRow> lockedUsers) {
         int normalizedPageNum = normalizePageNum(pageNum);
         int normalizedPageSize = pageSize == null ? normalizeLimit(limit, 10, 100) : normalizeLimit(pageSize, 10, 100);
         int idleDays = sessionIdleDays();
         PageResult<UserSessionView> sessionPage = userRepository.pageSessions(
                 selectedUserId, normalizedPageNum, normalizedPageSize, idleDays);
-        List<UserAccountView> accounts = userRepository.search(null, null, 200);
-        UserSecurityUserRow selectedUser = userRepository.findById(selectedUserId)
-                .map(this::securityUserRow)
-                .orElse(null);
-        List<UserSecurityUserRow> lockedUsers = lockedSecurityUsers();
+        UserSecurityUserRow selectedUser = account == null ? null : securityUserRow(account);
         return new UserSecurityOverview(
-                securityStats(accounts, lockedUsers),
+                securityStats(lockedUsers),
                 CREDENTIAL_PARAM_DEFINITIONS.stream().map(this::credentialParamView).toList(),
                 selectedUser,
                 sessionPage,
                 userRepository.countActiveSessions(selectedUserId, idleDays),
-                lockedUsers,
+                visibleLockedSecurityUsers(lockedUsers, scoped),
                 List.of("nx_user", "nx_user_security", "nx_user_session", "nx_config_item:auth.session.*"),
                 List.of("C5 writes require Idempotency-Key and Confirm-with-Reason",
                         "2FA disable and password reset require permission checks and explicit operator confirmation",
@@ -687,7 +693,15 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return userRepository.lockedSecurityUsers(shortLockThreshold, longLockThreshold, shortLockMinutes, longLockHours, 5);
     }
 
-    private UserSecurityStats securityStats(List<UserAccountView> accounts, List<UserSecurityUserRow> lockedUsers) {
+    private List<UserSecurityUserRow> visibleLockedSecurityUsers(List<UserSecurityUserRow> rows, boolean scoped) {
+        if (!scoped || rows.isEmpty()) return rows;
+        var scopes = supportOwnership.availableReadModes().stream()
+                .map(mode -> supportOwnership.queryScope(mode, null, null)).toList();
+        return rows.stream().filter(row -> row.userId() != null && scopes.stream().anyMatch(scope ->
+                userRepository.countReadableSupportCustomers(List.of(row.userId()), scope) == 1)).toList();
+    }
+
+    private UserSecurityStats securityStats(List<UserSecurityUserRow> lockedUsers) {
         Map<String, Object> canonicalOverview = userRepository.overview();
         long total = numberValue(canonicalOverview.get("totalUsers"));
         long twoFactorEnabled = numberValue(canonicalOverview.get("twoFactorEnabledUsers"));

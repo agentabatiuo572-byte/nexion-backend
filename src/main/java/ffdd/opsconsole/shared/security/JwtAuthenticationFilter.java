@@ -28,6 +28,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Component
 @RequiredArgsConstructor
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
+    static final String SESSION_ENDED_REASON = JwtAuthenticationFilter.class.getName() + ".sessionEndedReason";
     private final JwtTokenProvider tokenProvider;
     private final AuthSessionMapper authSessionMapper;
     private final UserOpsMapper userMapper;
@@ -37,6 +38,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final AdminPermissionCache permissionCache;
     private final ImpersonationSessionVerifier impersonationSessionVerifier;
     private final PlatformConfigFacade configFacade;
+    private final UserAccountBlocklistVerifier blocklist;
+    private final UserSessionRevocationService revocations;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -63,6 +66,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                 } else {
                     SecurityContextHolder.clearContext();
+                    String reason = sessionEndedReason(claims);
+                    if (reason != null) request.setAttribute(SESSION_ENDED_REASON, reason);
                 }
             } catch (SessionStoreUnavailableException ex) {
                 SecurityContextHolder.clearContext();
@@ -116,12 +121,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 String sessionId = request.getHeader(AuthHeaders.SESSION_ID);
                 if (!StringUtils.hasText(sessionId)) return;
                 UserEntity user = userMapper.selectById(userId);
-                if (user == null || !audience.acceptsSandbox(user.getSandbox())) return;
+                if (user == null || !audience.acceptsSandbox(user.getSandbox()) || !"ACTIVE".equals(user.getStatus())
+                        || !Integer.valueOf(0).equals(user.getIsDeleted()) || blocklist.isBlocked(userId)
+                        || userMapper.isPasswordResetRequired(userId)) return;
                 if (!SupportedUserPhonePolicy.isSupportedDestination(user.getCountryCode(), user.getPhone())) {
-                    authSessionMapper.revokeAllUserSessions(userId);
+                    revocations.revokeAll(userId);
                     return;
                 }
-                if (authSessionMapper.countActiveUserSession(sessionId.trim(), userId) <= 0) return;
+                int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
+                if (authSessionMapper.touchActiveUserSession(sessionId.trim(), userId, idleDays) == 0
+                        && authSessionMapper.touchRecentlyRotatedUserSession(sessionId.trim(), userId, idleDays) == 0) return;
             } catch (RuntimeException ex) {
                 throw new SessionStoreUnavailableException(ex, "USER");
             }
@@ -203,12 +212,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
             Long userId = Long.valueOf(claims.getSubject());
             UserEntity user = userMapper.selectById(userId);
-            if (user == null || !audience.acceptsSandbox(user.getSandbox())) {
-                authSessionMapper.revokeOwnedUserSession(userId, sessionId);
+            if (user == null || !audience.acceptsSandbox(user.getSandbox()) || !"ACTIVE".equals(user.getStatus())
+                    || !Integer.valueOf(0).equals(user.getIsDeleted()) || blocklist.isBlocked(userId)
+                    || userMapper.isPasswordResetRequired(userId)) {
+                revocations.revokeOwned(userId, sessionId);
                 return false;
             }
             if (!SupportedUserPhonePolicy.isSupportedDestination(user.getCountryCode(), user.getPhone())) {
-                authSessionMapper.revokeAllUserSessions(userId);
+                revocations.revokeAll(userId);
                 return false;
             }
             int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
@@ -221,6 +232,33 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return activeCount > 0;
         } catch (RuntimeException ex) {
             throw new SessionStoreUnavailableException(ex, "USER");
+        }
+    }
+
+    private String sessionEndedReason(Claims claims) {
+        if (!"USER".equals(String.valueOf(claims.getOrDefault("subjectType", "USER")))) return null;
+        var audience = UserAuthEnvironment.fromClaim(claims.get(UserAuthEnvironment.CLAIM, String.class)).orElse(null);
+        if (audience == null || audience != UserAuthEnvironment.resolve(environment).orElse(null)) return null;
+        String sessionId = claims.get("sessionId", String.class);
+        if (!StringUtils.hasText(sessionId)) return null;
+        try {
+            long userId = Long.parseLong(claims.getSubject());
+            var session = authSessionMapper.findOwnedSession(sessionId, userId);
+            if (session == null || !Long.valueOf(userId).equals(session.getUserId())) return null;
+            String ended = session.getSessionEndedReason();
+            if (java.util.Set.of("APP_REPLACED", "CURRENT_LOGOUT", "SECURITY_REVOKED", "SESSION_EXPIRED", "REAUTH_REQUIRED")
+                    .contains(ended == null ? "" : ended)) return ended;
+            if (!java.util.Set.of("APP", "H5").contains(session.getSessionGroup() == null ? "" : session.getSessionGroup()))
+                return "REAUTH_REQUIRED";
+            var now = java.time.LocalDateTime.now(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE);
+            var lastActive = session.getLastActiveAt() == null ? session.getCreatedAt() : session.getLastActiveAt();
+            if (session.getExpiresAt() == null || !session.getExpiresAt().isAfter(now)
+                    || lastActive == null || !lastActive.plusDays(configInt("auth.session.idle_ttl_days", 30, 7, 90)).isAfter(now))
+                return "SESSION_EXPIRED";
+            if (session.getRotationRedeemedAt() != null) return "SESSION_ROTATED";
+            return session.getRevokedAt() != null ? "SECURITY_REVOKED" : "REAUTH_REQUIRED";
+        } catch (RuntimeException failure) {
+            throw new SessionStoreUnavailableException(failure, "USER");
         }
     }
 
@@ -259,7 +297,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     /** Reuses the HTTP session, audience and current-permission checks for socket frames. */
     public org.springframework.security.core.Authentication authenticateSocketToken(String token) {
         Claims claims = tokenProvider.parse(token);
-        if (!isSessionActive(claims)) throw new org.springframework.security.authentication.BadCredentialsException("SESSION_EXPIRED");
+        if (!isSessionActive(claims)) {
+            String reason = sessionEndedReason(claims);
+            throw new org.springframework.security.authentication.BadCredentialsException(reason == null ? "SESSION_EXPIRED" : reason);
+        }
         var authentication = new UsernamePasswordAuthenticationToken(claims.getSubject(), null, resolveAuthorities(claims));
         Map<String, String> details = new LinkedHashMap<>();
         details.put("subjectType", String.valueOf(claims.getOrDefault("subjectType", "USER")));

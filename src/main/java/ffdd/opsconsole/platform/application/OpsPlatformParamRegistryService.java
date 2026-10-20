@@ -72,7 +72,7 @@ public class OpsPlatformParamRegistryService {
             }
             merge(rows, row);
         }
-        for (String field : List.of("allowReplacement", "minReplacementIntervalDays")) {
+        for (String field : List.of("allowReplacement", "minReplacementIntervalDays", "replacementWindowDays", "maxReplacementsInWindow")) {
             String key = ComputeConfigRegistry.phoneBindingKey(field);
             if (!rows.containsKey(key)) {
                 merge(rows, fromConfig(new PlatformConfigItem(null, key, ComputeConfigRegistry.defaultValue(key),
@@ -408,6 +408,8 @@ public class OpsPlatformParamRegistryService {
         if ("E.compute.phoneCalibration.policy".equals(key)) return "手机硬件算力规则与档位分界";
         if (ComputeConfigRegistry.phoneBindingKey("allowReplacement").equals(key)) return "允许更换绑定手机";
         if (ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays").equals(key)) return "手机换绑最短间隔天数";
+        if (ComputeConfigRegistry.phoneBindingKey("replacementWindowDays").equals(key)) return "手机换绑滚动窗口天数";
+        if (ComputeConfigRegistry.phoneBindingKey("maxReplacementsInWindow").equals(key)) return "手机换绑窗口内次数上限";
         if (ComputeConfigRegistry.coeffKey("h5BaseFactor").equals(key)) return "H5 基础托管系数（已退役）";
         String normalized = lower(key);
         if (normalized.startsWith("finance.topup.channel.")) {

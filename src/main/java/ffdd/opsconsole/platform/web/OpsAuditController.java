@@ -163,6 +163,12 @@ public class OpsAuditController {
         return ApiResult.ok(auditLogService.list(accessPolicy.constrain(request)));
     }
 
+    @GetMapping("/operations/proposals/by-idempotency-key")
+    public ApiResult<AuditCenterOverview.AuditOperationTicket> proposalByIdempotencyKey(
+            @org.springframework.web.bind.annotation.RequestParam String idempotencyKey) {
+        return auditCenterService.proposalByIdempotencyKey(idempotencyKey);
+    }
+
     @GetMapping("/logs/trace/{traceId}")
     public ApiResult<List<AuditLogRecord>> byTrace(@PathVariable String traceId) {
         AuditLogQueryRequest request = new AuditLogQueryRequest();

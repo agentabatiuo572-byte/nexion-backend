@@ -62,6 +62,7 @@ class AppUserAuthServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final MockEnvironment environment = new MockEnvironment();
     private final CaptchaOtpGate captchaGate = mock(CaptchaOtpGate.class);
+    private final ffdd.opsconsole.auth.mapper.AppLoginAttemptMapper attempts = mock(ffdd.opsconsole.auth.mapper.AppLoginAttemptMapper.class);
     private final ffdd.opsconsole.content.application.SupportActivityService supportActivity = mock(ffdd.opsconsole.content.application.SupportActivityService.class);
     private final AppUserAuthService service;
 
@@ -77,10 +78,32 @@ class AppUserAuthServiceTest {
         when(loginGuards.recordOtpSend(any(), any(), any(), any(Integer.class), any(), any(Integer.class))).thenReturn(1);
         when(loginGuards.countRecentOtpSendEvents(any(), any())).thenReturn(0);
         when(loginGuards.insertOtpSendEvent(any(), any())).thenReturn(1);
-        service = new AppUserAuthService(
-                users, sessions, loginGuards, passwords, tokens, properties, blocklistVerifier, configFacade, captchaGate, otpDelivery, outbox, environment, supportActivity);
+        var phone=mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class);
+        var audit=mock(ffdd.opsconsole.shared.audit.AuditLogService.class);
+        var single=new AppSingleSessionService(sessions,attempts,tokens,phone,audit,outbox,configFacade,users,blocklistVerifier,environment);
+        service = new AppUserAuthService(users, sessions, loginGuards, passwords, tokens, properties, blocklistVerifier,
+                configFacade, captchaGate, otpDelivery, outbox, environment, supportActivity, single,
+                new ffdd.opsconsole.shared.security.UserSessionRevocationService(sessions,phone));
+        when(sessions.lockAccount(org.mockito.ArgumentMatchers.anyLong())).thenAnswer(call->call.getArgument(0));
+        when(users.selectById(org.mockito.ArgumentMatchers.anyLong())).thenAnswer(call->users.selectOne(null));
+        when(users.findLoginUserForUpdate(org.mockito.ArgumentMatchers.anyLong())).thenAnswer(call->users.selectById((Long)call.getArgument(0)));
+        when(sessions.insert(any(UserSessionEntity.class))).thenReturn(1);
+        when(sessions.advanceAppState(org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.anyLong(),any(),any(),org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(1);
+        when(attempts.insert(any())).thenReturn(1);
+        when(tokens.refreshSuccessor(any(),any())).thenReturn("initial-refresh-secret");
+        when(sessions.countFixedContext(any(),org.mockito.ArgumentMatchers.anyLong())).thenReturn(1);
         when(captchaGate.checkAndConsume(any(), any(), any(), anyInt()))
                 .thenReturn(new CaptchaOtpGate.Decision(true, 0, "OK"));
+    }
+
+    private static AppLoginContext context(AppSessionSurface group,String method) {
+        return new AppLoginContext(group,group==AppSessionSurface.APP?"test-installation":"browser-installation",group==AppSessionSurface.APP,
+                "test-attempt-0123456789","r".repeat(64),method,"test-auth-reference");
+    }
+    @Test void unknownLegacyContextCannotAuthenticate() {
+        assertThatThrownBy(()->service.login(new UserLoginRequest("+84","901234567","secret")))
+                .hasMessage("SESSION_CONTEXT_REAUTH_REQUIRED");
+        verify(sessions,never()).insert(any(UserSessionEntity.class));
     }
 
     @Test
@@ -100,8 +123,7 @@ class AppUserAuthServiceTest {
         when(tokens.createUserToken(eq(42L), eq("901234567"), eq(List.of()), any(), any(Duration.class), eq(UserAuthEnvironment.PRODUCTION)))
                 .thenReturn("signed-token");
 
-        var result = service.login(new UserLoginRequest("84", "901234567", "secret"),
-                "127.0.0.1", AppSessionSurface.APP);
+        var result = service.login(new UserLoginRequest("84", "901234567", "secret"), "127.0.0.1", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().accessToken()).isEqualTo("signed-token");
@@ -119,8 +141,7 @@ class AppUserAuthServiceTest {
     void h5SessionKeepsItsWebLabel() {
         when(users.selectOne(any())).thenReturn(activeUser());
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"),
-                "127.0.0.1", AppSessionSurface.H5);
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "127.0.0.1", context(AppSessionSurface.H5,"PASSWORD"));
 
         assertThat(result.getCode()).isZero();
         ArgumentCaptor<UserSessionEntity> saved = ArgumentCaptor.forClass(UserSessionEntity.class);
@@ -139,8 +160,7 @@ class AppUserAuthServiceTest {
         user.setPasswordHash(passwords.encode("secret"));
         when(users.selectOne(any())).thenReturn(user);
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "wrong"),
-                "127.0.0.1", AppSessionSurface.APP);
+        var result = service.login(new UserLoginRequest("+84", "901234567", "wrong"), "127.0.0.1", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(401);
         assertThat(result.getMessage()).isEqualTo("USER_CREDENTIAL_INVALID");
@@ -150,7 +170,8 @@ class AppUserAuthServiceTest {
 
     @Test
     void registrationAndDevelopmentOAuthSessionDoNotFabricateInteractiveActivity() {
-        var result=service.issueRegisteredSession(activeUser(),"127.0.0.1");
+        when(users.selectById(42L)).thenReturn(activeUser());
+        var result=service.issueRegisteredSession(activeUser(), "127.0.0.1", context(AppSessionSurface.APP,"REGISTRATION"));
         assertThat(result.getCode()).isZero();
         verify(supportActivity,never()).interactiveLogin(any(),any());
     }
@@ -159,7 +180,7 @@ class AppUserAuthServiceTest {
     void activityFailurePropagatesToRollBackLoginTransaction() {
         when(users.selectOne(any())).thenReturn(activeUser());
         doThrow(new IllegalStateException("capture unavailable")).when(supportActivity).interactiveLogin(any(),any());
-        assertThatThrownBy(()->service.login(new UserLoginRequest("+84","901234567","secret")))
+        assertThatThrownBy(()->service.login(new UserLoginRequest("+84","901234567","secret"), "local", context(AppSessionSurface.APP,"PASSWORD")))
                 .hasMessage("capture unavailable");
     }
 
@@ -172,7 +193,7 @@ class AppUserAuthServiceTest {
         when(tokens.createUserToken(eq(42L),eq("901234567"),eq(List.of()),any(),any(Duration.class),eq(UserAuthEnvironment.SANDBOX)))
                 .thenReturn("sandbox-token");
 
-        var result=service.login(new UserLoginRequest("+84","901234567","secret"));
+        var result=service.login(new UserLoginRequest("+84","901234567","secret"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().accessToken()).isEqualTo("sandbox-token");
@@ -192,11 +213,11 @@ class AppUserAuthServiceTest {
         when(users.selectOne(any())).thenReturn(user);
         when(blocklistVerifier.isBlocked(42L)).thenReturn(true);
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"));
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("ACCOUNT_BLOCKLISTED");
-        org.mockito.Mockito.verifyNoInteractions(sessions);
+        verify(sessions,never()).insert(any(UserSessionEntity.class));
     }
 
     @Test
@@ -207,7 +228,7 @@ class AppUserAuthServiceTest {
         guard.setLockedUntil(LocalDateTime.now().plusMinutes(14));
         when(loginGuards.lock(any())).thenReturn(null, guard);
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"));
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(429);
         assertThat(result.getMessage()).isEqualTo("USER_LOGIN_TEMPORARILY_LOCKED");
@@ -230,7 +251,7 @@ class AppUserAuthServiceTest {
         when(loginGuards.lock(any())).thenReturn(null, guard);
         when(users.selectOne(any())).thenReturn(user);
         when(blocklistVerifier.isAllowlisted(42L)).thenReturn(true);
-        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"));
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(429);
         assertThat(result.getMessage()).isEqualTo("USER_LOGIN_TEMPORARILY_LOCKED");
@@ -244,7 +265,7 @@ class AppUserAuthServiceTest {
         guard.setWindowStartedAt(LocalDateTime.now().minusMinutes(1));
         when(loginGuards.lock(any())).thenReturn(null, guard);
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "wrong"));
+        var result = service.login(new UserLoginRequest("+84", "901234567", "wrong"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(401);
         verify(loginGuards).recordFailure(any(), eq(5), eq(guard.getWindowStartedAt()), any(LocalDateTime.class));
@@ -260,7 +281,7 @@ class AppUserAuthServiceTest {
         when(configFacade.activeValue("auth.risk.login_long_lock_threshold")).thenReturn(Optional.of("5"));
         LocalDateTime before = LocalDateTime.now();
 
-        service.login(new UserLoginRequest("+84", "901234567", "wrong"));
+        service.login(new UserLoginRequest("+84", "901234567", "wrong"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         ArgumentCaptor<LocalDateTime> lockedUntil = ArgumentCaptor.forClass(LocalDateTime.class);
         verify(loginGuards).recordFailure(any(), eq(5), eq(guard.getWindowStartedAt()), lockedUntil.capture());
@@ -275,7 +296,7 @@ class AppUserAuthServiceTest {
         guard.setLockedUntil(LocalDateTime.now().plusSeconds(50));
         when(loginGuards.lock(any())).thenReturn(guard);
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "203.0.113.9");
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "203.0.113.9", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(429);
         assertThat(result.getMessage()).isEqualTo("USER_LOGIN_RATE_LIMITED");
@@ -287,14 +308,15 @@ class AppUserAuthServiceTest {
         when(users.selectOne(any())).thenReturn(user);
         when(users.isTwoFactorEnabled(42L)).thenReturn(true);
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"));
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(428);
         assertThat(result.getMessage()).isEqualTo("USER_TWO_FACTOR_VERIFICATION_REQUIRED");
         assertThat(result.getData().challengeNo()).startsWith("OTP-");
         verify(users).createLoginOtpChallenge(eq(42L), eq(result.getData().challengeNo()), any(), eq(5));
         verify(otpDelivery).deliver(eq("+84"), eq("901234567"), eq(result.getData().challengeNo()), any(), eq(5));
-        org.mockito.Mockito.verifyNoInteractions(sessions, tokens);
+        verify(sessions,never()).insert(any(UserSessionEntity.class));
+        org.mockito.Mockito.verifyNoInteractions(tokens);
     }
 
     @Test
@@ -314,7 +336,7 @@ class AppUserAuthServiceTest {
         UserEntity user = activeUser();
         user.setCountryCode("+1");
 
-        assertThatThrownBy(() -> service.issueRegisteredSession(user, "127.0.0.1"))
+        assertThatThrownBy(() -> service.issueRegisteredSession(user, "127.0.0.1", context(AppSessionSurface.APP,"REGISTRATION")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("USER_REGISTRATION_COUNTRY_CODE_FORBIDDEN");
         verify(sessions, never()).insert(any(UserSessionEntity.class));
@@ -327,7 +349,7 @@ class AppUserAuthServiceTest {
         user.setCountryCode("+86");
         user.setPhone("12800138000");
 
-        assertThatThrownBy(() -> service.issueRegisteredSession(user, "127.0.0.1"))
+        assertThatThrownBy(() -> service.issueRegisteredSession(user, "127.0.0.1", context(AppSessionSurface.APP,"REGISTRATION")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("USER_REGISTRATION_PHONE_INVALID");
         verify(sessions, never()).insert(any(UserSessionEntity.class));
@@ -343,7 +365,7 @@ class AppUserAuthServiceTest {
         cooldown.setLastSentAt(LocalDateTime.now());
         when(loginGuards.lockOtpSendGuard(any())).thenReturn(cooldown);
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"));
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(429);
         assertThat(result.getMessage()).isEqualTo("USER_OTP_SEND_RATE_LIMITED");
@@ -358,7 +380,7 @@ class AppUserAuthServiceTest {
         when(users.isTwoFactorEnabled(42L)).thenReturn(true);
 
         var result = service.login(new UserLoginRequest(
-                "+84", "901234567", "secret", "captcha-provider-ticket"), "203.0.113.9");
+                "+84", "901234567", "secret", "captcha-provider-ticket"), "203.0.113.9", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(428);
         assertThat(result.getMessage()).isEqualTo("USER_TWO_FACTOR_VERIFICATION_REQUIRED");
@@ -375,7 +397,7 @@ class AppUserAuthServiceTest {
         doThrow(new IllegalStateException("ambiguous provider timeout"))
                 .when(otpDelivery).deliver(any(), any(), any(), any(), any(Integer.class));
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"));
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getMessage()).isEqualTo("USER_OTP_DELIVERY_FAILED");
@@ -389,11 +411,12 @@ class AppUserAuthServiceTest {
         when(users.selectOne(any())).thenReturn(user);
         when(users.isPasswordResetRequired(42L)).thenReturn(true);
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"));
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(428);
         assertThat(result.getMessage()).isEqualTo("USER_PASSWORD_RESET_REQUIRED");
-        org.mockito.Mockito.verifyNoInteractions(sessions, tokens);
+        verify(sessions,never()).insert(any(UserSessionEntity.class));
+        org.mockito.Mockito.verifyNoInteractions(tokens);
     }
 
     @Test
@@ -406,7 +429,7 @@ class AppUserAuthServiceTest {
                 .thenReturn("configured-token");
 
         LocalDateTime before = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
-        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"));
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isZero();
         ArgumentCaptor<UserSessionEntity> saved = ArgumentCaptor.forClass(UserSessionEntity.class);
@@ -417,17 +440,55 @@ class AppUserAuthServiceTest {
     }
 
     @Test
+    void forcedPasswordResetRecoversAfterAccountLockEvenWhenTheOriginalPasswordHasChanged() {
+        UserEntity user = activeUser();
+        when(users.selectOne(any())).thenReturn(user);
+        when(users.isPasswordResetRequired(42L)).thenReturn(true);
+        when(users.updatePasswordHash(eq(42L), any())).thenAnswer(call -> {
+            user.setPasswordHash(call.getArgument(1)); return 1;
+        });
+        when(users.clearPasswordResetRequired(42L)).thenAnswer(call -> {
+            when(users.isPasswordResetRequired(42L)).thenReturn(false); return 1;
+        });
+        when(tokens.createUserToken(eq(42L), eq("901234567"), eq(List.of()), any(), any(Duration.class), eq(UserAuthEnvironment.PRODUCTION)))
+                .thenReturn("original-reset-access");
+        var input = new UserPasswordResetCompleteRequest("+84", "901234567", "secret", "NewSecure@2026");
+        var context = context(AppSessionSurface.APP, "PASSWORD_RESET");
+        var original = service.completePasswordReset(input, "local", context);
+        var savedAttempt = ArgumentCaptor.forClass(ffdd.opsconsole.auth.mapper.AppLoginAttemptMapper.Attempt.class);
+        var savedSession = ArgumentCaptor.forClass(UserSessionEntity.class);
+        verify(attempts).insert(savedAttempt.capture());
+        verify(sessions).insert(savedSession.capture());
+        // Emulate the loser: its initial nonlocking lookup saw no attempt, but the winner committed before its user lock.
+        when(attempts.findLocked(context.loginAttemptId())).thenReturn(savedAttempt.getValue());
+        when(sessions.findRefreshForUpdate(savedAttempt.getValue().sessionId())).thenReturn(savedSession.getValue());
+
+        var replay = service.completePasswordReset(input, "local", context);
+
+        assertThat(replay.getCode()).isZero();
+        assertThat(replay.getData().refreshToken()).isEqualTo(original.getData().refreshToken());
+        assertThat(replay.getData().sessionChainId()).isEqualTo(original.getData().sessionChainId());
+        assertThat(passwords.matches("secret", user.getPasswordHash())).isFalse();
+        verify(users, times(1)).updatePasswordHash(eq(42L), any());
+        verify(users, times(1)).clearPasswordResetRequired(42L);
+        verify(sessions, times(1)).insert(any(UserSessionEntity.class));
+        verify(attempts, times(1)).insert(any());
+    }
+
+    @Test
     void forcedPasswordResetChangesHashClearsFlagAndIssuesSession() {
         UserEntity user = activeUser();
         when(users.selectOne(any())).thenReturn(user);
         when(users.isPasswordResetRequired(42L)).thenReturn(true);
         when(users.updatePasswordHash(eq(42L), any())).thenReturn(1);
-        when(users.clearPasswordResetRequired(42L)).thenReturn(1);
+        when(users.clearPasswordResetRequired(42L)).thenAnswer(call->{
+            when(users.isPasswordResetRequired(42L)).thenReturn(false); return 1;
+        });
         when(tokens.createUserToken(eq(42L), eq("901234567"), eq(List.of()), any(), any(Duration.class), eq(UserAuthEnvironment.PRODUCTION)))
                 .thenReturn("reset-token");
 
         var result = service.completePasswordReset(new UserPasswordResetCompleteRequest(
-                "+84", "901234567", "secret", "NewSecure@2026"));
+                "+84", "901234567", "secret", "NewSecure@2026"), "local", context(AppSessionSurface.APP,"PASSWORD_RESET"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().accessToken()).isEqualTo("reset-token");
@@ -449,8 +510,7 @@ class AppUserAuthServiceTest {
                 .thenReturn("mfa-token");
 
         var result = service.completeTwoFactorLogin(new UserTwoFactorLoginRequest(
-                "+84", "901234567", "secret", challengeNo, "123456"),
-                "127.0.0.1", AppSessionSurface.APP);
+                "+84", "901234567", "secret", challengeNo, "123456"), "127.0.0.1", context(AppSessionSurface.APP,"TWO_FACTOR"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().accessToken()).isEqualTo("mfa-token");
@@ -463,9 +523,9 @@ class AppUserAuthServiceTest {
     @Test
     void twoFactorLoginRejectsRegistrationAndPasswordlessChallengePurposes() {
         var loginPurpose = service.completeTwoFactorLogin(new UserTwoFactorLoginRequest(
-                "+84", "901234567", "secret", "LOGIN-0123456789abcdef0123456789abcdef", "123456"));
+                "+84", "901234567", "secret", "LOGIN-0123456789abcdef0123456789abcdef", "123456"), "local", context(AppSessionSurface.APP,"TWO_FACTOR"));
         var registrationPurpose = service.completeTwoFactorLogin(new UserTwoFactorLoginRequest(
-                "+84", "901234567", "secret", "REG-0123456789abcdef0123456789abcdef", "123456"));
+                "+84", "901234567", "secret", "REG-0123456789abcdef0123456789abcdef", "123456"), "local", context(AppSessionSurface.APP,"TWO_FACTOR"));
 
         assertThat(loginPurpose.getCode()).isEqualTo(422);
         assertThat(registrationPurpose.getCode()).isEqualTo(422);
@@ -483,8 +543,7 @@ class AppUserAuthServiceTest {
 
         var sent = service.beginOtpLogin(new UserOtpLoginRequest("+84", "901234567"));
         var verified = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
-                "+84", "901234567", sent.getData().challengeNo(), "123456"),
-                "127.0.0.1", AppSessionSurface.APP);
+                "+84", "901234567", sent.getData().challengeNo(), "123456"), "127.0.0.1", context(AppSessionSurface.APP,"OTP"));
 
         assertThat(sent.getCode()).isZero();
         assertThat(sent.getData().challengeNo()).startsWith("LOGIN-");
@@ -499,7 +558,7 @@ class AppUserAuthServiceTest {
     @Test
     void otpLoginCannotConsumeASecondFactorChallenge() {
         var result = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
-                "+84", "901234567", "OTP-42", "123456"));
+                "+84", "901234567", "OTP-42", "123456"), "local", context(AppSessionSurface.APP,"OTP"));
 
         assertThat(result.getCode()).isEqualTo(422);
         assertThat(result.getMessage()).isEqualTo("USER_OTP_LOGIN_CHALLENGE_INVALID");
@@ -651,7 +710,7 @@ class AppUserAuthServiceTest {
         String challengeNo = "LOGIN-22222222222222222222222222222222";
 
         var fifth = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
-                "+84", "901234567", challengeNo, "999999"), "198.51.100.40");
+                "+84", "901234567", challengeNo, "999999"), "198.51.100.40", context(AppSessionSurface.APP,"OTP"));
 
         assertThat(fifth.getCode()).isEqualTo(422);
         ArgumentCaptor<LocalDateTime> lockUntil = ArgumentCaptor.forClass(LocalDateTime.class);
@@ -674,7 +733,7 @@ class AppUserAuthServiceTest {
         when(users.consumeValidLoginOtp(42L, "LOGIN-00000000000000000000000000000000", "123456")).thenReturn(0);
 
         var result = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
-                "+84", "901234567", "LOGIN-00000000000000000000000000000000", "123456"));
+                "+84", "901234567", "LOGIN-00000000000000000000000000000000", "123456"), "local", context(AppSessionSurface.APP,"OTP"));
 
         assertThat(result.getCode()).isEqualTo(422);
         assertThat(result.getMessage()).isEqualTo("USER_OTP_LOGIN_CHALLENGE_INVALID");
@@ -693,7 +752,7 @@ class AppUserAuthServiceTest {
         when(users.recordInvalidLoginOtpAttempt(42L, challengeNo)).thenReturn(1);
 
         var result = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
-                "+84", "901234567", challengeNo, "999999"));
+                "+84", "901234567", challengeNo, "999999"), "local", context(AppSessionSurface.APP,"OTP"));
 
         assertThat(result.getCode()).isEqualTo(422);
         verify(users).recordInvalidLoginOtpAttempt(42L, challengeNo);
@@ -707,14 +766,14 @@ class AppUserAuthServiceTest {
         when(tokens.createUserToken(eq(42L), eq("901234567"), eq(List.of()), any(), any(Duration.class), eq(UserAuthEnvironment.PRODUCTION)))
                 .thenReturn("initial-token", "refreshed-token");
 
-        var login = service.login(new UserLoginRequest("+84", "901234567", "secret"),
-                "127.0.0.1", AppSessionSurface.APP);
+        var login = service.login(new UserLoginRequest("+84", "901234567", "secret"), "127.0.0.1", context(AppSessionSurface.APP,"PASSWORD"));
         ArgumentCaptor<UserSessionEntity> initialCaptor = ArgumentCaptor.forClass(UserSessionEntity.class);
         verify(sessions).insert(initialCaptor.capture());
         UserSessionEntity initial = initialCaptor.getValue();
         initial.setId(101L);
 
         when(sessions.findRefreshForUpdate(initial.getRefreshTokenId())).thenReturn(initial);
+        when(sessions.findSession(initial.getRefreshTokenId())).thenReturn(initial);
         when(sessions.markRefreshRotated(eq(101L), any())).thenReturn(1);
         when(users.selectById(42L)).thenReturn(user);
 
@@ -760,6 +819,7 @@ class AppUserAuthServiceTest {
         when(tokens.createUserToken(eq(42L), eq(user.getPhone()), eq(List.of()), any(),
                 any(Duration.class), eq(UserAuthEnvironment.PRODUCTION))).thenReturn("access");
         when(sessions.findRefreshForUpdate(any())).thenReturn(original);
+        when(sessions.findSession(any())).thenReturn(original);
         when(sessions.markRefreshRotated(eq(101L), any())).thenReturn(1);
 
         var first = service.refresh(new UserRefreshRequest("original-cookie"), nonce, cookieMode);
@@ -773,6 +833,7 @@ class AppUserAuthServiceTest {
         original.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         original.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         when(sessions.findRefreshForUpdate(original.getRotatedToId())).thenReturn(successor);
+        when(sessions.findSession(original.getRotatedToId())).thenReturn(successor);
 
         var recovered = service.refresh(new UserRefreshRequest("original-cookie"), nonce, cookieMode);
 
@@ -792,11 +853,12 @@ class AppUserAuthServiceTest {
         old.setRotatedToId("successor-hash");
         old.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         when(sessions.findRefreshForUpdate(any())).thenReturn(old);
+        when(sessions.findSession(any())).thenReturn(old);
 
         var result = service.refresh(new UserRefreshRequest("old-cookie"), null, cookieMode);
 
         assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_REUSE_DETECTED");
-        verify(sessions).revokeRefreshChain("chain-42");
+        verify(sessions).revokeOwnedUserSession(eq(42L), any());
         verify(tokens, never()).refreshSuccessor(any(), any());
     }
 
@@ -809,12 +871,13 @@ class AppUserAuthServiceTest {
         old.setRotatedToId("different-successor-hash");
         old.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         when(sessions.findRefreshForUpdate(any())).thenReturn(old);
+        when(sessions.findSession(any())).thenReturn(old);
         when(tokens.refreshSuccessor("old-cookie", "b".repeat(64))).thenReturn("wrong-successor");
 
         var result = service.refresh(new UserRefreshRequest("old-cookie"), "b".repeat(64), cookieMode);
 
         assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_REUSE_DETECTED");
-        verify(sessions).revokeRefreshChain("chain-42");
+        verify(sessions).revokeOwnedUserSession(eq(42L), any());
     }
 
     @ParameterizedTest
@@ -826,11 +889,12 @@ class AppUserAuthServiceTest {
         expired.setLastActiveAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).minusDays(2));
         expired.setExpiresAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).minusSeconds(1));
         when(sessions.findRefreshForUpdate(any())).thenReturn(expired);
+        when(sessions.findSession(any())).thenReturn(expired);
 
         var result = service.refresh(new UserRefreshRequest("expired-cookie"), "a".repeat(64), cookieMode);
 
         assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_EXPIRED");
-        verify(sessions).revokeRefreshChain("chain-42");
+        verify(sessions).revokeOwnedUserSession(eq(42L), any());
         verify(sessions, never()).insert(any(UserSessionEntity.class));
     }
 
@@ -842,11 +906,12 @@ class AppUserAuthServiceTest {
         revoked.setSessionChainId("chain-42");
         revoked.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         when(sessions.findRefreshForUpdate(any())).thenReturn(revoked);
+        when(sessions.findSession(any())).thenReturn(revoked);
 
         var result = service.refresh(new UserRefreshRequest("logged-out-cookie"), "a".repeat(64), cookieMode);
 
         assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_REUSE_DETECTED");
-        verify(sessions).revokeRefreshChain("chain-42");
+        verify(sessions).revokeOwnedUserSession(eq(42L), any());
         verify(sessions, never()).insert(any(UserSessionEntity.class));
     }
 
@@ -869,6 +934,7 @@ class AppUserAuthServiceTest {
                 any(Duration.class), eq(UserAuthEnvironment.PRODUCTION))).thenReturn("access");
         when(sessions.markRefreshRotated(any(), any())).thenReturn(1);
         when(sessions.findRefreshForUpdate(any())).thenReturn(first);
+        when(sessions.findSession(any())).thenReturn(first);
 
         var firstRotation = service.refresh(new UserRefreshRequest("first-cookie"), firstNonce, cookieMode);
         assertThat(firstRotation.getCode()).isZero();
@@ -880,6 +946,7 @@ class AppUserAuthServiceTest {
         first.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         first.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         when(sessions.findRefreshForUpdate(any())).thenReturn(second, first, second);
+        when(sessions.findSession(any())).thenReturn(second, first, second);
 
         var secondRotation = service.refresh(new UserRefreshRequest("second-cookie"), secondNonce, cookieMode);
         assertThat(secondRotation.getCode()).isZero();
@@ -905,6 +972,7 @@ class AppUserAuthServiceTest {
         current.setLastActiveAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         current.setExpiresAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).plusDays(1));
         when(sessions.findRefreshForUpdate(any())).thenReturn(current);
+        when(sessions.findSession(any())).thenReturn(current);
         when(sessions.markRefreshRotated(eq(101L), any())).thenReturn(1);
         when(users.selectById(42L)).thenReturn(activeUser());
         when(tokens.createUserToken(eq(42L), any(), eq(List.of()), any(),
@@ -921,7 +989,11 @@ class AppUserAuthServiceTest {
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
     void malformedRotationKeyCannotRotateAnActiveCredential(boolean cookieMode) {
-        when(sessions.findRefreshForUpdate(any())).thenReturn(new UserSessionEntity());
+        UserSessionEntity current = new UserSessionEntity();
+        current.setUserId(42L);
+        current.setSessionGroup("H5");
+        when(sessions.findRefreshForUpdate(any())).thenReturn(current);
+        when(sessions.findSession(any())).thenReturn(current);
 
         var result = service.refresh(new UserRefreshRequest("active-token"), "not-a-rotation-key", cookieMode);
 
@@ -941,6 +1013,10 @@ class AppUserAuthServiceTest {
         original.setId(101L);
         original.setUserId(42L);
         original.setSessionChainId("chain-42");
+        original.setSessionGroup("APP");
+        original.setInstallationId("installation-42");
+        original.setAppSessionVersion(3L);
+        original.setExecutionSupported(true);
         original.setLastActiveAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         original.setExpiresAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).plusDays(1));
         when(users.selectById(42L)).thenReturn(user);
@@ -948,6 +1024,7 @@ class AppUserAuthServiceTest {
         when(tokens.createUserToken(eq(42L), any(), eq(List.of()), any(),
                 any(Duration.class), eq(UserAuthEnvironment.PRODUCTION))).thenReturn("access");
         when(sessions.findRefreshForUpdate(any())).thenReturn(original);
+        when(sessions.findSession(any())).thenReturn(original);
         when(sessions.markRefreshRotated(eq(101L), any())).thenReturn(1);
         assertThat(service.refresh(new UserRefreshRequest("original-token"), nonce, false).getCode()).isZero();
         ArgumentCaptor<UserSessionEntity> inserted = ArgumentCaptor.forClass(UserSessionEntity.class);
@@ -957,6 +1034,7 @@ class AppUserAuthServiceTest {
         original.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         original.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
         when(sessions.findRefreshForUpdate(original.getRotatedToId())).thenReturn(successor);
+        when(sessions.findSession(original.getRotatedToId())).thenReturn(successor);
         switch (invalidState) {
             case "other-user" -> successor.setUserId(99L);
             case "other-chain" -> successor.setSessionChainId("another-chain");
@@ -971,7 +1049,17 @@ class AppUserAuthServiceTest {
         var result = service.refresh(new UserRefreshRequest("original-token"), nonce, false);
 
         assertThat(result.getCode()).isIn(401, 403, 409);
-        assertThat(result.getData()).isNull();
+        if (List.of("expired", "idle").contains(invalidState)) {
+            var ended = result.getData();
+            assertThat(ended).isNotNull();
+            assertThat(ended.sessionEndedReason()).isEqualTo("SESSION_EXPIRED");
+            assertThat(new Object[]{ended.accessToken(), ended.refreshToken(), ended.tokenType(), ended.user(),
+                    ended.installationId(), ended.appSessionVersion(), ended.sessionChainId(), ended.sessionGroup(),
+                    ended.loginAttemptId(), ended.sessionSyncKey(), ended.challengeNo(), ended.deliveryHint(),
+                    ended.registrationReceipt(), ended.executionSupported(), ended.loginAttemptStatus()}).containsOnlyNulls();
+        } else {
+            assertThat(result.getData()).isNull();
+        }
         verify(sessions, times(1)).insert(any(UserSessionEntity.class));
         verify(tokens, times(1)).createUserToken(eq(42L), any(), eq(List.of()), any(),
                 any(Duration.class), eq(UserAuthEnvironment.PRODUCTION));
@@ -979,7 +1067,7 @@ class AppUserAuthServiceTest {
             assertThat(result.getMessage()).isEqualTo("USER_REFRESH_ROTATION_SUPERSEDED");
             verify(sessions, never()).revokeRefreshChain(any());
         } else {
-            verify(sessions).revokeRefreshChain("chain-42");
+            verify(sessions).revokeOwnedUserSession(eq(42L), any());
         }
     }
 
@@ -994,6 +1082,7 @@ class AppUserAuthServiceTest {
         current.setExpiresAt(LocalDateTime.now().plusDays(1));
         current.setLastActiveAt(LocalDateTime.now());
         when(sessions.findRefreshForUpdate(any())).thenReturn(current);
+        when(sessions.findSession(any())).thenReturn(current);
         when(users.selectById(42L)).thenReturn(user);
 
         var result = service.refresh(new UserRefreshRequest("unsupported-country-refresh"));
@@ -1018,6 +1107,7 @@ class AppUserAuthServiceTest {
         current.setExpiresAt(LocalDateTime.now().plusDays(1));
         current.setLastActiveAt(LocalDateTime.now());
         when(sessions.findRefreshForUpdate(any())).thenReturn(current);
+        when(sessions.findSession(any())).thenReturn(current);
         when(users.selectById(42L)).thenReturn(user);
 
         var result = service.refresh(new UserRefreshRequest("invalid-phone-refresh"));
@@ -1038,12 +1128,13 @@ class AppUserAuthServiceTest {
         used.setSessionChainId("chain-42");
         used.setRotationRedeemedAt(LocalDateTime.now().minusSeconds(1));
         when(sessions.findRefreshForUpdate(any())).thenReturn(used);
+        when(sessions.findSession(any())).thenReturn(used);
 
         var result = service.refresh(new UserRefreshRequest("already-used-refresh-secret"));
 
         assertThat(result.getCode()).isEqualTo(401);
         assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_REUSE_DETECTED");
-        verify(sessions).revokeRefreshChain("chain-42");
+        verify(sessions).revokeOwnedUserSession(eq(42L), any());
         verify(outbox).publish(eq("USER_SECURITY"), eq("42"),
                 eq("auth.refresh_token_reuse_detected"), any());
     }
@@ -1054,6 +1145,7 @@ class AppUserAuthServiceTest {
         current.setUserId(42L);
         current.setSessionChainId("chain-42");
         when(sessions.findRefreshForUpdate(any())).thenReturn(current);
+        when(sessions.findSession(any())).thenReturn(current);
 
         var result = service.logout(new UserRefreshRequest("raw-refresh-secret"));
 
@@ -1072,7 +1164,7 @@ class AppUserAuthServiceTest {
         user.setSandbox(accountSandbox);
         when(users.selectOne(any())).thenReturn(user);
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"));
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("USER_AUTH_ENVIRONMENT_FORBIDDEN");
@@ -1092,7 +1184,7 @@ class AppUserAuthServiceTest {
         String challengeNo = "OTP-0123456789abcdef0123456789abcdef";
 
         var result = service.completeTwoFactorLogin(new UserTwoFactorLoginRequest(
-                "+84", "901234567", "secret", challengeNo, "123456"));
+                "+84", "901234567", "secret", challengeNo, "123456"), "local", context(AppSessionSurface.APP,"TWO_FACTOR"));
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("USER_AUTH_ENVIRONMENT_FORBIDDEN");
@@ -1112,7 +1204,7 @@ class AppUserAuthServiceTest {
         String challengeNo = "LOGIN-0123456789abcdef0123456789abcdef";
 
         var result = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
-                "+84", "901234567", challengeNo, "123456"));
+                "+84", "901234567", challengeNo, "123456"), "local", context(AppSessionSurface.APP,"OTP"));
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("USER_AUTH_ENVIRONMENT_FORBIDDEN");
@@ -1135,6 +1227,7 @@ class AppUserAuthServiceTest {
         current.setExpiresAt(LocalDateTime.now().plusDays(1));
         current.setLastActiveAt(LocalDateTime.now());
         when(sessions.findRefreshForUpdate(any())).thenReturn(current);
+        when(sessions.findSession(any())).thenReturn(current);
         when(users.selectById(42L)).thenReturn(user);
 
         var result = service.refresh(new UserRefreshRequest("cross-environment-refresh"));
@@ -1142,7 +1235,7 @@ class AppUserAuthServiceTest {
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("USER_REFRESH_ENVIRONMENT_FORBIDDEN");
         assertThat(result.getData()).isNull();
-        verify(sessions).revokeRefreshChain("environment-chain");
+        verify(sessions).revokeOwnedUserSession(eq(42L), any());
         verify(sessions, never()).markRefreshRotated(any(), any());
         verify(sessions, never()).insert(any(UserSessionEntity.class));
     }
@@ -1156,7 +1249,7 @@ class AppUserAuthServiceTest {
         when(users.isPasswordResetRequired(42L)).thenReturn(true);
 
         var result = service.completePasswordReset(new UserPasswordResetCompleteRequest(
-                "+84", "901234567", "secret", "NewSecure@2026"));
+                "+84", "901234567", "secret", "NewSecure@2026"), "local", context(AppSessionSurface.APP,"PASSWORD_RESET"));
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("USER_AUTH_ENVIRONMENT_FORBIDDEN");
@@ -1173,7 +1266,7 @@ class AppUserAuthServiceTest {
         user.setSandbox(0);
         when(users.selectOne(any())).thenReturn(user);
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"));
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getMessage()).isEqualTo("USER_AUTH_ENVIRONMENT_FORBIDDEN");
