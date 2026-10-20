@@ -100,7 +100,8 @@ class OAuthProviderClientTest {
         }
         assertThat(output).contains("provider=" + provider.name()
                 + " stage=ID_TOKEN_DECODE category=JWT_REJECTED http_status=none")
-                .doesNotContain("hidden-client-secret", "hidden-provider-subject", "hidden-nonce", "hidden-code", "hidden-verifier");
+                .doesNotContain("OAUTH_PROVIDER_TOKEN_SCHEMA", "hidden-client-secret", "hidden-provider-subject",
+                        "hidden-nonce", "hidden-code", "hidden-verifier");
     }
     @Test void tokenEndpointDiagnosticsRetainStatusAndSuppressProviderPayload(CapturedOutput output) {
         var client = new OAuthProviderClient(config().withProperty("oauth.telegram.client-id", "client")
@@ -124,6 +125,48 @@ class OAuthProviderClientTest {
                 "provider=TELEGRAM stage=TOKEN_RESPONSE category=ID_TOKEN_MISSING_OR_INVALID http_status=200")
                 .doesNotContain("hidden-provider-error", "hidden-access-token", "hidden-client-secret",
                         "hidden-code", "hidden-nonce", "hidden-verifier", "HttpClientErrorException");
+    }
+    @Test void rejectedTokenResponseSchemaUsesOnlyFixedLabelsLengthsAndAllowedErrors(CapturedOutput output) {
+        var client = new OAuthProviderClient(config().withProperty("oauth.telegram.client-id", "client")
+                .withProperty("oauth.telegram.client-secret", "hidden-client-secret"));
+        var http = (org.springframework.web.client.RestTemplate) org.springframework.test.util.ReflectionTestUtils.getField(client, "http");
+        var server = org.springframework.test.web.client.MockRestServiceServer.bindTo(http).build();
+        String oversized = "hidden-id-token".repeat(2200);
+        for (String body : List.of("", "null", "{}", "{\"id_token\":null}", "{\"id_token\":true}",
+                "{\"id_token\":123456}", "{\"id_token\":{\"hidden-token-key\":\"hidden-token-value\"}}",
+                "{\"id_token\":[\"hidden-token-value\"]}", "{\"id_token\":\"" + oversized + "\"}",
+                "{\"access_token\":\"hidden-access-token\",\"token_type\":\"hidden-token-type\",\"expires_in\":\"hidden-expiry\","
+                        + "\"data\":{\"hidden-nested-key\":\"hidden-nested-value\"},\"result\":\"hidden-result\",\"ok\":true}",
+                "{\"error\":\"invalid_grant\",\"error_description\":\"hidden-error-description\",\"hidden-response-key\":\"hidden-response-value\"}",
+                "{\"error\":\"hidden-unknown-error\",\"error_description\":\"hidden-error-description\"}",
+                "{\"error\":{\"hidden-error-key\":\"hidden-error-value\"}}")) {
+            server.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo(OAuthProviderClient.Provider.TELEGRAM.token))
+                    .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess(
+                            body, org.springframework.http.MediaType.APPLICATION_JSON));
+            assertThatThrownBy(() -> client.exchange(OAuthProviderClient.Provider.TELEGRAM, "hidden-code", "hidden-nonce", "hidden-verifier"))
+                    .hasMessage("OAUTH_AUTHORIZATION_INVALID").hasNoCause();
+            server.verify(); server.reset();
+        }
+        assertThat(output).contains(
+                "body_present=false id_token_present=false id_token_kind=MISSING id_token_length=-1",
+                "body_present=true id_token_present=false id_token_kind=MISSING id_token_length=-1",
+                "id_token_present=true id_token_kind=NULL id_token_length=-1",
+                "id_token_present=true id_token_kind=BOOLEAN id_token_length=-1",
+                "id_token_present=true id_token_kind=NUMBER id_token_length=-1",
+                "id_token_present=true id_token_kind=OBJECT id_token_length=-1",
+                "id_token_present=true id_token_kind=ARRAY id_token_length=-1",
+                "id_token_present=true id_token_kind=STRING id_token_length=" + oversized.length(),
+                "access_token_present=true token_type_present=true expires_in_present=true",
+                "data_present=true result_present=true ok_present=true",
+                "error_present=true error_kind=STRING error_code=invalid_grant error_description_present=true",
+                "error_present=true error_kind=STRING error_code=OTHER error_description_present=true",
+                "error_present=true error_kind=OBJECT error_code=OTHER",
+                "provider=TELEGRAM stage=TOKEN_RESPONSE category=PROVIDER_ERROR http_status=200")
+                .doesNotContain("hidden-id-token", "123456", "hidden-token-key", "hidden-token-value",
+                        "hidden-access-token", "hidden-token-type", "hidden-expiry", "hidden-nested-key", "hidden-nested-value", "hidden-result",
+                        "hidden-error-description", "hidden-response-key", "hidden-response-value",
+                        "hidden-unknown-error", "hidden-error-key", "hidden-error-value",
+                        "hidden-client-secret", "hidden-code", "hidden-nonce", "hidden-verifier");
     }
     @Test void decodeAndIdentityDiagnosticsDoNotExposeExceptionMessagesOrClaims(CapturedOutput output) {
         var client = new OAuthProviderClient(config().withProperty("oauth.telegram.client-id", "client")
