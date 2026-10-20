@@ -524,6 +524,69 @@ public class AppUserAuthService {
         return issueSession(user, countryCode, user.getPhone(), clientAddress, context, false);
     }
 
+    /** Called only after the provider flow verifies the browser proof and resolves its linked account. */
+    ApiResult<UserLoginResponse> issueProviderSession(Long userId, String clientAddress, AppLoginContext context,
+            String challengeNo, String code, String captchaTicket) {
+        ApiResult<UserLoginResponse> recovered = recoverCompletedLogin(context);
+        if (recovered != null) return recovered;
+        LocalDateTime now = LocalDateTime.now();
+        if (!consumeClientRate(clientAddress, now)) return ApiResult.fail(429, "USER_LOGIN_RATE_LIMITED");
+        UserEntity snapshot = userMapper.selectById(userId);
+        if (snapshot == null || !validCountryCode(snapshot.getCountryCode())
+                || !validPhone(snapshot.getCountryCode(), snapshot.getPhone()))
+            return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
+        String country = normalizeCountryCode(snapshot.getCountryCode());
+        String key = loginKey(country, snapshot.getPhone(), authNamespace());
+        // Match password/OTP login's guard -> account lock order.
+        loginGuardMapper.initialize(key, now);
+        UserLoginGuardRecord guard = loginGuardMapper.lock(key);
+        if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now))
+            return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED");
+        UserEntity user = userMapper.findLoginUserForUpdate(userId);
+        if (user == null || !"ACTIVE".equalsIgnoreCase(user.getStatus())
+                || !Integer.valueOf(0).equals(user.getIsDeleted()) || blocklistVerifier.isBlocked(userId))
+            return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
+        ApiResult<UserLoginResponse> environmentFailure = environmentFailure(user, false);
+        if (environmentFailure != null) return environmentFailure;
+        if (!validCountryCode(user.getCountryCode()) || !validPhone(user.getCountryCode(), user.getPhone()))
+            return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
+        if (userMapper.isPasswordResetRequired(userId)) return ApiResult.fail(428, "USER_PASSWORD_RESET_REQUIRED");
+        if (!country.equals(normalizeCountryCode(user.getCountryCode())) || !snapshot.getPhone().equals(user.getPhone()))
+            return ApiResult.fail(409, "OAUTH_IDENTITY_NOT_AVAILABLE");
+        loginGuardMapper.bindUser(key, userId);
+        if (userMapper.isTwoFactorEnabled(userId)) {
+            if (!StringUtils.hasText(challengeNo) && !StringUtils.hasText(code))
+                return issueTwoFactorChallenge(user, country, user.getPhone(), captchaTicket, clientAddress);
+            if (challengeNo == null || !challengeNo.matches("OTP-[a-f0-9]{32}")
+                    || code == null || !code.matches("\\d{6}"))
+                return ApiResult.fail(422, "USER_TWO_FACTOR_CHALLENGE_INVALID");
+            if (userMapper.consumeValidLoginOtp(userId, challengeNo, code) != 1) {
+                userMapper.recordInvalidLoginOtpAttempt(userId, challengeNo);
+                recordFailure(key, userId, guard, now);
+                return ApiResult.fail(422, "USER_TWO_FACTOR_CHALLENGE_INVALID");
+            }
+        }
+        loginGuardMapper.clear(key);
+        userMapper.clearLoginFailure(userId);
+        return issueSession(user, country, user.getPhone(), clientAddress, context, true);
+    }
+
+    /** Linking requires a current authenticated session plus its owner's password. */
+    ApiResult<Void> verifyProviderLink(Long userId, String password, String clientAddress) {
+        LocalDateTime now = LocalDateTime.now();
+        if (!consumeClientRate(clientAddress, now)) return ApiResult.fail(429, "USER_LOGIN_RATE_LIMITED");
+        UserEntity user = userMapper.findLoginUserForUpdate(userId);
+        if (user == null || !"ACTIVE".equalsIgnoreCase(user.getStatus())
+                || !Integer.valueOf(0).equals(user.getIsDeleted()) || blocklistVerifier.isBlocked(userId)
+                || environmentFailure(user, false) != null)
+            return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
+        if (password == null || password.length() > 128 || !safePasswordMatches(password, user.getPasswordHash()))
+            return ApiResult.fail(403, "OAUTH_LINK_PASSWORD_INVALID");
+        if (userMapper.isPasswordResetRequired(userId))
+            return ApiResult.fail(428, "USER_PASSWORD_RESET_REQUIRED");
+        return ApiResult.ok();
+    }
+
     private ApiResult<UserLoginResponse> endedRefresh(UserSessionEntity session, String message, String fallback) {
         // A refresh secret is resolved by its hash, then account/session locks are held by refresh().
         // Do not reveal even a reason across the server-owned environment boundary.

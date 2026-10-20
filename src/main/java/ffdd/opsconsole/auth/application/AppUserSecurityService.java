@@ -96,6 +96,8 @@ public class AppUserSecurityService {
         requireContext(userId, currentSessionId);
         if (commandKey == null || !commandKey.matches("[A-Za-z0-9:_-]{8,128}"))
             throw new BizException(422, "PASSWORD_COMMAND_KEY_INVALID");
+        // Use the same guard -> account order as OAuth binding and other password checks.
+        verificationGuard.lock(userId);
         // The user row serializes simultaneous attempts; the receipt commits atomically with the change.
         String hash = securityMapper.passwordHashForUpdate(userId);
         if (!StringUtils.hasText(hash)) throw new BizException(401, "USER_AUTH_REQUIRED");

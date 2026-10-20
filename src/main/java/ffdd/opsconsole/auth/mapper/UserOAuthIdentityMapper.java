@@ -47,4 +47,17 @@ public interface UserOAuthIdentityMapper extends BaseMapper<UserOAuthIdentityEnt
             VALUES(#{provider},#{externalSubject},#{userId},#{sourceEnvironment},#{displayName},NOW(6),NOW(6),0)
             """)
     int insertIdentity(UserOAuthIdentityEntity identity);
+
+    @Select("""
+            SELECT provider FROM nx_user_oauth_identity
+            WHERE user_id=#{userId} AND source_environment='PRODUCTION' AND is_deleted=0
+            """)
+    java.util.List<String> linkedProviders(Long userId);
+
+    @Select("""
+            SELECT id,provider,external_subject,user_id,source_environment,display_name,is_deleted
+            FROM nx_user_oauth_identity WHERE provider=#{provider} AND external_subject=#{subject}
+              AND source_environment='PRODUCTION' AND is_deleted=0 LIMIT 1
+            """)
+    UserOAuthIdentityEntity findProviderIdentity(@Param("provider") String provider, @Param("subject") String subject);
 }
