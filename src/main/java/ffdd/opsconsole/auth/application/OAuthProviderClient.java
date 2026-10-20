@@ -53,6 +53,9 @@ public class OAuthProviderClient {
 
     public record Identity(String subject, String displayName) {}
     private static final Logger log = LoggerFactory.getLogger(OAuthProviderClient.class);
+    private static final List<String> OAUTH_ERROR_CODES = List.of("invalid_request", "invalid_client", "invalid_grant",
+            "unauthorized_client", "unsupported_grant_type", "invalid_scope", "access_denied", "server_error",
+            "temporarily_unavailable");
     private static final SecureRandom RANDOM = new SecureRandom();
     private final Environment environment;
     private final RestTemplate http;
@@ -169,9 +172,13 @@ public class OAuthProviderClient {
             httpStatus = Integer.toString(response.getStatusCode().value());
             stage = "TOKEN_RESPONSE";
             category = "ID_TOKEN_MISSING_OR_INVALID";
-            Object raw = response.getBody() == null ? null : response.getBody().get("id_token");
-            if (!(raw instanceof String token) || token.length() > 32768)
+            Map<?, ?> body = response.getBody();
+            Object raw = body == null ? null : body.get("id_token");
+            if (!(raw instanceof String token) || token.length() > 32768) {
+                if (body != null && body.get("error") instanceof String) category = "PROVIDER_ERROR";
+                logTokenResponse(provider, body, raw, httpStatus);
                 throw new IllegalArgumentException("Missing ID token");
+            }
             stage = "ID_TOKEN_DECODE";
             category = "DECODER_FAILURE";
             httpStatus = "none";
@@ -196,6 +203,34 @@ public class OAuthProviderClient {
             if ("IDENTITY_CLAIMS".equals(stage)) logIdentityChecks(provider, jwt, nonce);
             throw new BizException(401, "OAUTH_AUTHORIZATION_INVALID");
         }
+    }
+
+    private void logTokenResponse(Provider provider, Map<?, ?> body, Object token, String httpStatus) {
+        Map<?, ?> fields = body == null ? Map.of() : body;
+        Object error = fields.get("error");
+        String errorCode = error == null ? "NONE"
+                : error instanceof String value && OAUTH_ERROR_CODES.contains(value) ? value : "OTHER";
+        log.warn("OAUTH_PROVIDER_TOKEN_SCHEMA provider={} stage=TOKEN_RESPONSE category=SCHEMA http_status={}"
+                        + " body_present={} id_token_present={} id_token_kind={} id_token_length={}"
+                        + " access_token_present={} token_type_present={} expires_in_present={}"
+                        + " error_present={} error_kind={} error_code={} error_description_present={}"
+                        + " data_present={} result_present={} ok_present={}",
+                provider.name(), httpStatus, body != null, fields.containsKey("id_token"),
+                tokenFieldKind(token, fields.containsKey("id_token")), token instanceof String value ? value.length() : -1,
+                fields.containsKey("access_token"), fields.containsKey("token_type"), fields.containsKey("expires_in"),
+                fields.containsKey("error"), tokenFieldKind(error, fields.containsKey("error")), errorCode,
+                fields.containsKey("error_description"), fields.containsKey("data"), fields.containsKey("result"), fields.containsKey("ok"));
+    }
+
+    private static String tokenFieldKind(Object value, boolean present) {
+        if (!present) return "MISSING";
+        if (value == null) return "NULL";
+        if (value instanceof String) return "STRING";
+        if (value instanceof Number) return "NUMBER";
+        if (value instanceof Boolean) return "BOOLEAN";
+        if (value instanceof Map) return "OBJECT";
+        if (value instanceof List) return "ARRAY";
+        return "OTHER";
     }
 
     private void logIdentityChecks(Provider provider, Jwt jwt, String nonce) {
