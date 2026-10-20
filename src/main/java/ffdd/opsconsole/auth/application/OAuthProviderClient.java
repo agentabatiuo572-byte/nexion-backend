@@ -13,17 +13,23 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.env.Environment;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.security.oauth2.jwt.BadJwtException;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidationException;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -46,6 +52,7 @@ public class OAuthProviderClient {
     }
 
     public record Identity(String subject, String displayName) {}
+    private static final Logger log = LoggerFactory.getLogger(OAuthProviderClient.class);
     private static final SecureRandom RANDOM = new SecureRandom();
     private final Environment environment;
     private final RestTemplate http;
@@ -153,16 +160,63 @@ public class OAuthProviderClient {
                     ? AppleClientSecret.create(environment, Instant.now()) : property(provider, "client-secret"));
         }
         if (provider != Provider.APPLE) form.add("code_verifier", verifier);
+        String stage = "TOKEN_EXCHANGE";
+        String category = "REQUEST_FAILED";
+        String httpStatus = "none";
+        Jwt jwt = null;
         try {
-            Map<?, ?> response = http.postForObject(provider.token, new HttpEntity<>(form, headers), Map.class);
-            Object raw = response == null ? null : response.get("id_token");
+            var response = http.postForEntity(provider.token, new HttpEntity<>(form, headers), Map.class);
+            httpStatus = Integer.toString(response.getStatusCode().value());
+            stage = "TOKEN_RESPONSE";
+            category = "ID_TOKEN_MISSING_OR_INVALID";
+            Object raw = response.getBody() == null ? null : response.getBody().get("id_token");
             if (!(raw instanceof String token) || token.length() > 32768)
                 throw new IllegalArgumentException("Missing ID token");
-            Jwt jwt = decoders.computeIfAbsent(provider, this::decoder).decode(token);
+            stage = "ID_TOKEN_DECODE";
+            category = "DECODER_FAILURE";
+            httpStatus = "none";
+            jwt = decoders.computeIfAbsent(provider, this::decoder).decode(token);
+            stage = "IDENTITY_CLAIMS";
+            category = "CLAIMS_REJECTED";
             return validateIdentity(jwt, provider.issuer, property(provider, "client-id"), nonce);
         } catch (RuntimeException exception) {
-            // Never include provider response bodies, authorization codes or tokens in errors/logs.
+            if (exception instanceof RestClientResponseException responseException) {
+                category = "HTTP_ERROR";
+                httpStatus = Integer.toString(responseException.getStatusCode().value());
+            } else if (exception instanceof ResourceAccessException) {
+                category = "TRANSPORT_ERROR";
+            } else if (exception instanceof JwtValidationException) {
+                category = "JWT_CLAIMS_REJECTED";
+            } else if (exception instanceof BadJwtException) {
+                category = "JWT_REJECTED";
+            }
+            // Only fixed labels and status codes: never log the exception, message or provider payload.
+            log.warn("OAUTH_PROVIDER_REJECTED provider={} stage={} category={} http_status={}",
+                    provider.name(), stage, category, httpStatus);
+            if ("IDENTITY_CLAIMS".equals(stage)) logIdentityChecks(provider, jwt, nonce);
             throw new BizException(401, "OAUTH_AUTHORIZATION_INVALID");
+        }
+    }
+
+    private void logIdentityChecks(Provider provider, Jwt jwt, String nonce) {
+        try {
+            Instant now = Instant.now();
+            String audience = property(provider, "client-id");
+            String subject = jwt.getSubject();
+            String actualNonce = jwt.getClaimAsString("nonce");
+            log.warn("OAUTH_PROVIDER_CLAIM_CHECKS provider={} stage=IDENTITY_CLAIMS category=CHECKS http_status=none"
+                            + " issuer_valid={} audience_valid={} azp_valid={} expiry_valid={} issued_at_valid={}"
+                            + " nonce_present={} nonce_match={} subject_valid={}",
+                    provider.name(), provider.issuer.equals(jwt.getClaimAsString("iss")),
+                    jwt.getAudience().contains(audience),
+                    jwt.getAudience().size() <= 1 || audience.equals(jwt.getClaimAsString("azp")),
+                    jwt.getExpiresAt() != null && jwt.getExpiresAt().isAfter(now),
+                    jwt.getIssuedAt() != null && !jwt.getIssuedAt().isAfter(now.plusSeconds(60)),
+                    actualNonce != null, constantEquals(nonce, actualNonce),
+                    subject != null && !subject.isBlank() && subject.length() <= 512);
+        } catch (RuntimeException exception) {
+            log.warn("OAUTH_PROVIDER_CLAIM_CHECKS provider={} stage=IDENTITY_CLAIMS"
+                    + " category=CLAIM_FORMAT_REJECTED http_status=none", provider.name());
         }
     }
 
