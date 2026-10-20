@@ -91,6 +91,8 @@ public class OAuthProviderClient {
         try {
             publicBaseUrl();
             h5Origin();
+            if (provider == Provider.APPLE && AppleClientSecret.usesSigningKey(environment))
+                return AppleClientSecret.configured(environment);
             return !property(provider, "client-id").isEmpty() && !property(provider, "client-secret").isEmpty();
         } catch (BizException exception) { return false; }
     }
@@ -147,7 +149,8 @@ public class OAuthProviderClient {
         if (provider == Provider.TELEGRAM) {
             headers.setBasicAuth(property(provider, "client-id"), property(provider, "client-secret"));
         } else {
-            form.add("client_secret", property(provider, "client-secret"));
+            form.add("client_secret", provider == Provider.APPLE && AppleClientSecret.usesSigningKey(environment)
+                    ? AppleClientSecret.create(environment, Instant.now()) : property(provider, "client-secret"));
         }
         if (provider != Provider.APPLE) form.add("code_verifier", verifier);
         try {
