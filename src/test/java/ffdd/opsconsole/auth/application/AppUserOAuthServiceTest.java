@@ -50,11 +50,23 @@ class AppUserOAuthServiceTest {
         service = new AppUserOAuthService(identityMapper, userMapper, passwordEncoder,
                 authService, outboxService, environment, sandboxChallengeService);
         when(environment.getActiveProfiles()).thenReturn(new String[] {"test"});
+        when(environment.getProperty("oauth.enabled", "false")).thenReturn("true");
         when(environment.getProperty("server.forward-headers-strategy")).thenReturn("none");
         when(passwordEncoder.encode(any())).thenReturn("oauth-hash");
         when(authService.recoverCompletedLogin(any())).thenAnswer(call->{
             ((AppLoginContext)call.getArgument(0)).validate(); return null;
         });
+    }
+
+    @Test
+    void disabledThirdPartyExchangeCannotRecoverOrIssueAnySession() {
+        when(environment.getProperty("oauth.enabled", "false")).thenReturn("false");
+        for (String provider : java.util.List.of("GOOGLE", "APPLE", "TELEGRAM", " google ")) {
+            assertThat(service.exchange(new UserOAuthExchangeRequest(provider, "name", "challenge"),
+                    "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT).getMessage()).isEqualTo("OAUTH_DISABLED");
+        }
+        org.mockito.Mockito.verifyNoInteractions(authService, identityMapper, userMapper, sandboxChallengeService,
+                outboxService, passwordEncoder);
     }
 
     @Test

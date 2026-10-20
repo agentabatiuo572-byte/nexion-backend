@@ -106,6 +106,17 @@ class AppUserAuthServiceTest {
         verify(sessions,never()).insert(any(UserSessionEntity.class));
     }
 
+    @Test void disabledThirdPartyLoginCannotUseGenericAttemptRecoveryOrSessionIssuance() {
+        for (String provider : java.util.List.of("GOOGLE", "APPLE", "TELEGRAM", "google", " google ", "Apple", "telegram")) {
+            var context = new AppLoginContext(AppSessionSurface.H5, "", false,
+                    "oauth-attempt-0123456789", "r".repeat(64), "OAUTH", provider + ":existing-flow");
+            assertThatThrownBy(() -> service.recoverLogin(context)).hasMessage("OAUTH_DISABLED");
+            assertThat(service.issueProviderSession(42L, "client", context, null, null, null).getMessage())
+                    .isEqualTo("OAUTH_DISABLED");
+        }
+        org.mockito.Mockito.verifyNoInteractions(attempts, users, sessions, tokens);
+    }
+
     @Test
     void validDatabaseUserGetsSessionBackedUserToken() {
         environment.setActiveProfiles("dev");
@@ -1297,6 +1308,7 @@ class AppUserAuthServiceTest {
     }
 
     @Test void providerLoginKeepsMfaCaptchaGuardOwnershipAndDoesNotIssueEarly() {
+        environment.setProperty("oauth.enabled", "true");
         when(users.selectOne(any())).thenReturn(activeUser());
         when(users.isTwoFactorEnabled(42L)).thenReturn(true);
         when(captchaGate.checkAndConsume(any(), any(), any(), anyInt()))
@@ -1319,6 +1331,7 @@ class AppUserAuthServiceTest {
     }
 
     @Test void providerLoginNeverBypassesBlocklistOrRequiredPasswordReset() {
+        environment.setProperty("oauth.enabled", "true");
         when(users.selectOne(any())).thenReturn(activeUser());
         when(blocklistVerifier.isBlocked(42L)).thenReturn(true);
         assertThat(service.issueProviderSession(42L, "provider-ip", context(AppSessionSurface.H5, "OAUTH"), null, null, null).getCode()).isEqualTo(403);

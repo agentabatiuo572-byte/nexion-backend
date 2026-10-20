@@ -29,6 +29,7 @@ class OAuthProviderFlowServiceTest {
     final AppLoginContext context = new AppLoginContext(AppSessionSurface.H5, "", false, id, key, "OAUTH", "GOOGLE:" + id);
     OAuthProviderFlow flow;
     @BeforeEach void setup() {
+        environment.setProperty("oauth.enabled", "true");
         environment.setActiveProfiles("dev");
         flow = new OAuthProviderFlow();
         flow.setId(id); flow.setProofHash(OAuthProviderClient.hash(key)); flow.setReceiptHash(OAuthProviderClient.hash(receipt));

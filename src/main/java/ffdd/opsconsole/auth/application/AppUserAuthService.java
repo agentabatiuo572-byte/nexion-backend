@@ -485,6 +485,13 @@ public class AppUserAuthService {
 
     @Transactional
     public ApiResult<UserLoginResponse> recoverLogin(AppLoginContext context) {
+        if (context != null && "OAUTH".equals(context.authMethod())
+                && context.authReference() != null
+                && java.util.Set.of("GOOGLE", "APPLE", "TELEGRAM").contains(
+                        context.authReference().split(":", 2)[0].trim().toUpperCase(java.util.Locale.ROOT))
+                && !OAuthProviderClient.enabled(environment)) {
+            throw new BizException(503, "OAUTH_DISABLED");
+        }
         var issued = singleSessions.recover(context);
         UserEntity user = userMapper.selectById(issued.session().getUserId());
         if (user == null || !"ACTIVE".equals(user.getStatus()) || blocklistVerifier.isBlocked(user.getId())
@@ -527,6 +534,7 @@ public class AppUserAuthService {
     /** Called only after the provider flow verifies the browser proof and resolves its linked account. */
     ApiResult<UserLoginResponse> issueProviderSession(Long userId, String clientAddress, AppLoginContext context,
             String challengeNo, String code, String captchaTicket) {
+        if (!OAuthProviderClient.enabled(environment)) return ApiResult.fail(503, "OAUTH_DISABLED");
         ApiResult<UserLoginResponse> recovered = recoverCompletedLogin(context);
         if (recovered != null) return recovered;
         LocalDateTime now = LocalDateTime.now();

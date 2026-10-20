@@ -4,9 +4,12 @@
 
 ## 启用配置
 
-由部署环境的安全配置提供下列 Spring properties，不写入 Git 或前端环境文件。未完整配置的平台不显示登录按钮。仅正式数据环境（单独的 `dev` / `prod` profile）开放，沙箱数据不共享身份。
+由部署环境的安全配置提供下列 Spring properties，不写入 Git 或前端环境文件。独立总开关 `oauth.enabled`（环境变量 `OAUTH_ENABLED`）默认 `false`，仅显式 `true` 才开放；缺失、空值或其他字符串均关闭。凭据完整不再等于启用。总开关关闭时平台列表为空，新建授权、打开供应商页面、回调、查询流程、登录完成/重试、绑定与旧三方兑换入口均无法完成授权或发放会话。开关不撤销此前已经发出的普通会话，也不改变本地开发 Passkey 的现有隔离规则。
+
+未完整配置的平台不显示登录按钮。总开关开启后仍仅正式数据环境（单独的 `dev` / `prod` profile）开放，沙箱数据不共享真实平台身份。
 
 ```properties
+oauth.enabled=false
 oauth.public-base-url=https://api.example.com
 oauth.h5-origin=https://app.example.com
 oauth.google.client-id=
@@ -16,6 +19,8 @@ oauth.apple.client-secret=
 oauth.telegram.client-id=
 oauth.telegram.client-secret=
 ```
+
+TEST 固定保持 `OAUTH_ENABLED=false`，可提前加载 Google Client ID/Secret。配置变更需要按部署流程重启后端生效；未来功能完成后，须经用户明确批准再设为 `true`、重启并验收。不得因已配置凭据或构建成功自动开启。本轮仅验证关闭门禁，不代表 Google/Apple/Telegram 真实授权验收通过。
 
 域名需替换为实际 HTTPS 网关。`h5-origin` 只填协议、域名和端口，不带路径或末尾斜杠；它控制回调页向哪个网页窗口传递授权结果。仅本地 `dev` 允许其使用 HTTP localhost/127.0.0.1。`public-base-url` 始终需要 HTTPS。
 
