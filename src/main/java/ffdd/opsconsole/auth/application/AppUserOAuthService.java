@@ -66,6 +66,11 @@ public class AppUserOAuthService {
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<UserOAuthExchangeResponse> exchange(
             UserOAuthExchangeRequest request, String clientAddress, String requestOrigin, AppLoginContext context) {
+        if (request != null && request.provider() != null
+                && Set.of(GOOGLE, APPLE, TELEGRAM).contains(request.provider().trim().toUpperCase(Locale.ROOT))
+                && !OAuthProviderClient.enabled(environment)) {
+            return ApiResult.fail(503, "OAUTH_DISABLED");
+        }
         ApiResult<UserLoginResponse> recovered = authService.recoverCompletedLogin(context);
         if (recovered != null) return recoveredExchange(recovered);
         var resolved = UserAuthEnvironment.resolve(environment);

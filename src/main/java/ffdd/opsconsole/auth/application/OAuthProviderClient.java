@@ -60,7 +60,12 @@ public class OAuthProviderClient {
     }
 
     public List<String> available() {
+        if (!enabled(environment)) return List.of();
         return java.util.Arrays.stream(Provider.values()).filter(this::configured).map(Enum::name).toList();
+    }
+
+    static boolean enabled(Environment environment) {
+        return "true".equalsIgnoreCase(environment.getProperty("oauth.enabled", "false"));
     }
 
     public Provider provider(String value) {
@@ -104,6 +109,7 @@ public class OAuthProviderClient {
     }
 
     public void requireConfigured(Provider provider) {
+        if (!enabled(environment)) throw new BizException(503, "OAUTH_DISABLED");
         if (!configured(provider)) throw new BizException(503, "OAUTH_PROVIDER_NOT_CONFIGURED");
     }
 

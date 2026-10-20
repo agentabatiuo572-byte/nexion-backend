@@ -11,7 +11,8 @@ import org.springframework.security.oauth2.jwt.Jwt;
 
 class OAuthProviderClientTest {
     private MockEnvironment config() {
-        var env = new MockEnvironment().withProperty("oauth.public-base-url", "https://api.example.test")
+        var env = new MockEnvironment().withProperty("oauth.enabled", "true")
+                .withProperty("oauth.public-base-url", "https://api.example.test")
                 .withProperty("oauth.h5-origin", "https://app.example.test");
         env.setActiveProfiles("dev");
         return env;

@@ -9,6 +9,10 @@ logging:
   file:
     name: ${NEXION_LOG_FILE:logs/nexion-backend.log}
 
+oauth:
+  # Credentials can be provisioned independently; no provider is enabled by default.
+  enabled: ${OAUTH_ENABLED:false}
+
 spring:
   application:
     name: nexion-backend
