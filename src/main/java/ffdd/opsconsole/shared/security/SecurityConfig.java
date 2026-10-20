@@ -69,6 +69,12 @@ public class SecurityConfig {
                         // starts. ASYNC is a container-managed continuation of that authorized request;
                         // re-authorizing it after the response is committed produces a false 403/error dispatch.
                         .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
+                        .requestMatchers(HttpMethod.GET, "/auth/users/oauth/provider/available",
+                                "/auth/users/oauth/provider/authorize/{state}",
+                                "/auth/users/oauth/provider/callback/{provider}").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/auth/users/oauth/provider/start",
+                                "/auth/users/oauth/provider/status", "/auth/users/oauth/provider/complete",
+                                "/auth/users/oauth/provider/callback/{provider}").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/platform").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/store/media/images/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/app/profile/avatar/image/*/*").permitAll()
@@ -212,6 +218,12 @@ public class SecurityConfig {
         configuration.setAllowCredentials(true);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        CorsConfiguration appleCallback = new CorsConfiguration();
+        appleCallback.setAllowedOrigins(List.of("https://appleid.apple.com"));
+        appleCallback.setAllowedMethods(List.of("POST"));
+        appleCallback.setAllowedHeaders(List.of("Content-Type"));
+        appleCallback.setAllowCredentials(true);
+        source.registerCorsConfiguration("/auth/users/oauth/provider/callback/APPLE", appleCallback);
         source.registerCorsConfiguration("/**", configuration);
         return source;
     }

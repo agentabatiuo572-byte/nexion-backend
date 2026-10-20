@@ -28,15 +28,21 @@ public class AppUserSecurityVerificationGuard {
     @Transactional
     public boolean allowed(Long userId, String operation) {
         LocalDateTime now = LocalDateTime.now();
-        String key = key(userId);
-        loginGuardMapper.initialize(key, now);
-        loginGuardMapper.bindUser(key, userId);
-        UserLoginGuardRecord guard = loginGuardMapper.lock(key);
+        UserLoginGuardRecord guard = lock(userId);
         boolean allowed = guard == null || guard.getLockedUntil() == null || !guard.getLockedUntil().isAfter(now);
         if (!allowed) {
             auditRejected(userId, operation, guard.getFailedCount(), true, guard.getLockedUntil(), true);
         }
         return allowed;
+    }
+
+    /** Acquire before the account row, including idempotent password-change recovery. */
+    @Transactional
+    public UserLoginGuardRecord lock(Long userId) {
+        String key = key(userId);
+        loginGuardMapper.initialize(key, LocalDateTime.now());
+        loginGuardMapper.bindUser(key, userId);
+        return loginGuardMapper.lock(key);
     }
 
     @Transactional

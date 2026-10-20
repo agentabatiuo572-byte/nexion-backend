@@ -159,6 +159,9 @@ class AppUserSecurityServiceTest {
                 new AppPasswordChangeRequest("OldPassword1", "NewPassword2"));
         assertThat(result.passwordChangedAt()).isEqualTo(changedAt);
         assertThat(result.revokedSessionCount()).isEqualTo(2);
+        var lockOrder = org.mockito.Mockito.inOrder(verificationGuard, security);
+        lockOrder.verify(verificationGuard).lock(42L);
+        lockOrder.verify(security).passwordHashForUpdate(42L);
         verify(security, never()).updatePasswordHash(any(), any());
         verify(sessions, never()).revokeOtherUserSessions(any(), any());
         verify(audit, never()).recordRequired(any());

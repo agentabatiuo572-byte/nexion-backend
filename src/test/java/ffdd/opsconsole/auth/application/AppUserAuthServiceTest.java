@@ -1296,6 +1296,38 @@ class AppUserAuthServiceTest {
                 Arguments.of("test", 0));
     }
 
+    @Test void providerLoginKeepsMfaCaptchaGuardOwnershipAndDoesNotIssueEarly() {
+        when(users.selectOne(any())).thenReturn(activeUser());
+        when(users.isTwoFactorEnabled(42L)).thenReturn(true);
+        when(captchaGate.checkAndConsume(any(), any(), any(), anyInt()))
+                .thenReturn(new CaptchaOtpGate.Decision(false, 428, "USER_CAPTCHA_REQUIRED"));
+        var pending = service.issueProviderSession(42L, "provider-ip", context(AppSessionSurface.APP, "OAUTH"), null, null, null);
+        assertThat(pending.getCode()).isEqualTo(428);
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+        verify(loginGuards).bindUser(any(), eq(42L));
+        when(captchaGate.checkAndConsume(any(), eq("captcha-proof"), any(), anyInt()))
+                .thenReturn(new CaptchaOtpGate.Decision(true, 0, "OK"));
+        var challenge = service.issueProviderSession(42L, "provider-ip", context(AppSessionSurface.APP, "OAUTH"), null, null, "captcha-proof");
+        assertThat(challenge.getMessage()).isEqualTo("USER_TWO_FACTOR_VERIFICATION_REQUIRED");
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+        when(users.consumeValidLoginOtp(eq(42L), any(), eq("123456"))).thenReturn(1);
+        var signedIn = service.issueProviderSession(42L, "provider-ip", context(AppSessionSurface.APP, "OAUTH"),
+                challenge.getData().challengeNo(), "123456", null);
+        assertThat(signedIn.getCode()).isZero();
+        verify(sessions).insert(any(UserSessionEntity.class));
+        verify(supportActivity).interactiveLogin(eq(42L), any());
+    }
+
+    @Test void providerLoginNeverBypassesBlocklistOrRequiredPasswordReset() {
+        when(users.selectOne(any())).thenReturn(activeUser());
+        when(blocklistVerifier.isBlocked(42L)).thenReturn(true);
+        assertThat(service.issueProviderSession(42L, "provider-ip", context(AppSessionSurface.H5, "OAUTH"), null, null, null).getCode()).isEqualTo(403);
+        when(blocklistVerifier.isBlocked(42L)).thenReturn(false);
+        when(users.isPasswordResetRequired(42L)).thenReturn(true);
+        assertThat(service.issueProviderSession(42L, "provider-ip", context(AppSessionSurface.H5, "OAUTH"), null, null, null).getCode()).isEqualTo(428);
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+    }
+
     private UserEntity activeUser() {
         UserEntity user = new UserEntity();
         user.setId(42L);
