@@ -30,7 +30,13 @@ TEST 固定保持 `OAUTH_ENABLED=false`，可提前加载 Google Client ID/Secre
 | Apple | 开启 Sign in with Apple 的 App ID、关联的 Services ID、Team ID、Key ID 和私钥；client-id 使用 Services ID | `https://api.example.com/auth/users/oauth/provider/callback/APPLE` |
 | Telegram | BotFather 创建代表本产品的 Bot，在 Login Widget 设置 Allowed URLs，取得该处 Client ID / Client Secret；使用默认 RS256 | `https://api.example.com/auth/users/oauth/provider/callback/TELEGRAM` |
 
-Apple 的 `client-secret` 是使用开发者私钥签出的 ES256 JWT，含 Team ID（iss）、Services ID（sub）、Apple audience、iat 和 exp；须在过期前通过安全配置轮换。当前接入消费已生成的 JWT，不把私钥交给 App，也不自动生成开发者应用或轮换密钥。Telegram 使用 Login Widget 的 client secret，不使用 Bot API token。
+Apple 推荐使用按需自动签发：配置 `oauth.apple.team-id`、`oauth.apple.key-id`、`oauth.apple.private-key-file`（环境变量分别为 `OAUTH_APPLE_TEAM_ID`、`OAUTH_APPLE_KEY_ID`、`OAUTH_APPLE_PRIVATE_KEY_FILE`），以及上面的 Services ID。私钥文件使用服务器上的绝对路径，内容为 Apple 下载的 PKCS#8 PEM `.p8`，只允许后端服务账号和系统管理员读取，不进入 Git、镜像、前端或日志。
+
+每次向 Apple 交换授权码时，后端读取该文件并签发有效期 5 分钟的 ES256 Client Secret，包含 Team ID（iss）、Services ID（sub）、Apple audience、Key ID、iat 和 exp。无需定时任务、半年替换凭据或为续签重启服务。签发时间回退 30 秒容忍轻微时钟差，服务器仍需正常时间同步。总开关关闭时在读取私钥和签发之前拒绝授权。
+
+配置任一签名字段后必须完整提供三项和有效 P-256 私钥；缺失、不可读或损坏时平台不可用，不回退到旧静态 Client Secret。未配置这些字段时仍兼容已有静态 `client-secret`。迁移完成后移除 `OAUTH_APPLE_CLIENT_SECRET`，避免以后误用过期值。更换同一路径的私钥会在下一次请求读取；更换 Key ID / Team ID / Services ID 等环境配置仍需正常部署重启。自动签发不能恢复已撤销密钥或失效开发者会员，出现此情况需在 Apple 控制台处理。
+
+Telegram 使用 Login Widget 的 client secret，不使用 Bot API token。
 
 ## 网关和客户端
 
