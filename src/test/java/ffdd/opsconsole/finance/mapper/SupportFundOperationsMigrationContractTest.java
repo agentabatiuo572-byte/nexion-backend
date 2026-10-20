@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 /** SQL contracts only; no database, transaction, writer, or provenance is certified by these tests. */
 class SupportFundOperationsMigrationContractTest {
     private static String sql() throws Exception {
-        return Files.readString(Path.of("scripts/migrations/20261011_support_fund_operations.sql"));
+        return Files.readString(Path.of("scripts/migrations/20261011_support_fund_operations.sql")).replace("\r\n", "\n");
     }
     private static String compact(String source) { return source.replaceAll("\\s+", ""); }
     private static String table(String source, String name) {

@@ -20,4 +20,10 @@ public class UserSessionEntity extends BaseEntity {
     private String sessionChainId;
     private String rotatedToId;
     private LocalDateTime rotationRedeemedAt;
+    private String sessionGroup;
+    private String installationId;
+    private Long appSessionVersion;
+    private Boolean executionSupported;
+    private String loginAttemptId;
+    private String sessionEndedReason;
 }

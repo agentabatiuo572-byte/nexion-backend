@@ -14,6 +14,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import ffdd.opsconsole.auth.application.AppUserAuthService;
 import ffdd.opsconsole.auth.application.AppSessionSurface;
+import ffdd.opsconsole.auth.application.AppLoginContext;
 import ffdd.opsconsole.auth.application.AppUserOAuthService;
 import ffdd.opsconsole.auth.application.AppUserPasswordResetService;
 import ffdd.opsconsole.auth.application.AppUserRegistrationService;
@@ -52,6 +53,11 @@ import jakarta.servlet.ServletException;
 @Import(SecurityConfig.class)
 @ContextConfiguration(classes = {AppUserAuthController.class, SecurityConfig.class})
 class AppUserAuthControllerSecurityTest {
+    private static final String INSTALLATION = "security-test-installation";
+    private static final String ATTEMPT = "security_test_attempt_001";
+    private static final String RECOVERY = "r".repeat(64);
+    private static final String LOGIN_BODY = "{\"countryCode\":\"+84\",\"phone\":\"901234567\","
+            + "\"challengeNo\":\"challenge-001\",\"provider\":\"PASSKEY\"}";
     @Autowired
     private MockMvc mockMvc;
 
@@ -81,6 +87,8 @@ class AppUserAuthControllerSecurityTest {
 
     @BeforeEach
     void continueAuthenticationFilters() throws Exception {
+        when(refreshCookieService.issue(any(), any(), any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
         when(refreshCookieService.issueOAuth(any(), any(), any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         doAnswer(invocation -> {
@@ -98,43 +106,41 @@ class AppUserAuthControllerSecurityTest {
     @ParameterizedTest
     @ValueSource(strings = { "/login", "/login/otp/verify", "/login/2fa", "/register", "/oauth/exchange" })
     void nativeMarkerReachesEverySessionIssuancePath(String path) throws Exception {
-        mockMvc.perform(post("/auth/users" + path)
-                        .header(AppSessionSurface.APP_HEADER, "APP")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
+        mockMvc.perform(sessionPost("/auth/users" + path, true).content(LOGIN_BODY))
                 .andExpect(status().isOk());
 
         switch (path) {
-            case "/login" -> verify(authService).login(any(), eq("127.0.0.1"), eq(AppSessionSurface.APP));
+            case "/login" -> verify(authService).login(any(), eq("127.0.0.1"), eq(context(AppSessionSurface.APP, true, "PASSWORD", "+84:901234567")));
             case "/login/otp/verify" -> verify(authService).completeOtpLogin(
-                    any(), eq("127.0.0.1"), eq(AppSessionSurface.APP));
+                    any(), eq("127.0.0.1"), eq(context(AppSessionSurface.APP, true, "OTP", "challenge-001")));
             case "/login/2fa" -> verify(authService).completeTwoFactorLogin(
-                    any(), eq("127.0.0.1"), eq(AppSessionSurface.APP));
+                    any(), eq("127.0.0.1"), eq(context(AppSessionSurface.APP, true, "TWO_FACTOR", "challenge-001")));
             case "/register" -> verify(registrationService).register(
-                    any(), eq("127.0.0.1"), eq(AppSessionSurface.APP));
+                    any(), eq("127.0.0.1"), eq(context(AppSessionSurface.APP, true, "REGISTRATION", "+84:901234567")));
             case "/oauth/exchange" -> verify(oauthService).exchange(
-                    any(), eq("127.0.0.1"), eq(null), eq(AppSessionSurface.APP));
+                    any(), eq("127.0.0.1"), eq(null), eq(context(AppSessionSurface.APP, true, "OAUTH", "PASSKEY:challenge-001")));
             default -> throw new AssertionError(path);
         }
     }
 
     @Test
-    void cookieModeTakesPrecedenceAndMissingMarkerRemainsUnknown() throws Exception {
+    void cookieModeTakesPrecedenceAndMissingMarkerRequiresReauthentication() throws Exception {
         when(refreshCookieService.cookieMode(any())).thenAnswer(invocation ->
                 "cookie".equals(invocation.getArgument(0, jakarta.servlet.http.HttpServletRequest.class)
                         .getHeader(AppUserRefreshCookieService.MODE_HEADER)));
 
-        mockMvc.perform(post("/auth/users/login")
-                        .header(AppSessionSurface.APP_HEADER, "APP")
+        mockMvc.perform(sessionPost("/auth/users/login", false)
                         .header(AppUserRefreshCookieService.MODE_HEADER, "cookie")
-                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                        .content(LOGIN_BODY))
                 .andExpect(status().isOk());
-        verify(authService).login(any(), eq("127.0.0.1"), eq(AppSessionSurface.H5));
+        verify(authService).login(any(), eq("127.0.0.1"), eq(context(AppSessionSurface.H5, false, "PASSWORD", "+84:901234567")));
 
-        mockMvc.perform(post("/auth/users/login")
-                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
-                .andExpect(status().isOk());
-        verify(authService).login(any(), eq("127.0.0.1"), eq(AppSessionSurface.UNKNOWN));
+        ServletException rejected = assertThrows(ServletException.class, () -> mockMvc.perform(
+                sessionPost("/auth/users/login", false).with(request -> {
+                    request.removeHeader(AppSessionSurface.APP_HEADER); return request;
+                }).content(LOGIN_BODY)));
+        org.assertj.core.api.Assertions.assertThat(rejected.getCause()).hasMessage("SESSION_CONTEXT_REAUTH_REQUIRED");
+        verify(authService, org.mockito.Mockito.times(1)).login(any(), any(), any(AppLoginContext.class));
     }
 
     @Test
@@ -187,13 +193,13 @@ class AppUserAuthControllerSecurityTest {
                 "PASSKEY", "SANDBOX_MOCK", null, "Passkey User",
                 "OAUTH-11111111111111111111111111111111");
         when(oauthService.exchange(eq(request), eq("127.0.0.1"),
-                eq("http://127.0.0.1:5173"), eq(AppSessionSurface.UNKNOWN))).thenReturn(ApiResult.ok(
+                eq("http://127.0.0.1:5173"), eq(context(AppSessionSurface.APP, false, "OAUTH", "PASSKEY:OAUTH-11111111111111111111111111111111")))).thenReturn(ApiResult.ok(
                 new UserOAuthExchangeResponse(
                         "access", "Bearer",
                         new UserLoginResponse.UserSession(301L, "+86", "900123456789", "Passkey User"),
                         "refresh", "mock", true)));
 
-        mockMvc.perform(post("/auth/users/oauth/exchange")
+        mockMvc.perform(sessionPost("/auth/users/oauth/exchange", false)
                         .with(req -> {
                             req.setRemoteAddr("127.0.0.1");
                             return req;
@@ -208,25 +214,15 @@ class AppUserAuthControllerSecurityTest {
                 .andExpect(jsonPath("$.data.accessToken").value("access"));
 
         verify(oauthService).exchange(eq(request), eq("127.0.0.1"),
-                eq("http://127.0.0.1:5173"), eq(AppSessionSurface.UNKNOWN));
+                eq("http://127.0.0.1:5173"), eq(context(AppSessionSurface.APP, false, "OAUTH", "PASSKEY:OAUTH-11111111111111111111111111111111")));
     }
 
     @Test
-    void emptyOAuthExchangeBodyReturnsValidationFailure() throws Exception {
-        when(oauthService.exchange(eq(null), eq("127.0.0.1"), eq(null), eq(AppSessionSurface.UNKNOWN)))
-                .thenReturn(ApiResult.fail(422, "OAUTH_REQUEST_INVALID"));
-
-        mockMvc.perform(post("/auth/users/oauth/exchange")
-                        .with(req -> {
-                            req.setRemoteAddr("127.0.0.1");
-                            return req;
-                        })
-                        .contentType(MediaType.APPLICATION_JSON))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(422))
-                .andExpect(jsonPath("$.message").value("OAUTH_REQUEST_INVALID"));
-
-        verify(oauthService).exchange(eq(null), eq("127.0.0.1"), eq(null), eq(AppSessionSurface.UNKNOWN));
+    void emptyOAuthExchangeBodyCannotCreateAnUnboundLoginAttempt() throws Exception {
+        ServletException rejected = assertThrows(ServletException.class, () -> mockMvc.perform(
+                sessionPost("/auth/users/oauth/exchange", false)));
+        org.assertj.core.api.Assertions.assertThat(rejected.getCause()).hasMessage("LOGIN_ATTEMPT_CONTEXT_INVALID");
+        verifyNoInteractions(oauthService);
     }
 
     @Test
@@ -305,6 +301,7 @@ class AppUserAuthControllerSecurityTest {
                 .andExpect(jsonPath("$.code").value(401));
 
         verify(authService, org.mockito.Mockito.never()).completePasswordReset(any(), any());
+        verify(authService, org.mockito.Mockito.never()).completePasswordReset(any(), any(), any(AppLoginContext.class));
     }
 
     @Test
@@ -361,5 +358,69 @@ class AppUserAuthControllerSecurityTest {
 
         verify(authService).refresh(eq(credential), eq("a".repeat(64)), eq(false));
         verify(refreshCookieService, org.mockito.Mockito.never()).clear(any());
+    }
+
+    @Test
+    void unsupportedNativeExecutionStillReachesTheAppLoginBoundary() throws Exception {
+        mockMvc.perform(sessionPost("/auth/users/login", false).content(LOGIN_BODY)).andExpect(status().isOk());
+        verify(authService).login(any(), eq("127.0.0.1"), eq(context(AppSessionSurface.APP, false, "PASSWORD", "+84:901234567")));
+    }
+
+    @Test
+    void missingExecutionContextCannotIssueASession() throws Exception {
+        ServletException rejected = assertThrows(ServletException.class, () -> mockMvc.perform(
+                sessionPost("/auth/users/login", false).with(request -> {
+                    request.removeHeader("X-NexGrid-Execution-Supported"); return request;
+                }).content(LOGIN_BODY)));
+        org.assertj.core.api.Assertions.assertThat(rejected.getCause()).hasMessage("LOGIN_EXECUTION_CONTEXT_INVALID");
+        verifyNoInteractions(authService);
+    }
+
+    @Test
+    void recoveryPassesTheOriginalAttemptAndProofToTheService() throws Exception {
+        var expected = context(AppSessionSurface.APP, false, "PASSWORD", "+84:901234567");
+        when(authService.recoverLogin(expected)).thenReturn(ApiResult.fail(409, "SESSION_REPLACED"));
+        mockMvc.perform(sessionPost("/auth/users/login/attempts/" + ATTEMPT + "/recover", false)
+                        .content("{\"installationId\":\"" + INSTALLATION + "\",\"executionSupported\":false,"
+                                + "\"recoveryProof\":\"" + RECOVERY + "\",\"authMethod\":\"PASSWORD\","
+                                + "\"authReference\":\"+84:901234567\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("SESSION_REPLACED"));
+        verify(authService).recoverLogin(expected);
+        verify(authService, org.mockito.Mockito.never()).login(any(), any(), any(AppLoginContext.class));
+    }
+
+    @Test
+    void refreshResponseKeepsTheStoredGroupAndVersionDespiteNewContextHeaders() throws Exception {
+        var stored = new ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity();
+        stored.setSessionGroup("H5"); stored.setInstallationId("original-browser");
+        stored.setAppSessionVersion(0L); stored.setSessionChainId("original-chain");
+        stored.setExecutionSupported(false);
+        var credential = new ffdd.opsconsole.auth.dto.UserRefreshRequest("refresh");
+        when(refreshCookieService.resolve(any(), any())).thenReturn(credential);
+        when(authService.refresh(eq(credential), eq(null), eq(false))).thenReturn(ApiResult.ok(
+                new UserLoginResponse("access", "Bearer", new UserLoginResponse.UserSession(42L, "+84", "901234567", "synthetic"))
+                        .withContext(stored, "SUCCEEDED")));
+        mockMvc.perform(sessionPost("/auth/users/refresh", true)
+                        .header("X-NexGrid-App-Session-Version", "999").content("{\"refreshToken\":\"refresh\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.sessionGroup").value("H5"))
+                .andExpect(jsonPath("$.data.appSessionVersion").value(0))
+                .andExpect(jsonPath("$.data.installationId").value("original-browser"))
+                .andExpect(jsonPath("$.data.executionSupported").value(false));
+        verify(authService).refresh(credential, null, false);
+    }
+
+    private static AppLoginContext context(AppSessionSurface group, boolean execution, String method, String reference) {
+        return new AppLoginContext(group, INSTALLATION, execution, ATTEMPT, RECOVERY, method, reference);
+    }
+
+    private static org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder sessionPost(String path, boolean execution) {
+        return post(path).header(AppSessionSurface.APP_HEADER, "APP")
+                .header("X-NexGrid-Installation-Id", INSTALLATION)
+                .header("X-NexGrid-Execution-Supported", String.valueOf(execution))
+                .header("X-NexGrid-Login-Attempt-Id", ATTEMPT)
+                .header("X-NexGrid-Login-Recovery-Key", RECOVERY)
+                .contentType(MediaType.APPLICATION_JSON);
     }
 }

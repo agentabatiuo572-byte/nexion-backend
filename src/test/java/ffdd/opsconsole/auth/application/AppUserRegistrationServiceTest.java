@@ -314,7 +314,7 @@ class AppUserRegistrationServiceTest {
         sandboxSponsor.setSandbox(1);
         prepareSuccessfulRegistration(sandboxSponsor);
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654321", "REG-H003", "123456", "NexPass9a", "NXAB12CD34EF", "zh"),
                 "127.0.0.3");
 
@@ -339,12 +339,12 @@ class AppUserRegistrationServiceTest {
             return 1;
         }).when(userMapper).insert(any(UserEntity.class));
         when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"),
-                eq(AppSessionSurface.APP)))
+                any(AppLoginContext.class)))
                 .thenReturn(ApiResult.ok(new UserLoginResponse(
                         "access", "Bearer", new UserLoginResponse.UserSession(
                                 99L, "+84", "987654321", "Nexion 4321"))));
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654321", "REG-H003", "123456", "NexPass9a", null),
                 "127.0.0.3", AppSessionSurface.APP);
 
@@ -353,7 +353,7 @@ class AppUserRegistrationServiceTest {
         assertThat(inserted.getValue().getNickname()).isEqualTo("UVEL " + inserted.getValue().getPhone().substring(inserted.getValue().getPhone().length() - 4));
         verify(userMapper).ensureRegisteredUserWallet(99L, 1);
         verify(mapper).insertTeamMemberProjection(99L, 99L, 0, 1);
-        verify(authService).issueRegisteredSession(inserted.getValue(), "127.0.0.3", AppSessionSurface.APP);
+        verify(authService).issueRegisteredSession(eq(inserted.getValue()), eq("127.0.0.3"), any(AppLoginContext.class));
         verify(outboxService).publish(
                 "USER_REGISTRATION", "99", "auth.register_completed", java.util.Map.of("userId", 99L));
         verify(outboxService, org.mockito.Mockito.times(1)).publish(any(), any(), any(), any());
@@ -415,12 +415,12 @@ class AppUserRegistrationServiceTest {
             user.setId(109L);
             return 1;
         }).when(userMapper).insert(any(UserEntity.class));
-        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1")))
+        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1"), any(AppLoginContext.class)))
                 .thenReturn(ApiResult.ok(new UserLoginResponse(
                         "access", "Bearer", new UserLoginResponse.UserSession(
                                 109L, "+84", "0912681799", "Nexion 1799"))));
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "0912681799", "REG-LOCAL", "123456", "NexPass9a", null), "127.0.0.1");
 
         assertThat(result.getCode()).isZero();
@@ -439,14 +439,14 @@ class AppUserRegistrationServiceTest {
         when(mapper.countRegisteredAccountsByClientIp24hInEnvironment(
                 "203.0.113.8", "PRODUCTION", 0)).thenReturn(3);
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "0912681798", "REG-PROD-LIMIT", "123456", "NexPass9a", null), "203.0.113.8");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_K1_IP_LIMIT");
         verify(userMapper, never()).insert(any(UserEntity.class));
         verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
-        verify(authService, never()).issueRegisteredSession(any(), any());
+        verify(authService, never()).issueRegisteredSession(any(), any(), any(AppLoginContext.class));
     }
 
     @Test
@@ -454,7 +454,7 @@ class AppUserRegistrationServiceTest {
         when(environment.getActiveProfiles()).thenReturn(new String[] { "test" });
         prepareSuccessfulRegistration(user(41L, "NXAB12CD34EF"));
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654321", "REG-H003", "123456", "NexPass9a", "NXAB12CD34EF"),
                 "127.0.0.3");
 
@@ -462,7 +462,7 @@ class AppUserRegistrationServiceTest {
         assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_SPONSOR_ENVIRONMENT_MISMATCH");
         verify(userMapper, never()).insert(any(UserEntity.class));
         verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
-        verify(authService, never()).issueRegisteredSession(any(), any());
+        verify(authService, never()).issueRegisteredSession(any(), any(), any(AppLoginContext.class));
         verify(outboxService, never()).publish(any(), any(), any(), any());
     }
 
@@ -472,7 +472,7 @@ class AppUserRegistrationServiceTest {
         sandboxSponsor.setSandbox(1);
         prepareSuccessfulRegistration(sandboxSponsor);
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654321", "REG-H003", "123456", "NexPass9a", "NXAB12CD34EF"),
                 "127.0.0.3");
 
@@ -480,7 +480,7 @@ class AppUserRegistrationServiceTest {
         assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_SPONSOR_ENVIRONMENT_MISMATCH");
         verify(userMapper, never()).insert(any(UserEntity.class));
         verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
-        verify(authService, never()).issueRegisteredSession(any(), any());
+        verify(authService, never()).issueRegisteredSession(any(), any(), any(AppLoginContext.class));
         verify(outboxService, never()).publish(any(), any(), any(), any());
     }
 
@@ -490,7 +490,7 @@ class AppUserRegistrationServiceTest {
         when(environment.getActiveProfiles()).thenReturn(new String[] { profile });
         prepareSuccessfulRegistration(user(41L, "NXAB12CD34EF"));
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654321", "REG-H003", "123456", "NexPass9a", "NXAB12CD34EF"),
                 "127.0.0.3");
 
@@ -507,7 +507,7 @@ class AppUserRegistrationServiceTest {
     void unknownOrMixedProfilesFailClosedBeforeOtpOrAnyRegistrationWrite() {
         when(environment.getActiveProfiles()).thenReturn(new String[] { "dev", "prod" });
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654321", "REG-H003", "123456", "NexPass9a", null), "127.0.0.3");
 
         assertThat(result.getCode()).isEqualTo(503);
@@ -523,7 +523,7 @@ class AppUserRegistrationServiceTest {
     void unknownSingleProfileFailsClosedBeforeOtpOrAnyRegistrationWrite() {
         when(environment.getActiveProfiles()).thenReturn(new String[] { "staging" });
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654321", "REG-H003", "123456", "NexPass9a", null), "127.0.0.3");
 
         assertThat(result.getCode()).isEqualTo(503);
@@ -549,7 +549,7 @@ class AppUserRegistrationServiceTest {
         direct.setLevel(1);
         when(mapper.listActiveSponsorChain(99L, 0)).thenReturn(List.of(direct));
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654321", "REG-H003", "123456", "NexPass9a", "nx-ab12-cd34-ef"),
                 "127.0.0.3");
 
@@ -561,7 +561,7 @@ class AppUserRegistrationServiceTest {
         verify(userMapper).ensureNewRegisteredUserWallet(eq(99L), eq(0), any(String.class));
         verify(mapper).insertTeamMemberProjection(99L, 99L, 0, 0);
         verify(mapper).insertTeamMemberProjection(41L, 99L, 1, 0);
-        verify(authService).issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"));
+        verify(authService).issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"), any(AppLoginContext.class));
         assertThat(result.getCode()).isZero();
         assertThat(sponsorCode.getValue()).isEqualTo("NXAB12CD34EF");
         assertThat(inserted.getValue().getSponsorUserId()).isEqualTo(41L);
@@ -578,7 +578,7 @@ class AppUserRegistrationServiceTest {
         UserEntity existing = user(77L, "NXEXISTING77");
         when(userMapper.selectOne(any())).thenReturn(existing);
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654322", "REG-DUP", "123456", "NexPass9a", "NXEXISTING77"),
                 "127.0.0.4");
 
@@ -587,7 +587,7 @@ class AppUserRegistrationServiceTest {
         verify(mapper, never()).findSponsorForUpdate(any());
         verify(userMapper, never()).insert(any(UserEntity.class));
         verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
-        verify(authService, never()).issueRegisteredSession(any(), any());
+        verify(authService, never()).issueRegisteredSession(any(), any(), any(AppLoginContext.class));
         verify(outboxService, never()).publish(any(), any(), any(), any());
     }
 
@@ -598,7 +598,7 @@ class AppUserRegistrationServiceTest {
         when(mapper.findActiveSponsorsByCanonicalCode("NXAB12CD34EF")).thenReturn(List.of(legacySponsor));
         when(mapper.findSponsorForUpdate("nx-ab12-cd34-ef")).thenReturn(legacySponsor);
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654321", "REG-H003", "123456", "NexPass9a", " nx-ab12-cd34-ef "),
                 "127.0.0.3");
 
@@ -616,7 +616,7 @@ class AppUserRegistrationServiceTest {
         when(mapper.findActiveSponsorsByCanonicalCode("NXAB12CD34EF")).thenReturn(List.of(
                 user(41L, "NXAB12CD34EF"), user(42L, "NX-AB12-CD34-EF")));
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654323", "REG-AMB", "123456", "NexPass9a", "nx-ab12-cd34-ef"),
                 "127.0.0.5");
 
@@ -625,7 +625,7 @@ class AppUserRegistrationServiceTest {
         verify(mapper, never()).findSponsorForUpdate(any());
         verify(userMapper, never()).insert(any(UserEntity.class));
         verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
-        verify(authService, never()).issueRegisteredSession(any(), any());
+        verify(authService, never()).issueRegisteredSession(any(), any(), any(AppLoginContext.class));
         verify(outboxService, never()).publish(any(), any(), any(), any());
     }
 
@@ -641,7 +641,7 @@ class AppUserRegistrationServiceTest {
                     return 1;
                 });
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654321", "REG-H003", "123456", "NexPass9a", "NXAB12CD34EF"),
                 "127.0.0.3");
 
@@ -649,7 +649,7 @@ class AppUserRegistrationServiceTest {
         verify(transactionExecutor, org.mockito.Mockito.times(2)).execute(any());
         verify(userMapper, org.mockito.Mockito.times(2)).insert(any(UserEntity.class));
         verify(userMapper).ensureNewRegisteredUserWallet(eq(99L), eq(0), any(String.class));
-        verify(authService).issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"));
+        verify(authService).issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"), any(AppLoginContext.class));
         verify(outboxService, org.mockito.Mockito.times(2)).publish(any(), any(), any(), any());
     }
 
@@ -658,7 +658,7 @@ class AppUserRegistrationServiceTest {
         org.mockito.Mockito.doThrow(new CannotAcquireLockException("lock timeout"))
                 .when(transactionExecutor).execute(any());
 
-        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+        ApiResult<UserLoginResponse> result = register(new UserRegistrationRequest(
                 "+84", "987654324", "REG-LOCK", "123456", "NexPass9a", null), "127.0.0.6");
 
         assertThat(result.getCode()).isEqualTo(503);
@@ -666,7 +666,7 @@ class AppUserRegistrationServiceTest {
         verify(transactionExecutor, org.mockito.Mockito.times(3)).execute(any());
         verify(userMapper, never()).insert(any(UserEntity.class));
         verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
-        verify(authService, never()).issueRegisteredSession(any(), any());
+        verify(authService, never()).issueRegisteredSession(any(), any(), any(AppLoginContext.class));
         verify(outboxService, never()).publish(any(), any(), any(), any());
     }
 
@@ -686,17 +686,17 @@ class AppUserRegistrationServiceTest {
             inserted.setId(ids.incrementAndGet());
             return 1;
         }).when(userMapper).insert(any(UserEntity.class));
-        when(authService.issueRegisteredSession(any(), any())).thenReturn(ApiResult.ok(
+        when(authService.issueRegisteredSession(any(), any(), any(AppLoginContext.class))).thenReturn(ApiResult.ok(
                 new UserLoginResponse("access", "Bearer", new UserLoginResponse.UserSession(1L, "+84", "987654330", "NexGrid"))));
 
         List<ApiResult<UserLoginResponse>> results = concurrently(
-                () -> service.register(request("REG-S1", "987654331", "NX-AB12-CD34-EF"), "127.0.0.8"),
-                () -> service.register(request("REG-S2", "987654332", " nxab12cd34ef "), "127.0.0.8"));
+                () -> register(request("REG-S1", "987654331", "NX-AB12-CD34-EF"), "127.0.0.8"),
+                () -> register(request("REG-S2", "987654332", " nxab12cd34ef "), "127.0.0.8"));
 
         assertThat(results).extracting(ApiResult::getCode).containsOnly(0);
         verify(mapper, org.mockito.Mockito.times(2)).findSponsorForUpdate("nx-ab12-cd34-ef");
         verify(userMapper, org.mockito.Mockito.times(2)).ensureNewRegisteredUserWallet(anyLong(), eq(0), any(String.class));
-        verify(authService, org.mockito.Mockito.times(2)).issueRegisteredSession(any(), any());
+        verify(authService, org.mockito.Mockito.times(2)).issueRegisteredSession(any(), any(), any(AppLoginContext.class));
         verify(outboxService, org.mockito.Mockito.times(4)).publish(any(), any(), any(), any());
     }
 
@@ -714,17 +714,17 @@ class AppUserRegistrationServiceTest {
             ((UserEntity) invocation.getArgument(0)).setId(111L);
             return 1;
         }).when(userMapper).insert(any(UserEntity.class));
-        when(authService.issueRegisteredSession(any(), any())).thenReturn(ApiResult.ok(
+        when(authService.issueRegisteredSession(any(), any(), any(AppLoginContext.class))).thenReturn(ApiResult.ok(
                 new UserLoginResponse("access", "Bearer", new UserLoginResponse.UserSession(111L, "+84", "987654333", "Nexion"))));
 
         List<ApiResult<UserLoginResponse>> results = concurrently(
-                () -> service.register(request("REG-PHONE", "987654333", null), "127.0.0.9"),
-                () -> service.register(request("REG-PHONE", "987654333", null), "127.0.0.9"));
+                () -> register(request("REG-PHONE", "987654333", null), "127.0.0.9"),
+                () -> register(request("REG-PHONE", "987654333", null), "127.0.0.9"));
 
         assertThat(results).extracting(ApiResult::getCode).containsExactlyInAnyOrder(0, 422);
         verify(userMapper, org.mockito.Mockito.times(1)).insert(any(UserEntity.class));
         verify(userMapper, org.mockito.Mockito.times(1)).ensureNewRegisteredUserWallet(eq(111L), eq(0), any(String.class));
-        verify(authService, org.mockito.Mockito.times(1)).issueRegisteredSession(any(), any());
+        verify(authService, org.mockito.Mockito.times(1)).issueRegisteredSession(any(), any(), any(AppLoginContext.class));
         verify(outboxService, org.mockito.Mockito.times(1)).publish(any(), any(), any(), any());
     }
 
@@ -738,11 +738,21 @@ class AppUserRegistrationServiceTest {
             user.setId(99L);
             return 1;
         }).when(userMapper).insert(any(UserEntity.class));
-        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3")))
+        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"), any(AppLoginContext.class)))
                 .thenReturn(ApiResult.ok(new UserLoginResponse(
                         "access", "Bearer", new UserLoginResponse.UserSession(99L, "+84", "987654321", "Nexion 4321"))));
     }
 
+    private ApiResult<UserLoginResponse> register(UserRegistrationRequest request, String address) {
+        return register(request, address, AppSessionSurface.APP);
+    }
+
+    private ApiResult<UserLoginResponse> register(UserRegistrationRequest request, String address, AppSessionSurface surface) {
+        AppLoginContext context = new AppLoginContext(surface, "registration-test-install", true,
+                java.util.UUID.randomUUID().toString(), "r".repeat(64), "REGISTRATION",
+                request == null ? "invalid-request" : request.countryCode() + ":" + request.phone());
+        return service.register(request, address, context);
+    }
     private void prepareRegistrationPrerequisites(String challengeNo, String phone, String clientIp) {
         when(mapper.consumeValidChallengeInEnvironment(
                 eq(challengeNo), eq("+84"), eq(phone), any(), eq("123456"), anyInt())).thenReturn(1);

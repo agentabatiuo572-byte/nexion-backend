@@ -43,6 +43,8 @@ class JwtAuthenticationFilterTest {
     private final AdminPermissionCache permissionCache = mock(AdminPermissionCache.class);
     private final ImpersonationSessionVerifier impersonationSessionVerifier = mock(ImpersonationSessionVerifier.class);
     private final PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
+    private final UserAccountBlocklistVerifier blocklist = mock(UserAccountBlocklistVerifier.class);
+    private final UserSessionRevocationService revocations = mock(UserSessionRevocationService.class);
     private final AdminAccountStateMapper accountStateMapper = mock(AdminAccountStateMapper.class);
     private final AdminRbacAuthorizationFilter rbacFilter = new AdminRbacAuthorizationFilter(
             mock(AuditLogService.class), accountStateMapper);
@@ -55,7 +57,7 @@ class JwtAuthenticationFilterTest {
             adminSessionRegistry,
             permissionCache,
             impersonationSessionVerifier,
-            configFacade);
+            configFacade, blocklist, revocations);
 
     JwtAuthenticationFilterTest() {
         environment.setActiveProfiles("dev");
@@ -206,7 +208,7 @@ class JwtAuthenticationFilterTest {
         request.addHeader(AuthHeaders.USERNAME, "customer-1001");
         request.addHeader(AuthHeaders.SESSION_ID, "gateway-user-session");
         when(userMapper.selectById(1001L)).thenReturn(user(0));
-        when(authSessionMapper.countActiveUserSession("gateway-user-session", 1001L)).thenReturn(1);
+        when(authSessionMapper.touchActiveUserSession("gateway-user-session", 1001L, 30)).thenReturn(1);
 
         filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
 
@@ -362,7 +364,7 @@ class JwtAuthenticationFilterTest {
         filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
 
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
-        org.mockito.Mockito.verify(authSessionMapper).revokeOwnedUserSession(42L, "profile-drift");
+        org.mockito.Mockito.verify(revocations).revokeOwned(42L, "profile-drift");
         org.mockito.Mockito.verify(authSessionMapper, never()).touchActiveUserSession(any(), any(), anyInt());
     }
 
@@ -376,7 +378,7 @@ class JwtAuthenticationFilterTest {
         filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
 
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
-        org.mockito.Mockito.verify(authSessionMapper).revokeAllUserSessions(42L);
+        org.mockito.Mockito.verify(revocations).revokeAll(42L);
         org.mockito.Mockito.verify(authSessionMapper, never()).touchActiveUserSession(any(), any(), anyInt());
     }
 
@@ -394,7 +396,7 @@ class JwtAuthenticationFilterTest {
         filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
 
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
-        org.mockito.Mockito.verify(authSessionMapper).revokeAllUserSessions(1001L);
+        org.mockito.Mockito.verify(revocations).revokeAll(1001L);
         org.mockito.Mockito.verify(authSessionMapper, never())
                 .countActiveUserSession("gateway-legacy-country-session", 1001L);
     }
@@ -627,7 +629,7 @@ class JwtAuthenticationFilterTest {
         gatewayProperties.setHeaderAuthenticationEnabled(true);
         gatewayProperties.setInternalSecret("test-gateway-secret-with-32-characters");
         when(userMapper.selectById(1001L)).thenReturn(user(0));
-        when(authSessionMapper.countActiveUserSession("gateway-user-session", 1001L))
+        when(authSessionMapper.touchActiveUserSession("gateway-user-session", 1001L, 30))
                 .thenThrow(new IllegalStateException("session database down"));
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/trial/eligibility");
         request.addHeader(AuthHeaders.GATEWAY_SECRET, gatewayProperties.getInternalSecret());
@@ -649,8 +651,35 @@ class JwtAuthenticationFilterTest {
         UserEntity user = new UserEntity();
         user.setId(42L);
         user.setSandbox(sandbox);
+        user.setStatus("ACTIVE");
+        user.setIsDeleted(0);
         user.setCountryCode(countryCode);
         user.setPhone(phone);
         return user;
+    }
+
+    @Test
+    void fixedContextRejectionCannotBeOverriddenBySurfaceInstallationOrVersionHeaders() throws Exception {
+        when(userMapper.selectById(42L)).thenReturn(user(0));
+        when(authSessionMapper.lockAccount(42L)).thenReturn(42L);
+        // The database has rejected the persisted group/current App version. Exercise both real guards.
+        when(authSessionMapper.countFixedContext("superseded-session", 42L)).thenReturn(0);
+        when(authSessionMapper.touchActiveUserSession("superseded-session", 42L, 30)).thenCallRealMethod();
+        when(authSessionMapper.touchRecentlyRotatedUserSession("superseded-session", 42L, 30)).thenCallRealMethod();
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createUserToken(42L, "synthetic", List.of(),
+                "superseded-session", java.time.Duration.ofHours(1), UserAuthEnvironment.PRODUCTION));
+        request.addHeader("X-NexGrid-Client-Surface", "H5");
+        request.addHeader("X-NexGrid-Installation-Id", "new-owner-installation");
+        request.addHeader("X-NexGrid-App-Session-Version", "999");
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            filter.doFilter(request, new MockHttpServletResponse(), (ignoredRequest, ignoredResponse) -> { });
+        } finally {
+            org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+        org.mockito.Mockito.verify(authSessionMapper, org.mockito.Mockito.times(2)).countFixedContext("superseded-session", 42L);
+        org.mockito.Mockito.verify(authSessionMapper, never()).lockActiveUserSession(any(), any());
+        org.mockito.Mockito.verify(authSessionMapper, never()).findRecentUserSessionRotation(any(), any());
     }
 }

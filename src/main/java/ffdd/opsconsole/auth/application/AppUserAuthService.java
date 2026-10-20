@@ -72,6 +72,8 @@ public class AppUserAuthService {
     private final Environment environment;
     private final ffdd.opsconsole.content.application.SupportActivityService supportActivity;
     private final SecureRandom secureRandom = new SecureRandom();
+    private final AppSingleSessionService singleSessions;
+    private final ffdd.opsconsole.shared.security.UserSessionRevocationService revocations;
 
     @PostConstruct
     void ensureLoginGuardSchema() {
@@ -93,6 +95,14 @@ public class AppUserAuthService {
     @Transactional
     public ApiResult<UserLoginResponse> login(
             UserLoginRequest request, String clientAddress, AppSessionSurface surface) {
+        return login(request, clientAddress, AppLoginContext.unavailable(surface));
+    }
+
+    @Transactional
+    public ApiResult<UserLoginResponse> login(
+            UserLoginRequest request, String clientAddress, AppLoginContext context) {
+        ApiResult<UserLoginResponse> recovered = recoverCompletedLogin(context);
+        if (recovered != null) return recovered;
         if (request == null || !validCountryCode(request.countryCode())
                 || !validPhone(request.countryCode(), request.phone())) {
             return ApiResult.fail(422, "USER_LOGIN_PHONE_INVALID");
@@ -112,7 +122,7 @@ public class AppUserAuthService {
         String loginKey = loginKey(countryCode, phone, authNamespace());
         loginGuardMapper.initialize(loginKey, now);
         UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
-        UserEntity user = findUser(countryCode, phone);
+        UserEntity user = lockLoginUser(findUser(countryCode, phone));
         if (user != null) {
             loginGuardMapper.bindUser(loginKey, user.getId());
         }
@@ -141,7 +151,7 @@ public class AppUserAuthService {
             return issueTwoFactorChallenge(user, countryCode, phone, request.captchaTicket(), clientAddress);
         }
 
-        return issueSession(user, countryCode, phone, clientAddress, surface);
+        return issueSession(user, countryCode, phone, clientAddress, context, true);
     }
 
     /**
@@ -172,7 +182,7 @@ public class AppUserAuthService {
         String otpSendKey = otpSendKey(countryCode, phone, authNamespace());
         loginGuardMapper.initialize(loginKey, now);
         UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
-        UserEntity user = findUser(countryCode, phone);
+        UserEntity user = lockLoginUser(findUser(countryCode, phone));
         if (user != null) loginGuardMapper.bindUser(loginKey, user.getId());
         if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
             return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED");
@@ -221,6 +231,14 @@ public class AppUserAuthService {
     @Transactional
     public ApiResult<UserLoginResponse> completeOtpLogin(
             UserOtpLoginVerifyRequest request, String clientAddress, AppSessionSurface surface) {
+        return completeOtpLogin(request, clientAddress, AppLoginContext.unavailable(surface));
+    }
+
+    @Transactional
+    public ApiResult<UserLoginResponse> completeOtpLogin(
+            UserOtpLoginVerifyRequest request, String clientAddress, AppLoginContext context) {
+        ApiResult<UserLoginResponse> recovered = recoverCompletedLogin(context);
+        if (recovered != null) return recovered;
         if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.countryCode(), request.phone())
                 || !StringUtils.hasText(request.challengeNo()) || !request.challengeNo().trim().matches("LOGIN-[a-f0-9]{32}")
                 || !StringUtils.hasText(request.code()) || !request.code().trim().matches("\\d{6}")) {
@@ -233,7 +251,7 @@ public class AppUserAuthService {
         String loginKey = loginKey(countryCode, phone, authNamespace());
         loginGuardMapper.initialize(loginKey, now);
         UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
-        UserEntity user = findUser(countryCode, phone);
+        UserEntity user = lockLoginUser(findUser(countryCode, phone));
         if (user != null) loginGuardMapper.bindUser(loginKey, user.getId());
         boolean eligible = user != null
                 && "ACTIVE".equalsIgnoreCase(user.getStatus())
@@ -244,6 +262,11 @@ public class AppUserAuthService {
                 && (guard == null || guard.getLockedUntil() == null || !guard.getLockedUntil().isAfter(now));
         ApiResult<UserLoginResponse> environmentFailure = user == null ? null : environmentFailure(user, false);
         if (environmentFailure != null) return environmentFailure;
+        if (eligible) {
+            sessionMapper.lockAccount(user.getId());
+            var committed = singleSessions.recoverCompletedForUser(user.getId(), context);
+            if (committed != null) return loginReceipt(user, committed);
+        }
         int consumed = eligible
                 ? userMapper.consumeValidLoginOtp(user.getId(), request.challengeNo().trim(), request.code().trim())
                 : 0;
@@ -256,7 +279,7 @@ public class AppUserAuthService {
         }
         loginGuardMapper.clear(loginKey);
         userMapper.clearLoginFailure(user.getId());
-        return issueSession(user, countryCode, phone, clientAddress, surface);
+        return issueSession(user, countryCode, phone, clientAddress, context, true);
     }
 
     @Transactional
@@ -267,6 +290,14 @@ public class AppUserAuthService {
     @Transactional
     public ApiResult<UserLoginResponse> completePasswordReset(
             UserPasswordResetCompleteRequest request, String clientAddress) {
+        return completePasswordReset(request, clientAddress, AppLoginContext.unavailable(null));
+    }
+
+    @Transactional
+    public ApiResult<UserLoginResponse> completePasswordReset(
+            UserPasswordResetCompleteRequest request, String clientAddress, AppLoginContext context) {
+        ApiResult<UserLoginResponse> recovered = recoverCompletedLogin(context);
+        if (recovered != null) return recovered;
         if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.countryCode(), request.phone())
                 || !StringUtils.hasText(request.currentPassword()) || !strongPassword(request.newPassword())) {
             return ApiResult.fail(422, "USER_NEW_PASSWORD_POLICY_REJECTED");
@@ -281,7 +312,11 @@ public class AppUserAuthService {
         if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
             return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED");
         }
-        UserEntity user = findUser(countryCode, phone);
+        UserEntity user = lockLoginUser(findUser(countryCode, phone));
+        if (user != null) {
+            var completed = singleSessions.recoverCompletedForUser(user.getId(), context);
+            if (completed != null) return loginReceipt(user, completed);
+        }
         if (user == null || !"ACTIVE".equalsIgnoreCase(user.getStatus())
                 || !safePasswordMatches(request.currentPassword(), user.getPasswordHash())) {
             recordFailure(loginKey, user == null ? null : user.getId(), guard, now);
@@ -304,7 +339,8 @@ public class AppUserAuthService {
         }
         loginGuardMapper.clear(loginKey);
         userMapper.clearLoginFailure(user.getId());
-        return issueSession(user, countryCode, phone, clientAddress);
+        revocations.revokeAll(user.getId());
+        return issueSession(user, countryCode, phone, clientAddress, context, true);
     }
 
     @Transactional
@@ -321,6 +357,14 @@ public class AppUserAuthService {
     @Transactional
     public ApiResult<UserLoginResponse> completeTwoFactorLogin(
             UserTwoFactorLoginRequest request, String clientAddress, AppSessionSurface surface) {
+        return completeTwoFactorLogin(request, clientAddress, AppLoginContext.unavailable(surface));
+    }
+
+    @Transactional
+    public ApiResult<UserLoginResponse> completeTwoFactorLogin(
+            UserTwoFactorLoginRequest request, String clientAddress, AppLoginContext context) {
+        ApiResult<UserLoginResponse> recovered = recoverCompletedLogin(context);
+        if (recovered != null) return recovered;
         if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.countryCode(), request.phone())
                 || !StringUtils.hasText(request.password()) || !StringUtils.hasText(request.challengeNo())
                 || !request.challengeNo().trim().matches("OTP-[a-f0-9]{32}")
@@ -337,7 +381,7 @@ public class AppUserAuthService {
         if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
             return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED");
         }
-        UserEntity user = findUser(countryCode, phone);
+        UserEntity user = lockLoginUser(findUser(countryCode, phone));
         if (user == null || !"ACTIVE".equalsIgnoreCase(user.getStatus())
                 || !safePasswordMatches(request.password(), user.getPasswordHash())) {
             recordFailure(loginKey, user == null ? null : user.getId(), guard, now);
@@ -354,6 +398,8 @@ public class AppUserAuthService {
         if (!userMapper.isTwoFactorEnabled(user.getId())) {
             return ApiResult.fail(409, "USER_TWO_FACTOR_NOT_REQUIRED");
         }
+        var committed = singleSessions.recoverCompletedForUser(user.getId(), context);
+        if (committed != null) return loginReceipt(user, committed);
         if (userMapper.consumeValidLoginOtp(user.getId(), request.challengeNo().trim(), request.code().trim()) != 1) {
             userMapper.recordInvalidLoginOtpAttempt(user.getId(), request.challengeNo().trim());
             recordFailure(loginKey, user.getId(), guard, now);
@@ -361,7 +407,7 @@ public class AppUserAuthService {
         }
         loginGuardMapper.clear(loginKey);
         userMapper.clearLoginFailure(user.getId());
-        return issueSession(user, countryCode, phone, clientAddress, surface);
+        return issueSession(user, countryCode, phone, clientAddress, context, true);
     }
 
     private ApiResult<UserLoginResponse> issueTwoFactorChallenge(
@@ -401,45 +447,50 @@ public class AppUserAuthService {
 
     private ApiResult<UserLoginResponse> issueSession(
             UserEntity user, String countryCode, String phone, String clientAddress) {
-        return issueSession(user, countryCode, phone, clientAddress, AppSessionSurface.UNKNOWN);
+        return issueSession(user, countryCode, phone, clientAddress, AppLoginContext.unavailable(null), true);
     }
 
     private ApiResult<UserLoginResponse> issueSession(
-            UserEntity user, String countryCode, String phone, String clientAddress, AppSessionSurface surface) {
-        return issueSession(user,countryCode,phone,clientAddress,surface,true);
-    }
-
-    private ApiResult<UserLoginResponse> issueSession(
-            UserEntity user, String countryCode, String phone, String clientAddress, AppSessionSurface surface,
+            UserEntity user, String countryCode, String phone, String clientAddress, AppLoginContext context,
             boolean interactiveLogin) {
         ApiResult<UserLoginResponse> environmentFailure = environmentFailure(user, false);
         if (environmentFailure != null) return environmentFailure;
-        String rawRefreshToken = randomRefreshToken();
-        String sessionId = hashToken(rawRefreshToken);
-        UserSessionEntity session = new UserSessionEntity();
-        session.setUserId(user.getId());
-        session.setRefreshTokenId(sessionId);
-        session.setDeviceName(surface.deviceName());
-        session.setClientIp(StringUtils.hasText(clientAddress) ? clientAddress.trim() : null);
-        session.setSessionChainId(UUID.randomUUID().toString());
-        LocalDateTime issuedAt = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
-        session.setLastActiveAt(issuedAt);
-        session.setExpiresAt(issuedAt.plusDays(configInt("auth.session.refresh_ttl_days", 30, 7, 90)));
-        session.setIsDeleted(0);
-        sessionMapper.insert(session);
-
-        Duration accessTtl = Duration.ofHours(configInt("auth.session.access_ttl_hours", 4, 1, 24));
+        var issued = singleSessions.issue(user.getId(), context, clientAddress,
+                configInt("auth.session.refresh_ttl_days", 30, 7, 90));
+        UserSessionEntity session = issued.session();
         UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment)
                 .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN"));
-        String token = tokenProvider.createUserToken(user.getId(), phone, List.of(), sessionId, accessTtl, audience);
-        // Registration and the current development/mock OAuth exchange reuse session issuance,
-        // but are not proven interactive login sources. Refresh never enters this method.
-        if(interactiveLogin && audience==UserAuthEnvironment.PRODUCTION)
-            supportActivity.interactiveLogin(user.getId(),session.getSessionChainId());
+        if (!issued.original() && interactiveLogin && audience == UserAuthEnvironment.PRODUCTION)
+            supportActivity.interactiveLogin(user.getId(), session.getSessionChainId());
+        return loginReceipt(user, issued);
+    }
+
+    private ApiResult<UserLoginResponse> loginReceipt(UserEntity user, AppSingleSessionService.Issued issued) {
+        UserSessionEntity session = issued.session();
+        String token = issued.refreshToken() == null ? null : tokenProvider.createUserToken(user.getId(), user.getPhone(),
+                List.of(), session.getRefreshTokenId(), Duration.ofHours(configInt("auth.session.access_ttl_hours",4,1,24)),
+                UserAuthEnvironment.resolve(environment).orElseThrow(() -> new BizException(503,"USER_AUTH_ENVIRONMENT_FORBIDDEN")));
         return ApiResult.ok(new UserLoginResponse(token, "Bearer",
-                new UserLoginResponse.UserSession(user.getId(), countryCode, phone, user.getNickname(),
-                        userMapper.isOnboardingComplete(user.getId())),
-                null, null, rawRefreshToken, null, tokenProvider.sessionSyncKey(session.getSessionChainId())));
+                new UserLoginResponse.UserSession(user.getId(), normalizeCountryCode(user.getCountryCode()), user.getPhone(),
+                        user.getNickname(), userMapper.isOnboardingComplete(user.getId())), null, null,
+                issued.refreshToken(), null, tokenProvider.sessionSyncKey(session.getSessionChainId()))
+                .withContext(session, issued.status()));
+    }
+
+    @Transactional
+    public ApiResult<UserLoginResponse> recoverCompletedLogin(AppLoginContext context) {
+        context.validate();
+        return singleSessions.hasAttempt(context.loginAttemptId()) ? recoverLogin(context) : null;
+    }
+
+    @Transactional
+    public ApiResult<UserLoginResponse> recoverLogin(AppLoginContext context) {
+        var issued = singleSessions.recover(context);
+        UserEntity user = userMapper.selectById(issued.session().getUserId());
+        if (user == null || !"ACTIVE".equals(user.getStatus()) || blocklistVerifier.isBlocked(user.getId())
+                || userMapper.isPasswordResetRequired(user.getId())) throw new BizException(403,"USER_REFRESH_NOT_ALLOWED");
+        ApiResult<UserLoginResponse> failure = environmentFailure(user, false);
+        return failure == null ? loginReceipt(user, issued) : failure;
     }
 
     /**
@@ -455,6 +506,11 @@ public class AppUserAuthService {
 
     ApiResult<UserLoginResponse> issueRegisteredSession(
             UserEntity user, String clientAddress, AppSessionSurface surface) {
+        return issueRegisteredSession(user, clientAddress, AppLoginContext.unavailable(surface));
+    }
+
+    ApiResult<UserLoginResponse> issueRegisteredSession(
+            UserEntity user, String clientAddress, AppLoginContext context) {
         if (user == null || user.getId() == null || !StringUtils.hasText(user.getPhone())) {
             throw new BizException(422, "USER_REGISTRATION_SESSION_INVALID");
         }
@@ -465,7 +521,21 @@ public class AppUserAuthService {
             throw new BizException(422, "USER_REGISTRATION_PHONE_INVALID");
         }
         String countryCode = normalizeCountryCode(user.getCountryCode());
-        return issueSession(user, countryCode, user.getPhone(), clientAddress, surface, false);
+        return issueSession(user, countryCode, user.getPhone(), clientAddress, context, false);
+    }
+
+    private ApiResult<UserLoginResponse> endedRefresh(UserSessionEntity session, String message, String fallback) {
+        // A refresh secret is resolved by its hash, then account/session locks are held by refresh().
+        // Do not reveal even a reason across the server-owned environment boundary.
+        UserEntity user = userMapper.findLoginUserForUpdate(session.getUserId());
+        var audience = UserAuthEnvironment.resolve(environment).orElse(null);
+        if (user == null || audience == null || !audience.acceptsSandbox(user.getSandbox()))
+            return ApiResult.fail(401, message);
+        String reason = session.getSessionEndedReason();
+        if (!"APP".equals(session.getSessionGroup()) && !"H5".equals(session.getSessionGroup())) reason = "REAUTH_REQUIRED";
+        else if (reason == null || !List.of("APP_REPLACED", "CURRENT_LOGOUT", "SECURITY_REVOKED", "SESSION_EXPIRED", "REAUTH_REQUIRED").contains(reason)
+                || ("APP_REPLACED".equals(reason) && !"APP".equals(session.getSessionGroup()))) reason = fallback;
+        return ApiResult.fail(401, message, UserLoginResponse.ended(reason));
     }
 
     @Transactional
@@ -481,8 +551,13 @@ public class AppUserAuthService {
         }
         String rawCurrent = request.refreshToken().trim();
         String tokenId = hashToken(rawCurrent);
-        UserSessionEntity current = sessionMapper.findRefreshForUpdate(tokenId);
+        UserSessionEntity routed = sessionMapper.findSession(tokenId);
+        if (routed != null && sessionMapper.lockAccount(routed.getUserId()) == null)
+            throw new BizException(403, "USER_AUTH_REQUIRED");
+        UserSessionEntity current = routed == null ? null : sessionMapper.findRefreshForUpdate(tokenId);
         if (current == null) return ApiResult.fail(401, "USER_REFRESH_TOKEN_INVALID");
+        if (sessionMapper.countFixedContext(tokenId, current.getUserId()) != 1)
+            return endedRefresh(current, "SESSION_CONTEXT_REAUTH_REQUIRED", "REAUTH_REQUIRED");
         String recoveredRaw = null;
         // Both credential transports can recover only the same authenticated rotation intent.
         boolean nonceRotation = validRotationNonce(rotationNonce);
@@ -509,7 +584,7 @@ public class AppUserAuthService {
         if (recoveredRaw == null && (current.getRotationRedeemedAt() != null || current.getRevokedAt() != null)) {
             String chainId = StringUtils.hasText(current.getSessionChainId())
                     ? current.getSessionChainId() : tokenId;
-            sessionMapper.revokeRefreshChain(chainId);
+            revocations.revokeOwned(current.getUserId(), current.getRefreshTokenId());
             outboxService.publish("USER_SECURITY", String.valueOf(current.getUserId()),
                     "auth.refresh_token_reuse_detected", Map.of(
                             "targetUserId", current.getUserId(),
@@ -524,27 +599,27 @@ public class AppUserAuthService {
         int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
         LocalDateTime lastActive = current.getLastActiveAt() == null ? current.getCreatedAt() : current.getLastActiveAt();
         if (current.getExpiresAt() == null || !current.getExpiresAt().isAfter(now)
-                || lastActive == null || lastActive.plusDays(idleDays).isBefore(now)) {
-            sessionMapper.revokeRefreshChain(current.getSessionChainId());
-            return ApiResult.fail(401, "USER_REFRESH_TOKEN_EXPIRED");
+                || lastActive == null || !lastActive.plusDays(idleDays).isAfter(now)) {
+            revocations.expireOwned(current.getUserId(), current.getRefreshTokenId());
+            return endedRefresh(current, "USER_REFRESH_TOKEN_EXPIRED", "SESSION_EXPIRED");
         }
         UserEntity user = userMapper.selectById(current.getUserId());
         if (user == null || !Integer.valueOf(0).equals(user.getIsDeleted()) || !"ACTIVE".equalsIgnoreCase(user.getStatus())
                 || blocklistVerifier.isBlocked(user.getId()) || userMapper.isPasswordResetRequired(user.getId())) {
-            sessionMapper.revokeRefreshChain(current.getSessionChainId());
+            revocations.revokeOwned(current.getUserId(), current.getRefreshTokenId());
             return ApiResult.fail(403, "USER_REFRESH_NOT_ALLOWED");
         }
         ApiResult<UserLoginResponse> environmentFailure = environmentFailure(user, true);
         if (environmentFailure != null) {
-            sessionMapper.revokeRefreshChain(current.getSessionChainId());
+            revocations.revokeOwned(current.getUserId(), current.getRefreshTokenId());
             return environmentFailure;
         }
         if (!validCountryCode(user.getCountryCode())) {
-            sessionMapper.revokeAllUserSessions(user.getId());
+            revocations.revokeAll(user.getId());
             return ApiResult.fail(403, "USER_REFRESH_COUNTRY_CODE_FORBIDDEN");
         }
         if (!validPhone(user.getCountryCode(), user.getPhone())) {
-            sessionMapper.revokeAllUserSessions(user.getId());
+            revocations.revokeAll(user.getId());
             return ApiResult.fail(403, "USER_REFRESH_PHONE_INVALID");
         }
         if (recoveredRaw != null) {
@@ -556,12 +631,12 @@ public class AppUserAuthService {
             return ApiResult.ok(new UserLoginResponse(access, "Bearer",
                     new UserLoginResponse.UserSession(user.getId(), normalizeCountryCode(user.getCountryCode()),
                             user.getPhone(), user.getNickname(), userMapper.isOnboardingComplete(user.getId())),
-                    null, null, recoveredRaw, null, tokenProvider.sessionSyncKey(current.getSessionChainId())));
+                    null, null, recoveredRaw, null, tokenProvider.sessionSyncKey(current.getSessionChainId())).withContext(current, "ACTIVE"));
         }
         String rawNext = nonceRotation ? tokenProvider.refreshSuccessor(rawCurrent, rotationNonce) : randomRefreshToken();
         String nextId = hashToken(rawNext);
         if (sessionMapper.markRefreshRotated(current.getId(), nextId) != 1) {
-            sessionMapper.revokeRefreshChain(current.getSessionChainId());
+            revocations.revokeOwned(current.getUserId(), current.getRefreshTokenId());
             return ApiResult.fail(409, "USER_REFRESH_STATE_CHANGED");
         }
         UserSessionEntity next = new UserSessionEntity();
@@ -570,6 +645,11 @@ public class AppUserAuthService {
         next.setDeviceName(current.getDeviceName());
         next.setClientIp(current.getClientIp());
         next.setSessionChainId(current.getSessionChainId());
+        next.setSessionGroup(current.getSessionGroup());
+        next.setInstallationId(current.getInstallationId());
+        next.setAppSessionVersion(current.getAppSessionVersion());
+        next.setExecutionSupported(current.getExecutionSupported());
+        next.setLoginAttemptId(current.getLoginAttemptId());
         next.setLastActiveAt(now);
         next.setExpiresAt(now.plusDays(configInt("auth.session.refresh_ttl_days", 30, 7, 90)));
         next.setIsDeleted(0);
@@ -584,7 +664,7 @@ public class AppUserAuthService {
         return ApiResult.ok(new UserLoginResponse(access, "Bearer",
                 new UserLoginResponse.UserSession(user.getId(), countryCode, phone, user.getNickname(),
                         userMapper.isOnboardingComplete(user.getId())),
-                null, null, rawNext, null, tokenProvider.sessionSyncKey(current.getSessionChainId())));
+                null, null, rawNext, null, tokenProvider.sessionSyncKey(current.getSessionChainId())).withContext(current, "ACTIVE"));
     }
 
     @Transactional
@@ -594,13 +674,16 @@ public class AppUserAuthService {
             return ApiResult.ok(Map.of("revoked", false));
         }
         String tokenId = hashToken(request.refreshToken().trim());
-        UserSessionEntity current = sessionMapper.findRefreshForUpdate(tokenId);
+        UserSessionEntity routed = sessionMapper.findSession(tokenId);
+        if (routed != null && sessionMapper.lockAccount(routed.getUserId()) == null)
+            throw new BizException(403, "USER_AUTH_REQUIRED");
+        UserSessionEntity current = routed == null ? null : sessionMapper.findRefreshForUpdate(tokenId);
         if (current == null) {
             return ApiResult.ok(Map.of("revoked", false));
         }
         String chainId = StringUtils.hasText(current.getSessionChainId())
                 ? current.getSessionChainId() : tokenId;
-        sessionMapper.revokeRefreshChain(chainId);
+        singleSessions.logout(current);
         return ApiResult.ok(Map.of("revoked", true));
     }
 
@@ -621,6 +704,11 @@ public class AppUserAuthService {
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 unavailable", exception);
         }
+    }
+
+    private UserEntity lockLoginUser(UserEntity user) {
+        if (user == null || sessionMapper.lockAccount(user.getId()) == null) return null;
+        return userMapper.findLoginUserForUpdate(user.getId());
     }
 
     private UserEntity findUser(String countryCode, String phone) {

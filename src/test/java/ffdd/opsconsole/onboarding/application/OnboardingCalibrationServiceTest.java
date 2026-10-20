@@ -10,6 +10,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doThrow;
 import org.mockito.ArgumentCaptor;
 
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper;
@@ -32,18 +33,50 @@ class OnboardingCalibrationServiceTest {
     private final Environment environment = mock(Environment.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
+    private final PhoneInstallationService installations = mock(PhoneInstallationService.class);
+    private final PhoneReplacementService replacements = mock(PhoneReplacementService.class);
+    private final ffdd.opsconsole.common.boundary.PhoneActivationCapacityContract capacity =
+            mock(ffdd.opsconsole.common.boundary.PhoneActivationCapacityContract.class);
+    private final java.util.concurrent.atomic.AtomicReference<ffdd.opsconsole.common.boundary.PhoneReplacementContract.Receipt> committed = new java.util.concurrent.atomic.AtomicReference<>();
+    private final java.util.concurrent.atomic.AtomicReference<OnboardingCalibrationMapper.PhoneBindingRow> binding = new java.util.concurrent.atomic.AtomicReference<>();
     private final ffdd.opsconsole.platform.facade.PlatformConfigFacade configFacade =
             mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
+    private final ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract terms =
+            mock(ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract.class);
     private final OnboardingCalibrationService service = new OnboardingCalibrationService(
-            mapper, null, environment, audit, outbox, configFacade, java.time.Clock.systemUTC());
+            mapper, null, environment, audit, outbox, configFacade, java.time.Clock.systemUTC(), installations, replacements, capacity,
+            terms);
 
     @BeforeEach
     void config() {
+        var auth = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("9", "", List.of());
+        auth.setDetails(Map.of("subjectType", "USER", "sessionId", "current-session"));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(auth);
+        var account = ffdd.opsconsole.common.boundary.PhoneReplacementContract.Account.production(9);
+        when(replacements.lockAccount(any(), any(), any())).thenReturn(
+                new PhoneReplacementService.LockedAccount(account, null, null, null, 1L, 1L));
+        when(replacements.openOperation(any(), any(), any(), any(), any())).thenAnswer(invocation ->
+                new PhoneReplacementService.Command(null, committed.get() != null));
+        when(replacements.receipt(any())).thenAnswer(invocation -> committed.get());
+        when(replacements.recordActivationSuccess(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
+            var receipt = new ffdd.opsconsole.common.boundary.PhoneReplacementContract.Receipt(
+                    "original-operation", "PHONE_ACTIVATE", "SUCCEEDED", 1L, 2L, invocation.getArgument(4), null, "audit-ref");
+            committed.set(receipt);
+            return receipt;
+        });
+        when(replacements.reject(any(), any(), any())).thenAnswer(invocation ->
+                new ffdd.opsconsole.common.boundary.PhoneReplacementContract.Receipt("rejected-operation", "PHONE_ACTIVATE",
+                        "FAILED", 1L, 2L, Map.of("conflictType", invocation.getArgument(2)), null, "audit-ref"));
+        when(mapper.phoneBinding(9L, "PRODUCTION", "")).thenAnswer(invocation -> binding.get());
         when(configFacade.activeValue(PhoneCalibrationConfigService.KEY)).thenReturn(java.util.Optional.of(
                 "{\"revision\":1,\"current\":{\"version\":1,\"effectiveAt\":0,\"thresholds\":[19,25,35,47],\"rules\":["
                 + "{\"id\":\"fixture\",\"platform\":\"android\",\"model\":\"\",\"soc\":\"test soc\",\"gpu\":\"Mali-G715\","
                 + "\"minMemoryGb\":1,\"maxMemoryGb\":129,\"computeValue\":28.3,\"evidence\":\"Test only\"}]},\"scheduled\":null}"));
-        when(mapper.savePhoneBinding(any(), any(), any(), any(), any(), any())).thenReturn(1);
+        when(mapper.savePhoneBinding(any(), any(), any(), any(), any(), any())).thenAnswer(invocation -> {
+            binding.set(new OnboardingCalibrationMapper.PhoneBindingRow(invocation.getArgument(1), invocation.getArgument(2),
+                    invocation.getArgument(3), 1L, 1L));
+            return 1;
+        });
         when(environment.getActiveProfiles()).thenReturn(new String[] {"prod"});
         when(mapper.userSandbox(9L)).thenReturn(0);
         when(mapper.userSandbox(10L)).thenReturn(0);
@@ -60,6 +93,40 @@ class OnboardingCalibrationServiceTest {
                 new ComparisonRow("s1", "Test S1", new BigDecimal("1.000000"), new BigDecimal("1.000000"), 2, 9L),
                 new ComparisonRow("pro", "Test Pro", new BigDecimal("2.000000"), new BigDecimal("2.000000"), 3, 9L),
                 new ComparisonRow("rack", "Test Rack", new BigDecimal("3.000000"), new BigDecimal("3.000000"), 4, 9L)));
+    }
+
+    @org.junit.jupiter.api.AfterEach void clearAuthentication() {
+        org.springframework.security.core.context.SecurityContextHolder.clearContext();
+    }
+
+    @Test void eligibilityRequiresCalibrationForThisInstallation() {
+        when(mapper.find(9L, "other-install")).thenReturn(actionRow(9L, "other-install", 1L, 1L, "ACTIVATED", null, null));
+        assertThat(service.activationBlockReasons(9L, "new-install"))
+                .containsExactly("ONBOARDING_CALIBRATION_REQUIRED");
+        verifyNoActivationWrites();
+    }
+
+    @Test void eligibilityValidatesTermsAndCurrentCalibrationRulesWithoutWrites() {
+        when(mapper.find(9L, "current-install")).thenReturn(actionRow(9L, "current-install", null, 1L, "CALIBRATED", null, null));
+        assertThat(service.activationBlockReasons(9L, "current-install")).isEmpty();
+        when(terms.checkTerms(9L)).thenReturn(ApiResult.fail(403, "USER_TERMS_REQUIRED"));
+        assertThat(service.activationBlockReasons(9L, "current-install")).containsExactly("USER_TERMS_REQUIRED");
+        when(configFacade.activeValue(PhoneCalibrationConfigService.KEY)).thenReturn(java.util.Optional.empty());
+        assertThat(service.activationBlockReasons(9L, "current-install"))
+                .contains("USER_TERMS_REQUIRED", "PHONE_CALIBRATION_RULES_CHANGED");
+        verifyNoActivationWrites();
+    }
+
+    @Test void eligibilityDoesNotMaskUnavailableTermsAsUsable() {
+        when(terms.checkTerms(9L)).thenReturn(ApiResult.fail(503, "USER_TERMS_UNAVAILABLE"));
+        assertThatThrownBy(() -> service.activationBlockReasons(9L, "current-install"))
+                .hasMessage("USER_TERMS_UNAVAILABLE");
+        verifyNoActivationWrites();
+    }
+
+    private void verifyNoActivationWrites() {
+        verify(mapper, never()).insert(any());
+        org.mockito.Mockito.verifyNoInteractions(replacements, audit, outbox, installations, capacity);
     }
 
     @Test
@@ -280,6 +347,34 @@ class OnboardingCalibrationServiceTest {
     }
 
     @Test
+    void committedActivationUnderOldPolicyReplaysBeforeCurrentPolicyOrDeviceChecks() {
+        var account=ffdd.opsconsole.common.boundary.PhoneReplacementContract.Account.production(9);
+        var currentPolicy=new PhoneReplacementPolicy(false,1,30,2,8);
+        when(replacements.lockAccount(any(),any(),any())).thenReturn(
+                new PhoneReplacementService.LockedAccount(account,
+                        new ffdd.opsconsole.common.boundary.PhoneReplacementContract.Binding("dev-phone",44L,"hw",100L,5L),
+                        null,currentPolicy,8L,200L));
+        var original=Map.<String,Object>of("activationStatus","ACTIVE","policyVersion",7L);
+        committed.set(new ffdd.opsconsole.common.boundary.PhoneReplacementContract.Receipt(
+                "original-v7","PHONE_ACTIVATE","SUCCEEDED",100L,101L,original,null,"audit-v7"));
+        var command=new OnboardingCalibrationService.ActionRequest("dev-phone",3L,"original-key-v7",
+                null,4L,7L,null,true,true);
+
+        var result=service.activate(9L,command);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("operationId","original-v7")
+                .containsEntry("policyVersion",7L).containsEntry("originalResult",original);
+        verify(replacements,never()).prepareActivation(any(),any(),any());
+        verify(replacements,never()).recordActivationSuccess(any(),any(),any(),any(),any());
+        verify(replacements,never()).reject(any(),any(),any());
+        verify(mapper,never()).findForUpdate(any(),any());
+        verify(mapper,never()).savePhoneBinding(any(),any(),any(),any(),any(),any());
+        verify(mapper,never()).upsertPhoneDevice(any(),any(),any(),any(),any(),any(),any(),any(),any(),any());
+        org.mockito.Mockito.verifyNoInteractions(terms,capacity,audit,outbox);
+    }
+
+    @Test
     void failedOldTaskCancellationBlocksNewPhoneActivation() {
         when(mapper.findForUpdate(9L, "dev-phone-b")).thenReturn(
                 actionRow(9L, "dev-phone-b", null, 3L, "CALIBRATED", null, null));
@@ -495,10 +590,12 @@ class OnboardingCalibrationServiceTest {
         when(mapper.findForUpdate(9L,"new-phone")).thenReturn(actionRow(9L,"new-phone",null,3L,"CALIBRATED",null,null));
         when(mapper.phoneBinding(9L,"PRODUCTION", "")).thenReturn(
                 new OnboardingCalibrationMapper.PhoneBindingRow("old-phone",33L,"",System.currentTimeMillis(),1L));
-        assertThatThrownBy(() -> service.activate(9L,command)).hasMessageContaining("PHONE_REPLACEMENT_DISABLED");
-        when(configFacade.activeValue("E.compute.phoneBinding.allowReplacement")).thenReturn(java.util.Optional.of("on"));
-        when(configFacade.activeValue("E.compute.phoneBinding.minReplacementIntervalDays")).thenReturn(java.util.Optional.of("30"));
-        assertThatThrownBy(() -> service.activate(9L,command)).hasMessageContaining("PHONE_REPLACEMENT_COOLDOWN");
+        doThrow(new ffdd.opsconsole.shared.exception.BizException(409, "PHONE_REPLACEMENT_DISABLED"))
+                .when(replacements).prepareActivation(any(), any(), any());
+        assertThat(service.activate(9L,command).getMessage()).isEqualTo("PHONE_REPLACEMENT_DISABLED");
+        doThrow(new ffdd.opsconsole.shared.exception.BizException(409, "PHONE_REPLACEMENT_COOLDOWN"))
+                .when(replacements).prepareActivation(any(), any(), any());
+        assertThat(service.activate(9L,command).getMessage()).isEqualTo("PHONE_REPLACEMENT_COOLDOWN");
         verify(mapper,never()).upsertPhoneDevice(any(),any(),any(),any(),any(),any(),any(),any(),any(),any());
     }
 
@@ -507,15 +604,17 @@ class OnboardingCalibrationServiceTest {
         when(mapper.phoneBinding(9L,"PRODUCTION", "")).thenReturn(
                 new OnboardingCalibrationMapper.PhoneBindingRow("old-phone",33L,"",System.currentTimeMillis(),1L));
         when(mapper.lockOtherPhoneTasks(9L,-1L)).thenReturn(List.of());
-        assertThat(service.phoneLogin(9L,"new-phone").get("status")).isEqualTo("PHONE_REPLACEMENT_DISABLED");
-        verify(mapper).claimPhoneExecution(9L,"new-phone");
+        service.authenticatedApp(9L, "new-phone", true);
+        assertThat(service.phoneLogin(9L,"new-phone").get("status")).isEqualTo("REPLACEMENT_REQUIRED");
+        verify(mapper).claimPhoneExecution(9L,"");
         verify(mapper).clearReplacedPhoneRuntime(9L,-1L);
         verify(mapper,never()).savePhoneBinding(any(),any(),any(),any(),any(),any());
         verify(mapper,never()).deactivateOtherPhoneDevices(any(),any(),any(),any());
         when(mapper.find(9L,"old-phone")).thenReturn(actionRow(9L,"old-phone",33L,3L,"ACTIVE",null,null));
+        service.authenticatedApp(9L, "old-phone", true);
         assertThat(service.phoneLogin(9L,"old-phone").get("status")).isEqualTo("BOUND");
         verify(mapper).claimPhoneExecution(9L,"old-phone");
-        verify(mapper).restoreBoundPhoneRuntime(9L,33L);
+        verify(mapper, times(2)).restoreBoundPhoneRuntime(9L,33L);
         var order = org.mockito.Mockito.inOrder(mapper);
         order.verify(mapper).lockUserSandbox(9L);
         order.verify(mapper).phoneBinding(9L,"PRODUCTION", "");
@@ -524,8 +623,8 @@ class OnboardingCalibrationServiceTest {
     @Test
     void caseVariantCannotUseAnOldCalibrationToBypassReplacementPolicy() {
         when(mapper.findForUpdate(9L,"PHONE")).thenReturn(actionRow(9L,"phone",44L,3L,"CALIBRATED",null,null));
-        assertThatThrownBy(() -> service.activate(9L,new OnboardingCalibrationService.ActionRequest("PHONE",3L,"case-variant-001")))
-                .hasMessageContaining("PHONE_INSTALLATION_ID_MISMATCH");
+        assertThat(service.activate(9L,new OnboardingCalibrationService.ActionRequest("PHONE",3L,"case-variant-001")).getMessage())
+                .isEqualTo("PHONE_INSTALLATION_ID_MISMATCH");
         verify(mapper,never()).savePhoneBinding(any(),any(),any(),any(),any(),any());
         verify(mapper,never()).upsertPhoneDevice(any(),any(),any(),any(),any(),any(),any(),any(),any(),any());
     }

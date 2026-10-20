@@ -30,7 +30,7 @@ class AccountDeletionAdminServiceTest {
     private final AuthSessionMapper sessions = mock(AuthSessionMapper.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
-    private final AccountDeletionAdminService service = new AccountDeletionAdminService(mapper, sessions, audit, idempotency);
+    private final AccountDeletionAdminService service = new AccountDeletionAdminService(mapper, sessions, audit, idempotency, org.mockito.Mockito.mock(ffdd.opsconsole.shared.security.UserSessionRevocationService.class));
 
     @Test
     void detailReadUsesANonLockingQueryAndKeepsNullableFields() throws Exception {
@@ -43,7 +43,7 @@ class AccountDeletionAdminServiceTest {
             assertThat(invocation.<String>getArgument(0)).isEqualTo(requestNo);
             return record;
         });
-        var readService = new AccountDeletionAdminService(detailMapper, sessions, audit, idempotency);
+        var readService = new AccountDeletionAdminService(detailMapper, sessions, audit, idempotency, org.mockito.Mockito.mock(ffdd.opsconsole.shared.security.UserSessionRevocationService.class));
 
         var result = readService.find(" " + requestNo + " ");
 
@@ -67,7 +67,7 @@ class AccountDeletionAdminServiceTest {
     @Test
     void detailLookupKeepsNotFoundAndMalformedInputErrorsWithoutSideEffects() {
         AppUserSecurityMapper notFoundMapper = mock(AppUserSecurityMapper.class, invocation -> null);
-        var readService = new AccountDeletionAdminService(notFoundMapper, sessions, audit, idempotency);
+        var readService = new AccountDeletionAdminService(notFoundMapper, sessions, audit, idempotency, org.mockito.Mockito.mock(ffdd.opsconsole.shared.security.UserSessionRevocationService.class));
         for (String requestNo : new String[]{null, " ", "ADR-invalid"}) {
             assertThatThrownBy(() -> readService.find(requestNo))
                     .isInstanceOfSatisfying(BizException.class, error -> assertThat(error.getCode()).isEqualTo(422));

@@ -33,6 +33,8 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.CanonicalEventSchemaMySqlFixture;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -40,6 +42,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.core.env.Environment;
@@ -244,7 +247,7 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
                 new SupportDeviceFundAdapter(new ffdd.opsconsole.finance.application.SupportFundJournalBindingService(
                     fixture.mapper(ffdd.opsconsole.finance.mapper.SupportFundJournalMapper.class),fixture.jdbc().getDataSource(),new com.fasterxml.jackson.databind.ObjectMapper()),
                     fixture.mapper(ffdd.opsconsole.device.mapper.SupportDeviceReadMapper.class),
-                    new SupportDeviceReadService(fixture.mapper(ffdd.opsconsole.device.mapper.SupportDeviceReadMapper.class)),new com.fasterxml.jackson.databind.ObjectMapper())));
+                    new SupportDeviceReadService(fixture.mapper(ffdd.opsconsole.device.mapper.SupportDeviceReadMapper.class)),new com.fasterxml.jackson.databind.ObjectMapper()), org.mockito.Mockito.mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class)));
     }
 
     private AppTradeinService capacityService(CanonicalEventSchemaMySqlFixture fixture) {
@@ -292,7 +295,8 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
         return idempotency;
     }
 
-    private void seedTaskSettlement(CanonicalEventSchemaMySqlFixture fixture) {
+    private void seedTaskSettlement(CanonicalEventSchemaMySqlFixture fixture) throws Exception {
+        createFundJournalDependencies(fixture);
         fixture.jdbc().update("""
                 INSERT INTO nx_user(id,country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox,
                     created_at,updated_at,is_deleted)
@@ -320,6 +324,31 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
                     ?, 18, 5, ?, ?, 'PRODUCTION', 'Nexion App', 'RUNNING', ?, ?, ?, 1, 3, ?, ?, 0)
                 """, TASK_NO, USER_ID, DEVICE_ID, REWARD, COMPLETION_NONCE, NOW.plusHours(2),
                 NOW.minusMinutes(30), NOW.minusMinutes(30), NOW.plusHours(2), NOW.minusMinutes(30), NOW.minusMinutes(30));
+    }
+
+    private void createFundJournalDependencies(CanonicalEventSchemaMySqlFixture fixture) throws Exception {
+        // SHOW CREATE TABLE preserves current wallet columns, but does not copy its triggers.
+        // Keep the settlement adapter real and install the canonical journal bodies before seeding wallets.
+        String earnings=Files.readString(Path.of("scripts/migrations/20261007_earnings_source_recovery.sql"));
+        var debit=Pattern.compile("CREATE TRIGGER IF NOT EXISTS nx_wallet_earnings_debit_counter_v1.*?;",Pattern.DOTALL).matcher(earnings);
+        assertThat(debit.find()).isTrue();fixture.jdbc().execute(debit.group());
+        for(String file:List.of("20261011_support_fund_journal.sql","20261011_support_fund_operations.sql",
+                "20261011_support_fund_operation_party.sql")) {
+            String migration=Files.readString(Path.of("scripts/migrations",file));
+            var tables=Pattern.compile("CREATE TABLE IF NOT EXISTS nx_support_[a-z_]+ \\(.*?\\) ENGINE=.*?;",Pattern.DOTALL).matcher(migration);
+            int tableCount=0;
+            while(tables.find()){fixture.jdbc().execute(tables.group());tableCount++;}
+            assertThat(tableCount).as(file+" canonical tables").isPositive();
+            boolean compound=file.equals("20261011_support_fund_journal.sql");
+            var triggers=Pattern.compile(compound ? "CREATE TRIGGER IF NOT EXISTS .*?END\\$\\$"
+                    : "CREATE TRIGGER IF NOT EXISTS .*?;",Pattern.DOTALL).matcher(migration);
+            int triggerCount=0;
+            while(triggers.find()){
+                String trigger=triggers.group();fixture.jdbc().execute(compound ? trigger.substring(0,trigger.length()-2) : trigger);
+                triggerCount++;
+            }
+            assertThat(triggerCount).as(file+" canonical triggers").isPositive();
+        }
     }
 
     private void seedPaidCloudShare(CanonicalEventSchemaMySqlFixture fixture) {

@@ -31,6 +31,12 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 public class GlobalExceptionHandler {
     private final AuditLogService auditLogService;
 
+    @ExceptionHandler(PhoneReplacementException.class)
+    public ApiResult<PhoneReplacementException.Details> handlePhoneReplacement(PhoneReplacementException ex, HttpServletResponse response) {
+        response.setStatus(normalizeHttpStatus(ex.getCode()));
+        return ApiResult.fail(ex.getCode(),ex.getMessage(),ex.details());
+    }
+
     @ExceptionHandler(BizException.class)
     public ApiResult<Void> handleBiz(BizException ex, HttpServletResponse response) {
         response.setStatus(normalizeHttpStatus(ex.getCode()));

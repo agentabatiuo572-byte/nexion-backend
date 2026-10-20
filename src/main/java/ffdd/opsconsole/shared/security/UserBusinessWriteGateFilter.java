@@ -29,7 +29,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Component
 @RequiredArgsConstructor
 @Slf4j
-public class UserBusinessWriteGateFilter extends OncePerRequestFilter {
+public class UserBusinessWriteGateFilter extends OncePerRequestFilter implements ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract {
     private final UserOpsMapper users;
     private final LegalTermsService legalTerms;
 
@@ -83,6 +83,11 @@ public class UserBusinessWriteGateFilter extends OncePerRequestFilter {
         if (!onboardingComplete) {
             return ApiResult.fail(428, "USER_ONBOARDING_REQUIRED");
         }
+        return checkTerms(userId);
+    }
+
+    @Override
+    public ApiResult<Void> checkTerms(Long userId) {
         final ApiResult<LegalTermsCurrentView> current;
         try {
             current = legalTerms.current(language(userId), "GLOBAL", userId);

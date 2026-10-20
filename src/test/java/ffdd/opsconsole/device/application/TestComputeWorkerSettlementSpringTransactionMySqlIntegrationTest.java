@@ -19,6 +19,18 @@ import ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
+import ffdd.opsconsole.auth.application.AppLoginContext;
+import ffdd.opsconsole.auth.application.AppSessionSurface;
+import ffdd.opsconsole.auth.application.AppSingleSessionService;
+import ffdd.opsconsole.auth.mapper.AppLoginAttemptMapper;
+import ffdd.opsconsole.device.dto.AppTaskCompleteRequest;
+import ffdd.opsconsole.onboarding.application.OnboardingCalibrationService;
+import ffdd.opsconsole.onboarding.application.PhoneInstallationService;
+import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper;
+import ffdd.opsconsole.onboarding.mapper.PhoneInstallationMapper;
+import ffdd.opsconsole.shared.security.*;
+import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
+import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import java.lang.reflect.*;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -45,14 +57,12 @@ import org.springframework.jdbc.datasource.*;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 import org.springframework.transaction.interceptor.TransactionInterceptor;
+import org.springframework.transaction.support.TransactionTemplate;
 
-/** Opt-in, identity-pinned Root-owned localhost13306. Never uses a runtime datasource or shared credentials. */
+/** Opt-in isolated MySQL; explicit test credentials, verified target and independently owned schemas. */
 @EnabledIfEnvironmentVariable(named="UVEL_BUG355_MYSQL_IT", matches="true")
+@EnabledIfEnvironmentVariable(named="NEXION_TEST_DB_PASSWORD", matches=".+")
 class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
-    private static final String URL = "jdbc:mysql://127.0.0.1:13306/?serverTimezone=UTC&useSSL=false&allowPublicKeyRetrieval=true";
-    private static final Path INSTANCE = Path.of("D:/workspace/audit-artifacts/uvel-full-test-20261001/bug355-test-mysql-r01/instance.json");
-    private static final String EXPECTED_UUID = "ad1eb25e-be16-11f1-819a-26563d2f347a";
-    private static final String EXPECTED_DIR = "D:/workspace/audit-artifacts/uvel-full-test-20261001/bug355-test-mysql-r01/data/";
     private static final Pattern OWN = Pattern.compile("uvel_bug355_[a-f0-9]{32}");
     private static final Instant INSTANT = TestComputeWorkerServiceTest.INSTANT;
     private static final LocalDateTime NOW = TestComputeWorkerServiceTest.NOW;
@@ -78,33 +88,41 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
     private int receiptsAfterAdvance;
     private int runtimeMarksAfterAdvance;
     private Map<String,Object> stateAtAdvance;
+    private boolean phoneMode;
+    private AppSingleSessionService appSessions;
+    private TransactionTemplate authTransaction;
+    private static final byte[] PHONE_PROOF_KEY="isolated-phone-executor-key-32-bytes".getBytes(StandardCharsets.UTF_8);
 
     @BeforeEach void fixture() throws Exception {
-        // All server and manifest identity checks precede CREATE DATABASE. URL is constant, not supplied by env.
-        var manifest = json.readTree(Files.readString(INSTANCE));
-        assertThat(manifest.get("state").textValue()).isEqualTo("ready-verified");
-        assertThat(manifest.get("host").textValue()).isEqualTo("127.0.0.1");
-        assertThat(manifest.get("port").intValue()).isEqualTo(13306);
-        assertThat(manifest.at("/identity/uuid").textValue()).isEqualTo(EXPECTED_UUID);
-        assertThat(manifest.at("/identity/mysqlx").textValue()).isEqualTo("DISABLED");
-        admin = DriverManager.getConnection(URL, "root", "");
-        try (var statement=admin.createStatement(); var rows=statement.executeQuery("SELECT @@port,@@datadir,@@server_uuid,@@version, DATABASE()")) {
+        String serverUrl=System.getenv("NEXION_TEST_DB_SERVER_URL");
+        String username=System.getenv("NEXION_TEST_DB_USERNAME");
+        String password=System.getenv("NEXION_TEST_DB_PASSWORD");
+        String expectedDirectory=System.getenv("NEXION_TEST_DB_EXPECTED_DATADIR");
+        assertThat(serverUrl).matches("jdbc:mysql://(127[.]0[.]0[.]1|localhost):[0-9]+/([?].*)?");
+        int port=java.net.URI.create(serverUrl.substring("jdbc:".length())).getPort();
+        assertThat(port).isBetween(1,65535);
+        assertThat(username).isNotBlank();assertThat(password).isNotBlank();
+        assertThat(expectedDirectory).isNotBlank();
+        // Target checks precede CREATE DATABASE; a runtime database URL is never accepted.
+        admin = DriverManager.getConnection(serverUrl, username, password);
+        try (var statement=admin.createStatement(); var rows=statement.executeQuery("SELECT @@port,@@datadir,DATABASE()")) {
             assertThat(rows.next()).isTrue();
-            assertThat(rows.getInt(1)).isEqualTo(13306);
-            assertThat(rows.getString(2).replace('\\','/')).isEqualTo(EXPECTED_DIR);
-            assertThat(rows.getString(3)).isEqualTo(EXPECTED_UUID);
-            assertThat(rows.getString(4)).isEqualTo(manifest.at("/identity/version").textValue());
-            assertThat(rows.getString(5)).isNull();
+            assertThat(rows.getInt(1)).isEqualTo(port);
+            assertThat(rows.getString(2).replace('\\','/').replaceAll("/+$",""))
+                    .isEqualTo(expectedDirectory.replace('\\','/').replaceAll("/+$",""));
+            assertThat(rows.getString(3)).isNull();
         }
         try(var statement=admin.createStatement(); var rows=statement.executeQuery("SELECT COUNT(*) FROM information_schema.PLUGINS WHERE PLUGIN_NAME='mysqlx' AND PLUGIN_STATUS='ACTIVE'")) {
             assertThat(rows.next()).isTrue(); assertThat(rows.getInt(1)).isZero();
         }
-        System.out.println("BUG355_LOCAL_MYSQL_PIN_OK port=13306 uuid="+EXPECTED_UUID+" datadir="+EXPECTED_DIR);
+        System.out.println("BUG355_LOCAL_MYSQL_PIN_OK port="+port+" datadir="+expectedDirectory);
         schema="uvel_bug355_"+UUID.randomUUID().toString().replace("-", "");
         assertThat(OWN.matcher(schema).matches()).isTrue();
         try(var statement=admin.createStatement()) { statement.execute("CREATE DATABASE `"+schema+"` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"); }
         created=true;
-        source=new DriverManagerDataSource(URL.replace("13306/", "13306/"+schema), "root", "");
+        int query=serverUrl.indexOf('?');
+        String fixtureUrl=serverUrl.substring(0,query<0?serverUrl.length():query)+schema+(query<0?"":serverUrl.substring(query));
+        source=new DriverManagerDataSource(fixtureUrl, username, password);
         jdbc=new JdbcTemplate(source);
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(schema);
         createTables(); seed(); configure("CTA-TEST-ONE");
@@ -158,6 +176,139 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         var changed=new CompleteRequest(request.specVersion(), request.inputHash(),"b".repeat(64),request.resultArtifactBase64(),request.proofNonce(),request.proofTimestamp());
         assertThatThrownBy(() -> app.testWorkerComplete(grant,grant.taskNo(),"complete-one",changed)).hasMessageContaining("IDEMPOTENCY");
         assertThat(count("nx_wallet_ledger")).isEqualTo(2);
+    }
+
+    @ParameterizedTest @ValueSource(booleans={false,true})
+    void realPhoneCompletionVersusAppTakeoverSerializesFundsAndNonce(boolean takeoverFirst) throws Exception {
+        preparePhoneFixture();
+        var proof=phoneProof();var next=phoneContext("phone-b");
+        var winnerLocked=new CountDownLatch(1);var contenderStarted=new CountDownLatch(1);
+        var pool=Executors.newFixedThreadPool(2);
+        try {
+            var winner=pool.submit(()->authTransaction.execute(status->{
+                session.getMapper(AuthSessionMapper.class).lockAccount(7);
+                winnerLocked.countDown();awaitPhoneRace(contenderStarted);
+                return takeoverFirst ? appSessions.issue(7,next,"local",30)
+                        : app.complete(7L,"CTA-TEST-ONE","phone-complete",proof);
+            }));
+            var contender=pool.submit(()->{
+                awaitPhoneRace(winnerLocked);contenderStarted.countDown();
+                if(takeoverFirst) {
+                    assertThatThrownBy(()->app.complete(7L,"CTA-TEST-ONE","phone-complete",proof))
+                            .hasMessage("PHONE_EXECUTION_SESSION_REQUIRED");
+                } else authTransaction.executeWithoutResult(status->appSessions.issue(7,next,"local",30));
+            });
+            assertThat(winner.get(20,TimeUnit.SECONDS)).isNotNull();contender.get(20,TimeUnit.SECONDS);
+        } finally { pool.shutdownNow(); }
+        assertPhoneSettlement(!takeoverFirst);
+        assertThat(jdbc.queryForObject("SELECT installation_id FROM nx_app_session_state",String.class)).isEqualTo("phone-b");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_session WHERE revoked_at IS NULL AND session_ended_reason IS NULL",Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT installation_id FROM nx_phone_binding",String.class)).isEqualTo("phone-a");
+        assertThat(jdbc.queryForObject("SELECT execution_installation_id FROM nx_phone_binding",String.class)).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT active_task_no FROM nx_user_device_runtime",String.class)).isNull();
+        assertThat(jdbc.queryForObject("SELECT online_status FROM nx_user_device_runtime",String.class)).isEqualTo("OFFLINE");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_event_outbox WHERE event_type='account.app_session_replaced'",Integer.class)).isEqualTo(2);
+        var beforeReplay=phoneSettlementSnapshot();
+        if(!takeoverFirst) {
+            var replay=app.complete(7L,"CTA-TEST-ONE","phone-complete",proof);
+            assertThat(replay.getCode()).isZero();
+            assertThat(json.valueToTree(replay.getData()).get("receiptNo").asText()).isEqualTo("CTR-CTA-TEST-ONE");
+        }
+        assertThatThrownBy(()->app.complete(7L,"CTA-TEST-ONE","phone-second-command",proof))
+                .hasMessage("PHONE_EXECUTION_SESSION_REQUIRED");
+        assertThat(phoneSettlementSnapshot()).isEqualTo(beforeReplay);
+    }
+
+    @ParameterizedTest @ValueSource(strings={"signature","completeAssignment","audit","outbox"})
+    void realPhoneProofAndSettlementFailureRollBackBeforeTakeover(String point) throws Exception {
+        preparePhoneFixture();var proof=phoneProof();
+        if(point.equals("signature")) proof=new AppTaskCompleteRequest(proof.resultHash(),proof.proofMode(),
+                proof.executorId(),proof.proofNonce(),proof.proofTimestamp(),"0".repeat(64));
+        var submitted=proof;var before=phoneSettlementSnapshot();failure=point;
+        try {
+            var rejected=assertThatThrownBy(()->app.complete(7L,"CTA-TEST-ONE","phone-failed",submitted));
+            switch(point) {
+                case "signature" -> rejected.hasMessage("TASK_ASSIGNMENT_PROOF_SIGNATURE_INVALID");
+                case "completeAssignment" -> rejected.hasMessage("TASK_ASSIGNMENT_PROOF_REPLAYED");
+                case "audit" -> rejected.hasMessage("LOCAL_TEST_AUDIT_FAILURE");
+                default -> rejected.hasMessage("LOCAL_TEST_OUTBOX_FAILURE");
+            }
+        } finally {failure=null;}
+        assertThat(phoneSettlementSnapshot()).isEqualTo(before);
+        assertThat(jdbc.queryForObject("SELECT status FROM nx_compute_task",String.class)).isEqualTo("RUNNING");
+        assertThat(jdbc.queryForObject("SELECT proof_consumed_at FROM nx_compute_task",LocalDateTime.class)).isNull();
+        assertThat(jdbc.queryForObject("SELECT status FROM nx_admin_idempotency_record WHERE idempotency_key='phone-failed'",String.class)).isEqualTo("FAILED");
+        var next=phoneContext("phone-b");
+        authTransaction.executeWithoutResult(status->appSessions.issue(7,next,"local",30));
+        assertPhoneSettlement(false);
+        assertThatThrownBy(()->app.complete(7L,"CTA-TEST-ONE","phone-after-stop",phoneProof()))
+                .hasMessage("PHONE_EXECUTION_SESSION_REQUIRED");
+        assertPhoneSettlement(false);
+    }
+
+    private void preparePhoneFixture() throws Exception {
+        String schemaSql=Files.readString(Path.of("scripts/schema.sql"));
+        for(String table:List.of("nx_user_session","nx_user_security","nx_phone_binding")) {
+            int start=schemaSql.indexOf("CREATE TABLE IF NOT EXISTS "+table+" (");
+            jdbc.execute(schemaSql.substring(start,schemaSql.indexOf(';',start)+1));
+        }
+        String migration=Files.readString(Path.of("scripts/migrations/20261019_app_single_session.sql"));
+        String statements=migration.lines().filter(line->!line.stripLeading().startsWith("--"))
+                .reduce("",(left,right)->left+"\n"+right);
+        try(var connection=source.getConnection();var statement=connection.createStatement()) {
+            for(String sql:statements.split(";"))if(!sql.isBlank())statement.execute(sql);
+        }
+        jdbc.update("UPDATE nx_user_device SET device_type='PHONE',source_channel='ONBOARDING'");
+        jdbc.update("INSERT INTO nx_phone_binding VALUES(7,'PRODUCTION','','phone-a','phone-a',11,'hardware',NOW(6),1)");
+        jdbc.update("INSERT INTO nx_onboarding_calibration(user_id,device_id,user_device_id,signal_json,derived_json,comparison_json,config_revision,idempotency_key,request_hash,activation_status) VALUES(7,'phone-a',11,'{}','{}','{}',1,'phone-fixture',?,'ACTIVE')","a".repeat(64));
+        phoneMode=true;configure("CTA-TEST-ONE");
+        authTransaction=new TransactionTemplate(new DataSourceTransactionManager(source));
+        var initial=phoneContext("phone-a");
+        authTransaction.executeWithoutResult(status->appSessions.issue(7,initial,"local",30));
+        jdbc.update("UPDATE nx_user_device_runtime SET online_status='ONLINE',battery_level=80,network_reachable=1,heartbeat_at=?,paused_reason=NULL",NOW);
+    }
+
+    private AppLoginContext phoneContext(String installation) {
+        return new AppLoginContext(AppSessionSurface.APP,installation,true,
+                "attempt_"+UUID.randomUUID().toString().replace("-",""),"b".repeat(64),"PASSWORD","fixture-user-7");
+    }
+
+    private AppTaskCompleteRequest phoneProof() throws Exception {
+        String canonical="7\nCTA-TEST-ONE\n11\nNEX-TEST-INSTANCE\n"+"f".repeat(64)+"\n"+INSTANT.toEpochMilli()+"\n"+TestComputeWorkerServiceTest.NONCE;
+        var mac=javax.crypto.Mac.getInstance("HmacSHA256");
+        mac.init(new javax.crypto.spec.SecretKeySpec(PHONE_PROOF_KEY,"HmacSHA256"));
+        return new AppTaskCompleteRequest("f".repeat(64),"PRODUCTION","phone-executor",TestComputeWorkerServiceTest.NONCE,
+                INSTANT.toEpochMilli(),HexFormat.of().formatHex(mac.doFinal(canonical.getBytes(StandardCharsets.UTF_8))));
+    }
+
+    private void assertPhoneSettlement(boolean completed) {
+        assertBalances(completed?"10.25":"10","20");
+        for(String table:List.of("nx_compute_receipt","nx_wallet_ledger","nx_earning_event"))
+            assertThat(count(table)).as(table).isEqualTo(completed?1:0);
+        assertThat(jdbc.queryForObject("SELECT status FROM nx_compute_task",String.class)).isEqualTo(completed?"COMPLETED":"CANCELLED");
+        assertThat(jdbc.queryForObject("SELECT proof_consumed_at IS NOT NULL FROM nx_compute_task",Boolean.class)).isEqualTo(completed);
+        assertThat(jdbc.queryForObject("SELECT completion_nonce FROM nx_compute_task",String.class)).isEqualTo(TestComputeWorkerServiceTest.NONCE);
+        for(String event:List.of("task.completed","earnings.credited"))
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_event_outbox WHERE event_type=?",Integer.class,event)).isEqualTo(completed?1:0);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log WHERE action='TASK_ASSIGNMENT_COMPLETED'",Integer.class)).isEqualTo(completed?1:0);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log WHERE action='TASK_ASSIGNMENT_PHONE_REPLACED'",Integer.class)).isEqualTo(completed?0:1);
+    }
+
+    private Map<String,Object> phoneSettlementSnapshot() {
+        var result=new LinkedHashMap<String,Object>();
+        for(String table:List.of("nx_user_wallet","nx_compute_task","nx_compute_receipt","nx_wallet_ledger",
+                "nx_earning_event","nx_user_device_runtime","nx_compute_device_task_lock","nx_support_wallet_journal",
+                "nx_support_fund_operation"))
+            result.put(table,jdbc.queryForList("SELECT * FROM "+table+" ORDER BY id"));
+        result.put("fundLegs",jdbc.queryForList("SELECT * FROM nx_support_fund_operation_leg ORDER BY wallet_incarnation,revision"));
+        result.put("fundParties",jdbc.queryForList("SELECT * FROM nx_support_fund_operation_party ORDER BY operation_id,customer_id"));
+        result.put("audit",count("nx_audit_log"));result.put("outbox",count("nx_event_outbox"));
+        return result;
+    }
+
+    private static void awaitPhoneRace(CountDownLatch latch) {
+        try {if(!latch.await(10,TimeUnit.SECONDS))throw new AssertionError("phone race latch timeout");}
+        catch(InterruptedException failure){Thread.currentThread().interrupt();throw new AssertionError(failure);}
     }
 
     @Test void expiredOldLeaseCreatesOnlyTheDeterministicNewServerTaskWithFreshNonceAndOriginalFrozenReward() {
@@ -536,7 +687,11 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         global.setMetaObjectHandler(new ffdd.opsconsole.shared.config.MybatisMetaObjectHandler(businessClock));
         GlobalConfigUtils.setGlobalConfig(config,global);
         config.setMapUnderscoreToCamelCase(true);
-        for(Class<?> type:List.of(AppTaskAssignmentMapper.class,AuditLogMapper.class,EventOutboxMapper.class,AdminIdempotencyRecordMapper.class)) config.addMapper(type);
+        for(Class<?> type:List.of(AppTaskAssignmentMapper.class,AuditLogMapper.class,EventOutboxMapper.class,AdminIdempotencyRecordMapper.class,
+                ffdd.opsconsole.finance.mapper.SupportFundJournalMapper.class,
+                ffdd.opsconsole.device.mapper.SupportDeviceReadMapper.class)) config.addMapper(type);
+        if(phoneMode) for(Class<?> type:List.of(AuthSessionMapper.class,AppLoginAttemptMapper.class,UserOpsMapper.class,
+                OnboardingCalibrationMapper.class,PhoneInstallationMapper.class)) config.addMapper(type);
         session=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));
         mapper=controlled(AppTaskAssignmentMapper.class,session.getMapper(AppTaskAssignmentMapper.class));
         var auditMapper=controlled(AuditLogMapper.class,session.getMapper(AuditLogMapper.class));
@@ -549,12 +704,31 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         var idempotency=new AdminIdempotencyService(executor,Clock.fixed(idempotencyNow.toInstant(ZoneOffset.UTC),ZoneOffset.UTC));
         var outbox=new EventOutboxService(controlled(EventOutboxMapper.class,session.getMapper(EventOutboxMapper.class)),json,new OutboxProperties(),mock(A4RuntimePolicyService.class));
         var proof=mock(ComputeTaskProofVerifier.class);when(proof.sourceEnvironment()).thenReturn("PRODUCTION");
+        ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract phone=mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class);
+        if(phoneMode) {
+            proof=new ComputeTaskProofVerifier("PRODUCTION","phone-executor:NEX-TEST-INSTANCE:"
+                    +Base64.getEncoder().encodeToString(PHONE_PROOF_KEY),120000,businessClock,env,
+                    mock(ffdd.opsconsole.janus.application.JanusSandboxEnrollmentService.class));
+            var platform=mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
+            when(platform.activeValue(anyString())).thenReturn(Optional.empty());
+            var users=session.getMapper(UserOpsMapper.class);
+            var blocklist=mock(UserAccountBlocklistVerifier.class);
+            var current=transactional(new CurrentAppSessionService(session.getMapper(AuthSessionMapper.class),platform,blocklist,users,env));
+            phone=transactional(new OnboardingCalibrationService(session.getMapper(OnboardingCalibrationMapper.class),
+                    mock(ffdd.opsconsole.growth.application.WheelSandboxProfile.class),env,audit,outbox,platform,businessClock,
+                    new PhoneInstallationService(session.getMapper(PhoneInstallationMapper.class),current),
+                    mock(ffdd.opsconsole.onboarding.application.PhoneReplacementService.class),
+                    mock(ffdd.opsconsole.common.boundary.PhoneActivationCapacityContract.class),
+                    mock(ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract.class)));
+            appSessions=new AppSingleSessionService(session.getMapper(AuthSessionMapper.class),session.getMapper(AppLoginAttemptMapper.class),
+                    new JwtTokenProvider(new JwtProperties()),phone,audit,outbox,platform,users,blocklist,env);
+        }
         worker=transactional(new TestComputeWorkerService(mapper,audit,businessClock,env));
         var target=new AppTaskAssignmentService(mapper,idempotency,outbox,audit,proof,env,businessClock,worker,
             new SupportDeviceFundAdapter(new ffdd.opsconsole.finance.application.SupportFundJournalBindingService(
                 session.getMapper(ffdd.opsconsole.finance.mapper.SupportFundJournalMapper.class),source,json),
                 session.getMapper(ffdd.opsconsole.device.mapper.SupportDeviceReadMapper.class),
-                new SupportDeviceReadService(session.getMapper(ffdd.opsconsole.device.mapper.SupportDeviceReadMapper.class)),json));
+                new SupportDeviceReadService(session.getMapper(ffdd.opsconsole.device.mapper.SupportDeviceReadMapper.class)),json),phone);
         app=transactional(target);
         grant=continuous ? worker.continuousGrant(continuousIdentity(),taskNo,INSTANT.minusSeconds(10).toEpochMilli(),INSTANT.plusSeconds(86400).toEpochMilli())
                 : worker.authenticate("Bearer "+TestComputeWorkerServiceTest.TOKEN);
@@ -605,15 +779,52 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
                 "nx_user_wallet","nx_wallet_ledger","nx_earning_event","nx_config_item","nx_onboarding_calibration",
                 "nx_admin_idempotency_record","nx_audit_log","nx_event_outbox","nx_event_schema_registry","nx_event_schema_property")) {
             var matcher=Pattern.compile("CREATE TABLE IF NOT EXISTS "+table+" \\(.*?\\) ENGINE=.*?;",Pattern.DOTALL).matcher(sql);
-            assertThat(matcher.find()).as("formal schema DDL "+table).isTrue();jdbc.execute(matcher.group());
+            assertThat(matcher.find()).as("formal schema DDL "+table).isTrue();
+            String definition=matcher.group();
+            if(table.equals("nx_user_wallet")) {
+                // UUID identity belongs in the fresh table: ALTER ADD with a system-function default is unsafe.
+                definition=definition.replace("nx_user_wallet (", "nx_user_wallet (\n"
+                        + "  fund_incarnation CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT (UUID()),");
+            }
+            jdbc.execute(definition);
         }
         // Existing canonical migration; schema.sql predates wallet sandbox. No production schema change.
         jdbc.execute("ALTER TABLE nx_user_wallet ADD COLUMN sandbox TINYINT(1) NOT NULL DEFAULT 0");
+        createFundJournalDependencies();
         // Minimal legacy E2 projection, using only actual AppTaskAssignmentMapper's current columns.
         jdbc.execute("CREATE TABLE nx_admin_device_task(id BIGINT AUTO_INCREMENT PRIMARY KEY,task_id VARCHAR(64) UNIQUE,name VARCHAR(128),task_class VARCHAR(32),model_name VARCHAR(128),min_reward DECIMAL(18,6),max_reward DECIMAL(18,6),min_vram VARCHAR(32),status VARCHAR(32),kill_init VARCHAR(32),updated_at DATETIME,is_deleted TINYINT DEFAULT 0)");
         String lifecycle=Files.readString(Path.of("scripts/migrations/20260810_ab_pending_closure.sql"));
         var matcher=Pattern.compile("CREATE TABLE IF NOT EXISTS nx_admin_event_lifecycle \\(.*?\\) ENGINE=.*?;",Pattern.DOTALL).matcher(lifecycle);
         assertThat(matcher.find()).isTrue();jdbc.execute(matcher.group());
+    }
+
+    private void createFundJournalDependencies() throws Exception {
+        // The real settlement adapter binds wallet revisions; reuse canonical table/trigger bodies.
+        // This fixture exercises writers and rollback, not the migration deployment integrity guards.
+        jdbc.execute("ALTER TABLE nx_user_wallet ADD cregis_risk_held DECIMAL(18,6) NOT NULL DEFAULT 0,"
+                + "ADD earnings_usdt_debited DECIMAL(30,6) NOT NULL DEFAULT 0,"
+                + "ADD earnings_nex_debited DECIMAL(30,6) NOT NULL DEFAULT 0,"
+                + "ADD fund_revision BIGINT NOT NULL DEFAULT 0");
+        String earnings=Files.readString(Path.of("scripts/migrations/20261007_earnings_source_recovery.sql"));
+        var debit=Pattern.compile("CREATE TRIGGER IF NOT EXISTS nx_wallet_earnings_debit_counter_v1.*?;",Pattern.DOTALL).matcher(earnings);
+        assertThat(debit.find()).isTrue();jdbc.execute(debit.group());
+        for(String file:List.of("20261011_support_fund_journal.sql","20261011_support_fund_operations.sql",
+                "20261011_support_fund_operation_party.sql")) {
+            String migration=Files.readString(Path.of("scripts/migrations",file));
+            var tables=Pattern.compile("CREATE TABLE IF NOT EXISTS nx_support_[a-z_]+ \\(.*?\\) ENGINE=.*?;",Pattern.DOTALL).matcher(migration);
+            int tableCount=0;
+            while(tables.find()){jdbc.execute(tables.group());tableCount++;}
+            assertThat(tableCount).as(file+" canonical tables").isPositive();
+            boolean compound=file.equals("20261011_support_fund_journal.sql");
+            var triggers=Pattern.compile(compound ? "CREATE TRIGGER IF NOT EXISTS .*?END\\$\\$"
+                    : "CREATE TRIGGER IF NOT EXISTS .*?;",Pattern.DOTALL).matcher(migration);
+            int triggerCount=0;
+            while(triggers.find()){
+                String trigger=triggers.group();jdbc.execute(compound ? trigger.substring(0,trigger.length()-2) : trigger);
+                triggerCount++;
+            }
+            assertThat(triggerCount).as(file+" canonical triggers").isPositive();
+        }
     }
 
     private void seed() {

@@ -47,8 +47,6 @@ import org.springframework.transaction.interceptor.TransactionInterceptor;
 @EnabledIfEnvironmentVariable(named = "NEXION_DEV_PENDING_IT", matches = "true")
 @EnabledIfEnvironmentVariable(named = "NEXION_TEST_DB_PASSWORD", matches = ".+")
 class AppTaskAssignmentLeaseExpirySpringTransactionMySqlIntegrationTest {
-    private static final String SERVER_URL = "jdbc:mysql://127.0.0.1:3306/?useUnicode=true&characterEncoding=utf8"
-            + "&serverTimezone=UTC&useSSL=false&allowPublicKeyRetrieval=true";
     private static final Pattern OWNED_DATABASE = Pattern.compile("nx_task_expiry_test_[0-9a-f]{32}");
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-09-10T12:00:00Z"), ZoneOffset.UTC);
     private Connection admin;
@@ -60,16 +58,31 @@ class AppTaskAssignmentLeaseExpirySpringTransactionMySqlIntegrationTest {
 
     @BeforeEach
     void createFixture() throws Exception {
-        admin = DriverManager.getConnection(SERVER_URL, "root", System.getenv("NEXION_TEST_DB_PASSWORD"));
-        assertThat(new JdbcTemplate(new DriverManagerDataSource(SERVER_URL, "root", System.getenv("NEXION_TEST_DB_PASSWORD")))
-                .queryForObject("SELECT DATABASE()", String.class)).isNull();
+        String serverUrl = System.getenv("NEXION_TEST_DB_SERVER_URL");
+        String username = System.getenv("NEXION_TEST_DB_USERNAME");
+        String password = System.getenv("NEXION_TEST_DB_PASSWORD");
+        String expectedDirectory = System.getenv("NEXION_TEST_DB_EXPECTED_DATADIR");
+        assertThat(serverUrl).matches("jdbc:mysql://(127[.]0[.]0[.]1|localhost):[0-9]+/([?].*)?");
+        int port = java.net.URI.create(serverUrl.substring("jdbc:".length())).getPort();
+        assertThat(port).isBetween(1, 65535);
+        assertThat(username).isNotBlank();
+        assertThat(password).isNotBlank();
+        assertThat(expectedDirectory).isNotBlank();
+        admin = DriverManager.getConnection(serverUrl, username, password);
+        try (var statement = admin.createStatement(); var rows = statement.executeQuery("SELECT @@port,@@datadir,DATABASE()")) {
+            assertThat(rows.next()).isTrue();
+            assertThat(rows.getInt(1)).isEqualTo(port);
+            assertThat(rows.getString(2).replace('\\', '/').replaceAll("/+$", ""))
+                    .isEqualTo(expectedDirectory.replace('\\', '/').replaceAll("/+$", ""));
+            assertThat(rows.getString(3)).isNull();
+        }
         database = "nx_task_expiry_test_" + UUID.randomUUID().toString().replace("-", "");
         assertThat(OWNED_DATABASE.matcher(database).matches()).isTrue();
         try (var statement = admin.createStatement()) {
             statement.execute("CREATE DATABASE `" + database + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
             created = true;
         }
-        source = new DriverManagerDataSource(fixtureUrl(database), "root", System.getenv("NEXION_TEST_DB_PASSWORD"));
+        source = new DriverManagerDataSource(fixtureUrl(serverUrl, database), username, password);
         jdbc = new JdbcTemplate(source);
         assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(database);
         createTables();
@@ -172,7 +185,7 @@ class AppTaskAssignmentLeaseExpirySpringTransactionMySqlIntegrationTest {
         org.mockito.Mockito.when(proof.sourceEnvironment()).thenReturn("PRODUCTION");
         AppTaskAssignmentService target = new AppTaskAssignmentService(mapper,
                 mock(AdminIdempotencyService.class), outbox, audit, proof, new StandardEnvironment(), CLOCK,
-                mock(TestComputeWorkerService.class), mock(SupportDeviceFundAdapter.class));
+                mock(TestComputeWorkerService.class), mock(SupportDeviceFundAdapter.class), org.mockito.Mockito.mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class));
         ProxyFactory factory = new ProxyFactory(target);
         factory.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(source),
                 new AnnotationTransactionAttributeSource()));
@@ -225,7 +238,7 @@ class AppTaskAssignmentLeaseExpirySpringTransactionMySqlIntegrationTest {
     private void createTables() {
         jdbc.execute("CREATE TABLE nx_user (id BIGINT PRIMARY KEY,status VARCHAR(32),sandbox TINYINT,is_deleted TINYINT,created_at DATETIME)");
         jdbc.execute("CREATE TABLE nx_user_device (id BIGINT PRIMARY KEY,user_id BIGINT,instance_no VARCHAR(96),status VARCHAR(32),row_version BIGINT,pending_deactivate TINYINT,source_environment VARCHAR(32),run_id VARCHAR(96),ownership_status VARCHAR(32),activated_at DATETIME,deactivated_at DATETIME,updated_at DATETIME,is_deleted TINYINT)");
-        jdbc.execute("CREATE TABLE nx_compute_task (id BIGINT AUTO_INCREMENT PRIMARY KEY,task_no VARCHAR(96),user_id BIGINT,user_device_id BIGINT,task_config_id VARCHAR(96),task_name VARCHAR(128),task_type VARCHAR(32),model_name VARCHAR(128),client_name VARCHAR(128),status VARCHAR(32),reward_usdt DECIMAL(18,6),required_seconds INT,task_lock_minutes INT,started_at DATETIME,lease_expires_at DATETIME,completed_at DATETIME,completion_nonce VARCHAR(128),proof_expires_at DATETIME,proof_consumed_at DATETIME,source_environment VARCHAR(32),last_error VARCHAR(128),updated_at DATETIME,is_deleted TINYINT)");
+        jdbc.execute("CREATE TABLE nx_compute_task (id BIGINT AUTO_INCREMENT PRIMARY KEY,task_no VARCHAR(96),user_id BIGINT,user_device_id BIGINT,task_config_id VARCHAR(96),task_name VARCHAR(128),task_type VARCHAR(32),model_name VARCHAR(128),client_name VARCHAR(128),status VARCHAR(32),reward_usdt DECIMAL(18,6),required_seconds INT,task_lock_minutes INT,started_at DATETIME,lease_expires_at DATETIME,completed_at DATETIME,completion_nonce VARCHAR(128),proof_expires_at DATETIME,proof_consumed_at DATETIME,paused_at DATETIME NULL,paused_seconds BIGINT NOT NULL DEFAULT 0,source_environment VARCHAR(32),last_error VARCHAR(128),updated_at DATETIME,is_deleted TINYINT)");
         jdbc.execute("CREATE TABLE nx_compute_receipt (id BIGINT AUTO_INCREMENT PRIMARY KEY,task_no VARCHAR(96),receipt_no VARCHAR(96),source_environment VARCHAR(32),is_deleted TINYINT)");
         jdbc.execute("CREATE TABLE nx_user_device_runtime (id BIGINT AUTO_INCREMENT PRIMARY KEY,user_device_id BIGINT,active_task_no VARCHAR(96),online_status VARCHAR(32),paused_reason VARCHAR(64),updated_at DATETIME,is_deleted TINYINT)");
         jdbc.execute("CREATE TABLE nx_config_item (id BIGINT AUTO_INCREMENT PRIMARY KEY,config_key VARCHAR(128),config_value VARCHAR(128),status TINYINT,is_deleted TINYINT)");
@@ -245,8 +258,10 @@ class AppTaskAssignmentLeaseExpirySpringTransactionMySqlIntegrationTest {
         jdbc.update("INSERT INTO nx_earning_event(event_no,user_id,user_device_id,amount,is_deleted) VALUES('EARN-EXISTING',7,11,1,0)");
     }
 
-    private static String fixtureUrl(String schema) {
-        return SERVER_URL.substring(0, SERVER_URL.indexOf('?')) + schema + SERVER_URL.substring(SERVER_URL.indexOf('?'));
+    private static String fixtureUrl(String serverUrl, String schema) {
+        int query = serverUrl.indexOf('?');
+        return serverUrl.substring(0, query < 0 ? serverUrl.length() : query) + schema
+                + (query < 0 ? "" : serverUrl.substring(query));
     }
 
     /** Transaction-bound persistence stub for proving rollback, rather than a substitute for EventOutboxService behavior. */

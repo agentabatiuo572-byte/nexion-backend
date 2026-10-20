@@ -71,6 +71,20 @@ class OpsAuditControllerTest {
         SecurityContextHolder.clearContext();
     }
 
+    @Test void proposalRecoveryUsesReadOnlyGetUnderA2ReadAndDelegatesExactKey() throws Exception {
+        var method = OpsAuditController.class.getMethod("proposalByIdempotencyKey", String.class);
+        assertThat(method.getAnnotation(org.springframework.web.bind.annotation.GetMapping.class).value())
+                .containsExactly("/operations/proposals/by-idempotency-key");
+        assertThat(OpsAuditController.class.getAnnotation(PreAuthorize.class).value())
+                .isEqualTo("hasAuthority('platform_a2_read')");
+        when(auditCenterService.proposalByIdempotencyKey("original-key"))
+                .thenReturn(ffdd.opsconsole.shared.api.ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN"));
+        var result = controller.proposalByIdempotencyKey("original-key");
+        assertThat(result.getCode()).isEqualTo(404);
+        verify(auditCenterService).proposalByIdempotencyKey("original-key");
+        org.mockito.Mockito.verifyNoInteractions(auditLogService, idempotencyService);
+    }
+
     @Test
     void reasonPolicyIsAvailableOnlyToAnAuthenticatedAdminSession() throws Exception {
         PreAuthorize guard = OpsAuditController.class.getDeclaredMethod("reasonPolicy")

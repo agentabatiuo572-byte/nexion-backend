@@ -33,6 +33,8 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 class AppUserOAuthServiceTest {
+    private static final AppLoginContext OAUTH_CONTEXT=new AppLoginContext(AppSessionSurface.APP,"oauth-installation",true,
+            "oauth-attempt-0123456789","r".repeat(64),"OAUTH","oauth-provider-reference");
     private static final String LOCAL_ORIGIN = "http://127.0.0.1:5173";
     private final UserOAuthIdentityMapper identityMapper = mock(UserOAuthIdentityMapper.class);
     private final UserOpsMapper userMapper = mock(UserOpsMapper.class);
@@ -50,6 +52,33 @@ class AppUserOAuthServiceTest {
         when(environment.getActiveProfiles()).thenReturn(new String[] {"test"});
         when(environment.getProperty("server.forward-headers-strategy")).thenReturn("none");
         when(passwordEncoder.encode(any())).thenReturn("oauth-hash");
+        when(authService.recoverCompletedLogin(any())).thenAnswer(call->{
+            ((AppLoginContext)call.getArgument(0)).validate(); return null;
+        });
+    }
+
+    @Test
+    void consumedChallengeRecoversTheConcurrentOriginalLoginWithoutIssuingAgain() {
+        String challenge = "OAUTH-11111111111111111111111111111111";
+        var original = new ffdd.opsconsole.auth.dto.UserLoginResponse(
+                "original-access", "Bearer", new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
+                        301L, "+86", "13900123001", "Sandbox Alice"), "original-refresh");
+        when(authService.recoverCompletedLogin(OAUTH_CONTEXT)).thenReturn(null, ApiResult.ok(original));
+        when(sandboxChallengeService.consume("GOOGLE", challenge)).thenReturn(java.util.Optional.empty());
+
+        var result = service.exchange(new UserOAuthExchangeRequest(
+                "GOOGLE", "SANDBOX_MOCK", null, "Sandbox Alice", challenge),
+                "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().accessToken()).isEqualTo("original-access");
+        assertThat(result.getData().refreshToken()).isEqualTo("original-refresh");
+        assertThat(result.getData().user().userId()).isEqualTo(301L);
+        verify(authService, org.mockito.Mockito.times(2)).recoverCompletedLogin(OAUTH_CONTEXT);
+        verify(authService, never()).issueRegisteredSession(any(), any(), any(AppLoginContext.class));
+        verify(userMapper, never()).insert(any(UserEntity.class));
+        verify(identityMapper, never()).insertIdentity(any());
+        org.mockito.Mockito.verifyNoInteractions(outboxService);
     }
 
     @Test
@@ -59,22 +88,18 @@ class AppUserOAuthServiceTest {
             user.setId(301L);
             return 1;
         }).when(userMapper).insert(any(UserEntity.class));
-        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1"),
-                eq(AppSessionSurface.APP)))
+        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1"), eq(OAUTH_CONTEXT)))
                 .thenReturn(ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
                         "access", "Bearer", new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
                                 301L, "+86", "13900123001", "Sandbox Alice"), "refresh")));
 
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                sandboxRequest("GOOGLE", "browser-a", "Sandbox Alice"),
-                "127.0.0.1", LOCAL_ORIGIN, AppSessionSurface.APP);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(sandboxRequest("GOOGLE", "browser-a", "Sandbox Alice"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().source()).isEqualTo("mock");
         assertThat(result.getData().sandbox()).isTrue();
         assertThat(result.getData().user().userId()).isEqualTo(301L);
-        verify(authService).issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1"),
-                eq(AppSessionSurface.APP));
+        verify(authService).issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1"), eq(OAUTH_CONTEXT));
         ArgumentCaptorSupport.assertSandboxUser(userMapper);
         verify(userMapper).ensureRegisteredUserWallet(301L, 1);
         verify(outboxService).publish(eq("USER_SECURITY"), eq("301"),
@@ -89,7 +114,7 @@ class AppUserOAuthServiceTest {
             user.setId(ids.incrementAndGet());
             return 1;
         }).when(userMapper).insert(any(UserEntity.class));
-        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1")))
+        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1"), eq(OAUTH_CONTEXT)))
                 .thenAnswer(invocation -> {
                     UserEntity user = invocation.getArgument(0);
                     return ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
@@ -98,9 +123,7 @@ class AppUserOAuthServiceTest {
                                     user.getId(), "+86", user.getPhone(), user.getNickname()), "refresh"));
                 });
 
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                sandboxRequest("TELEGRAM", "app-telegram-development", "Telegram Mock"),
-                "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(sandboxRequest("TELEGRAM", "app-telegram-development", "Telegram Mock"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().source()).isEqualTo("mock");
         assertThat(result.getData().sandbox()).isTrue();
@@ -115,14 +138,12 @@ class AppUserOAuthServiceTest {
         UserEntity fixed = activeSandboxUser(187L, "+86", "18708173775", "Development User");
         when(userMapper.lockActiveDevelopmentUserByPhone("+86", "86", "18708173775"))
                 .thenReturn(fixed);
-        when(authService.issueRegisteredSession(fixed, "127.0.0.1"))
+        when(authService.issueRegisteredSession(fixed, "127.0.0.1", OAUTH_CONTEXT))
                 .thenReturn(ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
                         "access", "Bearer", new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
                                 187L, "+86", "18708173775", "Development User"), "refresh")));
 
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                sandboxRequest("PASSKEY", "development-passkey-fixed-account", "Passkey User"),
-                "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(sandboxRequest("PASSKEY", "development-passkey-fixed-account", "Passkey User"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().user().userId()).isEqualTo(187L);
@@ -147,19 +168,15 @@ class AppUserOAuthServiceTest {
                 .thenReturn(fixed);
         when(sandboxChallengeService.consume("PASSKEY", "OAUTH-33333333333333333333333333333333"))
                 .thenReturn(java.util.Optional.of("development-passkey-fixed-account"));
-        when(authService.issueRegisteredSession(fixed, "127.0.0.1"))
+        when(authService.issueRegisteredSession(fixed, "127.0.0.1", OAUTH_CONTEXT))
                 .thenReturn(ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
                         "access", "Bearer", new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
                                 188L, "+86", "18708173775", "Development User"), "refresh")));
 
-        ApiResult<UserOAuthExchangeResponse> passkey = service.exchange(
-                new UserOAuthExchangeRequest("PASSKEY", "SANDBOX_MOCK", null, "Passkey User",
-                        "OAUTH-33333333333333333333333333333333"),
-                "127.0.0.1", LOCAL_ORIGIN);
-        ApiResult<UserOAuthExchangeResponse> google = service.exchange(
-                new UserOAuthExchangeRequest("GOOGLE", "SANDBOX_MOCK", null, "Google User",
-                        "OAUTH-44444444444444444444444444444444"),
-                "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> passkey = service.exchange(new UserOAuthExchangeRequest("PASSKEY", "SANDBOX_MOCK", null, "Passkey User",
+                        "OAUTH-33333333333333333333333333333333"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
+        ApiResult<UserOAuthExchangeResponse> google = service.exchange(new UserOAuthExchangeRequest("GOOGLE", "SANDBOX_MOCK", null, "Google User",
+                        "OAUTH-44444444444444444444444444444444"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(passkey.getCode()).isZero();
         assertThat(passkey.getData().source()).isEqualTo("development");
@@ -176,14 +193,12 @@ class AppUserOAuthServiceTest {
         when(environment.getProperty("nexion.auth.development-passkey-account.phone"))
                 .thenReturn("18800000000");
 
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                sandboxRequest("PASSKEY", "development-passkey-fixed-account", "Passkey User"),
-                "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(sandboxRequest("PASSKEY", "development-passkey-fixed-account", "Passkey User"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getMessage()).isEqualTo("OAUTH_DEVELOPMENT_ACCOUNT_NOT_FOUND");
         verify(userMapper, never()).lockActiveDevelopmentUserByPhone(any(), any(), any());
-        verify(authService, never()).issueRegisteredSession(any(), any());
+        verify(authService, never()).issueRegisteredSession(any(), any(), eq(OAUTH_CONTEXT));
     }
 
     @Test
@@ -193,9 +208,7 @@ class AppUserOAuthServiceTest {
         when(environment.getProperty("nexion.auth.development-passkey-account.phone"))
                 .thenReturn("18708173775");
 
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                sandboxRequest("PASSKEY", "development-passkey-fixed-account", "Passkey User"),
-                "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(sandboxRequest("PASSKEY", "development-passkey-fixed-account", "Passkey User"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getMessage()).isEqualTo("OAUTH_DEVELOPMENT_ACCOUNT_NOT_FOUND");
@@ -205,10 +218,8 @@ class AppUserOAuthServiceTest {
 
     @Test
     void passkeyRejectsANonLocalDevelopmentCallerBeforeConsumingTheChallenge() {
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                new UserOAuthExchangeRequest("PASSKEY", "SANDBOX_MOCK", null, "Passkey User",
-                        "OAUTH-11111111111111111111111111111111"),
-                "192.168.1.20", "http://192.168.1.20:5173");
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(new UserOAuthExchangeRequest("PASSKEY", "SANDBOX_MOCK", null, "Passkey User",
+                        "OAUTH-11111111111111111111111111111111"), "192.168.1.20", "http://192.168.1.20:5173", OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("OAUTH_DEVELOPMENT_PASSKEY_LOCAL_ONLY");
@@ -219,10 +230,8 @@ class AppUserOAuthServiceTest {
     @Test
     void everySandboxProviderRejectsANonLocalExchangeBeforeConsumingTheChallenge() {
         for (String provider : java.util.List.of("GOOGLE", "APPLE", "PASSKEY", "TELEGRAM")) {
-            ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                    new UserOAuthExchangeRequest(provider, "SANDBOX_MOCK", null, "Local only",
-                            "OAUTH-11111111111111111111111111111111"),
-                    "192.168.1.20", "http://192.168.1.20:5173");
+            ApiResult<UserOAuthExchangeResponse> result = service.exchange(new UserOAuthExchangeRequest(provider, "SANDBOX_MOCK", null, "Local only",
+                            "OAUTH-11111111111111111111111111111111"), "192.168.1.20", "http://192.168.1.20:5173", OAUTH_CONTEXT);
 
             assertThat(result.getCode()).as(provider).isEqualTo(403);
             assertThat(result.getMessage()).as(provider)
@@ -236,10 +245,8 @@ class AppUserOAuthServiceTest {
     void passkeyFailsClosedWhenForwardedHeaderRewritingIsEnabled() {
         when(environment.getProperty("server.forward-headers-strategy")).thenReturn("native");
 
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                new UserOAuthExchangeRequest("PASSKEY", "SANDBOX_MOCK", null, "Passkey User",
-                        "OAUTH-11111111111111111111111111111111"),
-                "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(new UserOAuthExchangeRequest("PASSKEY", "SANDBOX_MOCK", null, "Passkey User",
+                        "OAUTH-11111111111111111111111111111111"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getMessage()).isEqualTo("OAUTH_DEVELOPMENT_PASSKEY_NETWORK_POLICY_INVALID");
@@ -250,15 +257,13 @@ class AppUserOAuthServiceTest {
     void productionNeverFallsBackToMockWhenProviderIsMissing() {
         when(environment.getActiveProfiles()).thenReturn(new String[] {"prod"});
 
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                sandboxRequest("GOOGLE", "browser-a", "Alice"),
-                "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(sandboxRequest("GOOGLE", "browser-a", "Alice"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getMessage()).isEqualTo("OAUTH_PROVIDER_NOT_CONFIGURED");
         verify(userMapper, never()).insert(any(UserEntity.class));
         verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
-        verify(authService, never()).issueRegisteredSession(any(), any());
+        verify(authService, never()).issueRegisteredSession(any(), any(), eq(OAUTH_CONTEXT));
         verify(outboxService, never()).publish(any(), any(), any(), any());
     }
 
@@ -280,14 +285,12 @@ class AppUserOAuthServiceTest {
         existing.setPhone("13900123001");
         existing.setNickname("Sandbox Alice");
         when(userMapper.selectById(301L)).thenReturn(existing);
-        when(authService.issueRegisteredSession(existing, "127.0.0.1"))
+        when(authService.issueRegisteredSession(existing, "127.0.0.1", OAUTH_CONTEXT))
                 .thenReturn(ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
                         "access", "Bearer", new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
                                 301L, "+86", "13900123001", "Sandbox Alice"), "refresh")));
 
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                sandboxRequest("GOOGLE", "app-google-sandbox", "Changed Name"),
-                "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(sandboxRequest("GOOGLE", "app-google-sandbox", "Changed Name"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().user().userId()).isEqualTo(301L);
@@ -323,20 +326,18 @@ class AppUserOAuthServiceTest {
         winner.setPhone("13900222002");
         winner.setNickname("Winner");
         when(userMapper.selectById(302L)).thenReturn(winner);
-        when(authService.issueRegisteredSession(winner, "127.0.0.1"))
+        when(authService.issueRegisteredSession(winner, "127.0.0.1", OAUTH_CONTEXT))
                 .thenReturn(ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
                         "access", "Bearer", new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
                                 302L, "+86", "13900222002", "Winner"), "refresh")));
 
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                sandboxRequest("GOOGLE", "race-subject", "Race"),
-                "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(sandboxRequest("GOOGLE", "race-subject", "Race"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().user().userId()).isEqualTo(302L);
         verify(userMapper).softDeleteSandboxOAuthUser(303L);
         verify(userMapper).softDeleteSandboxOAuthWallet(303L);
-        verify(authService).issueRegisteredSession(winner, "127.0.0.1");
+        verify(authService).issueRegisteredSession(winner, "127.0.0.1", OAUTH_CONTEXT);
     }
 
     @Test
@@ -382,7 +383,7 @@ class AppUserOAuthServiceTest {
         when(userMapper.softDeleteSandboxOAuthWallet(anyLong())).thenReturn(1);
         when(userMapper.softDeleteSandboxOAuthUser(anyLong())).thenReturn(1);
         when(userMapper.selectById(anyLong())).thenReturn(winner);
-        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1")))
+        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1"), eq(OAUTH_CONTEXT)))
                 .thenAnswer(invocation -> {
                     UserEntity user = invocation.getArgument(0);
                     return ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
@@ -395,12 +396,8 @@ class AppUserOAuthServiceTest {
         var secondRequest = sandboxRequest("APPLE", "parallel-subject", "Parallel");
         var executor = Executors.newFixedThreadPool(2);
         try {
-            var first = executor.submit(() -> service.exchange(
-                    firstRequest,
-                    "127.0.0.1", LOCAL_ORIGIN));
-            var second = executor.submit(() -> service.exchange(
-                    secondRequest,
-                    "127.0.0.1", LOCAL_ORIGIN));
+            var first = executor.submit(() -> service.exchange(firstRequest, "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT));
+            var second = executor.submit(() -> service.exchange(secondRequest, "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT));
             assertThat(first.get(5, TimeUnit.SECONDS).getCode()).isZero();
             assertThat(second.get(5, TimeUnit.SECONDS).getCode()).isZero();
         } finally {
@@ -417,9 +414,7 @@ class AppUserOAuthServiceTest {
     void mixedProfilesFailClosedBeforeAnyOAuthWrite() {
         when(environment.getActiveProfiles()).thenReturn(new String[] {"dev", "prod"});
 
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                sandboxRequest("APPLE", "browser-a", "Alice"),
-                "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(sandboxRequest("APPLE", "browser-a", "Alice"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getMessage()).isEqualTo("OAUTH_PROFILE_FORBIDDEN");
@@ -429,10 +424,8 @@ class AppUserOAuthServiceTest {
 
     @Test
     void invalidProviderAndSubjectAreRejected() {
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                new UserOAuthExchangeRequest("FACEBOOK", "SANDBOX_MOCK", null, "Alice",
-                        "OAUTH-00000000000000000000000000000000"),
-                "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(new UserOAuthExchangeRequest("FACEBOOK", "SANDBOX_MOCK", null, "Alice",
+                        "OAUTH-00000000000000000000000000000000"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isEqualTo(422);
         assertThat(result.getMessage()).isEqualTo("OAUTH_REQUEST_INVALID");
@@ -441,8 +434,7 @@ class AppUserOAuthServiceTest {
 
     @Test
     void missingRequestIsRejectedBeforeProviderNormalization() {
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                null, "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(null, "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isEqualTo(422);
         assertThat(result.getMessage()).isEqualTo("OAUTH_REQUEST_INVALID");
@@ -456,18 +448,16 @@ class AppUserOAuthServiceTest {
         when(sandboxChallengeService.consume("GOOGLE", challengeNo))
                 .thenReturn(java.util.Optional.of("server-issued-subject"));
 
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> service.exchange(
-                new UserOAuthExchangeRequest("GOOGLE", "SANDBOX_MOCK", "victim-subject", "Attacker",
-                        challengeNo), "127.0.0.1", LOCAL_ORIGIN));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> service.exchange(new UserOAuthExchangeRequest("GOOGLE", "SANDBOX_MOCK", "victim-subject", "Attacker",
+                        challengeNo), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT));
         verify(identityMapper).findForUpdate("GOOGLE", "server-issued-subject", "SANDBOX");
         verify(identityMapper, never()).findForUpdate("GOOGLE", "victim-subject", "SANDBOX");
     }
 
     @Test
     void missingOrReplayedSandboxChallengeFailsBeforeIdentityLookup() {
-        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
-                new UserOAuthExchangeRequest("GOOGLE", "SANDBOX_MOCK", "victim-subject", "Attacker",
-                        "OAUTH-22222222222222222222222222222222"), "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(new UserOAuthExchangeRequest("GOOGLE", "SANDBOX_MOCK", "victim-subject", "Attacker",
+                        "OAUTH-22222222222222222222222222222222"), "127.0.0.1", LOCAL_ORIGIN, OAUTH_CONTEXT);
 
         assertThat(result.getCode()).isEqualTo(401);
         assertThat(result.getMessage()).isEqualTo("OAUTH_SANDBOX_CHALLENGE_INVALID");

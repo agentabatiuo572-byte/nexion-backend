@@ -9,7 +9,12 @@ public record ComputeConfigView(
         DownloadView download,
         PhoneBindingView phoneBinding,
         List<String> sources) {
-    public record PhoneBindingView(boolean allowReplacement, long minReplacementIntervalDays) {}
+    public record PhoneBindingView(Boolean allowReplacement, Long minReplacementIntervalDays,
+            Integer replacementWindowDays, Integer maxReplacementsInWindow, Long policyVersion, boolean available) {
+        public PhoneBindingView(boolean allowReplacement, long minReplacementIntervalDays) {
+            this(allowReplacement, minReplacementIntervalDays, null, null, null, false);
+        }
+    }
     public record FlagView(String key, String label, String desc, boolean enabled, String frontendEffect) {}
     public record CoeffView(String key, String label, String value, String unit, String desc, String frontendEffect) {}
     public record YieldView(String key, String label, String value, String unit) {}

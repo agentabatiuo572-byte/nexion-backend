@@ -21,12 +21,13 @@ public class OnboardingCalibrationController {
     private final ffdd.opsconsole.onboarding.application.PhoneInstallationService installations;
 
     @PostMapping
+    @org.springframework.transaction.annotation.Transactional
     public ApiResult<Map<String, Object>> calibrate(
             @RequestBody(required = false) OnboardingCalibrationService.Request request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = authenticatedUserId(authentication);
-        if (userId != null && request != null) installations.require(authentication, request.deviceId());
+        if (userId != null && request != null) installations.requireCurrent(authentication, request.deviceId(), true);
         if (request != null && (request.idempotencyKey() == null || request.idempotencyKey().isBlank())
                 && idempotencyKey != null) {
             request = new OnboardingCalibrationService.Request(request.deviceId(), request.expectedRevision(),
@@ -53,19 +54,19 @@ public class OnboardingCalibrationController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = authenticatedUserId(authentication);
-        if (userId != null && request != null) installations.require(authentication, request.deviceId());
         return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED")
-                : service.activate(userId, action(request, idempotencyKey));
+                : service.activate(userId, action(request, idempotencyKey), authentication);
     }
 
     @PostMapping("/defer")
+    @org.springframework.transaction.annotation.Transactional
     public ApiResult<Map<String, Object>> defer(
             @RequestBody(required = false) OnboardingCalibrationService.ActionRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = authenticatedUserId(authentication);
         if (userId == null) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
-        if (request != null) installations.require(authentication, request.deviceId());
+        if (request != null) installations.requireDefer(authentication, request.deviceId(), Boolean.TRUE.equals(request.initialOnly()));
         return service.defer(userId, action(request, idempotencyKey));
     }
 
@@ -73,7 +74,9 @@ public class OnboardingCalibrationController {
             OnboardingCalibrationService.ActionRequest request, String idempotencyKey) {
         if (request == null || request.idempotencyKey() != null && !request.idempotencyKey().isBlank()) return request;
         return new OnboardingCalibrationService.ActionRequest(
-                request.deviceId(), request.expectedRevision(), idempotencyKey, request.initialOnly());
+                request.deviceId(), request.expectedRevision(), idempotencyKey, request.initialOnly(),
+                request.expectedBindingVersion(), request.expectedPolicyVersion(), request.exceptionGrantId(),
+                request.replacementConfirmed(), request.bindingVersionPresent());
     }
 
     private Long authenticatedUserId(Authentication authentication) {

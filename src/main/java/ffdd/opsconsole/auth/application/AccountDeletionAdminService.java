@@ -28,6 +28,7 @@ public class AccountDeletionAdminService {
     private final AuthSessionMapper sessionMapper;
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotency;
+    private final ffdd.opsconsole.shared.security.UserSessionRevocationService revocations;
 
     @Transactional(readOnly = true)
     public AccountDeletionAdminView find(String requestNo) {
@@ -134,7 +135,7 @@ public class AccountDeletionAdminService {
         }
         int disabled = mapper.disableAndAnonymizeUser(userId);
         mapper.anonymizeUserProfile(userId);
-        int revoked = sessionMapper.revokeAllUserSessions(userId);
+        int revoked = revocations.revokeAll(userId);
         if (mapper.transitionAccountDeletion(requestNo.trim(), from, "COMPLETED", version,
                 request.reason().trim(), null) != 1) {
             throw new BizException(409, "ACCOUNT_DELETION_CONCURRENT_UPDATE");

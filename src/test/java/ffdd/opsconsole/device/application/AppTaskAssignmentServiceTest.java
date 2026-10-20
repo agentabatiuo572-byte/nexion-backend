@@ -53,7 +53,7 @@ class AppTaskAssignmentServiceTest {
     private final AppTaskAssignmentService service = new AppTaskAssignmentService(
             mapper, idempotency, outbox, audit, proofVerifier,
             environment,
-            Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), mock(TestComputeWorkerService.class), deviceFunds);
+            Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), mock(TestComputeWorkerService.class), deviceFunds, org.mockito.Mockito.mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class));
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})

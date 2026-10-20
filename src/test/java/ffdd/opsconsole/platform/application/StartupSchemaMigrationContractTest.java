@@ -8,6 +8,19 @@ import org.junit.jupiter.api.Test;
 
 class StartupSchemaMigrationContractTest {
     @Test
+    void phoneOperationsFollowFactsAndCannotInheritBroadRiskRolePermissions() throws Exception {
+        String runner=Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        assertThat(runner.indexOf("20261019_phone_replacement_ops.sql"))
+                .isGreaterThan(runner.indexOf("20261019_phone_replacement_domain.sql"));
+        String migration=Files.readString(Path.of("scripts/migrations/20261019_phone_replacement_ops.sql"));
+        assertThat(migration).contains("nx_phone_policy_operation","nx_phone_replacement_verification",
+                "r.role_code='SUPER_ADMIN'","admin.phone_replacement_policy_updated");
+        assertThat(migration).doesNotContain("r.role_code='RISK'","DELETE FROM","UPDATE nx_phone_binding");
+        assertThat(Files.readString(Path.of("scripts/rbac-classic-seed/02-role-permission-seed.sql")))
+                .contains("AND p.permission_code NOT IN ('user_c5_phone_replacement_exception_grant','user_c5_phone_replacement_exception_revoke')");
+    }
+
+    @Test
     void currentRulesSchemaPrecedesImmutableS3InitializationOnEveryFreshPath() throws Exception {
         String prerequisite = "20260929_support_binding_rules_schema_20261015.sql";
         String history = "20260929_support_binding_s3.sql";

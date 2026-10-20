@@ -24,6 +24,9 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface UserOpsMapper extends BaseMapper<UserEntity> {
+    @Select("SELECT * FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
+    UserEntity findLoginUserForUpdate(@Param("userId") Long userId);
+
     @Select("""
             SELECT *
               FROM nx_user
@@ -56,10 +59,10 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             @Param("legacyCountryCode") String legacyCountryCode,
             @Param("phone") String phone);
 
-    @Select("SELECT COALESCE((SELECT two_factor_enabled FROM nx_user_security WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1),0)=1")
+    @Select("SELECT COALESCE((SELECT two_factor_enabled FROM nx_user_security WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1 FOR UPDATE),0)=1")
     boolean isTwoFactorEnabled(@Param("userId") Long userId);
 
-    @Select("SELECT COALESCE((SELECT password_reset_required FROM nx_user_security WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1),0)=1")
+    @Select("SELECT COALESCE((SELECT password_reset_required FROM nx_user_security WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1 FOR UPDATE),0)=1")
     boolean isPasswordResetRequired(@Param("userId") Long userId);
 
     @Select("""
@@ -266,7 +269,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND kind='BLOCK'
                AND status='ACTIVE'
                AND (expires_at IS NULL OR expires_at > NOW())
-               AND is_deleted=0
+               AND is_deleted=0 FOR UPDATE
             """)
     int countActiveBlocklistByUser(@Param("userId") Long userId);
 

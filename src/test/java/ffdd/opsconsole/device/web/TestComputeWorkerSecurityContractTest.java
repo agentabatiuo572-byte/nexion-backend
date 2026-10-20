@@ -285,9 +285,11 @@ class TestComputeWorkerSecurityContractTest {
             when(sessions.touchActiveUserSession("fixture-session", 7L, 30)).thenReturn(1);
             var users = mock(UserOpsMapper.class); var user = new UserEntity();
             user.setId(7L); user.setSandbox(0); user.setCountryCode("84"); user.setPhone("912345678");
+            user.setStatus("ACTIVE"); user.setIsDeleted(0);
             when(users.selectById(7L)).thenReturn(user);
             return new JwtAuthenticationFilter(provider, sessions, users, env, new GatewaySecurityProperties(), mock(AdminSessionRegistry.class),
-                    mock(AdminPermissionCache.class), mock(ImpersonationSessionVerifier.class), mock(PlatformConfigFacade.class));
+                    mock(AdminPermissionCache.class), mock(ImpersonationSessionVerifier.class), mock(PlatformConfigFacade.class),
+                    mock(UserAccountBlocklistVerifier.class), mock(UserSessionRevocationService.class));
         }
     }
 

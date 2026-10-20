@@ -14,6 +14,29 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
+    /** Exact durable proposal identity; retention may move the audit into its cold payload. */
+    @Select("""
+            SELECT resourceId FROM (
+              SELECT resource_id AS resourceId
+                FROM nx_audit_log
+               WHERE is_deleted=0 AND actor_type='ADMIN' AND actor_id=#{actorId}
+                 AND action='A2_OPERATION_PROPOSED' AND resource_type='A2_OPERATION' AND result='SUCCESS'
+                 AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.idempotencyKey'))=BINARY #{key}
+              UNION
+              SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS resourceId
+                FROM nx_audit_log_archive
+               WHERE JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType'))='ADMIN'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorId'))=CAST(#{actorId} AS CHAR)
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='A2_OPERATION_PROPOSED'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='A2_OPERATION'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+                 AND BINARY JSON_UNQUOTE(JSON_EXTRACT(
+                       JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')),'$.idempotencyKey'))=BINARY #{key}
+                 AND content_sha256 IS NOT NULL
+            ) proposals LIMIT 2
+            """)
+    List<String> findA2ProposalIds(@Param("actorId") long actorId, @Param("key") String key);
+
     @Select("SELECT GET_LOCK('nexion:a2:audit-retention',0)")
     Integer tryAcquireRetentionLock();
 

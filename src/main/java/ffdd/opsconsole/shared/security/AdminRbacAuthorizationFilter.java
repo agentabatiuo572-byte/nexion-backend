@@ -64,6 +64,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             // the generic user_* prefix would otherwise reject valid F5 operators first.
             rule("/api/admin/users/*/commission/suspend", null),
             rule("/api/admin/users/**", "user_"),
+            rule("/api/admin/phone-replacement-operations/**", null),
             rule("/api/admin/bills", "finance_d4_"),
             rule("/api/admin/bills/**", "finance_d4_"),
             // Canonical D5 PUT authorization is field-aware (including H1 read-only fields),
@@ -259,6 +260,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
     private RequiredAuthority requiredAuthority(String path, String method) {
         boolean read = HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
+        if (read && pathMatcher.match("/api/admin/users/profiles/*/phone-replacement-verifications/by-idempotency-key",path)) {
+            return RequiredAuthority.exact("user_c5_phone_replacement_exception_grant");
+        }
         // Method security additionally binds these grants to the requested media namespace.
         if (HttpMethod.POST.matches(method) && path.equals("/api/admin/media/uploads")) {
             return RequiredAuthority.exact("device_e1_write", "growth_promotion_edit");

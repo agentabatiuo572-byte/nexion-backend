@@ -18,7 +18,7 @@ class PhoneInstallationControllerTest {
     private final PhoneInstallationMapper mapper = mock(PhoneInstallationMapper.class);
     private final OnboardingCalibrationService calibration = mock(OnboardingCalibrationService.class);
     private final PhoneInstallationController controller = new PhoneInstallationController(
-            new PhoneInstallationService(mapper), calibration);
+            new PhoneInstallationService(mapper, mock(ffdd.opsconsole.shared.security.CurrentAppSessionService.class)), calibration);
 
     @Test void loginUsesTheAuthenticatedUserAndInstallationWithoutAProofSession() {
         var user = new UsernamePasswordAuthenticationToken("42", "", List.of());

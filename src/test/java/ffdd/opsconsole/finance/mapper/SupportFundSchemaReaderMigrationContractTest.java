@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class SupportFundSchemaReaderMigrationContractTest {
     private static final Path MIGRATION=Path.of("scripts/migrations/20261011_support_fund_schema_reader.sql");
     private static final String FUNCTION="nx_support_fund_schema_ready_v1";
-    private static String migration() throws IOException {return Files.readString(MIGRATION);}
+    private static String migration() throws IOException {return Files.readString(MIGRATION).replace("\r\n", "\n");}
     private static String body(String sql) {
         int start=sql.indexOf("-- FUNCTION_BODY_BEGIN\n");
         int end=sql.indexOf(";\n-- FUNCTION_BODY_END",start);

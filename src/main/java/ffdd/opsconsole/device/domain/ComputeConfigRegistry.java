@@ -82,7 +82,9 @@ public final class ComputeConfigRegistry {
     /** 缺失或非法存量值的唯一默认来源，写前全局不变量校验也必须使用同一组默认值。 */
     public static String defaultValue(String key) {
         if (phoneBindingKey("allowReplacement").equals(key)) return "off";
-        if (phoneBindingKey("minReplacementIntervalDays").equals(key)) return "0";
+        if (phoneBindingKey("minReplacementIntervalDays").equals(key)) return "1";
+        if (phoneBindingKey("replacementWindowDays").equals(key)) return "30";
+        if (phoneBindingKey("maxReplacementsInWindow").equals(key)) return "2";
         for (FlagDef flag : FLAGS) {
             if (flagKey(flag.key()).equals(key)) {
                 return flag.defaultOn() ? "on" : "off";
@@ -126,6 +128,8 @@ public final class ComputeConfigRegistry {
                 .forEach(coeff -> keys.add(coeffKey(coeff.key())));
         keys.add(phoneBindingKey("allowReplacement"));
         keys.add(phoneBindingKey("minReplacementIntervalDays"));
+        keys.add(phoneBindingKey("replacementWindowDays"));
+        keys.add(phoneBindingKey("maxReplacementsInWindow"));
         YIELD_ESTIMATE.forEach(item -> keys.add(yieldKey(item.key())));
         for (String tierId : GPU_TIER_IDS) {
             keys.add(gpuTierKey(tierId, "label"));

@@ -3,7 +3,6 @@ package ffdd.opsconsole.shared.security;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ffdd.opsconsole.shared.outbox.CanonicalEventSchemaMySqlFixture;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -44,8 +43,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 class AuthSessionGraceConcurrencyMySqlTest {
     @Test
     void concurrentOldBearersAndLiveTouchDoNotDeadlock() throws Exception {
-        try (var fixture = new CanonicalEventSchemaMySqlFixture("nx_user_session")) {
-            assertThat(fixture.jdbc().queryForObject("SELECT @@port", Integer.class)).isEqualTo(33329);
+        try (var fixture = new SessionFixture()) {
+            assertThat(fixture.jdbc().queryForObject("SELECT @@port", Integer.class)).isEqualTo(fixture.port());
             assertThat(fixture.jdbc().queryForList("SHOW INDEX FROM nx_user_session").stream()
                     .map(row -> row.get("Key_name")).distinct()).contains(
                             "PRIMARY", "uk_user_session_token", "idx_user_session_chain");
@@ -94,7 +93,7 @@ class AuthSessionGraceConcurrencyMySqlTest {
     @ValueSource(strings = {"owner", "window", "issued-deleted", "not-rotated", "revoked",
             "expired", "idle", "live-deleted", "different-chain", "different-owner"})
     void rejectsInvalidGraceWithoutTouchingTheSuccessor(String scenario) throws Exception {
-        try (var fixture = new CanonicalEventSchemaMySqlFixture("nx_user_session"); var context = context(fixture)) {
+        try (var fixture = new SessionFixture(); var context = context(fixture)) {
             seed(fixture);
             fixture.jdbc().update("UPDATE nx_user_session SET last_active_at=DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 1 DAY) WHERE refresh_token_id='live'");
             String sql = switch (scenario) {
@@ -119,7 +118,7 @@ class AuthSessionGraceConcurrencyMySqlTest {
     @ParameterizedTest
     @ValueSource(strings = {"owner", "revoked", "expired", "idle", "deleted"})
     void rejectsInvalidLiveSessionWithoutTouchingActivity(String scenario) throws Exception {
-        try (var fixture = new CanonicalEventSchemaMySqlFixture("nx_user_session"); var context = context(fixture)) {
+        try (var fixture = new SessionFixture(); var context = context(fixture)) {
             seed(fixture);
             fixture.jdbc().update("UPDATE nx_user_session SET last_active_at=DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 1 DAY) WHERE refresh_token_id='live'");
             String change = switch (scenario) {
@@ -139,7 +138,7 @@ class AuthSessionGraceConcurrencyMySqlTest {
 
     @Test
     void concurrentRefreshPreservesBothOldBearersAndLogoutClosesTheChain() throws Exception {
-        try (var fixture = new CanonicalEventSchemaMySqlFixture("nx_user_session"); var context = context(fixture)) {
+        try (var fixture = new SessionFixture(); var context = context(fixture)) {
             seed(fixture);
             AuthSessionMapper mapper = context.getBean(AuthSessionMapper.class);
             TransactionTemplate tx = new TransactionTemplate(new DataSourceTransactionManager(fixture.jdbc().getDataSource()));
@@ -153,6 +152,7 @@ class AuthSessionGraceConcurrencyMySqlTest {
                     for(int i=0;i<5;i++) {
                         String current=i==0 ? "live" : "next-"+(i-1), next="next-"+i;
                         tx.executeWithoutResult(status -> {
+                            mapper.lockAccount(7L);
                             var row=mapper.findRefreshForUpdate(current);
                             fixture.jdbc().update("INSERT INTO nx_user_session(user_id,refresh_token_id,session_chain_id,last_active_at,expires_at) VALUES(7,?,'chain-a',DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),DATE_ADD(UTC_TIMESTAMP(),INTERVAL 9 HOUR))",next);
                             assertThat(mapper.markRefreshRotated(row.getId(),next)).isEqualTo(1);
@@ -163,7 +163,7 @@ class AuthSessionGraceConcurrencyMySqlTest {
                 assertThat(old.get(15,TimeUnit.SECONDS)).isTrue();
                 assertThat(middle.get(15,TimeUnit.SECONDS)).isTrue();
                 assertThat(refresh.get(15,TimeUnit.SECONDS)).isTrue();
-                tx.executeWithoutResult(status -> { mapper.findRefreshForUpdate("next-4"); mapper.revokeRefreshChain("chain-a"); });
+                tx.executeWithoutResult(status -> { mapper.lockAccount(7L); mapper.findRefreshForUpdate("next-4"); mapper.revokeRefreshChain("chain-a"); });
                 assertThat(mapper.touchRecentlyRotatedUserSession("old",7L,30)).isZero();
                 assertThat(mapper.touchRecentlyRotatedUserSession("middle",7L,30)).isZero();
                 assertThat(mapper.touchActiveUserSession("next-4",7L,30)).isZero();
@@ -177,38 +177,29 @@ class AuthSessionGraceConcurrencyMySqlTest {
     @ParameterizedTest
     @ValueSource(strings = {"live", "middle", "old"})
     void concurrentLogoutDoesNotDeadlockWithGrace(String revokedToken) throws Exception {
-        try (var fixture = new CanonicalEventSchemaMySqlFixture("nx_user_session"); var context = context(fixture)) {
+        try (var fixture = new SessionFixture(); var context = context(fixture)) {
             seed(fixture);
-            var issuerRead = new CountDownLatch(1);
-            var continueGrace = new CountDownLatch(1);
-            context.getBean(SqlSessionFactory.class).getConfiguration()
-                    .addInterceptor(new PauseAfterIssuerRead(issuerRead, continueGrace));
+            var connectionId = new java.util.concurrent.atomic.AtomicLong();
+            context.getBean(SqlSessionFactory.class).getConfiguration().addInterceptor(new CaptureUpdateConnection(connectionId));
             AuthSessionMapper mapper = context.getBean(AuthSessionMapper.class);
             var tx = new TransactionTemplate(context.getBean(DataSourceTransactionManager.class));
             var pool = Executors.newSingleThreadExecutor();
             var pendingGrace = new java.util.concurrent.atomic.AtomicReference<java.util.concurrent.Future<Integer>>();
             try {
                 tx.executeWithoutResult(status -> {
+                    mapper.lockAccount(7L);
                     mapper.findRefreshForUpdate(revokedToken);
                     var grace = pool.submit(() -> mapper.touchRecentlyRotatedUserSession("old", 7L, 30));
-                    try {
-                        assertThat(issuerRead.await(5, TimeUnit.SECONDS)).isTrue();
-                        continueGrace.countDown();
-                        mapper.revokeRefreshChain("chain-a");
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        throw new IllegalStateException(interrupted);
-                    }
+                    awaitCondition(() -> connectionId.get() != 0 && fixture.jdbc().queryForObject("SELECT COUNT(*) FROM performance_schema.data_lock_waits waits JOIN performance_schema.threads threads ON threads.THREAD_ID=waits.REQUESTING_THREAD_ID WHERE threads.PROCESSLIST_ID=?", Integer.class, connectionId.get()) > 0, 3);
+                    mapper.revokeRefreshChain("chain-a");
                     pendingGrace.set(grace);
                 });
                 int concurrentResult = pendingGrace.get().get(5, TimeUnit.SECONDS);
-                if (revokedToken.equals("live")) assertThat(concurrentResult).isZero();
-                else assertThat(concurrentResult).isIn(0, 1); // Authentication may precede revocation.
+                assertThat(concurrentResult).isZero();
                 assertThat(mapper.touchRecentlyRotatedUserSession("old", 7L, 30)).isZero();
                 assertThat(mapper.touchRecentlyRotatedUserSession("middle", 7L, 30)).isZero();
                 assertThat(mapper.touchActiveUserSession("live", 7L, 30)).isZero();
             } finally {
-                continueGrace.countDown();
                 pool.shutdownNow();
                 assertThat(pool.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
             }
@@ -217,8 +208,8 @@ class AuthSessionGraceConcurrencyMySqlTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"deleted", "window", "owner", "chain", "rotation"})
-    void rechecksIssuerAfterTouchAndRollsBackInvalidAuthentication(String invalidation) throws Exception {
-        try (var fixture = new CanonicalEventSchemaMySqlFixture("nx_user_session"); var context = context(fixture)) {
+    void issuerMutationWaitsForAuthenticationThenInvalidatesFurtherGrace(String invalidation) throws Exception {
+        try (var fixture = new SessionFixture(); var context = context(fixture)) {
             seed(fixture);
             fixture.jdbc().update("UPDATE nx_user_session SET last_active_at=DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 1 DAY) WHERE refresh_token_id='live'");
             var before = fixture.jdbc().queryForObject("SELECT last_active_at FROM nx_user_session WHERE refresh_token_id='live'", java.time.LocalDateTime.class);
@@ -235,17 +226,29 @@ class AuthSessionGraceConcurrencyMySqlTest {
                     case "rotation" -> "rotated_to_id=NULL";
                     default -> throw new IllegalArgumentException(invalidation);
                 };
-                independently(fixture, "UPDATE nx_user_session SET " + change + " WHERE refresh_token_id='old'");
+                assertThatThrownBy(() -> independently(fixture, "UPDATE nx_user_session SET " + change + " WHERE refresh_token_id='old'"))
+                        .isInstanceOf(SQLException.class);
             });
-            assertThat(context.getBean(AuthSessionMapper.class).touchRecentlyRotatedUserSession("old", 7L, 30)).isZero();
+            assertThat(context.getBean(AuthSessionMapper.class).touchRecentlyRotatedUserSession("old", 7L, 30)).isEqualTo(1);
             assertThat(touched).isTrue();
-            assertThat(fixture.jdbc().queryForObject("SELECT last_active_at FROM nx_user_session WHERE refresh_token_id='live'", java.time.LocalDateTime.class)).isEqualTo(before);
+            String change = switch (invalidation) {
+                case "deleted" -> "is_deleted=1";
+                case "window" -> "rotation_redeemed_at=DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 11 SECOND)";
+                case "owner" -> "user_id=8";
+                case "chain" -> "session_chain_id='chain-b'";
+                case "rotation" -> "rotated_to_id=NULL";
+                default -> throw new IllegalArgumentException(invalidation);
+            };
+            independently(fixture,"UPDATE nx_user_session SET " + change + " WHERE refresh_token_id='old'");
+            var committedActivity=fixture.jdbc().queryForObject("SELECT last_active_at FROM nx_user_session WHERE refresh_token_id='live'",java.time.LocalDateTime.class);
+            assertThat(context.getBean(AuthSessionMapper.class).touchRecentlyRotatedUserSession("old",7L,30)).isZero();
+            assertThat(fixture.jdbc().queryForObject("SELECT last_active_at FROM nx_user_session WHERE refresh_token_id='live'",java.time.LocalDateTime.class)).isEqualTo(committedActivity);
         }
     }
 
     @Test
     void failedCandidateReleasesItsLockBeforeRelocating() throws Exception {
-        try (var fixture = new CanonicalEventSchemaMySqlFixture("nx_user_session"); var context = context(fixture)) {
+        try (var fixture = new SessionFixture(); var context = context(fixture)) {
             seed(fixture);
             var rotated = new AtomicBoolean();
             var released = new AtomicBoolean();
@@ -265,7 +268,7 @@ class AuthSessionGraceConcurrencyMySqlTest {
 
     @Test
     void databaseFailureAfterTouchRejectsAndRollsBack() throws Exception {
-        try (var fixture = new CanonicalEventSchemaMySqlFixture("nx_user_session"); var context = context(fixture)) {
+        try (var fixture = new SessionFixture(); var context = context(fixture)) {
             seed(fixture);
             fixture.jdbc().update("UPDATE nx_user_session SET last_active_at=DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 1 DAY) WHERE refresh_token_id='live'");
             var before = fixture.jdbc().queryForObject("SELECT last_active_at FROM nx_user_session WHERE refresh_token_id='live'", java.time.LocalDateTime.class);
@@ -281,7 +284,7 @@ class AuthSessionGraceConcurrencyMySqlTest {
     @ParameterizedTest
     @ValueSource(strings = {"grace-expiry", "grace-idle", "live-expiry", "live-idle"})
     void sessionDeadlineDuringAnActualRowLockWaitRejectsWithoutTouching(String scenario) throws Exception {
-        try (var fixture = new CanonicalEventSchemaMySqlFixture("nx_user_session"); var context = context(fixture)) {
+        try (var fixture = new SessionFixture(); var context = context(fixture)) {
             seed(fixture);
             boolean expiry = scenario.endsWith("expiry");
             String change = expiry
@@ -297,6 +300,7 @@ class AuthSessionGraceConcurrencyMySqlTest {
             try {
                 tx.executeWithoutResult(status -> {
                     AuthSessionMapper mapper = context.getBean(AuthSessionMapper.class);
+                    mapper.lockAccount(7L);
                     mapper.findRefreshForUpdate("live");
                     pendingGrace.set(pool.submit(() -> scenario.startsWith("live")
                             ? mapper.touchActiveUserSession("live", 7L, 30)
@@ -319,7 +323,8 @@ class AuthSessionGraceConcurrencyMySqlTest {
         }
     }
 
-    @Intercepts(@Signature(type = Executor.class, method = "update", args = {MappedStatement.class, Object.class}))
+    @Intercepts({@Signature(type = Executor.class, method = "update", args = {MappedStatement.class, Object.class}),
+            @Signature(type = Executor.class, method = "query", args = {MappedStatement.class, Object.class, RowBounds.class, ResultHandler.class})})
     static class CaptureUpdateConnection implements Interceptor {
         private final java.util.concurrent.atomic.AtomicLong connectionId;
         CaptureUpdateConnection(java.util.concurrent.atomic.AtomicLong connectionId) { this.connectionId = connectionId; }
@@ -347,7 +352,7 @@ class AuthSessionGraceConcurrencyMySqlTest {
         }
     }
 
-    private static void independently(CanonicalEventSchemaMySqlFixture fixture, String... statements) throws SQLException {
+    private static void independently(SessionFixture fixture, String... statements) throws SQLException {
         try (var connection = fixture.jdbc().getDataSource().getConnection(); var statement = connection.createStatement()) {
             statement.execute("SET innodb_lock_wait_timeout=1");
             connection.setAutoCommit(false);
@@ -414,7 +419,7 @@ class AuthSessionGraceConcurrencyMySqlTest {
     @MapperScan(basePackageClasses = AuthSessionMapper.class)
     static class Transactions { }
 
-    private static AnnotationConfigApplicationContext context(CanonicalEventSchemaMySqlFixture fixture) {
+    private static AnnotationConfigApplicationContext context(SessionFixture fixture) {
         return context(fixture.jdbc().getDataSource());
     }
 
@@ -426,7 +431,8 @@ class AuthSessionGraceConcurrencyMySqlTest {
         return context;
     }
 
-    private static void seed(CanonicalEventSchemaMySqlFixture fixture) {
+    private static void seed(SessionFixture fixture) {
+        fixture.jdbc().update("INSERT INTO nx_user VALUES(7,'ACTIVE',0),(8,'ACTIVE',0)");
         fixture.jdbc().update("""
                 INSERT INTO nx_user_session(user_id,refresh_token_id,session_chain_id,rotated_to_id,
                     rotation_redeemed_at,revoked_at,last_active_at,expires_at,created_at,updated_at,is_deleted)
@@ -440,6 +446,37 @@ class AuthSessionGraceConcurrencyMySqlTest {
                     (7,'live','chain-a',NULL,NULL,NULL,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),
                      DATE_ADD(UTC_TIMESTAMP(),INTERVAL 9 HOUR),UTC_TIMESTAMP(),UTC_TIMESTAMP(),0)
                 """);
+    }
+
+    /** Own schema from canonical DDL, with only the sessions needed by this concurrency regression. */
+    private static final class SessionFixture implements AutoCloseable {
+        private final java.sql.Connection admin;
+        private final String schema="nx_session_grace_"+java.util.UUID.randomUUID().toString().replace("-","");
+        private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+        private final int port;
+        SessionFixture() throws Exception {
+            String url=System.getenv("NEXION_TEST_DB_SERVER_URL");
+            if(url==null || !url.matches("jdbc:mysql://(127[.]0[.]0[.]1|localhost):[0-9]+/([?].*)?"))
+                throw new IllegalArgumentException("Explicit loopback session test server required");
+            port=java.net.URI.create(url.substring("jdbc:".length())).getPort();
+            String user=System.getenv().getOrDefault("NEXION_TEST_DB_USERNAME","root"),password=System.getenv("NEXION_TEST_DB_PASSWORD");
+            admin=java.sql.DriverManager.getConnection(url,user,password);
+            try(var statement=admin.createStatement()){statement.execute("CREATE DATABASE `"+schema+"` CHARACTER SET utf8mb4");}
+            int q=url.indexOf('?');
+            var ds=new org.springframework.jdbc.datasource.DriverManagerDataSource(url.substring(0,q<0?url.length():q)+schema+(q<0?"":url.substring(q)),user,password);
+            jdbc=new org.springframework.jdbc.core.JdbcTemplate(ds);
+            String baseline=Files.readString(Path.of("scripts/schema.sql"));
+            int start=baseline.indexOf("CREATE TABLE IF NOT EXISTS nx_user_session (");
+            jdbc.execute(baseline.substring(start,baseline.indexOf(';',start)+1));
+            jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,status VARCHAR(32),is_deleted INT)");
+            jdbc.execute("ALTER TABLE nx_user_session ADD session_group VARCHAR(16) NOT NULL DEFAULT 'H5',ADD installation_id VARCHAR(128),ADD app_session_version BIGINT,ADD execution_supported TINYINT,ADD login_attempt_id VARCHAR(80),ADD session_ended_reason VARCHAR(32)");
+            jdbc.execute("CREATE TABLE nx_app_session_state(user_id BIGINT PRIMARY KEY,app_session_version BIGINT,session_chain_id VARCHAR(64),installation_id VARCHAR(128),execution_supported TINYINT)");
+        }
+        org.springframework.jdbc.core.JdbcTemplate jdbc(){return jdbc;}
+        int port(){return port;}
+        public void close() throws Exception {
+            try(var statement=admin.createStatement()){statement.execute("DROP DATABASE `"+schema+"`");}finally{admin.close();}
+        }
     }
 
     private static boolean deadlock(Throwable failure) {

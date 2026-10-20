@@ -97,6 +97,15 @@ public class AuditLogService {
         return list(request, MAX_LIMIT);
     }
 
+    /** Returns only the exact maker/key association, never a recent-log approximation. */
+    public String findA2ProposalId(long actorId, String key) {
+        if (actorId < 1 || !StringUtils.hasText(key) || key.length() > 128)
+            throw new BizException(422, "A2_PROPOSAL_KEY_INVALID");
+        List<String> ids = auditLogMapper.findA2ProposalIds(actorId, key.trim());
+        if (ids.size() > 1) throw new BizException(409, "A2_PROPOSAL_RESULT_AMBIGUOUS");
+        return ids.isEmpty() ? null : ids.get(0);
+    }
+
     public List<AuditLogRecord> listForExport(AuditLogQueryRequest request, int maxRows) {
         return list(request, Math.max(1, Math.min(maxRows, 5000)));
     }

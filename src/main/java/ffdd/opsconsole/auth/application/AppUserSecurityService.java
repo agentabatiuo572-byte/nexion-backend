@@ -48,6 +48,7 @@ public class AppUserSecurityService {
     private final UserOtpDeliveryService otpDeliveryService;
     private final AppUserSecurityVerificationGuard verificationGuard;
     private final UserOpsMapper userMapper;
+    private final ffdd.opsconsole.shared.security.UserSessionRevocationService revocations;
 
     @Transactional(readOnly = true)
     public AppSecurityStateResponse overview(Long userId, String currentSessionId) {
@@ -132,7 +133,7 @@ public class AppUserSecurityService {
                 || sessionMapper.countSameUserSessionChain(userId, currentSessionId, normalizedTarget) > 0) {
             throw new BizException(409, "CURRENT_SESSION_REVOKE_FORBIDDEN");
         }
-        int revoked = sessionMapper.revokeOwnedUserSession(userId, normalizedTarget);
+        int revoked = revocations.revokeOwned(userId, normalizedTarget);
         if (revoked != 1) {
             throw new BizException(404, "SESSION_NOT_ACTIVE_OR_NOT_OWNED");
         }
@@ -144,7 +145,7 @@ public class AppUserSecurityService {
     @Transactional
     public AppSecurityMutationResponse revokeOtherSessions(Long userId, String currentSessionId) {
         requireContext(userId, currentSessionId);
-        int revoked = sessionMapper.revokeOtherUserSessions(userId, currentSessionId);
+        int revoked = revocations.revokeOthers(userId, currentSessionId);
         recordRequired(userId, "USER_OTHER_SESSIONS_REVOKED", "USER_SESSION", String.valueOf(userId),
                 Map.of("scope", "ALL_OTHER_SESSIONS", "revokedSessionCount", revoked));
         return AppSecurityMutationResponse.sessions(revoked);
@@ -165,7 +166,7 @@ public class AppUserSecurityService {
                 || securityMapper.markPasswordChanged(userId) < 1) {
             throw new IllegalStateException("USER_PASSWORD_STATE_CHANGED");
         }
-        int revoked = sessionMapper.revokeOtherUserSessions(userId, currentSessionId);
+        int revoked = revocations.revokeOthers(userId, currentSessionId);
         LocalDateTime changedAt = securityMapper.passwordChangedAt(userId);
         recordRequired(userId, "USER_PASSWORD_CHANGED", "USER_SECURITY", String.valueOf(userId),
                 Map.of("revokedOtherSessionCount", revoked));

@@ -22,9 +22,33 @@ import org.springframework.security.core.context.SecurityContextHolder;
 class A2AccessPolicyTest {
     private final AdminOperatorRoleResolver roles = mock(AdminOperatorRoleResolver.class);
     private final AuditOperationTicketMapper ticketMapper = mock(AuditOperationTicketMapper.class);
-    private final A2AccessPolicy policy = new A2AccessPolicy(roles, ticketMapper);
+    private final ffdd.opsconsole.shared.security.AdminPermissionCache permissions = mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class);
+    private final A2AccessPolicy policy = new A2AccessPolicy(roles, ticketMapper, permissions);
 
     @AfterEach void clear() { SecurityContextHolder.clearContext(); }
+
+    @Test void proposalRecoveryRequiresCurrentActiveAdministratorAndA2Read() {
+        var auth = new UsernamePasswordAuthenticationToken("9", null,
+                List.of(new SimpleGrantedAuthority("platform_a2_read")));
+        auth.setDetails(Map.of("subjectType", "ADMIN", "username", "maker"));
+        SecurityContextHolder.getContext().setAuthentication(auth);
+        when(roles.isActiveAdministrator(9L)).thenReturn(true);
+        when(permissions.getPermissionCodes(9L)).thenReturn(java.util.Set.of("platform_a2_read"));
+        assertThat(policy.requireProposalReader()).isEqualTo(9L);
+        when(roles.isActiveAdministrator(9L)).thenReturn(false); // disabled/deleted admin
+        org.assertj.core.api.Assertions.assertThatThrownBy(policy::requireProposalReader)
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+        when(roles.isActiveAdministrator(9L)).thenReturn(true);
+        auth.setDetails(Map.of("subjectType", "USER", "username", "maker"));
+        org.assertj.core.api.Assertions.assertThatThrownBy(policy::requireProposalReader)
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+        var revoked = new UsernamePasswordAuthenticationToken("9", null, List.of());
+        revoked.setDetails(Map.of("subjectType", "ADMIN", "username", "maker"));
+        SecurityContextHolder.getContext().setAuthentication(revoked);
+        when(permissions.getPermissionCodes(9L)).thenReturn(java.util.Set.of());
+        org.assertj.core.api.Assertions.assertThatThrownBy(policy::requireProposalReader)
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+    }
 
     @Test
     void riskIsServerScopedToAccountAndRiskDomains() {

@@ -31,7 +31,7 @@ class TestComputeWorkerContinuousTest {
     private final org.springframework.mock.env.MockEnvironment environment = TestComputeWorkerServiceTest.continuousEnvironment();
     private final TestComputeWorkerService worker = new TestComputeWorkerService(mapper, audit, clock, environment);
     private final AppTaskAssignmentService app = new AppTaskAssignmentService(mapper, idempotency,
-            mock(EventOutboxService.class), audit, proof, environment, clock, worker, mock(SupportDeviceFundAdapter.class));
+            mock(EventOutboxService.class), audit, proof, environment, clock, worker, mock(SupportDeviceFundAdapter.class), org.mockito.Mockito.mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class));
     private final ContinuousIdentity identity = new ContinuousIdentity("test355-continuous");
     private final AtomicReference<AssignmentRow> task = new AtomicReference<>();
     private final AtomicReference<TestWorkerRuntimeRow> runtime = new AtomicReference<>();
@@ -204,7 +204,7 @@ class TestComputeWorkerContinuousTest {
         Clock fractional = Clock.fixed(TestComputeWorkerServiceTest.INSTANT.plusMillis(750), ZoneOffset.UTC);
         TestComputeWorkerService fractionalWorker = new TestComputeWorkerService(mapper, audit, fractional, environment);
         AppTaskAssignmentService fractionalApp = new AppTaskAssignmentService(mapper, idempotency,
-                mock(EventOutboxService.class), audit, proof, environment, fractional, fractionalWorker, mock(SupportDeviceFundAdapter.class));
+                mock(EventOutboxService.class), audit, proof, environment, fractional, fractionalWorker, mock(SupportDeviceFundAdapter.class), org.mockito.Mockito.mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class));
 
         var data = fractionalApp.continuousWorkerNext(identity, KEY).getData();
         assertThat(data).containsEntry("deploymentScope", "TEST").containsEntry("serverCanonical", true);
