@@ -56,6 +56,18 @@ public class G1AdminCommandService {
     }
 
     @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> updateVisibility(String key, NexMarketValueUpdateRequest request) {
+        requireReason(request == null ? null : request.reason());
+        return once("VISIBILITY", key, request, () -> {
+            ApiResult<Map<String, Object>> result = success(market.updateStakingVisibility(key, request));
+            outbox.publish("STAKING_PRODUCT", "staking", "admin.staking_visibility_changed", linked(
+                    "visible", parseBoolean(request.value()), "reason", request.reason().trim(),
+                    "operator", actor(request.operator())));
+            return result;
+        });
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> kill(
             String key, String tierKey, NexMarketValueUpdateRequest request) {
         requireReason(request == null ? null : request.reason());

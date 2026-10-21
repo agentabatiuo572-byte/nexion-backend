@@ -772,7 +772,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 compute.domain(), publicFlags, compute.coefficients(), compute.yieldEstimate(),
                 compute.gpuTiers(), compute.download(), compute.phoneBinding(), compute.sources());
         return ApiResult.ok(new PlatformComputeConfigView(
-                new PlatformComputeConfigView.FeatureFlags(enabled, false, false),
+                new PlatformComputeConfigView.FeatureFlags(enabled, false, false, true),
                 null,
                 new PlatformComputeConfigView.OnlineBonus(
                         BigDecimal.ZERO,

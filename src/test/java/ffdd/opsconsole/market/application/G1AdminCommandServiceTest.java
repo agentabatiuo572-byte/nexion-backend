@@ -44,6 +44,21 @@ class G1AdminCommandServiceTest {
     }
 
     @Test
+    void visibilityCommandPersistsThroughTheG1BoundaryWithoutSlashingPositions() {
+        NexMarketValueUpdateRequest request = new NexMarketValueUpdateRequest(
+                "false", "hide staking in App", "superadmin");
+        when(market.updateStakingVisibility("g1-visibility-1", request))
+                .thenReturn(ApiResult.ok(Map.of("appVisible", false)));
+
+        assertThat(service.updateVisibility("g1-visibility-1", request).getData())
+                .containsEntry("appVisible", false);
+        verify(market).updateStakingVisibility("g1-visibility-1", request);
+        verify(outbox).publish(anyString(), anyString(),
+                org.mockito.ArgumentMatchers.eq("admin.staking_visibility_changed"), any());
+        org.mockito.Mockito.verifyNoInteractions(mapper);
+    }
+
+    @Test
     void killAtomicallyDisposesOpenPositionsAndPublishesStructuredEvent() {
         NexMarketValueUpdateRequest request = new NexMarketValueUpdateRequest(
                 "true", "incident risk confirmed", "superadmin", null,
