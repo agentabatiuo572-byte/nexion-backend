@@ -91,6 +91,16 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int claimProvisionGate();
     @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId}")
     int allocatedAddressCount(@Param("projectId") long projectId, @Param("chainId") String chainId);
+    @Select("""
+            SELECT COUNT(*) AS total,
+                   COALESCE(SUM(state='UNASSIGNED'),0) AS unassigned,
+                   COALESCE(SUM(state='READY'),0) AS assigned,
+                   COALESCE(SUM(state='VERIFYING'),0) AS verifying,
+                   COALESCE(SUM(state='UNKNOWN'),0) AS `unknown`
+              FROM nx_cregis_deposit_address
+             WHERE project_id=#{projectId} AND chain_id=#{chainId}
+            """)
+    Map<String, Object> addressPool(@Param("projectId") long projectId, @Param("chainId") String chainId);
     @Update("UPDATE nx_cregis_provision_gate SET state='IDLE' WHERE id=1 AND state='BUSY'")
     int releaseProvisionGate();
     @Update("""
@@ -181,6 +191,50 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     Map<String, Object> lockProvisionGate();
     @Select("""
+            WITH delivery_json AS (
+              SELECT d.*, IF(JSON_VALID(raw_json),raw_json,'{}') AS payload
+                FROM nx_cregis_deposit_delivery d
+               WHERE accepted=1 AND (processed_at IS NULL OR reason IN
+                 ('PROVIDER_FAILED_HOLD','PROVIDER_MISMATCH_HOLD','CHAIN_MISMATCH_HOLD','PROVIDER_CONFLICT_HOLD'))
+            ), delivery_snapshots AS (
+              SELECT d.*,
+                     CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(payload,'$.block_height')) REGEXP '^[0-9]{1,16}$'
+                          THEN CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.block_height')) AS UNSIGNED) END AS snapshot_block,
+                     CASE WHEN signature_valid=1 AND timestamp_valid=1 AND ip_valid=1
+                          AND JSON_VALID(raw_json)
+                          AND JSON_TYPE(JSON_EXTRACT(payload,'$.pid'))='INTEGER'
+                          AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.pid'))=CAST(#{projectId} AS CHAR)
+                          AND JSON_TYPE(JSON_EXTRACT(payload,'$.cid'))='INTEGER'
+                          AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.cid'))=CAST(cid AS CHAR)
+                          AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.chain_id'))='2510'
+                          AND LOWER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.token_id')))='0x55d398326f99059ff775485246999027b3197955'
+                          AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.currency'))) IN
+                            ('USDT','USDT-BEP20','2510@0X55D398326F99059FF775485246999027B3197955')
+                          AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.status'))='1'
+                          AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.block_height')) REGEXP '^[0-9]{1,16}$'
+                          AND LOWER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.txid'))) REGEXP '^(0x)?[0-9a-f]{64}$'
+                          AND CONCAT('0x',RIGHT(LOWER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.txid'))),64))=LOWER(txid)
+                          AND LOWER(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.address')))=LOWER(address)
+                          AND gross_amount>0
+                          AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.nonce')) REGEXP '^[A-Za-z0-9]{6}$'
+                          AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.sign')) REGEXP '^[0-9a-fA-F]{32}$'
+                          THEN 1 ELSE 0 END AS snapshot_valid
+                FROM delivery_json d
+            ), delivery_exposure AS (
+              SELECT MAX(CASE WHEN gross_amount>0 THEN gross_amount END) AS amount
+                FROM delivery_snapshots d
+               WHERE snapshot_valid=0 OR (
+                 NOT EXISTS(SELECT 1 FROM nx_cregis_deposit_event e
+                             WHERE e.project_id=#{projectId} AND e.cid=d.cid
+                               AND e.txid=d.txid AND e.address=d.address
+                               AND e.gross_amount=d.gross_amount AND e.block_number=d.snapshot_block)
+                 AND NOT EXISTS(SELECT 1 FROM nx_cregis_chain_observation o
+                                 WHERE o.project_id=#{projectId} AND o.txid=d.txid AND o.address=d.address
+                                   AND CAST(o.raw_amount AS DECIMAL(18,6))=d.gross_amount
+                                   AND o.block_number=d.snapshot_block))
+               GROUP BY CASE WHEN snapshot_valid=1 THEN 0 ELSE id END,
+                        cid,txid,address,gross_amount,snapshot_block
+            )
             SELECT
               COALESCE((SELECT SUM(gross_amount) FROM nx_cregis_deposit_event
                          WHERE project_id=#{projectId} AND status IN
@@ -191,20 +245,8 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                              AND NOT EXISTS(SELECT 1 FROM nx_cregis_deposit_event e
                                              WHERE e.project_id=o.project_id
                                                AND e.txid=o.txid AND e.log_index=o.log_index)),0)
-              + COALESCE((SELECT SUM(d.gross_amount) FROM nx_cregis_deposit_delivery d
-                           WHERE d.accepted=1 AND d.processed_at IS NULL
-                             AND NOT EXISTS(SELECT 1 FROM nx_cregis_deposit_event e
-                                             WHERE e.project_id=#{projectId} AND e.cid=d.cid)
-                             AND NOT EXISTS(SELECT 1 FROM nx_cregis_chain_observation o
-                                             WHERE o.project_id=#{projectId} AND o.txid=d.txid)),0)
-              + COALESCE((SELECT SUM(d.gross_amount) FROM nx_cregis_deposit_delivery d
-                           WHERE d.accepted=1 AND d.reason IN
-                             ('PROVIDER_FAILED_HOLD','PROVIDER_MISMATCH_HOLD','CHAIN_MISMATCH_HOLD',
-                              'PROVIDER_CONFLICT_HOLD')
-                             AND NOT EXISTS(SELECT 1 FROM nx_cregis_deposit_event e
-                                             WHERE e.project_id=#{projectId} AND e.cid=d.cid)
-                             AND NOT EXISTS(SELECT 1 FROM nx_cregis_chain_observation o
-                                             WHERE o.project_id=#{projectId} AND o.txid=d.txid)),0)
+              + (SELECT CASE WHEN COUNT(*)<>COUNT(amount) THEN NULL ELSE COALESCE(SUM(amount),0) END
+                   FROM delivery_exposure)
               + COALESCE((SELECT SUM(w.amount) FROM nx_withdrawal_order w
                            WHERE w.asset='USDT' AND w.is_deleted=0
                              AND w.status NOT IN ('CONFIRMED','FAILED','REFUNDED','CANCELLED','REJECTED')),0)
@@ -354,6 +396,12 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     List<Map<String, Object>> pendingAcceptedDeliveries();
     @Select("SELECT COUNT(*) FROM nx_cregis_deposit_delivery WHERE accepted=1 AND processed_at IS NULL AND id<>#{exceptId}")
     int pendingAcceptedDeliveryCount(@Param("exceptId") long exceptId);
+    @Select("""
+            SELECT raw_json AS rawJson FROM nx_cregis_deposit_delivery
+             WHERE accepted=1 AND processed_at IS NULL AND id<>#{exceptId}
+             ORDER BY id
+            """)
+    List<Map<String, Object>> pendingAcceptedDeliveryEvidence(@Param("exceptId") long exceptId);
     @Select("""
             SELECT COUNT(*) FROM nx_cregis_deposit_delivery
              WHERE cid=#{cid} AND reason IN

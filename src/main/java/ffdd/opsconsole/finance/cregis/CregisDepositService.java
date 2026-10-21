@@ -198,6 +198,8 @@ public class CregisDepositService {
                 Map.entry("mode", "DISABLED"), Map.entry("depositEnabled", false),
                 Map.entry("depositCreditEnabled", false),
                 Map.entry("providerPayout", payouts.capability()),
+                Map.entry("addressPool", Map.of("available", false, "total", 0, "unassigned", 0,
+                        "assigned", 0, "verifying", 0, "unknown", 0, "limit", 60)),
                 Map.entry("provisionGate", Map.of("state", "DISABLED")),
                 Map.entry("uncertainAddresses", List.of()), Map.entry("heldDeposits", List.of()),
                 Map.entry("failedDeliveries", List.of()), Map.entry("pendingAcceptedDeliveries", 0),
@@ -210,6 +212,10 @@ public class CregisDepositService {
         status.put("depositEnabled", config.isDepositEnabled());
         status.put("depositCreditEnabled", config.isDepositCreditEnabled());
         status.put("providerPayout", payouts.capability());
+        Map<String, Object> addressPool = new java.util.LinkedHashMap<>(db.addressPool(config.getProjectId(), CHAIN));
+        addressPool.put("available", true);
+        addressPool.put("limit", 60);
+        status.put("addressPool", addressPool);
         status.put("provisionGate", gate == null ? Map.of("state", "MISSING") : gate);
         status.put("unresolvedExposureUsdt", db.unresolvedExposure(config.getProjectId()));
         status.put("riskAlerts", db.riskAlerts(config.getProjectId()));
@@ -258,7 +264,7 @@ public class CregisDepositService {
             signatureValid = config.getApiKey() != null && !config.getApiKey().isBlank()
                     && signer.verify(config.getApiKey(), callback, String.valueOf(callback.get("sign")));
         } catch (IllegalArgumentException invalid) { /* preserve rejected delivery */ }
-        boolean ipValid = allowedCallbackSource(sourceIp);
+        boolean ipValid = config.allowsCallbackSourceIp(sourceIp);
         boolean accepted = timestampValid && signatureValid && ipValid && valid(callback, true);
         String reason = accepted ? "OK" : !signatureValid ? "INVALID_SIGNATURE"
                 : !ipValid ? "INVALID_SOURCE_IP" : !timestampValid ? "INVALID_TIMESTAMP" : "INVALID_FIELDS";
@@ -281,15 +287,6 @@ public class CregisDepositService {
                     timestampValid ? 1 : 0, ipValid ? 1 : 0);
         });
         return accepted ? "success" : "rejected";
-    }
-
-    private boolean allowedCallbackSource(String sourceIp) {
-        if (sourceIp == null || sourceIp.isBlank()) return false;
-        String configured = config.getCallbackSourceIps();
-        if (configured == null || configured.isBlank()) return false;
-        for (String candidate : configured.split(","))
-            if (sourceIp.equalsIgnoreCase(candidate.trim())) return true;
-        return false;
     }
 
     private boolean valid(Map<String, Object> c, boolean requireFresh) {
@@ -790,7 +787,8 @@ public class CregisDepositService {
         List<Map<String, Object>> existing = db.lockEvent(config.getProjectId(), cid);
         if (!existing.isEmpty()) return settle(deliveryId, userId, cid, txid, address, amount, proof);
         if (config.isDepositCreditEnabled() && "IDLE".equals(gate.get("state"))
-                && on(gate, "creditEnabled") && db.pendingAcceptedDeliveryCount(deliveryId) == 0) {
+                && on(gate, "creditEnabled")
+                && !hasBlockingPendingDelivery(deliveryId, cid, txid, address, amount, proof.blockNumber())) {
             if (settle(deliveryId, userId, cid, txid, address, amount, proof)) return true;
             // A trip during settlement can close the gate before this verified
             // transfer is materialized. Keep it as a reviewed hold.
@@ -835,7 +833,7 @@ public class CregisDepositService {
         if (gate == null) throw new IllegalStateException("CREGIS_DEPOSIT_RISK_GATE_MISSING");
         if (tripLocked()) return false;
         if (!"IDLE".equals(gate.get("state")) || !on(gate, "creditEnabled")
-                || db.pendingAcceptedDeliveryCount(deliveryId) != 0) return false;
+                || hasBlockingPendingDelivery(deliveryId, cid, txid, address, amount, proof.blockNumber())) return false;
         if (!Long.valueOf(userId).equals(db.lockActiveUser(userId)))
             throw new IllegalStateException("CREGIS_DEPOSIT_USER_FROZEN");
         var prepared = "CREDITED".equals(status)
@@ -867,6 +865,28 @@ public class CregisDepositService {
         }
         if (deliveryId > 0) db.finishDelivery(deliveryId, status);
         return true;
+    }
+
+    /** Independent verified successes proceed; receipts sharing CID or transaction must match this credit. */
+    private boolean hasBlockingPendingDelivery(long deliveryId, long cid, String txid, String address,
+                                               BigDecimal amount, long blockNumber) {
+        for (Map<String, Object> receipt : db.pendingAcceptedDeliveryEvidence(deliveryId)) {
+            try {
+                Map<String, Object> callback = json.readValue((String) receipt.get("rawJson"), new TypeReference<>() { });
+                if (!valid(callback, false) || !"1".equals(String.valueOf(callback.get("status")))) return true;
+                boolean sameCid = ((Number) callback.get("cid")).longValue() == cid;
+                boolean sameTx = txid.replaceFirst("(?i)^0x", "").equalsIgnoreCase(
+                        String.valueOf(callback.get("txid")).replaceFirst("(?i)^0x", ""));
+                if (!sameCid && !sameTx) continue;
+                if (!sameCid || !sameTx
+                        || !address.equalsIgnoreCase(String.valueOf(callback.get("address")))
+                        || amount.compareTo(CregisAmount.parsePositive((String) callback.get("amount"))) != 0
+                        || Long.parseLong(String.valueOf(callback.get("block_height"))) != blockNumber) return true;
+            } catch (Exception unverified) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void requireAllocationAnchor(Map<String, Object> owner) {

@@ -37,16 +37,27 @@ public class WithdrawalPayoutExecutor {
     private final WithdrawalPayoutFinalizer finalizer;
     private final BscDepositProof chain;
     private final CregisPayoutControl payouts;
+    private final java.util.concurrent.atomic.AtomicReference<String> providerObservationCursor =
+            new java.util.concurrent.atomic.AtomicReference<>("");
 
     @Scheduled(fixedDelayString = "${nexion.finance.withdrawal-payout-poll-ms:30000}")
-    public void process() {
+    public synchronized void process() {
         CregisProperties.Mode mode = router.mode();
         // The local gateway is an acceptance probe only. It must never consume real wallet orders.
         if (mode == CregisProperties.Mode.LOCAL_SANDBOX) return;
         if (mode == CregisProperties.Mode.PROVIDER) {
             for (var expired : mapper.expiredProviderAttempts(LocalDateTime.now(),50))
                 finalizer.orphaned(expired,expired.providerCid(),"provider","CREGIS_SUBMISSION_UNKNOWN");
-            for (var submitted : mapper.incompleteProviderSubmissions(50)) reconcileProvider(submitted);
+            var submitted = mapper.incompleteProviderSubmissions(providerObservationCursor.get(), 50);
+            if (submitted.isEmpty() && !providerObservationCursor.get().isEmpty()) {
+                providerObservationCursor.set("");
+                submitted = mapper.incompleteProviderSubmissions(providerObservationCursor.get(), 50);
+            }
+            for (var row : submitted) {
+                // Advance even when a provider/RPC observation fails, so pending orders cannot starve later ones.
+                providerObservationCursor.set(row.withdrawalNo());
+                reconcileProvider(row);
+            }
         }
         // Existing submitted orders keep being observed when the operator closes new payouts.
         if (mode == CregisProperties.Mode.PROVIDER && !payouts.enabled()) return;

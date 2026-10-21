@@ -260,6 +260,10 @@ public final class HttpCregisGateway implements CregisGateway {
         long cid = expected.cid();
         JsonNode data = postRead("/api/v1/payout/query", Map.of("cid", cid));
         JsonNode pidNode = data.get("pid");
+        // The documented response may omit CID; when supplied it must agree with the requested identity.
+        JsonNode cidNode = data.get("cid");
+        if (cidNode != null && (!cidNode.isIntegralNumber() || !cidNode.canConvertToLong() || cidNode.longValue() != cid))
+            throw invalidResponse();
         String chainId = requiredText(data, "chain_id");
         String tokenId = requiredText(data, "token_id");
         String providerCurrency = requiredText(data, "currency");
