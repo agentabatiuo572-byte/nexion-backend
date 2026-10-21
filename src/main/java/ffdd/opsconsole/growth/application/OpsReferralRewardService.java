@@ -282,6 +282,21 @@ public class OpsReferralRewardService {
 
     @Transactional(isolation = Isolation.SERIALIZABLE)
     public Map<String, Object> runSettlements(String idempotencyKey, ReferralSettlementRunRequest request) {
+        return runSettlements(idempotencyKey, request, null);
+    }
+
+    @Transactional(isolation = Isolation.SERIALIZABLE)
+    public Map<String, Object> runSettlementForUser(
+            String idempotencyKey, Long invitedUserId, ReferralSettlementRunRequest request) {
+        requireProductionH8UnavailableInStrictSandbox("H8_PRODUCTION_SETTLEMENT_FORBIDDEN_IN_SANDBOX");
+        if (invitedUserId == null || invitedUserId <= 0 || invitedUserId > 9_007_199_254_740_991L) {
+            throw new BizException(422, "REFERRAL_REWARD_INVITED_USER_INVALID");
+        }
+        return runSettlements(idempotencyKey, request, invitedUserId);
+    }
+
+    private Map<String, Object> runSettlements(
+            String idempotencyKey, ReferralSettlementRunRequest request, Long onlyInvitedUserId) {
         // This is deliberately before validation/audit/idempotency: acceptance must not
         // create any production H8 write, including a rejected-action audit row.
         requireProductionH8UnavailableInStrictSandbox("H8_PRODUCTION_SETTLEMENT_FORBIDDEN_IN_SANDBOX");
@@ -293,7 +308,7 @@ public class OpsReferralRewardService {
                 throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                         "A2_CONFIRMATION_REQUIRED");
             }
-            int limit = Math.min(100, Math.max(
+            int limit = onlyInvitedUserId != null ? 1 : Math.min(100, Math.max(
                     1,
                     request == null || request.limit() == null ? 20 : request.limit()));
             // The database mutex survives until commit, serializes all H8 batches across
@@ -302,9 +317,10 @@ public class OpsReferralRewardService {
             RewardSnapshot snapshot = rewardSnapshot();
             requireApprovedSnapshot(request, snapshot);
             return idempotency.execute("REFERRAL_REWARD_SETTLEMENT", idempotencyKey,
-                    hash(limit + ":" + snapshot.hash() + ":" + reason), Map.class,
+                    hash((onlyInvitedUserId == null ? "" : onlyInvitedUserId + ":")
+                            + limit + ":" + snapshot.hash() + ":" + reason), Map.class,
                     () -> settle(limit, reason, actor(request.operator()), idempotencyKey, snapshot,
-                            accountSandbox, null));
+                            accountSandbox, onlyInvitedUserId));
         } catch (RuntimeException ex) {
             rejectedAudit("REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED", "batch",
                     request == null ? null : request.operator(), idempotencyKey,
@@ -448,12 +464,19 @@ public class OpsReferralRewardService {
         int settled = 0;
         int skipped = 0;
         boolean holdRisky = "risk_bucket".equals(lockMode);
-        for (ReferralRewardMapper.ReferralRow row : mapper.findPendingReferrals(
-                effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky, limit, onlyInvitedUserId)) {
+        List<ReferralRewardMapper.ReferralRow> pending = mapper.findPendingReferrals(
+                effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky, limit, onlyInvitedUserId);
+        if (onlyInvitedUserId != null && pending.isEmpty()) {
+            throw new BizException(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
+        }
+        for (ReferralRewardMapper.ReferralRow row : pending) {
             String settlementNo = "REF-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24).toUpperCase();
             if (mapper.insertSettlement(settlementNo, row.invitedUserId(), row.inviterUserId(),
                     newcomerUsdt, newcomerNex, inviterNex, lockMode, configSnapshot, operator, reason, key,
                     effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky) != 1) {
+                if (onlyInvitedUserId != null) {
+                    throw new BizException(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
+                }
                 skipped++;
                 continue;
             }
@@ -487,10 +510,14 @@ public class OpsReferralRewardService {
         batchAudit.put("effectiveAt", effectiveAt);
         batchAudit.put("sourceEnvironment", SETTLEMENT_ENVIRONMENT);
         batchAudit.put("coverage", coverageDetail());
+        if (onlyInvitedUserId != null) batchAudit.put("invitedUserId", onlyInvitedUserId);
         audit("REFERRAL_REWARD_SETTLEMENT_RUN", "batch", operator, key, batchAudit);
+        Map<String, Object> completed = new LinkedHashMap<>(Map.of(
+                "limit", limit, "settled", settled, "skipped", skipped,
+                "operator", operator, "idempotencyKey", key));
+        if (onlyInvitedUserId != null) completed.put("invitedUserId", onlyInvitedUserId);
         outbox.publish("REFERRAL_REWARD_SETTLEMENT", key, "H8_REFERRAL_REWARD_BATCH_COMPLETED",
-                Map.of("limit", limit, "settled", settled, "skipped", skipped,
-                        "operator", operator, "idempotencyKey", key));
+                completed);
         return Map.of("settled", settled, "skipped", skipped, "limit", limit);
     }
 

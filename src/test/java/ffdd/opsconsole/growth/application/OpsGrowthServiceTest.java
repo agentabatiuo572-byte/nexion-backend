@@ -2488,6 +2488,20 @@ class OpsGrowthServiceTest {
         assertThat(result.getMessage()).isEqualTo("UNKNOWN_REPLAY_OP:h99_unknown");
     }
 
+    @Test
+    void targetedReferralReplayRejectsFractionalMissingOrUnsafeIdsBeforeServiceLookup() {
+        for (Object raw : List.of(60723153029.5, 0, -1, "", "1e3", 9007199254740992L)) {
+            ApiResult<?> result = service.replay(
+                    new AuditReplayCommand("H", "h8_referral_settlement_user", Map.of("invitedUserId", raw)),
+                    new AuditReplayContext("superadmin", "invalid target cannot become batch", "idem-h8-invalid-target"));
+            assertThat(result.getCode()).isEqualTo(422);
+            assertThat(result.getMessage()).isEqualTo("REFERRAL_REWARD_INVITED_USER_INVALID");
+        }
+        assertThat(service.replay(new AuditReplayCommand("H", "h8_referral_settlement_user", Map.of()),
+                new AuditReplayContext("superadmin", "missing target cannot become batch", "idem-h8-missing-target"))
+                .getCode()).isEqualTo(422);
+    }
+
     private static Map<String, Object> voucherDbRow(String voucherId, String status) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("id", voucherId);

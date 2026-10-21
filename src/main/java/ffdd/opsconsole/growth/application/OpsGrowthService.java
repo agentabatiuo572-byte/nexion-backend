@@ -5629,21 +5629,27 @@ public class OpsGrowthService implements AuditReplayable {
                         null, str(p, "value"), reason, operator, str(p, "expectedValue"));
                 return updateCheckInRule(idem, str(p, "ruleKey"), req);
             }
-            case "h8_referral_settlement" -> {
+            case "h8_referral_settlement", "h8_referral_settlement_user" -> {
+                boolean targeted = "h8_referral_settlement_user".equals(cmd.op());
+                Long invitedUserId = targeted ? referralSettlementUserId(p) : null;
+                if (targeted && invitedUserId == null) {
+                    return ApiResult.fail(422, "REFERRAL_REWARD_INVITED_USER_INVALID");
+                }
                 if (referralRewardService.isEmpty()) {
                     return ApiResult.fail(503, "H8_REFERRAL_REWARD_SERVICE_UNAVAILABLE");
                 }
                 Integer requestedLimit = intVal(p, "limit");
                 int limit = requestedLimit == null ? 20 : requestedLimit;
-                return ApiResult.ok(referralRewardService.get().runSettlements(
-                        idem,
-                        new ReferralSettlementRunRequest(
+                ReferralSettlementRunRequest request = new ReferralSettlementRunRequest(
                                 limit,
                                 reason,
                                 operator,
                                 longVal(p, "expectedH8Version"),
                                 intVal(p, "expectedRhythmMonth"),
-                                str(p, "rewardSnapshotHash"))));
+                                str(p, "rewardSnapshotHash"));
+                return ApiResult.ok(targeted
+                        ? referralRewardService.get().runSettlementForUser(idem, invitedUserId, request)
+                        : referralRewardService.get().runSettlements(idem, request));
             }
             default -> {
                 return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
@@ -5681,6 +5687,13 @@ public class OpsGrowthService implements AuditReplayable {
         } catch (NumberFormatException ex) {
             return null;
         }
+    }
+
+    private static Long referralSettlementUserId(Map<String, Object> params) {
+        String raw = str(params, "invitedUserId");
+        if (raw == null || !raw.matches("[1-9]\\d{0,15}")) return null;
+        long value = Long.parseLong(raw);
+        return value <= 9_007_199_254_740_991L ? value : null;
     }
 
     /** 从 replay params 取 Long；非法或缺失均返回 null，由业务快照 CAS fail-closed。 */
