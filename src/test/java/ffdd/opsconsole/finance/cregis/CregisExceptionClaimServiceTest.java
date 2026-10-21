@@ -121,4 +121,13 @@ class CregisExceptionClaimServiceTest {
         assertThatThrownBy(()->service.decide("key",1,0,"APPROVE","独立复核原始来源及新鲜链上证据")).hasMessage("ADMIN_FINANCE_AUTH_REQUIRED");
         verify(deposits,never()).creditWallet(any(),anyLong(),anyLong());verifyNoInteractions(attribution,treasury);
     }
+    @Test void inactiveMakerDoesNotPreventDifferentActiveCheckerRejectingAndReleasingSource(){
+        doThrow(new ffdd.opsconsole.shared.exception.BizException(403,"ADMIN_FINANCE_AUTH_REQUIRED")).when(admins).requireActive(7);
+        var result=service.decide("reject",1,0,"REJECT","提案人已停用由另一有效复核人拒绝释放来源");
+        assertThat(result.get("state")).isEqualTo("REJECTED");
+        verify(admins).require(true);verify(admins,never()).requireActive(anyLong());
+        verify(sources).ensureReserved(source,"CLAIM","CL-original");verify(sources).release(source,"CLAIM","CL-original");
+        verify(db).decide(88,1,0,9,"REJECTED","提案人已停用由另一有效复核人拒绝释放来源");
+        verifyNoInteractions(attribution,treasury);verify(deposits,never()).creditWallet(any(),anyLong(),anyLong());
+    }
 }

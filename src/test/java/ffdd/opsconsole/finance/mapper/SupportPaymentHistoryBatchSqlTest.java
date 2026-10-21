@@ -43,9 +43,37 @@ class SupportPaymentHistoryBatchSqlTest {
                 SupportPaymentSourceMapper.Marker.CARD_SETTLEMENT,SupportPaymentSourceMapper.Marker.INTENT,SupportPaymentSourceMapper.Marker.DEVICE)) {
             String prior=switch(marker){case CREGIS_EVENT->SupportPaymentSourceSql.CREGIS_EVENT;case PAYMENT->SupportPaymentSourceSql.PAYMENT;case CARD_SETTLEMENT->SupportPaymentSourceSql.CARD_SETTLEMENT;case INTENT->SupportPaymentSourceSql.INTENT;case DEVICE->SupportPaymentSourceSql.DEVICE;default->throw new AssertionError(marker);};
             var ref=marker==SupportPaymentSourceMapper.Marker.CREGIS_EVENT?Map.<String,Object>of("projectId",100L,"cid",23L):marker==SupportPaymentSourceMapper.Marker.DEVICE?Map.<String,Object>of("id",4L):Map.<String,Object>of("key","one");
-            String actual=bound("historyMarkerBatch",Map.of("marker",marker,"customerIds",List.of(7L),"refs",List.of(ref)));
-            assertTrue(actual.startsWith(prior.substring(0,prior.indexOf(" WHERE "))+" WHERE "),actual);
-            assertFalse(actual.contains("is_deleted=0"),"Marker contradictions must remain visible");
+            String outerSuffix=switch(marker) {
+                case CREGIS_EVENT->" WHERE project_id=#{partition} AND cid=#{cid}";
+                case PAYMENT->" WHERE order_no=#{orderNo}";
+                case CARD_SETTLEMENT->" WHERE payment_no=#{key}";
+                case INTENT->" WHERE intent_no=#{key}";
+                case DEVICE->" WHERE id=#{id}";
+                default->throw new AssertionError(marker);
+            };
+            assertTrue(prior.endsWith(outerSuffix),"Exact original outer reference predicate changed");
+            String projection=prior.substring(0,prior.length()-outerSuffix.length()).replaceAll("\\s+"," ").trim();
+            var parameters=Map.<String,Object>of("marker",marker,"customerIds",List.of(7L),"refs",List.of(ref));
+            String actual=bound("historyMarkerBatch",parameters);
+            assertTrue(actual.startsWith(projection+" WHERE "),actual);
+            String predicate=actual.substring((projection+" WHERE ").length());
+            String expectedPredicate=switch(marker) {
+                case CREGIS_EVENT->"((project_id=? AND cid=?))";
+                case PAYMENT->"order_no IN (?)";
+                case CARD_SETTLEMENT->"payment_no IN (?)";
+                case INTENT->"intent_no IN (?)";
+                case DEVICE->"id IN (?)";
+                default->throw new AssertionError(marker);
+            };
+            assertEquals(expectedPredicate.replaceAll("\\s+",""),predicate.replaceAll("\\s+",""),"Outer marker scope must contain only its bound references");
+            assertFalse(predicate.contains("is_deleted"),"Marker contradictions must remain visible; nested audit provenance may require a live audit");
+            var sql=configuration().getMappedStatement(SupportPaymentSourceMapper.class.getName()+".historyMarkerBatch").getBoundSql(parameters);
+            var fields=marker==SupportPaymentSourceMapper.Marker.CREGIS_EVENT?List.of("projectId","cid"):List.of(marker==SupportPaymentSourceMapper.Marker.DEVICE?"id":"key");
+            assertEquals(fields,sql.getParameterMappings().stream().map(mapping->mapping.getProperty().substring(mapping.getProperty().lastIndexOf('.')+1)).toList());
+            for(var mapping:sql.getParameterMappings()) {
+                String field=mapping.getProperty().substring(mapping.getProperty().lastIndexOf('.')+1);
+                assertEquals(ref.get(field),sql.getAdditionalParameter(mapping.getProperty()),"Reference values must remain bound");
+            }
         }
     }
     @Test void emptyScopeUnknownSourcesAndUnknownMarkersCannotProduceQueries() {
@@ -55,6 +83,8 @@ class SupportPaymentHistoryBatchSqlTest {
             assertThrows(RuntimeException.class,()->bound(method,Map.of("source",Source.DEPOSIT_ORDER,"customerIds",List.of(true),"keys",List.of("one"))));
             assertThrows(RuntimeException.class,()->bound(method,Map.of("source",Source.DEPOSIT_ORDER,"customerIds",List.of(7L),"keys",List.of())));
         }
+        for(var invalidScope:List.of(List.of(),List.of(true)))
+            assertThrows(RuntimeException.class,()->bound("historyMarkerBatch",Map.of("marker",SupportPaymentSourceMapper.Marker.PAYMENT,"customerIds",invalidScope,"refs",List.of(Map.of("key","one")))));
         assertThrows(RuntimeException.class,()->bound("historyMarkerBatch",Map.of("marker",SupportPaymentSourceMapper.Marker.LEDGER,"customerIds",List.of(7L),"refs",List.of(Map.of("key","one")))));
     }
     @Test void markerReferenceTypesAndFieldSetsAreStrict() {

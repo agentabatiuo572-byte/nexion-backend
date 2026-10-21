@@ -65,7 +65,7 @@ public class CregisExceptionRefundService {
     public Map<String,Object> decidePolicy(String key,long id,long version,String decision,String reason) {
         long actor=admin(true); requireReason(reason); decision(decision,false);
         return command(actor,key,map("policyCaseId",id,"version",version,"decision",decision,"reason",reason),()->{
-            var proposal=db.lockPolicyCase(id); requireRow(proposal,version,"MAKER_DONE"); different(proposal,actor);
+            var proposal=db.lockPolicyCase(id); requireRow(proposal,version,"MAKER_DONE"); different(proposal,actor,"APPROVE".equals(decision));
             db.ensurePolicy(project()); var policy=db.lockPolicy(project());
             if ("APPROVE".equals(decision) && (number(policy,"version")!=number(proposal,"expectedPolicyVersion")
                     || db.applyPolicy(project(),number(policy,"version"),text(proposal,"mode"),decimal(proposal,"feeUsdt"))!=1)) throw conflict();
@@ -132,7 +132,7 @@ public class CregisExceptionRefundService {
             var row=db.lockCase(project(),id); requireRow(row,version,"MAKER_DONE");
             checkLocks(source(row),number(row,"claimantUserId"));
             if("CANCEL".equals(decision)) { if(number(row,"makerId")!=actor) throw new BizException(403,"CREGIS_REFUND_MAKER_REQUIRED"); }
-            else different(row,actor);
+            else different(row,actor,"APPROVE".equals(decision));
             if(evidence!=null) requireFresh(evidence,row);
             String next="APPROVE".equals(decision)?"APPROVED":"CANCEL".equals(decision)?"CANCELLED":"REJECTED";
             if(db.state(id,version,"MAKER_DONE",next,actor,null)!=1)throw conflict();
@@ -319,9 +319,9 @@ public class CregisExceptionRefundService {
     }
     private Map<String,Object> required(long id) { var row=db.byId(project(),id);if(row==null)throw new BizException(404,"CREGIS_REFUND_NOT_FOUND");return row; }
     private void requireRow(Map<String,Object> row,long version,String state) {if(row==null||number(row,"projectId")!=project()||number(row,"version")!=version||!state.equals(row.get("state")))throw conflict();}
-    private void different(Map<String,Object> row,long actor) {
+    private void different(Map<String,Object> row,long actor,boolean requireActiveMaker) {
         if(number(row,"makerId")==actor)throw new BizException(403,"CREGIS_REFUND_DIFFERENT_CHECKER_REQUIRED");
-        if(!admins.isActiveAdministrator(number(row,"makerId")))throw new BizException(403,"CREGIS_REFUND_MAKER_INACTIVE");
+        if(requireActiveMaker&&!admins.isActiveAdministrator(number(row,"makerId")))throw new BizException(403,"CREGIS_REFUND_MAKER_INACTIVE");
     }
     private void decision(String decision,boolean cancel) {if(decision==null||!("APPROVE".equals(decision)||"REJECT".equals(decision)||cancel&&"CANCEL".equals(decision)))throw invalid();}
     private long project() {if(config.getMode()!=CregisProperties.Mode.PROVIDER||config.getProjectId()<=0)throw new BizException(503,"CREGIS_PROVIDER_DISABLED");return config.getProjectId();}

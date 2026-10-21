@@ -28,6 +28,6 @@ public interface CregisExceptionOwnershipMapper extends BaseMapper<Object> {
     int insert(@Param("id") String id,@Param("project") long project,@Param("type") String type,@Param("sourceId") long sourceId,
                @Param("action") String action,@Param("target") Long target,@Param("message") String message,
                @Param("hash") String hash,@Param("expires") LocalDateTime expires,@Param("actor") long actor);
-    @Update("UPDATE nx_cregis_ownership_challenge SET consumed_ref=#{ref} WHERE challenge_id=#{id} AND consumed_ref IS NULL AND expires_at>UTC_TIMESTAMP()")
-    int consume(@Param("id") String id,@Param("ref") String ref);
+    @Update("UPDATE nx_cregis_ownership_challenge SET consumed_ref=#{ref},consumed_signature=#{signature},signer=#{signer},consumed_at=UTC_TIMESTAMP() WHERE challenge_id=#{id} AND consumed_ref IS NULL AND consumed_signature IS NULL AND signer IS NULL AND consumed_at IS NULL AND expires_at>UTC_TIMESTAMP()")
+    int consume(@Param("id") String id,@Param("ref") String ref,@Param("signature") String signature,@Param("signer") String signer);
 }

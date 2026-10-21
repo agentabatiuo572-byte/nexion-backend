@@ -40,7 +40,11 @@ public class CregisExceptionOwnershipService {
                             String sourceStatus,Long userId,long blockNumber,String blockHash,int confirmations,
                             String evidenceHash,Instant checkedAt) { }
     public record VerifiedOwnership(String challengeId,String action,Long targetUserId,Evidence evidence,
-                                     String signatureHash) { }
+                                     String signatureHash,String signature) {
+        public VerifiedOwnership(String challengeId,String action,Long targetUserId,Evidence evidence,String signatureHash) {
+            this(challengeId,action,targetUserId,evidence,signatureHash,null);
+        }
+    }
     public record Challenge(String challengeId,String message,String expiresAt,String evidenceHash,
                              String fromAddress,String txid,int logIndex,String grossAmount) { }
 
@@ -100,8 +104,14 @@ public class CregisExceptionOwnershipService {
         Evidence proof=preflight(ref);
         if("CLAIM_CREDIT".equals(action) && !"OBSERVATION".equals(ref.type())) throw fail("CREGIS_EXCEPTION_SOURCE_ALREADY_ATTRIBUTED");
         String id=UUID.randomUUID().toString();
-        Instant expires=Instant.now().plusSeconds(600);
-        String message=String.join("\n","UVEL Cregis ownership authorization v1","Issuer: "+deployment(),
+        Instant expires=Instant.now().plusSeconds(600).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        String message=message(proof,id,action,targetUserId,expires);
+        if(db.insert(id,config.getProjectId(),ref.type(),ref.id(),action,targetUserId,message,proof.evidenceHash(),
+                LocalDateTime.ofInstant(expires,ZoneOffset.UTC),actor)!=1) throw fail("CREGIS_EXCEPTION_CHALLENGE_WRITE_FAILED");
+        return new Challenge(id,message,expires.toString(),proof.evidenceHash(),proof.fromAddress(),proof.source().txid(),proof.source().logIndex(),proof.source().grossAmount().toPlainString());
+    }
+    private String message(Evidence proof,String id,String action,Long targetUserId,Instant expires) {
+        return String.join("\n","UVEL Cregis ownership authorization v1","Issuer: "+deployment(),
                 "Action: "+action,"Project: "+config.getProjectId(),"Chain: 2510 / BSC 56",
                 "Token: "+CregisConstants.USDT_BEP20_TOKEN_ID,"Transaction: "+proof.source().txid(),
                 "Log index: "+proof.source().logIndex(),"Amount USDT: "+proof.source().grossAmount().stripTrailingZeros().toPlainString(),
@@ -109,9 +119,6 @@ public class CregisExceptionOwnershipService {
                 "Target UVEL user: "+(targetUserId==null?"NONE":targetUserId),"Evidence: "+proof.evidenceHash(),
                 "Nonce: "+id,"Expires UTC: "+expires.toString(),
                 "I authorize only this disposition of this deposit. This signature does not authorize wallet access.");
-        if(db.insert(id,config.getProjectId(),ref.type(),ref.id(),action,targetUserId,message,proof.evidenceHash(),
-                LocalDateTime.ofInstant(expires,ZoneOffset.UTC),actor)!=1) throw fail("CREGIS_EXCEPTION_CHALLENGE_WRITE_FAILED");
-        return new Challenge(id,message,expires.toString(),proof.evidenceHash(),proof.fromAddress(),proof.source().txid(),proof.source().logIndex(),proof.source().grossAmount().toPlainString());
     }
 
     public VerifiedOwnership verify(String challengeId,String signature,String action,Long targetUserId) {
@@ -121,9 +128,11 @@ public class CregisExceptionOwnershipService {
         if(challenge.get("consumed_ref")!=null)throw fail("CREGIS_EXCEPTION_CHALLENGE_USED");
         Evidence evidence=preflight(new SourceRef((String)challenge.get("source_type"),((Number)challenge.get("source_id")).longValue()));
         if(!evidence.evidenceHash().equals(challenge.get("evidence_hash"))) throw fail("CREGIS_EXCEPTION_EVIDENCE_CHANGED");
+        requireMessage(challenge,evidence,action,targetUserId);
         String signer=recoverSigner((String)challenge.get("message"),signature);
         if(!evidence.fromAddress().equalsIgnoreCase(signer)) throw fail("CREGIS_EXCEPTION_SIGNATURE_INVALID");
-        return new VerifiedOwnership(challengeId,action,targetUserId,evidence,sha(signature.toLowerCase(java.util.Locale.ROOT)));
+        String normalized=signature.toLowerCase(java.util.Locale.ROOT);
+        return new VerifiedOwnership(challengeId,action,targetUserId,evidence,sha(normalized),normalized);
     }
 
     @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)
@@ -132,12 +141,16 @@ public class CregisExceptionOwnershipService {
         var challenge=db.lockChallenge(verified.challengeId());
         requireChallenge(challenge,verified.action(),verified.targetUserId());
         if(!verified.evidence().evidenceHash().equals(challenge.get("evidence_hash"))) throw fail("CREGIS_EXCEPTION_EVIDENCE_CHANGED");
+        requireMessage(challenge,verified.evidence(),verified.action(),verified.targetUserId());
+        String signer=recoverSigner((String)challenge.get("message"),verified.signature());
+        if(!verified.evidence().fromAddress().equalsIgnoreCase(signer)
+                || !sha(verified.signature()).equals(verified.signatureHash()))throw fail("CREGIS_EXCEPTION_SIGNATURE_INVALID");
         if(reference==null || reference.isBlank() || reference.length()>96) throw fail("CREGIS_EXCEPTION_REQUEST_INVALID");
         if(challenge.get("consumed_ref")!=null) {
-            if(reference.equals(challenge.get("consumed_ref"))) return verified.evidence();
+            if(reference.equals(challenge.get("consumed_ref"))) { requireReceipt(challenge);return verified.evidence(); }
             throw fail("CREGIS_EXCEPTION_CHALLENGE_USED");
         }
-        if(db.consume(verified.challengeId(),reference)!=1) throw fail("CREGIS_EXCEPTION_CHALLENGE_USED");
+        if(db.consume(verified.challengeId(),reference,verified.signature(),signer)!=1) throw fail("CREGIS_EXCEPTION_CHALLENGE_USED");
         return verified.evidence();
     }
 
@@ -151,6 +164,25 @@ public class CregisExceptionOwnershipService {
         if(row==null || ((Number)row.get("project_id")).longValue()!=config.getProjectId()
                 || !action.equals(row.get("action")) || !Objects.equals(target,row.get("target_user_id") instanceof Number n?n.longValue():null)
                 || !reference.equals(row.get("consumed_ref")) || !hash.equals(row.get("evidence_hash")))
+            throw fail("CREGIS_EXCEPTION_OWNERSHIP_RECEIPT_MISMATCH");
+        requireReceipt(row);
+    }
+    private void requireMessage(Map<String,Object> row,Evidence evidence,String action,Long target) {
+        if(!evidence.ref().type().equals(row.get("source_type")) || evidence.ref().id()!=((Number)row.get("source_id")).longValue()
+                || !message(evidence,(String)row.get("challenge_id"),action,target,expiry(row.get("expires_at")).toInstant(ZoneOffset.UTC)).equals(row.get("message")))
+            throw fail("CREGIS_EXCEPTION_OWNERSHIP_RECEIPT_MISMATCH");
+    }
+    private void requireReceipt(Map<String,Object> row) {
+        String message=(String)row.get("message"),signer=(String)row.get("signer");
+        if(signer==null || !signer.matches("(?i)0x[0-9a-f]{40}") || message==null
+                || !recoverSigner(message,(String)row.get("consumed_signature")).equalsIgnoreCase(signer)
+                || row.get("consumed_at")==null || expiry(row.get("consumed_at")).isAfter(expiry(row.get("expires_at"))))
+            throw fail("CREGIS_EXCEPTION_OWNERSHIP_RECEIPT_MISMATCH");
+        var lines=java.util.Arrays.asList(message.split("\n",-1));
+        if(!lines.contains("Issuer: "+deployment()) || !lines.contains("Action: "+row.get("action"))
+                || !lines.contains("Project: "+row.get("project_id")) || !lines.contains("Nonce: "+row.get("challenge_id"))
+                || !lines.contains("Evidence: "+row.get("evidence_hash")) || !lines.contains("Transfer sender: "+signer)
+                || !lines.contains("Target UVEL user: "+(row.get("target_user_id")==null?"NONE":row.get("target_user_id"))))
             throw fail("CREGIS_EXCEPTION_OWNERSHIP_RECEIPT_MISMATCH");
     }
     public void requireTargetActive(long target){if(!db.activeTarget(target))throw fail("CREGIS_EXCEPTION_TARGET_INVALID");}

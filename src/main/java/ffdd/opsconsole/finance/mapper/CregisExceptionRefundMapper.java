@@ -21,6 +21,7 @@ public interface CregisExceptionRefundMapper extends BaseMapper<Object> {
             + "AND s.cid=r.deposit_cid AND s.address=r.deposit_address AND s.gross_amount=r.gross_amount "
             + "AND c.project_id=r.project_id AND c.action='REFUND_ORIGIN' AND c.target_user_id IS NULL "
             + "AND c.consumed_ref=r.ownership_reference AND c.evidence_hash=r.source_evidence_hash "
+            + "AND c.consumed_signature IS NOT NULL AND c.signer=r.return_address AND c.consumed_at IS NOT NULL AND c.consumed_at<=c.expires_at "
             + "AND r.net_amount>0 AND r.fee_amount>=0 AND r.gross_amount=r.net_amount+r.fee_amount ";
     String APPROVED_CTE="WITH approved_refund_sources AS (SELECT DISTINCT r.project_id,r.txid,r.log_index,r.deposit_cid,r.deposit_address,r.gross_amount "
             +APPROVED_SOURCE+"AND r.project_id=#{project}) ";

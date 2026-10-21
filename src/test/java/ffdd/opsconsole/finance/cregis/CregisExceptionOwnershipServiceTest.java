@@ -46,7 +46,9 @@ class CregisExceptionOwnershipServiceTest {
             challenge.put("expires_at",Timestamp.valueOf(i.<LocalDateTime>getArgument(8)));return 1;});
         when(db.challenge(any())).thenAnswer(i->challenge.isEmpty()?null:challenge);
         when(db.lockChallenge(any())).thenAnswer(i->challenge);
-        when(db.consume(any(),any())).thenAnswer(i->{challenge.put("consumed_ref",i.getArgument(1));return 1;});
+        when(db.consume(any(),any(),any(),any())).thenAnswer(i->{challenge.put("consumed_ref",i.getArgument(1));
+            challenge.put("consumed_signature",i.getArgument(2));challenge.put("signer",i.getArgument(3));
+            challenge.put("consumed_at",Timestamp.valueOf(LocalDateTime.now(ZoneOffset.UTC)));return 1;});
     }
     @Test void eip191RecoveryUsesKnownPrivateKeyOneAddressAndRejectsMessageTampering() {
         String signature=sign("UVEL claim – 所有权",BigInteger.ONE);
@@ -62,6 +64,9 @@ class CregisExceptionOwnershipServiceTest {
         assertThat(verified.evidence().source().cid()).isEqualTo(77);
         assertThatThrownBy(()->service.verify(c.challengeId(),sign(c.message(),BigInteger.ONE),"REFUND_ORIGIN",42L)).hasMessage("CREGIS_EXCEPTION_CHALLENGE_INVALID_OR_EXPIRED");
         service.consume(verified,"CL-original");
+        assertThat(challenge.get("consumed_signature")).isEqualTo(verified.signature());
+        assertThat(challenge.get("signer")).isEqualTo(KEY_ONE_ADDRESS);
+        service.requireConsumed(c.challengeId(),"CL-original","CLAIM_CREDIT",42L,c.evidenceHash());
         assertThatThrownBy(()->service.consume(verified,"CL-another")).hasMessage("CREGIS_EXCEPTION_CHALLENGE_USED");
         assertThatThrownBy(()->service.verify(c.challengeId(),sign(c.message(),BigInteger.ONE),"CLAIM_CREDIT",42L)).hasMessage("CREGIS_EXCEPTION_CHALLENGE_USED");
     }
@@ -86,6 +91,32 @@ class CregisExceptionOwnershipServiceTest {
         when(db.eventByLog(88,TX,3)).thenReturn(null);
         when(db.eventByCid(88,77)).thenReturn(Map.of("id",2L,"status","CREDITED","userId",77L));
         assertThatThrownBy(()->service.preflight(new CregisExceptionOwnershipService.SourceRef("OBSERVATION",101))).hasMessage("CREGIS_EXCEPTION_SOURCE_ALREADY_ATTRIBUTED");
+    }
+    @Test void consumedReceiptReverifiesOriginalSignatureSignerMessageAndStructuredBinding() {
+        var c=service.prepare(new CregisExceptionOwnershipService.SourceRef("OBSERVATION",101),"CLAIM_CREDIT",42L);
+        var verified=service.verify(c.challengeId(),sign(c.message(),BigInteger.ONE),"CLAIM_CREDIT",42L);service.consume(verified,"CL-original");
+        var original=new HashMap<>(challenge);
+        challenge.put("consumed_signature",sign(c.message(),BigInteger.TWO));assertReceiptRejected(c);
+        challenge.clear();challenge.putAll(original);challenge.put("signer","0x"+"f".repeat(40));assertReceiptRejected(c);
+        challenge.clear();challenge.putAll(original);
+        String altered=c.message().replace("Target UVEL user: 42","Target UVEL user: 43");
+        challenge.put("message",altered);challenge.put("consumed_signature",sign(altered,BigInteger.ONE));assertReceiptRejected(c);
+        challenge.clear();challenge.putAll(original);challenge.put("consumed_at",Timestamp.valueOf(LocalDateTime.now(ZoneOffset.UTC).plusHours(1)));assertReceiptRejected(c);
+        challenge.clear();challenge.putAll(original);config.setCallbackBaseUrl("https://production.uvel.invalid/api/cregis/callbacks");assertReceiptRejected(c);
+    }
+    @Test void consumeRevalidatesSignatureAndFullIssuedMessageWithinNonceTransaction() {
+        var c=service.prepare(new CregisExceptionOwnershipService.SourceRef("OBSERVATION",101),"CLAIM_CREDIT",42L);
+        var verified=service.verify(c.challengeId(),sign(c.message(),BigInteger.ONE),"CLAIM_CREDIT",42L);
+        String invalid=sign(c.message(),BigInteger.TWO);
+        var forged=new CregisExceptionOwnershipService.VerifiedOwnership(verified.challengeId(),verified.action(),verified.targetUserId(),verified.evidence(),CregisExceptionOwnershipService.sha(invalid),invalid);
+        assertThatThrownBy(()->service.consume(forged,"CL-original")).hasMessage("CREGIS_EXCEPTION_SIGNATURE_INVALID");
+        challenge.put("message",c.message().replace("Log index: 3","Log index: 4"));
+        assertThatThrownBy(()->service.consume(verified,"CL-original")).hasMessage("CREGIS_EXCEPTION_OWNERSHIP_RECEIPT_MISMATCH");
+        verify(db,never()).consume(any(),any(),any(),any());
+    }
+    void assertReceiptRejected(CregisExceptionOwnershipService.Challenge c) {
+        assertThatThrownBy(()->service.requireConsumed(c.challengeId(),"CL-original","CLAIM_CREDIT",42L,c.evidenceHash()))
+                .hasMessage("CREGIS_EXCEPTION_OWNERSHIP_RECEIPT_MISMATCH");
     }
     static String sign(String message,BigInteger privateKey) {
         byte[] body=message.getBytes(StandardCharsets.UTF_8),prefix=("\u0019Ethereum Signed Message:\n"+body.length).getBytes(StandardCharsets.UTF_8);

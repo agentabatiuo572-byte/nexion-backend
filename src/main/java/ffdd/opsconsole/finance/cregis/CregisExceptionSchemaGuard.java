@@ -25,7 +25,7 @@ public class CregisExceptionSchemaGuard implements ApplicationRunner {
         Map<String,String> required = Map.ofEntries(
             Map.entry("nx_cregis_deposit_event", "transfer_from_address origin_log_index"),
             Map.entry("nx_cregis_exception_source", "project_id txid log_index cid address gross_amount state operation_kind operation_ref alias_of_log_index version"),
-            Map.entry("nx_cregis_ownership_challenge", "challenge_id project_id source_type source_id action target_user_id message evidence_hash expires_at consumed_ref created_by"),
+            Map.entry("nx_cregis_ownership_challenge", "challenge_id project_id source_type source_id action target_user_id message evidence_hash expires_at consumed_ref consumed_signature signer consumed_at created_by"),
             Map.entry("nx_cregis_exception_claim", "id case_no project_id cid txid log_index target_user_id challenge_id evidence_hash state version maker_id checker_id"),
             Map.entry("nx_cregis_exception_refund_policy", "project_id mode fee_usdt version"),
             Map.entry("nx_cregis_exception_refund_policy_case", "id project_id expected_policy_version mode fee_usdt maker_id checker_id state version"),
