@@ -124,7 +124,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 if (user == null || !audience.acceptsSandbox(user.getSandbox()) || !"ACTIVE".equals(user.getStatus())
                         || !Integer.valueOf(0).equals(user.getIsDeleted()) || blocklist.isBlocked(userId)
                         || userMapper.isPasswordResetRequired(userId)) return;
-                if (!SupportedUserPhonePolicy.isSupportedDestination(user.getCountryCode(), user.getPhone())) {
+                if (!supportedIdentity(user)) {
                     revocations.revokeAll(userId);
                     return;
                 }
@@ -163,6 +163,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         details.put("sessionId", request.getHeader(AuthHeaders.SESSION_ID).trim());
         authentication.setDetails(Map.copyOf(details));
         SecurityContextHolder.getContext().setAuthentication(authentication);
+    }
+
+    private boolean supportedIdentity(UserEntity user) {
+        return SupportedUserPhonePolicy.isSupportedDestination(user.getCountryCode(), user.getPhone())
+                || user.getCountryCode() == null && user.getPhone() == null
+                    && userMapper.countProviderIdentities(user.getId()) > 0;
     }
 
     private String resolveToken(HttpServletRequest request) {
@@ -218,7 +224,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 revocations.revokeOwned(userId, sessionId);
                 return false;
             }
-            if (!SupportedUserPhonePolicy.isSupportedDestination(user.getCountryCode(), user.getPhone())) {
+            if (!supportedIdentity(user)) {
                 revocations.revokeAll(userId);
                 return false;
             }

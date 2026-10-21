@@ -13,7 +13,7 @@ public interface OAuthProviderFlowMapper extends BaseMapper<OAuthProviderFlow> {
           receipt_hash VARCHAR(64) NULL,
           state VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
           provider VARCHAR(16) NOT NULL, nonce VARCHAR(64) NOT NULL, verifier VARCHAR(64) NOT NULL,
-          browser_hash VARCHAR(64) NULL, link_user_id BIGINT NULL,
+          browser_hash VARCHAR(64) NULL, link_user_id BIGINT NULL, sponsor_code VARCHAR(32) NULL,
           status VARCHAR(16) NOT NULL, subject VARCHAR(191) NULL, display_name VARCHAR(128) NULL,
           client_hash VARCHAR(64) NOT NULL, expires_at DATETIME(6) NOT NULL,
           UNIQUE KEY uk_oauth_flow_state(state), KEY idx_oauth_flow_expiry(expires_at),
@@ -24,8 +24,8 @@ public interface OAuthProviderFlowMapper extends BaseMapper<OAuthProviderFlow> {
 
     @Insert("""
         INSERT INTO nx_oauth_provider_flow
-        (id,proof_hash,state,provider,nonce,verifier,link_user_id,status,client_hash,expires_at)
-        VALUES (#{id},#{proofHash},#{state},#{provider},#{nonce},#{verifier},#{linkUserId},'PENDING',
+        (id,proof_hash,state,provider,nonce,verifier,link_user_id,sponsor_code,status,client_hash,expires_at)
+        VALUES (#{id},#{proofHash},#{state},#{provider},#{nonce},#{verifier},#{linkUserId},#{sponsorCode},'PENDING',
                 #{clientHash},DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 10 MINUTE))
         """)
     void insertFlow(OAuthProviderFlow flow);

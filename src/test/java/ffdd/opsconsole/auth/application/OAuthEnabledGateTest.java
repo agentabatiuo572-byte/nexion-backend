@@ -37,7 +37,8 @@ class OAuthEnabledGateTest {
             var auth = mock(AppUserAuthService.class);
             var guard = mock(AppUserSecurityVerificationGuard.class);
             var sessions = mock(CurrentAppSessionService.class);
-            var service = new OAuthProviderFlowService(client, mapper, identities, auth, env, guard, sessions);
+            var service = new OAuthProviderFlowService(client, mapper, identities, auth, env, guard, sessions,
+                    mock(AppUserRegistrationService.class));
             var proof = new OAuthProviderFlowService.Proof("existing-flow", "key", "receipt");
             assertThat(client.available()).isEmpty();
             assertThat(service.available()).isEmpty();
@@ -71,7 +72,8 @@ class OAuthEnabledGateTest {
         assertThat(client.available()).containsExactly("GOOGLE", "TELEGRAM");
         var mapper = mock(OAuthProviderFlowMapper.class);
         var service = new OAuthProviderFlowService(client, mapper, mock(UserOAuthIdentityMapper.class),
-                mock(AppUserAuthService.class), env, mock(AppUserSecurityVerificationGuard.class), mock(CurrentAppSessionService.class));
+                mock(AppUserAuthService.class), env, mock(AppUserSecurityVerificationGuard.class), mock(CurrentAppSessionService.class),
+                mock(AppUserRegistrationService.class));
         env.setActiveProfiles("test");
         assertThat(service.available()).isEmpty();
         assertThatThrownBy(() -> service.start("GOOGLE", null, "client")).hasMessage("OAUTH_PROFILE_FORBIDDEN");

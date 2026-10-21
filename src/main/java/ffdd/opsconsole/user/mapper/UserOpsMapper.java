@@ -24,6 +24,8 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface UserOpsMapper extends BaseMapper<UserEntity> {
+    @Select("SELECT COUNT(*) FROM nx_user_oauth_identity WHERE user_id=#{userId} AND source_environment='PRODUCTION' AND is_deleted=0")
+    int countProviderIdentities(@Param("userId") Long userId);
     @Select("SELECT * FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     UserEntity findLoginUserForUpdate(@Param("userId") Long userId);
 

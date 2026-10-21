@@ -222,6 +222,9 @@ public interface AppUserRegistrationMapper {
     int countRegisteredAccountsByClientIp24hInEnvironment(@Param("clientIp") String clientIp,
             @Param("authEnvironment") String authEnvironment, @Param("sandbox") int sandbox);
 
+    @Select("SELECT COUNT(*) FROM nx_user WHERE client_ip=#{clientIp} AND sandbox=0 AND created_at>=DATE_SUB(NOW(),INTERVAL 1 DAY) AND is_deleted=0")
+    int countNewAccountsByClientIp24h(@Param("clientIp") String clientIp);
+
     /**
      * Compatibility resolver for legacy stored codes that contain hyphens or
      * lowercase letters. It deliberately takes no lock: an expression cannot

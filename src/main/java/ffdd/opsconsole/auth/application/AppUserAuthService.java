@@ -468,11 +468,11 @@ public class AppUserAuthService {
 
     private ApiResult<UserLoginResponse> loginReceipt(UserEntity user, AppSingleSessionService.Issued issued) {
         UserSessionEntity session = issued.session();
-        String token = issued.refreshToken() == null ? null : tokenProvider.createUserToken(user.getId(), user.getPhone(),
+        String token = issued.refreshToken() == null ? null : tokenProvider.createUserToken(user.getId(), user.getPhone() == null ? "" : user.getPhone(),
                 List.of(), session.getRefreshTokenId(), Duration.ofHours(configInt("auth.session.access_ttl_hours",4,1,24)),
                 UserAuthEnvironment.resolve(environment).orElseThrow(() -> new BizException(503,"USER_AUTH_ENVIRONMENT_FORBIDDEN")));
         return ApiResult.ok(new UserLoginResponse(token, "Bearer",
-                new UserLoginResponse.UserSession(user.getId(), normalizeCountryCode(user.getCountryCode()), user.getPhone(),
+                new UserLoginResponse.UserSession(user.getId(), sessionCountryCode(user), sessionPhone(user),
                         user.getNickname(), userMapper.isOnboardingComplete(user.getId())), null, null,
                 issued.refreshToken(), null, tokenProvider.sessionSyncKey(session.getSessionChainId()))
                 .withContext(session, issued.status()));
@@ -498,7 +498,9 @@ public class AppUserAuthService {
         if (user == null || !"ACTIVE".equals(user.getStatus()) || blocklistVerifier.isBlocked(user.getId())
                 || userMapper.isPasswordResetRequired(user.getId())) throw new BizException(403,"USER_REFRESH_NOT_ALLOWED");
         ApiResult<UserLoginResponse> failure = environmentFailure(user, false);
-        return failure == null ? loginReceipt(user, issued) : failure;
+        if (failure != null) return failure;
+        if (!phoneOrProviderIdentity(user)) throw new BizException(403, "USER_REFRESH_NOT_ALLOWED");
+        return loginReceipt(user, issued);
     }
 
     /**
@@ -541,11 +543,11 @@ public class AppUserAuthService {
         LocalDateTime now = LocalDateTime.now();
         if (!consumeClientRate(clientAddress, now)) return ApiResult.fail(429, "USER_LOGIN_RATE_LIMITED");
         UserEntity snapshot = userMapper.selectById(userId);
-        if (snapshot == null || !validCountryCode(snapshot.getCountryCode())
-                || !validPhone(snapshot.getCountryCode(), snapshot.getPhone()))
+        if (snapshot == null || !phoneOrProviderIdentity(snapshot))
             return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
-        String country = normalizeCountryCode(snapshot.getCountryCode());
-        String key = loginKey(country, snapshot.getPhone(), authNamespace());
+        boolean providerOnly = snapshot.getPhone() == null;
+        String country = providerOnly ? "" : normalizeCountryCode(snapshot.getCountryCode());
+        String key = providerOnly ? "OAUTH:" + userId : loginKey(country, snapshot.getPhone(), authNamespace());
         // Match password/OTP login's guard -> account lock order.
         loginGuardMapper.initialize(key, now);
         UserLoginGuardRecord guard = loginGuardMapper.lock(key);
@@ -557,13 +559,14 @@ public class AppUserAuthService {
             return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
         ApiResult<UserLoginResponse> environmentFailure = environmentFailure(user, false);
         if (environmentFailure != null) return environmentFailure;
-        if (!validCountryCode(user.getCountryCode()) || !validPhone(user.getCountryCode(), user.getPhone()))
+        if (!phoneOrProviderIdentity(user))
             return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
         if (userMapper.isPasswordResetRequired(userId)) return ApiResult.fail(428, "USER_PASSWORD_RESET_REQUIRED");
-        if (!country.equals(normalizeCountryCode(user.getCountryCode())) || !snapshot.getPhone().equals(user.getPhone()))
+        if (!country.equals(sessionCountryCode(user)) || !java.util.Objects.equals(snapshot.getPhone(), user.getPhone()))
             return ApiResult.fail(409, "OAUTH_IDENTITY_NOT_AVAILABLE");
         loginGuardMapper.bindUser(key, userId);
         if (userMapper.isTwoFactorEnabled(userId)) {
+            if (providerOnly) return ApiResult.fail(403, "USER_PHONE_BINDING_REQUIRED");
             if (!StringUtils.hasText(challengeNo) && !StringUtils.hasText(code))
                 return issueTwoFactorChallenge(user, country, user.getPhone(), captchaTicket, clientAddress);
             if (challengeNo == null || !challengeNo.matches("OTP-[a-f0-9]{32}")
@@ -686,23 +689,24 @@ public class AppUserAuthService {
             revocations.revokeOwned(current.getUserId(), current.getRefreshTokenId());
             return environmentFailure;
         }
-        if (!validCountryCode(user.getCountryCode())) {
+        boolean providerOnly = providerOnlyAccount(user);
+        if (!providerOnly && !validCountryCode(user.getCountryCode())) {
             revocations.revokeAll(user.getId());
             return ApiResult.fail(403, "USER_REFRESH_COUNTRY_CODE_FORBIDDEN");
         }
-        if (!validPhone(user.getCountryCode(), user.getPhone())) {
+        if (!providerOnly && !validPhone(user.getCountryCode(), user.getPhone())) {
             revocations.revokeAll(user.getId());
             return ApiResult.fail(403, "USER_REFRESH_PHONE_INVALID");
         }
         if (recoveredRaw != null) {
-            String access = tokenProvider.createUserToken(user.getId(), user.getPhone(), List.of(),
+            String access = tokenProvider.createUserToken(user.getId(), sessionPhone(user), List.of(),
                     current.getRefreshTokenId(),
                     Duration.ofHours(configInt("auth.session.access_ttl_hours", 4, 1, 24)),
                     UserAuthEnvironment.resolve(environment)
                             .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN")));
             return ApiResult.ok(new UserLoginResponse(access, "Bearer",
-                    new UserLoginResponse.UserSession(user.getId(), normalizeCountryCode(user.getCountryCode()),
-                            user.getPhone(), user.getNickname(), userMapper.isOnboardingComplete(user.getId())),
+                    new UserLoginResponse.UserSession(user.getId(), sessionCountryCode(user),
+                            sessionPhone(user), user.getNickname(), userMapper.isOnboardingComplete(user.getId())),
                     null, null, recoveredRaw, null, tokenProvider.sessionSyncKey(current.getSessionChainId())).withContext(current, "ACTIVE"));
         }
         String rawNext = nonceRotation ? tokenProvider.refreshSuccessor(rawCurrent, rotationNonce) : randomRefreshToken();
@@ -727,7 +731,7 @@ public class AppUserAuthService {
         next.setIsDeleted(0);
         sessionMapper.insert(next);
         String phone = user.getPhone() == null ? "" : user.getPhone();
-        String countryCode = normalizeCountryCode(user.getCountryCode());
+        String countryCode = sessionCountryCode(user);
         UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment)
                 .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN"));
         String access = tokenProvider.createUserToken(
@@ -850,6 +854,22 @@ public class AppUserAuthService {
             return false;
         }
     }
+
+    private boolean providerOnlyAccount(UserEntity user) {
+        return user.getCountryCode() == null && user.getPhone() == null
+                && userMapper.countProviderIdentities(user.getId()) > 0;
+    }
+
+    private boolean phoneOrProviderIdentity(UserEntity user) {
+        return validCountryCode(user.getCountryCode()) && validPhone(user.getCountryCode(), user.getPhone())
+                || providerOnlyAccount(user);
+    }
+
+    private String sessionCountryCode(UserEntity user) {
+        return user.getCountryCode() == null ? "" : normalizeCountryCode(user.getCountryCode());
+    }
+
+    private String sessionPhone(UserEntity user) { return user.getPhone() == null ? "" : user.getPhone(); }
 
     private String normalizeCountryCode(String value) {
         String normalized = value == null ? "" : value.trim().replace(" ", "");

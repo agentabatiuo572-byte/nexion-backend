@@ -1372,6 +1372,26 @@ class AppUserAuthServiceTest {
         verify(supportActivity).interactiveLogin(eq(42L), any());
     }
 
+    @Test void verifiedProviderAccountWithoutPhoneGetsARealSessionAndKeepsSmsMfaClosed() {
+        environment.setProperty("oauth.enabled", "true");
+        UserEntity user = activeUser();
+        user.setCountryCode(null); user.setPhone(null);
+        when(users.selectOne(any())).thenReturn(user);
+        when(users.countProviderIdentities(42L)).thenReturn(1);
+        when(tokens.createUserToken(eq(42L), eq(""), eq(List.of()), any(), any(Duration.class),
+                eq(UserAuthEnvironment.PRODUCTION))).thenReturn("provider-token");
+        var result = service.issueProviderSession(42L, "provider-ip", context(AppSessionSurface.H5, "OAUTH"), null, null, null);
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().accessToken()).isEqualTo("provider-token");
+        assertThat(result.getData().user().countryCode()).isEmpty();
+        assertThat(result.getData().user().phone()).isEmpty();
+        when(users.isTwoFactorEnabled(42L)).thenReturn(true);
+        var next = new AppLoginContext(AppSessionSurface.H5, "browser-installation", false,
+                "other-attempt-0123456789", "r".repeat(64), "OAUTH", "test-auth-reference");
+        var denied = service.issueProviderSession(42L, "provider-ip", next, null, null, null);
+        assertThat(denied.getMessage()).isEqualTo("USER_PHONE_BINDING_REQUIRED");
+    }
+
     @Test void providerLoginNeverBypassesBlocklistOrRequiredPasswordReset() {
         environment.setProperty("oauth.enabled", "true");
         when(users.selectOne(any())).thenReturn(activeUser());

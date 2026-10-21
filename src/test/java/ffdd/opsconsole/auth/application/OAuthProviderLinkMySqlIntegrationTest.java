@@ -90,7 +90,7 @@ class OAuthProviderLinkMySqlIntegrationTest {
         var current = fixture.transactional(new CurrentAppSessionService(sessions, config, blocklist, users, environment));
         var guard = fixture.transactional(new AppUserSecurityVerificationGuard(loginGuards, mock(AuditLogService.class)));
         service = fixture.transactional(new OAuthProviderFlowService(mock(OAuthProviderClient.class), flows, identities,
-                auth, environment, guard, current));
+                auth, environment, guard, current, mock(AppUserRegistrationService.class)));
         fixture.jdbc().update("""
                 INSERT INTO nx_user(id,country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox,
                                     created_at,updated_at,is_deleted)

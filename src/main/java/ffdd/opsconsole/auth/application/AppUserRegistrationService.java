@@ -15,6 +15,8 @@ import ffdd.opsconsole.growth.application.OpsReferralRewardService;
 import ffdd.opsconsole.growth.facade.DayOneInstanceFacade;
 import ffdd.opsconsole.growth.domain.ReferralRewardPublicConfigView;
 import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
+import ffdd.opsconsole.auth.mapper.UserOAuthIdentityMapper;
+import ffdd.opsconsole.auth.infrastructure.UserOAuthIdentityEntity;
 import ffdd.opsconsole.auth.mapper.TeamAncestorProjection;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -38,6 +40,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -64,6 +67,64 @@ public class AppUserRegistrationService {
     private final DayOneInstanceFacade dayOneInstanceFacade;
     private final ffdd.opsconsole.content.facade.SupportRegistrationFacade supportBindingService;
     private final AuthNewAccountCreator accountCreator;
+
+    /** Called only after a signed provider identity and browser receipt were verified. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public ApiResult<UserLoginResponse> registerProvider(String provider, String subject, String displayName,
+            String sponsorCode, String clientAddress, AppLoginContext context, UserOAuthIdentityMapper identities) {
+        if (UserAuthEnvironment.resolve(environment).orElse(null) != UserAuthEnvironment.PRODUCTION)
+            throw new BizException(503, "OAUTH_PROFILE_FORBIDDEN");
+        String ip = normalizeClientAddress(clientAddress);
+        if ("unknown".equalsIgnoreCase(ip)) throw new BizException(503, "USER_REGISTRATION_CLIENT_IP_UNAVAILABLE");
+        if (mapper.countNewAccountsByClientIp24h(ip) >= requiredK1MaxSignupPerIp24h())
+            throw new BizException(409, "USER_REGISTRATION_K1_IP_LIMIT");
+        UserEntity sponsor = null;
+        if (StringUtils.hasText(sponsorCode)) {
+            String canonical = canonicalReferralCode(sponsorCode);
+            if (!canonical.matches("[A-Z0-9]{4,32}")) throw new BizException(422, "USER_REGISTRATION_SPONSOR_INVALID");
+            List<UserEntity> candidates = mapper.findActiveSponsorsByCanonicalCode(canonical);
+            if (candidates == null || candidates.isEmpty()) throw new BizException(422, "USER_REGISTRATION_SPONSOR_NOT_FOUND");
+            if (candidates.size() != 1) throw new BizException(409, "USER_REGISTRATION_SPONSOR_AMBIGUOUS");
+            String stored = candidates.get(0).getReferralCode();
+            if (!StringUtils.hasText(stored) || !canonical.equals(canonicalReferralCode(stored)))
+                throw new BizException(409, "USER_REGISTRATION_SPONSOR_STATE_CHANGED");
+            sponsor = mapper.findSponsorForUpdate(stored);
+            if (sponsor == null) throw new BizException(409, "USER_REGISTRATION_SPONSOR_STATE_CHANGED");
+            if (sandboxOf(sponsor) != 0) throw new BizException(409, "USER_REGISTRATION_SPONSOR_ENVIRONMENT_MISMATCH");
+        }
+        String name = StringUtils.hasText(displayName) ? displayName.trim() : "UVEL User";
+        name = name.substring(0, Math.min(name.length(), 64));
+        String referralCode = nextReferralCode();
+        AuthNewAccountCreator.BirthHandle birth = accountCreator.insertNew(
+                new ffdd.opsconsole.user.facade.UserRegistrationWriteFacade.NewAccountCommand(
+                        null, null, ip, passwordEncoder.encode(UUID.randomUUID().toString()),
+                        name, referralCode, sponsor == null ? null : sponsor.getId(),
+                        sponsor == null ? null : sponsor.getReferralCode(), "L1", "V0", "ACTIVE", 0, "en-US"));
+        long userId = birth.customerId();
+        var identity = new UserOAuthIdentityEntity();
+        identity.setProvider(provider);
+        identity.setExternalSubject(subject);
+        identity.setUserId(userId);
+        identity.setSourceEnvironment("PRODUCTION");
+        identity.setDisplayName(displayName);
+        try { identities.insertIdentity(identity); }
+        catch (DuplicateKeyException exception) { throw new BizException(409, "OAUTH_IDENTITY_ALREADY_LINKED"); }
+        supportBindingService.register(userId, sponsor == null ? null : sponsor.getId());
+        dayOneInstanceFacade.provisionForRegisteredUser(userId);
+        createTeamGraphProjection(userId, 0);
+        userMapper.resetLoginFailures(userId);
+        accountCreator.ensureWallet(birth);
+        String eventId = outboxService.publish("USER_REGISTRATION", String.valueOf(userId),
+                "auth.register_completed", Map.of("userId", userId));
+        accountCreator.complete(birth, eventId);
+        if (sponsor != null) outboxService.publish("USER_REFERRAL", String.valueOf(userId),
+                "referral.bound", Map.of("userId", userId, "sponsorUserId", sponsor.getId(),
+                        "source", "nx_user.sponsor_user_id"));
+        ApiResult<UserLoginResponse> session = authService.issueProviderSession(userId, clientAddress, context, null, null, null);
+        if (session.getCode() != 0 || session.getData() == null) throw new BizException(session.getCode(), session.getMessage());
+        return sponsor == null ? session : new ApiResult<>(session.getCode(), session.getMessage(),
+                session.getData().withRegistrationReceipt(registrationReceipt(sponsor, 0)));
+    }
 
     @PostConstruct
     void ensureSchema() {

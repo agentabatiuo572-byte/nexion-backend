@@ -23,7 +23,7 @@ public class OAuthProviderController {
     private final OAuthProviderClient providers;
     private final com.fasterxml.jackson.databind.ObjectMapper json;
 
-    public record StartRequest(String provider, String intent) {}
+    public record StartRequest(String provider, String intent, String sponsorCode) {}
     public record CompleteRequest(String provider, String flowId, String flowKey, String receipt, String challengeNo, String code, String captchaTicket) {
         @Override public String toString() { return "CompleteRequest[REDACTED]"; }
     }
@@ -42,7 +42,7 @@ public class OAuthProviderController {
         if (!"LOGIN".equals(request.intent()) && !"LINK".equals(request.intent()))
             throw new BizException(422, "OAUTH_REQUEST_INVALID");
         Long userId = "LINK".equals(request.intent()) ? userId(authentication) : null;
-        return ApiResult.ok(flows.start(request.provider(), userId, http.getRemoteAddr()));
+        return ApiResult.ok(flows.start(request.provider(), userId, http.getRemoteAddr(), request.sponsorCode()));
     }
 
     @GetMapping("/authorize/{state}")

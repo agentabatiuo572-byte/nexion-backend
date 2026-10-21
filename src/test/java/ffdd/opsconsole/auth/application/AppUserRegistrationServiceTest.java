@@ -24,6 +24,8 @@ import ffdd.opsconsole.auth.infrastructure.UserOtpSendGuardRecord;
 import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
 import ffdd.opsconsole.auth.mapper.TeamAncestorProjection;
 import ffdd.opsconsole.auth.mapper.UserLoginGuardMapper;
+import ffdd.opsconsole.auth.mapper.UserOAuthIdentityMapper;
+import ffdd.opsconsole.auth.infrastructure.UserOAuthIdentityEntity;
 import ffdd.opsconsole.growth.application.OpsReferralRewardService;
 import ffdd.opsconsole.growth.application.DayOneInstanceFacadeAdapter;
 import ffdd.opsconsole.growth.facade.DayOneInstanceFacade;
@@ -741,6 +743,35 @@ class AppUserRegistrationServiceTest {
         when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"), any(AppLoginContext.class)))
                 .thenReturn(ApiResult.ok(new UserLoginResponse(
                         "access", "Bearer", new UserLoginResponse.UserSession(99L, "+84", "987654321", "Nexion 4321"))));
+    }
+
+    @Test void firstProviderSignInCreatesPhoneFreeAccountAndPublishesOneReferralBinding() {
+        UserEntity sponsor = user(41L, "NXAB12CD34EF");
+        sponsor.setNickname("Alice Example");
+        prepareSuccessfulRegistration(sponsor);
+        var identities = mock(UserOAuthIdentityMapper.class);
+        when(passwordEncoder.encode(any())).thenReturn("random-password-hash");
+        var login = new UserLoginResponse("access", "Bearer",
+                new UserLoginResponse.UserSession(99L, "", "", "New User"));
+        var context = new AppLoginContext(AppSessionSurface.H5, "", false,
+                "oauth-attempt-0123456789", "r".repeat(64), "OAUTH", "GOOGLE:flow");
+        when(authService.issueProviderSession(eq(99L), eq("127.0.0.3"), eq(context),
+                org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(ApiResult.ok(login));
+        var result = service.registerProvider("GOOGLE", "verified-subject", "New User",
+                "NXAB12CD34EF", "127.0.0.3", context, identities);
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().registrationReceipt().sponsorCode()).isEqualTo("NXAB12CD34EF");
+        ArgumentCaptor<UserEntity> account = ArgumentCaptor.forClass(UserEntity.class);
+        verify(userMapper).insert(account.capture());
+        assertThat(account.getValue().getPhone()).isNull();
+        assertThat(account.getValue().getCountryCode()).isNull();
+        assertThat(account.getValue().getSponsorUserId()).isEqualTo(41L);
+        ArgumentCaptor<UserOAuthIdentityEntity> identity = ArgumentCaptor.forClass(UserOAuthIdentityEntity.class);
+        verify(identities).insertIdentity(identity.capture());
+        assertThat(identity.getValue().getUserId()).isEqualTo(99L);
+        assertThat(identity.getValue().getExternalSubject()).isEqualTo("verified-subject");
+        verify(outboxService).publish(eq("USER_REFERRAL"), eq("99"), eq("referral.bound"), any());
     }
 
     private ApiResult<UserLoginResponse> register(UserRegistrationRequest request, String address) {
