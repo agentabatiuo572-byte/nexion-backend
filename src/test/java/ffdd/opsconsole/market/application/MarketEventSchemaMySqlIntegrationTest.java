@@ -39,6 +39,7 @@ import org.springframework.core.env.Environment;
 class MarketEventSchemaMySqlIntegrationTest {
     private static final String EMISSION_EVENT = "genesis.emission_paid";
     private static final String RESTORE_EVENT = "admin.staking_pool_restored";
+    private static final String VISIBILITY_EVENT = "admin.staking_visibility_changed";
     private static final String HOLDING_NO = "fixture-holding-001";
     private static final String BATCH_NO = "20260831";
     private static final String TIER_KEY = "usdt30d";
@@ -166,6 +167,43 @@ class MarketEventSchemaMySqlIntegrationTest {
             assertThat(walletBalance(fixture)).isEqualByComparingTo("100.000000");
             assertThat(outboxCount(fixture, EMISSION_EVENT)).isZero();
             assertThat(outboxCount(fixture, RESTORE_EVENT)).isZero();
+        }
+    }
+
+    @Test
+    void visibilityMigrationLetsTheRealG1PublisherCloseTheAppSwitchAtomically() throws Exception {
+        try (CanonicalEventSchemaMySqlFixture fixture = fixture()) {
+            fixture.jdbc().update("""
+                    INSERT INTO nx_config_item (config_key,config_value,value_type,config_group,visibility,remark,status,is_deleted)
+                    VALUES ('G.staking.app_visible','true','BOOLEAN','market','ADMIN','fixture visibility',1,0)
+                    """);
+            OpsNexMarketService market = mock(OpsNexMarketService.class);
+            when(market.updateStakingVisibility(anyString(), any())).thenAnswer(invocation -> {
+                fixture.jdbc().update("UPDATE nx_config_item SET config_value='false' WHERE config_key='G.staking.app_visible'");
+                return ApiResult.ok(Map.of("visible", false));
+            });
+            G1AdminCommandService g1 = fixture.transactional(new G1AdminCommandService(
+                    market, immediateIdempotency(), fixture.outbox(),
+                    mock(ffdd.opsconsole.market.mapper.StakingMapper.class)));
+            NexMarketValueUpdateRequest request = new NexMarketValueUpdateRequest(
+                    "false", "Hide all App staking entries", "fixture-admin", null, null, null);
+
+            assertThatThrownBy(() -> g1.updateVisibility("fixture-visibility-before", request))
+                    .hasMessage("A4_SCHEMA_NOT_REGISTERED");
+            assertThat(configValue(fixture, "G.staking.app_visible")).isEqualTo("true");
+            assertThat(outboxCount(fixture, VISIBILITY_EVENT)).isZero();
+
+            fixture.migrate("20261021_g1_staking_visibility_event.sql");
+            g1.updateVisibility("fixture-visibility-after", request);
+
+            assertThat(configValue(fixture, "G.staking.app_visible")).isEqualTo("false");
+            assertThat(schemaRevision(fixture, VISIBILITY_EVENT)).isEqualTo(20261021);
+            assertThat(outboxCount(fixture, VISIBILITY_EVENT)).isEqualTo(1);
+            JsonNode payload = outboxPayload(fixture, VISIBILITY_EVENT);
+            assertThat(payload.path("visible").asBoolean()).isFalse();
+            assertThat(payload.path("reason").asText()).isEqualTo("Hide all App staking entries");
+            assertThat(payload.path("operator").asText()).isEqualTo("fixture-admin");
+            assertNoPii(payload);
         }
     }
 
