@@ -16,6 +16,9 @@ import ffdd.opsconsole.auth.dto.AppAccountDeletionRequest;
 import ffdd.opsconsole.auth.dto.AppAccountDeletionCancelRequest;
 import ffdd.opsconsole.auth.dto.AppTwoFactorUpdateRequest;
 import ffdd.opsconsole.auth.dto.AppTwoFactorChallengeRequest;
+import ffdd.opsconsole.auth.dto.AppPhoneBindingRequest;
+import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.auth.mapper.AppUserSecurityMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity;
@@ -39,13 +42,20 @@ class AppUserSecurityServiceTest {
     private final AppUserSecurityVerificationGuard verificationGuard = mock(AppUserSecurityVerificationGuard.class);
     private final UserOpsMapper users = mock(UserOpsMapper.class);
     private final BCryptPasswordEncoder passwords = new BCryptPasswordEncoder();
+    private final AppUserRegistrationService registration = mock(AppUserRegistrationService.class);
+    private final AppUserRegistrationMapper registrationMapper = mock(AppUserRegistrationMapper.class);
+    private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+    private final org.springframework.core.env.Environment environment = mock(org.springframework.core.env.Environment.class);
     private final AppUserSecurityService service = new AppUserSecurityService(
             security, sessions, passwords, audit, otpDelivery, verificationGuard, users,
             new ffdd.opsconsole.shared.security.UserSessionRevocationService(sessions,
-                    mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class)));
+                    mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class)),
+            registration, registrationMapper, config, environment);
 
     @BeforeEach
     void defaults() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
+        when(config.activeValue(any())).thenReturn(java.util.Optional.empty());
         when(security.passwordHashForUpdate(42L)).thenReturn(passwords.encode("OldPassword1"));
         when(security.twoFactorEnabled(42L)).thenReturn(false);
         UserEntity user = new UserEntity();
@@ -53,10 +63,42 @@ class AppUserSecurityServiceTest {
         user.setCountryCode("+84");
         user.setPhone("901234567");
         when(users.selectById(42L)).thenReturn(user);
+        when(users.findLoginUserForUpdate(42L)).thenReturn(user);
         when(otpDelivery.available(org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
         when(verificationGuard.allowed(eq(42L), any())).thenReturn(true);
         when(verificationGuard.recordFailure(eq(42L), any()))
                 .thenReturn(new AppUserSecurityVerificationGuard.VerificationFailure(1, false));
+    }
+
+    @Test
+    void providerAccountBindsOnlyAfterConsumingMatchingSmsCode() {
+        UserEntity user = users.findLoginUserForUpdate(42L);
+        user.setPhone(null);
+        user.setSandbox(0);
+        when(users.countProviderIdentities(42L)).thenReturn(1);
+        when(registrationMapper.consumeValidChallengeInEnvironment(
+                "REG-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "+84", "901234567", "PRODUCTION", "123456", 5)).thenReturn(1);
+        when(registrationMapper.bindPhone(42L, "+84", "901234567")).thenReturn(1);
+
+        assertThat(service.bindPhone(42L, new AppPhoneBindingRequest(
+                "+84", "901234567", "REG-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "123456")).getData())
+                .containsEntry("status", "PHONE_BOUND");
+        verify(registrationMapper).bindPhone(42L, "+84", "901234567");
+    }
+
+    @Test
+    void invalidSmsCodeCountsAnAttemptWithoutBinding() {
+        UserEntity user = users.findLoginUserForUpdate(42L);
+        user.setPhone(null);
+        user.setSandbox(0);
+        when(users.countProviderIdentities(42L)).thenReturn(1);
+        var request = new AppPhoneBindingRequest("+84", "901234567",
+                "REG-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "123456");
+
+        assertThatThrownBy(() -> service.bindPhone(42L, request)).hasMessage("USER_PHONE_BINDING_CODE_INVALID");
+        verify(registrationMapper).recordInvalidAttemptInEnvironment(
+                request.challengeNo(), "+84", request.phone(), "PRODUCTION", 5);
+        verify(registrationMapper, never()).bindPhone(any(), any(), any());
     }
 
     @Test

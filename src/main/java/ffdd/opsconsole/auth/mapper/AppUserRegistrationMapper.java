@@ -9,6 +9,12 @@ import org.apache.ibatis.annotations.Update;
 
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface AppUserRegistrationMapper {
+    @Select("SELECT COUNT(*) FROM nx_user WHERE country_code IN (#{countryCode},#{legacyCountryCode}) AND phone IN (#{phone},#{alternatePhone}) AND is_deleted=0")
+    int countPhoneOwners(@Param("countryCode") String countryCode, @Param("legacyCountryCode") String legacyCountryCode,
+            @Param("phone") String phone, @Param("alternatePhone") String alternatePhone);
+    @Update("UPDATE nx_user SET country_code=#{countryCode},phone=#{phone},updated_at=NOW() WHERE id=#{userId} AND phone IS NULL AND status='ACTIVE' AND is_deleted=0")
+    int bindPhone(@Param("userId") Long userId, @Param("countryCode") String countryCode,
+            @Param("phone") String phone);
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_user_registration_otp (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,

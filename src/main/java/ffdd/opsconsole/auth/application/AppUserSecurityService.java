@@ -7,11 +7,17 @@ import ffdd.opsconsole.auth.dto.AppSecurityMutationResponse;
 import ffdd.opsconsole.auth.dto.AppSecurityStateResponse;
 import ffdd.opsconsole.auth.dto.AppTwoFactorUpdateRequest;
 import ffdd.opsconsole.auth.dto.AppTwoFactorChallengeRequest;
+import ffdd.opsconsole.auth.dto.AppPhoneBindingRequest;
+import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
+import ffdd.opsconsole.auth.dto.UserRegistrationOtpResponse;
 import ffdd.opsconsole.auth.mapper.AppUserSecurityMapper;
+import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.SupportedUserPhonePolicy;
+import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
@@ -26,6 +32,8 @@ import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.core.env.Environment;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -49,6 +57,69 @@ public class AppUserSecurityService {
     private final AppUserSecurityVerificationGuard verificationGuard;
     private final UserOpsMapper userMapper;
     private final ffdd.opsconsole.shared.security.UserSessionRevocationService revocations;
+    private final AppUserRegistrationService registrationService;
+    private final AppUserRegistrationMapper registrationMapper;
+    private final PlatformConfigFacade configFacade;
+    private final Environment environment;
+
+    public ffdd.opsconsole.shared.api.ApiResult<UserRegistrationOtpResponse> sendPhoneBindingChallenge(
+            Long userId, UserRegistrationOtpRequest request, String clientAddress) {
+        if (UserAuthEnvironment.resolve(environment).orElse(null) != UserAuthEnvironment.PRODUCTION)
+            throw new BizException(503, "USER_PHONE_BINDING_UNAVAILABLE");
+        requireProviderAccountWithoutPhone(userId, false);
+        if (request == null || !SupportedUserPhonePolicy.isSupportedDestination(request.countryCode(), request.phone()))
+            throw new BizException(422, "USER_PHONE_INVALID");
+        if (phoneTaken(request.countryCode(), request.phone())) throw new BizException(409, "USER_PHONE_ALREADY_USED");
+        return registrationService.sendOtp(request, clientAddress);
+    }
+
+    @Transactional(noRollbackFor = PreWriteRejection.class)
+    public ffdd.opsconsole.shared.api.ApiResult<Map<String, Object>> bindPhone(Long userId, AppPhoneBindingRequest request) {
+        if (request == null || !SupportedUserPhonePolicy.isSupportedDestination(request.countryCode(), request.phone())
+                || request.challengeNo() == null || !request.challengeNo().matches("REG-[a-f0-9]{32}")
+                || request.code() == null || !request.code().matches("[0-9]{6}"))
+            throw new BizException(422, "USER_PHONE_BINDING_INVALID");
+        requireProviderAccountWithoutPhone(userId, true);
+        String countryCode = request.countryCode().trim();
+        if (!countryCode.startsWith("+")) countryCode = "+" + countryCode;
+        String phone = request.phone().trim();
+        if (phoneTaken(countryCode, phone)) throw new BizException(409, "USER_PHONE_ALREADY_USED");
+        UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment).orElse(null);
+        if (audience != UserAuthEnvironment.PRODUCTION) throw new BizException(503, "USER_PHONE_BINDING_UNAVAILABLE");
+        AppOtpPolicy policy = AppOtpPolicy.load(configFacade);
+        if (registrationMapper.consumeValidChallengeInEnvironment(request.challengeNo(), countryCode, phone,
+                audience.name(), request.code(), policy.maxVerifyAttempts()) != 1) {
+            registrationMapper.recordInvalidAttemptInEnvironment(request.challengeNo(), countryCode, phone,
+                    audience.name(), policy.maxVerifyAttempts());
+            throw new PreWriteRejection(422, "USER_PHONE_BINDING_CODE_INVALID");
+        }
+        try {
+            if (registrationMapper.bindPhone(userId, countryCode, phone) != 1)
+                throw new BizException(409, "USER_PHONE_ALREADY_BOUND");
+        } catch (DuplicateKeyException conflict) {
+            throw new BizException(409, "USER_PHONE_ALREADY_USED");
+        }
+        recordRequired(userId, "USER_PHONE_BOUND", "USER_SECURITY", String.valueOf(userId),
+                Map.of("countryCode", countryCode, "phoneMasked", maskPhone(phone)));
+        return ffdd.opsconsole.shared.api.ApiResult.ok(Map.of("status", "PHONE_BOUND"));
+    }
+
+    private void requireProviderAccountWithoutPhone(Long userId, boolean lock) {
+        if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
+        UserEntity user = lock ? userMapper.findLoginUserForUpdate(userId) : userMapper.selectById(userId);
+        if (user == null || !Integer.valueOf(0).equals(user.getSandbox()))
+            throw new BizException(403, "USER_PHONE_BINDING_UNAVAILABLE");
+        if (StringUtils.hasText(user.getPhone())) throw new BizException(409, "USER_PHONE_ALREADY_BOUND");
+        if (userMapper.countProviderIdentities(userId) < 1) throw new BizException(403, "USER_PHONE_BINDING_UNAVAILABLE");
+    }
+
+    private boolean phoneTaken(String countryCode, String phone) {
+        String country = countryCode.trim().replace("+", "");
+        phone = phone.trim();
+        String alternative = country.equals("84")
+                ? (phone.startsWith("0") ? phone.substring(1) : "0" + phone) : phone;
+        return registrationMapper.countPhoneOwners("+" + country, country, phone.trim(), alternative) > 0;
+    }
 
     @Transactional(readOnly = true)
     public AppSecurityStateResponse overview(Long userId, String currentSessionId) {
