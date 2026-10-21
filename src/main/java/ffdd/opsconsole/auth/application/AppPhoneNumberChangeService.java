@@ -101,7 +101,7 @@ public class AppPhoneNumberChangeService {
         String newCode = delivery.verificationCode(country);
         String changeNo = "PHONE-" + UUID.randomUUID().toString().replace("-", "");
         mapper.expirePending(userId);
-        if (mapper.insert(changeNo, userId, user.getCountryCode(), user.getPhone(),
+        if (mapper.insertChallenge(changeNo, userId, user.getCountryCode(), user.getPhone(),
                 country, nextPhone, oldCode, newCode) != 1) {
             throw new IllegalStateException("USER_PHONE_CHANGE_CHALLENGE_NOT_CREATED");
         }
