@@ -28,6 +28,9 @@ GUARD_TEXT = ('[Unit]\nConditionPathExists=|!/srv/nexgrid/cd/migrations/START_BL
               'ConditionPathExists=|/run/nexgrid-backend-migration-start\n').encode()
 OLD_LOCK = 'cc860b4242e357669447e14257f03d69e6c4b164c6de2d133df373ee5b5835bd'
 NEW_MIGRATIONS_SHA = 'f4f66b3609f28f08d7562685d3f54ebec6f9fb575ea4326a6fe8a81bab9adbee'
+# JAR policy is independently pinned; the installed closure includes an older
+# bundled policy file that is not used to validate current release artifacts.
+EXPECTED_JAR_POLICY_SHA = '6ed34f3ea7e78ea8de6211e62de9d3ebda09243cd29f0a65d0d2284c48209f5e'
 CHANGED = 'database_migrations.py'
 FILES = frozenset({'40-release-jobs.groovy', 'ci-build.sh', 'database_migrations.py',
                    'h5-nginx.conf', 'install_release.py', 'main.pipeline.groovy',
@@ -107,7 +110,7 @@ def preflight(old, *, timer_active):
             and isinstance(external, dict) and external
             and isinstance(jobs, dict) and set(jobs) == {'backend', 'pc', 'uniapp'},
             'CONFIG_PINS_REJECTED')
-    require(config.get('policy_sha256') == old['files']['public-test-policy.properties'],
+    require(config.get('policy_sha256') == EXPECTED_JAR_POLICY_SHA,
             'POLICY_PIN_DRIFT')
     for name, expected in internal.items():
         require(name in FILES and valid_sha(expected) and old['files'][name] == expected,
