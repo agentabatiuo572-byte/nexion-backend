@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -126,7 +127,7 @@ class WithdrawalPayoutExecutorTest {
         var proof = new ffdd.opsconsole.finance.cregis.BscDepositProof.Proof(2,100,"0x"+"b".repeat(64),confirmations);
         when(router.mode()).thenReturn(CregisProperties.Mode.PROVIDER);
         when(router.provider()).thenReturn(gateway);
-        when(mapper.incompleteProviderSubmissions(50)).thenReturn(List.of(sent));
+        when(mapper.incompleteProviderSubmissions("",50)).thenReturn(List.of(sent));
         when(gateway.queryPayout(any())).thenReturn(new CregisGateway.PayoutOrder(9001L,"USDT","2510",
                 ffdd.opsconsole.finance.cregis.CregisConstants.USDT_BEP20_TOKEN_ID,sent.targetAddress(),
                 sent.netReceive(),sent.providerIdempotencyKey(),CregisGateway.PayoutStatus.SUCCEEDED,tx));
@@ -156,6 +157,41 @@ class WithdrawalPayoutExecutorTest {
         when(control.enabled()).thenReturn(true);
         when(control.requiredConfirmations()).thenReturn(15);
         return control;
+    }
+
+    @Test void pendingFirstFiftyDoNotStarveTheFiftyFirstAndCursorWraps() {
+        var mapper = mock(WithdrawalPayoutMapper.class);
+        var router = mock(CregisGatewayRouter.class);
+        var gateway = mock(CregisGateway.class);
+        var finalizer = mock(WithdrawalPayoutFinalizer.class);
+        var pending = java.util.stream.IntStream.rangeClosed(1,51).mapToObj(i -> {
+            var base = row("SENT");
+            String no = "WD-" + String.format("%03d",i);
+            return new WithdrawalPayoutMapper.PayoutRow(no,42L,base.chain(),base.targetAddress(),
+                    base.amount(),base.netReceive(),base.nexBurned(),"SENT",null,(long)i,no,"provider",1);
+        }).toList();
+        when(router.mode()).thenReturn(CregisProperties.Mode.PROVIDER);
+        when(router.provider()).thenReturn(gateway);
+        when(mapper.incompleteProviderSubmissions("",50)).thenReturn(pending.subList(0,50));
+        when(mapper.incompleteProviderSubmissions("WD-050",50)).thenReturn(pending.subList(50,51));
+        when(mapper.incompleteProviderSubmissions("WD-051",50)).thenReturn(List.of());
+        when(gateway.queryPayout(any())).thenAnswer(call -> {
+            var query = call.getArgument(0,CregisGateway.PayoutQuery.class);
+            return new CregisGateway.PayoutOrder(query.cid(),ffdd.opsconsole.finance.cregis.CregisConstants.USDT_BEP20_CURRENCY,
+                    "2510",ffdd.opsconsole.finance.cregis.CregisConstants.USDT_BEP20_TOKEN_ID,query.address(),query.amount(),
+                    query.thirdPartyId(),CregisGateway.PayoutStatus.AWAITING_AUDIT,null);
+        });
+        var control = payouts(); when(control.enabled()).thenReturn(false);
+        var executor = new WithdrawalPayoutExecutor(mapper,router,finalizer,
+                mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class),control);
+        executor.process();
+        verify(gateway,never()).queryPayout(argThat(q -> q.cid()==51));
+        executor.process();
+        verify(gateway).queryPayout(argThat(q -> q.cid()==51));
+        executor.process();
+        verify(gateway,org.mockito.Mockito.times(2)).queryPayout(argThat(q -> q.cid()==1));
+        verify(gateway,never()).createPayout(any());
+        verify(finalizer,never()).terminal(any(),anyLong(),any(),any(),any(),any(),any(),any());
     }
 
     @Test void realExecutorRegistersForPublicTestWhileLocalDevSimulatorRemainsIsolated() {

@@ -46,6 +46,14 @@ public class CregisProperties {
     /** Historical RPC batch includes the existing 100-block overlap. */
     private int chainScanBlocks = 500;
 
+    public boolean allowsCallbackSourceIp(String sourceIp) {
+        if (sourceIp == null || sourceIp.isBlank()
+                || callbackSourceIps == null || callbackSourceIps.isBlank()) return false;
+        for (String candidate : callbackSourceIps.split(","))
+            if (sourceIp.equalsIgnoreCase(candidate.trim())) return true;
+        return false;
+    }
+
     public int getChainScanBlocks() {
         if (chainScanBlocks <= 100) throw new IllegalStateException("CREGIS_CHAIN_SCAN_BLOCKS_INVALID");
         return chainScanBlocks;

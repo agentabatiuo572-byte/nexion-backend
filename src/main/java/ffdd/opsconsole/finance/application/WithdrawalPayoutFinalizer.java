@@ -128,6 +128,37 @@ public class WithdrawalPayoutFinalizer {
     }
 
     @Transactional(rollbackFor = Exception.class)
+    public String recoverProviderSubmission(WithdrawalPayoutMapper.PayoutRow expected, long providerCid,
+                                             String actor, String reason) {
+        lockCashCustomer(expected.userId());
+        mapper.lockPayoutSource(expected.withdrawalNo());
+        var current = mapper.payout(expected.withdrawalNo());
+        if (current == null || !java.util.Objects.equals(expected.userId(), current.userId())
+                || !"USDT-BEP20".equals(current.chain()) || !"provider".equals(current.payoutSource())
+                || !java.util.Objects.equals(expected.targetAddress(), current.targetAddress())
+                || !java.util.Objects.equals(expected.netReceive(), current.netReceive())
+                || !java.util.Objects.equals(expected.amount(), current.amount())
+                || !java.util.Objects.equals(expected.providerIdempotencyKey(), current.providerIdempotencyKey())
+                || current.providerCid() != null && current.providerCid() != providerCid)
+            throw new BizException(409, "CREGIS_PAYOUT_RECOVERY_STATE_CONFLICT");
+        String state = current.status();
+        if ("TX_ORPHANED".equals(state)) {
+            if (!recoverProviderSubmission(current, providerCid))
+                throw new BizException(409, "CREGIS_PAYOUT_RECOVERY_STATE_CONFLICT");
+            state = "SENT";
+        } else if (current.providerCid() == null || !java.util.Set.of("SENT", "CONFIRMED", "FAILED").contains(state)) {
+            throw new BizException(409, "CREGIS_PAYOUT_RECOVERY_STATE_CONFLICT");
+        }
+        audit.recordRequired(AuditLogWriteRequest.builder()
+                .action("D2_CREGIS_PAYOUT_CID_RECOVERED").resourceType("WITHDRAWAL")
+                .resourceId(current.withdrawalNo()).bizNo(current.withdrawalNo()).userId(current.userId())
+                .actorType("ADMIN").actorUsername(actor).riskLevel("CRITICAL").result("SUCCESS")
+                .detail(Map.of("providerCid", providerCid, "providerIdempotencyKey", current.providerIdempotencyKey(),
+                        "reason", reason, "state", state)).build());
+        return state;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public boolean retry(WithdrawalPayoutMapper.PayoutRow row, String error) {
         LocalDateTime now = LocalDateTime.now(clock);
         if (mapper.releaseRetry(row.withdrawalNo(), safeError(error), now) != 1) return false;

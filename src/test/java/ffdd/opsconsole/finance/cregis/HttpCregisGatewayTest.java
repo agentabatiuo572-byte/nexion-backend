@@ -209,6 +209,21 @@ class HttpCregisGatewayTest {
     }
 
     @Test
+    void queryOptionalCidMustBeAnExactMatchingIntegerWhenPresent() throws Exception {
+        String original = queryResponse("42","6","0x"+"a".repeat(64));
+        AtomicReference<String> response = new AtomicReference<>(original);
+        server = start("/api/v1/payout/query", exchange -> respond(exchange,200,response.get()));
+        assertThat(gateway(500).queryPayout(query(9001)).cid()).isEqualTo(9001);
+        response.set(original.replace("\"pid\":42", "\"pid\":42,\"cid\":9001"));
+        assertThat(gateway(500).queryPayout(query(9001)).cid()).isEqualTo(9001);
+        for (String invalid : java.util.List.of("9002","9001.5","9223372036854775808","\"9001\"","null")) {
+            response.set(original.replace("\"pid\":42", "\"pid\":42,\"cid\":"+invalid));
+            assertThatThrownBy(() -> gateway(500).queryPayout(query(9001)))
+                    .isInstanceOf(CregisGatewayException.class).hasMessage("CREGIS_RESPONSE_INVALID");
+        }
+    }
+
+    @Test
     void fractionalWriteReceiptAndOversizedReadResponseFailClosed() throws Exception {
         server = start("/api/v1/payout", exchange -> respond(exchange, 200,
                 "{\"code\":\"00000\",\"data\":{\"cid\":1.5}}"));

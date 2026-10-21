@@ -29,9 +29,12 @@ public class WithdrawalPayoutCallbackService {
     private final CregisGatewayRouter router;
     private final Clock clock;
 
-    public ApiResult<Map<String, Object>> receive(Map<String, Object> callback) {
+    public ApiResult<Map<String, Object>> receive(Map<String, Object> callback, String sourceIp) {
         if (properties.getMode() != CregisProperties.Mode.PROVIDER) {
             return ApiResult.fail(503, "CREGIS_PROVIDER_CALLBACK_DISABLED");
+        }
+        if (!properties.allowsCallbackSourceIp(sourceIp)) {
+            return ApiResult.fail(401, "CREGIS_CALLBACK_INVALID_SOURCE_IP");
         }
         String providerKey = text(callback == null ? null : callback.get("third_party_id"));
         if (providerKey == null) return ApiResult.fail(422, "CREGIS_CALLBACK_SCHEMA_INVALID");

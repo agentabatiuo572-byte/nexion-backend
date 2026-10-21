@@ -123,9 +123,11 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
               FROM nx_withdrawal_order
              WHERE status IN ('SENT','TX_ORPHANED') AND d5_payout_source='provider' AND completed_at IS NULL
                AND d5_provider_cid IS NOT NULL AND is_deleted=0
-             ORDER BY chain_submitted_at,id LIMIT #{limit}
+               AND withdrawal_no>#{afterWithdrawalNo}
+             ORDER BY withdrawal_no LIMIT #{limit}
             """)
-    List<PayoutRow> incompleteProviderSubmissions(@Param("limit") int limit);
+    List<PayoutRow> incompleteProviderSubmissions(@Param("afterWithdrawalNo") String afterWithdrawalNo,
+                                                @Param("limit") int limit);
 
     @Update("""
             UPDATE nx_withdrawal_order
