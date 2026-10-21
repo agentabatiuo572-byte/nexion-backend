@@ -622,6 +622,222 @@ class FixedTriggerTests(unittest.TestCase):
         self.assertFalse(any(user == 'root' for user, _, _ in self.sql_calls))
 
 
+class CregisTriggerTests(unittest.TestCase):
+    backup = MigrationTests.backup
+
+    def setUp(self):
+        MigrationTests.setUp(self)
+        directory = Path(__file__).resolve().parents[2] / 'scripts' / 'migrations'
+        self.sources = {name: (directory / name).read_bytes().replace(b'\r\n', b'\n') for name in m.CREGIS_PINS}
+        self.scripts.update(self.sources)
+        self.scripts['20261022_02_cregis_exception_refund.sql'] = b'SELECT 2;'
+        self.context = {'version': '8.4.11', 'database': 'nexion', 'principal': 'nexion_app@%',
+                        'log_bin': 1, 'trust': 0, 'mode': 'STRICT_TRANS_TABLES',
+                        'charset': 'utf8mb4', 'collation': 'utf8mb4_0900_ai_ci'}
+        self.app_grants = ['GRANT ALL PRIVILEGES ON `nexion`.* TO `nexion_app`@`%`']
+        self.root_grants = ['GRANT SUPER, TRIGGER, SET_ANY_DEFINER ON *.* TO `root`@`localhost`']
+        self.installed, self.sql_calls, self.sessions = {}, [], []
+        self.bad_field = self.fail_root = self.fail_app = None
+        self.binlog = ['ROW']
+        owner = self
+
+        class Session:
+            def __init__(self, _folder, name, user, _password):
+                owner.assertEqual(user, 'nexion_app')
+                self.name, self.closed = name, None
+                self.sent = []
+                owner.sessions.append(self)
+
+            def send(self, data):
+                owner.assertNotIn(b'CREATE TRIGGER', data)
+                owner.assertNotIn(b'DELIMITER', data)
+                self.sent.append(data)
+                owner.sql_calls.append(('nexion_app', self.name, data))
+                if owner.fail_app and owner.fail_app in data:
+                    raise m.MigrationError('FIXTURE_APP_SEGMENT_FAILED')
+
+            def close(self, *, success):
+                self.closed = success
+
+        for p in (patch.object(m, 'credentials', return_value=('nexion_app', 'fixture', 'fixture-root')),
+                  patch.object(m, 'probe', side_effect=self.read_query),
+                  patch.object(m, 'SupportMysqlSession', Session),
+                  patch.object(m, 'execute_sql', side_effect=self.write_sql),
+                  patch.object(m, 'fixed_trigger_enabled', side_effect=AssertionError('Cregis must not repurpose earnings approval'))):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def read_query(self, user, _password, sql, *, as_json=True):
+        if sql == m.CONTEXT_SQL:
+            return {**self.context, 'principal': 'root@localhost' if user == 'root' else self.context['principal']}
+        if sql == 'SELECT @@SESSION.binlog_format;':
+            return self.binlog
+        if sql == 'SHOW GRANTS FOR CURRENT_USER();':
+            return self.root_grants if user == 'root' else self.app_grants
+        if sql == m.CREGIS_TRIGGER_SQL:
+            self.assertEqual(user, 'root')
+            return list(self.installed.values())
+        self.fail('Unexpected Cregis query: ' + sql)
+
+    def write_sql(self, name, data, _folder, user, _password):
+        self.calls.append(name)
+        self.sql_calls.append((user, name, data))
+        if user != 'root':
+            self.assertEqual(user, 'nexion_app')
+            self.assertNotIn(b'CREATE TRIGGER', data)
+            return
+        matches = [(file, part) for file, source in self.sources.items()
+                   for part in m.cregis_segments(file, source) if part['program'] and name == file + '.' + part['program']]
+        self.assertEqual(len(matches), 1)
+        file, part = matches[0]
+        self.assertEqual(data, m.support_session_settings(self.context) + m.cregis_template(file, part['program'], self.sources[file]))
+        self.assertNotIn(b'CREATE TABLE', data)
+        self.assertNotIn(b'ALTER TABLE', data)
+        self.assertNotIn(b'SET GLOBAL', data)
+        if self.fail_root:
+            raise m.MigrationError('FIXTURE_ROOT_CREATE_FAILED')
+        text = part['data'].decode()
+        import re
+        header = re.search(r'BEFORE (INSERT|UPDATE|DELETE) ON (\w+) FOR EACH ROW', text)
+        row = {'name': part['program'], 'body': text.split('FOR EACH ROW\n', 1)[1].removesuffix('$$\n'),
+               'definer': 'nexion_app@%', 'mode': self.context['mode'], 'charset': self.context['charset'],
+               'collation': self.context['collation'], 'table': header[2], 'timing': 'BEFORE',
+               'event': header[1], 'orientation': 'ROW'}
+        if self.bad_field:
+            row[self.bad_field] = 'CHANGED'
+        self.installed[part['program']] = row
+
+    def assert_before_hold(self):
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.sql_calls, [])
+        self.assertIsNone(m.active())
+        self.assertFalse((self.db / 'START_BLOCKED').exists())
+
+    def test_exact_two_sources_five_chunks_and_fixed_non_root_definer(self):
+        self.assertEqual(len(m.CREGIS_PINS), 2)
+        self.assertEqual(sum(len(value) for value in m.CREGIS_PROGRAMS.values()), 5)
+        for name, raw in self.sources.items():
+            self.assertEqual(m.digest(raw), m.CREGIS_PINS[name])
+            segments = m.cregis_segments(name, raw)
+            chunk = b'DELIMITER $$\n' + b''.join(part['data'] for part in segments if part['program']) + b'DELIMITER ;\n'
+            self.assertEqual(segments[0]['data'] + chunk + segments[-1]['data'], raw)
+            for part in segments:
+                if part['program']:
+                    template = m.cregis_template(name, part['program'], raw)
+                    self.assertIn(b'CREATE DEFINER=`nexion_app`@`%` TRIGGER IF NOT EXISTS ', template)
+                    self.assertNotIn(b'`root`', template)
+            with self.assertRaisesRegex(m.MigrationError, 'PROGRAM_NAME_REJECTED'):
+                m.cregis_template(name, 'unreviewed', raw)
+
+    def test_missing_changed_source_chunk_or_unknown_program_fails_before_hold(self):
+        name = next(iter(self.sources))
+        raw = self.sources[name]
+        self.scripts[name] = raw + b'\nSELECT 1;'
+        with self.assertRaisesRegex(m.MigrationError, 'FIXED_SOURCE_CHANGED'):
+            m.apply(SHA)
+        self.scripts[name] = raw
+        del self.scripts[next(reversed(self.sources))]
+        with self.assertRaisesRegex(m.MigrationError, 'COMPLETE_FIRST_INSTALL_REQUIRED'):
+            m.apply(SHA)
+        self.assert_before_hold()
+        changed = raw[:2877] + b' ' + raw[2878:] + b'\n'
+        with patch.dict(m.CREGIS_PINS, {name: m.digest(changed)}):
+            with self.assertRaisesRegex(m.MigrationError, 'FIXED_CHUNK_CHANGED'):
+                m.cregis_segments(name, changed)
+
+    def test_unknown_stored_program_does_not_inherit_cregis_review(self):
+        self.scripts['20261022_04_unreviewed.sql'] = b'CREATE TRIGGER evil BEFORE DELETE ON example FOR EACH ROW SET @x=1;'
+        with self.assertRaisesRegex(m.MigrationError, 'UNREVIEWED_STORED_PROGRAM'):
+            m.apply(SHA)
+        self.assert_before_hold()
+
+    def test_independent_program_hash_guard_and_every_postcheck_dimension(self):
+        name = next(iter(self.sources))
+        entries = m.CREGIS_PROGRAMS[name]
+        wrong = (entries[0][0], entries[0][1], entries[0][2], '0' * 64)
+        with patch.dict(m.CREGIS_PROGRAMS, {name: (wrong, *entries[1:])}):
+            with self.assertRaisesRegex(m.MigrationError, 'FIXED_PROGRAM_CHANGED'):
+                m.cregis_segments(name, self.sources[name])
+        parts = m.cregis_prepare(list(self.sources.items()))
+        part = next(part for part in parts[name] if part['program'])
+        self.write_sql(name + '.' + part['program'],
+                       m.support_session_settings(self.context) + m.cregis_template(name, part['program'], self.sources[name]),
+                       self.backups, 'root', 'fixture-root')
+        original = dict(self.installed[part['program']])
+        for field in ('body', 'definer', 'mode', 'charset', 'collation', 'table', 'timing', 'event', 'orientation'):
+            with self.subTest(field=field):
+                self.installed[part['program']] = {**original, field: 'CHANGED'}
+                with self.assertRaisesRegex(m.MigrationError, 'TRIGGER_POSTCHECK_CHANGED'):
+                    m.cregis_verify_triggers(parts, [part['program']], 'fixture-root', self.context)
+        self.installed[part['program']] = original
+        self.installed['extra'] = {**original, 'name': 'extra'}
+        with self.assertRaisesRegex(m.MigrationError, 'TRIGGER_INVENTORY_CHANGED'):
+            m.cregis_verify_triggers(parts, [part['program']], 'fixture-root', self.context)
+
+    def test_capabilities_live_context_and_preexisting_trigger_are_fail_closed(self):
+        for field, invalid in [('principal', 'other@%'), ('version', '8.0.41'), ('trust', 1), ('log_bin', 0)]:
+            with self.subTest(field=field):
+                previous = self.context[field]
+                self.context[field] = invalid
+                with self.assertRaisesRegex(m.MigrationError, 'LIVE_CONTEXT_REJECTED'):
+                    m.apply(SHA)
+                self.context[field] = previous
+                self.assert_before_hold()
+        self.binlog = ['STATEMENT']
+        with self.assertRaisesRegex(m.MigrationError, 'LIVE_BINLOG_FORMAT_REJECTED'):
+            m.apply(SHA)
+        self.binlog = ['ROW']
+        self.root_grants = ['GRANT SUPER, TRIGGER ON *.* TO `root`@`localhost`']
+        with self.assertRaisesRegex(m.MigrationError, 'FIXED_CREATOR_CAPABILITIES_MISSING'):
+            m.apply(SHA)
+        self.root_grants = ['GRANT SUPER, TRIGGER, SET_ANY_DEFINER ON *.* TO `root`@`localhost`']
+        self.installed['unknown'] = {'name': 'unknown'}
+        with self.assertRaisesRegex(m.MigrationError, 'EXISTING_OR_PARTIAL_TRIGGERS'):
+            m.apply(SHA)
+        self.assert_before_hold()
+
+    def test_backup_app_sessions_exact_five_root_creates_metadata_and_once_only_history(self):
+        receipt = m.apply(SHA)
+        self.assertEqual(receipt['phase'], 'SQL_APPLIED')
+        self.assertEqual(self.calls[:2], ['stop', 'backup'])
+        writes = [(user, name, data) for user, name, data in self.sql_calls if user == 'root']
+        self.assertEqual(len(writes), 5)
+        self.assertEqual(len(self.installed), 5)
+        self.assertTrue(all(session.closed is True for session in self.sessions))
+        self.assertEqual(len(self.sessions), 2)
+        before = list(self.sql_calls)
+        self.assertEqual(m.apply(SHA), receipt)
+        self.assertEqual(before, self.sql_calls)
+        self.assertNotIn('start-old', self.calls)
+
+    def test_root_or_app_failure_preserves_hold_and_unapplied_file(self):
+        self.fail_root = True
+        with self.assertRaisesRegex(m.MigrationError, 'FIXTURE_ROOT_CREATE_FAILED'):
+            m.apply(SHA)
+        self.assertEqual(m.active()['phase'], 'SQL_FAILED')
+        self.assertNotIn(next(iter(self.sources)), json.loads((self.db / 'state.json').read_text())['scripts'])
+        self.assertFalse(self.sessions[0].closed)
+        self.assertNotIn('start-old', self.calls)
+
+    def test_wrong_trigger_body_definer_or_metadata_keeps_persistent_hold(self):
+        self.bad_field = 'definer'
+        with self.assertRaisesRegex(m.MigrationError, 'TRIGGER_POSTCHECK_CHANGED'):
+            m.apply(SHA)
+        self.assertEqual(m.active()['phase'], 'SQL_FAILED')
+        self.assertEqual(len([entry for entry in self.sql_calls if entry[0] == 'root']), 1)
+        self.assertFalse(self.sessions[0].closed)
+        self.assertNotIn('start-old', self.calls)
+
+    def test_suffix_failure_never_records_partial_file_applied_or_restarts_previous_code(self):
+        self.fail_app = b'CREATE TABLE IF NOT EXISTS nx_cregis_exception_claim'
+        with self.assertRaisesRegex(m.MigrationError, 'FIXTURE_APP_SEGMENT_FAILED'):
+            m.apply(SHA)
+        self.assertEqual(len(self.installed), 3)
+        self.assertEqual(m.active()['phase'], 'SQL_FAILED')
+        self.assertNotIn(next(iter(self.sources)), json.loads((self.db / 'state.json').read_text())['scripts'])
+        self.assertNotIn('start-old', self.calls)
+
+
 original_scoped_account = m.scoped_account
 original_credentials = m.credentials
 original_probe = m.probe

@@ -722,6 +722,155 @@ def execute_support_file(name, raw, folder, user, password, root_password, conte
             session.close(success=False)
 
 
+# First install only: reviewed Cregis source and the five immutable-evidence triggers.
+CREGIS_PINS = {
+    '20261022_01_cregis_exception_claim.sql': 'c89572f7288fa2a62e1ffca727d87fdd32644cf3c945ae3410e52224e5872920',
+    '20261022_03_cregis_reorg_resolution.sql': 'f503bf113512c047bf8ed014b5827fb1b99aa7c18e4f5cf5349ee4e8ed486d1c',
+}
+CREGIS_CHUNKS = {
+    '20261022_01_cregis_exception_claim.sql': (2877, 1565, 'a59eb2518a219a3f18bc255e56d5aaea9bbd3dfb838b29e9601755e603827be9'),
+    '20261022_03_cregis_reorg_resolution.sql': (4185, 439, '257a51655aefda34a4abe36c503dca61247b6f4e82797cafdfa46ebeacd0c273'),
+}
+CREGIS_PROGRAMS = {
+    '20261022_01_cregis_exception_claim.sql': (
+        ('nx_cregis_ownership_challenge_bi_v1', 2890, 368, 'e8bd42656388a629eae9d86b9a2080f27cad3e3f7e7ecd0146f876f88e3fe3ff'),
+        ('nx_cregis_ownership_challenge_bu_v1', 3258, 955, 'c32ec266b46188262b1323ebba82efacb502513eadc05ad929fc5be4ba103500'),
+        ('nx_cregis_ownership_challenge_bd_v1', 4213, 217, '33ed2a35a8fc97c9e2bbec8ffd407835b0f7e3ab016e29185dd5187a822d17dc'),
+    ),
+    '20261022_03_cregis_reorg_resolution.sql': (
+        ('nx_cregis_reorg_operation_bu_v1', 4198, 207, '8cda960bbce1d6c7ebc6b87ee2a032e94c8942865716f26c11741b477c18d414'),
+        ('nx_cregis_reorg_operation_bd_v1', 4405, 207, 'a380197a03c08f05604e690ef911851001de86478362f15c8387006c0dbcde75'),
+    ),
+}
+CREGIS_DEFINER = 'nexion_app@%'
+CREGIS_TRIGGER_SQL = (
+    "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('name',TRIGGER_NAME,'body',ACTION_STATEMENT,'definer',DEFINER,"
+    "'mode',SQL_MODE,'charset',CHARACTER_SET_CLIENT,'collation',COLLATION_CONNECTION,"
+    "'table',EVENT_OBJECT_TABLE,'timing',ACTION_TIMING,'event',EVENT_MANIPULATION,'orientation',ACTION_ORIENTATION)),JSON_ARRAY()) "
+    "FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND ("
+    "EVENT_OBJECT_TABLE IN ('nx_cregis_ownership_challenge','nx_cregis_reorg_operation') OR TRIGGER_NAME IN ("
+    + ','.join("'" + program[0] + "'" for entries in CREGIS_PROGRAMS.values() for program in entries) + '));')
+
+
+def cregis_require(condition, reason):
+    require(condition, 'MIGRATION_CREGIS_' + reason)
+
+
+def cregis_segments(name, raw):
+    cregis_require(name in CREGIS_PINS and digest(raw) == CREGIS_PINS[name], 'FIXED_SOURCE_CHANGED')
+    start, length, checksum = CREGIS_CHUNKS[name]
+    chunk = raw[start:start + length]
+    cregis_require(digest(chunk) == checksum, 'FIXED_CHUNK_CHANGED')
+    blocks = []
+    for program, offset, size, expected in CREGIS_PROGRAMS[name]:
+        block = raw[offset:offset + size]
+        cregis_require(digest(block) == expected, 'FIXED_PROGRAM_CHANGED')
+        blocks.append({'program': program, 'data': block})
+    cregis_require(chunk == b'DELIMITER $$\n' + b''.join(part['data'] for part in blocks) + b'DELIMITER ;\n',
+                   'FIXED_CHUNK_LAYOUT_CHANGED')
+    prefix, suffix = raw[:start], raw[start + length:]
+    # The app process never receives a delimiter spanning a barrier, or any CREATE program.
+    migration_preflight([(name + '.app', data) for data in (prefix, suffix) if data], None, None, None)
+    return [{'program': '', 'data': prefix}, *blocks, {'program': '', 'data': suffix}]
+
+
+def cregis_prepare(pending):
+    sources = dict(pending)
+    if not any(name in CREGIS_PINS for name in sources):
+        return None
+    cregis_require(set(CREGIS_PINS) <= sources.keys(), 'COMPLETE_FIRST_INSTALL_REQUIRED')
+    return {name: cregis_segments(name, sources[name]) for name in CREGIS_PINS}
+
+
+def cregis_preflight(user, password, root_password):
+    app, root = server_context(user, password), server_context('root', root_password)
+    cregis_require(user == 'nexion_app' and app['principal'] == CREGIS_DEFINER
+                   and root['principal'] in ('root@localhost', 'root@%')
+                   and app['version'] == root['version'] and app['version'].startswith('8.4.')
+                   and app['log_bin'] == root['log_bin'] == 1 and app['trust'] == root['trust'] == 0
+                   and all(app[key] == root[key] for key in ('mode', 'charset', 'collation')),
+                   'LIVE_CONTEXT_REJECTED')
+    for actor, secret in ((user, password), ('root', root_password)):
+        cregis_require(probe(actor, secret, 'SELECT @@SESSION.binlog_format;', as_json=False) == ['ROW'],
+                       'LIVE_BINLOG_FORMAT_REJECTED')
+    app_privileges = grant_privileges(probe(user, password, 'SHOW GRANTS FOR CURRENT_USER();', as_json=False), '`nexion`.*')
+    cregis_require('ALL PRIVILEGES' in app_privileges
+                   or {'ALTER', 'CREATE', 'INDEX', 'INSERT', 'SELECT', 'UPDATE', 'REFERENCES', 'TRIGGER'} <= app_privileges,
+                   'APP_CAPABILITIES_MISSING')
+    root_privileges = grant_privileges(probe('root', root_password, 'SHOW GRANTS FOR CURRENT_USER();', as_json=False), '*.*')
+    cregis_require(('ALL PRIVILEGES' in root_privileges or {'SUPER', 'TRIGGER'} <= root_privileges)
+                   and 'SET_ANY_DEFINER' in root_privileges, 'FIXED_CREATOR_CAPABILITIES_MISSING')
+    cregis_require(probe('root', root_password, CREGIS_TRIGGER_SQL) == [],
+                   'EXISTING_OR_PARTIAL_TRIGGERS_REQUIRE_INSPECTION')
+    return {**app, 'root_context': root, 'verified_programs': []}
+
+
+def cregis_template(name, program, raw):
+    parts = [part for part in cregis_segments(name, raw) if part['program'] == program]
+    cregis_require(len(parts) == 1, 'PROGRAM_NAME_REJECTED')
+    block = parts[0]['data']
+    old = b'CREATE TRIGGER IF NOT EXISTS '
+    cregis_require(block.startswith(old) and block.count(old) == 1, 'PROGRAM_HEADER_CHANGED')
+    return b'DELIMITER $$\n' + block.replace(old, b'CREATE DEFINER=`nexion_app`@`%` TRIGGER IF NOT EXISTS ', 1) + b'DELIMITER ;\n'
+
+
+def cregis_verify_triggers(parts, expected_names, root_password, context):
+    rows = probe('root', root_password, CREGIS_TRIGGER_SQL)
+    cregis_require(isinstance(rows, list) and len(rows) == len(expected_names)
+                   and all(isinstance(row, dict) for row in rows)
+                   and {row.get('name') for row in rows} == set(expected_names), 'TRIGGER_INVENTORY_CHANGED')
+    blocks = {part['program']: part['data'] for entries in parts.values() for part in entries if part['program']}
+    for row in rows:
+        text = blocks[row['name']].decode()
+        header = re.search(r'BEFORE (INSERT|UPDATE|DELETE) ON (\w+) FOR EACH ROW\n', text)
+        body = text.split('FOR EACH ROW\n', 1)[1].removesuffix('$$\n')
+        cregis_require(header and row.get('timing') == 'BEFORE' and row.get('event') == header[1]
+                       and row.get('table') == header[2] and row.get('orientation') == 'ROW'
+                       and row.get('body') == body and row.get('definer') == CREGIS_DEFINER
+                       and all(row.get(key) == context[key] for key in ('mode', 'charset', 'collation')),
+                       'TRIGGER_POSTCHECK_CHANGED')
+
+
+def execute_cregis_file(name, raw, folder, user, password, root_password, context, parts, journal):
+    segments = cregis_segments(name, raw)
+    session = SupportMysqlSession(folder, name, user, password)
+    success = False
+    try:
+        session.send(b'SET SESSION lock_wait_timeout=30; SET SESSION innodb_lock_wait_timeout=30;\n'
+                     + support_session_settings(context))
+        for index, part in enumerate(segments):
+            journal['cregis_segment'] = str(index) + ':' + (part['program'] or 'APP_SOURCE')
+            save(ROOT / 'active.json', journal)
+            save(folder / 'receipt.json', journal)
+            if not part['program']:
+                if part['data']:
+                    session.send(part['data'])
+                continue
+            cregis_require(server_context('root', root_password) == context['root_context'], 'ROOT_CONTEXT_CHANGED_BEFORE_WRITE')
+            current = server_context(user, password)
+            cregis_require(all(current[key] == context[key] for key in
+                           ('principal', 'database', 'version', 'mode', 'charset', 'collation', 'log_bin', 'trust')),
+                           'APP_CONTEXT_CHANGED_BEFORE_WRITE')
+            template = cregis_template(name, part['program'], raw)
+            journal['cregis_trigger'] = {'name': part['program'], 'definer': CREGIS_DEFINER,
+                                        'template_sha256': digest(template)}
+            save(ROOT / 'active.json', journal)
+            execute_sql(name + '.' + part['program'], support_session_settings(context) + template,
+                        folder, 'root', root_password)
+            names = [*context['verified_programs'], part['program']]
+            cregis_verify_triggers(parts, names, root_password, context)
+            context['verified_programs'] = names
+            journal['cregis_verified_triggers'] = names
+            save(ROOT / 'active.json', journal)
+            save(folder / 'receipt.json', journal)
+        cregis_verify_triggers(parts, context['verified_programs'], root_password, context)
+        session.close(success=True)
+        success = True
+    finally:
+        if not success:
+            session.close(success=False)
+
+
 def stop_backend():
     revoke_candidate_start()
     save(ROOT / 'START_BLOCKED', {'reason': 'DATABASE_MIGRATION_HOLD'})
@@ -887,11 +1036,15 @@ def apply(sha, *, rollback_check=False):
     for _, data in pending:
         validate_sql(data)
     support_order = support_prepare(pending)
+    cregis_parts = cregis_prepare(pending)
     user, password, root_password = credentials()
     scoped_account(user, password)
     trigger_context = migration_preflight(
-        [(name, data) for name, data in pending if not support_order or name not in SUPPORT_PROGRAMS],
+        [(name, data) for name, data in pending
+         if (not support_order or name not in SUPPORT_PROGRAMS) and (not cregis_parts or name not in CREGIS_PINS)],
         user, password, root_password)
+    if cregis_parts:
+        cregis_context = cregis_preflight(user, password, root_password)
     if support_order:
         support_context = support_preflight(user, password, root_password)
         sources = dict(pending)
@@ -919,11 +1072,14 @@ def apply(sha, *, rollback_check=False):
                 os.fsync(stream.fileno())
             journal.pop('segment', None)
             journal.pop('support_segment', None)
+            journal.pop('cregis_segment', None)
             journal.update(phase='SQL_APPLYING', current=name)
             save(ROOT / 'active.json', journal)
             sql_started = True
             if support_order and name in SUPPORT_PROGRAMS:
                 execute_support_file(name, data, folder, user, password, root_password, support_context, journal)
+            elif cregis_parts and name in CREGIS_PINS:
+                execute_cregis_file(name, data, folder, user, password, root_password, cregis_context, cregis_parts, journal)
             elif name == EARNINGS_FILE and trigger_context['root_install']:
                 execute_earnings_recovery(data, folder, user, password, root_password, trigger_context, journal)
             else:
