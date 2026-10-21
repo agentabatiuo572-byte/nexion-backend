@@ -84,7 +84,7 @@ public interface CregisExceptionRefundMapper extends BaseMapper<Object> {
     @Select("SELECT COUNT(*) FROM nx_cregis_risk_alert a WHERE a.project_id=#{project} AND a.severity='P0' AND a.resolved_at IS NULL "
             + "AND NOT(a.kind='UNRESOLVED_EXPOSURE' AND a.alert_key='unresolved-exposure-500') "
             + "AND NOT(a.kind='PROVIDER_ORPHAN' AND (a.alert_key=CONCAT('orphan-cid-',#{cid}) OR EXISTS(SELECT 1 "+APPROVED_SOURCE
-            + "AND r.project_id=a.project_id AND a.alert_key=CONCAT('orphan-cid-',r.deposit_cid)))))")
+            + "AND r.project_id=a.project_id AND a.alert_key=CONCAT('orphan-cid-',r.deposit_cid))))")
     int otherCriticalAlerts(@Param("project") long project,@Param("cid") long cid);
     @Select("SELECT COUNT(*) FROM nx_cregis_deposit_event WHERE project_id=#{project} AND status IN ('REORG_INVESTIGATING','PROVIDER_CONFLICT_HOLD')")
     int criticalDeposits(long project);
