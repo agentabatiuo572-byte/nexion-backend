@@ -1031,6 +1031,63 @@ class AuditReplayBusinessPermissionGuardTest {
     }
 
     @Test
+    void targetedH8ApprovalBindsTheNewcomerAndRetainsSharedSettlementLock() {
+        authenticate("platform_a2_proposal_create", "growth_h8_settle");
+        var command = new AuditReplayCommand("H", "h8_referral_settlement_user", Map.of(
+                "invitedUserId", 60723153032L, "expectedH8Version", 7L,
+                "expectedRhythmMonth", 3, "rewardSnapshotHash", "a".repeat(64)));
+        var target = new AuditLockTarget("H", "referral_settlement_batch", "pending");
+        var request = new AuditOperationProposalRequest(
+                "client supplied copy", "新人 60723153032", "before", "after", "maker", "growth",
+                "fund", true, false, "门槛者", "only settle this approved newcomer", "H8", command, target, null);
+
+        assertThat(guard.validateProposal(command).getCode()).isZero();
+        var canonical = guard.validateProposalContext(request);
+        assertThat(canonical.getCode()).isZero();
+        assertThat(canonical.getData().objectId()).isEqualTo("新人 60723153032");
+        assertThat(canonical.getData().afterValue()).isEqualTo("仅结算新人 60723153032 的邀请奖励");
+        assertThat(canonical.getData().target()).isEqualTo(target);
+
+        authenticate("platform_a2_proposal_create");
+        assertThat(guard.validateProposal(command).getCode()).isNotZero();
+    }
+
+    @Test
+    void targetedH8ApprovalRejectsInvalidOrMissingNewcomerInsteadOfBecomingBatchApproval() {
+        authenticate("platform_a2_proposal_create", "growth_h8_settle");
+        for (Object raw : List.of(0L, -1L, 1.5, "invalid", 9007199254740992L)) {
+            var command = new AuditReplayCommand("H", "h8_referral_settlement_user", Map.of(
+                    "invitedUserId", raw, "expectedH8Version", 7L,
+                    "expectedRhythmMonth", 3, "rewardSnapshotHash", "a".repeat(64)));
+            var request = new AuditOperationProposalRequest(
+                    "copy", "新人 " + raw, "before", "after", "maker", "growth",
+                    "fund", true, false, "门槛者", "invalid target must not become batch", "H8", command,
+                    new AuditLockTarget("H", "referral_settlement_batch", "pending"), null);
+            assertThat(guard.validateProposalContext(request).getCode()).isNotZero();
+        }
+        var missing = new AuditReplayCommand("H", "h8_referral_settlement_user", Map.of(
+                "expectedH8Version", 7L, "expectedRhythmMonth", 3, "rewardSnapshotHash", "a".repeat(64)));
+        var request = new AuditOperationProposalRequest("copy", "待结算邀请批次", "before", "after", "maker", "growth",
+                "fund", true, false, "门槛者", "missing target must not become batch", "H8", missing,
+                new AuditLockTarget("H", "referral_settlement_batch", "pending"), null);
+        assertThat(guard.validateProposalContext(request).getCode()).isNotZero();
+    }
+
+    @Test
+    void fullA2WriterCannotSpoofTargetWithAFractionalNewcomerId() {
+        authenticate("platform_a2_write", "platform_a2_proposal_create", "growth_h8_settle");
+        var command = new AuditReplayCommand("H", "h8_referral_settlement_user", Map.of(
+                "invitedUserId", 60723153029.5, "expectedH8Version", 7L,
+                "expectedRhythmMonth", 3, "rewardSnapshotHash", "a".repeat(64)));
+        var request = new AuditOperationProposalRequest("copy", "新人 60723153032", "before", "after", "maker", "growth",
+                "fund", true, false, "门槛者", "fractional target must never reach old newcomer", "H8", command,
+                new AuditLockTarget("H", "unrelated_lock", "60723153032"), null);
+        assertThat(guard.validateProposal(command).getCode()).isEqualTo(422);
+        assertThat(guard.validateApproval(command).getCode()).isEqualTo(422);
+        assertThat(guard.validateProposalContext(request).getCode()).isNotZero();
+    }
+
+    @Test
     void delegatedH8SettlementFailsClosedForMalformedSnapshotOrContextSpoofing() {
         authenticate("platform_a2_proposal_create", "growth_h8_settle");
         AuditReplayCommand malformed = new AuditReplayCommand(

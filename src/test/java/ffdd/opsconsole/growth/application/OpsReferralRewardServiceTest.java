@@ -581,6 +581,70 @@ class OpsReferralRewardServiceTest {
                 .hasMessageContaining("REFERRAL_REWARD_EFFECTIVE_AMOUNT_OVERFLOW");
     }
 
+    @Test
+    void targetedSettlementOnlySelectsApprovedNewcomerAndCreditsItsCanonicalSponsor() {
+        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(0), eq(true), eq(1), eq(32L)))
+                .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(32L, 7L)));
+        when(mapper.insertSettlement(anyString(), eq(32L), eq(7L), any(), any(), any(),
+                eq("risk_bucket"), anyString(), anyString(), anyString(), anyString(),
+                any(LocalDateTime.class), eq("PRODUCTION"), eq(0), eq(true))).thenReturn(1);
+
+        Map<String, Object> result = service.runSettlementForUser("idem-ref-user-32", 32L,
+                request(100, "only settle the approved newcomer"));
+
+        assertThat(result).containsEntry("settled", 1).containsEntry("limit", 1);
+        verify(mapper).findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(0), eq(true), eq(1), eq(32L));
+        verify(mapper, never()).findPendingReferrals(any(), anyString(), anyInt(), anyBoolean(), anyInt(), eq(null));
+        verify(earningsRelease).creditReward(eq(32L), eq("H8_REFERRAL"), anyString(), eq("USDT"),
+                decimal("5"), eq("PRODUCTION"), anyString());
+        verify(earningsRelease).creditReward(eq(32L), eq("H8_REFERRAL"), anyString(), eq("NEX"),
+                decimal("20"), eq("PRODUCTION"), anyString());
+        verify(earningsRelease).creditReward(eq(7L), eq("H8_REFERRAL"), anyString(), eq("NEX"),
+                decimal("10"), eq("PRODUCTION"), anyString());
+        verify(earningsRelease, times(3)).creditReward(any(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
+        verify(outbox).publish(anyString(), anyString(), eq("H8_REFERRAL_REWARD_BATCH_COMPLETED"),
+                argThat(payload -> payload instanceof Map<?, ?> values
+                        && Long.valueOf(32L).equals(values.get("invitedUserId"))));
+    }
+
+    @Test
+    void targetedSettlementCannotFallBackToAnOlderInvitationWhenTargetIsIneligibleOrSettled() {
+        when(mapper.findPendingReferrals(any(), eq("PRODUCTION"), eq(0), eq(true), eq(1), eq(32L)))
+                .thenReturn(List.of());
+        assertThatThrownBy(() -> service.runSettlementForUser("idem-ref-user-ineligible", 32L,
+                request(20, "must not settle the older pending invitation")))
+                .isInstanceOf(BizException.class).hasMessageContaining("REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
+        verify(mapper, never()).findPendingReferrals(any(), anyString(), anyInt(), anyBoolean(), anyInt(), eq(null));
+        verify(earningsRelease, never()).creditReward(any(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
+    }
+
+    @Test
+    void targetedSettlementRetainsA2AndUserIdValidation() {
+        for (Long invalid : new Long[] {null, 0L, -1L, 9_007_199_254_740_992L}) {
+            assertThatThrownBy(() -> service.runSettlementForUser("idem-ref-invalid-user", invalid,
+                    request(1, "invalid target cannot become batch settlement")))
+                    .isInstanceOf(BizException.class).hasMessageContaining("REFERRAL_REWARD_INVITED_USER_INVALID");
+        }
+        A2ReplayContext.exitReplay();
+        assertThatThrownBy(() -> service.runSettlementForUser("idem-ref-user-no-a2", 32L,
+                request(1, "targeted settlement still requires approval")))
+                .isInstanceOf(BizException.class).hasMessageContaining("A2_CONFIRMATION_REQUIRED");
+        verify(mapper, never()).lockRewardMutation();
+    }
+
+    @Test
+    void targetedSettlementIdempotencyFingerprintBindsTheNewcomer() {
+        for (long target : new long[] {32L, 33L}) {
+            assertThatThrownBy(() -> service.runSettlementForUser("same-idempotency-key", target,
+                    request(1, "same reason but different approved newcomer")))
+                    .isInstanceOf(BizException.class).hasMessageContaining("REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
+        }
+        var hashes = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(idempotency, times(2)).execute(eq("REFERRAL_REWARD_SETTLEMENT"), eq("same-idempotency-key"),
+                hashes.capture(), eq(Map.class), any());
+        assertThat(hashes.getAllValues()).doesNotHaveDuplicates();
+    }
+
     private ReferralSettlementRunRequest request(int limit, String reason) {
         if (!A2ReplayContext.isReplaying()) {
             return new ReferralSettlementRunRequest(limit, reason, "superadmin", null, null, null);

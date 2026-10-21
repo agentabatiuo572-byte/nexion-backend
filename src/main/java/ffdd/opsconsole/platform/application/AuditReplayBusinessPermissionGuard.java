@@ -146,6 +146,11 @@ public class AuditReplayBusinessPermissionGuard {
         }
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
         String requiredAuthority = requiredAuthority(command, operation);
+        if ("h8_referral_settlement_user".equals(operation)
+                && (!"H".equalsIgnoreCase(command.domain())
+                    || delegatedHDescriptor(operation, command.params() == null ? Map.of() : command.params()) == null)) {
+            return ApiResult.fail(422, "REFERRAL_REWARD_TARGET_REQUEST_INVALID");
+        }
         if("promotion_reward_correction".equals(operation)
                 &&(!"H".equals(command.domain())||!promotionCorrectionValid(command.params())))
             return ApiResult.fail(422,"PROMOTION_CORRECTION_FIELDS_INVALID");
@@ -408,7 +413,7 @@ public class AuditReplayBusinessPermissionGuard {
         }
         DelegatedProposalDescriptor descriptor = delegatedDescriptor(command);
         if (descriptor == null) {
-            return delegated
+            return delegated || command != null && "h8_referral_settlement_user".equalsIgnoreCase(text(command.op()))
                     ? ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_CONTEXT_UNMAPPED")
                     : ApiResult.ok(null);
         }
@@ -537,24 +542,26 @@ public class AuditReplayBusinessPermissionGuard {
                 "奖励版本 "+value(params,"expectedRevision"),"仅批准指定奖励及资产的处置", "H", "fund",false,
                 new AuditLockTarget("H","promotion_reward",id));
         }
-        if (!"h8_referral_settlement".equals(operation)) {
+        if (!Set.of("h8_referral_settlement", "h8_referral_settlement_user").contains(operation)) {
             return null;
         }
-        Integer limit = strictInteger(params.get("limit"), 1, 100);
+        boolean targeted = "h8_referral_settlement_user".equals(operation);
+        Long invitedUserId = targeted ? strictLong(params.get("invitedUserId"), 1, 9_007_199_254_740_991L) : null;
+        Integer limit = targeted ? Integer.valueOf(1) : strictInteger(params.get("limit"), 1, 100);
         Long expectedVersion = strictLong(params.get("expectedH8Version"), 0, Long.MAX_VALUE);
         Integer expectedRhythmMonth = strictInteger(params.get("expectedRhythmMonth"), 1, 24);
         String snapshotHash = value(params, "rewardSnapshotHash");
-        if (limit == null
+        if ((targeted && invitedUserId == null) || limit == null
                 || expectedVersion == null
                 || expectedRhythmMonth == null
                 || !snapshotHash.matches("(?i)^[0-9a-f]{64}$")) {
             return null;
         }
         return new DelegatedProposalDescriptor(
-                "执行邀请奖励真实结算",
-                "待结算邀请批次",
+                targeted ? "执行指定新人邀请奖励结算" : "执行邀请奖励真实结算",
+                targeted ? "新人 " + invitedUserId : "待结算邀请批次",
                 "以服务器执行时状态为准",
-                "最多结算 " + limit + " 条",
+                targeted ? "仅结算新人 " + invitedUserId + " 的邀请奖励" : "最多结算 " + limit + " 条",
                 "H8",
                 "fund",
                 true,
@@ -1130,7 +1137,7 @@ public class AuditReplayBusinessPermissionGuard {
                 case "h2_trial_cancel" -> "growth_h2_session_cancel";
                 case "h2_trial_charge" -> "growth_h2_session_charge";
                 case "h5_checkin_rule" -> "growth_h5_rule_write";
-                case "h8_referral_settlement" -> "growth_h8_settle";
+                case "h8_referral_settlement", "h8_referral_settlement_user" -> "growth_h8_settle";
                 default -> null;
             };
             case "I" -> switch (operation) {
