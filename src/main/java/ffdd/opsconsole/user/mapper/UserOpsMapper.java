@@ -1143,6 +1143,9 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND c2_freeze_source = #{source}
             """)
     int countFrozenBySource(@Param("userId") Long userId, @Param("source") String source);
+    @Select("SELECT COUNT(*) FROM nx_cregis_reorg_resolution WHERE user_id=#{userId} "
+        +"AND (status='INVESTIGATING' OR outstanding_debt>0 OR held_amount>0)")
+    int unresolvedCregisIncidents(@Param("userId") Long userId);
 
     @Update("""
             UPDATE nx_user

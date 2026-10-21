@@ -57,7 +57,7 @@ class CregisChainScanBatchTest {
         var treasury = mock(TreasuryLedgerRepository.class);var capture=mock(SupportPaymentAttributionFacade.class);
         var service = new CregisDepositService(config,mock(CregisGatewayRouter.class),chain,new CregisSigner(),
                 new ObjectMapper(),db,mock(PlatformTransactionManager.class),treasury,
-                mock(FinanceWithdrawalControlFacade.class),capture,mock(CregisPayoutControl.class));
+                mock(FinanceWithdrawalControlFacade.class),capture,mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         return new Fixture(service,db,chain,address,treasury,capture);
     }
     record Fixture(CregisDepositService service,CregisDepositMapper db,BscDepositProof chain,String address,

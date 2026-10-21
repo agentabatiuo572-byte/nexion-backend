@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -148,9 +149,9 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     int readyPoolCandidate(@Param("id") long id);
     @Update("""
-            UPDATE nx_cregis_deposit_address SET state='UNATTRIBUTED_HOLD'
+            UPDATE nx_cregis_deposit_address SET state=CASE WHEN state='RETIRED' THEN 'RETIRED_HOLD' ELSE 'UNATTRIBUTED_HOLD' END
              WHERE project_id=#{projectId} AND chain_id=#{chainId} AND address=#{address}
-               AND state IN ('VERIFYING','UNASSIGNED') AND user_id IS NULL
+               AND state IN ('VERIFYING','UNASSIGNED','RETIRED') AND user_id IS NULL
             """)
     int holdPoolAddress(@Param("projectId") long projectId, @Param("chainId") String chainId,
                         @Param("address") String address);
@@ -241,7 +242,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                          ('DUST_HOLD','REVIEW_HOLD','REORG_INVESTIGATING','PROVIDER_CONFLICT_HOLD')),0)
               + COALESCE((SELECT SUM(CAST(o.raw_amount AS DECIMAL(18,6)))
                             FROM nx_cregis_chain_observation o
-                           WHERE o.project_id=#{projectId} AND o.status<>'MATCHED'
+                           WHERE o.project_id=#{projectId} AND o.status NOT IN ('MATCHED','REFUNDED')
                              AND NOT EXISTS(SELECT 1 FROM nx_cregis_deposit_event e
                                              WHERE e.project_id=o.project_id
                                                AND e.txid=o.txid AND e.log_index=o.log_index)),0)
@@ -349,7 +350,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     @Select("""
             SELECT id,user_id AS userId,address,state,created_at AS createdAt
               FROM nx_cregis_deposit_address
-             WHERE project_id=#{projectId} AND state IN ('UNKNOWN','PROVISIONING','VERIFYING','UNATTRIBUTED_HOLD')
+             WHERE project_id=#{projectId} AND state IN ('UNKNOWN','PROVISIONING','VERIFYING','UNATTRIBUTED_HOLD','RETIRED_HOLD')
              ORDER BY id LIMIT 50
             """)
     List<Map<String, Object>> uncertainAddresses(@Param("projectId") long projectId);
@@ -536,7 +537,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                    allocation_block AS allocationBlock
               FROM nx_cregis_deposit_address
              WHERE project_id=#{projectId} AND chain_id=#{chainId}
-               AND state IN ('VERIFYING','UNASSIGNED','READY','UNATTRIBUTED_HOLD')
+               AND state IN ('VERIFYING','UNASSIGNED','READY','UNATTRIBUTED_HOLD','RETIRED','RETIRED_HOLD')
              ORDER BY id LIMIT 61
             """)
     List<Map<String, Object>> allocations(@Param("projectId") long projectId,
@@ -609,10 +610,10 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
 
     @Insert("""
             INSERT INTO nx_cregis_deposit_event
-            (user_id,project_id,cid,txid,log_index,address,gross_amount,fee_amount,net_amount,
+            (user_id,project_id,cid,txid,log_index,origin_log_index,address,gross_amount,fee_amount,net_amount,
              block_number,block_hash,confirmations,canonical_until,
              last_canonical_checked_block,last_canonical_checked_hash,status)
-            VALUES (#{userId},#{projectId},#{cid},#{txid},#{logIndex},#{address},#{amount},#{fee},#{net},
+            VALUES (#{userId},#{projectId},#{cid},#{txid},#{logIndex},#{logIndex},#{address},#{amount},#{fee},#{net},
                     #{blockNumber},#{blockHash},#{confirmations},
                     #{blockNumber}+100,#{blockNumber},#{blockHash},#{status})
             """)
@@ -623,6 +624,9 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                     @Param("net") BigDecimal net, @Param("blockNumber") long blockNumber,
                     @Param("blockHash") String blockHash, @Param("confirmations") int confirmations,
                     @Param("status") String status);
+
+    @Update("UPDATE nx_cregis_deposit_event SET transfer_from_address=#{sender} WHERE project_id=#{projectId} AND cid=#{cid} AND (transfer_from_address IS NULL OR transfer_from_address=#{sender})")
+    int recordTransferSender(@Param("projectId") long projectId,@Param("cid") long cid,@Param("sender") String sender);
 
     @Select("SELECT id FROM nx_cregis_deposit_event WHERE project_id=#{projectId} AND cid=#{cid}")
     Long eventId(@Param("projectId") long projectId, @Param("cid") long cid);
@@ -733,6 +737,9 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int insertIncident(@Param("eventId") long eventId, @Param("projectId") long projectId,
                        @Param("cid") long cid, @Param("userId") long userId,
                        @Param("kind") String kind, @Param("heldAmount") BigDecimal heldAmount);
+    @Select("SELECT id FROM nx_cregis_deposit_incident WHERE event_id=#{eventId} AND kind=#{kind} ORDER BY id DESC LIMIT 1 FOR UPDATE")
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    Long latestIncidentId(@Param("eventId") long eventId,@Param("kind") String kind);
 
     @Select("SELECT UNIX_TIMESTAMP(MIN(created_at)) FROM nx_cregis_deposit_address WHERE project_id=#{projectId}")
     Long firstAddressSecond(@Param("projectId") long projectId);

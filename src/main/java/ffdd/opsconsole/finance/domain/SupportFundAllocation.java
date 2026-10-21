@@ -14,7 +14,8 @@ import java.util.Set;
 public final class SupportFundAllocation {
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(6);
 
-    public enum Action { DEPOSIT, EARNINGS, PROTECTED_EARNINGS, CONSUME, FEE, REFUND, RESERVE, CONFIRM, RETURN, TRADE, MOVE, EXCHANGE, RELEASE, RECOVER, CLAWBACK }
+    public enum Action { DEPOSIT, EARNINGS, PROTECTED_EARNINGS, CONSUME, FEE, REFUND, RESERVE, CONFIRM, RETURN, TRADE, MOVE, EXCHANGE, RELEASE, RECOVER, CLAWBACK,
+        REORG_DEBIT, REORG_REFUND, REVOKE_DEPOSIT, RESTORE_DEPOSIT }
     public record Account(long customerId, String currency, String slot) {
         public Account {
             require(customerId > 0 && ("USDT".equals(currency) || "NEX".equals(currency)), "Invalid account");
@@ -41,6 +42,8 @@ public final class SupportFundAllocation {
     private Map<String, Reservation> reserved = new HashMap<>();
     private Map<String, BigDecimal> totals = new HashMap<>();
     private Set<String> released = new HashSet<>();
+    private Map<String,BigDecimal> contributionBalances = new HashMap<>();
+    private Set<String> revokedDeposits = new HashSet<>();
 
     public BigDecimal balance(Account account) { return sum(balances.getOrDefault(account, List.of())); }
     /** Exact non-cash holdings; the reader must independently reconcile every returned slot. */
@@ -75,6 +78,8 @@ public final class SupportFundAllocation {
         next.reserved = new HashMap<>(reserved);
         next.totals = new HashMap<>(totals);
         next.released = new HashSet<>(released);
+        next.contributionBalances = new HashMap<>(contributionBalances);
+        next.revokedDeposits = new HashSet<>(revokedDeposits);
         List<Change> changes = new ArrayList<>();
         for (Event event : events) {
             require(event != null, "Missing operation event");
@@ -93,6 +98,8 @@ public final class SupportFundAllocation {
         reserved = next.reserved;
         totals = next.totals;
         released = next.released;
+        contributionBalances = next.contributionBalances;
+        revokedDeposits = next.revokedDeposits;
         return List.copyOf(changes);
     }
 
@@ -203,6 +210,32 @@ public final class SupportFundAllocation {
                 require(needed.signum()==0,"Insufficient available funds for commission clawback");
                 balances.put(e.from(),remaining.stream().filter(lot->lot.quantity().signum()>0).toList());
             }
+            case REORG_DEBIT -> {
+                Event origin=receipts.get(e.reference());
+                require(origin!=null && origin.action()==Action.DEPOSIT && origin.to().customerId()==e.from().customerId()
+                    && origin.to().currency().equals(e.from().currency()),"Reorg debit requires the original deposit");
+                Taken take=take(e.from(),e.amount(),false);
+                balances.put(e.from(),take.remaining());
+                consumed.put(e.id(),new Consumption(e.from(),take.picked(),false));
+            }
+            case REORG_REFUND -> {
+                Event debit=receipts.get(e.reference());Consumption collection=consumed.get(e.reference());
+                require(debit!=null && debit.action()==Action.REORG_DEBIT && collection!=null
+                    && collection.account().customerId()==e.to().customerId() && collection.account().currency().equals(e.to().currency()),
+                    "Reorg return requires the original collected funds");
+                Taken take=split(collection.remaining(),e.amount());add(e.to(),take.picked());
+                consumed.put(e.reference(),new Consumption(collection.account(),take.remaining(),false));
+            }
+            case REVOKE_DEPOSIT, RESTORE_DEPOSIT -> {
+                Event origin=receipts.get(e.reference());
+                require(origin!=null && origin.action()==Action.DEPOSIT && origin.amount().compareTo(e.amount())==0,
+                    "Reorg contribution adjustment requires the original deposit");
+                BigDecimal current=contributionBalances.getOrDefault(e.reference(),ZERO);
+                boolean reverse=e.action()==Action.REVOKE_DEPOSIT;
+                require(reverse?revokedDeposits.add(e.reference()):revokedDeposits.remove(e.reference()),"Deposit contribution state conflict");
+                BigDecimal delta=reverse?current.negate():current;
+                if(delta.signum()!=0){changes.add(new Change(e.reference(),origin.to().currency(),delta));totals.merge(origin.to().currency(),delta,BigDecimal::add);}
+            }
         }
     }
 
@@ -255,6 +288,8 @@ public final class SupportFundAllocation {
     }
     private void change(List<Change> changes, String origin, String currency, BigDecimal amount) {
         if (amount.signum() == 0) return;
+        contributionBalances.merge(origin,amount,BigDecimal::add);
+        if(revokedDeposits.contains(origin))return;
         changes.add(new Change(origin, currency, amount));
         totals.merge(currency, amount, BigDecimal::add);
     }
@@ -275,6 +310,9 @@ public final class SupportFundAllocation {
             case RELEASE -> require(available(e.from()) && e.to() == null && reference(e) && e.amount() == null && e.targetAmount() == null, "Invalid earnings release");
             case RECOVER -> require(available(e.from()) && e.to()==null && reference(e) && e.amount()!=null && e.targetAmount()==null,"Invalid original earnings recovery");
             case CLAWBACK -> require(available(e.from()) &&e.to()==null &&reference(e) &&e.amount()!=null &&e.targetAmount()==null,"Invalid commission clawback");
+            case REORG_DEBIT -> require(e.from()!=null && e.to()==null && reference(e) && e.amount()!=null && e.targetAmount()==null,"Invalid reorg collection");
+            case REORG_REFUND -> require(e.from()==null && available(e.to()) && reference(e) && e.amount()!=null && e.targetAmount()==null,"Invalid reorg return");
+            case REVOKE_DEPOSIT, RESTORE_DEPOSIT -> require(e.from()==null && e.to()==null && reference(e) && e.amount()!=null && e.targetAmount()==null,"Invalid deposit contribution correction");
             case MOVE, EXCHANGE, TRADE -> {
                 require(e.from() != null && e.to() != null && !e.from().equals(e.to()) && e.reference() == null && e.amount() != null, "Invalid transfer");
                 if (e.action() == Action.MOVE) require(e.from().customerId() == e.to().customerId() && e.from().currency().equals(e.to().currency()) && e.targetAmount() == null, "Invalid principal move");

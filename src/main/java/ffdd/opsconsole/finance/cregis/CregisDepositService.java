@@ -38,13 +38,16 @@ public class CregisDepositService {
     private final FinanceWithdrawalControlFacade withdrawalControl;
     private final SupportPaymentAttributionFacade paymentAttribution;
     private final CregisPayoutControl payouts;
+    private final CregisExceptionSourceService exceptionSources;
+    private final CregisReorgResolutionService reorgResolutions;
 
     public CregisDepositService(CregisProperties config, CregisGatewayRouter router,
                                 BscDepositProof chain, CregisSigner signer, ObjectMapper json,
                                 CregisDepositMapper db, PlatformTransactionManager txManager,
                                 TreasuryLedgerRepository treasury,
                                 FinanceWithdrawalControlFacade withdrawalControl,
-                                SupportPaymentAttributionFacade paymentAttribution, CregisPayoutControl payouts) {
+                                SupportPaymentAttributionFacade paymentAttribution, CregisPayoutControl payouts,
+                                CregisExceptionSourceService exceptionSources, CregisReorgResolutionService reorgResolutions) {
         this.config = config;
         this.router = router;
         this.chain = chain;
@@ -56,6 +59,8 @@ public class CregisDepositService {
         this.withdrawalControl = withdrawalControl;
         this.paymentAttribution = java.util.Objects.requireNonNull(paymentAttribution);
         this.payouts = payouts;
+        this.exceptionSources = exceptionSources;
+        this.reorgResolutions = reorgResolutions;
     }
 
     public Map<String, Object> address(long userId) {
@@ -384,6 +389,7 @@ public class CregisDepositService {
         db.blockProvisionGateAny();
         long id = ((Number) current.get("id")).longValue();
         long userId = ((Number) current.get("userId")).longValue();
+        var holdBefore = reorgResolutions.beforeIncident(userId);
         if (db.markCreditedIncident(id, kind) != 1)
             throw new IllegalStateException("CREGIS_INCIDENT_EVENT_CONFLICT");
         db.freezeUser(userId, "CR-" + cid, kind);
@@ -397,13 +403,17 @@ public class CregisDepositService {
             if (held.signum() > 0) {
                 if (db.reserveRiskAmount(userId, ((Number) wallet.get("version")).longValue(), held) != 1)
                     throw new IllegalStateException("CREGIS_INCIDENT_WALLET_CONFLICT");
-                if (db.insertRiskHoldLedger("CR-" + cid + ":RISK", userId, held,
-                        available.subtract(held), kind) != 1)
-                    throw new IllegalStateException("CREGIS_INCIDENT_LEDGER_FAILED");
             }
         }
         if (db.insertIncident(id, config.getProjectId(), cid, userId, kind, held) != 1)
             throw new IllegalStateException("CREGIS_INCIDENT_RECORD_FAILED");
+        if (held.signum() > 0) {
+            Long incidentId=db.latestIncidentId(id,kind);
+            if (incidentId==null || incidentId<=0 || db.insertRiskHoldLedger("CR-" + cid + ":RISK:" + incidentId,
+                    userId,held,((BigDecimal)wallet.get("usdtAvailable")).subtract(held),kind)!=1)
+                throw new IllegalStateException("CREGIS_INCIDENT_LEDGER_FAILED");
+        }
+        reorgResolutions.recordIncident(id, kind, held, holdBefore);
     }
 
     void scanTrackedAddresses(long finalized) {
@@ -444,7 +454,8 @@ public class CregisDepositService {
                             log.address(), log.amount().toPlainString(), log.blockNumber(),
                             assigned ? "PROVIDER_MISSING" : "UNATTRIBUTED_HOLD") != 1)
                         throw new IllegalStateException("CREGIS_CHAIN_OBSERVATION_INSERT_FAILED");
-                    if (!assigned) {
+                    if (!assigned && (observed == null || !java.util.Set.of("MATCHED", "REFUNDED")
+                            .contains(String.valueOf(observed.get("status"))))) {
                         db.holdPoolAddress(config.getProjectId(), CHAIN, log.address());
                         db.blockProvisionGateAny();
                     }
@@ -740,6 +751,10 @@ public class CregisDepositService {
                 || !db.providerMissing(config.getProjectId()).isEmpty()
                 || !db.unattributedObservations(config.getProjectId()).isEmpty())
             throw new IllegalStateException("CREGIS_DEPOSIT_RISK_GATE_BLOCKED");
+        var exceptionSource = new CregisExceptionSourceService.Source(config.getProjectId(), cid,
+                (String) event.get("txid"), ((Number) event.get("logIndex")).intValue(),
+                (String) event.get("address"), (BigDecimal) event.get("grossAmount"));
+        exceptionSources.reserve(exceptionSource, "REVIEW", "CR-" + cid + ":REVIEW");
         long userId = ((Number) event.get("userId")).longValue();
         if (!Long.valueOf(userId).equals(db.lockActiveUser(userId)))
             throw new IllegalStateException("CREGIS_DEPOSIT_USER_FROZEN");
@@ -775,6 +790,7 @@ public class CregisDepositService {
                         proof.confirmations(), ledgerId) != 1)
             throw new IllegalStateException("CREGIS_REVIEW_LEDGER_LINK_FAILED");
         paymentAttribution.record(prepared);
+        exceptionSources.complete(exceptionSource, "REVIEW", "CR-" + cid + ":REVIEW", "CREDITED");
     }
 
     private boolean settleOrHold(long deliveryId, long userId, long cid, String txid, String address,
@@ -799,6 +815,7 @@ public class CregisDepositService {
                 address, amount, BigDecimal.ZERO, BigDecimal.ZERO, proof.blockNumber(),
                 proof.blockHash(), proof.confirmations(), status) != 1)
             throw new IllegalStateException("CREGIS_PAUSED_HOLD_INSERT_FAILED");
+        recordTransferSender(cid,proof);
         tripLocked();
         if (deliveryId > 0) db.finishDelivery(deliveryId, status);
         return true;
@@ -834,6 +851,9 @@ public class CregisDepositService {
         if (tripLocked()) return false;
         if (!"IDLE".equals(gate.get("state")) || !on(gate, "creditEnabled")
                 || hasBlockingPendingDelivery(deliveryId, cid, txid, address, amount, proof.blockNumber())) return false;
+        var exceptionSource = new CregisExceptionSourceService.Source(config.getProjectId(), cid, txid,
+                proof.logIndex(), address, amount);
+        if ("CREDITED".equals(status)) exceptionSources.reserve(exceptionSource, "AUTO", "CR-" + cid);
         if (!Long.valueOf(userId).equals(db.lockActiveUser(userId)))
             throw new IllegalStateException("CREGIS_DEPOSIT_USER_FROZEN");
         var prepared = "CREDITED".equals(status)
@@ -844,6 +864,7 @@ public class CregisDepositService {
         if (db.insertEvent(userId, config.getProjectId(), cid, txid, proof.logIndex(), address, amount, fee, net,
                 proof.blockNumber(), proof.blockHash(), proof.confirmations(), status) != 1)
             throw new IllegalStateException("CREGIS_EVENT_INSERT_FAILED");
+        recordTransferSender(cid,proof);
         if (!"CREDITED".equals(status)) tripLocked();
         if ("CREDITED".equals(status)) {
             Map<String, Object> wallet = db.lockWallet(userId);
@@ -862,9 +883,15 @@ public class CregisDepositService {
             if (db.insertDepositOrder(userId, bizNo, txid, proof.logIndex(), net, proof.confirmations(), ledgerId) != 1)
                 throw new IllegalStateException("CREGIS_DEPOSIT_ORDER_FAILED");
             paymentAttribution.record(prepared);
+            exceptionSources.complete(exceptionSource, "AUTO", "CR-" + cid, "CREDITED");
         }
         if (deliveryId > 0) db.finishDelivery(deliveryId, status);
         return true;
+    }
+
+    private void recordTransferSender(long cid,BscDepositProof.Proof proof) {
+        if(proof.fromAddress()!=null && db.recordTransferSender(config.getProjectId(),cid,proof.fromAddress())!=1)
+            throw new IllegalStateException("CREGIS_TRANSFER_SENDER_SNAPSHOT_FAILED");
     }
 
     /** Independent verified successes proceed; receipts sharing CID or transaction must match this credit. */

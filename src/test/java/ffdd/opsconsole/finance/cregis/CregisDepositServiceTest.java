@@ -8,10 +8,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -46,7 +48,7 @@ class CregisDepositServiceTest {
         CregisDepositService service = new CregisDepositService(properties(),
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         var proof = new CregisDepositService.ReviewProof(1, 77, 42, TXID, ADDRESS,
                 BigDecimal.TEN, 101, BLOCK, 0, 15, 100, BLOCK, Instant.now().minusSeconds(6));
         assertThatThrownBy(() -> service.creditReviewedHold(77, proof))
@@ -92,7 +94,7 @@ class CregisDepositServiceTest {
 
         CregisDepositService service = new CregisDepositService(props, router, chain,
                 new CregisSigner(), new ObjectMapper(), db, manager, treasury,
-                mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         String raw = signedCallback();
         assertThat(service.receive(raw)).isEqualTo("success");
         when(db.pendingDeliveries()).thenReturn(List.of(Map.of("id", 1L, "rawJson", raw)));
@@ -137,7 +139,7 @@ class CregisDepositServiceTest {
         CregisDepositService service = new CregisDepositService(properties(),
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         assertThat(service.receive("{\"pid\":88,\"cid\":77}")).isEqualTo("rejected");
         verify(db).insertDelivery(any(), any(), any(), any(), any(), any(), anyInt(),
                 org.mockito.ArgumentMatchers.eq("INVALID_SIGNATURE"), any(), anyInt(), anyInt(), anyInt());
@@ -204,7 +206,7 @@ class CregisDepositServiceTest {
         when(db.linkLedger(11L, 12L)).thenReturn(1);
         when(db.insertDepositOrder(42L, "CR-77", TXID, 0, new BigDecimal("9"), 15, 11L)).thenReturn(1);
         var service = new CregisDepositService(properties(), router, chain, new CregisSigner(), json, db,
-                manager, treasury, mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                manager, treasury, mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
 
         service.reconcile();
         if (equivalent) {
@@ -296,7 +298,7 @@ class CregisDepositServiceTest {
         when(db.linkLedger(anyLong(), anyLong())).thenReturn(1);
         when(db.insertDepositOrder(anyLong(), any(), any(), anyInt(), any(), anyInt(), anyLong())).thenReturn(1);
         var service = new CregisDepositService(properties(), router, chain, new CregisSigner(), json, db,
-                manager, treasury, mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                manager, treasury, mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
 
         service.reconcile();
         service.reconcile();
@@ -322,7 +324,7 @@ class CregisDepositServiceTest {
         CregisDepositService service = new CregisDepositService(properties(),
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         assertThat(service.receive(signedCallback(), "192.0.2.5")).isEqualTo("rejected");
         verify(db).insertDelivery(any(), any(), any(), any(), any(), any(), eq(0),
                 eq("INVALID_SOURCE_IP"), eq("192.0.2.5"), eq(1), eq(1), eq(0));
@@ -355,7 +357,7 @@ class CregisDepositServiceTest {
         when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         CregisDepositService service = new CregisDepositService(props, router, chain,
                 new CregisSigner(), new ObjectMapper(), db, manager,
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         String raw = signedCallback();
         assertThat(service.receive(raw)).isEqualTo("success");
         when(db.pendingDeliveries()).thenReturn(List.of(Map.of("id", 1L, "rawJson", raw)));
@@ -372,7 +374,7 @@ class CregisDepositServiceTest {
         CregisDepositService service = new CregisDepositService(disabled,
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         assertThat(service.deposits(42)).isEmpty();
         verify(db, never()).deposits(anyLong(), anyLong());
     }
@@ -388,7 +390,7 @@ class CregisDepositServiceTest {
         CregisDepositService service = new CregisDepositService(properties(),
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         Map<String, Object> page = service.adminDeposits(0, 2);
         assertThat((List<?>) page.get("items")).hasSize(2);
         Map<?, ?> first = (Map<?, ?>) ((List<?>) page.get("items")).get(0);
@@ -407,7 +409,7 @@ class CregisDepositServiceTest {
         CregisDepositService service = new CregisDepositService(new CregisProperties(),
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         assertThat(service.adminDeposits(0, 20)).containsEntry("available", false)
                 .containsEntry("items", List.of())
                 .containsEntry("hasMore", false);
@@ -420,7 +422,7 @@ class CregisDepositServiceTest {
         CregisDepositService disabled = new CregisDepositService(new CregisProperties(),
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         assertThat(disabled.exceptions()).containsEntry("mode", "DISABLED")
                 .containsEntry("depositEnabled", false).containsEntry("depositCreditEnabled", false)
                 .containsEntry("addressPool", Map.of("available", false, "total", 0, "unassigned", 0,
@@ -437,7 +439,7 @@ class CregisDepositServiceTest {
         CregisDepositService provider = new CregisDepositService(enabled,
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         assertThat(provider.exceptions()).containsEntry("mode", "PROVIDER")
                 .containsEntry("depositEnabled", true).containsEntry("depositCreditEnabled", false)
                 .containsEntry("addressPool", Map.of("available", true, "total", 3L, "unassigned", 2L,
@@ -457,7 +459,7 @@ class CregisDepositServiceTest {
         when(router.provider()).thenReturn(gateway);
         CregisDepositService service = new CregisDepositService(props, router, mock(BscDepositProof.class),
                 new CregisSigner(), new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         assertThatThrownBy(() -> service.address(42))
                 .hasMessage("CREGIS_ADDRESS_POOL_EMPTY");
         verify(db, never()).claimProvisionGate();
@@ -480,7 +482,7 @@ class CregisDepositServiceTest {
         CregisGatewayRouter router = mock(CregisGatewayRouter.class);
         CregisDepositService service = new CregisDepositService(props, router, mock(BscDepositProof.class),
                 new CregisSigner(), new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         assertThat(service.address(42)).isEqualTo(Map.of("enabled", true, "creditEnabled", creditEnabled,
                 "network", "BEP20", "address", ADDRESS, "confirmations", 15,
                 "feeUsdt", 1, "minDepositUsdt", 10));
@@ -503,7 +505,7 @@ class CregisDepositServiceTest {
         BscDepositProof chain = mock(BscDepositProof.class);
         CregisDepositService service = new CregisDepositService(props, router, chain,
                 new CregisSigner(), new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         assertThat(service.address(42)).isEqualTo(Map.of(
                 "enabled", false, "creditEnabled", false, "network", "BEP20"));
         verifyNoInteractions(db, router, chain);
@@ -521,7 +523,7 @@ class CregisDepositServiceTest {
         CregisGatewayRouter router = mock(CregisGatewayRouter.class);
         CregisDepositService service = new CregisDepositService(props, router, chain,
                 new CregisSigner(), new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
 
         assertThat(service.address(42)).containsEntry("enabled", false)
                 .containsEntry("creditEnabled", false)
@@ -565,7 +567,7 @@ class CregisDepositServiceTest {
         when(db.assignPoolAddress(1, 42, 120, BLOCK)).thenReturn(1);
         CregisDepositService service = new CregisDepositService(props, router, chain,
                 new CregisSigner(), new ObjectMapper(), db, manager,
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         assertThat(service.address(42)).isEqualTo(Map.of("enabled", true, "creditEnabled", expectedCreditEnabled,
                 "network", "BEP20", "address", ADDRESS, "confirmations", 15,
                 "feeUsdt", 1, "minDepositUsdt", 10));
@@ -586,14 +588,15 @@ class CregisDepositServiceTest {
         when(db.markCreditedIncident(12, "PROVIDER_CONFLICT_HOLD")).thenReturn(1);
         when(db.lockWallet(42)).thenReturn(Map.of("usdtAvailable", new BigDecimal("5"), "version", 7L));
         when(db.reserveRiskAmount(42, 7, new BigDecimal("5"))).thenReturn(1);
-        when(db.insertRiskHoldLedger(eq("CR-77:RISK"), eq(42L), eq(new BigDecimal("5")),
+        when(db.latestIncidentId(12,"PROVIDER_CONFLICT_HOLD")).thenReturn(101L);
+        when(db.insertRiskHoldLedger(eq("CR-77:RISK:101"), eq(42L), eq(new BigDecimal("5")),
                 eq(BigDecimal.ZERO), any())).thenReturn(1);
         when(db.insertIncident(12, 88, 77, 42, "PROVIDER_CONFLICT_HOLD", new BigDecimal("5")))
                 .thenReturn(1);
         FinanceWithdrawalControlFacade withdrawalControl = mock(FinanceWithdrawalControlFacade.class);
         CregisDepositService service = new CregisDepositService(properties(), mock(CregisGatewayRouter.class),
                 mock(BscDepositProof.class), new CregisSigner(), new ObjectMapper(), db, manager,
-                mock(TreasuryLedgerRepository.class), withdrawalControl, capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), withdrawalControl, capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         String raw = signedCallback("2");
         assertThat(service.receive(raw)).isEqualTo("success");
         when(db.pendingDeliveries()).thenReturn(List.of(Map.of("id", 1L, "rawJson", raw)));
@@ -616,11 +619,36 @@ class CregisDepositServiceTest {
         CregisDepositService service = new CregisDepositService(properties(),
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, manager, mock(TreasuryLedgerRepository.class),
-                mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         service.tripIfNeeded();
         verify(db).tripAll("CREGIS_UNRESOLVED_EXPOSURE_500");
         verify(db).insertRiskAlert(eq(88L), eq("unresolved-exposure-500"), eq("P0"),
                 eq("UNRESOLVED_EXPOSURE"), any());
+    }
+
+    @Test
+    void secondReorgEpochUsesItsOwnIncidentLedgerAndDuplicateInSameEpochDoesNothing() {
+        CregisDepositMapper db=mock(CregisDepositMapper.class);
+        Map<String,Object> event=new java.util.HashMap<>(Map.of("id",12L,"userId",42L,"status","CREDITED","netAmount",new BigDecimal("9")));
+        when(db.markCreditedIncident(12,"REORG_INVESTIGATING")).thenAnswer(i->{event.put("status","REORG_INVESTIGATING");return 1;});
+        when(db.lockWallet(42)).thenReturn(Map.of("usdtAvailable",new BigDecimal("5"),"version",7L));
+        when(db.reserveRiskAmount(42,7,new BigDecimal("5"))).thenReturn(1);
+        when(db.insertIncident(12,88,77,42,"REORG_INVESTIGATING",new BigDecimal("5"))).thenReturn(1);
+        when(db.latestIncidentId(12,"REORG_INVESTIGATING")).thenReturn(101L,102L);
+        java.util.Set<String> ledgerKeys=new java.util.HashSet<>();
+        when(db.insertRiskHoldLedger(anyString(),eq(42L),eq(new BigDecimal("5")),eq(BigDecimal.ZERO),anyString()))
+                .thenAnswer(i->ledgerKeys.add(i.getArgument(0))?1:0);
+        CregisDepositService service=new CregisDepositService(properties(),mock(CregisGatewayRouter.class),mock(BscDepositProof.class),
+                new CregisSigner(),new ObjectMapper(),db,mock(PlatformTransactionManager.class),mock(TreasuryLedgerRepository.class),
+                mock(FinanceWithdrawalControlFacade.class),capture,mock(CregisPayoutControl.class),mock(CregisExceptionSourceService.class),mock(CregisReorgResolutionService.class));
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"freezeLockedCreditedEvent",event,77L,"REORG_INVESTIGATING");
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"freezeLockedCreditedEvent",event,77L,"REORG_INVESTIGATING");
+        // An approved canonical restore makes the same financial event CREDITED again.
+        event.put("status","CREDITED");
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"freezeLockedCreditedEvent",event,77L,"REORG_INVESTIGATING");
+        assertThat(ledgerKeys).containsExactlyInAnyOrder("CR-77:RISK:101","CR-77:RISK:102");
+        verify(db,times(2)).insertIncident(12,88,77,42,"REORG_INVESTIGATING",new BigDecimal("5"));
+        verify(db,times(2)).reserveRiskAmount(42,7,new BigDecimal("5"));
     }
 
     @ParameterizedTest
@@ -638,7 +666,7 @@ class CregisDepositServiceTest {
         CregisDepositService service = new CregisDepositService(props,
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, mock(PlatformTransactionManager.class),
-                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         assertThat(service.address(42)).isEqualTo(Map.of("enabled", false, "creditEnabled", false,
                 "network", "BEP20", "reason", "CREGIS_DEPOSIT_PAUSED"));
         verify(db, never()).creditWallet(any(), anyLong(), anyLong());
@@ -706,7 +734,7 @@ class CregisDepositServiceTest {
         var service = new CregisDepositService(properties(), mock(CregisGatewayRouter.class),
                 mock(BscDepositProof.class), new CregisSigner(), new ObjectMapper(), db,
                 mock(PlatformTransactionManager.class), mock(TreasuryLedgerRepository.class),
-                mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class));
+                mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         var proof = new CregisDepositService.ReviewProof(12L, 77L, 42L, TXID, ADDRESS,
                 BigDecimal.TEN, 101L, BLOCK, 0, 15, 100L, BLOCK, Instant.now());
         if (failCapture) {

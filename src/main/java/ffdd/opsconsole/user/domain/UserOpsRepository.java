@@ -127,6 +127,7 @@ public interface UserOpsRepository {
             Long userId, String expectedStatus, String reason, String operator, String source, String sourceRef);
 
     boolean isFrozenBySource(Long userId, String source);
+    boolean hasUnresolvedCregisIncident(Long userId);
 
     boolean restoreUserStatusByFreezeSource(Long userId, String source, String sourceRef);
 

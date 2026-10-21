@@ -257,6 +257,16 @@ class OpsUserServiceTest {
     }
 
     @Test
+    void c2UnfreezeCannotBypassUnresolvedCregisIncidentOrItsOwnedFreeze() {
+        assertThat(service.updateStatus(1L,"freeze-cregis-guard",new UserStatusUpdateRequest("FROZEN","RISK_HIT","freeze for guard test","superadmin")).getCode()).isZero();
+        userRepository.unresolvedCregis=true;
+        assertThat(service.updateStatus(1L,"unfreeze-with-debt",new UserStatusUpdateRequest("ACTIVE","Cregis debt is still open","superadmin")).getMessage()).isEqualTo("USER_FROZEN_BY_CREGIS_INCIDENT");
+        userRepository.unresolvedCregis=false;userRepository.freezeSource="CREGIS_DEPOSIT_INCIDENT";
+        assertThat(service.updateStatus(1L,"unfreeze-owned-cregis",new UserStatusUpdateRequest("ACTIVE","Cregis source owns this freeze","superadmin")).getMessage()).isEqualTo("USER_FROZEN_BY_CREGIS_INCIDENT");
+        assertThat(userRepository.user.status()).isEqualTo("FROZEN");
+    }
+
+    @Test
     void profilePageReturnsServerCanonicalPagination() {
         ApiResult<PageResult<UserAccountView>> result = service.profilePage(
                 UserQueryRequest.basic("Alice", "ACTIVE", 70, 2, 10, null));
@@ -2192,6 +2202,8 @@ class OpsUserServiceTest {
     }
 
     private static final class FakeUserOpsRepository implements UserOpsRepository {
+        @Override public boolean hasUnresolvedCregisIncident(Long userId) { return unresolvedCregis; }
+        private boolean unresolvedCregis;
         private final Map<ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope,java.util.Set<Long>> currentSupportScopes=new LinkedHashMap<>();
         private UserAccountView user = new UserAccountView(
                 1L,

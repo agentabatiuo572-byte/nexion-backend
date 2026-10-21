@@ -396,6 +396,11 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     }
 
     @Override
+    public boolean hasUnresolvedCregisIncident(Long userId) {
+        return mapper.unresolvedCregisIncidents(userId)>0;
+    }
+
+    @Override
     public boolean restoreUserStatusByFreezeSource(Long userId, String source, String sourceRef) {
         return mapper.restoreUserStatusByFreezeSource(userId, source, sourceRef) == 1;
     }
