@@ -163,9 +163,20 @@ class AppRepurchaseServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("sourceEnvironment", "SANDBOX")
                 .containsEntry("runId", "RUN-REPURCHASE-TEST-001");
-        verifyNoInteractions(mapper, disclosureGate, config, growthRhythmFacade, idempotency, outbox, audit);
+        verifyNoInteractions(mapper, disclosureGate, growthRhythmFacade, idempotency, outbox, audit);
         verify(sandboxMapper).insertAccountIfAbsent("repurchase", "RUN-REPURCHASE-TEST-001", 7L);
         verify(sandboxMapper).updateWallet(eq("repurchase"), eq("RUN-REPURCHASE-TEST-001"), eq(7L), any(), any());
+    }
+
+    @Test
+    void hiddenAppStakingRejectsSandboxReinvestmentBeforeAnyWrite() {
+        environment.setActiveProfiles("test");
+        when(config.activeValueForUpdate("G.staking.app_visible")).thenReturn(Optional.of("false"));
+
+        assertThatThrownBy(() -> service.open(7L, "hidden-sandbox-reinvest",
+                new AppRepurchaseService.OpenRequest(new BigDecimal("200"))))
+                .isInstanceOf(BizException.class).hasMessage("STAKING_APP_HIDDEN");
+        verifyNoInteractions(sandboxMapper, mapper, disclosureGate, outbox, audit);
     }
 
     @Test
