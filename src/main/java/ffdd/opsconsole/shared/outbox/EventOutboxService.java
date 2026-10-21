@@ -408,6 +408,7 @@ public class EventOutboxService {
             "admin.product_price_changed",
             "admin.product_unlisted",
             "admin.report_exported",
+            "admin.staking_visibility_changed",
             "admin.staking_pool_config_changed",
             "admin.staking_pool_enabled_changed",
             "admin.staking_pool_killed",
