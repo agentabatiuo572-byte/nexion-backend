@@ -1,6 +1,10 @@
 package ffdd.opsconsole.auth.web;
 
 import ffdd.opsconsole.auth.application.AppUserSecurityService;
+import ffdd.opsconsole.auth.dto.AppPhoneBindingRequest;
+import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
+import ffdd.opsconsole.auth.dto.UserRegistrationOtpResponse;
+import jakarta.servlet.http.HttpServletRequest;
 import ffdd.opsconsole.auth.dto.AppPasswordChangeRequest;
 import ffdd.opsconsole.auth.dto.AppAccountDeletionRequest;
 import ffdd.opsconsole.auth.dto.AppAccountDeletionCancelRequest;
@@ -49,6 +53,21 @@ public class AppUserSecurityController {
             @RequestBody(required = false) AppPasswordChangeRequest request) {
         UserContext context = requireUser(authentication);
         return ApiResult.ok(securityService.changePassword(context.userId(), context.sessionId(), commandKey, request));
+    }
+
+    @PostMapping("/phone/challenge")
+    public ApiResult<UserRegistrationOtpResponse> sendPhoneBindingChallenge(
+            Authentication authentication, @RequestBody(required = false) UserRegistrationOtpRequest request,
+            HttpServletRequest servletRequest) {
+        UserContext context = requireUser(authentication);
+        return securityService.sendPhoneBindingChallenge(context.userId(), request, servletRequest.getRemoteAddr());
+    }
+
+    @PostMapping("/phone")
+    public ApiResult<Map<String, Object>> bindPhone(Authentication authentication,
+            @RequestBody(required = false) AppPhoneBindingRequest request) {
+        UserContext context = requireUser(authentication);
+        return securityService.bindPhone(context.userId(), request);
     }
 
     @GetMapping("/password/commands/{commandKey}")
