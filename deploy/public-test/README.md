@@ -135,3 +135,22 @@ code. Recover those exact files from the printed runtime backup before resuming.
 
 MySQL references: [noninteractive binary-mode client](https://dev.mysql.com/doc/refman/8.0/en/mysql-command-options.html)
 and [mysqldump consistency and options](https://dev.mysql.com/doc/refman/8.0/en/mysqldump.html).
+
+## Cregis exception fixed trigger install (TEST)
+
+`update_cregis_exception_triggers.py` is an operator-only 13-to-13 runtime
+update for the SHA-pinned installed closure. Stage all 13 files from that
+verified **host** closure, replace only `database_migrations.py` with the reviewed
+candidate bytes, and update that single entry in the staged lock. The host lock
+can differ from the repository example; never replace the other 12 host files
+with older repository copies. Independently verify the updater SHA, candidate
+migrator SHA and staged lock SHA before `python3 -I UPDATER STAGE LOCK_SHA`.
+
+The updater preserves the existing timer state (active or inactive), approval
+flags, jobs, external policies and release/migration journals. It backs up and
+atomically changes only the migrator and its two pin records under the release
+lock. A write failure restores bytes and file modes; uncertain recovery leaves
+the timer stopped. It never imports the migrator, runs SQL or changes grants.
+The normal broker subsequently performs full backup, persistent hold, migration
+journaling and health verification for the fixed Cregis SQL contracts. Modified
+or unknown program source remains rejected before a database change.
