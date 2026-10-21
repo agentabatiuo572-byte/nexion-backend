@@ -100,6 +100,7 @@ class AppRepurchaseServiceTest {
     @SuppressWarnings({"unchecked", "rawtypes"})
     void executeIdempotentAction() {
         environment.setActiveProfiles("dev");
+        when(config.activeValueForUpdate("G.staking.app_visible")).thenReturn(Optional.of("true"));
         when(mapper.controlValue("killswitch.staking")).thenReturn("enabled");
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
@@ -122,6 +123,16 @@ class AppRepurchaseServiceTest {
         when(sandboxMapper.insertIdempotency(any())).thenReturn(1);
         when(sandboxMapper.updateWallet(anyString(), anyString(), any(), any(), any())).thenReturn(1);
         when(sandboxMapper.insertPosition(any())).thenReturn(1);
+    }
+
+    @Test
+    void hiddenAppStakingRejectsReinvestmentBeforeAnyFinancialWrite() {
+        when(config.activeValueForUpdate("G.staking.app_visible")).thenReturn(Optional.of("false"));
+
+        assertThatThrownBy(() -> service.open(7L, "hidden-reinvest",
+                new AppRepurchaseService.OpenRequest(new BigDecimal("200"))))
+                .isInstanceOf(BizException.class).hasMessage("STAKING_APP_HIDDEN");
+        verifyNoInteractions(mapper, disclosureGate, outbox, audit);
     }
 
     @Test
