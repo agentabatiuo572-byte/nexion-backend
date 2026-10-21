@@ -41,6 +41,7 @@ import java.util.Map;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.core.Authentication;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -756,6 +757,20 @@ public class AppUserAuthService {
                 ? current.getSessionChainId() : tokenId;
         singleSessions.logout(current);
         return ApiResult.ok(Map.of("revoked", true));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> discardSession(Authentication authentication) {
+        if (authentication == null || !authentication.isAuthenticated()
+                || !(authentication.getDetails() instanceof Map<?, ?> details)
+                || !"USER".equals(details.get("subjectType"))
+                || !(details.get("sessionId") instanceof String sessionId) || sessionId.isBlank())
+            throw new BizException(401, "USER_AUTH_REQUIRED");
+        long userId;
+        try { userId = Long.parseLong(authentication.getName()); }
+        catch (NumberFormatException invalid) { throw new BizException(401, "USER_AUTH_REQUIRED"); }
+        if (userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
+        return ApiResult.ok(Map.of("revoked", revocations.revokeOwned(userId, sessionId) > 0));
     }
 
     private boolean validRotationNonce(String nonce) {

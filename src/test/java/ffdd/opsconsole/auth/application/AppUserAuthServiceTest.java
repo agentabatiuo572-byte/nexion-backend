@@ -48,6 +48,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 
 class AppUserAuthServiceTest {
     private final UserOpsMapper users = mock(UserOpsMapper.class);
@@ -1165,6 +1166,47 @@ class AppUserAuthServiceTest {
         verify(sessions).findRefreshForUpdate(org.mockito.ArgumentMatchers.argThat(
                 tokenId -> tokenId.length() == 64 && !tokenId.equals("raw-refresh-secret")));
         verify(sessions).revokeRefreshChain("chain-42");
+    }
+
+    @Test void discardUsesOnlyTheAuthenticatedSnapshotSessionAndItsOwner() {
+        var authentication = new UsernamePasswordAuthenticationToken("42", null, List.of());
+        authentication.setDetails(java.util.Map.of("subjectType", "USER", "sessionId", "snapshot-a"));
+        var original = new UserSessionEntity();
+        original.setUserId(42L); original.setSessionChainId("chain-a"); original.setSessionGroup("H5");
+        when(sessions.findSession("snapshot-a")).thenReturn(original);
+        when(sessions.revokeOwnedUserSession(42L, "snapshot-a")).thenReturn(1);
+
+        assertThat(service.discardSession(authentication).getData()).containsEntry("revoked", true);
+
+        verify(sessions).revokeOwnedUserSession(42L, "snapshot-a");
+        verify(sessions).endChain("chain-a", "SECURITY_REVOKED");
+        verify(sessions, never()).revokeAllUserSessions(any());
+        verify(sessions, never()).revokeOtherUserSessions(any(), any());
+        verify(sessions, never()).findRefreshForUpdate(any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"missing", "anonymous", "ADMIN", "IMPERSONATION", "missing-session", "invalid-owner"})
+    void discardRejectsMissingOrNonUserAuthenticatedContext(String scenario) {
+        var authentication = new UsernamePasswordAuthenticationToken(
+                "invalid-owner".equals(scenario) ? "not-a-user" : "42", null, List.of());
+        authentication.setDetails(java.util.Map.of("subjectType",
+                List.of("ADMIN", "IMPERSONATION").contains(scenario) ? scenario : "USER",
+                "sessionId", "missing-session".equals(scenario) ? "" : "snapshot-a"));
+        if ("anonymous".equals(scenario)) authentication.setAuthenticated(false);
+        assertThatThrownBy(() -> service.discardSession("missing".equals(scenario) ? null : authentication))
+                .hasMessage("USER_AUTH_REQUIRED");
+        org.mockito.Mockito.verifyNoInteractions(sessions);
+    }
+
+    @Test void discardCannotRevokeASessionOwnedByAnotherAccount() {
+        var authentication = new UsernamePasswordAuthenticationToken("42", null, List.of());
+        authentication.setDetails(java.util.Map.of("subjectType", "USER", "sessionId", "snapshot-a"));
+        var foreign = new UserSessionEntity(); foreign.setUserId(43L);
+        when(sessions.findSession("snapshot-a")).thenReturn(foreign);
+        assertThat(service.discardSession(authentication).getData()).containsEntry("revoked", false);
+        verify(sessions, never()).revokeOwnedUserSession(any(), any());
+        verify(sessions, never()).endChain(any(), any());
     }
 
     @ParameterizedTest

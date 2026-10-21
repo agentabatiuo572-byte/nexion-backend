@@ -31,6 +31,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.security.core.Authentication;
 
 @RestController
 @RequestMapping("/auth/users")
@@ -168,6 +170,15 @@ public class AppUserAuthController {
         } finally {
             refreshCookieService.clear(servletResponse);
         }
+    }
+
+    /** Discard the captured Bearer's session; a newer browser refresh cookie is unrelated. */
+    @PostMapping("/session/discard")
+    public ApiResult<Map<String, Object>> discardSession(Authentication authentication,
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        if (authorization == null || !authorization.startsWith("Bearer ") || authorization.substring(7).isBlank())
+            throw new BizException(401, "USER_AUTH_REQUIRED");
+        return authService.discardSession(authentication);
     }
 
     public record LoginRecoveryRequest(String installationId, Boolean executionSupported, String recoveryProof,

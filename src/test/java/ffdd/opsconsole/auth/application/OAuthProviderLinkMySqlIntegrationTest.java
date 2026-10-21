@@ -58,6 +58,7 @@ class OAuthProviderLinkMySqlIntegrationTest {
     private OAuthProviderFlowMapper flows;
     private UserOAuthIdentityMapper identities;
     private OAuthProviderFlowService service;
+    private AppUserAuthService auth;
     private UserSessionRevocationService revocations;
     private UsernamePasswordAuthenticationToken authentication;
     private OAuthProviderFlowService.Proof proof;
@@ -82,7 +83,7 @@ class OAuthProviderLinkMySqlIntegrationTest {
         var environment = new MockEnvironment().withProperty("oauth.enabled", "true");
         environment.setActiveProfiles("dev");
         revocations = fixture.transactional(new UserSessionRevocationService(sessions, mock(PhoneExecutionSessionContract.class)));
-        var auth = new AppUserAuthService(users, sessions, loginGuards, passwords, mock(JwtTokenProvider.class),
+        auth = new AppUserAuthService(users, sessions, loginGuards, passwords, mock(JwtTokenProvider.class),
                 new JwtProperties(), blocklist, config, mock(CaptchaOtpGate.class), mock(UserOtpDeliveryService.class),
                 mock(EventOutboxService.class), environment, mock(SupportActivityService.class),
                 mock(AppSingleSessionService.class), revocations);
@@ -205,6 +206,41 @@ class OAuthProviderLinkMySqlIntegrationTest {
         assertThat(result.getCode()).isEqualTo(code);
         assertThat(result.getMessage()).isEqualTo(message);
         assertNoBinding();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"active", "rotated", "already-revoked"})
+    void discardingCapturedH5SessionNeverChangesNewerH5Chain(String scenario) {
+        fixture.jdbc().update("""
+                INSERT INTO nx_user_session(user_id,refresh_token_id,session_chain_id,session_group,expires_at,
+                                            last_active_at,created_at,updated_at,is_deleted)
+                SELECT user_id,'telegram74-newer-session','telegram74-newer-chain',session_group,expires_at,
+                       last_active_at,created_at,updated_at,is_deleted
+                FROM nx_user_session WHERE refresh_token_id=?
+                """, SESSION_ID);
+        if ("rotated".equals(scenario)) {
+            fixture.jdbc().update("""
+                    INSERT INTO nx_user_session(user_id,refresh_token_id,session_chain_id,session_group,expires_at,
+                                                last_active_at,created_at,updated_at,is_deleted)
+                    SELECT user_id,'telegram74-a-successor',session_chain_id,session_group,expires_at,
+                           last_active_at,created_at,updated_at,is_deleted
+                    FROM nx_user_session WHERE refresh_token_id=?
+                    """, SESSION_ID);
+            fixture.jdbc().update("UPDATE nx_user_session SET revoked_at=NOW(),rotation_redeemed_at=NOW(),rotated_to_id='telegram74-a-successor' WHERE refresh_token_id=?", SESSION_ID);
+        } else if ("already-revoked".equals(scenario)) revocations.revokeOwned(USER_ID, SESSION_ID);
+        var newerBefore = fixture.jdbc().queryForMap("SELECT * FROM nx_user_session WHERE refresh_token_id='telegram74-newer-session'");
+
+        var result = fixture.transactional(auth).discardSession(authentication);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("revoked", !"already-revoked".equals(scenario));
+        assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_user_session WHERE session_chain_id='telegram74-original-chain' AND revoked_at IS NULL", Integer.class)).isZero();
+        assertThat(fixture.jdbc().queryForMap("SELECT * FROM nx_user_session WHERE refresh_token_id='telegram74-newer-session'")).isEqualTo(newerBefore);
+        var newer = tx.execute(status -> {
+            sessions.lockAccount(USER_ID);
+            return sessions.findAuthorizedSession("telegram74-newer-session", USER_ID, 30);
+        });
+        assertThat(newer).isNotNull();
     }
 
     private ApiResult<Void> link(String password) {
