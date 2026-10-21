@@ -189,6 +189,17 @@ class CregisExceptionRefundServiceTest {
         assertThatThrownBy(()->service.decide("disabled-maker",1,0,"APPROVE",reason)).hasMessage("CREGIS_REFUND_MAKER_INACTIVE");
         verify(db,never()).state(anyLong(),anyLong(),any(),any(),any(),any());
     }
+    @Test void activeCheckerCanRejectDeactivatedMakersRefundAndFeePolicy(){
+        authenticate("ADMIN",8,List.of("finance_d1_read","finance_d1_channel_manage","finance_d2_withdrawal_approve"));
+        when(admins.isActiveAdministrator(7)).thenReturn(false);
+        service.decide("reject-inactive-maker",1,0,"REJECT",reason);
+        verify(db).state(1,0,"MAKER_DONE","REJECTED",8L,null);
+        verify(sources).release(any(),eq("REFUND"),eq("CR-RF-fixture"));
+        var policyCase=CregisExceptionRefundService.map("id",8L,"projectId",42L,"expectedPolicyVersion",0L,"mode","FIXED_USDT","feeUsdt",BigDecimal.ONE,"makerId",7L,"state","MAKER_DONE","version",0L);
+        when(db.lockPolicyCase(8)).thenReturn(policyCase);when(db.decidePolicy(8,0,8,"REJECTED")).thenReturn(1);
+        assertThat(service.decidePolicy("reject-inactive-policy-maker",8,0,"REJECT",reason)).containsEntry("state","REJECTED");
+        verify(db,never()).applyPolicy(anyLong(),anyLong(),any(),any());verify(db,never()).intent(anyLong(),anyLong());
+    }
     @Test void blockedDispatchRecordsOnlySafeCodesWithoutAdvancingStateOrIntent(){
         when(db.dispatchBlocked(42,1,"OBJECT_LOCKED_BY_A2")).thenReturn(1);
         service.dispatchBlocked(1,new ffdd.opsconsole.shared.exception.BizException(409,"OBJECT_LOCKED_BY_A2"));

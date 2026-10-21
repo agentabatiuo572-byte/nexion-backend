@@ -111,13 +111,13 @@ public class CregisReorgResolutionService {
         long actor=requireAdmin(true);reason(request==null?null:request.reason());
         if(request.decision()==null || !Set.of("APPROVE","REJECT").contains(request.decision()) || request.expectedVersion()<0)throw conflict("REQUEST_INVALID");
         return idempotency.executeRetained("CREGIS_REORG_DECIDE:"+actor,key,sha(caseId+"|"+request),Result.class,()-> {
-            var proposal=required(db.proposal(caseId));checkProposal(proposal,actor,request.expectedVersion());
+            var proposal=required(db.proposal(caseId));checkProposal(proposal,actor,request.expectedVersion(),"APPROVE".equals(request.decision()));
             long incident=id(proposal,"incidentId");Action action=Action.valueOf(text(proposal,"action"));
             Evidence evidence="APPROVE".equals(request.decision())?inspect(incident,action):null;
             if(evidence!=null && !evidence.hash().equals(proposal.get("evidenceHash")))throw conflict("EVIDENCE_CHANGED");
             return new TransactionTemplate(txManager).execute(ignored->{
                 var initial=required(db.incident(config.getProjectId(),incident));lockSubject(initial);
-                var lockedProposal=required(db.lockProposal(caseId));checkProposal(lockedProposal,actor,request.expectedVersion());
+                var lockedProposal=required(db.lockProposal(caseId));checkProposal(lockedProposal,actor,request.expectedVersion(),"APPROVE".equals(request.decision()));
                 var row=required(db.lockIncident(config.getProjectId(),incident));
                 if(id(row,"version")!=id(lockedProposal,"expectedVersion"))throw conflict("VERSION_CHANGED");
                 if(evidence!=null) {
@@ -258,10 +258,10 @@ public class CregisReorgResolutionService {
         if(!A2ReplayContext.isReplaying() && (locks.countActiveByTarget("C","user",String.valueOf(id(row,"userId")))>0
                 || locks.countActiveByTarget("D","deposit","CR-"+id(row,"cid"))>0))throw conflict("OBJECT_LOCKED_BY_A2");
     }
-    private void checkProposal(Map<String,Object> proposal,long actor,long version) {
+    private void checkProposal(Map<String,Object> proposal,long actor,long version,boolean approving) {
         if(!"MAKER_DONE".equals(proposal.get("status")) || id(proposal,"version")!=version)throw conflict("PROPOSAL_CHANGED");
         if(id(proposal,"makerId")==actor)throw new BizException(403,"CREGIS_REORG_DIFFERENT_CHECKER_REQUIRED");
-        if(!admins.isActiveAdministrator(id(proposal,"makerId")))throw new BizException(403,"CREGIS_REORG_MAKER_INACTIVE");
+        if(approving && !admins.isActiveAdministrator(id(proposal,"makerId")))throw new BizException(403,"CREGIS_REORG_MAKER_INACTIVE");
     }
     private long requireAdmin(boolean write) {
         var auth=SecurityContextHolder.getContext().getAuthentication();

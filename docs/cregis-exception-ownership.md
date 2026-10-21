@@ -14,6 +14,12 @@ The message binds the configured HTTPS callback origin/path and project, action 
 `REFUND_ORIGIN`, network/token, transaction/log index, gross amount, original recipient, sender, target
 user, snapshot hash, random nonce and UTC expiry. Challenges expire after ten minutes, and accepted
 evidence is usable within five seconds. A persisted nonce is consumed once inside the case transaction.
+The same atomic consume stores the original 65-byte signature, recovered sender and UTC consumption
+time. The issued message and source/action/target snapshot are immutable; database triggers prohibit
+later receipt updates or deletion. Approval and refund dispatch re-run EIP191 recovery over the retained
+message/signature, compare its sender and structured nonce/action/target/project/issuer/hash binding,
+and require that consumption occurred before expiry. A consumed authorization stays verifiable after
+challenge expiry; fresh provider/chain evidence is still checked independently.
 The signature is not a wallet login, private key request, or general spending authorization.
 
 Exchange and contract senders without an EOA signature remain under investigation. A public transaction,

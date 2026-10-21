@@ -110,6 +110,20 @@ class CregisReorgResolutionServiceTest {
         var evidence=service.evidence(1,Action.REVERSE);prepare(Action.REVERSE,evidence);auth(7,"ADMIN");assertThatThrownBy(()->service.decide(5,"same",new Decision("APPROVE",0,reason))).hasMessage("CREGIS_REORG_DIFFERENT_CHECKER_REQUIRED");
         auth(8,"APP");assertThatThrownBy(()->service.evidence(1,Action.REVERSE)).hasMessage("ADMIN_FINANCE_AUTH_REQUIRED");auth(8,"ADMIN");when(admins.isActiveAdministrator(7)).thenReturn(false);assertThatThrownBy(()->service.decide(5,"inactive",new Decision("APPROVE",0,reason))).hasMessage("CREGIS_REORG_MAKER_INACTIVE");
     }
+    @Test void inactiveMakerCanBeRejectedByAnotherActiveCheckerAndDoesNotStrandNewProposal() {
+        var evidence=service.evidence(1,Action.REVERSE);prepare(Action.REVERSE,evidence);
+        when(admins.isActiveAdministrator(7)).thenReturn(false);
+        when(db.decide(5,0,8,"REJECTED")).thenAnswer(call->{proposal.put("status","REJECTED");return 1;});
+        var rejected=service.decide(5,"reject-inactive-maker",new Decision("REJECT",0,reason));
+        assertThat(rejected.status()).isEqualTo("REJECTED");
+        when(db.propose(any())).thenAnswer(call->{
+            assertThat(proposal.get("status")).isEqualTo("REJECTED");
+            call.<Map<String,Object>>getArgument(0).put("id",6L);return 1;
+        });
+        var replacement=service.propose(1,"replace-rejected-proposal",new Proposal(Action.REVERSE,0,reason,evidence.get("evidenceHash").toString()));
+        assertThat(replacement.id()).isEqualTo("6");assertThat(replacement.status()).isEqualTo("MAKER_DONE");
+        verify(db,never()).walletChange(anyLong(),anyLong(),any(),any(),any());verifyNoInteractions(treasury);
+    }
     @Test void actionHashCannotApproveAnotherActionAndA2LockPreventsMutation(){
         var evidence=service.evidence(1,Action.REVERSE);prepare(Action.REVERSE,evidence);when(locks.countActiveByTarget("C","user","7")).thenReturn(1);assertThatThrownBy(()->service.decide(5,"locked",new Decision("APPROVE",0,reason))).hasMessage("CREGIS_REORG_OBJECT_LOCKED_BY_A2");verify(db,never()).walletChange(anyLong(),anyLong(),any(),any(),any());
     }
