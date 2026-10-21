@@ -151,6 +151,7 @@ class AppStakingServiceTest {
     void setUp() {
         environment.setActiveProfiles("dev");
         when(config.activeValue(anyString())).thenReturn(Optional.empty());
+        when(config.activeValueForUpdate("G.staking.app_visible")).thenReturn(Optional.of("true"));
         when(mapper.controlValue("killswitch.staking")).thenReturn("enabled");
         when(mapper.listCanonicalProducts()).thenReturn(List.of(product()));
         when(mapper.lockProductByTier("usdt30d")).thenReturn(product());
@@ -354,6 +355,22 @@ class AppStakingServiceTest {
                 42L, "open-killed", new AppStakingService.OpenRequest("usdt30d", new BigDecimal("100"))))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("STAKING_POOL_KILLED");
+    }
+
+    @Test
+    void hiddenStakingRejectsNewPositionsWithoutChangingExistingFunds() {
+        when(config.activeValue("G.staking.app_visible")).thenReturn(Optional.of("false"));
+        when(config.activeValueForUpdate("G.staking.app_visible")).thenReturn(Optional.of("false"));
+
+        @SuppressWarnings("unchecked")
+        List<java.util.Map<String, Object>> pools =
+                (List<java.util.Map<String, Object>>) service.pools().getData().get("pools");
+        assertThat(pools).singleElement().satisfies(pool -> assertThat(pool).containsEntry("enabled", false));
+        assertThatThrownBy(() -> service.open(
+                42L, "open-hidden", new AppStakingService.OpenRequest("usdt30d", new BigDecimal("100"))))
+                .isInstanceOf(BizException.class).hasMessageContaining("STAKING_POOL_STOPPED");
+        org.mockito.Mockito.verify(mapper, org.mockito.Mockito.never())
+                .debitWallet(org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.any());
     }
 
     @Test

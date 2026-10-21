@@ -29,6 +29,14 @@ public class OpsStakingController {
         return marketService.stakingOverview();
     }
 
+    @PatchMapping("/visibility")
+    @PreAuthorize("hasAuthority('finprod_g1_write')")
+    public ApiResult<Map<String, Object>> updateVisibility(
+            @RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String idempotencyKey,
+            @RequestBody NexMarketValueUpdateRequest request) {
+        return commandService.updateVisibility(idempotencyKey, request);
+    }
+
     @PatchMapping("/pools/{tierKey}/params/{paramKey}")
     @PreAuthorize("hasAnyAuthority('finprod_g1_apy_write','finprod_g1_penalty_write','finprod_g1_min_write')")
     public ApiResult<Map<String, Object>> updatePoolParam(

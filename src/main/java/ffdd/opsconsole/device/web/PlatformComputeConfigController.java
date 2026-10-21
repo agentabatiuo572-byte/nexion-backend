@@ -5,6 +5,7 @@ import ffdd.opsconsole.device.domain.PlatformComputeConfigView;
 import ffdd.opsconsole.growth.application.GrowthPublicStatsService;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -17,6 +18,7 @@ public class PlatformComputeConfigController {
     private final GrowthPublicStatsService publicStatsService;
     private final OpsGrowthService growthService;
     private final PlatformExperienceConfigService experienceConfigService;
+    private final PlatformConfigFacade platformConfig;
 
     @GetMapping("/api/config/platform")
     public ApiResult<PlatformComputeConfigView> platformConfig() {
@@ -39,7 +41,8 @@ public class PlatformComputeConfigController {
         PlatformComputeConfigView compute = computeResult.getData();
         OpsGrowthService.HomeFeatureFlags flags = homeFlags.getData();
         PlatformComputeConfigView.FeatureFlags featureFlags = new PlatformComputeConfigView.FeatureFlags(
-                compute.featureFlags().computeShareEnabled(), flags.homeNewcomerTasksEnabled(), flags.homeWeeklyPromoEnabled());
+                compute.featureFlags().computeShareEnabled(), flags.homeNewcomerTasksEnabled(), flags.homeWeeklyPromoEnabled(),
+                platformConfig.activeValue("G.staking.app_visible").map("true"::equalsIgnoreCase).orElse(true));
         return ApiResult.ok(new PlatformComputeConfigView(
                 featureFlags, publicStats.getData(), compute.onlineBonus(),
                 compute.computerCompute(), compute.phoneBinding(), experience.getData(), compute.updatedAt()));

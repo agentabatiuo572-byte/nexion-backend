@@ -16,7 +16,8 @@ public record PlatformComputeConfigView(
     public record FeatureFlags(
             boolean computeShareEnabled,
             boolean homeNewcomerTasksEnabled,
-            boolean homeWeeklyPromoEnabled) {
+            boolean homeWeeklyPromoEnabled,
+            boolean stakingVisible) {
     }
 
     public record OnlineBonus(BigDecimal h5BaseFactor, BigDecimal continuityFullHours) {

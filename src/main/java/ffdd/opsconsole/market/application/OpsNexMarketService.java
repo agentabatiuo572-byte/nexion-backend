@@ -97,6 +97,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private static final int GENESIS_NODE_DEFAULT_PAGE_SIZE = 10;
     private static final int GENESIS_NODE_MAX_PAGE_SIZE = 50;
     private static final String STAKING_PREFIX = "G.staking.";
+    private static final String STAKING_VISIBILITY_KEY = "G.staking.app_visible";
     private static final String STAKING_KILLSWITCH_KEY = "killswitch.staking";
     private static final String STAKING_LEGACY_KILLSWITCH_KEY = "J.killswitch.staking";
     private static final String SUNSET_EXCLUSIONS_KEY = "G.sunset.exclusions";
@@ -420,6 +421,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "enabled", stakingGateOn(),
                 "configKey", STAKING_KILLSWITCH_KEY,
                 "linkedDomain", "J1"));
+        response.put("appVisible", stakingAppVisible());
         response.put("disclosureGate", map("staking", disclosureGateActive("staking")));
         response.put("pools", pools);
         response.put("positions", stakingPositionGroups());
@@ -551,6 +553,29 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         Map<String, Object> response = stakingOverview().getData();
         response.put("updated", map("tierKey", pool.tierKey(), "key", "saleStatus", "before", before, "after", enabled));
         return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> updateStakingVisibility(
+            String idempotencyKey, NexMarketValueUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        ApiResult<Map<String, Object>> permission = requirePermission("finprod_g1_write");
+        if (permission != null) return permission;
+        Boolean visible = parseBooleanValue(request.value());
+        if (visible == null) return validation("G1_STAKING_VISIBILITY_INVALID");
+        Optional<String> lockedVisibility = configFacade.activeValueForUpdate(STAKING_VISIBILITY_KEY);
+        if (lockedVisibility.isEmpty()) return ApiResult.fail(503, "G1_STAKING_VISIBILITY_CONFIG_MISSING");
+        boolean before = "true".equalsIgnoreCase(lockedVisibility.get());
+        if (before == visible) return ApiResult.fail(409, "G1_STAKING_VISIBILITY_UNCHANGED");
+        if (visible) {
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+            if (redline != null) return redline;
+        }
+        configFacade.upsertAdminValue(STAKING_VISIBILITY_KEY, visible.toString(), "BOOLEAN", "market", "App staking visibility");
+        auditRequired("G1_STAKING_VISIBILITY_CHANGED", "STAKING_PRODUCT", STAKING_VISIBILITY_KEY,
+                request.operator(), map("before", before, "after", visible, "reason", request.reason().trim(),
+                        "idempotencyKey", idempotencyKey.trim()));
+        return stakingOverview();
     }
 
     public ApiResult<Map<String, Object>> updateStakingPoolKillStatus(
@@ -1999,9 +2024,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         // 停售 —— 同一条产品两个状态。enabled/killed/status/statusLabel 保留为档位自身
         // 配置状态,运营才能区分"产品配置启用"与"对客实际可售"。
         boolean globalGateOn = stakingGateOn();
-        boolean sellable = enabled && !killed && globalGateOn;
-        String blockedBy = globalGateOn ? (killed ? "TIER_KILLED" : enabled ? null : "TIER_DISABLED")
-                : "GLOBAL_GATE";
+        boolean appVisible = stakingAppVisible();
+        boolean sellable = enabled && !killed && globalGateOn && appVisible;
+        String blockedBy = !appVisible ? "APP_HIDDEN" : globalGateOn
+                ? (killed ? "TIER_KILLED" : enabled ? null : "TIER_DISABLED") : "GLOBAL_GATE";
         return map(
                 "product", pool.product(),
                 "tierKey", pool.tierKey(),
@@ -2085,6 +2111,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ffdd.opsconsole.emergency.domain.KillSwitchState.enabledFailClosed(
                 controlValue(STAKING_KILLSWITCH_KEY),
                 controlValue(STAKING_LEGACY_KILLSWITCH_KEY));
+    }
+
+    private boolean stakingAppVisible() {
+        return configFacade.activeValue(STAKING_VISIBILITY_KEY)
+                .map("true"::equalsIgnoreCase).orElse(true);
     }
 
     private boolean stakingPoolEnabled(StakingPoolDef pool) {

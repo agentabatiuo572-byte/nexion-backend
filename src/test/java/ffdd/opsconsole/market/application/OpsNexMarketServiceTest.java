@@ -1341,6 +1341,36 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void hidingStakingPersistsVisibilityWithoutChangingExistingPositions() {
+        List<StakingPositionView> existing = List.copyOf(marketRepository.stakingPositions);
+
+        ApiResult<Map<String, Object>> result = service.updateStakingVisibility(
+                "idem-g1-hide", new NexMarketValueUpdateRequest(
+                        "false", "hide App staking entries", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("appVisible", false);
+        assertThat(configFacade.values).containsEntry("G.staking.app_visible", "false");
+        assertThat(marketRepository.stakingPositions).containsExactlyElementsOf(existing);
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("G1_STAKING_VISIBILITY_CHANGED");
+    }
+
+    @Test
+    void restoringStakingVisibilityBelowCoverageRedlineLeavesItHidden() {
+        configFacade.values.put("G.staking.app_visible", "false");
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
+
+        ApiResult<Map<String, Object>> result = service.updateStakingVisibility(
+                "idem-g1-show", new NexMarketValueUpdateRequest(
+                        "true", "restore App staking entries", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(configFacade.values).containsEntry("G.staking.app_visible", "false");
+    }
+
+    @Test
     void globalJ1StakingGateBlocksOpeningAPoolSale() {
         emergencyRepository.settings.put("killswitch.staking", "disabled");
         configFacade.values.put("G.staking.enabled.usdt365d", "false");
@@ -1748,7 +1778,8 @@ class OpsNexMarketServiceTest {
     }
 
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
-        private final Map<String, String> values = new LinkedHashMap<>(Map.of("wallet.exchange.nex_usdt_price", "0.171"));
+        private final Map<String, String> values = new LinkedHashMap<>(Map.of(
+                "wallet.exchange.nex_usdt_price", "0.171", "G.staking.app_visible", "true"));
 
         @Override
         public Optional<String> activeValue(String configKey) {
