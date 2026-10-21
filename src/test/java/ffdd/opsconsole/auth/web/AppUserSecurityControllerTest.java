@@ -6,13 +6,15 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.application.AppUserSecurityService;
+import ffdd.opsconsole.auth.application.AppPhoneNumberChangeService;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 
 class AppUserSecurityControllerTest {
     private final AppUserSecurityService service = mock(AppUserSecurityService.class);
-    private final AppUserSecurityController controller = new AppUserSecurityController(service);
+    private final AppUserSecurityController controller =
+            new AppUserSecurityController(service, mock(AppPhoneNumberChangeService.class));
 
     @Test
     void authenticatedUserIdentityAndSessionComeOnlyFromTheValidatedJwt() {

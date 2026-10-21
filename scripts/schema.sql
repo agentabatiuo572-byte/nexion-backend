@@ -7274,6 +7274,24 @@ CREATE TABLE IF NOT EXISTS nx_user_password_command (
   PRIMARY KEY (user_id, command_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+-- Login phone-number changes are counted per user; completed rows retain no phone or OTP values.
+CREATE TABLE IF NOT EXISTS nx_user_phone_number_change (
+  change_no VARCHAR(64) PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  old_country_code VARCHAR(8) NULL,
+  old_phone VARCHAR(32) NULL,
+  new_country_code VARCHAR(8) NULL,
+  new_phone VARCHAR(32) NULL,
+  old_code_hash CHAR(64) NOT NULL,
+  new_code_hash CHAR(64) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  attempt_count INT NOT NULL DEFAULT 0,
+  completed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_phone_number_change_user_completed (user_id, completed_at),
+  KEY idx_phone_number_change_user_created (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 -- Personal inbox visibility only. Conversation, message and receipt rows are retained.
 CREATE TABLE IF NOT EXISTS nx_app_conversation_dismissal (
   user_id BIGINT NOT NULL,

@@ -5,6 +5,7 @@ import ffdd.opsconsole.auth.dto.AppPhoneBindingRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpResponse;
 import jakarta.servlet.http.HttpServletRequest;
+import ffdd.opsconsole.auth.application.AppPhoneNumberChangeService;
 import ffdd.opsconsole.auth.dto.AppPasswordChangeRequest;
 import ffdd.opsconsole.auth.dto.AppAccountDeletionRequest;
 import ffdd.opsconsole.auth.dto.AppAccountDeletionCancelRequest;
@@ -33,6 +34,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AppUserSecurityController {
     private final AppUserSecurityService securityService;
+    private final AppPhoneNumberChangeService phoneNumberChangeService;
 
     public ApiResult<AppSecurityStateResponse> overview(Authentication authentication) {
         UserContext context = requireUser(authentication);
@@ -68,6 +70,30 @@ public class AppUserSecurityController {
             @RequestBody(required = false) AppPhoneBindingRequest request) {
         UserContext context = requireUser(authentication);
         return securityService.bindPhone(context.userId(), request);
+    }
+
+    @GetMapping("/phone-number")
+    public ApiResult<Map<String, Object>> phoneNumberPolicy(Authentication authentication) {
+        UserContext context = requireUser(authentication);
+        return ApiResult.ok(phoneNumberChangeService.policy(context.userId()));
+    }
+
+    @PostMapping("/phone-number/challenge")
+    public ApiResult<Map<String, Object>> startPhoneNumberChange(Authentication authentication,
+            @RequestBody(required = false) PhoneNumberChangeStartRequest request) {
+        UserContext context = requireUser(authentication);
+        if (request == null) throw new BizException(422, "USER_PHONE_CHANGE_REQUEST_REQUIRED");
+        return ApiResult.ok(phoneNumberChangeService.start(context.userId(), request.currentPassword(),
+                request.countryCode(), request.phone()));
+    }
+
+    @PostMapping("/phone-number/confirm")
+    public ApiResult<Map<String, Object>> confirmPhoneNumberChange(Authentication authentication,
+            @RequestBody(required = false) PhoneNumberChangeConfirmRequest request) {
+        UserContext context = requireUser(authentication);
+        if (request == null) throw new BizException(422, "USER_PHONE_CHANGE_REQUEST_REQUIRED");
+        return ApiResult.ok(phoneNumberChangeService.confirm(context.userId(), context.sessionId(),
+                request.changeNo(), request.oldCode(), request.newCode()));
     }
 
     @GetMapping("/password/commands/{commandKey}")
@@ -154,5 +180,11 @@ public class AppUserSecurityController {
     }
 
     private record UserContext(Long userId, String sessionId) {
+    }
+
+    public record PhoneNumberChangeStartRequest(String currentPassword, String countryCode, String phone) {
+    }
+
+    public record PhoneNumberChangeConfirmRequest(String changeNo, String oldCode, String newCode) {
     }
 }
