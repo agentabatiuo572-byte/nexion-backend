@@ -174,10 +174,7 @@ public class AppRepurchaseService {
     }
 
     private ApiResult<Map<String, Object>> openInternal(Long userId, String key, OpenRequest request) {
-        if (!config.activeValueForUpdate(STAKING_VISIBILITY_KEY)
-                .map(value -> "true".equalsIgnoreCase(value.trim())).orElse(false)) {
-            throw new BizException(409, "STAKING_APP_HIDDEN");
-        }
+        requireAppStakingVisibleForOpen();
         if (!globalGateEnabled()) throw new BizException(409, "REPURCHASE_GLOBAL_GATE_DISABLED");
         ApiResult<Void> userDisclosureGate = disclosureGate.checkUserGate(userId, "staking", key);
         if (userDisclosureGate.getCode() != 0) {
@@ -339,6 +336,13 @@ public class AppRepurchaseService {
                 "pointsReward", false, "sourceEnvironment", "PRODUCTION", "runId", "");
     }
 
+    private void requireAppStakingVisibleForOpen() {
+        if (!config.activeValueForUpdate(STAKING_VISIBILITY_KEY)
+                .map(value -> "true".equalsIgnoreCase(value.trim())).orElse(false)) {
+            throw new BizException(409, "STAKING_APP_HIDDEN");
+        }
+    }
+
     private boolean isSandbox() {
         return UserAuthEnvironment.resolve(environment).orElse(null) == UserAuthEnvironment.SANDBOX;
     }
@@ -363,6 +367,7 @@ public class AppRepurchaseService {
     }
 
     private ApiResult<Map<String, Object>> sandboxOpen(Long userId, String key, OpenRequest request) {
+        requireAppStakingVisibleForOpen();
         requireUser(userId);
         String runId = sandboxRunId();
         if (request == null || request.amountUsdt() == null || request.amountUsdt().signum() <= 0) {
