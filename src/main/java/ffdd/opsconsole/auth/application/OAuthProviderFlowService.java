@@ -7,6 +7,7 @@ import ffdd.opsconsole.auth.mapper.OAuthProviderFlowMapper;
 import ffdd.opsconsole.auth.mapper.UserOAuthIdentityMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.security.CurrentAppSessionService;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import jakarta.annotation.PostConstruct;
 import java.time.LocalDateTime;
@@ -17,6 +18,7 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,6 +40,7 @@ public class OAuthProviderFlowService {
     private final AppUserAuthService auth;
     private final Environment environment;
     private final AppUserSecurityVerificationGuard verificationGuard;
+    private final CurrentAppSessionService currentSessions;
 
     @PostConstruct void ensureSchema() { flows.createTable(); }
 
@@ -152,7 +155,8 @@ public class OAuthProviderFlowService {
     }
 
     @Transactional
-    public ApiResult<Void> link(Proof proof, Long userId, String password, String clientAddress) {
+    public ApiResult<Void> link(Proof proof, Long userId, String password, String clientAddress,
+            Authentication authentication) {
         requireEnvironment();
         OAuthProviderFlow flow = proofFlow(proof, true);
         requireReceipt(flow, proof);
@@ -167,6 +171,10 @@ public class OAuthProviderFlowService {
             }
             return verified;
         }
+        // Password/guard checks acquired the account lock. Recheck the original session while
+        // holding it through the identity write, so revocation cannot win between check and link.
+        if (!Objects.equals(userId, currentSessions.requireSession(authentication).getUserId()))
+            throw new BizException(403, "OAUTH_FLOW_INTENT_INVALID");
         verificationGuard.clear(userId);
         var identity = identities.findForUpdate(flow.getProvider(), flow.getSubject(), "PRODUCTION");
         if ("CONSUMED".equals(flow.getStatus()) && identity != null && userId.equals(identity.getUserId()))
