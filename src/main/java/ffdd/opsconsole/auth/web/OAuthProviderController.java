@@ -118,7 +118,7 @@ public class OAuthProviderController {
     @PostMapping("/link")
     public ApiResult<Void> link(@RequestBody LinkRequest request, Authentication authentication, HttpServletRequest http) {
         return flows.link(new Proof(request.flowId(), request.flowKey(), request.receipt()),
-                userId(authentication), request.password(), http.getRemoteAddr());
+                userId(authentication), request.password(), http.getRemoteAddr(), authentication);
     }
 
     private long userId(Authentication authentication) {

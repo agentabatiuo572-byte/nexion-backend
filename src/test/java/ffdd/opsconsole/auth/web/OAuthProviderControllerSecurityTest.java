@@ -4,9 +4,13 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import ffdd.opsconsole.auth.application.*;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.security.*;
 import jakarta.servlet.http.Cookie;
+import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -14,6 +18,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
@@ -57,6 +62,18 @@ class OAuthProviderControllerSecurityTest {
         mvc.perform(get("/auth/users/oauth/provider/linked")).andExpect(status().isUnauthorized());
         mvc.perform(get("/auth/users/oauth/provider/available/extra")).andExpect(status().isUnauthorized());
         verifyNoInteractions(flows);
+    }
+    @Test void bindingPassesOriginalAuthenticatedSessionToTransactionalService() throws Exception {
+        var principal = new UsernamePasswordAuthenticationToken("12", null, List.of());
+        principal.setDetails(Map.of("subjectType", "USER", "sessionId", "original-session"));
+        when(flows.link(any(), eq(12L), eq("password"), anyString(), same(principal)))
+                .thenReturn(ApiResult.ok());
+        mvc.perform(post("/auth/users/oauth/provider/link").with(authentication(principal))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"flowId\":\"flow\",\"flowKey\":\"key\",\"receipt\":\"receipt\",\"password\":\"password\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(0));
+        verify(flows).link(new OAuthProviderFlowService.Proof("flow", "key", "receipt"),
+                12L, "password", "127.0.0.1", principal);
     }
     @Test void callbackDoesNotRenderAnyUntrustedProviderParameters() throws Exception {
         mvc.perform(get("/auth/users/oauth/provider/callback/GOOGLE").param("state", "invalid")

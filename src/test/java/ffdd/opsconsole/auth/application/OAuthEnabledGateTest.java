@@ -5,6 +5,7 @@ import static org.mockito.Mockito.*;
 
 import ffdd.opsconsole.auth.mapper.OAuthProviderFlowMapper;
 import ffdd.opsconsole.auth.mapper.UserOAuthIdentityMapper;
+import ffdd.opsconsole.shared.security.CurrentAppSessionService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
@@ -35,7 +36,8 @@ class OAuthEnabledGateTest {
             var identities = mock(UserOAuthIdentityMapper.class);
             var auth = mock(AppUserAuthService.class);
             var guard = mock(AppUserSecurityVerificationGuard.class);
-            var service = new OAuthProviderFlowService(client, mapper, identities, auth, env, guard);
+            var sessions = mock(CurrentAppSessionService.class);
+            var service = new OAuthProviderFlowService(client, mapper, identities, auth, env, guard, sessions);
             var proof = new OAuthProviderFlowService.Proof("existing-flow", "key", "receipt");
             assertThat(client.available()).isEmpty();
             assertThat(service.available()).isEmpty();
@@ -53,9 +55,9 @@ class OAuthEnabledGateTest {
             assertThatThrownBy(() -> service.status(proof)).hasMessage("OAUTH_DISABLED");
             assertThatThrownBy(() -> service.login(proof, "client", null, null, null))
                     .hasMessage("OAUTH_DISABLED");
-            assertThatThrownBy(() -> service.link(proof, 1L, "password", "client")).hasMessage("OAUTH_DISABLED");
+            assertThatThrownBy(() -> service.link(proof, 1L, "password", "client", null)).hasMessage("OAUTH_DISABLED");
             assertThatThrownBy(() -> service.linked(1L)).hasMessage("OAUTH_DISABLED");
-            verifyNoInteractions(mapper, identities, auth, guard);
+            verifyNoInteractions(mapper, identities, auth, guard, sessions);
         }
     }
 
@@ -69,7 +71,7 @@ class OAuthEnabledGateTest {
         assertThat(client.available()).containsExactly("GOOGLE", "TELEGRAM");
         var mapper = mock(OAuthProviderFlowMapper.class);
         var service = new OAuthProviderFlowService(client, mapper, mock(UserOAuthIdentityMapper.class),
-                mock(AppUserAuthService.class), env, mock(AppUserSecurityVerificationGuard.class));
+                mock(AppUserAuthService.class), env, mock(AppUserSecurityVerificationGuard.class), mock(CurrentAppSessionService.class));
         env.setActiveProfiles("test");
         assertThat(service.available()).isEmpty();
         assertThatThrownBy(() -> service.start("GOOGLE", null, "client")).hasMessage("OAUTH_PROFILE_FORBIDDEN");

@@ -9,12 +9,16 @@ import ffdd.opsconsole.auth.infrastructure.UserOAuthIdentityEntity;
 import ffdd.opsconsole.auth.mapper.OAuthProviderFlowMapper;
 import ffdd.opsconsole.auth.mapper.UserOAuthIdentityMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.security.CurrentAppSessionService;
+import ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
+import org.springframework.security.core.Authentication;
 
 class OAuthProviderFlowServiceTest {
     final OAuthProviderClient providers = mock(OAuthProviderClient.class);
@@ -23,7 +27,9 @@ class OAuthProviderFlowServiceTest {
     final AppUserAuthService auth = mock(AppUserAuthService.class);
     final MockEnvironment environment = new MockEnvironment();
     final AppUserSecurityVerificationGuard guard = mock(AppUserSecurityVerificationGuard.class);
-    final OAuthProviderFlowService service = new OAuthProviderFlowService(providers, mapper, identities, auth, environment, guard);
+    final CurrentAppSessionService sessions = mock(CurrentAppSessionService.class);
+    final Authentication authentication = mock(Authentication.class);
+    final OAuthProviderFlowService service = new OAuthProviderFlowService(providers, mapper, identities, auth, environment, guard, sessions);
     final String id = "OIDC-" + "a".repeat(32), key = "k".repeat(43), receipt = "r".repeat(43), state = "s".repeat(43);
     final OAuthProviderFlowService.Proof proof = new OAuthProviderFlowService.Proof(id, key, receipt);
     final AppLoginContext context = new AppLoginContext(AppSessionSurface.H5, "", false, id, key, "OAUTH", "GOOGLE:" + id);
@@ -39,6 +45,8 @@ class OAuthProviderFlowServiceTest {
         when(mapper.find(id)).thenReturn(flow); when(mapper.lock(id)).thenReturn(flow); when(mapper.byState(state)).thenReturn(flow);
         when(mapper.consume(id)).thenReturn(1); when(providers.provider("GOOGLE")).thenReturn(OAuthProviderClient.Provider.GOOGLE);
         when(auth.verifyProviderLink(anyLong(), any(), any())).thenReturn(ApiResult.ok());
+        var session = new UserSessionEntity(); session.setUserId(12L);
+        when(sessions.requireSession(authentication)).thenReturn(session);
         when(guard.allowed(anyLong(), any())).thenReturn(true);
         when(guard.recordFailure(anyLong(), any())).thenReturn(new AppUserSecurityVerificationGuard.VerificationFailure(1, false));
     }
@@ -81,27 +89,58 @@ class OAuthProviderFlowServiceTest {
     }
     @Test void linkIntentIsFixedToAuthenticatedOwnerAndNeverChangesAnExistingLink() {
         flow.setLinkUserId(12L);
-        assertThatThrownBy(() -> service.link(proof, 13L, "password", "client")).hasMessage("OAUTH_FLOW_INTENT_INVALID");
+        assertThatThrownBy(() -> service.link(proof, 13L, "password", "client", authentication)).hasMessage("OAUTH_FLOW_INTENT_INVALID");
         var other = new UserOAuthIdentityEntity(); other.setUserId(13L);
         when(identities.findForUpdate("GOOGLE", "verified-subject", "PRODUCTION")).thenReturn(other);
-        assertThatThrownBy(() -> service.link(proof, 12L, "password", "client")).hasMessage("OAUTH_IDENTITY_ALREADY_LINKED");
+        assertThatThrownBy(() -> service.link(proof, 12L, "password", "client", authentication)).hasMessage("OAUTH_IDENTITY_ALREADY_LINKED");
         verify(identities, never()).insertIdentity(any()); verify(mapper, never()).consume(any());
     }
     @Test void passwordDenialReturnsWithoutRollingBackRateCountersOrConsumingProof() {
         flow.setLinkUserId(12L);
         when(auth.verifyProviderLink(12L, "wrong", "client")).thenReturn(ApiResult.fail(403, "OAUTH_LINK_PASSWORD_INVALID"));
-        assertThat(service.link(proof, 12L, "wrong", "client").getCode()).isEqualTo(403);
-        verifyNoInteractions(identities); verify(mapper, never()).consume(any());
+        assertThat(service.link(proof, 12L, "wrong", "client", authentication).getCode()).isEqualTo(403);
+        verifyNoInteractions(identities, sessions); verify(mapper, never()).consume(any());
     }
     @Test void authorizedBindingCanRecoverLostResponseWithoutCreatingAnotherLink() {
         flow.setLinkUserId(12L);
         when(identities.linkedProviders(12L)).thenReturn(List.of());
-        assertThat(service.link(proof, 12L, "password", "client").getCode()).isZero();
+        assertThat(service.link(proof, 12L, "password", "client", authentication).getCode()).isZero();
         var linked = new UserOAuthIdentityEntity(); linked.setUserId(12L);
         when(identities.findForUpdate("GOOGLE", "verified-subject", "PRODUCTION")).thenReturn(linked);
         flow.setStatus("CONSUMED");
-        assertThat(service.link(proof, 12L, "password", "client").getCode()).isZero();
+        assertThat(service.link(proof, 12L, "password", "client", authentication).getCode()).isZero();
         verify(identities, times(1)).insertIdentity(any());
+        verify(mapper, times(1)).consume(id);
+        verify(sessions, times(2)).requireSession(authentication);
+    }
+    @Test void revokedSessionFailsBeforeIdentityAccessAndReceiptConsumption() {
+        flow.setLinkUserId(12L);
+        when(sessions.requireSession(authentication)).thenThrow(new BizException(401, "SESSION_REPLACED"));
+        assertThatThrownBy(() -> service.link(proof, 12L, "password", "client", authentication))
+                .hasMessage("SESSION_REPLACED");
+        verifyNoInteractions(identities);
+        verify(mapper, never()).consume(any());
+        verify(guard, never()).clear(any());
+    }
+    @Test void originalSessionOwnerMustMatchTheLinkOwner() {
+        flow.setLinkUserId(12L);
+        var otherSession = new UserSessionEntity(); otherSession.setUserId(13L);
+        when(sessions.requireSession(authentication)).thenReturn(otherSession);
+        assertThatThrownBy(() -> service.link(proof, 12L, "password", "client", authentication))
+                .hasMessage("OAUTH_FLOW_INTENT_INVALID");
+        verifyNoInteractions(identities);
+        verify(mapper, never()).consume(any());
+    }
+    @Test void currentSessionCheckPreservesGuardAccountIdentityLockOrder() {
+        flow.setLinkUserId(12L);
+        assertThat(service.link(proof, 12L, "password", "client", authentication).getCode()).isZero();
+        var order = inOrder(guard, auth, sessions, identities, mapper);
+        order.verify(guard).allowed(12L, "OAUTH_LINK");
+        order.verify(auth).verifyProviderLink(12L, "password", "client");
+        order.verify(sessions).requireSession(authentication);
+        order.verify(identities).findForUpdate("GOOGLE", "verified-subject", "PRODUCTION");
+        order.verify(identities).insertIdentity(any());
+        order.verify(mapper).consume(id);
     }
     @Test void callbackRejectsWrongBrowserProviderAndDuplicateBeforeExchangingCode() {
         assertThatThrownBy(() -> service.callback("APPLE", state, "browser", "code", null)).hasMessage("OAUTH_AUTHORIZATION_INVALID");
@@ -119,7 +158,7 @@ class OAuthProviderFlowServiceTest {
     @Test void accountPasswordLockBlocksBindingAcrossClientAddresses() {
         flow.setLinkUserId(12L);
         when(guard.allowed(12L, "OAUTH_LINK")).thenReturn(false);
-        assertThat(service.link(proof, 12L, "password", "another-client").getCode()).isEqualTo(429);
-        verifyNoInteractions(auth, identities);
+        assertThat(service.link(proof, 12L, "password", "another-client", authentication).getCode()).isEqualTo(429);
+        verifyNoInteractions(auth, identities, sessions);
     }
 }
