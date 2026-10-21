@@ -45,6 +45,7 @@ public class AppRepurchaseService {
     private static final String STAKING_KILLSWITCH_KEY = "killswitch.staking";
     private static final String STAKING_LEGACY_KILLSWITCH_KEY = "J.killswitch.staking";
     private static final String STAKING_DISCLOSURE_GATE_KEY = "disclosure.gate.staking";
+    private static final String STAKING_VISIBILITY_KEY = "G.staking.app_visible";
 
     private final AppRepurchaseMapper mapper;
     private final RiskDisclosureGateFacade disclosureGate;
@@ -173,6 +174,10 @@ public class AppRepurchaseService {
     }
 
     private ApiResult<Map<String, Object>> openInternal(Long userId, String key, OpenRequest request) {
+        if (!config.activeValueForUpdate(STAKING_VISIBILITY_KEY)
+                .map(value -> "true".equalsIgnoreCase(value.trim())).orElse(false)) {
+            throw new BizException(409, "STAKING_APP_HIDDEN");
+        }
         if (!globalGateEnabled()) throw new BizException(409, "REPURCHASE_GLOBAL_GATE_DISABLED");
         ApiResult<Void> userDisclosureGate = disclosureGate.checkUserGate(userId, "staking", key);
         if (userDisclosureGate.getCode() != 0) {
