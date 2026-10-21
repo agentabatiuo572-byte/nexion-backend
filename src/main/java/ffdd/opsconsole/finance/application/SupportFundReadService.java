@@ -174,6 +174,10 @@ public class SupportFundReadService {
                         }
                         Stamp stamp;List<Checkpoint> checkpoints=List.of();List<Point> sourcePoints=null;
                         switch(text(row,"businessType")) {
+                            case "SUPPORT_CREGIS_REORG" -> {
+                                try {stamp=SupportFundCregisReorgEvidence.verify(codec,row,source,proof,events,mapper.cregisReorgOperations(parties));}
+                                catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
+                            }
                             case "SUPPORT_PAYMENT" -> stamp=payment(row,source,proof,events,paymentHistory,paymentLedgers,paymentSources,paymentAudits,trials,earnings,representedEarnings,originFacts,represented);
                             case "SUPPORT_WITHDRAWAL" -> stamp=withdrawal(row,source,proof,events,withdrawalRows,ledgers,audits,banks,attempts,withdrawalPhases,withdrawalPrecision,componentOps);
                             case "SUPPORT_EARNINGS" -> {
@@ -234,6 +238,11 @@ public class SupportFundReadService {
                             sourcePoints!=null?sourcePoints:checkpoints.isEmpty()?points(opLegs,proof,componentRaw,events):List.of(),stamp,checkpoints));
                     }
                     // Source enumeration is independent of receipt enumeration; zero-cash omissions cannot hide here.
+                    if(ops.stream().anyMatch(op->"SUPPORT_CREGIS_REORG".equals(op.get("businessType")))) {
+                        for(var held:mapper.cregisReorgHoldings(component.stream().sorted().toList()))
+                            holdings.add(new Holding(new Account(number(held,"userId"),"USDT","risk:CR-"+number(held,"incidentId")),
+                                decimal(held.get("heldAmount")),"nx_cregis_reorg_resolution:"+number(held,"incidentId")));
+                    }
                     for(var fact:paymentHistory.facts())if(component.contains(fact.customerId()))
                         require(represented.contains(fact.factId()),Gap.SOURCE_COVERAGE);
                     for(var entry:paymentSources.entrySet())for(var sourceRow:entry.getValue())if(component.contains(number(sourceRow,"customerId"))) {

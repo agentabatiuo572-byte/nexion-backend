@@ -40,7 +40,7 @@ class BscDepositProofTest {
     void creditsOnlyCanonicalReceiptWithExactTransferAndFifteenConfirmations() throws Exception {
         BscDepositProof proof = local();
         assertThat(proof.verify(TX, TO, new BigDecimal("1.000000"), 100))
-                .contains(new BscDepositProof.Proof(2, 100, HASH, 15));
+                .contains(new BscDepositProof.Proof(2, 100, HASH, 15,"0x"+"0".repeat(40)));
         assertThat(proof.scan(100, 100, java.util.List.of(TO))).singleElement()
                 .extracting(BscDepositProof.Observation::address).isEqualTo(TO);
         assertThat(proof.scan(100, 100, java.util.List.of(TO))).singleElement()
@@ -64,7 +64,7 @@ class BscDepositProofTest {
         BscDepositProof proof = local();
         head = "0x71";
         assertThat(proof.verifyPayout(TX.substring(2),TO,BigDecimal.ONE))
-                .contains(new BscDepositProof.Proof(2,100,HASH,14));
+                .contains(new BscDepositProof.Proof(2,100,HASH,14,"0x"+"0".repeat(40)));
         assertThat(proof.verify(TX,TO,BigDecimal.ONE,100)).isEmpty();
         canonicalHash = "0x" + "d".repeat(64);
         assertThatThrownBy(() -> proof.verifyPayout(TX,TO,BigDecimal.ONE))

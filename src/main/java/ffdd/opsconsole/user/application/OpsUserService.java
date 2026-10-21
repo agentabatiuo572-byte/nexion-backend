@@ -1660,6 +1660,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "C2_STATUS_TRANSITION_NOT_ALLOWED");
         }
         String actor = operator(request.operator());
+        if ("ACTIVE".equals(nextStatus) && (userRepository.hasUnresolvedCregisIncident(userId)
+                || userRepository.isFrozenBySource(userId, "CREGIS_DEPOSIT_INCIDENT"))) {
+            return ApiResult.fail(409, "USER_FROZEN_BY_CREGIS_INCIDENT");
+        }
         if ("ACTIVE".equals(nextStatus)
                 && userRepository.isFrozenBySource(userId, "K1_MULTI_ACCOUNT_CLUSTER")) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "USER_FROZEN_BY_K1_CLUSTER");

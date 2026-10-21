@@ -227,4 +227,35 @@ class SupportFundAllocationTest {
         apply("second", Action.TRADE, a, b, null, "100", "100"); refund("r", "p", "100"); reserve("w", b, "100");
         assertEquals("first", apply("wc", Action.CONFIRM, null, null, "w", null, null).get(0).contributionId());
     }
+
+    @Test void reorgReverseThenReturnOfCollectedFundsPreservesOriginalLotsAndContribution() {
+        deposit("d",a,"100");consume("spent",a,"60");
+        var held=new Account(1,"USDT","risk:CR-1");apply("hold",Action.MOVE,a,held,null,"40",null);
+        apply("seize",Action.REORG_DEBIT,held,null,"d","40",null);
+        apply("reverse",Action.REVOKE_DEPOSIT,null,null,"d","100",null);
+        money("0",funds.total("USDT"));earning("later",a,"20");
+        apply("collect",Action.REORG_DEBIT,a,null,"d","20",null);money("0",funds.balance(a));
+        apply("restore",Action.RESTORE_DEPOSIT,null,null,"d","100",null);
+        apply("returnHeld",Action.REORG_REFUND,null,a,"seize","40",null);
+        apply("returnLater",Action.REORG_REFUND,null,a,"collect","20",null);
+        money("60",funds.balance(a));money("100",funds.total("USDT"));
+        assertThrows(IllegalArgumentException.class,()->apply("doubleRestore",Action.RESTORE_DEPOSIT,null,null,"d","100",null));
+        assertThrows(IllegalArgumentException.class,()->apply("doubleRefund",Action.REORG_REFUND,null,a,"collect","20",null));
+        money("60",funds.balance(a));money("100",funds.total("USDT"));
+    }
+    @Test void reorgSuppressesOnlyTheRevokedOriginalContributionAndSupportsSecondReorgEpoch() {
+        deposit("d",a,"100");reserve("w",a,"40");
+        apply("seize",Action.REORG_DEBIT,a,null,"d","60",null);apply("reverse",Action.REVOKE_DEPOSIT,null,null,"d","100",null);
+        confirm("wc","w");money("0",funds.total("USDT"));
+        apply("restore",Action.RESTORE_DEPOSIT,null,null,"d","100",null);apply("refund",Action.REORG_REFUND,null,a,"seize","60",null);
+        money("60",funds.total("USDT"));money("60",funds.balance(a));
+        apply("seize2",Action.REORG_DEBIT,a,null,"d","60",null);apply("reverse2",Action.REVOKE_DEPOSIT,null,null,"d","100",null);money("0",funds.total("USDT"));
+    }
+    @Test void reorgCannotCollectAnotherCustomerOrReturnToAnotherAccount() {
+        deposit("d",a,"100");deposit("peer",b,"100");
+        assertThrows(IllegalArgumentException.class,()->apply("bad",Action.REORG_DEBIT,b,null,"d","10",null));
+        apply("debit",Action.REORG_DEBIT,a,null,"d","10",null);
+        assertThrows(IllegalArgumentException.class,()->apply("badReturn",Action.REORG_REFUND,null,b,"debit","10",null));
+        money("90",funds.balance(a));money("100",funds.balance(b));
+    }
 }

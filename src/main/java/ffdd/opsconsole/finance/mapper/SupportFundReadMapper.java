@@ -11,6 +11,22 @@ import org.apache.ibatis.annotations.*;
 @Mapper
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportFundReadMapper {
+    @Select("<script>SELECT o.operation_no operationNo,o.incident_id incidentId,o.resolution_version resolutionVersion,o.phase,"
+        +"o.original_fact_id originalFactId,o.attribution_effect attributionEffect,o.snapshot_json snapshotJson,o.proof_json proofJson,"
+        +"o.events_json eventsJson,o.created_at createdAt,r.user_id userId,r.event_id eventId,r.net_amount netAmount,"
+        +"(SELECT COUNT(*) FROM nx_treasury_reserve_ledger t WHERE t.idempotency_key=o.operation_no AND t.is_deleted=0 "
+        +"AND t.status='CONFIRMED' AND t.amount_usd=r.net_amount AND t.direction=CASE o.phase WHEN 'REVERSE' THEN 'OUT' WHEN 'RESTORE' THEN 'IN' ELSE 'NONE' END) reserveCount,"
+        +"(SELECT COUNT(*) FROM nx_audit_log a WHERE a.action=CONCAT('CREGIS_REORG_OPERATION_',o.phase) "
+        +"AND a.resource_type='CREGIS_INCIDENT' AND a.resource_id=CAST(o.incident_id AS CHAR) AND a.result='SUCCESS' "
+        +"AND JSON_UNQUOTE(JSON_EXTRACT(a.detail_json,'$.operationNo'))=o.operation_no AND a.is_deleted=0) auditCount "
+        +"FROM nx_cregis_reorg_operation o JOIN nx_cregis_reorg_resolution r ON r.incident_id=o.incident_id WHERE r.user_id IN "
+        +"<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach> ORDER BY o.incident_id,o.resolution_version</script>")
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> cregisReorgOperations(@Param("ids") List<Long> ids);
+    @Select("<script>SELECT incident_id incidentId,user_id userId,held_amount heldAmount,status FROM nx_cregis_reorg_resolution WHERE user_id IN "
+        +"<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach> AND held_amount>0 ORDER BY incident_id</script>")
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    List<Map<String,Object>> cregisReorgHoldings(@Param("ids") List<Long> ids);
     String IDS="<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>";
     String WALLET="SELECT id,user_id userId,usdt_available usdtAvailable,nex_available nexAvailable,"
         +"pending_withdraw pendingWithdraw,cregis_risk_held cregisRiskHeld,version,sandbox,is_deleted isDeleted,"

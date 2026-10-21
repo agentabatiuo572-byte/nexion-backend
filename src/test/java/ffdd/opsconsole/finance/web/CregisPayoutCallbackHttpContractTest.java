@@ -7,6 +7,7 @@ import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 import ffdd.opsconsole.finance.application.WithdrawalPayoutCallbackService;
+import ffdd.opsconsole.finance.cregis.CregisExceptionRefundCallbackService;
 import ffdd.opsconsole.emergency.web.DeploymentForwardedHeadersConfiguration;
 import ffdd.opsconsole.emergency.web.GeoBlockEnforcementProperties;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -17,7 +18,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 class CregisPayoutCallbackHttpContractTest {
     @Test void onlyDurablyAcceptedVerifiedCallbackReceivesLiteralSuccess() throws Exception {
         var service = mock(WithdrawalPayoutCallbackService.class);
-        var http = MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(service)).build();
+        var http = MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(service,mock(CregisExceptionRefundCallbackService.class))).build();
         when(service.receive(any(), anyString())).thenReturn(ApiResult.ok(Map.of("status","ACCEPTED","callbackVerified",true)));
         for (String path : new String[]{"/api/cregis/callbacks/payout","/openapi/v1/withdrawals/cregis/callbacks/payout"})
             http.perform(post(path).contentType("application/json").content("{}"))
@@ -33,7 +34,7 @@ class CregisPayoutCallbackHttpContractTest {
 
     @Test void controllerUsesServletPeerInsteadOfRawForwardingHeaders() throws Exception {
         var service = mock(WithdrawalPayoutCallbackService.class);
-        var http = MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(service)).build();
+        var http = MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(service,mock(CregisExceptionRefundCallbackService.class))).build();
         when(service.receive(any(), eq("192.0.2.5")))
                 .thenReturn(ApiResult.fail(401, "CREGIS_CALLBACK_INVALID_SOURCE_IP"));
 
@@ -50,7 +51,7 @@ class CregisPayoutCallbackHttpContractTest {
         var service = mock(WithdrawalPayoutCallbackService.class);
         var forwarding = new DeploymentForwardedHeadersConfiguration()
                 .forwardedHeaderFilter(new GeoBlockEnforcementProperties());
-        var http = MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(service))
+        var http = MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(service,mock(CregisExceptionRefundCallbackService.class)))
                 .addFilters(forwarding).build();
         when(service.receive(any(), eq("18.143.53.174")))
                 .thenReturn(ApiResult.ok(Map.of("status", "ACCEPTED")));
@@ -68,5 +69,41 @@ class CregisPayoutCallbackHttpContractTest {
                 .header("X-Forwarded-For", "18.143.53.174"))
                 .andExpect(status().isForbidden());
         verifyNoInteractions(service);
+    }
+
+    @Test void refundPrefixOnlySelectsVerifierAndNeverBypassesIpSignatureOrDurability() throws Exception {
+        var withdrawals=mock(WithdrawalPayoutCallbackService.class);
+        var db=mock(ffdd.opsconsole.finance.mapper.CregisExceptionRefundMapper.class);
+        var config=new ffdd.opsconsole.finance.cregis.CregisProperties();
+        config.setMode(ffdd.opsconsole.finance.cregis.CregisProperties.Mode.PROVIDER);config.setProjectId(42);
+        config.setApiKey("fixture-only-test-secret");config.setCallbackSourceIps("127.0.0.1");
+        var signer=new ffdd.opsconsole.finance.cregis.CregisSigner();
+        var gate=mock(ffdd.opsconsole.finance.mapper.CregisDepositMapper.class);
+        when(gate.lockProvisionGate()).thenReturn(Map.of("state","BLOCKED"));
+        var refunds=new CregisExceptionRefundCallbackService(db,config,signer,gate,mock(ffdd.opsconsole.finance.cregis.CregisExceptionRefundService.class));
+        var http=MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(withdrawals,refunds)).build();
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();
+        String address="0x"+"a".repeat(40),tx="0x"+"b".repeat(64);
+        var row=new java.util.LinkedHashMap<String,Object>();
+        row.put("caseNo","CR-RF-test");row.put("businessKey","CR-RF-test");row.put("returnAddress",address);
+        row.put("netAmount",java.math.BigDecimal.ONE);row.put("providerCid",901L);row.put("dispatchIntentAt",java.time.LocalDateTime.now());
+        when(db.byKey(42,"CR-RF-test")).thenReturn(row);
+        var payload=new java.util.LinkedHashMap<String,Object>();
+        payload.put("pid",42L);payload.put("cid",901L);payload.put("timestamp",System.currentTimeMillis());payload.put("nonce","abc123");
+        payload.put("chain_id","2510");payload.put("token_id",ffdd.opsconsole.finance.cregis.CregisConstants.USDT_BEP20_TOKEN_ID);
+        payload.put("currency","USDT-BEP20");payload.put("third_party_id","CR-RF-test");payload.put("amount","1");
+        payload.put("address",address);payload.put("status",6L);payload.put("txid",tx);payload.put("sign","0".repeat(32));
+        http.perform(post("/api/cregis/callbacks/payout").contentType("application/json").content(json.writeValueAsString(payload)))
+                .andExpect(content().string("rejected"));
+        payload.put("sign",signer.sign(config.getApiKey(),payload));
+        http.perform(post("/api/cregis/callbacks/payout").contentType("application/json").content(json.writeValueAsString(payload))
+                        .with(r->{r.setRemoteAddr("192.0.2.5");return r;}))
+                .andExpect(content().string("rejected"));
+        http.perform(post("/api/cregis/callbacks/payout").contentType("application/json").content(json.writeValueAsString(payload)))
+                .andExpect(content().string("success"));
+        when(db.callback(any(),any(),anyLong(),anyInt(),any())).thenThrow(new IllegalStateException("durable failure"));
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->http.perform(post("/api/cregis/callbacks/payout").contentType("application/json").content(json.writeValueAsString(payload))))
+                .hasCauseInstanceOf(IllegalStateException.class);
+        verifyNoInteractions(withdrawals);
     }
 }

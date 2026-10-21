@@ -468,7 +468,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
             if(events.size()!=1)return "BROKEN_CREGIS_EVENT_LINK";
             var event=events.get(0);
             if(number(event,"projectId")!=project || number(event,"cid")!=cid || number(event,"customerId")!=f.customerId()
-                || number(event,"ledgerId")!=f.ledgerId() || !"CREDITED".equals(text(event,"status"))
+                || number(event,"ledgerId")!=f.ledgerId() || !("CREDITED".equals(text(event,"status")) || number(event,"lifecycleVerified")==1)
                 || !amountMatches(event,f))return "BROKEN_CREGIS_EVENT_LINK";
         } else if(source==Source.VIETQR || source==Source.HDPAY) {
             String intentKey=source==Source.VIETQR?partition:key;

@@ -49,8 +49,126 @@ public final class BscDepositProof {
     }
 
     public record Head(long number, String hash) { }
-    public record Proof(int logIndex, long blockNumber, String blockHash, int confirmations) { }
+    public record Proof(int logIndex, long blockNumber, String blockHash, int confirmations,String fromAddress) {
+        public Proof(int logIndex,long blockNumber,String blockHash,int confirmations) {
+            this(logIndex,blockNumber,blockHash,confirmations,null);
+        }
+    }
     public record Observation(String txid, int logIndex, String address, BigDecimal amount, long blockNumber) { }
+    public record TransferProof(int logIndex,long blockNumber,String blockHash,int confirmations,
+                                String fromAddress,String toAddress,BigDecimal amount,boolean senderEoa) { }
+    public record ReorgProof(boolean positivelyVerifiedAbsent,TransferProof canonical,
+                             long checkedHead,String originalCanonicalHash) { }
+
+    /** Exact log identity; transaction.from is deliberately never used as token ownership. */
+    public TransferProof verifyExact(String txid,int logIndex,String address,BigDecimal amount,Long expectedBlock) {
+        String normalized=hash(txid);
+        if(logIndex<0 || address==null || !address.matches("(?i)0x[0-9a-f]{40}")
+                || amount==null || amount.signum()<=0 || amount.stripTrailingZeros().scale()>6
+                || properties.getDepositConfirmations()<15) throw invalid();
+        JsonNode receipt=call("eth_getTransactionReceipt","[\""+normalized+"\"]");
+        return verifyReceipt(normalized,logIndex,address,amount,expectedBlock,receipt);
+    }
+
+    private TransferProof verifyReceipt(String normalized,int logIndex,String address,BigDecimal amount,
+                                         Long expectedBlock,JsonNode receipt) {
+        if(receipt.isNull()) return null;
+        if(!receipt.isObject() || !"0x1".equalsIgnoreCase(receipt.path("status").asText())
+                || !normalized.equalsIgnoreCase(receipt.path("transactionHash").asText())) throw invalid();
+        long height=hexLong(receipt.path("blockNumber").asText());
+        String blockHash=hash(receipt.path("blockHash").asText());
+        if(expectedBlock!=null && expectedBlock!=height) throw invalid();
+        Head head=head();
+        int required=Math.max(15,properties.getDepositConfirmations());
+        if(head.number()<height || head.number()-height+1<required) return null;
+        if(!blockHash.equalsIgnoreCase(blockHash(height))) throw invalid();
+        if(hexLong(call("eth_call","[{\"to\":\""+CregisConstants.USDT_BEP20_TOKEN_ID
+                +"\",\"data\":\"0x313ce567\"},\"latest\"]").asText())!=18) throw invalid();
+        JsonNode logs=receipt.path("logs");
+        if(!logs.isArray()) throw invalid();
+        JsonNode selected=null;
+        for(JsonNode entry:logs) if(hexLong(entry.path("logIndex").asText())==logIndex) {
+            if(selected!=null) throw invalid(); selected=entry;
+        }
+        if(selected==null || selected.path("removed").asBoolean(false)
+                || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(selected.path("address").asText())
+                || !normalized.equalsIgnoreCase(selected.path("transactionHash").asText())
+                || height!=hexLong(selected.path("blockNumber").asText())
+                || !blockHash.equalsIgnoreCase(selected.path("blockHash").asText())) throw invalid();
+        JsonNode topics=selected.path("topics");
+        if(!topics.isArray() || topics.size()!=3 || !TRANSFER_TOPIC.equalsIgnoreCase(topics.get(0).asText())
+                || !topics.get(1).asText().matches("(?i)0x0{24}[0-9a-f]{40}")
+                || !topics.get(2).asText().matches("(?i)0x0{24}[0-9a-f]{40}")) throw invalid();
+        String sender="0x"+topics.get(1).asText().substring(26).toLowerCase(Locale.ROOT);
+        String recipient="0x"+topics.get(2).asText().substring(26).toLowerCase(Locale.ROOT);
+        String raw=selected.path("data").asText();
+        if(!raw.matches("(?i)0x[0-9a-f]{64}") || !recipient.equalsIgnoreCase(address)
+                || new BigDecimal(new BigInteger(raw.substring(2),16),18).compareTo(amount)!=0) throw invalid();
+        JsonNode code=call("eth_getCode","[\""+sender+"\",\""+hex(height)+"\"]");
+        if(!code.isTextual() || !code.asText().matches("(?i)0x(?:[0-9a-f]{2})*")) throw invalid();
+        boolean eoa="0x".equalsIgnoreCase(code.asText()) && !sender.equals("0x"+"0".repeat(40));
+        return new TransferProof(logIndex,height,blockHash,
+                Math.toIntExact(Math.min(Integer.MAX_VALUE,head.number()-height+1)),sender,recipient,amount,eoa);
+    }
+
+    /** A missing receipt or unavailable RPC alone is never evidence that an existing credit disappeared. */
+    public ReorgProof inspectCanonical(String txid,int logIndex,String address,BigDecimal amount,
+                                       long originalBlock,String originalHash) {
+        return inspectCanonical(txid,logIndex,address,amount,originalBlock,originalHash,null);
+    }
+
+    /** A relocated index needs the original token sender and exactly one matching Transfer. */
+    public ReorgProof inspectCanonical(String txid,int logIndex,String address,BigDecimal amount,
+                                       long originalBlock,String originalHash,String expectedFrom) {
+        if(originalBlock<0 || originalHash==null || logIndex<0 || address==null
+                || !address.matches("(?i)0x[0-9a-f]{40}") || amount==null || amount.signum()<=0) throw invalid();
+        String normalized=hash(txid), oldHash=hash(originalHash);
+        Head head=head();
+        int required=Math.max(15,properties.getDepositConfirmations());
+        if(properties.getDepositConfirmations()<15 || head.number()<originalBlock
+                || head.number()-originalBlock+1<required) return new ReorgProof(false,null,head.number(),null);
+        String canonicalHash=blockHash(originalBlock);
+        JsonNode first=call("eth_getTransactionReceipt","[\""+normalized+"\"]");
+        if(!first.isNull()) {
+            int selectedIndex=logIndex;
+            if(expectedFrom!=null) {
+                if(!expectedFrom.matches("(?i)0x[0-9a-f]{40}")) throw invalid();
+                Integer match=null;
+                JsonNode entries=first.path("logs");
+                if(!entries.isArray()) throw invalid();
+                for(JsonNode entry:entries) {
+                    JsonNode topics=entry.path("topics");
+                    if(!CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(entry.path("address").asText())
+                            || !topics.isArray() || topics.size()!=3
+                            || !TRANSFER_TOPIC.equalsIgnoreCase(topics.get(0).asText())) continue;
+                    String sender=topics.get(1).asText(),recipient=topics.get(2).asText(),raw=entry.path("data").asText();
+                    if(!sender.matches("(?i)0x0{24}[0-9a-f]{40}") || !recipient.matches("(?i)0x0{24}[0-9a-f]{40}")
+                            || !raw.matches("(?i)0x[0-9a-f]{64}")) throw invalid();
+                    if(!sender.substring(26).equalsIgnoreCase(expectedFrom.substring(2))
+                            || address==null || !recipient.substring(26).equalsIgnoreCase(address.substring(2))
+                            || new BigDecimal(new BigInteger(raw.substring(2),16),18).compareTo(amount)!=0) continue;
+                    long index=hexLong(entry.path("logIndex").asText());
+                    if(match!=null || index>Integer.MAX_VALUE) throw invalid();
+                    match=(int)index;
+                }
+                if(match==null) throw invalid();
+                selectedIndex=match;
+            }
+            TransferProof canonical=verifyReceipt(normalized,selectedIndex,address,amount,null,first);
+            if(canonical!=null && expectedFrom!=null && !expectedFrom.equalsIgnoreCase(canonical.fromAddress())) throw invalid();
+            // Legacy rows without a persisted sender cannot authenticate a relocated source.
+            if(canonical!=null && expectedFrom==null && (canonical.blockNumber()!=originalBlock
+                    || !canonical.blockHash().equalsIgnoreCase(oldHash))) throw invalid();
+            return new ReorgProof(false,canonical,head.number(),canonicalHash);
+        }
+        if(oldHash.equalsIgnoreCase(canonicalHash)) return new ReorgProof(false,null,head.number(),canonicalHash);
+        JsonNode second=call("eth_getTransactionReceipt","[\""+normalized+"\"]");
+        String secondHash=blockHash(originalBlock);
+        Head latest=head();
+        boolean absent=second.isNull() && canonicalHash.equalsIgnoreCase(secondHash)
+                && latest.number()>=head.number();
+        return new ReorgProof(absent,null,latest.number(),secondHash);
+    }
 
     /** Narrow finalized Transfer scan of already allocated addresses. */
     public List<Observation> scan(long from, long to, List<String> addresses) {
@@ -148,6 +266,7 @@ public final class BscDepositProof {
         JsonNode logs = receipt.path("logs");
         if (!logs.isArray()) throw invalid();
         Integer found = null;
+        String sender = null;
         for (JsonNode log : logs) {
             if (!CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(log.path("address").asText())) continue;
             JsonNode topics = log.path("topics");
@@ -164,13 +283,16 @@ public final class BscDepositProof {
                     || !txid.equalsIgnoreCase(log.path("transactionHash").asText())
                     || hexLong(log.path("blockNumber").asText()) != blockNumber)
                 throw invalid();
+            if (!topics.get(1).asText().matches("(?i)0x0{24}[0-9a-f]{40}")
+                    || !recipient.matches("(?i)0x0{24}[0-9a-f]{40}")) throw invalid();
             long index = hexLong(log.path("logIndex").asText());
             if (index > Integer.MAX_VALUE || found != null) throw invalid();
             found = (int) index;
+            sender = "0x" + topics.get(1).asText().substring(26).toLowerCase(Locale.ROOT);
         }
         if (found == null) throw invalid();
         return Optional.of(new Proof(found, blockNumber, blockHash,
-                Math.toIntExact(Math.min(Integer.MAX_VALUE, head.number() - blockNumber + 1))));
+                Math.toIntExact(Math.min(Integer.MAX_VALUE, head.number() - blockNumber + 1)),sender));
     }
 
     private JsonNode call(String method, String params) {

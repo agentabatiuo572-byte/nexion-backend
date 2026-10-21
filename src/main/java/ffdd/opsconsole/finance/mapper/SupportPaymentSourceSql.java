@@ -172,7 +172,19 @@ public final class SupportPaymentSourceSql {
         WHERE c.user_id=#{customerId} AND c.claim_no=#{claimNo} FOR SHARE OF c,d,o,u
         """;
     static final String PROOF="SELECT capture_mode captureMode,capture_schema_version schemaVersion,source_partition sourcePartition,source_fact_json sourceFactJson,JSON_EXTRACT(attribution_evidence_json,'$.beforeSource') beforeSourceJson,JSON_UNQUOTE(JSON_EXTRACT(attribution_evidence_json,'$.captureMode')) evidenceCaptureMode,JSON_UNQUOTE(JSON_EXTRACT(attribution_evidence_json,'$.schemaVersion')) evidenceSchemaVersion FROM nx_support_payment_attribution WHERE fact_id=#{factId}";
-    static final String CREGIS_EVENT="SELECT id,CONCAT('nx_cregis_deposit_event:',id) sourceId,user_id customerId,project_id projectId,cid,status,net_amount amount,ledger_id ledgerId,credited_at successAt FROM nx_cregis_deposit_event WHERE project_id=#{partition} AND cid=#{cid}";
+    static final String CREGIS_EVENT="""
+        SELECT id,CONCAT('nx_cregis_deposit_event:',id) sourceId,user_id customerId,project_id projectId,cid,status,
+          net_amount amount,ledger_id ledgerId,credited_at successAt,
+          EXISTS(SELECT 1 FROM nx_cregis_reorg_resolution r JOIN nx_cregis_reorg_operation o
+            ON o.incident_id=r.incident_id AND o.resolution_version=r.version
+            JOIN nx_audit_log a ON a.action=CONCAT('CREGIS_REORG_OPERATION_',o.phase)
+              AND a.resource_type='CREGIS_INCIDENT' AND a.resource_id=CAST(r.incident_id AS CHAR)
+              AND JSON_UNQUOTE(JSON_EXTRACT(a.detail_json,'$.operationNo'))=o.operation_no
+              AND a.result='SUCCESS' AND a.is_deleted=0
+            WHERE r.event_id=e.id AND r.user_id=e.user_id AND r.net_amount=e.net_amount
+              AND ((e.status IN ('REORG_INVESTIGATING','PROVIDER_CONFLICT_HOLD') AND r.status='INVESTIGATING' AND o.phase='HOLD')
+                OR (e.status='REORG_REVERSED' AND r.status IN ('REVERSED','REVERSED_DEBT') AND o.phase IN ('REVERSE','COLLECT_DEBT','UNFREEZE')))) lifecycleVerified
+        FROM nx_cregis_deposit_event e WHERE project_id=#{partition} AND cid=#{cid}""";
     static final String LEDGER="SELECT id,CONCAT('nx_wallet_ledger:',id) sourceId,user_id customerId,biz_no businessId,biz_type ledgerType,status,created_at successAt,is_deleted deleted,asset currency,direction,amount,balance_after balanceAfter,remark,updated_at updatedAt FROM nx_wallet_ledger WHERE biz_no=#{key}";
     static final String PAYMENT="SELECT id,CONCAT('nx_payment_record:',id) sourceId,user_id customerId,payment_no businessId,order_no orderNo,provider,payment_status status,paid_at successAt,wallet_ledger_id ledgerId,amount_usdt amount,currency,is_deleted deleted FROM nx_payment_record WHERE order_no=#{orderNo}";
     static final String CARD_SETTLEMENT="SELECT id,CONCAT('nx_topup_card_settlement:',id) sourceId,user_id customerId,payment_no businessId,order_no orderNo,provider,provider_payment_id providerPaymentId,amount_usdt amount,status,is_deleted deleted FROM nx_topup_card_settlement WHERE payment_no=#{key}";
@@ -245,7 +257,7 @@ public final class SupportPaymentSourceSql {
         String sql=switch(marker) {case CREGIS_EVENT -> CREGIS_EVENT;
             case LEDGER -> LEDGER;case PAYMENT -> PAYMENT;case CARD_SETTLEMENT -> CARD_SETTLEMENT;
             case INTENT -> INTENT;case REFUND_BILL -> REFUND_BILL;case DEVICE -> DEVICE;};
-        return sql.substring(0,sql.indexOf(" WHERE "))+" WHERE id=#{id} FOR SHARE";
+        return sql.substring(0,sql.lastIndexOf(" WHERE "))+" WHERE id=#{id} FOR SHARE";
     }
     public static String currentSettled(Map<String,Object> p) {
         Source source=(Source)p.get("source");String sql=settled(p);

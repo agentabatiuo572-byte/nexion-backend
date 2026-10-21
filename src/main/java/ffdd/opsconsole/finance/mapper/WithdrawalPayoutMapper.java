@@ -64,7 +64,9 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT withdrawal_no withdrawalNo,user_id userId,chain,target_address targetAddress,
-                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,status,
+                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,
+                   CASE WHEN status='FROZEN' AND c2_frozen_by_user_status=1 AND d5_payout_source='provider'
+                        AND c2_previous_status IN ('SENT','TX_ORPHANED','PROCESSING') THEN c2_previous_status ELSE status END AS status,
                    d5_payout_due_at payoutDueAt,d5_provider_cid providerCid,
                    COALESCE(d5_provider_idempotency_key,withdrawal_no) providerIdempotencyKey,
                    d5_payout_source payoutSource,chain_broadcast_attempts attempts
@@ -83,7 +85,9 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT withdrawal_no withdrawalNo,user_id userId,chain,target_address targetAddress,
-                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,status,
+                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,
+                   CASE WHEN status='FROZEN' AND c2_frozen_by_user_status=1 AND d5_payout_source='provider'
+                        AND c2_previous_status IN ('SENT','TX_ORPHANED','PROCESSING') THEN c2_previous_status ELSE status END AS status,
                    d5_payout_due_at payoutDueAt,d5_provider_cid providerCid,
                    COALESCE(d5_provider_idempotency_key,withdrawal_no) providerIdempotencyKey,
                    d5_payout_source payoutSource,chain_broadcast_attempts attempts
@@ -103,7 +107,9 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT withdrawal_no withdrawalNo,user_id userId,chain,target_address targetAddress,
-                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,status,
+                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,
+                   CASE WHEN status='FROZEN' AND c2_frozen_by_user_status=1 AND d5_payout_source='provider'
+                        AND c2_previous_status IN ('SENT','TX_ORPHANED','PROCESSING') THEN c2_previous_status ELSE status END AS status,
                    d5_payout_due_at payoutDueAt,d5_provider_cid providerCid,
                    d5_provider_idempotency_key providerIdempotencyKey,
                    d5_payout_source payoutSource,chain_broadcast_attempts attempts
@@ -116,12 +122,15 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT withdrawal_no withdrawalNo,user_id userId,chain,target_address targetAddress,
-                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,status,
+                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,
+                   CASE WHEN status='FROZEN' AND c2_frozen_by_user_status=1 AND d5_payout_source='provider'
+                        AND c2_previous_status IN ('SENT','TX_ORPHANED','PROCESSING') THEN c2_previous_status ELSE status END AS status,
                    d5_payout_due_at payoutDueAt,d5_provider_cid providerCid,
                    d5_provider_idempotency_key providerIdempotencyKey,
                    d5_payout_source payoutSource,chain_broadcast_attempts attempts
               FROM nx_withdrawal_order
-             WHERE status IN ('SENT','TX_ORPHANED') AND d5_payout_source='provider' AND completed_at IS NULL
+             WHERE (status IN ('SENT','TX_ORPHANED') OR (status='FROZEN' AND c2_frozen_by_user_status=1
+                    AND c2_previous_status IN ('SENT','TX_ORPHANED'))) AND d5_payout_source='provider' AND completed_at IS NULL
                AND d5_provider_cid IS NOT NULL AND is_deleted=0
                AND withdrawal_no>#{afterWithdrawalNo}
              ORDER BY withdrawal_no LIMIT #{limit}
@@ -164,6 +173,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
             UPDATE nx_withdrawal_order SET d5_payout_source='provider',updated_at=#{now}
              WHERE withdrawal_no=#{withdrawalNo} AND status='PROCESSING' AND is_deleted=0
                AND d5_provider_cid IS NULL AND (d5_payout_source IS NULL OR d5_payout_source='provider')
+                AND EXISTS(SELECT 1 FROM nx_user u WHERE u.id=nx_withdrawal_order.user_id AND u.status='ACTIVE' AND u.is_deleted=0)
             """)
     int markProviderIntent(@Param("withdrawalNo") String withdrawalNo,@Param("now") LocalDateTime now);
 
@@ -176,12 +186,15 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT withdrawal_no withdrawalNo,user_id userId,chain,target_address targetAddress,
-                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,status,
+                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,
+                   CASE WHEN status='FROZEN' AND c2_frozen_by_user_status=1 AND d5_payout_source='provider'
+                        AND c2_previous_status IN ('SENT','TX_ORPHANED','PROCESSING') THEN c2_previous_status ELSE status END AS status,
                    d5_payout_due_at payoutDueAt,d5_provider_cid providerCid,
                    d5_provider_idempotency_key providerIdempotencyKey,
                    d5_payout_source payoutSource,chain_broadcast_attempts attempts
               FROM nx_withdrawal_order
-             WHERE status='PROCESSING' AND d5_payout_lease_until<=#{now} AND is_deleted=0
+             WHERE (status='PROCESSING' OR (status='FROZEN' AND c2_frozen_by_user_status=1
+                    AND c2_previous_status='PROCESSING')) AND d5_payout_lease_until<=#{now} AND is_deleted=0
                AND chain='USDT-BEP20' AND (d5_payout_source IS NULL OR d5_payout_source='provider')
              ORDER BY id LIMIT #{limit}
             """)
@@ -189,7 +202,9 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT withdrawal_no withdrawalNo,user_id userId,chain,target_address targetAddress,
-                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,status,
+                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,
+                   CASE WHEN status='FROZEN' AND c2_frozen_by_user_status=1 AND d5_payout_source='provider'
+                        AND c2_previous_status IN ('SENT','TX_ORPHANED','PROCESSING') THEN c2_previous_status ELSE status END AS status,
                    d5_payout_due_at payoutDueAt,d5_provider_cid providerCid,
                    COALESCE(d5_provider_idempotency_key,withdrawal_no) providerIdempotencyKey,
                    d5_payout_source payoutSource,chain_broadcast_attempts attempts
@@ -199,7 +214,9 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT withdrawal_no withdrawalNo,user_id userId,chain,target_address targetAddress,
-                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,status,
+                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,
+                   CASE WHEN status='FROZEN' AND c2_frozen_by_user_status=1 AND d5_payout_source='provider'
+                        AND c2_previous_status IN ('SENT','TX_ORPHANED','PROCESSING') THEN c2_previous_status ELSE status END AS status,
                    d5_payout_due_at payoutDueAt,d5_provider_cid providerCid,
                    COALESCE(d5_provider_idempotency_key,withdrawal_no) providerIdempotencyKey,
                    d5_payout_source payoutSource,chain_broadcast_attempts attempts
@@ -212,8 +229,10 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
             UPDATE nx_withdrawal_order
                SET status='SENT',d5_provider_cid=#{providerCid},d5_payout_source=#{source},
                    d5_payout_lease_until=NULL,chain_submitted_at=#{now},next_broadcast_at=NULL,
-                   failure_reason=NULL,updated_at=#{now}
-             WHERE withdrawal_no=#{withdrawalNo} AND status='PROCESSING' AND is_deleted=0
+                   failure_reason=NULL,c2_frozen_by_user_status=0,c2_previous_status=NULL,updated_at=#{now}
+             WHERE withdrawal_no=#{withdrawalNo} AND (status='PROCESSING' OR (status='FROZEN'
+                AND c2_frozen_by_user_status=1 AND c2_previous_status='PROCESSING'
+                AND d5_payout_source='provider' AND #{source}='provider')) AND is_deleted=0
             """)
     int markSubmitted(@Param("withdrawalNo") String withdrawalNo, @Param("providerCid") long providerCid,
                       @Param("source") String source, @Param("now") LocalDateTime now);
@@ -232,8 +251,10 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
     @Update("""
             UPDATE nx_withdrawal_order
                SET status='TX_ORPHANED',d5_payout_lease_until=NULL,d5_provider_cid=#{providerCid},
-                   d5_payout_source=#{source},last_broadcast_error=#{error},failure_reason=#{error},updated_at=#{now}
-             WHERE withdrawal_no=#{withdrawalNo} AND status='PROCESSING' AND is_deleted=0
+                   d5_payout_source=#{source},last_broadcast_error=#{error},failure_reason=#{error},
+                    c2_frozen_by_user_status=0,c2_previous_status=NULL,updated_at=#{now}
+             WHERE withdrawal_no=#{withdrawalNo} AND (status='PROCESSING' OR (status='FROZEN'
+                AND c2_frozen_by_user_status=1 AND c2_previous_status='PROCESSING')) AND is_deleted=0
             """)
     int markOrphaned(@Param("withdrawalNo") String withdrawalNo, @Param("providerCid") Long providerCid,
                      @Param("source") String source, @Param("error") String error,
@@ -243,8 +264,10 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
             UPDATE nx_withdrawal_order
                SET status=#{status},chain_tx_hash=#{txid},completed_at=CASE WHEN #{status}='CONFIRMED' THEN #{now} ELSE completed_at END,
                    failed_at=CASE WHEN #{status}='FAILED' THEN #{now} ELSE failed_at END,
-                   failure_reason=#{failureReason},d5_payout_lease_until=NULL,updated_at=#{now}
-             WHERE withdrawal_no=#{withdrawalNo} AND status='SENT' AND d5_provider_cid=#{providerCid}
+                   failure_reason=#{failureReason},d5_payout_lease_until=NULL,c2_frozen_by_user_status=0,c2_previous_status=NULL,updated_at=#{now}
+             WHERE withdrawal_no=#{withdrawalNo} AND (status='SENT' OR (status='FROZEN'
+                    AND c2_frozen_by_user_status=1 AND c2_previous_status='SENT' AND d5_payout_source='provider'))
+                AND d5_provider_cid=#{providerCid}
                AND is_deleted=0
             """)
     int terminalOrder(@Param("withdrawalNo") String withdrawalNo, @Param("providerCid") long providerCid,
@@ -253,8 +276,11 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_withdrawal_order
-               SET status='TX_ORPHANED',failure_reason=#{error},last_broadcast_error=#{error},updated_at=#{now}
-             WHERE withdrawal_no=#{withdrawalNo} AND status='SENT' AND d5_provider_cid=#{providerCid}
+               SET status='TX_ORPHANED',c2_frozen_by_user_status=0,c2_previous_status=NULL,
+                    failure_reason=#{error},last_broadcast_error=#{error},updated_at=#{now}
+             WHERE withdrawal_no=#{withdrawalNo} AND (status='SENT' OR (status='FROZEN'
+                    AND c2_frozen_by_user_status=1 AND c2_previous_status='SENT' AND d5_payout_source='provider'))
+                AND d5_provider_cid=#{providerCid}
                AND is_deleted=0
             """)
     int holdAmbiguousCallback(@Param("withdrawalNo") String withdrawalNo,
@@ -263,10 +289,12 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_withdrawal_order
-               SET status='SENT',d5_provider_cid=#{providerCid},d5_payout_source='provider',
+               SET status='SENT',c2_frozen_by_user_status=0,c2_previous_status=NULL,
+                    d5_provider_cid=#{providerCid},d5_payout_source='provider',
                    d5_payout_lease_until=NULL,chain_submitted_at=COALESCE(chain_submitted_at,#{now}),
                    failure_reason=NULL,last_broadcast_error=NULL,updated_at=#{now}
-             WHERE withdrawal_no=#{withdrawalNo} AND status IN ('PROCESSING','TX_ORPHANED')
+             WHERE withdrawal_no=#{withdrawalNo} AND (status IN ('PROCESSING','TX_ORPHANED')
+                OR (status='FROZEN' AND c2_frozen_by_user_status=1 AND c2_previous_status IN ('PROCESSING','TX_ORPHANED')))
                AND (d5_payout_source IS NULL OR d5_payout_source='provider')
                AND (d5_provider_cid IS NULL OR d5_provider_cid=#{providerCid})
                AND d5_provider_idempotency_key=#{providerKey}

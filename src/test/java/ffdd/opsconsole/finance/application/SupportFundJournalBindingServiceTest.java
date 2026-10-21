@@ -447,10 +447,11 @@ class SupportFundJournalBindingServiceTest {
             String shape = switch (action) {
                 case DEPOSIT, EARNINGS, PROTECTED_EARNINGS -> "\"to\":{\"customerId\":7,\"currency\":\"USDT\",\"slot\":\"available\"},\"amount\":1";
                 case CONSUME, FEE, RESERVE -> from + ",\"amount\":1";
-                case REFUND -> "\"reference\":\"original\",\"amount\":1";
+                case REFUND, REVOKE_DEPOSIT, RESTORE_DEPOSIT -> "\"reference\":\"original\",\"amount\":1";
+                case REORG_REFUND -> "\"to\":{\"customerId\":7,\"currency\":\"USDT\",\"slot\":\"available\"},\"reference\":\"original\",\"amount\":1";
                 case CONFIRM, RETURN -> "\"reference\":\"original\"";
                 case RELEASE -> from + ",\"reference\":\"original\"";
-                case RECOVER, CLAWBACK -> from + ",\"reference\":\"original\",\"amount\":1";
+                case RECOVER, CLAWBACK, REORG_DEBIT -> from + ",\"reference\":\"original\",\"amount\":1";
                 case MOVE -> from + ",\"to\":{\"customerId\":7,\"currency\":\"USDT\",\"slot\":\"held:move\"},\"amount\":1";
                 case EXCHANGE -> from + ",\"to\":{\"customerId\":7,\"currency\":\"NEX\",\"slot\":\"available\"},\"amount\":1,\"targetAmount\":2";
                 case TRADE -> from + ",\"to\":{\"customerId\":8,\"currency\":\"USDT\",\"slot\":\"available\"},\"amount\":1,\"targetAmount\":1";
