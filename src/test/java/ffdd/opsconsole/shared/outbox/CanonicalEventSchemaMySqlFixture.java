@@ -100,9 +100,13 @@ public final class CanonicalEventSchemaMySqlFixture implements AutoCloseable {
     }
 
     public void migrate() throws Exception {
+        migrate(MIGRATION);
+    }
+
+    public void migrate(String migration) throws Exception {
         try (Connection connection = dataSource.getConnection()) {
             if (!database.equals(connection.getCatalog())) throw new IllegalStateException("Wrong migration database");
-            ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/migrations/" + MIGRATION));
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/migrations/" + migration));
         }
     }
 
