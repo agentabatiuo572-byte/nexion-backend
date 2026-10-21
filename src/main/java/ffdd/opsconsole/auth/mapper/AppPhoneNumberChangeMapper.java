@@ -1,12 +1,14 @@
 package ffdd.opsconsole.auth.mapper;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.auth.infrastructure.AppPhoneNumberChangeEntity;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
-public interface AppPhoneNumberChangeMapper {
+public interface AppPhoneNumberChangeMapper extends BaseMapper<AppPhoneNumberChangeEntity> {
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_user_phone_number_change (
               change_no VARCHAR(64) PRIMARY KEY,
