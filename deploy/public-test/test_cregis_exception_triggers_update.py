@@ -58,6 +58,7 @@ class CregisTriggerUpdateTests(unittest.TestCase):
         values = {'INSTALL': self.install, 'ROOT': self.root, 'STAGES': self.stage.parent,
                   'BACKUPS': self.backups, 'JOBS': self.jobs, 'GUARD': self.guard, 'PERMIT': self.permit,
                   'OLD_LOCK': self.old_pin, 'NEW_MIGRATIONS_SHA': u.digest(self.new_source),
+                  'EXPECTED_JAR_POLICY_SHA': self.config['policy_sha256'],
                   'sys': SimpleNamespace(flags=SimpleNamespace(isolated=1))}
         for name, value in values.items():
             self.start_patch(patch.object(u, name, value))
@@ -204,7 +205,8 @@ class CregisTriggerUpdateTests(unittest.TestCase):
         self.command.assert_not_called()
 
     def test_config_internal_external_and_job_drift_reject_before_stop(self):
-        variants = [({**self.config, 'trusted_files': {u.CHANGED: '0' * 64}}, 'CONFIG_PIN_DRIFT'),
+        variants = [({**self.config, 'policy_sha256': '0' * 64}, 'POLICY_PIN_DRIFT'),
+                    ({**self.config, 'trusted_files': {u.CHANGED: '0' * 64}}, 'CONFIG_PIN_DRIFT'),
                     ({**self.config, 'trusted_external_files': {str(self.external): '0' * 64}}, 'EXTERNAL_PIN_DRIFT'),
                     ({**self.config, 'job_hashes': {**self.config['job_hashes'], 'backend': '0' * 64}}, 'JOB_PIN_DRIFT')]
         for config, reason in variants:
@@ -341,6 +343,15 @@ class CregisTriggerUpdateTests(unittest.TestCase):
             u.update(self.stage, self.new_pin)
         self.assertEqual(self.install_snapshot(), self.old)
         self.assertFalse(list(self.backups.iterdir()))
+
+    def test_jar_policy_pin_is_distinct_and_preserved_from_bundled_policy(self):
+        actual_jar_pin = u.digest(b'approved jar policy')
+        self.config['policy_sha256'] = actual_jar_pin
+        (self.install / 'config.json').write_bytes(json.dumps(self.config).encode())
+        with patch.object(u, 'EXPECTED_JAR_POLICY_SHA', actual_jar_pin):
+            u.update(self.stage, self.new_pin)
+        self.assertEqual(json.loads((self.install / 'config.json').read_bytes())['policy_sha256'], actual_jar_pin)
+        self.assertEqual((self.install / 'public-test-policy.properties').read_bytes(), self.old_sources['public-test-policy.properties'])
 
     def test_trusted_path_rejects_symlink_nonroot_and_writable_files(self):
         # Exercise the actual validator through fresh source loaded under a test name.
