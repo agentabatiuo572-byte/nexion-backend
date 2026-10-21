@@ -21,6 +21,7 @@ public class OAuthProviderFlow {
     private String verifier;
     private String browserHash;
     private Long linkUserId;
+    private String sponsorCode;
     private String status;
     private String subject;
     private String displayName;

@@ -268,6 +268,22 @@ class JwtAuthenticationFilterTest {
         org.mockito.Mockito.verify(authSessionMapper).touchActiveUserSession("user-session-1", 42L, 14);
     }
 
+    @Test void providerOnlySessionRequiresItsStoredProviderIdentity() throws Exception {
+        when(userMapper.selectById(42L)).thenReturn(user(0, null, null));
+        when(userMapper.countProviderIdentities(42L)).thenReturn(1);
+        when(authSessionMapper.touchActiveUserSession("provider-session", 42L, 30)).thenReturn(1);
+        var request = requestWithBearer(tokenProvider.createUserToken(42L, "", List.of(),
+                "provider-session", java.time.Duration.ofHours(1), UserAuthEnvironment.PRODUCTION));
+        filter.doFilter(request, new MockHttpServletResponse(), (a, b) -> { });
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNotNull();
+        SecurityContextHolder.clearContext();
+        when(userMapper.countProviderIdentities(42L)).thenReturn(0);
+        filter.doFilter(requestWithBearer(tokenProvider.createUserToken(42L, "", List.of(),
+                "provider-session", java.time.Duration.ofHours(1), UserAuthEnvironment.PRODUCTION)),
+                new MockHttpServletResponse(), (a, b) -> { });
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
+
     @Test
     void recentlyRotatedBearerCanFinishInFlightRequestWhenChainHasLiveSuccessor() throws Exception {
         when(authSessionMapper.touchActiveUserSession("rotated-session", 42L, 30)).thenReturn(0);

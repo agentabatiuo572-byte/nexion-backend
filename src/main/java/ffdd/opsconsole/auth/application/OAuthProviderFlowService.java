@@ -41,6 +41,7 @@ public class OAuthProviderFlowService {
     private final Environment environment;
     private final AppUserSecurityVerificationGuard verificationGuard;
     private final CurrentAppSessionService currentSessions;
+    private final AppUserRegistrationService registration;
 
     @PostConstruct void ensureSchema() { flows.createTable(); }
 
@@ -63,7 +64,16 @@ public class OAuthProviderFlowService {
     }
 
     public Start start(String providerName, Long linkUserId, String clientAddress) {
+        return start(providerName, linkUserId, clientAddress, null);
+    }
+
+    public Start start(String providerName, Long linkUserId, String clientAddress, String sponsorCode) {
         requireEnvironment();
+        if (linkUserId != null && sponsorCode != null && !sponsorCode.isBlank())
+            throw new BizException(422, "OAUTH_REQUEST_INVALID");
+        String canonicalSponsor = sponsorCode == null ? null : sponsorCode.trim().replace("-", "").toUpperCase(java.util.Locale.ROOT);
+        if (canonicalSponsor != null && !canonicalSponsor.isEmpty() && !canonicalSponsor.matches("[A-Z0-9]{4,32}"))
+            throw new BizException(422, "USER_REGISTRATION_SPONSOR_INVALID");
         var provider = providers.provider(providerName);
         providers.requireConfigured(provider);
         String clientHash = OAuthProviderClient.hash(String.valueOf(clientAddress));
@@ -78,6 +88,7 @@ public class OAuthProviderFlowService {
         flow.setNonce(OAuthProviderClient.random());
         flow.setVerifier(OAuthProviderClient.random());
         flow.setLinkUserId(linkUserId);
+        flow.setSponsorCode(canonicalSponsor == null || canonicalSponsor.isEmpty() ? null : canonicalSponsor);
         flow.setClientHash(clientHash);
         flows.insertFlow(flow);
         return new Start(flow.getId(), key, providers.publicBaseUrl()
@@ -147,7 +158,12 @@ public class OAuthProviderFlowService {
         // Links are immutable here. Read the mapping before the account lock without taking an identity
         // lock; linking always locks account -> identity, so login must not reverse that order.
         var identity = identities.findProviderIdentity(flow.getProvider(), flow.getSubject());
-        if (identity == null) return ApiResult.fail(409, "OAUTH_ACCOUNT_LINK_REQUIRED");
+        if (identity == null) {
+            var created = registration.registerProvider(flow.getProvider(), flow.getSubject(), flow.getDisplayName(),
+                    flow.getSponsorCode(), clientAddress, context, identities);
+            if (flows.consume(flow.getId()) != 1) throw new BizException(409, "OAUTH_FLOW_ALREADY_USED");
+            return created;
+        }
         var result = auth.issueProviderSession(identity.getUserId(), clientAddress, context, challengeNo, code, captchaTicket);
         if (result.getCode() == 0 && flows.consume(flow.getId()) != 1)
             throw new BizException(409, "OAUTH_FLOW_ALREADY_USED");

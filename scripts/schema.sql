@@ -6,8 +6,8 @@ SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS nx_user (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  country_code VARCHAR(8) NOT NULL,
-  phone VARCHAR(32) NOT NULL,
+  country_code VARCHAR(8) NULL,
+  phone VARCHAR(32) NULL,
   client_ip VARCHAR(64) NOT NULL,
   password_hash VARCHAR(128) NOT NULL,
   nickname VARCHAR(64) NOT NULL,

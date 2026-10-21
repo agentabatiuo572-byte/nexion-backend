@@ -28,8 +28,9 @@ class OAuthProviderFlowServiceTest {
     final MockEnvironment environment = new MockEnvironment();
     final AppUserSecurityVerificationGuard guard = mock(AppUserSecurityVerificationGuard.class);
     final CurrentAppSessionService sessions = mock(CurrentAppSessionService.class);
+    final AppUserRegistrationService registration = mock(AppUserRegistrationService.class);
     final Authentication authentication = mock(Authentication.class);
-    final OAuthProviderFlowService service = new OAuthProviderFlowService(providers, mapper, identities, auth, environment, guard, sessions);
+    final OAuthProviderFlowService service = new OAuthProviderFlowService(providers, mapper, identities, auth, environment, guard, sessions, registration);
     final String id = "OIDC-" + "a".repeat(32), key = "k".repeat(43), receipt = "r".repeat(43), state = "s".repeat(43);
     final OAuthProviderFlowService.Proof proof = new OAuthProviderFlowService.Proof(id, key, receipt);
     final AppLoginContext context = new AppLoginContext(AppSessionSurface.H5, "", false, id, key, "OAUTH", "GOOGLE:" + id);
@@ -62,11 +63,16 @@ class OAuthProviderFlowServiceTest {
         assertThat(status.status()).isEqualTo("PENDING"); assertThat(status.displayName()).isNull();
         assertThat(service.status(proof).displayName()).isEqualTo("Verified account");
     }
-    @Test void unknownProviderIdentityDoesNotCreateAccountOrIssueSession() {
-        assertThat(service.login(proof, "client", context, null, null).getMessage()).isEqualTo("OAUTH_ACCOUNT_LINK_REQUIRED");
-        verify(identities, never()).insertIdentity(any());
+    @Test void firstProviderLoginCreatesAccountWithTheStoredSponsorAndConsumesProof() {
+        flow.setSponsorCode("NXINVITE1234");
+        var response = ApiResult.ok(new UserLoginResponse("access", "Bearer", null, "refresh"));
+        when(registration.registerProvider("GOOGLE", "verified-subject", "Verified account",
+                "NXINVITE1234", "client", context, identities)).thenReturn(response);
+        assertThat(service.login(proof, "client", context, null, null)).isSameAs(response);
+        verify(registration).registerProvider("GOOGLE", "verified-subject", "Verified account",
+                "NXINVITE1234", "client", context, identities);
         verify(auth, never()).issueProviderSession(any(), any(), any(), any(), any(), any());
-        verify(mapper, never()).consume(any());
+        verify(mapper).consume(id);
     }
     @Test void validLoginUsesInteractiveSessionPolicyAndConsumesOnlyAfterSuccess() {
         var identity = new UserOAuthIdentityEntity(); identity.setUserId(12L);
