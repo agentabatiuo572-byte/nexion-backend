@@ -1840,7 +1840,7 @@ class OpsUserServiceTest {
         List<UserCredentialParamView> params = service.credentialParams().getData();
 
         assertThat(params).extracting(UserCredentialParamView::value)
-                .contains("4 小时", "30 天", "30 天", "7 天");
+                .contains("4 小时", "30 天", "30 天", "7 天", "365 天", "5 次");
     }
 
     private UserSecurityActionRequest verifiedC5Request(String reason, String lockKind) {

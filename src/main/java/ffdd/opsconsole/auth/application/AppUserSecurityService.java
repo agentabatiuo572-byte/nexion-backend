@@ -452,7 +452,7 @@ public class AppUserSecurityService {
         return StringUtils.hasText(password) && password.length() <= MAX_PASSWORD_LENGTH;
     }
 
-    private String verifyCurrentPassword(Long userId, String rawPassword, String operation) {
+    String verifyCurrentPassword(Long userId, String rawPassword, String operation) {
         if (!verificationGuard.allowed(userId, operation)) {
             throw new PreWriteRejection(429, "USER_SECURITY_VERIFICATION_RATE_LIMITED");
         }
