@@ -99,7 +99,7 @@ public interface AppPhoneNumberChangeMapper extends BaseMapper<AppPhoneNumberCha
               SHA2(CONCAT(#{newCode},':',#{changeNo},':NEW'),256),
               DATE_ADD(NOW(),INTERVAL 10 MINUTE))
             """)
-    int insert(@Param("changeNo") String changeNo, @Param("userId") long userId,
+    int insertChallenge(@Param("changeNo") String changeNo, @Param("userId") long userId,
             @Param("oldCountryCode") String oldCountryCode, @Param("oldPhone") String oldPhone,
             @Param("newCountryCode") String newCountryCode, @Param("newPhone") String newPhone,
             @Param("oldCode") String oldCode, @Param("newCode") String newCode);
