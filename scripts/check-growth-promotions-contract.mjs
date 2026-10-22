@@ -564,6 +564,7 @@ function check(doc, fixture, sql) {
   assert.equal(doc.paths['/api/promotions'].get['x-placement-filter'], 'EXPLICIT_SELECTED_ACTIVE_PUBLISHED');
   assert(doc.paths['/api/promotions'].get.parameters.some(p => p.name === 'placement' && p.schema.enum?.[0] === 'home.purchase-promotion'));
   const opMap = new Map();
+  assert.deepEqual(doc.paths['/api/admin/growth/promotion-account-samples'].get['x-required-permissions'], ['growth_promotion_simulate','user_c1_read']);
   for (const [route, verbs] of Object.entries(doc.paths)) {
     assert(route.startsWith('/'));
     for (const [method, operation] of Object.entries(verbs)) {

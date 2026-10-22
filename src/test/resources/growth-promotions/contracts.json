@@ -298,6 +298,11 @@
       "operationId": "withdrawPromotion",
       "requestExample": "request_PublishAction",
       "responseExample": "response_CommandReceipt"
+    },
+    {
+      "id": "searchPromotionAccountSamples",
+      "operationId": "searchPromotionAccountSamples",
+      "responseExample": "response_AccountSamplePage"
     }
   ],
   "schemas": {
@@ -5096,6 +5101,24 @@
               "status": "UNKNOWN"
             }
           ]
+        }
+      }
+    },
+    "response_AccountSamplePage": {
+      "summary": "Synthetic scoped account selection, never a live account.",
+      "value": {
+        "code": 0,
+        "message": "success",
+        "data": {
+          "items": [
+            {
+              "accountId": "29",
+              "label": "U000000029 · Synthetic sample"
+            }
+          ],
+          "total": 31,
+          "pageNum": 2,
+          "pageSize": 20
         }
       }
     }

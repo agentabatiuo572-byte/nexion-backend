@@ -57,7 +57,7 @@ class PromotionListSnapshotMySqlTest {
                 try(var session=new MybatisSqlSessionFactoryBuilder().build(configuration).openSession(true)){
                     var db=session.getMapper(PromotionMapper.class);
                     var validator=new PromotionContractValidator(new ObjectMapper().findAndRegisterModules());
-                    var admin=new PromotionAdminService(db,validator,null,null,null,null,null,null,null,null,null,null,null,null);
+                    var admin=new PromotionAdminService(db,validator,null,null,null,null,null,null,null,null,null,null,null,null,null);
                     authenticate(17,true);
                     String terms="terms ".repeat(600);
                     for(String id:List.of("A1","A2")){

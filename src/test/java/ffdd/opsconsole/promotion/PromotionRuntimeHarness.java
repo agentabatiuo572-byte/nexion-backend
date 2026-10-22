@@ -76,7 +76,7 @@ public final class PromotionRuntimeHarness {
         earningsPolicy=new RiskReleaseParamsService(config,idempotency,audit,null,false);
         natives=new PromotionNativeContractResolver(db,config,earningsPolicy,a2,new MockEnvironment().withProperty("spring.profiles.active","test"),30);
         validator=new PromotionContractValidator(json);resolver=new PromotionPolicyResolver(db,validator,natives);policies=new PromotionPolicyService(db,validator,resolver,natives);
-        admin=new PromotionAdminService(db,validator,resolver,policies,natives,null,null,null,null,idempotency,audit,a2,null,org.mockito.Mockito.mock(PromotionBannerService.class));
+        admin=new PromotionAdminService(db,validator,resolver,policies,natives,null,null,null,null,idempotency,audit,a2,null,org.mockito.Mockito.mock(PromotionBannerService.class),org.mockito.Mockito.mock(PromotionAccountSampleService.class));
         authenticate(maker);
         var request=values("reason","隔离治理契约真实验收说明","draft",values("category","PROMOTION","template","SKU_GIFT"));
         admin.command("createPromotion","promotions",run+"-evidence",request,()->admin.create(request));

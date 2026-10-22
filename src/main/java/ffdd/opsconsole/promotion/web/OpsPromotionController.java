@@ -17,6 +17,7 @@ public class OpsPromotionController {
     private final PromotionPolicyService policies;
     private final PromotionRewardService rewards;
     private final PromotionMetricsService metrics;
+    private final PromotionAccountSampleService accountSamples;
 
     @ExceptionHandler(BizException.class)
     public org.springframework.http.ResponseEntity<ApiResult<Map<String,Object>>> rejected(BizException failure){
@@ -31,6 +32,8 @@ public class OpsPromotionController {
 
     @GetMapping("/promotion-catalog") @PreAuthorize("hasAuthority('growth_promotion_read')")
     public ApiResult<Map<String,Object>> catalog(){return ApiResult.ok(admin.catalog());}
+    @GetMapping("/promotion-account-samples") @PreAuthorize("hasAuthority('growth_promotion_simulate') and hasAuthority('user_c1_read')")
+    public ApiResult<Map<String,Object>> accountSamples(@RequestParam(defaultValue="") String keyword,@RequestParam(required=false) String accountId,@RequestParam(defaultValue="1") int pageNum){return ApiResult.ok(accountSamples.search(keyword,accountId,pageNum));}
     @GetMapping("/promotion-commands/{idempotencyKey}") @PreAuthorize("hasAuthority('growth_promotion_read')")
     public ApiResult<Map<String,Object>> command(@PathVariable String idempotencyKey,@RequestParam String operation,@RequestParam String targetId){return ApiResult.ok(admin.recover(idempotencyKey,operation,targetId));}
     @GetMapping("/promotion-policies") @PreAuthorize("hasAuthority('growth_promotion_policy_read')")

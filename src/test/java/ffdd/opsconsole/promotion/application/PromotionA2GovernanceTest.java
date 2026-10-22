@@ -47,7 +47,7 @@ class PromotionA2GovernanceTest {
             if(verb!=null){assertNotNull(method.getAnnotation(PreAuthorize.class));actual.put(verb+" /api/admin/growth"+path,method.getAnnotation(PreAuthorize.class).value());}
         }
         for(var paths=spec.get("paths").fields();paths.hasNext();){var entry=paths.next();if(!entry.getKey().startsWith("/api/admin/growth/"))continue;
-            for(var methods=entry.getValue().fields();methods.hasNext();){var method=methods.next();String key=method.getKey()+" "+entry.getKey();assertEquals("hasAuthority('"+method.getValue().get("x-required-permission").asText()+"')",actual.remove(key),key);}}
+            for(var methods=entry.getValue().fields();methods.hasNext();){var method=methods.next();String key=method.getKey()+" "+entry.getKey();var required=method.getValue().get("x-required-permissions");String expected=required==null?"hasAuthority('"+method.getValue().get("x-required-permission").asText()+"')":java.util.stream.StreamSupport.stream(required.spliterator(),false).map(permission->"hasAuthority('"+permission.asText()+"')").collect(java.util.stream.Collectors.joining(" and "));assertEquals(expected,actual.remove(key),key);}}
         assertTrue(actual.isEmpty());
     }
     @Test void existingGrowthReplayUsesTheRealPromotionApprovalService() {
