@@ -46,7 +46,7 @@ class BscExceptionProofTest {
             if(method.equals("eth_getTransactionReceipt"))receipts.incrementAndGet();
             result=switch(method){case "eth_chainId"->"0x38";case "eth_blockNumber"->"0x80";
                 case "eth_getBlockByNumber"->Map.of("number",request.path("params").get(0).asText(),"hash",canonical);
-                case "eth_call"->"0x12";case "eth_getCode"->contract?"0x6000":"0x";
+                case "eth_call"->"0x"+"0".repeat(62)+"12";case "eth_getCode"->contract?"0x6000":"0x";
                 case "eth_getTransactionReceipt"->missing?null:Map.of("transactionHash",tx,"from","0x"+"f".repeat(40),"status","0x1","blockNumber","0x"+Long.toHexString(currentBlock),"blockHash",canonical,"logs",ambiguous?List.of(log(currentIndex,from),log(currentIndex+1,from)):List.of(log(1,"0x"+"f".repeat(40)),log(currentIndex,from)));
                 default->null;};
             Map<String,Object> response=new HashMap<>();response.put("jsonrpc","2.0");response.put("id",1);

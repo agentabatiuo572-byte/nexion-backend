@@ -29,6 +29,7 @@ class BscDepositProofTest {
     private String head = "0x72";
     private String received = "1000000000000000000";
     private String balance = "0x0";
+    private String decimals = "0x" + "0".repeat(62) + "12";
     private String canonicalHash = HASH;
     private String logTx = TX;
     private final AtomicReference<String> userAgent = new AtomicReference<>();
@@ -46,6 +47,17 @@ class BscDepositProofTest {
     }
 
     @AfterEach void close() { if (server != null) server.stop(0); }
+
+    @Test void rejectsDifferentOrMalformedAbiDecimalsBeforeReadingBalancesOrVerifyingTransfers() throws Exception {
+        var proof = local();
+        for (String invalidDecimals : java.util.List.of("0x" + "0".repeat(62) + "06", "0x" + "1".repeat(65), "0xZZ")) {
+            decimals = invalidDecimals;
+            methods.clear();
+            assertThatThrownBy(() -> proof.preparationBalance(TO)).hasMessage("CREGIS_BSC_PROOF_INVALID");
+            assertThat(methods).doesNotContain("eth_getBalance");
+            assertThatThrownBy(() -> proof.verify(TX, TO, BigDecimal.ONE, 100)).hasMessage("CREGIS_BSC_PROOF_INVALID");
+        }
+    }
 
     @Test
     void creditsOnlyCanonicalReceiptWithExactTransferAndFifteenConfirmations() throws Exception {
@@ -130,7 +142,7 @@ class BscDepositProofTest {
                 case "eth_getBlockByNumber" -> "{\"hash\":\"" + canonicalHash + "\",\"number\":\""
                         + request.path("params").get(0).asText() + "\"}";
                 case "eth_call" -> request.path("params").get(0).path("data").asText()
-                        .startsWith("0x70a08231") ? "\"" + balance + "\"" : "\"0x12\"";
+                        .startsWith("0x70a08231") ? "\"" + balance + "\"" : "\"" + decimals + "\"";
                 case "eth_getTransactionReceipt" -> "{\"status\":\"0x1\",\"transactionHash\":\"" + TX
                         + "\",\"blockNumber\":\"0x64\",\"blockHash\":\"" + HASH + "\",\"logs\":[" + log() + "]}";
                 case "eth_getLogs" -> "[" + log() + "]";
