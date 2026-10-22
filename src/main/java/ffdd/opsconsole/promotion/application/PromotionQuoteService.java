@@ -5,11 +5,14 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.promotion.domain.PromotionRules;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.shared.canonical.BundleDiscountPolicy;
+import ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.math.*;
 import java.time.*;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.transaction.annotation.Transactional;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 
@@ -22,6 +25,8 @@ public class PromotionQuoteService {
     private final PromotionEvaluationService evaluator;
     private final PlatformConfigFacade config;
     private final AppGrowthLifecyclePublisher vouchers;
+    // Canonical commerce also depends on PromotionOrderService; resolve only when evaluating a purchase.
+    private final ObjectProvider<AppCanonicalBoundaryService> purchaseEligibility;
 
     @Transactional
     public Map<String,Object> quote(Long userId,Map<String,Object> request) {
@@ -30,6 +35,7 @@ public class PromotionQuoteService {
         db.user(userId,false);
         List<PromotionRules.Selection> items=selections(request);
         require(items.size()<=8,"BUNDLE_PRODUCT_COUNT_INVALID");
+        requirePurchaseEligibility(userId,items);
         Map<String,Object> price=prices(userId,items,text(request.get("voucherId")));
         Instant now=Instant.now();
         List<Map<String,Object>> candidates=db.list("""
@@ -78,6 +84,23 @@ public class PromotionQuoteService {
         changed(db.write("INSERT INTO nx_promotion_quote(quote_id,user_id,request_hash,quote_hash,quote_json,expires_at) VALUES(?,?,?,?,?,?)",
             quoteId,userId,hash(request),quoteHash,json(stored),timestamp(expiry)));
         return publicQuote;
+    }
+    // Simulation catches unavailable facts; keep that failed read from marking its transaction rollback-only.
+    @Transactional(readOnly=true,propagation=org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    public void requirePurchaseEligibility(long user,List<PromotionRules.Selection> items) {
+        var products=items.stream().map(PromotionRules.Selection::productNo).toList();
+        var result=purchaseEligibility.getObject().purchaseEligibilityBatch(user,products);
+        if(result==null)throw new BizException(503,"PURCHASE_ELIGIBILITY_UNAVAILABLE");
+        if(result.getCode()!=0)throw new BizException(result.getCode(),result.getMessage());
+        for(String product:products){
+            var decision=result.getData()==null?null:result.getData().get(product);
+            if(decision==null)throw new BizException(503,"PURCHASE_ELIGIBILITY_UNAVAILABLE");
+            if(!decision.eligible()){
+                String code=decision.decisionCode();
+                boolean rejected=Set.of("F4B_REQUIREMENTS_NOT_MET","F4B_MONTHLY_QUOTA_EXHAUSTED","PURCHASE_GATE_NOT_MET","PURCHASE_GATE_SOLD_OUT","PRODUCT_NOT_RELEASED").contains(code);
+                throw new BizException(rejected?409:503,code);
+            }
+        }
     }
     public Map<String,Object> prices(long user,List<PromotionRules.Selection> items,String voucher) {
         return prices(user,items,voucher,false);

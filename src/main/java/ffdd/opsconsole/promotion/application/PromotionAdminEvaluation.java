@@ -63,11 +63,12 @@ final class PromotionAdminEvaluation {
 
     Map<String,Object> simulate(String activity,Map<String,Object> root,Map<String,Object> c,Map<String,Object> request){
         Instant now=Instant.now();Long account=request.get("sampleAccountId")==null?null:number(request.get("sampleAccountId"));var items=PromotionQuoteService.selections(request);PromotionRules.selections(items);
-        var blockers=new ArrayList<String>();Map<String,Object> resolved=Map.of(),price=null;List<Map<String,Object>> awards=List.of();
+        var blockers=new ArrayList<String>();Map<String,Object> resolved=Map.of(),price=null;List<Map<String,Object>> awards=List.of();String purchaseFailure=null;
         try{resolved=resolver.resolve(c,false);}catch(BizException|DataAccessException failure){blockers.add("EXECUTABLE_POLICY_UNAVAILABLE");}
         try{price=quotes.prices(account==null?0:account,items,"");}catch(BizException|DataAccessException failure){blockers.add("PRICING_SOURCE_UNAVAILABLE");}
         if(account==null)blockers.add("SAMPLE_ACCOUNT_REQUIRED");
-        if(blockers.isEmpty())try{awards=evaluator.evaluate(activity,c,resolved,account,items,now,null).stream().map(PromotionEvaluationService::award).toList();}catch(BizException|DataAccessException failure){blockers.add("ACCOUNT_FACTS_UNAVAILABLE");}
+        else try{quotes.requirePurchaseEligibility(account,items);}catch(BizException failure){if(failure.getCode()==409)purchaseFailure=failure.getMessage();else blockers.add("PURCHASE_ELIGIBILITY_UNAVAILABLE");}catch(DataAccessException|org.springframework.beans.BeansException failure){blockers.add("PURCHASE_ELIGIBILITY_UNAVAILABLE");}
+        if(blockers.isEmpty()&&purchaseFailure==null)try{awards=evaluator.evaluate(activity,c,resolved,account,items,now,null).stream().map(PromotionEvaluationService::award).toList();}catch(BizException|DataAccessException failure){blockers.add("ACCOUNT_FACTS_UNAVAILABLE");}
         var results=new ArrayList<Map<String,Object>>();var units=new ArrayList<Map<String,Object>>();
         Map<String,Integer> quantities=new HashMap<>();items.forEach(item->quantities.put(item.productNo(),item.quantity()));
         for(var rule:maps(c.get("rules"))){
@@ -76,7 +77,8 @@ final class PromotionAdminEvaluation {
                 Object spec=rule.get("BUYER".equals(role)?"buyerReward":"inviterReward");if(spec==null)continue;
                 var matched=awards.stream().filter(a->rule.get("ruleId").equals(a.get("ruleId"))&&role.equals(a.get("beneficiaryRole"))).toList();
                 var reasons=new ArrayList<String>(blockers);String status=blockers.isEmpty()?(matched.isEmpty()?"REJECTED":"MATCHED"):"UNKNOWN";
-                if(blockers.isEmpty()&&matched.isEmpty()){
+                if(purchaseFailure!=null)reasons.add(purchaseFailure);
+                if(blockers.isEmpty()&&purchaseFailure==null&&matched.isEmpty()){
                     try{
                         reasons.addAll(audienceFailures(c,"buyerAudience",account,map(c.get("buyerAudience")),resolved,now));
                         if(quantity<number(rule.get("minBuyQty")))reasons.add(quantity==0?"PRODUCT_NOT_SELECTED":"MINIMUM_QUANTITY_NOT_MET");
@@ -103,6 +105,7 @@ final class PromotionAdminEvaluation {
         boolean unknown=!blockers.isEmpty()||resources.stream().anyMatch(r->"UNKNOWN".equals(r.get("status")))||quotas.stream().anyMatch(r->"UNKNOWN".equals(r.get("status")));
         boolean shortage=resources.stream().anyMatch(r->"SHORTAGE".equals(r.get("status")))||quotas.stream().anyMatch(r->"SHORTAGE".equals(r.get("status")));
         if(shortage)blockers.add("RESOURCE_SHORTAGE");
+        if(purchaseFailure!=null)blockers.add(purchaseFailure);
         var result=values("activityId",activity,"version",root.get("draft_version")==null?number(root.get("active_version")):number(root.get("draft_version")),"configHash",hash(c),"asOf",now.toString(),"sample",values("kind",account==null?"UNSELECTED":"EXISTING_ACCOUNT","accountId",account==null?null:String.valueOf(account)),"pricing",price,"eligibility",unknown?"UNKNOWN":awards.isEmpty()?"INELIGIBLE":"ELIGIBLE","ruleResults",results,"rewardUnits",units,"resources",resources,"quotaImpact",quotas,"publicPreview",resolved.isEmpty()?null:publicPreview(c,resolved),"blockers",diagnostics(blockers),"completeness",unknown?"UNAVAILABLE":"COMPLETE","reserved",false,"giftCostUsdt",null,"acquisitionCostUsdt",null,"source",List.of("PromotionRules.evaluate","nx_promotion_usage","nx_promotion_budget","nx_product","nx_admin_device_sku","approved native policies"));
         validator.validate("AdminSimulation",result);return result;
     }
@@ -149,6 +152,11 @@ final class PromotionAdminEvaluation {
     private Map<String,Object> message(String code){
         String[] text=switch(code){
             case "SAMPLE_ACCOUNT_REQUIRED"->new String[]{"请选择账户样本后核对资格与奖励","Select an account sample to evaluate eligibility and rewards.","Chọn tài khoản mẫu để kiểm tra điều kiện và phần thưởng."};
+            case "F4B_REQUIREMENTS_NOT_MET"->new String[]{"所选商品的有效直推或团队业绩购买条件尚未满足","The selected product's active-direct or team-volume purchase requirements are not met.","Chưa đáp ứng điều kiện mua về giới thiệu trực tiếp hoặc doanh số nhóm của sản phẩm đã chọn."};
+            case "F4B_MONTHLY_QUOTA_EXHAUSTED"->new String[]{"所选商品本月购买配额已用完","The selected product's monthly purchase quota is exhausted.","Hạn mức mua tháng này của sản phẩm đã chọn đã hết."};
+            case "F4B_QUOTA_UNAVAILABLE","PURCHASE_ELIGIBILITY_UNAVAILABLE"->new String[]{"商品购买资格暂无法确认，请稍后重试","Product purchase eligibility is unavailable; retry later.","Chưa thể xác nhận điều kiện mua sản phẩm; vui lòng thử lại sau."};
+            case "PURCHASE_GATE_NOT_MET"->new String[]{"尚未满足所选商品的购买条件","The selected product's purchase requirements are not met.","Chưa đáp ứng điều kiện mua sản phẩm đã chọn."};
+            case "PRODUCT_NOT_RELEASED","PRODUCT_NOT_AVAILABLE"->new String[]{"所选商品当前不可购买","The selected product is currently unavailable for purchase.","Hiện chưa thể mua sản phẩm đã chọn."};
             case "PRODUCT_NOT_SELECTED"->new String[]{"样本未购买此商品","This product is absent from the sample order.","Đơn mẫu không có sản phẩm này."};
             case "MINIMUM_QUANTITY_NOT_MET"->new String[]{"购买数量未达到本组门槛","The quantity is below this rule's minimum.","Số lượng chưa đạt mức tối thiểu của quy tắc."};
             case "COMBINATION_INCOMPLETE"->new String[]{"尚未满足全部商品组合","The required product combination is incomplete.","Chưa đủ tổ hợp sản phẩm bắt buộc."};
