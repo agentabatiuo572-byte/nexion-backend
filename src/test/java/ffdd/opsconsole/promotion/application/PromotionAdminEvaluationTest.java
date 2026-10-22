@@ -31,9 +31,16 @@ class PromotionAdminEvaluationTest {
     final PromotionContractValidator validator=new PromotionContractValidator(new ObjectMapper());
     final PromotionAdminEvaluation service=new PromotionAdminEvaluation(db,validator,resolver,evaluator,quotes);
     Map<String,Object> contract() throws Exception{return map(map(map(parse(Files.readString(Path.of("src/test/resources/growth-promotions/contracts.json"))).get("examples")).get("request_SimulateInput")).get("value")).get("draft") instanceof Map<?,?> c?map(c):Map.of();}
-    @Test void simulationRejectsUnmetStorefrontPurchaseConditionsBeforeAwardEvaluation() throws Exception {
-        var c=contract();when(resolver.resolve(anyMap(),eq(false))).thenReturn(Map.of());
+    void stubSimulationReads(){
+        when(resolver.resolve(anyMap(),eq(false))).thenReturn(Map.of());
+        var line=values("lineId","SKU1","productNo","SKU1","quantity",1,"unitPriceUsdt","1.000000","subtotalUsdt","1.000000","discountUsdt","0.000000","payableUsdt","1.000000");
+        when(quotes.prices(anyLong(),anyList(),eq(""))).thenReturn(values("items",List.of(line),"subtotalUsdt","1.000000","discountUsdt","0.000000","amountUsdt","1.000000","bundlePolicyVersion",1));
         when(db.product(anyString(),eq(false))).thenReturn(values("inventory_mode","UNLIMITED"));
+        when(db.list(anyString(),any(Object[].class))).thenReturn(List.of());
+        when(db.one(anyString(),any(Object[].class))).thenReturn(null);
+    }
+    @Test void simulationRejectsUnmetStorefrontPurchaseConditionsBeforeAwardEvaluation() throws Exception {
+        var c=contract();stubSimulationReads();
         doThrow(new BizException(409,"F4B_REQUIREMENTS_NOT_MET")).when(quotes).requirePurchaseEligibility(eq(29L),anyList());
         var result=service.simulate("A1",values("draft_version",1,"reserved_orders",0,"used_orders",0),c,values("sampleAccountId","29","items",List.of(values("productNo","SKU1","quantity",1))));
         assertEquals("INELIGIBLE",result.get("eligibility"));assertTrue(maps(result.get("rewardUnits")).isEmpty());
@@ -42,8 +49,7 @@ class PromotionAdminEvaluationTest {
         verifyNoInteractions(evaluator);verify(db,never()).write(anyString(),any());
     }
     @Test void simulationNeverAssumesPurchaseEligibilityWithoutSampleOrReadableFacts() throws Exception {
-        var c=contract();when(resolver.resolve(anyMap(),eq(false))).thenReturn(Map.of());
-        when(db.product(anyString(),eq(false))).thenReturn(values("inventory_mode","UNLIMITED"));
+        var c=contract();stubSimulationReads();
         var items=List.of(values("productNo","SKU1","quantity",1));
         var anonymous=service.simulate("A1",values("draft_version",1,"reserved_orders",0,"used_orders",0),c,values("items",items));
         assertEquals("UNKNOWN",anonymous.get("eligibility"));verify(quotes,never()).requirePurchaseEligibility(anyLong(),anyList());
