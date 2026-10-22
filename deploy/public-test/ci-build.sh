@@ -56,10 +56,8 @@ const manifest = {version:1,component:kind,branch:'test',sha:fs.readFileSync('ar
   artifact,sha256:hash(fs.readFileSync('artifacts/'+artifact)),schema};
 if (kind === 'backend') {
   manifest.tree = fs.readFileSync('artifacts/test-tree.txt','utf8').trim();
-  manifest.publicationNative = 'OWNER_ADMISSION_REQUIRED';
 }
 fs.writeFileSync('artifacts/release.json', JSON.stringify(manifest, null, 2)+'\n');
 JS
 (cd artifacts && shopt -s nullglob && sha256sum test-sha.txt test-tree.txt release.json *.jar *.tgz | tee SHA256SUMS)
 echo 'RELEASE_ARTIFACT_READY: isolated CI passed; host broker independently controls promotion and rollback.'
-if [ "$kind" = backend ]; then echo 'PUBLICATION_NATIVE_HOLD: normal build success needs independent root owner admission before promotion.'; fi
