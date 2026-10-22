@@ -33,6 +33,17 @@ class BscDepositProofTest {
     private String logTx = TX;
     private final AtomicReference<String> userAgent = new AtomicReference<>();
     private final AtomicInteger unavailableResponses = new AtomicInteger();
+    private final java.util.List<String> methods = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    @Test void preparationReadsExactBlockBalancesWithoutAnyTransactionMethod() throws Exception {
+        var proof = local();
+        balance = "0xde0b6b3a7640000";
+        var facts = proof.preparationBalance(TO);
+        assertThat(facts.usdt()).isEqualTo("1.000000000000000000");
+        assertThat(facts.bnb()).isEqualTo("0.000000000000000001");
+        assertThat(facts.blockNumber()).isEqualTo(114);
+        assertThat(methods).containsOnly("eth_chainId","eth_blockNumber","eth_getBlockByNumber","eth_call","eth_getBalance");
+    }
 
     @AfterEach void close() { if (server != null) server.stop(0); }
 
@@ -110,10 +121,12 @@ class BscDepositProofTest {
             userAgent.set(exchange.getRequestHeaders().getFirst("User-Agent"));
             JsonNode request = json.readTree(exchange.getRequestBody());
             String method = request.path("method").asText();
+            methods.add(method);
             if ("eth_getLogs".equals(method)) scanTo.set(request.path("params").get(0).path("toBlock").asText());
             String result = switch (method) {
                 case "eth_chainId" -> "\"0x38\"";
                 case "eth_blockNumber" -> "\"" + head + "\"";
+                case "eth_getBalance" -> "\"0x1\"";
                 case "eth_getBlockByNumber" -> "{\"hash\":\"" + canonicalHash + "\",\"number\":\""
                         + request.path("params").get(0).asText() + "\"}";
                 case "eth_call" -> request.path("params").get(0).path("data").asText()

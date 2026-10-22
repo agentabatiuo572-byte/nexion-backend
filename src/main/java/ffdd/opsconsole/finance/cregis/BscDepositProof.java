@@ -231,6 +231,25 @@ public final class BscDepositProof {
         return hexBigInteger(result.asText()).signum() == 0;
     }
 
+    /** Read-only preparation facts. A positive BNB balance is not a gas estimate or a send permit. */
+    public record PreparationBalance(String usdt, String bnb, long blockNumber, String blockHash) { }
+
+    public PreparationBalance preparationBalance(String address) {
+        if (address == null || !address.matches("(?i)0x[0-9a-f]{40}")) throw invalid();
+        Head at = head();
+        String tag = hex(at.number());
+        JsonNode decimals = call("eth_call", "[{\"to\":\"" + CregisConstants.USDT_BEP20_TOKEN_ID
+                + "\",\"data\":\"0x313ce567\"},\"" + tag + "\"]");
+        if (hexLong(decimals.asText()) != 18) throw invalid();
+        String data = "0x70a08231" + "0".repeat(24) + address.substring(2).toLowerCase(Locale.ROOT);
+        JsonNode token = call("eth_call", "[{\"to\":\"" + CregisConstants.USDT_BEP20_TOKEN_ID
+                + "\",\"data\":\"" + data + "\"},\"" + tag + "\"]");
+        JsonNode nativeCoin = call("eth_getBalance", "[\"" + address.toLowerCase(Locale.ROOT) + "\",\"" + tag + "\"]");
+        if (!at.hash().equalsIgnoreCase(blockHash(at.number()))) throw invalid();
+        return new PreparationBalance(new BigDecimal(hexBigInteger(token.asText()), 18).toPlainString(),
+                new BigDecimal(hexBigInteger(nativeCoin.asText()), 18).toPlainString(), at.number(), at.hash());
+    }
+
     public Optional<Proof> verify(String txid, String address, BigDecimal amount, long callbackHeight) {
         return verifyTransfer(txid, address, amount, callbackHeight, true);
     }
