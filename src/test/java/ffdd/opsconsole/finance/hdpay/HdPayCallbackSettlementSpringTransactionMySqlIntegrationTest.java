@@ -972,12 +972,12 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                 + "?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true";
     }
 
-    private DataSource dataSource(String schema) {
+    DataSource dataSource(String schema) {
         return new DriverManagerDataSource(isolatedUrl(System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT"), schema),
                 "root", System.getenv().getOrDefault("NEXION_ISOLATED_MYSQL_PASSWORD", ""));
     }
 
-    private void createFixtureSchema(DataSource dataSource) throws Exception {
+    void createFixtureSchema(DataSource dataSource) throws Exception {
         JdbcTemplate jdbc = new JdbcTemplate(dataSource);
         jdbc.execute("CREATE TABLE nx_config_item(config_key VARCHAR(100),config_value TEXT,updated_at DATETIME,is_deleted TINYINT)");
         jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,status VARCHAR(32),language VARCHAR(16),is_deleted TINYINT)");
@@ -1001,7 +1001,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
         jdbc.execute("CREATE TABLE it_audit(id BIGINT AUTO_INCREMENT PRIMARY KEY,intent_no VARCHAR(64),action VARCHAR(96),actor VARCHAR(128))");
     }
 
-    private SqlSessionFactory sessionFactory(DataSource dataSource) {
+    SqlSessionFactory sessionFactory(DataSource dataSource) {
         MybatisConfiguration configuration = new MybatisConfiguration(new Environment(
                 "hdpay-settlement-integration", new SpringManagedTransactionFactory(), dataSource));
         GlobalConfig globalConfig = new GlobalConfig();

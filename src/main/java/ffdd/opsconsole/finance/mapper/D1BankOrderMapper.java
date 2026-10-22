@@ -13,12 +13,7 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface D1BankOrderMapper extends BaseMapper<Object> {
-    // One canonical order, regardless of APP projection closure or receipt count.
-    String ORDERS = """
-            WITH bank_orders AS (
-              SELECT i.intent_no AS intentNo, i.payment_rail AS paymentRail, i.user_id AS userId,
-                     i.settlement_target_type AS settlementTargetType, i.target_order_no AS targetOrderNo,
-                     i.status AS intentStatus,
+    String DISPLAY_STATUS = """
                      CASE
                        WHEN i.status <> 'AWAITING_PAYMENT' THEN i.status
                        WHEN i.expires_at <= #{asOf} THEN 'EXPIRED'
@@ -28,7 +23,41 @@ public interface D1BankOrderMapper extends BaseMapper<Object> {
                        WHEN h.submission_status = 'REJECTED' THEN 'FAILED'
                        WHEN h.submission_status = 'CREATED' THEN 'AWAITING_PAYMENT'
                        ELSE 'CREATING'
-                     END AS status,
+                     END
+            """;
+
+    // Filter/count only order identity and status; financial evidence is read after pagination.
+    String CANDIDATES = """
+            WITH candidate_orders AS (
+              SELECT i.intent_no AS intentNo, i.payment_rail AS paymentRail, i.user_id AS userId,
+                     i.memo_code AS memoCode, i.created_at AS createdAt,
+            """ + DISPLAY_STATUS + """
+                     AS status
+                FROM nx_vietqr_intent i
+                LEFT JOIN nx_hdpay_payin_order h
+                  ON i.payment_rail='HDPAY' AND h.merchant_order_id=i.intent_no
+               WHERE i.is_deleted=0 AND i.payment_rail IN ('MANUAL','HDPAY')
+                 AND i.settlement_target_type='WALLET_TOPUP'
+            )
+            """;
+    String FILTER = """
+             FROM candidate_orders
+            WHERE (#{paymentRail} IS NULL OR paymentRail=#{paymentRail})
+              AND (#{status} IS NULL OR status=#{status})
+              AND (#{keyword} IS NULL OR intentNo LIKE CONCAT('%',#{keyword},'%')
+                   OR memoCode LIKE CONCAT('%',#{keyword},'%') OR CAST(userId AS CHAR)=#{keyword})
+            """;
+    String PAGE = ", order_page AS (SELECT intentNo " + FILTER
+            + " ORDER BY createdAt DESC, intentNo DESC LIMIT #{limit} OFFSET #{offset}) ";
+
+    // One canonical order, regardless of APP projection closure or receipt count.
+    String ORDERS = """
+            , bank_orders AS (
+              SELECT i.intent_no AS intentNo, i.payment_rail AS paymentRail, i.user_id AS userId,
+                     i.settlement_target_type AS settlementTargetType, i.target_order_no AS targetOrderNo,
+                     i.status AS intentStatus,
+            """ + DISPLAY_STATUS + """
+                     AS status,
                      i.requested_usdt AS requestedUsdt, i.payable_vnd AS payableVnd,
                      i.received_vnd AS receivedVnd, i.credited_usdt AS creditedUsdt,
                      i.locked_fx_rate_vnd_per_usdt AS lockedFxRateVndPerUsdt,
@@ -102,9 +131,10 @@ public interface D1BankOrderMapper extends BaseMapper<Object> {
                          AND COALESCE(r.credited_usdt,0)=0 AND r.payment_reference IS NOT NULL
                          AND r.payment_reference<>'' AND r.received_at>=i.created_at AND r.is_deleted=0)
                        AS reusableReceiptCount,
-                     ((SELECT COUNT(*) FROM nx_wallet_ledger l WHERE l.biz_no=i.intent_no
-                         OR EXISTS (SELECT 1 FROM nx_vietqr_reconciliation r
-                           WHERE r.intent_no=i.intent_no AND l.biz_no=CONCAT('D1-VIETQR-',r.reconciliation_no)))
+                     ((SELECT COUNT(*) FROM nx_wallet_ledger l WHERE l.biz_no=i.intent_no)
+                      + (SELECT COUNT(*) FROM nx_vietqr_reconciliation r
+                           JOIN nx_wallet_ledger l ON l.biz_no=CONCAT('D1-VIETQR-',r.reconciliation_no)
+                          WHERE r.intent_no=i.intent_no AND l.biz_no<>i.intent_no)
                       + (SELECT COUNT(*) FROM nx_treasury_reserve_ledger t WHERE t.voucher_no=i.intent_no)
                       + (SELECT COUNT(*) FROM nx_hdpay_manual_confirmation m2 WHERE m2.merchant_order_id=i.intent_no)
                       + (SELECT COUNT(*) FROM nx_vietqr_reconciliation r2
@@ -114,6 +144,7 @@ public interface D1BankOrderMapper extends BaseMapper<Object> {
                      EXISTS (SELECT 1 FROM nx_vietqr_bank_account b
                        WHERE b.id=i.bank_account_id AND b.status='ACTIVE' AND b.is_deleted=0) AS bankAccountActive
                 FROM nx_vietqr_intent i
+                JOIN order_page p ON p.intentNo=i.intent_no
                 LEFT JOIN nx_hdpay_payin_order h
                   ON i.payment_rail='HDPAY' AND h.merchant_order_id=i.intent_no
                 LEFT JOIN nx_hdpay_manual_confirmation m
@@ -122,27 +153,20 @@ public interface D1BankOrderMapper extends BaseMapper<Object> {
                  AND i.settlement_target_type='WALLET_TOPUP'
             )
             """;
-    String FILTER = """
-             FROM bank_orders
-            WHERE (#{paymentRail} IS NULL OR paymentRail=#{paymentRail})
-              AND (#{status} IS NULL OR status=#{status})
-              AND (#{keyword} IS NULL OR intentNo LIKE CONCAT('%',#{keyword},'%')
-                   OR memoCode LIKE CONCAT('%',#{keyword},'%') OR CAST(userId AS CHAR)=#{keyword})
-            """;
-
-    @Select(ORDERS + " SELECT COUNT(*) " + FILTER)
+    @Select(CANDIDATES + " SELECT COUNT(*) " + FILTER)
     long countOrders(@Param("paymentRail") String paymentRail, @Param("status") String status,
                      @Param("keyword") String keyword, @Param("asOf") LocalDateTime asOf);
 
-    @Select(ORDERS + " SELECT * " + FILTER + " ORDER BY createdAt DESC, intentNo DESC LIMIT #{limit} OFFSET #{offset}")
+    @Select(CANDIDATES + PAGE + ORDERS + " SELECT * FROM bank_orders ORDER BY createdAt DESC, intentNo DESC")
     List<Map<String, Object>> listOrders(@Param("paymentRail") String paymentRail, @Param("status") String status,
             @Param("keyword") String keyword, @Param("asOf") LocalDateTime asOf,
             @Param("limit") int limit, @Param("offset") int offset);
 
     @Select("""
-            SELECT (SELECT COUNT(*) FROM nx_wallet_ledger l WHERE l.biz_no=#{intentNo}
-                      OR EXISTS (SELECT 1 FROM nx_vietqr_reconciliation r
-                        WHERE r.intent_no=#{intentNo} AND l.biz_no=CONCAT('D1-VIETQR-',r.reconciliation_no)))
+            SELECT (SELECT COUNT(*) FROM nx_wallet_ledger l WHERE l.biz_no=#{intentNo})
+                 + (SELECT COUNT(*) FROM nx_vietqr_reconciliation r
+                      JOIN nx_wallet_ledger l ON l.biz_no=CONCAT('D1-VIETQR-',r.reconciliation_no)
+                     WHERE r.intent_no=#{intentNo} AND l.biz_no<>#{intentNo})
                  + (SELECT COUNT(*) FROM nx_treasury_reserve_ledger WHERE voucher_no=#{intentNo})
                  + (SELECT COUNT(*) FROM nx_hdpay_manual_confirmation WHERE merchant_order_id=#{intentNo})
                  + (SELECT COUNT(*) FROM nx_vietqr_reconciliation
