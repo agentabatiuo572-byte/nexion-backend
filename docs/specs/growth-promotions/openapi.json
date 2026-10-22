@@ -3531,6 +3531,84 @@
         },
         "x-request-schema": "PublishAction"
       }
+    },
+    "/api/admin/growth/promotion-account-samples": {
+      "get": {
+        "operationId": "searchPromotionAccountSamples",
+        "summary": "Search C1-visible accounts for an operator simulation",
+        "description": "Requires both promotion simulation and C1 read. Uses the existing C1 search scope and audit. Returns only the internal simulation identity and a user-code/nickname label. Simulation rechecks C1 visibility for the selected buyer and any direct inviter before returning individual diagnostics. keyword retains C1 raw-phone restrictions; accountId is an explicit internal-ID filter, never parsed from userNo.",
+        "tags": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "keyword",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "accountId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$"
+            }
+          },
+          {
+            "name": "pageNum",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          }
+        ],
+        "x-audience": "ADMIN",
+        "x-required-permission": "growth_promotion_simulate",
+        "x-response-schema": "AccountSamplePage",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessAccountSamplePage"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "x-required-permissions": [
+          "growth_promotion_simulate",
+          "user_c1_read"
+        ]
+      }
     }
   },
   "components": {
@@ -7047,7 +7125,7 @@
           "qualificationCredential"
         ],
         "additionalProperties": false,
-        "description": "Read-only census of nondeleted, nonsandbox accounts. Validates only audience structure and required audience/first-purchase policies; draft may omit time/rewards/budget/global settlement policies. Unknown dependencies never count as rejected or as device absence. Counts sum to total when the account source is available. estimatedAccounts is null if unknowns exist. Samples are at most 20 account IDs with no contact data, and are returned only with the existing user_c1_read capability; otherwise samples is empty and aggregate counts remain available."
+        "description": "Read-only census of nondeleted, nonsandbox accounts. Validates only audience structure and required audience/first-purchase policies; draft may omit time/rewards/budget/global settlement policies. Unknown dependencies never count as rejected or as device absence. Counts sum to total when the account source is available. estimatedAccounts is null if unknowns exist. Individual samples are returned only by the C1-scoped promotion-account-samples search; this census leaves samples empty while aggregate counts remain available."
       },
       "SimulateInput": {
         "type": "object",
@@ -10670,6 +10748,53 @@
         ],
         "additionalProperties": false,
         "description": "Operational counts and asset-separated budgets for an activity list row. Reserved order details are only returned by the activity detail endpoint."
+      },
+      "AccountSample": {
+        "type": "object",
+        "required": [
+          "accountId",
+          "label"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
+      "AccountSamplePage": {
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "pageNum",
+          "pageSize"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountSample"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pageNum": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          }
+        }
       }
     },
     "parameters": {
@@ -11490,6 +11615,38 @@
             "examples": {
               "fixture": {
                 "$ref": "../../../src/test/resources/growth-promotions/contracts.json#/examples/response_AdminSimulation"
+              }
+            }
+          }
+        }
+      },
+      "SuccessAccountSamplePage": {
+        "description": "Canonical result; code=0. A successful command receipt is not an asset receipt.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code",
+                "message",
+                "data"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "const": 0
+                },
+                "message": {
+                  "type": "string"
+                },
+                "data": {
+                  "$ref": "#/components/schemas/AccountSamplePage"
+                }
+              }
+            },
+            "examples": {
+              "fixture": {
+                "$ref": "../../../src/test/resources/growth-promotions/contracts.json#/examples/response_AccountSamplePage"
               }
             }
           }

@@ -3513,7 +3513,7 @@
           "qualificationCredential"
         ],
         "additionalProperties": false,
-        "description": "Read-only census of nondeleted, nonsandbox accounts. Validates only audience structure and required audience/first-purchase policies; draft may omit time/rewards/budget/global settlement policies. Unknown dependencies never count as rejected or as device absence. Counts sum to total when the account source is available. estimatedAccounts is null if unknowns exist. Samples are at most 20 account IDs with no contact data, and are returned only with the existing user_c1_read capability; otherwise samples is empty and aggregate counts remain available."
+        "description": "Read-only census of nondeleted, nonsandbox accounts. Validates only audience structure and required audience/first-purchase policies; draft may omit time/rewards/budget/global settlement policies. Unknown dependencies never count as rejected or as device absence. Counts sum to total when the account source is available. estimatedAccounts is null if unknowns exist. Individual samples are returned only by the C1-scoped promotion-account-samples search; this census leaves samples empty while aggregate counts remain available."
       },
       "SimulateInput": {
         "type": "object",
@@ -7136,6 +7136,53 @@
         ],
         "additionalProperties": false,
         "description": "Operational counts and asset-separated budgets for an activity list row. Reserved order details are only returned by the activity detail endpoint."
+      },
+      "AccountSample": {
+        "type": "object",
+        "required": [
+          "accountId",
+          "label"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
+      "AccountSamplePage": {
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "pageNum",
+          "pageSize"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountSample"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pageNum": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          }
+        }
       }
     }
   }

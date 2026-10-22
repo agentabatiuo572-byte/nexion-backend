@@ -35,7 +35,7 @@ final class PromotionAdminEvaluation {
                 catch(BizException|DataAccessException failure){failures=List.of("ACCOUNT_FACTS_UNAVAILABLE");status="UNKNOWN";}
                 if("MATCHED".equals(status))matched++;else if("UNKNOWN".equals(status))unknown++;else rejected++;
                 failures.forEach(code->reasons.merge(code,1L,Long::sum));
-                if(PromotionAdminService.has("user_c1_read")&&"buyerAudience".equals(role)&&samples.size()<20)samples.add(values("accountId",String.valueOf(account),"status",status,"reasons",diagnostics(failures)));
+                // Individual sample identities come only from the scoped C1-backed search.
             }
             roles.add(values("role","buyerAudience".equals(role)?"BUYER":"DIRECT_INVITER","conditions",audience,"matched",matched,"rejected",rejected,"unknown",unknown,"reasonCounts",reasons.entrySet().stream().map(e->reasonCount(e.getKey(),e.getValue())).toList()));
         }

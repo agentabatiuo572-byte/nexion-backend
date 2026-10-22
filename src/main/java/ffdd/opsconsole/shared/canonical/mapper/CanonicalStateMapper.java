@@ -509,8 +509,10 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                    d.vram_total_gb AS vramTotalGb,
                    d.base_power_w AS basePowerW,
                    d.dc_location AS location,
-                   COALESCE(NULLIF(CASE WHEN o.quantity > 0 THEN o.amount_usdt / o.quantity END, 0),
-                            NULLIF(d.price_usdt_snapshot, 0), p.price_usdt, 0) AS actualPaidUsdt,
+                   CASE WHEN UPPER(COALESCE(d.source_channel,'')) = 'PROMOTION_GIFT' THEN 0
+                        ELSE COALESCE(NULLIF(CASE WHEN o.quantity > 0 THEN o.amount_usdt / o.quantity END, 0),
+                                      NULLIF(d.price_usdt_snapshot, 0), p.price_usdt, 0)
+                   END AS actualPaidUsdt,
                    COALESCE((SELECT SUM(r.reward_usdt)
                               FROM nx_compute_receipt r
                               WHERE r.user_device_id = d.id AND r.is_deleted = 0
@@ -597,8 +599,10 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                    d.vram_total_gb AS vramTotalGb,
                    d.base_power_w AS basePowerW,
                    d.dc_location AS location,
-                   COALESCE(NULLIF(CASE WHEN o.quantity > 0 THEN o.amount_usdt / o.quantity END, 0),
-                            NULLIF(d.price_usdt_snapshot, 0), p.price_usdt, 0) AS actualPaidUsdt,
+                   CASE WHEN UPPER(COALESCE(d.source_channel,'')) = 'PROMOTION_GIFT' THEN 0
+                        ELSE COALESCE(NULLIF(CASE WHEN o.quantity > 0 THEN o.amount_usdt / o.quantity END, 0),
+                                      NULLIF(d.price_usdt_snapshot, 0), p.price_usdt, 0)
+                   END AS actualPaidUsdt,
                    COALESCE(output.totalUsdt, 0) AS cumulativeOutputUsdt,
                    d.hashrate AS hashrate,d.source_channel AS sourceChannel,d.product_tier AS productTier
               FROM nx_user_device d

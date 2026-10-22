@@ -32,6 +32,7 @@ public class PromotionAdminService {
     private final A2RuntimePolicy reasonPolicy;
     private final ffdd.opsconsole.platform.application.OpsOptionsService options;
     private final PromotionBannerService banners;
+    private final PromotionAccountSampleService accountSamples;
 
     public static long actor(){
         var auth=SecurityContextHolder.getContext().getAuthentication();
@@ -138,8 +139,13 @@ public class PromotionAdminService {
     @org.springframework.transaction.annotation.Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public Map<String,Object> simulate(String id,Map<String,Object> request){
         if(request.get("sampleAccountId")!=null&&!has("user_c1_read"))throw new BizException(403,"PROMOTION_ACCOUNT_SAMPLE_FORBIDDEN");
+        if(request.get("sampleAccountId")!=null)accountSamples.requireReadable(number(request.get("sampleAccountId")));
         validator.validate("SimulateInput",request);var p=db.activity(id,false);var c=map(request.get("draft"));
         validator.validate("PromotionContract",c);validateWindow(c);validateConfiguration(c);
+        if(request.get("sampleAccountId")!=null&&("DIRECT_REFERRAL".equals(c.get("template"))||c.get("inviterAudience")!=null)){
+            var buyer=db.user(number(request.get("sampleAccountId")),false);
+            if(buyer.get("sponsor_user_id")!=null)accountSamples.requireReadable(number(buyer.get("sponsor_user_id")));
+        }
         return new PromotionAdminEvaluation(db,validator,resolver,evaluator,quotes).simulate(id,p,c,request);
     }
     @org.springframework.transaction.annotation.Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)

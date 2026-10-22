@@ -26,7 +26,7 @@ class PromotionEffectiveLifecycleTest {
     @BeforeEach void setup(){
         db=mock(PromotionMapper.class);resolver=mock(PromotionPolicyResolver.class);
         admin=new PromotionAdminService(db,mock(PromotionContractValidator.class),resolver,null,
-            mock(PromotionNativeContractResolver.class),null,null,null,null,null,null,null,null,mock(PromotionBannerService.class));
+            mock(PromotionNativeContractResolver.class),null,null,null,null,null,null,null,null,mock(PromotionBannerService.class),mock(PromotionAccountSampleService.class));
         when(db.write(anyString(),any(Object[].class))).thenReturn(1);
         when(db.list(anyString(),any(Object[].class))).thenReturn(List.of());
         when(db.requiredRow(anyString(),any(Object[].class))).thenReturn(values("reserved",0,"unpaid_orders",0,

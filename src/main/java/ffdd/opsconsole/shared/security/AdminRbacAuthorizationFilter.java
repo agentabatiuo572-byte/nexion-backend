@@ -106,6 +106,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/commissions/**", "network_"),
             rule("/api/admin/market/**", "finprod_"),
             rule("/api/admin/repurchase/**", "finprod_"),
+            // The sample search requires simulate AND C1 read at the controller/service boundary.
+            rule("/api/admin/growth/promotion-account-samples", null),
             rule("/api/admin/growth/**", "growth_"),
             rule("/api/admin/content/tickets", "service_"),
             rule("/api/admin/content/tickets/**", "service_"),

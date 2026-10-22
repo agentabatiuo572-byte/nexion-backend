@@ -113,7 +113,7 @@ GET /api/admin/growth/promotions 接受 query/name/activityId/category/template/
 
 报表快照有效24小时；过期且没有关联任何导出任务的快照定时分批回收，回收后重新查询生成新快照。已关联导出任务的快照及导出记录保留，供原操作、导出状态与审计追溯。
 
-audience-preview 只要求 Draft 的类别、模板及所预览 Audience；不要求先配置时间、奖励、预算或全局结算政策。只解析设备人群和首购口径所需的已批准政策。返回条件摘要、来源、matched/rejected/unknown/total、拒绝原因计数；具备既有 user_c1_read 能力才返回最多 20 个仅含账户 ID 的样本，否则 samples=[]，各角色分别计数。simulate 的非空 sampleAccountId 同样要求 user_c1_read，缺少时返回 403。政策缺失或事实源不可读是 UNKNOWN，不能当无设备或未命中；账户来源不可读时 total 等为 null，estimatedAccounts 只在全部可判断时提供。预览不构成资格凭证，不写资格或订单。
+audience-preview 只要求 Draft 的类别、模板及所预览 Audience；不要求先配置时间、奖励、预算或全局结算政策。只解析设备人群和首购口径所需的已批准政策。返回条件摘要、来源、matched/rejected/unknown/total、拒绝原因计数；samples 始终为空，各角色分别计数；个体样本统一通过 promotion-account-samples 分页搜索，须同时具有 growth_promotion_simulate 和 user_c1_read，沿用 C1 可读范围、搜索审计和隐私规则，只返回账户 ID 与用户编码/昵称标签。用户编码不转换为内部 ID；已知内部 ID 使用独立精确筛选。simulate 的非空 sampleAccountId 在服务端复验同 C1 可读范围，直邀试算同时核验真实邀请人；不可读时返回 403。政策缺失或事实源不可读是 UNKNOWN，不能当无设备或未命中；账户来源不可读时 total 等为 null，estimatedAccounts 只在全部可判断时提供。预览不构成资格凭证，不写资格或订单。
 
 simulate 返回独立 AdminSimulation，公开 Quote 不增加内部诊断字段。完整草稿使用同一规则求值器，返回精确 configHash/版本/asOf、实付报价、逐规则双方命中或拒绝原因、逐购买组 rewardUnits、分资产预算和购买/赠品库存消耗、三语公开说明预览。quotaImpact 明示活动订单、各受益人的订单及规则组数限额、已用加预留、本次预计消耗与剩余；无限限额为 null，未知消耗也为 null 并由 status 区分。没有账户样本、政策不可执行或事实不可读时明确 UNKNOWN/阻断；资源不足单列 SHORTAGE。结果 reserved=false，不保存真实报价、不占库存预算、不下单发奖；没有成本来源时 giftCostUsdt/acquisitionCostUsdt=null。提交与发布仍独立核实当前条件。
 

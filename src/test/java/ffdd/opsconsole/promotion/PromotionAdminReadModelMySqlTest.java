@@ -44,7 +44,7 @@ class PromotionAdminReadModelMySqlTest {
                 var activityQuota=maps(simulation.get("quotaImpact")).stream().filter(q->"ACTIVITY_ORDER".equals(q.get("scope"))).findFirst().orElseThrow();assertEquals(3,number(activityQuota.get("usedAndReserved")));assertEquals(1,number(activityQuota.get("required")));
                 assertEquals(quoteCount,h.db.count("SELECT COUNT(*) FROM nx_promotion_quote"));assertEquals(reservationCount,h.db.count("SELECT COUNT(*) FROM nx_promotion_reservation"));
                 var partial=values("category","PROMOTION","template","SKU_GIFT","buyerAudience",contract.get("buyerAudience"));var preview=admin.audiencePreview(activity,values("draft",partial));assertEquals("COMPLETE",preview.get("completeness"));assertEquals(0,number(preview.get("unknown")));assertTrue(number(preview.get("matched"))>0);assertEquals(number(preview.get("total")),number(preview.get("matched"))+number(preview.get("rejected")));
-                assertFalse(maps(preview.get("samples")).isEmpty());
+                assertTrue(maps(preview.get("samples")).isEmpty());
                 var metrics=h.proxy(new PromotionMetricsService(h.db,h.validator,null,h.audit));var report=metrics.metrics(activity,null,Instant.now().minusSeconds(3600).toString(),Instant.now().plusSeconds(3600).toString(),"Asia/Tokyo");assertEquals(3,number(report.get("orders")));assertEquals(2,number(report.get("paidOrders")));assertEquals(0,number(report.get("refundedOrders")));assertNull(report.get("conversionRate"));
                 evidence.add(values("asset",asset,"activity",activity,"impact",impact,"rewardTotal",rewards.get("total"),"simulatedUnits",simulation.get("rewardUnits"),"reportOrders",report.get("orders"),"reportPaid",report.get("paidOrders")));
             }
