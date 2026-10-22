@@ -3,6 +3,7 @@ package ffdd.opsconsole.promotion.mapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import java.sql.Timestamp;
 import java.util.*;
 import org.apache.ibatis.annotations.*;
 import org.apache.ibatis.mapping.BoundSql;
@@ -16,6 +17,25 @@ public interface PromotionMapper extends BaseMapper<Object> {
     /** SQL is supplied only by domain code; all data values remain bound parameters. */
     @SelectProvider(type=StatementProvider.class,method="statement")
     @Lang(PreparedSqlDriver.class) @Options(useCache=false)
+    // DATETIME must retain the JDBC connection's instant conversion, like setTimestamp writes.
+    @Results({
+        @Result(column="expires_at",property="expires_at",javaType=Timestamp.class),
+        @Result(column="pay_by",property="pay_by",javaType=Timestamp.class),
+        @Result(column="ready_at",property="ready_at",javaType=Timestamp.class),
+        @Result(column="paid_at",property="paid_at",javaType=Timestamp.class),
+        @Result(column="as_of",property="as_of",javaType=Timestamp.class),
+        @Result(column="created_at",property="created_at",javaType=Timestamp.class),
+        @Result(column="updated_at",property="updated_at",javaType=Timestamp.class),
+        @Result(column="started_at",property="started_at",javaType=Timestamp.class),
+        @Result(column="finished_at",property="finished_at",javaType=Timestamp.class),
+        @Result(column="approved_at",property="approved_at",javaType=Timestamp.class),
+        @Result(column="published_at",property="published_at",javaType=Timestamp.class),
+        @Result(column="activated_at",property="activated_at",javaType=Timestamp.class),
+        @Result(column="purchased_at",property="purchased_at",javaType=Timestamp.class),
+        @Result(column="first_failure",property="first_failure",javaType=Timestamp.class),
+        @Result(column="resolved_at",property="resolved_at",javaType=Timestamp.class),
+        @Result(column="snapshot_expires",property="snapshot_expires",javaType=Timestamp.class)
+    })
     List<Map<String,Object>> list(@Param("sql") String sql,@Param("args") Object... args);
     default Map<String,Object> one(String sql,Object... args) {
         List<Map<String,Object>> rows=list(sql,args);
