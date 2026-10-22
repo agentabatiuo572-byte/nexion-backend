@@ -307,6 +307,64 @@ public final class HttpCregisGateway implements CregisGateway {
         return result.booleanValue();
     }
 
+    @Override public long createCollection(CollectionRequest request) {
+        requireAutoForward();
+        requireCollection(request);
+        JsonNode data=postWrite("/api/v1/collection",Map.of("currency",CregisConstants.USDT_BEP20_CURRENCY,
+                "from_address",request.fromAddress(),"to_address",request.toAddress(),"amount",request.amount().toPlainString()));
+        JsonNode cid=data.get("cid");
+        if(cid==null||!cid.isIntegralNumber()||!cid.canConvertToLong()||cid.longValue()<=0)throw submissionUnknown();
+        return cid.longValue();
+    }
+
+    @Override public java.util.Optional<CollectionOrder> queryCollection(long cid,CollectionRequest expected) {
+        if(cid<=0)throw requestInvalid();
+        requireCollection(expected);
+        JsonNode data=postRead("/api/v1/trade/page",Map.of("cid",cid,"business_type",5,"trade_type",2,
+                "chain_id",CregisConstants.BSC_CHAIN_ID,"token_id",CregisConstants.USDT_BEP20_TOKEN_ID,"page_num",1,"page_size",10));
+        JsonNode rows=data.get("rows"),total=data.get("total");
+        if(rows==null||!rows.isArray()||total==null||!total.isIntegralNumber()||!total.canConvertToLong()
+                ||total.longValue()!=rows.size()||rows.size()>1)throw invalidResponse();
+        if(rows.isEmpty())return java.util.Optional.empty();
+        JsonNode row=rows.get(0);
+        if(!row.path("pid").isIntegralNumber()||!row.path("pid").canConvertToLong()||row.path("pid").longValue()!=properties.getProjectId()
+                ||!row.path("cid").isIntegralNumber()||!row.path("cid").canConvertToLong()||row.path("cid").longValue()!=cid
+                ||!"5".equals(row.path("business_type").asText())||!"2".equals(row.path("trade_type").asText())
+                ||!CregisConstants.BSC_CHAIN_ID.equals(requiredText(row,"chain_id"))
+                ||!CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(requiredText(row,"token_id"))
+                ||!("USDT-BEP20".equalsIgnoreCase(requiredText(row,"currency"))
+                    ||CregisConstants.USDT_BEP20_CURRENCY.equalsIgnoreCase(requiredText(row,"currency")))
+                ||!expected.fromAddress().equalsIgnoreCase(requiredText(row,"from_address"))
+                ||!expected.toAddress().equalsIgnoreCase(requiredText(row,"to_address"))
+                ||expected.amount().compareTo(positiveAmount(row.get("amount")))!=0
+                ||!row.path("status").isIntegralNumber()||!row.path("status").canConvertToInt())throw invalidResponse();
+        int status=row.path("status").intValue();String txid=row.path("txid").asText("");
+        if(status<0||status>2||(!txid.isBlank()&&!BSC_TXID.matcher(txid).matches())||status==1&&txid.isBlank())throw invalidResponse();
+        return java.util.Optional.of(new CollectionOrder(cid,status,txid.isBlank()?null:txid));
+    }
+
+    @Override public PayoutSubmission createAutoForwardPayout(PayoutRequest request) {
+        requireAutoForward();
+        if(request==null||!CregisFundsPreparationService.COUNTERPARTY.equalsIgnoreCase(request.address())
+                ||request.thirdPartyId()==null||!request.thirdPartyId().matches("CA-P-[1-9][0-9]{0,18}-[1-9][0-9]{0,18}"))throw requestInvalid();
+        PayoutRequest normalized=normalizePayout(request);
+        JsonNode data=postWrite("/api/v2/payout",Map.of("currency",normalized.currency(),
+                "from_address",CregisFundsPreparationService.PLATFORM,"to_address",normalized.address(),
+                "amount",normalized.amount().toPlainString(),"third_party_id",normalized.thirdPartyId(),
+                "callback_url",normalized.callbackUrl(),"remark",normalized.remark()));
+        JsonNode cid=data.get("cid");
+        if(cid==null||!cid.isIntegralNumber()||!cid.canConvertToLong()||cid.longValue()<=0)throw submissionUnknown();
+        return new PayoutSubmission(cid.longValue(),normalized.thirdPartyId());
+    }
+    private void requireAutoForward() {
+        if(properties.getMode()!=CregisProperties.Mode.PROVIDER||!properties.isAutoForwardEnabled()||!properties.isPayoutEnabled())throw configurationInvalid();
+    }
+    private void requireCollection(CollectionRequest request) {
+        if(request==null||request.fromAddress()==null||!EVM_ADDRESS.matcher(request.fromAddress()).matches()
+                ||!CregisFundsPreparationService.PLATFORM.equalsIgnoreCase(request.toAddress())
+                ||request.fromAddress().equalsIgnoreCase(request.toAddress())||CregisAmount.normalizePositive(request.amount())==null)throw requestInvalid();
+    }
+
     private JsonNode postRead(String path, Map<String, ?> functional) {
         return post(path, functional, false);
     }

@@ -14,6 +14,8 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity> {
+    @Select("SELECT COUNT(*) FROM nx_cregis_risk_alert WHERE project_id=#{projectId} AND kind='AUTO_FORWARD_UNKNOWN' AND resolved_at IS NULL")
+    int openAutoForwardUnknownAlertCount(long projectId);
     @Select("""
             SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE()
              AND TABLE_NAME IN ('nx_cregis_deposit_address','nx_cregis_deposit_delivery',

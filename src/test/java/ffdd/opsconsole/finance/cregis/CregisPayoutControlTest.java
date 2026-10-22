@@ -51,6 +51,9 @@ class CregisPayoutControlTest {
         assertThat(control.capability()).containsEntry("disabledReason","RECONCILIATION_REQUIRED");
         when(db.recentCompleteReconcileCount(88)).thenReturn(1);
         assertThat(control.capability()).containsEntry("enabled",true).containsEntry("disabledReason",null);
+        when(db.openAutoForwardUnknownAlertCount(88)).thenReturn(1);
+        assertThat(control.capability()).containsEntry("disabledReason","RISK_HOLD");
+        when(db.openAutoForwardUnknownAlertCount(88)).thenReturn(0);
         when(db.openCriticalAlertCountExceptManual(88)).thenReturn(1);
         assertThat(control.capability()).containsEntry("disabledReason","RISK_HOLD");
     }

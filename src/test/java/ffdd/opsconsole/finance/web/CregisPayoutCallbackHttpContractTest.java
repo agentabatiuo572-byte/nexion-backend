@@ -16,9 +16,23 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 class CregisPayoutCallbackHttpContractTest {
+    @Test void autoForwardPrefixRoutesOnlyToDurableAutoVerifier() throws Exception {
+        var withdrawals=mock(WithdrawalPayoutCallbackService.class);
+        var refunds=mock(CregisExceptionRefundCallbackService.class);
+        var automatic=mock(ffdd.opsconsole.finance.cregis.CregisAutoForwardService.class);
+        var http=MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(withdrawals,refunds,automatic)).build();
+        String body="{\"third_party_id\":\"CA-P-42-100\"}";
+        for(String path:new String[]{"/api/cregis/callbacks/payout","/openapi/v1/withdrawals/cregis/callbacks/payout"}) {
+            http.perform(post(path).contentType("application/json").content(body)).andExpect(content().string("rejected"));
+            when(automatic.callback(any(),anyString())).thenReturn(true);
+            http.perform(post(path).contentType("application/json").content(body)).andExpect(content().string("success"));
+            when(automatic.callback(any(),anyString())).thenReturn(false);
+        }
+        verifyNoInteractions(withdrawals,refunds);
+    }
     @Test void onlyDurablyAcceptedVerifiedCallbackReceivesLiteralSuccess() throws Exception {
         var service = mock(WithdrawalPayoutCallbackService.class);
-        var http = MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(service,mock(CregisExceptionRefundCallbackService.class))).build();
+        var http = MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(service,mock(CregisExceptionRefundCallbackService.class),mock(ffdd.opsconsole.finance.cregis.CregisAutoForwardService.class))).build();
         when(service.receive(any(), anyString())).thenReturn(ApiResult.ok(Map.of("status","ACCEPTED","callbackVerified",true)));
         for (String path : new String[]{"/api/cregis/callbacks/payout","/openapi/v1/withdrawals/cregis/callbacks/payout"})
             http.perform(post(path).contentType("application/json").content("{}"))
@@ -34,7 +48,7 @@ class CregisPayoutCallbackHttpContractTest {
 
     @Test void controllerUsesServletPeerInsteadOfRawForwardingHeaders() throws Exception {
         var service = mock(WithdrawalPayoutCallbackService.class);
-        var http = MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(service,mock(CregisExceptionRefundCallbackService.class))).build();
+        var http = MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(service,mock(CregisExceptionRefundCallbackService.class),mock(ffdd.opsconsole.finance.cregis.CregisAutoForwardService.class))).build();
         when(service.receive(any(), eq("192.0.2.5")))
                 .thenReturn(ApiResult.fail(401, "CREGIS_CALLBACK_INVALID_SOURCE_IP"));
 
@@ -51,7 +65,7 @@ class CregisPayoutCallbackHttpContractTest {
         var service = mock(WithdrawalPayoutCallbackService.class);
         var forwarding = new DeploymentForwardedHeadersConfiguration()
                 .forwardedHeaderFilter(new GeoBlockEnforcementProperties());
-        var http = MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(service,mock(CregisExceptionRefundCallbackService.class)))
+        var http = MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(service,mock(CregisExceptionRefundCallbackService.class),mock(ffdd.opsconsole.finance.cregis.CregisAutoForwardService.class)))
                 .addFilters(forwarding).build();
         when(service.receive(any(), eq("18.143.53.174")))
                 .thenReturn(ApiResult.ok(Map.of("status", "ACCEPTED")));
@@ -81,7 +95,7 @@ class CregisPayoutCallbackHttpContractTest {
         var gate=mock(ffdd.opsconsole.finance.mapper.CregisDepositMapper.class);
         when(gate.lockProvisionGate()).thenReturn(Map.of("state","BLOCKED"));
         var refunds=new CregisExceptionRefundCallbackService(db,config,signer,gate,mock(ffdd.opsconsole.finance.cregis.CregisExceptionRefundService.class));
-        var http=MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(withdrawals,refunds)).build();
+        var http=MockMvcBuilders.standaloneSetup(new CregisPayoutCallbackController(withdrawals,refunds,mock(ffdd.opsconsole.finance.cregis.CregisAutoForwardService.class))).build();
         var json=new com.fasterxml.jackson.databind.ObjectMapper();
         String address="0x"+"a".repeat(40),tx="0x"+"b".repeat(64);
         var row=new java.util.LinkedHashMap<String,Object>();
