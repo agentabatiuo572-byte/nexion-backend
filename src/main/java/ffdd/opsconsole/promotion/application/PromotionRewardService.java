@@ -102,7 +102,7 @@ public class PromotionRewardService {
         // Only the existing auto-activated, unbounded E1 device contract is executable here.
         require("AUTO".equals(rights.get("activationMode"))&&"ISSUED".equals(rights.get("effectiveOn"))&&rights.get("durationDays")==null,"PROMOTION_DEVICE_RIGHTS_NOT_EXECUTABLE");
         Map<String,Object> frozen=map(map(snapshot.get("products")).get(productNo)),product=map(frozen.get("product")),sku=map(frozen.get("sku"));
-        require("ACTIVE".equals(product.get("status")),"PROMOTION_GIFT_PRODUCT_UNAVAILABLE");
+        require(productOnSale(product.get("status")),"PROMOTION_GIFT_PRODUCT_UNAVAILABLE");
         String type=text(product.get("product_type"));require(Set.of("DEVICE","SERVER").contains(type),"PROMOTION_GIFT_PRODUCT_UNSUPPORTED");
         boolean share=false;
         BigDecimal watts=share?BigDecimal.ZERO:PromotionNativeContractResolver.powerWatts(sku.get("power_text"));

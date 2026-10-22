@@ -27,6 +27,10 @@ public final class PromotionValues {
         return list.stream().map(PromotionValues::map).toList();
     }
     public static String text(Object value) { return value == null ? "" : String.valueOf(value); }
+    /** Same sale states as the formal store and order flow. */
+    public static boolean productOnSale(Object status) {
+        return Set.of("ACTIVE", "ON_SALE").contains(text(status).toUpperCase(Locale.ROOT));
+    }
     public static String required(Object value, String field) {
         String result=text(value).trim();
         if (result.isEmpty()) throw new BizException(422,"PROMOTION_REQUIRED:"+field);

@@ -115,7 +115,7 @@ public class PromotionNativeContractResolver {
         String type=text(product.get("product_type")).toUpperCase(Locale.ROOT);
         String identity=String.join(" ",type,text(product.get("device_type")),text(product.get("product_no")),text(sku.get("name"))).toUpperCase(Locale.ROOT);
         if(identity.contains("CLOUD-SHARE")||identity.contains("CLOUD_SHARE")||identity.matches(".*\\bSHARE\\b.*")||!Set.of("DEVICE","SERVER").contains(type))return "UNSUPPORTED_DEVICE_TYPE";
-        if(!"ACTIVE".equals(product.get("status")))return "PRODUCT_UNAVAILABLE";
+        if(!productOnSale(product.get("status")))return "PRODUCT_UNAVAILABLE";
         if(powerWatts(sku.get("power_text"))==null||text(sku.get("datacenter")).isBlank()||product.get("vram_total_gb")==null||number(product.get("vram_total_gb"))<=0)return "PRODUCT_RIGHTS_INCOMPLETE";
         return null;
     }
