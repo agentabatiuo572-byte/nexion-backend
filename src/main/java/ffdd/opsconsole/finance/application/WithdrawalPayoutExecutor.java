@@ -37,6 +37,7 @@ public class WithdrawalPayoutExecutor {
     private final WithdrawalPayoutFinalizer finalizer;
     private final BscDepositProof chain;
     private final CregisPayoutControl payouts;
+    private final WithdrawalPayoutDispatchGuard dispatchGuard;
     private final java.util.concurrent.atomic.AtomicReference<String> providerObservationCursor =
             new java.util.concurrent.atomic.AtomicReference<>("");
 
@@ -63,10 +64,17 @@ public class WithdrawalPayoutExecutor {
         if (mode == CregisProperties.Mode.PROVIDER && !payouts.enabled()) return;
         LocalDateTime now = LocalDateTime.now();
         for (var candidate : mapper.claimable(now, 50)) {
+            if(mode==CregisProperties.Mode.PROVIDER && "USDT-BEP20".equals(candidate.chain())) {
+                WithdrawalPayoutMapper.PayoutRow claimed;
+                try { claimed=dispatchGuard.begin(candidate,now); }
+                catch(RuntimeException unavailable) { continue; } // No HTTP request starts on a failed admission.
+                if(claimed!=null)dispatch(claimed,true);
+                continue;
+            }
             if (mapper.claimNewPayout(candidate.withdrawalNo(), now, now.plusMinutes(2)) != 1) continue;
             WithdrawalPayoutMapper.PayoutRow claimed = mapper.payout(candidate.withdrawalNo());
             if (claimed == null) continue;
-            dispatch(claimed);
+            dispatch(claimed,false);
         }
     }
 
@@ -101,17 +109,17 @@ public class WithdrawalPayoutExecutor {
         }
     }
 
-    private void dispatch(WithdrawalPayoutMapper.PayoutRow row) {
+    private void dispatch(WithdrawalPayoutMapper.PayoutRow row,boolean providerIntentPersisted) {
         if (!"USDT-BEP20".equals(row.chain())) {
             finalizer.retry(row, "CREGIS_CHAIN_UNSUPPORTED");
             return;
         }
-        CregisProperties.Mode mode = router.mode();
+        CregisProperties.Mode mode = providerIntentPersisted?CregisProperties.Mode.PROVIDER:router.mode();
         if (mode == CregisProperties.Mode.DISABLED) {
             finalizer.retry(row, "CREGIS_PROVIDER_DISABLED");
             return;
         }
-        if (!router.payoutEnabled() || (mode == CregisProperties.Mode.PROVIDER && !payouts.enabled())) {
+        if (!providerIntentPersisted && (!router.payoutEnabled() || (mode == CregisProperties.Mode.PROVIDER && !payouts.enabled()))) {
             finalizer.retry(row, "CREGIS_PAYOUT_DISABLED");
             return;
         }
@@ -120,9 +128,7 @@ public class WithdrawalPayoutExecutor {
         try {
             gateway = mode == CregisProperties.Mode.LOCAL_SANDBOX
                     ? router.isolatedLocalSandbox() : router.provider();
-            // Persist intent before the HTTP request. D2 locks the same order before any manual reset.
-            if (mode == CregisProperties.Mode.PROVIDER
-                    && mapper.markProviderIntent(row.withdrawalNo(),LocalDateTime.now()) != 1) return;
+            // Provider intent has already committed under the shared gate; never claim it a second time.
             CregisGateway.PayoutSubmission submission = gateway.createPayout(new CregisGateway.PayoutRequest(
                     CregisConstants.USDT_BEP20_CURRENCY,
                     row.targetAddress(),

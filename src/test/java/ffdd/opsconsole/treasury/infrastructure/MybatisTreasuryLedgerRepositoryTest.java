@@ -76,6 +76,8 @@ class MybatisTreasuryLedgerRepositoryTest {
         TreasuryLedgerMapper mapper = mock(TreasuryLedgerMapper.class);
         MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(
                 mapper, mock(EventOutboxService.class), mock(ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade.class));
+        when(mapper.lockReserveWithdrawal("WD-1")).thenReturn(new TreasuryLedgerMapper.ReserveWithdrawal(
+                7L,"USDT-BEP20",new BigDecimal("100"),"REVIEW_REJECTED",null,null));
         when(mapper.actualUserBalance(7L, "USDT")).thenReturn(new BigDecimal("20.000000"));
         when(mapper.actualUserBalance(7L, "NEX")).thenReturn(new BigDecimal("5.000000"));
         when(mapper.releasePendingWithdrawalWithNex(

@@ -22,6 +22,31 @@ import org.junit.jupiter.api.Test;
 
 class WithdrawalPayoutExecutorTest {
 
+    @Test void stopAfterUnlockedEligibilityButBeforeGateAdmissionNeverCreatesOrOrphans(){
+        var mapper=mock(WithdrawalPayoutMapper.class);var router=mock(CregisGatewayRouter.class);
+        var gateway=mock(CregisGateway.class);var finalizer=mock(WithdrawalPayoutFinalizer.class);var guard=mock(WithdrawalPayoutDispatchGuard.class);
+        var candidate=row("REVIEW_PASSED");when(router.mode()).thenReturn(CregisProperties.Mode.PROVIDER);when(router.provider()).thenReturn(gateway);
+        when(mapper.claimable(any(),eq(50))).thenReturn(List.of(candidate));
+        // The fast eligibility read was true, but the guarded current check sees a committed stop.
+        when(guard.begin(eq(candidate),any())).thenReturn(null).thenThrow(new IllegalStateException("gate unavailable"));
+        var executor=new WithdrawalPayoutExecutor(mapper,router,finalizer,mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class),payouts(),guard);
+        executor.process();executor.process();
+        verify(gateway,never()).createPayout(any());verify(mapper,never()).claimNewPayout(any(),any(),any());
+        verify(finalizer,never()).orphaned(any(),any(),any(),any());verify(finalizer,never()).retry(any(),any());
+    }
+    @Test void committedIntentSendsOnceEvenWhenStopCommitsImmediatelyAfterAdmission(){
+        var mapper=mock(WithdrawalPayoutMapper.class);var router=mock(CregisGatewayRouter.class);var gateway=mock(CregisGateway.class);
+        var finalizer=mock(WithdrawalPayoutFinalizer.class);var guard=mock(WithdrawalPayoutDispatchGuard.class);var control=payouts();
+        var candidate=row("REVIEW_PASSED");when(router.mode()).thenReturn(CregisProperties.Mode.PROVIDER);when(router.provider()).thenReturn(gateway);
+        when(router.payoutCallbackUrl()).thenReturn("https://callback.invalid/payout");when(mapper.claimable(any(),eq(50))).thenReturn(List.of(candidate));
+        when(guard.begin(eq(candidate),any())).thenAnswer(call->{when(control.enabled()).thenReturn(false);return candidate;});
+        when(gateway.createPayout(any())).thenReturn(new CregisGateway.PayoutSubmission(9001,candidate.providerIdempotencyKey()));
+        var executor=new WithdrawalPayoutExecutor(mapper,router,finalizer,mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class),control,guard);
+        executor.process();executor.process();
+        verify(gateway).createPayout(any());verify(finalizer).submitted(candidate,9001,"provider");
+        verify(mapper,never()).markProviderIntent(any(),any());verify(finalizer,never()).retry(any(),any());
+    }
+
     @Test
     void sandboxTickNeverTouchesRealWithdrawalOrdersOrWallets() {
         WithdrawalPayoutMapper mapper = mock(WithdrawalPayoutMapper.class);
@@ -37,7 +62,7 @@ class WithdrawalPayoutExecutorTest {
         when(gateway.createPayout(any())).thenReturn(new CregisGateway.PayoutSubmission(9001L, row.withdrawalNo()));
         when(finalizer.submitted(row, 9001L, "mock")).thenReturn(true);
 
-        new WithdrawalPayoutExecutor(mapper, router, finalizer, mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class), payouts()).process();
+        new WithdrawalPayoutExecutor(mapper, router, finalizer, mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class), payouts(),mock(WithdrawalPayoutDispatchGuard.class)).process();
 
         verify(gateway, never()).createPayout(any());
         verify(mapper, never()).claimNewPayout(any(), any(), any());
@@ -57,7 +82,7 @@ class WithdrawalPayoutExecutorTest {
         when(mapper.payout(row.withdrawalNo())).thenReturn(row);
         when(router.mode()).thenReturn(CregisProperties.Mode.DISABLED);
 
-        new WithdrawalPayoutExecutor(mapper, router, finalizer, mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class), payouts()).process();
+        new WithdrawalPayoutExecutor(mapper, router, finalizer, mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class), payouts(),mock(WithdrawalPayoutDispatchGuard.class)).process();
 
         verify(router, never()).isolatedLocalSandbox();
         verify(router, never()).provider();
@@ -82,7 +107,8 @@ class WithdrawalPayoutExecutorTest {
         when(gateway.createPayout(any())).thenThrow(new RuntimeException("timeout after send"));
         when(mapper.markProviderIntent(eq(row.withdrawalNo()),any())).thenReturn(1);
 
-        new WithdrawalPayoutExecutor(mapper, router, finalizer, mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class), payouts()).process();
+        var guard=mock(WithdrawalPayoutDispatchGuard.class);when(guard.begin(eq(row),any())).thenReturn(row);
+        new WithdrawalPayoutExecutor(mapper, router, finalizer, mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class), payouts(),guard).process();
 
         verify(gateway).createPayout(any());
         verify(finalizer).orphaned(row, null, "provider", "CREGIS_SUBMISSION_UNKNOWN");
@@ -103,7 +129,7 @@ class WithdrawalPayoutExecutorTest {
 
         var closed = payouts();
         when(closed.enabled()).thenReturn(false);
-        new WithdrawalPayoutExecutor(mapper, router, finalizer, mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class), closed).process();
+        new WithdrawalPayoutExecutor(mapper, router, finalizer, mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class), closed,mock(WithdrawalPayoutDispatchGuard.class)).process();
 
         verify(router, never()).provider();
         verify(mapper, never()).claimNewPayout(any(),any(),any());
@@ -132,7 +158,7 @@ class WithdrawalPayoutExecutorTest {
                 ffdd.opsconsole.finance.cregis.CregisConstants.USDT_BEP20_TOKEN_ID,sent.targetAddress(),
                 sent.netReceive(),sent.providerIdempotencyKey(),CregisGateway.PayoutStatus.SUCCEEDED,tx));
         when(chain.verifyPayout(tx,sent.targetAddress(),sent.netReceive())).thenReturn(java.util.Optional.of(proof));
-        new WithdrawalPayoutExecutor(mapper,router,finalizer,chain,control).process();
+        new WithdrawalPayoutExecutor(mapper,router,finalizer,chain,control,mock(WithdrawalPayoutDispatchGuard.class)).process();
         if (confirmations==15) verify(finalizer).confirmProviderChain(sent,tx,proof,15);
         else verify(finalizer,never()).confirmProviderChain(any(),any(),any(),anyInt());
         verify(mapper,never()).claimNewPayout(any(),any(),any());
@@ -147,7 +173,7 @@ class WithdrawalPayoutExecutorTest {
         when(router.mode()).thenReturn(CregisProperties.Mode.PROVIDER);
         var expired = row("PROCESSING");
         when(mapper.expiredProviderAttempts(any(),eq(50))).thenReturn(List.of(expired));
-        new WithdrawalPayoutExecutor(mapper,router,finalizer,mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class),payouts()).process();
+        new WithdrawalPayoutExecutor(mapper,router,finalizer,mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class),payouts(),mock(WithdrawalPayoutDispatchGuard.class)).process();
         verify(finalizer).orphaned(expired,null,"provider","CREGIS_SUBMISSION_UNKNOWN");
         verify(router,never()).provider();
     }
@@ -183,7 +209,7 @@ class WithdrawalPayoutExecutorTest {
         });
         var control = payouts(); when(control.enabled()).thenReturn(false);
         var executor = new WithdrawalPayoutExecutor(mapper,router,finalizer,
-                mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class),control);
+                mock(ffdd.opsconsole.finance.cregis.BscDepositProof.class),control,mock(WithdrawalPayoutDispatchGuard.class));
         executor.process();
         verify(gateway,never()).queryPayout(argThat(q -> q.cid()==51));
         executor.process();

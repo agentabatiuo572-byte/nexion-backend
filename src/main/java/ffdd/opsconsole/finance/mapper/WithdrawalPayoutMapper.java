@@ -165,6 +165,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_withdrawal_order.user_id
                            AND u.is_deleted=0 AND u.sandbox=0 AND u.status='ACTIVE')
                AND status='REVIEW_PASSED' AND (next_broadcast_at IS NULL OR next_broadcast_at<=#{now})
+               AND d5_payout_source IS NULL AND d5_provider_cid IS NULL
             """)
     int claimNewPayout(@Param("withdrawalNo") String withdrawalNo, @Param("now") LocalDateTime now,
                        @Param("leaseUntil") LocalDateTime leaseUntil);
@@ -172,7 +173,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
     @Update("""
             UPDATE nx_withdrawal_order SET d5_payout_source='provider',updated_at=#{now}
              WHERE withdrawal_no=#{withdrawalNo} AND status='PROCESSING' AND is_deleted=0
-               AND d5_provider_cid IS NULL AND (d5_payout_source IS NULL OR d5_payout_source='provider')
+               AND d5_provider_cid IS NULL AND d5_payout_source IS NULL
                 AND EXISTS(SELECT 1 FROM nx_user u WHERE u.id=nx_withdrawal_order.user_id AND u.status='ACTIVE' AND u.is_deleted=0)
             """)
     int markProviderIntent(@Param("withdrawalNo") String withdrawalNo,@Param("now") LocalDateTime now);

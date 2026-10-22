@@ -1,5 +1,7 @@
 package ffdd.opsconsole.finance.cregis;
 
+import ffdd.opsconsole.auth.infrastructure.AdminEntity;
+import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.finance.mapper.CregisDepositMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -21,6 +23,7 @@ public class CregisDepositSwitchService {
     private final AuditLogService audit;
     private final PlatformTransactionManager txManager;
     private final CregisPayoutControl payouts;
+    private final AdminMapper admins;
 
     public List<Map<String, Object>> cases() {
         return config.getMode() == CregisProperties.Mode.PROVIDER
@@ -66,6 +69,10 @@ public class CregisDepositSwitchService {
                 throw new BizException(403, "CREGIS_SWITCH_DIFFERENT_CHECKER_REQUIRED");
             String status = "APPROVE".equals(decision) ? "RESOLVED" : "REJECTED";
             if ("APPROVE".equals(decision)) {
+                AdminEntity maker = admins.selectActiveForUpdate(((Number) proposal.get("makerId")).longValue());
+                if (maker == null || !Integer.valueOf(1).equals(maker.getStatus())
+                        || !Integer.valueOf(0).equals(maker.getIsDeleted()))
+                    throw new BizException(403, "CREGIS_SWITCH_MAKER_INACTIVE");
                 Map<String, Object> gate = db.lockProvisionGate();
                 long expected = ((Number) proposal.get("expectedVersion")).longValue();
                 if (gate == null || ((Number) gate.get("version")).longValue() != expected

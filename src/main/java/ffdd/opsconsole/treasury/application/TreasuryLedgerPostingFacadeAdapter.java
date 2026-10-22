@@ -46,4 +46,9 @@ public class TreasuryLedgerPostingFacadeAdapter implements TreasuryLedgerPosting
     public void reverseLegacyBankWithdrawalReserve(String withdrawalNo, BigDecimal amount, LocalDateTime now) {
         ledgerRepository.reverseLegacyBankWithdrawalReserve(withdrawalNo, amount, now);
     }
+
+    @Override
+    public void reverseBep20WithdrawalReserve(String withdrawalNo, BigDecimal amount, LocalDateTime now) {
+        ledgerRepository.reverseBep20WithdrawalReserve(withdrawalNo, amount, now);
+    }
 }
