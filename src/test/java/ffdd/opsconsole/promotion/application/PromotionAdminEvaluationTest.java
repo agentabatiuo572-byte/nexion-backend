@@ -35,7 +35,7 @@ class PromotionAdminEvaluationTest {
         var c=contract();when(resolver.resolve(anyMap(),eq(false))).thenReturn(Map.of());
         when(db.product(anyString(),eq(false))).thenReturn(values("inventory_mode","UNLIMITED"));
         doThrow(new BizException(409,"F4B_REQUIREMENTS_NOT_MET")).when(quotes).requirePurchaseEligibility(eq(29L),anyList());
-        var result=service.simulate("A1",values("draft_version",1),c,values("sampleAccountId","29","items",List.of(values("productNo","SKU1","quantity",1))));
+        var result=service.simulate("A1",values("draft_version",1,"reserved_orders",0,"used_orders",0),c,values("sampleAccountId","29","items",List.of(values("productNo","SKU1","quantity",1))));
         assertEquals("INELIGIBLE",result.get("eligibility"));assertTrue(maps(result.get("rewardUnits")).isEmpty());
         var failure=maps(result.get("blockers")).stream().filter(r->"F4B_REQUIREMENTS_NOT_MET".equals(r.get("code"))).findFirst().orElseThrow();
         assertTrue(text(map(failure.get("message")).get("zh")).contains("购买条件尚未满足"));
@@ -45,13 +45,13 @@ class PromotionAdminEvaluationTest {
         var c=contract();when(resolver.resolve(anyMap(),eq(false))).thenReturn(Map.of());
         when(db.product(anyString(),eq(false))).thenReturn(values("inventory_mode","UNLIMITED"));
         var items=List.of(values("productNo","SKU1","quantity",1));
-        var anonymous=service.simulate("A1",values("draft_version",1),c,values("items",items));
+        var anonymous=service.simulate("A1",values("draft_version",1,"reserved_orders",0,"used_orders",0),c,values("items",items));
         assertEquals("UNKNOWN",anonymous.get("eligibility"));verify(quotes,never()).requirePurchaseEligibility(anyLong(),anyList());
         doThrow(new BizException(503,"F4B_QUOTA_UNAVAILABLE")).when(quotes).requirePurchaseEligibility(eq(29L),anyList());
-        var invalidQuota=service.simulate("A1",values("draft_version",1),c,values("sampleAccountId","29","items",items));
+        var invalidQuota=service.simulate("A1",values("draft_version",1,"reserved_orders",0,"used_orders",0),c,values("sampleAccountId","29","items",items));
         assertEquals("UNKNOWN",invalidQuota.get("eligibility"));assertEquals("UNAVAILABLE",invalidQuota.get("completeness"));
         doThrow(new DataAccessResourceFailureException("offline")).when(quotes).requirePurchaseEligibility(eq(29L),anyList());
-        var unavailable=service.simulate("A1",values("draft_version",1),c,values("sampleAccountId","29","items",items));
+        var unavailable=service.simulate("A1",values("draft_version",1,"reserved_orders",0,"used_orders",0),c,values("sampleAccountId","29","items",items));
         assertEquals("UNKNOWN",unavailable.get("eligibility"));assertTrue(maps(unavailable.get("blockers")).stream().anyMatch(r->"PURCHASE_ELIGIBILITY_UNAVAILABLE".equals(r.get("code"))));
         verifyNoInteractions(evaluator);
     }
