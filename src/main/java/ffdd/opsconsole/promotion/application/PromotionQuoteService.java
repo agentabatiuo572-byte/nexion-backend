@@ -91,7 +91,7 @@ public class PromotionQuoteService {
         List<Map<String,Object>> lines=new ArrayList<>();
         for(PromotionRules.Selection item:items){
             Map<String,Object> product=db.product(item.productNo(),currentRead);
-            require("ACTIVE".equals(product.get("status"))&&number(product.get("store_visible"))==1&&decimal(product.get("price_usdt")).signum()>0,"PRODUCT_NOT_AVAILABLE");
+            require(productOnSale(product.get("status"))&&number(product.get("store_visible"))==1&&decimal(product.get("price_usdt")).signum()>0,"PRODUCT_NOT_AVAILABLE");
             BigDecimal unit=decimal(product.get("price_usdt")).setScale(6,RoundingMode.UNNECESSARY),line=unit.multiply(BigDecimal.valueOf(item.quantity()));
             subtotal=subtotal.add(line);
             lines.add(values("lineId",item.productNo(),"productNo",item.productNo(),"quantity",item.quantity(),"unitPriceUsdt",money(unit),"subtotalUsdt",money(line)));

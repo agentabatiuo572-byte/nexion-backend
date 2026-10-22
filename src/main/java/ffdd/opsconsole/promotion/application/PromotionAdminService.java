@@ -126,7 +126,7 @@ public class PromotionAdminService {
             var sku=db.requiredRow("SELECT * FROM nx_admin_device_sku WHERE sku_id=? AND is_deleted=0",p.get("product_no"));String giftFailure=PromotionNativeContractResolver.giftFailure(p,sku);
             if(canReadNative)nativeOptions.add(natives.catalogOption("E1_PRODUCT",text(p.get("product_no")),localized(text(sku.get("name"))),giftFailure));
             var reason=giftFailure==null?null:values("zh","当前商品的赠送权益尚未具备执行条件，请选择其他赠品。","en","This product's gift rights are not executable. Choose another gift.","vi","Quyền quà tặng của sản phẩm chưa thể thực hiện. Hãy chọn quà khác.");
-            skus.add(values("productNo",p.get("product_no"),"productRevision",Math.max(1,number(p.get("purchase_gate_generation"))),"name",localized(text(p.get("name"))),"available","ACTIVE".equals(p.get("status"))&&number(p.get("store_visible"))==1,"inventoryMode",inventory,"availableQuantity","UNLIMITED".equals(inventory)?null:number(p.get("stock")),"giftEligible",giftFailure==null,"giftUnavailabilityReason",reason));
+            skus.add(values("productNo",p.get("product_no"),"productRevision",Math.max(1,number(p.get("purchase_gate_generation"))),"name",localized(text(p.get("name"))),"available",productOnSale(p.get("status"))&&number(p.get("store_visible"))==1,"inventoryMode",inventory,"availableQuantity","UNLIMITED".equals(inventory)?null:number(p.get("stock")),"giftEligible",giftFailure==null,"giftUnavailabilityReason",reason));
         }
         var ranks=db.list("SELECT rank_code,title_cn,title_en FROM nx_v_rank_config WHERE status=1 AND is_deleted=0 ORDER BY sort_order,rank_code").stream().map(r->values("id",r.get("rank_code"),"name",values("zh",r.get("title_cn"),"en",r.get("title_en"),"vi",r.get("title_en")))).toList();
         var markets=options.options("user","regions").getData().stream().filter(o->!o.disabled()).map(o->values("id",o.value(),"name",localized(o.label()))).toList();
@@ -315,7 +315,7 @@ public class PromotionAdminService {
     private void resumeResources(String id,Map<String,Object> contract){
         for(var rule:maps(contract.get("rules"))){
             var product=db.product(text(rule.get("productNo")),false);
-            require("ACTIVE".equals(product.get("status"))&&number(product.get("store_visible"))==1,"PROMOTION_PRODUCT_UNAVAILABLE");
+            require(productOnSale(product.get("status"))&&number(product.get("store_visible"))==1,"PROMOTION_PRODUCT_UNAVAILABLE");
             require("UNLIMITED".equals(product.get("inventory_mode"))||number(product.get("stock"))>=number(rule.get("minBuyQty")),"PROMOTION_PRODUCT_STOCK_EXHAUSTED");
             for(String role:List.of("buyerReward","inviterReward"))if(rule.get(role)!=null){
                 var reward=map(rule.get(role));String asset=text(reward.get("type")),gift="DEVICE".equals(asset)?text(reward.get("giftProductNo")):"";
@@ -323,7 +323,7 @@ public class PromotionAdminService {
                 var budget=db.requiredRow("SELECT * FROM nx_promotion_budget WHERE activity_id=? AND asset=? AND product_no=? FOR UPDATE",id,asset,gift);
                 BigDecimal available=decimal(budget.get("total")).subtract(decimal(budget.get("reserved"))).subtract(decimal(budget.get("committed"))).subtract(decimal(budget.get("issued"))).add(decimal(budget.get("reversed")));
                 require(available.compareTo(needed)>=0,"PROMOTION_BUDGET_EXHAUSTED");
-                if(!gift.isEmpty()){var p=db.product(gift,false);require("ACTIVE".equals(p.get("status")),"PROMOTION_GIFT_UNAVAILABLE");require("UNLIMITED".equals(p.get("inventory_mode"))||decimal(p.get("stock")).compareTo(needed)>=0,"PROMOTION_GIFT_STOCK_EXHAUSTED");}
+                if(!gift.isEmpty()){var p=db.product(gift,false);require(productOnSale(p.get("status")),"PROMOTION_GIFT_UNAVAILABLE");require("UNLIMITED".equals(p.get("inventory_mode"))||decimal(p.get("stock")).compareTo(needed)>=0,"PROMOTION_GIFT_STOCK_EXHAUSTED");}
             }
         }
     }
