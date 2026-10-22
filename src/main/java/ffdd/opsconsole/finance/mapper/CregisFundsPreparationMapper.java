@@ -1,12 +1,13 @@
 package ffdd.opsconsole.finance.mapper;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.*;
 
 @Mapper
-public interface CregisFundsPreparationMapper {
+public interface CregisFundsPreparationMapper extends BaseMapper<Object> {
     String FIELDS = "CAST(id AS CHAR) id,plan_no planNo,kind,source_address sourceAddress,target_address targetAddress,"
             + "CAST(amount_usdt AS CHAR) amountUsdt,business_reference businessReference,reason,state,"
             + "CAST(maker_id AS CHAR) makerId,CAST(checker_id AS CHAR) checkerId,decision_reason decisionReason,"
