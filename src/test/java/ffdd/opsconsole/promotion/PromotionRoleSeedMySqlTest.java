@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.*;
 import java.sql.*;
 import java.util.*;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.core.io.FileSystemResource;
@@ -14,7 +15,7 @@ import org.springframework.jdbc.datasource.init.ScriptUtils;
 @EnabledIfEnvironmentVariable(named = "GROWTH_PROMOTION_RUNTIME", matches = "1")
 class PromotionRoleSeedMySqlTest {
     @Test
-    void rerunningWholeClassicSeedCannotGrantPromotionCapabilitiesOrRemoveExplicitGrants() throws Exception {
+    void superAdminReceivesPromotionCapabilitiesWithoutSpreadingOrdinaryRoleGrants() throws Exception {
         var json = new ObjectMapper();
         var config = json.readTree(Files.readString(Path.of(
                 "C:/Users/jason/.codex/workflow-runs/growth-promotions-20261007/mysql/connection.private.json")));
@@ -38,24 +39,52 @@ class PromotionRoleSeedMySqlTest {
                 statement.execute("INSERT INTO nx_admin_role(role_code,role_name,status,is_deleted) VALUES('"
                         + role + "','" + role + "',1,0)");
             }
-            for (String permission : List.of("growth_h4_read", "growth_promotion_read", "growth_promotion_publish")) {
+            var promotionPermissions = Pattern.compile("\\('(?<code>growth_promotion_[a-z_]+)'")
+                    .matcher(Files.readString(Path.of("scripts/migrations/20261007_growth_promotions.sql")))
+                    .results().map(match -> match.group(1)).distinct().sorted().toList();
+            assertEquals(20, promotionPermissions.size());
+            var fixturePermissions = new ArrayList<>(promotionPermissions);
+            fixturePermissions.addAll(List.of("growth_h4_read", "growth_promotion_disabled", "growth_promotion_deleted"));
+            for (String permission : fixturePermissions) {
                 statement.execute("INSERT INTO nx_admin_permission(permission_code,permission_name,resource_type,perm_type,status,is_deleted) VALUES('"
                         + permission + "','" + permission + "','API','READ',1,0)");
             }
+            statement.execute("UPDATE nx_admin_permission SET status=0 WHERE permission_code='growth_promotion_disabled'");
+            statement.execute("UPDATE nx_admin_permission SET is_deleted=1 WHERE permission_code='growth_promotion_deleted'");
             // An explicitly granted FINANCE capability must not spread through the
             // old FINANCE_LEAD inheritance path, or disappear during seed reruns.
             grant(statement, "FINANCE", "growth_promotion_read");
-            ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/rbac-classic-seed/02-role-permission-seed.sql"));
+            grant(statement, "FINANCE", "growth_promotion_publish");
+            statement.execute("UPDATE nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id JOIN nx_admin_permission p ON p.id=rp.permission_id SET rp.is_deleted=1 WHERE r.role_code='FINANCE' AND p.permission_code='growth_promotion_publish'");
+            grant(statement, "SUPER_ADMIN", "growth_promotion_read");
+            statement.execute("UPDATE nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id SET rp.is_deleted=1 WHERE r.role_code='SUPER_ADMIN'");
+            var expected = new ArrayList<String>();
+            expected.add("FINANCE:growth_promotion_read");
+            promotionPermissions.forEach(permission -> expected.add("SUPER_ADMIN:" + permission));
+            statement.execute("UPDATE nx_admin_role SET status=0 WHERE role_code='SUPER_ADMIN'");
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/migrations/20261022_04_h4_superadmin_permissions.sql"));
             assertEquals(List.of("FINANCE:growth_promotion_read"), promotionGrants(statement));
+            statement.execute("UPDATE nx_admin_role SET status=1,is_deleted=1 WHERE role_code='SUPER_ADMIN'");
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/migrations/20261022_04_h4_superadmin_permissions.sql"));
+            assertEquals(List.of("FINANCE:growth_promotion_read"), promotionGrants(statement));
+            statement.execute("UPDATE nx_admin_role SET is_deleted=0 WHERE role_code='SUPER_ADMIN'");
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/migrations/20261022_04_h4_superadmin_permissions.sql"));
+            assertEquals(expected, promotionGrants(statement));
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/migrations/20261022_04_h4_superadmin_permissions.sql"));
+            assertEquals(expected, promotionGrants(statement));
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/rbac-classic-seed/02-role-permission-seed.sql"));
+            assertEquals(expected, promotionGrants(statement));
             try (var old = statement.executeQuery("SELECT COUNT(*) FROM nx_admin_role_permission rp JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE p.permission_code='growth_h4_read' AND rp.is_deleted=0")) {
                 assertTrue(old.next()); assertEquals(3, old.getInt(1));
             }
             grant(statement, "GROWTH", "growth_promotion_publish");
             ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/rbac-classic-seed/02-role-permission-seed.sql"));
-            assertEquals(List.of("FINANCE:growth_promotion_read", "GROWTH:growth_promotion_publish"), promotionGrants(statement));
+            expected.add("GROWTH:growth_promotion_publish");
+            expected.sort(String::compareTo);
+            assertEquals(expected, promotionGrants(statement));
             Files.writeString(Path.of("target/promotion-role-seed-runtime.json"), json.writeValueAsString(Map.of(
                     "status", "PASS", "database", database, "seedExecutions", 2,
-                    "implicitPromotionGrants", 0, "preservedExplicitGrants", promotionGrants(statement))));
+                    "implicitOrdinaryRoleGrants", 0, "superAdminPromotionGrants", 20, "preservedExplicitGrants", promotionGrants(statement))));
             // Only the freshly created, strictly named fixture is removed on success.
             // Leave a failed fixture intact for diagnosis.
             statement.execute("USE growth_promotions_20261007");
