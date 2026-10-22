@@ -82,8 +82,8 @@ public final class BscDepositProof {
         int required=Math.max(15,properties.getDepositConfirmations());
         if(head.number()<height || head.number()-height+1<required) return null;
         if(!blockHash.equalsIgnoreCase(blockHash(height))) throw invalid();
-        if(hexLong(call("eth_call","[{\"to\":\""+CregisConstants.USDT_BEP20_TOKEN_ID
-                +"\",\"data\":\"0x313ce567\"},\"latest\"]").asText())!=18) throw invalid();
+        if(!hexBigInteger(call("eth_call","[{\"to\":\""+CregisConstants.USDT_BEP20_TOKEN_ID
+                +"\",\"data\":\"0x313ce567\"},\"latest\"]").asText()).equals(BigInteger.valueOf(18))) throw invalid();
         JsonNode logs=receipt.path("logs");
         if(!logs.isArray()) throw invalid();
         JsonNode selected=null;
@@ -240,7 +240,7 @@ public final class BscDepositProof {
         String tag = hex(at.number());
         JsonNode decimals = call("eth_call", "[{\"to\":\"" + CregisConstants.USDT_BEP20_TOKEN_ID
                 + "\",\"data\":\"0x313ce567\"},\"" + tag + "\"]");
-        if (hexLong(decimals.asText()) != 18) throw invalid();
+        if (!hexBigInteger(decimals.asText()).equals(BigInteger.valueOf(18))) throw invalid();
         String data = "0x70a08231" + "0".repeat(24) + address.substring(2).toLowerCase(Locale.ROOT);
         JsonNode token = call("eth_call", "[{\"to\":\"" + CregisConstants.USDT_BEP20_TOKEN_ID
                 + "\",\"data\":\"" + data + "\"},\"" + tag + "\"]");
@@ -281,7 +281,7 @@ public final class BscDepositProof {
                 || !blockHash.equalsIgnoreCase(hash(block.path("hash").asText()))) throw invalid();
         JsonNode decimals = call("eth_call", "[{\"to\":\"" + CregisConstants.USDT_BEP20_TOKEN_ID
                 + "\",\"data\":\"0x313ce567\"},\"latest\"]");
-        if (hexLong(decimals.asText()) != 18) throw invalid();
+        if (!hexBigInteger(decimals.asText()).equals(BigInteger.valueOf(18))) throw invalid();
         JsonNode logs = receipt.path("logs");
         if (!logs.isArray()) throw invalid();
         Integer found = null;
