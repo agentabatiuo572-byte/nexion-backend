@@ -641,7 +641,14 @@ class PromotionLifecycleMySqlTest {
         var earnings=h.proxy(new EarningsReleaseService(h.session.getMapper(EarningsReleaseMapper.class),h.earningsPolicy,h.idempotency,h.audit,guard));
         var evaluator=new PromotionEvaluationService(h.db);
         var vouchers=new AppGrowthLifecyclePublisher(h.session.getMapper(AppGrowthLifecycleMapper.class),h.audit,outbox);
-        quotes=h.proxy(new PromotionQuoteService(h.db,h.validator,h.resolver,evaluator,h.config,vouchers));
+        h.session.getConfiguration().addMapper(ffdd.opsconsole.device.mapper.DeviceCatalogMapper.class);
+        var release=new ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy(
+            new ffdd.opsconsole.device.infrastructure.MybatisDeviceCatalogRepository(h.session.getMapper(ffdd.opsconsole.device.mapper.DeviceCatalogMapper.class),new ObjectMapper()),
+            new ffdd.opsconsole.growth.application.GrowthRhythmFacadeAdapter(h.config,ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.disabledForDirectConstruction()));
+        var eligibility=h.proxy(new ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService(canonical,null,null,null,null,null,null,null,guard,
+            new ffdd.opsconsole.commerce.application.CommerceAcceptanceRun(h.run),release,new ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy(),env));
+        var beans=new org.springframework.beans.factory.support.StaticListableBeanFactory();beans.addBean("purchaseEligibility",eligibility);
+        quotes=h.proxy(new PromotionQuoteService(h.db,h.validator,h.resolver,evaluator,h.config,vouchers,beans.getBeanProvider(ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService.class)));
         orders=h.proxy(new PromotionOrderService(h.db,quotes,evaluator,h.resolver,h.audit,outbox));
         rewards=h.proxy(new PromotionRewardService(h.db,orders,earnings,ledger,h.audit,outbox));
         var product=h.db.requiredRow("""

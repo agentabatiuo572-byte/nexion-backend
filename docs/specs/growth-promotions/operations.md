@@ -39,6 +39,8 @@ AUTHORIZATION 只控制本功能的批准与发布关系。读取真实 A2 政�
 
 ## 3. 固定模板及版本身份
 
+活动不覆盖 E1/F4B 原商品购买条件。公开 quote 与选择真实账户的后台 simulate 都复用正式 purchaseEligibilityBatch 对整单全部购买 SKU 做只读资格评估（不含赠品 SKU，不占月配额）；任一 SKU 不合格，quote 在写入报价前拒绝并返回原 decisionCode，simulate 不生成奖励、展示购买条件阻断原因。无账户或资格事实不可读时 simulate 为 UNKNOWN，不假定满足条件；报价不以读取失败降级放行。付款时原有 E1/F4B 锁定与配额门禁仍独立执行，报价通过不预占或保证月配额。
+
 - SKU_GIFT：按各 rule.productNo 的 minBuyQty/PER_GROUP 或 ONCE_PER_ORDER 计算。
 - FIRST_PURCHASE：NEVER_PAID，按批准 FIRST_PURCHASE.mode；支付前账户级仲裁，败选订单在扣款前409并重报价确认。未付取消不消耗资格，付后退款是否恢复取批准合同。
 - DIRECT_REFERRAL：受邀买家首购，sponsor 用服务端已验证关系快照；双方各自资格/限次/奖励，买家不合格不能伪装成交礼，邀请者不合格可仅发符合发布规则的买家奖励。双方不能同人。
