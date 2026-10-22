@@ -2,6 +2,7 @@ package ffdd.opsconsole.finance.cregis;
 
 import ffdd.opsconsole.finance.mapper.CregisDepositMapper;
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -19,7 +20,9 @@ public class CregisPayoutControl {
         return config.getMode() == CregisProperties.Mode.PROVIDER && config.isPayoutEnabled()
                 && config.getProjectId() > 0 && config.getDepositConfirmations() >= 15
                 && StringUtils.hasText(config.getBaseUrl()) && StringUtils.hasText(config.getApiKey())
-                && StringUtils.hasText(config.getCallbackBaseUrl()) && StringUtils.hasText(config.getBscRpcUrl());
+                && StringUtils.hasText(config.getCallbackBaseUrl()) && StringUtils.hasText(config.getBscRpcUrl())
+                && config.getCallbackSourceIps() != null
+                && Arrays.stream(config.getCallbackSourceIps().split(",")).anyMatch(StringUtils::hasText);
     }
 
     /** The existing reconciliation/risk qualifications apply before reopening any real-money switch. */

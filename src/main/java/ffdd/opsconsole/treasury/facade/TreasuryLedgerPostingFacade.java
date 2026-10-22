@@ -23,4 +23,8 @@ public interface TreasuryLedgerPostingFacade extends DomainFacade {
     default void reverseLegacyBankWithdrawalReserve(String withdrawalNo, BigDecimal amount, LocalDateTime now) {
         throw new UnsupportedOperationException("BANK_RESERVE_REVERSAL_NOT_IMPLEMENTED");
     }
+
+    default void reverseBep20WithdrawalReserve(String withdrawalNo, BigDecimal amount, LocalDateTime now) {
+        throw new UnsupportedOperationException("BEP20_RESERVE_REVERSAL_NOT_IMPLEMENTED");
+    }
 }

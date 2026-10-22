@@ -252,6 +252,8 @@ public class WithdrawalPayoutFinalizer {
         } else {
             if ("BANK-VND".equals(row.chain()) && "hdpay".equals(source))
                 ledger.reverseLegacyBankWithdrawalReserve(row.withdrawalNo(), row.amount(), now);
+            if ("USDT-BEP20".equals(row.chain()) && "provider".equals(source))
+                ledger.reverseBep20WithdrawalReserve(row.withdrawalNo(), row.amount(), now);
             BigDecimal nexBurned = row.nexBurned() == null ? BigDecimal.ZERO : row.nexBurned();
             if (mapper.refundPending(row.userId(), row.amount(), nexBurned, now) != 1) {
                 throw new BizException(409, "WITHDRAWAL_PENDING_REFUND_CONFLICT");

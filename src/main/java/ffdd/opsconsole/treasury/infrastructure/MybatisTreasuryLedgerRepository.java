@@ -270,6 +270,42 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
         return amountUsd.setScale(6, java.math.RoundingMode.UNNECESSARY);
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void reverseBep20WithdrawalReserve(String withdrawalNo, BigDecimal amountUsd, LocalDateTime now) {
+        var order = mapper.lockReserveWithdrawal(withdrawalNo);
+        if (order == null || !"USDT-BEP20".equals(order.chain()) || !"FAILED".equals(order.status())
+                || !"provider".equals(order.payoutSource()) || (order.txid() != null && !order.txid().isBlank()))
+            throw new IllegalStateException("BEP20_RESERVE_RETURN_STATE_INVALID");
+        returnBep20Reserve(withdrawalNo, order, amountUsd, now, false);
+    }
+
+    private void returnBep20Reserve(String withdrawalNo, TreasuryLedgerMapper.ReserveWithdrawal order,
+                                    BigDecimal amountUsd, LocalDateTime now, boolean beforeApproval) {
+        if (amountUsd == null || amountUsd.signum() <= 0 || order.amount() == null
+                || order.amount().compareTo(amountUsd) != 0 || now == null)
+            throw new IllegalStateException("BEP20_RESERVE_ORDER_AMOUNT_MISMATCH");
+        BigDecimal amount = amountUsd.setScale(6, java.math.RoundingMode.UNNECESSARY);
+        String key = safeBiz(withdrawalNo);
+        String reserveNo = compactKey("RSV-WD-", key, 64), voucherNo = compactKey("WD-", key, 96);
+        var original = mapper.lockReserveEntries(reserveNo, voucherNo);
+        if (original.isEmpty() && beforeApproval) {
+            if (!mapper.lockReserveEntries(compactKey("RSV-WD-REV-", key, 64), compactKey("WD-REV-", key, 96)).isEmpty())
+                throw new IllegalStateException("BEP20_RESERVE_ORIGINAL_MISSING");
+            return;
+        }
+        requireReserveEntry(original, reserveNo, voucherNo, "OUT", amount, null);
+        String reversalNo = compactKey("RSV-WD-REV-", key, 64), reversalVoucher = compactKey("WD-REV-", key, 96);
+        String evidence = "reverse:" + voucherNo;
+        var reversal = mapper.lockReserveEntries(reversalNo, reversalVoucher);
+        if (!reversal.isEmpty()) {
+            requireReserveEntry(reversal, reversalNo, reversalVoucher, "IN", amount, evidence);
+            return;
+        }
+        if (mapper.insertBep20ReserveReversal(reversalNo, reversalVoucher, amount, evidence, now) != 1)
+            throw new IllegalStateException("BEP20_RESERVE_RETURN_WRITE_FAILED");
+    }
+
     private void writeBankReserveEntry(String reserveNo, String voucherNo, String direction, BigDecimal amount,
                                        String reason, String evidence, LocalDateTime now) {
         var existing = mapper.lockReserveEntries(reserveNo, voucherNo);
@@ -316,6 +352,26 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
             assertSameLedgerFingerprint(providerRefund, userId, "WITHDRAW_PAYOUT_REFUND", safeAmount, "POSTED",
                     "Provider payout failed; reserved withdrawal returned");
             throw new BizException(409, "WITHDRAWAL_ALREADY_REFUNDED_BY_PROVIDER");
+        }
+        var order = mapper.lockReserveWithdrawal(withdrawalNo);
+        if (order == null || !java.util.Objects.equals(userId, order.userId()) || order.amount() == null
+                || order.amount().compareTo(safeAmount) != 0)
+            throw new IllegalStateException("WITHDRAWAL_REFUND_ORDER_MISMATCH");
+        if ("USDT-BEP20".equals(order.chain())) {
+            WalletLedgerEntity manualRefund = mapper.findLedgerEntry(
+                    compactKey("D2-REFUND-", safeBiz(withdrawalNo), 96), "USDT", "IN");
+            if (manualRefund != null) {
+                assertSameLedgerFingerprint(manualRefund, userId, "WITHDRAW_REFUND", safeAmount, "SUCCESS", trim(reason));
+                throw new BizException(409, "WITHDRAWAL_ALREADY_REFUNDED");
+            }
+        }
+        if ("USDT-BEP20".equals(order.chain())) {
+            if (!("REVIEW_REJECTED".equals(order.status()) || "REFUNDED".equals(order.status()))
+                    || (order.txid() != null && !order.txid().isBlank())
+                    || (order.payoutSource() != null && !order.payoutSource().isBlank()))
+                throw new IllegalStateException("BEP20_RESERVE_RETURN_STATE_INVALID");
+            returnBep20Reserve(withdrawalNo, order, safeAmount, LocalDateTime.now(),
+                    "REVIEW_REJECTED".equals(order.status()));
         }
         BigDecimal usdtBefore = actualUserBalance(userId, "USDT").orElse(BigDecimal.ZERO);
         BigDecimal nexBefore = actualUserBalance(userId, "NEX").orElse(BigDecimal.ZERO);

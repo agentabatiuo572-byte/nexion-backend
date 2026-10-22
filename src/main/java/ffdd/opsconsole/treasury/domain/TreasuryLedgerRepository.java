@@ -127,6 +127,10 @@ public interface TreasuryLedgerRepository {
         throw new UnsupportedOperationException("BANK_RESERVE_REVERSAL_NOT_IMPLEMENTED");
     }
 
+    default void reverseBep20WithdrawalReserve(String withdrawalNo, BigDecimal amountUsd, LocalDateTime now) {
+        throw new UnsupportedOperationException("BEP20_RESERVE_REVERSAL_NOT_IMPLEMENTED");
+    }
+
     default void releaseCommissionFunds(Long eventId) {
         throw new UnsupportedOperationException("COMMISSION_FUNDS_RELEASE_NOT_IMPLEMENTED");
     }

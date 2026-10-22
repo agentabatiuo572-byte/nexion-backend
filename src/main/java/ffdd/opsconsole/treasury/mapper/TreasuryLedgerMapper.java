@@ -516,6 +516,14 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     BigDecimal lockBankWithdrawalAmount(@Param("order") String order);
 
     @Select("""
+            SELECT user_id userId,chain,amount,status,chain_tx_hash txid,d5_payout_source payoutSource
+            FROM nx_withdrawal_order WHERE withdrawal_no=#{order} AND is_deleted=0 FOR UPDATE
+            """)
+    ReserveWithdrawal lockReserveWithdrawal(@Param("order") String order);
+
+    record ReserveWithdrawal(Long userId, String chain, BigDecimal amount, String status, String txid, String payoutSource) { }
+
+    @Select("""
             SELECT reserve_no reserveNo,voucher_no voucherNo,direction,amount_usd amountUsd,
               idempotency_key idempotencyKey,status,is_deleted deleted
             FROM nx_treasury_reserve_ledger WHERE reserve_no=#{reserveNo} OR voucher_no=#{voucherNo} FOR UPDATE
@@ -531,6 +539,15 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     int insertBankReserveEntry(@Param("reserveNo") String reserveNo, @Param("voucherNo") String voucherNo,
             @Param("direction") String direction, @Param("amount") BigDecimal amount,
             @Param("reason") String reason, @Param("evidence") String evidence, @Param("now") LocalDateTime now);
+
+    @Insert("""
+            INSERT INTO nx_treasury_reserve_ledger(reserve_no,voucher_no,direction,amount_usd,reason,operator,
+              idempotency_key,status,created_at,updated_at,is_deleted)
+            VALUES(#{reserveNo},#{voucherNo},'IN',#{amount},'BEP20 reserved withdrawal returned','cregis-settlement',
+              #{evidence},'CONFIRMED',#{now},#{now},0)
+            """)
+    int insertBep20ReserveReversal(@Param("reserveNo") String reserveNo, @Param("voucherNo") String voucherNo,
+            @Param("amount") BigDecimal amount, @Param("evidence") String evidence, @Param("now") LocalDateTime now);
 
     record ReserveEntry(String reserveNo, String voucherNo, String direction, BigDecimal amountUsd,
                         String idempotencyKey, String status, Integer deleted) { }

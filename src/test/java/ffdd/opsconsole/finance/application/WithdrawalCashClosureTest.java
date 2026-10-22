@@ -114,6 +114,38 @@ class WithdrawalCashClosureTest {
                 .isInstanceOf(IllegalStateException.class);
         f.assertRolledBack();
     }
+    @Test void providerFailureReturnsReserveExactlyOnceAndBeforeWalletRefund() {
+        var f=new TerminalFixture("FAILED");
+        f.finalizer.terminal(f.row,9,"provider","event","hash","FAILED",null,"failure");
+        f.finalizer.terminal(f.row,9,"provider","event","hash","FAILED",null,"failure");
+        verify(f.ledger,times(1)).reverseBep20WithdrawalReserve("WD1",new BigDecimal("100"),at);
+        var sequence=inOrder(f.ledger,f.source.mapper);
+        sequence.verify(f.ledger).reverseBep20WithdrawalReserve("WD1",new BigDecimal("100"),at);
+        sequence.verify(f.source.mapper).refundPending(7L,new BigDecimal("100"),BigDecimal.ZERO,at);
+        assertThat(f.reserveReturns).containsExactly("WD1");
+    }
+    @Test void missingOriginalReserveStopsFailureReturnAndRollsBackCallbackAndOrder() {
+        var f=new TerminalFixture("FAILED");
+        doThrow(new IllegalStateException("missing original OUT")).when(f.ledger)
+                .reverseBep20WithdrawalReserve("WD1",new BigDecimal("100"),at);
+        assertThatThrownBy(()->f.finalizer.terminal(f.row,9,"provider","event","hash","FAILED",null,"failure"))
+                .hasMessage("missing original OUT");
+        f.assertRolledBack();
+        verify(f.source.mapper,never()).refundPending(any(),any(),any(),any());
+    }
+    @Test void lateFailureAfterSuccessEvidenceCannotReturnReserveOrWallet() {
+        var f=new TerminalFixture("FAILED");
+        when(f.source.mapper.hasProviderSuccessEvidence("WD1")).thenReturn(true);
+        assertThatThrownBy(()->f.finalizer.terminal(f.row,9,"provider","late","hash","FAILED",null,"failure"))
+                .hasMessage("CREGIS_FAILURE_CONFLICTS_WITH_SUCCESS_EVIDENCE");
+        verify(f.ledger,never()).reverseBep20WithdrawalReserve(any(),any(),any());
+        f.assertRolledBack();
+    }
+    @Test void successDoesNotReverseApprovalReserve() {
+        var f=new TerminalFixture("CONFIRMED");
+        f.finalizer.confirmProviderChain(f.row,TX,PROOF,15);
+        verify(f.ledger,never()).reverseBep20WithdrawalReserve(any(),any(),any());
+    }
     @Test void sourceProofLocksBeforeWalletAndOrderCashMutation() {
         var f=new TerminalFixture("CONFIRMED");
         f.finalizer.confirmProviderChain(f.row,TX,PROOF,15);
@@ -147,7 +179,7 @@ class WithdrawalCashClosureTest {
         final AtomicReference<BigDecimal> pending=new AtomicReference<>(new BigDecimal("200"));
         final AtomicReference<BigDecimal> available=new AtomicReference<>(new BigDecimal("900"));
         final java.util.Map<String,String> callbacks=new java.util.HashMap<>();
-        final java.util.List<String> receipts=new java.util.ArrayList<>(),refunds=new java.util.ArrayList<>();
+        final java.util.List<String> receipts=new java.util.ArrayList<>(),refunds=new java.util.ArrayList<>(),reserveReturns=new java.util.ArrayList<>();
         final WithdrawalPayoutFinalizer finalizer;
         final WithdrawalPayoutMapper.PayoutRow row=new WithdrawalPayoutMapper.PayoutRow("WD1",7L,"USDT-BEP20","0x"+"c".repeat(40),new BigDecimal("100"),new BigDecimal("90"),BigDecimal.ZERO,"SENT",at,9L,"WD1","provider",1);
         TerminalFixture(String status) {
@@ -165,12 +197,13 @@ class WithdrawalCashClosureTest {
             when(source.mapper.settlePending(7L,new BigDecimal("100"),at)).thenAnswer(i->{pending.set(pending.get().subtract(new BigDecimal("100")));return 1;});
             when(source.mapper.refundPending(7L,new BigDecimal("100"),BigDecimal.ZERO,at)).thenAnswer(i->{pending.set(pending.get().subtract(new BigDecimal("100")));available.set(available.get().add(new BigDecimal("100")));return 1;});
             doAnswer(i->{refunds.add(i.getArgument(0));return null;}).when(ledger).postLedgerEntry(any(),any(),any(),any(),any(),any(),any(),any());
+            doAnswer(i->{reserveReturns.add(i.getArgument(0));return null;}).when(ledger).reverseBep20WithdrawalReserve(any(),any(),any());
             doAnswer(i->{var input=i.getArgument(1,ffdd.opsconsole.finance.facade.SupportFundJournalFacade.ReceiptInput.class);
                 receipts.add(input.operationKey());return new ffdd.opsconsole.finance.facade.SupportFundJournalFacade.BoundReceipt(1,input.operationKey(),"a".repeat(64),1);})
                     .when(source.fund).bind(any(),any());
             var target=new WithdrawalPayoutFinalizer(source.mapper,audit,ledger,Clock.fixed(at.toInstant(ZoneOffset.UTC),ZoneOffset.UTC),source.service, mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class));
             var manager=new MemoryTransactionManager(()->{},()->{pending.set(new BigDecimal("200"));available.set(new BigDecimal("900"));
-                source.order.put("status","SENT");source.order.put("chain","USDT-BEP20");callbacks.clear();receipts.clear();refunds.clear();});
+                source.order.put("status","SENT");source.order.put("chain","USDT-BEP20");callbacks.clear();receipts.clear();refunds.clear();reserveReturns.clear();});
             finalizer=transactionProxy(target,manager);
         }
         void legacyReservation() throws Exception {
@@ -181,7 +214,7 @@ class WithdrawalCashClosureTest {
                     "actorType","USER","result","SUCCESS","detailJson",detail)));
         }
         void assertRolledBack(){assertThat(pending.get()).isEqualByComparingTo("200");assertThat(available.get()).isEqualByComparingTo("900");
-            assertThat(source.order.get("status")).isEqualTo("SENT");assertThat(callbacks).isEmpty();assertThat(receipts).isEmpty();assertThat(refunds).isEmpty();}
+            assertThat(source.order.get("status")).isEqualTo("SENT");assertThat(callbacks).isEmpty();assertThat(receipts).isEmpty();assertThat(refunds).isEmpty();assertThat(reserveReturns).isEmpty();}
     }
     private void settle(String no,BigDecimal gross,BigDecimal nex) throws Exception {
         var finalizer=new WithdrawalPayoutFinalizer(mapper,mock(AuditLogService.class),mock(TreasuryLedgerPostingFacade.class),Clock.systemUTC(),funds,mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class));
