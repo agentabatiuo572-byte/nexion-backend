@@ -31,6 +31,18 @@ public interface CregisGateway {
 
     PayoutOrder queryPayout(PayoutQuery expected);
 
+    default long createCollection(CollectionRequest request) {
+        throw new CregisGatewayException(CregisGatewayException.Kind.CONFIGURATION,"CREGIS_AUTO_FORWARD_DISABLED");
+    }
+    default java.util.Optional<CollectionOrder> queryCollection(long cid, CollectionRequest expected) {
+        throw new CregisGatewayException(CregisGatewayException.Kind.CONFIGURATION,"CREGIS_COLLECTION_QUERY_UNSUPPORTED");
+    }
+    default PayoutSubmission createAutoForwardPayout(PayoutRequest request) {
+        throw new CregisGatewayException(CregisGatewayException.Kind.CONFIGURATION,"CREGIS_AUTO_FORWARD_DISABLED");
+    }
+    record CollectionRequest(String fromAddress,String toAddress,BigDecimal amount) { }
+    record CollectionOrder(long cid,int status,String txid) { }
+
     default boolean hasExternalFundSideEffects() {
         return true;
     }

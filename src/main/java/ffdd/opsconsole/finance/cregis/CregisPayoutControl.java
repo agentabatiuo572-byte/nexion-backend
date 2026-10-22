@@ -33,6 +33,7 @@ public class CregisPayoutControl {
                 || db.disputedDeliveryCountForProject(config.getProjectId()) != 0
                 || db.pendingAcceptedDeliveryCount(0) != 0
                 || db.openCriticalAlertCountExceptManual(config.getProjectId()) != 0
+                || db.openAutoForwardUnknownAlertCount(config.getProjectId()) != 0
                 || !db.uncertainAddresses(config.getProjectId()).isEmpty()
                 || !db.providerMissing(config.getProjectId()).isEmpty()
                 || !db.failedDeliveries(config.getProjectId()).isEmpty()) return "RISK_HOLD";
