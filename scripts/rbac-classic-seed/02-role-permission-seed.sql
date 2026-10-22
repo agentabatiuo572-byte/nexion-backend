@@ -1,6 +1,6 @@
 -- role_permission 绑定（角色×权限，域级规则）
 -- 经典权限规则：超管=全部；审计=READ；各域主操作角色=该域权限；B/L 域全角色。
--- growth_promotion_ 权限只允许 A1 显式授权；重跑经典 seed 不隐式新增，也不删除已有授权。
+-- growth_promotion_：超管拥有全部；普通角色只允许 A1 显式授权，重跑不扩散或删除已有授权。
 -- 按 permission_code 前缀（域 slug）+ perm_type 匹配。幂等 INSERT IGNORE。
 -- 依赖：00-alter + 01-menu + 各域权限 seed(AB/C/D/EF/GH/IJ/KLM.sql) 已执行。
 
@@ -8,6 +8,15 @@
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p WHERE r.role_code='SUPER_ADMIN'
   AND LEFT(p.permission_code,17) <> 'growth_promotion_';
+
+-- H4 新促销：补齐超管细项，并恢复此前被软删除的超管绑定。
+INSERT INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id
+FROM nx_admin_role r
+JOIN nx_admin_permission p ON LEFT(p.permission_code, 17) = 'growth_promotion_'
+WHERE r.role_code = 'SUPER_ADMIN' AND r.status = 1 AND r.is_deleted = 0
+  AND p.resource_type = 'API' AND p.status = 1 AND p.is_deleted = 0
+ON DUPLICATE KEY UPDATE is_deleted = 0, updated_at = NOW();
 
 -- 审计：所有 READ 类型（只读，全域）
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
