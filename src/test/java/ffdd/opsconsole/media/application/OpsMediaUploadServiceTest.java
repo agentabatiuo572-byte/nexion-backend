@@ -38,6 +38,18 @@ class OpsMediaUploadServiceTest {
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final OpsMediaUploadService service = service();
 
+    @Test
+    void promotionEvidenceIdentityRetainsAllManagedUploadFormatsAndRejectsOtherReferences() {
+        String prefix="admin/growth/promotion-evidence/20261023/72acf9af-ed09-4b54-9e6a-8d20a0825a12.";
+        for(String extension:java.util.List.of("jpg","png","webp","gif","mp4","webm","mov")) {
+            String key=prefix+extension,asset=Base64.getUrlEncoder().withoutPadding().encodeToString(key.getBytes(StandardCharsets.UTF_8));
+            assertThat(OpsMediaUploadService.promotionEvidenceObjectKey(asset)).isEqualTo(key);
+            assertThat(OpsMediaUploadService.promotionEvidenceObjectKey(asset+"=")).isNull();
+        }
+        for(String invalid:java.util.List.of("https://outside.example/evidence.png","bad!","a".repeat(241)))
+            assertThat(OpsMediaUploadService.promotionEvidenceObjectKey(invalid)).isNull();
+    }
+
     private OpsMediaUploadService service() {
         return new OpsMediaUploadService(
                 storageService,

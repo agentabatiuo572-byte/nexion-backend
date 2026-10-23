@@ -3619,6 +3619,18 @@
         "maxLength": 64,
         "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
       },
+      "EvidenceRef": {
+        "anyOf": [
+          { "$ref": "#/components/schemas/Id" },
+          {
+            "type": "string",
+            "minLength": 65,
+            "maxLength": 240,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        ],
+        "description": "Existing audit/A2 reference or canonical assetId from a managed growth/promotion-evidence upload. Managed references are checked against existing object storage before a new command executes; policy approval retains its original audit/A2 evidence requirements."
+      },
       "Hash": {
         "type": "string",
         "pattern": "^[a-f0-9]{64}$"
@@ -4202,7 +4214,7 @@
           "evidenceRefs": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Id"
+              "$ref": "#/components/schemas/EvidenceRef"
             },
             "minItems": 1
           }
@@ -4948,7 +4960,7 @@
           "evidenceRefs": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Id"
+              "$ref": "#/components/schemas/EvidenceRef"
             },
             "maxItems": 20
           }
@@ -4974,7 +4986,7 @@
           "evidenceRefs": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Id"
+              "$ref": "#/components/schemas/EvidenceRef"
             },
             "maxItems": 20
           },
@@ -6386,7 +6398,7 @@
                 "evidenceRefs": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/Id"
+                    "$ref": "#/components/schemas/EvidenceRef"
                   }
                 }
               },
@@ -6454,7 +6466,7 @@
           "evidenceRefs": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Id"
+              "$ref": "#/components/schemas/EvidenceRef"
             },
             "maxItems": 20,
             "minItems": 1
@@ -6492,7 +6504,7 @@
           "evidenceRefs": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Id"
+              "$ref": "#/components/schemas/EvidenceRef"
             },
             "maxItems": 20,
             "minItems": 1
@@ -7663,7 +7675,7 @@
           "evidenceRefs": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Id"
+              "$ref": "#/components/schemas/EvidenceRef"
             },
             "minItems": 1
           },

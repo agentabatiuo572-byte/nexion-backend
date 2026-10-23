@@ -24,6 +24,25 @@ class PromotionBannerServiceTest {
     private final ObjectStorageService storage = mock(ObjectStorageService.class);
     private final PromotionBannerService service = new PromotionBannerService(db, storage);
 
+    @Test void managedEvidenceUsesExistingUploadIdentityAndStorageWithoutBecomingPublicArtwork() {
+        String key=KEY.replace("promotion-banner","promotion-evidence"),asset=encode(key);
+        when(storage.exists(key)).thenReturn(true);
+        service.validateEvidenceRefs(List.of("audit-1",asset));
+        assertNull(service.issueUrl("PROMO-1",3,asset));
+        verify(storage).exists(key);
+        verify(storage,never()).get(anyString());
+    }
+
+    @Test void evidenceRejectsMissingObjectsOtherNamespacesTraversalAndNoncanonicalIds() {
+        String key=KEY.replace("promotion-banner","promotion-evidence"),asset=encode(key);
+        for(String rejected:List.of(asset,ASSET,asset+"=",encode(key.replace("promotion-evidence/", "promotion-evidence/../")),
+                encode(key.replace("growth/promotion-evidence", "e/sku-image")))) {
+            assertEquals(422,assertThrows(BizException.class,()->service.validateEvidenceRefs(List.of(rejected))).getCode());
+        }
+        when(storage.exists(key)).thenThrow(new IllegalStateException("storage unavailable"));
+        assertEquals(503,assertThrows(BizException.class,()->service.validateEvidenceRefs(List.of(asset))).getCode());
+    }
+
     @Test void managedImageCanBeSavedAndReadOnlyViaCurrentPublishedVersion() {
         image();
         service.validateAsset(ASSET);

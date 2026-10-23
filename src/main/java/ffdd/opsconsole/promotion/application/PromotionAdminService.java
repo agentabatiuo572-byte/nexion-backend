@@ -56,6 +56,7 @@ public class PromotionAdminService {
         var attempted=new java.util.concurrent.atomic.AtomicBoolean();
         try{return idempotency.executeRetained(scope(actor,operation,target),key,hash(request),Map.class,()->{
             reasonPolicy.validateReason(text(request.get("reason")));
+            banners.validateEvidenceRefs(request.get("evidenceRefs"));
             String command=id("PC");Instant now=Instant.now();var before=before(target);
             attempted.set(true);var resource=action.get();var after=before(text(resource.get("id")));
             String auditedTarget="PROMOTION".equals(resource.get("type"))?text(resource.get("id")):target;
