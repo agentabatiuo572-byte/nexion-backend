@@ -39,4 +39,18 @@ class PromotionContractValidatorTest {
         }
         for(Object invalid:List.of("",1,"a".repeat(241)))assertThrows(BizException.class,()->validator.validate("DraftPatch",values("bannerAssetId",invalid)));
     }
+
+    @Test void evidenceAcceptsOfficialUploadIdsWithoutWideningBusinessIds() throws Exception {
+        String uploaded="YWRtaW4vZ3Jvd3RoL3Byb21vdGlvbi1ldmlkZW5jZS8yMDI2MTAyMy83MmFjZjlhZi1lZDA5LTRiNTQtOWU2YS04ZDIwYTA4MjVhMTIucG5n";
+        for(String ref:List.of("123", "WO-261022165446093-261", uploaded))validator.validate("EvidenceRef",ref);
+        validator.validate("ResolveInput",values("expectedRevision",5,"reason","Keep the original manual review with managed evidence",
+                "evidenceRefs",List.of(uploaded),"decision","KEEP_MANUAL_REVIEW"));
+        for(Object invalid:List.of("",123,"https://outside.example/evidence.png","a".repeat(241)))
+            assertThrows(BizException.class,()->validator.validate("EvidenceRef",invalid));
+        assertThrows(BizException.class,()->validator.validate("Id",uploaded));
+        JsonNode schemas=json.readTree(getClass().getResourceAsStream("/promotion/contract-schemas.json")).path("components").path("schemas");
+        for(String schema:List.of("PolicyDraft","Action","PublishAction","ResolveInput","ReverseInput","PolicyVersionInput"))
+            assertEquals("#/components/schemas/EvidenceRef",schemas.path(schema).path("properties").path("evidenceRefs").path("items").path("$ref").asText());
+        assertEquals("#/components/schemas/EvidenceRef",schemas.path("RewardAdmin").path("properties").path("attempts").path("items").path("properties").path("evidenceRefs").path("items").path("$ref").asText());
+    }
 }

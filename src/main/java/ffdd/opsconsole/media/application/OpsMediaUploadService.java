@@ -317,11 +317,23 @@ public class OpsMediaUploadService {
         return StringUtils.hasText(value) ? value.trim() : "";
     }
 
-    private String encodeAssetId(String objectKey) {
+    public static String promotionEvidenceObjectKey(String assetId) {
+        if (assetId == null || assetId.length() > 240) return null;
+        try {
+            String key = decodeAssetId(assetId);
+            return key.startsWith("admin/growth/promotion-evidence/")
+                    && MANAGED_OBJECT_KEY.matcher(key).matches()
+                    && assetId.equals(encodeAssetId(key)) ? key : null;
+        } catch (BizException rejected) {
+            return null;
+        }
+    }
+
+    private static String encodeAssetId(String objectKey) {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(objectKey.getBytes(StandardCharsets.UTF_8));
     }
 
-    private String decodeAssetId(String assetId) {
+    private static String decodeAssetId(String assetId) {
         if (!StringUtils.hasText(assetId)) {
             throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ASSET_ID_REQUIRED");
         }

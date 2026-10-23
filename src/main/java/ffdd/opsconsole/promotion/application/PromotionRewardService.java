@@ -336,7 +336,7 @@ public class PromotionRewardService {
         if(admin){result.put("beneficiaryId",text(row.get("beneficiary_id")));result.put("qualificationSnapshotHash",row.get("snapshot_hash"));
             result.put("dispositionOptions",dispositionOptions(row));
             result.put("attempts",db.list("SELECT * FROM nx_promotion_reward_attempt WHERE obligation_id=? ORDER BY started_at,attempt_id",id).stream().map(a->values("attemptId",a.get("attempt_id"),"commandId",a.get("command_id"),"state",a.get("status"),
-                "startedAt",instant(a.get("started_at")).toString(),"finishedAt",a.get("finished_at")==null?null:instant(a.get("finished_at")).toString(),"evidenceRefs",List.of())).toList());}
+                "startedAt",instant(a.get("started_at")).toString(),"finishedAt",a.get("finished_at")==null?null:instant(a.get("finished_at")).toString(),"evidenceRefs",parse(a.get("evidence_json")).getOrDefault("evidenceRefs",List.of()))).toList());}
         return result;
     }
     private List<Map<String,Object>> dispositionOptions(Map<String,Object> row){

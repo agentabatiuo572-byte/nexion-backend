@@ -1,12 +1,14 @@
 package ffdd.opsconsole.promotion.application;
 
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
+import ffdd.opsconsole.media.application.OpsMediaUploadService;
 import ffdd.opsconsole.shared.canonical.ManagedPromotionBannerIdentity;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Instant;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
@@ -23,6 +25,20 @@ public class PromotionBannerService {
         String key = ManagedPromotionBannerIdentity.objectKey(text(assetId));
         if (key == null || !exists(key)) throw invalid();
         image(key, true);
+    }
+
+    public void validateEvidenceRefs(Object refs) {
+        if (!(refs instanceof List<?> items)) return;
+        for (int i = 0; i < items.size(); i++) {
+            String ref = text(items.get(i));
+            if (ref.length() <= 64) continue; // Existing audit/A2 IDs retain their own approval rules.
+            String key = OpsMediaUploadService.promotionEvidenceObjectKey(ref);
+            if (key == null) throw new BizException(422, "PROMOTION_FIELD_INVALID:$.evidenceRefs[" + i + "]");
+            boolean present;
+            try { present = storage.exists(key); }
+            catch (RuntimeException failure) { throw new BizException(503, "PROMOTION_EVIDENCE_UNAVAILABLE"); }
+            if (!present) throw new BizException(422, "PROMOTION_FIELD_INVALID:$.evidenceRefs[" + i + "]");
+        }
     }
 
     public String issueUrl(String activity, long version, Object assetId) {
