@@ -304,11 +304,13 @@ public class H4EventEngine {
     public void settle(String code){
         // Account -> rule -> orders is shared with award writers. Lock every member before taking
         // the rule lock, then make allocation, all wallet postings and receipts one atomic batch.
+        policies.lockHoldingWallets(code);
         for(var member:db.rows("SELECT user_id FROM nx_growth_event_region WHERE event_code=? UNION SELECT user_id FROM nx_growth_event_holding WHERE event_code=? ORDER BY user_id",code,code))
             db.row("SELECT id FROM nx_user WHERE id=? FOR UPDATE",member.get("user_id"));
         var rule=policies.find(code,true);if(rule==null||rule.get("settled_at")!=null)return;
         LocalDateTime end=date(rule.get("ends_at")),disabled=date(rule.get("disabled_at"));
         if(end==null||end.isAfter(LocalDateTime.now(ZoneOffset.UTC))||rule.get("activated_at")==null)return;
+        if("holding".equals(rule.get("kind")))db.rows("SELECT user_id FROM nx_growth_event_holding WHERE event_code=? ORDER BY user_id FOR UPDATE",code);
         if("regional".equals(rule.get("kind"))) {
             db.rows("SELECT o.order_no FROM nx_order o JOIN nx_growth_event_region er ON er.user_id=o.user_id AND er.event_code=? ORDER BY o.order_no FOR UPDATE",code);
             db.rows("SELECT h.order_no FROM nx_promotion_refund_hold h JOIN nx_order o ON o.order_no=h.order_no JOIN nx_growth_event_region er ON er.user_id=o.user_id AND er.event_code=? ORDER BY h.order_no FOR UPDATE",code);

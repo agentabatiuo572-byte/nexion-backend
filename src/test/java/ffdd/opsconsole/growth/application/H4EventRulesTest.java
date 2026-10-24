@@ -37,6 +37,8 @@ class H4EventRulesTest {
     @Test void acceptsConfiguredCompositeOnboardingAndHoldingPolicies(){
         assertThat(missing("evt-onboarding-7d",Map.of("windowDays",7,"minRank",2,"rewardNex",200,"streakSavers",1,"budgetNex",2000),start,end)).isEmpty();
         assertThat(missing("evt-nex-holders-share",Map.of("minNex",1000,"holdDays",7,"poolUsdt",5000,"allocation","EQUAL"),start,end)).isEmpty();
+        assertThat(missing("evt-nex-holders-share",Map.of("minNex",new BigDecimal("0.0000001"),"holdDays",7,"poolUsdt",5000,"allocation","EQUAL"),start,end)).contains("minNex");
+        assertThat(missing("evt-nex-holders-share",Map.of("minNex",new BigDecimal("1000000000000"),"holdDays",7,"poolUsdt",5000,"allocation","EQUAL"),start,end)).contains("minNex");
     }
     @Test void rewardSummaryUsesActualCompositeConfigurationAndTicketGrantLimits(){
         assertThat(H4EventEngine.rewardSummary(Map.of("rewardNex",200,"streakSavers",1),"zh")).isEqualTo("200 UVT + 1 补签卡");
