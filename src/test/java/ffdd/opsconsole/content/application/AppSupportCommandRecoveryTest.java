@@ -35,18 +35,29 @@ class AppSupportCommandRecoveryTest {
 
     @Test
     void committedCommandIsRecoveredOnlyFromTheAuthenticatedUsersScope() throws Exception {
-        AdminIdempotencyRecordEntity record = record("APP_SUPPORT_TICKET_CREATE:42", "SUCCEEDED",
-                new ObjectMapper().writeValueAsString(ApiResult.ok(java.util.Map.of("ticket", java.util.Map.of("ticketNo", "TK-1")))));
+        AdminIdempotencyRecordEntity record = record("APP_CONVERSATION_CREATE:42", "SUCCEEDED",
+                new ObjectMapper().writeValueAsString(ApiResult.ok(java.util.Map.of("conversation", java.util.Map.of("conversationNo", "CV-1")))));
         when(records.selectSupportCommand(any(), any())).thenReturn(List.of(record));
 
         var result = service.commandResult(42L, "support-ticket-123");
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("resultType", "ticket");
+        assertThat(result.getData()).containsEntry("resultType", "conversation");
         verify(records).selectSupportCommand(List.of(
                 "APP_SUPPORT_TICKET_CREATE:42", "APP_SUPPORT_TICKET_REPLY:42", "APP_SUPPORT_TICKET_CLOSE:42",
                 "APP_CONVERSATION_CREATE:42", "APP_CONVERSATION_REPLY:42", "APP_CONVERSATION_TO_TICKET:42"),
                 "support-ticket-123");
+    }
+
+    @Test
+    void retiredTicketReceiptsCannotRestoreTicketWorkflows() {
+        for (String scope : List.of("APP_SUPPORT_TICKET_CREATE:42", "APP_SUPPORT_TICKET_REPLY:42", "APP_CONVERSATION_TO_TICKET:42")) {
+            when(records.selectSupportCommand(any(), any())).thenReturn(List.of(record(scope, "SUCCEEDED", "{}")));
+            var result = service.commandResult(42L, "support-ticket-123");
+            assertThat(result.getCode()).isEqualTo(410);
+            assertThat(result.getMessage()).isEqualTo("SUPPORT_TICKETS_RETIRED");
+            assertThat(result.getData()).isNull();
+        }
     }
 
     @Test

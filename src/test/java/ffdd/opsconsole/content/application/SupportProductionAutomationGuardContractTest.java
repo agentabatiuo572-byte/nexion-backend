@@ -14,9 +14,8 @@ class SupportProductionAutomationGuardContractTest {
         String transfer = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/application/OpsConversationTransferScheduler.java"));
         assertThat(bootstrap).contains("if (!productionPathGuard.productionSupportAutomationAllowed()) return;")
                 .contains("mapper.ensurePolicyTable");
-        assertThat(idle).contains("if (!productionPathGuard.productionSupportAutomationAllowed()) return new SweepResult(0, 0);")
-                .contains("mapper.selectDueWarningCandidates", "mapper.selectDueCloseCandidates")
-                .doesNotContain("mapper.selectPolicy");
+        assertThat(idle).contains("public SweepResult sweep() { return new SweepResult(0, 0); }")
+                .doesNotContain("@Service", "@Scheduled", "mapper.selectDueWarningCandidates", "mapper.selectDueCloseCandidates");
         assertThat(transfer).contains("if (!productionPathGuard.productionSupportAutomationAllowed()) return;")
                 .contains("conversationService.runTimeoutFallback");
     }
