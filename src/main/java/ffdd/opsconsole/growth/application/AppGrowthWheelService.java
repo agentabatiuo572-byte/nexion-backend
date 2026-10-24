@@ -67,13 +67,16 @@ public class AppGrowthWheelService {
         }
         String code = reference(eventCode, "EVENT_CODE_REQUIRED");
         WheelEvent event = mapper.findOpenWheelEvent(code);
+        boolean ended = event == null;
+        if (ended) event = mapper.findEndedWheelEvent(code);
         if (event == null) return ApiResult.fail(409, "WHEEL_EVENT_NOT_OPEN");
 
         LocalDate serverDate = LocalDate.now(clock.withZone(ZoneOffset.UTC));
-        boolean freeAvailable = "evt-spring-spin".equals(event.eventCode())
+        boolean freeAvailable = !ended && "evt-spring-spin".equals(event.eventCode())
                 && mapper.countDailySpin(event.eventId(), userId, serverDate) == 0;
-        int bonusTickets = mapper.countAvailableTickets(userId);
-        List<WheelTier> tiers = mapper.listActiveTiers();
+        int bonusTickets = ended ? 0 : mapper.countAvailableTickets(userId);
+        // A past event must not advertise today's prize pool as its historical pool.
+        List<WheelTier> tiers = ended ? List.of() : mapper.listActiveTiers();
         List<Map<String, Object>> segments = IntStream.range(0, tiers.size())
                 .mapToObj(index -> publicSegment(tiers.get(index), index))
                 .toList();
@@ -82,6 +85,7 @@ public class AppGrowthWheelService {
                 .toList();
         return ApiResult.ok(linked(
                 "eventCode", event.eventCode(),
+                "ended", ended,
                 "eventId", String.valueOf(event.eventId()),
                 "serverDate", serverDate.toString(),
                 "nextResetAtUtc", serverDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toString(),

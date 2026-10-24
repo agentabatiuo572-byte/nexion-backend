@@ -23,6 +23,7 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -80,6 +81,28 @@ class AppGrowthWheelServiceTest {
         verify(outbox).publishUserEvent(
                 eq("WHEEL_SPIN"), anyString(), eq("event.spin_awarded"), eq(42L),
                 eq("P2"), eq(3), eq("2026-W30"), any());
+    }
+
+    @Test
+    void endedWheelExposesOnlyThisUsersHistoryAndNeverTodaysTicketsOrPool() {
+        when(mapper.findActiveUser(42L)).thenReturn(42L);
+        when(mapper.findEndedWheelEvent("evt-anniversary-spin"))
+                .thenReturn(new WheelEvent(9L, "evt-anniversary-spin"));
+        when(mapper.listWheelHistory(42L, "evt-anniversary-spin", 20)).thenReturn(List.of(Map.of(
+                "spinId", "prior-spin", "tierName", "prior-tier", "rewardType", "NEX",
+                "rewardAmount", 5, "spinDate", "2025-10-01", "sourceType", "DAILY",
+                "awardedAt", "2025-10-01T01:00:00", "downgraded", false)));
+
+        var result = service.state(42L, "evt-anniversary-spin");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("ended", true).containsEntry("availableSpins", 0)
+                .containsEntry("freeAvailable", false).containsEntry("segments", List.of());
+        assertThat((List<?>) result.getData().get("history")).hasSize(1);
+        verify(mapper, never()).listActiveTiers();
+        verify(mapper, never()).countAvailableTickets(any());
+        verify(mapper, never()).lockActiveTiers();
+        assertThat(service.spin(42L, "evt-anniversary-spin", "closed-spin").getCode()).isEqualTo(409);
     }
 
     @Test

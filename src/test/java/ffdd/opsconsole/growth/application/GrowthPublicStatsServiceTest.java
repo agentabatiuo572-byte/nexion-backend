@@ -67,6 +67,40 @@ class GrowthPublicStatsServiceTest {
     }
 
     @Test
+    void networkPulseUsesConfiguredMembersAndTheSameCurrentHomeDisplayBatch() {
+        HomeDisplayService display = mock(HomeDisplayService.class);
+        long now = clock.millis();
+        when(display.current()).thenReturn(Map.of("startAt", now - 1000, "serverNow", now,
+                "online", new long[]{28000, 28002, 28005}));
+        GrowthPublicStatsService withDisplay = new GrowthPublicStatsService(
+                config, users, deviceOps, audit, new ObjectMapper(), clock, environment, Optional.of(display));
+        Map<String, Object> projection = withDisplay.publicProjection().getData();
+        assertThat((Map<String, Object>) projection.get("networkPulse"))
+                .containsEntry("registeredUsers", 5000L).containsEntry("onlineDevices", 28002L);
+        assertThat(projection).containsEntry("realUserCount", 4321L).doesNotContainKey("values");
+        verify(display).current();
+
+        Clock monthLater = Clock.offset(clock, java.time.Duration.ofDays(30));
+        GrowthPublicStatsService later = new GrowthPublicStatsService(
+                config, users, deviceOps, audit, new ObjectMapper(), monthLater, environment, Optional.of(display));
+        assertThat((Map<String, Object>) later.publicProjection().getData().get("networkPulse"))
+                .containsEntry("registeredUsers", 5250L);
+    }
+
+    @Test
+    void unavailableHomeDisplayDoesNotInventOnlineCountsOrBreakTheOtherProjection() {
+        HomeDisplayService display = mock(HomeDisplayService.class);
+        when(display.current()).thenThrow(new IllegalStateException("cache unavailable"));
+        GrowthPublicStatsService withDisplay = new GrowthPublicStatsService(
+                config, users, deviceOps, audit, new ObjectMapper(), clock, environment, Optional.of(display));
+        ApiResult<Map<String, Object>> projection = withDisplay.publicProjection();
+        assertThat(projection.getCode()).isZero();
+        assertThat((Map<String, Object>) projection.getData().get("networkPulse"))
+                .containsEntry("registeredUsers", 5000L).containsEntry("onlineDevices", null);
+        assertThat(projection.getData()).containsKey("verified");
+    }
+
+    @Test
     void publicProjectionCarriesExactProductionProvenance() {
         ApiResult<Map<String, Object>> result = service.publicProjection();
 

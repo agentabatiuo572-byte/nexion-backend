@@ -4,6 +4,7 @@ import ffdd.opsconsole.content.facade.RiskDisclosureGateFacade;
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.growth.application.GenesisRaffleService;
 import ffdd.opsconsole.market.mapper.AppRepurchaseMapper;
 import ffdd.opsconsole.market.mapper.MarketSandboxMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -58,6 +59,7 @@ public class AppRepurchaseService {
     private final Environment environment;
     private final MarketSandboxMapper sandboxMapper;
     private final SupportStakingFundAdapter fundAdapter;
+    private final GenesisRaffleService raffle;
 
     public AppRepurchaseService(AppRepurchaseMapper mapper, RiskDisclosureGateFacade disclosureGate,
             PlatformConfigFacade config, GrowthRhythmFacade growthRhythmFacade, AdminIdempotencyService idempotency,
@@ -73,11 +75,19 @@ public class AppRepurchaseService {
                 environment, sandboxMapper, null);
     }
 
-    @Autowired
     public AppRepurchaseService(AppRepurchaseMapper mapper, RiskDisclosureGateFacade disclosureGate,
             PlatformConfigFacade config, GrowthRhythmFacade growthRhythmFacade, AdminIdempotencyService idempotency,
             EventOutboxService outbox, AuditLogService audit, Clock clock, Environment environment,
             MarketSandboxMapper sandboxMapper, SupportStakingFundAdapter fundAdapter) {
+        this(mapper, disclosureGate, config, growthRhythmFacade, idempotency, outbox, audit, clock,
+                environment, sandboxMapper, fundAdapter, null);
+    }
+
+    @Autowired
+    public AppRepurchaseService(AppRepurchaseMapper mapper, RiskDisclosureGateFacade disclosureGate,
+            PlatformConfigFacade config, GrowthRhythmFacade growthRhythmFacade, AdminIdempotencyService idempotency,
+            EventOutboxService outbox, AuditLogService audit, Clock clock, Environment environment,
+            MarketSandboxMapper sandboxMapper, SupportStakingFundAdapter fundAdapter, GenesisRaffleService raffle) {
         this.mapper = mapper;
         this.disclosureGate = disclosureGate;
         this.config = config;
@@ -89,6 +99,7 @@ public class AppRepurchaseService {
         this.environment = environment;
         this.sandboxMapper = sandboxMapper;
         this.fundAdapter = fundAdapter;
+        this.raffle = raffle;
     }
 
     public ApiResult<Map<String, Object>> config() {
@@ -218,10 +229,13 @@ public class AppRepurchaseService {
         requireLedger(new AppRepurchaseMapper.LedgerWrite(
                 userId, billNo, "WALLET_REINVEST", "OUT", request.amountUsdt(), after,
                 "G7 repurchase principal lock"));
-        if (tickets > 0 && mapper.insertTicket(new AppRepurchaseMapper.TicketWrite(
-                "GT-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT),
-                userId, orderNo, Math.toIntExact(tickets), now)) != 1) {
-            throw new BizException(409, "G4_LOTTERY_TICKET_CONFLICT");
+        if (tickets > 0) {
+            String ticketNo = "GT-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+            if (mapper.insertTicket(new AppRepurchaseMapper.TicketWrite(ticketNo, userId, orderNo, Math.toIntExact(tickets), now)) != 1) {
+                throw new BizException(409, "G4_LOTTERY_TICKET_CONFLICT");
+            }
+            // The production constructor always supplies the unified raffle ledger.
+            if (raffle != null) raffle.grant(userId, "G7_BASE", ticketNo, tickets, orderNo);
         }
         if (fundBefore != null) fundAdapter.recorded(fundBefore, orderNo, "OPEN");
         AppRepurchaseMapper.UserAttribution at = requireAttribution(userId);
