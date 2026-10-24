@@ -102,7 +102,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """ + StorefrontProductPublishGate.BLOCK_REASON_SQL + """
              AS publishBlockReason,
             p.created_at AS createdAt,
-            p.updated_at AS updatedAt
+            p.updated_at AS updatedAt,
+            s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl
             """;
 
     String TASK_COLUMNS = """
@@ -244,6 +245,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               ai_video_min_per_hour BIGINT DEFAULT NULL,
               ai_fine_tune_mins BIGINT DEFAULT NULL,
               ai_unlocks VARCHAR(255) DEFAULT NULL,
+              spec_document_title VARCHAR(200) DEFAULT NULL,
+              spec_document_url VARCHAR(2048) DEFAULT NULL,
               features_json TEXT,
               generation INT DEFAULT NULL,
               lifecycle VARCHAR(32) DEFAULT NULL,
@@ -1029,7 +1032,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               sku_id,name,tier,tagline,badge,gpu,vram,hash_rate,power_text,datacenter,uptime,warranty,phone_daily_earn,phone_daily_earn_nex,price,
               daily_earn,daily_earn_nex,share_yield_min,share_yield_max,base_rate,sold,stock_text,
               rating,reviews,ai_image_gen_per_min,ai_llm_tokens_per_sec,ai_video_min_per_hour,
-              ai_fine_tune_mins,ai_unlocks,features_json,generation,lifecycle,superseded_by,
+              ai_fine_tune_mins,ai_unlocks,spec_document_title,spec_document_url,features_json,generation,lifecycle,superseded_by,
               tradein_discount,unlock_phase,unlock_phase_id,purchase_gate_json,image_asset_id,image_object_key,image_preview_url,tag,status,
               created_at,updated_at,is_deleted
             ) VALUES (
@@ -1037,7 +1040,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               #{sku.power},#{sku.datacenter},#{sku.uptime},#{sku.warranty},#{sku.phoneDailyEarn},#{sku.phoneDailyEarnNex},#{sku.price},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.shareYieldMin},
               #{sku.shareYieldMax},#{sku.baseRate},0,#{sku.stock},#{sku.rating},#{sku.reviews},
               #{sku.aiImageGenPerMin},#{sku.aiLlmTokensPerSec},#{sku.aiVideoMinPerHour},#{sku.aiFineTuneMins},
-              #{sku.aiUnlocks},#{sku.featuresJson},#{sku.generation},#{sku.lifecycle},#{sku.supersededBy},
+              #{sku.aiUnlocks},#{sku.specDocumentTitle},#{sku.specDocumentUrl},#{sku.featuresJson},#{sku.generation},#{sku.lifecycle},#{sku.supersededBy},
               #{sku.tradeinDiscount},'',#{sku.unlockPhaseId},#{sku.purchaseGateJson},#{sku.imageAssetId},#{sku.imageObjectKey},
               #{sku.imagePreviewUrl},#{sku.tag},#{sku.status},COALESCE(#{sku.createdAt},#{sku.updatedAt}),#{sku.updatedAt},0
             )
@@ -1048,7 +1051,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               share_yield_max=VALUES(share_yield_max),base_rate=VALUES(base_rate),stock_text=VALUES(stock_text),
               rating=VALUES(rating),reviews=VALUES(reviews),ai_image_gen_per_min=VALUES(ai_image_gen_per_min),
               ai_llm_tokens_per_sec=VALUES(ai_llm_tokens_per_sec),ai_video_min_per_hour=VALUES(ai_video_min_per_hour),
-              ai_fine_tune_mins=VALUES(ai_fine_tune_mins),ai_unlocks=VALUES(ai_unlocks),features_json=VALUES(features_json),
+              ai_fine_tune_mins=VALUES(ai_fine_tune_mins),ai_unlocks=VALUES(ai_unlocks),spec_document_title=VALUES(spec_document_title),spec_document_url=VALUES(spec_document_url),features_json=VALUES(features_json),
               generation=VALUES(generation),lifecycle=VALUES(lifecycle),superseded_by=VALUES(superseded_by),
               tradein_discount=VALUES(tradein_discount),unlock_phase='',unlock_phase_id=VALUES(unlock_phase_id),
               purchase_gate_generation=CASE WHEN NOT (purchase_gate_json <=> VALUES(purchase_gate_json))
@@ -1792,6 +1795,15 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """)
     int archiveGenerationGate(@Param("skuId") String skuId, @Param("now") LocalDateTime now);
 
+    @Select("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_admin_device_sku' AND column_name='spec_document_title'")
+    int countSkuDocumentTitleColumn();
+    @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN spec_document_title VARCHAR(200) DEFAULT NULL")
+    void addSkuDocumentTitleColumn();
+    @Select("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_admin_device_sku' AND column_name='spec_document_url'")
+    int countSkuDocumentUrlColumn();
+    @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN spec_document_url VARCHAR(2048) DEFAULT NULL")
+    void addSkuDocumentUrlColumn();
+
     record SkuRow(
             String skuId,
             String name,
@@ -1840,7 +1852,60 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             Boolean publishBlocked,
             String publishBlockReason,
             LocalDateTime createdAt,
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl) {
+        /** Existing callers without a product document keep an empty document. */
+        public SkuRow(
+            String skuId,
+            String name,
+            String tier,
+            String tagline,
+            String badge,
+            String gpu,
+            String vram,
+            String hashRate,
+            String power,
+            String datacenter,
+            String uptime,
+            String warranty,
+            BigDecimal phoneDailyEarn,
+            BigDecimal phoneDailyEarnNex,
+            BigDecimal price,
+            BigDecimal dailyEarn,
+            BigDecimal dailyEarnNex,
+            BigDecimal shareYieldMin,
+            BigDecimal shareYieldMax,
+            String baseRate,
+            Long sold,
+            String stock,
+            String productType,
+            String inventoryMode,
+            Boolean trialEligible,
+            BigDecimal rating,
+            Long reviews,
+            Long aiImageGenPerMin,
+            Long aiLlmTokensPerSec,
+            Long aiVideoMinPerHour,
+            Long aiFineTuneMins,
+            String aiUnlocks,
+            String featuresJson,
+            Integer generation,
+            String lifecycle,
+            String supersededBy,
+            BigDecimal tradeinDiscount,
+            String unlockPhase,
+            String purchaseGateJson,
+            String imageAssetId,
+            String imageObjectKey,
+            String imagePreviewUrl,
+            String tag,
+            String status,
+            Boolean publishBlocked,
+            String publishBlockReason,
+            LocalDateTime createdAt,
             LocalDateTime updatedAt) {
+            this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, productType, inventoryMode, trialEligible, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, featuresJson, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGateJson, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, publishBlocked, publishBlockReason, createdAt, updatedAt, null, null);
+        }
+
     }
 
     record SkuWrite(
@@ -1891,7 +1956,60 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String inventoryMode,
             Boolean trialEligible,
             LocalDateTime createdAt,
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl) {
+        /** Existing callers without a product document keep an empty document. */
+        public SkuWrite(
+            String skuId,
+            String name,
+            String tier,
+            String tagline,
+            String badge,
+            String gpu,
+            String vram,
+            String hashRate,
+            String power,
+            String datacenter,
+            String uptime,
+            String warranty,
+            BigDecimal phoneDailyEarn,
+            BigDecimal phoneDailyEarnNex,
+            BigDecimal price,
+            BigDecimal dailyEarn,
+            BigDecimal dailyEarnNex,
+            BigDecimal shareYieldMin,
+            BigDecimal shareYieldMax,
+            String baseRate,
+            Long sold,
+            String stock,
+            BigDecimal rating,
+            Long reviews,
+            Long aiImageGenPerMin,
+            Long aiLlmTokensPerSec,
+            Long aiVideoMinPerHour,
+            Long aiFineTuneMins,
+            String aiUnlocks,
+            String featuresJson,
+            Integer generation,
+            String lifecycle,
+            String supersededBy,
+            BigDecimal tradeinDiscount,
+            Long unlockPhaseId,
+            String purchaseGateJson,
+            String imageAssetId,
+            String imageObjectKey,
+            String imagePreviewUrl,
+            String tag,
+            String status,
+            BigDecimal canonicalHashrate,
+            Integer canonicalVramGb,
+            Integer canonicalStock,
+            String inventoryMode,
+            Boolean trialEligible,
+            LocalDateTime createdAt,
             LocalDateTime updatedAt) {
+            this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, featuresJson, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhaseId, purchaseGateJson, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, canonicalHashrate, canonicalVramGb, canonicalStock, inventoryMode, trialEligible, createdAt, updatedAt, null, null);
+        }
+
     }
 
     record GenerationGateWrite(

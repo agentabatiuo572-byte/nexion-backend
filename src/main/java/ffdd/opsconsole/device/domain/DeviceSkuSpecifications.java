@@ -10,6 +10,18 @@ public final class DeviceSkuSpecifications {
 
     private DeviceSkuSpecifications() { }
 
+    public static String validateDocument(String title, String url) {
+        if (!StringUtils.hasText(title) && !StringUtils.hasText(url)) return null;
+        if (!StringUtils.hasText(title) || title.trim().length() > 200
+                || !StringUtils.hasText(url) || url.trim().length() > 2048) return "SKU_DOCUMENT_INVALID";
+        try {
+            java.net.URI link = java.net.URI.create(url.trim());
+            if (!"https".equalsIgnoreCase(link.getScheme()) || link.getHost() == null
+                    || link.getUserInfo() != null) return "SKU_DOCUMENT_INVALID";
+        } catch (IllegalArgumentException error) { return "SKU_DOCUMENT_INVALID"; }
+        return null;
+    }
+
     public static String validatePhoneDailyEarn(BigDecimal value) {
         if (value == null) return null;
         if (value.signum() < 0 || value.precision() > MAX_DECIMAL_PRECISION || value.scale() > MAX_DECIMAL_SCALE) {
