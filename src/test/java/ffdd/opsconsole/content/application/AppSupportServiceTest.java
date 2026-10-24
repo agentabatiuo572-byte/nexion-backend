@@ -1,5 +1,7 @@
 package ffdd.opsconsole.content.application;
 
+import static org.mockito.ArgumentMatchers.eq;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -676,15 +678,15 @@ class AppSupportServiceTest {
     }
 
     @Test
-    void closedConversationStillRejectsReply() {
+    void closedConversationReplyResumesTheOriginalWindow() {
         ContentConversationView closed = closedConversation(42L, "CV-CLOSED");
         when(conversations.findByConversationNo("CV-CLOSED")).thenReturn(Optional.of(closed));
-
+        when(conversations.replyAsUser(eq(closed),eq(42L),eq("continue"),any())).thenReturn(true);
         var result = service.replyConversation(42L, "CV-CLOSED", "closed-reply-key",
-                new AppSupportService.ReplyRequest("must not send", "CLOSED", 9L));
-
-        assertThat(result.getCode()).isEqualTo(409);
-        verify(conversations, never()).replyAsUser(any(), any(), any(), any());
+                new AppSupportService.ReplyRequest("continue", "CLOSED", 9L));
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().conversation().conversationNo()).isEqualTo("CV-CLOSED");
+        verify(conversations).replyAsUser(eq(closed),eq(42L),eq("continue"),any());
     }
 
     @Test

@@ -291,8 +291,7 @@ public class OpsConversationService {
                 request.attachmentId(),request.expectedAssignmentId());
         if(prepared.previousMessageId()!=null) return new MessageCommandResult(ApiResult.ok(conversation),prepared.previousMessageId());
         if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
-                || "TRANSFERRED".equalsIgnoreCase(conversation.status()) || "CLOSED".equalsIgnoreCase(conversation.status())
-                || Boolean.TRUE.equals(conversation.archived())) {
+                || "TRANSFERRED".equalsIgnoreCase(conversation.status())) {
             return new MessageCommandResult(invalidState(), null);
         }
         String body = prepared.content(request.body());
@@ -691,9 +690,7 @@ public class OpsConversationService {
         else humanMessages.committedForActor(prepared,persisted.messageId(),idempotencyKey);
         if(request.replyTargets()!=null) replies.handled(request.userId(),created.conversationNo(),persisted.messageId(),
                 new ConversationReplyRequest(text,created.status(),created.version(),request.reason(),request.operator(),request.replyTargets(),null));
-        SupportTicketView fallbackTicket = routing.fallbackTicket()
-                ? createAdvisorFallbackTicket(created, text, routing, actor, now)
-                : null;
+        SupportTicketView fallbackTicket = null;
         Map<String, Object> detail = auditDetail(
                 "conversationType", type,
                 "userId", request.userId() == null ? "audience" : request.userId(),
@@ -703,7 +700,7 @@ public class OpsConversationService {
                 "routingTargetType", routing.targetType(),
                 "routingReason", routing.reason(),
                 "dedicatedAdvisor", routing.dedicated(),
-                "fallbackTicket", routing.fallbackTicket(),
+                "fallbackTicket", false,
                 "reason", reasonOrDefault(request.reason(), "single-user routine"),
                 "idempotencyKey", idempotencyKey.trim());
         if (fallbackTicket != null) {

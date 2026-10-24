@@ -365,6 +365,12 @@ public class MybatisConversationRepository implements ConversationRepository {
             String conversationNo,Long userId,String conversationType,String ownerAgentId,String ownerAgentName,
             String openingText,Long senderAdminId,String senderName,LocalDateTime now) {
         if(senderAdminId==null || senderAdminId<=0) throw new IllegalArgumentException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
+        ContentConversationView current = List.of("advisor","support").contains(conversationType) ? resumeCustomerConversation(userId, now) : null;
+        if (current != null) {
+            Long messageId = replyAndReturnMessageId(current, openingText, senderAdminId, senderName, now);
+            if (messageId == null) throw new IllegalStateException("CONVERSATION_RESUME_CONFLICT");
+            return new PersistedConversation(findByConversationNo(current.conversationNo()).orElseThrow(), messageId);
+        }
         snapshotTimeout(conversationNo,conversationType);
         ConversationEntity entity = new ConversationEntity();
         entity.setConversationNo(conversationNo);
@@ -419,6 +425,11 @@ public class MybatisConversationRepository implements ConversationRepository {
     public ContentConversationView createUserConversation(
             String conversationNo, Long userId, String conversationType, String openingText,
             String ownerAgentId, String ownerAgentName, LocalDateTime now) {
+        ContentConversationView current = List.of("advisor","support").contains(conversationType) ? resumeCustomerConversation(userId, now) : null;
+        if (current != null) {
+            if (!replyAsUser(current, userId, openingText, now)) throw new IllegalStateException("CONVERSATION_RESUME_CONFLICT");
+            return findByConversationNo(current.conversationNo()).orElseThrow();
+        }
         snapshotTimeout(conversationNo,conversationType);
         ConversationEntity entity = new ConversationEntity();
         entity.setConversationNo(conversationNo);
@@ -437,6 +448,19 @@ public class MybatisConversationRepository implements ConversationRepository {
         mapper.insert(entity);
         insertMessage(entity.getId(), conversationNo, userId, "user", "用户", openingText, now);
         return findByConversationNo(conversationNo).orElseThrow();
+    }
+
+    private ContentConversationView resumeCustomerConversation(Long userId, LocalDateTime now) {
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("CONVERSATION_CREATE_TRANSACTION_REQUIRED");
+        // Serialize both customer and agent entry, including the first message when no row exists.
+        ownership.lockCustomer(userId);
+        String no = mapper.currentCustomerConversation(userId);
+        if (no == null) return null;
+        ContentConversationView current = findByConversationNoForUpdate(no).orElseThrow();
+        if (mapper.resumeCustomerConversation(no, current.version(), now) != 1)
+            throw new ffdd.opsconsole.shared.exception.BizException(409, "CONVERSATION_TRANSFER_PENDING");
+        return findByConversationNoForUpdate(no).orElseThrow();
     }
 
     private void snapshotTimeout(String conversationNo,String conversationType) {
