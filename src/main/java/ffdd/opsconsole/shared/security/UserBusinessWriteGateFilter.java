@@ -1,7 +1,5 @@
 package ffdd.opsconsole.shared.security;
 
-import ffdd.opsconsole.content.terms.LegalTermsService;
-import ffdd.opsconsole.content.terms.domain.LegalTermsCurrentView;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import jakarta.servlet.FilterChain;
@@ -18,20 +16,18 @@ import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
  * Server-side gate for authenticated user business writes.  The App route
- * guard is presentation-only; this filter makes onboarding and the currently
- * published Terms authoritative for direct HTTP callers as well.
+ * guard is presentation-only; onboarding remains authoritative for direct
+ * HTTP callers. Terms consent belongs to registration, not later operations.
  */
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class UserBusinessWriteGateFilter extends OncePerRequestFilter implements ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract {
     private final UserOpsMapper users;
-    private final LegalTermsService legalTerms;
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
@@ -61,7 +57,7 @@ public class UserBusinessWriteGateFilter extends OncePerRequestFilter implements
             if (blocked.getCode() == 503 && "POST".equals(request.getMethod())
                     && "/api/app/deposits/vietqr/intents".equals(request.getRequestURI())) {
                 String reason = switch (blocked.getMessage() == null ? "" : blocked.getMessage()) {
-                    case "USER_ONBOARDING_STATE_UNAVAILABLE", "LEGAL_TERMS_UNAVAILABLE" -> blocked.getMessage();
+                    case "USER_ONBOARDING_STATE_UNAVAILABLE" -> blocked.getMessage();
                     default -> "UNCLASSIFIED_503";
                 };
                 log.warn("event=VIETQR_INTENT_CREATE_UNAVAILABLE phase=USER_WRITE_GATE code={}", reason);
@@ -83,33 +79,13 @@ public class UserBusinessWriteGateFilter extends OncePerRequestFilter implements
         if (!onboardingComplete) {
             return ApiResult.fail(428, "USER_ONBOARDING_REQUIRED");
         }
-        return checkTerms(userId);
-    }
-
-    @Override
-    public ApiResult<Void> checkTerms(Long userId) {
-        final ApiResult<LegalTermsCurrentView> current;
-        try {
-            current = legalTerms.current(language(userId), "GLOBAL", userId);
-        } catch (RuntimeException ex) {
-            return ApiResult.fail(503, "LEGAL_TERMS_UNAVAILABLE");
-        }
-        if (current == null || current.getCode() != 0 || current.getData() == null) {
-            return ApiResult.fail(503, "LEGAL_TERMS_UNAVAILABLE");
-        }
-        if (!current.getData().acknowledged()) {
-            return ApiResult.fail(428, "LEGAL_TERMS_ACK_REQUIRED");
-        }
         return null;
     }
 
-    private String language(Long userId) {
-        try {
-            String value = users.activeUserLanguage(userId);
-            return StringUtils.hasText(value) ? value.trim() : "en";
-        } catch (RuntimeException ex) {
-            return "en";
-        }
+    /** Compatibility for onboarding callers: no post-registration Terms check. */
+    @Override
+    public ApiResult<Void> checkTerms(Long userId) {
+        return null;
     }
 
     private Long authenticatedUserId() {

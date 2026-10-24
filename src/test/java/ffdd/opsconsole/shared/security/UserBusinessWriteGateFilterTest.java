@@ -27,7 +27,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 class UserBusinessWriteGateFilterTest {
     private final UserOpsMapper users = mock(UserOpsMapper.class);
     private final LegalTermsService terms = mock(LegalTermsService.class);
-    private final UserBusinessWriteGateFilter filter = new UserBusinessWriteGateFilter(users, terms);
+    private final UserBusinessWriteGateFilter filter = new UserBusinessWriteGateFilter(users);
     private final ch.qos.logback.classic.Logger logger =
             (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(UserBusinessWriteGateFilter.class);
     private final ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> logs =
@@ -68,7 +68,7 @@ class UserBusinessWriteGateFilterTest {
     }
 
     @Test
-    void depositLegal503PreservesResponseBlocksDispatchAndLogsOnlyGateEnum() throws Exception {
+    void unavailableTermsDoNotBlockDepositOrEmitFailure() throws Exception {
         authenticateUser(42L);
         when(users.isOnboardingComplete(42L)).thenReturn(true);
         when(users.activeUserLanguage(42L)).thenReturn("en");
@@ -77,11 +77,10 @@ class UserBusinessWriteGateFilterTest {
         MockFilterChain chain = new MockFilterChain();
         filter.doFilter(new MockHttpServletRequest("POST", "/api/app/deposits/vietqr/intents"), response, chain);
 
-        assertThat(response.getStatus()).isEqualTo(503);
-        assertThat(response.getContentAsString()).isEqualTo(
-                "{\"code\":503,\"message\":\"LEGAL_TERMS_UNAVAILABLE\",\"data\":null}");
-        assertThat(chain.getRequest()).isNull();
-        assertSafeDiagnostic("LEGAL_TERMS_UNAVAILABLE");
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(chain.getRequest()).isNotNull();
+        verify(terms, never()).current("en", "GLOBAL", 42L);
+        assertThat(logs.list).isEmpty();
     }
 
     @ParameterizedTest
@@ -107,7 +106,7 @@ class UserBusinessWriteGateFilterTest {
         assertThat(response.getStatus()).isEqualTo(200);
         assertThat(chain.getRequest()).isSameAs(request);
         verify(users).isOnboardingComplete(42L);
-        verify(terms).current("en", "GLOBAL", 42L);
+        verify(terms, never()).current("en", "GLOBAL", 42L);
         assertThat(logs.list).isEmpty();
     }
 
@@ -130,7 +129,7 @@ class UserBusinessWriteGateFilterTest {
     }
 
     @Test
-    void blocksBusinessWriteUntilCurrentTermsAreAcknowledged() throws Exception {
+    void unacknowledgedNewTermsDoNotBlockBusinessWrites() throws Exception {
         authenticateUser(42L);
         when(users.isOnboardingComplete(42L)).thenReturn(true);
         when(users.activeUserLanguage(42L)).thenReturn("en");
@@ -138,8 +137,9 @@ class UserBusinessWriteGateFilterTest {
 
         MockHttpServletResponse response = invoke("POST", "/api/tasks/assignments/claim");
 
-        assertThat(response.getStatus()).isEqualTo(428);
-        assertThat(response.getContentAsString()).contains("LEGAL_TERMS_ACK_REQUIRED");
+        assertThat(response.getStatus()).isEqualTo(200);
+        verify(terms, never()).current("en", "GLOBAL", 42L);
+        assertThat(filter.checkTerms(42L)).isNull();
     }
 
     @Test
@@ -168,7 +168,7 @@ class UserBusinessWriteGateFilterTest {
     }
 
     @Test
-    void permitsBusinessWriteOnlyAfterBothServerFactsPass() throws Exception {
+    void permitsBusinessWriteAfterOnboarding() throws Exception {
         authenticateUser(42L);
         when(users.isOnboardingComplete(42L)).thenReturn(true);
         when(users.activeUserLanguage(42L)).thenReturn("en");

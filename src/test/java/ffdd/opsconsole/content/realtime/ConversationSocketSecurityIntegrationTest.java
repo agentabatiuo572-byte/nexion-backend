@@ -185,7 +185,7 @@ class ConversationSocketSecurityIntegrationTest {
 
         @Bean LegalTermsService legalTermsService() { return mock(LegalTermsService.class); }
         @Bean UserBusinessWriteGateFilter userBusinessWriteGateFilter(UserOpsMapper users, LegalTermsService legalTerms) {
-            return new UserBusinessWriteGateFilter(users, legalTerms);
+            return new UserBusinessWriteGateFilter(users);
         }
         @Bean ffdd.opsconsole.content.domain.ConversationRepository conversationRepository() { return mock(ffdd.opsconsole.content.domain.ConversationRepository.class); }
         @Bean ConversationSocketAccess conversationSocketAccess(JwtAuthenticationFilter auth, AdminRbacAuthorizationFilter gate,
