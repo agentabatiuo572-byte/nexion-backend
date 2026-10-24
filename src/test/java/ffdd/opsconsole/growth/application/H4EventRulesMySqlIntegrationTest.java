@@ -46,7 +46,7 @@ class H4EventRulesMySqlIntegrationTest {
         jdbc.execute("CREATE TABLE IF NOT EXISTS h4_test_credit(receipt VARCHAR(160) PRIMARY KEY,user_id BIGINT,amount DECIMAL(18,6))");
         jdbc.execute("CREATE TABLE IF NOT EXISTS h4_test_ledger(receipt VARCHAR(160) PRIMARY KEY,user_id BIGINT,amount DECIMAL(18,6))");
         jdbc.execute("CREATE TABLE IF NOT EXISTS nx_event_quest(id BIGINT AUTO_INCREMENT PRIMARY KEY,quest_code VARCHAR(64) UNIQUE,quest_name VARCHAR(128),description VARCHAR(512),target_type VARCHAR(32),target_value INT,reward_type VARCHAR(32),reward_amount DECIMAL(18,6),reward_name VARCHAR(128),cta_href VARCHAR(255),status INT,sort_order INT)");
-        for(String column:List.of("is_deleted","updated_at"))if(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_event_quest' AND column_name=?",Integer.class,column)==0)
+        for(String column:List.of("is_deleted","updated_at","starts_at","ends_at"))if(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_event_quest' AND column_name=?",Integer.class,column)==0)
             jdbc.execute("ALTER TABLE nx_event_quest ADD "+column+(column.equals("is_deleted")?" INT NOT NULL DEFAULT 0":" DATETIME NULL"));
         jdbc.execute("CREATE TABLE IF NOT EXISTS nx_config_item(config_key VARCHAR(128) PRIMARY KEY,config_value TEXT,status INT,is_deleted INT)");
         String migration=Files.readString(Path.of("scripts/migrations/20261025_h4_event_rules.sql"));
