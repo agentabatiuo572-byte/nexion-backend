@@ -340,7 +340,7 @@ public class AppSupportService {
                     request.clientMessageId(),request.kind(),"SERVICE",request.attachmentId(),request.expectedAssignmentId());
             if(prepared.previousMessageId()!=null) return replayConversation(userId,conversationNo);
             if (!matches(conversation.status(), conversation.version(), request.expectedStatus(), request.expectedVersion())) return conversationConflict();
-            if (!Set.of("OPEN", "RESOLVED").contains(normalizeUpper(conversation.status()))) return invalidConversationState();
+            if (!Set.of("OPEN", "RESOLVED", "CLOSED").contains(normalizeUpper(conversation.status()))) return invalidConversationState();
             if (!conversationRepository.replyAsUser(conversation, userId, SupportHumanMessageService.text(request.body()), LocalDateTime.now(clock))) {
                 return conversationConflict();
             }
@@ -522,6 +522,7 @@ public class AppSupportService {
         if (records.isEmpty()) return hiddenNotFound("SUPPORT_COMMAND_NOT_FOUND");
         if (records.size() != 1) return conflict("SUPPORT_COMMAND_AMBIGUOUS");
         AdminIdempotencyRecordEntity record = records.get(0);
+        if (record.getScope().contains("TICKET")) return ApiResult.fail(410, "SUPPORT_TICKETS_RETIRED");
         return switch (normalizeUpper(record.getStatus())) {
             case "SUCCEEDED" -> recoverSucceededCommand(record);
             case "PROCESSING" -> conflict("SUPPORT_COMMAND_IN_PROGRESS");

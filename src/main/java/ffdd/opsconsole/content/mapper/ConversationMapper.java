@@ -13,6 +13,11 @@ import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import org.apache.ibatis.annotations.Update;
 
 public interface ConversationMapper extends BaseMapper<ConversationEntity> {
+    @Select("SELECT conversation_no FROM nx_conversation WHERE user_id=#{userId} AND is_deleted=0 AND conversation_type IN ('advisor','support') ORDER BY id DESC LIMIT 1 FOR UPDATE")
+    String currentCustomerConversation(@Param("userId") Long userId);
+
+    @Update("UPDATE nx_conversation SET status='OPEN',archived=0,version=version+1,updated_at=#{now} WHERE conversation_no=#{no} AND is_deleted=0 AND status IN ('OPEN','RESOLVED','CLOSED') AND version=#{version}")
+    int resumeCustomerConversation(@Param("no") String no, @Param("version") Long version, @Param("now") LocalDateTime now);
     @Insert("""
             INSERT INTO nx_conversation_timeout_segment
               (conversation_no,policy_version,warn_minutes,close_minutes)
@@ -123,7 +128,11 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                 LEFT JOIN nx_support_reply_cursor reply_cursor ON reply_cursor.conversation_no=pending_message.conversation_no
                 WHERE pending_message.conversation_no=c.conversation_no AND pending_message.is_deleted=0
                   AND pending_message.sender_type='user'
-                  AND pending_message.id>COALESCE(reply_cursor.through_message_id,0)) AS pendingReplyCount
+                  AND pending_message.id>COALESCE(reply_cursor.through_message_id,0)) AS pendingReplyCount,
+              (SELECT MIN(waiting.created_at) FROM nx_conversation_message waiting
+                LEFT JOIN nx_support_reply_cursor handled ON handled.conversation_no=waiting.conversation_no
+                WHERE waiting.conversation_no=c.conversation_no AND waiting.is_deleted=0 AND waiting.sender_type='user'
+                  AND waiting.id>COALESCE(handled.through_message_id,0)) AS pendingReplySince
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -204,7 +213,12 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                 WHERE pending_message.conversation_no=c.conversation_no AND pending_message.is_deleted=0
                   AND pending_message.sender_type='user'
                   AND pending_message.id>COALESCE(reply_cursor.through_message_id,0)
-                <if test='currentRead'>FOR SHARE</if>) AS pendingReplyCount
+                <if test='currentRead'>FOR SHARE</if>) AS pendingReplyCount,
+              (SELECT MIN(waiting.created_at) FROM nx_conversation_message waiting
+                LEFT JOIN nx_support_reply_cursor handled ON handled.conversation_no=waiting.conversation_no
+                WHERE waiting.conversation_no=c.conversation_no AND waiting.is_deleted=0 AND waiting.sender_type='user'
+                  AND waiting.id>COALESCE(handled.through_message_id,0)
+                <if test='currentRead'>FOR SHARE</if>) AS pendingReplySince
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -264,7 +278,11 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                 LEFT JOIN nx_support_reply_cursor reply_cursor ON reply_cursor.conversation_no=pending_message.conversation_no
                 WHERE pending_message.conversation_no=c.conversation_no AND pending_message.is_deleted=0
                   AND pending_message.sender_type='user'
-                  AND pending_message.id>COALESCE(reply_cursor.through_message_id,0)) AS pendingReplyCount
+                  AND pending_message.id>COALESCE(reply_cursor.through_message_id,0)) AS pendingReplyCount,
+              (SELECT MIN(waiting.created_at) FROM nx_conversation_message waiting
+                LEFT JOIN nx_support_reply_cursor handled ON handled.conversation_no=waiting.conversation_no
+                WHERE waiting.conversation_no=c.conversation_no AND waiting.is_deleted=0 AND waiting.sender_type='user'
+                  AND waiting.id>COALESCE(handled.through_message_id,0)) AS pendingReplySince
             FROM nx_conversation c
             JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -388,7 +406,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
 
     @Update("""
             UPDATE nx_conversation
-               SET status=CASE WHEN status='RESOLVED' THEN 'OPEN' ELSE status END,
+               SET status=CASE WHEN status IN ('RESOLVED','CLOSED') THEN 'OPEN' ELSE status END,archived=0,
                    unread_count=0,
                    last_message=#{body},
                    last_message_at=#{now},
@@ -405,14 +423,14 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
 
     @Update("""
             UPDATE nx_conversation
-               SET status=CASE WHEN status='RESOLVED' THEN 'OPEN' ELSE status END,
+               SET status=CASE WHEN status IN ('RESOLVED','CLOSED') THEN 'OPEN' ELSE status END,archived=0,
                    unread_count=unread_count+1,
                    last_message=#{body},
                    last_message_at=#{now},
                    version=version+1,
                    updated_at=#{now}
              WHERE conversation_no=#{conversationNo} AND user_id=#{userId} AND is_deleted=0
-               AND status=#{expectedStatus} AND status IN ('OPEN','RESOLVED') AND version=#{expectedVersion}
+               AND status=#{expectedStatus} AND status IN ('OPEN','RESOLVED','CLOSED') AND version=#{expectedVersion}
             """)
     int replyConversationAsUser(
             @Param("conversationNo") String conversationNo,

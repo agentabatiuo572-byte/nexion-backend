@@ -52,6 +52,7 @@ public class OpsSupportCommandController {
         if(found.size()!=1) throw new BizException(409,"SUPPORT_COMMAND_AMBIGUOUS");
         var receipt=found.get(0);
         if(!scopes.contains(receipt.getScope())) throw new BizException(404,"SUPPORT_COMMAND_NOT_FOUND");
+        if(receipt.getScope().contains("TICKET")) throw new BizException(410,"SUPPORT_TICKETS_RETIRED");
         if(receipt.getScope().startsWith("SUPPORT_GROUP_")) {
             if(key.length()>96)throw new BizException(422,"IDEMPOTENCY_KEY_INVALID");
             if(receipt.getScope().equals("SUPPORT_GROUP_QUALIFICATION:"+actor)) {

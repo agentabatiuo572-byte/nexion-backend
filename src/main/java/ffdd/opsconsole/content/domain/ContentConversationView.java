@@ -25,7 +25,19 @@ public record ContentConversationView(
         Long lastPublicMessageId,
         String lastMessageKind,
         Boolean archived,
-        Long pendingReplyCount) {
+        Long pendingReplyCount,
+        LocalDateTime pendingReplySince) {
+    public ContentConversationView(Long id, String conversationNo, Long userId, String conversationType,
+            String status, String ownerAgentId, String ownerAgentName, Integer unreadCount, String lastMessage,
+            LocalDateTime lastMessageAt, String transferFromAgentId, String transferFromAgentName,
+            String transferToType, String transferToId, String transferToName, String transferReason,
+            LocalDateTime transferredAt, LocalDateTime updatedAt, Long version, Long lastPublicMessageId,
+            String lastMessageKind, Boolean archived, Long pendingReplyCount) {
+        this(id, conversationNo, userId, conversationType, status, ownerAgentId, ownerAgentName, unreadCount,
+                lastMessage, lastMessageAt, transferFromAgentId, transferFromAgentName, transferToType,
+                transferToId, transferToName, transferReason, transferredAt, updatedAt, version,
+                lastPublicMessageId, lastMessageKind, archived, pendingReplyCount, null);
+    }
     @org.apache.ibatis.annotations.AutomapConstructor
     public ContentConversationView {
         archived = Boolean.TRUE.equals(archived);

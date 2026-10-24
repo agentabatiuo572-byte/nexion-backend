@@ -353,7 +353,7 @@ class OpsConversationServiceTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
     }
 
-    @Test void httpAndInternalReplyBothRejectArchivedConversationWithoutWriting() {
+    @Test void archivedReplyResumesAndStaleRetryCannotAppendAgain() {
         conversationRepository.conversation=conversation("CV-ARCHIVED","OPEN");
         conversationRepository.archive(conversationRepository.conversation,true,"agent-1",LocalDateTime.now(clock));
         var request=new ConversationReplyRequest("hello","OPEN",1L,"Archived reply regression","spoofed",List.of(),null,
@@ -361,10 +361,10 @@ class OpsConversationServiceTest {
         when(ownership.conversationCustomer("CV-ARCHIVED")).thenReturn(1001L);
         var p=new SupportHumanMessageService.Prepared(1001L,"ADMIN",7L,"bulk-client-01","TEXT","SERVICE",null,null,"hash",null,null,null,null,null);
         when(humanMessages.prepareForActor(eq(7L),eq(1001L),any(),any(),eq(request),any(),any(),any(),org.mockito.ArgumentMatchers.isNull(),eq(3L))).thenReturn(p);
-        assertThat(service.replyWithMessageId("CV-ARCHIVED","archive-http-key",request).result().getCode()).isEqualTo(409);
+        assertThat(service.replyWithMessageId("CV-ARCHIVED","archive-http-key",request).result().getCode()).isZero();
         assertThat(service.replyWithMessageIdForActor(7L,"CV-ARCHIVED","archive-bulk-key",request).result().getCode()).isEqualTo(409);
-        assertThat(conversationRepository.messageWrites).isZero();
-        verifyNoInteractions(auditLogService);
+        assertThat(conversationRepository.messageWrites).isEqualTo(1);
+        verify(auditLogService).recordRequired(any());
     }
 
     @Test void persistedActorReplyIgnoresMissingOrStaleSecurityContext() {
@@ -508,7 +508,7 @@ class OpsConversationServiceTest {
     }
 
     @Test
-    void initiateAdvisorConversationCreatesM2TicketWhenRoutedToStandbyPool() {
+    void initiateAdvisorConversationDoesNotCreateRetiredTicketWhenRoutedToStandbyPool() {
         when(supportAgentService.routeAdvisorForUser(1001L))
                 .thenReturn(new AdvisorRoutingDecision(
                         "standby",
@@ -526,10 +526,7 @@ class OpsConversationServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().ownerAgentId()).isEqualTo("standby-pool");
-        assertThat(ticketRepository.ticket).isNotNull();
-        assertThat(ticketRepository.ticket.ticketNo()).startsWith("TK-");
-        assertThat(ticketRepository.ticket.assignedAdminName()).isEqualTo("备勤池");
-        assertThat(ticketRepository.ticket.lastMessage()).contains("Advisor conversation routed to 备勤池");
+        assertThat(ticketRepository.ticket).isNull();
     }
 
     @Test
