@@ -247,7 +247,11 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         Long device = bindPhoneDevice(userId, current, scope);
         if (mapper.savePhoneBinding(userId, deviceId, device, hardwareKey(current), scope.sourceEnvironment(), scope.runId()) < 1)
             throw new BizException(503, "ONBOARDING_PHONE_BIND_FAILED");
-        if (!scope.sandbox()) mapper.restoreBoundPhoneRuntime(userId, device);
+        if (!scope.sandbox()) {
+            mapper.restoreBoundPhoneRuntime(userId, device);
+            // Only an explicit activation may undo a user stop; login recovery must retain it.
+            mapper.resumeUserDeactivatedPhoneRuntime(userId, device);
+        }
         String key = request.idempotencyKey().trim();
         String hash = actionHash(userId, request, "ACTIVE", scope);
         int changed = scope.sandbox()
