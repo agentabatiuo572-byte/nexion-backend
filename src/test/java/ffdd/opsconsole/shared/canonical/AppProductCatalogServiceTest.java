@@ -259,11 +259,14 @@ class AppProductCatalogServiceTest {
                 "sku-spec", "Spec SKU", "Pro", new BigDecimal("100"), 1, "SERVER", 2,
                 "GPU", 32, new BigDecimal("1"), new BigDecimal("2"), new BigDecimal("3"),
                 null, null, 0, null, null, "700W", "Tokyo DC", "99.9%", "36 months",
-                new BigDecimal("0.06"), new BigDecimal("12"), "[]", null, null, null, null, null, null)));
+                new BigDecimal("0.06"), new BigDecimal("12"), "[]", null, null, null, null, null, null,
+                null, null, "FINITE", "NVIDIA RTX 4090", "https://www.nvidia.com/")));
 
         Map<String, Object> product = (Map<String, Object>) ((List<?>) service.catalog(42L).getData().get("products")).get(0);
 
         assertThat(product).containsEntry("uptime", "99.9%")
+                .containsEntry("specDocumentTitle", "NVIDIA RTX 4090")
+                .containsEntry("specDocumentUrl", "https://www.nvidia.com/")
                 .containsEntry("warranty", "36 months")
                 .containsEntry("phoneDailyEarn", "0.06 USDT/day")
                 .containsEntry("phoneDailyEarnNEX", "12 NEX/day");

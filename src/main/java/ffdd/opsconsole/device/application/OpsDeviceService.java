@@ -3229,6 +3229,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!validMediaAssetId(request.imageAssetId())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_IMAGE_ASSET_ID_INVALID");
         }
+        String documentError = DeviceSkuSpecifications.validateDocument(request.specDocumentTitle(), request.specDocumentUrl());
+        if (documentError != null) return ApiResult.fail(422, documentError);
         if (!validMediaObjectKey(request.imageObjectKey())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_IMAGE_OBJECT_KEY_INVALID");
         }
@@ -3298,7 +3300,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.reason(),
                 operator(request.operator()),
                 inventoryMode.name(),
-                request.trialEligible());
+                request.trialEligible(), request.specDocumentTitle(), request.specDocumentUrl());
     }
 
     private DeviceSkuUpsertRequest withTrialEligible(DeviceSkuUpsertRequest request, boolean trialEligible) {
@@ -3313,7 +3315,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.lifecycle(), request.supersededBy(), request.tradeinDiscount(), request.unlockPhase(),
                 request.purchaseGate(), request.imageAssetId(), request.imageObjectKey(), request.imagePreviewUrl(),
                 request.tag(), request.status(), request.reason(), request.operator(), request.inventoryMode(),
-                trialEligible);
+                trialEligible, request.specDocumentTitle(), request.specDocumentUrl());
     }
 
     private ProductInventoryMode inventoryMode(String raw) {
@@ -5226,7 +5228,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 str(p, "unlockPhase"), buildPurchaseGate(p), str(p, "imageAssetId"),
                 str(p, "imageObjectKey"), str(p, "imagePreviewUrl"), str(p, "tag"),
                 str(p, "status"), reason, operator, str(p, "inventoryMode"),
-                boolVal(p, "trialEligible"));
+                boolVal(p, "trialEligible"), str(p, "specDocumentTitle"), str(p, "specDocumentUrl"));
     }
 
     /** 从 replay params 的 purchaseGate 子 map 重建 DevicePurchaseGateView;缺失返回 null。 */

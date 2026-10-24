@@ -206,6 +206,9 @@ public class AppProductCatalogService {
         item.put("power", display(target.power()));
         item.put("datacenter", display(target.datacenter()));
         item.put("uptime", DeviceSkuSpecifications.display(target.uptime()));
+        boolean validDocument = DeviceSkuSpecifications.validateDocument(target.specDocumentTitle(), target.specDocumentUrl()) == null;
+        item.put("specDocumentTitle", validDocument ? nullableText(target.specDocumentTitle()) : null);
+        item.put("specDocumentUrl", validDocument ? nullableText(target.specDocumentUrl()) : null);
         item.put("warranty", DeviceSkuSpecifications.display(target.warranty()));
         item.put("phoneDailyEarn", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarn(), "USDT/day"));
         item.put("phoneDailyEarnNEX", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarnNex(), "NEX/day"));

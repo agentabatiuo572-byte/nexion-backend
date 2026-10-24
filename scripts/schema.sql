@@ -3307,6 +3307,8 @@ CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   ai_video_min_per_hour BIGINT NULL,
   ai_fine_tune_mins BIGINT NULL,
   ai_unlocks VARCHAR(255) NULL,
+  spec_document_title VARCHAR(200) NULL,
+  spec_document_url VARCHAR(2048) NULL,
   features_json TEXT NULL,
   generation INT NULL,
   lifecycle VARCHAR(32) NULL,

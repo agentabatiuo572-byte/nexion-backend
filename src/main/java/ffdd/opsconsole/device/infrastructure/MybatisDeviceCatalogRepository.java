@@ -52,6 +52,8 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     @PostConstruct
     void ensureSchema() {
         mapper.createSkuTable();
+        if (mapper.countSkuDocumentTitleColumn() == 0) mapper.addSkuDocumentTitleColumn();
+        if (mapper.countSkuDocumentUrlColumn() == 0) mapper.addSkuDocumentUrlColumn();
         if (mapper.productUpdatedAtPrecision() < 6) {
             mapper.widenProductUpdatedAtPrecision();
         }
@@ -591,7 +593,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.updatedAt(),
                 row.productType(),
                 row.inventoryMode(),
-                Boolean.TRUE.equals(row.trialEligible()));
+                Boolean.TRUE.equals(row.trialEligible()), row.specDocumentTitle(), row.specDocumentUrl());
     }
 
     private DeviceCatalogMapper.SkuWrite skuWrite(String skuId, DeviceSkuUpsertRequest request,
@@ -644,7 +646,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 request.inventoryMode().trim().toUpperCase(java.util.Locale.ROOT),
                 Boolean.TRUE.equals(request.trialEligible()),
                 createdAt,
-                updatedAt);
+                updatedAt, blankToNull(request.specDocumentTitle()), blankToNull(request.specDocumentUrl()));
     }
 
     private BigDecimal firstDecimal(String value) {

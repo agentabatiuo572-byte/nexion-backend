@@ -18,7 +18,8 @@ class DeviceCatalogMapperProductSpecContractTest {
                         "s.phone_daily_earn AS phoneDailyEarn", "s.phone_daily_earn_nex AS phoneDailyEarnNex");
         Method insert = DeviceCatalogMapper.class.getMethod("upsertSkuMetadata", DeviceCatalogMapper.SkuWrite.class);
         assertThat(AnnotationUtils.findAnnotation(insert, Insert.class).value()[0])
-                .contains("uptime", "warranty", "phone_daily_earn", "phone_daily_earn_nex");
+                .contains("uptime", "warranty", "phone_daily_earn", "phone_daily_earn_nex",
+                        "spec_document_title", "spec_document_url", "#{sku.specDocumentTitle}", "#{sku.specDocumentUrl}");
         assertThat(AnnotationUtils.findAnnotation(insert, Insert.class).value()[0])
                 .contains("uptime=VALUES(uptime)", "phone_daily_earn=VALUES(phone_daily_earn)");
 

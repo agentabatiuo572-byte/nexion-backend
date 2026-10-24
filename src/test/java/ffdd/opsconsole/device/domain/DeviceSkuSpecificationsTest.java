@@ -8,6 +8,15 @@ import org.junit.jupiter.api.Test;
 
 class DeviceSkuSpecificationsTest {
     @Test
+    void documentRequiresAnHttpsLinkAndTitleAndCanBeCleared() {
+        assertThat(DeviceSkuSpecifications.validateDocument(null, null)).isNull();
+        assertThat(DeviceSkuSpecifications.validateDocument("NVIDIA RTX 4090", "https://www.nvidia.com/")).isNull();
+        for (String link : java.util.List.of("", "javascript:alert(1)", "http://example.com", "https://user:secret@example.com")) {
+            assertThat(DeviceSkuSpecifications.validateDocument("Specs", link)).isEqualTo("SKU_DOCUMENT_INVALID");
+        }
+        assertThat(DeviceSkuSpecifications.validateDocument("", "https://www.nvidia.com/")).isEqualTo("SKU_DOCUMENT_INVALID");
+    }
+    @Test
     void acceptsZeroAndSixDecimalPhoneEarnings() {
         assertThat(DeviceSkuSpecifications.validatePhoneDailyEarn(new BigDecimal("0"))).isNull();
         assertThat(DeviceSkuSpecifications.validatePhoneDailyEarn(new BigDecimal("999999999999.999999"))).isNull();
