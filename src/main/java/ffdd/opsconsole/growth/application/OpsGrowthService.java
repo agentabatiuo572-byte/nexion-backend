@@ -1,7 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
 
-import lombok.RequiredArgsConstructor;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -64,9 +63,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
 public class OpsGrowthService implements AuditReplayable {
-    private H4EventRuleService h4EventRules;
-    @org.springframework.beans.factory.annotation.Autowired
-    public void setH4EventRules(H4EventRuleService h4EventRules) { this.h4EventRules = h4EventRules; }
+    private final H4EventRuleService h4EventRules;
     private final WeeklyQuestSnapshotService weeklySnapshots;
     private final WeeklyRegionPolicyService weeklyRegionPolicies;
 
@@ -243,7 +240,7 @@ public class OpsGrowthService implements AuditReplayable {
                 appTrialLifecycleService, referralRewardService, streakPerkAvailability, promotionAdmin, weeklySnapshots, null);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
+    /** Legacy direct construction; production also supplies the event rules. */
     public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,
             TreasuryCoverageFacade coverageFacade, TreasuryLedgerPostingFacade ledgerPostingFacade,
             AuditLogService auditLogService, ObjectMapper objectMapper, OpsReadTimeSeedPolicy readTimeSeedPolicy,
@@ -253,6 +250,23 @@ public class OpsGrowthService implements AuditReplayable {
             StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
             ffdd.opsconsole.promotion.application.PromotionAdminService promotionAdmin,
             WeeklyQuestSnapshotService weeklySnapshots, WeeklyRegionPolicyService weeklyRegionPolicies) {
+        this(configFacade, emergencyRepository, coverageFacade, ledgerPostingFacade, auditLogService, objectMapper,
+                readTimeSeedPolicy, deviceCatalogRepository, questEventMapper, voucherMapper, lockMapper,
+                appTrialLifecycleService, referralRewardService, streakPerkAvailability, promotionAdmin,
+                weeklySnapshots, weeklyRegionPolicies, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,
+            TreasuryCoverageFacade coverageFacade, TreasuryLedgerPostingFacade ledgerPostingFacade,
+            AuditLogService auditLogService, ObjectMapper objectMapper, OpsReadTimeSeedPolicy readTimeSeedPolicy,
+            Optional<DeviceCatalogRepository> deviceCatalogRepository, Optional<GrowthQuestEventMapper> questEventMapper,
+            Optional<GrowthVoucherMapper> voucherMapper, AuditObjectLockMapper lockMapper,
+            AppTrialLifecycleService appTrialLifecycleService, Optional<OpsReferralRewardService> referralRewardService,
+            StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
+            ffdd.opsconsole.promotion.application.PromotionAdminService promotionAdmin,
+            WeeklyQuestSnapshotService weeklySnapshots, WeeklyRegionPolicyService weeklyRegionPolicies,
+            H4EventRuleService h4EventRules) {
         this.configFacade=configFacade;this.emergencyRepository=emergencyRepository;this.coverageFacade=coverageFacade;
         this.ledgerPostingFacade=ledgerPostingFacade;this.auditLogService=auditLogService;this.objectMapper=objectMapper;
         this.readTimeSeedPolicy=readTimeSeedPolicy;this.deviceCatalogRepository=deviceCatalogRepository;
@@ -261,6 +275,7 @@ public class OpsGrowthService implements AuditReplayable {
         this.streakPerkAvailability=streakPerkAvailability;this.promotionAdmin=promotionAdmin;
         this.weeklySnapshots = weeklySnapshots;
         this.weeklyRegionPolicies = weeklyRegionPolicies;
+        this.h4EventRules = h4EventRules;
     }
 
     public OpsGrowthService(PlatformConfigFacade configFacade, EmergencyControlRepository emergencyRepository,

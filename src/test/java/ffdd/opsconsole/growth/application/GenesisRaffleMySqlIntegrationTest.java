@@ -1,6 +1,8 @@
 package ffdd.opsconsole.growth.application;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.promotion.infrastructure.PromotionSqlConfiguration;
+import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.growth.dto.GenesisRaffleRequest.Prize;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
@@ -58,7 +60,7 @@ class GenesisRaffleMySqlIntegrationTest {
         // Exercise the real entry SQL in a real transaction; key replay belongs to the shared boundary tests.
         when(idempotency.executeRetained(anyString(),anyString(),anyString(),eq(ApiResult.class),any()))
                 .thenAnswer(call->tx.execute(s->((Supplier<?>)call.getArgument(4)).get()));
-        repository=new PausingRepository(jdbc);
+        repository=new PausingRepository(new PromotionSqlConfiguration().promotionRawMapper(ds));
         service=new GenesisRaffleService(repository,json,Clock.fixed(Instant.parse("2026-10-25T12:00:00Z"),ZoneOffset.UTC),
                 idempotency,earnings,ledger,coverage,mock(EventDeviceGiftService.class),mock(AuditLogService.class),mock(A2RuntimePolicy.class));
     }
@@ -232,7 +234,7 @@ class GenesisRaffleMySqlIntegrationTest {
     }
     static class PausingRepository extends H4EventRuleRepository {
         volatile CountDownLatch userLockAttempt;
-        PausingRepository(JdbcTemplate jdbc){super(jdbc);}
+        PausingRepository(PromotionMapper mapper){super(mapper);}
         @Override public List<Map<String,Object>> rows(String sql,Object... args){
             if(userLockAttempt!=null&&sql.contains("FROM nx_user")&&sql.contains("FOR UPDATE"))userLockAttempt.countDown();
             return super.rows(sql,args);
