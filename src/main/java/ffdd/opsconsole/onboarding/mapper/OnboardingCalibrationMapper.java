@@ -331,6 +331,17 @@ public interface OnboardingCalibrationMapper {
     int restoreBoundPhoneRuntime(@Param("userId") Long userId,@Param("userDeviceId") Long userDeviceId);
 
     @Update("""
+            UPDATE nx_user_device_runtime r JOIN nx_user_device d ON d.id=r.user_device_id
+               SET r.paused_reason=NULL,r.online_status='OFFLINE',r.network_reachable=0,r.updated_at=NOW(6)
+             WHERE d.user_id=#{userId} AND d.id=#{userDeviceId} AND d.source_channel='ONBOARDING'
+               AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.is_deleted=0 AND r.is_deleted=0
+               AND d.status='ACTIVE' AND d.ownership_status='OWNED'
+               AND UPPER(d.device_type) IN ('MOBILE','PHONE')
+               AND BINARY r.paused_reason = BINARY 'USER_DEACTIVATED'
+            """)
+    int resumeUserDeactivatedPhoneRuntime(@Param("userId") Long userId,@Param("userDeviceId") Long userDeviceId);
+
+    @Update("""
             UPDATE nx_onboarding_calibration
                SET activation_status='DEFERRED',row_version=row_version+1,updated_at=NOW(6)
              WHERE user_id=#{userId} AND (user_device_id IS NULL OR user_device_id<>#{keepUserDeviceId})
@@ -443,6 +454,7 @@ public interface OnboardingCalibrationMapper {
          WHERE d.user_id=#{userId} AND d.id=#{deviceId} AND d.is_deleted=0 AND r.is_deleted=0
            AND NULLIF(TRIM(r.paused_reason),'') IS NOT NULL
            AND r.paused_reason NOT IN ('PHONE_REPLACED','PHONE_LOW_BATTERY','PHONE_OFFLINE')
+           AND BINARY r.paused_reason <> BINARY 'USER_DEACTIVATED'
          FOR SHARE
         """)
     String phoneReplacementHardPause(@Param("userId") Long userId, @Param("deviceId") Long deviceId);

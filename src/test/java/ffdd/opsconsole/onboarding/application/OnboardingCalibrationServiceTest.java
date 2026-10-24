@@ -312,6 +312,9 @@ class OnboardingCalibrationServiceTest {
         verify(mapper).deferOtherPhoneCalibrations(9L, 44L, "PRODUCTION", "");
         verify(mapper).cancelReplacedPhoneTask(9L, 33L, "CTA-A");
         verify(mapper).clearReplacedPhoneRuntime(9L, 44L);
+        var activationOrder = org.mockito.Mockito.inOrder(mapper);
+        activationOrder.verify(mapper).savePhoneBinding(eq(9L), eq("dev-phone"), eq(44L), any(), eq("PRODUCTION"), eq(""));
+        activationOrder.verify(mapper).resumeUserDeactivatedPhoneRuntime(9L, 44L);
         verify(outbox).publish(eq("COMPUTE_TASK"), eq("CTA-A"),
                 eq("TASK_ASSIGNMENT_PHONE_REPLACED"), any());
         verify(audit).recordRequired(any());
@@ -342,6 +345,7 @@ class OnboardingCalibrationServiceTest {
         assertThat(service.activate(9L, command).getCode()).isZero();
 
         verify(mapper, times(1)).cancelReplacedPhoneTask(9L, 33L, "CTA-A");
+        verify(mapper, times(1)).resumeUserDeactivatedPhoneRuntime(9L, 44L);
         verify(outbox, times(1)).publish(eq("COMPUTE_TASK"), eq("CTA-A"),
                 eq("TASK_ASSIGNMENT_PHONE_REPLACED"), any());
     }
@@ -369,6 +373,7 @@ class OnboardingCalibrationServiceTest {
         verify(replacements,never()).recordActivationSuccess(any(),any(),any(),any(),any());
         verify(replacements,never()).reject(any(),any(),any());
         verify(mapper,never()).findForUpdate(any(),any());
+        verify(mapper,never()).resumeUserDeactivatedPhoneRuntime(any(),any());
         verify(mapper,never()).savePhoneBinding(any(),any(),any(),any(),any(),any());
         verify(mapper,never()).upsertPhoneDevice(any(),any(),any(),any(),any(),any(),any(),any(),any(),any());
         org.mockito.Mockito.verifyNoInteractions(terms,capacity,audit,outbox);
@@ -615,6 +620,7 @@ class OnboardingCalibrationServiceTest {
         assertThat(service.phoneLogin(9L,"old-phone").get("status")).isEqualTo("BOUND");
         verify(mapper).claimPhoneExecution(9L,"old-phone");
         verify(mapper, times(2)).restoreBoundPhoneRuntime(9L,33L);
+        verify(mapper, never()).resumeUserDeactivatedPhoneRuntime(any(),any());
         var order = org.mockito.Mockito.inOrder(mapper);
         order.verify(mapper).lockUserSandbox(9L);
         order.verify(mapper).phoneBinding(9L,"PRODUCTION", "");

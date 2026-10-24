@@ -275,6 +275,48 @@ class OnboardingActivationTransactionMySqlTest {
         assertThat(jdbc.queryForObject("SELECT status FROM nx_compute_task WHERE task_no=?",String.class,"task-"+user)).isEqualTo("RUNNING");
         var after=snapshot(user);assertThat(phone.activate(user,request,b).getCode()).isEqualTo(409);assertThat(snapshot(user)).isEqualTo(after);
     }
+    @Test void explicitReactivationClearsUserStopButLoginAndReceiptReplayDoNot(){
+        long user=701;first(user);
+        var auth=session(user,"phone-a","APP",true);
+        long device=device(user);
+        jdbc.update("UPDATE nx_user_device SET status='DEACTIVATED',deactivated_at=NOW(6) WHERE id=?",device);
+        jdbc.update("INSERT INTO nx_user_device_runtime(user_device_id,paused_reason,online_status,network_reachable,heartbeat_at) VALUES(?,'USER_DEACTIVATED','OFFLINE',0,NOW(6))",device);
+        var heartbeat=jdbc.queryForMap("SELECT heartbeat_at FROM nx_user_device_runtime WHERE user_device_id=?",device).get("heartbeat_at");
+        phone.phoneLogin(user,"phone-a");
+        assertThat(jdbc.queryForObject("SELECT paused_reason FROM nx_user_device_runtime WHERE user_device_id=?",String.class,device)).isEqualTo("USER_DEACTIVATED");
+        long revision=jdbc.queryForObject("SELECT row_version FROM nx_onboarding_calibration WHERE user_id=?",Long.class,user);
+        var signals=new OnboardingCalibrationService.Signals(8.0,8,"Synthetic phone","Synthetic","Mali-G715",3.0,42.0,80,true,true,"android","test soc");
+        var calibrated=phone.calibrate(user,new OnboardingCalibrationService.Request("phone-a",revision,"recalibrate-user-stop-"+user,signals));
+        assertThat(calibrated.getCode()).isZero();
+        revision=((Number)calibrated.getData().get("revision")).longValue();
+        assertThat(app.eligibility(auth).blockedReasons()).doesNotContain("PHONE_REPLACEMENT_RISK_PAUSED");
+        var request=action("phone-a",revision,1L,"reactivate-user-stop-"+user);
+        assertThat(phone.activate(user,request,auth).getCode()).isZero();
+        assertThat(jdbc.queryForMap("SELECT paused_reason,online_status,network_reachable,heartbeat_at FROM nx_user_device_runtime WHERE user_device_id=?",device))
+                .containsEntry("paused_reason",null).containsEntry("online_status","OFFLINE")
+                .containsEntry("network_reachable",0).containsEntry("heartbeat_at",heartbeat);
+        assertThat(jdbc.queryForObject("SELECT status FROM nx_user_device WHERE id=?",String.class,device)).isEqualTo("ACTIVE");
+        assertThat(count("nx_phone_replacement_event",user)).isZero();
+        jdbc.update("UPDATE nx_user_device_runtime SET paused_reason='USER_DEACTIVATED' WHERE user_device_id=?",device);
+        var before=snapshot(user);
+        assertThat(phone.activate(user,request,auth).getCode()).isZero();
+        assertThat(snapshot(user)).isEqualTo(before);
+    }
+    @Test void reactivationKeepsRiskAndNoncanonicalUserStopReasons(){
+        long user=702;first(user);
+        var auth=session(user,"phone-a","APP",true);
+        long device=device(user);
+        jdbc.update("INSERT INTO nx_user_device_runtime(user_device_id,paused_reason,online_status,heartbeat_at) VALUES(?,'RISK_PAUSED','OFFLINE',NOW(6))",device);
+        int attempt=0;
+        for(String reason:List.of("RISK_PAUSED","ADMIN_PAUSED","user_deactivated","USER_DEACTIVATED ")){
+            jdbc.update("UPDATE nx_user_device_runtime SET paused_reason=? WHERE user_device_id=?",reason,device);
+            assertThat(app.eligibility(auth).blockedReasons()).contains("PHONE_REPLACEMENT_RISK_PAUSED");
+            long revision=jdbc.queryForObject("SELECT row_version FROM nx_onboarding_calibration WHERE user_id=?",Long.class,user);
+            long binding=jdbc.queryForObject("SELECT version FROM nx_phone_binding WHERE user_id=?",Long.class,user);
+            assertThat(phone.activate(user,action("phone-a",revision,binding,"retain-pause-"+attempt++),auth).getCode()).isZero();
+            assertThat(jdbc.queryForObject("SELECT paused_reason FROM nx_user_device_runtime WHERE user_device_id=?",String.class,device)).isEqualTo(reason);
+        }
+    }
     @Test void fixedSessionGroupInstallationExecutionAndVersionAreAuthoritative(){
         long user=401;seed(user);long revision=calibrate(user,"phone-a");var request=action("phone-a",revision,null,"activate-session-"+user);
         var stale=session(user,"phone-a","APP",true);
