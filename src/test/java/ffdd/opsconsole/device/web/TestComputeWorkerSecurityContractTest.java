@@ -273,7 +273,7 @@ class TestComputeWorkerSecurityContractTest {
         @Bean AppTaskAssignmentService assignments() { return mock(AppTaskAssignmentService.class); }
         @Bean AppTaskAssignmentMapper mapper() { return mock(AppTaskAssignmentMapper.class); }
         @Bean AuditLogService audit() { return mock(AuditLogService.class); }
-        @Bean UserBusinessWriteGateFilter userWriteGate() { return new UserBusinessWriteGateFilter(mock(UserOpsMapper.class), mock(LegalTermsService.class)); }
+        @Bean UserBusinessWriteGateFilter userWriteGate() { return new UserBusinessWriteGateFilter(mock(UserOpsMapper.class)); }
         @Bean UserBlocklistEnforcementFilter userBlocklist() { return new UserBlocklistEnforcementFilter(userId -> false); }
         @Bean DeveloperApiKeyAuthenticationFilter developerKeys() { return new DeveloperApiKeyAuthenticationFilter(mock(AppDeveloperApiService.class)); }
         @Bean AdminRbacAuthorizationFilter rbac(AuditLogService audit) { return new AdminRbacAuthorizationFilter(audit, mock(AdminAccountStateMapper.class)); }

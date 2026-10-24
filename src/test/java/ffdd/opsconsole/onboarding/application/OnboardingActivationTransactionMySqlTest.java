@@ -133,8 +133,7 @@ class OnboardingActivationTransactionMySqlTest {
         var current=proxy(new CurrentAppSessionService(sql.getMapper(AuthSessionMapper.class),config,
                 mock(UserAccountBlocklistVerifier.class),users,environment));
         domain=proxy(new PhoneReplacementService(sql.getMapper(PhoneReplacementMapper.class),Clock.systemUTC(),audit,outbox));
-        var terms=new UserBusinessWriteGateFilter(users,new LegalTermsService(new MybatisLegalTermsRepository(
-                sql.getMapper(LegalTermsVersionMapper.class),sql.getMapper(LegalTermsAckMapper.class)),Clock.systemUTC(),environment,audit));
+        var terms=new UserBusinessWriteGateFilter(users);
         phone=proxy(new OnboardingCalibrationService(sql.getMapper(OnboardingCalibrationMapper.class),runtime,environment,audit,outbox,
                 config,Clock.systemUTC(),proxy(new PhoneInstallationService(sql.getMapper(PhoneInstallationMapper.class),current)),domain,
                 proxy(new PhoneActivationCapacityService(sql.getMapper(CanonicalStateMapper.class))),terms));
