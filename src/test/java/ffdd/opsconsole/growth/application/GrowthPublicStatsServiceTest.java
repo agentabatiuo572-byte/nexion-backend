@@ -148,7 +148,11 @@ class GrowthPublicStatsServiceTest {
         stubSandbox(runId, 12000);
         when(config.activeValueForUpdate("h9.sb." + runId + ".v")).thenReturn(Optional.of("3"));
 
-        ApiResult<Map<String, Object>> result = sandboxService(runId).update(validRequest(3L), "h9-sandbox-save");
+        HomeDisplayService publicDisplay = mock(HomeDisplayService.class);
+        GrowthPublicStatsService scoped = sandboxService(runId);
+        org.springframework.test.util.ReflectionTestUtils.setField(scoped, "homeDisplay", publicDisplay);
+        ApiResult<Map<String, Object>> result = scoped.update(validRequest(3L), "h9-sandbox-save");
+        org.mockito.Mockito.verifyNoInteractions(publicDisplay);
 
         assertThat(result.getCode()).isZero();
         verify(config).upsertAdminValue(
@@ -295,6 +299,19 @@ class GrowthPublicStatsServiceTest {
         ApiResult<Map<String, Object>> result = service.overview();
 
         assertThat(result.getCode()).isZero();
+    }
+
+    @Test
+    void rejectsInvertedRangesAndSubCentDisplayAmountsBeforeWriting() {
+        GrowthPublicStatsUpdateRequest base = validRequest(3L);
+        for (BigDecimal paidStep : List.of(new BigDecimal("5.51"), new BigDecimal("1.101"), new BigDecimal("-1"))) {
+            GrowthPublicStatsUpdateRequest request = new GrowthPublicStatsUpdateRequest(base.fleetDevices(), base.onlineRatePct(),
+                    base.onlineJitter(), base.registeredUsersBase(), base.registeredUsersMonthlyGrowthPct(), base.virtualUserCount(),
+                    base.hashratePercentileTable(), 3L, base.reason(), base.operator(), 28432L, 1, 3,
+                    new BigDecimal("130532"), paidStep, new BigDecimal("5.50"), true);
+            assertThat(service.update(request, "invalid-home-display").getCode()).isEqualTo(422);
+        }
+        verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
     private GrowthPublicStatsUpdateRequest validRequest(long version) {

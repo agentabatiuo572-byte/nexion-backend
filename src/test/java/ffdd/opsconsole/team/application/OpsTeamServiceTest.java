@@ -96,8 +96,18 @@ class OpsTeamServiceTest {
             f5CommissionService,
             idempotencyService, null, null, mock(VRankSkuFulfillmentService.class), null);
 
+    @Test
+    void inactiveV9CannotBeEditedAfterV8Configuration() {
+        commissionRepository.vRankRows.removeIf(row -> Integer.parseInt(row.get("v").toString().substring(1)) > 8);
+        assertThatThrownBy(() -> service.updateVRankThreshold("V9", "teamGv", "inactive-v9",
+                new TeamCommissionConfigUpdateRequest(null, "$25k", "check inactive rank", "superadmin")))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Unsupported F1");
+    }
+
     @BeforeEach
     void seedPermissionContext() {
+        commissionRepository.vRankRows.addAll(java.util.stream.IntStream.rangeClosed(0, 12)
+                .mapToObj(v -> new LinkedHashMap<String, Object>(Map.of("v", "V" + v))).toList());
         // updateConfig/updateUiConfig service 层二次校验需 admin id + 权限码;默认 stub 全 network_f2/f3/f4/f5 码通过。
         // A1 批1a:补 network_f5_commission_dispose / reject 以覆盖 F5 状态处置权限分流。
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
@@ -206,6 +216,7 @@ class OpsTeamServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void overviewExposesF1ToF4PageReadModelsWithoutStaticFrontendAuthority() {
+        commissionRepository.vRankRows.clear();
         ApiResult<Map<String, Object>> result = service.overview();
 
         assertThat(result.getCode()).isZero();
@@ -343,6 +354,7 @@ class OpsTeamServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void ranksReturnEmptyReadModelWhenDatabaseIsEmpty() {
+        commissionRepository.vRankRows.clear();
         ApiResult<Map<String, Object>> result = service.ranks();
 
         assertThat(result.getCode()).isZero();
@@ -576,6 +588,7 @@ class OpsTeamServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void updateVRankThresholdWritesBusinessTableAndAudit() {
+        commissionRepository.vRankRows.clear();
         commissionRepository.vRankRows.add(new LinkedHashMap<>(Map.of(
                 "v", "V3",
                 "label", "Builder",
@@ -1745,6 +1758,7 @@ class OpsTeamServiceTest {
     // 旧实现:UI_CONFIG_KEYS 白名单不含 F.pool.votes.V{n} → updateUiConfig 抛 IllegalArgumentException → HTTP 500。
     @Test
     void updateF4VRankVotesWritesBusinessTableAndAudit() {
+        commissionRepository.vRankRows.clear();
         commissionRepository.vRankRows.add(new LinkedHashMap<>(Map.of(
                 "v", "V5",
                 "label", "Advocate",
@@ -1785,6 +1799,7 @@ class OpsTeamServiceTest {
     @Test
     void updateF4VRankVotesAmplifyBlockedBelowRedline() {
         coverageFacade.setSnapshot(new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00")));
+        commissionRepository.vRankRows.clear();
         commissionRepository.vRankRows.add(new LinkedHashMap<>(Map.of(
                 "v", "V5",
                 "label", "Advocate",

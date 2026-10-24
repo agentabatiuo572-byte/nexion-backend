@@ -31,6 +31,8 @@ import org.springframework.util.StringUtils;
 public class GrowthPublicStatsService {
     public static final String VALUES_KEY = "growth.public_stats.values";
     public static final String VERSION_KEY = "growth.public_stats.version";
+    private static final List<String> HOME_FIELDS = List.of("homeOnlineCurrent", "homeOnlineStepMin", "homeOnlineStepMax",
+            "homePaidCurrent", "homePaidStepMin", "homePaidStepMax");
     private static final String DAILY_USD_KEY = "dailyUsdtPerBaseline";
     private static final BigDecimal SANDBOX_DAILY_USD = new BigDecimal("0.06");
     private static final Set<String> SANDBOX_PROFILES = Set.of("test");
@@ -44,6 +46,9 @@ public class GrowthPublicStatsService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final Environment environment;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private HomeDisplayService homeDisplay;
 
     private record RuntimeScope(boolean sandbox, String runId, String versionKey, String valuesKey) { }
 
@@ -205,7 +210,8 @@ public class GrowthPublicStatsService {
         long currentBase = longValue(before.get("registeredUsersBase"));
         long anchor = currentBase == request.registeredUsersBase()
                 ? longValue(before.get("registeredUsersAnchorAt")) : now;
-        Map<String, Object> nextValues = requestValues(request, anchor, now);
+        Map<String, Object> nextValues = requestValues(request, anchor, now, before);
+        if (homeDisplay != null && !scope.sandbox()) homeDisplay.configure(before, nextValues, now);
         long nextVersion = lockedVersion.get() + 1L;
         try {
             config.upsertAdminValue(scope.valuesKey(), objectMapper.writeValueAsString(nextValues), "JSON",
@@ -246,7 +252,7 @@ public class GrowthPublicStatsService {
         return data;
     }
 
-    private Map<String, Object> requestValues(GrowthPublicStatsUpdateRequest request, long anchor, long effectiveAt) {
+    private Map<String, Object> requestValues(GrowthPublicStatsUpdateRequest request, long anchor, long effectiveAt, Map<String, Object> before) {
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("fleetDevices", request.fleetDevices());
         values.put("onlineRatePct", request.onlineRatePct());
@@ -261,6 +267,17 @@ public class GrowthPublicStatsService {
             bands.add(Map.of("tops", band.tops(), "cumPct", band.cumPct()));
         }
         values.put("hashratePercentileTable", bands);
+        Object[] requested = { request.homeOnlineCurrent(), request.homeOnlineStepMin(), request.homeOnlineStepMax(),
+                request.homePaidCurrent(), request.homePaidStepMin(), request.homePaidStepMax() };
+        boolean changed = false;
+        for (int i = 0; i < HOME_FIELDS.size(); i++) {
+            String key = HOME_FIELDS.get(i);
+            Object next = requested[i] == null ? before.get(key) : requested[i];
+            values.put(key, next);
+            changed |= decimalValue(next).compareTo(decimalValue(before.get(key))) != 0;
+        }
+        values.put("homeDisplayEnabled", request.homeDisplayEnabled() == null ? before.get("homeDisplayEnabled") : request.homeDisplayEnabled());
+        values.put("homeDisplayAnchorAt", changed ? effectiveAt : before.get("homeDisplayAnchorAt"));
         return values;
     }
 
@@ -280,6 +297,9 @@ public class GrowthPublicStatsService {
                 band("5", "20"), band("20", "55"), band("60", "82"), band("150", "96"),
                 band("700", "97.6"), band("2700", "98.7"), band("5400", "99.3"),
                 band("11000", "99.6"), band("27000", "99.8"), band("53000", "100")));
+        HOME_FIELDS.forEach(key -> defaults.put(key, 0));
+        defaults.put("homeDisplayAnchorAt", anchor);
+        defaults.put("homeDisplayEnabled", false);
         return defaults;
     }
 
@@ -301,6 +321,10 @@ public class GrowthPublicStatsService {
                 || !between(request.virtualUserCount(), 0L, 10_000_000L)) {
             return "H9_VALUES_OUT_OF_RANGE";
         }
+        Object[] home = { request.homeOnlineCurrent(), request.homeOnlineStepMin(), request.homeOnlineStepMax(),
+                request.homePaidCurrent(), request.homePaidStepMin(), request.homePaidStepMax() };
+        long supplied = java.util.Arrays.stream(home).filter(java.util.Objects::nonNull).count();
+        if (supplied != 0 && (supplied != HOME_FIELDS.size() || !validHomeDisplay(home))) return "H9_HOME_DISPLAY_INVALID";
         if (!validBands(request.hashratePercentileTable())) {
             return "H9_PERCENTILE_TABLE_INVALID";
         }
@@ -319,6 +343,9 @@ public class GrowthPublicStatsService {
                     || !between(longValue(values.get("virtualUserCount")), 0L, 10_000_000L)) {
                 return "invalid";
             }
+            if (!(values.get("homeDisplayEnabled") instanceof Boolean)) return "invalid";
+            if (!validHomeDisplay(HOME_FIELDS.stream().map(values::get).toArray())
+                    || longValue(values.get("homeDisplayAnchorAt")) <= 0) return "invalid";
             Object rawBands = values.get("hashratePercentileTable");
             if (!(rawBands instanceof List<?> rows) || rows.size() < 2) {
                 return "invalid";
@@ -371,13 +398,33 @@ public class GrowthPublicStatsService {
         try {
             return config.activeValue(scope.valuesKey()).map(value -> {
                 try {
-                    return objectMapper.readValue(value, MAP_TYPE);
+                    Map<String, Object> stored = objectMapper.readValue(value, MAP_TYPE);
+                    // Older H9 records retain their timestamp and start with a static display until configured.
+                    stored.putIfAbsent("homeOnlineCurrent", Math.round(decimalValue(stored.get("fleetDevices")).doubleValue()
+                            * decimalValue(stored.get("onlineRatePct")).doubleValue() / 100));
+                    HOME_FIELDS.forEach(key -> stored.putIfAbsent(key, 0));
+                    stored.putIfAbsent("homeDisplayAnchorAt", stored.get("effectiveAt"));
+                    stored.putIfAbsent("homeDisplayEnabled", false);
+                    return stored;
                 } catch (Exception ex) {
                     throw new IllegalArgumentException(ex);
                 }
             });
         } catch (RuntimeException ex) {
             return Optional.empty();
+        }
+    }
+
+    private boolean validHomeDisplay(Object[] values) {
+        try {
+            BigDecimal[] n = java.util.Arrays.stream(values).map(this::decimalValue).toArray(BigDecimal[]::new);
+            for (int i = 0; i < n.length; i++) {
+                BigDecimal limit = new BigDecimal(i == 3 || i == 0 ? "9000000000000" : "1000000");
+                if (n[i].signum() < 0 || n[i].compareTo(limit) > 0 || n[i].stripTrailingZeros().scale() > (i < 3 ? 0 : 2)) return false;
+            }
+            return n[1].compareTo(n[2]) <= 0 && n[4].compareTo(n[5]) <= 0;
+        } catch (RuntimeException ex) {
+            return false;
         }
     }
 

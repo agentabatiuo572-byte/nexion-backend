@@ -2581,7 +2581,7 @@ public class OpsTeamService implements AuditReplayable {
             if (!node.isObject()) {
                 throw new IllegalArgumentException("F_VRANK_TITLES_SCHEMA_INVALID");
             }
-            for (String level : VRANK_LEVELS) {
+            for (String level : activeVRankLevels()) {
                 var title = node.get(level);
                 if (title == null || !title.isTextual() || title.asText().isBlank()) {
                     throw new IllegalArgumentException("F_VRANK_TITLES_SCHEMA_INVALID");
@@ -2623,7 +2623,7 @@ public class OpsTeamService implements AuditReplayable {
 
     private Map<String, List<Map<String, Object>>> vRankRewards() {
         Map<String, List<Map<String, Object>>> rewards = new LinkedHashMap<>();
-        for (String level : VRANK_LEVELS) {
+        for (String level : activeVRankLevels()) {
             rewards.put(level, activeRewards(level));
         }
         return rewards;
@@ -2793,10 +2793,14 @@ public class OpsTeamService implements AuditReplayable {
                 .intValue();
     }
 
+    private List<String> activeVRankLevels() {
+        return commissionRepository.vRankRows().stream().map(row -> String.valueOf(row.get("v"))).toList();
+    }
+
     private VRankSeed requireVRank(String rank) {
         String normalized = requireText(rank, "TEAM_VRANK_REQUIRED").toUpperCase(Locale.ROOT);
         return VRANK_SEEDS.stream()
-                .filter(seed -> seed.v().equals(normalized))
+                .filter(seed -> seed.v().equals(normalized) && activeVRankLevels().contains(normalized))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("Unsupported F1 V-Rank level"));
     }
@@ -2807,8 +2811,8 @@ public class OpsTeamService implements AuditReplayable {
 
     private String normalizeVRankThreshold(String field, String raw) {
         String value = normalizeUiValue(raw);
-        if ("legRank".equals(field) && !VRANK_LEVELS.contains(value.toUpperCase(Locale.ROOT))) {
-            throw new IllegalArgumentException("F1 V-Rank leg rank must be one of V0-V12");
+        if ("legRank".equals(field) && !activeVRankLevels().contains(value.toUpperCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("F1 V-Rank leg rank must be active");
         }
         if (("directRefs".equals(field) || "legCount".equals(field)) && parseDecimal(value).compareTo(BigDecimal.ZERO) < 0) {
             throw new IllegalArgumentException("F1 V-Rank count threshold must be non-negative");
@@ -3205,7 +3209,7 @@ public class OpsTeamService implements AuditReplayable {
             return guard;
         }
         String targetV = requireText(request.targetV(), "TEAM_VRANK_REQUIRED").toUpperCase(Locale.ROOT);
-        if (!VRANK_LEVELS.contains(targetV)) {
+        if (!activeVRankLevels().contains(targetV)) {
             throw new IllegalArgumentException("Unsupported F1 V-Rank level");
         }
         String direction = requireText(request.direction(), "TEAM_VRANK_DIRECTION_REQUIRED")
