@@ -82,7 +82,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/public/referrals/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/task-pricing", "/api/config/phone-tiers").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/staking/pools").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/config/v-ranks").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/v-ranks", "/api/config/home-display").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/v-rank-policy", "/api/developer/docs", "/api/legal/terms/current", "/api/legal/privacy-policy/current").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/legal/risk-disclosure/public/current").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/commission/rates", "/api/config/commission/guide", "/api/config/commission/direct-referral").permitAll()
