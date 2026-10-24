@@ -4,6 +4,10 @@ import ffdd.opsconsole.device.mapper.AppTradeinMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import ffdd.opsconsole.shared.storage.StorageProperties;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -12,6 +16,12 @@ import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.stream.MemoryCacheImageInputStream;
+import javax.imageio.stream.MemoryCacheImageOutputStream;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,6 +38,10 @@ public class StorefrontSkuImageService {
     private final ObjectStorageService storage;
     private final StorageProperties properties;
     private final Clock clock;
+    private final java.util.concurrent.Semaphore imageConversions = new java.util.concurrent.Semaphore(2);
+    // Only small, immutable object-key renditions are retained (at most 16 MiB).
+    // Product ownership and signed-link expiry are still checked on every request.
+    private final Map<String, ImageBytes> renditions = new LinkedHashMap<>(16, 0.75f, true);
 
     @Autowired
     public StorefrontSkuImageService(AppTradeinMapper mapper, ObjectStorageService storage,
@@ -85,6 +99,11 @@ public class StorefrontSkuImageService {
         if (!Integer.valueOf(1).equals(mapper.currentStorefrontImage(productNo, assetId, objectKey))) {
             throw unavailable();
         }
+        ImageBytes cached;
+        synchronized (renditions) {
+            cached = renditions.get(objectKey);
+            if (cached != null && cached.bytes().length > 0) return cached;
+        }
         String contentType = contentType(objectKey);
         byte[] bytes;
         try (InputStream stream = storage.get(objectKey)) {
@@ -95,7 +114,77 @@ public class StorefrontSkuImageService {
         if (bytes.length == 0 || bytes.length > MAX_IMAGE_BYTES || !matchesImageType(contentType, bytes)) {
             throw unavailable();
         }
-        return new ImageBytes(contentType, bytes);
+        // A zero-byte cache entry remembers that this immutable asset stays original.
+        if (cached != null || !imageConversions.tryAcquire()) return new ImageBytes(contentType, bytes);
+        ImageBytes image;
+        try { image = compactImage(contentType, bytes); }
+        finally { imageConversions.release(); }
+        synchronized (renditions) {
+            renditions.put(objectKey, image.bytes().length <= 1024 * 1024
+                    ? image : new ImageBytes(contentType, new byte[0]));
+            if (renditions.size() > 16) renditions.remove(renditions.keySet().iterator().next());
+        }
+        return image;
+    }
+
+    private ImageBytes compactImage(String contentType, byte[] bytes) {
+        ImageBytes original = new ImageBytes(contentType, bytes);
+        // Preserve animation, transparency, JPEG orientation and already-small images.
+        if (bytes.length < 128 * 1024 || !"image/png".equals(contentType) || animatedPng(bytes)) {
+            return original;
+        }
+        try (var input = new MemoryCacheImageInputStream(new ByteArrayInputStream(bytes))) {
+            var readers = ImageIO.getImageReaders(input);
+            if (!readers.hasNext()) return original;
+            var reader = readers.next();
+            BufferedImage decoded;
+            try {
+                reader.setInput(input);
+                int width = reader.getWidth(0), height = reader.getHeight(0);
+                if (width <= 0 || height <= 0 || (long) width * height > 4_000_000) return original;
+                decoded = reader.read(0);
+            } finally { reader.dispose(); }
+            if (decoded == null) return original;
+            if (decoded.getColorModel().hasAlpha()) {
+                for (int y = 0; y < decoded.getHeight(); y++) {
+                    for (int x = 0; x < decoded.getWidth(); x++) {
+                        if ((decoded.getRGB(x, y) >>> 24) != 255) return original;
+                    }
+                }
+            }
+            double scale = Math.min(1d, 960d / Math.max(decoded.getWidth(), decoded.getHeight()));
+            BufferedImage resized = new BufferedImage(Math.max(1, (int) Math.round(decoded.getWidth() * scale)),
+                    Math.max(1, (int) Math.round(decoded.getHeight() * scale)), BufferedImage.TYPE_INT_RGB);
+            var graphics = resized.createGraphics();
+            try {
+                graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+                graphics.drawImage(decoded, 0, 0, resized.getWidth(), resized.getHeight(), null);
+            } finally { graphics.dispose(); }
+            var output = new ByteArrayOutputStream();
+            var writer = ImageIO.getImageWritersByFormatName("jpeg").next();
+            try (var stream = new MemoryCacheImageOutputStream(output)) {
+                writer.setOutput(stream);
+                var params = writer.getDefaultWriteParam();
+                params.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+                params.setCompressionQuality(0.86f);
+                writer.write(null, new javax.imageio.IIOImage(resized, null, null), params);
+            } finally { writer.dispose(); }
+            byte[] compact = output.toByteArray();
+            return compact.length < bytes.length ? new ImageBytes("image/jpeg", compact) : original;
+        } catch (IOException | RuntimeException ex) {
+            return original;
+        }
+    }
+
+    private boolean animatedPng(byte[] bytes) {
+        for (int offset = 8; offset + 12 <= bytes.length;) {
+            int length = java.nio.ByteBuffer.wrap(bytes, offset, 4).getInt();
+            if (length < 0 || (long) offset + length + 12 > bytes.length) return true;
+            if (bytes[offset + 4] == 'a' && bytes[offset + 5] == 'c'
+                    && bytes[offset + 6] == 'T' && bytes[offset + 7] == 'L') return true;
+            offset += length + 12;
+        }
+        return false;
     }
 
     private String publicOrigin() {

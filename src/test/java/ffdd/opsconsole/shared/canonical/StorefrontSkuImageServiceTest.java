@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
@@ -123,6 +125,71 @@ class StorefrontSkuImageServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessage("STORE_IMAGE_UNAVAILABLE")
                 .extracting(ex -> ((BizException) ex).getCode()).isEqualTo(503);
+    }
+
+    @Test
+    void largeOpaquePngIsResizedOnceButEveryRequestStillChecksCurrentSku() throws Exception {
+        var source = new java.awt.image.BufferedImage(1254, 1254, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var random = new java.util.Random(17);
+        for (int y = 0; y < 1254; y++) for (int x = 0; x < 1254; x++) source.setRGB(x, y, random.nextInt(0x1000000));
+        var output = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(source, "png", output);
+        byte[] original = output.toByteArray();
+        Link link = issue();
+        when(mapper.currentStorefrontImage("stellarbox-pro", ASSET_ID, OBJECT_KEY)).thenReturn(1);
+        when(storage.get(OBJECT_KEY)).thenAnswer(invocation -> new ByteArrayInputStream(original));
+        var image = service.read("stellarbox-pro", ASSET_ID, link.expires(), link.signature());
+        assertThat(image.contentType()).isEqualTo("image/jpeg");
+        assertThat(image.bytes().length).isLessThan(original.length / 2);
+        var decoded = javax.imageio.ImageIO.read(new ByteArrayInputStream(image.bytes()));
+        assertThat(decoded.getWidth()).isEqualTo(960);
+        assertThat(decoded.getHeight()).isEqualTo(960);
+        assertThat(service.read("stellarbox-pro", ASSET_ID, link.expires(), link.signature()).bytes()).isEqualTo(image.bytes());
+        verify(storage, times(1)).get(OBJECT_KEY);
+        verify(mapper, times(2)).currentStorefrontImage("stellarbox-pro", ASSET_ID, OBJECT_KEY);
+        when(mapper.currentStorefrontImage("stellarbox-pro", ASSET_ID, OBJECT_KEY)).thenReturn(0);
+        assertUnavailable(() -> service.read("stellarbox-pro", ASSET_ID, link.expires(), link.signature()));
+        var later = new StorefrontSkuImageService(mapper, storage, properties, Clock.offset(CLOCK, Duration.ofMinutes(16)));
+        assertUnavailable(() -> later.read("stellarbox-pro", ASSET_ID, link.expires(), link.signature()));
+    }
+
+    @Test
+    void transparentPngRetainsItsExactPixelsAndFormat() throws Exception {
+        var source = new java.awt.image.BufferedImage(300, 300, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        var random = new java.util.Random(17);
+        for (int y = 0; y < 300; y++) for (int x = 0; x < 300; x++) source.setRGB(x, y, random.nextInt());
+        var output = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(source, "png", output);
+        byte[] original = output.toByteArray();
+        Link link = issue();
+        when(mapper.currentStorefrontImage("stellarbox-pro", ASSET_ID, OBJECT_KEY)).thenReturn(1);
+        when(storage.get(OBJECT_KEY)).thenAnswer(invocation -> new ByteArrayInputStream(original));
+        var image = service.read("stellarbox-pro", ASSET_ID, link.expires(), link.signature());
+        assertThat(image.contentType()).isEqualTo("image/png");
+        assertThat(image.bytes()).isEqualTo(original);
+    }
+
+    @Test
+    void animationControlChunkKeepsLargePngOriginal() throws Exception {
+        var output = new java.io.ByteArrayOutputStream();
+        output.write(PNG, 0, 33); // signature + IHDR
+        var chunks = new java.io.DataOutputStream(output);
+        byte[] control = java.nio.ByteBuffer.allocate(12).put("acTL".getBytes(StandardCharsets.US_ASCII))
+                .putInt(2).putInt(0).array();
+        var crc = new java.util.zip.CRC32(); crc.update(control);
+        chunks.writeInt(8); chunks.write(control); chunks.writeInt((int) crc.getValue());
+        byte[] text = new byte[130 * 1024];
+        text[0] = 't'; text[1] = 'E'; text[2] = 'X'; text[3] = 't';
+        crc.reset(); crc.update(text);
+        chunks.writeInt(text.length - 4); chunks.write(text); chunks.writeInt((int) crc.getValue());
+        output.write(PNG, 33, PNG.length - 33);
+        byte[] animation = output.toByteArray();
+        Link link = issue();
+        when(mapper.currentStorefrontImage("stellarbox-pro", ASSET_ID, OBJECT_KEY)).thenReturn(1);
+        when(storage.get(OBJECT_KEY)).thenReturn(new ByteArrayInputStream(animation));
+        var image = service.read("stellarbox-pro", ASSET_ID, link.expires(), link.signature());
+        assertThat(image.contentType()).isEqualTo("image/png");
+        assertThat(image.bytes()).isEqualTo(animation);
     }
 
     private Link issue() {
