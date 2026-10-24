@@ -9,6 +9,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -21,7 +22,8 @@ public class PlatformComputeConfigController {
     private final PlatformConfigFacade platformConfig;
 
     @GetMapping("/api/config/platform")
-    public ApiResult<PlatformComputeConfigView> platformConfig() {
+    public ApiResult<PlatformComputeConfigView> platformConfig(
+            @RequestParam(name = "officialLinkFragments", defaultValue = "false") boolean officialLinkFragments) {
         ApiResult<PlatformComputeConfigView> computeResult = deviceService.platformComputeConfig();
         if (computeResult.getCode() != 0 || computeResult.getData() == null) {
             return computeResult;
@@ -34,7 +36,7 @@ public class PlatformComputeConfigController {
         if (homeFlags.getCode() != 0 || homeFlags.getData() == null) {
             return ApiResult.fail(homeFlags.getCode(), homeFlags.getMessage());
         }
-        ApiResult<PlatformComputeConfigView.ShareConfig> experience = experienceConfigService.publicConfig();
+        ApiResult<PlatformComputeConfigView.ShareConfig> experience = experienceConfigService.publicConfig(officialLinkFragments);
         if (experience.getCode() != 0 || experience.getData() == null) {
             return ApiResult.fail(experience.getCode(), experience.getMessage());
         }

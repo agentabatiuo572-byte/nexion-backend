@@ -65,12 +65,22 @@ public class PlatformExperienceConfigService {
                 LocalDateTime.now().toString()));
     }
 
-    public ApiResult<PlatformComputeConfigView.ShareConfig> publicConfig() {
+    public ApiResult<PlatformComputeConfigView.ShareConfig> publicConfig(boolean officialLinkFragments) {
         Optional<PlatformComputeConfigView.ShareConfig> share = readShare(false);
         // A missing/invalid A3 projection is a normal unavailable state for
         // App/H5. Return an explicit backend-owned unavailable payload so the
         // clients render a closed state; never synthesize a download URL.
-        return ApiResult.ok(share.orElseGet(this::unavailableShare));
+        PlatformComputeConfigView.ShareConfig value = share.orElseGet(this::unavailableShare);
+        PlatformComputeConfigView.AppDownload download = value.appDownload();
+        // Released clients reject fragments while parsing the entire platform config.
+        // Keep their landing page usable until they opt in; never change stored A3 data.
+        if (!officialLinkFragments && StringUtils.hasText(download.officialUrl()) && download.officialUrl().contains("#")) {
+            value = new PlatformComputeConfigView.ShareConfig(value.baseUrl(), value.channels(),
+                    new PlatformComputeConfigView.AppDownload(download.officialUrl().split("#", 2)[0],
+                            download.iosUrl(), download.androidUrl(), download.apkUrl(), download.version(),
+                            download.releaseNotes(), download.source()));
+        }
+        return ApiResult.ok(value);
     }
 
     @Transactional
@@ -161,7 +171,7 @@ public class PlatformExperienceConfigService {
         String source = trim(download.source());
         if (!SOURCES.contains(source)) return "PLATFORM_EXPERIENCE_SOURCE_INVALID";
         String officialUrl = trim(download.officialUrl());
-        if (!"unavailable".equals(source) && !validUrl(officialUrl, false)) {
+        if (!"unavailable".equals(source) && !validUrl(officialUrl, false, true)) {
             return "PLATFORM_EXPERIENCE_OFFICIAL_URL_INVALID";
         }
         if (!"unavailable".equals(source)) {
@@ -253,7 +263,7 @@ public class PlatformExperienceConfigService {
         PlatformComputeConfigView.AppDownload download = share.appDownload();
         if (download == null || !SOURCES.contains(download.source())) return false;
         if (!"unavailable".equals(download.source())
-                && !validUrl(download.officialUrl(), false)) return false;
+                && !validUrl(download.officialUrl(), false, true)) return false;
         if (!"unavailable".equals(download.source())
                 && ((StringUtils.hasText(download.iosUrl()) && !validUrl(download.iosUrl(), false))
                 || (StringUtils.hasText(download.androidUrl()) && !validUrl(download.androidUrl(), false))
@@ -270,7 +280,11 @@ public class PlatformExperienceConfigService {
     }
 
     private boolean validUrl(String value, boolean allowHttp) {
-        if (!StringUtils.hasText(value) || value.matches(".*[\\s#@].*")) return false;
+        return validUrl(value, allowHttp, false);
+    }
+
+    private boolean validUrl(String value, boolean allowHttp, boolean allowFragment) {
+        if (!StringUtils.hasText(value) || value.matches(".*[\\s@].*") || (!allowFragment && value.contains("#"))) return false;
         try {
             URI uri = URI.create(value.trim());
             return (allowHttp ? ("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))
