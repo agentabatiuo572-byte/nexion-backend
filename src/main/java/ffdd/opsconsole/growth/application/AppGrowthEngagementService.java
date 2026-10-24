@@ -104,10 +104,7 @@ public class AppGrowthEngagementService {
     private final Optional<AppGrowthVoucherSandboxService> voucherSandboxService;
     private final Environment environment;
     private final Clock clock;
-    private H4EventEngine eventEngine;
-
-    @org.springframework.beans.factory.annotation.Autowired
-    public void setEventEngine(H4EventEngine eventEngine) { this.eventEngine = eventEngine; }
+    private final H4EventEngine eventEngine;
 
     /** Backward-compatible local construction; production Spring injection uses the business-zone clock. */
     public AppGrowthEngagementService(
@@ -149,7 +146,7 @@ public class AppGrowthEngagementService {
         this(mapper, voucherGrantFacade, growthRhythmFacade, coverageFacade, idempotencyService, auditLogService, outboxService, earningsReleaseService, sandboxService, questFactConsumer, streakPerkAvailability, voucherSandboxService, environment, clock, null);
     }
 
-    @Autowired
+    /** Legacy direct construction; production also supplies the event engine. */
     public AppGrowthEngagementService(
             AppGrowthEngagementMapper mapper,
             VoucherGrantFacade voucherGrantFacade,
@@ -166,6 +163,29 @@ public class AppGrowthEngagementService {
             Environment environment,
             Clock clock,
             WeeklyQuestSnapshotService weeklySnapshots) {
+        this(mapper, voucherGrantFacade, growthRhythmFacade, coverageFacade, idempotencyService,
+                auditLogService, outboxService, earningsReleaseService, sandboxService, questFactConsumer,
+                streakPerkAvailability, voucherSandboxService, environment, clock, weeklySnapshots, null);
+    }
+
+    @Autowired
+    public AppGrowthEngagementService(
+            AppGrowthEngagementMapper mapper,
+            VoucherGrantFacade voucherGrantFacade,
+            GrowthRhythmFacade growthRhythmFacade,
+            TreasuryCoverageFacade coverageFacade,
+            AdminIdempotencyService idempotencyService,
+            AuditLogService auditLogService,
+            EventOutboxService outboxService,
+            EarningsReleaseService earningsReleaseService,
+            AppGrowthWheelSandboxService sandboxService,
+            QuestCompletionFactConsumer questFactConsumer,
+            StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
+            Optional<AppGrowthVoucherSandboxService> voucherSandboxService,
+            Environment environment,
+            Clock clock,
+            WeeklyQuestSnapshotService weeklySnapshots,
+            H4EventEngine eventEngine) {
         this.mapper = mapper;
         this.voucherGrantFacade = voucherGrantFacade;
         this.growthRhythmFacade = growthRhythmFacade;
@@ -181,6 +201,7 @@ public class AppGrowthEngagementService {
         this.environment = environment;
         this.clock = clock;
         this.weeklySnapshots = weeklySnapshots;
+        this.eventEngine = eventEngine;
     }
 
     public ApiResult<Map<String, Object>> questState(Long userId) {

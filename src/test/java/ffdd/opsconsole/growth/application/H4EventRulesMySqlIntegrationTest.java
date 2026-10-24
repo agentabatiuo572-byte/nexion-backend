@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.jdbc.core.JdbcTemplate;
+import ffdd.opsconsole.promotion.infrastructure.PromotionSqlConfiguration;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
@@ -53,7 +54,7 @@ class H4EventRulesMySqlIntegrationTest {
         }
         for(String table:List.of("h4_test_credit","h4_test_ledger","nx_growth_event_pool_result","nx_growth_event_holding","nx_growth_event_claim","nx_growth_event_region","nx_growth_event_reminder","nx_order","nx_promotion_refund_hold","nx_user_wallet","nx_user_level_log","nx_user"))jdbc.update("DELETE FROM "+table);
         jdbc.update("UPDATE nx_growth_event_rule SET enabled=0,activated_at=NULL,disabled_at=NULL,settled_at=NULL,settlement_hash=NULL,spent_nex=0,spent_usdt=0,spent_devices=0,spent_tickets=0");
-        db=new H4EventRuleRepository(jdbc);var commerce=mock(H4EventCommerceService.class);var coverage=mock(TreasuryCoverageFacade.class);var audit=mock(AuditLogService.class);
+        db=new H4EventRuleRepository(new PromotionSqlConfiguration().promotionRawMapper(ds));var commerce=mock(H4EventCommerceService.class);var coverage=mock(TreasuryCoverageFacade.class);var audit=mock(AuditLogService.class);
         when(coverage.snapshot()).thenReturn(new ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot(new BigDecimal("200"),new BigDecimal("100")));
         policies=new H4EventRuleService(db,new ObjectMapper(),audit,commerce,coverage,mock(A2RuntimePolicy.class));
         earnings=mock(EarningsReleaseService.class);
