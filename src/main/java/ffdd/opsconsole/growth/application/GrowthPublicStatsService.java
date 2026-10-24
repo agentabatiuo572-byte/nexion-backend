@@ -47,8 +47,7 @@ public class GrowthPublicStatsService {
     private final Clock clock;
     private final Environment environment;
 
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private HomeDisplayService homeDisplay;
+    private final Optional<HomeDisplayService> homeDisplay;
 
     private record RuntimeScope(boolean sandbox, String runId, String versionKey, String valuesKey) { }
 
@@ -211,7 +210,7 @@ public class GrowthPublicStatsService {
         long anchor = currentBase == request.registeredUsersBase()
                 ? longValue(before.get("registeredUsersAnchorAt")) : now;
         Map<String, Object> nextValues = requestValues(request, anchor, now, before);
-        if (homeDisplay != null && !scope.sandbox()) homeDisplay.configure(before, nextValues, now);
+        if (!scope.sandbox()) homeDisplay.ifPresent(display -> display.configure(before, nextValues, now));
         long nextVersion = lockedVersion.get() + 1L;
         try {
             config.upsertAdminValue(scope.valuesKey(), objectMapper.writeValueAsString(nextValues), "JSON",

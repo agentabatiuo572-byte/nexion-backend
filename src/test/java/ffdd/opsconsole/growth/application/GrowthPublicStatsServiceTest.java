@@ -34,7 +34,7 @@ class GrowthPublicStatsServiceTest {
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-07T10:15:30Z"), ZoneOffset.UTC);
     private final MockEnvironment environment = new MockEnvironment();
     private final GrowthPublicStatsService service = new GrowthPublicStatsService(
-            config, users, deviceOps, audit, new ObjectMapper(), clock, environment);
+            config, users, deviceOps, audit, new ObjectMapper(), clock, environment, Optional.empty());
 
     @BeforeEach
     void setUp() {
@@ -89,7 +89,7 @@ class GrowthPublicStatsServiceTest {
                 .withProperty("NEXION_ACCEPTANCE_RUN_ID", "home-public-stats-20260819");
         sandbox.setActiveProfiles("test");
         GrowthPublicStatsService sandboxService = new GrowthPublicStatsService(
-                config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox);
+                config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox, Optional.empty());
 
         ApiResult<Map<String, Object>> result = sandboxService.publicProjection();
 
@@ -109,7 +109,7 @@ class GrowthPublicStatsServiceTest {
         MockEnvironment development = new MockEnvironment();
         development.setActiveProfiles("dev");
         GrowthPublicStatsService developmentService = new GrowthPublicStatsService(
-                config, users, deviceOps, audit, new ObjectMapper(), clock, development);
+                config, users, deviceOps, audit, new ObjectMapper(), clock, development, Optional.empty());
 
         ApiResult<Map<String, Object>> result = developmentService.publicProjection();
 
@@ -150,7 +150,7 @@ class GrowthPublicStatsServiceTest {
 
         HomeDisplayService publicDisplay = mock(HomeDisplayService.class);
         GrowthPublicStatsService scoped = sandboxService(runId);
-        org.springframework.test.util.ReflectionTestUtils.setField(scoped, "homeDisplay", publicDisplay);
+        org.springframework.test.util.ReflectionTestUtils.setField(scoped, "homeDisplay", Optional.of(publicDisplay));
         ApiResult<Map<String, Object>> result = scoped.update(validRequest(3L), "h9-sandbox-save");
         org.mockito.Mockito.verifyNoInteractions(publicDisplay);
 
@@ -186,7 +186,7 @@ class GrowthPublicStatsServiceTest {
         MockEnvironment sandbox = new MockEnvironment();
         sandbox.setActiveProfiles("test");
         GrowthPublicStatsService sandboxService = new GrowthPublicStatsService(
-                config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox);
+                config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox, Optional.empty());
 
         ApiResult<Map<String, Object>> result = sandboxService.publicProjection();
 
@@ -201,7 +201,7 @@ class GrowthPublicStatsServiceTest {
         MockEnvironment mixed = new MockEnvironment();
         mixed.setActiveProfiles("dev", "prod");
         GrowthPublicStatsService mixedService = new GrowthPublicStatsService(
-                config, users, deviceOps, audit, new ObjectMapper(), clock, mixed);
+                config, users, deviceOps, audit, new ObjectMapper(), clock, mixed, Optional.empty());
 
         ApiResult<Map<String, Object>> result = mixedService.publicProjection();
 
@@ -326,7 +326,7 @@ class GrowthPublicStatsServiceTest {
     private GrowthPublicStatsService sandboxService(String runId) {
         MockEnvironment sandbox = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", runId);
         sandbox.setActiveProfiles("test");
-        return new GrowthPublicStatsService(config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox);
+        return new GrowthPublicStatsService(config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox, Optional.empty());
     }
 
     private void stubSandbox(String runId, int fleetDevices) {
