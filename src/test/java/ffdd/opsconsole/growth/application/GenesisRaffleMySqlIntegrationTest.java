@@ -1,8 +1,8 @@
 package ffdd.opsconsole.growth.application;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import ffdd.opsconsole.promotion.infrastructure.PromotionSqlConfiguration;
-import ffdd.opsconsole.promotion.mapper.PromotionMapper;
+import ffdd.opsconsole.growth.infrastructure.H4EventSqlConfiguration;
+import ffdd.opsconsole.growth.mapper.H4EventSqlMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.growth.dto.GenesisRaffleRequest.Prize;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
@@ -39,7 +39,8 @@ class GenesisRaffleMySqlIntegrationTest {
     @BeforeEach void prepare() throws Exception {
         var ds=new DriverManagerDataSource(System.getenv("H4_EVENT_JDBC_URL"),System.getenv("H4_EVENT_DB_USER"),System.getenv("H4_EVENT_DB_PASSWORD"));
         jdbc=new JdbcTemplate(ds);assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).startsWith("h4_events_");
-        jdbc.execute("CREATE TABLE IF NOT EXISTS nx_user(id BIGINT PRIMARY KEY,status VARCHAR(32),sandbox INT,is_deleted INT,country_code VARCHAR(8),region VARCHAR(32),created_at DATETIME,language VARCHAR(16),v_rank VARCHAR(16))");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS nx_user(id BIGINT PRIMARY KEY,status VARCHAR(32),sandbox TINYINT(1),is_deleted INT,country_code VARCHAR(8),region VARCHAR(32),created_at DATETIME,language VARCHAR(16),v_rank VARCHAR(16))");
+        jdbc.execute("ALTER TABLE nx_user MODIFY COLUMN sandbox TINYINT(1)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS nx_staking_position(position_no VARCHAR(96) PRIMARY KEY,user_id BIGINT,status VARCHAR(32),is_deleted INT)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS nx_g7_repurchase_ticket(ticket_no VARCHAR(96) PRIMARY KEY,position_no VARCHAR(96),user_id BIGINT,quantity INT,status VARCHAR(32),issued_at DATETIME(6),is_deleted INT)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS nx_order(order_no VARCHAR(96) PRIMARY KEY,user_id BIGINT,amount_usdt DECIMAL(18,6),payment_status VARCHAR(24),order_status VARCHAR(24),paid_at DATETIME(6),is_deleted INT)");
@@ -60,7 +61,7 @@ class GenesisRaffleMySqlIntegrationTest {
         // Exercise the real entry SQL in a real transaction; key replay belongs to the shared boundary tests.
         when(idempotency.executeRetained(anyString(),anyString(),anyString(),eq(ApiResult.class),any()))
                 .thenAnswer(call->tx.execute(s->((Supplier<?>)call.getArgument(4)).get()));
-        repository=new PausingRepository(new PromotionSqlConfiguration().promotionRawMapper(ds));
+        repository=new PausingRepository(new H4EventSqlConfiguration().h4EventRawMapper(ds));
         service=new GenesisRaffleService(repository,json,Clock.fixed(Instant.parse("2026-10-25T12:00:00Z"),ZoneOffset.UTC),
                 idempotency,earnings,ledger,coverage,mock(EventDeviceGiftService.class),mock(AuditLogService.class),mock(A2RuntimePolicy.class));
     }
@@ -130,6 +131,16 @@ class GenesisRaffleMySqlIntegrationTest {
         tx.executeWithoutResult(s->service.draw("round"));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_genesis_raffle_result",Integer.class)).isZero();
         verifyNoInteractions(earnings);
+    }
+    @Test void mysqlBooleanSandboxFlagDisqualifiesAnAlreadyEnteredAccount() throws Exception {
+        ready(null);
+        jdbc.update("UPDATE nx_user SET sandbox=1 WHERE id=100");
+        assertThat(H4EventRuleService.number(repository.row("SELECT sandbox FROM nx_user WHERE id=100").get("sandbox")))
+                .isEqualByComparingTo("1");
+        tx.executeWithoutResult(s->service.draw("round"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_genesis_raffle_result",Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT status FROM nx_genesis_raffle_draw",String.class)).isEqualTo("DRAWN");
+        verifyNoInteractions(earnings,ledger);
     }
     @Test void simultaneousEntriesInDifferentDrawsCannotSpendTheSameTicketsTwice() throws Exception {
         createDraw("a","2026-10-26");createDraw("b","2026-10-26");
@@ -234,7 +245,7 @@ class GenesisRaffleMySqlIntegrationTest {
     }
     static class PausingRepository extends H4EventRuleRepository {
         volatile CountDownLatch userLockAttempt;
-        PausingRepository(PromotionMapper mapper){super(mapper);}
+        PausingRepository(H4EventSqlMapper mapper){super(mapper);}
         @Override public List<Map<String,Object>> rows(String sql,Object... args){
             if(userLockAttempt!=null&&sql.contains("FROM nx_user")&&sql.contains("FOR UPDATE"))userLockAttempt.countDown();
             return super.rows(sql,args);

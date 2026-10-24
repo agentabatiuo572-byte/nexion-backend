@@ -64,17 +64,39 @@ DELIMITER $$
 CREATE TRIGGER IF NOT EXISTS nx_wallet_h4_holding_observation
 AFTER UPDATE ON nx_user_wallet FOR EACH ROW
 BEGIN
-  IF NOT (NEW.nex_available <=> OLD.nex_available) THEN
-    INSERT INTO nx_growth_event_holding(event_code,user_id,eligible_since,updated_at)
-    SELECT r.event_code,NEW.user_id,
-      CASE WHEN NEW.nex_available>=CAST(JSON_UNQUOTE(JSON_EXTRACT(r.rules_json,'$.minNex')) AS DECIMAL(18,6))
-        THEN GREATEST(r.starts_at,UTC_TIMESTAMP(6)) ELSE NULL END,UTC_TIMESTAMP(6)
-    FROM nx_growth_event_rule r
-    WHERE (r.enabled=1 OR EXISTS(SELECT 1 FROM nx_growth_event_holding h WHERE h.event_code=r.event_code AND h.user_id=NEW.user_id))
-      AND r.activated_at IS NOT NULL AND r.kind='holding' AND r.ends_at>UTC_TIMESTAMP(6)
-    ON DUPLICATE KEY UPDATE eligible_since=
-      CASE WHEN VALUES(eligible_since) IS NULL THEN NULL
-        ELSE COALESCE(eligible_since,VALUES(eligible_since)) END,updated_at=UTC_TIMESTAMP(6);
+  DECLARE event_enabled TINYINT DEFAULT 0;
+  DECLARE event_activated DATETIME(6) DEFAULT NULL;
+  DECLARE event_start DATETIME(6) DEFAULT NULL;
+  DECLARE event_end DATETIME(6) DEFAULT NULL;
+  DECLARE minimum_nex DECIMAL(18,6) DEFAULT NULL;
+  DECLARE observed TINYINT DEFAULT 0;
+  DECLARE CONTINUE HANDLER FOR NOT FOUND SET observed=0;
+  IF NOT (NEW.nex_available <=> OLD.nex_available)
+     OR NOT (NEW.is_deleted <=> OLD.is_deleted) OR NOT (NEW.sandbox <=> OLD.sandbox) THEN
+    -- Current read of one immutable policy, never a scan/lock of unrelated activity rules.
+    -- Wallet row is already locked by UPDATE; all H4 policy writers acquire wallets first.
+    SELECT enabled,activated_at,starts_at,ends_at,
+           CAST(JSON_UNQUOTE(JSON_EXTRACT(rules_json,'$.minNex')) AS DECIMAL(18,6))
+      INTO event_enabled,event_activated,event_start,event_end,minimum_nex
+      FROM nx_growth_event_rule WHERE event_code='evt-nex-holders-share' FOR SHARE;
+    IF event_activated IS NOT NULL AND event_end>UTC_TIMESTAMP(6) THEN
+      IF NEW.is_deleted=0 AND NEW.sandbox=0 THEN
+        SELECT 1 INTO observed FROM nx_growth_event_holding
+          WHERE event_code='evt-nex-holders-share' AND user_id=NEW.user_id FOR UPDATE;
+        IF event_enabled=1 OR observed=1 THEN
+          INSERT INTO nx_growth_event_holding(event_code,user_id,eligible_since,updated_at)
+          VALUES('evt-nex-holders-share',NEW.user_id,
+            CASE WHEN NEW.nex_available>=minimum_nex THEN GREATEST(event_start,event_activated,UTC_TIMESTAMP(6)) ELSE NULL END,
+            UTC_TIMESTAMP(6))
+          ON DUPLICATE KEY UPDATE eligible_since=
+            CASE WHEN VALUES(eligible_since) IS NULL THEN NULL
+              ELSE COALESCE(eligible_since,VALUES(eligible_since)) END,updated_at=UTC_TIMESTAMP(6);
+        END IF;
+      ELSE
+        UPDATE nx_growth_event_holding SET eligible_since=NULL,updated_at=UTC_TIMESTAMP(6)
+          WHERE event_code='evt-nex-holders-share' AND user_id=NEW.user_id;
+      END IF;
+    END IF;
   END IF;
 END$$
 DELIMITER ;

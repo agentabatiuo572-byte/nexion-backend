@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.jdbc.core.JdbcTemplate;
-import ffdd.opsconsole.promotion.infrastructure.PromotionSqlConfiguration;
+import ffdd.opsconsole.growth.infrastructure.H4EventSqlConfiguration;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
@@ -37,24 +37,30 @@ class H4EventRulesMySqlIntegrationTest {
         var ds=new DriverManagerDataSource(System.getenv("H4_EVENT_JDBC_URL"),System.getenv("H4_EVENT_DB_USER"),System.getenv("H4_EVENT_DB_PASSWORD"));
         jdbc=new JdbcTemplate(ds);assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).startsWith("h4_events_");
         jdbc.execute("CREATE TABLE IF NOT EXISTS nx_user(id BIGINT PRIMARY KEY,status VARCHAR(32),sandbox INT,is_deleted INT,country_code VARCHAR(8),region VARCHAR(32),created_at DATETIME,language VARCHAR(16),v_rank VARCHAR(16))");
-        jdbc.execute("CREATE TABLE IF NOT EXISTS nx_user_wallet(user_id BIGINT PRIMARY KEY,nex_available DECIMAL(18,6),is_deleted INT)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS nx_user_wallet(user_id BIGINT PRIMARY KEY,nex_available DECIMAL(18,6),is_deleted INT,sandbox INT NOT NULL DEFAULT 0)");
+        if(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_user_wallet' AND column_name='sandbox'",Integer.class)==0)
+            jdbc.execute("ALTER TABLE nx_user_wallet ADD sandbox INT NOT NULL DEFAULT 0");
         jdbc.execute("CREATE TABLE IF NOT EXISTS nx_user_level_log(user_id BIGINT,level_type VARCHAR(16),to_code VARCHAR(16),created_at DATETIME,is_deleted INT)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS nx_order(order_no VARCHAR(96) PRIMARY KEY,user_id BIGINT,amount_usdt DECIMAL(18,6),payment_status VARCHAR(24),order_status VARCHAR(24),paid_at DATETIME(6),is_deleted INT)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS nx_promotion_refund_hold(order_no VARCHAR(96),status VARCHAR(24))");
         jdbc.execute("CREATE TABLE IF NOT EXISTS h4_test_credit(receipt VARCHAR(160) PRIMARY KEY,user_id BIGINT,amount DECIMAL(18,6))");
         jdbc.execute("CREATE TABLE IF NOT EXISTS h4_test_ledger(receipt VARCHAR(160) PRIMARY KEY,user_id BIGINT,amount DECIMAL(18,6))");
         jdbc.execute("CREATE TABLE IF NOT EXISTS nx_event_quest(id BIGINT AUTO_INCREMENT PRIMARY KEY,quest_code VARCHAR(64) UNIQUE,quest_name VARCHAR(128),description VARCHAR(512),target_type VARCHAR(32),target_value INT,reward_type VARCHAR(32),reward_amount DECIMAL(18,6),reward_name VARCHAR(128),cta_href VARCHAR(255),status INT,sort_order INT)");
+        for(String column:List.of("is_deleted","updated_at"))if(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_event_quest' AND column_name=?",Integer.class,column)==0)
+            jdbc.execute("ALTER TABLE nx_event_quest ADD "+column+(column.equals("is_deleted")?" INT NOT NULL DEFAULT 0":" DATETIME NULL"));
+        jdbc.execute("CREATE TABLE IF NOT EXISTS nx_config_item(config_key VARCHAR(128) PRIMARY KEY,config_value TEXT,status INT,is_deleted INT)");
         String migration=Files.readString(Path.of("scripts/migrations/20261025_h4_event_rules.sql"));
         // Keep the MySQL trigger body as one statement; ScriptUtils handles ordinary DDL/DML.
         int delimiter=migration.indexOf("DELIMITER $$");
         try(var connection=ds.getConnection()){
             ScriptUtils.executeSqlScript(connection,new ByteArrayResource(migration.substring(0,delimiter).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
             String trigger=migration.substring(delimiter+"DELIMITER $$".length(),migration.indexOf("END$$")+3).trim();
+            jdbc.execute("DROP TRIGGER IF EXISTS nx_wallet_h4_holding_observation");
             jdbc.execute(trigger);
         }
         for(String table:List.of("h4_test_credit","h4_test_ledger","nx_growth_event_pool_result","nx_growth_event_holding","nx_growth_event_claim","nx_growth_event_region","nx_growth_event_reminder","nx_order","nx_promotion_refund_hold","nx_user_wallet","nx_user_level_log","nx_user"))jdbc.update("DELETE FROM "+table);
         jdbc.update("UPDATE nx_growth_event_rule SET enabled=0,activated_at=NULL,disabled_at=NULL,settled_at=NULL,settlement_hash=NULL,spent_nex=0,spent_usdt=0,spent_devices=0,spent_tickets=0");
-        db=new H4EventRuleRepository(new PromotionSqlConfiguration().promotionRawMapper(ds));var commerce=mock(H4EventCommerceService.class);var coverage=mock(TreasuryCoverageFacade.class);var audit=mock(AuditLogService.class);
+        db=new H4EventRuleRepository(new H4EventSqlConfiguration().h4EventRawMapper(ds));var commerce=mock(H4EventCommerceService.class);var coverage=mock(TreasuryCoverageFacade.class);var audit=mock(AuditLogService.class);
         when(coverage.snapshot()).thenReturn(new ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot(new BigDecimal("200"),new BigDecimal("100")));
         policies=new H4EventRuleService(db,new ObjectMapper(),audit,commerce,coverage,mock(A2RuntimePolicy.class));
         earnings=mock(EarningsReleaseService.class);
@@ -69,7 +75,7 @@ class H4EventRulesMySqlIntegrationTest {
     }
     @Test void closingHoldingKeepsExistingObserversAndRejectsNewParticipants(){
         jdbc.update("INSERT INTO nx_user VALUES(1,'ACTIVE',0,0,'+84',NULL,NOW(),'vi','V1')");
-        jdbc.update("INSERT INTO nx_user_wallet VALUES(1,1500,0)");
+        jdbc.update("INSERT INTO nx_user_wallet(user_id,nex_available,is_deleted) VALUES(1,1500,0)");
         jdbc.update("UPDATE nx_growth_event_rule SET enabled=1,activated_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 8 DAY),starts_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 8 DAY),ends_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 DAY),rules_json=JSON_OBJECT('minNex',1000,'holdDays',7,'poolUsdt',5000,'allocation','EQUAL') WHERE event_code='evt-nex-holders-share'");
         jdbc.update("INSERT INTO nx_growth_event_holding VALUES('evt-nex-holders-share',1,DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 6 DAY),NULL,UTC_TIMESTAMP(6))");
         Timestamp before=jdbc.queryForObject("SELECT eligible_since FROM nx_growth_event_holding",Timestamp.class);
@@ -83,7 +89,7 @@ class H4EventRulesMySqlIntegrationTest {
         jdbc.update("UPDATE nx_user_wallet SET nex_available=900 WHERE user_id=1");jdbc.update("UPDATE nx_user_wallet SET nex_available=1500 WHERE user_id=1");
         assertThat(jdbc.queryForObject("SELECT eligible_since FROM nx_growth_event_holding",Timestamp.class)).isNotNull();
         jdbc.update("INSERT INTO nx_user VALUES(2,'ACTIVE',0,0,'+84',NULL,NOW(),'vi','V1')");
-        jdbc.update("INSERT INTO nx_user_wallet VALUES(2,0,0)");
+        jdbc.update("INSERT INTO nx_user_wallet(user_id,nex_available,is_deleted) VALUES(2,0,0)");
         jdbc.update("UPDATE nx_user_wallet SET nex_available=1500 WHERE user_id=2");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_growth_event_holding WHERE user_id=2",Integer.class)).isZero();
     }
@@ -158,5 +164,88 @@ class H4EventRulesMySqlIntegrationTest {
         var source=List.of(H4EventRuleService.values("eventCode","evt-onboarding-7d","userStatus","AVAILABLE"));
         assertThat(engine.project(1L,source,"en")).singleElement().satisfies(row->assertThat(row.get("userStatus")).isEqualTo("CLAIMABLE"));
         assertThat(engine.project(2L,source,"en")).isEmpty();
+    }
+    void holdingAccount(){
+        jdbc.update("INSERT INTO nx_user VALUES(1,'ACTIVE',0,0,'+84',NULL,NOW(),'en','V1')");
+        jdbc.update("INSERT INTO nx_user_wallet(user_id,nex_available,is_deleted) VALUES(1,1500,0)");
+    }
+    void await(CountDownLatch latch){
+        try{assertThat(latch.await(10,TimeUnit.SECONDS)).isTrue();}catch(InterruptedException ex){Thread.currentThread().interrupt();throw new AssertionError(ex);}
+    }
+    @Test void activationWaitsForAnUncommittedWalletDebitBeforeTakingItsBaseline() throws Exception {
+        holdingAccount();
+        jdbc.update("INSERT INTO nx_config_item VALUES('growth.content.localized',?,1,0) ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
+            "{\"event\":{\"evt-nex-holders-share\":{\"zh\":{\"name\":\"持币\",\"description\":\"规则\",\"rewardName\":\"奖池\"},\"vi\":{\"name\":\"Event\",\"description\":\"Rules\",\"rewardName\":\"Pool\"}}}}");
+        var revision=jdbc.queryForObject("SELECT revision FROM nx_growth_event_rule WHERE event_code='evt-nex-holders-share'",Long.class);
+        var request=new ffdd.opsconsole.growth.dto.H4EventRuleRequest(revision,true,java.time.Instant.now().minusSeconds(86400).toString(),java.time.Instant.now().plusSeconds(864000).toString(),Map.of("minNex",1000,"holdDays",1,"poolUsdt",10,"allocation","EQUAL"),"Start isolated holding test");
+        var debitReady=new CountDownLatch(1);var release=new CountDownLatch(1);var workers=Executors.newFixedThreadPool(2);
+        try {
+            var debit=workers.submit(()->tx.executeWithoutResult(s->{jdbc.update("UPDATE nx_user_wallet SET nex_available=999 WHERE user_id=1");debitReady.countDown();await(release);}));
+            await(debitReady);
+            var activation=workers.submit(()->tx.execute(s->policies.update("evt-nex-holders-share",request)));
+            assertThatThrownBy(()->activation.get(200,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+            release.countDown();debit.get(10,TimeUnit.SECONDS);
+            assertThat(activation.get(10,TimeUnit.SECONDS).getCode()).isZero();
+        } finally {release.countDown();workers.shutdownNow();}
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_growth_event_holding WHERE eligible_since IS NOT NULL",Integer.class)).isZero();
+        jdbc.update("UPDATE nx_user_wallet SET nex_available=1500 WHERE user_id=1");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_growth_event_holding WHERE eligible_since IS NOT NULL",Integer.class)).isEqualTo(1);
+    }
+    @Test void closingWaitsForAnInFlightObserverAndKeepsItsEarnedMembership() throws Exception {
+        holdingAccount();
+        jdbc.update("UPDATE nx_growth_event_rule SET enabled=1,activated_at=UTC_TIMESTAMP(6),starts_at=UTC_TIMESTAMP(6),ends_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 2 DAY),rules_json=JSON_OBJECT('minNex',1000,'holdDays',1,'poolUsdt',10,'allocation','EQUAL') WHERE event_code='evt-nex-holders-share'");
+        var updateReady=new CountDownLatch(1);var release=new CountDownLatch(1);var workers=Executors.newFixedThreadPool(2);
+        try {
+            var update=workers.submit(()->tx.executeWithoutResult(s->{jdbc.update("UPDATE nx_user_wallet SET nex_available=1600 WHERE user_id=1");updateReady.countDown();await(release);}));
+            await(updateReady);
+            var closing=workers.submit(()->tx.executeWithoutResult(s->policies.stop("evt-nex-holders-share")));
+            assertThatThrownBy(()->closing.get(200,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+            release.countDown();update.get(10,TimeUnit.SECONDS);closing.get(10,TimeUnit.SECONDS);
+        } finally {release.countDown();workers.shutdownNow();}
+        jdbc.update("UPDATE nx_user_wallet SET nex_available=900 WHERE user_id=1");
+        assertThat(jdbc.queryForObject("SELECT eligible_since FROM nx_growth_event_holding",Timestamp.class)).isNull();
+        jdbc.update("UPDATE nx_user_wallet SET nex_available=1500 WHERE user_id=1");
+        assertThat(jdbc.queryForObject("SELECT eligible_since FROM nx_growth_event_holding",Timestamp.class)).isNotNull();
+    }
+    @Test void cutoffSettlementWaitsForTheWalletDebitAndCannotPayItsOldObservation() throws Exception {
+        holdingAccount();
+        jdbc.update("UPDATE nx_growth_event_rule SET enabled=1,activated_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 3 DAY),starts_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 3 DAY),ends_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 3 SECOND),rules_json=JSON_OBJECT('minNex',1000,'holdDays',1,'poolUsdt',10,'allocation','EQUAL') WHERE event_code='evt-nex-holders-share'");
+        jdbc.update("INSERT INTO nx_growth_event_holding VALUES('evt-nex-holders-share',1,DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 2 DAY),NULL,UTC_TIMESTAMP(6))");
+        var debitReady=new CountDownLatch(1);var release=new CountDownLatch(1);var workers=Executors.newFixedThreadPool(2);
+        try {
+            var debit=workers.submit(()->tx.executeWithoutResult(s->{
+                jdbc.update("UPDATE nx_user_wallet SET nex_available=999 WHERE user_id=1");
+                assertThat(jdbc.queryForObject("SELECT eligible_since FROM nx_growth_event_holding",Timestamp.class)).isNull();
+                debitReady.countDown();await(release);
+            }));
+            await(debitReady);
+            jdbc.queryForObject("SELECT SLEEP(GREATEST(0,TIMESTAMPDIFF(MICROSECOND,UTC_TIMESTAMP(6),ends_at)/1000000.0)+0.05) FROM nx_growth_event_rule WHERE event_code='evt-nex-holders-share'",Integer.class);
+            var settlement=workers.submit(()->tx.executeWithoutResult(s->engine.settle("evt-nex-holders-share")));
+            assertThatThrownBy(()->settlement.get(200,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+            release.countDown();debit.get(10,TimeUnit.SECONDS);settlement.get(10,TimeUnit.SECONDS);
+        } finally {release.countDown();workers.shutdownNow();}
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_growth_event_pool_result",Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM h4_test_credit",Integer.class)).isZero();
+    }
+    @Test void unrelatedActivityRuleLockDoesNotBlockAWalletUpdate() throws Exception {
+        holdingAccount();var locked=new CountDownLatch(1);var release=new CountDownLatch(1);var workers=Executors.newFixedThreadPool(2);
+        try {
+            var unrelated=workers.submit(()->tx.executeWithoutResult(s->{policies.find("evt-regional-pk",true);locked.countDown();await(release);}));
+            await(locked);
+            workers.submit(()->tx.executeWithoutResult(s->jdbc.update("UPDATE nx_user_wallet SET nex_available=1600 WHERE user_id=1"))).get(3,TimeUnit.SECONDS);
+            release.countDown();unrelated.get(10,TimeUnit.SECONDS);
+        } finally {release.countDown();workers.shutdownNow();}
+    }
+    @Test void walletEnvironmentOrDeletionChangesCannotPreserveAProductionHoldingPeriod(){
+        holdingAccount();
+        jdbc.update("UPDATE nx_growth_event_rule SET enabled=1,activated_at=UTC_TIMESTAMP(6),starts_at=UTC_TIMESTAMP(6),ends_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 2 DAY),rules_json=JSON_OBJECT('minNex',1000,'holdDays',1,'poolUsdt',10,'allocation','EQUAL') WHERE event_code='evt-nex-holders-share'");
+        jdbc.update("UPDATE nx_user_wallet SET nex_available=1600 WHERE user_id=1");
+        assertThat(jdbc.queryForObject("SELECT eligible_since FROM nx_growth_event_holding",Timestamp.class)).isNotNull();
+        jdbc.update("UPDATE nx_user_wallet SET sandbox=1 WHERE user_id=1");
+        assertThat(jdbc.queryForObject("SELECT eligible_since FROM nx_growth_event_holding",Timestamp.class)).isNull();
+        jdbc.update("UPDATE nx_user_wallet SET sandbox=0 WHERE user_id=1");
+        assertThat(jdbc.queryForObject("SELECT eligible_since FROM nx_growth_event_holding",Timestamp.class)).isNotNull();
+        jdbc.update("UPDATE nx_user_wallet SET is_deleted=1 WHERE user_id=1");
+        assertThat(jdbc.queryForObject("SELECT eligible_since FROM nx_growth_event_holding",Timestamp.class)).isNull();
     }
 }

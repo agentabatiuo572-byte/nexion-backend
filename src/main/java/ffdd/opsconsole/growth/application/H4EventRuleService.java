@@ -38,7 +38,15 @@ public class H4EventRuleService {
     public void registerDraft(String code,String kind){
         db.write("INSERT IGNORE INTO nx_growth_event_rule(event_code,kind,rules_json,enabled) VALUES(?,?,JSON_OBJECT(),0)",code,kind);
     }
+    /** Caller owns a transaction. Match wallet writers before taking the holding policy lock. */
+    public void lockHoldingWallets(String code){
+        if(!"evt-nex-holders-share".equals(code))return;
+        db.rows("SELECT id FROM nx_user ORDER BY id FOR UPDATE");
+        db.rows("SELECT user_id FROM nx_user_wallet ORDER BY user_id FOR UPDATE");
+    }
+    @Transactional(rollbackFor=Exception.class,isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void stop(String code){
+        lockHoldingWallets(code);
         var row=find(code,true);if(row==null)return;
         if(number(row.get("enabled")).intValue()==1)freezeReferral(row);
         db.write("UPDATE nx_growth_event_rule SET enabled=0,disabled_at=COALESCE(disabled_at,UTC_TIMESTAMP(6)),revision=revision+1 WHERE event_code=? AND enabled=1",code);
@@ -87,9 +95,10 @@ public class H4EventRuleService {
                 "endsAt",iso(row.get("ends_at")),"rules",r,"rulesLocked",row.get("activated_at")!=null,
                 "readiness",Map.of("ready",missing.isEmpty(),"missing",missing));
     }
-    @Transactional(rollbackFor=Exception.class)
+    @Transactional(rollbackFor=Exception.class,isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<Map<String,Object>> update(String code,H4EventRuleRequest request) {
         if(request==null||request.reason()==null||request.reason().trim().length()<a2.reasonMinChars())throw new BizException(422,"REASON_REQUIRED");
+        lockHoldingWallets(code);
         var current=find(code,true);
         if(current==null)throw new BizException(404,"EVENT_RULE_NOT_FOUND");
         if(number(current.get("revision")).longValue()!=request.expectedRevision())throw new BizException(409,"EVENT_CONFIG_STALE");
@@ -122,7 +131,7 @@ public class H4EventRuleService {
                 INSERT INTO nx_growth_event_holding(event_code,user_id,eligible_since,updated_at)
                 SELECT ?,w.user_id,GREATEST(?,UTC_TIMESTAMP(6)),UTC_TIMESTAMP(6)
                 FROM nx_user_wallet w JOIN nx_user u ON u.id=w.user_id AND u.status='ACTIVE' AND u.sandbox=0 AND u.is_deleted=0
-                WHERE w.nex_available>=? AND w.is_deleted=0
+                WHERE w.nex_available>=? AND w.is_deleted=0 AND w.sandbox=0
                 ON DUPLICATE KEY UPDATE eligible_since=VALUES(eligible_since),updated_at=VALUES(updated_at)
                 """,code,start,number(rules.get("minNex")));
         } else {
@@ -186,7 +195,8 @@ public class H4EventRuleService {
         if(number(r.get("giftQuantity")).compareTo(BigDecimal.valueOf(100))>0)missing.add("giftQuantity");
         for(String key:List.of("ticketsPerThreshold","extraGenesisTickets"))
             if(number(r.get(key)).compareTo(BigDecimal.valueOf(1000000))>0)missing.add(key);
-        for(String key:List.of("rewardNex","poolUsdt","budgetNex"))if(number(r.get(key)).scale()>6)missing.add(key);
+        for(String key:List.of("rewardNex","poolUsdt","budgetNex","minNex"))if(number(r.get(key)).scale()>6)missing.add(key);
+        if(number(r.get("minNex")).compareTo(new BigDecimal("999999999999.999999"))>0)missing.add("minNex");
         for(String key:List.of("targetInvites","windowDays","giftQuantity","deviceBudget","minRank","streakSavers","holdDays","ticketsPerThreshold","ticketBudget","extraGenesisTickets"))
             if(number(r.get(key)).compareTo(BigDecimal.valueOf(Integer.MAX_VALUE))>0||number(r.get(key)).signum()<0)missing.add(key);
         return missing.stream().distinct().toList();
@@ -197,7 +207,7 @@ public class H4EventRuleService {
         try{return json.readValue(text(row.get("rules_json")),new TypeReference<>(){});}catch(Exception ex){throw new BizException(503,"EVENT_RULE_INVALID");}
     }
     public String encode(Object value){try{return json.writeValueAsString(value);}catch(Exception ex){throw new IllegalArgumentException(ex);}}
-    public static BigDecimal number(Object value){try{return value==null?BigDecimal.ZERO:new BigDecimal(value.toString());}catch(Exception ex){return BigDecimal.ZERO;}}
+    public static BigDecimal number(Object value){try{return value==null?BigDecimal.ZERO:value instanceof Boolean flag?(flag?BigDecimal.ONE:BigDecimal.ZERO):new BigDecimal(value.toString());}catch(Exception ex){return BigDecimal.ZERO;}}
     public static String text(Object value){return value==null?"":value.toString();}
     public static LocalDateTime date(Object value){return value==null?null:value instanceof Timestamp t?t.toLocalDateTime():value instanceof LocalDateTime t?t:LocalDateTime.parse(text(value).replace(' ','T'));}
     public static LocalDateTime parseDate(String value){try{return value==null||value.isBlank()?null:LocalDateTime.ofInstant(Instant.parse(value),ZoneOffset.UTC);}catch(Exception ex){throw new BizException(422,"EVENT_DATE_INVALID");}}
