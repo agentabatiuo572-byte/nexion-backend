@@ -33,7 +33,7 @@ public final class GeoProtectedRouteRegistry {
             new ProtectedRoute("/api/subscriptions", "subscription"),
             new ProtectedRoute("/api/rewards/claim", "reward-claim"),
             new ProtectedRoute("/api/quests", "quest-reward-claim", Set.of("claim")),
-            new ProtectedRoute("/api/events", "event-reward", Set.of("claim", "spin")),
+            new ProtectedRoute("/api/events", "event-reward", Set.of("claim", "spin", "enter")),
             new ProtectedRoute("/api/points", "points-reward"),
             new ProtectedRoute("/api/earnings/milestones/evaluate", "earning-milestone-reward"),
             new ProtectedRoute("/api/vouchers", "voucher-reward-claim", Set.of("claim")),

@@ -260,6 +260,8 @@ public class PromotionOrderService {
     public void holdA2Refund(String operationId,String orderNo){
         Map<String,Object> ticket=refundTicket(operationId,orderNo);require("pending".equals(ticket.get("status")),"PROMOTION_REFUND_SOURCE_NOT_PENDING");
         if(db.reservations(orderNo,false).isEmpty())return;
+        // Serialize a new refund hold with H4/Genesis settlement eligibility checks.
+        db.order(orderNo,true);
         Map<String,Object> existing=db.one("SELECT * FROM nx_promotion_refund_hold WHERE source_type='A2_OPERATION' AND source_id=? FOR UPDATE",operationId);
         if(existing!=null){require(orderNo.equals(existing.get("order_no"))&&"HELD".equals(existing.get("status")),"PROMOTION_REFUND_HOLD_CONFLICT");return;}
         changed(db.write("INSERT INTO nx_promotion_refund_hold(refund_request_id,order_no,source_type,source_id,source_event_id,status,evidence_json,reason) VALUES(?,?,'A2_OPERATION',?,?,'HELD',?,?)",

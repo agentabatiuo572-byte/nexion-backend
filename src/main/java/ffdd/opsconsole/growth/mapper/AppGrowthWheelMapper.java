@@ -34,6 +34,7 @@ public interface AppGrowthWheelMapper {
                AND status=1 AND is_deleted=0
                AND (starts_at IS NULL OR starts_at<=UTC_TIMESTAMP())
                AND (ends_at IS NULL OR ends_at>UTC_TIMESTAMP())
+               AND NOT EXISTS (SELECT 1 FROM nx_growth_event_rule r WHERE r.event_code=quest_code AND r.enabled=0)
              LIMIT 1 FOR UPDATE
             """)
     WheelEvent lockOpenWheelEvent(@Param("eventCode") String eventCode);
@@ -45,9 +46,19 @@ public interface AppGrowthWheelMapper {
                AND status=1 AND is_deleted=0
                AND (starts_at IS NULL OR starts_at<=UTC_TIMESTAMP())
                AND (ends_at IS NULL OR ends_at>UTC_TIMESTAMP())
+               AND NOT EXISTS (SELECT 1 FROM nx_growth_event_rule r WHERE r.event_code=quest_code AND r.enabled=0)
              LIMIT 1
             """)
     WheelEvent findOpenWheelEvent(@Param("eventCode") String eventCode);
+
+    @Select("""
+            SELECT id eventId,quest_code eventCode
+              FROM nx_event_quest
+             WHERE quest_code=#{eventCode} AND LOWER(target_type)='wheel' AND is_deleted=0
+               AND (status=2 OR (ends_at IS NOT NULL AND ends_at<=UTC_TIMESTAMP()))
+             LIMIT 1
+            """)
+    WheelEvent findEndedWheelEvent(@Param("eventCode") String eventCode);
 
     @Select("""
             SELECT COUNT(1) FROM nx_growth_wheel_spin

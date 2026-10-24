@@ -119,7 +119,7 @@ public class PromotionNativeContractResolver {
         if(powerWatts(sku.get("power_text"))==null||text(sku.get("datacenter")).isBlank()||product.get("vram_total_gb")==null||number(product.get("vram_total_gb"))<=0)return "PRODUCT_RIGHTS_INCOMPLETE";
         return null;
     }
-    static java.math.BigDecimal powerWatts(Object value){
+    public static java.math.BigDecimal powerWatts(Object value){
         var power=java.util.regex.Pattern.compile(" *(([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})(\\.[0-9]{1,6})?)(?U:\\s)*(W((?U:\\s)+TDP)?)? *")
             .matcher(text(value).toUpperCase(Locale.ROOT));
         if(!power.matches())return null;

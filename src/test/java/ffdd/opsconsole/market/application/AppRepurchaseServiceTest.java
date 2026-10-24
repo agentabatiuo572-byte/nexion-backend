@@ -37,6 +37,26 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class AppRepurchaseServiceTest {
+    @Test
+    void newProductionBaseTicketUsesTheSameReceiptInTheUnifiedRaffleLedger() {
+        var raffle = mock(ffdd.opsconsole.growth.application.GenesisRaffleService.class);
+        var actual = new AppRepurchaseService(mapper, disclosureGate, config, growthRhythmFacade, idempotency,
+                outbox, audit, clock, environment, sandboxMapper, null, raffle);
+        when(mapper.lockActiveUser(7L)).thenReturn(7L);
+        when(mapper.lockProduct()).thenReturn(product());
+        when(mapper.lockWallet(7L)).thenReturn(new BigDecimal("500"));
+        when(mapper.debitWallet(eq(7L), any())).thenReturn(1);
+        when(mapper.insertPosition(any())).thenReturn(1);
+        when(mapper.insertLedger(any())).thenReturn(1);
+        when(mapper.insertTicket(any())).thenReturn(1);
+        when(mapper.attribution(7L)).thenReturn(new AppRepurchaseMapper.UserAttribution("P1", 3, "2026-W30"));
+        actual.open(7L, "unified-base-ticket", new AppRepurchaseService.OpenRequest(new BigDecimal("100")));
+        var ticket = org.mockito.ArgumentCaptor.forClass(AppRepurchaseMapper.TicketWrite.class);
+        verify(mapper).insertTicket(ticket.capture());
+        var row = ticket.getValue();
+        verify(raffle).grant(7L, "G7_BASE", row.ticketNo(), row.quantity().longValue(), row.positionNo());
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(strings={"OPEN","CLAIM","EARLY"})
     void realCommandsBindOneCashIntervalIncludingRepurchaseInterest(String phase) {

@@ -28,6 +28,7 @@ import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
+@lombok.extern.slf4j.Slf4j
 public class GrowthPublicStatsService {
     public static final String VALUES_KEY = "growth.public_stats.values";
     public static final String VERSION_KEY = "growth.public_stats.version";
@@ -85,8 +86,8 @@ public class GrowthPublicStatsService {
      * {@code verified} 里的每个数都来自真实表聚合,并自带口径与统计时刻;消费方必须优先读它,
      * 不得再拿配置值派生「已付 / 收入 / 在线」这类事实表述。
      *
-     * <p>运营手填的 {@code values} 只留在鉴权管理接口 {@code overview}。
-     * 公网接口不能把这些数值交给旧客户端当作实测规模、支付额或增长率使用。
+     * <p>完整运营参数仍只留在管理接口。networkPulse 是独立的首页展示投影，
+     * 复用 H9 用户增长配置与 HomeDisplay 在线批次，不改变 verified 或个人排名。
      */
     public ApiResult<Map<String, Object>> publicProjection() {
         String runtimeError = runtimeError();
@@ -110,7 +111,32 @@ public class GrowthPublicStatsService {
         // 也让「本次投影的所有数字来自同一次读取」这个不变量成立。
         projection.put("verified", verifiedAggregates(scope, result.getData().get("realUserCount")));
         projection.put("realUserCount", result.getData().get("realUserCount"));
+        projection.put("networkPulse", networkPulse(scope, result.getData()));
         return ApiResult.ok(projection);
+    }
+
+    private Map<String, Object> networkPulse(RuntimeScope scope, Map<String, Object> overview) {
+        Map<String, Object> pulse = new LinkedHashMap<>();
+        Map<?, ?> values = (Map<?, ?>) overview.get("values");
+        double months = Math.max(0, (clock.millis() - longValue(values.get("registeredUsersAnchorAt")))
+                / (30d * 24 * 3_600_000));
+        double registered = longValue(values.get("registeredUsersBase")) * Math.pow(
+                1 + decimalValue(values.get("registeredUsersMonthlyGrowthPct")).doubleValue() / 100, months);
+        pulse.put("registeredUsers", Double.isFinite(registered) && registered <= 9_007_199_254_740_991d
+                ? (long) Math.floor(registered) : null);
+        pulse.put("onlineDevices", null);
+        if (!scope.sandbox() && homeDisplay.isPresent()) {
+            try {
+                Map<String, Object> batch = homeDisplay.get().current();
+                long[] online = (long[]) batch.get("online");
+                int index = (int) Math.min(online.length - 1,
+                        Math.max(0L, (longValue(batch.get("serverNow")) - longValue(batch.get("startAt"))) / 1000));
+                pulse.put("onlineDevices", online[index]);
+            } catch (RuntimeException ex) {
+                log.warn("Home display snapshot unavailable for network pulse", ex);
+            }
+        }
+        return pulse;
     }
 
     /**

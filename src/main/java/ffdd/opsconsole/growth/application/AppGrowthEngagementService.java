@@ -104,6 +104,10 @@ public class AppGrowthEngagementService {
     private final Optional<AppGrowthVoucherSandboxService> voucherSandboxService;
     private final Environment environment;
     private final Clock clock;
+    private H4EventEngine eventEngine;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setEventEngine(H4EventEngine eventEngine) { this.eventEngine = eventEngine; }
 
     /** Backward-compatible local construction; production Spring injection uses the business-zone clock. */
     public AppGrowthEngagementService(
@@ -314,6 +318,7 @@ public class AppGrowthEngagementService {
         requireCanonicalEngagementRuntime();
         requireReadableUser(userId);
         List<Map<String, Object>> events = safeList(mapper.eventState(userId, contentLocale(locale)));
+        if (eventEngine != null) events = eventEngine.project(userId, events, contentLocale(locale));
         long featuredOngoing = events.stream()
                 .filter(row -> Boolean.TRUE.equals(row.get("featured"))
                         || row.get("featured") instanceof Number number && number.intValue() == 1)
@@ -716,6 +721,8 @@ public class AppGrowthEngagementService {
         requireCanonicalEngagementRuntime();
         requireUser(userId);
         String code = reference(eventCode, "EVENT_CODE_REQUIRED");
+        if (eventEngine != null && eventEngine.managed(code)) return executeOnce("EVENT_JOIN", userId, idempotencyKey, code,
+                () -> eventEngine.join(userId, code));
         return executeOnce("EVENT_JOIN", userId, idempotencyKey, code, () -> {
             EventReward event = mapper.lockOpenEvent(code);
             if (event == null) return ApiResult.fail(409, "EVENT_NOT_OPEN");
@@ -732,6 +739,7 @@ public class AppGrowthEngagementService {
         requireCanonicalEngagementRuntime();
         requireUser(userId);
         String code = reference(eventCode, "EVENT_CODE_REQUIRED");
+        if (eventEngine != null && eventEngine.managed(code)) return eventEngine.claim(userId, code, idempotencyKey);
         return executeOnce("EVENT_CLAIM", userId, idempotencyKey, code, () -> {
             EventReward reward = mapper.lockClaimableEvent(userId, code);
             if (reward == null) return ApiResult.fail(409, "EVENT_NOT_CLAIMABLE");
@@ -780,6 +788,7 @@ public class AppGrowthEngagementService {
                     .setScale(0, RoundingMode.DOWN).intValueExact();
             int streakBonus = streak % 7 == 0 ? positiveInt(mapper.checkInRule("bonus7"), 5) : 0;
             int reward = Math.addExact(luckyReward, streakBonus);
+            if (eventEngine != null) reward = eventEngine.checkInReward(userId, today, reward);
             if (mapper.insertCheckIn(userId, missionId, today, base, multiplier,
                     luckyReward - base, streakBonus, reward) != 1) {
                 throw conflict("DAILY_CHECK_IN_CONFLICT");

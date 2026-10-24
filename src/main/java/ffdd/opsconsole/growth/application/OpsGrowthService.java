@@ -64,6 +64,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
 public class OpsGrowthService implements AuditReplayable {
+    private H4EventRuleService h4EventRules;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setH4EventRules(H4EventRuleService h4EventRules) { this.h4EventRules = h4EventRules; }
     private final WeeklyQuestSnapshotService weeklySnapshots;
     private final WeeklyRegionPolicyService weeklyRegionPolicies;
 
@@ -995,7 +998,7 @@ public class OpsGrowthService implements AuditReplayable {
                     .anyMatch(row -> "wheel".equalsIgnoreCase(String.valueOf(row.get("kind"))))) {
                 return validation("EVENT_WHEEL_SINGLETON");
             }
-            String state = normalizeEventState(request.state());
+            String state = h4EventRules == null ? normalizeEventState(request.state()) : "upcoming";
             String reward = wheelEvent
                     ? "Wheel pool award"
                     : normalizePlainText(StringUtils.hasText(request.reward()) ? request.reward() : "0 NEX", 128);
@@ -1004,7 +1007,7 @@ public class OpsGrowthService implements AuditReplayable {
             if (!wheelEvent && rewardAmount.signum() <= 0) {
                 return validation("EVENT_REWARD_INVALID");
             }
-            boolean featured = Boolean.TRUE.equals(request.featured());
+            boolean featured = h4EventRules == null && Boolean.TRUE.equals(request.featured());
             if (featured && !"ongoing".equals(state)) {
                 return validation("EVENT_FEATURED_REQUIRES_ONGOING");
             }
@@ -1060,6 +1063,7 @@ public class OpsGrowthService implements AuditReplayable {
                     sortOrder,
                     eventStatusCode(state),
                     LocalDateTime.now());
+            if(h4EventRules != null)h4EventRules.registerDraft(id,kind);
             audit("H4_EVENT_CREATED", "GROWTH_EVENT", id, request.operator(), row(
                     "eventId", id,
                     "name", name,
@@ -2236,6 +2240,7 @@ public class OpsGrowthService implements AuditReplayable {
                 && coverageBelowRedline()) {
             return coverageRedline();
         }
+        if (!"ongoing".equals(status) && h4EventRules != null) h4EventRules.stop(id);
         if (!updateBusinessEventStatus(id, status)) {
             return validation("QUEST_EVENT_BUSINESS_TABLE_UPDATE_FAILED");
         }
