@@ -121,7 +121,8 @@ public interface AppGrowthWheelMapper {
             SELECT spin_no spinId,spin_date spinDate,source_type sourceType,
                    tier_id tierId,tier_name tierName,UPPER(reward_kind) rewardType,
                    reward_amount rewardAmount,tier_name rewardName,
-                   downgraded,downgrade_reason downgradeReason,created_at awardedAt
+                    downgraded,downgrade_reason downgradeReason,
+                    DATE_FORMAT(created_at,'%Y-%m-%dT%H:%i:%s+08:00') awardedAt
               FROM nx_growth_wheel_spin
              WHERE user_id=#{userId} AND event_code=#{eventCode} AND is_deleted=0
              ORDER BY created_at DESC,id DESC

@@ -14,13 +14,18 @@ import ffdd.opsconsole.growth.mapper.AppGrowthWheelMapper.WheelEvent;
 import ffdd.opsconsole.growth.mapper.AppGrowthWheelMapper.WheelTier;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 
 class AppGrowthWheelStateServiceTest {
     private final AppGrowthWheelMapper mapper = mock(AppGrowthWheelMapper.class);
@@ -55,5 +60,32 @@ class AppGrowthWheelStateServiceTest {
         Map<?, ?> segment = (Map<?, ?>) ((List<?>) result.getData().get("segments")).get(0);
         assertThat(segment.keySet().contains("probabilityPct")).isFalse();
         verify(mapper, never()).lockGuardValue("budget");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "2026-10-25T07:59:59+08:00,2026-10-24T23:59:59Z",
+            "2026-10-25T08:00:00+08:00,2026-10-25T00:00:00Z",
+            "2026-10-25T13:43:02+08:00,2026-10-25T05:43:02Z"
+    })
+    void historyPreservesItsExplicitOffsetThroughTheConfiguredJsonBoundary(String awardedAt, String utc) throws Exception {
+        when(mapper.findActiveUser(42L)).thenReturn(42L);
+        when(mapper.findOpenWheelEvent("evt-spring-spin"))
+                .thenReturn(new WheelEvent(8L, "evt-spring-spin"));
+        when(mapper.listWheelHistory(42L, "evt-spring-spin", 20)).thenReturn(List.of(
+                Map.of("spinId", "SPIN-1", "spinDate", utc.substring(0, 10), "sourceType", "DAILY",
+                        "tierId", 1L, "rewardType", "NEX", "rewardAmount", new BigDecimal("30"),
+                        "rewardName", "nex-30", "downgraded", false, "downgradeReason", "NONE",
+                        "awardedAt", awardedAt)));
+
+        var result = service.state(42L, "evt-spring-spin");
+        var builder = new Jackson2ObjectMapperBuilder();
+        new DateTimeFormatConfig().nexionDateTimeJacksonCustomizer().customize(builder);
+        var json = builder.build();
+        var history = json.readTree(json.writeValueAsString(result)).path("data").path("history").get(0);
+
+        assertThat(history.path("awardedAt").asText()).isEqualTo(awardedAt);
+        assertThat(OffsetDateTime.parse(history.path("awardedAt").asText()).toInstant().toString()).isEqualTo(utc);
+        assertThat(history.path("spinDate").asText()).isEqualTo(utc.substring(0, 10));
     }
 }

@@ -36,4 +36,12 @@ class AppGrowthWheelMapperSqlContractTest {
             assertThat(sql).contains("coalesce(sandbox,0)=0");
         }
     }
+
+    @Test
+    void historyMakesTheApplicationSessionDatetimeOffsetExplicit() throws Exception {
+        Method method = AppGrowthWheelMapper.class.getMethod("listWheelHistory", Long.class, String.class, int.class);
+        String sql = String.join(" ", method.getAnnotation(Select.class).value()).replaceAll("\\s+", " ");
+        assertThat(sql).contains("DATE_FORMAT(created_at,'%Y-%m-%dT%H:%i:%s+08:00') awardedAt")
+                .doesNotContain("created_at awardedAt", "@@session.time_zone");
+    }
 }
