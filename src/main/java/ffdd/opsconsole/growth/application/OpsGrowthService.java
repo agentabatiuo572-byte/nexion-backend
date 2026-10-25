@@ -4532,10 +4532,13 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private List<String> normalizeClaimSurfaces(List<String> raw) {
-        List<String> surfaces = normalizeStringList(raw, 8, 20);
         if (raw == null) {
             return List.of("home", "store");
         }
+        if (raw.stream().anyMatch(surface -> !StringUtils.hasText(surface))) {
+            throw new IllegalArgumentException("VOUCHER_SURFACE_INVALID");
+        }
+        List<String> surfaces = normalizeStringList(raw, 8, 20);
         Set<String> allowed = Set.of("home", "store", "me", "earn");
         for (String surface : surfaces) {
             if (!allowed.contains(surface)) {

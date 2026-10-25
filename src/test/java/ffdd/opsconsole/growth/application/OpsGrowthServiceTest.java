@@ -2489,10 +2489,13 @@ class OpsGrowthServiceTest {
                     .isEqualTo(expected);
             assertThat(writtenSurfaces).containsExactly(json.writeValueAsString(expected), json.writeValueAsString(expected));
 
-            GrowthVoucherRequest invalid = json.readValue(body + ",\"claimSurfaces\":[\"invalid\"]}", GrowthVoucherRequest.class);
-            assertThat(h7.createVoucher("idem-invalid-create", invalid).getMessage()).contains("VOUCHER_SURFACE_INVALID");
-            assertThat(h7.updateVoucher("idem-invalid-update", "vc-surfaces", invalid).getMessage()).contains("VOUCHER_SURFACE_INVALID");
-            assertThat(writtenSurfaces).hasSize(2);
+            for (String invalidSurfaces : List.of("[\"invalid\"]", "[null]", "[\"\"]", "[\"  \"]",
+                    "[\"home\",null]", "[\"\",\"store\"]", "[\"me\",\"  \"]")) {
+                GrowthVoucherRequest invalid = json.readValue(body + ",\"claimSurfaces\":" + invalidSurfaces + "}", GrowthVoucherRequest.class);
+                assertThat(h7.createVoucher("idem-invalid-create", invalid).getMessage()).as(invalidSurfaces).contains("VOUCHER_SURFACE_INVALID");
+                assertThat(h7.updateVoucher("idem-invalid-update", "vc-surfaces", invalid).getMessage()).as(invalidSurfaces).contains("VOUCHER_SURFACE_INVALID");
+                assertThat(writtenSurfaces).hasSize(2);
+            }
         }
     }
 
