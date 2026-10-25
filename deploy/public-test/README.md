@@ -116,6 +116,28 @@ Failure receipts are in `migrations/active.json` and `component-failures.json` u
 `/srv/nexgrid/cd`; the normal release state is the last successful version, not a
 claim that a held backend is currently running.
 
+### H4 wheel payout mutex forward repair
+
+`20261025_h4_wheel_payout_mutex.sql` restores only the fixed `H4_WHEEL_PAYOUT`
+row with `INSERT IGNORE`. The mutex table must already exist; the local startup
+sequence places this repair after its G2 mutex-table prerequisite. Existing rows,
+wheel tiers, cash guard values and user spin/reward records are unchanged.
+
+Do not replay `20260722_h_engagement_execution.sql` to recover this row: that
+historical file also rewrites the prize pool and seeds missing cash guards with
+`kill=on`. Its recorded checksum remains unchanged. Both baselined and previously
+applied histories discover the new forward filename through the normal catalog.
+
+After publishing the repair to backend `test` and obtaining a SUCCESS build of
+the current SHA, the host's existing broker poll applies it, or the main Agent
+can use `sudo /usr/bin/python3 -I /srv/jenkins/release/trusted_entry.py broker deploy backend BUILD_NUMBER`.
+Pending SQL requires forward deploy; `rollback-check` refuses pending migrations.
+There is no supported CLI to replay one statement from a recorded historical file.
+Verify the new filename is `APPLIED` in `/srv/nexgrid/cd/migrations/state.json`,
+then read `SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key='H4_WHEEL_PAYOUT';`
+and retry the real App spin, checking its reward receipt. Migration success alone
+does not prove reward delivery.
+
 On a partial/uncertain SQL failure, inspect private SQL stderr, completed hashes,
 actual schema and server sessions before recovery. MySQL DDL is not transactional:
 decide explicitly whether to repair forward or restore a verified full backup;
