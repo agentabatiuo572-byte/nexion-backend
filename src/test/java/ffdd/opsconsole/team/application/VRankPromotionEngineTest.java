@@ -68,7 +68,7 @@ class VRankPromotionEngineTest {
         voucherGrantFacade = mock(VoucherGrantFacade.class);
         when(voucherGrantFacade.grant(any())).thenAnswer(invocation -> {
             VoucherGrantCommand command = invocation.getArgument(0);
-            return new VoucherGrantResult("VGR-" + command.userId() + "-" + command.voucherId(), false);
+            return new VoucherGrantResult("VGR-" + command.userId() + "-" + command.voucherId(), false, "AVAILABLE");
         });
         seedVRankConfigRows();
         rewardDispatcher = new VRankRewardDispatcher(

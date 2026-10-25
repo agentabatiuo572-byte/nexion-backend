@@ -72,7 +72,8 @@ public class GrowthVoucherGrantFacadeAdapter implements VoucherGrantFacade {
         if (inserted == 0) {
             Map<String, Object> existing = mapper.findByGrantKey(request.grantKey());
             if (sameGrant(existing, request)) {
-                return new VoucherGrantResult(String.valueOf(existing.get("grantId")), true);
+                return new VoucherGrantResult(String.valueOf(existing.get("grantId")), true,
+                        String.valueOf(existing.get("status")));
             }
             throw new BizException(409, "H7_VOUCHER_GRANT_IDEMPOTENCY_CONFLICT");
         }
@@ -98,7 +99,7 @@ public class GrowthVoucherGrantFacadeAdapter implements VoucherGrantFacade {
                 .detail(detail)
                 .build());
         outboxService.publish("VOUCHER_GRANT", grantId, "H7_VOUCHER_GRANTED", detail);
-        return new VoucherGrantResult(grantId, false);
+        return new VoucherGrantResult(grantId, false, "AVAILABLE");
     }
 
     private ValidGrant validate(VoucherGrantCommand command) {
@@ -153,7 +154,8 @@ public class GrowthVoucherGrantFacadeAdapter implements VoucherGrantFacade {
             return null;
         }
         if (sameGrant(existing, request)) {
-            return new VoucherGrantResult(String.valueOf(existing.get("grantId")), true);
+            return new VoucherGrantResult(String.valueOf(existing.get("grantId")), true,
+                    String.valueOf(existing.get("status")));
         }
         throw new BizException(409, "H7_VOUCHER_GRANT_IDEMPOTENCY_CONFLICT");
     }

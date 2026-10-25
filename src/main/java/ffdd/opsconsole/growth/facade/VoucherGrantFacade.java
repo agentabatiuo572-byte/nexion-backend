@@ -15,6 +15,6 @@ public interface VoucherGrantFacade {
             String reason) {
     }
 
-    record VoucherGrantResult(String grantId, boolean replayed) {
+    record VoucherGrantResult(String grantId, boolean replayed, String status) {
     }
 }

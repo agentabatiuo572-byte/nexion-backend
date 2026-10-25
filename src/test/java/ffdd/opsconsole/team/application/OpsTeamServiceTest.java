@@ -62,7 +62,7 @@ class OpsTeamServiceTest {
     private final ffdd.opsconsole.shared.security.AdminPermissionCache permissionCache = mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class);
     private final AdminIdempotencyService idempotencyService = passThroughIdempotency();
     private final VoucherGrantFacade voucherGrantFacade = command ->
-            new VoucherGrantFacade.VoucherGrantResult("VGR-TEST-" + command.userId(), false);
+            new VoucherGrantFacade.VoucherGrantResult("VGR-TEST-" + command.userId(), false, "AVAILABLE");
     // Sprint5:F1 V-Rank 引擎 + 派发器(由 service 的 evaluate/override 端点驱动)
     private final VRankRewardDispatcher vRankRewardDispatcher = new VRankRewardDispatcher(
             commissionRepository,
