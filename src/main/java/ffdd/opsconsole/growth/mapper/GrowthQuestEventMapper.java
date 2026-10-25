@@ -1336,6 +1336,16 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_event_quest
+               SET reward_name = #{rewardName}, updated_at = #{now}
+             WHERE quest_code = #{eventId} AND is_deleted = 0
+            """)
+    int updateRewardName(
+            @Param("eventId") String eventId,
+            @Param("rewardName") String rewardName,
+            @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_event_quest
                SET status = #{status},
                    badge_achievement_code = CASE
                      WHEN #{status} <> 1 AND badge_achievement_code = 'FEATURED' THEN NULL
