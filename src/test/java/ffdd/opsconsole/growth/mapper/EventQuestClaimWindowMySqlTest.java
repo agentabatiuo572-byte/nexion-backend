@@ -146,6 +146,34 @@ class EventQuestClaimWindowMySqlTest {
 
     @Test
     @EnabledIfEnvironmentVariable(named = "NEXION_EVENT_CLAIM_IT", matches = "true")
+    void wheelParticipationRequiresAnExactLiveReceiptAndSurvivesANewUtcDay() throws Exception {
+        inSchema((jdbc, mapper, session) -> {
+            clock(jdbc, session, "2026-09-06 16:30:00");
+            jdbc.update("UPDATE nx_event_quest SET target_type='wheel'");
+            jdbc.update("INSERT INTO nx_growth_wheel_spin(user_id,event_id,event_code,spin_date,is_deleted) VALUES"
+                    + "(7,1,'event-1','2026-09-05',0),(99,2,'event-1','2026-09-05',0),"
+                    + "(99,1,'other-event','2026-09-05',0),(99,1,'event-1','2026-09-05',1)");
+            session.clearCache();
+            var untouched = mapper.eventState(99L, "en").get(0);
+            assertThat(untouched.get("userStatus")).isEqualTo("AVAILABLE");
+            assertThat(((Number) untouched.get("progressValue")).intValue()).isZero();
+
+            jdbc.update("INSERT INTO nx_growth_wheel_spin(user_id,event_id,event_code,spin_date,is_deleted)"
+                    + " VALUES(99,1,'event-1','2026-09-05',0)");
+            session.clearCache();
+            var participated = mapper.eventState(99L, "en").get(0);
+            assertThat(participated.get("userStatus")).isEqualTo("JOINED");
+            assertThat(((Number) participated.get("progressValue")).intValue()).isEqualTo(1);
+            assertThat(((Number) participated.get("targetValue")).intValue()).isEqualTo(1);
+            assertThat(((Number) participated.get("trackable")).intValue()).isZero();
+            assertThat(mapper.lockClaimableEvent(99L, "event-1")).isNull();
+            assertThat(mapper.claimEvent(99L, "event-1")).isZero();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_event_quest WHERE user_id=99", Integer.class)).isZero();
+        });
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "NEXION_EVENT_CLAIM_IT", matches = "true")
     void finalClaimRechecksTrackabilityEvenAfterAnEarlierEligibleRead() throws Exception {
         inSchema((jdbc, mapper, session) -> {
             clock(jdbc, session, "2026-09-06 16:30:00");
@@ -197,6 +225,8 @@ class EventQuestClaimWindowMySqlTest {
                     + "quest_name VARCHAR(64) DEFAULT 'Campaign',description TEXT,reward_name VARCHAR(64),"
                     + "geo_scope VARCHAR(32),cta_href VARCHAR(64),updated_at DATETIME,sort_order INT DEFAULT 0) ENGINE=InnoDB");
             jdbc.execute("CREATE TABLE nx_config_item(config_key VARCHAR(128),config_value TEXT,status INT,is_deleted INT) ENGINE=InnoDB");
+            jdbc.execute("CREATE TABLE nx_growth_wheel_spin(id BIGINT AUTO_INCREMENT PRIMARY KEY,user_id BIGINT,"
+                    + "event_id BIGINT,event_code VARCHAR(64),spin_date DATE,is_deleted INT) ENGINE=InnoDB");
             jdbc.execute("CREATE TABLE nx_user_event_quest(id BIGINT AUTO_INCREMENT PRIMARY KEY,user_id BIGINT,quest_id BIGINT,"
                     + "quest_code VARCHAR(64),progress_value INT,claim_status VARCHAR(32),reward_type VARCHAR(16),"
                     + "reward_amount DECIMAL(20,6),is_deleted INT,claimed_at DATETIME,created_at DATETIME,updated_at DATETIME,"

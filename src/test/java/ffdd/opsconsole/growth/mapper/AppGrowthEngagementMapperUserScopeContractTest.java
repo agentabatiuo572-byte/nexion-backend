@@ -3,11 +3,47 @@ package ffdd.opsconsole.growth.mapper;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.lang.reflect.Method;
+import java.util.Map;
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+import org.apache.ibatis.session.Configuration;
 import org.junit.jupiter.api.Test;
 
 class AppGrowthEngagementMapperUserScopeContractTest {
+
+    @Test
+    void wheelReceiptProjectionParsesWithBoundUserAndLocaleParameters() throws Exception {
+        Configuration configuration = new Configuration();
+        configuration.addMapper(AppGrowthEngagementMapper.class);
+        var bound = configuration.getMappedStatement(AppGrowthEngagementMapper.class.getName() + ".eventState")
+                .getBoundSql(Map.of("userId", 60723153007L, "locale", "zh"));
+
+        assertThat(CCJSqlParserUtil.parse(bound.getSql())).isNotNull();
+        assertThat(bound.getParameterMappings()).extracting(mapping -> mapping.getProperty())
+                .containsExactly("locale", "locale", "locale", "userId", "userId", "userId");
+        assertThat(bound.getSql()).doesNotContain("60723153007");
+    }
+
+    @Test
+    void wheelParticipationUsesTheCurrentUserAndExactEventReceiptWithoutADailyReset() throws Exception {
+        String sql = String.join(" ", AppGrowthEngagementMapper.class
+                .getMethod("eventState", Long.class, String.class).getAnnotation(Select.class).value())
+                .replaceAll("\\s+", " ").toLowerCase();
+        String receiptScope = "select 1 from nx_growth_wheel_spin s where s.user_id=#{userid} "
+                + "and s.event_id=q.id and s.event_code=q.quest_code and s.is_deleted=0";
+
+        assertThat(sql.split(java.util.regex.Pattern.quote(receiptScope), -1)).hasSize(3);
+        assertThat(sql).contains("case when lower(q.target_type)='wheel' then 1 else q.target_value end targetvalue")
+                .contains("when u.id is not null or (lower(q.target_type)='wheel' and exists (")
+                .contains("lower(q.target_type)<>'wheel'")
+                .doesNotContain("spin_date", "insert ", "update ");
+        int claimed = sql.indexOf("then 'claimed'");
+        int claimable = sql.indexOf("then 'claimable'");
+        int joined = sql.indexOf("then 'joined'");
+        assertThat(claimed).isNotNegative().isLessThan(claimable);
+        assertThat(claimable).isLessThan(joined);
+    }
 
     @Test
     void wheelUsesTheSameExclusiveDeadlineAsEventClaims() throws Exception {
