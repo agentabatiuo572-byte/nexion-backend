@@ -62,7 +62,7 @@ public class H4EventEngine {
     private Map<String,Object> project(Long id,Map<String,Object> source,Map<String,Object> rule,String locale){
         var row=new LinkedHashMap<>(source);String code=text(rule.get("event_code")),phase=phase(rule);
         row.put("state",Set.of("ENDED","DISABLED").contains(phase)?"ended":"IN_PROGRESS".equals(phase)?"ongoing":"upcoming");
-        var r=policies.rules(rule);var progress=progress(id,rule,r);
+        var r=policies.rules(rule);var progress=progress(id,rule,r,source);
         row.put("progressValue",progress.getOrDefault("current",0));row.put("targetValue",progress.getOrDefault("target",1));
         boolean trackable=Set.of("referral","onboarding","regional").contains(text(rule.get("kind")))||"evt-reinvest-bonus".equals(code);
         row.put("trackable",trackable);
@@ -81,7 +81,7 @@ public class H4EventEngine {
         if(source==null)throw new BizException(404,"EVENT_NOT_FOUND");
         if(rule==null)return ApiResult.ok(values("event",source,"rules",Map.of(),"enabled",true,"eligible",false,"eligibilityReason","IN_PROGRESS",
                 "progressValue",source.get("progressValue"),"targetValue",source.get("targetValue"),"rewards",List.of(),"results",List.of(),"userStatus",source.get("userStatus")));
-        var r=policies.rules(rule);var progress=progress(id,rule,r);var event=project(id,source,rule,locale);
+        var r=policies.rules(rule);var progress=progress(id,rule,r,source);var event=project(id,source,rule,locale);
         String phase=phase(rule),status=text(event.get("userStatus"));
         String reason="CLAIMED".equals(status)?"CLAIMED":!"IN_PROGRESS".equals(phase)?phase:Boolean.TRUE.equals(progress.get("eligible"))?"READY":"IN_PROGRESS";
         Map<String,Object> publicRules=new LinkedHashMap<>(r);
@@ -118,6 +118,10 @@ public class H4EventEngine {
             ""","H4-REMINDER:"+code,id,text(event.get("title")),text(event.get("subtitle")),
                 "zh".equals(locale)?"查看活动":"vi".equals(locale)?"Xem hoạt động":"View activity","/pages/events/detail?id="+code);
         db.write("UPDATE nx_growth_event_reminder SET notified_at=UTC_TIMESTAMP(6) WHERE event_code=? AND user_id=?",code,id);
+    }
+    private Map<String,Object> progress(Long id,Map<String,Object> rule,Map<String,Object> r,Map<String,Object> source){
+        if("wheel".equals(rule.get("kind")))return values("current",number(source.get("progressValue")).signum()>0?1:0,"target",1,"eligible",false);
+        return progress(id,rule,r);
     }
     private Map<String,Object> progress(Long id,Map<String,Object> rule,Map<String,Object> r){
         String code=text(rule.get("event_code"));

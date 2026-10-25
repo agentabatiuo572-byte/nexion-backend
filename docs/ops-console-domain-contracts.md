@@ -351,6 +351,7 @@ H1 使用 8-dial，移除已下线订阅和旧锁仓 gate。D5/F3/G/H3/E1 等只
 
 - H 域奖励如果增加 NEX/USDT 流出，必须核 B1。
 - Lucky Spin 由 server RNG，前端不得传中奖结果。
+- 活动列表和详情以当前用户、同一活动 `event_id + event_code` 的未删除真实转盘记录投影 `JOINED` 与已抽进度 `1/1`，没有记录为 `0/1`；参与历史不按当天次数日桶清零。保留原已领取/可领取状态优先级，转盘仍不提供活动任务领取，不新增虚假参与记录，也不重发奖励。
 - `GET /api/events/{eventCode}/spin/state` 的 `history.awardedAt` 返回带 `+08:00` 的 ISO 日期时间，显式标明应用连接写入 `created_at` 的业务时区；客户端按该时刻转换为 UTC 展示，不能截取本地时分或依赖手机时区。`spinDate` 仍为 UTC 次数日桶，历史数据不重写。
 - Trial 领取必须拒重领，状态由 server 推进。
 

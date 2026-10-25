@@ -424,15 +424,26 @@ public interface AppGrowthEngagementMapper {
                    q.reward_amount rewardAmount,
                    CASE WHEN q.badge_achievement_code='FEATURED' THEN 1 ELSE 0 END featured,
                    CASE WHEN LOWER(q.target_type)<>'wheel' AND q.target_value>0 THEN 1 ELSE 0 END trackable,
-                   q.target_value targetValue,
-                   COALESCE(u.progress_value,0) progressValue,
+                   CASE WHEN LOWER(q.target_type)='wheel' THEN 1 ELSE q.target_value END targetValue,
+                   CASE WHEN LOWER(q.target_type)='wheel' THEN
+                     CASE WHEN EXISTS (
+                       SELECT 1 FROM nx_growth_wheel_spin s
+                        WHERE s.user_id=#{userId} AND s.event_id=q.id
+                          AND s.event_code=q.quest_code AND s.is_deleted=0
+                     ) THEN 1 ELSE 0 END
+                     ELSE COALESCE(u.progress_value,0)
+                   END progressValue,
                    CASE
                      WHEN UPPER(COALESCE(u.claim_status,''))='CLAIMED' THEN 'CLAIMED'
                      WHEN u.id IS NOT NULL AND q.target_value>0 AND LOWER(q.target_type)<>'wheel' AND
                           (u.progress_value>=q.target_value
                            OR UPPER(COALESCE(u.claim_status,'')) IN ('COMPLETED','CLAIMABLE'))
                        THEN 'CLAIMABLE'
-                     WHEN u.id IS NOT NULL THEN 'JOINED'
+                     WHEN u.id IS NOT NULL OR (LOWER(q.target_type)='wheel' AND EXISTS (
+                       SELECT 1 FROM nx_growth_wheel_spin s
+                        WHERE s.user_id=#{userId} AND s.event_id=q.id
+                          AND s.event_code=q.quest_code AND s.is_deleted=0
+                     )) THEN 'JOINED'
                      ELSE 'AVAILABLE'
                    END userStatus,
                    q.geo_scope geo,
