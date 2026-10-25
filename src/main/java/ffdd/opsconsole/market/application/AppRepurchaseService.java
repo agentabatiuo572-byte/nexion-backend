@@ -341,7 +341,8 @@ public class AppRepurchaseService {
                 "effectiveNurtureMultiplier", decimal(p.rewardMultiplier()).multiply(phaseReinvestMultiplier()).stripTrailingZeros(),
                 "ticketPerOrder", Math.max(0, p.ticketPerOrder() == null ? 0 : p.ticketPerOrder()),
                 "presets", presets(p.presetAmounts()), "earlyPenaltyPct", pct(p.earlyPenaltyBps()),
-                "minAmountUsdt", money(p.minAmount()), "enabled", "ACTIVE".equals(p.status()) && globalGateEnabled(),
+                "minAmountUsdt", money(p.minAmount()), "enabled", "ACTIVE".equals(p.status()) && globalGateEnabled()
+                        && config.activeValue(STAKING_VISIBILITY_KEY).map(value->"true".equalsIgnoreCase(value.trim())).orElse(false),
                 "disclosureRequired", disclosureRequired(),
                 "currentNexPriceUsdt", currentNexPrice(),
                 "g4LotteryCapacity", configLong(G4_CAPACITY_KEY, 100_000L, 0, 100_000_000L),

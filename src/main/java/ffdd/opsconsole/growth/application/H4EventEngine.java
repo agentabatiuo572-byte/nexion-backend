@@ -30,7 +30,10 @@ public class H4EventEngine {
     private final ffdd.opsconsole.shared.audit.AuditLogService audit;
 
     public boolean managed(String code){return policies.find(code,false)!=null;}
-    public boolean enabled(String code){var row=policies.find(code,false);return row==null||number(row.get("enabled")).intValue()==1;}
+    public boolean enabled(String code){var row=policies.find(code,false);return row==null||number(row.get("enabled")).intValue()==1&&newParticipationOpen(row,false);}
+    private boolean newParticipationOpen(Map<String,Object> rule,boolean lock){
+        return !"evt-reinvest-bonus".equals(rule.get("event_code"))||commerce.reinvestParticipationOpen(lock);
+    }
     private Map<String,Object> user(Long id,boolean lock){
         var user=db.row("SELECT *,TIMESTAMPDIFF(SECOND,created_at,NOW()) account_age_seconds FROM nx_user WHERE id=? AND status='ACTIVE' AND sandbox=0 AND is_deleted=0"+(lock?" FOR UPDATE":""),id);
         if(user==null)throw new BizException(403,"USER_NOT_FOUND_OR_INACTIVE");return user;
@@ -71,6 +74,7 @@ public class H4EventEngine {
         boolean observed="holding".equals(rule.get("kind"))&&db.row("SELECT 1 FROM nx_growth_event_holding WHERE event_code=? AND user_id=?",code,id)!=null;
         Object previousStatus="CLAIMABLE".equals(source.get("userStatus"))?"JOINED":source.get("userStatus");
         row.put("userStatus",claimed?"CLAIMED":trackable&&Boolean.TRUE.equals(progress.get("eligible"))?"CLAIMABLE":observed?"JOINED":previousStatus);
+        if(!newParticipationOpen(rule,false)){row.put("state","ended");row.put("href","");}
         row.put("startsAt",date(rule.get("starts_at"))==null?null:date(rule.get("starts_at")).toInstant(ZoneOffset.UTC).toString());
         row.put("endsAt",date(rule.get("ends_at"))==null?null:date(rule.get("ends_at")).toInstant(ZoneOffset.UTC).toString());
         return row;
@@ -86,10 +90,12 @@ public class H4EventEngine {
         String reason="CLAIMED".equals(status)?"CLAIMED":!"IN_PROGRESS".equals(phase)?phase:Boolean.TRUE.equals(progress.get("eligible"))?"READY":"IN_PROGRESS";
         Map<String,Object> publicRules=new LinkedHashMap<>(r);
         List.of("budgetNex","poolUsdt","deviceBudget","ticketBudget").forEach(k->{if(!"poolUsdt".equals(k))publicRules.remove(k);});
-        boolean canParticipate="IN_PROGRESS".equals(phase);
+        boolean participationOpen=newParticipationOpen(rule,false);
+        boolean canParticipate="IN_PROGRESS".equals(phase)&&participationOpen;
         if("onboarding".equals(rule.get("kind")))canParticipate=canParticipate&&number(user(id,false).get("account_age_seconds")).longValue()<number(r.get("windowDays")).longValue()*86400;
         if("regional".equals(rule.get("kind")))canParticipate=canParticipate&&regionFor(user(id,false),r)!=null;
         if("IN_PROGRESS".equals(phase)&&!canParticipate)reason="NOT_ELIGIBLE";
+        if(!participationOpen)reason="DISABLED";
         if("CLAIMABLE".equals(status)){canParticipate=true;reason="READY";}
         return ApiResult.ok(values("event",event,"rules",publicRules,"enabled",enabled(code),"eligible",canParticipate,"eligibilityReason",reason,
                 "progressValue",progress.getOrDefault("current",0),"targetValue",progress.getOrDefault("target",1),"rewards",rewards(r),
@@ -99,6 +105,7 @@ public class H4EventEngine {
     }
     @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> remind(Long id,String code){
+        if("evt-reinvest-bonus".equals(code)&&!commerce.reinvestParticipationOpen(true))throw new BizException(409,"EVENT_REMINDER_NOT_AVAILABLE");
         user(id,true);var rule=policies.find(code,true);
         if(rule==null||!"NOT_STARTED".equals(phase(rule)))throw new BizException(409,"EVENT_REMINDER_NOT_AVAILABLE");
         db.write("INSERT IGNORE INTO nx_growth_event_reminder(event_code,user_id) VALUES(?,?)",code,id);
@@ -106,6 +113,7 @@ public class H4EventEngine {
     }
     @Transactional(rollbackFor=Exception.class)
     public void notifyReminder(Long id,String code){
+        if("evt-reinvest-bonus".equals(code)&&!commerce.reinvestParticipationOpen(true))return;
         user(id,true);var rule=policies.find(code,true);
         if(rule==null||!"IN_PROGRESS".equals(phase(rule)))return;
         var reminder=db.row("SELECT notified_at FROM nx_growth_event_reminder WHERE event_code=? AND user_id=? FOR UPDATE",code,id);
@@ -177,6 +185,7 @@ public class H4EventEngine {
     }
     @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> join(Long id,String code){
+        if("evt-reinvest-bonus".equals(code)&&!commerce.reinvestParticipationOpen(true))throw new BizException(409,"EVENT_NOT_OPEN");
         user(id,true);var rule=policies.find(code,true);if(rule==null||!"IN_PROGRESS".equals(phase(rule)))throw new BizException(409,"EVENT_NOT_OPEN");
         if("regional".equals(rule.get("kind"))){
             var account=user(id,false);String region=regionFor(account,policies.rules(rule));

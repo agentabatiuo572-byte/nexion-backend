@@ -740,10 +740,10 @@ public class AppGrowthEngagementService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> joinEvent(Long userId, String eventCode, String idempotencyKey) {
         requireCanonicalEngagementRuntime();
-        requireUser(userId);
         String code = reference(eventCode, "EVENT_CODE_REQUIRED");
         if (eventEngine != null && eventEngine.managed(code)) return executeOnce("EVENT_JOIN", userId, idempotencyKey, code,
                 () -> eventEngine.join(userId, code));
+        requireUser(userId);
         return executeOnce("EVENT_JOIN", userId, idempotencyKey, code, () -> {
             EventReward event = mapper.lockOpenEvent(code);
             if (event == null) return ApiResult.fail(409, "EVENT_NOT_OPEN");

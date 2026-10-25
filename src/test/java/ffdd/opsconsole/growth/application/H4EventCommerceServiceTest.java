@@ -23,7 +23,8 @@ class H4EventCommerceServiceTest {
     private final PromotionPublicService promotions = mock(PromotionPublicService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-10-25T12:00:00Z"), ZoneOffset.ofHours(8));
     private final GenesisRaffleService raffle = mock(GenesisRaffleService.class);
-    private final H4EventCommerceService service = new H4EventCommerceService(db, promotions, clock, raffle, new EventDeviceGiftService(db));
+    private final ffdd.opsconsole.platform.facade.PlatformConfigFacade config=mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
+    private final H4EventCommerceService service = new H4EventCommerceService(db, promotions, clock, raffle, new EventDeviceGiftService(db),config);
     private static final long USER = 7L;
     private static final LocalDateTime START = LocalDateTime.of(2026, 10, 1, 0, 0);
     private static final LocalDateTime END = LocalDateTime.of(2026, 11, 1, 0, 0);
@@ -33,6 +34,7 @@ class H4EventCommerceServiceTest {
 
     @BeforeEach
     void setUp() {
+        when(config.activeValue("G.staking.app_visible")).thenReturn(java.util.Optional.of("true"));
         when(db.user(USER, true)).thenReturn(Map.of("status", "ACTIVE", "sandbox", 0));
         when(db.requiredRow(contains("nx_staking_product"))).thenReturn(Map.of("id", 1));
         when(db.requiredRow(contains("nx_config_item"))).thenReturn(Map.of("config_value", "1000"));
@@ -49,6 +51,18 @@ class H4EventCommerceServiceTest {
         product.putAll(Map.of("tier", "T1", "name", "Server A", "generation", 1, "gpu_model", "A", "hashrate", BigDecimal.TEN, "estimated_daily_usdt", BigDecimal.ONE, "daily_nex", BigDecimal.ONE));
         when(db.product("SERVER-A", true)).thenReturn(product);
         when(db.requiredRow(contains("nx_admin_device_sku"), eq("SERVER-A"))).thenReturn(Map.of("power_text", "200 W", "datacenter", "DC1"));
+    }
+
+    @Test void hiddenOrMissingStakingSwitchBlocksOpeningWithoutInvalidatingEarnedTickets(){
+        for(var value:List.of(java.util.Optional.of("false"),java.util.Optional.<String>empty())){
+            when(config.activeValue("G.staking.app_visible")).thenReturn(value);
+            assertThat(service.readiness("evt-reinvest-bonus",TICKET_RULE,START,END)).containsExactly("stakingAppVisible");
+            assertThat(service.awardReinvestTickets(USER,"evt-reinvest-bonus",TICKET_RULE,START,END,"RP-1"))
+                    .containsEntry("rewardType","GENESIS_TICKET").containsEntry("quantity",1L);
+        }
+        when(config.activeValue("G.staking.app_visible")).thenReturn(java.util.Optional.of(" true "));
+        assertThat(service.readiness("evt-reinvest-bonus",TICKET_RULE,START,END)).isEmpty();
+        verify(db,never()).write(anyString(),any(Object[].class));
     }
 
     @Test
