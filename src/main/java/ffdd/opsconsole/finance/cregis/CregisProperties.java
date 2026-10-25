@@ -37,8 +37,6 @@ public class CregisProperties {
     private boolean payoutEnabled;
     /** Separate operator approval for the automatic collection/forward transport. Never enabled by a migration. */
     private boolean autoForwardEnabled;
-    /** Comma-separated, explicitly approved pilot user IDs. Empty means no users. */
-    private String depositPilotUserIds = "";
     /** Exact Cregis callback egress IPs; empty rejects callbacks until verified with vendor. */
     private String callbackSourceIps = "";
     /** Read-only BSC JSON-RPC endpoint; no keys or transaction methods are used. */
