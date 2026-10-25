@@ -175,7 +175,7 @@ public class AppGrowthWheelService {
             guardFailure = realPrizeGuardFailure(selected, spinDate);
         }
         if (guardFailure != null) {
-            selected = comfortTier(tiers);
+            selected = comfortTier(tiers, spinDate);
             downgraded = true;
             downgradeReason = guardFailure;
         }
@@ -260,12 +260,12 @@ public class AppGrowthWheelService {
         return tiers.get(tiers.size() - 1);
     }
 
-    private WheelTier comfortTier(List<WheelTier> tiers) {
+    private WheelTier comfortTier(List<WheelTier> tiers, LocalDate spinDate) {
         return tiers.stream()
                 .filter(row -> !Boolean.TRUE.equals(row.realOutflow()))
                 .filter(row -> "nex".equals(row.rewardKind()))
+                .filter(row -> stockGuardFailure(row, spinDate) == null)
                 .findFirst()
-                .or(() -> tiers.stream().filter(row -> !Boolean.TRUE.equals(row.realOutflow())).findFirst())
                 .orElseThrow(() -> new BizException(409, "WHEEL_COMFORT_TIER_MISSING"));
     }
 
