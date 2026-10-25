@@ -84,7 +84,7 @@ public class H4EventEngine {
         var source=events.eventState(id,locale==null?"en":locale).stream().filter(e->code.equals(e.get("eventCode"))).findFirst().orElse(null);
         if(source==null)throw new BizException(404,"EVENT_NOT_FOUND");
         if(rule==null)return ApiResult.ok(values("event",source,"rules",Map.of(),"enabled",true,"eligible",false,"eligibilityReason","IN_PROGRESS",
-                "progressValue",source.get("progressValue"),"targetValue",source.get("targetValue"),"rewards",List.of(),"results",List.of(),"userStatus",source.get("userStatus")));
+                "progressValue",source.get("progressValue"),"targetValue",source.get("targetValue"),"rewards",List.of(),"results",List.of(),"myRewardAmount",null,"userStatus",source.get("userStatus")));
         var r=policies.rules(rule);var progress=progress(id,rule,r,source);var event=project(id,source,rule,locale);
         String phase=phase(rule),status=text(event.get("userStatus"));
         String reason="CLAIMED".equals(status)?"CLAIMED":!"IN_PROGRESS".equals(phase)?phase:Boolean.TRUE.equals(progress.get("eligible"))?"READY":"IN_PROGRESS";
@@ -101,7 +101,7 @@ public class H4EventEngine {
         if("CLAIMABLE".equals(status)){canParticipate=true;reason="READY";}
         return ApiResult.ok(values("event",event,"rules",publicRules,"enabled",enabled(code),"eligible",canParticipate,"eligibilityReason",reason,
                 "progressValue",progress.getOrDefault("current",0),"targetValue",progress.getOrDefault("target",1),"rewards",rewards(r),"voucher",progress.get("voucher"),
-                "results",resultView(id,rule,r),"userStatus",status,
+                "results",resultView(id,rule,r),"myRewardAmount",myPoolReward(id,rule),"userStatus",status,
                 "claimKeys",progress.getOrDefault("claimKeys",List.of("ONCE")),"reminderSubscribed",
                 db.row("SELECT 1 FROM nx_growth_event_reminder WHERE event_code=? AND user_id=?",code,id)!=null));
     }
@@ -122,12 +122,14 @@ public class H4EventEngine {
         if(reminder==null||reminder.get("notified_at")!=null)return;
         var account=user(id,false);String language=text(account.get("language"));String locale=language.startsWith("zh")?"zh":language.startsWith("vi")?"vi":"en";
         var event=events.eventState(id,locale).stream().filter(e->code.equals(e.get("eventCode"))).findFirst().orElseThrow();
-        db.write("""
-            INSERT IGNORE INTO nx_notification(biz_no,user_id,type,title,body,cta_label,cta_href,push_status,created_at,updated_at,is_deleted)
-            VALUES(?,?,'EVENT',?,?,?,?, 'SKIPPED',NOW(),NOW(),0)
+        int delivered=db.write("""
+            INSERT INTO nx_notification(biz_no,user_id,type,title,body,cta_label,cta_href,push_status,pushed_at,created_at,updated_at,is_deleted)
+            VALUES(?,?,'EVENT',?,?,?,?, 'DELIVERED',NOW(),NOW(),NOW(),0)
             ""","H4-REMINDER:"+code,id,text(event.get("title")),text(event.get("subtitle")),
                 "zh".equals(locale)?"查看活动":"vi".equals(locale)?"Xem hoạt động":"View activity","/pages/events/detail?id="+code);
-        db.write("UPDATE nx_growth_event_reminder SET notified_at=UTC_TIMESTAMP(6) WHERE event_code=? AND user_id=?",code,id);
+        if(delivered!=1)throw new BizException(409,"EVENT_REMINDER_DELIVERY_CONFLICT");
+        if(db.write("UPDATE nx_growth_event_reminder SET notified_at=UTC_TIMESTAMP(6) WHERE event_code=? AND user_id=? AND notified_at IS NULL",code,id)!=1)
+            throw new BizException(409,"EVENT_REMINDER_DELIVERY_CONFLICT");
     }
     private Map<String,Object> progress(Long id,Map<String,Object> rule,Map<String,Object> r,Map<String,Object> source){
         if("wheel".equals(rule.get("kind")))return values("current",number(source.get("progressValue")).signum()>0?1:0,"target",1,"eligible",false);
@@ -307,6 +309,11 @@ public class H4EventEngine {
         List<Map<String,Object>> result=new ArrayList<>();
         totals.entrySet().stream().sorted(Map.Entry.<String,BigDecimal>comparingByValue().reversed())
                 .forEach(e->result.add(values("region",e.getKey(),"rank",result.size()+1,"volume",e.getValue())));return result;
+    }
+    private Object myPoolReward(Long id,Map<String,Object> rule){
+        if(!Set.of("regional","holding").contains(text(rule.get("kind"))))return null;
+        var result=db.row("SELECT reward_usdt FROM nx_growth_event_pool_result WHERE event_code=? AND user_id=? AND status='PAID'",rule.get("event_code"),id);
+        return result==null?null:result.get("reward_usdt");
     }
     private List<Map<String,Object>> resultView(Long id,Map<String,Object> rule,Map<String,Object> r){
         if(rule.get("settled_at")!=null){
