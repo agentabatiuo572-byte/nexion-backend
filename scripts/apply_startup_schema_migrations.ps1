@@ -63,6 +63,7 @@ $migrations = @(
   # Existing databases may predate G4's shared transaction mutex row.
   (Join-Path $root "scripts\migrations\20261013_g4_config_mutation_mutex.sql"),
   (Join-Path $root "scripts\migrations\20261025_h4_wheel_payout_mutex.sql"),
+  (Join-Path $root "scripts\migrations\20261025_h4_event_mutex.sql"),
   (Join-Path $root "scripts\migrations\20260811_a2_a4_runtime_policy_closure.sql"),
   (Join-Path $root "scripts\migrations\20260811_f5_commission_export_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260811_l6_source_environment_schema.sql"),

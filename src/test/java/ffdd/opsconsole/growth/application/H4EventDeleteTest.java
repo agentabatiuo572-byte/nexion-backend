@@ -21,6 +21,15 @@ class H4EventDeleteTest {
     private final H4EventRuleService service=new H4EventRuleService(db,new ObjectMapper(),audit,null,null,a2);
     private final LocalDateTime now=LocalDateTime.now(ZoneOffset.UTC);
 
+    @Test void forwardMigrationSeedsOnlyTheRequiredActivityMutexAndIsRegistered() throws Exception {
+        var migration=java.nio.file.Files.readString(java.nio.file.Path.of("scripts/migrations/20261025_h4_event_mutex.sql"));
+        var statements=migration.lines().map(String::trim).filter(line->!line.isEmpty()&&!line.startsWith("--"))
+                .collect(java.util.stream.Collectors.joining("\n"));
+        assertThat(statements).isEqualTo("INSERT IGNORE INTO nx_admin_operation_mutex (lock_key) VALUES ('H4_EVENT');");
+        assertThat(java.nio.file.Files.readString(java.nio.file.Path.of("scripts/apply_startup_schema_migrations.ps1")))
+                .contains("scripts\\migrations\\20261025_h4_event_mutex.sql");
+    }
+
     @Test void onlyNeverPublishedDraftsAndActuallyEndedActivitiesAreDeletable(){
         var snapshot=snapshot();
         assertState(snapshot,"draft",true);
