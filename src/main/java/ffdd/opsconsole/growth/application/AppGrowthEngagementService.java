@@ -1041,7 +1041,7 @@ public class AppGrowthEngagementService {
                 publish("VOUCHER_GRANT", grant.grantId(), "voucher.claimed", userId, attribution, eventDetail);
             }
             return ApiResult.ok(linked(
-                    "voucherId", code, "grantId", grant.grantId(), "status", "AVAILABLE",
+                    "voucherId", code, "grantId", grant.grantId(), "status", grant.status(),
                     "replay", grant.replayed(), "serverCanonical", true,
                     "source", "nx_growth_voucher + nx_growth_voucher_grant",
                     "sourceEnvironment", "PRODUCTION", "runId", ""));

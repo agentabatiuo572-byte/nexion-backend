@@ -20,6 +20,8 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -51,20 +53,42 @@ class GrowthVoucherGrantFacadeAdapterTest {
 
         assertThat(result.grantId()).startsWith("VGR-");
         assertThat(result.replayed()).isFalse();
+        assertThat(result.status()).isEqualTo("AVAILABLE");
         verify(audit).recordRequired(any());
         verify(outbox).publish(eq("VOUCHER_GRANT"), eq(result.grantId()), eq("H7_VOUCHER_GRANTED"), any());
     }
 
-    @Test
-    void exactGrantKeyReplayReturnsExistingGrantWithoutDuplicateSideEffects() {
+    @ParameterizedTest
+    @ValueSource(strings = {"AVAILABLE", "USED", "REVOKED", "EXPIRED"})
+    void exactGrantKeyReplayReturnsExistingStateWithoutDuplicateSideEffects(String status) {
         when(mapper.findByGrantKey("vrank:42:v5:VC-100")).thenReturn(Map.of(
                 "grantId", "VGR-existing", "grantKey", "vrank:42:v5:VC-100", "voucherId", "VC-100",
-                "userId", 42L, "sourceType", "VRANK_REWARD", "sourceId", "42:V5:voucher", "status", "AVAILABLE"));
+                "userId", 42L, "sourceType", "VRANK_REWARD", "sourceId", "42:V5:voucher", "status", status));
 
         var result = service.grant(command());
 
         assertThat(result).isEqualTo(new ffdd.opsconsole.growth.facade.VoucherGrantFacade.VoucherGrantResult(
-                "VGR-existing", true));
+                "VGR-existing", true, status));
+        verify(mapper, never()).insertGrant(any(), any(), any(), anyLong(), any(), any(), any(), any());
+        verify(audit, never()).recordRequired(any());
+        verify(outbox, never()).publish(any(), any(), any(), any());
+    }
+
+    @Test
+    void duplicateInsertRaceReturnsTheAlreadyUsedGrantState() {
+        when(mapper.lockActiveUser(42L)).thenReturn(42L);
+        when(mapper.lockGrantableVoucher(eq("VC-100"), anyLong()))
+                .thenReturn(Map.of("voucherId", "VC-100", "status", "active"));
+        when(mapper.findByGrantKey("vrank:42:v5:VC-100")).thenReturn(null, null, Map.of(
+                "grantId", "VGR-existing", "grantKey", "vrank:42:v5:VC-100", "voucherId", "VC-100",
+                "userId", 42L, "sourceType", "VRANK_REWARD", "sourceId", "42:V5:voucher", "status", "USED"));
+
+        var result = service.grant(command());
+
+        assertThat(result.grantId()).isEqualTo("VGR-existing");
+        assertThat(result.replayed()).isTrue();
+        assertThat(result.status()).isEqualTo("USED");
+        verify(mapper).insertGrant(any(), any(), any(), anyLong(), any(), any(), any(), any());
         verify(audit, never()).recordRequired(any());
         verify(outbox, never()).publish(any(), any(), any(), any());
     }

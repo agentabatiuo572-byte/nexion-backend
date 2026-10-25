@@ -54,6 +54,8 @@ import java.util.Map;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -1010,18 +1012,37 @@ class AppGrowthEngagementServiceTest {
     void voucherClaimPublishesAnalyticsOnlyForTheFirstDurableGrant() {
         when(mapper.lockUserClaimableVoucher(eq("V-1"), eq("home"), anyLong()))
                 .thenReturn(new VoucherClaimDefinition("V-1", "all"));
-        when(voucher.grant(any())).thenReturn(new VoucherGrantResult("G-1", false));
+        when(voucher.grant(any())).thenReturn(new VoucherGrantResult("G-1", false, "AVAILABLE"));
 
         var result = service.claimVoucher(42L, "V-1", "home", "voucher-key");
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("serverCanonical", true)
+                .containsEntry("status", "AVAILABLE")
                 .containsEntry("sourceEnvironment", "PRODUCTION")
                 .containsEntry("runId", "");
         verify(audit).recordRequired(any());
         verify(outbox).publishUserEvent(
                 eq("VOUCHER_GRANT"), eq("G-1"), eq("voucher.claimed"), eq(42L),
                 eq("P3"), eq(5), eq("2026-W30"), any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"AVAILABLE", "USED", "REVOKED", "EXPIRED"})
+    void repeatedVoucherClaimReturnsActualGrantStateWithoutClaimSideEffects(String status) {
+        when(mapper.lockUserClaimableVoucher(eq("V-1"), eq("store"), anyLong()))
+                .thenReturn(new VoucherClaimDefinition("V-1", "all"));
+        when(voucher.grant(any())).thenReturn(new VoucherGrantResult("G-1", true, status));
+
+        var result = service.claimVoucher(42L, "V-1", "store", "new-claim-key");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("voucherId", "V-1")
+                .containsEntry("grantId", "G-1").containsEntry("replay", true)
+                .containsEntry("status", status);
+        verify(audit, never()).recordRequired(any());
+        verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(),
+                anyLong(), anyString(), anyInt(), anyString(), any());
     }
 
     @Test
@@ -1032,7 +1053,7 @@ class AppGrowthEngagementServiceTest {
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
         when(mapper.lockUserClaimableVoucher(eq("V-DEV"), eq("home"), anyLong()))
                 .thenReturn(new VoucherClaimDefinition("V-DEV", "all"));
-        when(voucher.grant(any())).thenReturn(new VoucherGrantResult("G-DEV", false));
+        when(voucher.grant(any())).thenReturn(new VoucherGrantResult("G-DEV", false, "AVAILABLE"));
 
         var result = service.claimVoucher(42L, "V-DEV", "home", "voucher-dev-key");
 
