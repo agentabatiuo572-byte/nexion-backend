@@ -3609,6 +3609,67 @@
           "user_c1_read"
         ]
       }
+    },
+    "/api/admin/growth/promotions/{activityId}/delete": {
+      "post": {
+        "operationId": "deletePromotion",
+        "summary": "Delete an inactive promotion from discovery",
+        "description": "Only an editable DRAFT or an effectively ENDED promotion may be deleted. Marks the root without changing existing orders or obligations. DRAFT requires expectedDraftRevision. Existing command receipts remain recoverable.",
+        "tags": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "AdminBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "activityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "x-audience": "ADMIN",
+        "x-required-permission": "growth_promotion_archive",
+        "x-response-schema": "CommandReceipt",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessCommandReceipt"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "$ref": "#/components/requestBodies/DeleteAction"
+        },
+        "x-request-schema": "DeleteAction"
+      }
     }
   },
   "components": {
@@ -5275,6 +5336,10 @@
           },
           "asOf": {
             "$ref": "#/components/schemas/Time"
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "Deleted promotions remain readable by authorized administrators for historical rewards and metrics; configuration changes are forbidden."
           }
         },
         "required": [
@@ -10959,6 +11024,36 @@
             "maximum": 20
           }
         }
+      },
+      "DeleteAction": {
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvidenceRef"
+            },
+            "maxItems": 20
+          },
+          "expectedDraftRevision": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "reason",
+          "evidenceRefs"
+        ],
+        "additionalProperties": false,
+        "description": "expectedRevision is the activity root revision. expectedDraftRevision is mandatory when deleting a DRAFT and must match its editable current version."
       }
     },
     "parameters": {
@@ -12054,6 +12149,21 @@
             }
           }
         }
+      },
+      "DeleteAction": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/DeleteAction"
+            },
+            "examples": {
+              "fixture": {
+                "$ref": "../../../src/test/resources/growth-promotions/contracts.json#/examples/request_DeleteAction"
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -12191,8 +12301,11 @@
           "COMMITTED",
           "RELEASED"
         ],
-        "COMMITTED": [],
-        "RELEASED": []
+        "COMMITTED": [
+          "REVERSED"
+        ],
+        "RELEASED": [],
+        "REVERSED": []
       },
       "hold": {
         "HELD": [

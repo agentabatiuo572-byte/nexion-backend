@@ -44,6 +44,17 @@ class OpsGrowthControllerTest {
     }
 
     @Test
+    void activityDeletionRequiresH4WriteAndUsesTheIdempotentBoundary() throws Exception {
+        var request=new ffdd.opsconsole.growth.dto.GrowthEventDeleteRequest("snapshot","cleanup ended event");
+        when(growthService.deleteQuestEvent("idem-delete","evt-test",request)).thenReturn(ApiResult.ok(Map.of("deleted",true)));
+        assertThat(controller.deleteQuestEvent("idem-delete","evt-test",request).getData()).containsEntry("deleted",true);
+        verify(commandBoundary).execute(org.mockito.ArgumentMatchers.eq("H4"),org.mockito.ArgumentMatchers.eq("EVENT_DELETE"),
+                org.mockito.ArgumentMatchers.eq("evt-test"),org.mockito.ArgumentMatchers.eq("idem-delete"),org.mockito.ArgumentMatchers.eq(request),any());
+        var method=OpsGrowthController.class.getMethod("deleteQuestEvent",String.class,String.class,request.getClass());
+        assertThat(method.getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAuthority('growth_h4_write')");
+    }
+
+    @Test
     void trialOverviewDelegatesToService() {
         when(growthService.trials(1, 20)).thenReturn(ApiResult.ok(Map.of("domain", "H2")));
 

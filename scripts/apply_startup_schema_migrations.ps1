@@ -306,6 +306,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261012_growth_promotions_snapshot_cleanup.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions_quota_restore.sql")
   (Join-Path $root "scripts\migrations\20261025_promotion_order_discount.sql")
+  (Join-Path $root "scripts\migrations\20261025_promotion_soft_delete.sql")
   (Join-Path $root "scripts\migrations\20261007_e4_wallet_bill_prerequisite.sql")
   (Join-Path $root "scripts\migrations\20261007_voucher_zero_payment.sql")
   (Join-Path $root "scripts\migrations\20261008_l6_promotion_reward_routes.sql")

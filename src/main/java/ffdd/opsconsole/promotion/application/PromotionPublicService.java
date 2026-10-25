@@ -21,7 +21,7 @@ public class PromotionPublicService {
         List<Map<String,Object>> rows=db.list("""
             SELECT p.*,v.contract_json,v.resolved_policies_json FROM nx_promotion p
             JOIN nx_promotion_version v ON v.activity_id=p.activity_id AND v.version=p.active_version
-            WHERE p.status IN ('ACTIVE','SCHEDULED') AND v.status='PUBLISHED' AND v.starts_at<=NOW(6) AND v.ends_at>NOW(6)
+            WHERE p.deleted_at IS NULL AND p.status IN ('ACTIVE','SCHEDULED') AND v.status='PUBLISHED' AND v.starts_at<=NOW(6) AND v.ends_at>NOW(6)
               AND (?='' OR p.activity_id>?) AND (?='' OR p.activity_id=?)
               AND (?='' OR JSON_UNQUOTE(JSON_EXTRACT(v.contract_json,'$.placement'))=?)
             ORDER BY p.activity_id LIMIT ?
@@ -33,7 +33,7 @@ public class PromotionPublicService {
         Map<String,Object> row=db.requiredRow("""
             SELECT p.*,v.contract_json,v.resolved_policies_json FROM nx_promotion p
             JOIN nx_promotion_version v ON v.activity_id=p.activity_id AND v.version=p.active_version
-            WHERE p.activity_id=? AND v.status='PUBLISHED' AND p.status<>'ARCHIVED'
+            WHERE p.deleted_at IS NULL AND p.activity_id=? AND v.status='PUBLISHED' AND p.status<>'ARCHIVED'
             """,activity);
         return view(row,user);
     }
@@ -97,7 +97,7 @@ public class PromotionPublicService {
             "benefitDescription",content.get(device?"rightsDescription":"availabilityDescription"),"deviceName",deviceName,"deviceRights",rights);
     }
     public Map<String,Object> referral(long owner,String activity){
-        Map<String,Object> root=db.activity(activity,false);require("DIRECT_REFERRAL".equals(root.get("template")),"PROMOTION_NOT_REFERRAL");
+        Map<String,Object> root=db.activity(activity,false);if(root.get("deleted_at")!=null)throw new ffdd.opsconsole.shared.exception.BizException(404,"PROMOTION_RESOURCE_NOT_FOUND");require("DIRECT_REFERRAL".equals(root.get("template")),"PROMOTION_NOT_REFERRAL");
         long orders=db.count("""
             SELECT COUNT(DISTINCT r.order_no) FROM nx_promotion_reward r JOIN nx_order o ON o.order_no=r.order_no
             WHERE r.activity_id=? AND r.beneficiary_id=? AND r.beneficiary_role='DIRECT_INVITER'

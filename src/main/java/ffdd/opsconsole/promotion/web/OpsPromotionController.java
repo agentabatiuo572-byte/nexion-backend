@@ -103,6 +103,9 @@ public class OpsPromotionController {
     @PostMapping("/promotions/{activityId}/archive") @PreAuthorize("hasAuthority('growth_promotion_archive')")
     public ApiResult<Map<String,Object>> archive(@PathVariable String activityId,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> request){return ApiResult.ok(admin.command("archivePromotion",activityId,key,request,()->admin.state(activityId,"archive",request)));}
 
+    @PostMapping("/promotions/{activityId}/delete") @PreAuthorize("hasAuthority('growth_promotion_archive')")
+    public ApiResult<Map<String,Object>> delete(@PathVariable String activityId,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> request){return ApiResult.ok(admin.command("deletePromotion",activityId,key,request,()->admin.delete(activityId,request)));}
+
     @GetMapping("/promotion-rewards") @PreAuthorize("hasAuthority('growth_promotion_reward_read')")
     public ApiResult<Map<String,Object>> rewardList(@RequestParam(required=false) String cursor,@RequestParam(defaultValue="20") int limit,@RequestParam(required=false) String activityId,@RequestParam(required=false) String state,@RequestParam(required=false) String orderNo,@RequestParam(required=false) Long beneficiaryId,@RequestParam(required=false) String type){return ApiResult.ok(rewards.page(null,true,cursor,limit,activityId,state,orderNo,beneficiaryId,type));}
     @GetMapping("/promotion-rewards/{obligationId}") @PreAuthorize("hasAuthority('growth_promotion_reward_read')")
