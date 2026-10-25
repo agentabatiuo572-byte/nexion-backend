@@ -13,6 +13,20 @@ import org.junit.jupiter.api.Test;
 class AppGrowthEngagementMapperUserScopeContractTest {
 
     @Test
+    void issuancePolicyAndCountUseCurrentReadsAfterTheVoucherMutex() throws Exception {
+        Configuration configuration = new Configuration();
+        configuration.addMapper(GrowthVoucherGrantMapper.class);
+        for (String method : new String[] {"issuanceLimit", "issuedCount"}) {
+            var bound = configuration.getMappedStatement(GrowthVoucherGrantMapper.class.getName() + "." + method)
+                    .getBoundSql(Map.of("voucherId", "V-CAPPED"));
+            assertThat(CCJSqlParserUtil.parse(bound.getSql())).isNotNull();
+            assertThat(bound.getSql().trim()).endsWith("FOR UPDATE").doesNotContain("SKIP LOCKED");
+            assertThat(bound.getParameterMappings()).extracting(mapping -> mapping.getProperty())
+                    .containsExactly("voucherId");
+        }
+    }
+
+    @Test
     void voucherCapacityReadsAllIssuedGrantsWithoutRemovingOwnedHistory() throws Exception {
         Configuration configuration = new Configuration();
         configuration.addMapper(AppGrowthEngagementMapper.class);
