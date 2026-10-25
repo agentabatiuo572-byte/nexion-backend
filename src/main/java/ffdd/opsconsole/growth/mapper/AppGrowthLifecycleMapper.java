@@ -12,6 +12,9 @@ import org.apache.ibatis.annotations.Update;
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface AppGrowthLifecycleMapper {
 
+    @Select("SELECT stack_with_others=1 FROM nx_growth_voucher WHERE voucher_id=#{voucherId} FOR UPDATE")
+    Boolean voucherAllowsPromotionStacking(@Param("voucherId") String voucherId);
+
     @Select("""
             SELECT g.grant_id AS grantId,
                    g.voucher_id AS voucherId,

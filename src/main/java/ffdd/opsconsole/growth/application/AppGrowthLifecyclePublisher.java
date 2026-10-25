@@ -23,6 +23,10 @@ public class AppGrowthLifecyclePublisher {
     private final AuditLogService auditLogService;
     private final EventOutboxService outboxService;
 
+    public boolean allowsPromotionStacking(String voucherId){
+        return !StringUtils.hasText(voucherId)||Boolean.TRUE.equals(mapper.voucherAllowsPromotionStacking(voucherId.trim()));
+    }
+
     public VoucherRedemption prepareVoucher(
             Long userId, String voucherId, String productNo, BigDecimal subtotalUsdt) {
         if (!StringUtils.hasText(voucherId)) return VoucherRedemption.none();

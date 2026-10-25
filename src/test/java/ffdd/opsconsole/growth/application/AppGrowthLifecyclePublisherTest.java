@@ -72,6 +72,17 @@ class AppGrowthLifecyclePublisherTest {
     }
 
     @Test
+    void realRedemptionSqlRetainsOwnerAvailableGrantDateAndSkuGuards() throws Exception {
+        String sql=String.join(" ",AppGrowthLifecycleMapper.class.getMethod("lockAvailableVoucher",Long.class,String.class,String.class,long.class)
+                .getAnnotation(org.apache.ibatis.annotations.Select.class).value());
+        assertThat(sql).contains("g.user_id = #{userId}","g.voucher_id = #{voucherId}","g.status = 'AVAILABLE'",
+                "v.start_at <= #{nowMillis}","v.end_at >= #{nowMillis}","JSON_CONTAINS(v.applicable_skus, JSON_QUOTE(#{productNo}))","FOR UPDATE");
+        assertThatThrownBy(()->service.redeemVoucher(42L,new VoucherRedemption("G1","BF20",BigDecimal.ONE),"O1","P1",attribution))
+                .hasMessage("VOUCHER_REDEMPTION_CONFLICT");
+        verify(audit,never()).recordRequired(any());verify(outbox,never()).publishUserEvent(any(),any(),any(),any(),any(),any(),any(),any());
+    }
+
+    @Test
     void trialAttemptRequiresAuditThenGovernedOutbox() {
         service.trialChargeAttempted(
                 42L, "TRIAL-1", "FAILED", new BigDecimal("90"), "INSUFFICIENT_FUNDS", attribution);

@@ -94,11 +94,13 @@ public class H4EventEngine {
         boolean canParticipate="IN_PROGRESS".equals(phase)&&participationOpen;
         if("onboarding".equals(rule.get("kind")))canParticipate=canParticipate&&number(user(id,false).get("account_age_seconds")).longValue()<number(r.get("windowDays")).longValue()*86400;
         if("regional".equals(rule.get("kind")))canParticipate=canParticipate&&regionFor(user(id,false),r)!=null;
+        if("evt-black-friday".equals(code))canParticipate=canParticipate&&Boolean.TRUE.equals(progress.get("eligible"));
         if("IN_PROGRESS".equals(phase)&&!canParticipate)reason="NOT_ELIGIBLE";
+        if("evt-black-friday".equals(code)&&"IN_PROGRESS".equals(phase))reason=text(progress.getOrDefault("eligibilityReason",reason));
         if(!participationOpen)reason="DISABLED";
         if("CLAIMABLE".equals(status)){canParticipate=true;reason="READY";}
         return ApiResult.ok(values("event",event,"rules",publicRules,"enabled",enabled(code),"eligible",canParticipate,"eligibilityReason",reason,
-                "progressValue",progress.getOrDefault("current",0),"targetValue",progress.getOrDefault("target",1),"rewards",rewards(r),
+                "progressValue",progress.getOrDefault("current",0),"targetValue",progress.getOrDefault("target",1),"rewards",rewards(r),"voucher",progress.get("voucher"),
                 "results",resultView(id,rule,r),"userStatus",status,
                 "claimKeys",progress.getOrDefault("claimKeys",List.of("ONCE")),"reminderSubscribed",
                 db.row("SELECT 1 FROM nx_growth_event_reminder WHERE event_code=? AND user_id=?",code,id)!=null));
@@ -175,7 +177,7 @@ public class H4EventEngine {
     }
     static String rewardSummary(Map<String,Object> r,String locale){
         boolean zh="zh".equals(locale),vi="vi".equals(locale);List<String> parts=new ArrayList<>();
-        if(r.containsKey("promotionActivityId"))parts.add(zh?"促销优惠":vi?"Ưu đãi khuyến mãi":"Promotional offer");
+        if(r.containsKey("voucherId")||r.containsKey("promotionActivityId"))parts.add(zh?"促销优惠":vi?"Ưu đãi khuyến mãi":"Promotional offer");
         if(number(r.get("multiplier")).signum()>0)parts.add((zh?"签到奖励":vi?"Thưởng điểm danh":"Check-in reward")+" × "+number(r.get("multiplier")).stripTrailingZeros().toPlainString());
         for(var reward:rewards(r)) {
             String type=text(reward.get("type"));String label=switch(type){case "NEX"->"UVT";case "USDT"->"USDT "+(zh?"总奖池":vi?"tổng quỹ thưởng":"total pool");case "DEVICE"->zh?"设备":vi?"thiết bị":"device";case "STREAK_SAVER"->zh?"补签卡":vi?"thẻ bù điểm danh":"streak saver";default->zh?"创世抽奖券":vi?"vé quay Genesis":"Genesis raffle tickets";};
