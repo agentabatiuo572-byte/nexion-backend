@@ -17,12 +17,18 @@ class PromotionDevicePowerTest {
     private static Map<String,Object> sku(String power) {
         return values("name","StellarBox S1","power_text",power,"datacenter","dc");
     }
-    private static final Map<String,String> VALID = Map.of(
-            "1200","1200", "1200.25","1200.25", "1200w","1200", " 1,200W TDP ","1200",
-            "1,200.125 W tdp","1200.125", "0.000001W","0.000001", "999,999,999,999.999999 W TDP","999999999999.999999");
+    private static final Map<String,String> VALID = Map.ofEntries(
+            Map.entry("1200","1200"), Map.entry("1200.25","1200.25"), Map.entry("1200w","1200"), Map.entry(" 1,200W TDP ","1200"),
+            Map.entry("1,200.125 W tdp","1200.125"), Map.entry("0.000001W","0.000001"), Map.entry("999,999,999,999.999999 W TDP","999999999999.999999"),
+            Map.entry("200W（单卡额定）","200"), Map.entry("575W（单卡额定）","575"), Map.entry("200 W (单卡额定)","200"),
+            Map.entry("1800W（显卡额定合计）","1800"), Map.entry("800W（显卡额定合计）","800"), Map.entry("3600 W (显卡额定合计)","3600"));
     private static final List<String> INVALID = List.of("", "unknown", "0", "0 W TDP", "-1200W", "1e3W",
             "1000000000000W", "1,000,000,000,000W", "1200.1234567W", "1,20W TDP", "12,34,567W", "1200WW",
-            "W1200", "1,200WW TDP", "1200W garbage", "1200TDP", "1200 W TDP TDP");
+            "W1200", "1,200WW TDP", "1200W garbage", "1200TDP", "1200 W TDP TDP",
+            "200-250W", "200W/300W", "2x200W", "0W（单卡额定）", "-200W（单卡额定）", "200kW（单卡额定）",
+            "200（单卡额定）", "200W（单卡额定2）", "200W（单卡额定200W）", "200W（单卡额定)", "200W(单卡额定）",
+            "200W（单卡额定）300W", "200W（单卡额定）TDP", "200W（最大功耗）", "1800W（显卡额定合计4卡）",
+            "1800W（显卡额定合计)", "1800W(显卡额定合计）", "1800（显卡额定合计）");
     private static final String[][] FORMAT_BOUNDARIES = {
         {"1200W\u0000",null},{"1200W\u0001",null},{"1200W\u001f",null},
         {"\t1200W",null},{"1200W\t",null},{"\n1200W",null},{"1200W\n",null},
@@ -56,6 +62,32 @@ class PromotionDevicePowerTest {
     @Test void resolverChecksWholePowerTextAndKeepsRightsGuards() {
         VALID.forEach((power,watts)->assertNull(PromotionNativeContractResolver.giftFailure(product("DEVICE"),sku(power)),power));
         assertNull(PromotionNativeContractResolver.giftFailure(product("SERVER"),sku("1,200W TDP")));
+    }
+
+    @Test void allCanonicalDeviceWritersUseTheSameUnambiguousPowerGrammar() {
+        int checked=0;
+        var literal=java.util.regex.Pattern.compile("UPPER\\(TRIM\\(s.power_text\\)\\) REGEXP '([^']+)'");
+        for(var mapper:List.of(ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper.class,
+                ffdd.opsconsole.device.mapper.AppTradeinMapper.class,ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.class)) {
+            for(var method:mapper.getDeclaredMethods()) {
+                var insert=method.getAnnotation(org.apache.ibatis.annotations.Insert.class);
+                if(insert==null)continue;
+                var match=literal.matcher(String.join(" ",insert.value()));
+                if(!match.find())continue;
+                checked++;
+                var grammar=java.util.regex.Pattern.compile(match.group(1).replace("\\\\","\\").replace("[[:space:]]","\\s"),java.util.regex.Pattern.UNICODE_CHARACTER_CLASS);
+                VALID.forEach((text,watts)->{
+                    var parsed=grammar.matcher(text.replaceAll("^ +| +$","").toUpperCase(Locale.ROOT));
+                    assertTrue(parsed.matches(),method.getName()+":"+text);
+                    assertEquals(0,new BigDecimal(watts).compareTo(new BigDecimal(parsed.group(1).replace(",","")+Objects.toString(parsed.group(3),""))));
+                });
+                for(var text:INVALID){
+                    var parsed=grammar.matcher(text.replaceAll("^ +| +$","").toUpperCase(Locale.ROOT));
+                    assertFalse(parsed.matches()&&new BigDecimal(parsed.group(1).replace(",","")+Objects.toString(parsed.group(3),"")).signum()>0,method.getName()+":"+text);
+                }
+            }
+        }
+        assertEquals(5,checked);
     }
 
     @Test void resolverRejectsMalformedPowerAndKeepsRightsGuards() {

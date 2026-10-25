@@ -397,7 +397,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
              WHERE p.id=#{productId} AND p.product_no=#{productCode} AND p.is_deleted=0
                AND p.estimated_daily_usdt>0 AND p.daily_nex>0
                AND TRIM(p.gpu_model)<>'' AND p.vram_total_gb>0 AND TRIM(s.datacenter)<>''
-               AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP)?)?\\\\z'
+               AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计)[)]))?)?\\\\z'
                AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6))>0
             """)
     int insertPurchasedDevice(

@@ -69,6 +69,19 @@ class H4EventCommerceServiceTest {
         assertThat(service.readiness("evt-refer-5-get-pro",two,START,END)).containsExactly("giftProductNo");
         verify(db,never()).write(anyString(),any(Object[].class));
     }
+    @Test void referralReadinessAcceptsExplicitRatedPowerButRejectsAmbiguousHardwareText(){
+        var product=new HashMap<String,Object>(Map.of("product_type","SERVER","status","ON_SALE","vram_total_gb",12,"inventory_mode","FINITE","stock",293));
+        when(db.product("SERVER-A",false)).thenReturn(product);
+        for(var power:List.of("200W（单卡额定）","575W（单卡额定）","1800W（显卡额定合计）","800W（显卡额定合计）","3600W（显卡额定合计）")){
+            when(db.requiredRow(contains("nx_admin_device_sku"),eq("SERVER-A"))).thenReturn(Map.of("power_text",power,"datacenter","DC1"));
+            assertThat(service.readiness("evt-refer-5-get-pro",GIFT_RULE,START,END)).isEmpty();
+        }
+        for(var power:List.of("200-250W","200W/300W","200W（单卡额定2）","0W（单卡额定）")){
+            when(db.requiredRow(contains("nx_admin_device_sku"),eq("SERVER-A"))).thenReturn(Map.of("power_text",power,"datacenter","DC1"));
+            assertThat(service.readiness("evt-refer-5-get-pro",GIFT_RULE,START,END)).containsExactly("giftProductNo");
+        }
+        verify(db,never()).write(anyString(),any(Object[].class));
+    }
 
     @Test
     void alreadySupplementedAndForfeitedTicketsCannotBeAwardedAgain() {
