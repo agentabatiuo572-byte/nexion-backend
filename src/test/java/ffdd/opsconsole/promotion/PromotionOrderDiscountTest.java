@@ -82,11 +82,74 @@ class PromotionOrderDiscountTest {
         when(db.one(contains("nx_promotion_budget"),any(Object[].class))).thenReturn(values("total",500,"reserved",0,"committed",0,"issued",0,"reversed",0));
         when(evaluator.evaluate(eq("A1"),anyMap(),anyMap(),eq(7L),anyList(),any(),isNull())).thenReturn(List.of(new PromotionRules.Award("PRO",text(rule.get("ruleId")),"D1",7L,"BUYER",0,spec("500"))));
         when(db.write(anyString(),any(Object[].class))).thenReturn(1);
-        var quotes=new PromotionQuoteService(db,validator,resolver,evaluator,null,null,provider);
+        var voucherMapper=mock(ffdd.opsconsole.growth.mapper.AppGrowthLifecycleMapper.class);
+        var vouchers=new ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher(voucherMapper,null,null);
+        var quotes=new PromotionQuoteService(db,validator,resolver,evaluator,null,vouchers,provider);
         var request=values("activityId","A1","items",List.of(values("productNo","PRO","quantity",1)),"clientCapabilities",List.of("PROMOTION_QUOTE_V1","ORDER_ITEM_QUANTITIES_V1","PROMOTION_REWARDS_V1"));
         var result=quotes.quote(7L,request);assertEquals("1000.000000",result.get("amountUsdt"));assertEquals("500.000000",result.get("discountUsdt"));
         assertEquals("DISCOUNT_USDT",map(maps(result.get("expectedRewards")).get(0).get("reward")).get("type"));
         verify(db).write(startsWith("INSERT INTO nx_promotion_quote"),any(Object[].class));verify(db,never()).write(contains("nx_promotion_reward"),any(Object[].class));
+        // Use the existing H7 percentage calculation before the promotion's fixed discount.
+        when(voucherMapper.lockAvailableVoucher(eq(7L),eq("BF20"),eq("PRO"),anyLong())).thenReturn(
+            new ffdd.opsconsole.growth.mapper.AppGrowthLifecycleMapper.VoucherRedemptionRow("G1","BF20","percent",BigDecimal.ZERO,new BigDecimal("20"),BigDecimal.ZERO,BigDecimal.ZERO));
+        when(voucherMapper.voucherAllowsPromotionStacking("BF20")).thenReturn(true);
+        request.put("voucherId","BF20");request.put("autoSelectPromotion",false);
+        var stacked=quotes.quote(7L,request);
+        assertEquals("700.000000",stacked.get("amountUsdt"));assertEquals("800.000000",stacked.get("discountUsdt"));
+        assertEquals("500.000000",stacked.get("promotionDiscountUsdt"));
+        var captured=org.mockito.ArgumentCaptor.forClass(Object[].class);
+        verify(db,times(2)).write(startsWith("INSERT INTO nx_promotion_quote"),captured.capture());
+        var persisted=captured.getAllValues().get(1);
+        var frozenContract=map(parse(persisted[4]).get("contract"));
+        when(db.requiredRow(startsWith("SELECT * FROM nx_promotion_quote"),eq(stacked.get("quoteId"))))
+            .thenReturn(values("user_id",7,"expires_at",Instant.now().plusSeconds(60),"quote_hash",persisted[3],"quote_json",persisted[4]));
+        when(db.user(7L,true)).thenReturn(values("status","ACTIVE"));
+        when(db.activity("A1",true)).thenReturn(values("status","ACTIVE","active_version",1,"reserved_orders",0,"used_orders",0));
+        when(db.version("A1",1,true)).thenReturn(values("status","PUBLISHED","content_hash",hash(frozenContract)));
+        when(db.product("PRO",true)).thenReturn(values("status","ACTIVE","store_visible",1,"price_usdt",new BigDecimal("1500"),"product_type","SERVER"));
+        when(db.deviceSlotCap()).thenReturn(10L);
+        when(evaluator.evaluateCurrent(eq("A1"),anyMap(),anyMap(),eq(7L),anyList(),any(),isNull()))
+            .thenReturn(List.of(new PromotionRules.Award("PRO",text(rule.get("ruleId")),"D1",7L,"BUYER",0,spec("500"))));
+        var orders=new PromotionOrderService(db,quotes,evaluator,resolver,null,null);
+        var selectedItems=List.of(new PromotionOrderService.Selection("PRO",1));
+        assertEquals(new BigDecimal("700.000000"),orders.prepareCreate(7L,text(stacked.get("quoteId")),selectedItems,"BF20",new BigDecimal("700")).price("amountUsdt"));
+        when(voucherMapper.voucherAllowsPromotionStacking("BF20")).thenReturn(false);
+        assertEquals("VOUCHER_PROMOTION_STACKING_NOT_ALLOWED",assertThrows(BizException.class,()->orders.prepareCreate(7L,text(stacked.get("quoteId")),selectedItems,"BF20",null)).getMessage());
+        when(voucherMapper.voucherAllowsPromotionStacking("BF20")).thenReturn(true);
+        when(voucherMapper.lockAvailableVoucher(eq(7L),eq("BF20"),eq("PRO"),anyLong())).thenReturn(null);
+        assertEquals("VOUCHER_NOT_AVAILABLE_OR_NOT_APPLICABLE",assertThrows(BizException.class,()->orders.prepareCreate(7L,text(stacked.get("quoteId")),selectedItems,"BF20",null)).getMessage());
+        when(voucherMapper.lockAvailableVoucher(eq(7L),eq("BF20"),eq("PRO"),anyLong())).thenReturn(
+            new ffdd.opsconsole.growth.mapper.AppGrowthLifecycleMapper.VoucherRedemptionRow("G1","BF20","percent",BigDecimal.ZERO,new BigDecimal("15"),BigDecimal.ZERO,BigDecimal.ZERO));
+        assertEquals("PROMOTION_QUOTE_PRICE_CHANGED",assertThrows(BizException.class,()->orders.prepareCreate(7L,text(stacked.get("quoteId")),selectedItems,"BF20",null)).getMessage());
+        when(voucherMapper.lockAvailableVoucher(eq(7L),eq("BF20"),eq("PRO"),anyLong())).thenReturn(
+            new ffdd.opsconsole.growth.mapper.AppGrowthLifecycleMapper.VoucherRedemptionRow("G1","BF20","percent",BigDecimal.ZERO,new BigDecimal("20"),BigDecimal.ZERO,BigDecimal.ZERO));
+        var plain=copy(request);plain.remove("activityId");
+        var voucherOnly=quotes.quote(7L,plain);
+        assertEquals("ELIGIBLE",voucherOnly.get("eligibility"));
+        assertEquals("1200.000000",voucherOnly.get("amountUsdt"));assertNull(voucherOnly.get("activityId"));assertTrue(maps(voucherOnly.get("expectedRewards")).isEmpty());
+        plain.remove("autoSelectPromotion");
+        assertEquals("700.000000",quotes.quote(7L,plain).get("amountUsdt")); // Existing automatic selection remains the default.
+        when(voucherMapper.voucherAllowsPromotionStacking("BF20")).thenReturn(false);
+        assertEquals("PROMOTION_NOT_ELIGIBLE_OR_UNAVAILABLE",assertThrows(BizException.class,()->quotes.quote(7L,request)).getMessage());
+        assertEquals("VOUCHER_PROMOTION_STACKING_NOT_ALLOWED",assertThrows(BizException.class,()->quotes.requireVoucherPromotionStacking("BF20")).getMessage());
+        when(voucherMapper.voucherAllowsPromotionStacking("BF20")).thenReturn(true);
+        ((Map<String,Object>)((Map<String,Object>)policies.get("$stacking")).get("content")).put("voucher","DENY");
+        assertEquals("PROMOTION_NOT_ELIGIBLE_OR_UNAVAILABLE",assertThrows(BizException.class,()->quotes.quote(7L,request)).getMessage());
+        ((Map<String,Object>)((Map<String,Object>)policies.get("$stacking")).get("content")).put("voucher","ALLOW");
+        for(String invalid:List.of("FORGED","EXPIRED","USED","FOREIGN")){
+            var bad=copy(plain);bad.put("voucherId",invalid);
+            assertEquals("VOUCHER_NOT_AVAILABLE_OR_NOT_APPLICABLE",assertThrows(BizException.class,()->quotes.quote(7L,bad)).getMessage());
+        }
+        when(db.product("S1",false)).thenReturn(values("status","ACTIVE","store_visible",1,"price_usdt",new BigDecimal("100")));
+        when(canonical.purchaseEligibilityBatch(7L,List.of("S1"))).thenReturn(ApiResult.ok(Map.of("S1",new AppCanonicalBoundaryService.PurchaseEligibilityDecision("S1",true,"ELIGIBLE"))));
+        when(voucherMapper.lockAvailableVoucher(eq(7L),eq("BF20"),eq("S1"),anyLong())).thenReturn(
+            new ffdd.opsconsole.growth.mapper.AppGrowthLifecycleMapper.VoucherRedemptionRow("G1","BF20","percent",BigDecimal.ZERO,new BigDecimal("20"),BigDecimal.ZERO,BigDecimal.ZERO));
+        var ordinarySku=values("items",List.of(values("productNo","S1","quantity",1)),"voucherId","BF20","autoSelectPromotion",false,"clientCapabilities",request.get("clientCapabilities"));
+        var ordinaryQuote=quotes.quote(7L,ordinarySku);
+        assertEquals("ELIGIBLE",ordinaryQuote.get("eligibility"));assertEquals("0.000000",ordinaryQuote.get("promotionDiscountUsdt"));
+        Files.writeString(Path.of("target/black-friday-voucher-quote-fixture.json"),json(ordinaryQuote));
+        assertEquals("80.000000",ordinaryQuote.get("amountUsdt"));assertNull(ordinaryQuote.get("activityId"));assertTrue(maps(ordinaryQuote.get("expectedRewards")).isEmpty());
+        assertEquals("BUNDLE_VOUCHER_UNSUPPORTED",assertThrows(BizException.class,()->quotes.prices(7L,List.of(new PromotionRules.Selection("PRO",1),new PromotionRules.Selection("S1",1)),"BF20")).getMessage());
         when(db.one(contains("nx_promotion_budget"),any(Object[].class))).thenReturn(values("total",499,"reserved",0,"committed",0,"issued",0,"reversed",0));
         assertEquals("PROMOTION_NOT_ELIGIBLE_OR_UNAVAILABLE",assertThrows(BizException.class,()->quotes.quote(7L,request)).getMessage());
     }

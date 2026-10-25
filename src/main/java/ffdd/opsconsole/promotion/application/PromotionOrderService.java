@@ -75,6 +75,7 @@ public class PromotionOrderService {
         }
         if(!activity.isEmpty())policies.verifyLockedProducts(map(stored.get("policies")),lockedProducts);
         Map<String,Object> currentPrice=PromotionQuoteService.applyDiscounts(quotes.currentPrices(buyerId,selections,text(voucherId)),maps(stored.get("awards")));
+        if(!activity.isEmpty()&&!text(voucherId).isEmpty())quotes.requireVoucherPromotionStacking(text(voucherId));
         for(String key:List.of("amountUsdt","subtotalUsdt","discountUsdt","bundlePolicyVersion"))
             require(text(currentPrice.get(key)).equals(text(pub.get(key))),"PROMOTION_QUOTE_PRICE_CHANGED");
         if(!activity.isEmpty())require(quotes.currentlyAvailable(activity,contract,maps(stored.get("awards"))),"PROMOTION_CAPACITY_UNAVAILABLE");

@@ -1870,6 +1870,11 @@
             "minItems": 3,
             "maxItems": 3,
             "uniqueItems": true
+          },
+          "autoSelectPromotion": {
+            "type": "boolean",
+            "default": true,
+            "description": "When false, a missing activityId requests voucher/base pricing only. An explicit activityId is still evaluated. Defaults to automatic promotion selection."
           }
         },
         "required": [

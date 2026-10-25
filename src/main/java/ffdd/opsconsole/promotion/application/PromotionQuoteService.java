@@ -48,6 +48,7 @@ public class PromotionQuoteService {
         List<Map<String,Object>> awarded=new ArrayList<>();
         Map<String,Object> chosen=null,contract=Map.of(),policies=Map.of();
         for(Map<String,Object> row:candidates) {
+            if(selected.isEmpty()&&Boolean.FALSE.equals(request.get("autoSelectPromotion")))break;
             if(!selected.isEmpty()&&!selected.equals(row.get("activity_id")))continue;
             Map<String,Object> version=db.version(text(row.get("activity_id")),number(row.get("active_version")),false);
             Map<String,Object> c=parse(version.get("contract_json"));validator.validate("PromotionContract",c);
@@ -56,7 +57,8 @@ public class PromotionQuoteService {
             List<Map<String,Object>> a=evaluator.evaluate(text(row.get("activity_id")),c,ps,userId,items,now,null).stream().map(PromotionEvaluationService::award).toList();
             if(a.isEmpty())continue;
             Map<String,Object> stacking=PromotionPolicyResolver.content(ps,"stacking");
-            if(!text(request.get("voucherId")).isEmpty()&&!"ALLOW".equals(stacking.get("voucher")))continue;
+            if(!text(request.get("voucherId")).isEmpty()
+                    &&(!"ALLOW".equals(stacking.get("voucher"))||!vouchers.allowsPromotionStacking(text(request.get("voucherId")))))continue;
             if(items.size()>1&&decimal(price.get("discountUsdt")).signum()>0&&!"ALLOW".equals(stacking.get("bundleDiscount")))continue;
             a=applyShortage(text(row.get("activity_id")),c,a);
             if(a.isEmpty())continue;
@@ -70,12 +72,14 @@ public class PromotionQuoteService {
         if(chosen!=null&&expiry.isAfter(instant(contract.get("endsAt"))))expiry=instant(contract.get("endsAt"));
         String activity=chosen==null?null:text(chosen.get("activity_id"));
         Long version=chosen==null?null:number(chosen.get("active_version"));
+        // Explicit voucher-only offers have passed both purchase eligibility and the owned voucher checks.
+        boolean eligible=chosen!=null||(Boolean.FALSE.equals(request.get("autoSelectPromotion"))&&!text(request.get("voucherId")).isEmpty());
         Map<String,Object> publicQuote=values("quoteId",quoteId,"quoteHash","0".repeat(64),"expiresAt",expiry.toString(),"serverTime",now.toString(),
             "itemCount",items.size(),"quantity",items.stream().mapToInt(PromotionRules.Selection::quantity).sum(),
             "items",price.get("items"),"subtotalUsdt",price.get("subtotalUsdt"),"discountUsdt",price.get("discountUsdt"),
             "promotionDiscountUsdt",price.get("promotionDiscountUsdt"),
             "amountUsdt",price.get("amountUsdt"),"bundlePolicyVersion",price.get("bundlePolicyVersion"),
-            "activityId",activity,"activityVersion",version,"eligibility",chosen==null?"INELIGIBLE":"ELIGIBLE",
+            "activityId",activity,"activityVersion",version,"eligibility",eligible?"ELIGIBLE":"INELIGIBLE",
             "expectedRewards",expected(awarded,activity,version),"warnings",List.of(),"reserved",false);
         var expected=maps(publicQuote.get("expectedRewards"));
         for(var reward:expected)reward.put("disclosure",PromotionPublicService.disclosure(db,contract,policies,map(reward.get("reward"))));
@@ -109,6 +113,9 @@ public class PromotionQuoteService {
     }
     public Map<String,Object> currentPrices(long user,List<PromotionRules.Selection> items,String voucher) {
         return prices(user,items,voucher,true);
+    }
+    public void requireVoucherPromotionStacking(String voucher){
+        require(vouchers.allowsPromotionStacking(voucher),"VOUCHER_PROMOTION_STACKING_NOT_ALLOWED");
     }
     private Map<String,Object> prices(long user,List<PromotionRules.Selection> items,String voucher,boolean currentRead) {
         PromotionRules.selections(items);require(items.size()<=8,"BUNDLE_PRODUCT_COUNT_INVALID");

@@ -184,7 +184,11 @@ public class H4EventRuleService {
                 if(!(r.get("weekdays") instanceof List<?> days)||days.isEmpty()||days.stream().anyMatch(d->number(d).intValue()<1||number(d).intValue()>7))missing.add("weekdays");
             }
             case "evt-reinvest-bonus" -> positive(r,missing,"thresholdUsdt","ticketsPerThreshold","ticketBudget");
-            case "evt-pro-upgrade-7d","evt-black-friday" -> {required(r,missing,"promotionActivityId");if(number(r.get("extraGenesisTickets")).signum()>0)positive(r,missing,"ticketBudget");}
+            case "evt-pro-upgrade-7d" -> {required(r,missing,"promotionActivityId");if(number(r.get("extraGenesisTickets")).signum()>0)positive(r,missing,"ticketBudget");}
+            case "evt-black-friday" -> {
+                required(r,missing,"voucherId");
+                if(number(r.get("extraGenesisTickets")).signum()>0){required(r,missing,"promotionActivityId");positive(r,missing,"ticketBudget");}
+            }
             case "evt-spring-spin" -> { }
             case "evt-anniversary-spin" -> {if(end==null||end.isAfter(LocalDateTime.now(ZoneOffset.UTC)))missing.add("endsAt");}
             default -> missing.add("eventCode");

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
 import ffdd.opsconsole.promotion.application.PromotionPublicService;
+import ffdd.opsconsole.promotion.application.PromotionPolicyResolver;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -22,12 +23,14 @@ import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 @Service
 @RequiredArgsConstructor
 public class H4EventCommerceService {
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON=new com.fasterxml.jackson.databind.ObjectMapper();
     private final PromotionMapper db;
     private final PromotionPublicService promotions;
     private final Clock clock;
     private final GenesisRaffleService raffle;
     private final EventDeviceGiftService gifts;
     private final ffdd.opsconsole.platform.facade.PlatformConfigFacade config;
+    private final PromotionPolicyResolver promotionPolicies;
 
     public boolean reinvestParticipationOpen(boolean lock){
         var value=lock?config.activeValueForUpdate("G.staking.app_visible"):config.activeValue("G.staking.app_visible");
@@ -36,6 +39,10 @@ public class H4EventCommerceService {
 
     public List<String> readiness(String eventCode, Map<String, Object> rules, LocalDateTime startsAt, LocalDateTime endsAt) {
         if("evt-reinvest-bonus".equals(eventCode)&&!reinvestParticipationOpen(false))return List.of("stakingAppVisible");
+        if("evt-black-friday".equals(eventCode)) {
+            List<String> missing=voucherReadiness(voucherDefinition(rules),rules,startsAt,endsAt);
+            if(!missing.isEmpty())return missing;
+        }
         if (rules.containsKey("giftProductNo")) {
             try {
                 String productNo = text(rules.get("giftProductNo"));
@@ -45,21 +52,29 @@ public class H4EventCommerceService {
                         ? List.of() : List.of("giftProductNo");
             } catch (BizException ex) { return List.of("giftProductNo"); }
         }
-        if (rules.containsKey("promotionActivityId")) {
+        if (!text(rules.get("promotionActivityId")).isBlank()) {
             if (startsAt == null || endsAt == null) return List.of("promotionActivityId");
             Map<String, Object> published = db.one("""
-                    SELECT p.activity_id FROM nx_promotion p JOIN nx_promotion_version v
+                    SELECT p.activity_id,v.contract_json FROM nx_promotion p JOIN nx_promotion_version v
                       ON v.activity_id=p.activity_id AND v.version=p.active_version
                     WHERE p.activity_id=? AND p.status IN ('ACTIVE','SCHEDULED') AND v.status='PUBLISHED'
                       AND v.starts_at<=? AND v.ends_at>=?
                     """, text(rules.get("promotionActivityId")), stored(startsAt), stored(endsAt));
-            return published == null ? List.of("promotionActivityId") : List.of();
+            if(published==null)return List.of("promotionActivityId");
+            if("evt-black-friday".equals(eventCode)){
+                try{
+                    var stacking=PromotionPolicyResolver.content(promotionPolicies.resolve(parse(published.get("contract_json")),false),"stacking");
+                    if(!"ALLOW".equals(stacking.get("voucher")))return List.of("voucherStacking");
+                }catch(BizException|IllegalStateException ex){return List.of("voucherStacking");}
+            }
+            return List.of();
         }
         return List.of();
     }
 
     public Map<String, Object> progress(Long userId, String eventCode, Map<String, Object> rules,
                                         LocalDateTime startsAt, LocalDateTime endsAt) {
+        if("evt-black-friday".equals(eventCode))return voucherProgress(userId,rules,startsAt,endsAt);
         if (rules.containsKey("giftProductNo")) {
             long count = referralCount(userId, rules, startsAt, endsAt);
             long target = number(rules.get("targetInvites"));
@@ -91,6 +106,65 @@ public class H4EventCommerceService {
         boolean eligible = "ACTIVE".equals(promotion.get("state")) && "ESTIMATE_ELIGIBLE".equals(promotion.get("eligibility"));
         return values("current", 0, "target", 1, "eligible", eligible, "claimKeys", List.of(),
                 "promotion", promotion, "promotionActivityId", promotion.get("activityId"));
+    }
+
+    private Map<String,Object> voucherDefinition(Map<String,Object> rules){
+        return db.one("""
+                SELECT v.*, (applicable_skus IS NULL OR JSON_LENGTH(applicable_skus)=0) all_skus,
+                  (claim_surfaces IS NULL OR JSON_LENGTH(claim_surfaces)=0
+                    OR JSON_CONTAINS(claim_surfaces,JSON_QUOTE('store'))) store_claimable,
+                  (SELECT COUNT(*) FROM nx_growth_voucher_grant g
+                    WHERE g.voucher_id=v.voucher_id AND g.is_deleted=0) issued_count
+                FROM nx_growth_voucher v WHERE voucher_id=? AND is_deleted=0
+                """,text(rules.get("voucherId")));
+    }
+
+    private List<String> voucherReadiness(Map<String,Object> voucher,Map<String,Object> rules,LocalDateTime start,LocalDateTime end){
+        if(voucher==null||voucher.isEmpty()||!"active".equalsIgnoreCase(text(voucher.get("status"))))return List.of("voucherId");
+        List<String> missing=new ArrayList<>();
+        if(!List.of("percent","percentage").contains(text(voucher.get("voucher_type")).toLowerCase(java.util.Locale.ROOT))
+                ||decimal(voucher.get("percent_value")).compareTo(new BigDecimal("20"))!=0
+                ||decimal(voucher.get("min_purchase_usd")).signum()!=0||decimal(voucher.get("max_discount_usd")).signum()!=0)missing.add("voucherDiscount");
+        if(!"all".equalsIgnoreCase(text(voucher.get("audience")))||!flag(voucher.get("all_skus")))missing.add("voucherScope");
+        if(!flag(voucher.get("store_claimable")))missing.add("voucherClaimSurface");
+        long from=number(voucher.get("start_at")),until=number(voucher.get("end_at"));
+        if(start==null||end==null||(from>0&&from>start.toInstant(ZoneOffset.UTC).toEpochMilli())
+                ||(until>0&&until<end.toInstant(ZoneOffset.UTC).toEpochMilli()))missing.add("voucherPeriod");
+        if(!text(rules.get("promotionActivityId")).isBlank()&&!flag(voucher.get("stack_with_others")))missing.add("voucherStacking");
+        return missing;
+    }
+
+    private Map<String,Object> voucherProgress(Long userId,Map<String,Object> rules,LocalDateTime start,LocalDateTime end){
+        var definition=voucherDefinition(rules);
+        var grant=db.one("""
+                SELECT grant_id,status FROM nx_growth_voucher_grant WHERE user_id=? AND voucher_id=? AND is_deleted=0
+                ORDER BY CASE status WHEN 'AVAILABLE' THEN 0 WHEN 'USED' THEN 1 ELSE 2 END,granted_at,id LIMIT 1
+                """,userId,text(rules.get("voucherId")));
+        String status=grant==null?"UNCLAIMED":text(grant.get("status"));
+        String reason="READY";
+        if(definition==null||definition.isEmpty())reason="VOUCHER_UNAVAILABLE";
+        else if(number(definition.get("start_at"))>clock.millis())reason="VOUCHER_NOT_STARTED";
+        else if(number(definition.get("end_at"))>0&&number(definition.get("end_at"))<clock.millis()){reason="VOUCHER_EXPIRED";status="EXPIRED";}
+        else if(!voucherReadiness(definition,rules,start,end).isEmpty())reason="VOUCHER_UNAVAILABLE";
+        else if("USED".equals(status))reason="VOUCHER_ALREADY_USED";
+        else if(!List.of("UNCLAIMED","AVAILABLE").contains(status))reason="VOUCHER_UNAVAILABLE";
+        else if("UNCLAIMED".equals(status)&&definition.get("issuance_limit")!=null&&number(definition.get("issuance_limit"))>0
+                &&number(definition.get("issued_count"))>=number(definition.get("issuance_limit")))reason="VOUCHER_EXHAUSTED";
+        boolean eligible="READY".equals(reason);
+        var voucher=values("voucherId",text(rules.get("voucherId")),"percent",definition==null?null:definition.get("percent_value"),
+                "applicableSkus",voucherSkus(definition),"grantStatus",status,"claimable",eligible&&"UNCLAIMED".equals(status),
+                "usable",eligible&&"AVAILABLE".equals(status),"singleSkuOnly",true,"singleUse",true,"claimSurface","store");
+        return values("current","USED".equals(status)?1:0,"target",1,"eligible",eligible,"eligibilityReason",reason,"claimKeys",List.of(),"voucher",voucher);
+    }
+
+    private static boolean flag(Object value){return Boolean.TRUE.equals(value)||"1".equals(text(value));}
+    private static List<String> voucherSkus(Map<String,Object> definition){
+        Object raw=definition==null?null:definition.get("applicable_skus");
+        if(raw==null)return List.of();
+        try{
+            String json=raw instanceof byte[] bytes?new String(bytes,java.nio.charset.StandardCharsets.UTF_8):text(raw);
+            return JSON.readValue(json,new com.fasterxml.jackson.core.type.TypeReference<List<String>>(){});
+        }catch(com.fasterxml.jackson.core.JsonProcessingException ex){throw new BizException(503,"VOUCHER_CONFIGURATION_INVALID");}
     }
 
     /** Caller locks the event rule and account and owns the claim receipt and atomic event budget. */
