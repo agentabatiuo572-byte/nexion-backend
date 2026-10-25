@@ -4533,7 +4533,7 @@ public class OpsGrowthService implements AuditReplayable {
 
     private List<String> normalizeClaimSurfaces(List<String> raw) {
         List<String> surfaces = normalizeStringList(raw, 8, 20);
-        if (surfaces.isEmpty()) {
+        if (raw == null) {
             return List.of("home", "store");
         }
         Set<String> allowed = Set.of("home", "store", "me", "earn");

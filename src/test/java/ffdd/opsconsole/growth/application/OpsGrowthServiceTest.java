@@ -2444,6 +2444,59 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void voucherCreateAndUpdatePreserveExplicitEmptySurfacesAndLegacyMissingDefault() throws Exception {
+        for (String surfaceField : List.of("", ",\"claimSurfaces\":null", ",\"claimSurfaces\":[]",
+                ",\"claimSurfaces\":[\"me\",\"earn\"]")) {
+            List<String> expected = surfaceField.contains("[]") ? List.of()
+                    : surfaceField.contains("earn") ? List.of("me", "earn") : List.of("home", "store");
+            ObjectMapper json = new ObjectMapper();
+            List<Map<String, Object>> stored = new ArrayList<>();
+            List<String> writtenSurfaces = new ArrayList<>();
+            GrowthVoucherMapper mapper = mock(GrowthVoucherMapper.class, invocation -> {
+                return switch (invocation.getMethod().getName()) {
+                    case "listVouchers" -> new ArrayList<>(stored);
+                    case "insertVoucher", "updateVoucher" -> {
+                        String surfaces = invocation.getArgument(11);
+                        writtenSurfaces.add(surfaces);
+                        Map<String, Object> row = voucherDbRow("vc-surfaces", "active");
+                        row.put("claimSurfacesJson", surfaces);
+                        stored.clear();
+                        stored.add(row);
+                        yield 1;
+                    }
+                    default -> org.mockito.Answers.RETURNS_DEFAULTS.answer(invocation);
+                };
+            });
+            OpsGrowthService h7 = new OpsGrowthService(configFacade, emergencyRepository, coverageFacade,
+                    ledgerPostingFacade, auditLogService, json, OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                    Optional.empty(), Optional.empty(), Optional.of(mapper), lockMapper, null,
+                    Optional.empty(), missionAvailability);
+            String body = "{\"id\":\"vc-surfaces\",\"name\":\"Surface test\",\"type\":\"fixed\","
+                    + "\"amountUSD\":1,\"audience\":\"all\",\"status\":\"active\","
+                    + "\"reason\":\"test explicit surface semantics\",\"operator\":\"superadmin\",\"expectedVersion\":1";
+            GrowthVoucherRequest request = json.readValue(body + surfaceField + "}", GrowthVoucherRequest.class);
+
+            ApiResult<Map<String, Object>> created = h7.createVoucher("idem-surface-create", request);
+            assertThat(created.getCode()).as(created.getMessage()).isZero();
+            assertThat(((Map<?, ?>) ((List<?>) created.getData().get("vouchers")).get(0)).get("claimSurfaces"))
+                    .isEqualTo(expected);
+
+            // Start editing from a restricted row, so clearing every checkbox must overwrite the old restriction.
+            stored.get(0).put("claimSurfacesJson", "[\"store\"]");
+            ApiResult<Map<String, Object>> updated = h7.updateVoucher("idem-surface-update", "vc-surfaces", request);
+            assertThat(updated.getCode()).as(updated.getMessage()).isZero();
+            assertThat(((Map<?, ?>) ((List<?>) updated.getData().get("vouchers")).get(0)).get("claimSurfaces"))
+                    .isEqualTo(expected);
+            assertThat(writtenSurfaces).containsExactly(json.writeValueAsString(expected), json.writeValueAsString(expected));
+
+            GrowthVoucherRequest invalid = json.readValue(body + ",\"claimSurfaces\":[\"invalid\"]}", GrowthVoucherRequest.class);
+            assertThat(h7.createVoucher("idem-invalid-create", invalid).getMessage()).contains("VOUCHER_SURFACE_INVALID");
+            assertThat(h7.updateVoucher("idem-invalid-update", "vc-surfaces", invalid).getMessage()).contains("VOUCHER_SURFACE_INVALID");
+            assertThat(writtenSurfaces).hasSize(2);
+        }
+    }
+
+    @Test
     void replayH2TrialChargePostsUsdtOutLedgerEntry() {
         seedTrialPolicies();
         seedTrialSession("usr_9921", "active");
