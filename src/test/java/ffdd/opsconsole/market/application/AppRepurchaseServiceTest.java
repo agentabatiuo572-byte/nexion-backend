@@ -121,6 +121,7 @@ class AppRepurchaseServiceTest {
     void executeIdempotentAction() {
         environment.setActiveProfiles("dev");
         when(config.activeValueForUpdate("G.staking.app_visible")).thenReturn(Optional.of("true"));
+        when(config.activeValue("G.staking.app_visible")).thenReturn(Optional.of("true"));
         when(mapper.controlValue("killswitch.staking")).thenReturn("enabled");
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
@@ -170,6 +171,19 @@ class AppRepurchaseServiceTest {
         assertThat(data.get("presets")).isEqualTo(List.of(
                 new BigDecimal("100.000000"), new BigDecimal("200.000000"),
                 new BigDecimal("500.000000"), new BigDecimal("1000.000000")));
+    }
+
+    @Test void configDisablesNewRepurchasesWhenStakingIsHiddenOrTheSwitchIsMissing(){
+        when(mapper.product()).thenReturn(product());
+        when(config.activeValue("G.staking.app_visible")).thenReturn(Optional.of("false"));
+        assertThat(service.config().getData()).containsEntry("enabled",false);
+        when(config.activeValue("G.staking.app_visible")).thenReturn(Optional.empty());
+        assertThat(service.config().getData()).containsEntry("enabled",false);
+        when(config.activeValue("G.staking.app_visible")).thenReturn(Optional.of(" true "));
+        assertThat(service.config().getData()).containsEntry("enabled",true);
+        when(mapper.controlValue("killswitch.staking")).thenReturn("disabled");
+        assertThat(service.config().getData()).containsEntry("enabled",false);
+        verify(mapper,never()).debitWallet(any(),any());
     }
 
     @Test

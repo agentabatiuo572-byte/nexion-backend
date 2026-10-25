@@ -27,8 +27,15 @@ public class H4EventCommerceService {
     private final Clock clock;
     private final GenesisRaffleService raffle;
     private final EventDeviceGiftService gifts;
+    private final ffdd.opsconsole.platform.facade.PlatformConfigFacade config;
+
+    public boolean reinvestParticipationOpen(boolean lock){
+        var value=lock?config.activeValueForUpdate("G.staking.app_visible"):config.activeValue("G.staking.app_visible");
+        return value.map(raw->"true".equalsIgnoreCase(raw.trim())).orElse(false);
+    }
 
     public List<String> readiness(String eventCode, Map<String, Object> rules, LocalDateTime startsAt, LocalDateTime endsAt) {
+        if("evt-reinvest-bonus".equals(eventCode)&&!reinvestParticipationOpen(false))return List.of("stakingAppVisible");
         if (rules.containsKey("giftProductNo")) {
             try {
                 String productNo = text(rules.get("giftProductNo"));
