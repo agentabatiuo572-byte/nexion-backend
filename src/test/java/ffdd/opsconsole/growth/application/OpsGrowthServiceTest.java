@@ -833,6 +833,97 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void supportedH4DraftsKeepDisplayRewardsOutOfLegacyEconomicFields() {
+        var rules = mock(H4EventRuleService.class);
+        var managed = serviceWithH4Rules(rules);
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85"));
+        for (var entry : Map.of("evt-refer-5-get-pro", "Pro 设备1台",
+                "evt-black-friday", "购物优惠券", "evt-onboarding-7d", "200 NEX + 补签卡",
+                "evt-regional-pk", "NEX 与 USDT 展示说明").entrySet()) {
+            var request = new GrowthQuestEventRequest(entry.getKey(), "Test campaign", "referral", "ongoing",
+                    entry.getValue(), true, false, "Campaign condition", "", 0, "", null, null,
+                    "Validate structured reward draft", "test-admin");
+            assertThat(managed.createQuestEvent("draft-" + entry.getKey(), request).getCode()).isZero();
+            verify(rules).registerDraft(entry.getKey(), "referral");
+        }
+        var inserts = mockingDetails(questEventMapper).getInvocations().stream()
+                .filter(invocation -> invocation.getMethod().getName().equals("insertEvent")).toList();
+        assertThat(inserts).hasSize(4).allSatisfy(invocation -> {
+            assertThat(invocation.getArgument(9, String.class)).isEqualTo("NEX");
+            assertThat(invocation.getArgument(10, BigDecimal.class)).isZero();
+            assertThat(invocation.getArgument(12, String.class)).isNull();
+            assertThat(invocation.getArgument(14, Integer.class)).isZero();
+        });
+    }
+
+    @Test
+    void unsupportedOrLegacyDraftStillRequiresSinglePositiveCurrencyAndCoverage() {
+        var managed = serviceWithH4Rules(mock(H4EventRuleService.class));
+        for (var creator : List.of(service, managed)) {
+            String code = creator == service ? "evt-refer-5-get-pro" : "custom-referral";
+            for (String reward : List.of("Pro 设备1台", "10 NEX + 1 USDT", "0 NEX")) {
+                var request = new GrowthQuestEventRequest(code, "Test campaign", "referral", "upcoming",
+                        reward, false, false, "", "", 0, "", null, null, "Check legacy reward validation", "test-admin");
+                assertThat(creator.createQuestEvent("legacy-draft", request).getCode()).isNotZero();
+            }
+            coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85"));
+            var request = new GrowthQuestEventRequest(code, "Test campaign", "referral", "upcoming",
+                    "10 NEX", false, false, "", "", 0, "", null, null, "Check legacy coverage validation", "test-admin");
+            assertThat(creator.createQuestEvent("legacy-coverage", request).getCode())
+                    .isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        }
+        assertThat(mockingDetails(questEventMapper).getInvocations())
+                .noneMatch(invocation -> invocation.getMethod().getName().equals("insertEvent"));
+    }
+
+    @Test
+    void managedRewardCopyEditOnlyWritesNameAndKeepsStaleAndEmptyChecks() throws Exception {
+        String code = "evt-refer-5-get-pro";
+        seedQuestEvents("{\"id\":\"evt-refer-5-get-pro\",\"kind\":\"referral\",\"reward\":\"Pro 设备1台\"}");
+        var rules = mock(H4EventRuleService.class);
+        when(rules.find(code, false)).thenReturn(Map.of("enabled", 1));
+        when(questEventMapper.updateRewardName(eq(code), anyString(), any())).thenReturn(1);
+        var managed = serviceWithH4Rules(rules);
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85"));
+        assertThat(managed.updateQuestEventReward("copy-stale", code,
+                new GrowthConfigUpdateRequest("reward", "Pro 设备礼品", "Edit display copy", "test-admin", "旧文案")).getMessage())
+                .isEqualTo("EVENT_CONFIG_STALE");
+        assertThat(managed.updateQuestEventReward("copy-empty", code,
+                new GrowthConfigUpdateRequest("reward", " ", "Edit display copy", "test-admin", "Pro 设备1台")).getCode())
+                .isNotZero();
+        assertThat(managed.updateQuestEventReward("copy-ok", code,
+                new GrowthConfigUpdateRequest("reward", "Pro 设备礼品", "Edit display copy", "test-admin", "Pro 设备1台")).getCode())
+                .isZero();
+        verify(questEventMapper).updateRewardName(eq(code), eq("Pro 设备礼品"), any());
+        verify(questEventMapper, never()).updateReward(anyString(), anyString(), anyString(), any(), any());
+        String sql = String.join(" ", GrowthQuestEventMapper.class
+                .getMethod("updateRewardName", String.class, String.class, LocalDateTime.class)
+                .getAnnotation(org.apache.ibatis.annotations.Update.class).value());
+        assertThat(sql).contains("reward_name").doesNotContain("reward_type", "reward_amount");
+        verify(rules, never()).update(anyString(), any());
+    }
+
+    @Test
+    void knownCodeWithoutRegisteredRuleRetainsLegacyRewardEdits() {
+        String code = "evt-refer-5-get-pro";
+        seedQuestEvents("{\"id\":\"evt-refer-5-get-pro\",\"kind\":\"referral\",\"reward\":\"10 NEX\"}");
+        var rules = mock(H4EventRuleService.class);
+        when(rules.find(code, false)).thenReturn(null);
+        var managed = serviceWithH4Rules(rules);
+        assertThat(managed.updateQuestEventReward("legacy-device", code,
+                new GrowthConfigUpdateRequest("reward", "Pro 设备1台", "Check legacy edit", "test-admin", "10 NEX")).getMessage())
+                .isEqualTo("EVENT_REWARD_ASSET_INVALID");
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85"));
+        assertThat(managed.updateQuestEventReward("legacy-increase", code,
+                new GrowthConfigUpdateRequest("reward", "20 NEX", "Check legacy edit", "test-admin", "10 NEX")).getCode())
+                .isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(managed.updateQuestEventReward("legacy-decrease", code,
+                new GrowthConfigUpdateRequest("reward", "5 NEX", "Check legacy edit", "test-admin", "10 NEX")).getCode()).isZero();
+        verify(questEventMapper).updateReward(eq(code), eq("5 NEX"), eq("NEX"), eq(new BigDecimal("5")), any());
+        verify(questEventMapper, never()).updateRewardName(anyString(), anyString(), any());
+    }
+
+    @Test
     void questEventsReturnsH3H4ReadModelAndSunsetOnly() {
         ApiResult<Map<String, Object>> result = service.questEvents();
 
@@ -2585,6 +2676,13 @@ class OpsGrowthServiceTest {
         row.put("batchCount", 0L);
         row.put("status", status);
         return row;
+    }
+
+    private OpsGrowthService serviceWithH4Rules(H4EventRuleService rules) {
+        return new OpsGrowthService(configFacade, emergencyRepository, coverageFacade, ledgerPostingFacade,
+                auditLogService, new ObjectMapper(), OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                Optional.empty(), Optional.of(questEventMapper), Optional.empty(), lockMapper,
+                null, Optional.empty(), missionAvailability, null, null, null, rules);
     }
 
     private OpsGrowthService serviceWithTrialLifecycle() {

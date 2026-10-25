@@ -1017,9 +1017,11 @@ public class OpsGrowthService implements AuditReplayable {
             String reward = wheelEvent
                     ? "Wheel pool award"
                     : normalizePlainText(StringUtils.hasText(request.reward()) ? request.reward() : "0 NEX", 128);
-            String rewardType = wheelEvent ? "NEX" : eventRewardAsset(reward);
-            BigDecimal rewardAmount = wheelEvent ? BigDecimal.ZERO : rewardFlow(reward);
-            if (!wheelEvent && rewardAmount.signum() <= 0) {
+            boolean ruleManaged = supportsH4EventRules(id);
+            // H4 economic terms live in the disabled rule draft, not in display copy.
+            String rewardType = wheelEvent || ruleManaged ? "NEX" : eventRewardAsset(reward);
+            BigDecimal rewardAmount = wheelEvent || ruleManaged ? BigDecimal.ZERO : rewardFlow(reward);
+            if (!wheelEvent && !ruleManaged && rewardAmount.signum() <= 0) {
                 return validation("EVENT_REWARD_INVALID");
             }
             boolean featured = h4EventRules == null && Boolean.TRUE.equals(request.featured());
@@ -2159,12 +2161,15 @@ public class OpsGrowthService implements AuditReplayable {
         if ("wheel".equalsIgnoreCase(String.valueOf(eventRow(id).get("kind")))) {
             return validation("EVENT_WHEEL_REWARD_MANAGED_BY_POOL");
         }
+        boolean ruleManaged = supportsH4EventRules(id) && h4EventRules.find(id, false) != null;
         String value;
         try {
             value = normalizePlainText(request.value(), 160);
-            eventRewardAsset(value);
-            if (rewardFlow(value).signum() <= 0) {
-                return validation("EVENT_REWARD_INVALID");
+            if (!ruleManaged) {
+                eventRewardAsset(value);
+                if (rewardFlow(value).signum() <= 0) {
+                    return validation("EVENT_REWARD_INVALID");
+                }
             }
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
@@ -2176,18 +2181,23 @@ public class OpsGrowthService implements AuditReplayable {
         if (oldValue.equalsIgnoreCase(value)) {
             return validation("EVENT_CONFIG_NO_CHANGE");
         }
-        String oldAsset;
-        try {
-            oldAsset = eventRewardAsset(oldValue);
-        } catch (IllegalArgumentException ignored) {
-            oldAsset = "";
+        if (!ruleManaged) {
+            String oldAsset;
+            try {
+                oldAsset = eventRewardAsset(oldValue);
+            } catch (IllegalArgumentException ignored) {
+                oldAsset = "";
+            }
+            boolean amplifiesOutflow = rewardFlow(value).compareTo(rewardFlow(oldValue)) > 0
+                    || ("USDT".equals(eventRewardAsset(value)) && !"USDT".equals(oldAsset));
+            if (amplifiesOutflow && coverageBelowRedline()) {
+                return coverageRedline();
+            }
         }
-        boolean amplifiesOutflow = rewardFlow(value).compareTo(rewardFlow(oldValue)) > 0
-                || ("USDT".equals(eventRewardAsset(value)) && !"USDT".equals(oldAsset));
-        if (amplifiesOutflow && coverageBelowRedline()) {
-            return coverageRedline();
-        }
-        if (!updateBusinessEventReward(id, value)) {
+        boolean updated = ruleManaged
+                ? questEventMapper.get().updateRewardName(id, value, LocalDateTime.now()) > 0
+                : updateBusinessEventReward(id, value);
+        if (!updated) {
             return validation("QUEST_EVENT_BUSINESS_TABLE_UPDATE_FAILED");
         }
         audit("H4_EVENT_REWARD_CHANGED", "GROWTH_EVENT", id, request.operator(), Map.of(
@@ -5049,6 +5059,10 @@ public class OpsGrowthService implements AuditReplayable {
 
     private String normalizeEventCondition(String raw) {
         return StringUtils.hasText(raw) ? normalizePlainText(raw, 512) : "";
+    }
+
+    private boolean supportsH4EventRules(String eventId) {
+        return h4EventRules != null && H4EventRuleService.CODES.contains(eventId);
     }
 
     private boolean updateBusinessEventReward(String eventId, String reward) {
