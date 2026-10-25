@@ -3,7 +3,7 @@
 ## 业务口径与测试边界
 
 - 正式 App 只展示 USDT-BEP20。登录用户获得一个固定的 Cregis 专属地址，可复制或扫描二维码。
-- 地址接口不可用时返回明确 `reason`：服务模式、全局充值/入账开关关闭或名单配置异常为 `CREGIS_DEPOSIT_PAUSED`；服务已开放但当前用户不在试点名单为 `CREGIS_DEPOSIT_ACCOUNT_NOT_OPEN`。均不返回充值地址，不触发建址或入账。App/H5 分别展示通道暂停、账号暂未开放提示；未知或旧响应缺省原因沿用通道不可用提示，请求异常仍走加载失败与重试。
+- 充值向所有正常登录账号开放，不再按用户 ID 维护充值试点名单。服务模式及全局充值/入账开关关闭、地址分配暂停时返回 `CREGIS_DEPOSIT_PAUSED`，不返回可用地址；请求异常仍走加载失败与重试。旧的 `NEXION_CREGIS_DEPOSIT_PILOT_USER_IDS` 配置不再被读取，不新增 PC 账号允许功能。鉴权、通道开关、风险暂停、地址核验、到账核验和幂等账务规则保持不变。
 - 单笔链上入金至少 10 USDT，固定手续费 1 USDT。入账净额为链上转账金额减 1 USDT；低于 10 USDT 的记录进入 `DUST_HOLD`，超过 100 USDT 的记录进入 `REVIEW_HOLD`，均由人工处理。
 - 到账经过 Cregis 签名通知、Cregis 交易查询、BSC USDT 合约 `Transfer` 日志和至少 15 个确认核对后，原子写入充值事件、USDT 钱包、累计本金、钱包流水、D1 储备和充值单。订单购买继续从钱包余额扣款。
 - 订单退款沿用现有人工审核和钱包退款流程。链上充值本金进入 `cumulative_deposit_usdt`，可计入已有银行提现资格；银行提现的实际通道仍由银行提现服务控制。
@@ -16,13 +16,13 @@
 1. 异常处置还须依次应用 `20261022_01_cregis_exception_claim.sql`、`20261022_02_cregis_exception_refund.sql`、`20261022_03_cregis_reorg_resolution.sql`，见 [操作说明](cregis-exception-operations.md)。基础入金按顺序在目标数据库执行 `scripts/migrations/20260928_cregis_deposit.sql` 与 `scripts/migrations/20260928_cregis_controls_reconciliation.sql`。启动迁移列表已注册两者；服务在 `PROVIDER` 模式下检查必需表、列和唯一索引，缺失时拒绝启动。
 2. 配置 Cregis 项目 ID、服务端 API key、Cregis API HTTPS 地址、公开 HTTPS 回调基址、只读 BSC JSON-RPC 地址及 `NEXION_CREGIS_CALLBACK_SOURCE_IPS`（供应商确认的回调出口 IP，逗号分隔的精确 IP）。来源清单为空时回调拒绝并留存证据。密钥留在安全配置中，不写入仓库或日志。
 3. 在 Cregis 项目中核验 USDT-BEP20 `chain_id=2510`、`token_id=0x55d398326f99059ff775485246999027b3197955` 可创建地址，并配置回调地址、出站访问白名单及回调网络通路。TEST 公网入口使用 `/api/cregis/callbacks/deposit`；原 `/openapi/v1/withdrawals/cregis/callbacks/deposit` 只适用于直接连到后端的环境。
-4. TEST 发布器的 JVM 参数优先于环境变量；须核对新进程的实际模式与独立主机许可。收款配置包括 `NEXION_CREGIS_DEPOSIT_ENABLED=true`、`NEXION_CREGIS_DEPOSIT_CREDIT_ENABLED=true`、`NEXION_CREGIS_DEPOSIT_PILOT_USER_IDS=<逗号分隔的用户 ID>`、`NEXION_CREGIS_BSC_RPC_URL=<HTTPS RPC>`。试点最多 50 个用户，地址池上限 60 个。出款另按出款接入文档配置并经不同管理员复核，不因收款配置自动开启。
-5. 使用已批准的试点账号读取 `GET /api/deposits/address?network=BEP20`，核对返回地址在 Cregis 项目中属于该项目；再做一笔受控小额真实转账，按 Cregis 交易、链上确认、回调收件箱、事件、钱包流水、充值单和 D1 储备逐项验收。未完成这些核对时保持收款开关关闭。
+4. TEST 发布器的 JVM 参数优先于环境变量；须核对新进程的实际模式与独立主机许可。收款配置包括 `NEXION_CREGIS_DEPOSIT_ENABLED=true`、`NEXION_CREGIS_DEPOSIT_CREDIT_ENABLED=true`、`NEXION_CREGIS_BSC_RPC_URL=<HTTPS RPC>`。不再有试点用户数量限制；现有地址池容量上限 60 个属于维护资源限制，不作为账号资格名单。出款另按出款接入文档配置并经不同管理员复核，不因收款配置自动开启。
+5. 使用正常登录账号读取 `GET /api/deposits/address?network=BEP20`，核对返回地址在 Cregis 项目中属于该项目；再做一笔受控小额真实转账，按 Cregis 交易、链上确认、回调收件箱、事件、钱包流水、充值单和 D1 储备逐项验收。未完成这些核对时保持收款开关关闭。
 
 ## 异常与恢复
 
 - 地址创建由 `finance_d1_channel_manage` 管理接口发起，每次只创建一个候选并记录请求；供应商结果未知时封闭许可。链日志追赶并确认归属、供应商余额和 BSC 余额均为零后才入池。用户接口只能领取已核验地址；空池返回 `CREGIS_ADDRESS_POOL_EMPTY`。
-- 长度受限的回调逐次留存原文、可信代理解析后的对端 IP、来源白名单结果、签名与时间窗结果；只有来源、验签、时间窗和字段校验均通过、原文落库成功后才返回 Cregis 要求的 `success`。异步任务通过 Cregis 交易查询和链上日志核实到账；服务中断后可重试。未处理的已验签投递会阻止重开开关和人工放行资金。链上扫描对有地址的试点账户从分配区块开始，发现平台未收到回调的转账时保留 `PROVIDER_MISSING` 观察记录。
+- 长度受限的回调逐次留存原文、可信代理解析后的对端 IP、来源白名单结果、签名与时间窗结果；只有来源、验签、时间窗和字段校验均通过、原文落库成功后才返回 Cregis 要求的 `success`。异步任务通过 Cregis 交易查询和链上日志核实到账；服务中断后可重试。未处理的已验签投递会阻止重开开关和人工放行资金。链上扫描对有地址的用户账户从分配区块开始，发现平台未收到回调的转账时保留 `PROVIDER_MISSING` 观察记录。
 - `DUST_HOLD` 不加钱包余额。重复的 Cregis ID 或相同交易日志由唯一索引阻止再次入账；冲突保持待处理。数据库事务失败会回滚钱包、流水及储备。
 - 回调和链上观察记录保留 `last_error` 以便运营区分供应商缺单、链事实不符和暂时不可用；定时任务继续核对，不根据错误自行加款或退款。已入账交易在 100 个后续区块内分段复核 canonical，冲突时冻结账户、待处理提现和可覆盖的余额并留存事件。
 - 有 `finance_d1_read` 权限的运营人员可读 `GET /api/admin/finance/cregis/exceptions`，查看未知地址、超限/灰尘待审入金、供应商缺单及建址许可状态。该接口不提供直接改余额的操作。

@@ -65,14 +65,10 @@ public class CregisDepositService {
 
     public Map<String, Object> address(long userId) {
         if (userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
-        String unavailableReason = depositUnavailableReason(userId);
-        if ("CREGIS_DEPOSIT_ACCOUNT_NOT_OPEN".equals(unavailableReason)) {
-            Map<String, Object> gate = db.provisionGate();
-            if (gate == null || !"IDLE".equals(gate.get("state")) || !on(gate, "assignEnabled"))
-                unavailableReason = "CREGIS_DEPOSIT_PAUSED";
-        }
-        if (unavailableReason != null) return Map.of("enabled", false, "creditEnabled", false,
-                "network", "BEP20", "reason", unavailableReason);
+        if (!config.isDepositEnabled() || !config.isDepositCreditEnabled()
+                || config.getMode() != CregisProperties.Mode.PROVIDER)
+            return Map.of("enabled", false, "creditEnabled", false,
+                    "network", "BEP20", "reason", "CREGIS_DEPOSIT_PAUSED");
         tripIfNeeded();
         if (config.getDepositConfirmations() < 15) throw new BizException(503, "CREGIS_CONFIRMATIONS_INVALID");
         List<Map<String, Object>> rows = db.addressForUser(userId, CHAIN);
@@ -930,15 +926,6 @@ public class CregisDepositService {
             db.blockProvisionGateAny();
             throw new IllegalStateException("CREGIS_ALLOCATION_ANCHOR_MISMATCH");
         }
-    }
-
-    private String depositUnavailableReason(long userId) {
-        if (!config.isDepositEnabled() || !config.isDepositCreditEnabled()
-                || config.getMode() != CregisProperties.Mode.PROVIDER) return "CREGIS_DEPOSIT_PAUSED";
-        String raw = config.getDepositPilotUserIds();
-        if (raw == null || raw.split(",").length > 50) return "CREGIS_DEPOSIT_PAUSED";
-        for (String id : raw.split(",")) if (id.trim().equals(Long.toString(userId))) return null;
-        return "CREGIS_DEPOSIT_ACCOUNT_NOT_OPEN";
     }
 
     @Scheduled(fixedDelayString = "${NEXION_CREGIS_RISK_CHECK_MS:30000}")
