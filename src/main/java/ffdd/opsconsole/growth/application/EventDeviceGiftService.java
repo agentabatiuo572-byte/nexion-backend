@@ -23,9 +23,14 @@ public class EventDeviceGiftService {
         require(totalQty > 0 && totalQty <= 100, "H4_EVENT_GIFT_QUANTITY_INVALID");
         Map<String, Object> product = db.product(productNo, true);
         Map<String, Object> sku = db.requiredRow("SELECT * FROM nx_admin_device_sku WHERE sku_id=? AND is_deleted=0 FOR UPDATE", productNo);
-        require(PromotionNativeContractResolver.giftFailure(product, sku) == null, "H4_EVENT_GIFT_PRODUCT_UNAVAILABLE");
-        require("FINITE".equals(product.get("inventory_mode")) && number(product.get("stock")) >= totalQty,
-                "H4_EVENT_GIFT_STOCK_UNAVAILABLE");
+        String failure=readinessFailure(product,sku,totalQty);
+        require(failure==null,failure);
+    }
+
+    public static String readinessFailure(Map<String,Object> product,Map<String,Object> sku,int quantity){
+        if(quantity<=0||quantity>100)return "H4_EVENT_GIFT_QUANTITY_INVALID";
+        if(PromotionNativeContractResolver.giftFailure(product,sku)!=null)return "H4_EVENT_GIFT_PRODUCT_UNAVAILABLE";
+        return "FINITE".equals(product.get("inventory_mode"))&&number(product.get("stock"))>=quantity?null:"H4_EVENT_GIFT_STOCK_UNAVAILABLE";
     }
 
     @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)

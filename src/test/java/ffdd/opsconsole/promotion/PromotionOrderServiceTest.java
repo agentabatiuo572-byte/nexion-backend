@@ -119,4 +119,60 @@ class PromotionOrderServiceTest {
         when(db.order("O1",false)).thenReturn(values("paid_at",Instant.now(),"order_status","CANCELLED"));
         assertThrows(BizException.class,()->service.releaseUnpaid("O1","cancel"));verifyNoInteractions(outbox);
     }
+    @Test void discountPaymentCommitsBudgetOnceAndNeverCreatesWalletReward(){
+        var reservation=values("reservation_id","R1","activity_id","A1","version",1,"order_no","O1","order_line_id",101,
+                "beneficiary_id",17L,"beneficiary_role","BUYER","rule_id","RULE1","reward_rule_id","D1","unit_seq",0,
+                "asset","DISCOUNT_USDT","product_no","","amount",new BigDecimal("500"),"status","RESERVED","pay_by",Instant.now().plusSeconds(600));
+        when(db.order("O1",false)).thenReturn(values("user_id",17L,"payment_status","PAID","paid_at",Instant.now()));
+        when(db.reservations("O1",true)).thenReturn(List.of(reservation));
+        when(db.write(startsWith("UPDATE nx_promotion_reservation SET status='COMMITTED'"),any(Object[].class))).thenAnswer(i->{reservation.put("status","COMMITTED");return 1;});
+        service.afterPaid(17L,"O1");service.afterPaid(17L,"O1");
+        verify(db,times(1)).write(startsWith("UPDATE nx_promotion_budget SET reserved=reserved-?,committed=committed+?"),eq(new BigDecimal("500")),eq(new BigDecimal("500")),eq("A1"),eq("DISCOUNT_USDT"),eq(""),eq(new BigDecimal("500")));
+        verify(db,never()).write(startsWith("INSERT INTO nx_promotion_reward"),any(Object[].class));verifyNoInteractions(outbox);
+    }
+    @Test void discountReceiptFreezesNetLinePriceAndReservesBudgetWithoutGiftStock(){
+        Instant deadline=Instant.now().plusSeconds(600);
+        when(db.order("O1",false)).thenReturn(values("id",5L,"user_id",17L,"payment_status","PENDING","amount_usdt",new BigDecimal("1000")));
+        when(db.list(startsWith("SELECT * FROM nx_order_item"),any(Object[].class))).thenReturn(List.of(values("id",101L,"product_no","PRO","product_name","Pro","quantity",1,"unit_price_usdt",new BigDecimal("1500"))));
+        when(db.reservations("O1",true)).thenReturn(List.of());
+        var award=values("productNo","PRO","beneficiaryId",17L,"beneficiaryRole","BUYER","ruleId","R1","rewardRuleId","D1","unitSeq",0,"reward",PromotionOrderDiscountTest.spec("500"));
+        var expected=PromotionQuoteService.expected(List.of(award),"A1",1L);
+        var localized=values("zh","下单立减","en","Order discount","vi","Giảm giá đơn");
+        expected.get(0).put("disclosure",values("title",localized,"terms",localized,"refundTerms",localized,"benefitDescription",localized,"deviceName",null,"deviceRights",null));
+        var price=PromotionQuoteService.applyDiscounts(PromotionOrderDiscountTest.price(List.of(PromotionOrderDiscountTest.line("PRO","1500.000000","0.000000"))),List.of(award));
+        price.putAll(values("activityId","A1","activityVersion",1,"expectedRewards",expected));
+        var snapshot=values("public",price,"request",values("items",List.of(values("productNo","PRO","quantity",1))),"awards",List.of(award));
+        var plan=new PromotionOrderService.CreationPlan("Q1",17L,List.of(17L),List.of("PRO"),deadline,snapshot);
+        var receipt=service.reserveCreatedOrder(plan,"O1",deadline);
+        receipt.putAll(values("orderNo","O1","paymentStatus","PENDING","orderStatus","PENDING_PAYMENT"));
+        new PromotionContractValidator(new com.fasterxml.jackson.databind.ObjectMapper()).validate("OrderReceipt",receipt);
+        assertEquals("500.000000",receipt.get("promotionDiscountUsdt"));
+        assertEquals("1000.000000",maps(receipt.get("items")).get(0).get("payableUsdt"));
+        assertEquals("101",maps(receipt.get("rewards")).get(0).get("lineId"));
+        verify(db).write(startsWith("UPDATE nx_promotion_budget SET reserved=reserved+?"),eq(new BigDecimal("500.000000")),eq("A1"),eq("DISCOUNT_USDT"),eq(""),eq(new BigDecimal("500.000000")));
+        verify(db,never()).write(startsWith("UPDATE nx_product"),any(Object[].class));
+        verify(db,never()).write(startsWith("INSERT INTO nx_promotion_reward"),any(Object[].class));
+    }
+    @Test void discountCancelReleasesOnlyItsReservationAndCanBeRetried(){
+        var reservation=values("reservation_id","R1","activity_id","A1","beneficiary_id",17L,"beneficiary_role","BUYER","rule_id","RULE1","asset","DISCOUNT_USDT","product_no","","amount",new BigDecimal("500"),"status","RESERVED");
+        when(db.order("O1",false)).thenReturn(values("paid_at",null,"order_status","CANCELLED"));when(db.reservations("O1",true)).thenReturn(List.of(reservation));
+        when(db.write(startsWith("UPDATE nx_promotion_reservation SET status='RELEASED'"),any(Object[].class))).thenAnswer(i->{reservation.put("status","RELEASED");return 1;});
+        service.releaseUnpaid("O1","CANCELLED");service.releaseUnpaid("O1","CANCELLED");
+        verify(db,times(1)).write(startsWith("UPDATE nx_promotion_budget SET reserved=reserved-?,revision"),any(Object[].class));
+        verify(db,never()).write(startsWith("UPDATE nx_product"),any(Object[].class));verify(db,never()).write(startsWith("INSERT INTO nx_promotion_reward"),any(Object[].class));
+    }
+    @Test void refundRequiresRealNetLedgerAndRestoresDiscountBudgetOnce(){
+        var reservation=values("reservation_id","R1","activity_id","A1","asset","DISCOUNT_USDT","product_no","","amount",new BigDecimal("500"),"status","COMMITTED","snapshot_json",json(values("policies",Map.of())));
+        var order=values("user_id",17L,"amount_usdt",new BigDecimal("1000"),"payment_status","REFUNDED","order_status","REFUNDED");
+        when(db.order("O1",false)).thenReturn(order);when(db.order("O1",true)).thenReturn(order);when(db.reservations("O1",true)).thenReturn(List.of(reservation));
+        when(db.requiredRow(startsWith("SELECT * FROM nx_wallet_ledger"),any(Object[].class))).thenReturn(values("amount",new BigDecimal("1500")));
+        assertEquals("PROMOTION_REFUND_LEDGER_MISMATCH",assertThrows(BizException.class,()->service.confirmE4Refund("O1","REFUND-O1")).getMessage());
+        verify(db,never()).write(startsWith("UPDATE nx_promotion_budget"),any(Object[].class));
+        when(db.requiredRow(startsWith("SELECT * FROM nx_wallet_ledger"),any(Object[].class))).thenReturn(values("amount",new BigDecimal("1000")));
+        when(db.list(contains("nx_promotion_refund_hold"),any(Object[].class))).thenReturn(List.of(values("status","EXECUTED")));
+        when(db.write(startsWith("UPDATE nx_promotion_reservation SET status='REVERSED'"),any(Object[].class))).thenAnswer(i->{reservation.put("status","REVERSED");return 1;});
+        service.confirmE4Refund("O1","REFUND-O1");service.confirmE4Refund("O1","REFUND-O1");
+        verify(db,times(1)).write(startsWith("UPDATE nx_promotion_budget SET committed=committed-?"),eq(new BigDecimal("500")),eq("A1"),eq(new BigDecimal("500")));
+        verify(db,never()).write(contains("nx_wallet_ledger"),any(Object[].class));verify(db,never()).write(startsWith("UPDATE nx_product"),any(Object[].class));
+    }
 }

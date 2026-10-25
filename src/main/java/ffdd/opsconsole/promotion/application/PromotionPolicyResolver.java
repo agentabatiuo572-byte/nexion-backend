@@ -75,6 +75,7 @@ public class PromotionPolicyResolver {
         }
         for(Map<String,Object> rule:maps(contract.get("rules")))for(String role:List.of("buyerReward","inviterReward")){
             if(rule.get(role)==null)continue;Map<String,Object> reward=map(rule.get(role));String type=text(reward.get("type"));
+            if("DISCOUNT_USDT".equals(type)){require("buyerReward".equals(role)&&"BUYER".equals(reward.get("beneficiaryRole")),"PROMOTION_DISCOUNT_BUYER_REQUIRED");continue;}
             Map<String,Object> policy=resolveReference(result,map(reward.get("DEVICE".equals(type)?"deviceRightsProfile":"assetPolicy")));
             Map<String,Object> content=map(policy.get("content"));
             if("DEVICE".equals(type))require("DEVICE_RIGHTS".equals(content.get("kind"))&&reward.get("giftProductNo").equals(content.get("productNo")),"PROMOTION_DEVICE_POLICY_MISMATCH");

@@ -9,7 +9,9 @@
       },
       "EvidenceRef": {
         "anyOf": [
-          { "$ref": "#/components/schemas/Id" },
+          {
+            "$ref": "#/components/schemas/Id"
+          },
           {
             "type": "string",
             "minLength": 65,
@@ -132,8 +134,10 @@
         "enum": [
           "RESERVED",
           "COMMITTED",
-          "RELEASED"
-        ]
+          "RELEASED",
+          "REVERSED"
+        ],
+        "description": "REVERSED applies only to an immediate order discount after a confirmed whole-order cash refund."
       },
       "HoldState": {
         "type": "string",
@@ -886,6 +890,34 @@
               "assetPolicy"
             ],
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "rewardRuleId": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "beneficiaryRole": {
+                "const": "BUYER"
+              },
+              "type": {
+                "const": "DISCOUNT_USDT"
+              },
+              "calculation": {
+                "const": "FIXED"
+              },
+              "amount": {
+                "$ref": "#/components/schemas/PositiveAmount"
+              }
+            },
+            "required": [
+              "rewardRuleId",
+              "beneficiaryRole",
+              "type",
+              "calculation",
+              "amount"
+            ],
+            "additionalProperties": false
           }
         ]
       },
@@ -954,7 +986,8 @@
                 "type": "string",
                 "enum": [
                   "USDT",
-                  "NEX"
+                  "NEX",
+                  "DISCOUNT_USDT"
                 ]
               },
               "total": {
@@ -1868,6 +1901,10 @@
           },
           "payableUsdt": {
             "$ref": "#/components/schemas/Amount"
+          },
+          "promotionDiscountUsdt": {
+            "$ref": "#/components/schemas/Amount",
+            "description": "Immediate promotion price reduction included in discountUsdt; never paid as a wallet reward."
           }
         },
         "required": [
@@ -2030,6 +2067,10 @@
           },
           "reserved": {
             "const": false
+          },
+          "promotionDiscountUsdt": {
+            "$ref": "#/components/schemas/Amount",
+            "description": "Immediate promotion price reduction included in discountUsdt; never paid as a wallet reward."
           }
         },
         "required": [
@@ -2241,6 +2282,16 @@
               "$ref": "#/components/schemas/OrderReceiptItem"
             },
             "description": "Frozen purchased items for promoted orders. Historical receipts are enriched from their original canonical order items, never the current catalog."
+          },
+          "subtotalUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "discountUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "promotionDiscountUsdt": {
+            "$ref": "#/components/schemas/Amount",
+            "description": "Immediate promotion price reduction included in discountUsdt; never paid as a wallet reward."
           }
         },
         "required": [
@@ -2917,7 +2968,8 @@
             "enum": [
               "USDT",
               "NEX",
-              "DEVICE"
+              "DEVICE",
+              "DISCOUNT_USDT"
             ]
           },
           "productNo": {
@@ -4205,6 +4257,38 @@
               "disclosure"
             ],
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "rewardRuleId": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "beneficiaryRole": {
+                "const": "BUYER"
+              },
+              "type": {
+                "const": "DISCOUNT_USDT"
+              },
+              "calculation": {
+                "const": "FIXED"
+              },
+              "amount": {
+                "$ref": "#/components/schemas/PositiveAmount"
+              },
+              "disclosure": {
+                "$ref": "#/components/schemas/RewardDisclosure"
+              }
+            },
+            "required": [
+              "rewardRuleId",
+              "beneficiaryRole",
+              "type",
+              "calculation",
+              "amount",
+              "disclosure"
+            ],
+            "additionalProperties": false
           }
         ]
       },
@@ -4772,6 +4856,46 @@
               "type"
             ],
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "rewardRuleId": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "beneficiaryRole": {
+                "const": "BUYER"
+              },
+              "type": {
+                "const": "DISCOUNT_USDT"
+              },
+              "calculation": {
+                "anyOf": [
+                  {
+                    "const": "FIXED"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "amount": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PositiveAmount"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "rewardRuleId",
+              "beneficiaryRole",
+              "type"
+            ],
+            "additionalProperties": false
           }
         ]
       },
@@ -4881,7 +5005,8 @@
                 "type": "string",
                 "enum": [
                   "USDT",
-                  "NEX"
+                  "NEX",
+                  "DISCOUNT_USDT"
                 ]
               },
               "total": {
@@ -5809,7 +5934,8 @@
             "enum": [
               "USDT",
               "NEX",
-              "DEVICE"
+              "DEVICE",
+              "DISCOUNT_USDT"
             ]
           },
           "productNo": {
@@ -5990,6 +6116,10 @@
           },
           "bundlePolicyVersion": {
             "$ref": "#/components/schemas/Revision"
+          },
+          "promotionDiscountUsdt": {
+            "$ref": "#/components/schemas/Amount",
+            "description": "Immediate promotion price reduction included in discountUsdt; never paid as a wallet reward."
           }
         },
         "required": [
@@ -6134,7 +6264,8 @@
             "enum": [
               "USDT",
               "NEX",
-              "DEVICE"
+              "DEVICE",
+              "DISCOUNT_USDT"
             ]
           },
           "productNo": {
@@ -6868,6 +6999,22 @@
           "productName": {
             "type": "string",
             "description": "Original canonical purchased order item name."
+          },
+          "unitPriceUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "subtotalUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "discountUsdt": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "promotionDiscountUsdt": {
+            "$ref": "#/components/schemas/Amount",
+            "description": "Immediate promotion price reduction included in discountUsdt; never paid as a wallet reward."
+          },
+          "payableUsdt": {
+            "$ref": "#/components/schemas/Amount"
           }
         },
         "required": [

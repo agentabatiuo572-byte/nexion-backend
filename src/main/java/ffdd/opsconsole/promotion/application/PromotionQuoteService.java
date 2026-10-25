@@ -64,6 +64,7 @@ public class PromotionQuoteService {
             chosen=row;contract=c;policies=ps;awarded=new ArrayList<>(a);
         }
         if(!selected.isEmpty())require(chosen!=null,"PROMOTION_NOT_ELIGIBLE_OR_UNAVAILABLE");
+        price=applyDiscounts(price,awarded);
         String quoteId=id("PQ");long ttl=chosen==null?60:number(PromotionPolicyResolver.content(policies,"quote").get("ttlSeconds"));
         Instant expiry=now.plusSeconds(ttl);
         if(chosen!=null&&expiry.isAfter(instant(contract.get("endsAt"))))expiry=instant(contract.get("endsAt"));
@@ -72,6 +73,7 @@ public class PromotionQuoteService {
         Map<String,Object> publicQuote=values("quoteId",quoteId,"quoteHash","0".repeat(64),"expiresAt",expiry.toString(),"serverTime",now.toString(),
             "itemCount",items.size(),"quantity",items.stream().mapToInt(PromotionRules.Selection::quantity).sum(),
             "items",price.get("items"),"subtotalUsdt",price.get("subtotalUsdt"),"discountUsdt",price.get("discountUsdt"),
+            "promotionDiscountUsdt",price.get("promotionDiscountUsdt"),
             "amountUsdt",price.get("amountUsdt"),"bundlePolicyVersion",price.get("bundlePolicyVersion"),
             "activityId",activity,"activityVersion",version,"eligibility",chosen==null?"INELIGIBLE":"ELIGIBLE",
             "expectedRewards",expected(awarded,activity,version),"warnings",List.of(),"reserved",false);
@@ -166,6 +168,28 @@ public class PromotionQuoteService {
         return accepted;
     }
     public static BigDecimal rewardAmount(Map<String,Object> r){return "DEVICE".equals(r.get("type"))?BigDecimal.valueOf(number(r.get("quantity"))):amount(r.get("amount"));}
+    /** Price adjustments stay in the originating purchase line; they are never wallet rewards. */
+    public static Map<String,Object> applyDiscounts(Map<String,Object> base,List<Map<String,Object>> awards){
+        Map<String,BigDecimal> discounts=new HashMap<>();
+        for(var award:awards){var reward=map(award.get("reward"));if(!"DISCOUNT_USDT".equals(reward.get("type")))continue;
+            require("BUYER".equals(award.get("beneficiaryRole")),"PROMOTION_DISCOUNT_BUYER_REQUIRED");
+            discounts.merge(text(award.get("productNo")),rewardAmount(reward),BigDecimal::add);
+        }
+        var result=copy(base);var lines=new ArrayList<Map<String,Object>>();BigDecimal total=BigDecimal.ZERO;
+        for(var original:maps(base.get("items"))){var line=copy(original);BigDecimal discount=discounts.remove(text(line.get("productNo")));
+            if(discount==null)discount=BigDecimal.ZERO;
+            BigDecimal payable=amount(line.get("payableUsdt"));require(discount.signum()>=0&&discount.compareTo(payable)<=0,"PROMOTION_DISCOUNT_EXCEEDS_LINE_AMOUNT");
+            line.put("promotionDiscountUsdt",money(discount));line.put("discountUsdt",money(amount(line.get("discountUsdt")).add(discount)));
+            line.put("payableUsdt",money(payable.subtract(discount)));lines.add(line);total=total.add(discount);
+        }
+        require(discounts.isEmpty(),"PROMOTION_DISCOUNT_LINE_MISSING");
+        BigDecimal payable=amount(base.get("amountUsdt")).subtract(total);
+        // E4's canonical cash refund requires a positive paid amount.
+        require(total.signum()==0||payable.signum()>0,"PROMOTION_DISCOUNT_REQUIRES_PAYMENT");
+        result.put("items",lines);result.put("promotionDiscountUsdt",money(total));
+        result.put("discountUsdt",money(amount(base.get("discountUsdt")).add(total)));
+        result.put("amountUsdt",money(payable));return result;
+    }
     public static List<PromotionRules.Selection> selections(Map<String,Object> request){return maps(request.get("items")).stream().map(i->new PromotionRules.Selection(text(i.get("productNo")),Math.toIntExact(number(i.get("quantity"))))).toList();}
     public static List<Map<String,Object>> expected(List<Map<String,Object>> awards,String activity,Long version){
         if(activity==null)return List.of();

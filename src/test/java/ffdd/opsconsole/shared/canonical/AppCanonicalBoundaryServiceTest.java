@@ -272,6 +272,31 @@ class AppCanonicalBoundaryServiceTest {
         verify(outbox).publishUserEvent(eq("ORDER"), anyString(), eq("checkout.started"),
                 eq(42L), eq("P3"), eq(5), eq("2026-W06"), any());
     }
+    @Test void promotionSingleOrderPersistsTheValidatedNetPriceWithoutARefundReward(){
+        when(idempotency.executeRetained(anyString(),anyString(),anyString(),eq(ffdd.opsconsole.shared.api.ApiResult.class),
+                org.mockito.ArgumentMatchers.<java.util.function.Supplier<ffdd.opsconsole.shared.api.ApiResult>>any()))
+                .thenAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get());
+        var promotions=mock(ffdd.opsconsole.promotion.application.PromotionOrderService.class);
+        var promoted=new AppCanonicalBoundaryService(mapper,publisher,idempotency,outbox,growthLifecyclePublisher,growthRhythmFacade,audit,
+                commerceSandboxMapper,fundsSandboxProfileGuard,new CommerceAcceptanceRun("test-run-0001"),productReleasePolicy,
+                new StorefrontPurchaseGatePolicy(),environment,promotions);
+        var product=new CanonicalStateMapper.ProductStock(8L,"BOX-8",new BigDecimal("1500"),4,null);
+        when(mapper.findPurchasableProduct(8L,null)).thenReturn(product);when(mapper.lockProduct(8L,null)).thenReturn(product);
+        when(mapper.deviceSlotCap()).thenReturn(3);
+        when(mapper.userEventAttribution(42L)).thenReturn(new CanonicalStateMapper.UserEventAttribution("P3",5,"2026-W06"));
+        var plan=new ffdd.opsconsole.promotion.application.PromotionOrderService.CreationPlan("Q1",42L,List.of(42L),List.of("BOX-8"),java.time.Instant.now().plusSeconds(600),
+                Map.of("public",Map.of("subtotalUsdt","1500.000000","discountUsdt","500.000000","amountUsdt","1000.000000")));
+        when(promotions.prepareCreate(eq(42L),eq("Q1"),any(),eq(null),eq(null))).thenReturn(plan);
+        when(promotions.reserveCreatedOrder(eq(plan),anyString(),any())).thenReturn(Map.of("promotionDiscountUsdt","500.000000"));
+        when(mapper.decrementProductStock(8L,1)).thenReturn(1);
+        when(mapper.insertOrder(eq(42L),anyString(),eq(8L),eq(1),any(),any(),any())).thenReturn(1);
+        when(mapper.orderDeadlineEpoch(anyString(),anyInt())).thenReturn(java.time.Instant.now().plusSeconds(1800).getEpochSecond());
+        var result=promoted.createOrder(42L,null,8L,null,1,null,"Q1","discount-order");
+        assertThat(result.getCode()).isZero();assertThat(result.getData()).containsEntry("amountUsdt",new BigDecimal("1000.000000"));
+        verify(mapper).insertOrder(eq(42L),anyString(),eq(8L),eq(1),eq(new BigDecimal("1500.000000")),eq(new BigDecimal("500.000000")),eq(new BigDecimal("1000.000000")));
+        verify(mapper,times(1)).decrementProductStock(8L,1);
+        verify(mapper).insertOrderItem(anyString(),eq(8L),eq(1),eq(new BigDecimal("1500.000000")),eq(false),eq(null));
+    }
 
     @Test
     void ordinaryOrderReservesEveryRequestedAndAlreadyAcceptedDeviceSlot() {

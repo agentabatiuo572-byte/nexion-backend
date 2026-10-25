@@ -25,7 +25,9 @@ public class PromotionOrderService {
     private final EventOutboxService outbox;
     public record Selection(String productNo,int quantity) {}
     public record CreationPlan(String quoteId,Long buyerId,List<Long> participantIds,List<String> productNos,
-                               Instant endsAt,Map<String,Object> snapshot) {}
+                               Instant endsAt,Map<String,Object> snapshot) {
+        public BigDecimal price(String field){return amount(map(snapshot.get("public")).get(field));}
+    }
 
     @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)
     public CreationPlan prepareCreate(Long buyerId,String quoteId,List<Selection> items,String voucherId,BigDecimal expectedAmount) {
@@ -72,7 +74,7 @@ public class PromotionOrderService {
             productSnapshots.put(product,values("product",frozenProduct,"sku",sku));
         }
         if(!activity.isEmpty())policies.verifyLockedProducts(map(stored.get("policies")),lockedProducts);
-        Map<String,Object> currentPrice=quotes.currentPrices(buyerId,selections,text(voucherId));
+        Map<String,Object> currentPrice=PromotionQuoteService.applyDiscounts(quotes.currentPrices(buyerId,selections,text(voucherId)),maps(stored.get("awards")));
         for(String key:List.of("amountUsdt","subtotalUsdt","discountUsdt","bundlePolicyVersion"))
             require(text(currentPrice.get(key)).equals(text(pub.get(key))),"PROMOTION_QUOTE_PRICE_CHANGED");
         if(!activity.isEmpty())require(quotes.currentlyAvailable(activity,contract,maps(stored.get("awards"))),"PROMOTION_CAPACITY_UNAVAILABLE");
@@ -147,6 +149,13 @@ public class PromotionOrderService {
             Map<String,Object> value=copy(reward);value.put("lineId",text(byProduct.get(text(reward.get("lineId"))).get("id")));expected.add(value);
         }
         Map<String,Object> projection=values("promotionQuoteId",plan.quoteId(),"items",receiptItems(lines),"itemCount",lines.size(),"quantity",actual.stream().mapToInt(PromotionRules.Selection::quantity).sum(),"amountUsdt",pub.get("amountUsdt"),"payBy",payBy.toString(),"rewards",expected);
+        if(pub.containsKey("promotionDiscountUsdt")){
+            for(String key:List.of("subtotalUsdt","discountUsdt","promotionDiscountUsdt"))projection.put(key,pub.get(key));
+            var pricedItems=maps(projection.get("items"));
+            for(var item:pricedItems)for(var quoted:maps(pub.get("items")))if(item.get("productNo").equals(quoted.get("productNo")))
+                for(String key:List.of("unitPriceUsdt","subtotalUsdt","discountUsdt","promotionDiscountUsdt","payableUsdt"))item.put(key,quoted.get(key));
+            projection.put("items",pricedItems);
+        }
         changed(db.write("INSERT INTO nx_promotion_order_receipt(order_no,order_id,quote_id,buyer_id,projection_json,pay_by) VALUES(?,?,?,?,?,?)",
             orderNo,order.get("id"),plan.quoteId(),plan.buyerId(),json(projection),timestamp(payBy)));
         return projection;
@@ -195,6 +204,7 @@ public class PromotionOrderService {
                 r.get("amount"),r.get("amount"),activity,r.get("asset"),r.get("product_no"),r.get("amount")));
             moveUsage(r,false,orderUses);
             changed(db.write("UPDATE nx_promotion_reservation SET status='COMMITTED',revision=revision+1,updated_at=NOW(6) WHERE reservation_id=? AND status='RESERVED'",r.get("reservation_id")));
+            if("DISCOUNT_USDT".equals(r.get("asset")))continue;
             String obligation=id("PO");
             changed(db.write("""
                 INSERT INTO nx_promotion_reward(obligation_id,reservation_id,activity_id,version,order_no,order_line_id,beneficiary_id,
@@ -295,6 +305,13 @@ public class PromotionOrderService {
         else for(Map<String,Object> hold:holds)if(!"EXECUTED".equals(hold.get("status")))
             changed(db.write("UPDATE nx_promotion_refund_hold SET status='EXECUTED',refund_no=?,refund_ledger_biz_no=?,revision=revision+1,updated_at=NOW(6) WHERE refund_request_id=?",refundNo,refundLedgerBizNo,hold.get("refund_request_id")));
         for(Map<String,Object> r:rows){
+            if("DISCOUNT_USDT".equals(r.get("asset"))){
+                if("COMMITTED".equals(r.get("status"))){
+                    changed(db.write("UPDATE nx_promotion_budget SET committed=committed-?,revision=revision+1 WHERE activity_id=? AND asset='DISCOUNT_USDT' AND product_no='' AND committed>=?",r.get("amount"),r.get("activity_id"),r.get("amount")));
+                    changed(db.write("UPDATE nx_promotion_reservation SET status='REVERSED',revision=revision+1,updated_at=NOW(6) WHERE reservation_id=? AND status='COMMITTED'",r.get("reservation_id")));
+                }
+                continue;
+            }
             Map<String,Object> reward=db.one("SELECT * FROM nx_promotion_reward WHERE reservation_id=? FOR UPDATE",r.get("reservation_id"));if(reward==null)continue;
             String status=text(reward.get("status"));if(Set.of("PENDING","READY","RETRYABLE_FAILED").contains(status)){
                 changed(db.write("UPDATE nx_promotion_reward SET status='CANCELLED',revision=revision+1,updated_at=NOW(6) WHERE obligation_id=?",reward.get("obligation_id")));
@@ -320,7 +337,8 @@ public class PromotionOrderService {
         Map<String,Object> first=PromotionPolicyResolver.content(map(snapshot.get("policies")),"firstPurchase");
         if(first==null||!Boolean.TRUE.equals(first.get("restoreAfterRefund")))return;
         List<Map<String,Object>> rewards=db.list("SELECT * FROM nx_promotion_reward WHERE order_no=? ORDER BY obligation_id FOR UPDATE",orderNo);
-        if(rewards.size()!=reservations.size())return;
+        long discounts=reservations.stream().filter(r->"DISCOUNT_USDT".equals(r.get("asset"))&&"REVERSED".equals(r.get("status"))).count();
+        if(rewards.size()+discounts!=reservations.size())return;
         for(Map<String,Object> reward:rewards){
             if("CANCELLED".equals(reward.get("status"))){
                 if(reward.get("original_ledger_no")!=null||reward.get("original_earnings_entry_no")!=null
@@ -340,7 +358,7 @@ public class PromotionOrderService {
             WHERE h.order_no=? AND h.status='EXECUTED' FOR UPDATE
             """,order.get("user_id"),order.get("amount_usdt"),orderNo).isEmpty())return;
         String activity=text(reservations.get(0).get("activity_id"));db.activity(activity,true);
-        require(reservations.stream().allMatch(r->activity.equals(r.get("activity_id"))&&"COMMITTED".equals(r.get("status"))),"PROMOTION_RESTORE_RESERVATION_INVALID");
+        require(reservations.stream().allMatch(r->activity.equals(r.get("activity_id"))&&("COMMITTED".equals(r.get("status"))||("DISCOUNT_USDT".equals(r.get("asset"))&&"REVERSED".equals(r.get("status"))))),"PROMOTION_RESTORE_RESERVATION_INVALID");
         record Group(long account,String role,String rule){}
         Map<Group,Long> groups=new LinkedHashMap<>();Set<Group> people=new LinkedHashSet<>();
         for(Map<String,Object> r:reservations){Group group=new Group(number(r.get("beneficiary_id")),text(r.get("beneficiary_role")),text(r.get("rule_id")));

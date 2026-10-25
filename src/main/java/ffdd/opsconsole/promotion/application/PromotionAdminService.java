@@ -314,6 +314,7 @@ public class PromotionAdminService {
         for(var rule:maps(contract.get("rules")))for(String role:List.of("buyerReward","inviterReward"))if(rule.get(role)!=null){
             field(!"inviterReward".equals(role)||"DIRECT_REFERRAL".equals(template),"rules.inviterReward");
             var reward=map(rule.get(role));String type=text(reward.get("type")),key=type+":"+("DEVICE".equals(type)?text(reward.get("giftProductNo")):"");
+            field(!"DISCOUNT_USDT".equals(type)||("buyerReward".equals(role)&&"BUYER".equals(reward.get("beneficiaryRole"))),"rules.buyerReward");
             BigDecimal needed=decimal(reward.get("DEVICE".equals(type)?"quantity":"amount"));
             field(budgets.containsKey(key)&&budgets.get(key).compareTo(needed)>=0,"budgets."+key);
         }

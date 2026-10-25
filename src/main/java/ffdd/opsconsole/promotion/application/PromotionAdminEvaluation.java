@@ -69,6 +69,7 @@ final class PromotionAdminEvaluation {
         if(account==null)blockers.add("SAMPLE_ACCOUNT_REQUIRED");
         else try{quotes.requirePurchaseEligibility(account,items);}catch(BizException failure){if(failure.getCode()==409)purchaseFailure=failure.getMessage();else blockers.add("PURCHASE_ELIGIBILITY_UNAVAILABLE");}catch(DataAccessException|org.springframework.beans.BeansException failure){blockers.add("PURCHASE_ELIGIBILITY_UNAVAILABLE");}
         if(blockers.isEmpty()&&purchaseFailure==null)try{awards=evaluator.evaluate(activity,c,resolved,account,items,now,null).stream().map(PromotionEvaluationService::award).toList();}catch(BizException|DataAccessException failure){blockers.add("ACCOUNT_FACTS_UNAVAILABLE");}
+        if(price!=null)try{price=PromotionQuoteService.applyDiscounts(price,awards);}catch(BizException failure){blockers.add(failure.getMessage());price=null;}
         var results=new ArrayList<Map<String,Object>>();var units=new ArrayList<Map<String,Object>>();
         Map<String,Integer> quantities=new HashMap<>();items.forEach(item->quantities.put(item.productNo(),item.quantity()));
         for(var rule:maps(c.get("rules"))){
@@ -151,6 +152,9 @@ final class PromotionAdminEvaluation {
     private Map<String,Object> reasonCount(String code,Long count){return values("code",code,"message",message(code),"count",count);}
     private Map<String,Object> message(String code){
         String[] text=switch(code){
+            case "PROMOTION_DISCOUNT_EXCEEDS_LINE_AMOUNT"->new String[]{"活动立减超过该商品剩余应付金额，请调整活动金额","The promotion discount exceeds this product's remaining payable amount.","Mức giảm vượt quá số tiền còn phải trả cho sản phẩm."};
+            case "PROMOTION_DISCOUNT_REQUIRES_PAYMENT"->new String[]{"活动立减后整单仍需保留应付金额，请调整购买数量或活动配置","The order must retain a positive payable amount after the promotion discount.","Đơn hàng phải còn số tiền cần thanh toán sau khi giảm giá."};
+            case "PROMOTION_DISCOUNT_LINE_MISSING"->new String[]{"立减对应商品不在当前订单中","The discounted product is absent from this order.","Sản phẩm được giảm giá không có trong đơn hàng này."};
             case "SAMPLE_ACCOUNT_REQUIRED"->new String[]{"请选择账户样本后核对资格与奖励","Select an account sample to evaluate eligibility and rewards.","Chọn tài khoản mẫu để kiểm tra điều kiện và phần thưởng."};
             case "F4B_REQUIREMENTS_NOT_MET"->new String[]{"所选商品的有效直推或团队业绩购买条件尚未满足","The selected product's active-direct or team-volume purchase requirements are not met.","Chưa đáp ứng điều kiện mua về giới thiệu trực tiếp hoặc doanh số nhóm của sản phẩm đã chọn."};
             case "F4B_MONTHLY_QUOTA_EXHAUSTED"->new String[]{"所选商品本月购买配额已用完","The selected product's monthly purchase quota is exhausted.","Hạn mức mua tháng này của sản phẩm đã chọn đã hết."};

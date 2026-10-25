@@ -282,6 +282,11 @@ public class AppBundleOrderService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
         BigDecimal discountRate = discountRate(itemCount);
         BigDecimal discount = subtotal.multiply(discountRate).setScale(6, RoundingMode.HALF_UP);
+        if (promotionPlan != null) {
+            if (subtotal.compareTo(promotionPlan.price("subtotalUsdt")) != 0)
+                throw new BizException(409, "PROMOTION_QUOTE_PRICE_CHANGED");
+            discount = promotionPlan.price("discountUsdt");
+        }
         BigDecimal amount = subtotal.subtract(discount).setScale(6, RoundingMode.HALF_UP);
         if (amount.compareTo(expectedAmountUsdt) != 0) return ApiResult.fail(409, "BUNDLE_QUOTE_STALE");
         if (products.stream().anyMatch(row -> {
