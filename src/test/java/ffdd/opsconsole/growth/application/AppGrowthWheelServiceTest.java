@@ -52,7 +52,7 @@ class AppGrowthWheelServiceTest {
         when(mapper.lockOpenWheelEvent("evt-spring-spin"))
                 .thenReturn(new WheelEvent(8L, "evt-spring-spin"));
         when(mapper.attribution(42L)).thenReturn(new Attribution("P2", 3, "2026-W30"));
-        when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class),
+        when(idempotency.executeRetained(anyString(), anyString(), anyString(), eq(ApiResult.class),
                 org.mockito.ArgumentMatchers.<Supplier<ApiResult>>any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
     }

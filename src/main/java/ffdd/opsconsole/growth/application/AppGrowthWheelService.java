@@ -362,7 +362,7 @@ public class AppGrowthWheelService {
     private ApiResult<Map<String, Object>> executeOnce(
             Long userId, String idempotencyKey, Object request,
             Supplier<ApiResult<Map<String, Object>>> action) {
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeRetained(
                 "APP:WHEEL_SPIN:USER:" + userId, idempotencyKey, sha256(String.valueOf(request)),
                 ApiResult.class, (Supplier) action);
     }
