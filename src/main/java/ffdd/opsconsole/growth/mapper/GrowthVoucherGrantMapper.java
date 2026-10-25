@@ -61,21 +61,24 @@ public interface GrowthVoucherGrantMapper {
             @Param("voucherId") String voucherId,
             @Param("nowMillis") long nowMillis);
 
+    /** Read current policy after the voucher-row mutex, including inside an outer REPEATABLE READ transaction. */
     @Select("""
             SELECT issuance_limit
               FROM nx_growth_voucher
              WHERE voucher_id = #{voucherId}
                AND is_deleted = 0
                AND status = 'active'
-             LIMIT 1
+             LIMIT 1 FOR UPDATE
             """)
     Long issuanceLimit(@Param("voucherId") String voucherId);
 
+    /** A snapshot count can miss the previous mutex holder's newly committed grant. */
     @Select("""
             SELECT COUNT(1)
              FROM nx_growth_voucher_grant
              WHERE voucher_id = #{voucherId}
                AND is_deleted = 0
+             FOR UPDATE
             """)
     long issuedCount(@Param("voucherId") String voucherId);
 
