@@ -144,6 +144,28 @@ class MigrationTests(unittest.TestCase):
             with self.assertRaisesRegex(m.MigrationError, 'MIGRATION_HISTORY_CHANGED_ADD_NEW_FILE'):
                 m.pending_scripts(state, {**files, name: files[name] + b'\n-- changed\n'})
 
+    def test_wheel_mutex_forward_repairs_baselined_or_applied_history_without_replaying_pool(self):
+        root = Path(__file__).resolve().parents[2]
+        directory = root / 'scripts' / 'migrations'
+        history = '20260722_h_engagement_execution.sql'
+        forward = '20261025_h4_wheel_payout_mutex.sql'
+        files = {name: (directory / name).read_bytes().replace(b'\r\n', b'\n')
+                 for name in (history, forward)}
+        for status in ('BASELINE_NOT_REPLAYED', 'APPLIED'):
+            with self.subTest(status=status):
+                state = {'version': 1, 'database': 'nexion', 'scripts': {
+                    history: {'sha256': m.digest(files[history]), 'status': status}}}
+                self.assertEqual(m.pending_scripts(state, files), [(forward, files[forward])])
+                state['scripts'][forward] = {'sha256': m.digest(files[forward]), 'status': 'APPLIED'}
+                self.assertEqual(m.pending_scripts(state, files), [])
+        m.validate_sql(files[forward])
+        statements = '\n'.join(line for line in files[forward].decode().splitlines()
+                               if not line.lstrip().startswith('--')).strip()
+        self.assertEqual(statements,
+                         "INSERT IGNORE INTO nx_admin_operation_mutex (lock_key) VALUES ('H4_WHEEL_PAYOUT');")
+        startup = (root / 'scripts' / 'apply_startup_schema_migrations.ps1').read_text(encoding='utf-8-sig')
+        self.assertLess(startup.index('20260811_g2_exchange_execution_mutex.sql'), startup.index(forward))
+
     def test_e4_applied_history_queues_forward_and_fresh_catalog_keeps_order(self):
         directory = Path(__file__).resolve().parents[2] / 'scripts' / 'migrations'
         compat = '20261009_e4_wallet_bill_compat.sql'
