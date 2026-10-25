@@ -120,7 +120,7 @@ public class PromotionNativeContractResolver {
         return null;
     }
     public static java.math.BigDecimal powerWatts(Object value){
-        var power=java.util.regex.Pattern.compile(" *(([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})(\\.[0-9]{1,6})?)(?U:\\s)*(W((?U:\\s)+TDP)?)? *")
+        var power=java.util.regex.Pattern.compile(" *(([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})(\\.[0-9]{1,6})?)(?U:\\s)*(W((?U:\\s)+TDP|(?U:\\s)*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计)[)]))?)? *")
             .matcher(text(value).toUpperCase(Locale.ROOT));
         if(!power.matches())return null;
         var watts=new java.math.BigDecimal(power.group(1).replace(",",""));

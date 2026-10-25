@@ -52,4 +52,30 @@ class EventDeviceGiftServiceTest {
             assertThatThrownBy(() -> service.validatePrize("SERVER-A", quantity)).hasMessageContaining("H4_EVENT_GIFT_QUANTITY_INVALID");
         verify(db, never()).product(anyString(), anyBoolean());
     }
+    @Test void ratedHardwarePowerCanBeValidatedAndAwardedWithExactWatts(){
+        product.put("id",2L);product.put("status","ON_SALE");
+        when(db.user(7L,true)).thenReturn(Map.of("status","ACTIVE","sandbox",0));
+        when(db.deviceSlotCap()).thenReturn(3L);
+        when(db.write(anyString(),any(Object[].class))).thenReturn(1);
+        for(var power:java.util.List.of("575W（单卡额定）","1800W（显卡额定合计）")){
+            when(db.requiredRow(contains("nx_admin_device_sku"),eq("SERVER-A"))).thenReturn(Map.of("power_text",power,"datacenter","DC1"));
+            service.validatePrize("SERVER-A",1);
+            var receipt=service.award(7L,"source-"+power,"SERVER-A",1);
+            assertThat(receipt).containsEntry("rewardType","DEVICE").containsEntry("quantity",1);
+        }
+        var args=org.mockito.ArgumentCaptor.forClass(Object[].class);
+        verify(db,times(2)).write(contains("INSERT INTO nx_user_device"),args.capture());
+        assertThat((java.math.BigDecimal)args.getAllValues().get(0)[11]).isEqualByComparingTo("575");
+        assertThat((java.math.BigDecimal)args.getAllValues().get(1)[11]).isEqualByComparingTo("1800");
+        verify(db,times(2)).write(startsWith("UPDATE nx_product SET stock=stock-?"),eq(1),eq(2L),eq(1));
+    }
+    @Test void ambiguousPowerCannotConsumeStockOrIssueDevices(){
+        when(db.user(7L,true)).thenReturn(Map.of("status","ACTIVE","sandbox",0));
+        when(db.deviceSlotCap()).thenReturn(3L);
+        for(var power:java.util.List.of("200-250W","200W/300W","200W（单卡额定2）","0W（单卡额定）")){
+            when(db.requiredRow(contains("nx_admin_device_sku"),eq("SERVER-A"))).thenReturn(Map.of("power_text",power,"datacenter","DC1"));
+            assertThatThrownBy(()->service.award(7L,"real-source","SERVER-A",1)).hasMessageContaining("H4_EVENT_GIFT_PRODUCT_UNAVAILABLE");
+        }
+        verify(db,never()).write(anyString(),any(Object[].class));
+    }
 }

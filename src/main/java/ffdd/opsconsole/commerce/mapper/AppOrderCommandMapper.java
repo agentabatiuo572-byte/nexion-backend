@@ -442,7 +442,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                AND o.payment_status='PAID' AND o.order_status='COMPLETED'
                AND o.activation_status='ACTIVATED' AND #{unitIndex} >= 0 AND #{unitIndex} < o.quantity
                AND (UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') OR
-                     (UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP)?)?\\\\z'
+                     (UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计)[)]))?)?\\\\z'
                       AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0))
             """)
     int insertDevelopmentDevice(@Param("orderNo") String orderNo,
@@ -477,7 +477,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                AND o.is_deleted=0 AND o.payment_status='PAID' AND o.order_status='COMPLETED'
                AND o.activation_status='ACTIVATED'
                AND (UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') OR
-                     (UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP)?)?\\\\z'
+                     (UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计)[)]))?)?\\\\z'
                       AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0))
             """)
     int insertWalletDevice(@Param("orderNo") String orderNo,
