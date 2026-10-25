@@ -888,6 +888,11 @@ public interface AppGrowthEngagementMapper {
                    COALESCE(ps.session_count,0) popupSessionCount,
                    v.stack_with_others stackWithOthers,v.splittable,
                    v.status definitionStatus,v.is_deleted definitionDeleted,
+                   v.issuance_limit issuanceLimit,
+                   CASE WHEN v.issuance_limit>0 THEN (
+                     SELECT COUNT(1) FROM nx_growth_voucher_grant issued
+                      WHERE issued.voucher_id=v.voucher_id AND issued.is_deleted=0
+                   ) ELSE 0 END issuedCount,
                    g.grant_id grantId,COALESCE(g.status,'UNCLAIMED') grantStatus,g.used_order_no usedOrderNo
               FROM nx_growth_voucher v
               LEFT JOIN nx_voucher_popup_state ps

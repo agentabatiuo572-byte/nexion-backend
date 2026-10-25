@@ -456,6 +456,10 @@ public class AppGrowthEngagementService {
             }
             boolean definitionOpen = !truthy(row.get("definitionDeleted"))
                     && "active".equalsIgnoreCase(String.valueOf(row.get("definitionStatus")));
+            long issuanceLimit = numberValue(item.remove("issuanceLimit"));
+            long issuedCount = numberValue(item.remove("issuedCount"));
+            boolean claimable = audienceEligible && definitionOpen && "UNCLAIMED".equals(grantStatus)
+                    && (issuanceLimit == 0L || issuedCount < issuanceLimit);
             long lastSeenAt = numberValue(row.get("popupLastSeenAt"));
             long delayMs = boundedCadence(row, "popupDelayMs", 1300L, 0L, 60_000L);
             long cooldownHours = boundedCadence(row, "popupCooldownHours", 24L, 0L, 720L);
@@ -466,11 +470,11 @@ public class AppGrowthEngagementService {
             item.put("popupCooldownHours", cooldownHours);
             item.put("popupMaxPerSession", maxPerSession);
             item.put("grantStatus", grantStatus);
-            item.put("claimable", audienceEligible && definitionOpen && "UNCLAIMED".equals(grantStatus));
+            item.put("claimable", claimable);
             item.put("audienceEligible", audienceEligible);
             item.put("nextEligibleAt", nextEligibleAt);
             item.put("popupEligible", cadenceEnabled && truthy(row.get("popupEnabled"))
-                    && audienceEligible && definitionOpen && "UNCLAIMED".equals(grantStatus)
+                    && claimable
                     && (nextEligibleAt == 0L || nextEligibleAt <= nowMillis));
             return item;
         }).toList();

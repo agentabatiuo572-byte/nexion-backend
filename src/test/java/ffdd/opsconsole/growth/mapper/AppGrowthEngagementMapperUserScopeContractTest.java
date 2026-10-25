@@ -13,6 +13,22 @@ import org.junit.jupiter.api.Test;
 class AppGrowthEngagementMapperUserScopeContractTest {
 
     @Test
+    void voucherCapacityReadsAllIssuedGrantsWithoutRemovingOwnedHistory() throws Exception {
+        Configuration configuration = new Configuration();
+        configuration.addMapper(AppGrowthEngagementMapper.class);
+        var bound = configuration.getMappedStatement(AppGrowthEngagementMapper.class.getName() + ".voucherState")
+                .getBoundSql(Map.of("userId", 42L, "nowMillis", 123L));
+        assertThat(CCJSqlParserUtil.parse(bound.getSql())).isNotNull();
+        String sql = bound.getSql().replaceAll("\\s+", " ").toLowerCase();
+        assertThat(sql).contains("v.issuance_limit issuancelimit",
+                "case when v.issuance_limit>0 then ( select count(1) from nx_growth_voucher_grant issued where issued.voucher_id=v.voucher_id and issued.is_deleted=0 ) else 0 end issuedcount",
+                "gg.user_id=?", "where g.id is not null or")
+                .doesNotContain("issued.user_id", "issued.status");
+        assertThat(bound.getParameterMappings()).extracting(mapping -> mapping.getProperty())
+                .containsExactly("userId", "userId", "nowMillis", "nowMillis");
+    }
+
+    @Test
     void wheelReceiptProjectionParsesWithBoundUserAndLocaleParameters() throws Exception {
         Configuration configuration = new Configuration();
         configuration.addMapper(AppGrowthEngagementMapper.class);

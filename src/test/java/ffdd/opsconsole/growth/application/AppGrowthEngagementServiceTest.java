@@ -56,6 +56,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -1107,6 +1108,39 @@ class AppGrowthEngagementServiceTest {
                 .containsEntry("serverCanonical", true)
                 .containsEntry("provenance", Map.of("source", "nx_growth_voucher",
                         "sourceEnvironment", "PRODUCTION", "runId", ""));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"1,0,true", "1,1,false", "1,2,false", "0,100,true"})
+    void voucherStateUsesGlobalIssuanceCapacityForBothClaimAndPopup(long limit, long issued, boolean available) {
+        when(mapper.voucherState(eq(42L), anyLong())).thenReturn(List.of(Map.ofEntries(
+                Map.entry("voucherId", "V-CAPPED"), Map.entry("audience", "all"),
+                Map.entry("definitionStatus", "active"), Map.entry("grantStatus", "UNCLAIMED"),
+                Map.entry("issuanceLimit", limit), Map.entry("issuedCount", issued),
+                Map.entry("popupEnabled", true), Map.entry("popupCadenceEnabled", true))));
+
+        var result = service.voucherState(42L);
+        @SuppressWarnings("unchecked")
+        var row = ((List<Map<String, Object>>) result.getData().get("vouchers")).get(0);
+        assertThat(row).containsEntry("claimable", available).containsEntry("popupEligible", available)
+                .containsEntry("grantStatus", "UNCLAIMED").doesNotContainKeys("issuanceLimit", "issuedCount");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"AVAILABLE", "USED"})
+    void exhaustedIssuanceDoesNotRemoveOrInvalidateOwnedVoucher(String grantStatus) {
+        when(mapper.voucherState(eq(42L), anyLong())).thenReturn(List.of(Map.ofEntries(
+                Map.entry("voucherId", "V-CAPPED"), Map.entry("audience", "all"),
+                Map.entry("definitionStatus", "active"), Map.entry("grantId", "G-OWNED"),
+                Map.entry("grantStatus", grantStatus), Map.entry("issuanceLimit", 1L),
+                Map.entry("issuedCount", 1L), Map.entry("popupEnabled", true),
+                Map.entry("popupCadenceEnabled", true))));
+
+        var result = service.voucherState(42L);
+        @SuppressWarnings("unchecked")
+        var row = ((List<Map<String, Object>>) result.getData().get("vouchers")).get(0);
+        assertThat(row).containsEntry("grantId", "G-OWNED").containsEntry("grantStatus", grantStatus)
+                .containsEntry("claimable", false).containsEntry("popupEligible", false);
     }
 
     @Test
