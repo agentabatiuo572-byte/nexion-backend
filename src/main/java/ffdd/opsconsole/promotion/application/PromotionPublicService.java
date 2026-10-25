@@ -72,6 +72,11 @@ public class PromotionPublicService {
     }
     /** Only public benefits are projected; the supplied policy map is the original approved snapshot. */
     public static Map<String,Object> disclosure(PromotionMapper db,Map<String,Object> contract,Map<String,Object> policies,Map<String,Object> spec){
+        if("DISCOUNT_USDT".equals(spec.get("type"))){
+            var refund=PromotionPolicyResolver.content(policies,"refund");require(refund!=null,"PROMOTION_POLICY_SNAPSHOT_MISSING");
+            return values("title",contract.get("title"),"terms",contract.get("terms"),"refundTerms",refund.get("terms"),
+                "benefitDescription",values("zh","下单立减，不另发钱包奖励；退款按实际支付金额。","en","Deducted at checkout, with no wallet reward. Refunds use the amount paid.","vi","Giảm trực tiếp khi đặt hàng, không thưởng thêm vào ví. Hoàn tiền theo số tiền thực trả."),"deviceName",null,"deviceRights",null);
+        }
         boolean device="DEVICE".equals(spec.get("type"));
         var policy=PromotionPolicyResolver.resolveReference(policies,map(spec.get(device?"deviceRightsProfile":"assetPolicy")));
         var content=map(policy.get("content"));var refund=PromotionPolicyResolver.content(policies,"refund");

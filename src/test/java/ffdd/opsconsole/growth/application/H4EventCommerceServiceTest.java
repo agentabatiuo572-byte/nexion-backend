@@ -59,6 +59,16 @@ class H4EventCommerceServiceTest {
         verify(db, never()).write(contains("nx_g7_repurchase_ticket"), any(Object[].class));
         verify(db, never()).write(contains("nx_growth_spin_ticket"), any(Object[].class));
     }
+    @Test void referralCannotOpenWhenCombinedGiftQuantityExceedsAvailableStock(){
+        var product=new HashMap<String,Object>(Map.of("product_type","SERVER","status","ACTIVE","vram_total_gb",16,"inventory_mode","FINITE","stock",0));
+        when(db.product("SERVER-A",false)).thenReturn(product);
+        assertThat(service.readiness("evt-refer-5-get-pro",GIFT_RULE,START,END)).containsExactly("giftProductNo");
+        product.put("stock",1);
+        assertThat(service.readiness("evt-refer-5-get-pro",GIFT_RULE,START,END)).isEmpty();
+        var two=new HashMap<>(GIFT_RULE);two.put("giftQuantity",2);
+        assertThat(service.readiness("evt-refer-5-get-pro",two,START,END)).containsExactly("giftProductNo");
+        verify(db,never()).write(anyString(),any(Object[].class));
+    }
 
     @Test
     void alreadySupplementedAndForfeitedTicketsCannotBeAwardedAgain() {

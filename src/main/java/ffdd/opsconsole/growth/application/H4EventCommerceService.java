@@ -1,6 +1,5 @@
 package ffdd.opsconsole.growth.application;
 
-import ffdd.opsconsole.promotion.application.PromotionNativeContractResolver;
 import ffdd.opsconsole.promotion.application.PromotionPublicService;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
@@ -35,8 +34,8 @@ public class H4EventCommerceService {
                 String productNo = text(rules.get("giftProductNo"));
                 Map<String, Object> product = db.product(productNo, false);
                 Map<String, Object> sku = db.requiredRow("SELECT * FROM nx_admin_device_sku WHERE sku_id=? AND is_deleted=0", productNo);
-                return PromotionNativeContractResolver.giftFailure(product, sku) == null
-                        && "FINITE".equals(product.get("inventory_mode")) ? List.of() : List.of("giftProductNo");
+                return EventDeviceGiftService.readinessFailure(product,sku,Math.toIntExact(number(rules.get("giftQuantity"))))==null
+                        ? List.of() : List.of("giftProductNo");
             } catch (BizException ex) { return List.of("giftProductNo"); }
         }
         if (rules.containsKey("promotionActivityId")) {

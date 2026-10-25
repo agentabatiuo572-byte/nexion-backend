@@ -95,6 +95,27 @@ class AppBundleOrderServiceTest {
         }
         verifyNoInteractions(mapper);
     }
+    @Test void promotedBundleUsesValidatedDiscountAndReservesEveryPurchasedUnitOnce(){
+        var mapper=mock(AppBundleOrderMapper.class);var idem=mock(AdminIdempotencyService.class);var guard=mock(FundsSandboxProfileGuard.class);
+        var promotions=mock(ffdd.opsconsole.promotion.application.PromotionOrderService.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        doAnswer(i->((Supplier<?>)i.getArgument(4)).get()).when(idem).executeRetained(anyString(),anyString(),anyString(),any(),any());
+        when(mapper.lockUser(7L)).thenReturn(new AppBundleOrderMapper.UserLock(7L,false));
+        when(mapper.lockProducts(any())).thenReturn(List.of(new AppBundleOrderMapper.ProductRow(1L,"s1","S1",new BigDecimal("100"),2),new AppBundleOrderMapper.ProductRow(2L,"pro","Pro",new BigDecimal("200"),3)));
+        when(mapper.deviceSlotCap()).thenReturn(5);when(mapper.attribution(7L)).thenReturn(new AppBundleOrderMapper.Attribution("P1",1,"2026-W41"));
+        when(mapper.decrementStock(anyLong(),anyInt())).thenReturn(1);when(mapper.insertBundleOrder(anyLong(),anyString(),anyLong(),anyInt(),anyInt(),any(),any(),any())).thenReturn(1);
+        when(mapper.insertBundleItem(anyString(),any(),anyInt(),anyInt(),anyBoolean(),any())).thenReturn(1);
+        when(mapper.orderDeadlineEpoch(anyString(),anyInt())).thenReturn(java.time.Instant.now().plusSeconds(1800).getEpochSecond());
+        var plan=new ffdd.opsconsole.promotion.application.PromotionOrderService.CreationPlan("Q1",7L,List.of(7L),List.of("s1","pro"),java.time.Instant.now().plusSeconds(600),
+                java.util.Map.of("public",java.util.Map.of("subtotalUsdt","800.000000","discountUsdt","140.000000","amountUsdt","660.000000")));
+        when(promotions.prepareCreate(eq(7L),eq("Q1"),any(),eq(null),eq(new BigDecimal("660")))).thenReturn(plan);
+        when(promotions.reserveCreatedOrder(eq(plan),anyString(),any())).thenReturn(java.util.Map.of("promotionDiscountUsdt","100.000000"));
+        var service=new AppBundleOrderService(mapper,idem,mock(EventOutboxService.class),guard,new StorefrontPurchaseGatePolicy(),releasePolicy,null,null,null,promotions,30);
+        var result=service.create(7L,null,List.of(new AppBundleOrderService.BundleItem("s1",2),new AppBundleOrderService.BundleItem("pro",3)),1L,new BigDecimal("660"),"Q1","promoted-bundle");
+        assertThat(result.getCode()).isZero();assertThat(result.getData()).containsEntry("amountUsdt",new BigDecimal("660.000000"));
+        verify(mapper).insertBundleOrder(eq(7L),anyString(),eq(2L),eq(2),eq(5),eq(new BigDecimal("800.000000")),eq(new BigDecimal("140.000000")),eq(new BigDecimal("660.000000")));
+        verify(mapper).decrementStock(1L,2);verify(mapper).decrementStock(2L,3);
+    }
 
     @Test
     @SuppressWarnings("unchecked")

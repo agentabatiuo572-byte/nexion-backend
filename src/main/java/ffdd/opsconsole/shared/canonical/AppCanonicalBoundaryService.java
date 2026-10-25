@@ -695,7 +695,7 @@ public class AppCanonicalBoundaryService {
                 if (user == null || user.sandbox()) throw new BizException(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
             }
             ApiResult<Map<String, Object>> result = createOrderInternal(
-                    userId, clientOrderId, productId, productNo, quantity, voucherId, developmentRuntime);
+                    userId, clientOrderId, productId, productNo, quantity, voucherId, developmentRuntime, plan);
             if (result.getCode() == 0 && plan != null) {
                 String orderNo = String.valueOf(result.getData().get("orderNo"));
                 Long deadlineSeconds = mapper.orderDeadlineEpoch(orderNo, pendingOrderTtlMinutes());
@@ -1318,7 +1318,7 @@ public class AppCanonicalBoundaryService {
 
     private ApiResult<Map<String, Object>> createOrderInternal(
             Long userId, String clientOrderId, Long productId, String productNo,
-            Integer quantity, String voucherId, boolean developmentRuntime) {
+            Integer quantity, String voucherId, boolean developmentRuntime, PromotionOrderService.CreationPlan promotionPlan) {
         if (StringUtils.hasText(clientOrderId)) {
             return reject(userId, "client_minted_id",
                     "客户端提交了自铸业务 ID，服务器拒绝使用该 ID 创建订单",
@@ -1380,6 +1380,11 @@ public class AppCanonicalBoundaryService {
         VoucherRedemption voucher = growthLifecyclePublisher.prepareVoucher(
                 userId, voucherId, product.productNo(), subtotal);
         BigDecimal discount = voucher.discountUsdt();
+        if (promotionPlan != null) {
+            if (subtotal.compareTo(promotionPlan.price("subtotalUsdt")) != 0)
+                throw new BizException(409, "PROMOTION_QUOTE_PRICE_CHANGED");
+            discount = promotionPlan.price("discountUsdt");
+        }
         BigDecimal amount = subtotal.subtract(discount).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
         QuotaReservation quotaReservation = reserveCanonicalPurchaseQuota(userId, product.productNo(), qty);
         if (mapper.decrementProductStock(product.id(), qty) != 1) {
