@@ -82,16 +82,24 @@ public class H4EventEngine {
     public ApiResult<Map<String,Object>> detail(Long id,String code,String locale){
         user(id,false);var rule=policies.find(code,false);
         var source=events.eventState(id,locale==null?"en":locale).stream().filter(e->code.equals(e.get("eventCode"))).findFirst().orElse(null);
+        boolean deleted=source==null;
+        if(deleted)source=events.deletedEventState(id,locale==null?"en":locale,code).stream().findFirst().orElse(null);
         if(source==null)throw new BizException(404,"EVENT_NOT_FOUND");
-        if(rule==null)return ApiResult.ok(values("event",source,"rules",Map.of(),"enabled",true,"eligible",false,"eligibilityReason","IN_PROGRESS",
+        if(deleted){source=new LinkedHashMap<>(source);source.put("deleted",true);source.put("href","");}
+        if(deleted&&rule==null&&!Set.of("JOINED","CLAIMABLE","CLAIMED").contains(text(source.get("userStatus"))))throw new BizException(404,"EVENT_NOT_FOUND");
+        if(rule==null)return ApiResult.ok(values("event",source,"rules",Map.of(),"enabled",!deleted,"eligible",false,"eligibilityReason",deleted?"ENDED":"IN_PROGRESS",
                 "progressValue",source.get("progressValue"),"targetValue",source.get("targetValue"),"rewards",List.of(),"results",List.of(),"myRewardAmount",null,"userStatus",source.get("userStatus")));
         var r=policies.rules(rule);var progress=progress(id,rule,r,source);var event=project(id,source,rule,locale);
+        if(deleted&&!Boolean.TRUE.equals(progress.get("eligible"))&&!Set.of("JOINED","CLAIMABLE","CLAIMED").contains(text(event.get("userStatus")))
+                &&db.row("SELECT 1 FROM nx_growth_event_claim WHERE event_code=? AND user_id=? LIMIT 1",code,id)==null
+                &&db.row("SELECT 1 FROM nx_growth_event_pool_result WHERE event_code=? AND user_id=? LIMIT 1",code,id)==null)
+            throw new BizException(404,"EVENT_NOT_FOUND");
         String phase=phase(rule),status=text(event.get("userStatus"));
         String reason="CLAIMED".equals(status)?"CLAIMED":!"IN_PROGRESS".equals(phase)?phase:Boolean.TRUE.equals(progress.get("eligible"))?"READY":"IN_PROGRESS";
         Map<String,Object> publicRules=new LinkedHashMap<>(r);
         List.of("budgetNex","poolUsdt","deviceBudget","ticketBudget").forEach(k->{if(!"poolUsdt".equals(k))publicRules.remove(k);});
         boolean participationOpen=newParticipationOpen(rule,false);
-        boolean canParticipate="IN_PROGRESS".equals(phase)&&participationOpen;
+        boolean canParticipate=!deleted&&"IN_PROGRESS".equals(phase)&&participationOpen;
         if("onboarding".equals(rule.get("kind")))canParticipate=canParticipate&&number(user(id,false).get("account_age_seconds")).longValue()<number(r.get("windowDays")).longValue()*86400;
         if("regional".equals(rule.get("kind")))canParticipate=canParticipate&&regionFor(user(id,false),r)!=null;
         if("evt-black-friday".equals(code))canParticipate=canParticipate&&Boolean.TRUE.equals(progress.get("eligible"));
@@ -99,7 +107,7 @@ public class H4EventEngine {
         if("evt-black-friday".equals(code)&&"IN_PROGRESS".equals(phase))reason=text(progress.getOrDefault("eligibilityReason",reason));
         if(!participationOpen)reason="DISABLED";
         if("CLAIMABLE".equals(status)){canParticipate=true;reason="READY";}
-        return ApiResult.ok(values("event",event,"rules",publicRules,"enabled",enabled(code),"eligible",canParticipate,"eligibilityReason",reason,
+        return ApiResult.ok(values("event",event,"rules",publicRules,"enabled",!deleted&&enabled(code),"eligible",canParticipate,"eligibilityReason",reason,
                 "progressValue",progress.getOrDefault("current",0),"targetValue",progress.getOrDefault("target",1),"rewards",rewards(r),"voucher",progress.get("voucher"),
                 "results",resultView(id,rule,r),"myRewardAmount",myPoolReward(id,rule),"userStatus",status,
                 "claimKeys",progress.getOrDefault("claimKeys",List.of("ONCE")),"reminderSubscribed",

@@ -103,6 +103,11 @@ public final class PromotionRuntimeHarness {
             pool.setUsername(credentials.get("user"));pool.setPassword(credentials.get("password"));
             // Reuse bounded physical sockets across all scenarios, including the 51-obligation queue race.
             pool.setMaximumPoolSize(8);pool.setMinimumIdle(0);pool.setPoolName("promotion-isolated-test");
+            try(var connection=pool.getConnection()){
+                assertEquals("growth_promotions_20261007",connection.getCatalog());
+                org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
+                    new org.springframework.core.io.FileSystemResource("scripts/migrations/20261025_promotion_soft_delete.sql"));
+            }catch(java.sql.SQLException failure){throw new IllegalStateException("Isolated promotion schema migration failed",failure);}
             Runtime.getRuntime().addShutdownHook(new Thread(pool::close,"promotion-test-pool-close"));
             return pool;
         }

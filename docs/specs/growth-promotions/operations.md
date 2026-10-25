@@ -37,6 +37,14 @@ FIRST_PURCHASE 和 DIRECT_REFERRAL 需要 FIRST_PURCHASE 政策；devicePresence
 
 AUTHORIZATION 只控制本功能的批准与发布关系。读取真实 A2 政策决定 maker/checker 是否分离，不复活全站旧双签；不得用一个布尔“已确认”代替批准对象。发布者、审核者来自服务端身份。
 
+## 活动删除（2026-10-25）
+
+`POST /api/admin/growth/promotions/{activityId}/delete` 复用 `growth_promotion_archive` 权限及原命令幂等、理由、证据和必需审计。`DeleteAction.expectedRevision` 匹配活动根版本；删除草稿还必须以 `expectedDraftRevision` 匹配当前草稿版本，防止确认期间编辑后的内容被误删。
+
+只允许未发布且当前版本仍为 DRAFT 的活动，或依据已发布时间窗口计算为 ENDED 的活动。待审核、已审核待发布、未到期 ACTIVE/SCHEDULED/PAUSED 和 ARCHIVED 拒绝。锁定活动根与必要版本后再检查状态和版本，成功只写 deleted_at/deleted_by 并增加根 revision；同键同请求仍回放原回执，不重复删除。
+
+删除后管理列表、草稿操作及 App 活动入口不可再访问；授权管理员仍可按原活动 ID 读取标记 deleted=true 的历史详情、版本、奖励和指标，配置只读，确保删除后发生退款也能继续追踪原奖励义务；包含已删除活动的旧列表快照返回 PROMOTION_LIST_SNAPSHOT_EXPIRED，客户端重新查询。已创建订单、预留、奖励义务、库存、账本和退款恢复记录全部保留，既有付款/取消/发奖/退款仍使用原合同快照继续完成。删除不替代结束，不修改或清空义务，也不删除内置模板。
+
 ## 3. 固定模板及版本身份
 
 活动不覆盖 E1/F4B 原商品购买条件。公开 quote 与选择真实账户的后台 simulate 都复用正式 purchaseEligibilityBatch 对整单全部购买 SKU 做只读资格评估（不含赠品 SKU，不占月配额）；任一 SKU 不合格，quote 在写入报价前拒绝并返回原 decisionCode，simulate 不生成奖励、展示购买条件阻断原因。无账户或资格事实不可读时 simulate 为 UNKNOWN，不假定满足条件；报价不以读取失败降级放行。付款时原有 E1/F4B 锁定与配额门禁仍独立执行，报价通过不预占或保证月配额。

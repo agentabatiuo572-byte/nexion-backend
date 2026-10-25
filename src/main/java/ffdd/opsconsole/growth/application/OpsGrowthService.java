@@ -3122,6 +3122,16 @@ public class OpsGrowthService implements AuditReplayable {
                 "note", "H1 owns global quest reward multiplier; H3 only consumes it");
     }
 
+    @Transactional(rollbackFor=Exception.class)
+    public ApiResult<Map<String,Object>> deleteQuestEvent(String key,String eventId,
+            ffdd.opsconsole.growth.dto.GrowthEventDeleteRequest request) {
+        var guard=requireCommand(key,request==null?null:request.reason());
+        if(guard!=null)return guard;
+        if(h4EventRules==null||questEventMapper.isEmpty())return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        if(!"H4_EVENT".equals(questEventMapper.get().lockGrowthMutation("H4_EVENT")))return validation("H4_EVENT_MUTEX_UNAVAILABLE");
+        return h4EventRules.delete(eventId,request);
+    }
+
     private List<Map<String, Object>> questEventsList() {
         return questEventRows().stream()
                 .map(row -> {
@@ -3130,6 +3140,7 @@ public class OpsGrowthService implements AuditReplayable {
                     copy.put("state", eventStatus(id));
                     copy.put("reward", eventReward(id));
                     copy.put("featured", eventFeatured(id));
+                    if(h4EventRules!=null)copy.putAll(h4EventRules.deletionInfo(id));
                     return copy;
                 })
                 .toList();
@@ -3406,6 +3417,7 @@ public class OpsGrowthService implements AuditReplayable {
             return validation("CONTENT_LOCALE_INVALID");
         }
         GrowthQuestEventMapper mapper = questEventMapper.get();
+        if (!"H4_EVENT".equals(mapper.lockGrowthMutation("H4_EVENT"))) return validation("H4_EVENT_MUTEX_UNAVAILABLE");
         mapper.ensureH3ConfigMutex();
         if (!"H3_CONFIG".equals(mapper.lockH3ConfigMutex())) return validation("H3_CONFIG_LOCK_UNAVAILABLE");
         ensureQuestEventSeedData();

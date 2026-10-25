@@ -409,7 +409,7 @@ public interface AppGrowthEngagementMapper {
             """)
     List<Map<String, Object>> questState(@Param("userId") Long userId, @Param("locale") String locale);
 
-    @Select("""
+    String EVENT_STATE_SELECT = """
             SELECT q.quest_code eventCode,
                    LOWER(q.target_type) kind,
                    CASE
@@ -454,10 +454,14 @@ public interface AppGrowthEngagementMapper {
               FROM nx_event_quest q
               LEFT JOIN nx_user_event_quest u
                 ON u.quest_id=q.id AND u.user_id=#{userId} AND u.is_deleted=0
-             WHERE q.is_deleted=0
-             ORDER BY q.sort_order,q.id
-            """)
+            """;
+
+    @Select(EVENT_STATE_SELECT + " WHERE q.is_deleted=0 ORDER BY q.sort_order,q.id")
     List<Map<String, Object>> eventState(@Param("userId") Long userId, @Param("locale") String locale);
+
+    // Detail-only lookup; the engine authorizes access from this user's historical rights.
+    @Select(EVENT_STATE_SELECT + " WHERE q.is_deleted=1 AND q.quest_code=#{eventCode}")
+    List<Map<String,Object>> deletedEventState(@Param("userId") Long userId,@Param("locale") String locale,@Param("eventCode") String eventCode);
 
     @Select("""
             SELECT b.banner_code bannerCode,

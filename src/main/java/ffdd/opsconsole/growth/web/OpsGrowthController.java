@@ -346,6 +346,16 @@ public class OpsGrowthController {
                 () -> growthService.deleteWheelTier(idempotencyKey, tierName, request));
     }
 
+    @DeleteMapping("/quest-events/events/{eventId}")
+    @PreAuthorize("hasAuthority('growth_h4_write')")
+    public ApiResult<Map<String,Object>> deleteQuestEvent(
+            @RequestHeader(value=OpsAdminApi.IDEMPOTENCY_KEY_HEADER,required=false) String key,
+            @PathVariable String eventId,
+            @RequestBody ffdd.opsconsole.growth.dto.GrowthEventDeleteRequest request) {
+        return commandBoundary.execute("H4","EVENT_DELETE",eventId,key,request,
+                ()->growthService.deleteQuestEvent(key,eventId,request));
+    }
+
     @PatchMapping("/quest-events/events/{eventId}/reward")
     @PreAuthorize("hasAuthority('growth_h4_write')")
     public ApiResult<Map<String, Object>> updateQuestEventReward(

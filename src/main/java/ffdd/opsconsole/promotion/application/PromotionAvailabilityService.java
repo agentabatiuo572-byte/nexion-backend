@@ -23,7 +23,7 @@ public class PromotionAvailabilityService {
         return db.list("""
             SELECT p.activity_id FROM nx_promotion p JOIN nx_promotion_version v
               ON v.activity_id=p.activity_id AND v.version=p.active_version
-            WHERE p.status IN ('ACTIVE','SCHEDULED') AND v.status='PUBLISHED' AND v.starts_at<=NOW(6) AND v.ends_at>NOW(6)
+            WHERE p.deleted_at IS NULL AND p.status IN ('ACTIVE','SCHEDULED') AND v.status='PUBLISHED' AND v.starts_at<=NOW(6) AND v.ends_at>NOW(6)
               AND JSON_UNQUOTE(JSON_EXTRACT(v.contract_json,'$.shortagePolicy'))='ACTIVITY_PAUSE'
               AND p.activity_id>?
             ORDER BY p.activity_id LIMIT ?
@@ -32,6 +32,7 @@ public class PromotionAvailabilityService {
     @Transactional(rollbackFor=Exception.class)
     public void pauseIfShort(String activity){
         Map<String,Object> root=db.activity(activity,true);
+        if(root.get("deleted_at")!=null)return;
         if(!Set.of("ACTIVE","SCHEDULED").contains(text(root.get("status"))))return;
         Map<String,Object> version=db.version(activity,number(root.get("active_version")),false),contract=parse(version.get("contract_json"));
         if(!"ACTIVITY_PAUSE".equals(contract.get("shortagePolicy")))return;

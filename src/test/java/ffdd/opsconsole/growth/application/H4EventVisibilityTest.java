@@ -67,6 +67,23 @@ class H4EventVisibilityTest {
         assertThat(engine.project(7L,List.of(source),"en").get(0)).containsEntry("userStatus","JOINED").containsEntry("href","").containsEntry("state","ended");
     }
 
+    @Test void deletedActivityRetainsOnlyTheOwnersHistoryAndPreviouslyEarnedClaim(){
+        when(events.eventState(7L,"en")).thenReturn(List.of());
+        when(events.deletedEventState(7L,"en",CODE)).thenReturn(List.of(source));
+        rule.put("enabled",0);rule.put("ends_at",now.minusHours(1));
+        assertThatThrownBy(()->engine.detail(7L,CODE,"en")).hasMessage("EVENT_NOT_FOUND");
+        when(commerce.progress(eq(7L),eq(CODE),eq(rules),any(),any()))
+                .thenReturn(Map.of("current",100,"target",100,"eligible",true,"claimKeys",List.of("RP-1")));
+        var detail=engine.detail(7L,CODE,"en").getData();
+        assertThat(detail).containsEntry("enabled",false).containsEntry("eligible",true).containsEntry("eligibilityReason","READY");
+        assertThat((Map<String,Object>)detail.get("event")).containsEntry("deleted",true).containsEntry("href","");
+        when(commerce.awardReinvestTickets(eq(7L),eq(CODE),eq(rules),any(),any(),eq("RP-1")))
+                .thenReturn(Map.of("rewardType","GENESIS_TICKET","quantity",1));
+        assertThat(engine.claim(7L,CODE,"claim-before-delete").getCode()).isZero();
+        assertThatThrownBy(()->engine.join(7L,CODE)).hasMessage("EVENT_NOT_OPEN");
+        verify(db).write(contains("INSERT INTO nx_growth_event_claim"),any(Object[].class));
+    }
+
     @Test void reopeningRestoresEntryAndLocksVisibilityBeforeTheAccount(){
         when(commerce.reinvestParticipationOpen(anyBoolean())).thenReturn(true);
         assertThat(engine.project(7L,List.of(source),"en")).hasSize(1);

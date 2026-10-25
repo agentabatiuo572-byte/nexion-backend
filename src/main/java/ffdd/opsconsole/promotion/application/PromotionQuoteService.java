@@ -41,7 +41,7 @@ public class PromotionQuoteService {
         List<Map<String,Object>> candidates=db.list("""
             SELECT p.activity_id,p.active_version FROM nx_promotion p JOIN nx_promotion_version v
               ON v.activity_id=p.activity_id AND v.version=p.active_version
-            WHERE p.status IN ('ACTIVE','SCHEDULED') AND v.status='PUBLISHED'
+            WHERE p.deleted_at IS NULL AND p.status IN ('ACTIVE','SCHEDULED') AND v.status='PUBLISHED'
               AND v.starts_at<=? AND v.ends_at>? ORDER BY p.activity_id
             """,timestamp(now),timestamp(now));
         String selected=text(request.get("activityId"));
@@ -150,6 +150,7 @@ public class PromotionQuoteService {
     }
     private boolean available(String activity,Map<String,Object> contract,List<Map<String,Object>> awards,boolean currentRead) {
         Map<String,Object> root=db.activity(activity,currentRead);
+        if(root.get("deleted_at")!=null)return false;
         if(number(root.get("reserved_orders"))+number(root.get("used_orders"))>=PromotionRules.limit(contract.get("activityLimit")))return false;
         Map<String,BigDecimal> sums=new TreeMap<>();
         for(Map<String,Object> award:awards){Map<String,Object> r=map(award.get("reward"));String asset=text(r.get("type")),product="DEVICE".equals(asset)?text(r.get("giftProductNo")):"";

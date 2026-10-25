@@ -50,7 +50,7 @@ public class PromotionOrderService {
         TreeSet<String> productNos=new TreeSet<>();items.forEach(i->productNos.add(i.productNo()));
         if(!activity.isEmpty()){
             Map<String,Object> root=db.activity(activity,true);
-            require(Set.of("ACTIVE","SCHEDULED").contains(text(root.get("status")))&&number(root.get("active_version"))==number(pub.get("activityVersion")),"PROMOTION_QUOTE_VERSION_CHANGED");
+            require(root.get("deleted_at")==null&&Set.of("ACTIVE","SCHEDULED").contains(text(root.get("status")))&&number(root.get("active_version"))==number(pub.get("activityVersion")),"PROMOTION_QUOTE_VERSION_CHANGED");
             Map<String,Object> version=db.version(activity,number(pub.get("activityVersion")),true);
             require("PUBLISHED".equals(version.get("status"))&&hash(contract).equals(version.get("content_hash")),"PROMOTION_VERSION_INVALID");
             Instant now=Instant.now();require(!now.isBefore(instant(contract.get("startsAt")))&&now.isBefore(instant(contract.get("endsAt"))),"PROMOTION_ACTIVITY_CLOSED");

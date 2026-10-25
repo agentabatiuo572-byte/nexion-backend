@@ -33,7 +33,59 @@ public class H4EventRuleService {
         return db.row("SELECT * FROM nx_growth_event_rule WHERE event_code=?"+(lock?" FOR UPDATE":""),code);
     }
     public List<Map<String,Object>> overview() {
-        return db.rows("SELECT * FROM nx_growth_event_rule ORDER BY event_code").stream().map(this::view).toList();
+        return db.rows("SELECT r.* FROM nx_growth_event_rule r JOIN nx_event_quest q ON q.quest_code=r.event_code AND q.is_deleted=0 ORDER BY r.event_code").stream().map(this::view).toList();
+    }
+
+    private Map<String,Object> deletionSnapshot(String code, boolean lock) {
+        return db.row("""
+            SELECT q.*,r.revision rule_revision,r.enabled rule_enabled,r.activated_at rule_activated_at,
+                   r.starts_at rule_starts_at,r.ends_at rule_ends_at
+            FROM nx_event_quest q LEFT JOIN nx_growth_event_rule r ON r.event_code=q.quest_code
+            WHERE q.quest_code=?
+            """+(lock?" FOR UPDATE":""),code);
+    }
+
+    public Map<String,Object> deletionInfo(String code) {
+        var snapshot=deletionSnapshot(code,false);
+        if(snapshot==null||number(snapshot.get("is_deleted")).intValue()!=0)return Map.of("deletable",false);
+        return deletionInfo(snapshot,LocalDateTime.now(ZoneOffset.UTC));
+    }
+
+    Map<String,Object> deletionInfo(Map<String,Object> snapshot,LocalDateTime now) {
+        boolean published=snapshot.get("rule_activated_at")!=null||number(snapshot.get("rule_enabled")).intValue()==1
+                ||number(snapshot.get("status")).intValue()!=0;
+        LocalDateTime start=date(snapshot.get("rule_starts_at")!=null?snapshot.get("rule_starts_at"):snapshot.get("starts_at"));
+        LocalDateTime end=date(snapshot.get("rule_ends_at")!=null?snapshot.get("rule_ends_at"):snapshot.get("ends_at"));
+        // Status 2 is the explicit terminal "end" command; disabling a rule alone is not.
+        String state=number(snapshot.get("status")).intValue()==2?"ended":!published?"draft":end!=null&&!now.isBefore(end)?"ended":start!=null&&now.isBefore(start)?"upcoming":"ongoing";
+        String version;
+        var versionFields=new TreeMap<String,String>();
+        snapshot.forEach((key,value)->versionFields.put(key,String.valueOf(value)));
+        try {
+            version=HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(encode(versionFields).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch(java.security.NoSuchAlgorithmException ex){throw new IllegalStateException(ex);}
+        return Map.of("deleteState",state,"deletable",Set.of("draft","ended").contains(state),"deleteVersion",version);
+    }
+
+    /** The caller holds H4_EVENT. Keep economic facts and scheduler-visible rules intact. */
+    @Transactional(rollbackFor=Exception.class,isolation=org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public ApiResult<Map<String,Object>> delete(String code,ffdd.opsconsole.growth.dto.GrowthEventDeleteRequest request) {
+        if(request==null||request.reason()==null||request.reason().trim().length()<a2.reasonMinChars())throw new BizException(422,"REASON_REQUIRED");
+        lockHoldingWallets(code);
+        find(code,true);
+        var snapshot=deletionSnapshot(code,true);
+        if(snapshot==null||number(snapshot.get("is_deleted")).intValue()!=0)throw new BizException(404,"EVENT_NOT_FOUND");
+        var info=deletionInfo(snapshot,LocalDateTime.now(ZoneOffset.UTC));
+        if(!Objects.equals(info.get("deleteVersion"),request.expectedVersion()))throw new BizException(409,"EVENT_CONFIG_STALE");
+        if(!Boolean.TRUE.equals(info.get("deletable")))throw new BizException(409,"EVENT_DELETE_STATE_INVALID");
+        stop(code);
+        if(db.write("UPDATE nx_event_quest SET is_deleted=1,updated_at=NOW() WHERE quest_code=? AND is_deleted=0",code)!=1)
+            throw new BizException(409,"EVENT_CONFIG_STALE");
+        audit.recordRequired(AuditLogWriteRequest.builder().action("H4_EVENT_DELETED").resourceType("GROWTH_EVENT")
+                .resourceId(code).actorType("ADMIN").actorUsername(ffdd.opsconsole.shared.security.AdminActorResolver.resolve("system"))
+                .result("SUCCESS").riskLevel("HIGH").detail(values("reason",request.reason().trim(),"before",info)).build());
+        return ApiResult.ok(Map.of("eventId",code,"deleted",true));
     }
     public void registerDraft(String code,String kind){
         db.write("INSERT IGNORE INTO nx_growth_event_rule(event_code,kind,rules_json,enabled) VALUES(?,?,JSON_OBJECT(),0)",code,kind);
@@ -101,6 +153,8 @@ public class H4EventRuleService {
         lockHoldingWallets(code);
         var current=find(code,true);
         if(current==null)throw new BizException(404,"EVENT_RULE_NOT_FOUND");
+        if(db.row("SELECT 1 FROM nx_event_quest WHERE quest_code=? AND is_deleted=1 FOR UPDATE",code)!=null)
+            throw new BizException(404,"EVENT_NOT_FOUND");
         if(number(current.get("revision")).longValue()!=request.expectedRevision())throw new BizException(409,"EVENT_CONFIG_STALE");
         Map<String,Object> rules=request.rules()==null?Map.of():request.rules();
         LocalDateTime start=parseDate(request.startsAt()),end=parseDate(request.endsAt());

@@ -54,7 +54,7 @@ public class PromotionBannerService {
         var row = db.one("""
             SELECT p.status,v.contract_json FROM nx_promotion p JOIN nx_promotion_version v
               ON v.activity_id=p.activity_id AND v.version=p.active_version
-            WHERE p.activity_id=? AND p.active_version=? AND v.status='PUBLISHED'
+            WHERE p.deleted_at IS NULL AND p.activity_id=? AND p.active_version=? AND v.status='PUBLISHED'
               AND p.status IN ('ACTIVE','SCHEDULED') AND v.starts_at<=NOW(6) AND v.ends_at>NOW(6)
             """, activity, version);
         if (row == null) throw unavailable();

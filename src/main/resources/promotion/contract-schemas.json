@@ -1663,6 +1663,10 @@
           },
           "asOf": {
             "$ref": "#/components/schemas/Time"
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "Deleted promotions remain readable by authorized administrators for historical rewards and metrics; configuration changes are forbidden."
           }
         },
         "required": [
@@ -7347,6 +7351,36 @@
             "maximum": 20
           }
         }
+      },
+      "DeleteAction": {
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvidenceRef"
+            },
+            "maxItems": 20
+          },
+          "expectedDraftRevision": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "reason",
+          "evidenceRefs"
+        ],
+        "additionalProperties": false,
+        "description": "expectedRevision is the activity root revision. expectedDraftRevision is mandatory when deleting a DRAFT and must match its editable current version."
       }
     }
   }

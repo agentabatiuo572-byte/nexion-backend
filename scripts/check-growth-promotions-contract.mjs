@@ -26,12 +26,12 @@ const rewardStates = ['PENDING', 'READY', 'PROCESSING', 'ISSUED', 'RETRYABLE_FAI
 const requiredOperations = [
   'listPublicPromotions', 'getPublicPromotion', 'quote', 'createOrder', 'createBundle', 'payOrder', 'cancelOrder',
   'listOwnRewards', 'getOwnReward', 'getOwnReferralProgress', 'getOwnCommand', 'getAdminCommand',
-  'getPromotionCatalog', 'listPolicies', 'getPolicy', 'createPolicy', 'createPolicyVersion',
+  'getPromotionCatalog', 'searchPromotionAccountSamples', 'listPolicies', 'getPolicy', 'createPolicy', 'createPolicyVersion',
   'approvePolicy', 'revokePolicy', 'listDeviceRightsProfiles', 'getDeviceRightsProfile',
   'listPromotions', 'createPromotion', 'getPromotion', 'saveDraft', 'listVersions', 'getVersion',
   'createDraftVersion', 'copyPromotion', 'simulate', 'audiencePreview', 'submitPromotion', 'withdrawPromotion',
   'approvePromotion', 'rejectPromotion', 'publishPromotion', 'pausePromotion', 'resumePromotion',
-  'endPromotion', 'archivePromotion', 'listRewards', 'getReward', 'retryReward', 'reconcileReward',
+  'endPromotion', 'archivePromotion', 'deletePromotion', 'listRewards', 'getReward', 'retryReward', 'reconcileReward',
   'cancelReward', 'reverseReward', 'resolveReward', 'getMetrics', 'createExport', 'getExport',
   'downloadExport', 'refundOrder', 'refundOrderPatch',
 ];

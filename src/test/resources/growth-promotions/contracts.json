@@ -303,6 +303,12 @@
       "id": "searchPromotionAccountSamples",
       "operationId": "searchPromotionAccountSamples",
       "responseExample": "response_AccountSamplePage"
+    },
+    {
+      "id": "deletePromotion",
+      "operationId": "deletePromotion",
+      "requestExample": "request_DeleteAction",
+      "responseExample": "response_CommandReceipt"
     }
   ],
   "schemas": {
@@ -2372,7 +2378,10 @@
               "quantity": 1,
               "productName": "Purchased D"
             }
-          ]
+          ],
+          "subtotalUsdt": "350.000000",
+          "discountUsdt": "0.000000",
+          "promotionDiscountUsdt": "0.000000"
         }
       }
     },
@@ -5120,6 +5129,17 @@
           "pageNum": 2,
           "pageSize": 20
         }
+      }
+    },
+    "request_DeleteAction": {
+      "summary": "Synthetic isolated fixture; no production approval.",
+      "value": {
+        "expectedRevision": 1,
+        "reason": "隔离合同验收",
+        "evidenceRefs": [
+          "fixture-evidence"
+        ],
+        "expectedDraftRevision": 1
       }
     }
   },
