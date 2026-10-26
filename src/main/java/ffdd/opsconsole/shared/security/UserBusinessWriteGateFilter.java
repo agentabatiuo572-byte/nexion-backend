@@ -39,8 +39,22 @@ public class UserBusinessWriteGateFilter extends OncePerRequestFilter implements
                 || path.startsWith("/api/legal/")
                 || path.startsWith("/api/app/profile/")
                 || path.startsWith("/api/app/security/")
+                // Customers need support while completing initial setup.
+                || isSupportCommunication(request)
                 // Reading and opening a welcome notification is not a business command.
                 || path.matches("/api/notifications/(?:[0-9]+/(?:actions|read)|read-all|read)");
+    }
+
+    private boolean isSupportCommunication(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        return switch (request.getMethod()) {
+            case "POST" -> path.equals("/api/app/support/realtime-ticket")
+                    || path.equals("/api/app/support/conversations")
+                    || path.matches("/api/app/support/conversations/[A-Za-z0-9_-]{1,100}/(?:replies|read|dismiss)")
+                    || path.equals("/api/app/support/attachments");
+            case "DELETE" -> path.matches("/api/app/support/attachments/[A-Za-z0-9_-]{1,100}");
+            default -> false;
+        };
     }
 
     @Override
@@ -68,7 +82,7 @@ public class UserBusinessWriteGateFilter extends OncePerRequestFilter implements
         filterChain.doFilter(request, response);
     }
 
-    /** The same gate applies when a business command arrives over WebSocket. */
+    /** Initial setup remains mandatory for business writes outside support communication. */
     public ApiResult<Void> businessWriteBlock(Long userId) {
         final boolean onboardingComplete;
         try {

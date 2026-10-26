@@ -7,6 +7,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.mapper.SupportAcceptanceSandboxMapper;
+import ffdd.opsconsole.content.domain.ContentConversationView;
+import ffdd.opsconsole.content.domain.ConversationRepository;
 import ffdd.opsconsole.content.terms.LegalTermsService;
 import ffdd.opsconsole.content.web.AppSupportController;
 import ffdd.opsconsole.content.web.OpsConversationController;
@@ -17,6 +19,8 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.security.*;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
+import ffdd.opsconsole.user.infrastructure.UserEntity;
+import ffdd.opsconsole.shared.api.ApiResult;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -24,6 +28,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -72,6 +77,12 @@ class ConversationSocketSecurityIntegrationTest {
     @Autowired AdminSessionRegistry sessions;
     @Autowired AdminPermissionCache permissions;
     @Autowired ObjectMapper json;
+    @Autowired UserOpsMapper users;
+    @Autowired AuthSessionMapper userSessions;
+    @Autowired UserAccountBlocklistVerifier blocklist;
+    @Autowired SupportAcceptanceSandboxMapper supportAccounts;
+    @Autowired ConversationRepository conversations;
+    @Autowired AppSupportController app;
     private final List<Client> clients = new CopyOnWriteArrayList<>();
 
     @BeforeEach void activeReadOnlyAdmin() {
@@ -82,7 +93,7 @@ class ConversationSocketSecurityIntegrationTest {
     @AfterEach void closeClients() {
         clients.forEach(Client::close);
         clients.clear();
-        reset(sessions, permissions);
+        reset(sessions, permissions, users, userSessions, blocklist, supportAccounts, conversations, app);
     }
 
     @Test void readOnlyM3AdminGetsSignedTicketAndReachesReadyButCannotUseOrdinaryPostWriteRoute() throws Exception {
@@ -90,6 +101,10 @@ class ConversationSocketSecurityIntegrationTest {
         Client client = connect();
         client.send(json.writeValueAsString(Map.of("type", "auth", "ticket", ticket)));
         assertEquals("ready", client.awaitType("ready").path("type").asText());
+        client.send(json.writeValueAsString(Map.of("type", "command", "requestId", "admin-create", "operation", "create",
+                "idempotencyKey", "admin-readonly-key", "body", Map.of())));
+        assertEquals(403, client.awaitType("ack").path("result").path("code").asInt(),
+                "read-only M3 must not acquire write authority over WebSocket");
 
         HttpResponse<String> write = post("/api/admin/content/conversations", signed("socket-session"));
         assertEquals(403, write.statusCode(), "read-only M3 must not inherit generic conversation POST write access");
@@ -107,6 +122,78 @@ class ConversationSocketSecurityIntegrationTest {
 
     private String signed(String session) {
         return tokens.createToken(7L, "ADMIN", "reader", List.of("stale_claim"), session, Duration.ofMinutes(5));
+    }
+
+    @Test void incompleteOnboardingUserGetsTicketAndUsesOwnSupportWindowWhileBusinessWritesStayBlocked() throws Exception {
+        String token = activeUser();
+        when(app.startConversation(anyString(), any(), any())).thenReturn(ApiResult.ok(null));
+        when(app.replyConversation(anyString(), anyString(), any(), any())).thenReturn(ApiResult.ok(null));
+        when(app.markConversationRead(anyString(), any(), any())).thenReturn(ApiResult.ok(null));
+        Client client = connectUser(token);
+        for (String operation : List.of("create", "reply", "read")) {
+            client.frames.clear();
+            client.send(json.writeValueAsString(Map.of("type", "command", "requestId", operation,
+                    "operation", operation, "conversationNo", "CV-42", "idempotencyKey", "support-key-42",
+                    "body", Map.of())));
+            assertEquals(0, client.awaitType("ack").path("result").path("code").asInt());
+        }
+        verify(app).startConversation(eq("support-key-42"), any(), any());
+        verify(app).replyConversation(eq("CV-42"), eq("support-key-42"), any(), any());
+        verify(app).markConversationRead(eq("CV-42"), any(), any());
+        for (String path : List.of("/api/orders", "/api/app/deposits/vietqr/intents")) {
+            HttpResponse<String> response = post(path, token);
+            assertEquals(428, response.statusCode());
+            assertEquals("USER_ONBOARDING_REQUIRED", json.readTree(response.body()).path("message").asText());
+        }
+    }
+
+    @Test void incompleteOnboardingDoesNotPermitAnotherCustomersConversationOrARevokedSession() throws Exception {
+        String token = activeUser();
+        when(conversations.findByConversationNo("CV-other")).thenReturn(Optional.of(conversation(43L, "CV-other")));
+        Client client = connectUser(token);
+        client.send(json.writeValueAsString(Map.of("type", "command", "requestId", "foreign-reply",
+                "operation", "reply", "conversationNo", "CV-other", "idempotencyKey", "support-key-42", "body", Map.of())));
+        assertEquals(404, client.awaitType("ack").path("result").path("code").asInt());
+        verify(app, never()).replyConversation(eq("CV-other"), any(), any(), any());
+
+        when(userSessions.touchActiveUserSession("user-session", 42L, 30)).thenReturn(0);
+        client.send(json.writeValueAsString(Map.of("type", "ping")));
+        assertEquals(401, client.awaitType("error").path("code").asInt());
+        assertEquals(401, post("/api/app/support/realtime-ticket", token).statusCode());
+    }
+
+    @Test void supportTicketStillRequiresAnAuthenticatedUnblockedUser() throws Exception {
+        assertEquals(401, post("/api/app/support/realtime-ticket", "invalid-token").statusCode());
+        String token = activeUser();
+        when(blocklist.isBlocked(42L)).thenReturn(true);
+        assertEquals(401, post("/api/app/support/realtime-ticket", token).statusCode());
+    }
+
+    private String activeUser() {
+        UserEntity user = new UserEntity();
+        user.setId(42L); user.setCountryCode("+84"); user.setPhone("912345678");
+        user.setSandbox(0); user.setStatus("ACTIVE"); user.setIsDeleted(0);
+        when(users.selectById(42L)).thenReturn(user);
+        when(users.isOnboardingComplete(42L)).thenReturn(false);
+        when(userSessions.touchActiveUserSession("user-session", 42L, 30)).thenReturn(1);
+        when(supportAccounts.sandboxUser(42L)).thenReturn(0);
+        when(conversations.findByConversationNo("CV-42")).thenReturn(Optional.of(conversation(42L, "CV-42")));
+        return tokens.createUserToken(42L, "customer", List.of(), "user-session", Duration.ofMinutes(5), UserAuthEnvironment.PRODUCTION);
+    }
+
+    private ContentConversationView conversation(long userId, String no) {
+        return new ContentConversationView(1L, no, userId, "support", "OPEN", "seat", "Agent", 0, "hello",
+                null, null, null, null, null, null, null, null, null, 1L);
+    }
+
+    private Client connectUser(String token) throws Exception {
+        HttpResponse<String> response = post("/api/app/support/realtime-ticket", token);
+        assertEquals(200, response.statusCode(), response.body());
+        String ticket = json.readTree(response.body()).path("data").path("ticket").asText();
+        Client client = connect();
+        client.send(json.writeValueAsString(Map.of("type", "auth", "ticket", ticket)));
+        assertEquals("ready", client.awaitType("ready").path("type").asText());
+        return client;
     }
 
     private String ticketFor(String token) throws Exception {
@@ -168,9 +255,10 @@ class ConversationSocketSecurityIntegrationTest {
         @Bean PlatformConfigFacade platformConfigFacade() { return mock(PlatformConfigFacade.class); }
         @Bean JwtAuthenticationFilter jwtAuthenticationFilter(JwtTokenProvider tokens, AuthSessionMapper sessions, UserOpsMapper users,
                 org.springframework.core.env.Environment env, GatewaySecurityProperties gateway, AdminSessionRegistry admins,
-                AdminPermissionCache permissions, ImpersonationSessionVerifier impersonation, PlatformConfigFacade config) {
+                AdminPermissionCache permissions, ImpersonationSessionVerifier impersonation, PlatformConfigFacade config,
+                UserAccountBlocklistVerifier blocklist) {
             return new JwtAuthenticationFilter(tokens, sessions, users, env, gateway, admins, permissions, impersonation, config,
-                    mock(UserAccountBlocklistVerifier.class), mock(UserSessionRevocationService.class));
+                    blocklist, mock(UserSessionRevocationService.class));
         }
         @Bean AuditLogService auditLogService() { return mock(AuditLogService.class); }
         @Bean AdminAccountStateMapper adminAccountStateMapper() { return mock(AdminAccountStateMapper.class); }
@@ -181,7 +269,7 @@ class ConversationSocketSecurityIntegrationTest {
         @Bean ProductionSupportPathGuard productionSupportPathGuard(org.springframework.core.env.Environment env, SupportAcceptanceSandboxMapper mapper) {
             return new ProductionSupportPathGuard(env, mapper);
         }
-        @Bean UserAccountBlocklistVerifier userAccountBlocklistVerifier() { return id -> false; }
+        @Bean UserAccountBlocklistVerifier userAccountBlocklistVerifier() { return mock(UserAccountBlocklistVerifier.class); }
 
         @Bean LegalTermsService legalTermsService() { return mock(LegalTermsService.class); }
         @Bean UserBusinessWriteGateFilter userBusinessWriteGateFilter(UserOpsMapper users, LegalTermsService legalTerms) {
@@ -189,9 +277,9 @@ class ConversationSocketSecurityIntegrationTest {
         }
         @Bean ffdd.opsconsole.content.domain.ConversationRepository conversationRepository() { return mock(ffdd.opsconsole.content.domain.ConversationRepository.class); }
         @Bean ConversationSocketAccess conversationSocketAccess(JwtAuthenticationFilter auth, AdminRbacAuthorizationFilter gate,
-                UserAccountBlocklistVerifier blocklist, UserBusinessWriteGateFilter userGate,
+                UserAccountBlocklistVerifier blocklist,
                 ffdd.opsconsole.content.domain.ConversationRepository conversations, ProductionSupportPathGuard production) {
-            return new ConversationSocketAccess(auth, gate, blocklist, userGate, conversations, production, ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class));
+            return new ConversationSocketAccess(auth, gate, blocklist, conversations, production, ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class));
         }
         @Bean ConversationSocketTickets conversationSocketTickets(ConversationSocketAccess access) { return new ConversationSocketTickets(access); }
         @Bean AppSupportController appSupportController() { return mock(AppSupportController.class); }
