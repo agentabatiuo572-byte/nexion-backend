@@ -484,6 +484,8 @@ class OpsUserServiceTest {
         assertThat(file.fileName()).startsWith("C1-USER-EXP-").endsWith(".csv");
         assertThat(workbook)
                 .contains("用户编码")
+                .contains("USDT余额,UVT余额")
+                .doesNotContain("NEX余额")
                 .contains("U00000001")
                 .doesNotContain("userId")
                 .doesNotContain("<th>ID</th>")
@@ -543,7 +545,7 @@ class OpsUserServiceTest {
 
         assertThat(new String(file.body(), StandardCharsets.UTF_8))
                 .contains("用户编码", "生命周期", "V-Rank", "手机号(脱敏)")
-                .doesNotContain("风险分", "风险等级", "设备数", "USDT余额", "NEX余额");
+                .doesNotContain("风险分", "风险等级", "设备数", "USDT余额", "UVT余额", "NEX余额");
     }
 
     @Test

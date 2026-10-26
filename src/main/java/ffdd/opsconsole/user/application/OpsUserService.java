@@ -446,7 +446,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return csv.toString().getBytes(StandardCharsets.UTF_8);
         }
         csv.append('\ufeff')
-                .append("用户编码,昵称,手机号(脱敏),国家/地区,生命周期,V-Rank,状态,风险分,风险等级,设备数,活跃设备数,USDT余额,NEX余额,注册时间,最近登录\r\n");
+                .append("用户编码,昵称,手机号(脱敏),国家/地区,生命周期,V-Rank,状态,风险分,风险等级,设备数,活跃设备数,USDT余额,UVT余额,注册时间,最近登录\r\n");
         for (UserAccountView row : rows) {
             csv.append(csvCell(row.userNo())).append(',')
                     .append(csvCell(row.nickname())).append(',')

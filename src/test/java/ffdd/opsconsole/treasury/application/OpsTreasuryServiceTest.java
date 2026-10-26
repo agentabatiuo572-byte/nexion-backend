@@ -156,6 +156,24 @@ class OpsTreasuryServiceTest {
     }
 
     @Test
+    void liabilityExportsDisplayUvtWhileCanonicalCategoryAndLabelRemainUnchanged() {
+        when(idempotencyService.execute(anyString(), anyString(), anyString(), eq(byte[].class), any(Supplier.class)))
+                .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
+
+        Map<String, Object> before = service.liabilities(true).getData();
+        String direct = new String(service.liabilitiesCsv(), java.nio.charset.StandardCharsets.UTF_8);
+        String approved = new String(service.sensitiveExportCsv("liabilities", "uvt-export",
+                new ffdd.opsconsole.treasury.dto.TreasuryExportRequest("核对平台代币展示名称", "superadmin")),
+                java.nio.charset.StandardCharsets.UTF_8);
+
+        assertThat(direct).contains("\"nex_v2_future\",\"UVT v2 未来兑付\"")
+                .doesNotContain("NEX v2 未来兑付");
+        assertThat(approved).isEqualTo(direct);
+        assertThat(service.liabilities(true).getData()).isEqualTo(before);
+        assertThat(before.get("breakdown").toString()).contains("NEX v2 未来兑付", "nex_v2_future");
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void dualLedgerAggregatesLiabilitiesWithoutSunsetProducts() {
         configFacade.values.put("H1.rhythm.currentMonth", "8");
