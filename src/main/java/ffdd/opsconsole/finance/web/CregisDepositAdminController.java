@@ -28,6 +28,21 @@ public class CregisDepositAdminController {
     private final CregisDepositReconciliation reconciliation;
     private final CregisDepositReviewService reviews;
     private final CregisDepositSwitchService switches;
+    private final ffdd.opsconsole.finance.cregis.CregisAddressPoolPolicyService poolPolicies;
+
+    @GetMapping("/addresses/policy")
+    @PreAuthorize("hasAuthority('finance_d1_read')")
+    public ApiResult<ffdd.opsconsole.finance.cregis.CregisAddressPoolPolicy> poolPolicy() {
+        return ApiResult.ok(poolPolicies.read());
+    }
+
+    @PostMapping("/addresses/policy")
+    @PreAuthorize("hasAuthority('finance_d1_channel_manage')")
+    public ApiResult<ffdd.opsconsole.finance.cregis.CregisAddressPoolPolicy> savePoolPolicy(@RequestBody PoolPolicyRequest request) {
+        return ApiResult.ok(poolPolicies.save(new ffdd.opsconsole.finance.cregis.CregisAddressPoolPolicy(
+                request.enabled(),request.target(),request.lowWatermark(),request.batchSize(),request.concurrency(),request.version()),request.reason()));
+    }
+    public record PoolPolicyRequest(boolean enabled,int target,int lowWatermark,int batchSize,int concurrency,long version,String reason) { }
 
     @GetMapping("/exceptions")
     @PreAuthorize("hasAuthority('finance_d1_read')")

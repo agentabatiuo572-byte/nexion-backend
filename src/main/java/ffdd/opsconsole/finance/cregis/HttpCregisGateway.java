@@ -416,6 +416,14 @@ public final class HttpCregisGateway implements CregisGateway {
                             CregisGatewayException.Kind.SUBMISSION_UNKNOWN,
                             "CREGIS_DUPLICATE_BUSINESS_ID_UNKNOWN");
                 }
+                if ("/api/v1/address/create".equals(path)) {
+                    String safeCode = switch(code.textValue()) {
+                        case "E0033", "T0062" -> "CREGIS_ADDRESS_QUOTA_EXCEEDED";
+                        case "Z0004" -> "CREGIS_ADDRESS_RATE_LIMITED";
+                        default -> "CREGIS_PROVIDER_REJECTED";
+                    };
+                    throw new CregisGatewayException(CregisGatewayException.Kind.REJECTED,safeCode);
+                }
                 throw new CregisGatewayException(CregisGatewayException.Kind.REJECTED, "CREGIS_PROVIDER_REJECTED");
             }
             JsonNode data = root.get("data");

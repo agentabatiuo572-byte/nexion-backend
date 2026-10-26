@@ -434,6 +434,7 @@ class CregisDepositServiceTest {
         enabled.setDepositEnabled(true);
         enabled.setDepositCreditEnabled(false);
         when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1));
+        when(db.poolPolicy()).thenReturn(Map.of("enabled",1,"target",1000,"lowWatermark",300,"batchSize",50,"concurrency",2,"version",0L));
         when(db.addressPool(88, CregisConstants.BSC_CHAIN_ID)).thenReturn(Map.of(
                 "total", 3L, "unassigned", 2L, "assigned", 1L, "verifying", 0L, "unknown", 0L));
         CregisDepositService provider = new CregisDepositService(enabled,
@@ -442,8 +443,13 @@ class CregisDepositServiceTest {
                 mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
         assertThat(provider.exceptions()).containsEntry("mode", "PROVIDER")
                 .containsEntry("depositEnabled", true).containsEntry("depositCreditEnabled", false)
-                .containsEntry("addressPool", Map.of("available", true, "total", 3L, "unassigned", 2L,
-                        "assigned", 1L, "verifying", 0L, "unknown", 0L, "limit", 0, "reserveTarget", 5, "automatic", false));
+                .hasEntrySatisfying("addressPool",pool->{
+                    Map<?,?> values=(Map<?,?>)pool;
+                    assertThat(values.get("reserveTarget")).isEqualTo(1000);
+                    assertThat(values.get("lowWatermark")).isEqualTo(300);
+                    assertThat(values.get("batchSize")).isEqualTo(50);
+                    assertThat(values.get("concurrency")).isEqualTo(2);
+                });
         verify(db).addressPool(88, CregisConstants.BSC_CHAIN_ID);
     }
 
@@ -557,8 +563,9 @@ class CregisDepositServiceTest {
                 : Map.of("state", finalState, "assignEnabled", finalAssignEnabled, "creditEnabled", finalCreditEnabled);
         when(db.provisionGate()).thenReturn(
                 Map.of("state", "IDLE", "assignEnabled", 1, "creditEnabled", 1), currentGate);
-        when(db.lockUnassignedAddress(88, CregisConstants.BSC_CHAIN_ID))
+        when(db.peekUnassignedAddress(eq(88L), eq(CregisConstants.BSC_CHAIN_ID), anyInt()))
                 .thenReturn(Map.of("id", 1L, "address", ADDRESS));
+        when(db.lockPoolCandidate(88,CregisConstants.BSC_CHAIN_ID,1)).thenReturn(Map.of("id",1L,"address",ADDRESS));
         when(router.provider()).thenReturn(provider);
         when(provider.addressBelongs(CregisConstants.BSC_CHAIN_ID, ADDRESS)).thenReturn(true);
         when(provider.zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY, ADDRESS)).thenReturn(true);

@@ -20,7 +20,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE()
              AND TABLE_NAME IN ('nx_cregis_deposit_address','nx_cregis_deposit_delivery',
                'nx_cregis_deposit_event','nx_cregis_chain_observation','nx_cregis_chain_cursor',
-               'nx_cregis_provision_gate','nx_cregis_deposit_incident')
+               'nx_cregis_provision_gate','nx_cregis_deposit_incident','nx_cregis_address_pool_policy')
             """)
     int schemaTableCount();
 
@@ -96,17 +96,45 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int allocatedAddressCount(@Param("projectId") long projectId, @Param("chainId") String chainId);
     @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='UNASSIGNED' AND user_id IS NULL")
     int availableAddressCount(@Param("projectId") long projectId, @Param("chainId") String chainId);
+    @Select("SELECT enabled,target_count AS target,low_watermark AS lowWatermark,batch_size AS batchSize,max_concurrency AS concurrency,refill_active AS refillActive,UNIX_TIMESTAMP(retry_after)*1000 AS retryAfter,last_error AS lastError,version FROM nx_cregis_address_pool_policy WHERE id=1")
+    Map<String,Object> poolPolicy();
+    @Update("UPDATE nx_cregis_address_pool_policy SET enabled=#{enabled},target_count=#{target},low_watermark=#{low},batch_size=#{batch},max_concurrency=#{concurrency},retry_after=NULL,last_error=NULL,version=version+1 WHERE id=1 AND version=#{version}")
+    int updatePoolPolicy(@Param("enabled") boolean enabled,@Param("target") int target,@Param("low") int low,
+            @Param("batch") int batch,@Param("concurrency") int concurrency,@Param("version") long version);
+    @Update("UPDATE nx_cregis_address_pool_policy SET refill_active=#{active} WHERE id=1")
+    int setPoolRefillActive(boolean active);
+    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state IN ('QUEUED','PROVISIONING','VERIFYING','UNKNOWN')")
+    int outstandingAddressCount(@Param("projectId") long projectId,@Param("chainId") String chainId);
+    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='PROVISIONING'")
+    int submittingAddressCount(@Param("projectId") long projectId,@Param("chainId") String chainId);
+    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='QUEUED'")
+    int queuedAddressCount(@Param("projectId") long projectId,@Param("chainId") String chainId);
+    @Insert("INSERT INTO nx_cregis_deposit_address(user_id,project_id,chain_id,request_id,state) VALUES(NULL,#{projectId},#{chainId},#{requestId},'QUEUED')")
+    int enqueuePoolAddress(@Param("projectId") long projectId,@Param("chainId") String chainId,@Param("requestId") String requestId);
+    @Select("SELECT id,request_id AS requestId FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='QUEUED' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED")
+    Map<String,Object> lockQueuedAddress(@Param("projectId") long projectId,@Param("chainId") String chainId);
+    @Update("UPDATE nx_cregis_deposit_address SET state='PROVISIONING',creation_block=#{block},updated_at=NOW() WHERE id=#{id} AND state='QUEUED'")
+    int claimQueuedAddress(@Param("id") long id,@Param("block") long block);
+    @Update("UPDATE nx_cregis_deposit_address SET state='CANCELLED' WHERE id=#{id} AND state='QUEUED'")
+    int cancelQueuedAddress(long id);
+    @Update("UPDATE nx_cregis_deposit_address SET state='REJECTED' WHERE request_id=#{requestId} AND state='PROVISIONING'")
+    int rejectPoolAttempt(String requestId);
+    @Update("UPDATE nx_cregis_address_pool_policy SET retry_after=DATE_ADD(NOW(),INTERVAL #{seconds} SECOND),last_error=#{code} WHERE id=1")
+    int pausePoolSubmission(@Param("code") String code,@Param("seconds") int seconds);
+    @Select("SELECT id,address,creation_block AS creationBlock,COALESCE(verification_block,creation_block) AS verificationBlock FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='VERIFYING' ORDER BY id LIMIT #{limit}")
+    List<Map<String,Object>> verifyingCandidates(@Param("projectId") long projectId,@Param("chainId") String chainId,@Param("limit") int limit);
     @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state IN ('PROVISIONING','VERIFYING','UNKNOWN')")
     int pendingAddressCount(@Param("projectId") long projectId, @Param("chainId") String chainId);
     @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='UNKNOWN'")
     int unknownAddressCount(@Param("projectId") long projectId, @Param("chainId") String chainId);
-    @Update("UPDATE nx_cregis_deposit_address SET state='UNKNOWN' WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='PROVISIONING' AND created_at < DATE_SUB(NOW(),INTERVAL 2 MINUTE)")
+    @Update("UPDATE nx_cregis_deposit_address SET state='UNKNOWN' WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='PROVISIONING' AND updated_at < DATE_SUB(NOW(),INTERVAL 2 MINUTE)")
     int expireProvisioning(@Param("projectId") long projectId, @Param("chainId") String chainId);
     @Select("""
             SELECT COUNT(*) AS total,
                    COALESCE(SUM(state='UNASSIGNED'),0) AS unassigned,
                    COALESCE(SUM(state='READY'),0) AS assigned,
                    COALESCE(SUM(state IN ('VERIFYING','PROVISIONING')),0) AS verifying,
+                   COALESCE(SUM(state='QUEUED'),0) AS queued,
                    COALESCE(SUM(state='UNKNOWN'),0) AS `unknown`
               FROM nx_cregis_deposit_address
              WHERE project_id=#{projectId} AND chain_id=#{chainId}
@@ -180,6 +208,10 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     Map<String, Object> lockUnassignedAddress(@Param("projectId") long projectId,
                                                @Param("chainId") String chainId);
+    @Select("SELECT id,address FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='UNASSIGNED' AND user_id IS NULL ORDER BY id LIMIT #{offset},1")
+    Map<String,Object> peekUnassignedAddress(@Param("projectId") long projectId,@Param("chainId") String chainId,@Param("offset") int offset);
+    @Select("SELECT id,address FROM nx_cregis_deposit_address WHERE id=#{id} AND project_id=#{projectId} AND chain_id=#{chainId} AND state='UNASSIGNED' AND user_id IS NULL FOR UPDATE SKIP LOCKED")
+    Map<String,Object> lockPoolCandidate(@Param("projectId") long projectId,@Param("chainId") String chainId,@Param("id") long id);
     @Update("""
             UPDATE nx_cregis_deposit_address
                SET user_id=#{userId},state='READY',allocation_block=#{block},allocation_hash=#{hash}
