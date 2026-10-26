@@ -66,7 +66,7 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
     @Select("<script>SELECT COUNT(*) FROM nx_user scope_customer WHERE scope_customer.id=#{id} " + CUSTOMER_SCOPE_PREDICATE + " FOR SHARE</script>")
     int readableCustomer(@Param("scope") ReadScope scope,@Param("id") Long id);
     String SCOPED_POOL_FILTER="FROM nx_support_binding_pool p JOIN nx_user scope_customer ON scope_customer.id=p.customer_id WHERE 1=1 "
-            + CUSTOMER_SCOPE_PREDICATE + " AND NOT EXISTS(SELECT 1 FROM nx_support_agent_user_assignment active_pool_binding WHERE active_pool_binding.user_id=p.customer_id AND active_pool_binding.status='ACTIVE' AND active_pool_binding.is_deleted=0 FOR SHARE) <if test='reason != null'>AND p.reason=#{reason}</if> <if test='keyword != null'>AND (scope_customer.nickname LIKE CONCAT('%',#{keyword},'%') OR CAST(scope_customer.id AS CHAR)=#{keyword})</if> ";
+            + CUSTOMER_SCOPE_PREDICATE + " AND NOT EXISTS(SELECT 1 FROM nx_support_agent_user_assignment active_pool_binding WHERE active_pool_binding.user_id=p.customer_id AND active_pool_binding.status='ACTIVE' AND active_pool_binding.is_deleted=0 FOR SHARE) <if test='reason != null'>AND p.reason=#{reason}</if> <if test='keyword != null'>AND (scope_customer.nickname LIKE CONCAT('%',#{keyword},'%') OR CAST(scope_customer.id AS CHAR)=#{keyword} OR LOCATE(#{keyword},scope_customer.phone)>0)</if> ";
     @Select("<script>SELECT COUNT(*) "+SCOPED_POOL_FILTER+" FOR SHARE</script>")
     long scopedPoolCount(@Param("scope") ReadScope scope,@Param("reason") String reason,@Param("keyword") String keyword);
     String POOL_ROUTE_FACT = """
