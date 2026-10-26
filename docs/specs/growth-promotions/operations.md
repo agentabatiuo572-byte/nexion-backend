@@ -11,6 +11,7 @@
 - CommandReceipt.resource 是结果定位，SUCCEEDED 只说明该命令成功；奖励是否到账看 Reward.assetReceipt。失败回执要保留错误、原资源和原 key。
 - 新字段钱数为十进制字符串，最多现有 D4 的 18,6 精度；目录 scale 是最终约束。拒绝超精度/溢出/负数，不四舍五入。DEVICE 为整数。现有 E4 DeviceOrderView.amount/时间及原订单已有字段保持原序列化；仅新 quote/reward/metrics 合同强制字符串。
 - /api/orders 保留单 SKU quantity；/bundle 的 productNos 与 items 恰一项，保留原有最多8种SKU边界。旧 productNos 仍每 SKU 一台；新 items 不允许重复 SKU，quantity 总和≤既有订单100台上限。itemCount=明细行数，quantity=总台数，退款不能再把二者相等作为条件。
+- 普通购买与促销奖励资格分开：未指定 activityId 的单 SKU 多数量或多 SKU 报价，在 canonical 购买资格、商品定价、数量及所选券校验通过后，即使没有命中活动也返回 ELIGIBLE；activityId/activityVersion 为空、expectedRewards 为空，不生成奖励承诺。关闭自动选活动仍可按普通价格购买。显式指定的活动不存在、结束、未达条件或资源不足时仍拒绝，不静默退为普通购买；非法券和购买条件拒绝也不能降级放行。报价不预占库存、预算或月配额，ELIGIBLE 只允许进入创建订单，原有建单、付款时的库存、容量、限额、价格与余额检查继续执行。
 - 旧订单没有 promotionQuoteId 时完全按旧合同。新活动必须具备 PROMOTION_QUOTE_V1、ORDER_ITEM_QUANTITIES_V1、PROMOTION_REWARDS_V1；能力不够不能以活动价/赠品承诺建普通单。公开说明仍可读。
 - 创建返回 promotionQuoteId 的订单必须返回 OrderReceipt 全部字段；items 保存正式订单行 lineId、productNo、productName、quantity，rewards.lineId 必须关联同一正式订单行。刷新、支付、取消和原命令恢复均使用同一回执；历史回执缺 items 时只读取原订单明细补齐，不读取现售商品规则。赠品 disclosure.deviceName 从原批准 E1 合同的商品名生成，USDT/NEX 为 null；隐藏、下架或后来改名不改变原承诺名称，也不回退通用设备名。普通旧订单响应只按既有必要字段验收。E4 POST/PATCH 是同一命令 scope，同 key 不能执行两次。
 - CreatePromotion 只要求 reason 与 draft.category/template。服务端生成活动、版本与 revision；不生成金额、期限、预算或已批准政策默认值。Draft 是可持久化的不完整配置，PromotionContract 是待审/批准/发布必须满足的完整合同，两者不得共用 required 清单。name 是运营内部活动名，1–200 字且不能全空白；草稿可暂缺，提交前必填。公开多语言标题仍为 title，二者分别保存；改候选草稿名称不改变当前发布版本名称。
