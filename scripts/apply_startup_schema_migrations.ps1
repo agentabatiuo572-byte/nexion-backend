@@ -298,6 +298,7 @@ $migrations = @(
   # Maker/checker controls and reconciliation state must exist before PROVIDER mode starts.
   (Join-Path $root "scripts\migrations\20260928_cregis_controls_reconciliation.sql")
   (Join-Path $root "scripts\migrations\20261026_01_cregis_address_pool.sql")
+  (Join-Path $root "scripts\migrations\20261026_02_cregis_address_pool_policy.sql")
   (Join-Path $root "scripts\migrations\20261022_01_cregis_exception_claim.sql")
   (Join-Path $root "scripts\migrations\20261022_02_cregis_exception_refund.sql")
   (Join-Path $root "scripts\migrations\20261022_03_cregis_reorg_resolution.sql")

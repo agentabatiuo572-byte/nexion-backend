@@ -24,7 +24,12 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class CregisDepositService {
-    private static final int POOL_RESERVE = 5;
+    private final java.util.concurrent.ExecutorService poolWorkers = java.util.concurrent.Executors.newFixedThreadPool(10, r -> {
+        Thread thread = new Thread(r,"cregis-address-pool"); thread.setDaemon(true); return thread;
+    });
+    private final Object allocationScanLock = new Object();
+    private final java.util.concurrent.atomic.AtomicBoolean poolMaintenanceRunning = new java.util.concurrent.atomic.AtomicBoolean();
+    @jakarta.annotation.PreDestroy public void closePoolWorkers() {poolWorkers.shutdown();}
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(CregisDepositService.class);
     private static final String CHAIN = CregisConstants.BSC_CHAIN_ID;
     private static final String TOKEN = CregisConstants.USDT_BEP20_TOKEN_ID;
@@ -94,12 +99,29 @@ public class CregisDepositService {
                 || !on(visibleGate, "assignEnabled"))
             return Map.of("enabled", false, "creditEnabled", false,
                     "network", "BEP20", "reason", "CREGIS_DEPOSIT_PAUSED");
-        if (db.availableAddressCount(config.getProjectId(), CHAIN) == 0)
-            return preparingAddress();
+        int available=db.availableAddressCount(config.getProjectId(), CHAIN);
+        if (available == 0) return preparingAddress();
         long finalized = chain.head().number() - config.getDepositConfirmations() + 1;
         if (finalized < 0) throw new BizException(503, "CREGIS_CHAIN_NOT_FINALIZED");
         Long before = db.cursor();
-        if (before == null || before <= finalized) scanTrackedAddresses(finalized);
+        if (before == null || before <= finalized) synchronized(allocationScanLock) {
+            Long currentCursor=db.cursor();
+            if(currentCursor==null || currentCursor<=finalized) scanTrackedAddresses(finalized);
+        }
+        // Random selection spreads simultaneous first visits; provider I/O never holds the global gate.
+        Map<String,Object> selected=db.peekUnassignedAddress(config.getProjectId(),CHAIN,
+                java.util.concurrent.ThreadLocalRandom.current().nextInt(available));
+        if(selected==null || selected.isEmpty()) return preparingAddress();
+        long selectedId=((Number)selected.get("id")).longValue();
+        String value=(String)selected.get("address");
+        boolean clean=router.provider().addressBelongs(CHAIN,value)
+                && router.provider().zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY,value)
+                && chain.zeroUsdtBalance(value);
+        BscDepositProof.Head allocationHead=chain.head();
+        if(allocationHead.number()<finalized
+                || !allocationHead.hash().equalsIgnoreCase(chain.blockHash(allocationHead.number())))
+            throw new IllegalStateException("CREGIS_ALLOCATION_HEAD_CHANGED");
+        Instant proofDeadline=Instant.now().plusSeconds(5);
         Map<String, Object> assigned = transactions.execute(ignored -> {
             Map<String, Object> gate = db.lockProvisionGate();
             if (gate == null || !"IDLE".equals(gate.get("state")) || !on(gate, "assignEnabled"))
@@ -108,23 +130,12 @@ public class CregisDepositService {
             List<Map<String, Object>> current = db.addressForUser(userId, CHAIN);
             if (!current.isEmpty()) return current.get(0);
             Long cursor = db.lockCursor();
-            if (cursor == null || cursor <= finalized)
-                throw new BizException(503, "CREGIS_ADDRESS_POOL_SCANNING");
-            Map<String, Object> candidate = db.lockUnassignedAddress(config.getProjectId(), CHAIN);
-            if (candidate == null) return preparingAddress();
-            String value = (String) candidate.get("address");
-            if (db.addressObservationCount(config.getProjectId(), value, finalized) != 0
-                    || !router.provider().addressBelongs(CHAIN, value)
-                    || !router.provider().zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY, value)
-                    || !chain.zeroUsdtBalance(value)) {
-                db.holdPoolAddress(config.getProjectId(), CHAIN, value);
-                db.blockProvisionGateAny();
-                return null;
+            if (cursor == null || cursor <= finalized || !Instant.now().isBefore(proofDeadline)) return preparingAddress();
+            Map<String,Object> candidate=db.lockPoolCandidate(config.getProjectId(),CHAIN,selectedId);
+            if(candidate==null || candidate.isEmpty()) return preparingAddress();
+            if(!clean || db.addressObservationCount(config.getProjectId(),value,finalized)!=0) {
+                db.holdPoolAddress(config.getProjectId(),CHAIN,value);db.blockProvisionGateAny();return null;
             }
-            BscDepositProof.Head allocationHead = chain.head();
-            if (allocationHead.number() < finalized
-                    || !allocationHead.hash().equalsIgnoreCase(chain.blockHash(allocationHead.number())))
-                throw new IllegalStateException("CREGIS_ALLOCATION_HEAD_CHANGED");
             if (db.assignPoolAddress(((Number) candidate.get("id")).longValue(), userId,
                     allocationHead.number(), allocationHead.hash()) != 1)
                 throw new IllegalStateException("CREGIS_ADDRESS_ASSIGN_CONFLICT");
@@ -148,11 +159,12 @@ public class CregisDepositService {
                 "reason", "CREGIS_ADDRESS_PREPARING");
     }
 
-    /** One shared worker; user requests never perform provider creation or wait for finality. */
+    /** Bounded batches; the database gate coordinates creators across backend instances. */
     @Scheduled(fixedDelayString = "${NEXION_CREGIS_POOL_MAINTENANCE_MS:10000}")
     public void maintainAddressPool() {
         if (config.getMode() != CregisProperties.Mode.PROVIDER || !config.isDepositEnabled()
-                || !config.isDepositCreditEnabled() || config.getDepositConfirmations() < 15) return;
+                || !config.isDepositCreditEnabled() || config.getDepositConfirmations() < 15
+                || !poolMaintenanceRunning.compareAndSet(false,true)) return;
         try {
             transactions.executeWithoutResult(ignored -> {
                 if (db.lockProvisionGate() == null) return;
@@ -162,64 +174,110 @@ public class CregisDepositService {
             Map<String,Object> gate = db.provisionGate();
             if (gate == null || !on(gate,"assignEnabled") || !on(gate,"creditEnabled")
                     || !java.util.Set.of("IDLE","BUSY").contains(String.valueOf(gate.get("state")))) return;
-            if (db.verifyingCandidate(config.getProjectId(), CHAIN) != null)
-                verifyPoolCandidate(chain.head().number() - config.getDepositConfirmations() + 1);
-            if (db.availableAddressCount(config.getProjectId(), CHAIN) < POOL_RESERVE
-                    && db.pendingAddressCount(config.getProjectId(), CHAIN) == 0)
-                provisionPoolAddress(true);
+            var policy=CregisAddressPoolPolicy.from(db.poolPolicy());
+            long finalized=chain.head().number()-config.getDepositConfirmations()+1;
+            var candidates=new java.util.concurrent.ConcurrentLinkedQueue<>(db.verifyingCandidates(config.getProjectId(),CHAIN,policy.batchSize()));
+            parallelPoolWork(policy.concurrency(),()->{
+                Map<String,Object> candidate;
+                while((candidate=candidates.poll())!=null) {
+                    try {verifyPoolCandidate(candidate,finalized);}
+                    catch(RuntimeException failure) {log.warn("Cregis candidate verification deferred: {}",safeReason(failure));}
+                }
+            });
+            enqueuePoolAddresses(true);
+            dispatchQueuedAddresses(policy);
         } catch (RuntimeException failure) {
             log.warn("Cregis address pool maintenance deferred: {}", safeReason(failure));
-        }
+        } finally {poolMaintenanceRunning.set(false);}
+    }
+
+    private void parallelPoolWork(int concurrency,Runnable worker) {
+        var work=new java.util.ArrayList<java.util.concurrent.CompletableFuture<Void>>();
+        for(int i=0;i<concurrency;i++) work.add(java.util.concurrent.CompletableFuture.runAsync(worker,poolWorkers));
+        java.util.concurrent.CompletableFuture.allOf(work.toArray(java.util.concurrent.CompletableFuture[]::new)).join();
     }
 
     public Map<String, Object> provisionPoolAddress() {
-        return provisionPoolAddress(false);
+        int added=enqueuePoolAddresses(false);
+        if(added==0) throw new BizException(409,"CREGIS_PROVISION_GATE_BLOCKED");
+        return Map.of("state","QUEUED","count",added);
     }
 
-    private Map<String,Object> provisionPoolAddress(boolean automatic) {
+    private int enqueuePoolAddresses(boolean automatic) {
         if (config.getMode() != CregisProperties.Mode.PROVIDER || config.getProjectId() <= 0
-                || config.getDepositConfirmations() < 15)
-            throw new BizException(503, "CREGIS_PROVISION_NOT_CONFIGURED");
-        boolean coinReady = router.provider().projectCoins().stream().anyMatch(coin ->
-                coin.addressEnabled() && CHAIN.equals(coin.chainId())
-                        && TOKEN.equalsIgnoreCase(coin.tokenId()));
-        if (!coinReady) throw new BizException(503, "CREGIS_PROJECT_COIN_UNAVAILABLE");
-        long creationBlock = chain.head().number();
-        String requestId = UUID.randomUUID().toString();
-        boolean acquired = Boolean.TRUE.equals(transactions.execute(ignored -> {
-            Map<String, Object> gate = db.lockProvisionGate();
-            if (gate == null || !"IDLE".equals(gate.get("state")) || !on(gate, "assignEnabled"))
-                return false;
-            if (tripLocked()) return false;
-            if (db.pendingAddressCount(config.getProjectId(), CHAIN) != 0) return false;
-            if (automatic && (!on(gate,"creditEnabled")
-                    || db.availableAddressCount(config.getProjectId(), CHAIN) >= POOL_RESERVE)) return false;
-            // The durable pending row serializes creators without pausing existing deposits.
-            if (db.insertPoolAttempt(config.getProjectId(), CHAIN, requestId, creationBlock) != 1)
-                throw new IllegalStateException("CREGIS_ADDRESS_ATTEMPT_INSERT_FAILED");
-            return true;
-        }));
-        if (!acquired) {
-            if (automatic) return Map.of("state", "WAITING");
-            throw new BizException(409, "CREGIS_PROVISION_GATE_BLOCKED");
-        }
+                || config.getDepositConfirmations() < 15) throw new BizException(503,"CREGIS_PROVISION_NOT_CONFIGURED");
+        return transactions.execute(ignored -> {
+            Map<String,Object> gate=db.lockProvisionGate();
+            if(gate==null || !"IDLE".equals(gate.get("state")) || !on(gate,"assignEnabled") || !on(gate,"creditEnabled")
+                    || tripLocked()) return 0;
+            var raw=db.poolPolicy();var policy=CregisAddressPoolPolicy.from(raw);
+            if((automatic && !policy.enabled()) || submissionCoolingDown(raw)) return 0;
+            int available=db.availableAddressCount(config.getProjectId(),CHAIN);
+            boolean active=on(raw,"refillActive") || available<policy.lowWatermark();
+            if(available>=policy.target()) {db.setPoolRefillActive(false);return 0;}
+            if(automatic && !active) return 0;
+            int count=Math.min(automatic?policy.batchSize():1,Math.max(0,policy.target()-available-db.outstandingAddressCount(config.getProjectId(),CHAIN)));
+            if(active) db.setPoolRefillActive(true);
+            for(int i=0;i<count;i++) if(db.enqueuePoolAddress(config.getProjectId(),CHAIN,UUID.randomUUID().toString())!=1)
+                throw new IllegalStateException("CREGIS_ADDRESS_QUEUE_INSERT_FAILED");
+            return count;
+        });
+    }
+
+    private void dispatchQueuedAddresses(CregisAddressPoolPolicy batchPolicy) {
+        var remaining=new java.util.concurrent.atomic.AtomicInteger(batchPolicy.batchSize());
+        parallelPoolWork(batchPolicy.concurrency(),()->{
+            while(remaining.getAndDecrement()>0) {
+                try {if(!submitQueuedAddress()) return;}
+                catch(RuntimeException failure) {log.warn("Cregis address submission deferred: {}",safeReason(failure));return;}
+            }
+        });
+    }
+
+    private boolean submitQueuedAddress() {
+        if(submissionCoolingDown(db.poolPolicy())) return false;
+        if(db.queuedAddressCount(config.getProjectId(),CHAIN)==0) return false;
+        boolean coinReady=router.provider().projectCoins().stream().anyMatch(coin->coin.addressEnabled()
+                && CHAIN.equals(coin.chainId()) && TOKEN.equalsIgnoreCase(coin.tokenId()));
+        if(!coinReady) throw new BizException(503,"CREGIS_PROJECT_COIN_UNAVAILABLE");
+        long creationBlock=chain.head().number();
+        Map<String,Object> request=transactions.execute(ignored->{
+            var gate=db.lockProvisionGate();
+            if(gate==null || !"IDLE".equals(gate.get("state")) || !on(gate,"assignEnabled") || !on(gate,"creditEnabled") || tripLocked()) return null;
+            var raw=db.poolPolicy();var policy=CregisAddressPoolPolicy.from(raw);
+            if(submissionCoolingDown(raw) || db.submittingAddressCount(config.getProjectId(),CHAIN)>=policy.concurrency()) return null;
+            var row=db.lockQueuedAddress(config.getProjectId(),CHAIN);
+            if(row==null || row.isEmpty()) return null;
+            if(db.availableAddressCount(config.getProjectId(),CHAIN)+db.pendingAddressCount(config.getProjectId(),CHAIN)>=policy.target()) {
+                db.cancelQueuedAddress(((Number)row.get("id")).longValue());return null;
+            }
+            if(db.claimQueuedAddress(((Number)row.get("id")).longValue(),creationBlock)!=1)
+                throw new IllegalStateException("CREGIS_ADDRESS_QUEUE_CLAIM_FAILED");
+            return row;
+        });
+        if(request==null) return false;
+        String requestId=(String)request.get("requestId");
         try {
-            CregisGateway.Address created = router.provider().createAddress(CHAIN, "UVEL USDT BEP20",
-                    router.depositCallbackUrl(), requestId);
-            if (!CHAIN.equals(created.chainId()) || created.address() == null
-                    || !created.address().matches("(?i)0x[0-9a-f]{40}"))
+            CregisGateway.Address created=router.provider().createAddress(CHAIN,"UVEL USDT BEP20",router.depositCallbackUrl(),requestId);
+            if(!CHAIN.equals(created.chainId()) || created.address()==null || !created.address().matches("(?i)0x[0-9a-f]{40}"))
                 throw new IllegalStateException("CREGIS_ADDRESS_CREATE_INVALID");
-            if (db.recordPoolCandidate(requestId, created.address().toLowerCase(Locale.ROOT)) != 1)
+            if(db.recordPoolCandidate(requestId,created.address().toLowerCase(Locale.ROOT))!=1)
                 throw new IllegalStateException("CREGIS_ADDRESS_CANDIDATE_CONFLICT");
-            return Map.of("state", "VERIFYING", "requestId", requestId);
-        } catch (RuntimeException failure) {
-            transactions.executeWithoutResult(ignored -> {
+            return true;
+        } catch(RuntimeException failure) {
+            transactions.executeWithoutResult(ignored->{
                 db.lockProvisionGate();
-                db.unknownPoolAttempt(requestId);
-                db.blockProvisionGateAny();
+                if(failure instanceof CregisGatewayException rejected && rejected.kind()==CregisGatewayException.Kind.REJECTED) {
+                    db.rejectPoolAttempt(requestId);
+                    db.pausePoolSubmission(safeReason(failure),"CREGIS_ADDRESS_RATE_LIMITED".equals(failure.getMessage())?60:900);
+                } else {db.unknownPoolAttempt(requestId);db.blockProvisionGateAny();}
             });
             throw failure;
         }
+    }
+
+    private boolean submissionCoolingDown(Map<String,Object> raw) {
+        return raw!=null && raw.get("retryAfter") instanceof Number until && until.longValue()>System.currentTimeMillis();
     }
 
     public List<Map<String, Object>> deposits(long userId) {
@@ -262,8 +320,15 @@ public class CregisDepositService {
         Map<String, Object> addressPool = new java.util.LinkedHashMap<>(db.addressPool(config.getProjectId(), CHAIN));
         addressPool.put("available", true);
         addressPool.put("limit", 0); // Zero means no account/address-count cap.
-        addressPool.put("reserveTarget", POOL_RESERVE);
-        addressPool.put("automatic", config.isDepositEnabled() && config.isDepositCreditEnabled());
+        var poolRaw=db.poolPolicy();
+        var poolPolicy=CregisAddressPoolPolicy.from(poolRaw);
+        addressPool.put("reserveTarget",poolPolicy.target());
+        addressPool.put("lowWatermark",poolPolicy.lowWatermark());
+        addressPool.put("batchSize",poolPolicy.batchSize());
+        addressPool.put("concurrency",poolPolicy.concurrency());
+        addressPool.put("lastError",poolRaw.get("lastError"));
+        addressPool.put("retryAfter",poolRaw.get("retryAfter"));
+        addressPool.put("automatic",poolPolicy.enabled() && config.isDepositEnabled() && config.isDepositCreditEnabled());
         status.put("addressPool", addressPool);
         status.put("provisionGate", gate == null ? Map.of("state", "MISSING") : gate);
         status.put("unresolvedExposureUsdt", db.unresolvedExposure(config.getProjectId()));
@@ -524,7 +589,11 @@ public class CregisDepositService {
 
     private void verifyPoolCandidate(long finalized) {
         Map<String, Object> candidate = db.verifyingCandidate(config.getProjectId(), CHAIN);
-        if (candidate == null) return;
+        if (candidate == null || candidate.isEmpty()) return;
+        verifyPoolCandidate(candidate,finalized);
+    }
+
+    private void verifyPoolCandidate(Map<String,Object> candidate,long finalized) {
         long creation = ((Number) candidate.get("creationBlock")).longValue();
         long checkpoint = ((Number) candidate.get("verificationBlock")).longValue();
         if (finalized < creation) return;
