@@ -426,7 +426,7 @@ class CregisDepositServiceTest {
         assertThat(disabled.exceptions()).containsEntry("mode", "DISABLED")
                 .containsEntry("depositEnabled", false).containsEntry("depositCreditEnabled", false)
                 .containsEntry("addressPool", Map.of("available", false, "total", 0, "unassigned", 0,
-                        "assigned", 0, "verifying", 0, "unknown", 0, "limit", 60));
+                        "assigned", 0, "verifying", 0, "unknown", 0, "limit", 0));
         verify(db, never()).provisionGate();
         verify(db, never()).addressPool(anyLong(), any());
 
@@ -443,7 +443,7 @@ class CregisDepositServiceTest {
         assertThat(provider.exceptions()).containsEntry("mode", "PROVIDER")
                 .containsEntry("depositEnabled", true).containsEntry("depositCreditEnabled", false)
                 .containsEntry("addressPool", Map.of("available", true, "total", 3L, "unassigned", 2L,
-                        "assigned", 1L, "verifying", 0L, "unknown", 0L, "limit", 60));
+                        "assigned", 1L, "verifying", 0L, "unknown", 0L, "limit", 0, "reserveTarget", 5, "automatic", false));
         verify(db).addressPool(88, CregisConstants.BSC_CHAIN_ID);
     }
 
@@ -459,8 +459,7 @@ class CregisDepositServiceTest {
         CregisDepositService service = new CregisDepositService(props, router, mock(BscDepositProof.class),
                 new CregisSigner(), new ObjectMapper(), db, mock(PlatformTransactionManager.class),
                 mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class));
-        assertThatThrownBy(() -> service.address(42))
-                .hasMessage("CREGIS_ADDRESS_POOL_EMPTY");
+        assertThat(service.address(42)).containsEntry("reason", "CREGIS_ADDRESS_PREPARING");
         verify(db, never()).claimProvisionGate();
         verify(router, never()).provider();
         verify(gateway, never()).createAddress(any(), any(), any(), any());
@@ -548,7 +547,7 @@ class CregisDepositServiceTest {
         BscDepositProof chain = mock(BscDepositProof.class);
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
-        when(db.allocatedAddressCount(88, CregisConstants.BSC_CHAIN_ID)).thenReturn(1);
+        when(db.availableAddressCount(88, CregisConstants.BSC_CHAIN_ID)).thenReturn(1);
         when(chain.head()).thenReturn(new BscDepositProof.Head(120, BLOCK));
         when(chain.blockHash(120)).thenReturn(BLOCK);
         when(db.cursor()).thenReturn(107L);
