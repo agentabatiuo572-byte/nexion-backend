@@ -179,6 +179,36 @@ class UserBusinessWriteGateFilterTest {
         assertThat(response.getStatus()).isEqualTo(200);
     }
 
+    @ParameterizedTest
+    @CsvSource({"POST,/api/app/support/realtime-ticket", "POST,/api/app/support/conversations",
+            "POST,/api/app/support/conversations/CV-42/replies", "POST,/api/app/support/conversations/CV-42/read",
+            "POST,/api/app/support/conversations/CV-42/dismiss", "POST,/api/app/support/attachments",
+            "DELETE,/api/app/support/attachments/attachment-42"})
+    void customerSupportCommunicationRemainsAvailableBeforeOnboarding(String method, String path) throws Exception {
+        authenticateUser(42L);
+        when(users.isOnboardingComplete(42L)).thenReturn(false);
+        MockHttpServletRequest request = new MockHttpServletRequest(method, path);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(chain.getRequest()).isSameAs(request);
+        verify(users, never()).isOnboardingComplete(42L);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"POST,/api/orders", "POST,/api/app/deposits/vietqr/intents",
+            "POST,/api/app/support/tickets", "POST,/api/app/support/conversations/CV-42/ticket",
+            "POST,/api/app/support/conversations/CV-42/replies/extra", "POST,/api/app/support/other",
+            "PUT,/api/app/support/conversations", "DELETE,/api/app/support/conversations/CV-42"})
+    void supportExceptionDoesNotOpenBusinessWritesOrUnknownSupportCommands(String method, String path) throws Exception {
+        authenticateUser(42L);
+        when(users.isOnboardingComplete(42L)).thenReturn(false);
+        assertThat(invoke(method, path).getStatus()).isEqualTo(428);
+    }
+
     private MockHttpServletResponse invoke(String method, String path) throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest(method, path);
         MockHttpServletResponse response = new MockHttpServletResponse();

@@ -805,7 +805,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
         private final ConversationRepository conversations;
 
         FixtureAccess(ConversationRepository conversations) {
-            super(null, null, null, null, conversations, null, ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class));
+            super(null, null, null, conversations, null, ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class));
             this.conversations = conversations;
         }
 

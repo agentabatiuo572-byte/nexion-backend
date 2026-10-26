@@ -1,7 +1,6 @@
 package ffdd.opsconsole.content.realtime;
 
 import ffdd.opsconsole.shared.security.*;
-import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.content.domain.ConversationRepository;
 import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
@@ -17,7 +16,6 @@ public class ConversationSocketAccess {
     private final JwtAuthenticationFilter authentication;
     private final AdminRbacAuthorizationFilter adminGate;
     private final UserAccountBlocklistVerifier blocklist;
-    private final UserBusinessWriteGateFilter userGate;
     private final ConversationRepository conversations;
     private final ProductionSupportPathGuard production;
     private final ffdd.opsconsole.content.application.SupportOwnershipService ownership;
@@ -38,12 +36,10 @@ public class ConversationSocketAccess {
         return auth;
     }
 
+    /** Customer support remains available before onboarding; admin writes still need permission. */
     public void write(Authentication auth, String audience) {
         if (audience.equals("ADMIN")) {
             if (!has(auth, "service_m3_write")) throw new BizException(403, "SOCKET_PERMISSION_DENIED");
-        } else {
-            ApiResult<Void> blocked = userGate.businessWriteBlock(Long.valueOf(auth.getName()));
-            if (blocked != null) throw new BizException(blocked.getCode(), blocked.getMessage());
         }
     }
 
