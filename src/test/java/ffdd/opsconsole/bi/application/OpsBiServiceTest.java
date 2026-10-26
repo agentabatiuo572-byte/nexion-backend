@@ -1172,7 +1172,8 @@ class OpsBiServiceTest {
                         "queueBacklogUsd", new BigDecimal("150.00"),
                         "avgRiskScore", 22,
                         "valuationReliable", true),
-                "accounts", List.of(Map.of("key", "balance", "amount", new BigDecimal("500000.00"))),
+                "accounts", List.of(Map.of("key", "balance", "amount", new BigDecimal("500000.00")),
+                        Map.of("key", "nex_payable", "amount", new BigDecimal("12.34"))),
                 "maturity7d", List.of(Map.of("day", "2026-07-18", "withdrawUsd", new BigDecimal("120.00"), "interestUsd", new BigDecimal("30.00"))));
 
         service.createReport(
@@ -1181,10 +1182,12 @@ class OpsBiServiceTest {
                         "export canonical finance snapshot", "superadmin", "财务当前汇总", "当前快照",
                         "资金池概览/负债科目/七日到期/钱包账单计数", "NONE", "NONE", "财务管理员", "L3-FINANCE"));
 
-        assertThat(reportRepository.report.rowCount()).isEqualTo(16L);
+        assertThat(reportRepository.report.rowCount()).isEqualTo(17L);
         assertThat(reportRepository.snapshots.get(reportRepository.report.reportId()))
                 .contains("\"资金池概览\",\"真实储备\",\"700000.00\",\"USD\",\"资金池总账\"")
                 .contains("\"负债科目\",\"可提现余额\",\"500000.00\",\"USD\",\"负债账本\"")
+                .contains("\"负债科目\",\"UVT 应付款\",\"12.34\",\"USD\",\"负债账本\"")
+                .doesNotContain("NEX 应付款")
                 .contains("\"七日到期\",\"2026-07-18 提现到期\",\"120.00\",\"USD\",\"到期排程\"")
                 .contains("\"七日到期\",\"2026-07-18 利息到期\",\"30.00\",\"USD\",\"到期排程\"");
     }
@@ -1199,7 +1202,9 @@ class OpsBiServiceTest {
                         "periodPurchasedDevices", 0L,
                         "periodRetiredDevices", 2L,
                         "periodLockedDevices", 3L,
-                        "periodFirstYieldDevices", 1L)),
+                        "periodFirstYieldDevices", 1L,
+                        "dailyYieldUsdt", new BigDecimal("2.50"),
+                        "dailyYieldNex", new BigDecimal("1.25"))),
                 "tasks", Map.of("summary", Map.of(
                         "dispatched", 4L,
                         "completed", 2L,
@@ -1227,12 +1232,15 @@ class OpsBiServiceTest {
 
         assertThat(created.getCode()).isZero();
         assertThat(reportRepository.report.type()).isEqualTo("OPERATIONS_AGG");
-        assertThat(reportRepository.report.rowCount()).isEqualTo(11L);
+        assertThat(reportRepository.report.rowCount()).isEqualTo(13L);
         assertThat(reportRepository.report.status()).isEqualTo("READY");
         assertThat(reportRepository.snapshots.get(reportRepository.report.reportId()))
                 .contains("\"分类\",\"周期/阶段\",\"运营指标\",\"值\",\"单位\",\"数据来源\"")
                 .contains("\"设备\",\"当前窗口 / ALL\",\"期间设备购置数\",\"0\",\"条\",\"A4 设备/产出事件\"")
                 .contains("\"网络\",\"当前窗口 / ALL\",\"佣金事件数\",\"7\",\"条\",\"A4/F 团队事件\"")
+                .contains("\"期间产出 UVT\",\"1.25\",\"UVT\"")
+                .contains("\"期间产出 USDT\",\"2.50\",\"USDT\"")
+                .doesNotContain("NEX")
                 .doesNotContain("nx_");
     }
 

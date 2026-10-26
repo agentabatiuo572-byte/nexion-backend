@@ -497,7 +497,7 @@ public class OpsTreasuryService {
         List<Map<String, Object>> rows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");
         StringBuilder csv = new StringBuilder("\ufeffcategory,label,amount_usdt,share,source\r\n");
         for (Map<String, Object> row : rows) {
-            csv.append(csvCell(row.get("category"))).append(',').append(csvCell(row.get("label"))).append(',')
+            csv.append(csvCell(row.get("category"))).append(',').append(csvCell("nex_v2_future".equals(row.get("category")) ? "UVT v2 未来兑付" : row.get("label"))).append(',')
                     .append(row.get("amountUsdt")).append(',').append(row.get("share")).append(',')
                     .append(csvCell(row.get("source"))).append("\r\n");
         }
@@ -552,7 +552,7 @@ public class OpsTreasuryService {
         List<Map<String, Object>> rows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");
         StringBuilder csv = new StringBuilder("\ufeffcategory,label,amount_usdt,share,source\r\n");
         for (Map<String, Object> row : rows) {
-            csv.append(csvCell(row.get("category"))).append(',').append(csvCell(row.get("label"))).append(',')
+            csv.append(csvCell(row.get("category"))).append(',').append(csvCell("nex_v2_future".equals(row.get("category")) ? "UVT v2 未来兑付" : row.get("label"))).append(',')
                     .append(row.get("amountUsdt")).append(',').append(row.get("share")).append(',')
                     .append(csvCell(row.get("source"))).append("\r\n");
         }

@@ -1416,7 +1416,7 @@ public class OpsBiService implements AuditReplayable {
                 "activeDevices", "当前活跃设备", "periodPurchasedDevices", "期间设备购置数",
                 "periodRetiredDevices", "期间设备退役数", "periodLockedDevices", "期间设备锁定数",
                 "periodFirstYieldDevices", "期间完成首次产出设备", "dailyYieldUsdt", "期间产出 USDT",
-                "dailyYieldNex", "期间产出 NEX", "degradationLossUsdt", "衰减影响 USDT"), "A4 设备/产出事件");
+                "dailyYieldNex", "期间产出 UVT", "degradationLossUsdt", "衰减影响 USDT"), "A4 设备/产出事件");
         appendOperationsSummary(rows, slice, "任务", mutableObjectMap(tasks.get("summary")), Map.of(
                 "dispatched", "任务派发量", "completed", "任务完成量", "acceptanceRate", "任务承接率",
                 "queueSaturation", "队列饱和度", "checkinActive", "签到活跃人数"), "A4 任务/签到事件");
@@ -1443,7 +1443,7 @@ public class OpsBiService implements AuditReplayable {
         labels.forEach((key, label) -> appendOperationsFact(rows, slice, category, label, summary.get(key),
                 key.toLowerCase(Locale.ROOT).contains("rate") || key.toLowerCase(Locale.ROOT).contains("saturation") ? "%"
                         : key.toLowerCase(Locale.ROOT).contains("usdt") ? "USDT"
-                        : key.toLowerCase(Locale.ROOT).contains("nex") ? "NEX" : "条",
+                        : key.toLowerCase(Locale.ROOT).contains("nex") ? "UVT" : "条",
                 source));
     }
 
@@ -1523,7 +1523,7 @@ public class OpsBiService implements AuditReplayable {
             case "balance" -> "可提现余额";
             case "stake_principal" -> "质押本金";
             case "stake_interest" -> "质押应计利息";
-            case "nex_payable" -> "NEX 应付款";
+            case "nex_payable" -> "UVT 应付款";
             case "withdraw_queue" -> "提现队列";
             case "commission_cooling" -> "佣金冷静期余额";
             case "pending_withdraw" -> "钱包待提现金额";
