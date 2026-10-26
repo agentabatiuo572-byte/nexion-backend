@@ -22,5 +22,7 @@ class SupportBindingPoolTimeContractTest {
                 "DATE_FORMAT(p.last_attempt_at,'%Y-%m-%dT%H:%i:%s.%fZ') lastAttemptAt",
                 "ORDER BY p.customer_id LIMIT ? OFFSET ? FOR SHARE")
                 .doesNotContain("CONVERT_TZ", "DATE_ADD", "COALESCE(p.last_attempt_at", "p.entered_at enteredAt", "p.last_attempt_at lastAttemptAt");
+        assertThat(sql).contains("CASE WHEN scope_customer.phone REGEXP '^[0-9]{7,15}$' THEN CONCAT(SUBSTRING(scope_customer.phone,1,3),'****',SUBSTRING(scope_customer.phone,LENGTH(scope_customer.phone)-3)) ELSE NULL END phoneMasked")
+                .doesNotContain("scope_customer.phone phone", "scope_customer.phone AS phone", "scope_customer.*");
     }
 }
