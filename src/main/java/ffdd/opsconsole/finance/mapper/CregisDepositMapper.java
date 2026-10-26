@@ -56,7 +56,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     @Select("""
             SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
              AND TABLE_NAME='nx_cregis_deposit_address'
-             AND ((COLUMN_NAME='user_id' AND IS_NULLABLE='YES') OR COLUMN_NAME='creation_block')
+             AND ((COLUMN_NAME='user_id' AND IS_NULLABLE='YES') OR COLUMN_NAME IN ('creation_block','verification_block'))
             """)
     int schemaPoolColumnCount();
     @Select("""
@@ -94,11 +94,19 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int claimProvisionGate();
     @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId}")
     int allocatedAddressCount(@Param("projectId") long projectId, @Param("chainId") String chainId);
+    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='UNASSIGNED' AND user_id IS NULL")
+    int availableAddressCount(@Param("projectId") long projectId, @Param("chainId") String chainId);
+    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state IN ('PROVISIONING','VERIFYING','UNKNOWN')")
+    int pendingAddressCount(@Param("projectId") long projectId, @Param("chainId") String chainId);
+    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='UNKNOWN'")
+    int unknownAddressCount(@Param("projectId") long projectId, @Param("chainId") String chainId);
+    @Update("UPDATE nx_cregis_deposit_address SET state='UNKNOWN' WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='PROVISIONING' AND created_at < DATE_SUB(NOW(),INTERVAL 2 MINUTE)")
+    int expireProvisioning(@Param("projectId") long projectId, @Param("chainId") String chainId);
     @Select("""
             SELECT COUNT(*) AS total,
                    COALESCE(SUM(state='UNASSIGNED'),0) AS unassigned,
                    COALESCE(SUM(state='READY'),0) AS assigned,
-                   COALESCE(SUM(state='VERIFYING'),0) AS verifying,
+                   COALESCE(SUM(state IN ('VERIFYING','PROVISIONING')),0) AS verifying,
                    COALESCE(SUM(state='UNKNOWN'),0) AS `unknown`
               FROM nx_cregis_deposit_address
              WHERE project_id=#{projectId} AND chain_id=#{chainId}
@@ -139,12 +147,19 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     int unknownPoolAttempt(@Param("requestId") String requestId);
     @Select("""
-            SELECT id,address,creation_block AS creationBlock FROM nx_cregis_deposit_address
+            SELECT id,address,creation_block AS creationBlock,
+                   COALESCE(verification_block,creation_block) AS verificationBlock FROM nx_cregis_deposit_address
              WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='VERIFYING'
              ORDER BY id LIMIT 1
             """)
     Map<String, Object> verifyingCandidate(@Param("projectId") long projectId,
                                             @Param("chainId") String chainId);
+    @Update("""
+            UPDATE nx_cregis_deposit_address SET verification_block=#{next}
+             WHERE id=#{id} AND state='VERIFYING' AND user_id IS NULL
+               AND COALESCE(verification_block,creation_block)=#{expected}
+            """)
+    int advanceCandidateVerification(@Param("id") long id, @Param("expected") long expected, @Param("next") long next);
     @Update("""
             UPDATE nx_cregis_deposit_address SET state='UNASSIGNED'
              WHERE id=#{id} AND state='VERIFYING' AND user_id IS NULL
@@ -535,15 +550,26 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                                            @Param("address") String address);
 
     @Select("""
-            SELECT address,user_id AS userId,state,creation_block AS creationBlock,
+            SELECT id,address,user_id AS userId,state,creation_block AS creationBlock,
                    allocation_block AS allocationBlock
               FROM nx_cregis_deposit_address
              WHERE project_id=#{projectId} AND chain_id=#{chainId}
                AND state IN ('VERIFYING','UNASSIGNED','READY','UNATTRIBUTED_HOLD','RETIRED','RETIRED_HOLD')
-             ORDER BY id LIMIT 61
+               AND id>#{afterId} AND id<=#{maxId}
+             ORDER BY id LIMIT 60
             """)
     List<Map<String, Object>> allocations(@Param("projectId") long projectId,
-                                          @Param("chainId") String chainId);
+                                          @Param("chainId") String chainId,
+                                          @Param("afterId") long afterId, @Param("maxId") long maxId);
+
+    @Select("""
+            SELECT MIN(creation_block) AS firstBlock,MAX(id) AS maxId,
+                   COALESCE(SUM(creation_block IS NULL),0) AS missingBlocks
+              FROM nx_cregis_deposit_address
+             WHERE project_id=#{projectId} AND chain_id=#{chainId}
+               AND state IN ('VERIFYING','UNASSIGNED','READY','UNATTRIBUTED_HOLD','RETIRED','RETIRED_HOLD')
+            """)
+    Map<String,Object> allocationBounds(@Param("projectId") long projectId, @Param("chainId") String chainId);
 
     @Insert("INSERT IGNORE INTO nx_cregis_chain_cursor(id,next_block) VALUES (1,#{block})")
     int ensureCursor(@Param("block") long block);

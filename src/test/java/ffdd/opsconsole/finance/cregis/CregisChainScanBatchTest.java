@@ -43,6 +43,33 @@ class CregisChainScanBatchTest {
         verify(f.db).advanceCursor(1101,1000);
     }
 
+
+    @ParameterizedTest @ValueSource(booleans={false,true})
+    void moreThanSixtyAddressesArePagedWithoutSkippingFailedPages(boolean failSecondPage) {
+        var f=fixture(500);
+        when(f.db.allocationBounds(88,CregisConstants.BSC_CHAIN_ID))
+            .thenReturn(Map.of("firstBlock",100L,"maxId",121L,"missingBlocks",0));
+        for(long start: new long[]{0,60,120}) {
+            var page=new java.util.ArrayList<Map<String,Object>>();
+            for(long id=start+1;id<=Math.min(start+60,121);id++)
+                page.add(Map.of("id",id,"creationBlock",100L,"allocationBlock",100L,"state","READY",
+                    "address","0x"+String.format("%040x",id)));
+            when(f.db.allocations(88,CregisConstants.BSC_CHAIN_ID,start,121)).thenReturn(page);
+        }
+        if(failSecondPage) when(f.chain.scan(anyLong(),anyLong(),any())).thenReturn(List.of())
+            .thenThrow(new IllegalStateException("RPC_FAILED"));
+        if(failSecondPage) {
+            assertThatThrownBy(()->f.service.scanTrackedAddresses(30000)).hasMessage("RPC_FAILED");
+            verify(f.db,never()).advanceCursor(anyLong(),anyLong());
+        } else {
+            f.service.scanTrackedAddresses(30000);
+            var pages=org.mockito.ArgumentCaptor.forClass(List.class);
+            verify(f.chain,times(3)).scan(eq(900L),eq(1399L),pages.capture());
+            assertThat(pages.getAllValues().stream().map(List::size).toList()).containsExactly(60,60,1);
+            verify(f.db).advanceCursor(1400,1000);
+        }
+    }
+
     private Fixture fixture(int size) {
         var config = new CregisProperties();
         assertThat(config.getChainScanBlocks()).isEqualTo(500);
@@ -50,7 +77,8 @@ class CregisChainScanBatchTest {
         config.setMode(CregisProperties.Mode.PROVIDER);config.setProjectId(88);
         var db = mock(CregisDepositMapper.class);var chain = mock(BscDepositProof.class);
         String address = "0x"+"a".repeat(40);
-        when(db.allocations(88,CregisConstants.BSC_CHAIN_ID)).thenReturn(List.of(Map.of(
+        when(db.allocationBounds(88,CregisConstants.BSC_CHAIN_ID)).thenReturn(Map.of("firstBlock",100L,"maxId",1L,"missingBlocks",0));
+        when(db.allocations(88,CregisConstants.BSC_CHAIN_ID,0,1)).thenReturn(List.of(Map.of("id",1L,
                 "creationBlock",100L,"allocationBlock",100L,"state","READY","address",address)));
         when(db.cursor()).thenReturn(1000L);
         when(db.verifyingCandidate(88,CregisConstants.BSC_CHAIN_ID)).thenReturn(null);

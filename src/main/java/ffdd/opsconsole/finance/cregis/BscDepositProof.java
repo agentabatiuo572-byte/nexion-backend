@@ -170,7 +170,7 @@ public final class BscDepositProof {
         return new ReorgProof(absent,null,latest.number(),secondHash);
     }
 
-    /** Narrow finalized Transfer scan of already allocated addresses. */
+    /** One bounded RPC batch; total user/address count is not capped. */
     public List<Observation> scan(long from, long to, List<String> addresses) {
         if (from < 0 || to < from || to - from >= properties.getChainScanBlocks() || addresses == null
                 || addresses.isEmpty() || addresses.size() > 60) throw invalid();
