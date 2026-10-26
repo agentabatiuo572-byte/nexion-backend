@@ -72,8 +72,8 @@ public class PromotionQuoteService {
         if(chosen!=null&&expiry.isAfter(instant(contract.get("endsAt"))))expiry=instant(contract.get("endsAt"));
         String activity=chosen==null?null:text(chosen.get("activity_id"));
         Long version=chosen==null?null:number(chosen.get("active_version"));
-        // Explicit voucher-only offers have passed both purchase eligibility and the owned voucher checks.
-        boolean eligible=chosen!=null||(Boolean.FALSE.equals(request.get("autoSelectPromotion"))&&!text(request.get("voucherId")).isEmpty());
+        // Ordinary purchases need no promotion; explicit activities must pass the selection guard above.
+        boolean eligible=chosen!=null||selected.isEmpty();
         Map<String,Object> publicQuote=values("quoteId",quoteId,"quoteHash","0".repeat(64),"expiresAt",expiry.toString(),"serverTime",now.toString(),
             "itemCount",items.size(),"quantity",items.stream().mapToInt(PromotionRules.Selection::quantity).sum(),
             "items",price.get("items"),"subtotalUsdt",price.get("subtotalUsdt"),"discountUsdt",price.get("discountUsdt"),
