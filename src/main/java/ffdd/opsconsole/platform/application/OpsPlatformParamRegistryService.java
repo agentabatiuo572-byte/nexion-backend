@@ -57,6 +57,11 @@ public class OpsPlatformParamRegistryService {
         LinkedHashMap<String, PlatformParamRegistryRow> rows = new LinkedHashMap<>();
         int unmappedConfigCount = 0;
         for (PlatformConfigItem item : configSource.findAllActive()) {
+            String key = item.configKey();
+            if (key != null && (key.equals("E.compute.computeShareEnabled")
+                    || key.equals("platform.compute.download.allowedTargets")
+                    || key.startsWith("E.compute.gpuTier.") || key.startsWith("E.compute.download.")
+                    || key.equals("risk.k1.release.appAttestationReleaseHours"))) continue;
             // H9 acceptance runs store payloads here, not operational parameters.
             // Keep those payloads private without hiding unknown config families.
             if ("growth_sandbox".equals(item.configGroup())
@@ -153,7 +158,9 @@ public class OpsPlatformParamRegistryService {
                 owner.route(),
                 retired ? "0" : secret ? "已配置（敏感值已隐藏）"
                         : "E.compute.phoneCalibration.policy".equals(canonicalKey)
-                        ? phonePolicySummary(item.configValue()) : Objects.toString(item.configValue(), ""),
+                        ? phonePolicySummary(item.configValue())
+                        : "risk.k1.release.releaseMode".equals(canonicalKey) ? "manual_only"
+                        : Objects.toString(item.configValue(), ""),
                 valueType,
                 secret ? "" : unitFor(canonicalKey),
                 "nx_config_item",

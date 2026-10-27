@@ -737,40 +737,25 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                         t.desc(), t.defaultModel(),
                         readComputeVal(ComputeConfigRegistry.gpuTierKey(t.id(), "tops"), t.defaultTops()),
                         readKeywords(t))).toList();
-        String downloadKey = ComputeConfigRegistry.downloadKey("url");
-        String downloadUrl = sanitizeComputeDownloadUrl(readComputeVal(downloadKey, ""));
-        // The allow-list is mutable configuration. Re-check the final release on every read,
-        // so a formerly healthy artifact that later redirects or disappears has no consumer entry.
-        if (!downloadUrl.isBlank() && verifyComputeDownloadPublication(downloadKey, downloadUrl) != null) {
-            downloadUrl = "";
-        }
-        var dl = new ComputeConfigView.DownloadView(
-                downloadUrl,
-                readComputeVal(ComputeConfigRegistry.downloadKey("zhTitle"), "电脑显卡算力共享"),
-                readComputeVal(ComputeConfigRegistry.downloadKey("zhGuide"), "下载桌面客户端,使用同一账号登录,连接后电脑会出现在设备仓库中。"),
-                readComputeVal(ComputeConfigRegistry.downloadKey("enTitle"), "Computer GPU share"),
-                readComputeVal(ComputeConfigRegistry.downloadKey("enGuide"), "Download the desktop client, sign in with the same account, and the computer appears in device inventory after connection."));
+        // Keep the response shape for older clients without publishing a retired installer.
+        var dl = new ComputeConfigView.DownloadView("", "", "", "", "");
         return ApiResult.ok(new ComputeConfigView("E6", flags, coeffs, yields, tiers, dl, readPhoneBinding(), List.of("nx_config_item:E.compute.*")));
     }
 
     /** App/H5 登录前可读的唯一 E6 服务端配置投影。 */
     public ApiResult<PlatformComputeConfigView> platformComputeConfig() {
         ComputeConfigView compute = computeConfig().getData();
-        boolean configuredEnabled = compute.flags().stream()
-                .filter(flag -> "computeShareEnabled".equals(flag.key()))
-                .map(ComputeConfigView.FlagView::enabled)
-                .findFirst().orElse(false);
-        boolean enabled = configuredEnabled && compute.download() != null
-                && !sanitizeComputeDownloadUrl(compute.download().url()).isBlank();
-        List<ComputeConfigView.FlagView> publicFlags = compute.flags().stream()
-                .map(flag -> "computeShareEnabled".equals(flag.key())
-                        ? new ComputeConfigView.FlagView(
-                                flag.key(), flag.label(), flag.desc(), enabled, flag.frontendEffect())
-                        : flag)
+        boolean enabled = false;
+        List<ComputeConfigView.FlagView> publicFlags = List.of(new ComputeConfigView.FlagView(
+                "computeShareEnabled", "已停止使用", "已停止使用", false, "已停止使用"));
+        var legacyTiers = ComputeConfigRegistry.LEGACY_WIRE_GPU_TIERS.stream()
+                .map(t -> new ComputeConfigView.GpuTierView(t.id(), t.label(), t.desc(), t.defaultModel(), t.defaultTops(),
+                        java.util.stream.IntStream.range(0,t.keywords().size())
+                                .mapToObj(i -> new ComputeConfigView.KeywordView("keyword"+(i+1),t.keywords().get(i))).toList()))
                 .toList();
         ComputeConfigView publicCompute = new ComputeConfigView(
                 compute.domain(), publicFlags, compute.coefficients(), compute.yieldEstimate(),
-                compute.gpuTiers(), compute.download(), compute.phoneBinding(), compute.sources());
+                legacyTiers, compute.download(), compute.phoneBinding(), compute.sources());
         return ApiResult.ok(new PlatformComputeConfigView(
                 new PlatformComputeConfigView.FeatureFlags(enabled, false, false, true),
                 null,

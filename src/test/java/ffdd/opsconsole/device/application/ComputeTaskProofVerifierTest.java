@@ -7,7 +7,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.device.dto.AppTaskCompleteRequest;
-import ffdd.opsconsole.janus.application.JanusSandboxEnrollmentService;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -85,20 +84,14 @@ class ComputeTaskProofVerifierTest {
     }
 
     @Test
-    void sandboxProofRequiresTheServerIssuedUserAndDeviceEnrollment() {
-        JanusSandboxEnrollmentService enrollment = mock(JanusSandboxEnrollmentService.class);
+    void retiredSandboxEnrollmentCannotAuthorizeTaskCompletion() {
         var verifier = new ComputeTaskProofVerifier("SANDBOX", "", 120_000, CLOCK,
-                new MockEnvironment().withProperty("spring.profiles.active", "dev"), enrollment);
+                new MockEnvironment().withProperty("spring.profiles.active", "test"));
         var proof = new AppTaskCompleteRequest("c".repeat(64), "SANDBOX", "sandbox",
                 NONCE, CLOCK.millis(), "server-issued-token");
-        when(enrollment.verify(7L, "DEV-11", "server-issued-token")).thenReturn(true);
-
-        var result = verifier.verify(7L, "CTA-1", 11L, "DEV-11", NONCE,
-                LocalDateTime.of(2026, 8, 10, 12, 2), proof);
-
-        assertThat(result.sandbox()).isTrue();
-        assertThat(result.proofHash()).matches("[a-f0-9]{64}");
-        verify(enrollment).verify(7L, "DEV-11", "server-issued-token");
+        assertThatThrownBy(() -> verifier.verify(7L, "CTA-1", 11L, "DEV-11", NONCE,
+                LocalDateTime.of(2026, 8, 10, 12, 2), proof))
+                .isInstanceOf(BizException.class).hasMessageContaining("SANDBOX_ISOLATION_MISMATCH");
     }
 
     @Test
@@ -133,7 +126,7 @@ class ComputeTaskProofVerifierTest {
     private ComputeTaskProofVerifier productionVerifier(byte[] key) {
         return new ComputeTaskProofVerifier("PRODUCTION",
                 "executor-1:DEV-11:" + Base64.getEncoder().encodeToString(key),
-                120_000, CLOCK, new MockEnvironment(), mock(JanusSandboxEnrollmentService.class));
+                120_000, CLOCK, new MockEnvironment());
     }
 
     private AppTaskCompleteRequest signedRequest(long userId, String taskNo, long deviceId,

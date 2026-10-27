@@ -14,6 +14,22 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class OpsPlatformParamRegistryServiceTest {
+    @Test void retiredParametersCannotReappearThroughOldActiveConfigRows() {
+        when(source.findAllActive()).thenReturn(List.of(
+                item("E.compute.computeShareEnabled","on","e6_compute"),
+                item("E.compute.gpuTier.G3.tops","160","e6_compute"),
+                item("E.compute.download.url","https://old.example/client","e6_compute"),
+                item("risk.k1.release.appAttestationReleaseHours","1","risk"),
+                item("risk.k1.release.releaseMode","attest_or_manual","risk")));
+        when(emergency.currentKillSwitches()).thenReturn(List.of());
+        var rows=service.overview().getData().rows();
+        assertThat(rows).noneMatch(row -> row.canonicalKey().contains("gpuTier")
+                || row.canonicalKey().contains("computeShareEnabled") || row.canonicalKey().contains("download.")
+                || row.canonicalKey().endsWith("appAttestationReleaseHours"));
+        assertThat(rows).filteredOn(row -> row.canonicalKey().equals("risk.k1.release.releaseMode"))
+                .singleElement().satisfies(row -> assertThat(row.currentValue()).isEqualTo("manual_only"));
+        assertThat(rows).anyMatch(row -> row.canonicalKey().equals("E.compute.phoneCalibration.policy"));
+    }
     private final PlatformParamRegistrySource source = mock(PlatformParamRegistrySource.class);
     private final PlatformEmergencyStateProvider emergency = mock(PlatformEmergencyStateProvider.class);
     /** A3 系统健康的实时来源:健康类参数键由它供值,不再读 nx_config_item 的存量快照。 */
