@@ -45,4 +45,13 @@ class PhoneActivationCapacityServiceTest {
         assertThatThrownBy(() -> service.requireCapacity(1L, null)).isInstanceOf(BizException.class);
         verify(mapper, never()).lockDeviceSlotCap();
     }
+
+    @Test void trialReservationCannotBeDisplacedByANewPhone() {
+        when(mapper.lockUser(1L)).thenReturn(new CanonicalStateMapper.UserLock(1L, false));
+        when(mapper.lockActiveDeviceCount(1L, false)).thenReturn(5);
+        when(mapper.lockReservedTrialSlotCount(1L)).thenReturn(1);
+        when(mapper.lockDeviceSlotCap()).thenReturn(6);
+        assertThatThrownBy(() -> service.requireCapacity(1L, null))
+                .isInstanceOf(BizException.class).hasMessage("CAPACITY_REPLACEMENT_REQUIRED");
+    }
 }

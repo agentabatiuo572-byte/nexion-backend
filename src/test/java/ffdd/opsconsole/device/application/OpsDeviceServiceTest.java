@@ -425,6 +425,26 @@ class OpsDeviceServiceTest {
                 eq("admin.device_activated"), any());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"false,5,0", "true,5,0", "false,4,1", "true,4,1"})
+    void e5ManualAndForceActivationRespectTrialAndOrderReservations(boolean force, int active, int reserved) {
+        deviceRepository.device = device("INVENTORY", 0, null);
+        deviceRepository.activeDevicesByUser = active;
+        deviceRepository.trialReservedSlots = 1;
+        deviceRepository.orderReservedSlots = reserved;
+        if (force) ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+        ApiResult<DeviceOpsView> result;
+        try {
+            result = service.activateE5Device(1L, force, "e5-trial-capacity",
+                    new DeviceE5ActionRequest("activate repaired inventory device", "superadmin"));
+        } finally {
+            if (force) ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+        }
+        assertThat(result.getMessage()).isEqualTo("MAX_DEVICES_PER_USER_EXCEEDED");
+        assertThat(deviceRepository.device.status()).isEqualTo("INVENTORY");
+        verify(outboxService, never()).publish(eq("E5_DEVICE"), anyString(), eq("admin.device_activated"), any());
+    }
+
     @Test
     void e5CloudShareActivationBypassesPhysicalDeviceCap() {
         deviceRepository.device = device("INVENTORY", 0, null);
@@ -3884,6 +3904,8 @@ class OpsDeviceServiceTest {
         private String lastConfigValueType;
         private String lastConfigOperator;
         private long activeDevicesByUser;
+        private long trialReservedSlots;
+        private long orderReservedSlots;
         private boolean targetOccupiesPhysicalSlot = true;
         private boolean activationLockHeld = true;
         private final List<Long> cancelledActiveTaskDeviceIds = new ArrayList<>();
@@ -3963,6 +3985,11 @@ class OpsDeviceServiceTest {
         @Override
         public long countActiveDevicesByUser(Long userId) {
             return activeDevicesByUser;
+        }
+
+        @Override
+        public long countOccupiedSlotsForE5Activation(Long userId) {
+            return activeDevicesByUser + trialReservedSlots + orderReservedSlots;
         }
 
         @Override

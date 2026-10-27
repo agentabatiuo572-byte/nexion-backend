@@ -372,6 +372,9 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             """)
     Long lockUserForE5Activation(@Param("userId") Long userId);
 
+    @Select("SELECT COALESCE(sandbox,0) FROM nx_user WHERE id=#{userId} AND is_deleted=0 FOR SHARE")
+    Boolean lockUserSandboxForE5Activation(@Param("userId") Long userId);
+
     @Update("""
             UPDATE nx_user_device
                SET status = 'OFFLINE', activated_at = COALESCE(activated_at, #{now}),

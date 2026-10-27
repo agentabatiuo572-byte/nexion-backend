@@ -47,7 +47,7 @@ class E5ReadEndpointsMySqlIntegrationTest {
                 createTables(jdbc);
                 DeviceOpsMapper mapper = mapper(connection);
                 MybatisDeviceOpsRepository repository = new MybatisDeviceOpsRepository(
-                        mapper, mock(OpsReadTimeSeedPolicy.class));
+                        mapper, mock(OpsReadTimeSeedPolicy.class), mock(ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.class));
                 OpsDeviceService service = mock(OpsDeviceService.class, CALLS_REAL_METHODS);
                 PlatformConfigFacade config = mock(PlatformConfigFacade.class);
                 when(config.activeValue("device.max_active_slots")).thenReturn(Optional.empty());

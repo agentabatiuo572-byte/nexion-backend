@@ -247,6 +247,38 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void reservedOrderAndTrialTogetherBlockAnAdditionalOwnedDeviceActivation() {
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
+        when(mapper.deviceSlotCap()).thenReturn(6);
+        when(mapper.activeDeviceCount(42L)).thenReturn(4);
+        when(mapper.reservedDeviceOrderCount(42L)).thenReturn(1);
+        when(mapper.lockReservedTrialSlotCount(42L)).thenReturn(1);
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "INACTIVE", "OWNED", 0L));
+
+        assertRejected(service.activateDevice(42L, 9L, 0L, 6, "trial-order-activation-cap"), "DEVICE_SLOT_CAP_EXCEEDED");
+        verify(mapper, never()).activateOwnedDeviceCas(anyLong(), anyLong(), anyLong(), anyInt());
+    }
+
+    @Test
+    void trialReservationBlocksOrdinaryActivationAndAnotherPhysicalOrderAtTheCap() {
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
+        when(mapper.deviceSlotCap()).thenReturn(6);
+        when(mapper.activeDeviceCount(42L)).thenReturn(5);
+        when(mapper.lockReservedTrialSlotCount(42L)).thenReturn(1);
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "INACTIVE", "OWNED", 0L));
+        when(mapper.lockProduct(8L, null)).thenReturn(
+                new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4, null));
+
+        assertRejected(service.activateDevice(42L, 9L, 0L, 6, "trial-device-cap"), "DEVICE_SLOT_CAP_EXCEEDED");
+        assertThat(service.createOrder(42L, null, 8L, 1, "trial-order-cap").getMessage())
+                .isEqualTo("CAPACITY_REPLACEMENT_REQUIRED");
+        verify(mapper, never()).activateOwnedDeviceCas(anyLong(), anyLong(), anyLong(), anyInt());
+        verify(mapper, never()).decrementProductStock(anyLong(), anyInt());
+    }
+
+    @Test
     void fullyDiscountedOrderCreatesAPayableZeroValueOrder() {
         when(mapper.lockProduct(8L, null)).thenReturn(
                 new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4, null));

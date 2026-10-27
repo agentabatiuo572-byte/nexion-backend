@@ -3,6 +3,7 @@ package ffdd.opsconsole.device.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.device.infrastructure.UserDeviceEntity;
 import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
+import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import java.math.BigDecimal;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -12,7 +13,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper {
+public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper, ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper {
     @Select("""
             SELECT config_key AS configKey, config_value AS configValue
               FROM nx_compute_e3_config
@@ -46,11 +47,23 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
             """)
     int countActiveDevices(@Param("userId") Long userId);
 
+    @Select(CanonicalStateMapper.ACTIVE_DEVICE_COUNT + " AND COALESCE(u.sandbox,0)=0 FOR SHARE")
+    int lockActiveDeviceCount(@Param("userId") Long userId);
+
+    @Select(CanonicalStateMapper.RESERVED_DEVICE_ORDERS + " AND COALESCE(u.sandbox,0)=0")
+    int reservedDeviceOrderCount(@Param("userId") Long userId);
+
+    @Select(CanonicalStateMapper.LOCK_RESERVED_DEVICE_ORDERS + " AND COALESCE(u.sandbox,0)=0 FOR SHARE")
+    int lockReservedDeviceOrderCount(@Param("userId") Long userId);
+
     @Select("""
             SELECT COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
                               WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1),3)
             """)
     int deviceSlotCap();
+
+    @Select("SELECT COALESCE((" + CanonicalStateMapper.DEVICE_SLOT_CAP + " FOR SHARE),3)")
+    int lockDeviceSlotCap();
 
     @Select("SELECT user_level FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0")
     String userLevel(@Param("userId") Long userId);

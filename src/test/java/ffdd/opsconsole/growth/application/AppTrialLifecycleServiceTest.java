@@ -189,6 +189,38 @@ class AppTrialLifecycleServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void claimedTrialKeepsItsDurationAndOffsetCapWhenPolicyChanges() {
+        when(mapper.trial(7L)).thenReturn(trialWithStatus("ACTIVE", null, 1L));
+        when(mapper.policies()).thenReturn(List.of(
+                new PolicyRow("trialDays", "9"), new PolicyRow("trialOffsetCapUSD", "999")));
+        Map<String, Object> config = (Map<String, Object>) service.state(7L).getData().get("config");
+        assertThat(config).containsEntry("trialDays", "3").containsEntry("trialOffsetCapUSD", "50");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"5,0,true", "6,0,false", "5,1,false"})
+    void claimUsesPhysicalDevicesAndExistingOrderReservations(int active, int reserved, boolean allowed) {
+        when(canonicalStateMapper.deviceSlotCap()).thenReturn(6);
+        when(canonicalStateMapper.activeDeviceCount(7L)).thenReturn(active);
+        when(canonicalStateMapper.reservedDeviceOrderCount(7L)).thenReturn(reserved);
+        when(mapper.insertTrial(any(), anyString(), anyString(), any(), anyString(),
+                anyInt(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
+
+        var eligibility = service.state(7L).getData();
+        assertThat(eligibility).containsEntry("canStart", allowed);
+        var result = service.start(7L, null, "Trial", "trial-capacity-" + active + "-" + reserved);
+        if (allowed) assertThat(result.getCode()).isZero();
+        else {
+            assertThat(eligibility).containsEntry("eligibilityReason", "capacity-full");
+            assertThat(result.getMessage()).isEqualTo("TRIAL_CAPACITY_FULL");
+            verify(mapper, never()).consumeTrialQuota(any(LocalDate.class));
+            verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
+                    anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void stateProjectsAnUninitializedDayWithoutWritingQuota() {
         when(mapper.trialQuotaRemaining(any(LocalDate.class))).thenReturn(null);
         Map<String, Object> state = service.state(7L).getData();

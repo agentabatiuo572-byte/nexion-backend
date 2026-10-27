@@ -308,7 +308,8 @@ public class AppBundleOrderService {
         int cap = Math.max(1, mapper.deviceSlotCap());
         int active = Math.max(0, mapper.activeDeviceCount(userId));
         int reserved = Math.max(0, mapper.reservedDeviceOrderCount(userId));
-        if ((long) active + reserved + physicalItemCount > cap) {
+        int trial = mapper.lockReservedTrialSlotCount(userId);
+        if ((long) active + reserved + trial + physicalItemCount > cap) {
             return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
         }
         AppBundleOrderMapper.Attribution attribution = mapper.attribution(userId);

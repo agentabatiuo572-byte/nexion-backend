@@ -23,8 +23,9 @@ public class PhoneActivationCapacityService implements PhoneActivationCapacityCo
                 && mapper.lockOccupiedOnboardingPhone(userId, currentBoundPhoneDeviceId) != null) return;
         int active = mapper.lockActiveDeviceCount(userId, user.sandbox());
         int reserved = mapper.lockReservedDeviceOrderCount(userId, user.sandbox());
+        int trial = mapper.lockReservedTrialSlotCount(userId);
         int cap = Math.max(1, mapper.lockDeviceSlotCap());
-        if ((long) Math.max(0, active) + Math.max(0, reserved) >= cap) {
+        if ((long) Math.max(0, active) + Math.max(0, reserved) + trial >= cap) {
             throw new BizException(409, "CAPACITY_REPLACEMENT_REQUIRED");
         }
     }

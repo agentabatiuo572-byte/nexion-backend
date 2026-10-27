@@ -23,7 +23,7 @@ class MybatisDeviceOpsRepositoryObservabilityTest {
         when(mapper.e5Activity24h()).thenReturn(List.of(new DeviceOpsMapper.E5ActivityRow(
                 "admin.device_activated", "E5_DEVICE", "42", capturedAt)));
 
-        Map<String, Object> result = new MybatisDeviceOpsRepository(mapper, mock(OpsReadTimeSeedPolicy.class))
+        Map<String, Object> result = new MybatisDeviceOpsRepository(mapper, mock(OpsReadTimeSeedPolicy.class), mock(ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.class))
                 .e5Observability();
         @SuppressWarnings("unchecked")
         Map<String, Object> telemetry = (Map<String, Object>) result.get("telemetry");

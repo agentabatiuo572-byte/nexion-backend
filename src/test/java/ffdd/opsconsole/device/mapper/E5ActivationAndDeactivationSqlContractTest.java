@@ -13,10 +13,14 @@ class E5ActivationAndDeactivationSqlContractTest {
                 "src/main/java/ffdd/opsconsole/device/mapper/DeviceOpsMapper.java"));
         String service = Files.readString(Path.of(
                 "src/main/java/ffdd/opsconsole/device/application/OpsDeviceService.java"));
+        String activation = service.substring(service.indexOf("public ApiResult<DeviceOpsView> activateE5Device("),
+                service.indexOf("public ApiResult<DeviceOpsView> deactivateE5Device("));
 
         assertThat(mapper).contains("lockUserForE5Activation", "FOR UPDATE");
-        assertThat(service).contains("lockUserForE5Activation", "DEVICE_ACTIVATION_LOCK_UNAVAILABLE",
-                "countActiveDevicesByUser");
+        assertThat(activation).contains("lockUserForE5Activation", "DEVICE_ACTIVATION_LOCK_UNAVAILABLE",
+                "countOccupiedSlotsForE5Activation");
+        assertThat(activation.indexOf("lockUserForE5Activation"))
+                .isLessThan(activation.indexOf("countOccupiedSlotsForE5Activation"));
     }
 
     @Test

@@ -10,7 +10,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface AppComputeShareEnrollmentMapper extends BaseMapper<Object> {
+public interface AppComputeShareEnrollmentMapper extends BaseMapper<Object>, ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper {
     @Select("""
             SELECT COUNT(1)
               FROM nx_user
@@ -43,6 +43,7 @@ public interface AppComputeShareEnrollmentMapper extends BaseMapper<Object> {
               FROM nx_compute_share_enrollment
              WHERE user_id = #{userId} AND status = 'PENDING'
                AND expires_at > #{now} AND is_deleted = 0
+             FOR SHARE
             """)
     int activeEnrollmentCount(@Param("userId") Long userId, @Param("now") Instant now);
 

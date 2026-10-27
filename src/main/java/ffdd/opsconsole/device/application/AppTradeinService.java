@@ -537,8 +537,8 @@ public class AppTradeinService {
 
     private AppCapacityReplaceQuoteResponse evaluateCapacity(
             Long userId, String targetProductNo, boolean locked) {
-        int activeDevices = Math.max(0, mapper.countActiveDevices(userId));
-        int slotCap = Math.max(1, mapper.deviceSlotCap());
+        int activeDevices = Math.max(0, locked ? mapper.lockActiveDeviceCount(userId) : mapper.countActiveDevices(userId));
+        int slotCap = Math.max(1, locked ? mapper.lockDeviceSlotCap() : mapper.deviceSlotCap());
         AppTradeinMapper.TargetProduct target = locked
                 ? mapper.lockTargetProduct(null, targetProductNo)
                 : mapper.findTargetProduct(null, targetProductNo);
@@ -552,7 +552,9 @@ public class AppTradeinService {
         BigDecimal wallet = money(nz(locked ? mapper.lockWalletBalanceUsdt(userId) : mapper.walletBalanceUsdt(userId)));
         AppTradeinMapper.SourceDevice source = null;
         String decision = "CAPACITY_AVAILABLE";
-        if (activeDevices >= slotCap) {
+        int trial = locked ? mapper.lockReservedTrialSlotCount(userId) : mapper.reservedTrialSlotCount(userId);
+        int reserved = Math.max(0, locked ? mapper.lockReservedDeviceOrderCount(userId) : mapper.reservedDeviceOrderCount(userId));
+        if ((long) activeDevices + reserved + trial >= slotCap) {
             source = locked ? mapper.lockCapacityReplacementSource(userId) : mapper.findCapacityReplacementSource(userId);
             decision = source == null ? "NO_ACTIVE_DEVICE" : "REPLACE_REQUIRED";
         }

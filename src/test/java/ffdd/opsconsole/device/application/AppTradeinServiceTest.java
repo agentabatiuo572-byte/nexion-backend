@@ -77,7 +77,9 @@ class AppTradeinServiceTest {
         when(mapper.userEventAttribution(7L)).thenReturn(
                 new AppTradeinMapper.UserEventAttribution("P3", 8, "2026-W30"));
         when(mapper.countActiveDevices(7L)).thenReturn(6);
+        when(mapper.lockActiveDeviceCount(7L)).thenReturn(6);
         when(mapper.deviceSlotCap()).thenReturn(6);
+        when(mapper.lockDeviceSlotCap()).thenReturn(6);
         when(mapper.findCapacityReplacementSource(7L)).thenReturn(source());
         when(mapper.lockCapacityReplacementSource(7L)).thenReturn(source());
         when(releasePolicy.evaluateTradein(anyString(), nullable(String.class), anyBoolean(), anyInt()))
@@ -454,6 +456,54 @@ class AppTradeinServiceTest {
         assertThat(result.getData().sourceDeviceId()).isEqualTo(11L);
         assertThat(result.getData().payableUsdt()).isEqualByComparingTo("1500.000000");
         assertThat(result.getData().decisionSource()).isEqualTo("server");
+    }
+
+    @Test
+    void trialReservationMakesTheLastFreePhysicalSlotUnavailable() {
+        when(mapper.countActiveDevices(7L)).thenReturn(5);
+        when(mapper.reservedTrialSlotCount(7L)).thenReturn(1);
+        var result = service.capacityQuote(7L, new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2"));
+        assertThat(result.getData().decision()).isEqualTo("REPLACE_REQUIRED");
+        assertThat(result.getData().activeDevices()).isEqualTo(5);
+        assertThat(result.getData().sourceDeviceId()).isEqualTo(11L);
+    }
+
+    @Test
+    void capacityQuoteCountsUnfulfilledOrdersAndGiftsAlongsideTrialWithoutChangingActiveDevices() {
+        when(mapper.countActiveDevices(7L)).thenReturn(4);
+        when(mapper.reservedTrialSlotCount(7L)).thenReturn(1);
+        when(mapper.reservedDeviceOrderCount(7L)).thenReturn(1);
+        var result = service.capacityQuote(7L, new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2"));
+        assertThat(result.getData().decision()).isEqualTo("REPLACE_REQUIRED");
+        assertThat(result.getData().activeDevices()).isEqualTo(4);
+        assertThat(result.getData().sourceDeviceId()).isEqualTo(11L);
+    }
+
+    @Test
+    void fulfilledInventoryDoesNotForceReplacementWhileTheSixthSlotIsFree() {
+        when(mapper.countActiveDevices(7L)).thenReturn(4);
+        when(mapper.reservedTrialSlotCount(7L)).thenReturn(1);
+        when(mapper.reservedDeviceOrderCount(7L)).thenReturn(0);
+        var result = service.capacityQuote(7L, new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2"));
+        assertThat(result.getData().decision()).isEqualTo("CAPACITY_AVAILABLE");
+        assertThat(result.getData().activeDevices()).isEqualTo(4);
+        assertThat(result.getData().sourceDeviceId()).isNull();
+        verify(mapper, never()).findCapacityReplacementSource(any());
+    }
+
+    @Test
+    void capacityReplacementUsesCurrentPhysicalAndOrderAndTrialCounts() {
+        when(mapper.countActiveDevices(7L)).thenReturn(4);
+        when(mapper.lockActiveDeviceCount(7L)).thenReturn(4);
+        when(mapper.lockReservedTrialSlotCount(7L)).thenReturn(1);
+        when(mapper.lockReservedDeviceOrderCount(7L)).thenReturn(1);
+        capacityReplacementCreatesARealOrderAndRefreshableSourceLinkWithoutTradeinCredit(false);
+        verify(mapper).lockActiveDeviceCount(7L);
+        verify(mapper).lockReservedDeviceOrderCount(7L);
+        verify(mapper).lockReservedTrialSlotCount(7L);
+        verify(mapper).lockDeviceSlotCap();
+        verify(mapper, never()).countActiveDevices(any());
+        verify(mapper, never()).reservedDeviceOrderCount(any());
     }
 
     @Test

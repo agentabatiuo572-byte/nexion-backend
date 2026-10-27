@@ -13,7 +13,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
+public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, TrialSlotReservationMapper {
     // All purchase entrypoints count unfulfilled gift promises against the same account slots.
     /** Old trial conversions already fulfilled a single device but used PAID/ACTIVE.
      * Preserve history and require the exact settled claim/device/order relationship.
@@ -33,6 +33,32 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                   AND (td.activated_at IS NOT NULL OR td.deactivated_at IS NOT NULL)
             """;
     String EXCLUDE_FULFILLED_LEGACY_TRIAL = " AND NOT EXISTS (" + FULFILLED_LEGACY_TRIAL + ") ";
+
+    // Capacity-keep purchases deliver one paid inventory unit before activation. Delivery remains
+    // fulfilled after activation, deactivation, recycling or unbinding; mutable ownership is not proof.
+    String CAPACITY_KEEP_DELIVERED_UNIT = """
+                SELECT 1 FROM nx_user_device delivered
+                JOIN nx_order_item delivered_item ON delivered_item.order_no=o.order_no
+                  AND delivered_item.product_id=o.product_id AND delivered_item.quantity=1
+                  AND delivered_item.is_deleted=0
+                WHERE UPPER(o.order_type)='CAPACITY_KEEP' AND o.quantity=1 AND o.item_count=1
+                  AND UPPER(o.payment_status)='PAID' AND o.paid_at IS NOT NULL
+                  AND UPPER(o.order_status)='PAID' AND UPPER(o.activation_status)='WAITING_PROVISIONING'
+                  AND delivered.user_id=o.user_id AND delivered.source_order_no=o.order_no
+                  AND delivered.product_id=o.product_id AND delivered.is_deleted=0
+                  AND delivered.source_channel='ORDER' AND delivered.source_environment='PRODUCTION'
+                  AND delivered.run_id='' AND delivered.purchased_at IS NOT NULL
+                  AND UPPER(COALESCE(NULLIF(delivered.device_type,''),'DEVICE')) <> 'SHARE'
+            """;
+    String CAPACITY_KEEP_OTHER_ITEMS = """
+                SELECT 1 FROM nx_order_item other_item
+                 WHERE other_item.order_no=o.order_no AND other_item.is_deleted=0
+                   AND other_item.id<>delivered_item.id
+            """;
+    String EXCLUDE_FULFILLED_CAPACITY_KEEP = " AND NOT EXISTS (" + CAPACITY_KEEP_DELIVERED_UNIT
+            + " AND NOT EXISTS (" + CAPACITY_KEEP_OTHER_ITEMS + ")) ";
+    String LOCK_EXCLUDE_FULFILLED_CAPACITY_KEEP = " AND NOT EXISTS (" + CAPACITY_KEEP_DELIVERED_UNIT
+            + " AND NOT EXISTS (" + CAPACITY_KEEP_OTHER_ITEMS + " FOR SHARE) FOR SHARE) ";
 
     String PROMOTION_RESERVED_AMOUNT = """
             SELECT SUM(r.amount) FROM nx_promotion_reservation r
@@ -261,7 +287,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             """;
     String RESERVED_DEVICE_ORDERS = "SELECT COALESCE(SUM(CASE WHEN EXISTS (" + PRESENT_ORDER_ITEMS
             + ") THEN COALESCE((" + RESERVED_ORDER_ITEM_QUANTITY + RESERVED_ORDER_HEADER_QUANTITY
-            + PROMOTION_RESERVED_SLOTS + RESERVED_ORDER_SOURCE + EXCLUDE_FULFILLED_LEGACY_TRIAL;
+            + PROMOTION_RESERVED_SLOTS + RESERVED_ORDER_SOURCE + EXCLUDE_FULFILLED_LEGACY_TRIAL
+            + EXCLUDE_FULFILLED_CAPACITY_KEEP;
 
     @Select(RESERVED_DEVICE_ORDERS + " AND COALESCE(u.sandbox,0)=0")
     int reservedDeviceOrderCount(@Param("userId") Long userId);
@@ -270,13 +297,22 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     int developmentReservedDeviceOrderCount(@Param("userId") Long userId);
 
     // Lock every nested query block: an outer locking SELECT does not refresh its scalar/EXISTS subqueries.
-    @Select("SELECT COALESCE(SUM(CASE WHEN EXISTS (" + PRESENT_ORDER_ITEMS + " FOR SHARE"
+    String LOCK_RESERVED_DEVICE_ORDERS = "SELECT COALESCE(SUM(CASE WHEN EXISTS (" + PRESENT_ORDER_ITEMS + " FOR SHARE"
             + ") THEN COALESCE((" + RESERVED_ORDER_ITEM_QUANTITY + " FOR SHARE" + RESERVED_ORDER_HEADER_QUANTITY
             + "COALESCE((" + PROMOTION_RESERVED_AMOUNT + " AND NOT EXISTS ("
             + FULFILLED_PROMOTION_RESERVATION + " FOR SHARE) FOR SHARE),0) "
             + RESERVED_ORDER_SOURCE + " AND NOT EXISTS (" + FULFILLED_LEGACY_TRIAL + " FOR SHARE) "
-            + " AND COALESCE(u.sandbox,0)=#{sandbox} FOR SHARE")
+            + LOCK_EXCLUDE_FULFILLED_CAPACITY_KEEP;
+
+    @Select(LOCK_RESERVED_DEVICE_ORDERS + " AND COALESCE(u.sandbox,0)=#{sandbox} FOR SHARE")
     int lockReservedDeviceOrderCount(@Param("userId") Long userId, @Param("sandbox") boolean sandbox);
+
+    /** Caller holds the owner lock; all components must read the same current committed state. */
+    default long lockOccupiedDeviceSlotCount(Long userId, boolean sandbox) {
+        return (long) lockActiveDeviceCount(userId, sandbox)
+                + lockReservedDeviceOrderCount(userId, sandbox)
+                + (sandbox ? 0 : lockReservedTrialSlotCount(userId));
+    }
 
     String DEVICE_SLOT_CAP = """
             SELECT CAST(config_value AS UNSIGNED)

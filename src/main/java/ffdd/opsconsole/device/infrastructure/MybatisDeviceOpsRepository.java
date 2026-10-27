@@ -14,6 +14,7 @@ import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -71,6 +72,7 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             Map.entry("earlyAccessEnabled", "false"), Map.entry("earlyAccessLeadDays", "30"));
     private final DeviceOpsMapper mapper;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final CanonicalStateMapper canonicalStateMapper;
 
     @Override
     public Map<String, Object> overviewCounters() {
@@ -159,6 +161,13 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     @Override
     public long countActiveDevicesByUser(Long userId) {
         return mapper.countActiveDevicesByUser(userId);
+    }
+
+    @Override
+    public long countOccupiedSlotsForE5Activation(Long userId) {
+        Boolean sandbox = mapper.lockUserSandboxForE5Activation(userId);
+        if (sandbox == null) throw new BizException(409, "DEVICE_ACTIVATION_LOCK_UNAVAILABLE");
+        return canonicalStateMapper.lockOccupiedDeviceSlotCount(userId, sandbox);
     }
 
     @Override
