@@ -287,8 +287,9 @@ class AppBundleOrderServiceTest {
                         null, null, "DEVICE", "FINITE", "configured", 1, "500W", "DC-HCM"),
                 new AppBundleOrderMapper.ProductRow(2L, "stellarbox-pro", "Pro", new BigDecimal("200"), 2,
                         null, null, "DEVICE", "FINITE", "configured", 1, "600W", "DC-HCM")));
-        when(mapper.deviceSlotCap()).thenReturn(2);
-        when(mapper.activeDeviceCount(7L)).thenReturn(2);
+        when(mapper.deviceSlotCap()).thenReturn(6);
+        when(mapper.activeDeviceCount(7L)).thenReturn(4);
+        when(mapper.lockReservedTrialSlotCount(7L)).thenReturn(1);
 
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))

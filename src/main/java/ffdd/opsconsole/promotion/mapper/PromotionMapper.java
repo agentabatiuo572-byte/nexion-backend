@@ -13,7 +13,7 @@ import org.apache.ibatis.scripting.xmltags.XMLLanguageDriver;
 import org.apache.ibatis.session.Configuration;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 
-public interface PromotionMapper extends BaseMapper<Object> {
+public interface PromotionMapper extends BaseMapper<Object>, ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper {
     /** SQL is supplied only by domain code; all data values remain bound parameters. */
     @SelectProvider(type=StatementProvider.class,method="statement")
     @Lang(PreparedSqlDriver.class) @Options(useCache=false)
@@ -86,7 +86,8 @@ public interface PromotionMapper extends BaseMapper<Object> {
             SELECT o.order_no,o.product_id,o.quantity FROM nx_order o WHERE o.user_id=? AND o.is_deleted=0
               AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
               AND UPPER(COALESCE(o.activation_status,'WAITING_PAYMENT')) NOT IN ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
-            """ + CanonicalStateMapper.EXCLUDE_FULFILLED_LEGACY_TRIAL + " ORDER BY o.id FOR UPDATE",account)) {
+            """ + " AND NOT EXISTS (" + CanonicalStateMapper.FULFILLED_LEGACY_TRIAL + " FOR SHARE) "
+            + CanonicalStateMapper.LOCK_EXCLUDE_FULFILLED_CAPACITY_KEEP + " ORDER BY o.id FOR UPDATE",account)) {
             List<Map<String,Object>> lines=list("SELECT product_id,quantity FROM nx_order_item WHERE order_no=? AND is_deleted=0 ORDER BY id FOR UPDATE",order.get("order_no"));
             if(lines.isEmpty())lines=List.of(order);
             for(Map<String,Object> line:lines){
@@ -100,7 +101,7 @@ public interface PromotionMapper extends BaseMapper<Object> {
             if(reward!=null&&(Set.of("CANCELLED","REVERSED").contains(text(reward.get("status")))||!list("SELECT device_id FROM nx_promotion_device_receipt WHERE obligation_id=? FOR UPDATE",reward.get("obligation_id")).isEmpty()))continue;
             used+=number(r.get("amount"));
         }
-        return used;
+        return used + lockReservedTrialSlotCount(account);
     }
     default long deviceSlotCap(){
         Map<String,Object> config=one("SELECT config_value FROM nx_config_item WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1");

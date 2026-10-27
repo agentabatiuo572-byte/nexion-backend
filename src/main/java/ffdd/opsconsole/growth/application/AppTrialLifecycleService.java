@@ -153,6 +153,7 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
         }
         if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
+        if (!withinPhysicalSlotCapacity(userId, product)) return ApiResult.fail(409, "TRIAL_CAPACITY_FULL");
         String normalizedDevice = product.name();
         BigDecimal price = product.priceUsdt();
         // 🔴 试用抵扣金必须与该商品的**权威日收益**同源(zentao #78)。
@@ -509,6 +510,8 @@ public class AppTrialLifecycleService {
                 ? null : mapper.conversionProduct(configuredProductCode);
         boolean productAvailable = availablePhysicalTrialProduct(startProduct) && productReleased(startProduct);
         boolean quotaAvailable = nonNegativeInt(policy, "seatsLeftToday", 0) > 0;
+        boolean capacityAvailable = row != null && !restartable(normalize(row.status()))
+                || withinPhysicalSlotCapacity(userId, startProduct);
         result.put("authoritative", true);
         result.put("serverCanonical", true);
         result.put("sourceEnvironment", "PRODUCTION");
@@ -516,11 +519,11 @@ public class AppTrialLifecycleService {
         result.put("serverNowEpochMs", now.atZone(BUSINESS_ZONE).toInstant().toEpochMilli());
         if (row == null) {
             result.put("state", "ELIGIBLE");
-            boolean canStart = productAvailable && trialGateEnabled && phaseOpen && !riskBlocked && quotaAvailable;
+            boolean canStart = productAvailable && trialGateEnabled && phaseOpen && !riskBlocked && quotaAvailable && capacityAvailable;
             result.put("canStart", canStart);
             result.put("eligibilityReason", productAvailable
                     ? eligibilityReason("ELIGIBLE", canStart, trialGateEnabled, phaseOpen,
-                            riskBlocked, quotaAvailable, null, now)
+                            riskBlocked, quotaAvailable, capacityAvailable, null, now)
                     : "product-unavailable");
             result.put("trialGateEnabled", trialGateEnabled);
             result.put("version", 0L);
@@ -538,13 +541,13 @@ public class AppTrialLifecycleService {
         int graceDays = nonNegativeInt(policy, "graceDays", 7);
         boolean canStart = restartable(effectiveState)
                 && (row.cooldownUntil() == null || !row.cooldownUntil().isAfter(now))
-                && productAvailable && trialGateEnabled && phaseOpen && !riskBlocked && quotaAvailable;
+                && productAvailable && trialGateEnabled && phaseOpen && !riskBlocked && quotaAvailable && capacityAvailable;
         result.put("claimNo", row.claimNo());
         result.put("state", effectiveState);
         result.put("canStart", canStart);
         result.put("eligibilityReason", !restartable(effectiveState) || productAvailable
                 ? eligibilityReason(effectiveState, canStart, trialGateEnabled, phaseOpen, riskBlocked,
-                        quotaAvailable, row.cooldownUntil(), now)
+                        quotaAvailable, capacityAvailable, row.cooldownUntil(), now)
                 : "product-unavailable");
         result.put("trialGateEnabled", trialGateEnabled);
         result.put("version", row.version());
@@ -574,11 +577,16 @@ public class AppTrialLifecycleService {
         // 已领取的试用:日收益以**该笔 claim 的快照**为准(row.dailyUsdt/dailyNex),不是当前目录价 ——
         // 用户已经按当时的数开始计息,中途改目录不该让他的 hero 数字跟着跳(zentao #78)。
         // 未领取/可重开时才回落目录商品值。
-        result.put("config", safePolicy(policy, configuredProductCode,
+        Map<String, Object> config = safePolicy(policy, configuredProductCode,
                 frozenProduct ? row.deviceName() : catalogProduct == null ? null : catalogProduct.name(),
                 frozenProduct ? row.priceUsdt() : catalogProduct == null ? null : catalogProduct.priceUsdt(),
                 frozenProduct ? row.dailyUsdt() : catalogProduct == null ? null : catalogProduct.estimatedDailyUsdt(),
-                frozenProduct ? row.dailyNex() : catalogProduct == null ? null : catalogProduct.dailyNex()));
+                frozenProduct ? row.dailyNex() : catalogProduct == null ? null : catalogProduct.dailyNex());
+        if (frozenProduct) {
+            config.put("trialDays", Integer.toString(Math.max(1, row.durationDays() == null ? 1 : row.durationDays())));
+            config.put("trialOffsetCapUSD", row.offsetCapUsdt().stripTrailingZeros().toPlainString());
+        }
+        result.put("config", config);
         return result;
     }
 
@@ -588,7 +596,7 @@ public class AppTrialLifecycleService {
 
     private String eligibilityReason(
             String state, boolean canStart, boolean trialGateEnabled, boolean phaseOpen,
-            boolean riskBlocked, boolean quotaAvailable, LocalDateTime cooldownUntil, LocalDateTime now) {
+            boolean riskBlocked, boolean quotaAvailable, boolean capacityAvailable, LocalDateTime cooldownUntil, LocalDateTime now) {
         if (!"ELIGIBLE".equals(state) && !PERSISTED_STATES.contains(normalize(state))) return "unknown";
         if (canStart) return null;
         if (active(state)) return "in-progress";
@@ -597,6 +605,7 @@ public class AppTrialLifecycleService {
         if (!trialGateEnabled || !phaseOpen) return "phase-closed";
         if (!quotaAvailable) return "quota-exhausted";
         if (cooldownUntil != null && cooldownUntil.isAfter(now)) return "used";
+        if (!capacityAvailable) return "capacity-full";
         return "unknown";
     }
 
@@ -712,7 +721,7 @@ public class AppTrialLifecycleService {
         return release != null && release.available();
     }
 
-    /** The user row was locked by requireUser before this check, serializing it with ordinary checkout. */
+    /** Start reserves one slot; conversion replaces that same trial reservation with one device. */
     private boolean withinPhysicalSlotCapacity(Long userId, AppTrialLifecycleMapper.ConversionProduct product) {
         if (product == null || "SHARE".equalsIgnoreCase(product.productType())) return true;
         int active = Math.max(0, canonicalStateMapper.activeDeviceCount(userId));

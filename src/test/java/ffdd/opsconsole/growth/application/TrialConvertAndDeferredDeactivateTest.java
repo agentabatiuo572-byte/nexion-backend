@@ -80,14 +80,19 @@ class TrialConvertAndDeferredDeactivateTest {
     }
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
-    void convertLocksAuthoritativeProductCreatesOrderAndClosesActiveTrialAtomically(boolean failCapture) {
+    @org.junit.jupiter.params.provider.CsvSource({"false,ACTIVE", "false,GRACE", "false,EXTENDED", "true,ACTIVE"})
+    void convertLocksAuthoritativeProductCreatesOrderAndClosesActiveTrialAtomically(boolean failCapture, String trialState) {
+        // Five purchased devices plus this trial already fill six slots. The
+        // conversion replaces the trial reservation, so it must not require a seventh.
+        when(canonicalStateMapper.deviceSlotCap()).thenReturn(6);
+        when(canonicalStateMapper.activeDeviceCount(7L)).thenReturn(5);
+        when(canonicalStateMapper.lockReservedTrialSlotCount(7L)).thenReturn(1);
         when(mapper.lockHardwarePurchaseTiers("stellarbox-s1")).thenReturn(List.of(
                 new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Tier(
                         1L, "S1", "stellarbox-s1", 0, BigDecimal.ZERO, 10, "ALL", 1)));
         when(mapper.lockHardwarePurchaseUsage(eq(1L), any(), any())).thenReturn(List.of(2));
         when(mapper.recordHardwarePurchase(any(), eq(7L), anyString(), any())).thenReturn(1);
-        when(mapper.lockTrial(7L)).thenReturn(activeTrial("stellarbox-s1", "1", "1"));
+        when(mapper.lockTrial(7L)).thenReturn(activeTrial("stellarbox-s1", "1", "1", trialState));
         when(mapper.lockConversionProduct("stellarbox-s1"))
                 .thenReturn(productWithRate("stellarbox-s1", "1", "1"));
         when(mapper.decrementProductStock(11L)).thenReturn(1);
@@ -345,8 +350,12 @@ class TrialConvertAndDeferredDeactivateTest {
     private TrialRow activeTrial(String productNo) { return activeTrial(productNo, "40", "5"); }
 
     private TrialRow activeTrial(String productNo, String dailyUsdt, String dailyNex) {
+        return activeTrial(productNo, dailyUsdt, dailyNex, "ACTIVE");
+    }
+
+    private TrialRow activeTrial(String productNo, String dailyUsdt, String dailyNex, String state) {
         LocalDateTime now = LocalDateTime.ofInstant(TEST_CLOCK.instant(), ZoneId.of("Asia/Shanghai"));
-        return new TrialRow(1L, 7L, "TRIAL-1", "ACTIVE", null, null, "NexGridBox S1", 3,
+        return new TrialRow(1L, 7L, "TRIAL-1", state, null, null, "NexGridBox S1", 3,
                 new BigDecimal(dailyUsdt), new BigDecimal(dailyNex), new BigDecimal("50"), new BigDecimal("1299"),
                 "productCode=" + productNo, now.minusHours(1), now.plusDays(2), BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, BigDecimal.ZERO, null, 0L);

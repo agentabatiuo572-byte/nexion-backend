@@ -16,7 +16,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 class MybatisDeviceOpsRepositoryPaginationTest {
     private final DeviceOpsMapper mapper = mock(DeviceOpsMapper.class);
     private final MybatisDeviceOpsRepository repository = new MybatisDeviceOpsRepository(
-            mapper, mock(OpsReadTimeSeedPolicy.class));
+            mapper, mock(OpsReadTimeSeedPolicy.class), mock(ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.class));
 
     @ParameterizedTest
     @CsvSource(value = {

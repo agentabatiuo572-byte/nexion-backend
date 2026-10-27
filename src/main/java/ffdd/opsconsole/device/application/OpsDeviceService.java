@@ -2907,7 +2907,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 if (!deviceRepository.lockUserForE5Activation(before.userId())) {
                     return ApiResult.fail(409, "DEVICE_ACTIVATION_LOCK_UNAVAILABLE");
                 }
-                if (deviceRepository.countActiveDevicesByUser(before.userId()) >= slotCap) {
+                if (deviceRepository.countOccupiedSlotsForE5Activation(before.userId()) >= slotCap) {
                     return ApiResult.fail(409, "MAX_DEVICES_PER_USER_EXCEEDED");
                 }
             }

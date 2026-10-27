@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.device.mapper.AppComputeShareEnrollmentMapper;
+import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -31,8 +32,9 @@ class AppComputeShareEnrollmentServiceTest {
     private final EventOutboxService outbox = org.mockito.Mockito.mock(EventOutboxService.class);
     private final MockEnvironment environment = new MockEnvironment().withProperty("spring.profiles.active", "prod");
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-13T00:00:00Z"), ZoneOffset.UTC);
+    private final CanonicalStateMapper canonicalStateMapper = org.mockito.Mockito.mock(CanonicalStateMapper.class);
     private final AppComputeShareEnrollmentService service = new AppComputeShareEnrollmentService(
-            mapper, config, idempotency, audit, outbox, environment, clock);
+            mapper, config, idempotency, audit, outbox, environment, clock, canonicalStateMapper);
 
     @BeforeEach
     void setUp() {
@@ -41,9 +43,9 @@ class AppComputeShareEnrollmentServiceTest {
         when(mapper.lockProductionUser(42L)).thenReturn(42L);
         when(config.activeValue("E.compute.computeShareEnabled")).thenReturn(Optional.of("on"));
         when(config.activeValue("E.compute.download.url")).thenReturn(Optional.of("https://downloads.nexion.example/janus"));
-        when(mapper.activeDeviceCount(42L)).thenReturn(1);
+        when(canonicalStateMapper.lockOccupiedDeviceSlotCount(42L, false)).thenReturn(1L);
         when(mapper.activeEnrollmentCount(42L, clock.instant())).thenReturn(0);
-        when(mapper.deviceSlotCap()).thenReturn(6);
+        when(canonicalStateMapper.lockDeviceSlotCap()).thenReturn(6);
         when(mapper.insertEnrollment(any())).thenReturn(1);
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
@@ -66,13 +68,38 @@ class AppComputeShareEnrollmentServiceTest {
 
     @Test
     void rejectsNewPairingWhenTheAuthoritativeOccupiedSlotCountReachesTheCap() {
-        when(mapper.activeDeviceCount(42L)).thenReturn(6);
+        when(canonicalStateMapper.lockOccupiedDeviceSlotCount(42L, false)).thenReturn(6L);
 
         ApiResult<?> result = service.create(42L, "NVIDIA RTX 4070", "pair-key-capacity");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("COMPUTE_SHARE_DEVICE_CAPACITY_REACHED");
         verify(mapper, never()).insertEnrollment(any());
+    }
+
+    @Test
+    void aTrialReservationCannotBeReplacedByANewPairing() {
+        when(canonicalStateMapper.lockOccupiedDeviceSlotCount(42L, false)).thenReturn(6L);
+        assertThat(service.create(42L, "NVIDIA RTX 4070", "pair-key-trial-capacity").getMessage())
+                .isEqualTo("COMPUTE_SHARE_DEVICE_CAPACITY_REACHED");
+        verify(mapper, never()).insertEnrollment(any());
+    }
+
+    @Test
+    void mixedDeviceOrderAndTrialReservationsBlockBothPairingBoundaries() {
+        // Four physical devices, one promised order/gift, and one trial already occupy six.
+        when(canonicalStateMapper.lockOccupiedDeviceSlotCount(42L, false)).thenReturn(6L);
+        when(mapper.activeDeviceCount(42L)).thenReturn(4);
+        when(mapper.lockEnrollment("CSE-1")).thenReturn(new AppComputeShareEnrollmentMapper.EnrollmentRow(
+                9L, "CSE-1", 42L, "NVIDIA RTX 4070", AppComputeShareEnrollmentService.hashPairingCode("CSE-1", "731904"),
+                "PENDING", null, null, clock.instant().plusSeconds(600), 0L));
+        assertThat(service.create(42L, "NVIDIA RTX 4070", "pair-mixed-capacity").getMessage())
+                .isEqualTo("COMPUTE_SHARE_DEVICE_CAPACITY_REACHED");
+        assertThat(service.claim(42L, "CSE-1", "731904", "JANUS-PC-1", "NVIDIA RTX 4070", 12, 240).getMessage())
+                .isEqualTo("COMPUTE_SHARE_DEVICE_CAPACITY_REACHED");
+        verify(mapper, never()).insertEnrollment(any());
+        verify(mapper, never()).insertCanonicalDevice(any());
+        verify(mapper, never()).activeDeviceCount(42L);
     }
 
     @Test

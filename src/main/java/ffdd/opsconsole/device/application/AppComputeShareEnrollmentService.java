@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -42,6 +43,7 @@ public class AppComputeShareEnrollmentService {
     private final EventOutboxService outbox;
     private final Environment environment;
     private final Clock clock;
+    private final CanonicalStateMapper canonicalStateMapper;
 
     @Transactional
     public ApiResult<Map<String, Object>> create(Long userId, String requestedGpuModel, String idempotencyKey) {
@@ -60,9 +62,9 @@ public class AppComputeShareEnrollmentService {
 
     private ApiResult<Map<String, Object>> createInternal(Long userId, String gpuModel, String idempotencyKey) {
         if (mapper.lockProductionUser(userId) == null) return ApiResult.fail(403, "COMPUTE_SHARE_PRODUCTION_USER_REQUIRED");
-        int cap = Math.max(1, mapper.deviceSlotCap());
-        int occupied = Math.max(0, mapper.activeDeviceCount(userId))
-                + Math.max(0, mapper.activeEnrollmentCount(userId, clock.instant()));
+        int cap = Math.max(1, canonicalStateMapper.lockDeviceSlotCap());
+        long occupied = canonicalStateMapper.lockOccupiedDeviceSlotCount(userId, false)
+                + mapper.activeEnrollmentCount(userId, clock.instant());
         if (occupied >= cap) return ApiResult.fail(409, "COMPUTE_SHARE_DEVICE_CAPACITY_REACHED");
 
         String enrollmentNo = "CSE-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
@@ -138,7 +140,8 @@ public class AppComputeShareEnrollmentService {
         byte[] expected = hashPairingCode(row.enrollmentNo(), normalizedCode).getBytes(StandardCharsets.US_ASCII);
         byte[] actual = String.valueOf(row.pairingCodeHash()).getBytes(StandardCharsets.US_ASCII);
         if (!MessageDigest.isEqual(expected, actual)) return ApiResult.fail(409, "COMPUTE_SHARE_PAIRING_CODE_INVALID");
-        if (mapper.activeDeviceCount(userId) >= Math.max(1, mapper.deviceSlotCap())) {
+        if (canonicalStateMapper.lockOccupiedDeviceSlotCount(userId, false)
+                >= Math.max(1, canonicalStateMapper.lockDeviceSlotCap())) {
             return ApiResult.fail(409, "COMPUTE_SHARE_DEVICE_CAPACITY_REACHED");
         }
         var existing = mapper.findCanonicalDevice(normalizedInstance);

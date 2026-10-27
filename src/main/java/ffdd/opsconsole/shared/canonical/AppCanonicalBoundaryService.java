@@ -206,8 +206,10 @@ public class AppCanonicalBoundaryService {
                 "alreadyActive", true));
         int cap = Math.max(1, mapper.deviceSlotCap());
         int active = Math.max(0, mapper.activeDeviceCount(userId));
+        int trial = mapper.lockReservedTrialSlotCount(userId);
+        int reservedOrders = Math.max(0, mapper.reservedDeviceOrderCount(userId));
         if ((clientMaxDevices != null && clientMaxDevices > cap)
-                || (occupiesPhysicalSlot && active >= cap)) {
+                || (occupiesPhysicalSlot && (long) active + reservedOrders + trial >= cap)) {
             return reject(userId, "device_slot_cap",
                     "客户端设备槽位上限高于服务器配置或账户已达上限，服务器拒绝激活",
                     "/api/devices/activate", "DEVICE_SLOT_CAP_EXCEEDED");
@@ -1361,7 +1363,8 @@ public class AppCanonicalBoundaryService {
                     ? mapper.developmentReservedDeviceOrderCount(userId)
                     : mapper.reservedDeviceOrderCount(userId));
             int slotCap = Math.max(1, mapper.deviceSlotCap());
-            if ((long) activeDevices + reservedDevices + qty > slotCap) {
+            int trial = developmentRuntime ? 0 : mapper.lockReservedTrialSlotCount(userId);
+            if ((long) activeDevices + reservedDevices + trial + qty > slotCap) {
                 return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
             }
         }

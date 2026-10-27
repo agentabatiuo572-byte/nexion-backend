@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper;
 import ffdd.opsconsole.device.mapper.DeviceCatalogMapper;
+import ffdd.opsconsole.device.mapper.AppTradeinMapper;
+import ffdd.opsconsole.device.mapper.AppComputeShareEnrollmentMapper;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import java.math.BigDecimal;
 import java.sql.Connection;
@@ -66,6 +68,7 @@ class TrialConversionSlotMySqlTest {
         jdbc.execute("CREATE TABLE nx_wallet_ledger(id BIGINT PRIMARY KEY AUTO_INCREMENT,user_id BIGINT,biz_no VARCHAR(100),biz_type VARCHAR(40),asset VARCHAR(16),direction VARCHAR(8),amount DECIMAL(24,6),status VARCHAR(32),created_at DATETIME,is_deleted INT DEFAULT 0)");
         var config=new Configuration(new Environment("trial-slots",new SpringManagedTransactionFactory(),ds));
         config.addMapper(DeviceCatalogMapper.class);config.addMapper(CanonicalStateMapper.class);config.addMapper(AppTrialLifecycleMapper.class);config.addMapper(AppBundleOrderMapper.class);config.addMapper(PromotionMapper.class);
+        config.addMapper(AppTradeinMapper.class);config.addMapper(AppComputeShareEnrollmentMapper.class);
         var session=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));
         catalog=session.getMapper(DeviceCatalogMapper.class);slots=session.getMapper(CanonicalStateMapper.class);trial=session.getMapper(AppTrialLifecycleMapper.class);bundle=session.getMapper(AppBundleOrderMapper.class);promotion=session.getMapper(PromotionMapper.class);
     }
@@ -92,9 +95,38 @@ class TrialConversionSlotMySqlTest {
           .containsEntry("order_status","COMPLETED").containsEntry("activation_status","ACTIVATED");
         assertThat(slots.activeDeviceCount(7L)).isEqualTo(1);
         assertThat(slots.reservedDeviceOrderCount(7L)).isZero();
+        assertThat(slots.reservedTrialSlotCount(7L)).isZero();
         assertThat(bundle.reservedDeviceOrderCount(7L)).isZero();
         assertThat(promotion.occupiedDeviceSlots(7L)).isEqualTo(slots.activeDeviceCount(7L));
         assertThat(slots.activeDeviceCount(7L)+slots.reservedDeviceOrderCount(7L)+1).isLessThanOrEqualTo(2);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"CLAIMED","ACTIVE","GRACE","EXTENDED"})
+    void everyLiveTrialReservesExactlyOneSlotWithoutCreatingAPurchasedDevice(String state){
+        jdbc.update("INSERT INTO nx_trial_claim(id,user_id,status) VALUES(1,7,?)",state);
+        assertThat(slots.activeDeviceCount(7L)).isZero();
+        assertThat(slots.reservedTrialSlotCount(7L)).isEqualTo(1);
+        assertThat(slots.lockReservedTrialSlotCount(7L)).isEqualTo(1);
+        assertThat(bundle.reservedTrialSlotCount(7L)).isEqualTo(1);
+        assertThat(promotion.occupiedDeviceSlots(7L)).isEqualTo(1);
+        assertThat(slots.reservedTrialSlotCount(8L)).isZero();
+        jdbc.update("UPDATE nx_trial_claim SET status='REDEEMED'");
+        assertThat(slots.reservedTrialSlotCount(7L)).isZero();
+    }
+
+    @Test void trialReservationIsAccountScopedAndExcludesDeletedTerminalAndDevelopmentClaims(){
+        jdbc.update("INSERT INTO nx_trial_claim(id,user_id,status) VALUES(1,7,'ACTIVE')");
+        jdbc.update("UPDATE nx_trial_claim SET is_deleted=1");
+        assertThat(slots.reservedTrialSlotCount(7L)).isZero();
+        jdbc.update("UPDATE nx_trial_claim SET is_deleted=0,status='CANCELLED'");
+        assertThat(slots.reservedTrialSlotCount(7L)).isZero();
+        jdbc.update("UPDATE nx_trial_claim SET status='FAILED'");
+        assertThat(slots.reservedTrialSlotCount(7L)).isZero();
+        jdbc.update("UPDATE nx_trial_claim SET status='ACTIVE'");
+        jdbc.update("UPDATE nx_user SET sandbox=1");
+        assertThat(slots.reservedTrialSlotCount(7L)).isZero();
+        assertThat(slots.lockReservedTrialSlotCount(7L)).isZero();
     }
     @Test void legacyFulfilledConversionUsesExactClaimDeviceAndOrderWithoutRewritingHistory(){
         legacy();

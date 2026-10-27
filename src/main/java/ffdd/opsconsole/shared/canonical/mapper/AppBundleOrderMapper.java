@@ -10,7 +10,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface AppBundleOrderMapper extends BaseMapper<Object> {
+public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReservationMapper {
     @Select("SELECT id,sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     UserLock lockUser(@Param("userId") Long userId);
 
@@ -72,7 +72,8 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
                AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
                AND UPPER(COALESCE(o.activation_status,'WAITING_PAYMENT')) NOT IN
                    ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
-            """ + CanonicalStateMapper.EXCLUDE_FULFILLED_LEGACY_TRIAL)
+            """ + CanonicalStateMapper.EXCLUDE_FULFILLED_LEGACY_TRIAL
+            + CanonicalStateMapper.EXCLUDE_FULFILLED_CAPACITY_KEEP)
     int reservedDeviceOrderCount(@Param("userId") Long userId);
 
     @Select("""
