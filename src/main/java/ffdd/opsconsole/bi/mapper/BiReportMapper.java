@@ -226,7 +226,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
              WHERE is_deleted = 0
                AND analytics_event = 1
                AND schema_registered = 1
-               AND event_ts >= DATE_SUB(CURRENT_DATE, INTERVAL 400 DAY)
+               AND event_ts >= DATE_SUB(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
+               , INTERVAL 400 DAY)
                AND event_name IN (
                  'auth.register_completed', 'checkout.completed',
                  'wallet.reinvest', 'withdraw.submitted', 'app.dau',
@@ -262,7 +263,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                  'app.dau', 'store.viewed'
                )
                AND (is_server_authoritative = 1 OR event_name = 'store.viewed')
-               AND COALESCE(event_ts, created_at) >= DATE_SUB(CURRENT_DATE, INTERVAL 13 MONTH)
+               AND COALESCE(event_ts, created_at) >= DATE_SUB(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
+               , INTERVAL 13 MONTH)
              ORDER BY COALESCE(event_ts, created_at) ASC, id ASC
             """)
     List<Map<String, Object>> selectB3EventFacts();
@@ -338,7 +340,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                  'auth.register_completed', 'store.viewed', 'app.dau', 'phase.transitioned', 'phase.dial_changed'
                )
                AND is_server_authoritative = 1
-               AND COALESCE(event_ts, created_at) >= DATE_SUB(CURRENT_DATE, INTERVAL 400 DAY)
+               AND COALESCE(event_ts, created_at) >= DATE_SUB(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
+               , INTERVAL 400 DAY)
              ORDER BY COALESCE(event_ts, created_at) ASC, id ASC
             """)
     List<Map<String, Object>> selectL4EventFacts();

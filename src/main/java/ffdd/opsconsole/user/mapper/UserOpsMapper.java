@@ -583,20 +583,20 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             """)
     long countActiveLongLocks(@Param("longThreshold") int longThreshold);
 
-    @Select("SELECT COUNT(*) FROM nx_event_outbox WHERE event_type=#{eventType} AND created_at>=CURRENT_DATE AND is_deleted=0")
+    @Select("SELECT COUNT(*) FROM nx_event_outbox WHERE event_type=#{eventType} AND created_at>=" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + " AND is_deleted=0")
     long countEventToday(@Param("eventType") String eventType);
 
-    @Select("SELECT COUNT(*) FROM nx_user_otp_challenge WHERE created_at>=CURRENT_DATE AND is_deleted=0")
+    @Select("SELECT COUNT(*) FROM nx_user_otp_challenge WHERE created_at>=" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + " AND is_deleted=0")
     long countRegistrationOtpToday();
 
-    @Select("SELECT COUNT(*) FROM nx_event_outbox WHERE event_type='auth.captcha_required' AND created_at>=CURRENT_DATE AND is_deleted=0")
+    @Select("SELECT COUNT(*) FROM nx_event_outbox WHERE event_type='auth.captcha_required' AND created_at>=" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + " AND is_deleted=0")
     long countRegistrationCaptchaTriggeredToday();
 
     @Select("""
             SELECT COUNT(*)
               FROM nx_event_outbox
              WHERE event_type='auth.login_locked'
-               AND created_at>=CURRENT_DATE
+               AND created_at>=""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
                AND is_deleted=0
                AND JSON_VALID(payload)=1
                AND COALESCE(

@@ -125,14 +125,14 @@ public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
                        COALESCE(SUM(amount_usdt), 0) AS provider_amount
                  FROM nx_topup_provider_statement
                  WHERE is_deleted = 0 AND ingestion_event_id IS NOT NULL AND payload_hash IS NOT NULL
-                   AND observed_at >= CURRENT_DATE
+                   AND observed_at >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
                    AND statement_status IN ('PAID', 'CONFIRMED', 'SETTLED')
                  GROUP BY channel_code
                 UNION ALL
                 SELECT 'HDPAY', COUNT(1), COALESCE(SUM(requested_usdt), 0)
                   FROM hdpay_wallet_orders
                  WHERE provider_status = 3 AND settlement_status = 'CREDITED'
-                   AND settled_at >= CURRENT_DATE
+                   AND settled_at >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
                 HAVING COUNT(1) > 0
             ), provider_side AS (
                 SELECT channel, SUM(provider_count) AS provider_count, SUM(provider_amount) AS provider_amount
@@ -151,14 +151,14 @@ public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
                   LEFT JOIN nx_payment_record p
                     ON p.wallet_ledger_id=l.id AND p.is_deleted=0 AND p.user_id=l.user_id
                    AND p.amount_usdt=l.amount AND l.biz_type='CARD_TOPUP' AND l.biz_no=p.payment_no
-                 WHERE l.is_deleted = 0 AND l.created_at >= CURRENT_DATE
+                 WHERE l.is_deleted = 0 AND l.created_at >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
                    AND l.asset = 'USDT' AND l.direction = 'IN' AND l.status = 'SUCCESS'
                    AND (d.id IS NOT NULL OR p.id IS NOT NULL)
                  GROUP BY COALESCE(d.chain_name,
                          CASE WHEN p.provider IN ('Checkout.com', 'Stripe', 'Card') THEN 'Card' ELSE p.provider END)
                 UNION ALL
                 SELECT 'HDPAY', COUNT(1), COALESCE(SUM(settled_usdt), 0)
-                  FROM hdpay_credited WHERE ledger_created_at >= CURRENT_DATE
+                  FROM hdpay_credited WHERE ledger_created_at >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
                 HAVING COUNT(1) > 0
             ), ledger_side AS (
                 SELECT channel, SUM(ledger_count) AS ledger_count, SUM(ledger_amount) AS ledger_amount
