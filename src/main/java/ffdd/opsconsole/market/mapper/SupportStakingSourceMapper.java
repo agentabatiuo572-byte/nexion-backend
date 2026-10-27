@@ -19,6 +19,6 @@ public interface SupportStakingSourceMapper {
     List<Map<String,Object>> ledgers(@Param("ids") Collection<String> ids);
     @Select("SELECT id,user_id AS customerId,fund_incarnation AS incarnation,fund_revision AS revision,version,usdt_available AS usdtAvailable,nex_available AS nexAvailable,cregis_risk_held AS riskHeld,pending_withdraw AS pendingWithdrawal,sandbox,is_deleted AS deleted FROM nx_user_wallet WHERE user_id=#{id}")
     List<Map<String,Object>> wallets(@Param("id") long id);
-    @Select("SELECT table_name AS tableName,column_name AS columnName,datetime_precision AS precision FROM information_schema.COLUMNS WHERE table_schema=DATABASE() AND table_name='nx_staking_position' AND column_name IN ('created_at','claimed_at','early_withdrawn_at')")
+    @Select("SELECT table_name AS tableName,column_name AS columnName,datetime_precision AS `precision` FROM information_schema.COLUMNS WHERE table_schema=DATABASE() AND table_name='nx_staking_position' AND column_name IN ('created_at','claimed_at','early_withdrawn_at')")
     List<Map<String,Object>> timePrecisions();
 }
