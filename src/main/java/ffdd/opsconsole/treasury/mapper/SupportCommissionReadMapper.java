@@ -54,7 +54,7 @@ public interface SupportCommissionReadMapper {
 
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     @Select("""
-        SELECT TABLE_NAME tableName,COLUMN_NAME columnName,DATETIME_PRECISION precision
+        SELECT TABLE_NAME tableName,COLUMN_NAME columnName,DATETIME_PRECISION `precision`
         FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
           AND ((TABLE_NAME='nx_wallet_ledger' AND COLUMN_NAME='created_at')
             OR (TABLE_NAME='nx_commission_event' AND COLUMN_NAME IN ('created_at','updated_at')))

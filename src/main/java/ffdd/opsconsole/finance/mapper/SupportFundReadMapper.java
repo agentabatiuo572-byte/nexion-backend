@@ -112,7 +112,7 @@ public interface SupportFundReadMapper {
         +" AND resource_id IN (SELECT entry_no FROM nx_earnings_release_entry WHERE user_id IN "+IDS+") ORDER BY id</script>")
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     List<Map<String,Object>> earningsAudits(@Param("ids") List<Long> ids);
-    @Select("SELECT table_name tableName,column_name columnName,datetime_precision precision FROM information_schema.COLUMNS"
+    @Select("SELECT table_name tableName,column_name columnName,datetime_precision `precision` FROM information_schema.COLUMNS"
         +" WHERE table_schema=DATABASE() AND ((table_name='nx_earnings_release_entry' AND column_name IN ('created_at','released_at'))"
         +" OR (table_name='nx_earnings_source_recovery' AND column_name='created_at')) ORDER BY table_name,column_name")
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
