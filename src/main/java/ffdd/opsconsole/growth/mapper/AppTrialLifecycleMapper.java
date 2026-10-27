@@ -274,7 +274,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
                    duration_days=#{durationDays},daily_usdt=#{dailyUsdt},daily_nex=#{dailyNex},
                    offset_cap_usdt=#{offsetCapUsdt},price_usdt=#{priceUsdt},claimed_at=#{now},
                    expires_at=#{expiresAt},quota_snapshot=#{quotaSnapshot},shadow_accrued_usdt=0,
-                   shadow_accrued_nex=0,remainder_usdt=0,discount_usdt=0,settlement_amount_usdt=0,
+                   shadow_accrued_nex=0,remainder_usdt=0,settled_trial_nex=NULL,discount_usdt=0,settlement_amount_usdt=0,
                    cancel_reason=NULL,extended_at=NULL,settled_at=NULL,closed_at=NULL,cooldown_until=NULL,
                    settlement_snapshot=NULL,version=version+1,updated_at=NOW(),is_deleted=0
              WHERE id=#{id} AND version=#{version}
@@ -417,7 +417,8 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
     @Update("""
             UPDATE nx_trial_claim
                SET status='REDEEMED',user_device_id=#{deviceId},shadow_accrued_usdt=#{shadowUsdt},
-                   shadow_accrued_nex=#{shadowNex},remainder_usdt=#{remainderUsdt},discount_usdt=#{discountUsdt},
+                   shadow_accrued_nex=#{shadowNex},remainder_usdt=#{remainderUsdt},settled_trial_nex=#{settledNex},
+                   discount_usdt=#{discountUsdt},
                    settlement_amount_usdt=#{chargeUsdt},settled_at=#{now},closed_at=#{now},
                    settlement_snapshot=#{snapshot},version=version+1,updated_at=NOW()
              WHERE id=#{id} AND version=#{version}
@@ -430,6 +431,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             @Param("shadowUsdt") BigDecimal shadowUsdt,
             @Param("shadowNex") BigDecimal shadowNex,
             @Param("remainderUsdt") BigDecimal remainderUsdt,
+            @Param("settledNex") BigDecimal settledNex,
             @Param("discountUsdt") BigDecimal discountUsdt,
             @Param("chargeUsdt") BigDecimal chargeUsdt,
             @Param("now") LocalDateTime now,

@@ -72,6 +72,7 @@ public class AppTrialLifecycleController {
                 : service.convert(userId,
                         request == null ? null : request.productNo(),
                         request == null ? null : request.expectedAmountUsdt(),
+                        request == null ? null : request.quoteVersion(),
                         idempotencyKey);
     }
 
@@ -97,6 +98,6 @@ public class AppTrialLifecycleController {
     public record CancelRequest(String reason) {
     }
 
-    public record ConvertRequest(String productNo, BigDecimal expectedAmountUsdt) {
+    public record ConvertRequest(String productNo, BigDecimal expectedAmountUsdt, String quoteVersion) {
     }
 }
