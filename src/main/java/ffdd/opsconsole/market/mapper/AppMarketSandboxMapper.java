@@ -55,7 +55,8 @@ public interface AppMarketSandboxMapper {
             SELECT COALESCE(SUM(CASE WHEN from_asset='USDT' THEN from_amount ELSE from_amount*rate END),0)
               FROM nx_exchange_sandbox_order
              WHERE run_id=#{runId} AND user_id=#{userId} AND status='COMPLETED'
-               AND created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL 1 DAY
+               AND created_at >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
+                AND created_at < """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_END + """
             """)
     BigDecimal userCompletedGrossToday(@Param("runId") String runId,@Param("userId") Long userId);
 
@@ -63,7 +64,8 @@ public interface AppMarketSandboxMapper {
             SELECT COALESCE(SUM(CASE WHEN from_asset='USDT' THEN from_amount ELSE from_amount*rate END),0)
               FROM nx_exchange_sandbox_order
              WHERE run_id=#{runId} AND status='COMPLETED'
-               AND created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL 1 DAY
+               AND created_at >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
+                AND created_at < """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_END + """
             """)
     BigDecimal platformCompletedGrossToday(@Param("runId") String runId);
 

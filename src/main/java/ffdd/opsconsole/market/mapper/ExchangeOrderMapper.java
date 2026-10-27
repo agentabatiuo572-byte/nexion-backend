@@ -20,7 +20,7 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
               FROM nx_exchange_order
              WHERE is_deleted = 0
                AND UPPER(status) IN ('COMPLETED', 'SUCCESS')
-               AND created_at >= CURRENT_DATE
+               AND created_at >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
             """)
     BigDecimal todayCompletedUsdt();
 
@@ -43,7 +43,7 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
             SELECT COUNT(1)
               FROM nx_exchange_order
              WHERE is_deleted = 0
-               AND created_at >= CURRENT_DATE
+               AND created_at >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
                AND UPPER(status) = UPPER(#{status})
             """)
     long countTodayByStatus(@Param("status") String status);

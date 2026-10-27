@@ -109,6 +109,22 @@ public class BusinessCalendarService {
         });
     }
 
+    /** D-16: what the App needs to cut business days itself; no operator, reason or pending detail. */
+    public record AppTrackVersion(String zoneId, int offsetMinutes, String effectiveAt) { }
+    public record AppCalendarView(Map<String, List<AppTrackVersion>> tracks) { }
+
+    public ApiResult<AppCalendarView> appView() {
+        Map<String, List<AppTrackVersion>> tracks = new LinkedHashMap<>();
+        for (BusinessCalendar.Track track : List.of(BusinessCalendar.legacy(), BusinessCalendar.growthTeam())) {
+            tracks.put(track.name(), track.versions().stream()
+                    .sorted(java.util.Comparator.comparing(BusinessCalendar.Version::effectiveStorageAt))
+                    .map(v -> new AppTrackVersion(v.zone().getId(), offsetMinutes(v.zone()),
+                            v.effectiveStorageAt().atZone(BusinessCalendar.STORAGE_ZONE).toInstant().toString()))
+                    .toList());
+        }
+        return ApiResult.ok(new AppCalendarView(tracks));
+    }
+
     public ApiResult<CalendarView> view() {
         LocalDateTime now = LocalDateTime.now(clock);
         List<BusinessCalendarMapper.Row> rows = mapper.listActive();
