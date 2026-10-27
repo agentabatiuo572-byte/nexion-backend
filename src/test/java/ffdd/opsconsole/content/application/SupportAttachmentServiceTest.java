@@ -164,11 +164,25 @@ class SupportAttachmentServiceTest {
 
     @Test void attachedCurrentReaderWorksButUnrelatedClientCannotRead() {
         when(mapper.find(id)).thenReturn(row("ADMIN", 2L, "ATTACHED", 8L, true));
+        when(mapper.userMessageVisible(10L, 8L)).thenReturn(true);
         when(storage.get(anyString())).thenReturn(new ByteArrayInputStream(new byte[]{1, 2, 3}));
         assertThat(service.content(id, "USER", 10L).bytes()).containsExactly(1, 2, 3);
         authenticate("USER", 11L); code(404, () -> service.content(id, "USER", 11L));
         authenticate("ADMIN", 3L); when(ownership.canRead(3L, 10L)).thenReturn(true);
         assertThat(service.metadata(id, "ADMIN", 3L).messageId()).isEqualTo(8L);
+    }
+
+    @Test void userClearRevokesOldAttachmentMetadataAndBytesButKeepsStaffCopy() {
+        when(mapper.find(id)).thenReturn(row("ADMIN", 2L, "ATTACHED", 8L, true));
+        when(mapper.userMessageVisible(10L, 8L)).thenReturn(false);
+        code(404, () -> service.metadata(id, "USER", 10L));
+        code(404, () -> service.content(id, "USER", 10L));
+        verifyNoInteractions(storage);
+        authenticate("ADMIN", 3L);
+        when(ownership.canRead(3L, 10L)).thenReturn(true);
+        assertThat(service.metadata(id, "ADMIN", 3L).messageId()).isEqualTo(8L);
+        when(storage.get(anyString())).thenReturn(new ByteArrayInputStream(new byte[]{1, 2, 3}));
+        assertThat(service.content(id, "ADMIN", 3L).bytes()).containsExactly(1, 2, 3);
     }
 
     @Test void oldManagedAttachmentUrlRechecksScopeBeforeMetadataAndBytes() {

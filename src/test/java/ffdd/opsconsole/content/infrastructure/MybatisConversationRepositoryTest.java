@@ -23,6 +23,15 @@ class MybatisConversationRepositoryTest {
     private final MybatisConversationRepository repository = new MybatisConversationRepository(mapper, messageMapper, ffdd.opsconsole.content.SupportTestDependencies.ownership());
     private final LocalDateTime now = LocalDateTime.of(2026, 7, 23, 12, 0);
 
+    @Test void changedAssignmentCannotWriteUnderAnotherStableStaffsHistory() {
+        when(mapper.storedPeerAgentId("CV-A")).thenReturn("7");
+        repository.requirePeerForWrite("CV-A", "7");
+        assertThatThrownBy(() -> repository.requirePeerForWrite("CV-A", "8"))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class).hasMessage("CONVERSATION_PEER_CHANGED");
+        assertThatThrownBy(() -> repository.requirePeerForWrite("CV-A", null)).hasMessage("CONVERSATION_PEER_CHANGED");
+        verifyNoInteractions(messageMapper);
+    }
+
     @Test void collectionCountAndRowsUseTheSameExplicitScope() {
         var scope=new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(7L,
                 ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED,9L,null);

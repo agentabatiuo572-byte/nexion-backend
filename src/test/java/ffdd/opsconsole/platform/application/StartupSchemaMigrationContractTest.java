@@ -8,6 +8,15 @@ import org.junit.jupiter.api.Test;
 
 class StartupSchemaMigrationContractTest {
     @Test
+    void userViewClearInstallsOnlyPersistentVisibilityMarkers() throws Exception {
+        String name = "20261027_app_conversation_user_clear.sql";
+        assertThat(Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"))).contains(name);
+        String sql = Files.readString(Path.of("scripts/migrations", name));
+        assertThat(sql).contains("nx_app_conversation_user_clear", "nx_app_conversation_user_clear_member",
+                "PRIMARY KEY (user_id, peer_key)", "through_message_id");
+        assertThat(sql).doesNotContain("DELETE FROM", "TRUNCATE", "UPDATE nx_conversation", "ALTER TABLE nx_conversation_message");
+    }
+    @Test
     void phoneOperationsFollowFactsAndCannotInheritBroadRiskRolePermissions() throws Exception {
         String runner=Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
         assertThat(runner.indexOf("20261019_phone_replacement_ops.sql"))

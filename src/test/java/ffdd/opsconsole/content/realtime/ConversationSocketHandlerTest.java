@@ -56,6 +56,17 @@ class ConversationSocketHandlerTest {
         assertTrue(frames.stream().anyMatch(s->s.contains("eventId")));
         assertFalse(frames.stream().anyMatch(s->s.contains("internal transfer reason")));
     }
+    @Test void clearInvalidatesOnlyThisAccountsViewsAndRechecksAuthentication()throws Exception{
+        login();
+        handler.userViewCleared(new ffdd.opsconsole.content.application.AppConversationManagementService.UserViewCleared(99L,List.of("CV-OTHER")));
+        handler.userViewCleared(new ffdd.opsconsole.content.application.AppConversationManagementService.UserViewCleared(12L,List.of("CV-1","CV-OLD")));
+        verify(socket,timeout(2000)).sendMessage(argThat(m->m.getPayload().toString().contains("CV-OLD")));
+        assertFalse(frames.stream().anyMatch(s->s.contains("CV-OTHER")));
+        assertTrue(frames.stream().anyMatch(s->s.contains("CV-1")&&s.contains("STATUS")));
+        when(access.authenticate("jwt","USER")).thenThrow(new org.springframework.security.authentication.BadCredentialsException("revoked"));
+        handler.userViewCleared(new ffdd.opsconsole.content.application.AppConversationManagementService.UserViewCleared(12L,List.of("CV-1")));
+        verify(socket,timeout(2000)).close(new CloseStatus(4401));
+    }
     @Test void presenceRecoversAfterTheOutboundQueueRejectsABatch()throws Exception{
         when(access.canRead(auth,"USER","CV-1")).thenReturn(true);
         var guard=ffdd.opsconsole.content.SupportTestDependencies.ownership();

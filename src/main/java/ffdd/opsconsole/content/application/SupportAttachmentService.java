@@ -135,7 +135,7 @@ public class SupportAttachmentService {
         return id;
     }
 
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public SupportAttachment.View upload(Long customer, String type, Long actor, Long expectedAssignment,
             String clientUploadId, String key, MultipartFile file) {
         requireActor(type, actor);
@@ -204,7 +204,7 @@ public class SupportAttachmentService {
         return find(row.id()).view();
     }
 
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public SupportAttachment.View metadata(String id, String type, Long actor) {
         requireActor(type, actor);
         SupportAttachment row = locked(id);
@@ -215,7 +215,7 @@ public class SupportAttachmentService {
     public record Content(String mime, byte[] bytes) {}
 
     /** Materialize under the customer lock; no URL or unguarded lazy storage stream escapes. */
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Content content(String id, String type, Long actor) {
         requireActor(type, actor);
         SupportAttachment row = locked(id);
@@ -299,7 +299,10 @@ public class SupportAttachmentService {
     private void requireReadable(SupportAttachment row, String type, Long actor) {
         production.requireAllowed(row.customerId());
         requireCustomer(row, type, actor);
-        if ("ATTACHED".equals(row.state())) return;
+        if ("ATTACHED".equals(row.state())) {
+            if ("USER".equals(type) && !mapper.userMessageVisible(actor, row.messageId())) throw missing();
+            return;
+        }
         if (!type.equals(row.uploaderType()) || !actor.equals(row.uploaderId())) throw missing();
         ready(row);
     }

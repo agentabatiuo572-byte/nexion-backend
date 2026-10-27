@@ -20,7 +20,7 @@ class CustomerConversationReuseTest {
     final LocalDateTime now=LocalDateTime.of(2026,10,24,10,0);
     final ContentConversationView row=new ContentConversationView(1L,"CV-OLD",42L,"advisor","OPEN","7","Agent",0,"before",now,null,null,null,null,null,null,null,now);
     void existing() {
-        when(mapper.currentCustomerConversation(42L)).thenReturn("CV-OLD");
+        when(mapper.currentCustomerConversation(42L,"7")).thenReturn("CV-OLD");
         when(mapper.lockConversationHeader("CV-OLD")).thenReturn(1L);
         when(mapper.findCurrentByConversationNo("CV-OLD")).thenReturn(row);
         when(mapper.findByConversationNo("CV-OLD")).thenReturn(row);
@@ -43,5 +43,23 @@ class CustomerConversationReuseTest {
         existing();when(mapper.resumeCustomerConversation("CV-OLD",0L,now)).thenReturn(0);
         assertThatThrownBy(()->repository.createUserConversation("CV-NEW",42L,"advisor","hello","7","Agent",now)).hasMessageContaining("CONVERSATION_TRANSFER_PENDING");
         verifyNoInteractions(messages);verify(mapper,never()).insert(any(ConversationEntity.class));
+    }
+    @Test void equalDisplayNameDoesNotReuseAnotherStaffsConversation() {
+        existing();
+        when(mapper.insertTimeoutSnapshot("CV-NEW")).thenReturn(1);
+        var next = new ContentConversationView(2L,"CV-NEW",42L,"advisor","OPEN","8","Agent",1,"hello",now,
+                null,null,null,null,null,null,null,now);
+        when(mapper.findByConversationNo("CV-NEW")).thenReturn(next);
+        assertThat(repository.createUserConversation("CV-NEW",42L,"advisor","hello","8","Agent",now).conversationNo())
+                .isEqualTo("CV-NEW");
+        verify(mapper).currentCustomerConversation(42L,"8");
+        verify(mapper,never()).resumeCustomerConversation(anyString(),anyLong(),any());
+    }
+    @Test void unassignedStaffDoesNotMergeByDisplayName() {
+        when(mapper.insertTimeoutSnapshot("CV-NEW")).thenReturn(1);
+        when(mapper.findByConversationNo("CV-NEW")).thenReturn(row);
+        repository.createUserConversation("CV-NEW",42L,"advisor","hello",null,"Agent",now);
+        verify(mapper,never()).currentCustomerConversation(anyLong(),any());
+        verify(mapper).insert(any(ConversationEntity.class));
     }
 }

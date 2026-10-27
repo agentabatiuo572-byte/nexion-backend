@@ -488,7 +488,8 @@ class SupportTicketCreationMySqlTest {
                 var agents = mock(OpsSupportAgentService.class);
                 appService = proxied(new AppSupportService(tickets, conversations, knowledge, idempotency, audit,
                         mock(ApplicationEventPublisher.class), clock, guard, receipts, json,
-                        mock(SupportAgentRepository.class), config, ownership, mock(SupportHumanMessageService.class)), interceptor);
+                        mock(SupportAgentRepository.class), config, ownership, mock(SupportHumanMessageService.class),
+                        ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations)), interceptor);
                 adminService = proxied(new OpsSupportTicketService(tickets, conversations, knowledge, agents, config,
                         audit, idempotency, clock, ownership, OpsReadTimeSeedPolicy.disabledForDirectConstruction(), json), interceptor);
                 conversationService = proxied(new OpsConversationService(conversations, tickets, agents, config, audit,

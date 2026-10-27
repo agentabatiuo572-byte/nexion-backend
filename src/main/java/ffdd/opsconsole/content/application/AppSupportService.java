@@ -18,7 +18,6 @@ import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.domain.DedicatedAdvisorBindingView;
-import ffdd.opsconsole.content.dto.ConversationQueryRequest;
 import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -76,6 +75,7 @@ public class AppSupportService {
     private final PlatformConfigFacade configFacade;
     private final SupportOwnershipService ownership;
     private final SupportHumanMessageService humanMessages;
+    private final AppConversationVisibilityService visibility;
 
     @Transactional(readOnly = true)
     public ApiResult<ffdd.opsconsole.content.domain.AppSupportAdvisorView> advisor(Long userId) {
@@ -210,6 +210,7 @@ public class AppSupportService {
         });
     }
 
+    @Transactional(readOnly = true)
     public ApiResult<PageResult<ContentConversationView>> conversations(
             Long userId, String status, Long pageNum, Long pageSize) {
         productionPathGuard.requireAllowed(userId);
@@ -218,14 +219,11 @@ public class AppSupportService {
         if (StringUtils.hasText(normalizedStatus) && !CONVERSATION_STATUSES.contains(normalizedStatus)) {
             return validation("CONVERSATION_STATUS_UNSUPPORTED");
         }
-        ConversationQueryRequest query = new ConversationQueryRequest(
-                normalizedStatus, null, null, userId, null, false,
-                bounded(pageNum, 1, 100000, 1), bounded(pageSize, 1, 100, 50));
-        PageResult<ContentConversationView> page = conversationRepository.pageConversations(query);
-        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(),
-                page.getRecords().stream().map(this::appConversation).toList()));
+        return ApiResult.ok(visibility.page(userId, normalizedStatus, bounded(pageNum, 1, 100000, 1),
+                bounded(pageSize, 1, 100, 50), null, false));
     }
 
+    @Transactional(readOnly = true)
     public ApiResult<PageResult<ContentConversationView>> conversationCursor(
             Long userId, String status, Long beforeId, Long pageSize) {
         productionPathGuard.requireAllowed(userId);
@@ -235,19 +233,16 @@ public class AppSupportService {
         if (StringUtils.hasText(normalizedStatus) && !CONVERSATION_STATUSES.contains(normalizedStatus)) {
             return validation("CONVERSATION_STATUS_UNSUPPORTED");
         }
-        ConversationQueryRequest query = new ConversationQueryRequest(
-                normalizedStatus, null, null, userId, null, false,
-                1L, bounded(pageSize, 1, 100, 50));
-        PageResult<ContentConversationView> page = conversationRepository
-                .pageConversationsBeforeId(query, beforeId);
-        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(),
-                page.getRecords().stream().map(this::appConversation).toList()));
+        return ApiResult.ok(visibility.page(userId, normalizedStatus, 1L,
+                bounded(pageSize, 1, 100, 50), beforeId, true));
     }
 
+    @Transactional(readOnly = true)
     public ApiResult<ContentConversationDetail> conversation(Long userId, String conversationNo) {
         return conversation(userId, conversationNo, null);
     }
 
+    @Transactional(readOnly = true)
     public ApiResult<ContentConversationDetail> conversation(Long userId, String conversationNo, Long beforeMessageId) {
         productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
@@ -257,7 +252,7 @@ public class AppSupportService {
         return ApiResult.ok(conversationDetail(conversation, beforeMessageId));
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<ContentConversationDetail> markConversationRead(
             Long userId, String conversationNo, Long lastSeenMessageId, String expectedStatus, Long expectedVersion) {
         productionPathGuard.requireAllowed(userId);
@@ -287,7 +282,7 @@ public class AppSupportService {
         return result;
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<ContentConversationDetail> startConversation(
             Long userId, String idempotencyKey, StartConversationRequest request) {
         productionPathGuard.requireAllowed(userId);
@@ -297,7 +292,7 @@ public class AppSupportService {
                 || !SupportHumanMessageService.validContent(request.kind(),request.openingText())) {
             return validation("CONVERSATION_INPUT_INVALID");
         }
-        return idempotent("APP_CONVERSATION_CREATE:" + userId, idempotencyKey, hash(request), () -> {
+        ApiResult<ContentConversationDetail> retained = idempotent("APP_CONVERSATION_CREATE:" + userId, idempotencyKey, hash(request), () -> {
             LocalDateTime now = LocalDateTime.now(clock);
             String type = "advisor";
             ownership.lockCustomer(userId);
@@ -321,9 +316,10 @@ public class AppSupportService {
             publish(result.getData(), ConversationMessageEvent.EventType.INITIATE, SupportHumanMessageService.text(request.openingText()));
             return result;
         });
+        return currentConversationResult(userId, retained);
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ApiResult<ContentConversationDetail> replyConversation(
             Long userId, String conversationNo, String idempotencyKey, ReplyRequest request) {
         productionPathGuard.requireAllowed(userId);
@@ -332,13 +328,15 @@ public class AppSupportService {
         if (request == null || !SupportHumanMessageService.validContent(request.kind(),request.body()) || !validExpectation(request.expectedStatus(), request.expectedVersion())) {
             return validation("CONVERSATION_REPLY_INVALID");
         }
-        return idempotent("APP_CONVERSATION_REPLY:" + userId, idempotencyKey, hash(conversationNo, request), () -> {
+        ApiResult<ContentConversationDetail> retained = idempotent("APP_CONVERSATION_REPLY:" + userId, idempotencyKey, hash(conversationNo, request), () -> {
             ownership.lockCustomer(userId);
             ContentConversationView conversation = ownedConversation(userId, conversationNo);
             if (conversation == null) return hiddenNotFound("CONVERSATION_NOT_FOUND");
             var prepared=humanMessages.prepare(userId,"USER",userId,idempotencyKey,"REPLY:"+conversationNo,request,
                     request.clientMessageId(),request.kind(),"SERVICE",request.attachmentId(),request.expectedAssignmentId());
             if(prepared.previousMessageId()!=null) return replayConversation(userId,conversationNo);
+            var advisor = supportAgentRepository.findActiveDedicatedAdvisor(userId).orElse(null);
+            conversationRepository.requirePeerForWrite(conversation.conversationNo(), advisor == null ? null : String.valueOf(advisor.adminId()));
             if (!matches(conversation.status(), conversation.version(), request.expectedStatus(), request.expectedVersion())) return conversationConflict();
             if (!Set.of("OPEN", "RESOLVED", "CLOSED").contains(normalizeUpper(conversation.status()))) return invalidConversationState();
             if (!conversationRepository.replyAsUser(conversation, userId, SupportHumanMessageService.text(request.body()), LocalDateTime.now(clock))) {
@@ -351,6 +349,7 @@ public class AppSupportService {
             publish(result.getData(), ConversationMessageEvent.EventType.MESSAGE, SupportHumanMessageService.text(request.body()));
             return result;
         });
+        return currentConversationResult(userId, retained);
     }
 
     @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
@@ -511,6 +510,7 @@ public class AppSupportService {
      * A missing command is the only case returned as 404; in-flight, failed and
      * unknown rows remain explicit so the client never treats them as safe to replay.
      */
+    @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> commandResult(Long userId, String idempotencyKey) {
         productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
@@ -524,7 +524,7 @@ public class AppSupportService {
         AdminIdempotencyRecordEntity record = records.get(0);
         if (record.getScope().contains("TICKET")) return ApiResult.fail(410, "SUPPORT_TICKETS_RETIRED");
         return switch (normalizeUpper(record.getStatus())) {
-            case "SUCCEEDED" -> recoverSucceededCommand(record);
+            case "SUCCEEDED" -> recoverSucceededCommand(userId, record);
             case "PROCESSING" -> conflict("SUPPORT_COMMAND_IN_PROGRESS");
             case "FAILED" -> conflict("SUPPORT_COMMAND_FAILED_RETRYABLE");
             case "UNKNOWN" -> conflict("SUPPORT_COMMAND_RESULT_UNKNOWN");
@@ -532,15 +532,28 @@ public class AppSupportService {
         };
     }
 
-    private ApiResult<Map<String, Object>> recoverSucceededCommand(AdminIdempotencyRecordEntity record) {
+    private ApiResult<Map<String, Object>> recoverSucceededCommand(Long userId, AdminIdempotencyRecordEntity record) {
         if (!StringUtils.hasText(record.getResponseJson())) return conflict("SUPPORT_COMMAND_RESULT_MISSING");
         try {
             JsonNode envelope = objectMapper.readTree(record.getResponseJson());
+            // SUCCEEDED records can retain a refusal returned before any clear watermark was written.
+            // Preserve only these exact terminal reasons so a lost response can release its failed intent.
+            if (envelope != null && ("APP_CONVERSATION_USER_CLEAR:" + userId).equals(record.getScope())
+                    && envelope.path("code").asInt() == 409) {
+                String reason = envelope.path("message").asText();
+                if ("CONVERSATION_USER_CLEAR_CONFLICT".equals(reason)
+                        || "CONVERSATION_USER_CLEAR_MEMBERS_CHANGED".equals(reason)) return conflict(reason);
+            }
             if (envelope == null || envelope.path("code").asInt(Integer.MIN_VALUE) != 0 || !envelope.hasNonNull("data")) {
                 return conflict("SUPPORT_COMMAND_NOT_COMMITTED");
             }
             String resultType = commandResultType(record.getScope());
             if (resultType == null) return conflict("SUPPORT_COMMAND_SCOPE_INVALID");
+            if ("conversation".equals(resultType)) {
+                var current = conversation(userId, envelope.path("data").path("conversation").path("conversationNo").asText());
+                if (current.getCode() != 0) return ApiResult.fail(current.getCode(), current.getMessage());
+                return ApiResult.ok(Map.of("resultType", resultType, "result", current.getData()));
+            }
             return ApiResult.ok(Map.of("resultType", resultType, "result", objectMapper.convertValue(envelope.get("data"), Object.class)));
         } catch (JsonProcessingException | IllegalArgumentException ex) {
             return conflict("SUPPORT_COMMAND_RESULT_INVALID");
@@ -554,12 +567,14 @@ public class AppSupportService {
                 "APP_SUPPORT_TICKET_CLOSE:" + userId,
                 "APP_CONVERSATION_CREATE:" + userId,
                 "APP_CONVERSATION_REPLY:" + userId,
+                "APP_CONVERSATION_USER_CLEAR:" + userId,
                 "APP_CONVERSATION_TO_TICKET:" + userId);
     }
 
     private String commandResultType(String scope) {
         if (scope == null) return null;
         if (scope.startsWith("APP_SUPPORT_TICKET_")) return "ticket";
+        if (scope.startsWith("APP_CONVERSATION_USER_CLEAR:")) return "CONVERSATION_USER_CLEAR";
         if (scope.startsWith("APP_CONVERSATION_TO_TICKET:")) return "conversation-ticket";
         if (scope.startsWith("APP_CONVERSATION_")) return "conversation";
         return null;
@@ -586,16 +601,15 @@ public class AppSupportService {
     }
 
     private ContentConversationView appConversation(ContentConversationView row,boolean currentRead) {
-        // The operations header is not a customer unread projection. Count every
-        // visible agent receipt instead of deriving a badge from one latest row.
-        int userUnread = currentRead?conversationRepository.currentUnreadUserVisibleAgentMessageCount(row.conversationNo())
-                :conversationRepository.unreadUserVisibleAgentMessageCount(row.conversationNo());
-        return new ContentConversationView(
-                row.id(), row.conversationNo(), row.userId(), row.conversationType(), row.status(),
-                row.ownerAgentId(), row.ownerAgentName(), userUnread, row.lastMessage(), row.lastMessageAt(),
-                row.transferFromAgentId(), row.transferFromAgentName(), row.transferToType(), row.transferToId(),
-                row.transferToName(), row.transferReason(), row.transferredAt(), row.updatedAt(), row.version(),
-                row.lastPublicMessageId(), row.lastMessageKind(),row.archived());
+        return visibility.project(row, currentRead);
+    }
+
+    private ApiResult<ContentConversationDetail> currentConversationResult(Long userId, ApiResult<?> retained) {
+        if (retained.getCode() != 0) return ApiResult.fail(retained.getCode(), retained.getMessage());
+        // Cached acknowledgements establish commitment, not permission to replay an old transcript.
+        String no = objectMapper.valueToTree(retained.getData()).path("conversation").path("conversationNo").asText();
+        ownership.lockCustomer(userId);
+        return replayConversation(userId, no);
     }
 
     private boolean validHistoryCursor(Long cursor) {
