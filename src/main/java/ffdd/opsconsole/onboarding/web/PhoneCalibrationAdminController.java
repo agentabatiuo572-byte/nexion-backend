@@ -1,5 +1,6 @@
 package ffdd.opsconsole.onboarding.web;
 
+import ffdd.opsconsole.onboarding.application.IosModelPresetCatalog;
 import ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService;
 import ffdd.opsconsole.onboarding.application.PhoneCalibrationPolicy;
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper;
@@ -35,6 +36,13 @@ public class PhoneCalibrationAdminController {
         return ApiResult.ok(data);
     }
 
+    /** The versioned iPhone preset catalog; loading it only fills an E6 draft that still goes through A2. */
+    @GetMapping("/ios-model-presets")
+    @PreAuthorize("hasAuthority('device_e6_read')")
+    public ApiResult<IosModelPresetCatalog.Catalog> iosModelPresets() {
+        return ApiResult.ok(IosModelPresetCatalog.load());
+    }
+
     @PostMapping("/preview")
     @PreAuthorize("hasAuthority('device_e6_read')")
     public ApiResult<Map<String,Object>> preview(@RequestBody Preview request) {
@@ -45,15 +53,22 @@ public class PhoneCalibrationAdminController {
         for (var group : mapper.calibrationHardwareGroups()) {
             var result = policy.match(new PhoneCalibrationPolicy.Hardware(group.platform(), group.model(),
                     group.soc(), group.gpu(), group.memoryGb()));
-            if (result.tier() == null) pending += group.count();
+            if (!result.matched()) pending += group.count();
             else {
                 matched += group.count();
-                if (!result.tier().equals(group.tier()) || group.computeValue() == null
-                        || result.computeValue().compareTo(group.computeValue()) != 0) changed += group.count();
+                // A stored iPhone allocation stays valid while it is inside the new range; nothing is drawn here.
+                boolean same = result.range()
+                        ? PhoneCalibrationPolicy.within(result, group.computeValue())
+                                && Integer.valueOf(policy.tierFor(group.computeValue())).equals(group.tier())
+                        : result.tier().equals(group.tier()) && group.computeValue() != null
+                                && result.computeValue().compareTo(group.computeValue()) == 0;
+                if (!same) changed += group.count();
             }
         }
+        var match = policy.match(request.hardware());
         Map<String,Object> data = new LinkedHashMap<>();
-        data.put("match", policy.match(request.hardware()));
+        data.put("match", match);
+        data.put("possibleTiers", policy.possibleTiers(match));
         data.put("impact", Map.of("matched", matched, "changed", changed, "pending", pending,
                 "appliesTo", "NEXT_CALIBRATION", "historicalSettlementChanged", false));
         data.put("expectedRevision", request.proposal().expectedRevision());

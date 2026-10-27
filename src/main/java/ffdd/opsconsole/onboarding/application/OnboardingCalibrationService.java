@@ -46,6 +46,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class OnboardingCalibrationService implements ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract {
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final java.security.SecureRandom RANDOM = new java.security.SecureRandom();
 
     private final OnboardingCalibrationMapper mapper;
     private final WheelSandboxProfile wheelSandboxProfile;
@@ -98,7 +99,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         if (!validConfig(tiers, comparisons)) {
             return ApiResult.fail(503, "ONBOARDING_CALIBRATION_CONFIG_UNAVAILABLE");
         }
-        Map<String, Object> derived = derive(request.signals(), tiers);
+        Map<String, Object> derived = derive(request.signals(), tiers, match -> storedIosValue(userId, scope, match));
         long configRevision = Math.max(
                 tiers.stream().mapToLong(row -> row.revision() == null ? 0L : row.revision()).max().orElse(0L),
                 comparisons.stream().mapToLong(row -> row.revision() == null ? 0L : row.revision()).max().orElse(0L));
@@ -420,6 +421,16 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         try {
             Signals signals = JSON.readValue(row.signalJson(), Signals.class);
             var matched = policy.match(hardware(signals));
+            if (PhoneCalibrationPolicy.IOS_MODEL_RANGE.equals(result.get("calibrationMethod"))) {
+                // Review the stored allocation against the rule; never draw again to compare.
+                BigDecimal stored = decimal(result.get("computeValue"));
+                if (!matched.matched() || !matched.range() || !matched.ruleId().equals(result.get("ruleId"))
+                        || !PhoneCalibrationPolicy.within(matched, stored)
+                        || policy.tierFor(stored) != ((Number)result.get("tier")).intValue()) {
+                    throw new BizException(409, "PHONE_CALIBRATION_RULES_CHANGED");
+                }
+                return;
+            }
             if (!"MATCHED".equals(matched.status()) || !matched.ruleId().equals(result.get("ruleId"))
                     || matched.computeValue().compareTo(decimal(result.get("computeValue"))) != 0
                     || !matched.tier().equals(((Number)result.get("tier")).intValue())) {
@@ -474,8 +485,12 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     String hardwareKey(CalibrationRow row) {
         try {
             Signals signals = JSON.readValue(row.signalJson(), Signals.class);
+            Map<String, Object> derived = JSON.readValue(row.derivedJson(), new TypeReference<>() { });
+            // An iPhone is identified by its canonical model, whether the SDK reported the name or an identifier.
+            Object model = PhoneCalibrationPolicy.IOS_MODEL_RANGE.equals(derived.get("calibrationMethod"))
+                    ? derived.get("model") : signals.model();
             return sha256(writeJson(List.of(PhoneCalibrationPolicy.normalize(signals.platform()),
-                    PhoneCalibrationPolicy.normalize(signals.model()), PhoneCalibrationPolicy.normalize(signals.soc()),
+                    PhoneCalibrationPolicy.normalize((String) model), PhoneCalibrationPolicy.normalize(signals.soc()),
                     PhoneCalibrationPolicy.normalize(signals.gpu()))));
         } catch (JsonProcessingException invalid) {
             throw new BizException(503, "ONBOARDING_CALIBRATION_PAYLOAD_INVALID");
@@ -624,21 +639,58 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                 signals.memGB() == null ? null : BigDecimal.valueOf(signals.memGB()));
     }
 
-    private Map<String,Object> derive(Signals signals, List<TierRow> tiers) {
+    /**
+     * The account's earlier allocation for the same canonical iPhone model, if it is still inside the
+     * matched range. A retry with a new idempotency key, a reinstall or an unrelated rule publish
+     * therefore reads the stored value instead of drawing again.
+     */
+    private BigDecimal storedIosValue(Long userId, Scope scope, PhoneCalibrationPolicy.Match match) {
+        String model = PhoneCalibrationPolicy.normalize(match.model());
+        for (String json : mapper.iosRangeAllocations(userId, scope.sourceEnvironment(), scope.runId())) {
+            try {
+                Map<String, Object> stored = JSON.readValue(json, new TypeReference<>() { });
+                if (!"MATCHED".equals(stored.get("calibrationStatus"))
+                        || !model.equals(PhoneCalibrationPolicy.normalize(String.valueOf(stored.get("model"))))) continue;
+                BigDecimal value = decimal(stored.get("computeValue"));
+                if (PhoneCalibrationPolicy.within(match, value)) return value;
+            } catch (JsonProcessingException | BizException unreadable) {
+                // An unreadable snapshot cannot be reused; the caller allocates a fresh value.
+            }
+        }
+        return null;
+    }
+
+    private Map<String,Object> derive(Signals signals, List<TierRow> tiers,
+                                      java.util.function.Function<PhoneCalibrationPolicy.Match, BigDecimal> storedRangeValue) {
         PhoneCalibrationPolicy policy = activePolicy();
         var match = policy == null ? new PhoneCalibrationPolicy.Match("RULES_UNAVAILABLE", null, null, null, 0)
                 : policy.match(hardware(signals));
+        BigDecimal value = match.computeValue();
+        Integer matchedTier = match.tier();
+        if (match.matched() && match.range()) {
+            BigDecimal stored = storedRangeValue.apply(match);
+            value = stored != null ? stored : PhoneCalibrationPolicy.draw(match, RANDOM);
+            matchedTier = policy.tierFor(value);
+        }
         Map<String,Object> result = new LinkedHashMap<>();
-        result.put("calibrationStatus", match.tier() == null ? "PENDING_VERIFICATION" : "MATCHED");
-        result.put("pendingReason", match.tier() == null ? match.status() : null);
+        result.put("calibrationStatus", matchedTier == null ? "PENDING_VERIFICATION" : "MATCHED");
+        result.put("pendingReason", matchedTier == null ? match.status() : null);
         result.put("ruleId", match.ruleId());
         result.put("ruleVersion", match.ruleVersion());
         result.put("computeUnit", "platform");
-        result.put("computeValue", match.computeValue());
-        result.put("score", match.computeValue() == null ? null : match.computeValue().setScale(0, RoundingMode.HALF_UP).intValue());
-        result.put("tops", match.computeValue()); // Compatibility transport field; clients display platform points.
-        result.put("tier", match.tier());
-        TierRow tier = match.tier() == null ? null : tiers.get(match.tier() - 1);
+        result.put("computeValue", value);
+        result.put("score", value == null ? null : value.setScale(0, RoundingMode.HALF_UP).intValue());
+        result.put("tops", value); // Compatibility transport field; clients display platform points.
+        result.put("tier", matchedTier);
+        if (match.range()) {
+            // Snapshot of the rule the value was drawn from, kept even after the rule changes or is deleted.
+            result.put("calibrationMethod", PhoneCalibrationPolicy.IOS_MODEL_RANGE);
+            result.put("model", match.model());
+            result.put("minComputeValue", match.minComputeValue());
+            result.put("maxComputeValue", match.maxComputeValue());
+            result.put("valueSource", PhoneCalibrationPolicy.OPERATOR_PRESET);
+        }
+        TierRow tier = matchedTier == null ? null : tiers.get(matchedTier - 1);
         result.put("tierName", tier == null ? null : tier.name());
         result.put("baseRateUsdt", tier == null ? null : tier.baseRateUsdt());
         result.put("baseRateNex", tier == null ? null : tier.baseRateNex());
