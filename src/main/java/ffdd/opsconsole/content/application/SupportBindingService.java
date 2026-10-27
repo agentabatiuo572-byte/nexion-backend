@@ -375,11 +375,15 @@ public class SupportBindingService {
     }
 
     private Long leastLoaded(List<Long> candidates) {
+        // Same load as SupportBindingMapper.agentLoad, read for every candidate in two grouped queries.
+        Map<Long,Long> load=new HashMap<>();
+        for(var row:mapper.boundCounts(candidates)) load.merge(((Number)row.get("agentId")).longValue(),((Number)row.get("n")).longValue(),Long::sum);
+        for(var row:mapper.pendingCounts(candidates)) load.merge(((Number)row.get("agentId")).longValue(),2*((Number)row.get("n")).longValue(),Long::sum);
         long best=Long.MAX_VALUE;List<Long> ties=new ArrayList<>();
         for(Long id:candidates) {
-            long load=mapper.agentLoad(id);
-            if(load<best) {best=load;ties.clear();}
-            if(load==best) ties.add(id);
+            long current=load.getOrDefault(id,0L);
+            if(current<best) {best=current;ties.clear();}
+            if(current==best) ties.add(id);
         }
         return ties.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(ties.size()));
     }

@@ -29,6 +29,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * R-1: the super admin picks one business time zone for the whole platform (D-13). A change takes effect from
@@ -99,6 +101,14 @@ public class BusinessCalendarService {
         BusinessCalendar.replaceVersions(loaded);
     }
 
+    /** The JVM-wide calendar only picks up a write once it is committed; a rolled-back write never reaches it. */
+    private void refreshAfterCommit() {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) { refresh(); return; }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCommit() { refresh(); }
+        });
+    }
+
     public ApiResult<CalendarView> view() {
         LocalDateTime now = LocalDateTime.now(clock);
         List<BusinessCalendarMapper.Row> rows = mapper.listActive();
@@ -132,7 +142,8 @@ public class BusinessCalendarService {
 
     private ApiResult<CalendarView> scheduleOnce(ZoneOption option, ZoneId zone, LocalDate date, String reason, String idempotencyKey) {
         LocalDateTime now = LocalDateTime.now(clock);
-        if (mapper.listActive().stream().anyMatch(row -> isPending(row, now))) return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "BUSINESS_CALENDAR_PENDING_EXISTS");
+        mapper.lockWriters();
+        if (mapper.countPendingForUpdate(now) > 0) return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "BUSINESS_CALENDAR_PENDING_EXISTS");
         LinkedHashSet<ZoneId> previous = new LinkedHashSet<>();
         previous.add(BusinessCalendar.legacy().versionOnDate(date).zone());
         previous.add(BusinessCalendar.growthTeam().versionOnDate(date).zone());
@@ -146,7 +157,7 @@ public class BusinessCalendarService {
                 .detail(Map.of("before", BusinessCalendar.legacy().currentZone(clock).getId(), "after", zone.getId(),
                         "effectiveDate", date.toString(), "switchStorageAt", switchAt.toString(), "reason", reason,
                         "idempotencyKey", idempotencyKey)).build());
-        refresh();
+        refreshAfterCommit();
         return view();
     }
 
@@ -160,13 +171,14 @@ public class BusinessCalendarService {
         return (ApiResult<CalendarView>) idempotencyService.execute("R1_BUSINESS_CALENDAR_CANCEL", idempotencyKey.trim(),
                 hash(String.valueOf(request.versionId()), reason), ApiResult.class, () -> {
                     LocalDateTime now = LocalDateTime.now(clock);
+                    mapper.lockWriters();
                     if (mapper.cancelPending(request.versionId(), now) != 1) return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "BUSINESS_CALENDAR_NOT_PENDING");
                     String actor = AdminActorResolver.resolve(null);
                     auditLogService.recordRequired(AuditLogWriteRequest.builder()
                             .action("A_BUSINESS_TIMEZONE_CANCELLED").resourceType("BUSINESS_CALENDAR").resourceId(String.valueOf(request.versionId()))
                             .actorType("ADMIN").actorUsername(actor).result("SUCCESS").riskLevel("HIGH")
                             .detail(Map.of("reason", reason, "idempotencyKey", idempotencyKey.trim())).build());
-                    refresh();
+                    refreshAfterCommit();
                     return view();
                 });
     }

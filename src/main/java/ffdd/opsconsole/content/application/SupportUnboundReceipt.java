@@ -30,7 +30,7 @@ public class SupportUnboundReceipt {
     private final SupportBindingService bindings;
 
     @Value("${nexion.support.unbound.receipt-text:已收到您的消息，正在为您安排专属客服，请稍候。}")
-    private String text;
+    private final String text;
 
     /** Caller holds the customer lock inside the message transaction. System messages never count as replies. */
     public void sendIfUnbound(Long userId, String conversationNo) {

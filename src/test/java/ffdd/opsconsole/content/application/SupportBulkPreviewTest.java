@@ -19,7 +19,8 @@ import static org.mockito.Mockito.*;
 
 class SupportBulkPreviewTest {
     @Test void stateChangesAfterFreezeSkipWithoutSendingOrCreatingAReplacementSegment() {
-        for(String state:List.of("CLOSED","TRANSFERRED","ARCHIVED","CONVERTED","CHANGED")) {
+        // D-6: a conversation that closed after the freeze is not skipped; the send resumes the customer's thread.
+        for(String state:List.of("TRANSFERRED","ARCHIVED","CONVERTED","CHANGED")) {
             var mapper=mock(SupportBulkMapper.class);
             var ownership=mock(SupportOwnershipService.class);
             var messages=mock(SupportHumanMessageService.class);
@@ -84,13 +85,15 @@ class SupportBulkPreviewTest {
         for(String mode:List.of("EXPLICIT","ALL_FILTERED")) {
             var ids="ALL_FILTERED".equals(mode)?List.<Long>of():List.of(1L,2L,3L,4L,5L,6L,7L,8L,9L);
             var preview=service.preview(new SupportBulkRequest.Preview(null,ids,List.of(9L),mode));
-            assertThat(preview.count()).isEqualTo(3);
-            assertThat(preview.customers()).extracting(SupportBulk.Customer::id).containsExactly(1L,2L,3L);
+            // D-6: a closed (not converted) conversation stays in the selection; the send resumes the customer's thread.
+            assertThat(preview.count()).isEqualTo(4);
+            assertThat(preview.customers()).extracting(SupportBulk.Customer::id).containsExactly(1L,2L,3L,4L);
             assertThat(preview.excluded()).extracting(SupportBulk.Excluded::reason).containsExactly(
-                    "CONVERSATION_CLOSED","CONVERSATION_TRANSFERRED","CONVERSATION_ARCHIVED",
+                    "CONVERSATION_TRANSFERRED","CONVERSATION_ARCHIVED",
                     "CONVERSATION_CONVERTED","MAINTENANCE_STOPPED","EXPLICITLY_EXCLUDED");
             verify(mapper).insertRecipient(eq(preview.selectionId()),eq(1L),eq(101L),anyString());
-            for(long customer=4;customer<=9;customer++) verify(mapper,never()).insertRecipient(eq(preview.selectionId()),eq(customer),anyLong(),anyString());
+            verify(mapper).insertRecipient(eq(preview.selectionId()),eq(4L),eq(104L),anyString());
+            for(long customer=5;customer<=9;customer++) verify(mapper,never()).insertRecipient(eq(preview.selectionId()),eq(customer),anyLong(),anyString());
         }
         verify(mapper,never()).conversation(8L);
         verify(mapper,never()).conversation(9L);

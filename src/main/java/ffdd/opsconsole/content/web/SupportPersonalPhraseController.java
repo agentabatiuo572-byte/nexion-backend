@@ -17,7 +17,7 @@ public class SupportPersonalPhraseController {
 
     public record PhraseRequest(String content) {}
 
-    @GetMapping @PreAuthorize("hasAuthority('service_m3_write')")
+    @GetMapping @PreAuthorize("hasAnyAuthority('service_m3_read','service_m3_write')")
     public ApiResult<List<Map<String, Object>>> list() { return ApiResult.ok(service.list()); }
 
     @PostMapping @PreAuthorize("hasAuthority('service_m3_write')")

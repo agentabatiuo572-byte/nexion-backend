@@ -1,5 +1,6 @@
 package ffdd.opsconsole.content.mapper;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
@@ -7,7 +8,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
-public interface SupportPersonalPhraseMapper {
+public interface SupportPersonalPhraseMapper extends BaseMapper<Object> {
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_support_personal_phrase (
               id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,

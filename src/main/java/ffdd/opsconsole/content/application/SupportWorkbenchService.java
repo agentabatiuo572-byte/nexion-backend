@@ -151,7 +151,6 @@ public class SupportWorkbenchService {
     private Map<String,Object> performance(ReadScope scope,LocalDateTime evaluatedAt,String rawFrom,String rawTo) {
         var calendar=ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
         Instant end=evaluatedAt.toInstant(ZoneOffset.UTC);
-        var zone=calendar.zoneAt(end);
         Instant start=calendar.startOf(calendar.dateAt(end).withDayOfMonth(1));
         if((rawFrom==null)!=(rawTo==null)) throw new BizException(422,"SUPPORT_PERFORMANCE_RANGE_REQUIRED");
         if(rawFrom!=null) {
@@ -161,17 +160,20 @@ public class SupportWorkbenchService {
         // Technical response bound, not a maintenance policy or historical retention limit.
         if((rawFrom!=null && !start.isBefore(end)) || start.isAfter(end) || ChronoUnit.DAYS.between(start,end)>3660 || start.isBefore(Instant.parse("1000-01-01T00:00:00Z"))
                 || end.isAfter(Instant.parse("9999-12-31T00:00:00Z"))) throw new BizException(422,"SUPPORT_PERFORMANCE_RANGE_INVALID");
+        // SQL buckets by one fixed offset, so the day keys below use the same one: the zone in effect at the range start.
+        var zone=calendar.zoneAt(start);
+        ZoneOffset offset=zone.getRules().getOffset(start);
         var q=new HashMap<String,Object>();
         q.put("scope",scope); q.put("from",LocalDateTime.ofInstant(start,ZoneOffset.UTC)); q.put("evaluatedAt",evaluatedAt);
         q.put("to",LocalDateTime.ofInstant(end,ZoneOffset.UTC));
-        q.put("businessOffset",zone.getRules().getOffset(start).toString());
+        q.put("businessOffset",offset.toString());
         var days=new TreeMap<String,Map<String,Object>>();
-        for(LocalDate day=calendar.dateAt(start);calendar.startOf(day).isBefore(end);day=day.plusDays(1)) {
+        for(LocalDate day=LocalDate.ofInstant(start,offset);day.atStartOfDay(offset).toInstant().isBefore(end);day=day.plusDays(1)) {
             var row=new LinkedHashMap<String,Object>(); row.put("day",day.toString());
             row.put("executionCount",0L); row.put("successfulCycleCount",0L); days.put(day.toString(),row);
         }
-        for(var row:mapper.executionDays(q)) days.get(row.get("day").toString()).put("executionCount",number(row.get("executionCount")));
-        for(var row:mapper.successDays(q)) days.get(row.get("day").toString()).put("successfulCycleCount",number(row.get("successfulCycleCount")));
+        for(var row:mapper.executionDays(q)) { var day=days.get(row.get("day").toString()); if(day!=null) day.put("executionCount",number(row.get("executionCount"))); }
+        for(var row:mapper.successDays(q)) { var day=days.get(row.get("day").toString()); if(day!=null) day.put("successfulCycleCount",number(row.get("successfulCycleCount"))); }
         return Map.of("from",start.toString(),"to",end.toString(),"timeZone",zone.toString(),"scopeBasis","CURRENT_AGENT_MEMBERSHIP","days",List.copyOf(days.values()),
                 "executionCount",days.values().stream().mapToLong(d->number(d.get("executionCount"))).sum(),
                 "successfulCycleCount",days.values().stream().mapToLong(d->number(d.get("successfulCycleCount"))).sum(),

@@ -237,9 +237,9 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
     int eligiblePool(@Param("id") Long id,@Param("version") Long version,@Param("operation") String operation);
     @Update("UPDATE nx_support_binding_pool SET auto_attempt_state=#{state},attempts=attempts+1,last_attempt_at=UTC_TIMESTAMP(6),last_outcome=#{outcome},version=version+1 WHERE customer_id=#{id}")
     int attemptPool(@Param("id") Long id,@Param("state") String state,@Param("outcome") String outcome);
-    /** Pool customers with an unanswered message in an open advisor conversation; assignment starts at the first inquiry. */
+    /** Pool customers with an unanswered message in an open advisor conversation; assignment starts at the first inquiry. Longest-waiting inquiry first, so a customer past the fallback threshold is never pushed out of the batch. */
     @Select("SELECT p.customer_id FROM nx_support_binding_pool p JOIN nx_user u ON u.id=p.customer_id AND u.is_deleted=0 AND u.sandbox=0 WHERE p.reason<>'MIGRATION_REVIEW' AND EXISTS(SELECT 1"
-            + POOL_PENDING_MESSAGES + ") ORDER BY COALESCE(p.last_attempt_at,p.entered_at),p.customer_id LIMIT 100")
+            + POOL_PENDING_MESSAGES + ") ORDER BY (SELECT MIN(pm.id)" + POOL_PENDING_MESSAGES + "),p.customer_id LIMIT 100")
     List<Long> autoPending();
     /** Minutes since the oldest unanswered customer message, or null when nothing is waiting. */
     @Select("SELECT TIMESTAMPDIFF(MINUTE,MIN(pm.created_at),NOW()) FROM nx_conversation pc JOIN nx_conversation_message pm ON pm.conversation_no=pc.conversation_no LEFT JOIN nx_support_reply_cursor pr ON pr.conversation_no=pm.conversation_no WHERE pc.user_id=#{id} AND pc.is_deleted=0 AND pc.status='OPEN' AND pc.conversation_type='advisor' AND pm.is_deleted=0 AND pm.sender_type='user' AND pm.id>COALESCE(pr.through_message_id,0)")
@@ -254,6 +254,24 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
                    WHERE m.is_deleted=0 AND m.sender_type='user' AND m.id>COALESCE(r.through_message_id,0))
         """)
     long agentLoad(@Param("agent") Long agent);
+    /** {@link #agentLoad} parts for many advisors in one round trip: active bound customers per advisor. */
+    @Select("""
+        <script>SELECT x.agent_admin_id agentId,COUNT(*) n FROM nx_support_agent_user_assignment x
+         WHERE x.status='ACTIVE' AND x.is_deleted=0 AND x.agent_admin_id IN <foreach collection="agents" item="a" open="(" separator="," close=")">#{a}</foreach>
+         GROUP BY x.agent_admin_id</script>
+        """)
+    List<Map<String,Object>> boundCounts(@Param("agents") List<Long> agents);
+    /** {@link #agentLoad} parts for many advisors in one round trip: unanswered messages of their customers. */
+    @Select("""
+        <script>SELECT b.agent_admin_id agentId,COUNT(*) n FROM nx_conversation_message m
+          JOIN nx_conversation c ON c.conversation_no=m.conversation_no AND c.is_deleted=0 AND c.status='OPEN' AND c.conversation_type='advisor'
+          JOIN nx_support_agent_user_assignment b ON b.user_id=c.user_id AND b.status='ACTIVE' AND b.is_deleted=0
+               AND b.agent_admin_id IN <foreach collection="agents" item="a" open="(" separator="," close=")">#{a}</foreach>
+          LEFT JOIN nx_support_reply_cursor r ON r.conversation_no=m.conversation_no
+         WHERE m.is_deleted=0 AND m.sender_type='user' AND m.id&gt;COALESCE(r.through_message_id,0)
+         GROUP BY b.agent_admin_id</script>
+        """)
+    List<Map<String,Object>> pendingCounts(@Param("agents") List<Long> agents);
     @Select("SELECT auto_eligible FROM nx_support_binding_pool WHERE customer_id=#{id} FOR SHARE")
     Boolean autoEligible(Long id);
     @Select("SELECT version FROM nx_support_binding_pool WHERE customer_id=#{id} FOR SHARE")

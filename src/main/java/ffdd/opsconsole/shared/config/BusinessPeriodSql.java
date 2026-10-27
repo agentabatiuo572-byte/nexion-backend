@@ -9,12 +9,17 @@ package ffdd.opsconsole.shared.config;
  */
 public final class BusinessPeriodSql {
     public static final String STORAGE_NOW = "CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00')";
-    static final String DELTA_HEAD = "COALESCE((SELECT bc.offset_minutes-480 FROM nx_business_calendar bc"
-            + " WHERE bc.is_deleted=0 AND bc.track IN ('";
-    static final String AT_MID = "','GLOBAL') AND NOT bc.effective_storage_at>";
-    static final String AT_TAIL = " ORDER BY bc.effective_storage_at DESC,bc.id DESC LIMIT 1),0)";
-    static final String ON_MID = "','GLOBAL') AND NOT bc.effective_date>";
-    static final String ON_TAIL = " ORDER BY bc.effective_date DESC,bc.id DESC LIMIT 1),0)";
+    /*
+     * The calendar is read through a derived table whose columns are all prefixed bc_, so an unqualified outer
+     * column passed in by a caller (created_at, id, ...) can never bind to a calendar column of the same name.
+     */
+    static final String DELTA_HEAD = "COALESCE((SELECT bc.bc_offset-480 FROM (SELECT id AS bc_id,track AS bc_track,"
+            + "offset_minutes AS bc_offset,effective_storage_at AS bc_at,effective_date AS bc_on"
+            + " FROM nx_business_calendar WHERE is_deleted=0) bc WHERE bc.bc_track IN ('";
+    static final String AT_MID = "','GLOBAL') AND NOT bc.bc_at>";
+    static final String AT_TAIL = " ORDER BY bc.bc_at DESC,bc.bc_id DESC LIMIT 1),0)";
+    static final String ON_MID = "','GLOBAL') AND NOT bc.bc_on>";
+    static final String ON_TAIL = " ORDER BY bc.bc_on DESC,bc.bc_id DESC LIMIT 1),0)";
 
     private BusinessPeriodSql() { }
 
@@ -63,6 +68,10 @@ public final class BusinessPeriodSql {
         public static final String NEXT_WEEK_START = "DATE_SUB(TIMESTAMP(" + NEXT_WEEK_DATE + "),INTERVAL " + DELTA_HEAD + T + ON_MID + NEXT_WEEK_DATE + ON_TAIL + " MINUTE)";
         public static final String MONTH_START = "DATE_SUB(TIMESTAMP(" + MONTH_DATE + "),INTERVAL " + DELTA_HEAD + T + ON_MID + MONTH_DATE + ON_TAIL + " MINUTE)";
         public static final String NEXT_MONTH_START = "DATE_SUB(TIMESTAMP(" + NEXT_MONTH_DATE + "),INTERVAL " + DELTA_HEAD + T + ON_MID + NEXT_MONTH_DATE + ON_TAIL + " MINUTE)";
+        /** Prefix + stored column + {@link #BUSINESS_TIME_MID} + same column + {@link #BUSINESS_TIME_TAIL}: per-row business time. */
+        public static final String BUSINESS_TIME_HEAD = "DATE_ADD(";
+        public static final String BUSINESS_TIME_MID = ",INTERVAL " + DELTA_HEAD + T + AT_MID;
+        public static final String BUSINESS_TIME_TAIL = AT_TAIL + " MINUTE)";
 
         private GrowthTeam() { }
     }

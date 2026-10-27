@@ -62,7 +62,8 @@ class L3FinanceReportServiceTest {
         assertThat((Map<String, Object>) result.get("period"))
                 .containsEntry("granularity", "month")
                 .containsEntry("label", "2026-07")
-                .containsEntry("timeZone", "Z");
+                // R-1: the window follows the business calendar (Beijing until a GLOBAL version), not the injected clock's zone.
+                .containsEntry("timeZone", "Asia/Shanghai");
     }
 
     @Test

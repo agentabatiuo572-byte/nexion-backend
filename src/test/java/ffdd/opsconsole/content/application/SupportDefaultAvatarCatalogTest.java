@@ -53,7 +53,8 @@ class SupportDefaultAvatarCatalogTest {
     }
     @Test void legacyConstructorsAndToStringHashesStayUnchanged() {
         var create=new AdminAccountCreateRequest("actor","Name","a@b.c","support",null,"reason","owner","password");
-        assertThat(create.toString()).isEqualTo("AdminAccountCreateRequest[username=actor, displayName=Name, email=a@b.c, role=support, ignoredCredentialDelivery=null, reason=reason, operator=owner, initialPassword=password]");
+        // B-3: the ignored password never reaches logs or request hashes.
+        assertThat(create.toString()).isEqualTo("AdminAccountCreateRequest[username=actor, displayName=Name, email=a@b.c, role=support, ignoredCredentialDelivery=null, reason=reason, operator=owner, initialPassword=[REDACTED]]");
         assertThat(new AdminAccountCreateRequest("actor","Name","a@b.c","support",null,"reason","owner","password",null,"MALE",true).toString()).contains("avatarGender","useDefaultAvatar").isNotEqualTo(create.toString());
         assertThat(new AdminAccountProfileUpdateRequest("actor","Name",null,"reason","owner","2").toString()).isEqualTo("AdminAccountProfileUpdateRequest[username=actor, displayName=Name, email=null, reason=reason, operator=owner, expectedVersion=2]");
     }

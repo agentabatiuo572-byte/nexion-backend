@@ -70,7 +70,8 @@ class SupportRandomOriginalAgentTest {
         assertThat(service.randomUnbound(30L,rules,"manual:31","99","Manual confirmed",99L).agentAdminId()).isEqualTo(12L);
     }
     @Test void historicalPoolWithoutAutoEligibilityIsNeverMovedByRetry(){
-        setup(List.of(candidate(12)),excluded());when(mapper.autoEligible(30L)).thenReturn(false);
+        // D-4: only a customer who writes in is assigned on inquiry; without an unanswered message the pool row stays put.
+        setup(List.of(candidate(12)),excluded());when(mapper.autoEligible(30L)).thenReturn(false);when(mapper.inquiryWaitMinutes(30L)).thenReturn(null);
         service.retryAutomatic(30L);assertThat(assigned.get()).isNull();verify(groups,never()).candidates(anyLong());
     }
     @Test void registrationPersistsOriginalAdvisorBeforeImmediateAutomaticDraw(){
