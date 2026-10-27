@@ -196,19 +196,27 @@ class EarningsCentralFundEvidenceTest {
         assertEquals(n("0"),result.recovered());assertEquals("LEGACY_UNPROVEN",result.evidenceStatus());assertEquals(2,receipts.size());assertEquals(1,raws.size());
         assertThrows(IllegalArgumentException.class,()->verifyReceipt(1));
     }
-    @Test void actualJanusReleaseRequiresConsumedProductionProofAndUnchangedWallet()throws Exception {
-        String no=protectedCredit("USDT");var p=new EarningsReleaseMapper.ProtectedEntry(no,7L,"USER:7","USDT",n("20"),"bonus_locked");
-        when(params.attestationHours()).thenReturn(1);when(params.releaseWindowHours()).thenReturn(24);when(params.freeSlots()).thenReturn(1);when(params.freeSlotRequiresBinding()).thenReturn(true);
-        when(mapper.proofIdentityMatches(7L,"JANUS_PRODUCTION_EXECUTOR")).thenReturn(1);when(mapper.trustedDeviceBinding(7L,"phone-7")).thenReturn(1);
-        when(mapper.consumeAppliedProof("proof-7",7L,"phone-7",1L,"JANUS_PRODUCTION_EXECUTOR","e".repeat(64))).thenReturn(1);
-        when(mapper.recordAttestation(7L,"phone-7","PRODUCTION")).thenReturn(1);when(mapper.attestedSeconds(7L,"PRODUCTION")).thenReturn(3600L);
-        when(mapper.protectedEntryScopes(7L,"PRODUCTION")).thenReturn(List.of(p));when(mapper.protectedEntries(7L,"PRODUCTION")).thenReturn(List.of(p));
+    @Test void historicalJanusReceiptStillRequiresConsumedProductionProof()throws Exception {
+        String no=protectedCredit("USDT");
+        service.manualReleaseOnce(no,new EarningsManualReleaseRequest("approved investigation","superadmin"));
+        var receipt=receipts.get(1);
+        var source=(ObjectNode)json.readTree(receipt.sourceSnapshotJson());
+        // Reconstruct a retained pre-retirement receipt; no current Janus producer is invoked.
+        entry.put("releaseSource","attest");
         applied.add(new LinkedHashMap<>(Map.of("proofId","proof-7","userId",7L,"deviceId","phone-7","commandVersion",1L,"proofHash","e".repeat(64),"executorMode","PRODUCTION","earningsConsumedAt",at)));
-        when(mapper.fundAppliedProof("proof-7")).thenAnswer(i->new LinkedHashMap<>(applied.get(0)));
-        when(mapper.releaseFromJanusProof(no,"JANUS_PRODUCTION_EXECUTOR")).thenAnswer(i->{entry.put("bucket","withdrawable");entry.put("releasedAt",at);entry.put("releaseSource","attest");return 1;});
-        doAnswer(i->{audit.recordRequired(i.getArgument(0));return null;}).when(audit).recordRequiredForTrustedActor(any());
-        service.recordTrustedAttestation(new EarningsReleaseService.TrustedAttestationProof("proof-7",7L,"phone-7",1L,"ACTIVATED","JANUS_PRODUCTION_EXECUTOR","e".repeat(64)));
-        assertEquals(2,receipts.size());assertEquals(1,raws.size());assertEquals(1,verifyReceipt(1).checkpoints().size());
-        applied.get(0).put("earningsConsumedAt",null);assertThrows(IllegalArgumentException.class,()->verifyReceipt(1));
+        var historicalAudit=audits.get(audits.size()-1);
+        historicalAudit.put("action","K1_EARNINGS_ATTESTATION_RELEASED");
+        historicalAudit.put("detailJson",json.writeValueAsString(Map.of("userId",7L,"deviceId","phone-7","before","bonus_locked","after","withdrawable","source","JANUS_PRODUCTION_EXECUTOR")));
+        source.put("authority","JANUS");
+        ((ObjectNode)source.path("entry")).put("releaseSource","attest");
+        ((ObjectNode)source.path("audit")).put("action","K1_EARNINGS_ATTESTATION_RELEASED");
+        ((ObjectNode)source.path("audit")).put("detailJson",historicalAudit.get("detailJson").toString());
+        var historicalProof=new LinkedHashMap<>(applied.get(0));
+        historicalProof.put("earningsConsumedAt",at.toString());
+        source.set("appliedProof",json.valueToTree(historicalProof));
+        var verified=evidence.verify(operation(1),source,json.readTree(receipt.sourceProofJson()),events(1),inputs());
+        assertEquals(1,verified.checkpoints().size());assertEquals(1,raws.size());
+        applied.get(0).put("earningsConsumedAt",null);
+        assertThrows(IllegalArgumentException.class,()->evidence.verify(operation(1),source,json.readTree(receipt.sourceProofJson()),events(1),inputs()));
     }
 }

@@ -22,7 +22,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.List;
-import java.util.TreeSet;
 import java.util.UUID;
 import java.util.Locale;
 import java.util.function.Supplier;
@@ -329,9 +328,9 @@ public class EarningsReleaseService {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("buckets", assets.get("USDT"));
         response.put("assets", assets);
-        response.put("releaseMode", params.manualOnly() ? "manual_only" : "attest_or_manual");
+        response.put("releaseMode", "manual_only");
         response.put("attestedOnlineSeconds", mapper.attestedSeconds(userId,"PRODUCTION"));
-        response.put("requiredAttestationSeconds", params.attestationHours() * 3600L);
+        response.put("requiredAttestationSeconds", 0L);
         response.put("serverCanonical", true);
         response.put("clusterRestricted", clusterRestricted(cluster));
         return ApiResult.ok(response);
@@ -355,58 +354,6 @@ public class EarningsReleaseService {
                     return item;
                 }).toList();
         return ApiResult.ok(Map.of("items", items, "limit", normalizedLimit, "serverCanonical", true));
-    }
-
-    public record TrustedAttestationProof(String proofId,Long userId,String deviceId,Long commandVersion,
-                                          String appliedStatus,String source,String proofHash) { }
-
-    /** Only a claimed, persisted Janus executor proof may mint trusted online time. */
-    @Transactional(rollbackFor = Exception.class)
-    public void recordTrustedAttestation(TrustedAttestationProof proof) {
-        if (proof == null || proof.userId() == null || proof.commandVersion() == null
-                || !StringUtils.hasText(proof.proofId()) || !StringUtils.hasText(proof.deviceId())
-                || !StringUtils.hasText(proof.proofHash()) || !"JANUS_PRODUCTION_EXECUTOR".equals(proof.source())) return;
-        Long userId=proof.userId(); String deviceId=proof.deviceId().trim();
-        String sourceEnvironment="PRODUCTION";
-        if (userId == null || !StringUtils.hasText(deviceId) || params.manualOnly()) return;
-        if(mapper.proofIdentityMatches(userId,proof.source())!=1)return;
-        if (params.freeSlotRequiresBinding() && mapper.trustedDeviceBinding(userId, deviceId.trim()) != 1) return;
-        if (mapper.consumeAppliedProof(proof.proofId().trim(),userId,deviceId,proof.commandVersion(),proof.source(),proof.proofHash().trim()) != 1) return;
-        if (mapper.recordAttestation(userId, deviceId.trim(), sourceEnvironment) < 1) {
-            throw new BizException(409, "EARNINGS_ATTESTATION_CONFLICT");
-        }
-        if (mapper.attestedSeconds(userId, sourceEnvironment) < params.attestationHours() * 3600L) return;
-        mapper.lockCreditUser(userId, 0);
-        mapper.lockCreditWallet(userId, 0);
-        Set<String> lockedClusters = new TreeSet<>();
-        for (ProtectedEntry scope : mapper.protectedEntryScopes(userId, sourceEnvironment)) {
-            String cluster = StringUtils.hasText(scope.clusterId()) ? scope.clusterId() : "USER:" + userId;
-            if (!cluster.startsWith("USER:")) lockedClusters.add(cluster);
-        }
-        for (String cluster : lockedClusters) {
-            if (mapper.lockCluster(cluster) == null) {
-                throw new BizException(409, "EARNINGS_RELEASE_CLUSTER_MISSING");
-            }
-        }
-        for (ProtectedEntry entry : mapper.protectedEntries(userId, sourceEnvironment)) {
-            String cluster = StringUtils.hasText(entry.clusterId()) ? entry.clusterId() : "USER:" + userId;
-            if (!cluster.startsWith("USER:") && !lockedClusters.contains(cluster)) {
-                throw new BizException(409, "EARNINGS_RELEASE_CLUSTER_MISSING");
-            }
-            if (mapper.releasedAccountsInWindow(cluster, userId, params.releaseWindowHours()) >= params.freeSlots()) continue;
-            var fundBefore=fundEarnings==null?null:fundEarnings.begin(userId);
-            var fundEntry=fundBefore==null?null:fundEarnings.entry(entry.entryNo());
-            int released=mapper.releaseFromJanusProof(entry.entryNo(),proof.source());
-            if(released!=1)throw new BizException(409,"EARNINGS_RELEASE_CONFLICT");
-            audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
-                    .action("K1_EARNINGS_ATTESTATION_RELEASED")
-                    .resourceType("EARNINGS_RELEASE_ENTRY").resourceId(entry.entryNo())
-                    .actorUsername("janus-carrier").riskLevel("HIGH")
-                    .detail(Map.of("userId", userId, "clusterId", cluster, "deviceId", deviceId.trim(),
-                            "before", entry.bucket(), "after", "withdrawable", "source", proof.source()))
-                    .build());
-            if(fundBefore!=null)fundEarnings.release(fundBefore,fundEntry,"JANUS",proof);
-        }
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -455,7 +402,7 @@ public class EarningsReleaseService {
         audit.recordRequired(AuditLogWriteRequest.builder().action("K1_EARNINGS_MANUALLY_RELEASED")
                 .resourceType("EARNINGS_RELEASE_ENTRY").resourceId(entryNo).actorUsername(actor)
                 .riskLevel("HIGH").detail(detail).build());
-        if(fundBefore!=null)fundEarnings.release(fundBefore,fundEntry,"MANUAL",null);
+        if(fundBefore!=null)fundEarnings.release(fundBefore,fundEntry);
         return ApiResult.ok(Map.of("entryNo", entryNo, "bucket", "withdrawable", "releaseSource", "manual"));
     }
 

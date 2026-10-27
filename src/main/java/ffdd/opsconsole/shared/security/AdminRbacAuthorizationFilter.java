@@ -49,6 +49,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     // 经典 RBAC 域级前缀兜底：GET 需 <域>_*_read，非 GET 需 <域>_*（非 _read 结尾，含 write/high）。
     // null 前缀 = 仅验认证。路径域→权限码前缀映射（treasury→finance / teams→network / market→finprod / support→service 为跨域）。
     private static final List<Rule> RULES = List.of(
+            // Authenticated legacy callers receive a retirement response, never a business action.
+            rule("/api/admin/janus", null),
+            rule("/api/admin/janus/**", null),
             rule("/api/admin/platform/audit/**", "platform_"),
             rule("/api/admin/platform/events/**", "platform_a4_"),
             rule("/api/admin/platform/**", "platform_"),
@@ -125,7 +128,6 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/emergency-control/**", "emergency_"),
             rule("/api/admin/emergency/kill-switches/alerts", null),
             rule("/api/admin/emergency/**", "emergency_"),
-            rule("/api/admin/janus/**", "risk_k6_"),
             rule("/api/admin/risk/radar", "overview_b5_"),
             rule("/api/admin/risk/radar/**", "overview_b5_"),
             rule("/api/admin/risk/bankrun-thresholds", "overview_b5_"),

@@ -707,8 +707,7 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract phone=mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class);
         if(phoneMode) {
             proof=new ComputeTaskProofVerifier("PRODUCTION","phone-executor:NEX-TEST-INSTANCE:"
-                    +Base64.getEncoder().encodeToString(PHONE_PROOF_KEY),120000,businessClock,env,
-                    mock(ffdd.opsconsole.janus.application.JanusSandboxEnrollmentService.class));
+                    +Base64.getEncoder().encodeToString(PHONE_PROOF_KEY),120000,businessClock,env);
             var platform=mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
             when(platform.activeValue(anyString())).thenReturn(Optional.empty());
             var users=session.getMapper(UserOpsMapper.class);

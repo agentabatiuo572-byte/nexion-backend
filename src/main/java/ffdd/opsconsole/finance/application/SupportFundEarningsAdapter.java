@@ -45,13 +45,11 @@ public class SupportFundEarningsAdapter {
         var event=new Event(eventId(entryNo),action,null,new Account(before.customerId(),asset,"available"),null,(BigDecimal)entry.get("amount"),null);
         bind(before,"CREDIT",entryNo,"nx_earnings_release_entry",Map.of("entry",entry),List.of(event));
     }
-    public void release(Capture before,Map<String,Object> original,String authority,
-                        EarningsReleaseService.TrustedAttestationProof proof) {
+    public void release(Capture before,Map<String,Object> original) {
         String no=(String)original.get("entryNo");var source=new LinkedHashMap<String,Object>();
         source.put("beforeEntry",original);source.put("entry",entry(no));
-        source.put("audit",earnings.fundReleaseAudit(no,"JANUS".equals(authority)?"K1_EARNINGS_ATTESTATION_RELEASED":"K1_EARNINGS_MANUALLY_RELEASED"));
-        source.put("authority",authority);
-        if(proof!=null)source.put("appliedProof",earnings.fundAppliedProof(proof.proofId().trim()));
+        source.put("audit",earnings.fundReleaseAudit(no,"K1_EARNINGS_MANUALLY_RELEASED"));
+        source.put("authority","MANUAL");
         var event=new Event("EARNINGS_RELEASE:"+no,Action.RELEASE,
             new Account(before.customerId(),(String)original.get("asset"),"available"),null,eventId(no),null,null);
         bind(before,"RELEASE",no,"nx_earnings_release_entry",source,List.of(event));
