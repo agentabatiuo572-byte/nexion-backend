@@ -38,7 +38,8 @@ public class EarningsReleaseService {
     private static final Set<String> ASSETS = Set.of("USDT", "NEX");
     private static final Set<String> SOURCE_ENVIRONMENTS = Set.of("PRODUCTION", "SANDBOX");
     // Other domains have their own reversal owners. Do not let two owners recover the same source.
-    private static final Set<String> RECOVERY_SOURCES = Set.of("PROMOTION_REWARD", "MOCK_PROMOTION_REWARD");
+    private static final Set<String> RECOVERY_SOURCES = Set.of("PROMOTION_REWARD", "MOCK_PROMOTION_REWARD",
+            "H2_TRIAL_REMAINDER", "H2_TRIAL_BONUS");
     private final EarningsReleaseMapper mapper;
     private final RiskReleaseParamsService params;
     private final AdminIdempotencyService idempotency;

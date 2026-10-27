@@ -31,7 +31,9 @@ class E4OrderRefundSettlementFacadeAdapterTest {
             + " | operator=suadmin | reason=";
     private static final String REMARK_SUFFIX = " | key=" + APPROVAL_KEY;
     private final E4OrderRefundMapper mapper = mock(E4OrderRefundMapper.class);
-    private final E4OrderRefundSettlementFacadeAdapter facade = new E4OrderRefundSettlementFacadeAdapter(capture, mapper);
+    private final TrialConversionRewardReversal trialRewards = mock(TrialConversionRewardReversal.class);
+    private final E4OrderRefundSettlementFacadeAdapter facade =
+            new E4OrderRefundSettlementFacadeAdapter(capture, mapper, trialRewards);
 
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})

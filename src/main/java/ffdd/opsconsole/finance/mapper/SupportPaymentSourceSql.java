@@ -159,7 +159,7 @@ public final class SupportPaymentSourceSql {
     }
     static final String TRIAL_FUND_SOURCE="""
         SELECT c.id claimId,c.claim_no claimNo,c.user_id customerId,c.status claimStatus,c.is_deleted claimDeleted,
-          c.settlement_amount_usdt chargeUsdt,c.remainder_usdt remainderUsdt,c.shadow_accrued_nex shadowNex,
+          c.settlement_amount_usdt chargeUsdt,c.remainder_usdt remainderUsdt,COALESCE(c.settled_trial_nex,c.shadow_accrued_nex) shadowNex,
           c.settled_at settledAt,c.version claimVersion,d.id deviceId,d.source_order_no orderNo,
           d.source_environment deviceEnvironment,d.status deviceStatus,d.ownership_status ownershipStatus,
           d.source_channel sourceChannel,d.is_deleted deviceDeleted,o.id orderId,o.order_type orderType,
