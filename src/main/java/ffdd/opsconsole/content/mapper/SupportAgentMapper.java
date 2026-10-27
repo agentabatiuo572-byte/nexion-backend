@@ -263,6 +263,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
             """)
     int dropAssignmentTypeColumn();
 
+    // Assignment clocks are UTC (SupportBindingMapper writes UTC_TIMESTAMP), so the cleanup must not stamp UTC+8 local time.
     @Update("""
             UPDATE nx_support_agent_user_assignment stale
               JOIN (
@@ -277,9 +278,9 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                  WHERE ranked.row_num > 1
               ) duplicate ON duplicate.id=stale.id
                SET stale.status='INACTIVE',
-                   stale.ends_at=COALESCE(stale.ends_at, NOW()),
+                   stale.ends_at=COALESCE(stale.ends_at, UTC_TIMESTAMP()),
                    stale.reason=COALESCE(NULLIF(stale.reason, ''), 'deduplicate active support assignment'),
-                   stale.updated_at=NOW()
+                   stale.updated_at=UTC_TIMESTAMP(6)
             """)
     int deactivateDuplicateActiveAssignments();
 
