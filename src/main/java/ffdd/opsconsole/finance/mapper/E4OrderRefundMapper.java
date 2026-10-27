@@ -61,4 +61,22 @@ public interface E4OrderRefundMapper extends BaseMapper<PaymentRecordEntity> {
                AND UPPER(payment_status) IN ('PAID','CONFIRMED','SUCCESS')
             """)
     int markPaymentRefunded(@Param("orderNo") String orderNo, @Param("userId") Long userId);
+
+    /**
+     * The trial claim converted into this order, locked for the refund's reward reversal. The device
+     * is matched by id only: a later transfer of the device must not hide the claim that paid out.
+     */
+    @Select("""
+            SELECT c.claim_no AS claimNo, c.settlement_snapshot AS settlementSnapshot
+              FROM nx_trial_claim c
+              JOIN nx_user_device d ON d.id = c.user_device_id
+             WHERE d.source_order_no = #{orderNo} AND c.user_id = #{userId}
+               AND c.is_deleted = 0 AND UPPER(c.status) = 'REDEEMED'
+             LIMIT 1
+             FOR UPDATE OF c
+            """)
+    TrialConversion lockTrialConversion(@Param("orderNo") String orderNo, @Param("userId") Long userId);
+
+    record TrialConversion(String claimNo, String settlementSnapshot) {
+    }
 }

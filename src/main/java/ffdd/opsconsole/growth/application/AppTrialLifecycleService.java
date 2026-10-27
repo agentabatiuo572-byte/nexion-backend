@@ -63,6 +63,10 @@ public class AppTrialLifecycleService {
             "CLAIMED", "ACTIVE", "GRACE", "EXTENDED", "REDEEMED", "FAILED", "CANCELLED");
     private static final String LEGACY_TRIAL_PRODUCT_ID = "device-trial-standard";
     private static final String CANONICAL_TRIAL_PRODUCT_ID = "stellarbox-s1";
+    /** FEAT-TRIAL05: converting inside the original term settles the full claimed term plus a fixed discount. */
+    public static final String FULL_TERM_POLICY = "FULL_TERM_ON_CONVERSION";
+    public static final String ACCRUED_POLICY = "ACCRUED_ON_CONVERSION";
+    private static final String EARLY_DISCOUNT_KEY = "earlyPurchaseDiscountUSD";
 
     @lombok.NonNull
     private final SupportPaymentAttributionFacade paymentAttribution;
@@ -270,20 +274,30 @@ public class AppTrialLifecycleService {
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> convert(
             Long userId, String productNo, BigDecimal expectedAmountUsdt, String idempotencyKey) {
+        return convert(userId, productNo, expectedAmountUsdt, null, idempotencyKey);
+    }
+
+    /** {@code quoteVersion} is the version the user confirmed; a different server quote needs a new confirmation. */
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> convert(
+            Long userId, String productNo, BigDecimal expectedAmountUsdt, String quoteVersion, String idempotencyKey) {
         requireUser(userId);
         String normalized = productNo == null ? "" : productNo.trim();
-        return once("TRIAL_CONVERT:PRODUCTION", userId, idempotencyKey,
-                linked("productNo", normalized, "expectedAmountUsdt", expectedAmountUsdt),
-                () -> convertOnce(userId, normalized, expectedAmountUsdt));
+        String confirmedQuote = StringUtils.hasText(quoteVersion) ? quoteVersion.trim() : null;
+        Map<String, Object> request = linked("productNo", normalized, "expectedAmountUsdt", expectedAmountUsdt);
+        if (confirmedQuote != null) request.put("quoteVersion", confirmedQuote);
+        return once("TRIAL_CONVERT:PRODUCTION", userId, idempotencyKey, request,
+                () -> convertOnce(userId, normalized, expectedAmountUsdt, confirmedQuote));
     }
 
     private ApiResult<Map<String, Object>> convertOnce(
-            Long userId, String productNo, BigDecimal expectedAmountUsdt) {
+            Long userId, String productNo, BigDecimal expectedAmountUsdt, String confirmedQuote) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         if (!productNo.matches("[A-Za-z0-9._-]{2,64}")) return ApiResult.fail(422, "TRIAL_PRODUCT_REQUIRED");
         if (!validExpectedAmount(expectedAmountUsdt)) {
             return ApiResult.fail(409, "TRIAL_AMOUNT_INVALID");
         }
+        if (confirmedQuote != null && confirmedQuote.length() > 96) return ApiResult.fail(422, "TRIAL_QUOTE_VERSION_INVALID");
         Map<String, String> policy = policyMap();
         var prepared = paymentAttribution.prepare(userId, Source.TRIAL_CONVERT, "USER:" + userId);
         TrialRow row = mapper.lockTrial(userId);
@@ -316,15 +330,15 @@ public class AppTrialLifecycleService {
         if (!withinPhysicalSlotCapacity(userId, product)) {
             return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
         }
-        Settlement settlement = settlement(row, policy, false, now);
         BigDecimal subtotal = row.priceUsdt();
         if (subtotal == null || subtotal.signum() <= 0) {
             throw new BizException(409, "TRIAL_PRICE_SNAPSHOT_INVALID");
         }
-        BigDecimal promoDiscount = conversionPromoDiscount(subtotal, policy);
-        BigDecimal discount = promoDiscount.add(settlement.offsetUsdt())
-                .min(subtotal).setScale(6, RoundingMode.DOWN);
-        BigDecimal amount = subtotal.subtract(discount).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+        Quote quote = quote(row, policy, now);
+        Settlement settlement = quote.accrued();
+        BigDecimal promoDiscount = quote.promoDiscountUsdt();
+        BigDecimal discount = quote.discountUsdt();
+        BigDecimal amount = quote.amountUsdt();
         // The App confirms a two-decimal USDT quote. Reject only when the
         // canonical two-decimal amount increased; a later/larger trial offset
         // may safely reduce what the user owes.
@@ -332,7 +346,12 @@ public class AppTrialLifecycleService {
                 .compareTo(expectedAmountUsdt.setScale(2, RoundingMode.UNNECESSARY)) > 0) {
             return ApiResult.fail(409, "TRIAL_AMOUNT_MISMATCH");
         }
-        requireCoverage(settlement.remainderUsdt(), settlement.shadowNex());
+        // A confirmed early quote that is no longer offered (term ended, policy changed) is
+        // never swapped silently for another rule, even when the amount happens to match.
+        if (confirmedQuote != null && !confirmedQuote.equals(quote.version())) {
+            return ApiResult.fail(409, "TRIAL_QUOTE_CHANGED");
+        }
+        requireCoverage(quote.remainderUsdt(), quote.rewardNex());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, product.productNo(),
                 LocalDateTime.ofInstant(clock.instant(), java.time.ZoneOffset.UTC));
         WalletRow wallet = mapper.lockWallet(userId);
@@ -342,28 +361,28 @@ public class AppTrialLifecycleService {
         if (mapper.settleWallet(userId, amount, BigDecimal.ZERO, BigDecimal.ZERO) != 1) {
             throw new BizException(409, "TRIAL_WALLET_CONFLICT");
         }
-        if (settlement.remainderUsdt().signum() > 0) {
+        if (quote.remainderUsdt().signum() > 0) {
             String entryNo = earningsReleaseService.creditRewardInFundOperation(userId, "H2_TRIAL_REMAINDER", row.claimNo() + ":REMAINDER",
-                    "USDT", settlement.remainderUsdt(), "H2:" + row.claimNo() + ":REMAINDER:USDT");
+                    "USDT", quote.remainderUsdt(), "H2:" + row.claimNo() + ":REMAINDER:USDT");
             paymentAttribution.trialReward(prepared, entryNo);
         }
-        if (settlement.shadowNex().signum() > 0) {
+        if (quote.rewardNex().signum() > 0) {
             String entryNo = earningsReleaseService.creditRewardInFundOperation(userId, "H2_TRIAL_BONUS", row.claimNo() + ":NEX",
-                    "NEX", settlement.shadowNex(), "H2:" + row.claimNo() + ":NEX");
+                    "NEX", quote.rewardNex(), "H2:" + row.claimNo() + ":NEX");
             paymentAttribution.trialReward(prepared, entryNo);
         }
-        BigDecimal usdtAfter = wallet.usdt().subtract(amount).add(settlement.remainderUsdt());
-        BigDecimal nexAfter = wallet.nex().add(settlement.shadowNex());
+        BigDecimal usdtAfter = wallet.usdt().subtract(amount).add(quote.remainderUsdt());
+        BigDecimal nexAfter = wallet.nex().add(quote.rewardNex());
         if (amount.signum() > 0 && paymentAttribution.insertLedger(prepared, amount,
                 wallet.usdt().subtract(amount), "H2 conversion via UVEL USDT wallet") != 1) {
             throw new BizException(409, "TRIAL_CHARGE_LEDGER_CONFLICT");
         }
-        if (settlement.remainderUsdt().signum() > 0) mapper.insertLedger(
+        if (quote.remainderUsdt().signum() > 0) mapper.insertLedger(
                 userId, row.claimNo() + ":REMAINDER", "TRIAL_BONUS", "USDT", "IN",
-                settlement.remainderUsdt(), usdtAfter, "H2 shadow remainder credited after purchase");
-        if (settlement.shadowNex().signum() > 0) mapper.insertLedger(
+                quote.remainderUsdt(), usdtAfter, "H2 shadow remainder credited after purchase");
+        if (quote.rewardNex().signum() > 0) mapper.insertLedger(
                 userId, row.claimNo() + ":NEX", "TRIAL_BONUS", "NEX", "IN",
-                settlement.shadowNex(), nexAfter, "H2 shadow NEX credited after purchase");
+                quote.rewardNex(), nexAfter, "H2 shadow NEX credited after purchase");
         String orderNo = "TRC-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         if (mapper.decrementProductStock(product.id()) != 1) throw new BizException(409, "TRIAL_PRODUCT_STOCK_CONFLICT");
         if (mapper.insertConversionOrder(userId, orderNo, product.id(), subtotal, discount, amount) != 1
@@ -384,9 +403,11 @@ public class AppTrialLifecycleService {
                 + ",orderNo=" + orderNo + ",promoDiscountUsdt=" + promoDiscount
                 + ",totalDiscountUsdt=" + discount + ",amountUsdt=" + amount
                 + ",trialDailyUsdt=" + row.dailyUsdt() + ",trialDailyNex=" + row.dailyNex()
-                + ",deviceDailyUsdt=" + product.estimatedDailyUsdt() + ",deviceDailyNex=" + product.dailyNex();
+                + ",deviceDailyUsdt=" + product.estimatedDailyUsdt() + ",deviceDailyNex=" + product.dailyNex()
+                + quote.snapshot();
+        // shadow_accrued_* keep the real accrual; the credited totals live in remainder_usdt / settled_trial_nex.
         if (deviceId == null || mapper.markRedeemed(row.id(), row.version(), deviceId,
-                settlement.shadowUsdt(), settlement.shadowNex(), settlement.remainderUsdt(), discount,
+                settlement.shadowUsdt(), settlement.shadowNex(), quote.remainderUsdt(), quote.rewardNex(), discount,
                 amount, now, snapshot) != 1) {
             throw new BizException(409, "TRIAL_CONVERSION_CONFLICT");
         }
@@ -395,12 +416,15 @@ public class AppTrialLifecycleService {
                 "amountUsdt", amount, "discountUsdt", discount, "paymentStatus", "PAID",
                 "orderStatus", "PAID", "paymentRail", "NEXION_USDT_WALLET",
                 "deviceId", deviceId, "shadowUsdt", settlement.shadowUsdt(),
-                "shadowNex", settlement.shadowNex(), "offsetUsdt", settlement.offsetUsdt(),
-                "remainderUsdt", settlement.remainderUsdt(), "discountApplied", promoDiscount,
-                "earlyPurchase", false, "sourceEnvironment", "PRODUCTION");
+                "shadowNex", settlement.shadowNex(), "offsetUsdt", quote.offsetUsdt(),
+                "remainderUsdt", quote.remainderUsdt(), "discountApplied", promoDiscount,
+                "earlyPurchase", quote.early(), "sourceEnvironment", "PRODUCTION");
+        detail.putAll(quote.receiptFields());
         putCanonicalProvenance(detail, TRIAL_CONVERSION_SOURCE);
         Map<String, Object> eventDetail = new LinkedHashMap<>(detail);
         eventDetail.keySet().removeAll(Set.of("serverCanonical", "sourceEnvironment", "runId", "provenance"));
+        // The registered trial.redeemed payload stays unchanged; the quote breakdown lives in the receipt and audit.
+        eventDetail.keySet().removeAll(quote.receiptFields().keySet());
         publish("TRIAL", row.claimNo(), "trial.redeemed", userId, attr, eventDetail);
         publish("ORDER", orderNo, "checkout.completed", userId, attr,
                 linked("order_id", orderNo, "order_no", orderNo, "order_subtotal_usdt", amount, "amount_usdt", amount));
@@ -468,6 +492,65 @@ public class AppTrialLifecycleService {
         BigDecimal charge = row.priceUsdt().subtract(discount).subtract(offset)
                 .max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
         return new Settlement(shadowUsdt, shadowNex, offset, remainder, discount, charge);
+    }
+
+    /**
+     * FEAT-TRIAL05 conversion quote. With {@code earlyPurchaseDiscountUSD > 0}, converting before the
+     * original expiry settles the whole claimed term (claim-day rates x original days) and takes a
+     * fixed discount off what is left to pay. The real accrual stays untouched; the difference is the
+     * early-conversion reward. Grace/extension never add days or the fixed discount. Claims without a
+     * complete snapshot keep the accrued rule instead of inventing zero-valued rewards.
+     */
+    private Quote quote(TrialRow row, Map<String, String> policy, LocalDateTime now) {
+        Settlement accrued = settlement(row, policy, false, now);
+        BigDecimal configured = earlyPurchaseDiscount(policy);
+        boolean early = configured.signum() > 0 && fullTermSnapshot(row) && inOriginalTerm(row, now);
+        BigDecimal settledUsdt = accrued.shadowUsdt();
+        BigDecimal settledNex = accrued.shadowNex();
+        if (early) {
+            BigDecimal days = BigDecimal.valueOf(row.durationDays());
+            settledUsdt = row.dailyUsdt().multiply(days).setScale(6, RoundingMode.DOWN).max(settledUsdt);
+            settledNex = row.dailyNex().multiply(days).setScale(6, RoundingMode.DOWN).max(settledNex);
+        }
+        BigDecimal offset = settledUsdt.min(row.offsetCapUsdt()).setScale(6, RoundingMode.DOWN);
+        BigDecimal remainder = settledUsdt.subtract(offset).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+        BigDecimal subtotal = row.priceUsdt();
+        BigDecimal promo = conversionPromoDiscount(subtotal, policy);
+        BigDecimal baseDiscount = promo.add(offset).min(subtotal).setScale(6, RoundingMode.DOWN);
+        BigDecimal base = subtotal.subtract(baseDiscount).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+        // Bounded by what is left to pay: never a negative price, never paid out as cash.
+        BigDecimal earlyDiscount = early ? configured.min(base).setScale(6, RoundingMode.DOWN)
+                : BigDecimal.ZERO.setScale(6);
+        BigDecimal amount = base.subtract(earlyDiscount).setScale(6, RoundingMode.DOWN);
+        String policyName = early ? FULL_TERM_POLICY : ACCRUED_POLICY;
+        // The early quote is constant for the whole original term, so its version is stable across
+        // reads; the accrued quote moves every second and is versioned by its rule only.
+        String version = early ? FULL_TERM_POLICY + ":" + sha256(String.join("|", row.claimNo(),
+                settledUsdt.toPlainString(), settledNex.toPlainString(), promo.toPlainString(),
+                earlyDiscount.toPlainString(), amount.toPlainString())).substring(0, 16) : ACCRUED_POLICY;
+        return new Quote(accrued, policyName, version, early, settledUsdt, settledNex,
+                settledUsdt.subtract(accrued.shadowUsdt()), settledNex.subtract(accrued.shadowNex()),
+                offset, remainder, promo, configured, earlyDiscount, baseDiscount.add(earlyDiscount), amount,
+                early ? row.expiresAt() : null);
+    }
+
+    private BigDecimal earlyPurchaseDiscount(Map<String, String> policy) {
+        BigDecimal value = decimal(policy, EARLY_DISCOUNT_KEY, "0");
+        return value.signum() > 0 ? value.setScale(2, RoundingMode.DOWN) : BigDecimal.ZERO.setScale(2);
+    }
+
+    private boolean fullTermSnapshot(TrialRow row) {
+        return row.durationDays() != null && row.durationDays() > 0
+                && positiveOrNull(row.dailyUsdt()) != null && positiveOrNull(row.dailyNex()) != null
+                && row.offsetCapUsdt() != null && row.offsetCapUsdt().signum() >= 0
+                && row.priceUsdt() != null && row.priceUsdt().signum() > 0
+                && row.claimedAt() != null && row.expiresAt() != null;
+    }
+
+    /** Server time, not the scheduler-advanced status, decides whether the original term is still running. */
+    private boolean inOriginalTerm(TrialRow row, LocalDateTime now) {
+        return List.of("CLAIMED", "ACTIVE").contains(normalize(row.status()))
+                && row.expiresAt() != null && now.isBefore(row.expiresAt());
     }
 
     private BigDecimal conversionPromoDiscount(BigDecimal catalogPrice, Map<String, String> policy) {
@@ -571,6 +654,9 @@ public class AppTrialLifecycleService {
         result.put("offsetUsdt", preview == null ? BigDecimal.ZERO : preview.offsetUsdt());
         result.put("remainderUsdt", preview == null ? safe(row.remainderUsdt()) : preview.remainderUsdt());
         result.put("priceUsdt", row.priceUsdt());
+        if (preview != null && row.priceUsdt() != null && row.priceUsdt().signum() > 0 && row.offsetCapUsdt() != null) {
+            result.put("quote", quoteView(quote(row, policy, now), row.priceUsdt()));
+        }
         result.put("paymentRail", "NEXION_USDT_WALLET");
         putCanonicalProvenance(result, "nx_trial_claim + nx_user_wallet");
         boolean frozenProduct = !restartable(effectiveState);
@@ -588,6 +674,23 @@ public class AppTrialLifecycleService {
         }
         result.put("config", config);
         return result;
+    }
+
+    /** The same numbers convert() will settle; the App only displays them. */
+    private Map<String, Object> quoteView(Quote quote, BigDecimal priceUsdt) {
+        Map<String, Object> view = linked(
+                "settlementPolicy", quote.policy(), "quoteVersion", quote.version(),
+                "earlyPurchase", quote.early(), "priceUsdt", priceUsdt,
+                "accruedUsdt", quote.accrued().shadowUsdt(), "accruedNex", quote.accrued().shadowNex(),
+                "settledUsdt", quote.settledUsdt(), "rewardNex", quote.rewardNex(),
+                "earlyRewardUsdt", quote.earlyRewardUsdt(), "earlyRewardNex", quote.earlyRewardNex(),
+                "offsetUsdt", quote.offsetUsdt(), "remainderUsdt", quote.remainderUsdt(),
+                "promoDiscountUsdt", quote.promoDiscountUsdt(),
+                "earlyDiscountConfiguredUsdt", quote.earlyDiscountConfiguredUsdt(),
+                "earlyDiscountUsdt", quote.earlyDiscountUsdt(),
+                "discountUsdt", quote.discountUsdt(), "amountUsdt", quote.amountUsdt());
+        view.put("earlyEndsAtEpochMs", epochMillis(quote.earlyEndsAt()));
+        return view;
     }
 
     private Long epochMillis(LocalDateTime value) {
@@ -634,7 +737,7 @@ public class AppTrialLifecycleService {
                 "shadowDailyUSD", "0", "shadowDailyNEX", "0", "cooldownDays", "30",
                 "phaseOpen", "true", "autoPushEnabled", "true", "autoPushDelayMs", "1500",
                 "autoPushCooldownHours", "24", "autoPushMaxPerSession", "1",
-                "seatsLeftToday", "0");
+                "seatsLeftToday", "0", EARLY_DISCOUNT_KEY, "0");
         defaults.forEach((key, fallback) -> {
             if (List.of("phaseOpen", "autoPushEnabled", "autoChargeAtEnd").contains(key)) {
                 result.put(key, !"autoChargeAtEnd".equals(key) && flag(policy, key, Boolean.parseBoolean(fallback)));
@@ -909,6 +1012,32 @@ public class AppTrialLifecycleService {
                     + ",shadowUsdt=" + shadowUsdt + ",shadowNex=" + shadowNex + ",offsetUsdt=" + offsetUsdt
                     + ",remainderUsdt=" + remainderUsdt + ",discountUsdt=" + discountUsdt
                     + ",chargeUsdt=" + chargeUsdt;
+        }
+    }
+
+    private record Quote(
+            Settlement accrued, String policy, String version, boolean early,
+            BigDecimal settledUsdt, BigDecimal rewardNex, BigDecimal earlyRewardUsdt, BigDecimal earlyRewardNex,
+            BigDecimal offsetUsdt, BigDecimal remainderUsdt, BigDecimal promoDiscountUsdt,
+            BigDecimal earlyDiscountConfiguredUsdt, BigDecimal earlyDiscountUsdt, BigDecimal discountUsdt,
+            BigDecimal amountUsdt, LocalDateTime earlyEndsAt) {
+        /** Settlement-snapshot suffix; refunds key the reward reversal off {@code settlementPolicy}. */
+        String snapshot() {
+            return ",settlementPolicy=" + policy + ",quoteVersion=" + version
+                    + ",settledUsdt=" + settledUsdt + ",settledNex=" + rewardNex
+                    + ",earlyRewardUsdt=" + earlyRewardUsdt + ",earlyRewardNex=" + earlyRewardNex
+                    + ",earlyDiscountUsdt=" + earlyDiscountUsdt;
+        }
+
+        Map<String, Object> receiptFields() {
+            Map<String, Object> fields = new LinkedHashMap<>();
+            fields.put("settlementPolicy", policy);
+            fields.put("quoteVersion", version);
+            fields.put("rewardNex", rewardNex);
+            fields.put("earlyRewardUsdt", earlyRewardUsdt);
+            fields.put("earlyRewardNex", earlyRewardNex);
+            fields.put("earlyDiscountUsdt", earlyDiscountUsdt);
+            return fields;
         }
     }
 }
