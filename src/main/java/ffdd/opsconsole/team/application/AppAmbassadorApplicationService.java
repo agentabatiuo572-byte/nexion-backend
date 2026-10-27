@@ -49,7 +49,7 @@ public class AppAmbassadorApplicationService {
         String normalizedCity = trim(city);
         String normalizedBucket = trim(bucket);
         String key = trim(idempotencyKey);
-        LocalDate today = LocalDate.now(BUSINESS_ZONE);
+        LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(java.time.Instant.now());
         if (eventDate == null || eventDate.isBefore(today) || eventDate.isAfter(today.plusYears(1))
                 || normalizedCity == null || normalizedCity.length() < 2 || normalizedCity.length() > 64
                 || normalizedCity.chars().anyMatch(Character::isISOControl)

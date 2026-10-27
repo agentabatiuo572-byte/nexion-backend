@@ -121,7 +121,7 @@ public class OpsTreasuryService {
         ensureD3FallbackSeedData();
         int normalizedDays = normalizeDays(days);
         LocalDateTime now = LocalDateTime.now(clock);
-        LocalDateTime since = now.minusDays(normalizedDays - 1L).toLocalDate().atStartOfDay();
+        LocalDateTime since = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now).minusDays(normalizedDays - 1L));
         Map<String, Object> response = section(
                 "service", "nexion-backend",
                 "domain", "B",
@@ -250,8 +250,8 @@ public class OpsTreasuryService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> maturityForecast(String window) {
         int days = d3WindowDays(window, Set.of(7, 30));
-        LocalDate start = LocalDateTime.now(clock).toLocalDate();
-        LocalDateTime startAt = start.atStartOfDay();
+        LocalDate start = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock);
+        LocalDateTime startAt = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(start);
         Map<String, Object> config = forecastConfigSnapshot();
         String interestMode = String.valueOf(config.get("stakingInterestMode"));
         Map<String, Map<String, Object>> buckets = new LinkedHashMap<>();
@@ -309,7 +309,7 @@ public class OpsTreasuryService {
     public ApiResult<Map<String, Object>> netExposure(String window) {
         int days = d3WindowDays(window, Set.of(7, 30, 90));
         LocalDateTime now = LocalDateTime.now(clock);
-        LocalDate today = now.toLocalDate();
+        LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now);
         Map<String, Object> config = forecastConfigSnapshot();
         BigDecimal reserveTotal = configuredReserveTotal(config);
         List<Map<String, Object>> liabilityRows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");
@@ -327,11 +327,11 @@ public class OpsTreasuryService {
         for (int offset = 0; offset < days; offset++) {
             LocalDate day = today.minusDays(offset);
             if (offset == 1) {
-                flowAfterDay = flowAfterDay.add(safe(ledgerRepository.sumNetUsdtFlowBetween(today.atStartOfDay(), now)));
+                flowAfterDay = flowAfterDay.add(safe(ledgerRepository.sumNetUsdtFlowBetween(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(today), now)));
             } else if (offset > 1) {
                 LocalDate laterDay = day.plusDays(1);
                 flowAfterDay = flowAfterDay.add(safe(ledgerRepository.sumNetUsdtFlowBetween(
-                        laterDay.atStartOfDay(), laterDay.plusDays(1).atStartOfDay())));
+                        ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(laterDay), ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(laterDay.plusDays(1)))));
             }
             // Reserve is an asset balance.  Rolling the current balance back
             // across net inflows may expose that the historical ledger is
@@ -354,11 +354,13 @@ public class OpsTreasuryService {
     /** B2 only: authoritative reserve-ledger windows plus canonical successful user deposits. */
     public ApiResult<Map<String, Object>> liquidityHistory() {
         LocalDateTime now = LocalDateTime.now(clock);
-        LocalDateTime dayStart = now.toLocalDate().minusDays(7).atStartOfDay();
-        LocalDateTime dayEnd = dayStart.plusDays(8);
-        LocalDate monthStartDate = now.toLocalDate().withDayOfMonth(1).minusMonths(7);
-        LocalDateTime monthStart = monthStartDate.atStartOfDay();
-        LocalDateTime monthEnd = now.toLocalDate().withDayOfMonth(1).plusMonths(1).atStartOfDay();
+        var calendar = ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
+        LocalDate today = calendar.dateAtStorage(now);
+        LocalDateTime dayStart = calendar.storageStart(today.minusDays(7));
+        LocalDateTime dayEnd = calendar.storageStart(today.plusDays(1));
+        LocalDate monthStartDate = today.withDayOfMonth(1).minusMonths(7);
+        LocalDateTime monthStart = calendar.storageStart(monthStartDate);
+        LocalDateTime monthEnd = calendar.storageStart(today.withDayOfMonth(1).plusMonths(1));
         List<Map<String, Object>> flowWindows = ledgerRepository.liquidityFlowWindows(dayStart, dayEnd).stream()
                 .map(row -> section(
                         "label", String.valueOf(row.get("label")),
@@ -383,8 +385,9 @@ public class OpsTreasuryService {
     /** B4 only: month-aligned growth/outflow facts; budget is fail-closed until all four approved keys exist. */
     public ApiResult<Map<String, Object>> growthFlowHistory() {
         LocalDateTime now = LocalDateTime.now(clock);
-        LocalDateTime start = now.toLocalDate().withDayOfMonth(1).minusMonths(7).atStartOfDay();
-        LocalDateTime end = now.toLocalDate().withDayOfMonth(1).plusMonths(1).atStartOfDay();
+        LocalDate month = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now).withDayOfMonth(1);
+        LocalDateTime start = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(month.minusMonths(7));
+        LocalDateTime end = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(month.plusMonths(1));
         List<Map<String, Object>> rows = monthlyGrowthFlowRows(start, end);
         BigDecimal latestRatio = rows.isEmpty() || rows.get(rows.size() - 1).get("ratio") == null
                 ? null
@@ -2110,7 +2113,7 @@ public class OpsTreasuryService {
     }
 
     private BigDecimal forecastTotal(Map<String, Object> config, int days) {
-        LocalDateTime startAt = LocalDateTime.now(clock).toLocalDate().atStartOfDay();
+        LocalDateTime startAt = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock));
         LocalDateTime endAt = startAt.plusDays(days);
         boolean withdrawalIncluded = categoryEnabled(config, "liabilityCategories", "withdrawal_queue");
         boolean interestIncluded = categoryEnabled(config, "liabilityCategories", "staking_interest");
@@ -2278,8 +2281,8 @@ public class OpsTreasuryService {
         if (normalized == null) return null;
         try {
             if (normalized.length() == 10) {
-                LocalDateTime start = LocalDate.parse(normalized).atStartOfDay();
-                return upperExclusive ? start.plusDays(1) : start;
+                LocalDate day = LocalDate.parse(normalized);
+                return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(upperExclusive ? day.plusDays(1) : day);
             }
             return LocalDateTime.parse(normalized);
         } catch (DateTimeParseException ex) {

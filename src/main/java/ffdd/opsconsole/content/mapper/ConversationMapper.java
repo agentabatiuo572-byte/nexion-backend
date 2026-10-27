@@ -135,7 +135,11 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               (SELECT MIN(waiting.created_at) FROM nx_conversation_message waiting
                 LEFT JOIN nx_support_reply_cursor handled ON handled.conversation_no=waiting.conversation_no
                 WHERE waiting.conversation_no=c.conversation_no AND waiting.is_deleted=0 AND waiting.sender_type='user'
-                  AND waiting.id>COALESCE(handled.through_message_id,0)) AS pendingReplySince
+                  AND waiting.id>COALESCE(handled.through_message_id,0)) AS pendingReplySince,
+              (SELECT MAX(human_message.created_at) FROM nx_conversation_message human_message
+                WHERE human_message.conversation_no=c.conversation_no AND human_message.is_deleted=0
+                  AND human_message.sender_type IN ('user','agent')) AS lastHumanMessageAt,
+              (SELECT nickname_user.nickname FROM nx_user nickname_user WHERE nickname_user.id=c.user_id) AS customerNickname
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -221,7 +225,11 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                 LEFT JOIN nx_support_reply_cursor handled ON handled.conversation_no=waiting.conversation_no
                 WHERE waiting.conversation_no=c.conversation_no AND waiting.is_deleted=0 AND waiting.sender_type='user'
                   AND waiting.id>COALESCE(handled.through_message_id,0)
-                <if test='currentRead'>FOR SHARE</if>) AS pendingReplySince
+                <if test='currentRead'>FOR SHARE</if>) AS pendingReplySince,
+              (SELECT MAX(human_message.created_at) FROM nx_conversation_message human_message
+                WHERE human_message.conversation_no=c.conversation_no AND human_message.is_deleted=0
+                  AND human_message.sender_type IN ('user','agent')) AS lastHumanMessageAt,
+              (SELECT nickname_user.nickname FROM nx_user nickname_user WHERE nickname_user.id=c.user_id) AS customerNickname
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -285,7 +293,11 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               (SELECT MIN(waiting.created_at) FROM nx_conversation_message waiting
                 LEFT JOIN nx_support_reply_cursor handled ON handled.conversation_no=waiting.conversation_no
                 WHERE waiting.conversation_no=c.conversation_no AND waiting.is_deleted=0 AND waiting.sender_type='user'
-                  AND waiting.id>COALESCE(handled.through_message_id,0)) AS pendingReplySince
+                  AND waiting.id>COALESCE(handled.through_message_id,0)) AS pendingReplySince,
+              (SELECT MAX(human_message.created_at) FROM nx_conversation_message human_message
+                WHERE human_message.conversation_no=c.conversation_no AND human_message.is_deleted=0
+                  AND human_message.sender_type IN ('user','agent')) AS lastHumanMessageAt,
+              (SELECT nickname_user.nickname FROM nx_user nickname_user WHERE nickname_user.id=c.user_id) AS customerNickname
             FROM nx_conversation c
             JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0

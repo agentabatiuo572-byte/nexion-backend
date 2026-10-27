@@ -128,7 +128,7 @@ public class SupportLeaderboardSamplingService {
         return Collections.unmodifiableNavigableMap(result);
     }
     private static void safeId(long id){if(id<=0 || id>9007199254740991L)throw SupportLeaderboardPolicy.unavailable();}
-    private static void add(Map<String,Context> output,Instant at,Scope scope,Set<Long> groups){YearMonth month=YearMonth.from(at.atZone(SupportLeaderboard.BUSINESS_ZONE));
+    private static void add(Map<String,Context> output,Instant at,Scope scope,Set<Long> groups){YearMonth month=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(at);
         for(Board board:List.of(Board.netContribution,Board.firstPayment,Board.customers))for(String currency:SupportAnalyticsPrivateQueryService.CURRENCIES){
             Context context=new Context(board,board==Board.customers?null:month,month,currency,scope,Set.copyOf(groups),SupportLeaderboardPolicy.DEFINITION,at);
             output.put(SupportLeaderboardPublicationService.streamKey(context),context);}

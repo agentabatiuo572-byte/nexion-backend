@@ -44,13 +44,15 @@ public interface B5RiskRadarMapper {
 
     @Select("""
             WITH RECURSIVE days AS (
-              SELECT 0 AS seq, DATE(#{startAt}) AS pressureDay
+              SELECT 0 AS seq, DATE(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_HEAD + "#{startAt}" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_MID + "#{startAt}" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_TAIL + """
+) AS pressureDay
               UNION ALL
               SELECT seq + 1, DATE_ADD(pressureDay, INTERVAL 1 DAY)
                 FROM days
                WHERE seq < 7
             ), buckets AS (
-              SELECT DATE(created_at) AS pressureDay,
+              SELECT DATE(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_HEAD + "created_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_MID + "created_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_TAIL + """
+) AS pressureDay,
                      COALESCE(SUM(CASE
                        WHEN direction='OUT' AND (
                          UPPER(biz_type) LIKE '%WITHDRAW%'
@@ -64,7 +66,7 @@ public interface B5RiskRadarMapper {
                  AND status='SUCCESS'
                  AND created_at >= #{startAt}
                  AND created_at < #{endAt}
-               GROUP BY DATE(created_at)
+               GROUP BY 1
             )
             SELECT DATE_FORMAT(days.pressureDay, '%m-%d') AS label,
                    CASE
@@ -110,18 +112,20 @@ public interface B5RiskRadarMapper {
 
     @Select("""
             WITH RECURSIVE days AS (
-              SELECT 0 AS seq, DATE(#{startAt}) AS alertDay
+              SELECT 0 AS seq, DATE(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_HEAD + "#{startAt}" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_MID + "#{startAt}" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_TAIL + """
+) AS alertDay
               UNION ALL
               SELECT seq + 1, DATE_ADD(alertDay, INTERVAL 1 DAY)
                 FROM days
                WHERE seq < 6
             ), buckets AS (
-              SELECT DATE(created_at) AS alertDay, COUNT(1) AS count
+              SELECT DATE(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_HEAD + "created_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_MID + "created_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_TAIL + """
+) AS alertDay, COUNT(1) AS count
                 FROM nx_risk_signal
                WHERE is_deleted=0
                  AND created_at >= #{startAt}
                  AND created_at < #{endAt}
-               GROUP BY DATE(created_at)
+               GROUP BY 1
             )
             SELECT DATE_FORMAT(days.alertDay, '%m-%d') AS label,
                    COALESCE(buckets.count, 0) AS count

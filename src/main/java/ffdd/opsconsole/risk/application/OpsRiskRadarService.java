@@ -105,9 +105,12 @@ public class OpsRiskRadarService {
                 .map(row -> decimal(row.get("amountUsdt")))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         long overdue = backlog.stream().mapToLong(row -> whole(row.get("overSlaCount"))).sum();
-        LocalDateTime dayStart = LocalDateTime.now(clock).toLocalDate().minusDays(7).atStartOfDay();
-        LocalDateTime dayEnd = dayStart.plusDays(8);
-        LocalDateTime alertStart = dayEnd.minusDays(7);
+        // R-1: eight business days ending today; bounds are stored (Beijing) timestamps.
+        var calendar = ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
+        java.time.LocalDate today = calendar.today(clock);
+        LocalDateTime dayStart = calendar.storageStart(today.minusDays(7));
+        LocalDateTime dayEnd = calendar.storageStart(today.plusDays(1));
+        LocalDateTime alertStart = calendar.storageStart(today.minusDays(6));
         if (mapper.unknownSeverityCount(alertStart, dayEnd) > 0) {
             throw new BizException(500, "B5_UNKNOWN_SEVERITY");
         }

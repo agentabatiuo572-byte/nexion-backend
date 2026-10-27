@@ -815,7 +815,7 @@ public class AppTrialLifecycleService {
     }
 
     private LocalDate businessDate() {
-        return Instant.now(clock).atZone(BUSINESS_ZONE).toLocalDate();
+        return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock);
     }
 
     private LocalDateTime businessNow() {

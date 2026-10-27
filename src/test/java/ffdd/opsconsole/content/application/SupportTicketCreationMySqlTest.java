@@ -482,15 +482,15 @@ class SupportTicketCreationMySqlTest {
                 var guard = mock(ProductionSupportPathGuard.class);
                 when(guard.productionSupportAutomationAllowed()).thenReturn(true);
                 bindings = proxied(new SupportBindingService(bindingMapper, ownership, idempotency, audit, events,
-                        mock(SupportAgentRepository.class), guard, ticketOwners, mock(ffdd.opsconsole.content.mapper.SupportGroupMapper.class)), interceptor);
+                        mock(SupportAgentRepository.class), guard, ticketOwners, mock(ffdd.opsconsole.content.mapper.SupportGroupMapper.class),org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundPolicyService.class)), interceptor);
                 var knowledge = mock(SupportKnowledgeRepository.class);
                 when(knowledge.listSla()).thenReturn(List.of(new SupportSlaView("other", 15, 24, "test", "test", 1L, now())));
                 var agents = mock(OpsSupportAgentService.class);
                 appService = proxied(new AppSupportService(tickets, conversations, knowledge, idempotency, audit,
                         mock(ApplicationEventPublisher.class), clock, guard, receipts, json,
                         mock(SupportAgentRepository.class), config, ownership, mock(SupportHumanMessageService.class),
-                        ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations)), interceptor);
-                adminService = proxied(new OpsSupportTicketService(tickets, conversations, knowledge, agents, config,
+                        ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class)), interceptor);
+                adminService = proxied(new OpsSupportTicketService(tickets, conversations, knowledge, mock(SupportTicketProgressNotice.class), agents, config,
                         audit, idempotency, clock, ownership, OpsReadTimeSeedPolicy.disabledForDirectConstruction(), json), interceptor);
                 conversationService = proxied(new OpsConversationService(conversations, tickets, agents, config, audit,
                         clock, OpsReadTimeSeedPolicy.disabledForDirectConstruction(), mock(OpsUserService.class),

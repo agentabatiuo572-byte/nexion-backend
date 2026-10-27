@@ -22,7 +22,7 @@ public record WithdrawalReviewRequest(
                 "FREEZE".equalsIgnoreCase(action) ? "7d" : null,
                 ("DELAY".equalsIgnoreCase(action) || "FREEZE".equalsIgnoreCase(action)) ? operator : null,
                 ("DELAY".equalsIgnoreCase(action) || "FREEZE".equalsIgnoreCase(action))
-                        ? java.time.LocalDate.now().plusDays(7).toString() : null,
+                        ? ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(java.time.Instant.now()).plusDays(7).toString() : null,
                 "REFUND".equalsIgnoreCase(action) ? Boolean.TRUE : null,
                 Boolean.TRUE);
     }

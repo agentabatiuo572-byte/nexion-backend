@@ -171,7 +171,7 @@ public class LeaderboardPauseSnapshotService {
             value.put("podium", List.copyOf(podium));
             value.put("snapshotAt", at.toString());
             value.put("timezone", DateTimeFormatConfig.BUSINESS_ZONE.getId());
-            value.put("businessTimezone", VietnamBusinessPeriod.ZONE.getId());
+            value.put("businessTimezone", ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam().zoneAt(java.time.Instant.now()).getId());
             value.put("fromInclusive", bounds.get(period + "FromInclusive"));
             value.put("toExclusive", bounds.get(period + "ToExclusive"));
             result.put(period, value);

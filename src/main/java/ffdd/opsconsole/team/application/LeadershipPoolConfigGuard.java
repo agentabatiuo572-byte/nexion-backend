@@ -61,9 +61,13 @@ public class LeadershipPoolConfigGuard {
         }
     }
 
+    /** Bootstrap value written by 20260811_f15 until an operator saves an audited value. */
+    static final String UNCONFIGURED_SENTINEL = "__UNCONFIGURED__";
+
     private String required(String key) {
+        // B-4: the bootstrap sentinel means "not configured yet", not a corrupt value; report it as MISSING.
         return configFacade.activeValue(key)
-                .filter(value -> !value.isBlank())
+                .filter(value -> !value.isBlank() && !UNCONFIGURED_SENTINEL.equals(value.trim()))
                 .orElseThrow(() -> invalid(key, "MISSING", null));
     }
 

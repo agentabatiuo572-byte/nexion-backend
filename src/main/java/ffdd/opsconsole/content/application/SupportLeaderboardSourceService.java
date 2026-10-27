@@ -137,7 +137,7 @@ public class SupportLeaderboardSourceService {
             throw new IllegalStateException("SUPPORT_LEADERBOARD_CAPTURE_BOUNDARY_CHANGED");
         LocalDateTime cutoff=captured.cutoff;
         Instant evaluatedAt=cutoff.toInstant(ZoneOffset.UTC);
-        YearMonth currentMonth=YearMonth.from(evaluatedAt.atZone(SupportLeaderboard.BUSINESS_ZONE));
+        YearMonth currentMonth=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(evaluatedAt);
         Context context=new Context(authorizedContext.board(),authorizedContext.rankMonth(),
             authorizedContext.board()==Board.customers?currentMonth:authorizedContext.referenceMonth(),authorizedContext.currency(),
             authorizedContext.scope(),authorizedContext.approvedGroupIds(),authorizedContext.definitionVersion(),evaluatedAt);
@@ -198,8 +198,8 @@ public class SupportLeaderboardSourceService {
         LocalDateTime cutover=raw.qualificationCutoverUtc();
         Coverage candidateCoverage=context.board()==Board.customers || cutover!=null && !monthFrom.isBefore(cutover)
             && !cutoff.isBefore(cutover)?Coverage.COMPLETE:Coverage.PARTIAL;
-        Instant monthStart=context.referenceMonth().atDay(1).atStartOfDay(SupportLeaderboard.BUSINESS_ZONE).toInstant();
-        Instant monthEnd=context.referenceMonth().plusMonths(1).atDay(1).atStartOfDay(SupportLeaderboard.BUSINESS_ZONE).toInstant();
+        Instant monthStart=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().startOf(context.referenceMonth().atDay(1));
+        Instant monthEnd=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().startOf(context.referenceMonth().plusMonths(1).atDay(1));
         for (Account a:accounts.values()) {
             List<QualificationInterval> history=qualifications.getOrDefault(a.id(),List.of());
             QualificationInterval current=history.stream().filter(q -> active(q.startsAt(),q.endsAt(),cutoff)).findFirst().orElse(null);
@@ -243,7 +243,10 @@ public class SupportLeaderboardSourceService {
             Amount amount=new Amount(amountComplete?net.amounts().getOrDefault(a.id(),BigDecimal.ZERO):subtotal?known:null,
                 context.currency(),context.referenceMonth(),AmountKind.NET_CONTRIBUTION,
                 amountComplete?Coverage.COMPLETE:subtotal?Coverage.PARTIAL:Coverage.UNKNOWN,net.reason(),"financial-source-unverified");
-            candidates.add(new Candidate(a.id(),name,avatar,groupId==null?"待分组":groups.get(groupId).name(),qualification,
+            // M-55: a supervisor is not a member of the group they lead; show that group instead of 待分组 (display only, scope unchanged).
+            String groupLabel=groupId!=null?groups.get(groupId).name():groups.values().stream()
+                .filter(g -> a.id().equals(g.supervisorId()) && "ENABLED".equals(g.status())).map(Group::name).sorted().findFirst().orElse("待分组");
+            candidates.add(new Candidate(a.id(),name,avatar,groupLabel,qualification,
                 firstPayment,new Count(customers,Coverage.COMPLETE,Reason.NONE),amount,null));
         }
         String sourceVersion=fingerprint(context,raw,candidates,candidateCoverage);
@@ -504,8 +507,8 @@ public class SupportLeaderboardSourceService {
     private static boolean jsonLayer(JsonNode layer,String status,Long id) {
         return layer.isObject() && jsonText(layer,"status",status) && jsonId(layer,"id",id);
     }
-    private static Instant evaluatedFrom(Context c) {return c.referenceMonth().atDay(1).atStartOfDay(SupportLeaderboard.BUSINESS_ZONE).toInstant();}
-    private static Instant evaluatedTo(Context c) {return c.referenceMonth().plusMonths(1).atDay(1).atStartOfDay(SupportLeaderboard.BUSINESS_ZONE).toInstant();}
+    private static Instant evaluatedFrom(Context c) {return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().startOf(c.referenceMonth().atDay(1));}
+    private static Instant evaluatedTo(Context c) {return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().startOf(c.referenceMonth().plusMonths(1).atDay(1));}
     private record Times(LocalDateTime start,LocalDateTime end) { }
     private static void rejectOverlaps(List<Times> intervals) {
         List<Times> sorted=intervals.stream().sorted(Comparator.comparing(Times::start)).toList();Times previous=null;

@@ -14,6 +14,7 @@ import java.util.*;
 /** Pure projection of a full, server-authorized aggregate set; never reads or creates financial facts. */
 public final class SupportLeaderboard {
     private SupportLeaderboard() { }
+    /** Storage zone of source timestamps and the contract tag on snapshots; period cutting uses BusinessCalendar (R-1). */
     public static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     public static final String NET_DEFINITION = "support-leaderboard-v3-net-contribution";
     // Legacy values remain decodable in immutable publications; request normalization retires their algorithms.
@@ -64,7 +65,7 @@ public final class SupportLeaderboard {
             Objects.requireNonNull(board); Objects.requireNonNull(scope); Objects.requireNonNull(evaluatedAt);
             requireToken(definitionVersion);
             approvedGroupIds = Set.copyOf(approvedGroupIds);
-            YearMonth current = YearMonth.from(evaluatedAt.atZone(BUSINESS_ZONE));
+            YearMonth current = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(evaluatedAt);
             if (currency == null || !currency.matches("[A-Z][A-Z0-9]{1,15}") || referenceMonth == null
                     || (board == Board.customers ? rankMonth != null || !referenceMonth.equals(current)
                         : rankMonth == null || rankMonth.isAfter(current) || !referenceMonth.equals(rankMonth))
@@ -158,13 +159,13 @@ public final class SupportLeaderboard {
 
     /** Select the previous business day's last committed COMPLETE version; never synthesize or recalculate yesterday. */
     public static Snapshot withMovement(Snapshot current, List<Publication> persistedPublications) {
-        Context c = current.context(); LocalDate today = c.evaluatedAt().atZone(BUSINESS_ZONE).toLocalDate();
+        Context c = current.context(); LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(c.evaluatedAt());
         Reason blocked = current.state() != State.COMPLETE ? Reason.METRIC_INCOMPLETE
             : c.rankMonth() != null && !c.rankMonth().equals(YearMonth.from(today)) ? Reason.HISTORICAL_MONTH
             : c.rankMonth() != null && today.getDayOfMonth() == 1 ? Reason.MONTH_START : null;
         List<Publication> previousDay = persistedPublications.stream()
             .filter(p -> p.snapshot().state() == State.COMPLETE
-                && p.publishedAt().atZone(BUSINESS_ZONE).toLocalDate().equals(today.minusDays(1))
+                && ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(p.publishedAt()).equals(today.minusDays(1))
                 && sameBoardPeriodCurrency(c, p.snapshot().context()))
             .toList();
         Publication baseline = previousDay.stream().filter(p -> sameScope(c, p.snapshot().context()))

@@ -428,22 +428,20 @@ public class OpsSessionTemplateService {
                 templateRepository.listReplyTemplates().stream().filter(row -> "published".equalsIgnoreCase(row.status())).toList()));
     }
 
+    /**
+     * The Chinese source may be published on its own; missing translations fall back to it.
+     * Translations that do exist must still match the source, so a stale one never reaches customers.
+     */
     private String requirePublishedLocalizedCopy(String kind, String contentId, String canonicalZh) {
         String messageKey = "conversation." + kind + "." + contentId.toLowerCase(Locale.ROOT);
         I18nMessagePairView localized = i18nLearningRepository.findPublishedMessagePair(messageKey).orElse(null);
-        if (localized == null
-                || !"published".equalsIgnoreCase(localized.status())
-                || !StringUtils.hasText(localized.en())
-                || !StringUtils.hasText(localized.zh())
-                || !StringUtils.hasText(localized.vi())) {
-            return "SESSION_TEMPLATE_I18N_NOT_PUBLISHED";
-        }
+        if (localized == null || !"published".equalsIgnoreCase(localized.status())) return null;
         Set<String> canonicalPlaceholders = placeholders(canonicalZh);
-        if (!canonicalZh.trim().equals(localized.zh().trim())
-                || !canonicalPlaceholders.equals(placeholders(localized.en()))
-                || !canonicalPlaceholders.equals(placeholders(localized.zh()))
-                || !canonicalPlaceholders.equals(placeholders(localized.vi()))) {
+        if (StringUtils.hasText(localized.zh()) && !canonicalZh.trim().equals(localized.zh().trim())) {
             return "SESSION_TEMPLATE_I18N_MISMATCH";
+        }
+        for (String copy : new String[] {localized.en(), localized.zh(), localized.vi()}) {
+            if (StringUtils.hasText(copy) && !canonicalPlaceholders.equals(placeholders(copy))) return "SESSION_TEMPLATE_I18N_MISMATCH";
         }
         return null;
     }
