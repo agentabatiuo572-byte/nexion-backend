@@ -36,7 +36,7 @@ public interface AppExchangeMapper {
               FROM nx_exchange_order o
               JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
              WHERE o.user_id=#{userId} AND o.is_deleted=0 AND UPPER(o.status) IN ('COMPLETED','SUCCESS')
-               AND o.created_at>=CURRENT_DATE
+               AND o.created_at>=""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
             """)
     BigDecimal userTodayUsdt(@Param("userId") Long userId);
 
@@ -44,7 +44,7 @@ public interface AppExchangeMapper {
             SELECT COALESCE(SUM(CASE WHEN UPPER(to_asset)='USDT' THEN to_amount ELSE from_amount END),0)
               FROM nx_exchange_order o
               JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
-             WHERE o.is_deleted=0 AND UPPER(o.status) IN ('COMPLETED','SUCCESS') AND o.created_at>=CURRENT_DATE
+             WHERE o.is_deleted=0 AND UPPER(o.status) IN ('COMPLETED','SUCCESS') AND o.created_at>=""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
             """)
     BigDecimal platformTodayUsdt();
 
