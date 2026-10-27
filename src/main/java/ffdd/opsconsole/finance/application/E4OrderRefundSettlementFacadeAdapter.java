@@ -20,6 +20,7 @@ public class E4OrderRefundSettlementFacadeAdapter implements E4OrderRefundSettle
     @lombok.NonNull
     private final SupportPaymentAttributionFacade paymentAttribution;
     private final E4OrderRefundMapper mapper;
+    private final TrialConversionRewardReversal trialRewards;
 
     @Override
     @org.springframework.transaction.annotation.Transactional(
@@ -71,6 +72,7 @@ public class E4OrderRefundSettlementFacadeAdapter implements E4OrderRefundSettle
             throw new IllegalStateException("ORDER_REFUND_LEDGER_WRITE_FAILED");
         }
         mapper.markPaymentRefunded(orderNo, userId);
+        trialRewards.reverse(orderNo, userId, ledgerBizNo);
         paymentAttribution.record(prepared);
         return new Settlement(channel, ledgerBizNo, billNo, availableBefore, availableAfter,
                 cumulativeBefore, cumulativeAfter);
