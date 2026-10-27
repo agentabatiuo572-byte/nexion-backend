@@ -38,10 +38,10 @@ public interface AppPayoutAddressMapper {
     @Select("SELECT COUNT(*) FROM nx_user_payout_address_sandbox_otp WHERE run_id=#{runId} AND user_id=#{userId} AND created_at>=DATE_SUB(NOW(),INTERVAL 60 SECOND) AND is_deleted=0")
     int recentSandboxOtpCount(@Param("runId") String runId, @Param("userId") Long userId);
 
-    @Select("SELECT COUNT(*) FROM nx_user_otp_challenge WHERE user_id=#{userId} AND challenge_no LIKE 'PAYOUT-%' AND created_at>=CURRENT_DATE AND is_deleted=0")
+    @Select("SELECT COUNT(*) FROM nx_user_otp_challenge WHERE user_id=#{userId} AND challenge_no LIKE 'PAYOUT-%' AND created_at>=" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + " AND is_deleted=0")
     int todayOtpCount(@Param("userId") Long userId);
 
-    @Select("SELECT COUNT(*) FROM nx_user_payout_address_sandbox_otp WHERE run_id=#{runId} AND user_id=#{userId} AND created_at>=CURRENT_DATE AND is_deleted=0")
+    @Select("SELECT COUNT(*) FROM nx_user_payout_address_sandbox_otp WHERE run_id=#{runId} AND user_id=#{userId} AND created_at>=" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + " AND is_deleted=0")
     int todaySandboxOtpCount(@Param("runId") String runId, @Param("userId") Long userId);
 
     @Insert("""

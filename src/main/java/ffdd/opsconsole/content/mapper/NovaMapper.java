@@ -245,7 +245,8 @@ public interface NovaMapper extends BaseMapper<Object> {
                          FROM nx_notification n
                         WHERE n.is_deleted = 0
                           AND n.type = 'NOVA_SOCIAL'
-                          AND DATE(COALESCE(n.pushed_at, n.updated_at, n.created_at)) = CURRENT_DATE()
+                          AND COALESCE(n.pushed_at, n.updated_at, n.created_at) >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
+                           AND COALESCE(n.pushed_at, n.updated_at, n.created_at) < """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_END + """
                           AND UPPER(COALESCE(n.push_status, '')) IN ('SENT', 'DELIVERED', 'READ', 'SUCCESS')
                    ), 0) AS todayDelivered,
                    COALESCE(AVG(CASE WHEN c.is_deleted = 0 THEN c.ctr_pct END), 0) AS avgCtr,

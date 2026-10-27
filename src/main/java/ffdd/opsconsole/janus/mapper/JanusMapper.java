@@ -19,7 +19,9 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
             CAST(UNIX_TIMESTAMP(first_seen_at) * 1000 AS UNSIGNED) AS firstSeenAt,
             CAST(UNIX_TIMESTAMP(last_seen_at) * 1000 AS UNSIGNED) AS lastSeenAt,
             CAST(UNIX_TIMESTAMP(install_at) * 1000 AS UNSIGNED) AS installAt,
-            DATEDIFF(CURRENT_DATE, DATE(install_at)) AS installDays,
+            DATEDIFF(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.TODAY + """
+            , DATE(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_HEAD + "install_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_MID + "install_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_TAIL + """
+            )) AS installDays,
             invite_code AS inviteCode, channel, cohort_id AS cohortId,
             reported_status AS status, desired_status AS desiredStatus, command_state AS commandState,
             status_source AS statusSource, activated, remote_url_key AS remoteUrlKey,
@@ -216,8 +218,9 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
 
     @Insert("""
             INSERT INTO nx_janus_daily_quota(strategy_id,quota_day,action,used_count)
-            SELECT strategy_id,CURRENT_DATE,action,COUNT(*) FROM nx_janus_evaluation
-            WHERE strategy_id IS NOT NULL AND action IS NOT NULL AND evaluated_at>=CURRENT_DATE
+            SELECT strategy_id,""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.TODAY + """
+            ,action,COUNT(*) FROM nx_janus_evaluation
+            WHERE strategy_id IS NOT NULL AND action IS NOT NULL AND evaluated_at>=""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
             GROUP BY strategy_id,action
             ON DUPLICATE KEY UPDATE used_count=GREATEST(used_count,VALUES(used_count))
             """)
@@ -408,7 +411,8 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
 
     @Insert("""
             INSERT INTO nx_janus_daily_quota(strategy_id,quota_day,action,used_count)
-            VALUES(#{strategyId},CURRENT_DATE,#{action},LAST_INSERT_ID(IF(#{cap}>0,1,0)))
+            VALUES(#{strategyId},""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.TODAY + """
+            ,#{action},LAST_INSERT_ID(IF(#{cap}>0,1,0)))
             ON DUPLICATE KEY UPDATE
               used_count=IF(used_count<#{cap},LAST_INSERT_ID(used_count+1),used_count+LAST_INSERT_ID(0))
             """)
@@ -420,7 +424,8 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
 
     @Update("""
             UPDATE nx_janus_daily_quota SET used_count=GREATEST(0,used_count-1)
-            WHERE strategy_id=#{strategyId} AND quota_day=CURRENT_DATE AND action=#{action}
+            WHERE strategy_id=#{strategyId} AND quota_day=""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.TODAY + """
+             AND action=#{action}
             """)
     int releaseDailyEvaluation(@Param("strategyId") String strategyId, @Param("action") String action);
 

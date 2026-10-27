@@ -2435,13 +2435,13 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Select("SELECT COUNT(*) FROM nx_admin_risk_ip_whitelist WHERE is_deleted = 0")
     long countIpWhitelist();
 
-    @Select("SELECT COUNT(*) FROM nx_admin_risk_ip_whitelist WHERE is_deleted = 0 AND active = 1 AND STR_TO_DATE(expire_text,'%Y-%m-%d') >= CURRENT_DATE")
+    @Select("SELECT COUNT(*) FROM nx_admin_risk_ip_whitelist WHERE is_deleted = 0 AND active = 1 AND STR_TO_DATE(expire_text,'%Y-%m-%d') >= " + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.TODAY)
     long countActiveIpWhitelist();
 
     @Select("""
             SELECT cidr,note_text AS note,operator,expire_text AS expireText,active
               FROM nx_admin_risk_ip_whitelist
-             WHERE is_deleted = 0 AND active = 1 AND STR_TO_DATE(expire_text,'%Y-%m-%d') >= CURRENT_DATE
+             WHERE is_deleted = 0 AND active = 1 AND STR_TO_DATE(expire_text,'%Y-%m-%d') >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.TODAY + """
              ORDER BY id ASC
             """)
     List<IpWhitelistRecord> ipWhitelist();
@@ -2449,7 +2449,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Select("""
             SELECT cidr,note_text AS note,operator,expire_text AS expireText,active
               FROM nx_admin_risk_ip_whitelist
-             WHERE is_deleted = 0 AND active = 1 AND STR_TO_DATE(expire_text,'%Y-%m-%d') >= CURRENT_DATE
+             WHERE is_deleted = 0 AND active = 1 AND STR_TO_DATE(expire_text,'%Y-%m-%d') >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.TODAY + """
              ORDER BY id ASC
              LIMIT #{offset}, #{pageSize}
             """)
@@ -2463,7 +2463,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     IpWhitelistRecord ipWhitelistState(@Param("cidr") String cidr);
 
-    @Select("SELECT cidr FROM nx_admin_risk_ip_whitelist WHERE is_deleted=0 AND active=1 AND STR_TO_DATE(expire_text,'%Y-%m-%d') >= CURRENT_DATE")
+    @Select("SELECT cidr FROM nx_admin_risk_ip_whitelist WHERE is_deleted=0 AND active=1 AND STR_TO_DATE(expire_text,'%Y-%m-%d') >= " + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.TODAY)
     java.util.Set<String> activeIpWhitelistCidrs();
 
     @Select("""
