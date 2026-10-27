@@ -65,7 +65,8 @@ class AppSupportServiceTest {
     void setUp() {
         service = new AppSupportService(tickets, conversations, knowledge, idempotency, audit, eventPublisher, clock,
                 productionPathGuard, idempotencyRecords, new ObjectMapper().findAndRegisterModules(), supportAgents,
-                configFacade, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages());
+                configFacade, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(),
+                ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations));
         when(idempotency.executeRetained(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
             java.util.function.Supplier<?> action = invocation.getArgument(4);
             return action.get();
@@ -74,6 +75,10 @@ class AppSupportServiceTest {
                 tickets.userVisibleMessages(invocation.getArgument(0)));
         when(conversations.recentUserVisibleMessages(anyString(), anyInt())).thenAnswer(invocation ->
                 conversations.userVisibleMessages(invocation.getArgument(0)));
+        when(conversations.currentRecentUserVisibleMessages(anyString(), anyInt())).thenAnswer(invocation ->
+                conversations.recentUserVisibleMessages(invocation.getArgument(0), invocation.getArgument(1)));
+        when(conversations.findByConversationNoForUpdate(anyString())).thenAnswer(invocation ->
+                conversations.findByConversationNo(invocation.getArgument(0)));
     }
 
     @Test
@@ -188,7 +193,8 @@ class AppSupportServiceTest {
         var retained = new AdminIdempotencyService(executor, clock);
         service = new AppSupportService(tickets, conversations, knowledge, retained, audit, eventPublisher, clock,
                 productionPathGuard, ledger, mapper, supportAgents, configFacade,
-                ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages());
+                ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(),
+                ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations));
         var request = new AppSupportService.StartConversationRequest("SUPPORT", "original");
         when(configFacade.activeValue("I.session.cat.advisor.enabled")).thenReturn(Optional.of("off"));
         assertThatThrownBy(() -> service.startConversation(42L, "original-retained-key", request))
@@ -419,7 +425,7 @@ class AppSupportServiceTest {
         var first = service.startConversation(42L, "stable-idempotency", request);
         when(configFacade.activeValue("I.session.cat.advisor.enabled")).thenReturn(Optional.of("off"));
         var replay = service.startConversation(42L, "stable-idempotency", request);
-        assertThat(replay).isSameAs(first);
+        assertThat(replay).isEqualTo(first).isNotSameAs(first);
         assertThat(request.conversationType()).isEqualTo("SUPPORT");
         var digest = java.security.MessageDigest.getInstance("SHA-256");
         digest.update(request.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -501,6 +507,19 @@ class AppSupportServiceTest {
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
         }
+    }
+
+    @Test void changedStaffRequiresARefreshedEntryBeforeAnyNewUserReply() {
+        var row = conversation(42L, "CV-OLD-PEER");
+        when(conversations.findByConversationNo("CV-OLD-PEER")).thenReturn(Optional.of(row));
+        org.mockito.Mockito.doThrow(new BizException(409, "CONVERSATION_PEER_CHANGED"))
+                .when(conversations).requirePeerForWrite(org.mockito.ArgumentMatchers.eq("CV-OLD-PEER"),
+                        org.mockito.ArgumentMatchers.nullable(String.class));
+        assertThatThrownBy(() -> service.replyConversation(42L, "CV-OLD-PEER", "new-reply-key",
+                new AppSupportService.ReplyRequest("hello", "OPEN", 0L)))
+                .isInstanceOf(BizException.class).hasMessage("CONVERSATION_PEER_CHANGED");
+        verify(conversations, never()).replyAsUser(any(), any(), any(), any());
+        verifyNoInteractions(audit, eventPublisher);
     }
 
     @Test

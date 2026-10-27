@@ -52,7 +52,7 @@ public class UserBusinessWriteGateFilter extends OncePerRequestFilter implements
                     || path.equals("/api/app/support/conversations")
                     || path.matches("/api/app/support/conversations/[A-Za-z0-9_-]{1,100}/(?:replies|read|dismiss)")
                     || path.equals("/api/app/support/attachments");
-            case "DELETE" -> path.matches("/api/app/support/attachments/[A-Za-z0-9_-]{1,100}");
+            case "DELETE" -> path.matches("/api/app/support/(?:attachments|conversations)/[A-Za-z0-9_-]{1,100}");
             default -> false;
         };
     }

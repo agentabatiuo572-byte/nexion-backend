@@ -13,8 +13,11 @@ import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import org.apache.ibatis.annotations.Update;
 
 public interface ConversationMapper extends BaseMapper<ConversationEntity> {
-    @Select("SELECT conversation_no FROM nx_conversation WHERE user_id=#{userId} AND is_deleted=0 AND conversation_type IN ('advisor','support') ORDER BY id DESC LIMIT 1 FOR UPDATE")
-    String currentCustomerConversation(@Param("userId") Long userId);
+    @Select("SELECT conversation_no FROM nx_conversation WHERE user_id=#{userId} AND owner_agent_id=#{ownerAgentId} AND is_deleted=0 AND conversation_type IN ('advisor','support') ORDER BY id DESC LIMIT 1 FOR UPDATE")
+    String currentCustomerConversation(@Param("userId") Long userId, @Param("ownerAgentId") String ownerAgentId);
+
+    @Select("SELECT owner_agent_id FROM nx_conversation WHERE conversation_no=#{conversationNo} AND is_deleted=0 FOR SHARE")
+    String storedPeerAgentId(@Param("conversationNo") String conversationNo);
 
     @Update("UPDATE nx_conversation SET status='OPEN',archived=0,version=version+1,updated_at=#{now} WHERE conversation_no=#{no} AND is_deleted=0 AND status IN ('OPEN','RESOLVED','CLOSED') AND version=#{version}")
     int resumeCustomerConversation(@Param("no") String no, @Param("version") Long version, @Param("now") LocalDateTime now);

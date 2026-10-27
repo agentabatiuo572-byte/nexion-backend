@@ -21,6 +21,22 @@ import org.springframework.web.socket.handler.*;
 @RequiredArgsConstructor
 public class ConversationSocketHandler extends TextWebSocketHandler {
     @org.springframework.transaction.event.TransactionalEventListener(phase=org.springframework.transaction.event.TransactionPhase.AFTER_COMMIT)
+    public void userViewCleared(ffdd.opsconsole.content.application.AppConversationManagementService.UserViewCleared event) {
+        enqueue(() -> {
+            for (Client c : clients.values()) {
+                if (c.auth == null || !"USER".equals(c.grant.audience())
+                        || !String.valueOf(event.userId()).equals(c.auth.getName())) continue;
+                try {
+                    c.auth = access.authenticate(c.grant.token(), c.grant.audience());
+                    for (String no : event.conversationNos()) {
+                        send(c, Map.of("type", "event", "eventId", UUID.randomUUID().toString(),
+                                "conversationNo", no, "eventType", "STATUS", "senderType", "SYSTEM"));
+                    }
+                } catch (Exception ex) { close(c, 4401); }
+            }
+        });
+    }
+    @org.springframework.transaction.event.TransactionalEventListener(phase=org.springframework.transaction.event.TransactionPhase.AFTER_COMMIT)
     public void scopeChanged(ffdd.opsconsole.content.domain.SupportGroupFacts.ScopeChanged event) {
         enqueue(()-> {
             for(Client c:clients.values()) {

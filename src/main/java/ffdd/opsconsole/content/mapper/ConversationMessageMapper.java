@@ -84,6 +84,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
              WHERE msg.is_deleted=0 AND msg.conversation_no=#{conversationNo}
                AND msg.sender_type IN ('user','agent')
+               AND msg.id > """ + AppConversationVisibilitySql.CONVERSATION_THROUGH + """
              ORDER BY msg.created_at ASC,msg.id ASC
             """)
     List<ContentConversationMessageView> listUserVisibleByConversationNo(@Param("conversationNo") String conversationNo);
@@ -108,6 +109,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
                 SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at
                   FROM nx_conversation_message
                  WHERE is_deleted=0 AND conversation_no=#{conversationNo} AND sender_type IN ('user','agent')
+                   AND id > """ + AppConversationVisibilitySql.CONVERSATION_THROUGH + """
                  ORDER BY id DESC LIMIT #{limit}
                  <if test="currentRead">FOR SHARE</if>
               ) recent
@@ -143,6 +145,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
                 SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at
                   FROM nx_conversation_message
                  WHERE is_deleted=0 AND conversation_no=#{conversationNo} AND sender_type IN ('user','agent')
+                   AND id > """ + AppConversationVisibilitySql.CONVERSATION_THROUGH + """
                    AND (#{beforeMessageId} IS NULL OR id < #{beforeMessageId})
                  ORDER BY id DESC LIMIT #{limit}
               ) recent
@@ -163,6 +166,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
               LEFT JOIN nx_admin_account_state av ON av.admin_id=msg.sender_id AND av.is_deleted=0 AND msg.sender_type='agent'
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
              WHERE msg.is_deleted=0 AND msg.conversation_no=#{conversationNo} AND msg.sender_type='agent'
+               AND msg.id > """ + AppConversationVisibilitySql.CONVERSATION_THROUGH + """
                AND (receipt.message_id IS NULL OR receipt.receipt_status&lt;&gt;'read')
             <if test="currentRead">FOR SHARE</if>
             </script>
@@ -185,6 +189,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
              WHERE msg.is_deleted=0
                AND msg.conversation_no=#{conversationNo}
                AND msg.sender_type='agent'
+               AND msg.id > """ + AppConversationVisibilitySql.CONVERSATION_THROUGH + """
                AND #{lastSeenMessageId} >= msg.id
                AND (existing.message_id IS NULL OR existing.receipt_status<>'read')
             ON DUPLICATE KEY UPDATE receipt_status='read',read_by=#{operator},read_at=#{now},updated_at=NOW()

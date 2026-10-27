@@ -8,6 +8,11 @@ import org.apache.ibatis.annotations.*;
 
 @Mapper
 public interface SupportAttachmentMapper extends BaseMapper<SupportAttachmentEntity> {
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_conversation_message m JOIN nx_conversation c "
+            + "ON c.conversation_no=m.conversation_no WHERE c.user_id=#{userId} AND c.is_deleted=0 "
+            + "AND m.is_deleted=0 AND m.sender_type IN ('user','agent') AND m.id=#{messageId} "
+            + "AND m.id > " + AppConversationVisibilitySql.THROUGH + ")")
+    boolean userMessageVisible(@Param("userId") Long userId, @Param("messageId") Long messageId);
     String COLUMNS = "id,customer_id customerId,uploader_type uploaderType,uploader_id uploaderId,assignment_id assignmentId,client_upload_id clientUploadId,request_hash requestHash,mime,bytes,width,height,object_key objectKey,state,expires_at expiresAt,message_id messageId";
 
     @Select("SELECT customer_id FROM nx_support_attachment WHERE id=#{id}")

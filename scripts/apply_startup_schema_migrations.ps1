@@ -346,6 +346,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261021_g1_staking_app_visibility.sql")
   (Join-Path $root "scripts\migrations\20261021_g1_staking_visibility_event.sql")
   (Join-Path $root "scripts\migrations\20261021_oauth_provider_first_login.sql")
+  (Join-Path $root "scripts\migrations\20261027_app_conversation_user_clear.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

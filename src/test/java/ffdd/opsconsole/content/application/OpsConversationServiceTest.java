@@ -311,6 +311,16 @@ class OpsConversationServiceTest {
         assertThat(captor.getValue().getAction()).isEqualTo("I9_CONVERSATION_REPLIED");
     }
 
+    @Test void changedStaffCannotAppendToPreviousStaffsConversation() {
+        conversationRepository.conversation = conversation("CV-1", "OPEN");
+        conversationRepository.peerChanged = true;
+        assertThatThrownBy(() -> service.reply("CV-1", "new-agent-reply",
+                new ConversationReplyRequest("New agent reply", "OPEN", 0L, "agent reply", "Marina K.")))
+                .hasMessage("CONVERSATION_PEER_CHANGED");
+        assertThat(conversationRepository.messageWrites).isZero();
+        verifyNoInteractions(auditLogService);
+    }
+
     @Test
     void replyRejectsAuditReasonShorterThanEightCharactersWithoutWriting() {
         conversationRepository.conversation = conversation("CV-1", "OPEN");
@@ -902,6 +912,11 @@ class OpsConversationServiceTest {
     }
 
     private static final class FakeConversationRepository implements ConversationRepository {
+        // These legacy service fixtures isolate ownership; real stable-peer enforcement is tested against MyBatis.
+        private boolean peerChanged;
+        @Override public void requirePeerForWrite(String conversationNo, String staffId) {
+            if (peerChanged) throw new ffdd.opsconsole.shared.exception.BizException(409, "CONVERSATION_PEER_CHANGED");
+        }
         private ContentConversationView conversation;
         private List<ContentConversationView> overdueConversations = List.of();
         private ConversationQueryRequest lastQuery;

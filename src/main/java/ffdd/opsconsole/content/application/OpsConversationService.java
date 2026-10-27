@@ -290,6 +290,8 @@ public class OpsConversationService {
                 "REPLY:"+conversationNo,request,request.clientMessageId(),request.kind(),request.intent(),
                 request.attachmentId(),request.expectedAssignmentId());
         if(prepared.previousMessageId()!=null) return new MessageCommandResult(ApiResult.ok(conversation),prepared.previousMessageId());
+        conversationRepository.requirePeerForWrite(conversationNo.trim(), String.valueOf(
+                persistedActor == null ? ownership.actorId() : persistedActor));
         if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
                 || "TRANSFERRED".equalsIgnoreCase(conversation.status())) {
             return new MessageCommandResult(invalidState(), null);

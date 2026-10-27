@@ -44,6 +44,11 @@ public interface ConversationRepository {
     /** Locks the conversation header first and its active transfer second. */
     Optional<ContentConversationView> findByConversationNoForUpdate(String conversationNo);
 
+    /** Caller holds the customer/header lock. A new write cannot silently retag another staff member's history. */
+    default void requirePeerForWrite(String conversationNo, String staffId) {
+        throw new UnsupportedOperationException("STABLE_CONVERSATION_PEER_REQUIRED");
+    }
+
     List<ContentConversationMessageView> messages(String conversationNo);
 
     /** Public App projection: transfer reasons and other SYSTEM traces remain ops-only. */
