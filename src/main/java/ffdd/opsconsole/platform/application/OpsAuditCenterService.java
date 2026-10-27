@@ -1421,7 +1421,7 @@ public class OpsAuditCenterService {
 
     private AuditLogQueryRequest calendarTodayFilter(AuditLogQueryRequest filter) {
         AuditLogQueryRequest query = copyFilter(filter);
-        LocalDateTime start = LocalDateTime.now().toLocalDate().atStartOfDay();
+        LocalDateTime start = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(java.time.Instant.now()));
         LocalDateTime now = LocalDateTime.now();
         if (query.getStartTime() == null || query.getStartTime().isBefore(start)) query.setStartTime(start);
         if (query.getEndTime() == null || query.getEndTime().isAfter(now)) query.setEndTime(now);

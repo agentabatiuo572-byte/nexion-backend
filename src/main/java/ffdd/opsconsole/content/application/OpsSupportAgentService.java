@@ -54,6 +54,11 @@ public class OpsSupportAgentService {
     private static final String SEAT_DEDICATED = "DEDICATED";
     private static final String SEAT_GENERAL = "GENERAL";
     private static final List<String> POSITIONS = List.of(POSITION_MANAGER, POSITION_DEDICATED, POSITION_GENERAL);
+    /**
+     * M-56: nx_support_agent_profile.service_types is the legacy transfer-routing flag ("support" = may receive
+     * conversation transfers). The views report the canonical role ("advisor") instead; the two are different
+     * facts and are intentionally not kept equal.
+     */
     private static final List<String> SERVICE_TYPES = List.of("support", "advisor");
     private static final List<String> DEFAULT_TAGS = List.of("账户", "提现", "设备");
     private static final Set<String> SUPPORT_OPERATOR_ROLES = Set.of("support");
@@ -297,6 +302,9 @@ public class OpsSupportAgentService {
         if (authorization != null) {
             return authorization;
         }
+        if (invalidServiceTypes(request.serviceTypes())) {
+            return ApiResult.fail(422, "SUPPORT_SERVICE_TYPE_INVALID");
+        }
         LocalDateTime now = LocalDateTime.now(clock);
         List<String> serviceTypes = normalizeSeatServiceTypes(seatType, request.serviceTypes());
         if (currentProfile != null) {
@@ -395,6 +403,9 @@ public class OpsSupportAgentService {
         SupportAgentProfileRecord currentProfile = repository.findProfile(adminId).orElse(null);
         if (currentProfile != null && !currentProfile.version().equals(request.expectedVersion())) {
             return ApiResult.fail(409, "SUPPORT_AGENT_PROFILE_VERSION_CONFLICT");
+        }
+        if (invalidServiceTypes(request.serviceTypes())) {
+            return ApiResult.fail(422, "SUPPORT_SERVICE_TYPE_INVALID");
         }
         LocalDateTime now = LocalDateTime.now(clock);
         List<String> serviceTypes = request.serviceTypes() == null && currentProfile != null
@@ -896,6 +907,12 @@ public class OpsSupportAgentService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "OPERATOR_REQUIRED");
         }
         return null;
+    }
+
+    /** M-7: unknown values used to be dropped silently; they are now rejected (allowed: support, advisor). */
+    private static boolean invalidServiceTypes(List<String> serviceTypes) {
+        return serviceTypes != null && serviceTypes.stream()
+                .anyMatch(value -> !StringUtils.hasText(value) || !SERVICE_TYPES.contains(value.trim().toLowerCase(Locale.ROOT)));
     }
 
     private List<String> normalizeServiceTypes(List<String> serviceTypes) {

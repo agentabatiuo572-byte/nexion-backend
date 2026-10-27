@@ -31,9 +31,12 @@ public final class L1KpiAnalytics {
     private L1KpiAnalytics() {
     }
 
+    /** R-1: business calendar date of a stored (Beijing) timestamp. */
+    private static LocalDate businessDay(LocalDateTime storageTime) { return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(storageTime); }
+
     /** Calendar boundary shared by L1 reads and export selection validation. */
     public static LocalDate businessDate(Instant instant) {
-        return instant.atZone(BUSINESS_ZONE).toLocalDate();
+        return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(instant);
     }
 
     public static Map<String, Object> calculate(
@@ -194,9 +197,9 @@ public final class L1KpiAnalytics {
                 .filter(named("auth.register_completed"))
                 .filter(dimensions)
                 .filter(event -> {
-                    LocalDate matureOn = event.at().toLocalDate().plusDays(7);
-                    return !matureOn.isBefore(from.toLocalDate())
-                            && !matureOn.isAfter(end.toLocalDate());
+                    LocalDate matureOn = businessDay(event.at()).plusDays(7);
+                    return !matureOn.isBefore(businessDay(from))
+                            && !matureOn.isAfter(businessDay(end));
                 })
                 .toList());
         Set<String> mature = new LinkedHashSet<>();
@@ -206,7 +209,7 @@ public final class L1KpiAnalytics {
             boolean found = events.stream().anyMatch(event -> event.actor().equals(actor)
                     && event.name().equals("app.dau")
                     && !event.at().isAfter(end)
-                    && ChronoUnit.DAYS.between(registration.at().toLocalDate(), event.at().toLocalDate()) == 7);
+                    && ChronoUnit.DAYS.between(businessDay(registration.at()), businessDay(event.at())) == 7);
             if (found) active.add(actor);
         });
         return ratio(active, mature, "NO_MATURE_DAY7_COHORT");
@@ -258,12 +261,12 @@ public final class L1KpiAnalytics {
         long sold = purchases.stream().mapToLong(event -> Math.max(0, event.quantity())).sum();
         if (purchases.isEmpty()) return new KpiValue(null, 0, 1000, "NO_GENESIS_PURCHASES");
         if (sold < 1000) return new KpiValue(null, sold, 1000, "GENESIS_NOT_SOLD_OUT");
-        LocalDate first = purchases.get(0).at().toLocalDate();
+        LocalDate first = businessDay(purchases.get(0).at());
         long cumulative = 0;
         for (EventFact event : purchases) {
             cumulative += Math.max(0, event.quantity());
             if (cumulative >= 1000) {
-                return new KpiValue((double) Math.max(1, ChronoUnit.DAYS.between(first, event.at().toLocalDate()) + 1), sold, 1000, null);
+                return new KpiValue((double) Math.max(1, ChronoUnit.DAYS.between(first, businessDay(event.at())) + 1), sold, 1000, null);
             }
         }
         return new KpiValue(null, sold, 1000, "GENESIS_NOT_SOLD_OUT");
@@ -299,7 +302,7 @@ public final class L1KpiAnalytics {
         List<String> labels = new ArrayList<>();
         long seconds = Math.max(1, ChronoUnit.SECONDS.between(from, to));
         for (int index = 1; index <= 6; index++) {
-            labels.add(from.plusSeconds(seconds * index / 6).toLocalDate().toString().substring(5));
+            labels.add(businessDay(from.plusSeconds(seconds * index / 6)).toString().substring(5));
         }
         return labels;
     }
@@ -484,12 +487,13 @@ public final class L1KpiAnalytics {
                 LocalDate toDate = LocalDate.parse(parts[2]);
                 if (fromDate.isAfter(toDate)
                         || ChronoUnit.DAYS.between(fromDate, toDate) > 400
-                        || toDate.isAfter(now.toLocalDate())) {
+                        || toDate.isAfter(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now))) {
                     throw new IllegalArgumentException("L1_CUSTOM_WINDOW_INVALID");
                 }
-                LocalDateTime to = toDate.equals(now.toLocalDate())
-                        ? now : LocalDateTime.of(toDate, LocalTime.MAX);
-                return new WindowRange("custom", fromDate.atStartOfDay(), to);
+                // R-1: custom dates are business dates; bounds are stored (Beijing) timestamps.
+                LocalDateTime to = toDate.equals(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now))
+                        ? now : ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(toDate.plusDays(1)).minusNanos(1);
+                return new WindowRange("custom", ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(fromDate), to);
             } catch (RuntimeException exception) {
                 throw new IllegalArgumentException("L1_CUSTOM_WINDOW_INVALID", exception);
             }

@@ -69,6 +69,7 @@ public class OpsSupportTicketService {
     private final SupportTicketRepository ticketRepository;
     private final ConversationRepository conversationRepository;
     private final SupportKnowledgeRepository knowledgeRepository;
+    private final SupportTicketProgressNotice progressNotice;
     private final OpsSupportAgentService supportAgentService;
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
@@ -275,7 +276,23 @@ public class OpsSupportTicketService {
         ensureSeedData();
         Long group=request==null?null:request.groupId(),agent=request==null?null:request.assignedAdminId();
         var scope=request==null || request.readMode()==null?ownership.defaultQueryScope(group,agent):ownership.queryScope(request.readMode(),group,agent);
-        return ApiResult.ok(ticketRepository.pageTickets(request,scope));
+        return ApiResult.ok(withSlaTargets(ticketRepository.pageTickets(request,scope)));
+    }
+
+    /** M-53: list rows carry the same SLA target as the detail view; rows without a published rule get none. */
+    private PageResult<SupportTicketView> withSlaTargets(PageResult<SupportTicketView> page) {
+        if (page == null || page.getRecords() == null || page.getRecords().isEmpty()) return page;
+        Map<String, SupportSlaView> rules = new java.util.HashMap<>();
+        knowledgeRepository.listSla().stream()
+                .filter(rule -> rule.version() != null && rule.version() >= 1)
+                .forEach(rule -> rules.putIfAbsent(rule.category(), rule));
+        Map<String, LocalDateTime> firstReplies = ticketRepository.firstAgentReplyAt(
+                page.getRecords().stream().map(SupportTicketView::ticketNo).toList());
+        page.setRecords(page.getRecords().stream().map(ticket -> {
+            SupportSlaView rule = rules.get(normalizeCategory(ticket.category()));
+            return rule == null ? ticket : ticket.withSlaTarget(slaTarget(ticket, firstReplies.get(ticket.ticketNo()), rule));
+        }).toList());
+        return page;
     }
 
     @Transactional(readOnly=true)
@@ -298,23 +315,20 @@ public class OpsSupportTicketService {
         if (rule == null || rule.version() == null || rule.version() < 1) {
             return ApiResult.fail(503, "SUPPORT_TICKET_SLA_UNAVAILABLE");
         }
-        return ApiResult.ok(new SupportTicketDetail(ticket, messages, slaTarget(ticket, messages, rule)));
-    }
-
-    private SupportTicketSlaTarget slaTarget(
-            SupportTicketView ticket,
-            List<ffdd.opsconsole.content.domain.SupportTicketMessageView> messages,
-            SupportSlaView rule) {
-        LocalDateTime evaluatedAt = LocalDateTime.now(clock);
-        LocalDateTime createdAt = ticket.createdAt();
-        LocalDateTime firstResponseDeadlineAt = createdAt.plusMinutes(rule.firstResponseMins());
-        LocalDateTime resolutionDeadlineAt = createdAt.plusHours(rule.resolutionHours());
         LocalDateTime firstResponseAt = messages.stream()
                 .filter(message -> "agent".equalsIgnoreCase(message.senderType()))
                 .map(ffdd.opsconsole.content.domain.SupportTicketMessageView::createdAt)
                 .filter(java.util.Objects::nonNull)
                 .min(LocalDateTime::compareTo)
                 .orElse(null);
+        return ApiResult.ok(new SupportTicketDetail(ticket, messages, slaTarget(ticket, firstResponseAt, rule)));
+    }
+
+    private SupportTicketSlaTarget slaTarget(SupportTicketView ticket, LocalDateTime firstResponseAt, SupportSlaView rule) {
+        LocalDateTime evaluatedAt = LocalDateTime.now(clock);
+        LocalDateTime createdAt = ticket.createdAt();
+        LocalDateTime firstResponseDeadlineAt = createdAt.plusMinutes(rule.firstResponseMins());
+        LocalDateTime resolutionDeadlineAt = createdAt.plusHours(rule.resolutionHours());
         LocalDateTime resolvedAt = TERMINAL_STATUSES.contains(normalizeStatus(ticket.status()))
                 ? (ticket.closedAt() == null ? ticket.updatedAt() : ticket.closedAt())
                 : null;
@@ -407,9 +421,11 @@ public class OpsSupportTicketService {
             return invalidState();
         }
         String actor = authenticatedOperator(request.operator());
-        if (!ticketRepository.appendReplyCas(ticket, request.body().trim(), actor, LocalDateTime.now(clock))) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        if (!ticketRepository.appendReplyCas(ticket, request.body().trim(), actor, now)) {
             return ticketConflict();
         }
+        progressNotice.replied(ticket, now);
         audit("M2_SUPPORT_TICKET_REPLIED", ticket.ticketNo(), actor, Map.of(
                 "bodyLength", request.body().trim().length(),
                 "reason", reasonOrDefault(request.reason(), "agent reply"),
@@ -456,6 +472,7 @@ public class OpsSupportTicketService {
             return ticketConflict();
         }
         ticketRepository.appendSystemTrace(ticket, "状态由" + statusLabel(ticket.status()) + "变更为" + statusLabel(target) + "（" + actor + "）", now);
+        progressNotice.statusChanged(ticket, target, now);
         audit("M2_SUPPORT_TICKET_STATUS_CHANGED", ticket.ticketNo(), actor, Map.of(
                 "from", ticket.status(),
                 "to", target,

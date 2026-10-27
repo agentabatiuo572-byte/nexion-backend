@@ -93,10 +93,12 @@ public class AppHomeOverviewService {
         }
         try {
             LocalDateTime now = LocalDateTime.ofInstant(clock.instant(), SERVER_ZONE);
-            LocalDate today = now.toLocalDate();
-            LocalDateTime dayStart = today.atStartOfDay();
-            LocalDateTime weekStart = today.minusDays(today.getDayOfWeek().getValue() - 1L).atStartOfDay();
-            LocalDateTime monthStart = today.withDayOfMonth(1).atStartOfDay();
+            // R-1: day / week / month cut by the business calendar; bounds are stored (Beijing) timestamps.
+            var calendar = ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
+            LocalDate today = calendar.dateAtStorage(now);
+            LocalDateTime dayStart = calendar.storageStart(today);
+            LocalDateTime weekStart = calendar.storageStart(today.minusDays(today.getDayOfWeek().getValue() - 1L));
+            LocalDateTime monthStart = calendar.storageStart(today.withDayOfMonth(1));
             if (sandbox) {
                 String runId = acceptanceRunId();
                 if (!validSandboxRunId(runId)) {

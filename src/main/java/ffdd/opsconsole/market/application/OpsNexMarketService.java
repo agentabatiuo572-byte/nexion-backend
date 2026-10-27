@@ -397,7 +397,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         long claimedCount = marketRepository.stakingPositionCountByStatus("CLAIMED");
         long slashedCount = marketRepository.stakingPositionCountByStatus("SLASHED");
         long refundedCount = marketRepository.stakingPositionCountByStatus("REFUNDED");
-        long earlyWithdrawnMonth = marketRepository.stakingEarlyWithdrawnCountSince(LocalDate.now(clock).withDayOfMonth(1).atStartOfDay());
+        long earlyWithdrawnMonth = marketRepository.stakingEarlyWithdrawnCountSince(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock).withDayOfMonth(1)));
         long killedCount = pools.stream()
                 .filter(pool -> Boolean.TRUE.equals(pool.get("killed")))
                 .count();
@@ -688,7 +688,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
     public ApiResult<Map<String, Object>> repurchaseOverview() {
         Optional<StakingProductView> product = marketRepository.repurchaseProduct();
-        LocalDateTime monthStart = LocalDate.now(clock).withDayOfMonth(1).atStartOfDay();
+        LocalDateTime monthStart = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock).withDayOfMonth(1));
         RepurchaseStatsView repurchaseStats = marketRepository.repurchaseStatsSince(monthStart);
         BigDecimal principalUsd = safeBig(repurchaseStats.principalUsd());
         BigDecimal estimatedInterestUsd = safeBig(repurchaseStats.estimatedInterestUsd());
@@ -2192,7 +2192,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 .map(this::stakingPosition)
                 .toList();
         long count = "EARLY_WITHDRAWN".equals(repositoryStatus)
-                ? marketRepository.stakingEarlyWithdrawnCountSince(LocalDate.now(clock).withDayOfMonth(1).atStartOfDay())
+                ? marketRepository.stakingEarlyWithdrawnCountSince(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock).withDayOfMonth(1)))
                 : marketRepository.stakingPositionCountByStatus(repositoryStatus);
         return map("status", status, "label", label, "note", note, "count", count, "rows", rows);
     }
@@ -2232,7 +2232,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (lockedAt == null) {
             return 0;
         }
-        return Math.max(0, ChronoUnit.DAYS.between(lockedAt.toLocalDate(), LocalDate.now(clock)));
+        return Math.max(0, ChronoUnit.DAYS.between(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(lockedAt), ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock)));
     }
 
     private List<Map<String, Object>> repurchaseStatusBreakdown() {
@@ -2756,7 +2756,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private String genesisTodayBatch() {
-        return LocalDate.now(clock).toString().replace("-", "");
+        return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock).toString().replace("-", "");
     }
 
     private BigDecimal genesisDividendRerunAmount() {
@@ -2835,7 +2835,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             int limit) {
         String perSlot = displayUsd(perSlotPerDay.setScale(2, RoundingMode.HALF_UP)) + " / day";
         String floor = displayUsd(floorPerNodePerDay.setScale(2, RoundingMode.HALF_UP)) + " / day";
-        LocalDate today = LocalDate.now(clock);
+        LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock);
         return marketRepository.genesisNodes(offset, limit).stream()
                 .map(node -> genesisNode(node, today, perSlotPerDay, perSlot, floor, royaltyPct))
                 .toList();

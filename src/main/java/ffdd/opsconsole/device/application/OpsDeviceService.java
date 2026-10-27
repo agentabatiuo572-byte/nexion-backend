@@ -2556,7 +2556,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         LocalDateTime now = LocalDateTime.now(clock);
         return ApiResult.ok(deviceRepository.e3TradeinOverview(
                 now.minusHours(24),
-                now.toLocalDate().withDayOfMonth(1).atStartOfDay(),
+                ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now).withDayOfMonth(1)),
                 cliffMonth));
     }
 

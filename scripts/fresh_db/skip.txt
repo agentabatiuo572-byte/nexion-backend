@@ -1,0 +1,5 @@
+# Startup migrations skipped on a local database while the business data they assert does not exist yet.
+# Format: <file>|<reason>|<run-when SQL returning a count; non-zero runs the migration again>
+# Each entry is DML/postcondition-only. Once the data is created in the console, the next
+# bootstrap_db.sh / start_backend.sh run applies the migration automatically (C-4).
+20260921_h2_trial_product_daily_yield.sql|DML only; postcondition requires product stellarbox-s1, which is business data created via the console|SELECT COUNT(*) FROM nx_product WHERE product_no='stellarbox-s1' AND is_deleted=0

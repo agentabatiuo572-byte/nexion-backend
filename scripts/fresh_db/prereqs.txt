@@ -1,0 +1,12 @@
+# Fresh-database prerequisites for the startup migration chain (C-1).
+# Format: <startup migration file>|<prereq>  where prereq is migrations/<file> (scripts/migrations) or fresh_db/<file> (this folder).
+# Each prereq runs right before the named startup migration and only creates tables a long-lived database already has.
+20260816_payment_method_run_scope.sql|fresh_db/01_payment_method_revoke_command.sql
+20260817_h7_voucher_cadence.sql|fresh_db/ddl-20260722_h_engagement_execution.sql
+20260826_trial_conversion_order_backfill.sql|fresh_db/ddl-20260722_h2_user_lifecycle.sql
+20260902_h3_active_mission_event_alignment.sql|fresh_db/ddl-20260722_h3_canonical_event_listener.sql
+20260903_hdpay_commerce_direct_purchase.sql|fresh_db/ddl-20260725_vietnam_payment_real_tables.sql
+20260903_hdpay_commerce_direct_purchase.sql|fresh_db/ddl-20260725_vietqr_intent_app.sql
+20261005_direct_referral_rewards.sql|fresh_db/ddl-20260722_f3_binary_settlement.sql
+20261001_support_enhancements_core.sql|migrations/20260929_support_message_s4.sql
+20261001_support_enhancements_bulk.sql|migrations/20260929_support_attachment_s4.sql

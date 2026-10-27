@@ -195,13 +195,15 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     @Select("""
             <script>
             WITH RECURSIVE days AS (
-              SELECT 0 AS seq, DATE(#{startAt}) AS flowDay
+              SELECT 0 AS seq, DATE(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_HEAD + "#{startAt}" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_MID + "#{startAt}" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_TAIL + """
+) AS flowDay
               UNION ALL
               SELECT seq + 1, DATE_ADD(flowDay, INTERVAL 1 DAY)
                 FROM days
                WHERE seq &lt; 7
             ), buckets AS (
-              SELECT DATE(created_at) AS flowDay,
+              SELECT DATE(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_HEAD + "created_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_MID + "created_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_TAIL + """
+) AS flowDay,
                      COALESCE(SUM(CASE WHEN direction='IN' THEN amount_usd ELSE 0 END), 0) AS inflowUsdt,
                      COALESCE(SUM(CASE WHEN direction='OUT' THEN amount_usd ELSE 0 END), 0) AS outflowUsdt
                 FROM nx_treasury_reserve_ledger
@@ -209,7 +211,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                  AND status='CONFIRMED'
                  AND created_at &gt;= #{startAt}
                  AND created_at &lt; #{endAt}
-               GROUP BY DATE(created_at)
+               GROUP BY 1
             )
             SELECT DATE_FORMAT(days.flowDay, '%m-%d') AS label,
                    COALESCE(buckets.inflowUsdt, 0) AS inflowUsdt,
@@ -227,13 +229,15 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     @Select("""
             <script>
             WITH RECURSIVE months AS (
-              SELECT 0 AS seq, DATE(#{startAt}) AS monthStart
+              SELECT 0 AS seq, DATE(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_HEAD + "#{startAt}" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_MID + "#{startAt}" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_TAIL + """
+) AS monthStart
               UNION ALL
               SELECT seq + 1, DATE_ADD(monthStart, INTERVAL 1 MONTH)
                 FROM months
                WHERE seq &lt; 7
             ), buckets AS (
-              SELECT DATE_FORMAT(created_at, '%Y-%m-01') AS monthStart,
+              SELECT DATE_FORMAT(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_HEAD + "created_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_MID + "created_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_TAIL + """
+, '%Y-%m-01') AS monthStart,
                      COALESCE(SUM(CASE
                        WHEN direction='IN' AND (
                          UPPER(biz_type) LIKE '%TOPUP%'
@@ -252,7 +256,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                  AND status='SUCCESS'
                  AND created_at &gt;= #{startAt}
                  AND created_at &lt; #{endAt}
-               GROUP BY DATE_FORMAT(created_at, '%Y-%m-01')
+               GROUP BY 1
             )
             SELECT DATE_FORMAT(months.monthStart, '%Y-%m') AS label,
                    COALESCE(buckets.newInflowUsdt, 0) AS newInflowUsdt,
@@ -369,13 +373,15 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
 
     @Select("""
             WITH RECURSIVE windows AS (
-              SELECT 0 AS seq, DATE_SUB(CURDATE(), INTERVAL 7 DAY) AS windowDay
+              SELECT 0 AS seq, DATE_SUB(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.TODAY + """
+, INTERVAL 7 DAY) AS windowDay
               UNION ALL
               SELECT seq + 1, DATE_ADD(windowDay, INTERVAL 1 DAY)
                 FROM windows
                WHERE seq < 7
             ), flow AS (
-              SELECT DATE(created_at) AS windowDay,
+              SELECT DATE(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_HEAD + "created_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_MID + "created_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_TAIL + """
+) AS windowDay,
                      COALESCE(SUM(CASE
                        WHEN direction='OUT' AND (
                          UPPER(biz_type) LIKE '%WITHDRAW%'
@@ -385,8 +391,9 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                      COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE 0 END), 0) AS grossInflow
                 FROM nx_wallet_ledger
                WHERE is_deleted=0 AND asset='USDT' AND status='SUCCESS'
-                 AND created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
-               GROUP BY DATE(created_at)
+                 AND created_at >= DATE_SUB(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
+, INTERVAL 7 DAY)
+               GROUP BY 1
             )
             SELECT CASE
                      WHEN COALESCE(flow.grossInflow, 0) <= 0 THEN 0
@@ -448,17 +455,20 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
 
     @Select("""
             WITH RECURSIVE days AS (
-              SELECT 0 AS seq, DATE_SUB(CURDATE(), INTERVAL 6 DAY) AS riskDay
+              SELECT 0 AS seq, DATE_SUB(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.TODAY + """
+, INTERVAL 6 DAY) AS riskDay
               UNION ALL
               SELECT seq + 1, DATE_ADD(riskDay, INTERVAL 1 DAY)
                 FROM days
                WHERE seq < 6
             ), buckets AS (
-              SELECT DATE(created_at) AS riskDay, COUNT(1) AS count
+              SELECT DATE(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_HEAD + "created_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_MID + "created_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.BUSINESS_TIME_TAIL + """
+) AS riskDay, COUNT(1) AS count
                 FROM nx_risk_decision
                WHERE is_deleted = 0
-                 AND created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
-               GROUP BY DATE(created_at)
+                 AND created_at >= DATE_SUB(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
+, INTERVAL 6 DAY)
+               GROUP BY 1
             )
             SELECT DATE_FORMAT(days.riskDay, '%m-%d') AS label,
                    COALESCE(buckets.count, 0) AS count

@@ -17,5 +17,6 @@ public class ConversationTimeoutPolicyBootstrap {
         mapper.ensurePolicyTable();
         mapper.ensureEventTable();
         mapper.insertDefaultPolicy();
+        mapper.upgradeLegacyDefaultPolicy();
     }
 }

@@ -110,7 +110,8 @@ public class L3FinanceReportService {
     private PeriodWindow periodWindow(String rawPeriod, String rawFrom, String rawTo) {
         String period = StringUtils.hasText(rawPeriod) ? rawPeriod.trim().toLowerCase(Locale.ROOT) : "month";
         if (!PERIODS.contains(period)) throw new BizException(400, "L3_PERIOD_INVALID");
-        LocalDate today = LocalDate.now(clock);
+        var calendar = ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
+        LocalDate today = calendar.today(clock);
         LocalDate start;
         LocalDate endExclusive;
         switch (period) {
@@ -152,9 +153,9 @@ public class L3FinanceReportService {
         String label = periodLabel(period, start, endExclusive.minusDays(1));
         String previousLabel = periodLabel(period, previousStart, previousEnd.minusDays(1));
         return new PeriodWindow(
-                period, start.atStartOfDay(), endExclusive.atStartOfDay(),
-                previousStart.atStartOfDay(), previousEnd.atStartOfDay(), label, previousLabel,
-                clock.getZone().getId());
+                period, calendar.storageStart(start), calendar.storageStart(endExclusive),
+                calendar.storageStart(previousStart), calendar.storageStart(previousEnd), label, previousLabel,
+                calendar.currentZone(clock).getId());
     }
 
     private String periodLabel(String period, LocalDate from, LocalDate to) {

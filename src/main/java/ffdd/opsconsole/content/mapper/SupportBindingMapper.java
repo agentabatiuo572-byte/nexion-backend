@@ -83,8 +83,17 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
             + "(SELECT CAST(read_route.id AS CHAR) "+POOL_ROUTE_FACT+" FOR SHARE) routeId,"
             + "(SELECT CAST(read_route.group_id AS CHAR) "+POOL_ROUTE_FACT+" FOR SHARE) routeGroupId,"
             + "(SELECT read_route.version "+POOL_ROUTE_FACT+" FOR SHARE) routeVersion,";
+    /** Customer messages in open advisor conversations that no reply cursor has covered yet. */
+    String POOL_PENDING_MESSAGES = " FROM nx_conversation_message pm JOIN nx_conversation pc ON pc.conversation_no=pm.conversation_no AND pc.is_deleted=0 AND pc.status='OPEN' AND pc.conversation_type='advisor'"
+            + " LEFT JOIN nx_support_reply_cursor pr ON pr.conversation_no=pm.conversation_no"
+            + " WHERE pc.user_id=p.customer_id AND pm.is_deleted=0 AND pm.sender_type='user' AND pm.id>COALESCE(pr.through_message_id,0) ";
+    String POOL_MESSAGE_COLUMNS = "(SELECT COUNT(*)" + POOL_PENDING_MESSAGES + ") pendingMessageCount,"
+            + "(SELECT DATE_FORMAT(CONVERT_TZ(MAX(pm.created_at),'+08:00','+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ')" + POOL_PENDING_MESSAGES + ") lastMessageAt,"
+            + "(SELECT DATE_FORMAT(CONVERT_TZ(MIN(pm.created_at),'+08:00','+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ')" + POOL_PENDING_MESSAGES + ") waitingSince,"
+            + "(SELECT LEFT(pm.content,80)" + POOL_PENDING_MESSAGES + " ORDER BY pm.id DESC LIMIT 1) lastMessagePreview,";
     // Pool clocks are UTC DATETIME(6); return explicit UTC strings without JDBC/session-zone conversion.
-    @Select("<script>SELECT "+POOL_ROUTE_COLUMNS+"p.customer_id customerId,p.reason,p.version,DATE_FORMAT(p.entered_at,'%Y-%m-%dT%H:%i:%s.%fZ') enteredAt,p.auto_eligible autoEligible,p.auto_rule_version autoRuleVersion,p.auto_attempt_state autoAttemptState,p.attempts,DATE_FORMAT(p.last_attempt_at,'%Y-%m-%dT%H:%i:%s.%fZ') lastAttemptAt,p.last_outcome lastOutcome,p.operation_id operationId,scope_customer.sponsor_user_id inviterId,scope_customer.nickname,CASE WHEN scope_customer.phone REGEXP '^[0-9]{7,15}$' THEN CONCAT(SUBSTRING(scope_customer.phone,1,3),'****',SUBSTRING(scope_customer.phone,LENGTH(scope_customer.phone)-3)) ELSE NULL END phoneMasked "+SCOPED_POOL_FILTER+" ORDER BY p.customer_id LIMIT #{limit} OFFSET #{offset} FOR SHARE</script>")
+    // Customers who are waiting on an unanswered message come first, longest wait first.
+    @Select("<script>SELECT "+POOL_ROUTE_COLUMNS+POOL_MESSAGE_COLUMNS+"p.customer_id customerId,p.reason,p.version,DATE_FORMAT(p.entered_at,'%Y-%m-%dT%H:%i:%s.%fZ') enteredAt,p.auto_eligible autoEligible,p.auto_rule_version autoRuleVersion,p.auto_attempt_state autoAttemptState,p.attempts,DATE_FORMAT(p.last_attempt_at,'%Y-%m-%dT%H:%i:%s.%fZ') lastAttemptAt,p.last_outcome lastOutcome,p.operation_id operationId,scope_customer.sponsor_user_id inviterId,scope_customer.nickname,CASE WHEN scope_customer.phone REGEXP '^[0-9]{7,15}$' THEN CONCAT(SUBSTRING(scope_customer.phone,1,3),'****',SUBSTRING(scope_customer.phone,LENGTH(scope_customer.phone)-3)) ELSE NULL END phoneMasked,scope_customer.nickname displayName "+SCOPED_POOL_FILTER+" ORDER BY pendingMessageCount&gt;0 DESC,waitingSince IS NULL,waitingSince,p.customer_id LIMIT #{limit} OFFSET #{offset} FOR SHARE</script>")
     List<Map<String,Object>> scopedPool(@Param("scope") ReadScope scope,@Param("reason") String reason,@Param("keyword") String keyword,@Param("offset") long offset,@Param("limit") int limit);
     String SCOPED_HANDOVER_FILTER="FROM nx_support_agent_user_assignment x JOIN nx_user scope_customer ON scope_customer.id=x.user_id LEFT JOIN nx_admin a ON a.id=x.agent_admin_id LEFT JOIN nx_support_agent_profile p ON p.admin_id=a.id WHERE x.status='ACTIVE' AND x.is_deleted=0 " + CUSTOMER_SCOPE_PREDICATE
             + " <if test='unavailable'>AND NOT EXISTS(SELECT 1 " + SupportBindingMapper.ELIGIBLE_AGENT_FROM + " AND a.id=x.agent_admin_id FOR SHARE)</if> ";
@@ -228,8 +237,23 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
     int eligiblePool(@Param("id") Long id,@Param("version") Long version,@Param("operation") String operation);
     @Update("UPDATE nx_support_binding_pool SET auto_attempt_state=#{state},attempts=attempts+1,last_attempt_at=UTC_TIMESTAMP(6),last_outcome=#{outcome},version=version+1 WHERE customer_id=#{id}")
     int attemptPool(@Param("id") Long id,@Param("state") String state,@Param("outcome") String outcome);
-    @Select("SELECT p.customer_id FROM nx_support_binding_pool p JOIN nx_user u ON u.id=p.customer_id AND u.is_deleted=0 AND u.sandbox=0 WHERE p.auto_eligible=1 ORDER BY COALESCE(p.last_attempt_at,p.entered_at),p.customer_id LIMIT 100")
+    /** Pool customers with an unanswered message in an open advisor conversation; assignment starts at the first inquiry. */
+    @Select("SELECT p.customer_id FROM nx_support_binding_pool p JOIN nx_user u ON u.id=p.customer_id AND u.is_deleted=0 AND u.sandbox=0 WHERE p.reason<>'MIGRATION_REVIEW' AND EXISTS(SELECT 1"
+            + POOL_PENDING_MESSAGES + ") ORDER BY COALESCE(p.last_attempt_at,p.entered_at),p.customer_id LIMIT 100")
     List<Long> autoPending();
+    /** Minutes since the oldest unanswered customer message, or null when nothing is waiting. */
+    @Select("SELECT TIMESTAMPDIFF(MINUTE,MIN(pm.created_at),NOW()) FROM nx_conversation pc JOIN nx_conversation_message pm ON pm.conversation_no=pc.conversation_no LEFT JOIN nx_support_reply_cursor pr ON pr.conversation_no=pm.conversation_no WHERE pc.user_id=#{id} AND pc.is_deleted=0 AND pc.status='OPEN' AND pc.conversation_type='advisor' AND pm.is_deleted=0 AND pm.sender_type='user' AND pm.id>COALESCE(pr.through_message_id,0)")
+    Long inquiryWaitMinutes(Long id);
+    /** Load = active bound customers + 2 x unanswered customer messages of those customers. */
+    @Select("""
+        SELECT (SELECT COUNT(*) FROM nx_support_agent_user_assignment x WHERE x.agent_admin_id=#{agent} AND x.status='ACTIVE' AND x.is_deleted=0)
+             + 2*(SELECT COUNT(*) FROM nx_conversation_message m
+                    JOIN nx_conversation c ON c.conversation_no=m.conversation_no AND c.is_deleted=0 AND c.status='OPEN' AND c.conversation_type='advisor'
+                    JOIN nx_support_agent_user_assignment b ON b.user_id=c.user_id AND b.agent_admin_id=#{agent} AND b.status='ACTIVE' AND b.is_deleted=0
+                    LEFT JOIN nx_support_reply_cursor r ON r.conversation_no=m.conversation_no
+                   WHERE m.is_deleted=0 AND m.sender_type='user' AND m.id>COALESCE(r.through_message_id,0))
+        """)
+    long agentLoad(@Param("agent") Long agent);
     @Select("SELECT auto_eligible FROM nx_support_binding_pool WHERE customer_id=#{id} FOR SHARE")
     Boolean autoEligible(Long id);
     @Select("SELECT version FROM nx_support_binding_pool WHERE customer_id=#{id} FOR SHARE")

@@ -78,9 +78,17 @@ public interface ConversationTimeoutPolicyMapper extends BaseMapper<Conversation
     @Insert("""
             INSERT IGNORE INTO nx_conversation_timeout_policy
               (policy_key,warn_minutes,close_minutes,version,updated_by,reason,created_at,updated_at)
-            VALUES ('GLOBAL',1,5,1,'system','系统默认会话闲置策略',NOW(),NOW())
+            VALUES ('GLOBAL',30,120,1,'system','系统默认会话闲置策略',NOW(),NOW())
             """)
     int insertDefaultPolicy();
+
+    /** The old 1/5-minute default fragmented dedicated-advisor threads; only an untouched system default is raised. */
+    @Update("""
+            UPDATE nx_conversation_timeout_policy
+               SET warn_minutes=30,close_minutes=120,version=version+1,reason='系统默认会话闲置策略（放宽至 30/120 分钟）',updated_at=NOW()
+             WHERE policy_key='GLOBAL' AND updated_by='system' AND warn_minutes=1 AND close_minutes=5
+            """)
+    int upgradeLegacyDefaultPolicy();
 
     @Select("""
             SELECT policy_key AS policyKey,

@@ -6,7 +6,6 @@ import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.content.mapper.SupportWorkbenchMapper;
-import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.sql.Timestamp;
 import java.time.*;
@@ -150,9 +149,10 @@ public class SupportWorkbenchService {
     }
 
     private Map<String,Object> performance(ReadScope scope,LocalDateTime evaluatedAt,String rawFrom,String rawTo) {
-        var zone=DateTimeFormatConfig.BUSINESS_ZONE;
+        var calendar=ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
         Instant end=evaluatedAt.toInstant(ZoneOffset.UTC);
-        Instant start=end.atZone(zone).toLocalDate().withDayOfMonth(1).atStartOfDay(zone).toInstant();
+        var zone=calendar.zoneAt(end);
+        Instant start=calendar.startOf(calendar.dateAt(end).withDayOfMonth(1));
         if((rawFrom==null)!=(rawTo==null)) throw new BizException(422,"SUPPORT_PERFORMANCE_RANGE_REQUIRED");
         if(rawFrom!=null) {
             try { start=Instant.parse(rawFrom); end=Instant.parse(rawTo); }
@@ -166,7 +166,7 @@ public class SupportWorkbenchService {
         q.put("to",LocalDateTime.ofInstant(end,ZoneOffset.UTC));
         q.put("businessOffset",zone.getRules().getOffset(start).toString());
         var days=new TreeMap<String,Map<String,Object>>();
-        for(LocalDate day=start.atZone(zone).toLocalDate();day.atStartOfDay(zone).toInstant().isBefore(end);day=day.plusDays(1)) {
+        for(LocalDate day=calendar.dateAt(start);calendar.startOf(day).isBefore(end);day=day.plusDays(1)) {
             var row=new LinkedHashMap<String,Object>(); row.put("day",day.toString());
             row.put("executionCount",0L); row.put("successfulCycleCount",0L); days.put(day.toString(),row);
         }

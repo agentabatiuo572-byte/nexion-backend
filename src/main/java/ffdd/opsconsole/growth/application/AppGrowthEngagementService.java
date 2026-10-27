@@ -365,7 +365,7 @@ public class AppGrowthEngagementService {
             if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
         }
         requireReadableUser(userId);
-        LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
+        LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam().dateAt(java.time.Instant.now());
         Map<String, Object> rawStreak = mapper.pointState(userId, today);
         Map<String, Object> streak = rawStreak == null
                 ? new LinkedHashMap<>()
@@ -378,9 +378,7 @@ public class AppGrowthEngagementService {
         return ApiResult.ok(productionResponse(linked(
                 "rewardAsset", "NEX",
                 "serverDate", today.toString(),
-                "nextResetAtUtc", ZonedDateTime.of(
-                        today.plusDays(1), java.time.LocalTime.MIDNIGHT, H5_BUSINESS_ZONE)
-                        .toInstant().toString(),
+                "nextResetAtUtc", ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam().startOf(today.plusDays(1)).toString(),
                 "streak", streak,
                 "dailyMilestones", safeList(mapper.dailyMilestoneState(userId)),
                 "earningMilestones", safeList(mapper.earningMilestoneState(userId)),
@@ -797,7 +795,7 @@ public class AppGrowthEngagementService {
     public ApiResult<Map<String, Object>> checkIn(Long userId, String idempotencyKey) {
         requireCanonicalEngagementRuntime();
         requireUser(userId);
-        LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
+        LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam().dateAt(java.time.Instant.now());
         return executeOnce("DAILY_CHECK_IN", userId, idempotencyKey, today, () -> {
             Long missionId = mapper.dailyMissionId();
             if (missionId == null) throw conflict("DAILY_MISSION_NOT_CONFIGURED");
@@ -844,7 +842,7 @@ public class AppGrowthEngagementService {
     public ApiResult<Map<String, Object>> useStreakSaver(Long userId, String idempotencyKey) {
         requireCanonicalEngagementRuntime();
         requireUser(userId);
-        LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
+        LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam().dateAt(java.time.Instant.now());
         return executeOnce("DAILY_STREAK_SAVER", userId, idempotencyKey, today, () -> {
             mapper.ensureUserStreak(userId);
             StreakState before = mapper.lockStreak(userId);

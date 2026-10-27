@@ -258,8 +258,8 @@ public class MybatisBiReportRepository implements BiReportRepository {
             }
         }
         result.put("liveFacts", linked(
-                        "deviceCatalogItems", mapper.countDevices(),
-                        "deviceOrders", mapper.countAdminDeviceOrders(),
+                        "deviceCatalogItems", mapper.countDeviceCatalogItems(),
+                        "deviceOrders", mapper.countOrders(),
                         "userDevices", mapper.countUserDevices(),
                         "activeUserDevices", mapper.countActiveUserDevices(),
                         "computeTasks", mapper.countComputeTasks(),
@@ -302,7 +302,6 @@ public class MybatisBiReportRepository implements BiReportRepository {
                         "nx_exchange_order",
                         "nx_wallet_ledger",
                         "nx_order",
-                        "nx_admin_device_order",
                         "nx_support_ticket",
                         "nx_conversation",
                         "nx_audit_log"));
@@ -312,7 +311,7 @@ public class MybatisBiReportRepository implements BiReportRepository {
         return List.of(
                 activity("account", mapper.countUsersSince(days), "nx_user"),
                 activity("funds", mapper.countWithdrawalsSince(days) + mapper.countExchangesSince(days) + mapper.countWalletLedgersSince(days), "nx_withdrawal_order/nx_exchange_order/nx_wallet_ledger"),
-                activity("commerce", mapper.countOrdersSince(days) + mapper.countAdminDeviceOrdersSince(days), "nx_order/nx_admin_device_order"),
+                activity("commerce", mapper.countOrdersSince(days), "nx_order"),
                 activity("support", mapper.countSupportTicketsSince(days) + mapper.countConversationsSince(days), "nx_support_ticket/nx_conversation"),
                 activity("audit", mapper.countAuditLogsSince(days), "nx_audit_log"));
     }
