@@ -117,8 +117,7 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
               EXISTS(SELECT 1 FROM nx_user u WHERE u.id=t.user_id AND u.is_deleted=0) AS userExists,
               t.source_conversation_no AS sourceConversationNo,
               NOT """ + VISIBLE + """
- AS contentRestricted,
-              (SELECT u.nickname FROM nx_user u WHERE u.id=t.user_id AND u.is_deleted=0) AS customerName
+ AS contentRestricted
             FROM nx_support_ticket t
             WHERE t.is_deleted=0
              <if test='scope == "active"'>AND t.archived=0</if>
@@ -181,8 +180,7 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
               EXISTS(SELECT 1 FROM nx_user u WHERE u.id=t.user_id AND u.is_deleted=0) AS userExists,
               t.source_conversation_no AS sourceConversationNo,
               NOT """ + VISIBLE + """
- AS contentRestricted,
-              (SELECT u.nickname FROM nx_user u WHERE u.id=t.user_id AND u.is_deleted=0) AS customerName
+ AS contentRestricted
             FROM nx_support_ticket t
             WHERE t.is_deleted=0 AND t.ticket_no=#{ticketNo}
             LIMIT 1

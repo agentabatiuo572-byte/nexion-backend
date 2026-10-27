@@ -490,7 +490,7 @@ class SupportTicketCreationMySqlTest {
                         mock(ApplicationEventPublisher.class), clock, guard, receipts, json,
                         mock(SupportAgentRepository.class), config, ownership, mock(SupportHumanMessageService.class),
                         ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class)), interceptor);
-                adminService = proxied(new OpsSupportTicketService(tickets, conversations, knowledge, mock(SupportTicketProgressNotice.class), agents, config,
+                adminService = proxied(new OpsSupportTicketService(tickets, conversations, knowledge, agents, config,
                         audit, idempotency, clock, ownership, OpsReadTimeSeedPolicy.disabledForDirectConstruction(), json), interceptor);
                 conversationService = proxied(new OpsConversationService(conversations, tickets, agents, config, audit,
                         clock, OpsReadTimeSeedPolicy.disabledForDirectConstruction(), mock(OpsUserService.class),

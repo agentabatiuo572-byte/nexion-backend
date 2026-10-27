@@ -78,7 +78,6 @@ class OpsSupportTicketServiceTest {
                 ticketRepository,
                 conversationRepository,
                 knowledgeRepository,
-                mock(SupportTicketProgressNotice.class),
                 supportAgentService,
                 configFacade,
                 auditLogService,
@@ -117,7 +116,7 @@ class OpsSupportTicketServiceTest {
                 any(), any(), anyString(), any())).thenThrow(new ffdd.opsconsole.shared.exception.BizException(
                         409, "SUPPORT_TICKET_OWNER_BINDING_MISMATCH"));
         var rejectingService = new OpsSupportTicketService(rejectingRepository, conversationRepository,
-                knowledgeRepository, mock(SupportTicketProgressNotice.class), supportAgentService, configFacade, auditLogService, idempotencyService, clock,
+                knowledgeRepository, supportAgentService, configFacade, auditLogService, idempotencyService, clock,
                 ffdd.opsconsole.content.SupportTestDependencies.ownership(),
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
                 new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules());
