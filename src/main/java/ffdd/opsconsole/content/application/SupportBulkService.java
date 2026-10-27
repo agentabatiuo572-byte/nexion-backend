@@ -111,7 +111,7 @@ public class SupportBulkService {
             if(request.assetId()!=null) requireAsset(request.assetId(),actor);
             for(var row:recipients) {
                 Long customer=number(row,"customerId");var current=mapper.conversation(customer);
-                // A closed latest segment gets a fresh segment, like a one-to-one proactive contact.
+                // A closed latest conversation goes through the create path, which resumes the customer thread (threads are reused).
                 String no=current==null || "CLOSED".equals(text(current,"status"))?null:text(current,"conversationNo");
                 String operation=no==null?"CREATE":"REPLY:"+no;
                 String attachment="IMAGE".equals(request.kind())?attachmentId(request.selectionId(),customer):null;

@@ -110,14 +110,6 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
     }
 
     @Override
-    public Map<String, LocalDateTime> firstAgentReplyAt(java.util.Collection<String> ticketNos) {
-        if (ticketNos == null || ticketNos.isEmpty()) return Map.of();
-        Map<String, LocalDateTime> replies = new LinkedHashMap<>();
-        messageMapper.firstAgentReplies(ticketNos).forEach(row -> replies.put(row.ticketNo(), row.firstAgentAt()));
-        return replies;
-    }
-
-    @Override
     public List<SupportTicketMessageView> messages(String ticketNo) {
         var ticket=findByTicketNo(ticketNo).orElse(null);
         var messages=messageMapper.listByTicketNo(ticketNo);

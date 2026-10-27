@@ -33,11 +33,6 @@ public interface SupportTicketRepository {
 
     List<SupportTicketMessageView> messages(String ticketNo);
 
-    /** Earliest advisor reply per ticket number; tickets without one are absent. */
-    default java.util.Map<String, java.time.LocalDateTime> firstAgentReplyAt(java.util.Collection<String> ticketNos) {
-        return java.util.Map.of();
-    }
-
     /** Public App projection: excludes internal notes and operational system traces. */
     default List<SupportTicketMessageView> userVisibleMessages(String ticketNo) {
         return messages(ticketNo).stream()
