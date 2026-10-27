@@ -91,6 +91,9 @@ public final class BusinessCalendar {
 
         private List<Version> own() { return byTrack.get(name); }
 
+        /** This track's versions plus every GLOBAL version, in storage order. */
+        public List<Version> versions() { return own(); }
+
         public Version versionAtStorage(LocalDateTime storageTime) {
             return own().stream().filter(v -> !v.effectiveStorageAt().isAfter(storageTime))
                     .max(Comparator.comparing(Version::effectiveStorageAt)).orElse(SEED.get(0));
