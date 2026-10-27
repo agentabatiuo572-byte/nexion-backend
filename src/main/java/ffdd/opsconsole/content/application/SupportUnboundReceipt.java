@@ -15,7 +15,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 /**
  * Tells a customer without a dedicated advisor that the message arrived and an advisor is being arranged,
- * then tries assignment once the message has committed.
+ * then tries assignment once the message has committed. System messages are not part of the App history (App
+ * queries return user and agent messages only); the App shows its own "留言已收到，分配后由专属客服接续" hint,
+ * so this row is the console's record of the acknowledgement. Wording follows the App: 专属客服.
  */
 @Component
 @RequiredArgsConstructor
@@ -27,7 +29,7 @@ public class SupportUnboundReceipt {
     private final Clock clock;
     private final SupportBindingService bindings;
 
-    @Value("${nexion.support.unbound.receipt-text:已收到您的消息，正在为您安排专属顾问，请稍候。}")
+    @Value("${nexion.support.unbound.receipt-text:已收到您的消息，正在为您安排专属客服，请稍候。}")
     private String text;
 
     /** Caller holds the customer lock inside the message transaction. System messages never count as replies. */
