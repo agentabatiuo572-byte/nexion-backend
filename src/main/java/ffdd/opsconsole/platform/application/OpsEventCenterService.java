@@ -156,7 +156,7 @@ public class OpsEventCenterService {
     public ApiResult<EventCenterOverview> overview() {
         AuditStatsSummaryResponse todaySummary = auditLogService.summary(statsQuery(1, 10));
         long todayAuditEvents = todaySummary.getTotal() == null ? 0L : todaySummary.getTotal();
-        LocalDateTime todayStart = LocalDate.now().atStartOfDay();
+        LocalDateTime todayStart = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(java.time.Instant.now()));
         List<EventFamilyCount> todayFamilyCounts = governanceMapper.countEventsByFamilySince(todayStart);
         long todayEvents = todayFamilyCounts.stream().mapToLong(EventFamilyCount::eventCount).sum();
         List<EventFamily> eventFamilies = eventFamilies(todayFamilyCounts);

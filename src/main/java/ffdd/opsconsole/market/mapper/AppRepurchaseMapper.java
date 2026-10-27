@@ -186,10 +186,9 @@ public interface AppRepurchaseMapper {
             """)
     int insertLedger(LedgerWrite row);
 
-    @Select("""
-            SELECT COALESCE(SUM(quantity),0) FROM nx_g7_repurchase_ticket
-             WHERE is_deleted=0 AND issued_at>=DATE_FORMAT(NOW(),'%Y-%m-01')
-            """)
+    /** R-1: this business month. */
+    @Select("SELECT COALESCE(SUM(quantity),0) FROM nx_g7_repurchase_ticket WHERE is_deleted=0 AND issued_at>="
+            + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.MONTH_START)
     long issuedTicketsThisMonth();
 
     @Insert("""

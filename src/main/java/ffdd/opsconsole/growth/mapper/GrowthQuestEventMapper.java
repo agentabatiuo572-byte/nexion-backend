@@ -871,7 +871,8 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                 SELECT COUNT(DISTINCT c.user_id)
                   FROM nx_daily_check_in c
                  WHERE c.is_deleted = 0
-                   AND c.check_in_date = CURDATE()
+                   AND c.check_in_date = """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.TODAY + """
+
               ) AS todaySign,
               (
                 SELECT CASE
@@ -880,7 +881,8 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                     SELECT COUNT(DISTINCT c2.user_id)
                       FROM nx_daily_check_in c2
                      WHERE c2.is_deleted = 0
-                       AND c2.check_in_date = CURDATE()
+                       AND c2.check_in_date = """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.TODAY + """
+
                   ) * 100 / COUNT(DISTINCT s.user_id), 1), '%')
                 END
                   FROM nx_user_streak s
@@ -893,7 +895,8 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                 END
                   FROM nx_daily_check_in c
                  WHERE c.is_deleted = 0
-                   AND c.check_in_date = CURDATE()
+                   AND c.check_in_date = """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.TODAY + """
+
               ) AS lucky15Actual,
               (
                 SELECT CASE
@@ -902,7 +905,8 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                 END
                   FROM nx_daily_check_in c
                  WHERE c.is_deleted = 0
-                   AND c.check_in_date = CURDATE()
+                   AND c.check_in_date = """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.TODAY + """
+
               ) AS lucky2Actual,
               (
                 SELECT COUNT(1)

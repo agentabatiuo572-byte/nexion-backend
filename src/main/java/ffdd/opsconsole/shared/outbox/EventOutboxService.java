@@ -680,7 +680,7 @@ public class EventOutboxService {
     }
 
     private String currentCohort() {
-        LocalDate today = LocalDate.now();
+        LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(java.time.Instant.now());
         WeekFields weekFields = WeekFields.ISO;
         return String.format(Locale.ROOT, "%d-W%02d",
                 today.get(weekFields.weekBasedYear()), today.get(weekFields.weekOfWeekBasedYear()));

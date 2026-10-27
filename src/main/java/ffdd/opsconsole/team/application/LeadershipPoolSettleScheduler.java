@@ -47,7 +47,8 @@ public class LeadershipPoolSettleScheduler {
     /** 每分钟读取运营权威键，命中动态 cron 时结算；部署属性不再覆盖业务配置。 */
     @Scheduled(fixedDelayString = "${nexion.f4.pool-schedule-poll-ms:30000}")
     public synchronized void weeklySettle() {
-        ZonedDateTime now = ZonedDateTime.now(clock.withZone(VietnamBusinessPeriod.ZONE)).withSecond(0).withNano(0);
+        // R-1: the operator cron is read in the business time zone in effect (Vietnam today, A3 setting later).
+        ZonedDateTime now = ZonedDateTime.now(clock.withZone(ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam().currentZone(clock))).withSecond(0).withNano(0);
         ZonedDateTime next;
         try {
             LeadershipPoolConfigGuard.SettlementConfig config = settlementConfigGuard.requireValid();
@@ -58,8 +59,13 @@ public class LeadershipPoolSettleScheduler {
             // still write their own audit entry at the settlement boundary.
             if (!failure.signature().equals(lastInvalidCron.get())) {
                 settlementConfigAlertService.recordBlocked(failure, "scheduler");
-                log.error("F4 leadership pool schedule disabled: key={} reason={} valueFingerprint={}",
-                        failure.key(), failure.reason(), failure.valueFingerprint());
+                if ("MISSING".equals(failure.reason())) {
+                    log.warn("F4 leadership pool settlement not configured yet (key={}); configure it in F4 to enable the schedule",
+                            failure.key());
+                } else {
+                    log.error("F4 leadership pool schedule disabled: key={} reason={} valueFingerprint={}",
+                            failure.key(), failure.reason(), failure.valueFingerprint());
+                }
                 lastInvalidCron.set(failure.signature());
             }
             return;

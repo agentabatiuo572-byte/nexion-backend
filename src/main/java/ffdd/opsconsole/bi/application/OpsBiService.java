@@ -1289,8 +1289,8 @@ public class OpsBiService implements AuditReplayable {
                 return null;
             }
             return new FinanceDetailSelection(
-                    from.atStartOfDay(),
-                    inclusiveTo.plusDays(1).atStartOfDay(),
+                    ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(from),
+                    ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(inclusiveTo.plusDays(1)),
                     fields);
         } catch (RuntimeException invalid) {
             return null;
@@ -1490,7 +1490,7 @@ public class OpsBiService implements AuditReplayable {
         try {
             LocalDate start = LocalDate.parse(normalizedFrom);
             LocalDate end = LocalDate.parse(normalizedTo);
-            LocalDate businessToday = LocalDate.now(ZoneOffset.ofHours(8));
+            LocalDate businessToday = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(java.time.Instant.now());
             if (start.isAfter(end) || end.isAfter(businessToday)
                     || java.time.temporal.ChronoUnit.DAYS.between(start, end) > 399) {
                 return new L4QuerySelection(
@@ -1587,7 +1587,7 @@ public class OpsBiService implements AuditReplayable {
         return switch (source) {
             case "nx_user" -> "用户主数据";
             case "nx_user_profile" -> "用户资料";
-            case "nx_order", "nx_order/nx_admin_device_order" -> "订单主数据";
+            case "nx_order", "nx_order/nx_admin_device_order" -> "订单主数据"; // old label kept for stored snapshots
             case "nx_wallet_ledger/nx_wallet_bill" -> "钱包活动记录";
             default -> "业务统计";
         };

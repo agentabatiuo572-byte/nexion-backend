@@ -166,21 +166,24 @@ public final class B3FunnelAnalytics {
         return points;
     }
 
+    /** R-1: business calendar date of a stored (Beijing) timestamp. */
+    private static LocalDate businessDay(LocalDateTime storageTime) { return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(storageTime); }
+
     private static List<Map<String, Object>> dailyFirstPurchase(
             Map<String, EventFact> registered, Map<String, EventFact> purchased) {
-        LocalDate end = LocalDate.now();
+        LocalDate end = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(java.time.Instant.now());
         LocalDate start = end.minusDays(7);
         List<Map<String, Object>> points = new ArrayList<>();
         for (int offset = 0; offset < 8; offset++) {
             LocalDate day = start.plusDays(offset);
             Set<String> cohortActors = registered.entrySet().stream()
-                    .filter(entry -> entry.getValue().at().toLocalDate().equals(day))
+                    .filter(entry -> businessDay(entry.getValue().at()).equals(day))
                     .map(Map.Entry::getKey)
                     .collect(Collectors.toCollection(LinkedHashSet::new));
             long firstPurchaseUsers = cohortActors.stream()
                     .filter(actor -> {
                         EventFact purchase = purchased.get(actor);
-                        return purchase != null && purchase.at().toLocalDate().equals(day);
+                        return purchase != null && businessDay(purchase.at()).equals(day);
                     })
                     .count();
             points.add(linked(
@@ -227,7 +230,7 @@ public final class B3FunnelAnalytics {
         Set<String> day0Actors = new LinkedHashSet<>();
         Set<String> matureActors = new LinkedHashSet<>();
         Set<String> day7Actors = new LinkedHashSet<>();
-        LocalDate today = LocalDate.now();
+        LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(java.time.Instant.now());
         for (Map.Entry<String, EventFact> entry : registered.entrySet()) {
             String actor = entry.getKey();
             EventFact registration = entry.getValue();
@@ -238,14 +241,14 @@ public final class B3FunnelAnalytics {
                     .filter(event -> event.latencySec() != null && event.latencySec() <= day0WindowSeconds)
                     .findFirst()
                     .ifPresent(event -> day0Actors.add(actor));
-            long ageDays = ChronoUnit.DAYS.between(registration.at().toLocalDate(), today);
+            long ageDays = ChronoUnit.DAYS.between(businessDay(registration.at()), today);
             if (ageDays >= 7) {
                 matureActors.add(actor);
                 boolean retained = events.stream()
                         .filter(event -> event.actor().equals(actor))
                         .filter(event -> event.name().equals("app.dau"))
                         .anyMatch(event -> ChronoUnit.DAYS.between(
-                                registration.at().toLocalDate(), event.at().toLocalDate()) == 7);
+                                businessDay(registration.at()), businessDay(event.at())) == 7);
                 if (retained) day7Actors.add(actor);
             }
         }
@@ -373,7 +376,7 @@ public final class B3FunnelAnalytics {
 
     private static String cohortOf(EventFact event) {
         if (event.cohort().matches("\\d{4}-W\\d{2}")) return event.cohort();
-        LocalDate date = event.at().toLocalDate();
+        LocalDate date = businessDay(event.at());
         return String.format(Locale.ROOT, "%d-W%02d",
                 date.get(IsoFields.WEEK_BASED_YEAR), date.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR));
     }

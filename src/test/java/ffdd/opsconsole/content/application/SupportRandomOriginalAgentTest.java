@@ -20,7 +20,7 @@ class SupportRandomOriginalAgentTest {
     final SupportOwnershipService ownership=mock(SupportOwnershipService.class);
     final ProductionSupportPathGuard production=mock(ProductionSupportPathGuard.class);
     final SupportBindingService service=new SupportBindingService(mapper,ownership,mock(AdminIdempotencyService.class),mock(AuditLogService.class),
-            mock(ApplicationEventPublisher.class),mock(SupportAgentRepository.class),production,mock(SupportTicketOwnerService.class),groups);
+            mock(ApplicationEventPublisher.class),mock(SupportAgentRepository.class),production,mock(SupportTicketOwnerService.class),groups,org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundPolicyService.class));
     final SupportRules rules=new SupportRules(1L,30,15,7,"LIMITED",0,"AUTO_RANDOM",null);
     final ReadScope scope=new ReadScope(99L,ReadMode.ALL,null,null);
     final AtomicReference<SupportAssignment> assigned=new AtomicReference<>();
@@ -70,7 +70,8 @@ class SupportRandomOriginalAgentTest {
         assertThat(service.randomUnbound(30L,rules,"manual:31","99","Manual confirmed",99L).agentAdminId()).isEqualTo(12L);
     }
     @Test void historicalPoolWithoutAutoEligibilityIsNeverMovedByRetry(){
-        setup(List.of(candidate(12)),excluded());when(mapper.autoEligible(30L)).thenReturn(false);
+        // D-4: only a customer who writes in is assigned on inquiry; without an unanswered message the pool row stays put.
+        setup(List.of(candidate(12)),excluded());when(mapper.autoEligible(30L)).thenReturn(false);when(mapper.inquiryWaitMinutes(30L)).thenReturn(null);
         service.retryAutomatic(30L);assertThat(assigned.get()).isNull();verify(groups,never()).candidates(anyLong());
     }
     @Test void registrationPersistsOriginalAdvisorBeforeImmediateAutomaticDraw(){

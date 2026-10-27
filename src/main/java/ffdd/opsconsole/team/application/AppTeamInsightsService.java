@@ -422,7 +422,7 @@ public class AppTeamInsightsService {
                 "vRank", count(row.vRank()), "people", count(row.people()), "votes", count(row.votes()))).toList();
         List<Map<String, Object>> history = mapper.leadershipHistory(userId, window.fromInclusive()).stream().map(row -> Map.<String, Object>of(
                 "weekId", row.weekId(), "payoutUSDT", zero(row.payoutUsdt()))).toList();
-        ZonedDateTime now = ZonedDateTime.now(VietnamBusinessPeriod.ZONE);
+        ZonedDateTime now = ZonedDateTime.now(ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam().zoneAt(java.time.Instant.now()));
         ZonedDateTime next = CronExpression.parse(config.springCron()).next(now);
         Map<String, Object> result = provenance(scope);
         result.put("currentWeekPoolUSDT", pool); result.put("myRank", myRank); result.put("myVotes", myVotes);

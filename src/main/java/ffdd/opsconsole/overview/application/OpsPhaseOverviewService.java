@@ -149,7 +149,7 @@ public class OpsPhaseOverviewService {
                 "maskingPolicy", "AGGREGATE_ONLY",
                 "format", "CSV"));
         return new PhaseCsvFile(
-                "b4-phase-distribution-" + LocalDate.now() + ".csv",
+                "b4-phase-distribution-" + ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(java.time.Instant.now()) + ".csv",
                 csv.toString().getBytes(StandardCharsets.UTF_8));
     }
 

@@ -42,7 +42,7 @@ public record SupportLeaderboardQuery(String board, String month, String currenc
         if (g != null && (g < 1 || g > MAX_SAFE_INTEGER)) throw invalid();
         if (s == Scope.all && g != null) throw invalid();
         if (g != null && !serverApprovedGroups.contains(g)) throw new BizException(403,"SUPPORT_LEADERBOARD_SCOPE_DENIED");
-        YearMonth current = YearMonth.from(now.atZone(SupportLeaderboard.BUSINESS_ZONE));
+        YearMonth current = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(now);
         YearMonth selected = null;
         if (b == Board.customers) { if (month != null) throw invalid(); }
         else {

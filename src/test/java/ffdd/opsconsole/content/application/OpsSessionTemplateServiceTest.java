@@ -410,8 +410,6 @@ class OpsSessionTemplateServiceTest {
         assertThat(current.get().vi()).isEmpty();
         assertThat(current.get().status()).isEqualTo("draft");
         var publish = new SessionReplyTemplateStatusRequest("published", "superadmin", "发布已核对三语的回复模板");
-        assertThat(service.updateReplyTemplateStatus(created.getData().id(), "missing-copy", publish).getMessage())
-                .isEqualTo("SESSION_TEMPLATE_I18N_NOT_PUBLISHED");
         var i6 = new OpsI18nLearningService(i18nLearningRepository, auditLogService,
                 mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class),
                 Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
@@ -422,13 +420,13 @@ class OpsSessionTemplateServiceTest {
         var copy = new ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest(created.getData().text(), en, vi,
                 current.get().version(), "superadmin", "填写并核对真实三语回复内容");
         assertThat(i6.saveLocalizedDraft(key, "save-i6-copy", copy).getCode()).isZero();
-        assertThat(service.updateReplyTemplateStatus(created.getData().id(), "draft-copy", publish).getMessage())
-                .isEqualTo("SESSION_TEMPLATE_I18N_NOT_PUBLISHED");
+        // M-46: an unpublished translation draft does not block; the Chinese source publishes on its own.
+        assertThat(service.updateReplyTemplateStatus(created.getData().id(), "draft-copy", publish).getData().status())
+                .isEqualTo("published");
         copy = new ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest(created.getData().text(), en, vi,
                 current.get().version(), "superadmin", "发布已核对三语的翻译内容");
+        // Translations published later in I6 match the source and leave the template live.
         assertThat(i6.publishLocalizedMessage(key, "publish-i6-copy", copy).getCode()).isZero();
-        assertThat(service.updateReplyTemplateStatus(created.getData().id(), "publish-m5-copy", publish).getData().status())
-                .isEqualTo("published");
     }
 
     @Test
@@ -443,10 +441,6 @@ class OpsSessionTemplateServiceTest {
                 "新增需要双语镜像的话术"));
         String messageKey = "conversation.script." + created.getData().id().toLowerCase();
 
-        var missing = service.updateScriptStatus(created.getData().id(), "idem-m5-i6-missing", new SessionScriptStatusRequest(
-                "published",
-                "Marina K.",
-                "双语镜像缺失时禁止发布"));
         when(i18nLearningRepository.findPublishedMessagePair(messageKey))
                 .thenReturn(Optional.of(new I18nMessagePairView(
                         messageKey,
@@ -462,8 +456,7 @@ class OpsSessionTemplateServiceTest {
                 "Marina K.",
                 "占位符不一致时禁止发布"));
 
-        assertThat(missing.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat(missing.getMessage()).isEqualTo("SESSION_TEMPLATE_I18N_NOT_PUBLISHED");
+        // M-46: a missing translation no longer blocks (see the reply-template flow above); a published one must still match.
         assertThat(mismatch.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat(mismatch.getMessage()).isEqualTo("SESSION_TEMPLATE_I18N_MISMATCH");
         assertThat(templateRepository.findScript(created.getData().id())).get()

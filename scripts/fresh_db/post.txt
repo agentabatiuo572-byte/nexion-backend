@@ -1,0 +1,21 @@
+# Run after the startup chain on a fresh database: structure-only copies of historical migrations whose tables the app still queries.
+fresh_db/ddl-20260720_d1_finance_closure.sql
+fresh_db/ddl-20260722_f1_vrank_promotion_engine.sql
+fresh_db/ddl-20260722_g2_g3_closure.sql
+fresh_db/ddl-20260722_g7_repurchase_closure.sql
+fresh_db/ddl-20260722_i3_a4_event_closure.sql
+fresh_db/ddl-20260722_k4_d2_routing_event_closure.sql
+fresh_db/ddl-20260723_b3_funnel_closure.sql
+fresh_db/ddl-20260727_f3_binary_settlement_closure.sql
+fresh_db/ddl-20260727_f4_leadership_pool_closure.sql
+fresh_db/ddl-20260727_g2_exchange_fee_allocation.sql
+fresh_db/ddl-20260727_k2_runtime_detection_closure.sql
+migrations/20260929_support_maintenance_s4.sql
+fresh_db/ddl-20261022_04_cregis_funds_preparation.sql
+fresh_db/ddl-20261022_05_cregis_auto_forward.sql
+fresh_db/ddl-20260713_k6_janus.sql
+fresh_db/ddl-20260717_a1_admin_mfa.sql
+fresh_db/ddl-20260721_e3_user_tradein_flow.sql
+fresh_db/ddl-20260727_h7_voucher_inventory_cas.sql
+fresh_db/03_app_runtime_tables.sql
+fresh_db/04_event_registry_restore.sql

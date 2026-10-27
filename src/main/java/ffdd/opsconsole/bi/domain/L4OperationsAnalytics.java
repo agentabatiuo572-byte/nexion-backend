@@ -93,8 +93,8 @@ public final class L4OperationsAnalytics {
                 "period", linked(
                         "key", normalizedPeriod,
                         "label", periodLabel(normalizedPeriod),
-                        "from", range.from().toLocalDate().toString(),
-                        "to", range.to().toLocalDate().toString()),
+                        "from", ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(range.from()).toString(),
+                        "to", ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(range.to()).toString()),
                 "phaseFilter", normalizedPhase,
                 "device", device(selected),
                 "tasks", tasks(selected, actorComplete, completionVolume, normalizedPeriod),
@@ -108,7 +108,7 @@ public final class L4OperationsAnalytics {
                         "incompleteRatesAreNull", true,
                         "eventCount", selected.size(),
                         "duplicateEventsIgnored", duplicateEventsIgnored,
-                        "businessTimeZone", "UTC+08:00",
+                        "businessTimeZone", ffdd.opsconsole.shared.config.BusinessCalendar.legacy().offsetLabel(),
                         "lateArrivalRule", "included_on_next_query"),
                 "capabilities", linked(
                         "currentSnapshot", true,
@@ -182,7 +182,7 @@ public final class L4OperationsAnalytics {
     private static List<Fact> completionInstances(List<Fact> completed, String period) {
         Map<String, List<Fact>> buckets = new TreeMap<>();
         for (Fact item : completed) {
-            buckets.computeIfAbsent(bucket(item.ts().toLocalDate(), period), ignored -> new ArrayList<>()).add(item);
+            buckets.computeIfAbsent(bucket(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(item.ts()), period), ignored -> new ArrayList<>()).add(item);
         }
         List<Fact> result = new ArrayList<>();
         for (List<Fact> facts : buckets.values()) {
@@ -273,7 +273,7 @@ public final class L4OperationsAnalytics {
     private static List<Map<String, Object>> history(List<Fact> rows, String period) {
         Map<String, List<Fact>> buckets = new TreeMap<>();
         for (Fact row : rows) {
-            String key = bucket(row.ts().toLocalDate(), period);
+            String key = bucket(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(row.ts()), period);
             buckets.computeIfAbsent(key, ignored -> new ArrayList<>()).add(row);
         }
         List<Map<String, Object>> result = new ArrayList<>();
@@ -443,11 +443,12 @@ public final class L4OperationsAnalytics {
             LocalDate start = parseDate(from);
             LocalDate end = parseDate(to);
             if (start == null || end == null || start.isAfter(end)
-                    || end.isAfter(now.toLocalDate())
+                    || end.isAfter(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now))
                     || ChronoUnit.DAYS.between(start, end) > 399) {
                 throw new IllegalArgumentException("L4_CUSTOM_RANGE_INVALID");
             }
-            return new Range(start.atStartOfDay(), end.atTime(LocalTime.MAX));
+            // R-1: custom dates are business dates; bounds are stored (Beijing) timestamps.
+            return new Range(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(start), ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(end.plusDays(1)).minusNanos(1));
         }
         long days = "day".equals(period) ? 1 : "month".equals(period) ? 30 : 7;
         return new Range(now.minusDays(days), now);

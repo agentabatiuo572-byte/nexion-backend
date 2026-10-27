@@ -108,7 +108,7 @@ public class SupportLeaderboardService {
         LocalDateTime databaseNow=sourceMapper.nowUtc();if(databaseNow==null)throw unavailable();
         Instant now=databaseNow.toInstant(ZoneOffset.UTC);int interval=refreshMinutes();
         // Structural validation before source access. Actual selectable-month policy is checked below.
-        YearMonth proposed=YearMonth.from(now.atZone(SupportLeaderboard.BUSINESS_ZONE));
+        YearMonth proposed=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(now);
         if(query.month()!=null) try {proposed=YearMonth.parse(query.month());}catch(DateTimeException ex){throw new BizException(422,"SUPPORT_LEADERBOARD_QUERY_INVALID");}
         Normalized preliminary=query.normalize(now,Set.of(proposed),SupportAnalyticsPrivateQueryService.CURRENCIES,"USDT",access.scopes());
         Context requested=context(preliminary,access,now);
@@ -118,7 +118,7 @@ public class SupportLeaderboardService {
         final SupportLeaderboardSourceService.Read preflight;
         // A caught source failure must not mark the response transaction rollback-only.
         try {preflight=freshRead.execute(status->source.readForAuthorizedLeaderboard(new Context(Board.customers,null,
-            YearMonth.from(now.atZone(SupportLeaderboard.BUSINESS_ZONE)),"USDT",Scope.all,Set.of(),DEFINITION,now)));}
+            ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(now),"USDT",Scope.all,Set.of(),DEFINITION,now)));}
         catch(BizException ex) {
             if(ex.getCode()!=503 || previous==null)throw ex;
             return new Resolved(preliminary,previous,previous.snapshot().context().rankMonth()==null?List.of():List.of(previous.snapshot().context().rankMonth()),now,interval,true);

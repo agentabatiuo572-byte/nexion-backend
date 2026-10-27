@@ -86,16 +86,19 @@ public class AppWalletBillsService {
         // conservative client watermark, so a concurrent later ledger insert cannot be marked as already read.
         Instant snapshotAsOf = scope.snapshotAt() == null
                 ? clock.instant() : scope.snapshotAt().toInstant(java.time.ZoneOffset.UTC);
-        LocalDateTime businessNow = LocalDateTime.ofInstant(snapshotAsOf, DateTimeFormatConfig.BUSINESS_ZONE);
-        LocalDateTime dayStart = businessNow.toLocalDate().atStartOfDay();
-        LocalDateTime nextDay = dayStart.plusDays(1);
-        LocalDateTime monthStart = YearMonth.from(businessNow).atDay(1).atStartOfDay();
-        LocalDateTime nextMonth = monthStart.plusMonths(1);
+        // R-1: today / this month by the business calendar; bounds are stored (Beijing) timestamps.
+        var calendar = ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
+        java.time.LocalDate businessToday = calendar.dateAt(snapshotAsOf);
+        LocalDateTime dayStart = calendar.storageStart(businessToday);
+        LocalDateTime nextDay = calendar.storageStart(businessToday.plusDays(1));
+        LocalDateTime monthStart = calendar.storageStart(YearMonth.from(businessToday));
+        LocalDateTime nextMonth = calendar.storageStart(YearMonth.from(businessToday).plusMonths(1));
         AppWalletBillsMapper.SummaryRow summary = mapper.summary(userId, dayStart, nextDay, monthStart, nextMonth);
         if (summary == null) summary = new AppWalletBillsMapper.SummaryRow(null, null, null, null, null, null);
 
         Map<String, Object> result = base();
-        result.put("timeZone", DateTimeFormatConfig.BUSINESS_ZONE.getId());
+        // D-16: the zone the today / this-month totals were cut in.
+        result.put("timeZone", calendar.zoneAt(snapshotAsOf).getId());
         result.put("asOf", snapshotAsOf.toString());
         result.put("rewardsUsdt", nonNegative(summary.rewardsUsdt()));
         result.put("rewardsNex", nonNegative(summary.rewardsNex()));

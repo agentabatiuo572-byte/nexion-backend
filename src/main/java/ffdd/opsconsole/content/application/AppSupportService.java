@@ -76,6 +76,7 @@ public class AppSupportService {
     private final SupportOwnershipService ownership;
     private final SupportHumanMessageService humanMessages;
     private final AppConversationVisibilityService visibility;
+    private final SupportUnboundReceipt unboundReceipt;
 
     @Transactional(readOnly = true)
     public ApiResult<ffdd.opsconsole.content.domain.AppSupportAdvisorView> advisor(Long userId) {
@@ -310,6 +311,7 @@ public class AppSupportService {
                     uniqueNo("CV-APP-", now), userId, type, SupportHumanMessageService.text(request.openingText()),
                     ownerId, ownerName, now);
             humanMessages.committed(prepared,humanMessages.latest(created.conversationNo()),idempotencyKey);
+            if (advisor == null) unboundReceipt.sendIfUnbound(userId, created.conversationNo());
             audit("APP_CONVERSATION_CREATED", "CONVERSATION", created.conversationNo(), userId,
                     Map.of("type", created.conversationType(), "idempotencyKey", idempotencyKey.trim()));
             ApiResult<ContentConversationDetail> result = conversation(userId, created.conversationNo());
@@ -343,6 +345,7 @@ public class AppSupportService {
                 return conversationConflict();
             }
             humanMessages.committed(prepared,humanMessages.latest(conversationNo),idempotencyKey);
+            unboundReceipt.sendIfUnbound(userId, conversation.conversationNo());
             audit("APP_CONVERSATION_REPLIED", "CONVERSATION", conversation.conversationNo(), userId,
                     Map.of("bodyLength", SupportHumanMessageService.text(request.body()).length(), "idempotencyKey", idempotencyKey.trim()));
             ApiResult<ContentConversationDetail> result = conversation(userId, conversation.conversationNo());

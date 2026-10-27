@@ -496,7 +496,7 @@ class R20UserViewClearMySqlReviewTest {
                     mock(SupportKnowledgeRepository.class), idempotency, audit, events, clock, guard,
                     session.getMapper(AdminIdempotencyRecordMapper.class), json,
                     new MybatisSupportAgentRepository(session.getMapper(SupportAgentMapper.class)), config,
-                    ownership, human, visibility), AppSupportService.class);
+                    ownership, human, visibility, org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class)), AppSupportService.class);
             ops = proxy(new OpsConversationService(repository, mock(SupportTicketRepository.class),
                     mock(OpsSupportAgentService.class), config, audit, clock,
                     mock(ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.class),
