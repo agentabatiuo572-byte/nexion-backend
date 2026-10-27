@@ -81,9 +81,9 @@ public class SupportLeaderboardPublicationService {
     @Transactional(propagation = Propagation.MANDATORY, readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public List<Publication> previousBusinessDay(Context current) {
         requireReadBoundary();
-        LocalDate today = current.evaluatedAt().atZone(SupportLeaderboard.BUSINESS_ZONE).toLocalDate();
-        Instant from = today.minusDays(1).atStartOfDay(SupportLeaderboard.BUSINESS_ZONE).toInstant();
-        Instant to = today.atStartOfDay(SupportLeaderboard.BUSINESS_ZONE).toInstant();
+        LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(current.evaluatedAt());
+        Instant from = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().startOf(today.minusDays(1));
+        Instant to = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().startOf(today);
         Map<String,Object> query = identity(current); query.put("from",utc(from)); query.put("to",utc(to));
         List<Publication> result = new ArrayList<>();
         for (Stored row : mapper.previousDay(query)) {

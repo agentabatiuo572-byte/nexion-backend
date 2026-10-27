@@ -53,8 +53,9 @@ public class WeeklyQuestSnapshotService {
         this.environment=environment;
     }
 
+    /** R-1: ISO week of a stored (Beijing) timestamp, cut by the business calendar. */
     public static String weekKey(LocalDateTime time) {
-        return "WEEK:%04d-W%02d".formatted(time.get(WeekFields.ISO.weekBasedYear()),time.get(WeekFields.ISO.weekOfWeekBasedYear()));
+        return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().weekKey(time);
     }
 
     private LocalDateTime now() { return LocalDateTime.now(clock.withZone(ZONE)); }
@@ -88,8 +89,8 @@ public class WeeklyQuestSnapshotService {
         if (eventWeek != null && !eventWeek.equals(key)) return null;
         existing = mapper.findAfterLock(key);
         if (existing != null) return contains(existing,clock.instant())?existing:null;
-        LocalDate monday=current.toLocalDate().with(DayOfWeek.MONDAY);
-        return publish(key,monday.atStartOfDay(),monday.plusWeeks(1).atStartOfDay(),null,null,null,requireRhythm);
+        LocalDate monday=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(current).with(DayOfWeek.MONDAY);
+        return publish(key,ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(monday),ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(monday.plusWeeks(1)),null,null,null,requireRhythm);
     }
 
     private Header publish(String key,LocalDateTime start,LocalDateTime end,String zone,LocalDate monday,String version,boolean requireRhythm) {

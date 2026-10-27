@@ -147,7 +147,7 @@ class AppConversationUserClearTest {
         var app = new AppSupportService(mock(SupportTicketRepository.class), conversations, mock(SupportKnowledgeRepository.class),
                 idempotency, audit, events, Clock.systemUTC(), mock(ProductionSupportPathGuard.class), records, json,
                 mock(SupportAgentRepository.class), mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), ownership,
-                mock(SupportHumanMessageService.class), visibility);
+                mock(SupportHumanMessageService.class), visibility, org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class));
         when(mapper.peer(42L, "CV-A")).thenReturn(new PeerRow("CV-A", "agent:7", "7", "same name", 3L, 20, 30, true, false));
         when(conversations.findByConversationNo("CV-A")).thenReturn(Optional.of(header("CV-A")));
         when(conversations.findByConversationNoForUpdate("CV-A")).thenReturn(Optional.of(header("CV-A")));

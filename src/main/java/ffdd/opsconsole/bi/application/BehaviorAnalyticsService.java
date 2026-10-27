@@ -50,7 +50,6 @@ public class BehaviorAnalyticsService {
     private static final Set<String> ZONES = Set.of("TOP", "MAIN_CTA", "CONTENT", "BOTTOM");
     private static final long MAX_DWELL_MS = 86_400_000L;
     private static final ZoneOffset BUSINESS_ZONE = ZoneOffset.ofHours(8);
-    private static final String BUSINESS_TIME_ZONE = "UTC+08:00";
 
     private final BehaviorAnalyticsMapper mapper;
     private final BehaviorAnalyticsSandboxMapper sandboxMapper;
@@ -312,7 +311,7 @@ public class BehaviorAnalyticsService {
                 "device", query.device() == null ? "ALL" : query.device(),
                 "locale", query.locale() == null ? "ALL" : query.locale(),
                 "depth", normalizedDepth,
-                "businessTimeZone", BUSINESS_TIME_ZONE,
+                "businessTimeZone", ffdd.opsconsole.shared.config.BusinessCalendar.legacy().offsetLabel(),
                 "lateArrivalPolicy", "rejected_retry_in_order",
                 "activity", rows,
                 "dailyTrend", mapper.dailyTrend(query.startAt(), query.endAt(), query.device(), query.locale()),

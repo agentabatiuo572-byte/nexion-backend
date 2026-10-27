@@ -1934,7 +1934,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     private boolean futureDate(String value) {
         try {
-            return LocalDate.parse(value).isAfter(LocalDate.now());
+            return LocalDate.parse(value).isAfter(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(java.time.Instant.now()));
         } catch (DateTimeParseException ex) {
             return false;
         }

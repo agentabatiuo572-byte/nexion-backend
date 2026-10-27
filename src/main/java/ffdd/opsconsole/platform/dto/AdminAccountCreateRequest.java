@@ -8,7 +8,8 @@ public record AdminAccountCreateRequest(
         String ignoredCredentialDelivery,
         String reason,
         String operator,
-        String initialPassword,
+        // B-3: accepted for wire compatibility but ignored (the server issues a temporary password); never serialized or logged.
+        @com.fasterxml.jackson.annotation.JsonProperty(access = com.fasterxml.jackson.annotation.JsonProperty.Access.WRITE_ONLY) String initialPassword,
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String avatarAssetId,
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String avatarGender,
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Boolean useDefaultAvatar) {
@@ -19,7 +20,7 @@ public record AdminAccountCreateRequest(
         this(username,displayName,email,role,ignoredCredentialDelivery,reason,operator,initialPassword,null);
     }
     @Override public String toString() {
-        String legacy="AdminAccountCreateRequest[username="+username+", displayName="+displayName+", email="+email+", role="+role+", ignoredCredentialDelivery="+ignoredCredentialDelivery+", reason="+reason+", operator="+operator+", initialPassword="+initialPassword+"]";
+        String legacy="AdminAccountCreateRequest[username="+username+", displayName="+displayName+", email="+email+", role="+role+", ignoredCredentialDelivery="+ignoredCredentialDelivery+", reason="+reason+", operator="+operator+", initialPassword="+(initialPassword==null?"null":"[REDACTED]")+"]";
         return avatarAssetId==null && avatarGender==null && useDefaultAvatar==null?legacy:ffdd.opsconsole.content.dto.SupportMessagePayload.encode(this);
     }
     public AdminAccountCreateRequest(

@@ -28,8 +28,39 @@ public record ContentConversationView(
         Long pendingReplyCount,
         LocalDateTime pendingReplySince,
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-        Long userClearedThroughMessageId) {
+        Long userClearedThroughMessageId,
+        LocalDateTime lastHumanMessageAt,
+        String customerNickname) {
+    public ContentConversationView {
+        archived = Boolean.TRUE.equals(archived);
+    }
     @org.apache.ibatis.annotations.AutomapConstructor
+    public ContentConversationView(Long id, String conversationNo, Long userId, String conversationType,
+            String status, String ownerAgentId, String ownerAgentName, Integer unreadCount, String lastMessage,
+            LocalDateTime lastMessageAt, String transferFromAgentId, String transferFromAgentName,
+            String transferToType, String transferToId, String transferToName, String transferReason,
+            LocalDateTime transferredAt, LocalDateTime updatedAt, Long version, Long lastPublicMessageId,
+            String lastMessageKind, Boolean archived, Long pendingReplyCount, LocalDateTime pendingReplySince,
+            LocalDateTime lastHumanMessageAt, String customerNickname) {
+        this(id, conversationNo, userId, conversationType, status, ownerAgentId, ownerAgentName, unreadCount,
+                lastMessage, lastMessageAt, transferFromAgentId, transferFromAgentName, transferToType,
+                transferToId, transferToName, transferReason, transferredAt, updatedAt, version,
+                lastPublicMessageId, lastMessageKind, archived, pendingReplyCount, pendingReplySince, null,
+                lastHumanMessageAt, customerNickname);
+    }
+    public ContentConversationView(Long id, String conversationNo, Long userId, String conversationType,
+            String status, String ownerAgentId, String ownerAgentName, Integer unreadCount, String lastMessage,
+            LocalDateTime lastMessageAt, String transferFromAgentId, String transferFromAgentName,
+            String transferToType, String transferToId, String transferToName, String transferReason,
+            LocalDateTime transferredAt, LocalDateTime updatedAt, Long version, Long lastPublicMessageId,
+            String lastMessageKind, Boolean archived, Long pendingReplyCount, LocalDateTime pendingReplySince,
+            Long userClearedThroughMessageId) {
+        this(id, conversationNo, userId, conversationType, status, ownerAgentId, ownerAgentName, unreadCount,
+                lastMessage, lastMessageAt, transferFromAgentId, transferFromAgentName, transferToType,
+                transferToId, transferToName, transferReason, transferredAt, updatedAt, version,
+                lastPublicMessageId, lastMessageKind, archived, pendingReplyCount, pendingReplySince,
+                userClearedThroughMessageId, null, null);
+    }
     public ContentConversationView(Long id, String conversationNo, Long userId, String conversationType,
             String status, String ownerAgentId, String ownerAgentName, Integer unreadCount, String lastMessage,
             LocalDateTime lastMessageAt, String transferFromAgentId, String transferFromAgentName,
@@ -39,7 +70,7 @@ public record ContentConversationView(
         this(id, conversationNo, userId, conversationType, status, ownerAgentId, ownerAgentName, unreadCount,
                 lastMessage, lastMessageAt, transferFromAgentId, transferFromAgentName, transferToType,
                 transferToId, transferToName, transferReason, transferredAt, updatedAt, version,
-                lastPublicMessageId, lastMessageKind, archived, pendingReplyCount, pendingReplySince, null);
+                lastPublicMessageId, lastMessageKind, archived, pendingReplyCount, pendingReplySince, null, null, null);
     }
     public ContentConversationView(Long id, String conversationNo, Long userId, String conversationType,
             String status, String ownerAgentId, String ownerAgentName, Integer unreadCount, String lastMessage,
@@ -51,9 +82,6 @@ public record ContentConversationView(
                 lastMessage, lastMessageAt, transferFromAgentId, transferFromAgentName, transferToType,
                 transferToId, transferToName, transferReason, transferredAt, updatedAt, version,
                 lastPublicMessageId, lastMessageKind, archived, pendingReplyCount, null);
-    }
-    public ContentConversationView {
-        archived = Boolean.TRUE.equals(archived);
     }
     public ContentConversationView(Long id, String conversationNo, Long userId, String conversationType,
             String status, String ownerAgentId, String ownerAgentName, Integer unreadCount, String lastMessage,

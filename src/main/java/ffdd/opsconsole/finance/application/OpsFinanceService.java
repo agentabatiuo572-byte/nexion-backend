@@ -336,7 +336,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (evidenceRef == null || evidenceRef.length() > 128) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RECONCILIATION_EVIDENCE_REQUIRED");
         }
-        LocalDate reconcileDate = LocalDate.now();
+        LocalDate reconcileDate = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock);
         if (depositOpsRepository.hasReconciliationWriteoff(channel.code(), reconcileDate)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
@@ -1438,7 +1438,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         BigDecimal providerAmount = safe(aggregate.providerAmount());
         BigDecimal ledgerAmount = safe(aggregate.ledgerAmount());
         BigDecimal diffAmount = providerAmount.subtract(ledgerAmount);
-        boolean reconciled = depositOpsRepository.hasReconciliationWriteoff(channelCode, LocalDate.now());
+        boolean reconciled = depositOpsRepository.hasReconciliationWriteoff(channelCode, ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock));
         String diff = diffText(diffAmount, aggregate.providerCount(), aggregate.ledgerCount(), reconciled);
         return new DepositReconciliationRowView(
                 channelId,
@@ -2163,7 +2163,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (reviewAt == null || !reviewAt.isAfter(LocalDateTime.now(clock))) {
             return false;
         }
-        long days = java.time.temporal.ChronoUnit.DAYS.between(LocalDate.now(clock), reviewAt.toLocalDate());
+        long days = java.time.temporal.ChronoUnit.DAYS.between(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock), ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(reviewAt));
         if (expectedDays == 365) {
             return days >= 1 && days <= 365;
         }
@@ -2179,7 +2179,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return LocalDateTime.parse(value);
         } catch (DateTimeParseException ignored) {
             try {
-                return LocalDate.parse(value).atStartOfDay();
+                return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(LocalDate.parse(value));
             } catch (DateTimeParseException invalid) {
                 return null;
             }

@@ -33,7 +33,7 @@ class AppSupportCommandRecoveryTest {
             Clock.fixed(Instant.parse("2026-08-31T00:00:00Z"), ZoneOffset.UTC),
             mock(ProductionSupportPathGuard.class), records, new ObjectMapper().findAndRegisterModules(),
             mock(SupportAgentRepository.class), mock(PlatformConfigFacade.class), ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(),
-            ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations));
+            ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class));
 
     @Test
     void committedCommandIsRecoveredOnlyFromTheAuthenticatedUsersScope() throws Exception {

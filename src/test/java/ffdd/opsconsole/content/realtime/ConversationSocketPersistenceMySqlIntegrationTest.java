@@ -696,7 +696,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
                 PlatformConfigFacade config) {
             return new AppSupportService(tickets, conversations, knowledge, idempotency, audit, events, clock,
                     guard, idempotencyRecords, json, agents, config, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(),
-                    ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations));
+                    ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class));
         }
 
         @Bean

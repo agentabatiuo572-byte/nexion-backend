@@ -111,7 +111,8 @@ public class SupportBulkService {
             if(request.assetId()!=null) requireAsset(request.assetId(),actor);
             for(var row:recipients) {
                 Long customer=number(row,"customerId");var current=mapper.conversation(customer);
-                String no=current==null?null:text(current,"conversationNo");
+                // A closed latest conversation goes through the create path, which resumes the customer thread (threads are reused).
+                String no=current==null || "CLOSED".equals(text(current,"status"))?null:text(current,"conversationNo");
                 String operation=no==null?"CREATE":"REPLY:"+no;
                 String attachment="IMAGE".equals(request.kind())?attachmentId(request.selectionId(),customer):null;
                 mapper.route(request.selectionId(),customer,operation,no,attachment);
@@ -288,7 +289,7 @@ public class SupportBulkService {
         if(!Boolean.TRUE.equals(mapper.maintenanceEnabled(customer))) throw conflict("SUPPORT_MAINTENANCE_STOPPED");
         var actual=mapper.conversation(customer);
         if("CREATE".equals(row.get("operation"))) {
-            if(actual!=null) throw conflict("SUPPORT_BULK_CONVERSATION_CHANGED");
+            if(actual!=null && !"CLOSED".equals(text(actual,"status"))) throw conflict("SUPPORT_BULK_CONVERSATION_CHANGED");
         } else {
             if(actual==null || !Objects.equals(text(actual,"conversationNo"),text(row,"conversationNo")))
                 throw conflict("SUPPORT_BULK_CONVERSATION_CHANGED");
@@ -463,7 +464,6 @@ public class SupportBulkService {
     private static String conversationExclusion(Map<String,Object> current) {
         if(truth(current.get("converted")))return "CONVERSATION_CONVERTED";
         if(truth(current.get("archived")))return "CONVERSATION_ARCHIVED";
-        if("CLOSED".equals(text(current,"status")))return "CONVERSATION_CLOSED";
         if("TRANSFERRED".equals(text(current,"status")))return "CONVERSATION_TRANSFERRED";
         return null;
     }

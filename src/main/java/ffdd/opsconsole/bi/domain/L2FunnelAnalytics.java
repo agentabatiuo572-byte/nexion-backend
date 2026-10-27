@@ -156,7 +156,7 @@ public final class L2FunnelAnalytics {
                         "actorCoverage", totalRelevant == 0 ? 1D : percent(identifiedRelevant, totalRelevant),
                         "retentionEvent", "app.dau",
                         "incompleteRatesAreNull", true,
-                        "businessTimeZone", "UTC+08:00",
+                        "businessTimeZone", ffdd.opsconsole.shared.config.BusinessCalendar.legacy().offsetLabel(),
                         "lateArrivals", "included_on_next_query"),
                 "sources", List.of("nx_event_outbox", "nx_event_schema_registry"));
     }
@@ -262,6 +262,9 @@ public final class L2FunnelAnalytics {
         return curves;
     }
 
+    /** R-1: business calendar date of a stored (Beijing) timestamp. */
+    private static LocalDate businessDay(LocalDateTime storageTime) { return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(storageTime); }
+
     private static Double retention(
             List<EventFact> events,
             Map<String, EventFact> registered,
@@ -276,7 +279,7 @@ public final class L2FunnelAnalytics {
                 event.actor().equals(actor)
                         && event.name().equals("app.dau")
                         && ChronoUnit.DAYS.between(
-                                registered.get(actor).at().toLocalDate(), event.at().toLocalDate()) == day)).count();
+                                businessDay(registered.get(actor).at()), businessDay(event.at())) == day)).count();
         return percent(active, actors.size());
     }
 
@@ -438,13 +441,13 @@ public final class L2FunnelAnalytics {
 
     private static String cohortOf(EventFact event) {
         if (event.cohort().matches("\\d{4}-W\\d{2}")) return event.cohort();
-        LocalDate date = event.at().toLocalDate();
+        LocalDate date = businessDay(event.at());
         return String.format(Locale.ROOT, "%d-W%02d",
                 date.get(IsoFields.WEEK_BASED_YEAR), date.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR));
     }
 
     private static String cohortKey(EventFact event, boolean monthly) {
-        return monthly ? event.at().toLocalDate().format(DateTimeFormatter.ofPattern("yyyy-MM")) : cohortOf(event);
+        return monthly ? businessDay(event.at()).format(DateTimeFormatter.ofPattern("yyyy-MM")) : cohortOf(event);
     }
 
     private static String normalizeLocale(String value) {

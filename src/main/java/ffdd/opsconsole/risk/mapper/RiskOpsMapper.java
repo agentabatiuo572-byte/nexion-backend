@@ -1273,7 +1273,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                 period_type,period_key,snapshot_bucket,user_id,cumulative_usdt,direct_count,is_deleted
             )
             SELECT 'week',
-                   DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY), '%Y-%m-%d'),
+                   DATE_FORMAT(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.WEEK_DATE + """
+, '%Y-%m-%d'),
                    FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(NOW()) / 300) * 300),
                    commission.user_id,
                    SUM(commission.amount_usdt),
@@ -1282,14 +1283,16 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                        FROM nx_user direct_user
                       WHERE direct_user.sponsor_user_id = commission.user_id
                         AND direct_user.is_deleted = 0
-                        AND direct_user.created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+                        AND direct_user.created_at >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.WEEK_START + """
+
                    ),
                    0
               FROM nx_commission_event commission
              WHERE commission.is_deleted = 0
                AND commission.amount_usdt > 0
                AND UPPER(commission.status) NOT IN ('FAILED','REJECTED','CANCELLED','REVERSED')
-               AND commission.created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+               AND commission.created_at >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.WEEK_START + """
+
              GROUP BY commission.user_id
             ON DUPLICATE KEY UPDATE
                 cumulative_usdt = VALUES(cumulative_usdt),
@@ -1323,7 +1326,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                WHERE snapshot.is_deleted = 0
                  AND snapshot.period_type = 'week'
                  AND snapshot.period_key =
-                     DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY), '%Y-%m-%d')
+                     DATE_FORMAT(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.WEEK_DATE + """
+, '%Y-%m-%d')
             ),
             pairs AS (
               SELECT user_id,

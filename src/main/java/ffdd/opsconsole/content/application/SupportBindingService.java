@@ -33,6 +33,7 @@ public class SupportBindingService {
     private final ProductionSupportPathGuard production;
     private final SupportTicketOwnerService ticketOwners;
     private final SupportGroupMapper groups;
+    private final SupportUnboundPolicyService unboundPolicy;
 
     @Transactional
     public SupportRules rules() { managementScope(null,null);return mapper.rules(); }
@@ -247,8 +248,8 @@ public class SupportBindingService {
         else mapper.enterPool(customer,reason);
         if(!"MIGRATION_REVIEW".equals(reason) && rules!=null && "AUTO_RANDOM".equals(rules.unboundAssignmentMode())
                 && production.productionSupportAutomationAllowed() && mapper.canonicalCustomer(customer)==1) {
+            // Assignment waits for the customer's first inquiry (SupportBindingRetry), so silent sign-ups don't load advisors.
             mapper.eligiblePool(customer,rules.version(),"registration:"+customer);
-            randomUnbound(customer,rules,"registration:"+customer,"registration","Automatic new customer assignment",null);
         }
     }
 
@@ -282,7 +283,7 @@ public class SupportBindingService {
         return false;
     }
 
-    /** The caller holds customer then rules locks. Candidate choice never uses presence or workload. */
+    /** The caller holds customer then rules locks. Supervisor-confirmed batches pick at random; automatic assignment picks the least-loaded candidate. */
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
     public SupportAssignment randomUnbound(Long customer,SupportRules rules,String operation,String actor,String reason,Long supervisor) {
         return randomUnbound(customer,rules,operation,actor,reason,supervisor,null);
@@ -308,7 +309,8 @@ public class SupportBindingService {
             if(!frozen.equals(current)) throw new BizException(409,"SUPPORT_RANDOM_SCOPE_CHANGED");
         }
         List<Long> candidates=facts.stream().map(Candidate::agentId).toList();
-        Long candidate=candidates.isEmpty()?null:candidates.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(candidates.size()));
+        Long candidate=candidates.isEmpty()?null:supervisor==null && frozen==null?leastLoaded(candidates)
+                :candidates.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(candidates.size()));
         if(!candidates.isEmpty()) {
             if(mapper.eligibleAgent(candidate)!=1) {
                 mapper.attemptPool(customer,"WAITING_CANDIDATE","CANDIDATE_CHANGED");return null;
@@ -331,16 +333,59 @@ public class SupportBindingService {
         return null;
     }
 
+    /**
+     * Automatic mode assigns at the customer's first inquiry. Supervisor mode leaves it to a supervisor and
+     * only falls back to automatic assignment after the inquiry has waited the policy's fallback minutes.
+     * Customers that were never routed go to the policy's default group first (M-18).
+     */
     @Transactional
     public void retryAutomatic(Long customer) {
         production.requireAllowed(customer);
         ownership.lockCustomer(customer);
-        if(mapper.current(customer)!=null || !Boolean.TRUE.equals(mapper.autoEligible(customer))) return;
+        if(mapper.current(customer)!=null || mapper.poolVersion(customer)==null || "MIGRATION_REVIEW".equals(mapper.poolReason(customer))) return;
+        Long waited=mapper.inquiryWaitMinutes(customer);
+        if(waited==null) return;
         SupportRules rules=mapper.rules();
-        if(rules==null || !"AUTO_RANDOM".equals(rules.unboundAssignmentMode())) {
-            mapper.attemptPool(customer,"PAUSED","SUPERVISOR_MODE");return;
+        var policy=Objects.requireNonNullElse(unboundPolicy.current(),new SupportUnboundPolicyService.Policy(5,15,null));
+        if(rules!=null && "AUTO_RANDOM".equals(rules.unboundAssignmentMode())) {
+            if(!Boolean.TRUE.equals(mapper.autoEligible(customer))) mapper.eligiblePool(customer,rules.version(),"inquiry:"+customer);
+            routeToDefaultGroup(customer,policy.defaultGroupId());
+            randomUnbound(customer,rules,"auto:"+customer,"automatic","客户首次咨询，按负载自动分配",null);
+            return;
         }
-        randomUnbound(customer,rules,"auto:"+customer,"automatic","Retry automatic new customer assignment",null);
+        if(rules==null || waited<policy.fallbackMinutes()) return;
+        routeToDefaultGroup(customer,policy.defaultGroupId());
+        randomUnbound(customer,rules,"fallback:"+customer,"automatic","待分配已等待 "+waited+" 分钟，按负载自动兜底分配",null);
+    }
+
+    /** Runs after the customer's message commits, in its own transaction; failures are retried by SupportBindingRetry. */
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    public void assignOnInquiry(Long customer) {
+        retryAutomatic(customer);
+    }
+
+    /** Only a customer with no route history at all is routed; an explicit supervisor decision is never overridden. */
+    private void routeToDefaultGroup(Long customer,Long group) {
+        if(group==null || groups.routeCurrent(customer)!=null || groups.routeHistoryCount(customer)!=0 || groups.openRouteCount(customer)!=0) return;
+        Group locked=groups.lockGroup(group);
+        if(locked==null || !"ENABLED".equals(locked.status()) || groups.ownerCurrent(group)==null) return;
+        var at=groups.now();
+        if(groups.insertRoute(customer,group,at,1L,null,"未分组新客户进入默认接收组","default-group:"+customer)!=1
+                || groups.touch(group,locked.version(),at)!=1) throw new BizException(409,"SUPPORT_GROUP_ROUTE_CONFLICT");
+    }
+
+    private Long leastLoaded(List<Long> candidates) {
+        // Same load as SupportBindingMapper.agentLoad, read for every candidate in two grouped queries.
+        Map<Long,Long> load=new HashMap<>();
+        for(var row:mapper.boundCounts(candidates)) load.merge(((Number)row.get("agentId")).longValue(),((Number)row.get("n")).longValue(),Long::sum);
+        for(var row:mapper.pendingCounts(candidates)) load.merge(((Number)row.get("agentId")).longValue(),2*((Number)row.get("n")).longValue(),Long::sum);
+        long best=Long.MAX_VALUE;List<Long> ties=new ArrayList<>();
+        for(Long id:candidates) {
+            long current=load.getOrDefault(id,0L);
+            if(current<best) {best=current;ties.clear();}
+            if(current==best) ties.add(id);
+        }
+        return ties.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(ties.size()));
     }
 
     public record SupportAssignmentChanged(Long customerId, SupportAssignment previous, SupportAssignment current) {}

@@ -10,9 +10,11 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Insert;
 
 public interface ConversationMessageMapper extends BaseMapper<ConversationMessageEntity> {
-    // Only legacy task actor references are resolved; ordinary historical display names stay unchanged.
+    // Legacy task actor references and bare login names resolve to the advisor's display name (M-38);
+    // any other historical display name stays unchanged.
     String ADMIN_DISPLAY_NAME = "COALESCE(NULLIF(TRIM(display_admin.nickname),''),NULLIF(TRIM(display_admin.username),''))";
-    String SENDER_NAME = "CASE WHEN sender_type='agent' AND sender_name=CONCAT('admin:',sender_id) "
+    String SENDER_NAME = "CASE WHEN sender_type='agent' AND (sender_name=CONCAT('admin:',sender_id) "
+        + "OR EXISTS(SELECT 1 FROM nx_admin login_admin WHERE login_admin.id=sender_id AND login_admin.username=sender_name)) "
         + "THEN COALESCE((SELECT " + ADMIN_DISPLAY_NAME
         + " FROM nx_admin display_admin WHERE display_admin.id=sender_id AND display_admin.is_deleted=0),'客服') "
         + "ELSE sender_name END AS senderName";

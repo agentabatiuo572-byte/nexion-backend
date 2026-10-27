@@ -66,7 +66,7 @@ class AppSupportServiceTest {
         service = new AppSupportService(tickets, conversations, knowledge, idempotency, audit, eventPublisher, clock,
                 productionPathGuard, idempotencyRecords, new ObjectMapper().findAndRegisterModules(), supportAgents,
                 configFacade, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(),
-                ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations));
+                ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class));
         when(idempotency.executeRetained(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
             java.util.function.Supplier<?> action = invocation.getArgument(4);
             return action.get();
@@ -194,7 +194,7 @@ class AppSupportServiceTest {
         service = new AppSupportService(tickets, conversations, knowledge, retained, audit, eventPublisher, clock,
                 productionPathGuard, ledger, mapper, supportAgents, configFacade,
                 ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(),
-                ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations));
+                ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class));
         var request = new AppSupportService.StartConversationRequest("SUPPORT", "original");
         when(configFacade.activeValue("I.session.cat.advisor.enabled")).thenReturn(Optional.of("off"));
         assertThatThrownBy(() -> service.startConversation(42L, "original-retained-key", request))

@@ -17,7 +17,7 @@ class SupportBindingPoolReadProjectionTest {
     final SupportBindingMapper mapper=mock(SupportBindingMapper.class);
     final SupportBindingService service=new SupportBindingService(mapper,ownership,mock(AdminIdempotencyService.class),
             mock(AuditLogService.class),mock(org.springframework.context.ApplicationEventPublisher.class),
-            mock(SupportAgentRepository.class),mock(ProductionSupportPathGuard.class),mock(SupportTicketOwnerService.class),mock(SupportGroupMapper.class));
+            mock(SupportAgentRepository.class),mock(ProductionSupportPathGuard.class),mock(SupportTicketOwnerService.class),mock(SupportGroupMapper.class),org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundPolicyService.class));
     final ReadScope scope=new ReadScope(7L,ReadMode.ALL,null,null);
     @Test void absentAndUnknownHaveExplicitNullableFieldsWithoutChangingPoolVersionOrImmutableSourceMap(){
         when(ownership.defaultQueryScope(null,null)).thenReturn(scope);

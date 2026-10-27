@@ -435,14 +435,10 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     @Select("SELECT COUNT(*) FROM nx_order WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
     long countOrdersSince(@Param("days") int days);
 
-    @Select("SELECT COUNT(*) FROM nx_admin_device_order WHERE is_deleted = 0")
-    long countAdminDeviceOrders();
-
-    @Select("SELECT COUNT(*) FROM nx_admin_device_order WHERE is_deleted = 0 AND ordered_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
-    long countAdminDeviceOrdersSince(@Param("days") int days);
-
-    @Select("SELECT COUNT(*) FROM nx_device WHERE deleted = 0")
-    long countDevices();
+    // B-2: nx_order is the single order source (20260721_e4_order_state_machine.sql); the legacy
+    // nx_admin_device_order and nx_device tables have no DDL in the startup chain and are no longer read.
+    @Select("SELECT COUNT(*) FROM nx_admin_device_sku WHERE is_deleted = 0")
+    long countDeviceCatalogItems();
 
     @Select("SELECT COUNT(*) FROM nx_user_device d "
             + "JOIN nx_user u ON u.id=d.user_id AND COALESCE(u.sandbox,0)=0 "
