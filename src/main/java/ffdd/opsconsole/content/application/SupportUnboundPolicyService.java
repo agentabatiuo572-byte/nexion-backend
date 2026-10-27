@@ -26,9 +26,9 @@ public class SupportUnboundPolicyService {
     private final AuditLogService audit;
 
     @Value("${nexion.support.unbound.alert-minutes:5}")
-    private int defaultAlert = 5;
+    private final int defaultAlert;
     @Value("${nexion.support.unbound.fallback-minutes:15}")
-    private int defaultFallback = 15;
+    private final int defaultFallback;
 
     @PostConstruct
     void initialize() {

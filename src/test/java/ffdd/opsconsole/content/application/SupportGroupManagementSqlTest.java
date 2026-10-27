@@ -38,7 +38,7 @@ class SupportGroupManagementSqlTest {
                 "read_route.version BETWEEN 1 AND 9007199254740991","other_route.id<>read_route.id","read_route.starts_at <= UTC_TIMESTAMP(6)","history_route.customer_id=p.customer_id")
                 .doesNotContain("COALESCE(read_route.version,0)","${","&lt;");
             if(scope.mode()==ReadMode.MANAGED)assertThat(text).contains("scope_group.supervisor_admin_id=","scope_q.qualification_kind='SUPERVISOR'");
-            assertThat(text.substring(text.indexOf("FROM nx_support_binding_pool p"),text.indexOf(" ORDER BY p.customer_id")))
+            assertThat(text.substring(text.indexOf("FROM nx_support_binding_pool p"),text.indexOf(" ORDER BY pendingMessageCount>0")))
                 .isEqualTo(sql(SupportBindingMapper.class,"scopedPoolCount",args).substring("SELECT COUNT(*) ".length(),sql(SupportBindingMapper.class,"scopedPoolCount",args).lastIndexOf(" FOR SHARE")));
         }
     }

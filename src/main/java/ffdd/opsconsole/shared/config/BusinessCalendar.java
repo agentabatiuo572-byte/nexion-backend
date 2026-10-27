@@ -9,6 +9,7 @@ import java.time.ZoneId;
 import java.time.temporal.WeekFields;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 
 /**
@@ -33,7 +34,11 @@ public final class BusinessCalendar {
 
     public record Version(String track, ZoneId zone, LocalDate effectiveDate, LocalDateTime effectiveStorageAt) { }
 
-    private static volatile List<Version> versions = seed();
+    private static final List<Version> SEED = seed();
+    private static volatile List<Version> versions = SEED;
+    /** Per-track version lists (own track + GLOBAL), rebuilt whenever {@link #versions} changes. */
+    private static volatile Map<String, List<Version>> byTrack = split(SEED);
+    private static final Track LEGACY_TRACK = new Track(LEGACY), GROWTH_TEAM_TRACK = new Track(GROWTH_TEAM);
 
     private BusinessCalendar() { }
 
@@ -50,12 +55,22 @@ public final class BusinessCalendar {
 
     public static void replaceVersions(List<Version> next) {
         if (next == null || next.isEmpty()) return;
-        versions = List.copyOf(next);
+        List<Version> copy = List.copyOf(next);
+        byTrack = split(copy);
+        versions = copy;
     }
 
-    public static Track legacy() { return new Track(LEGACY); }
+    private static Map<String, List<Version>> split(List<Version> all) {
+        return Map.of(LEGACY, own(all, LEGACY), GROWTH_TEAM, own(all, GROWTH_TEAM));
+    }
 
-    public static Track growthTeam() { return new Track(GROWTH_TEAM); }
+    private static List<Version> own(List<Version> all, String track) {
+        return all.stream().filter(v -> v.track().equals(track) || v.track().equals(GLOBAL)).toList();
+    }
+
+    public static Track legacy() { return LEGACY_TRACK; }
+
+    public static Track growthTeam() { return GROWTH_TEAM_TRACK; }
 
     /** The instant a version effective on {@code date} in {@code zone} takes over from {@code previousZones}. */
     public static LocalDateTime switchStorageAt(LocalDate date, ZoneId zone, List<ZoneId> previousZones) {
@@ -74,18 +89,16 @@ public final class BusinessCalendar {
 
         public String name() { return name; }
 
-        private List<Version> own() {
-            return versions.stream().filter(v -> v.track().equals(name) || v.track().equals(GLOBAL)).toList();
-        }
+        private List<Version> own() { return byTrack.get(name); }
 
         public Version versionAtStorage(LocalDateTime storageTime) {
             return own().stream().filter(v -> !v.effectiveStorageAt().isAfter(storageTime))
-                    .max(Comparator.comparing(Version::effectiveStorageAt)).orElse(seed().get(0));
+                    .max(Comparator.comparing(Version::effectiveStorageAt)).orElse(SEED.get(0));
         }
 
         public Version versionOnDate(LocalDate date) {
             return own().stream().filter(v -> !v.effectiveDate().isAfter(date))
-                    .max(Comparator.comparing(Version::effectiveDate)).orElse(seed().get(0));
+                    .max(Comparator.comparing(Version::effectiveDate)).orElse(SEED.get(0));
         }
 
         public ZoneId zoneAt(Instant instant) { return versionAtStorage(storageTime(instant)).zone(); }

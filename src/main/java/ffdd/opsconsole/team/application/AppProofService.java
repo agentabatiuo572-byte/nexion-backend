@@ -80,8 +80,7 @@ public class AppProofService {
                 && sandboxFixtureService != null && !runId.isBlank()
                 ? sandboxFixtureService.get(runId, userId) : null;
         Instant serverTime = Instant.now(clock);
-        // Check-in dates are written on the growth calendar (Vietnam since 2026-10-19), so the streak uses it too.
-        LocalDate asOfDate = ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam().dateAt(serverTime);
+        LocalDate asOfDate = serverTime.atZone(BUSINESS_ZONE).toLocalDate();
         long activeDays = Math.max(0, Duration.between(user.joinedAt().toInstant(ZoneOffset.UTC), serverTime).toDays());
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("source", "server"); result.put("sourceEnvironment", sourceEnvironment); result.put("runId", runId);

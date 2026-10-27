@@ -1,5 +1,6 @@
 package ffdd.opsconsole.platform.mapper;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -9,7 +10,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 /** R-1: nx_business_calendar. The DDL mirrors scripts/migrations/20261027_r1_business_calendar.sql. */
-public interface BusinessCalendarMapper {
+public interface BusinessCalendarMapper extends BaseMapper<Object> {
     record Row(Long id, String track, String zoneId, String countryCode, Integer offsetMinutes, LocalDate effectiveDate,
                LocalDateTime effectiveStorageAt, String operator, String reason, LocalDateTime createdAt) { }
 
@@ -49,6 +50,14 @@ public interface BusinessCalendarMapper {
     int insertGlobal(@Param("zoneId") String zoneId, @Param("countryCode") String countryCode, @Param("offsetMinutes") int offsetMinutes,
                      @Param("effectiveDate") LocalDate effectiveDate, @Param("effectiveStorageAt") LocalDateTime effectiveStorageAt,
                      @Param("operator") String operator, @Param("reason") String reason, @Param("now") LocalDateTime now);
+
+    /** Serializes schedule / cancel: every writer locks the LEGACY seed rows first. */
+    @Select("SELECT COUNT(*) FROM nx_business_calendar WHERE track='LEGACY' FOR UPDATE")
+    long lockWriters();
+
+    /** Locking (current) read, so a version committed by a concurrent writer is always seen. */
+    @Select("SELECT COUNT(*) FROM nx_business_calendar WHERE track='GLOBAL' AND is_deleted=0 AND effective_storage_at>#{now} FOR UPDATE")
+    long countPendingForUpdate(@Param("now") LocalDateTime now);
 
     /** Only a version that has not taken effect yet can be withdrawn. */
     @Update("UPDATE nx_business_calendar SET is_deleted=1,updated_at=#{now} WHERE id=#{id} AND track='GLOBAL' AND is_deleted=0 AND effective_storage_at>#{now}")

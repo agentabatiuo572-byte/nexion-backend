@@ -347,7 +347,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                       WHERE o.payment_status IN ('PAID', 'CONFIRMED', 'SUCCESS')
                         AND o.order_status NOT IN ('REFUNDED', 'CHARGEBACK')
                         AND o.paid_at IS NOT NULL
-                        AND YEARWEEK(CASE WHEN o.paid_at < '2026-10-19 00:00:00' THEN o.paid_at ELSE DATE_SUB(o.paid_at, INTERVAL 1 HOUR) END, 1) = YEARWEEK(""" + VietnamBusinessPeriodSql.NOW + """
+                        AND YEARWEEK(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.BUSINESS_TIME_HEAD + "o.paid_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.BUSINESS_TIME_MID + "o.paid_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.BUSINESS_TIME_TAIL + """
+                        , 1) = YEARWEEK(""" + VietnamBusinessPeriodSql.NOW + """
                         , 1)
                         AND o.is_deleted = 0
                    ) AS weeklyGmvUsd,
@@ -1357,7 +1358,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE payment_status IN ('PAID', 'CONFIRMED', 'SUCCESS')
                AND order_status NOT IN ('REFUNDED', 'CHARGEBACK')
                AND paid_at IS NOT NULL
-               AND YEARWEEK(CASE WHEN paid_at < '2026-10-19 00:00:00' THEN paid_at ELSE DATE_SUB(paid_at, INTERVAL 1 HOUR) END, 1) = #{weekCode}
+               AND YEARWEEK(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.BUSINESS_TIME_HEAD + "paid_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.BUSINESS_TIME_MID + "paid_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.BUSINESS_TIME_TAIL + """
+               , 1) = #{weekCode}
                AND is_deleted = 0
             """)
     java.math.BigDecimal weeklyPlatformVolume(@Param("weekCode") int weekCode);

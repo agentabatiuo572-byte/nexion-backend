@@ -31,7 +31,9 @@ class ConversationMapperSqlTest {
             if ("selectRecentVisible".equals(method)) assertThat(bound.getSql()).contains("FOR SHARE");
         }
         assertThat(ConversationMessageMapper.SENDER_NAME)
-                .contains("sender_type='agent' AND sender_name=CONCAT('admin:',sender_id)")
+                // Legacy "admin:<id>" labels and labels that equal the sender's login name both resolve to the display name.
+                .contains("sender_type='agent' AND (sender_name=CONCAT('admin:',sender_id) ",
+                        "login_admin.id=sender_id AND login_admin.username=sender_name")
                 .contains("display_admin.id=sender_id AND display_admin.is_deleted=0")
                 .contains("ELSE sender_name END", "'客服'");
     }
