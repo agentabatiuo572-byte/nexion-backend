@@ -18,7 +18,7 @@ public interface PaymentRecordMapper extends BaseMapper<PaymentRecordEntity> {
                    CASE WHEN l.status = 'ACTIVE' AND l.locked_until > NOW()
                         THEN CONCAT('锁定至 ', DATE_FORMAT(l.locked_until, '%Y-%m-%d %H:%i'))
                         ELSE '观察中' END AS note,
-                   CASE WHEN l.source = 'MANUAL' THEN TRUE ELSE FALSE END AS manual
+                   CASE WHEN l.source = 'MANUAL' THEN TRUE ELSE FALSE END AS `manual`
               FROM (
                     SELECT 'BIN' AS target_type, card_bin AS target_value, COUNT(1) AS fails24h
                       FROM nx_payment_record
@@ -55,7 +55,7 @@ public interface PaymentRecordMapper extends BaseMapper<PaymentRecordEntity> {
                    TRUE AS locked,
                    CONCAT(CASE WHEN source='MANUAL' THEN '手动' ELSE '自动' END,
                           '锁定至 ', DATE_FORMAT(locked_until, '%Y-%m-%d %H:%i')) AS note,
-                   CASE WHEN source='MANUAL' THEN TRUE ELSE FALSE END AS manual
+                   CASE WHEN source='MANUAL' THEN TRUE ELSE FALSE END AS `manual`
               FROM nx_topup_risk_lock
              WHERE is_deleted = 0 AND status='ACTIVE' AND locked_until > NOW()
              ORDER BY updated_at DESC
