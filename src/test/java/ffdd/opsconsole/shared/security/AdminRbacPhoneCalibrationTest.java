@@ -91,6 +91,12 @@ class AdminRbacPhoneCalibrationTest {
     }
 
     @Test
+    void presetCatalogNeedsE6ReadOnly() throws Exception {
+        authenticate("device_e2_read");
+        assertRequest("GET", ROOT + "/ios-model-presets", 403, "ADMIN_PERMISSION_DENIED");
+    }
+
+    @Test
     void rejectionRetainsTheExactRequiredAuthorityInAudit() throws Exception {
         authenticate("device_e2_read");
         assertRequest("POST", ROOT + "/preview", 403, "ADMIN_PERMISSION_DENIED");
@@ -104,8 +110,10 @@ class AdminRbacPhoneCalibrationTest {
                 .getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAnyAuthority('device_e6_read','device_e2_read')");
         assertThat(PhoneCalibrationAdminController.class.getDeclaredMethod("preview", PhoneCalibrationAdminController.Preview.class)
                 .getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAuthority('device_e6_read')");
+        assertThat(PhoneCalibrationAdminController.class.getDeclaredMethod("iosModelPresets")
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAuthority('device_e6_read')");
         assertThat(Arrays.stream(PhoneCalibrationAdminController.class.getDeclaredMethods()).map(method -> method.getName()))
-                .containsExactlyInAnyOrder("read", "preview");
+                .containsExactlyInAnyOrder("read", "preview", "iosModelPresets");
     }
 
     private void authenticate(String... authorities) {

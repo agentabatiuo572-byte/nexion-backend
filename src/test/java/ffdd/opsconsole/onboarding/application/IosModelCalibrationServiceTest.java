@@ -1,0 +1,162 @@
+package ffdd.opsconsole.onboarding.application;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper;
+import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.CalibrationRow;
+import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.ComparisonRow;
+import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.TierRow;
+import java.math.BigDecimal;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.core.env.Environment;
+
+/** I01–I03, I06–I08, I10, I11 and I19 against the calibration transaction with an in-memory table. */
+class IosModelCalibrationServiceTest {
+    private final OnboardingCalibrationMapper mapper = mock(OnboardingCalibrationMapper.class);
+    private final Environment environment = mock(Environment.class);
+    private final ffdd.opsconsole.platform.facade.PlatformConfigFacade config =
+            mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
+    private final OnboardingCalibrationService service = new OnboardingCalibrationService(mapper, null, environment,
+            mock(ffdd.opsconsole.shared.audit.AuditLogService.class), mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class),
+            config, java.time.Clock.systemUTC(), mock(PhoneInstallationService.class), mock(PhoneReplacementService.class),
+            mock(ffdd.opsconsole.common.boundary.PhoneActivationCapacityContract.class),
+            mock(ffdd.opsconsole.common.boundary.UserTermsAcceptanceContract.class));
+    /** nx_onboarding_calibration rows of user 9 by device id, in update order. */
+    private final Map<String, CalibrationRow> table = new LinkedHashMap<>();
+
+    @BeforeEach void setUp() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"prod"});
+        when(mapper.userSandbox(9L)).thenReturn(0);
+        when(mapper.lockUserSandbox(9L)).thenReturn(0);
+        when(mapper.activeTiers()).thenReturn(List.of(tier(1, "0.04"), tier(2, "0.05"), tier(3, "0.06"), tier(4, "0.08"), tier(5, "0.095")));
+        when(mapper.activeComparisons()).thenReturn(List.of(new ComparisonRow("phone", "手机", new BigDecimal("0.06"),
+                new BigDecimal("10"), 1, 7L)));
+        publish(1, "100", "120");
+        when(mapper.find(eq(9L), anyString())).thenAnswer(call -> table.get(call.<String>getArgument(1)));
+        when(mapper.findForUpdate(eq(9L), anyString())).thenAnswer(call -> table.get(call.<String>getArgument(1)));
+        when(mapper.insert(any())).thenAnswer(call -> {
+            OnboardingCalibrationMapper.CalibrationWrite write = call.getArgument(0);
+            table.put(write.deviceId(), row(write.deviceId(), write.signalJson(), write.derivedJson(), 1L, write.idempotencyKey()));
+            return 1;
+        });
+        when(mapper.update(eq(9L), anyString(), anyLong(), anyString(), anyString(), anyString(), anyLong(), anyString(), anyString()))
+                .thenAnswer(call -> {
+                    String device = call.getArgument(1);
+                    table.remove(device);
+                    table.put(device, row(device, call.getArgument(3), call.getArgument(4), call.<Long>getArgument(2) + 1,
+                            call.getArgument(7)));
+                    return 1;
+                });
+        when(mapper.iosRangeAllocations(9L, "PRODUCTION", "")).thenAnswer(call -> {
+            var newestFirst = new java.util.ArrayList<>(table.values().stream()
+                    .map(CalibrationRow::derivedJson).filter(json -> json.contains("IOS_MODEL_RANGE")).toList());
+            java.util.Collections.reverse(newestFirst);
+            return newestFirst;
+        });
+    }
+
+    @Test void firstCalibrationDrawsOnceAndEveryRetryOrReinstallReadsTheStoredValue() {
+        var first = calibrate("install-a", 0, "key-first-01", "iPhone 16 Pro").getData();
+        BigDecimal value = new BigDecimal(first.get("computeValue").toString());
+        assertThat(value).isBetween(new BigDecimal("100"), new BigDecimal("120"));
+        assertThat(first).containsEntry("calibrationStatus", "MATCHED").containsEntry("calibrationMethod", "IOS_MODEL_RANGE")
+                .containsEntry("model", "iPhone 16 Pro").containsEntry("ruleId", "ios-iphone-16-pro")
+                .containsEntry("valueSource", "OPERATOR_PRESET").containsEntry("ruleVersion", 1)
+                .containsEntry("tier", 5);
+        assertThat(first.get("minComputeValue").toString()).isEqualTo("100");
+        assertThat(first.get("maxComputeValue").toString()).isEqualTo("120");
+
+        for (int i = 0; i < 20; i++) {
+            var retry = calibrate("install-a", (Long) table.get("install-a").rowVersion(), "key-retry-" + 10 + i, "iPhone17,1");
+            assertThat(new BigDecimal(retry.getData().get("computeValue").toString())).isEqualByComparingTo(value);
+        }
+        var reinstall = calibrate("install-b", 0, "key-reinstall", "iPhone 16 Pro").getData();
+        assertThat(new BigDecimal(reinstall.get("computeValue").toString())).isEqualByComparingTo(value);
+        assertThat(new BigDecimal(service.result(9L, "install-a").getData().get("computeValue").toString()))
+                .isEqualByComparingTo(value);
+    }
+
+    @Test void capacityIsNotPartOfTheModelAndCannotChangeTheAllocation() {
+        BigDecimal value = new BigDecimal(calibrate("install-a", 0, "key-first-01", "iPhone 16 Pro").getData().get("computeValue").toString());
+        var other = calibrate("install-b", 0, "key-other-01", "iPhone 16 Pro", "512GB");
+        assertThat(new BigDecimal(other.getData().get("computeValue").toString())).isEqualByComparingTo(value);
+    }
+
+    @Test void unknownGenericOrEmptyModelsArePendingWithoutAnyValue() {
+        for (String model : List.of("iPhone", "", "iPhone99,9")) {
+            var result = calibrate("install-" + model.length(), 0, "key-pending-" + model.length(), model).getData();
+            assertThat(result).containsEntry("calibrationStatus", "PENDING_VERIFICATION")
+                    .containsEntry("calibrationAvailable", false).containsEntry("computeValue", null).containsEntry("tier", null);
+        }
+    }
+
+    @Test void activationReviewsTheStoredValueAndARangeChangeInvalidatesItOnlyWhenOutside() {
+        BigDecimal value = new BigDecimal(calibrate("install-a", 0, "key-first-01", "iPhone 16 Pro").getData().get("computeValue").toString());
+        assertThat(service.activationBlockReasons(9L, "install-a")).isEmpty();
+        assertThat(service.activationBlockReasons(9L, "install-a")).isEmpty(); // a review never re-draws
+
+        publish(2, value.toPlainString(), value.toPlainString());
+        assertThat(service.activationBlockReasons(9L, "install-a")).containsExactly("PHONE_CALIBRATION_RULES_CHANGED");
+        var sameValue = calibrate("install-a", table.get("install-a").rowVersion(), "key-new-version", "iPhone 16 Pro").getData();
+        assertThat(new BigDecimal(sameValue.get("computeValue").toString())).isEqualByComparingTo(value);
+        assertThat(sameValue).containsEntry("ruleVersion", 2);
+        assertThat(service.activationBlockReasons(9L, "install-a")).isEmpty();
+
+        String outside = value.compareTo(new BigDecimal("500")) < 0 ? "600" : "10";
+        publish(3, outside, outside);
+        var redrawn = calibrate("install-a", table.get("install-a").rowVersion(), "key-outside-01", "iPhone 16 Pro").getData();
+        assertThat(new BigDecimal(redrawn.get("computeValue").toString())).isEqualByComparingTo(outside);
+    }
+
+    @Test void aTamperedStoredValueOutsideTheRuleFailsActivationReview() {
+        calibrate("install-a", 0, "key-first-01", "iPhone 16 Pro");
+        var row = table.get("install-a");
+        String tampered = row.derivedJson().replaceAll("\"computeValue\":[0-9.]+", "\"computeValue\":150");
+        table.put("install-a", row("install-a", row.signalJson(), tampered, row.rowVersion(), row.idempotencyKey()));
+        assertThat(service.activationBlockReasons(9L, "install-a")).containsExactly("PHONE_CALIBRATION_RULES_CHANGED");
+    }
+
+    @Test void theBindingHardwareKeyFollowsTheCanonicalModelNotTheReportedName() {
+        calibrate("install-a", 0, "key-first-01", "iPhone 16 Pro");
+        String byName = service.hardwareKey(table.get("install-a"));
+        calibrate("install-a", table.get("install-a").rowVersion(), "key-ident-01", "iPhone17,1");
+        assertThat(service.hardwareKey(table.get("install-a"))).isEqualTo(byName);
+    }
+
+    private ffdd.opsconsole.shared.api.ApiResult<Map<String, Object>> calibrate(String device, long expected, String key,
+                                                                               String model, String... extra) {
+        String brand = extra.length > 0 ? "Apple " + extra[0] : "Apple";
+        var signals = new OnboardingCalibrationService.Signals(null, null, model, brand, "", null, null, 80, false, true, "ios", "");
+        var result = service.calibrate(9L, new OnboardingCalibrationService.Request(device, expected, key, signals));
+        assertThat(result.getCode()).as(result.getMessage()).isZero();
+        return result;
+    }
+
+    private void publish(long version, String min, String max) {
+        when(config.activeValue(PhoneCalibrationConfigService.KEY)).thenReturn(Optional.of(
+                "{\"revision\":" + version + ",\"current\":{\"version\":" + version + ",\"effectiveAt\":0,"
+                + "\"thresholds\":[19,25,35,47],\"rules\":[],\"iosModelRules\":[{\"id\":\"ios-iphone-16-pro\","
+                + "\"model\":\"iPhone 16 Pro\",\"aliases\":[\"iPhone17,1\"],\"minComputeValue\":" + min
+                + ",\"maxComputeValue\":" + max + ",\"enabled\":true,\"valueSource\":\"OPERATOR_PRESET\"}]},\"scheduled\":null}"));
+    }
+
+    private static CalibrationRow row(String device, String signals, String derived, long version, String key) {
+        return new CalibrationRow(9L, device, null, signals, derived, "[]", "server", true, 7L, version, key, "hash",
+                "CALIBRATED", null, null, "PRODUCTION", "");
+    }
+
+    private static TierRow tier(int tier, String usdt) {
+        return new TierRow(tier, "T" + tier, tier * 10, tier * 10 + 9, new BigDecimal(usdt), new BigDecimal("6"), 7L);
+    }
+}

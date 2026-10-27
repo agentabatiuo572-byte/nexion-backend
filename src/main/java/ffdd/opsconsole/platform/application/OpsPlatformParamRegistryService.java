@@ -405,7 +405,7 @@ public class OpsPlatformParamRegistryService {
         if ("feature.ops.maintenanceBanner".equals(key)) {
             return "维护公告横幅";
         }
-        if ("E.compute.phoneCalibration.policy".equals(key)) return "手机硬件算力规则与档位分界";
+        if ("E.compute.phoneCalibration.policy".equals(key)) return "手机算力规则（Android 硬件 / iPhone 机型）与档位分界";
         if (ComputeConfigRegistry.phoneBindingKey("allowReplacement").equals(key)) return "允许更换绑定手机";
         if (ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays").equals(key)) return "手机换绑最短间隔天数";
         if (ComputeConfigRegistry.phoneBindingKey("replacementWindowDays").equals(key)) return "手机换绑滚动窗口天数";
