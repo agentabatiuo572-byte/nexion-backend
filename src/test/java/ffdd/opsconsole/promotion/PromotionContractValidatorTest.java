@@ -22,7 +22,8 @@ class PromotionContractValidatorTest {
         for(Object value:List.of(1.25,"1.0000001","-1","1e2","NaN"))assertThrows(BizException.class,()->validator.validate("Amount",value));
     }
     @Test void assetRewardsRequireUvTWhileHistoricalPolicyIdsRemainOpaque(){
-        var reward=values("type","UVT","amount","1.000000","assetPolicy",
+        var reward=values("rewardRuleId","reward-NEX-BUYER","beneficiaryRole","BUYER",
+                "type","UVT","calculation","FIXED","amount","1.000000","assetPolicy",
                 values("policyId","fixture-NEX","version",1,"contentHash","a".repeat(64)));
         validator.validate("RewardSpec",reward);
         reward.put("type","NEX");
