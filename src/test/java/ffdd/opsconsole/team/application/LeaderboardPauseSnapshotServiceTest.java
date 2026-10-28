@@ -121,6 +121,12 @@ class LeaderboardPauseSnapshotServiceTest {
     }
 
     @Test
+    void freshDatabaseWithoutPauseFlagOrPointerIsLive() {
+        when(mapper.current()).thenReturn(null);
+        assertThat(service.current()).isEqualTo(LeaderboardPauseSnapshotService.State.live());
+    }
+
+    @Test
     void captureAndSettlementShareVietnamPeriodStorageBounds() {
         var before=LeaderboardPauseSnapshotService.captureParameters(Instant.parse("2026-10-18T16:59:59Z"));
         assertThat(before).containsEntry("weekFromInclusive",java.time.LocalDateTime.parse("2026-10-12T00:00:00"))

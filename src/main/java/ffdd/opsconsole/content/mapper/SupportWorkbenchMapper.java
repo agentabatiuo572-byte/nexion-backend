@@ -16,7 +16,7 @@ public interface SupportWorkbenchMapper extends BaseMapper<SupportAgentAssignmen
         """;
     String PROJECTION = """
         WITH facts AS (
-          SELECT u.id customerId,CAST(u.id AS CHAR) customerNo,u.nickname,
+          SELECT u.id customerId,CAST(u.id AS CHAR) customerNo,u.nickname,u.avatar_url customerAvatarKey,
             a.id assignmentId,a.version assignmentVersion,a.agent_admin_id agentAdminId,
             COALESCE(ad.nickname,ad.username) agentName,
             av.avatar_asset_id advisorAvatarAssetId,av.avatar_version advisorAvatarVersion,

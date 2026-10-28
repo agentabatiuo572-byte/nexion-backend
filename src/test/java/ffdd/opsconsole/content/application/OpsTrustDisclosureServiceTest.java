@@ -274,6 +274,37 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
+    void trustSectionDraftMayReplaceASingleLanguageFieldWithItsCompleteTranslations() {
+        var request = new TrustSectionDraftRequest("v6", "新版说明", "数字组 + 审计日期", List.of(
+                new TrustSectionFieldInput("reserve", "备付金覆盖率", "128.4%"),
+                new TrustSectionFieldInput("auditDate.zh", "最近审计日期", "2026 年 6 月 18 日"),
+                new TrustSectionFieldInput("auditDate.vi", "Ngày kiểm toán", "18/06/2026"),
+                new TrustSectionFieldInput("auditDate.en", "Last audit", "18 Jun 2026"),
+                new TrustSectionFieldInput("summary.zh", "中文摘要", "储备充足"),
+                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Dự trữ đầy đủ"),
+                new TrustSectionFieldInput("summary.en", "English summary", "Reserves are sufficient")),
+                0L, "v5", "published", "Marina K.", "维护信任版块草稿");
+
+        assertThat(service.createSectionDraft("financials", "idem-schema-localize", request).getCode()).isZero();
+    }
+
+    @Test
+    void trustSectionDraftRejectsPartialTranslationOfASingleLanguageField() {
+        var request = new TrustSectionDraftRequest("v6", "新版说明", "数字组 + 审计日期", List.of(
+                new TrustSectionFieldInput("reserve", "备付金覆盖率", "128.4%"),
+                new TrustSectionFieldInput("auditDate.zh", "最近审计日期", "2026 年 6 月 18 日"),
+                new TrustSectionFieldInput("auditDate.en", "Last audit", "18 Jun 2026"),
+                new TrustSectionFieldInput("summary.zh", "中文摘要", "储备充足"),
+                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Dự trữ đầy đủ"),
+                new TrustSectionFieldInput("summary.en", "English summary", "Reserves are sufficient")),
+                0L, "v5", "published", "Marina K.", "维护信任版块草稿");
+
+        var result = service.createSectionDraft("financials", "idem-schema-partial-localize", request);
+
+        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_FIELD_SCHEMA_MISMATCH");
+    }
+
+    @Test
     void trustSectionDraftRejectsRenamedOrExtraFieldIdentifiers() {
         var request = new TrustSectionDraftRequest(
                 "v6", "新版说明", "数字组 + 审计日期", List.of(

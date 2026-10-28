@@ -16,7 +16,7 @@ public interface AppUserProfileMapper extends BaseMapper<UserEntity> {
 
     @Update("""
             UPDATE nx_user
-               SET nickname=#{nickname},updated_at=NOW()
+               SET nickname=#{nickname},nickname_changed_at=NOW(),updated_at=NOW()
              WHERE id=#{userId} AND nickname=#{expectedNickname}
                AND status='ACTIVE' AND is_deleted=0
             """)
@@ -25,19 +25,27 @@ public interface AppUserProfileMapper extends BaseMapper<UserEntity> {
                        @Param("expectedNickname") String expectedNickname);
 
     @Select("""
-            SELECT nickname,avatar_url AS avatarObjectKey,language,updated_at AS updatedAt
+            SELECT nickname,avatar_url AS avatarObjectKey,language,updated_at AS updatedAt,
+                   nickname_changed_at AS nicknameChangedAt,avatar_changed_at AS avatarChangedAt
               FROM nx_user
              WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0
              LIMIT 1
             """)
     Map<String, Object> profile(@Param("userId") Long userId);
 
+    /** Read after the row lock taken by currentNicknameForUpdate / currentAvatarForUpdate in the same transaction. */
+    @Select("SELECT nickname_changed_at FROM nx_user WHERE id=#{userId} AND is_deleted=0 LIMIT 1")
+    java.time.LocalDateTime nicknameChangedAt(@Param("userId") Long userId);
+
+    @Select("SELECT avatar_changed_at FROM nx_user WHERE id=#{userId} AND is_deleted=0 LIMIT 1")
+    java.time.LocalDateTime avatarChangedAt(@Param("userId") Long userId);
+
     @Select("SELECT avatar_url FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1 FOR UPDATE")
     String currentAvatarForUpdate(@Param("userId") Long userId);
 
     @Update("""
             UPDATE nx_user
-               SET avatar_url=#{avatarObjectKey},updated_at=NOW()
+               SET avatar_url=#{avatarObjectKey},avatar_changed_at=NOW(),updated_at=NOW()
              WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0
                AND avatar_url <=> #{expectedAvatarObjectKey}
             """)

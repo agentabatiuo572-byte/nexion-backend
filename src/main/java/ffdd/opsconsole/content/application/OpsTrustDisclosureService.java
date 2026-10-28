@@ -1524,6 +1524,16 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         }
         Set<String> actualKeys = new TreeSet<>();
         fieldKeys.forEach(key -> actualKeys.add(key.trim()));
+        // A single-language field may be replaced by its complete zh/vi/en set, so sections first
+        // published without translations can still reach the trilingual snapshot the App requires.
+        for (String key : List.copyOf(expectedKeys)) {
+            List<String> localized = List.of(key + ".zh", key + ".vi", key + ".en");
+            if (!LOCALIZED_TRUST_FIELD_PATTERN.matcher(key).matches() && !actualKeys.contains(key)
+                    && actualKeys.containsAll(localized)) {
+                expectedKeys.remove(key);
+                expectedKeys.addAll(localized);
+            }
+        }
         if (!expectedKeys.equals(actualKeys)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_FIELD_SCHEMA_MISMATCH");
         }
