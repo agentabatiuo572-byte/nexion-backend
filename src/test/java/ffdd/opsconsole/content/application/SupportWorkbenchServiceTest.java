@@ -51,6 +51,49 @@ class SupportWorkbenchServiceTest {
         when(mapper.successfulCustomers(any())).thenReturn(1L);
     }
 
+    @org.junit.jupiter.api.AfterEach void restoreCalendar() {
+        ffdd.opsconsole.shared.config.BusinessCalendar.replaceVersions(ffdd.opsconsole.shared.config.BusinessCalendar.seed());
+    }
+
+    private static void switchToTokyo(java.time.LocalDate date) {
+        var versions=new java.util.ArrayList<>(ffdd.opsconsole.shared.config.BusinessCalendar.seed());
+        versions.add(new ffdd.opsconsole.shared.config.BusinessCalendar.Version(ffdd.opsconsole.shared.config.BusinessCalendar.GLOBAL,
+                java.time.ZoneId.of("Asia/Tokyo"),date,date.atStartOfDay().minusHours(1)));
+        ffdd.opsconsole.shared.config.BusinessCalendar.replaceVersions(versions);
+    }
+
+    @Test void analyticsMonthsKeepTheZoneEachMonthWasSettledIn() {
+        switchToTokyo(java.time.LocalDate.of(2026,12,1));
+        var months=SupportWorkbenchService.analyticsMonths(ffdd.opsconsole.shared.config.BusinessCalendar.legacy(),
+                java.time.Instant.parse("2027-01-15T00:00:00Z"),3);
+        assertThat(months).extracting(m->m.get("month")).containsExactly("2027-01","2026-12","2026-11");
+        assertThat(months.get(2)).containsEntry("from","2026-10-31T16:00:00Z").containsEntry("to","2026-11-30T15:00:00Z");
+        assertThat(months.get(1)).containsEntry("from","2026-11-30T15:00:00Z").containsEntry("to","2026-12-31T15:00:00Z");
+    }
+
+    @Test void maintenanceTrendQueriesEachZoneSegmentWithItsOwnOffset() {
+        setup(new SupportRules(5L,null,2,null,"UNCONFIGURED",null),0);
+        switchToTokyo(java.time.LocalDate.of(2026,9,29));
+        service.snapshot(null,"ALL",null,1,20,"2026-09-27T16:00:00Z","2026-09-29T15:00:00Z");
+        @SuppressWarnings({"rawtypes","unchecked"}) ArgumentCaptor<Map<String,Object>> query=ArgumentCaptor.forClass((Class)Map.class);
+        verify(mapper,org.mockito.Mockito.times(2)).executionDays(query.capture());
+        assertThat(query.getAllValues()).extracting(q->q.get("businessOffset"),q->q.get("from"),q->q.get("to")).containsExactly(
+                org.assertj.core.groups.Tuple.tuple("+08:00",LocalDateTime.of(2026,9,27,16,0),LocalDateTime.of(2026,9,28,15,0)),
+                org.assertj.core.groups.Tuple.tuple("+09:00",LocalDateTime.of(2026,9,28,15,0),LocalDateTime.of(2026,9,29,15,0)));
+    }
+
+    @Test void customerAvatarReferenceOnlyForTheCustomersOwnUpload() {
+        var rules=new SupportRules(5L,null,2,null,"UNCONFIGURED",null);
+        Map<String,Object> base=Map.of("customerId",20L,"preferenceVersion",1L,"enabled",1,"waitingReply",0,"firstContact",0,"due",0);
+        var own=new HashMap<>(base); own.put("customerAvatarKey","users/20/avatar/a.png");
+        var other=new HashMap<>(base); other.put("customerAvatarKey","users/21/avatar/a.png");
+        assertThat(SupportWorkbenchService.customerView(own,rules))
+                .containsEntry("customerAvatarRef","/api/admin/content/support-workbench/customers/20/avatar")
+                .doesNotContainKey("customerAvatarKey");
+        assertThat(SupportWorkbenchService.customerView(other,rules)).containsEntry("customerAvatarRef",null);
+        assertThat(SupportWorkbenchService.customerView(new HashMap<>(base),rules)).containsEntry("customerAvatarRef",null);
+    }
+
     @Test void onlyMConfiguredKeepsDueAndDoesNotFabricateActivityZero() {
         setup(new SupportRules(5L,null,2,null,"UNCONFIGURED",null),1);
         var result=service.snapshot(null,"DUE",null,1,20,null,null);
