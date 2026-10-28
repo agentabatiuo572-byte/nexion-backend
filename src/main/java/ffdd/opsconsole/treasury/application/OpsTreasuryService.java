@@ -188,7 +188,8 @@ public class OpsTreasuryService {
                 "series", series,
                 "breaches", List.of(),
                 "asOf", asOf,
-                "source", "资金总账"));
+                // Provenance marker, not display copy: the PC L3 contract requires a B1 source.
+                "source", "B1 双账本"));
     }
 
     /** D3 canonical reserve source. Coverage is intentionally absent: B1 owns that decision. */

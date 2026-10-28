@@ -39,3 +39,8 @@ SET @console_copy_sql := IF((SELECT COUNT(*) FROM information_schema.tables WHER
   'UPDATE nx_admin_risk_score_model SET reason=''系统初始评分规则'' WHERE reason=''K4 canonical initial model'' AND is_deleted=0',
   'SELECT 1');
 PREPARE console_copy_stmt FROM @console_copy_sql; EXECUTE console_copy_stmt; DEALLOCATE PREPARE console_copy_stmt;
+
+-- R1 business calendar seed note (shown on the system configuration page).
+UPDATE nx_business_calendar
+   SET reason='历史数据按北京时间',updated_at=NOW()
+ WHERE reason='历史口径：北京时间' AND operator='migration:r1' AND is_deleted=0;
