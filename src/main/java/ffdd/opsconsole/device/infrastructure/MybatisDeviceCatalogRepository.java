@@ -380,6 +380,11 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
+    public void recordOrderRefundReason(String orderNo, String refundReasonCode) {
+        mapper.updateOrderRefundReason(orderNo, refundReasonCode);
+    }
+
+    @Override
     public void recordOrderHistory(
             String orderNo,
             String fromState,
