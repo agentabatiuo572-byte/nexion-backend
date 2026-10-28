@@ -27,20 +27,9 @@ class SupportContentScopeSqlTest {
             assertThat(where(count)).isEqualTo(where(page).split("AND c.id <",2)[0].trim());
         }
     }
-    @Test void ticketTabDoesNotShadowAuthorizationScopeAndCountMatchesPage() {
-        for(ReadMode mode:ReadMode.values()) for(String tab:List.of("active","resolved","archived","all")) {
-            var query=query(mode);query.put("ticketScope",tab);
-            String count=sql(SupportTicketMapper.ScopedSql.count(),query);
-            String page=sql(SupportTicketMapper.ScopedSql.page(),query);
-            assertThat(count).contains("scope_customer.id=t.user_id");
-            assertThat(where(count)).isEqualTo(where(page));
-            if(tab.equals("active")) assertThat(count).contains("t.status IN ('OPEN','IN_PROGRESS','PENDING_USER')");
-            if(tab.equals("archived")) assertThat(count).contains("t.archived=1");
-        }
-    }
-    @Test void nullScopeDeniesConversationTicketAndEveryBulkArm() {
+    @Test void nullScopeDeniesConversationAndEveryBulkArm() {
         var query=query(null);
-        for(String source:List.of(ConversationMapper.ScopedSql.count(),SupportTicketMapper.ScopedSql.count(),
+        for(String source:List.of(ConversationMapper.ScopedSql.count(),
                 SupportBulkMapper.ScopedSql.recipientCount(),SupportBulkMapper.ScopedSql.jobCount())) {
             assertThat(sql(source,query)).contains("1=0");
         }
@@ -78,8 +67,7 @@ class SupportContentScopeSqlTest {
         values.put("scope",mode==null?null:new ReadScope(7L,mode,null,null));
         values.put("managedScope",null);values.put("personalScope",null);
         values.put("senderSummary",false);
-        values.put("ticketScope","all");values.put("keyword","needle");
-        values.put("visibility",new SupportTicketMapper.Visibility(7L,null,true,true));
+        values.put("keyword","needle");
         values.put("batch","batch-test");values.put("pageSize",20L);values.put("limit",20);values.put("offset",0L);
         values.put("stableCursor",false);return values;
     }

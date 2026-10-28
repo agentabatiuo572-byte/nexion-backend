@@ -47,7 +47,7 @@ import org.springframework.context.ApplicationEventPublisher;
 public class AppSupportService {
     private static final Set<String> CONVERSATION_STATUSES = Set.of("OPEN", "TRANSFERRED", "RESOLVED", "CLOSED");
     private static final Set<String> CONVERSATION_TYPES = Set.of("SUPPORT", "ADVISOR");
-    private static final Set<String> FAQ_SURFACES = Set.of("Help Center", "Ticket Create");
+    private static final Set<String> FAQ_SURFACES = Set.of("Help Center");
     private static final DateTimeFormatter NUMBER_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
     private static final int APP_MESSAGE_WINDOW = 100;
 

@@ -535,12 +535,46 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void retiredTicketDeskNeedsOnlyAuthenticationToReachRetirementWhileSeatCapacityStaysM1() throws Exception {
+        for (String[] call : new String[][]{{"GET", "/api/admin/content/tickets"}, {"GET", "/api/admin/content/tickets/TK-1"},
+                {"PATCH", "/api/admin/content/tickets/TK-1/status"}, {"POST", "/api/admin/content/tickets"}}) {
+            authenticate("content_i1_read");
+            AtomicBoolean reached = new AtomicBoolean(false);
+            filter.doFilter(request(call[0], call[1]), new MockHttpServletResponse(), mark(reached));
+            assertThat(reached).as(call[0] + " " + call[1]).isTrue();
+        }
+        for (String[] denied : new String[][]{{"GET", "service_m3_read"}, {"GET", "service_m2_read"},
+                {"PATCH", "service_m3_write"}, {"PATCH", "service_m2_write"}}) {
+            authenticate(denied[1]);
+            AtomicBoolean reached = new AtomicBoolean(false);
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(request(denied[0], "/api/admin/content/tickets/load-config"), response, mark(reached));
+            assertThat(reached).as(denied[0] + " " + denied[1]).isFalse();
+            assertThat(response.getStatus()).isEqualTo(403);
+        }
+        authenticate("service_m1_write");
+        AtomicBoolean rebalance = new AtomicBoolean(false);
+        filter.doFilter(request("POST", "/api/admin/content/tickets/load-config/rebalance"), new MockHttpServletResponse(), mark(rebalance));
+        assertThat(rebalance).isTrue();
+    }
+
+    @Test
+    void retiredM2PermissionNoLongerOpensCommandRecovery() throws Exception {
+        authenticateTrustedAdmin("7", "service_m2_read");
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        filter.doFilter(request("GET", "/api/admin/content/support-workbench/commands/k"), response, mark(invoked));
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
     void permitsSupportReadForSupportCenterApis() throws Exception {
         AtomicBoolean ticketsInvoked = new AtomicBoolean(false);
         AtomicBoolean agentsInvoked = new AtomicBoolean(false);
-        authenticate("service_m2_read", "service_m1_read");
+        authenticate("service_m1_read");
 
-        filter.doFilter(request("GET", "/api/admin/content/tickets"), new MockHttpServletResponse(), mark(ticketsInvoked));
+        filter.doFilter(request("GET", "/api/admin/content/tickets/load-config"), new MockHttpServletResponse(), mark(ticketsInvoked));
         filter.doFilter(request("GET", "/api/admin/content/support-agents/page"), new MockHttpServletResponse(), mark(agentsInvoked));
 
         assertThat(ticketsInvoked).isTrue();
@@ -869,7 +903,7 @@ class AdminRbacAuthorizationFilterTest {
 
     private static Stream<Arguments> reasonPolicyAdmins() {
         return Stream.of(
-                Arguments.of("2791", List.of("service_m2_read", "service_m3_read")),
+                Arguments.of("2791", List.of("service_m1_read", "service_m3_read")),
                 Arguments.of("2792", List.of()),
                 Arguments.of("1", List.of()),
                 Arguments.of(Long.toString(Long.MAX_VALUE), List.of()));
@@ -1087,7 +1121,6 @@ class AdminRbacAuthorizationFilterTest {
         "GET, /api/admin/content/support-workbench/commands/k, platform_a1_read",
         "HEAD, /api/admin/content/support-workbench/commands/k, platform_a1_read",
         "GET, /api/admin/content/support-workbench/commands/k, service_m1_read",
-        "GET, /api/admin/content/support-workbench/commands/k, service_m2_read",
         "GET, /api/admin/content/support-workbench/commands/k, service_m3_read"
     })
     void exactGroupManagementEntryPermissionsReachMethodChecks(String method,String path,String authority)throws Exception {

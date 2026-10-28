@@ -74,8 +74,7 @@ public class OpsPlatformMenuService {
         if (!StringUtils.hasText(menuCode)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "MENU_CODE_REQUIRED");
         }
-        if (java.util.Set.of("K6", "MENU_RISK_K6").contains(menuCode)
-                || "/risk/janus-c2".equals(request.routePath())) return ApiResult.fail(410, "MENU_RETIRED");
+        if (retiredMenu(menuCode, request.routePath())) return ApiResult.fail(410, "MENU_RETIRED");
         AdminMenuEntity existing = menuMapper.selectByMenuCodeForUpdate(menuCode);
         if (existing != null && !Integer.valueOf(1).equals(existing.getIsDeleted())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "MENU_CODE_DUPLICATE");
@@ -127,14 +126,19 @@ public class OpsPlatformMenuService {
         return result;
     }
 
+    /** Retired pages (K6 Janus C2, M2 ticket desk) cannot be recreated or re-pointed to by any menu node. */
+    private static boolean retiredMenu(String menuCode, String routePath) {
+        return menuCode != null && java.util.Set.of("K6", "MENU_RISK_K6", "M2", "MENU_SERVICE_M2").contains(menuCode)
+                || routePath != null && java.util.Set.of("/risk/janus-c2", "/service/tickets").contains(routePath);
+    }
+
     private ApiResult<MenuNodeView> updateNodeOnce(Long menuId, String idempotencyKey,
                                                    PlatformMenuNodeUpdateRequest request) {
         AdminMenuEntity entity = loadActiveForUpdate(menuId);
         if (entity == null) {
             return ApiResult.fail(404, "MENU_NODE_NOT_FOUND");
         }
-        if (java.util.Set.of("K6", "MENU_RISK_K6").contains(entity.getMenuCode())
-                || "/risk/janus-c2".equals(request.routePath())) return ApiResult.fail(410, "MENU_RETIRED");
+        if (retiredMenu(entity.getMenuCode(), request.routePath())) return ApiResult.fail(410, "MENU_RETIRED");
         ApiResult<Void> versionGuard = requireVersion(request.expectedVersion(), versionOf(entity));
         if (versionGuard != null) {
             return rejectMutation(entity, "UPDATE", versionGuard.getCode(), versionGuard.getMessage(),

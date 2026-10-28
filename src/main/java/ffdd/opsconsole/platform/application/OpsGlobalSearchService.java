@@ -21,7 +21,6 @@ import org.springframework.util.StringUtils;
 public class OpsGlobalSearchService {
     private static final Map<String, Integer> KIND_ORDER = Map.of(
             "user", 0,
-            "ticket", 1,
             "conversation", 2,
             "withdrawal", 3);
 
@@ -38,7 +37,6 @@ public class OpsGlobalSearchService {
         int perDomainLimit = Math.max(3, Math.min(finalLimit, 6));
         List<AdminSearchHit> hits = new ArrayList<>();
         hits.addAll(userSearchFacade.searchAdminUsers(q, perDomainLimit));
-        hits.addAll(contentSearchFacade.searchSupportTickets(q, perDomainLimit));
         hits.addAll(contentSearchFacade.searchConversations(q, perDomainLimit));
         hits.addAll(financeSearchFacade.searchWithdrawals(q, perDomainLimit));
 

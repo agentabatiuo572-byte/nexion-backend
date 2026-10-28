@@ -20,7 +20,7 @@ class SupportRandomOriginalAgentTest {
     final SupportOwnershipService ownership=mock(SupportOwnershipService.class);
     final ProductionSupportPathGuard production=mock(ProductionSupportPathGuard.class);
     final SupportBindingService service=new SupportBindingService(mapper,ownership,mock(AdminIdempotencyService.class),mock(AuditLogService.class),
-            mock(ApplicationEventPublisher.class),mock(SupportAgentRepository.class),production,mock(SupportTicketOwnerService.class),groups,org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundPolicyService.class));
+            mock(ApplicationEventPublisher.class),mock(SupportAgentRepository.class),production,groups,org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundPolicyService.class));
     final SupportRules rules=new SupportRules(1L,30,15,7,"LIMITED",0,"AUTO_RANDOM",null);
     final ReadScope scope=new ReadScope(99L,ReadMode.ALL,null,null);
     final AtomicReference<SupportAssignment> assigned=new AtomicReference<>();

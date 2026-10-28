@@ -81,10 +81,22 @@ class OpsSupportKnowledgeServiceTest {
     }
 
     @Test
+    void retiredTicketCreateSurfaceIsRejectedLikeAnyUnknownSurface() {
+        for (String surface : java.util.List.of("Ticket Create", "ticket create", "Unknown Surface")) {
+            var result = service.updateFaq("FAQ-001", "idem-m4-faq-retired-surface", new SupportFaqUpsertRequest(
+                    "account", surface, "Account security retry window?", "Retry after the security cooldown.",
+                    "DRAFT", "en-US", 20, "PUBLISHED", 1, "Marina K.", "retired FAQ surface"));
+            assertThat(result.getCode()).as(surface).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+            assertThat(result.getMessage()).as(surface).isEqualTo("SUPPORT_FAQ_SURFACE_UNSUPPORTED");
+        }
+        assertThat(service.overview().getData().surfaces()).containsExactlyInAnyOrder("Help Center", "Nova");
+    }
+
+    @Test
     void updateFaqChangesContent() {
         var result = service.updateFaq("FAQ-001", "idem-m4-faq-update", new SupportFaqUpsertRequest(
                 "account",
-                "Ticket Create",
+                "Help Center",
                 "Account security retry window?",
                 "Retry after the security cooldown and keep your contact method available.",
                 "DRAFT",
