@@ -118,8 +118,8 @@ public class LeaderboardPauseSnapshotService {
     /** Pause/ref/envelope are selected in one statement; no GET writes or legacy reconstruction. */
     public State current() {
         var row = mapper.current();
-        if (row == null) throw new BizException(503, "F4_LEADERBOARD_SNAPSHOT_READ_FAILED");
-        if (!paused(row.pausedValue())) return State.live();
+        // MyBatis maps the all-NULL row (no pause flag, no snapshot pointer) to null: never paused, so live.
+        if (row == null || !paused(row.pausedValue())) return State.live();
         if (row.snapshotRef() == null || row.snapshotRef().isBlank()) return State.unavailable("PRE_SNAPSHOT_PAUSE");
         try {
             ObjectNode ref = object(row.snapshotRef());

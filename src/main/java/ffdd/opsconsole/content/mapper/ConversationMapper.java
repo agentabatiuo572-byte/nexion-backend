@@ -139,7 +139,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               (SELECT MAX(human_message.created_at) FROM nx_conversation_message human_message
                 WHERE human_message.conversation_no=c.conversation_no AND human_message.is_deleted=0
                   AND human_message.sender_type IN ('user','agent')) AS lastHumanMessageAt,
-              (SELECT nickname_user.nickname FROM nx_user nickname_user WHERE nickname_user.id=c.user_id) AS customerNickname
+              (SELECT nickname_user.nickname FROM nx_user nickname_user WHERE nickname_user.id=c.user_id) AS customerNickname,
+              (SELECT avatar_user.avatar_url FROM nx_user avatar_user WHERE avatar_user.id=c.user_id) AS customerAvatarKey
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -229,7 +230,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               (SELECT MAX(human_message.created_at) FROM nx_conversation_message human_message
                 WHERE human_message.conversation_no=c.conversation_no AND human_message.is_deleted=0
                   AND human_message.sender_type IN ('user','agent')) AS lastHumanMessageAt,
-              (SELECT nickname_user.nickname FROM nx_user nickname_user WHERE nickname_user.id=c.user_id) AS customerNickname
+              (SELECT nickname_user.nickname FROM nx_user nickname_user WHERE nickname_user.id=c.user_id) AS customerNickname,
+              (SELECT avatar_user.avatar_url FROM nx_user avatar_user WHERE avatar_user.id=c.user_id) AS customerAvatarKey
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -297,7 +299,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               (SELECT MAX(human_message.created_at) FROM nx_conversation_message human_message
                 WHERE human_message.conversation_no=c.conversation_no AND human_message.is_deleted=0
                   AND human_message.sender_type IN ('user','agent')) AS lastHumanMessageAt,
-              (SELECT nickname_user.nickname FROM nx_user nickname_user WHERE nickname_user.id=c.user_id) AS customerNickname
+              (SELECT nickname_user.nickname FROM nx_user nickname_user WHERE nickname_user.id=c.user_id) AS customerNickname,
+              (SELECT avatar_user.avatar_url FROM nx_user avatar_user WHERE avatar_user.id=c.user_id) AS customerAvatarKey
             FROM nx_conversation c
             JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
