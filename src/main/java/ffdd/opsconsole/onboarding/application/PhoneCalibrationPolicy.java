@@ -22,6 +22,11 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
     public static final String HARDWARE_RULE = "HARDWARE_RULE";
     public static final String IOS_MODEL_RANGE = "IOS_MODEL_RANGE";
     public static final String OPERATOR_PRESET = "OPERATOR_PRESET";
+    /** Calibration result fields recording the operator range; kept on the server, never sent to the App. */
+    public static final String MIN_COMPUTE_VALUE = "minComputeValue";
+    public static final String MAX_COMPUTE_VALUE = "maxComputeValue";
+    public static final String VALUE_SOURCE = "valueSource";
+    private static final Set<String> SERVER_ONLY_RESULT_KEYS = Set.of(MIN_COMPUTE_VALUE, MAX_COMPUTE_VALUE, VALUE_SOURCE);
     public static final Set<String> CATALOG_CLASSES =
             Set.of("APPLE_CURRENT_SNAPSHOT", "APPLE_RELEASED_HISTORICAL", "OPERATOR_ADDED");
     /** Names that identify no specific model: they never match and cannot be configured. */
@@ -167,6 +172,24 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
         return a.platform().equals(b.platform()) && normalize(a.soc()).equals(normalize(b.soc()))
                 && normalize(a.gpu()).equals(normalize(b.gpu()));
     }
+    /**
+     * A calibration result, or an activation receipt holding one under originalResult, as the App
+     * may see it: the user's own value without the range it was drawn from. Other values pass through.
+     */
+    public static Object appView(Object result) {
+        if (!(result instanceof java.util.Map<?, ?> map)) return result;
+        java.util.Map<String, Object> view = new java.util.LinkedHashMap<>();
+        map.forEach((key, value) -> {
+            String name = String.valueOf(key);
+            if (!SERVER_ONLY_RESULT_KEYS.contains(name)) view.put(name, "originalResult".equals(name) ? appView(value) : value);
+        });
+        return view;
+    }
+    @SuppressWarnings("unchecked")
+    public static java.util.Map<String, Object> appView(java.util.Map<String, Object> result) {
+        return (java.util.Map<String, Object>) appView((Object) result);
+    }
+
     public static String normalize(String value) {
         return value == null ? "" : Normalizer.normalize(value, Normalizer.Form.NFKC)
                 .trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
