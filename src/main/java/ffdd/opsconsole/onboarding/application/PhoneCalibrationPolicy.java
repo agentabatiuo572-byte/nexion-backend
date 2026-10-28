@@ -26,7 +26,8 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
     public static final String MIN_COMPUTE_VALUE = "minComputeValue";
     public static final String MAX_COMPUTE_VALUE = "maxComputeValue";
     public static final String VALUE_SOURCE = "valueSource";
-    private static final Set<String> SERVER_ONLY_RESULT_KEYS = Set.of(MIN_COMPUTE_VALUE, MAX_COMPUTE_VALUE, VALUE_SOURCE);
+    private static final Set<String> SERVER_ONLY_RESULT_KEYS = Set.of(MIN_COMPUTE_VALUE, MAX_COMPUTE_VALUE, VALUE_SOURCE,
+            PhoneModelRisk.RISK_FLAGS, PhoneModelRisk.INSTALL_MODEL_LOCK);
     public static final Set<String> CATALOG_CLASSES =
             Set.of("APPLE_CURRENT_SNAPSHOT", "APPLE_RELEASED_HISTORICAL", "OPERATOR_ADDED");
     /** Names that identify no specific model: they never match and cannot be configured. */
@@ -35,12 +36,24 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
 
     public record Rule(String id, String platform, String model, String soc, String gpu,
                        BigDecimal minMemoryGb, BigDecimal maxMemoryGb, BigDecimal computeValue, String evidence) { }
-    /** One iPhone model regardless of storage, colour or regional SKU; aliases are verified SDK names. */
+    /**
+     * One iPhone model regardless of storage, colour or regional SKU; aliases are verified SDK names.
+     * The optional device facts (launch iOS, last supported major, screen scales and point sizes) feed
+     * the model consistency checks of {@link PhoneModelRisk}; an empty fact skips its check.
+     */
     public record IosModelRule(String id, String model, List<String> aliases, BigDecimal minComputeValue,
                                BigDecimal maxComputeValue, Boolean enabled, String valueSource, String catalogClass,
-                               String note) {
+                               String note, String minOsVersion, Integer maxOsMajor, List<Integer> scales,
+                               List<String> screens) {
         public IosModelRule {
             aliases = aliases == null ? List.of() : List.copyOf(aliases);
+            scales = scales == null ? List.of() : List.copyOf(scales);
+            screens = screens == null ? List.of() : List.copyOf(screens);
+        }
+        public IosModelRule(String id, String model, List<String> aliases, BigDecimal minComputeValue,
+                            BigDecimal maxComputeValue, Boolean enabled, String valueSource, String catalogClass, String note) {
+            this(id, model, aliases, minComputeValue, maxComputeValue, enabled, valueSource, catalogClass, note,
+                    null, null, List.of(), List.of());
         }
     }
     public record Hardware(String platform, String model, String soc, String gpu, BigDecimal memoryGb) { }
@@ -101,6 +114,13 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
                     || !preset(r.minComputeValue()) || !preset(r.maxComputeValue())
                     || r.minComputeValue().compareTo(r.maxComputeValue()) > 0) invalid();
             for (String alias : r.aliases()) if (!iosName(alias)) invalid();
+            if ((r.minOsVersion() != null && PhoneModelRisk.osVersion(r.minOsVersion()) == null)
+                    || (r.maxOsMajor() != null && (r.maxOsMajor() < 1 || r.maxOsMajor() > 99
+                        || (r.minOsVersion() != null && r.maxOsMajor() < PhoneModelRisk.osVersion(r.minOsVersion())[0])))
+                    || r.scales().size() > 3 || r.scales().stream().distinct().count() != r.scales().size()
+                    || r.scales().stream().anyMatch(scale -> scale == null || scale < 1 || scale > 3)
+                    || r.screens().size() > 10 || r.screens().stream().distinct().count() != r.screens().size()
+                    || r.screens().stream().anyMatch(screen -> PhoneModelRisk.screen(screen) == null)) invalid();
             // A model or alias names exactly one rule, enabled or not, so a match is never ambiguous.
             for (String name : names(r)) if (!names.add(name)) throw new BizException(422, "PHONE_CALIBRATION_IOS_MODEL_DUPLICATE");
         }
@@ -126,6 +146,36 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
                 ? (modelRules.isEmpty() ? "HARDWARE_UNKNOWN" : "HARDWARE_CONFLICT") : "HARDWARE_AMBIGUOUS");
         Rule rule = candidates.get(0);
         return new Match("MATCHED", rule.id(), rule.computeValue(), tierFor(rule.computeValue()), version);
+    }
+
+    /** The iPhone rule a match points to, for its device facts. */
+    public IosModelRule iosRule(String id) {
+        return id == null ? null : iosModelRules.stream().filter(rule -> id.equals(rule.id())).findFirst().orElse(null);
+    }
+
+    /**
+     * The model identity of a report for the installation lock: an iPhone name and its identifier
+     * resolve to the same rule through the current aliases; anything unmatched compares as written.
+     */
+    public String modelIdentity(String platform, String rawModel) {
+        String os = normalize(platform), model = normalize(rawModel);
+        if (model.isEmpty()) return null;
+        if ("ios".equals(os)) {
+            IosModelRule rule = iosModelRules.stream().filter(r -> names(r).contains(model)).findFirst().orElse(null);
+            if (rule != null) return "ios:" + rule.id();
+        }
+        return os + ":" + model;
+    }
+
+    /** The rule's model name for an iPhone name or identifier this policy knows; otherwise the report itself. */
+    public String displayModel(String platform, String rawModel) {
+        if (rawModel == null) return null;
+        String model = normalize(rawModel);
+        if ("ios".equals(normalize(platform))) {
+            IosModelRule rule = iosModelRules.stream().filter(r -> names(r).contains(model)).findFirst().orElse(null);
+            if (rule != null) return rule.model();
+        }
+        return rawModel.trim();
     }
 
     /** Exact model or alias only: "contains Pro" style guesses and the bare "iPhone" never match. */
@@ -174,14 +224,18 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
     }
     /**
      * A calibration result, or an activation receipt holding one under originalResult, as the App
-     * may see it: the user's own value without the range it was drawn from. Other values pass through.
+     * may see it: the user's own value without the range it was drawn from, the risk flags or the
+     * model lock, and a held calibration's risk reason generalised. Other values pass through.
      */
     public static Object appView(Object result) {
         if (!(result instanceof java.util.Map<?, ?> map)) return result;
         java.util.Map<String, Object> view = new java.util.LinkedHashMap<>();
         map.forEach((key, value) -> {
             String name = String.valueOf(key);
-            if (!SERVER_ONLY_RESULT_KEYS.contains(name)) view.put(name, "originalResult".equals(name) ? appView(value) : value);
+            if (SERVER_ONLY_RESULT_KEYS.contains(name)) return;
+            // Which model check held the calibration is not told to the user.
+            Object shown = "pendingReason".equals(name) && value instanceof String reason && PhoneModelRisk.ENFORCEABLE.contains(reason) ? PhoneModelRisk.APP_REASON : value;
+            view.put(name, "originalResult".equals(name) ? appView(shown) : shown);
         });
         return view;
     }

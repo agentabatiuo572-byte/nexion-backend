@@ -420,13 +420,73 @@ public interface OnboardingCalibrationMapper {
                    JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.soc')) soc,
                    JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.gpu')) gpu,
                    CAST(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.memGB')) AS DECIMAL(10,3)) memoryGb,
-                   NULL tier,NULL computeValue,COUNT(*) count
+                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.pendingReason')) reason,
+                   COUNT(*) count
               FROM nx_onboarding_calibration
              WHERE is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
                AND JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.calibrationStatus'))='PENDING_VERIFICATION'
-             GROUP BY platform,model,soc,gpu,memoryGb ORDER BY count DESC LIMIT 100
+             GROUP BY platform,model,soc,gpu,memoryGb,reason ORDER BY count DESC LIMIT 100
             """)
-    List<HardwareGroup> pendingHardware();
+    List<PendingHardware> pendingHardware();
+
+    /** Model reports of the account's installations touched within the window: the latest report and the lock. */
+    @Select("""
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')) platform,
+                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')) model,
+                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.platform')) lockPlatform,
+                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.model')) lockModel
+              FROM nx_onboarding_calibration
+             WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND run_id=#{runId} AND is_deleted=0
+               AND updated_at >= NOW(6) - INTERVAL #{days} DAY
+            """)
+    List<ModelReport> accountModelReports(@Param("userId") Long userId, @Param("sourceEnvironment") String sourceEnvironment,
+                                          @Param("runId") String runId, @Param("days") int days);
+
+    /** Production calibrations touched within the window that a model risk check flagged or held. */
+    @Select("""
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')) platform,
+                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')) model,
+                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.pendingReason')) pendingReason,
+                   JSON_EXTRACT(derived_json,'$.riskFlags') riskFlags,
+                   user_id userId
+              FROM nx_onboarding_calibration
+             WHERE is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
+               AND updated_at >= NOW(6) - INTERVAL #{days} DAY
+               AND JSON_LENGTH(derived_json,'$.riskFlags') > 0
+             ORDER BY updated_at DESC LIMIT 5000
+            """)
+    List<RiskSample> riskSamples(@Param("days") int days);
+
+    /** Every installation of the account with its model lock, for support. */
+    @Select("""
+            SELECT device_id deviceId,
+                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')) platform,
+                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')) model,
+                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.platform')) lockPlatform,
+                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.model')) lockModel,
+                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.calibrationStatus')) calibrationStatus,
+                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.pendingReason')) pendingReason,
+                   activation_status activationStatus,
+                   CAST(UNIX_TIMESTAMP(updated_at)*1000 AS UNSIGNED) updatedAt
+              FROM nx_onboarding_calibration
+             WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND run_id=#{runId} AND is_deleted=0
+             ORDER BY updated_at DESC,id DESC LIMIT 50
+            """)
+    List<ModelLockRow> modelLocks(@Param("userId") Long userId, @Param("sourceEnvironment") String sourceEnvironment,
+                                  @Param("runId") String runId);
+
+    /**
+     * Support releases an installation's model lock; the next calibration locks the model it then
+     * reports. updated_at is left alone so ordering and the churn window keep describing reports.
+     */
+    @Update("""
+            UPDATE nx_onboarding_calibration
+               SET derived_json=JSON_REMOVE(derived_json,'$.installModelLock')
+             WHERE user_id=#{userId} AND device_id=#{deviceId} AND source_environment=#{sourceEnvironment}
+               AND run_id=#{runId} AND is_deleted=0 AND JSON_CONTAINS_PATH(derived_json,'one','$.installModelLock')
+            """)
+    int releaseModelLock(@Param("userId") Long userId, @Param("deviceId") String deviceId,
+                         @Param("sourceEnvironment") String sourceEnvironment, @Param("runId") String runId);
 
     @Select("SELECT EXISTS(SELECT 1 FROM nx_phone_binding WHERE user_id=#{userId} "
             + "AND source_environment=#{sourceEnvironment} AND run_id=#{runId})")
@@ -475,6 +535,12 @@ public interface OnboardingCalibrationMapper {
     int claimPhoneExecution(@Param("userId") Long userId, @Param("deviceId") String deviceId);
     record HardwareGroup(String platform, String model, String soc, String gpu, BigDecimal memoryGb,
                          Integer tier, BigDecimal computeValue, long count) { }
+    record PendingHardware(String platform, String model, String soc, String gpu, BigDecimal memoryGb,
+                           String reason, long count) { }
+    record ModelReport(String platform, String model, String lockPlatform, String lockModel) { }
+    record RiskSample(String platform, String model, String pendingReason, String riskFlags, Long userId) { }
+    record ModelLockRow(String deviceId, String platform, String model, String lockPlatform, String lockModel,
+                        String calibrationStatus, String pendingReason, String activationStatus, Long updatedAt) { }
 
     record CalibrationWrite(Long userId, String deviceId, String signalJson, String derivedJson,
                             String comparisonJson, Long configRevision, String idempotencyKey, String requestHash,
