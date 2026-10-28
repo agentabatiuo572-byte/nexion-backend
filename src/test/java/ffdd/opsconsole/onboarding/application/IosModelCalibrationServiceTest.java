@@ -73,10 +73,15 @@ class IosModelCalibrationServiceTest {
         assertThat(value).isBetween(new BigDecimal("100"), new BigDecimal("120"));
         assertThat(first).containsEntry("calibrationStatus", "MATCHED").containsEntry("calibrationMethod", "IOS_MODEL_RANGE")
                 .containsEntry("model", "iPhone 16 Pro").containsEntry("ruleId", "ios-iphone-16-pro")
-                .containsEntry("valueSource", "OPERATOR_PRESET").containsEntry("ruleVersion", 1)
-                .containsEntry("tier", 5);
-        assertThat(first.get("minComputeValue").toString()).isEqualTo("100");
-        assertThat(first.get("maxComputeValue").toString()).isEqualTo("120");
+                .containsEntry("ruleVersion", 1).containsEntry("tier", 5)
+                .doesNotContainKeys("minComputeValue", "maxComputeValue", "valueSource");
+        // The range stays on the server for activation review; only the App responses omit it.
+        Map<String, Object> stored = json(table.get("install-a").derivedJson());
+        assertThat(new BigDecimal(stored.get("minComputeValue").toString())).isEqualByComparingTo("100");
+        assertThat(new BigDecimal(stored.get("maxComputeValue").toString())).isEqualByComparingTo("120");
+        assertThat(stored).containsEntry("valueSource", "OPERATOR_PRESET");
+        assertThat(service.result(9L, "install-a").getData()).doesNotContainKeys("minComputeValue", "maxComputeValue", "valueSource");
+        assertThat(service.project(table.get("install-a"))).containsKeys("minComputeValue", "maxComputeValue", "valueSource");
 
         for (int i = 0; i < 20; i++) {
             var retry = calibrate("install-a", (Long) table.get("install-a").rowVersion(), "key-retry-" + 10 + i, "iPhone17,1");
@@ -153,6 +158,27 @@ class IosModelCalibrationServiceTest {
         var result = service.calibrate(9L, new OnboardingCalibrationService.Request(device, expected, key, signals));
         assertThat(result.getCode()).as(result.getMessage()).isZero();
         return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test void anActivationReceiptStoredWithTheRangeReachesTheAppWithoutIt() {
+        Map<String, Object> result = new LinkedHashMap<>(Map.of("computeValue", 113.27, "model", "iPhone 16 Pro",
+                "minComputeValue", 100, "maxComputeValue", 120, "valueSource", "OPERATOR_PRESET"));
+        Map<String, Object> receipt = new LinkedHashMap<>(result);
+        receipt.put("originalResult", result);
+        Map<String, Object> view = PhoneCalibrationPolicy.appView(receipt);
+        assertThat(view).containsEntry("computeValue", 113.27).doesNotContainKeys("minComputeValue", "maxComputeValue", "valueSource");
+        assertThat((Map<String, Object>) view.get("originalResult")).containsEntry("model", "iPhone 16 Pro")
+                .doesNotContainKeys("minComputeValue", "maxComputeValue", "valueSource");
+        assertThat(result).containsKey("minComputeValue");
+    }
+
+    private static Map<String, Object> json(String value) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(value, new com.fasterxml.jackson.core.type.TypeReference<>() { });
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+            throw new IllegalStateException(invalid);
+        }
     }
 
     private void publish(long version, String min, String max) {
