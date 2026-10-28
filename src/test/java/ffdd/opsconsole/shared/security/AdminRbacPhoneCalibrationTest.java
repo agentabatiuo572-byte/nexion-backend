@@ -120,7 +120,7 @@ class AdminRbacPhoneCalibrationTest {
                 .getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAuthority('device_e6_write')");
         assertThat(Arrays.stream(PhoneCalibrationAdminController.class.getDeclaredMethods()).map(method -> method.getName())
                 .filter(name -> !name.startsWith("lambda$")))
-                .containsExactlyInAnyOrder("read", "preview", "iosModelPresets", "risk", "updateRisk");
+                .containsExactlyInAnyOrder("read", "preview", "iosModelPresets", "androidSocPresets", "risk", "updateRisk");
     }
 
     @Test

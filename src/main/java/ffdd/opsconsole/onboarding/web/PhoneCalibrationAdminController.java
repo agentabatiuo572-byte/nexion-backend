@@ -1,5 +1,6 @@
 package ffdd.opsconsole.onboarding.web;
 
+import ffdd.opsconsole.onboarding.application.AndroidSocPresetCatalog;
 import ffdd.opsconsole.onboarding.application.IosModelPresetCatalog;
 import ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService;
 import ffdd.opsconsole.onboarding.application.PhoneCalibrationPolicy;
@@ -54,6 +55,13 @@ public class PhoneCalibrationAdminController {
     @PreAuthorize("hasAuthority('device_e6_read')")
     public ApiResult<IosModelPresetCatalog.Catalog> iosModelPresets() {
         return ApiResult.ok(IosModelPresetCatalog.load());
+    }
+
+    /** The versioned Android chip-tier presets; loading them only fills an E6 draft that still goes through A2. */
+    @GetMapping("/android-soc-presets")
+    @PreAuthorize("hasAuthority('device_e6_read')")
+    public ApiResult<AndroidSocPresetCatalog.Catalog> androidSocPresets() {
+        return ApiResult.ok(AndroidSocPresetCatalog.load());
     }
 
     /** Model risk settings take effect when saved; they are not part of the A2-approved rules. */
