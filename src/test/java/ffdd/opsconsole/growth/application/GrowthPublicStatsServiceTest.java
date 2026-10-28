@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
 import ffdd.opsconsole.growth.dto.GrowthPublicStatsUpdateRequest;
+import ffdd.opsconsole.growth.dto.GlobeDisplayConfig;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -490,6 +491,42 @@ class GrowthPublicStatsServiceTest {
             assertThat(result.getCode()).isEqualTo(422);
             assertThat(result.getMessage()).isEqualTo("H9_MEMBER_TICK_INVALID");
         }
+        verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void legacyStoredValuesExposeServerOwnedGlobeBaseline() {
+        assertThat(service.publicProjection().getData()).containsEntry("globeDisplay", GlobeDisplayConfig.defaults());
+    }
+
+    @Test
+    void globeConfigIsSavedAndPreservedByOlderClients() throws Exception {
+        when(config.activeValueForUpdate("growth.public_stats.version")).thenReturn(Optional.of("3"));
+        GlobeDisplayConfig base = GlobeDisplayConfig.defaults();
+        GlobeDisplayConfig custom = new GlobeDisplayConfig(1001, base.nodeJitterPct(), base.activeJobsMinPct(),
+                base.activeJobsMaxPct(), base.throughputMin(), base.throughputMax(), base.latencyJitterMs(), base.centers());
+        GrowthPublicStatsUpdateRequest v = validRequest(3L);
+        GrowthPublicStatsUpdateRequest update = new GrowthPublicStatsUpdateRequest(v.fleetDevices(), v.onlineRatePct(), v.onlineJitter(),
+                v.registeredUsersBase(), v.registeredUsersMonthlyGrowthPct(), v.virtualUserCount(), v.hashratePercentileTable(),
+                3L, v.reason(), v.operator(), null, null, null, null, null, null, null, null, null, null, custom);
+        ApiResult<Map<String, Object>> result = service.update(update, "save-globe");
+        assertThat(result.getCode()).isZero();
+        Map<String, Object> saved = (Map<String, Object>) result.getData().get("values");
+        assertThat(saved).containsEntry("globeDisplay", custom);
+        when(config.activeValue("growth.public_stats.values")).thenReturn(Optional.of(new ObjectMapper().writeValueAsString(saved)));
+        assertThat(service.publicProjection().getData()).containsEntry("globeDisplay", custom);
+        assertThat((Map<String, Object>) service.update(v, "legacy-preserve-globe").getData().get("values"))
+                .containsEntry("globeDisplay", custom);
+    }
+
+    @Test
+    void malformedGlobeRejectsTheWholeWrite() {
+        GrowthPublicStatsUpdateRequest v = validRequest(3L);
+        GrowthPublicStatsUpdateRequest update = new GrowthPublicStatsUpdateRequest(v.fleetDevices(), v.onlineRatePct(), v.onlineJitter(),
+                v.registeredUsersBase(), v.registeredUsersMonthlyGrowthPct(), v.virtualUserCount(), v.hashratePercentileTable(),
+                3L, v.reason(), v.operator(), null, null, null, null, null, null, null, null, null, null,
+                new GlobeDisplayConfig(999, null, null, null, null, null, null, null));
+        assertThat(service.update(update, "invalid-globe").getMessage()).isEqualTo("H9_GLOBE_DISPLAY_INVALID");
         verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
