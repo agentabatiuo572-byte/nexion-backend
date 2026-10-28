@@ -76,66 +76,66 @@ public class OpsEventCenterService {
     private static final List<EventFamilyDefinition> EVENT_FAMILY_DEFINITIONS = List.of(
             familyDef("acquisition", "① 获客漏斗", "注册前后身份拼接 + 渠道归因",
                     "app.session_started · auth.register_completed · device.first_yield_received",
-                    "部分(注册/验证类服务器发)",
+                    "部分（注册、验证类由系统记录）",
                     List.of("APP_", "AUTH_", "C1_", "DEVICE_FIRST"),
                     row("app.session_started", "匿名设备首次会话"),
                     row("auth.register_started / completed", "注册链路开始与完成"),
                     row("device.first_yield_received", "首笔设备收益到账")),
             familyDef("conversion", "② 转化", "商城浏览、下单、试用和邀请转化",
                     "store.viewed · checkout.completed · trial.started · referral.invite_sent",
-                    "下单/试用服务器发",
+                    "下单、试用由系统记录",
                     List.of("E1_", "E2_", "E4_", "H2_", "REFERRAL_", "CHECKOUT_", "STORE_", "TRIAL_"),
                     row("store.viewed", "商城详情曝光"),
                     row("checkout.completed", "支付完成"),
                     row("trial.started", "试用开始"),
                     row("referral.invite_sent", "邀请发出")),
-            familyDef("monetization", "③ 资金 / 资产", "钱包、提现、质押、兑换、Genesis 交易",
+            familyDef("monetization", "③ 资金 / 资产", "钱包、提现、质押、兑换、创世节点交易",
                     "wallet.topup_* · withdraw.* · staking.opened · exchange.swapped · genesis.purchased",
-                    "全部服务器发",
+                    "全部由系统记录",
                     List.of("D1_", "D2_", "D3_", "D4_", "G1_", "G2_", "G3_", "G4_", "G7_", "B1_", "WALLET_", "WITHDRAW_", "STAKING_", "EXCHANGE_", "GENESIS_"),
                     row("wallet.topup_created / confirmed / failed", "充值全链路"),
                     row("withdraw.submitted / risk_held / approved / confirmed", "提现全链路"),
                     row("staking.opened", "质押开仓"),
                     row("exchange.swapped", "兑换完成"),
-                    row("genesis.purchased", "Genesis 购买完成")),
+                    row("genesis.purchased", "创世节点购买完成")),
             familyDef("retention", "④ 留存", "日活、签到、任务和推送触达",
                     "app.dau · daily.checkin · quest.completed · nova.push_clicked",
-                    "推送送达服务器发",
+                    "推送送达由系统记录",
                     List.of("H3_", "H4_", "H5_", "H6_", "I2_", "I3_", "I7_", "DAILY_", "QUEST_", "NOVA_", "NOTIFICATION_"),
-                    row("app.dau", "日活跃(KPI #2 口径)"),
+                    row("app.dau", "日活跃（关键指标 #2）"),
                     row("daily.checkin", "每日签到"),
                     row("quest.completed", "任务完成"),
-                    row("nova.push_sent / push_clicked", "推送送达与点击(KPI #6)")),
-            familyDef("risk", "⑤ 风控", "风险信号(服务器检测产出)",
+                    row("nova.push_sent / push_clicked", "推送送达与点击（关键指标 #6）")),
+            familyDef("risk", "⑤ 风控", "系统检测到的风险信号",
                     "risk.multi_account_flagged · risk.score_updated · auth.login_locked",
-                    "全部服务器发",
+                    "全部由系统记录",
                     List.of("K1_", "K2_", "K3_", "K4_", "C5_", "C6_", "J2_", "J3_", "RISK_", "AUTH_LOGIN"),
-                    row("risk.multi_account_flagged", "多账户关联命中"),
+                    row("risk.multi_account_flagged", "发现多账户关联"),
                     row("risk.arbitrage_suspected", "套利嫌疑"),
                     row("risk.trial_cycle_detected", "循环养号"),
                     row("risk.withdraw_held", "提现拦截"),
                     row("risk.score_updated", "风险分更新"),
                     row("auth.login_locked", "登录锁定")),
-            familyDef("phase_admin", "⑥ 节奏 / admin", "阶段切换 + 全部后台治理审计",
+            familyDef("phase_admin", "⑥ 运营阶段与后台操作", "阶段切换和所有后台操作记录",
                     "phase.transitioned · phase.dial_changed · admin.*",
-                    "全部服务器发",
+                    "全部由系统记录",
                     List.of("A1_", "A2_", "A3_", "A4_", "H1_", "J1_", "J4_", "ADMIN_", "PHASE_"),
                     row("phase.transitioned", "阶段切换"),
-                    row("phase.dial_changed", "dial 改动(同时落 A2 审计)"),
-                    row("admin.*(全后台治理事件)", "各域高敏动作审计,命名在 A4 注册,落库在 A2")));
+                    row("phase.dial_changed", "运营调节项修改（同时记入操作记录）"),
+                    row("admin.*（所有后台操作）", "各模块的敏感操作，在这里登记名称，记录保存在「操作记录与审批」")));
 
     private static final List<EventCommonField> COMMON_FIELDS = List.of(
-            new EventCommonField("event_id", "event_id", "服务器生成唯一号,去重用", "必带"),
+            new EventCommonField("event_id", "event_id", "系统生成的唯一编号，用于去重", "必带"),
             new EventCommonField("event_name", "event_name", "domain.object_action,动作使用过去式", "必带"),
-            new EventCommonField("ts", "ts", "服务器收到时间(毫秒),客户端时钟不算数", "服务器权威"),
-            new EventCommonField("identity", "user_id / anon_id", "身份二选一,注册拼接期可并存", "字段必带,值可空"),
+            new EventCommonField("ts", "ts", "系统收到的时间（毫秒），不以用户设备时间为准", "以系统为准"),
+            new EventCommonField("identity", "user_id / anon_id", "二选一，注册前后可同时存在", "字段必带,值可空"),
             new EventCommonField("session_id", "session_id", "单次会话 ID", "字段必带,值可空"),
-            new EventCommonField("phase", "phase + 账户月龄", "事发时用户处于 P 几,阶段效果归因字段", "必带"),
+            new EventCommonField("phase", "phase + 账户月龄", "事件发生时用户所在的运营阶段，用于分析阶段效果", "必带"),
             new EventCommonField("cohort", "cohort", "注册周(按周分群)", "必带"),
             new EventCommonField("attribution", "ref / source", "推荐码或渠道归因来源", "字段必带,值可空"),
             new EventCommonField("client", "platform / app_version / locale", "端、版本和语言", "必带"),
             new EventCommonField("is_server_authoritative", "is_server_authoritative",
-                    "资金/状态事件 = true(服务器发);界面交互 = false", "必带"));
+                    "资金和状态事件为 true（由系统记录）；界面操作为 false", "必带"));
 
     private static final List<EventKpiFormula> KPI_FORMULAS = List.of(
             new EventKpiFormula(1, "Day0 接入", "90 秒内拿到首笔收益的人 ÷ 注册数"),
@@ -143,9 +143,9 @@ public class OpsEventCenterService {
             new EventKpiFormula(3, "逛商城", "看过商城的人 ÷ 注册数"),
             new EventKpiFormula(4, "下单转化", "完成支付的人 ÷ 看过商城的人"),
             new EventKpiFormula(5, "持有者推广", "发过邀请的设备持有者 ÷ 持有者总数"),
-            new EventKpiFormula(6, "Nova 点击率", "推送点击 ÷ 推送送达(只认服务器送达)"),
-            new EventKpiFormula(7, "佣金触发", "直推首单产生佣金的人 ÷ 直推总数"),
-            new EventKpiFormula(8, "Genesis 售罄天数", "累计售出达成售罄口径用的天数"));
+            new EventKpiFormula(6, "Nova 点击率", "推送点击 ÷ 推送送达（以系统确认送达为准）"),
+            new EventKpiFormula(7, "佣金触发", "直接邀请的用户下首单并产生佣金的人数 ÷ 直接邀请总人数"),
+            new EventKpiFormula(8, "创世节点售罄天数", "从开售到卖完所用的天数"));
 
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
@@ -389,7 +389,7 @@ public class OpsEventCenterService {
                 "J 域 schema 批",
                 "inprogress",
                 "应急域(J3/J4)",
-                "J3 篡改事件已注册并落地；J4 剧本事件仍待注册",
+                "篡改事件已登记并上线；应急处理事件还没登记",
                 List.of(new EventDomainItem("risk.tamper_detected", true),
                         new EventDomainItem("admin.emergency_playbook_*", false)),
                 List.of(
@@ -457,7 +457,7 @@ public class OpsEventCenterService {
                 "登记扩展工单",
                 normalizeBatchStatus(record.status()),
                 record.producer(),
-                "done".equalsIgnoreCase(record.status()) ? "schema 已注册并完成归属确认" : "待 schema 注册和归属确认",
+                "done".equalsIgnoreCase(record.status()) ? "字段已登记，归属已确认" : "等待登记字段并确认归属",
                 List.of(new EventDomainItem(record.domainName(), true)),
                 List.of(row(record.eventName(), "生产方 " + record.producer() + " → 消费方 " + record.consumer())));
     }
@@ -490,12 +490,12 @@ public class OpsEventCenterService {
             families.add(family(
                     "other_unregistered",
                     "⑦ OTHER / UNREGISTERED",
-                    "已注册但未归入六类目录，或 schema_registered=0（纳入今日总量）",
-                    "其他已注册 family · 未注册 schema",
-                    "依原事件 schema",
+                    "已登记但不属于六类，或还没登记字段（计入今日总量）",
+                    "其他类别 · 未登记字段",
+                    "按原事件字段",
                     exactCount(otherCount),
-                    row("OTHER", "已注册但 family_key 未归入六类目录"),
-                    row("UNREGISTERED", "schema_registered=0 或 family_key 为空")));
+                    row("OTHER", "已登记，但不属于六类"),
+                    row("UNREGISTERED", "还没登记字段，或没有类别")));
         }
         return families;
     }
@@ -779,7 +779,7 @@ public class OpsEventCenterService {
                         "consumer", extension.consumer()));
         return ApiResult.ok(new EventDomainExtensionBatch(
                 "manual-" + slug(extension.domainName() + "-" + extension.eventName()),
-                "登记扩展工单", "registered", extension.producer(), "待 schema 注册和归属确认",
+                "登记扩展工单", "registered", extension.producer(), "等待登记字段并确认归属",
                 List.of(new EventDomainItem(extension.domainName(), true)),
                 List.of(row(extension.eventName(), "生产方 " + extension.producer() + " → 消费方 " + extension.consumer()))));
     }
@@ -1029,21 +1029,21 @@ public class OpsEventCenterService {
 
     private List<ParamDefinition> paramDefinitions() {
         return List.of(
-                new ParamDefinition("day0", "Day0 接入窗口", "注册到首笔收益到账的达标时限(KPI #1 口径)",
+                new ParamDefinition("day0", "Day0 接入窗口", "从注册到首笔收益到账的目标时间（关键指标 #1）",
                         "90 秒", false, A4RuntimePolicyService.DAY0_KEY),
-                new ParamDefinition("retention", "留存口径", "Day1 / Day7 / Day30 三窗",
+                new ParamDefinition("retention", "留存统计方式", "注册后第 1 / 7 / 30 天",
                         "D1·D7·D30", true, "admin.a4.event.kpi.retention"),
-                new ParamDefinition("event_retention", "事件留存期", "完整 12 月周期 + 1 月缓冲;审计日志同口径",
+                new ParamDefinition("event_retention", "事件留存期", "12 个月运营周期再多留 1 个月；操作记录相同",
                         "13 个月", false, A4RuntimePolicyService.EVENT_RETENTION_KEY),
-                new ParamDefinition("sampling", "采样率", "浏览/会话类抽样省成本;资金/风控/转化类永远全量",
+                new ParamDefinition("sampling", "采样率", "浏览和会话类只抽样以节省成本；资金、风控、转化类全部记录",
                         "浏览/会话 10% · 资金/风控/转化 100%", false, A4RuntimePolicyService.SAMPLING_KEY));
     }
 
     private List<String> guardrails() {
         return List.of(
-                "资金和 KPI 口径只统计 is_server_authoritative=true 的服务器事件",
-                "事件名和属性先注册后使用,PII 明文禁入 schema",
-                "Premium、积分系统、NEX v2 只保留历史兼容、到期兑付或迁移说明,不得作为活跃 domain");
+                "资金和关键指标只统计由系统记录的事件",
+                "事件名和字段要先登记再使用，字段里不能有明文个人敏感信息",
+                "Premium、积分系统、UVT v2 已下线，只保留历史数据和到期兑付");
     }
 
     private static EventFamily family(

@@ -99,11 +99,11 @@ public class OpsTreasuryService {
             new BudgetSeed("genesis", "创世", "operations.budget.current-month.genesis"),
             new BudgetSeed("reserve", "储备", "operations.budget.current-month.reserve"));
     private static final List<GateSeed> B_RISK_GATE_SEEDS = List.of(
-            new GateSeed("withdraw", "提现闸"),
-            new GateSeed("exchange", "兑换闸"),
-            new GateSeed("staking", "算力质押闸"),
-            new GateSeed("genesis", "Genesis 闸"),
-            new GateSeed("trial", "试用闸"));
+            new GateSeed("withdraw", "提现开关"),
+            new GateSeed("exchange", "兑换开关"),
+            new GateSeed("staking", "质押开关"),
+            new GateSeed("genesis", "创世节点开关"),
+            new GateSeed("trial", "试用开关"));
     private final TreasuryLedgerRepository ledgerRepository;
     private final PlatformConfigFacade configFacade;
     private final EmergencyControlRepository emergencyRepository;
@@ -188,7 +188,7 @@ public class OpsTreasuryService {
                 "series", series,
                 "breaches", List.of(),
                 "asOf", asOf,
-                "source", "B1 双账本"));
+                "source", "资金总账"));
     }
 
     /** D3 canonical reserve source. Coverage is intentionally absent: B1 owns that decision. */
@@ -295,7 +295,7 @@ public class OpsTreasuryService {
                 "cumulativeUsdt", money(running),
                 "reserveCoverDays", reserveCoverDays(reserveTotal, average),
                 "farLiabilityExcluded", !Boolean.TRUE.equals(config.get("includeFarLiabilities")),
-                "farLiabilityNote", "NEX v2 到期额超出预测窗口(24 月锁期)，不在图内",
+                "farLiabilityNote", "UVT 锁仓到期金额超出预测范围（24 个月），图中不显示",
                 "trialStressIncluded", Boolean.TRUE.equals(config.get("trialStressEnabled")),
                 "stakingInterestMode", interestMode,
                 "withdrawCooldownDays", d3WithdrawCooldownDays(),
@@ -495,12 +495,27 @@ public class OpsTreasuryService {
     }
 
     @SuppressWarnings("unchecked")
+    // The liabilities API keeps its canonical labels; exports show the operator-facing names.
+    private static Object liabilityExportLabel(Object category, Object label) {
+        return switch (String.valueOf(category)) {
+            case "usdt_staking_principal" -> "USDT 质押本金";
+            case "staking_interest" -> "质押应付利息";
+            case "genesis_daily_emission" -> "创世节点应付分红";
+            case "nex_v2_future" -> "UVT 锁仓到期应付";
+            case "withdrawal_queue" -> "待处理提现";
+            case "commission_cooling" -> "冷却期内未发放的佣金";
+            case "lock_other" -> "其他锁仓本息";
+            case "unverified_deposit" -> "未确认的入金";
+            default -> label;
+        };
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public byte[] liabilitiesCsv() {
         List<Map<String, Object>> rows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");
         StringBuilder csv = new StringBuilder("\ufeffcategory,label,amount_usdt,share,source\r\n");
         for (Map<String, Object> row : rows) {
-            csv.append(csvCell(row.get("category"))).append(',').append(csvCell("nex_v2_future".equals(row.get("category")) ? "UVT v2 未来兑付" : row.get("label"))).append(',')
+            csv.append(csvCell(row.get("category"))).append(',').append(csvCell(liabilityExportLabel(row.get("category"), row.get("label")))).append(',')
                     .append(row.get("amountUsdt")).append(',').append(row.get("share")).append(',')
                     .append(csvCell(row.get("source"))).append("\r\n");
         }
@@ -555,7 +570,7 @@ public class OpsTreasuryService {
         List<Map<String, Object>> rows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");
         StringBuilder csv = new StringBuilder("\ufeffcategory,label,amount_usdt,share,source\r\n");
         for (Map<String, Object> row : rows) {
-            csv.append(csvCell(row.get("category"))).append(',').append(csvCell("nex_v2_future".equals(row.get("category")) ? "UVT v2 未来兑付" : row.get("label"))).append(',')
+            csv.append(csvCell(row.get("category"))).append(',').append(csvCell(liabilityExportLabel(row.get("category"), row.get("label")))).append(',')
                     .append(row.get("amountUsdt")).append(',').append(row.get("share")).append(',')
                     .append(csvCell(row.get("source"))).append("\r\n");
         }
@@ -1432,34 +1447,34 @@ public class OpsTreasuryService {
         if (!k4ScoringAvailable) {
             feed.add(section(
                     "sev", "p1",
-                    "t", "K4 风险评分暂不可用 · 异常账户停止推测",
-                    "m", "K4 服务端权威评分",
+                    "t", "风险评分暂时不可用，异常账户暂不统计",
+                    "m", "风险评分规则",
                     "href", "/risk/scoring"));
         } else if (k4AutoEscalated > 0) {
             feed.add(section(
                     "sev", "p0",
-                    "t", "K4 自动升级线 " + k4AutoEscalateScore + " · " + k4AutoEscalated
-                            + " 个账户 · 当前模型 " + k4ModelVersion,
-                    "m", "活动模型阈值与新鲜有效分（含人工覆盖）",
+                    "t", "自动上报分数线 " + k4AutoEscalateScore + " · " + k4AutoEscalated
+                            + " 个账户 · 当前评分规则 " + k4ModelVersion,
+                    "m", "按当前评分规则和最新得分统计（含手动改分）",
                     "href", "/risk/scoring"));
         } else if (k4HighRisk > 0) {
             feed.add(section(
                     "sev", "p1",
-                    "t", "K4 高风险 " + k4HighRisk + " 个账户 · 当前模型 " + k4ModelVersion,
-                    "m", "含活动人工覆盖后的服务端有效分",
+                    "t", "高风险 " + k4HighRisk + " 个账户 · 当前评分规则 " + k4ModelVersion,
+                    "m", "按手动改分后的最新得分统计",
                     "href", "/risk/scoring"));
         } else if (k4MediumRisk > 0) {
             feed.add(section(
                     "sev", "p2",
-                    "t", "K4 中风险 " + k4MediumRisk + " 个账户 · 当前模型 " + k4ModelVersion,
-                    "m", "含活动人工覆盖后的服务端有效分",
+                    "t", "中风险 " + k4MediumRisk + " 个账户 · 当前评分规则 " + k4ModelVersion,
+                    "m", "按手动改分后的最新得分统计",
                     "href", "/risk/scoring"));
         }
         if (k4ScoringAvailable && k4StaleScoreUsers > 0) {
             feed.add(section(
                     "sev", "p2",
-                    "t", "K4 有 " + k4StaleScoreUsers + " 个账户等待当前模型重算",
-                    "m", "陈旧模型分未计入 B5 异常账户与风险分布",
+                    "t", k4StaleScoreUsers + " 个账户等待按当前规则重新评分",
+                    "m", "旧规则的得分不计入异常账户和风险分布",
                     "href", "/risk/scoring"));
         }
         RiskTamperSignalFacade.TamperRadarSnapshot tamperRadar = riskTamperSignalFacade.tamperRadarSnapshot(since);
@@ -1467,7 +1482,7 @@ public class OpsTreasuryService {
             feed.add(section(
                     "sev", "p1",
                     "t", "篡改拦截 " + tamperRadar.signalCount() + " 起 · 涉及 " + tamperRadar.accountCount() + " 个账户",
-                    "m", "J3 服务器拦截事件 · 最近 " + tamperRadar.latestAt(),
+                    "m", "篡改防御拦截 · 最近 " + tamperRadar.latestAt(),
                     "href", "/emergency/tamper"));
         }
         List<Map<String, Object>> gates = riskGates();
@@ -1549,7 +1564,7 @@ public class OpsTreasuryService {
         return section(
                 "sev", severity,
                 "t", "挤兑比率 " + bankRun.stripTrailingZeros().toPlainString() + "% · 覆盖率 " + coverage.stripTrailingZeros().toPlainString() + "%",
-                "m", "B1 双账本 · 实时",
+                "m", "资金总账 · 实时",
                 "href", "/overview/dual-ledger");
     }
 
@@ -1881,13 +1896,13 @@ public class OpsTreasuryService {
         String action;
         String notification;
         if (coverDays.compareTo(BigDecimal.valueOf(30)) >= 0) {
-            tier = "NORMAL"; color = "green"; action = "常规运营，无需联动"; notification = "并入日报";
+            tier = "NORMAL"; color = "green"; action = "正常运营，无需处理"; notification = "写入日报";
         } else if (coverDays.compareTo(BigDecimal.valueOf(15)) >= 0) {
-            tier = "WATCH"; color = "cyan"; action = "加密监控到期曲线与净敞口"; notification = "财务日报标注";
+            tier = "WATCH"; color = "cyan"; action = "加强监控到期金额和资金缺口"; notification = "在财务日报中标注";
         } else if (coverDays.compareTo(BigDecimal.valueOf(7)) >= 0) {
-            tier = "WARNING"; color = "yellow"; action = "建议到 D5 收紧节奏并在 D2 延迟大额"; notification = "实时告警和值班响应";
+            tier = "WARNING"; color = "yellow"; action = "建议在「提现参数配置」收紧提现节奏，并在「待审核提现」延后处理大额提现"; notification = "实时告警，值班人员跟进";
         } else {
-            tier = "DANGER"; color = "red"; action = "建议评估 J1 提现熔断并升级超管"; notification = "立即升级超管并通知 B5";
+            tier = "DANGER"; color = "red"; action = "建议评估是否在「紧急停用开关」暂停提现，并上报超级管理员"; notification = "立即上报超级管理员，并在「风险提醒」跟进";
         }
         return section("tier", tier, "color", color, "reserveCoverDays", coverDays,
                 "dailyAverageDueUsdt", money(dailyAverage), "suggestedAction", action, "notification", notification,
@@ -2109,7 +2124,7 @@ public class OpsTreasuryService {
                 "delta30dUsdt", money(after30d.subtract(before30d)),
                 "reserveCategoryChanges", changedCategoryCount(before, after, "reserveCategories"),
                 "liabilityCategoryChanges", changedCategoryCount(before, after, "liabilityCategories"),
-                "note", "科目纳入开关下一日批 UTC 00:00 生效且不追溯历史快照");
+                "note", "科目开关从下一个结算日（UTC 00:00）开始生效，不影响历史数据");
     }
 
     private BigDecimal forecastTotal(Map<String, Object> config, int days) {

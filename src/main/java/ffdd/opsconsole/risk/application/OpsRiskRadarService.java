@@ -190,20 +190,20 @@ public class OpsRiskRadarService {
             String label;
             String target;
             if (normalized.contains("multi_account")) {
-                label = "反多账户命中";
+                label = "多账户风险";
                 target = "/risk/multi-account";
             } else if (normalized.contains("arbitrage") || normalized.contains("trial_cycle")
                     || normalized.contains("leaderboard_velocity")) {
-                label = "套利或循环行为命中";
+                label = "套利或刷量风险";
                 target = "/risk/abuse";
             } else if (normalized.contains("withdraw")) {
-                label = "提现风险命中";
+                label = "提现风险";
                 target = "/finance/withdrawals";
             } else if (normalized.contains("tamper")) {
-                label = "篡改风险命中";
+                label = "篡改风险";
                 target = "/emergency/tamper";
             } else {
-                label = "风险信号命中";
+                label = "其他风险信号";
                 target = "/risk/scoring";
             }
             return section(
@@ -555,9 +555,9 @@ public class OpsRiskRadarService {
             }
         }
         return List.of(
-                abnormal(indexed, "multi-account", "反多账户命中"),
+                abnormal(indexed, "multi-account", "多账户风险"),
                 abnormal(indexed, "arbitrage", "套利可疑"),
-                abnormal(indexed, "trial-cycle", "Trial 循环养号"),
+                abnormal(indexed, "trial-cycle", "反复试用养号"),
                 abnormal(indexed, "withdraw-held", "提现冻结"));
     }
 

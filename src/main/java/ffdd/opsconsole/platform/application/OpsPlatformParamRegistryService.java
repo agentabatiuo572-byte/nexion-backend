@@ -28,17 +28,17 @@ public class OpsPlatformParamRegistryService {
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
     private static final Map<String, String> DOMAIN_LABELS = Map.ofEntries(
             Map.entry("A", "平台基础"),
-            Map.entry("B", "总览驾驶舱"),
+            Map.entry("B", "运营总览"),
             Map.entry("C", "用户与账户"),
             Map.entry("D", "资金与财务"),
             Map.entry("E", "设备与商城"),
             Map.entry("F", "分销与团队"),
             Map.entry("G", "金融产品"),
-            Map.entry("H", "增长节奏"),
-            Map.entry("I", "内容合规"),
-            Map.entry("J", "紧急合规"),
+            Map.entry("H", "增长与活动"),
+            Map.entry("I", "内容与合规"),
+            Map.entry("J", "紧急与合规控制"),
             Map.entry("K", "风控与反作弊"),
-            Map.entry("L", "数据与分析 BI"),
+            Map.entry("L", "数据与分析"),
             Map.entry("M", "客服中心"));
 
     /**
@@ -96,7 +96,7 @@ public class OpsPlatformParamRegistryService {
         int emergencyCount = 0;
         for (Map<String, Object> state : emergency) {
             String key = text(state.get("key"));
-            if (key.endsWith("-unavailable") || "读取失败".equals(text(state.get("status")))) {
+            if (key.endsWith("-unavailable") || "加载失败".equals(text(state.get("status")))) {
                 emergencyPartial = true;
                 continue;
             }
@@ -113,14 +113,14 @@ public class OpsPlatformParamRegistryService {
         int highSensitivityCount = (int) ordered.stream().filter(PlatformParamRegistryRow::operationConfirm).count();
         List<PlatformParamRegistrySourceState> sources = List.of(
                 new PlatformParamRegistrySourceState(
-                        "config", "服务端配置中心",
+                        "config", "系统参数",
                         unmappedConfigCount > 0 ? "PARTIAL" : configCount == 0 ? "EMPTY" : "READY", configCount,
                         unmappedConfigCount > 0
-                                ? "有 " + unmappedConfigCount + " 项参数归属尚未登记，已隔离且未展示参数值；请联系平台运维补齐归属。"
-                                : "数据库中启用且未删除的配置；未配置的手机换绑项展示服务端默认值"),
+                                ? "有 " + unmappedConfigCount + " 项参数还没登记所属页面，暂不显示它们的值；请联系平台运维补登记。"
+                                : "所有启用中的参数；手机换绑项没有设置时显示默认值"),
                 new PlatformParamRegistrySourceState(
-                        "emergency", "应急控制实时态", emergencyPartial ? "PARTIAL" : "READY", emergencyCount,
-                        emergencyPartial ? "部分 J1/J2 状态读取失败，未将未知值伪装为正常" : "J1/J2 服务端权威状态"));
+                        "emergency", "紧急开关当前状态", emergencyPartial ? "PARTIAL" : "READY", emergencyCount,
+                        emergencyPartial ? "部分紧急开关或地区限制状态加载失败，未知状态不会显示成正常" : "紧急停用开关和地区访问限制的当前状态"));
         PlatformParamRegistryStats stats = new PlatformParamRegistryStats(
                 ordered.size(), domainCount, highSensitivityCount, sources.size());
         return ApiResult.ok(new PlatformParamRegistryOverview(
@@ -141,9 +141,9 @@ public class OpsPlatformParamRegistryService {
             return liveHealthRow(canonicalKey, displayName, owner);
         }
         boolean retired = ComputeConfigRegistry.coeffKey("h5BaseFactor").equals(canonicalKey);
-        String description = retired ? "已退役，只读兼容值固定为零；历史存量不再生效。" : secret
-                ? "该敏感参数由" + owner.label() + "在服务端维护；A5 只确认已配置，不返回原始值。"
-                : "该参数由" + owner.label() + "在服务端维护；A5 仅展示当前值和归属入口。";
+        String description = retired ? "已退役，值固定为 0，历史数据也不再生效。" : secret
+                ? "这个敏感参数在「" + owner.label() + "」设置；这里只显示是否已配置，不显示具体值。"
+                : "这个参数在「" + owner.label() + "」设置；这里只显示当前值。";
         String valueType = secret
                 ? "SECRET"
                 : StringUtils.hasText(item.valueType()) ? item.valueType().trim().toUpperCase(Locale.ROOT) : "STRING";
@@ -176,11 +176,11 @@ public class OpsPlatformParamRegistryService {
     private String phonePolicySummary(String value) {
         try {
             var state = new com.fasterxml.jackson.databind.ObjectMapper().readTree(value);
-            if (!state.has("revision") || !state.path("revision").canConvertToLong()) return "配置异常，请前往 E6 检查";
-            if (state.path("revision").asLong() == 0) return "尚未发布 · 前往 E6 配置";
+            if (!state.has("revision") || !state.path("revision").canConvertToLong()) return "设置有误，请到「算力与设备配置」检查";
+            if (state.path("revision").asLong() == 0) return "还没发布 · 请到「算力与设备配置」设置";
             return "发布版本 " + state.path("revision").asLong()
-                    + (state.path("scheduled").isObject() ? " · 存在待生效版本" : "") + " · 前往 E6 查看规则";
-        } catch (Exception invalid) { return "配置异常，请前往 E6 检查"; }
+                    + (state.path("scheduled").isObject() ? " · 有待生效的版本" : "") + " · 到「算力与设备配置」查看";
+        } catch (Exception invalid) { return "设置有误，请到「算力与设备配置」检查"; }
     }
 
     /**
@@ -209,14 +209,14 @@ public class OpsPlatformParamRegistryService {
             }
         }
         String value = failed
-                ? "读取失败 · 不推测正常状态"
+                ? "加载失败 · 不显示为正常"
                 : text(metric.get("metric"));
         String observedAt = failed ? "" : text(metric.get("observedAt"));
         boolean stale = failed || Boolean.TRUE.equals(metric.get("stale"));
         return new PlatformParamRegistryRow(
                 canonicalKey,
                 displayName,
-                "该指标由 A3 系统健康实时采样(与 A3 页同一事实来源)；A5 不缓存、不代替实时告警。",
+                "这个指标取自「系统配置」的实时健康检查，和那里显示的一致；这里不缓存，也不代替实时告警。",
                 owner.domain(),
                 DOMAIN_LABELS.get(owner.domain()),
                 owner.code(),
@@ -225,7 +225,7 @@ public class OpsPlatformParamRegistryService {
                 StringUtils.hasText(value) ? value : "—",
                 "STRING",
                 "",
-                "A3 系统健康实时采样",
+                "系统健康实时检查",
                 failed ? "PARTIAL" : "READY",
                 StringUtils.hasText(observedAt) ? observedAt : "未知",
                 false,
@@ -253,12 +253,12 @@ public class OpsPlatformParamRegistryService {
         String key = required(text(state.get("key")), "A5_EMERGENCY_KEY_REQUIRED");
         boolean geo = "geo-block".equals(key);
         Owner owner = geo
-                ? new Owner("J", "J2", "J2 地区屏蔽", "/emergency/geo-block")
-                : new Owner("J", "J1", "J1 功能闸", "/emergency/kill-switch");
+                ? new Owner("J", "J2", "地区访问限制", "/emergency/geo-block")
+                : new Owner("J", "J1", "紧急停用开关", "/emergency/kill-switch");
         return new PlatformParamRegistryRow(
                 geo ? "emergency.geo-block" : "emergency.gate." + key,
                 required(text(state.get("name")), "A5_EMERGENCY_NAME_REQUIRED"),
-                geo ? "地区准入策略实时状态" : "全局业务功能闸实时状态",
+                geo ? "地区访问限制当前状态" : "业务紧急停用开关当前状态",
                 owner.domain(),
                 DOMAIN_LABELS.get(owner.domain()),
                 owner.code(),
@@ -301,109 +301,109 @@ public class OpsPlatformParamRegistryService {
         String group = lower(groupValue);
         String key = lower(keyValue);
         if ("admin_a2".equals(group) || "admin_audit".equals(group) || key.startsWith("admin.a2.") || key.startsWith("admin.audit.")) {
-            return new Owner("A", "A2", "A2 审计与追溯", "/platform/audit");
+            return new Owner("A", "A2", "操作记录与审批", "/platform/audit");
         }
         if ("admin_a4_event".equals(group) || key.startsWith("admin.a4.")) {
-            return new Owner("A", "A4", "A4 埋点事件中台", "/platform/events");
+            return new Owner("A", "A4", "用户行为事件", "/platform/events");
         }
         if (group.startsWith("admin") || key.startsWith("feature.") || key.startsWith("a.sys.")) {
-            return new Owner("A", "A3", "A3 系统配置", "/platform/config");
+            return new Owner("A", "A3", "系统配置", "/platform/config");
         }
         if (group.startsWith("auth") || key.startsWith("auth.")) {
-            return new Owner("C", "C6", "C6 注册与登录风控", "/users/reg-risk");
+            return new Owner("C", "C6", "注册与登录风险", "/users/reg-risk");
         }
         if ("content_support_load".equals(group) || key.startsWith("content.support.load.")) {
-            return new Owner("M", "M1", "M1 客服总览", "/service/overview");
+            return new Owner("M", "M1", "客服工作台", "/service/overview");
         }
         if (group.startsWith("content_session") || group.startsWith("content-session") || key.startsWith("i.session.")) {
-            return new Owner("M", "M5", "M5 话术与模板配置", "/service/scripts");
+            return new Owner("M", "M5", "服务规则与话术", "/service/scripts");
         }
         if ("content".equals(group) || key.startsWith("disclosure.")) {
-            return new Owner("I", "I5", "I5 风险披露", "/content/disclosures");
+            return new Owner("I", "I5", "风险披露", "/content/disclosures");
         }
         if ("e2".equals(group) || key.startsWith("e.task.")) {
-            return new Owner("E", "E2", "E2 收益与任务引擎", "/devices/tasks");
+            return new Owner("E", "E2", "设备收益与任务", "/devices/tasks");
         }
         if (key.startsWith("store.bundle.discount.")) {
-            return new Owner("E", "E1", "E1 商品目录 & 上架门", "/devices/pricing");
+            return new Owner("E", "E1", "商品管理与上架条件", "/devices/pricing");
         }
         if ("e6_compute".equals(group) || key.startsWith("e.compute.")) {
-            return new Owner("E", "E6", "E6 算力与设备配置", "/devices/compute-config");
+            return new Owner("E", "E6", "算力与设备配置", "/devices/compute-config");
         }
         if (List.of("dailyusdtperbaseline", "nexperusdt").contains(key)) {
-            return new Owner("E", "E6", "E6 算力与设备配置", "/devices/compute-config");
+            return new Owner("E", "E6", "算力与设备配置", "/devices/compute-config");
         }
         if ("finance-topup".equals(group) || key.startsWith("finance.topup.")) {
-            return new Owner("D", "D1", "D1 充值对账中心", "/finance/recon");
+            return new Owner("D", "D1", "充值对账中心", "/finance/recon");
         }
         if (key.startsWith("finance.payout_vnd.")) {
-            return new Owner("D", "D7", "D7 法币提现参数", "/finance/payout-vnd");
+            return new Owner("D", "D7", "法币提现参数", "/finance/payout-vnd");
         }
         if (key.startsWith("growth.phase.") || key.startsWith("h1.rhythm.")) {
-            return new Owner("H", "H1", "H1 Phase 调度器", "/growth/phase");
+            return new Owner("H", "H1", "运营阶段设置", "/growth/phase");
         }
         if (key.startsWith("growth.quest.")) {
-            return new Owner("H", "H3", "H3 任务引擎", "/growth/quest");
+            return new Owner("H", "H3", "用户任务管理", "/growth/quest");
         }
         if (key.startsWith("growth.event.")) {
-            return new Owner("H", "H4", "H4 增长活动", "/growth/events");
+            return new Owner("H", "H4", "活动中心", "/growth/events");
         }
         if (key.startsWith("growth.wheel.")) {
-            return new Owner("H", "H3", "H3 任务引擎", "/growth/quest");
+            return new Owner("H", "H3", "用户任务管理", "/growth/quest");
         }
         if (key.startsWith("growth.checkin.") || key.startsWith("growth.earn_milestone.")) {
-            return new Owner("H", "H5", "H5 签到与里程碑", "/growth/daily");
+            return new Owner("H", "H5", "签到与UVT奖励", "/growth/daily");
         }
         if (key.startsWith("growth.withdraw_nex_gate.")) {
-            return new Owner("H", "H1", "H1 Phase 调度器", "/growth/phase");
+            return new Owner("H", "H1", "运营阶段设置", "/growth/phase");
         }
         if (key.startsWith("growth.public_stats.")) {
-            return new Owner("H", "H9", "H9 对外公布数据", "/growth/public-stats");
+            return new Owner("H", "H9", "首页与历史展示设置", "/growth/public-stats");
         }
         if (key.startsWith("k.rewards.")) {
-            return new Owner("H", "H8", "H8 新人礼与邀请奖励", "/growth/referral-rewards");
+            return new Owner("H", "H8", "新人礼与邀请奖励", "/growth/referral-rewards");
         }
         if (key.startsWith("g.staking.")) {
-            return new Owner("G", "G1", "G1 Staking 池配置", "/finance-products/staking");
+            return new Owner("G", "G1", "质押产品配置", "/finance-products/staking");
         }
         if (key.startsWith("g.genesis.")) {
-            return new Owner("G", "G4", "G4 Genesis 经济", "/finance-products/genesis");
+            return new Owner("G", "G4", "创世节点销售与收益", "/finance-products/genesis");
         }
         if (key.startsWith("risk.k1.")) {
-            return new Owner("K", "K1", "K1 反多账户引擎", "/risk/multi-account");
+            return new Owner("K", "K1", "多账户风险排查", "/risk/multi-account");
         }
         if (key.startsWith("payout.")) {
-            return new Owner("D", "D5", "D5 提现参数", "/finance/params");
+            return new Owner("D", "D5", "提现参数配置", "/finance/params");
         }
         if (key.startsWith("treasury.d3.")) {
-            return new Owner("D", "D3", "D3 资金池与负债", "/finance/pool");
+            return new Owner("D", "D3", "资金储备与应付款", "/finance/pool");
         }
         if ("commission/cooling-days".equals(key)) {
-            return new Owner("F", "F2", "F2 代际与同级佣金", "/network/royalty");
+            return new Owner("F", "F2", "团队分成", "/network/royalty");
         }
         if (key.contains(".binary.")) {
-            return new Owner("F", "F3", "F3 双轨结算引擎", "/network/binary");
+            return new Owner("F", "F3", "左右团队业绩结算", "/network/binary");
         }
         if (key.contains(".unilevel.")) {
-            return new Owner("F", "F2", "F2 代际与同级佣金", "/network/royalty");
+            return new Owner("F", "F2", "团队分成", "/network/royalty");
         }
         if (key.contains(".pool.")) {
-            return new Owner("F", "F4", "F4 领导池", "/network/leadership-pool");
+            return new Owner("F", "F4", "奖励池、名额与排行榜", "/network/leadership-pool");
         }
         if (key.startsWith("team.")) {
-            return new Owner("F", "F1", "F1 V 级阶梯", "/network/v-rank");
+            return new Owner("F", "F1", "团队等级晋升", "/network/v-rank");
         }
         if (key.startsWith("wallet.dual-ledger.")) {
-            return new Owner("B", "B1", "B1 双账本健康", "/overview/dual-ledger");
+            return new Owner("B", "B1", "资金与应付款总览", "/overview/dual-ledger");
         }
         if (key.startsWith("wallet.exchange.")) {
-            return new Owner("G", "G2", "G2 兑换风控", "/finance-products/exchange");
+            return new Owner("G", "G2", "兑换风险规则", "/finance-products/exchange");
         }
         if (key.startsWith("wallet.nex_market.")) {
-            return new Owner("G", "G3", "G3 NEX 行情", "/finance-products/market");
+            return new Owner("G", "G3", "UVT价格管理", "/finance-products/market");
         }
         if (key.startsWith("withdrawal.")) {
-            return new Owner("D", "D5", "D5 提现参数", "/finance/params");
+            return new Owner("D", "D5", "提现参数配置", "/finance/params");
         }
         return null;
     }

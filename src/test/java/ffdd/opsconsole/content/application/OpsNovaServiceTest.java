@@ -242,12 +242,12 @@ class OpsNovaServiceTest {
         assertThat(result.getData().channels()).filteredOn(channel -> "tradein".equals(channel.key()))
                 .singleElement().satisfies(channel -> {
                     assertThat(channel.cooldown()).isEqualTo("24h");
-                    assertThat(channel.phaseKeyed()).contains("H1 当前 P5");
+                    assertThat(channel.phaseKeyed()).contains("当前运营阶段 P5");
                 });
         assertThat(result.getData().channels()).filteredOn(channel -> "taskLockMonthly".equals(channel.key()))
                 .singleElement().satisfies(channel -> {
                     assertThat(channel.cooldown()).isEqualTo("84h");
-                    assertThat(channel.phaseKeyed()).contains("H1 当前 P5");
+                    assertThat(channel.phaseKeyed()).contains("当前运营阶段 P5");
                 });
     }
 

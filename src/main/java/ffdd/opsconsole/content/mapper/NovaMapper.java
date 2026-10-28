@@ -101,8 +101,8 @@ public interface NovaMapper extends BaseMapper<Object> {
                'Cập nhật đội nhóm', 'Đội nhóm của bạn có hoạt động mới.', 'Team update', 'Your team has a new activity.', 'PUBLISHED', 'system', 'I2 v3 可执行模板', 0),
               ('staking_event', '质押事件', '/staking', 'v1', '质押动态', '你的质押仓位有新的业务动态。',
                'Cập nhật staking', 'Vị thế staking của bạn có hoạt động mới.', 'Staking update', 'Your staking position has a new activity.', 'PUBLISHED', 'system', 'I2 v3 可执行模板', 0),
-              ('market_event', '市场事件', '/earn', 'v1', '市场动态', '市场曲线已有新的服务端事实。',
-               'Cập nhật thị trường', 'Đường cong thị trường có dữ liệu mới từ máy chủ.', 'Market update', 'The market curve has a new server fact.', 'PUBLISHED', 'system', 'I2 v3 可执行模板', 0)
+              ('market_event', '市场事件', '/earn', 'v1', '市场动态', '行情有新变化，点开看看。',
+               'Cập nhật thị trường', 'Thị trường có biến động mới. Nhấn để xem.', 'Market update', 'The market has moved. Tap to see.', 'PUBLISHED', 'system', 'I2 v3 可执行模板', 0)
             ON DUPLICATE KEY UPDATE channel_key = VALUES(channel_key)
             """)
     void seedV3RuntimeTemplates();
@@ -166,7 +166,7 @@ public interface NovaMapper extends BaseMapper<Object> {
             VALUES
                 ('withdrawal', '提现到账', 30, 'var(--admin-cat-3)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0),
                 ('vrank', 'V 等级晋升', 25, 'var(--admin-cat-5)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0),
-                ('genesis', 'Genesis 成交', 25, 'var(--admin-cat-7)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0),
+                ('genesis', '创世节点成交', 25, 'var(--admin-cat-7)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0),
                 ('aiClient', 'AI 客户消费', 0, 'var(--admin-cat-2)', 'system', '真实数据源未接入，默认不参与抽样', NOW(), NOW(), 0),
                 ('newUsers', '每小时新增用户', 20, 'var(--admin-cat-4)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0)
             ON DUPLICATE KEY UPDATE dist_key = VALUES(dist_key)

@@ -85,7 +85,7 @@ public class OpsOptionsService {
                     "团队中心", "/team",
                     "收益任务", "/earn",
                     "客服中心", "/support"));
-            case "nova-social-event", "nova-social-events" -> ApiResult.ok(options("提现到账", "withdrawal", "V 等级晋升", "vrank", "Genesis 成交", "genesis", "AI 客户消费", "aiClient", "每小时新增用户", "newUsers"));
+            case "nova-social-event", "nova-social-events" -> ApiResult.ok(options("提现到账", "withdrawal", "V 等级晋升", "vrank", "创世节点成交", "genesis", "AI 客户消费", "aiClient", "每小时新增用户", "newUsers"));
             case "nova-social-pool", "nova-social-pools" -> ApiResult.ok(options("人名池", "SOCIAL_NAMES", "城市池", "CITIES", "AI 客户池", "AI_CLIENTS"));
             case "sku-status" -> ApiResult.ok(options("草稿", "DRAFT", "在售", "ON_SALE", "售罄", "SOLD_OUT", "下架", "OFFLINE"));
             case "region", "regions" -> ApiResult.ok(options("中国香港", "HK", "新加坡", "SG", "美国", "US", "日本", "JP"));
