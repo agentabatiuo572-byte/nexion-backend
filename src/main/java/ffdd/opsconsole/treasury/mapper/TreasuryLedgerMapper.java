@@ -621,7 +621,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
               FROM nx_price_index
              WHERE is_deleted = 0
                AND status = 'ACTIVE'
-               AND metric_code IN ('NEX', 'NEX_USDT')
+               AND metric_code IN ('UVT', 'UVT_USDT')
              ORDER BY sampled_at DESC, id DESC
              LIMIT 1
             """)
@@ -841,7 +841,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     @Select("""
             SELECT CASE UPPER(#{asset})
                      WHEN 'USDT' THEN usdt_available
-                     WHEN 'NEX' THEN nex_available
+                     WHEN 'UVT' THEN nex_available
                      ELSE NULL
                    END
               FROM nx_user_wallet
@@ -872,7 +872,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
 
     @Select("""
             SELECT user_id AS userId, UPPER(currency) AS asset,
-                   CASE WHEN UPPER(currency)='NEX' THEN amount_nex ELSE amount_usdt END AS amount,
+                   CASE WHEN UPPER(currency)='UVT' THEN amount_nex ELSE amount_usdt END AS amount,
                    UPPER(status) AS status
               FROM nx_commission_event
              WHERE id=#{eventId} AND is_deleted=0
@@ -881,7 +881,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     CommissionFundsRow lockCommissionFundsEvent(@Param("eventId") Long eventId);
 
     @Select("""
-            SELECT CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'NEX' THEN nex_available END
+            SELECT CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'UVT' THEN nex_available END
               FROM nx_user_wallet
              WHERE user_id=#{userId} AND is_deleted=0
              FOR UPDATE
@@ -891,10 +891,10 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     @org.apache.ibatis.annotations.Update("""
             UPDATE nx_user_wallet
                SET usdt_available=usdt_available+CASE WHEN #{asset}='USDT' THEN #{delta} ELSE 0 END,
-                   nex_available=nex_available+CASE WHEN #{asset}='NEX' THEN #{delta} ELSE 0 END,
+                   nex_available=nex_available+CASE WHEN #{asset}='UVT' THEN #{delta} ELSE 0 END,
                    version=version+1, updated_at=NOW(6)
              WHERE user_id=#{userId} AND is_deleted=0
-               AND CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'NEX' THEN nex_available END
+               AND CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'UVT' THEN nex_available END
                    + #{delta} >= 0
             """)
     int adjustCommissionWallet(@Param("userId") Long userId, @Param("asset") String asset,

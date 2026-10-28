@@ -282,7 +282,7 @@ class OpsUserControllerTest {
 
     @Test
     void assetAdjustmentListDelegatesQuery() {
-        UserAssetAdjustmentQueryRequest request = new UserAssetAdjustmentQueryRequest("PENDING_REVIEW", "NEX", 1L, null, 1, 20, null);
+        UserAssetAdjustmentQueryRequest request = new UserAssetAdjustmentQueryRequest("PENDING_REVIEW", "UVT", 1L, null, 1, 20, null);
 
         controller.assetAdjustments(request);
 

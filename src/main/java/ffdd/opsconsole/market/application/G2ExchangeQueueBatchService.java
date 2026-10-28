@@ -84,12 +84,12 @@ public class G2ExchangeQueueBatchService {
                 skipped.add(item(row.exchangeNo(),"SKIPPED","QUEUED","FEE_EXCEEDS_AMOUNT","手续费不低于兑换金额，本单仍在队列")); continue;
             }
             BigDecimal net = money(gross.subtract(fee));
-            String toAsset = "USDT".equals(row.fromAsset()) ? "NEX" : "USDT";
-            BigDecimal toAmount = "NEX".equals(toAsset) ? net.divide(price,6,RoundingMode.DOWN) : net;
+            String toAsset = "USDT".equals(row.fromAsset()) ? "UVT" : "USDT";
+            BigDecimal toAmount = "UVT".equals(toAsset) ? net.divide(price,6,RoundingMode.DOWN) : net;
             boolean sourceReserved = mapper.sourceReservationExists(row.exchangeNo()) > 0;
             BigDecimal usdtDelta = "USDT".equals(row.fromAsset())
                     ? (sourceReserved ? BigDecimal.ZERO : row.fromAmount().negate()) : toAmount;
-            BigDecimal nexDelta = "NEX".equals(row.fromAsset())
+            BigDecimal nexDelta = "UVT".equals(row.fromAsset())
                     ? (sourceReserved ? BigDecimal.ZERO : row.fromAmount().negate()) : toAmount;
             var fundBefore=exchangeFunds.begin(row.userId(),row.exchangeNo());
             if (mapper.applyWalletDelta(row.userId(),usdtDelta,nexDelta) != 1) {
@@ -138,7 +138,7 @@ public class G2ExchangeQueueBatchService {
     private void refundReservation(AppExchangeMapper.QueuedRow row, AppExchangeMapper.WalletGateRow wallet) {
         if (mapper.sourceReservationExists(row.exchangeNo()) <= 0) return;
         BigDecimal usdtRefund = "USDT".equals(row.fromAsset()) ? row.fromAmount() : BigDecimal.ZERO;
-        BigDecimal nexRefund = "NEX".equals(row.fromAsset()) ? row.fromAmount() : BigDecimal.ZERO;
+        BigDecimal nexRefund = "UVT".equals(row.fromAsset()) ? row.fromAmount() : BigDecimal.ZERO;
         if (mapper.applyWalletDelta(row.userId(), usdtRefund, nexRefund) != 1) {
             throw new BizException(409,"EXCHANGE_QUEUE_REFUND_CONFLICT");
         }

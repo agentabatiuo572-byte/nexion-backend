@@ -445,7 +445,7 @@ public class OpsGrowthController {
     }
 
     @PatchMapping("/check-in/rules/{ruleKey}")
-    // HIGH：签到 Lucky 概率/规则，放大 NEX 派发
+    // HIGH：签到 Lucky 概率/规则，放大 UVT 派发
     @PreAuthorize("hasAuthority('growth_h5_rule_write')")
     public ApiResult<Map<String, Object>> updateCheckInRule(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -487,7 +487,7 @@ public class OpsGrowthController {
     }
 
     @PatchMapping("/earn-milestones/tick-interval")
-    // earn 里程碑属 H5 签到&NEX（收益/间隔），按业务内容归 H5
+    // earn 里程碑属 H5 签到&UVT（收益/间隔），按业务内容归 H5
     @PreAuthorize("hasAuthority('growth_h5_write')")
     public ApiResult<Map<String, Object>> updateEarnMilestoneTickInterval(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -497,7 +497,7 @@ public class OpsGrowthController {
     }
 
     @PatchMapping("/earn-milestones/{milestoneKey}")
-    // earn 里程碑属 H5 签到&NEX（里程碑/收益），按业务内容归 H5
+    // earn 里程碑属 H5 签到&UVT（里程碑/收益），按业务内容归 H5
     @PreAuthorize("hasAuthority('growth_h5_write')")
     public ApiResult<Map<String, Object>> updateEarnMilestone(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -508,14 +508,14 @@ public class OpsGrowthController {
     }
 
     @GetMapping("/withdraw-gate")
-    // 待人工确认：提现闸门归属域字典未明确，暂按 H5（NEX 收益体系）处理
+    // 待人工确认：提现闸门归属域字典未明确，暂按 H5（UVT 收益体系）处理
     @PreAuthorize("hasAuthority('growth_h5_read')")
     public ApiResult<Map<String, Object>> withdrawGate() {
         return growthService.withdrawGate();
     }
 
     @PatchMapping("/withdraw-gate")
-    // 待人工确认：提现闸门归属域字典未明确，暂按 H5（NEX 收益体系）处理
+    // 待人工确认：提现闸门归属域字典未明确，暂按 H5（UVT 收益体系）处理
     @PreAuthorize("hasAuthority('growth_h5_write')")
     public ApiResult<Map<String, Object>> updateWithdrawGate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

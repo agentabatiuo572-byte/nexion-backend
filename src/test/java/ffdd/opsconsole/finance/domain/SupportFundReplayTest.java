@@ -75,15 +75,15 @@ class SupportFundReplayTest {
     }
     @Test void foreignPartyIsRejected(){var operation=new Operation(1,"op",List.of(1L,2L),List.of(),List.of(),OCT);unknown(run(List.of(operation),cash(0,0,0)),Gap.RECEIPT);}
     @Test void dualCurrencyReservationAndFeeReturnKeepIndependentBasis(){
-        var deposit=new Event("n",Action.DEPOSIT,null,a(1,"NEX"),null,n(2),null);
+        var deposit=new Event("n",Action.DEPOSIT,null,a(1,"UVT"),null,n(2),null);
         var reserve=new Event("r",Action.RESERVE,a(1,"USDT"),null,null,n(10),null);
-        var fee=new Event("fee",Action.FEE,a(1,"NEX"),null,null,n(2),null);
+        var fee=new Event("fee",Action.FEE,a(1,"UVT"),null,null,n(2),null);
         var returned=new Event("return",Action.RETURN,null,null,"r",null,null);
         var feeRefund=new Event("feeRefund",Action.REFUND,null,null,"fee",n(2),null);
         var result=replay.replay(Set.of(1L),List.of(op(1,List.of(credit("d",1,10),deposit),cash(0,0,0),cash(10,2,0)),
             op(2,List.of(reserve,fee),cash(10,2,0),cash(0,0,10)),op(3,List.of(returned,feeRefund),cash(0,0,10),cash(10,2,0))),
             Map.of(1L,cash(10,2,0)),Map.of("d","deposit","n","nex"),List.of());
-        assertEquals(State.READY,result.state());assertEquals(n(10),result.totals().get(1L).get("USDT"));assertEquals(n(2),result.totals().get(1L).get("NEX"));
+        assertEquals(State.READY,result.state());assertEquals(n(10),result.totals().get(1L).get("USDT"));assertEquals(n(2),result.totals().get(1L).get("UVT"));
     }
     @Test void threeCustomerTradeThenWithdrawalKeepsAOrigin(){
         var ab=new Event("ab",Action.TRADE,a(1,"USDT"),a(2,"USDT"),null,n(10),n(10));

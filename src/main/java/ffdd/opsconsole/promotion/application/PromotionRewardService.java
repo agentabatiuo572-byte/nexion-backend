@@ -298,7 +298,7 @@ public class PromotionRewardService {
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> page(Long owner,boolean admin,String cursor,int limit,String activity,String state,String order,Long beneficiary,String type){
-        if(!text(type).isEmpty()&&!Set.of("USDT","NEX","DEVICE").contains(type))throw new ffdd.opsconsole.shared.exception.BizException(422,"PROMOTION_REWARD_TYPE_INVALID");
+        if(!text(type).isEmpty()&&!Set.of("USDT","UVT","DEVICE").contains(type))throw new ffdd.opsconsole.shared.exception.BizException(422,"PROMOTION_REWARD_TYPE_INVALID");
         if(!text(state).isEmpty()&&!Set.of("PENDING","READY","PROCESSING","ISSUED","RETRYABLE_FAILED","OUTCOME_UNKNOWN","CANCELLED","REVERSAL_PENDING","REVERSED","MANUAL_REVIEW").contains(state))throw new ffdd.opsconsole.shared.exception.BizException(422,"PROMOTION_REWARD_STATE_INVALID");
         if(beneficiary!=null&&beneficiary<1)throw new ffdd.opsconsole.shared.exception.BizException(422,"PROMOTION_BENEFICIARY_INVALID");
         if(!admin&&(beneficiary!=null||!text(type).isEmpty()))throw new ffdd.opsconsole.shared.exception.BizException(403,"PROMOTION_ADMIN_REQUIRED");

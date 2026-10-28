@@ -24,7 +24,7 @@ public final class L3FinanceReportAssembler {
             "commission_cooling", "lock_other", "unverified_deposit");
     public static final List<String> CANONICAL_LIABILITY_LABELS = List.of(
             "可提余额", "USDT staking 本金", "staking 应付利息", "Genesis 排放承诺",
-            "NEX v2 未来兑付", "待提现 queue", "佣金冷却未解锁", "锁仓本息其他", "待核实入金");
+            "UVT v2 未来兑付", "待提现 queue", "佣金冷却未解锁", "锁仓本息其他", "待核实入金");
     private static final Set<String> PERIOD_GRANULARITIES = Set.of("day", "week", "month", "quarter", "custom");
     private static final BigDecimal ONE_CENT = new BigDecimal("0.01");
 

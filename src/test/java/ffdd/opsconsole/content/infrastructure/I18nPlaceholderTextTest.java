@@ -39,7 +39,7 @@ class I18nPlaceholderTextTest {
         assertThat(I18nCopyQuality.isPlaceholderText("a")).isFalse();
         assertThat(I18nCopyQuality.isPlaceholderText("cc")).isFalse();
         assertThat(I18nCopyQuality.isPlaceholderText("AAA")).isFalse();
-        assertThat(I18nCopyQuality.isPlaceholderText("NEX")).isFalse();
+        assertThat(I18nCopyQuality.isPlaceholderText("UVT")).isFalse();
         assertThat(I18nCopyQuality.isPlaceholderText("")).isFalse();
         assertThat(I18nCopyQuality.isPlaceholderText("   ")).isFalse();
     }

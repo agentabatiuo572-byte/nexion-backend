@@ -167,9 +167,9 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
                     BigDecimal.class, TASK_NO)).isEqualByComparingTo("4.250000");
             assertThat(fixture.jdbc().queryForObject("SELECT nex_available FROM nx_user_wallet WHERE user_id=?",
                     BigDecimal.class, USER_ID)).isEqualByComparingTo("4.250000");
-            assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_wallet_ledger WHERE asset='NEX'",
+            assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_wallet_ledger WHERE asset='UVT'",
                     Integer.class)).isEqualTo(1);
-            assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_earning_event WHERE asset='NEX'",
+            assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_earning_event WHERE asset='UVT'",
                     Integer.class)).isEqualTo(1);
             assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_event_outbox",
                     Integer.class)).isEqualTo(2);

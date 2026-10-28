@@ -10,12 +10,12 @@ import java.math.BigDecimal;
  *
  * <ul>
  *   <li>{@link #rewardType} — 派发口径:{@code usdt}(本人 USDT)/
- *       {@code nex}(培育类 NEX,默认派给 L1 上线 sponsor)/
+ *       {@code nex}(培育类 UVT,默认派给 L1 上线 sponsor)/
  *       {@code voucher}(H7 真实权益)/{@code sku}(权益类,stub)/
  *       {@code custom}(流水 only,不入 D4)。</li>
  *   <li>{@link #amount} — 资金类金额(usdt/nex 必填,voucher/sku/custom 为 null)。</li>
- *   <li>{@link #customLabel} — custom 类型描述;NEX 类型若包含 {@code "self"}/{@code "direct"}
- *       标记则视为"本人 NEX"(非培育),其余 NEX 默认培育派 sponsor。</li>
+ *   <li>{@link #customLabel} — custom 类型描述;UVT 类型若包含 {@code "self"}/{@code "direct"}
+ *       标记则视为"本人 UVT"(非培育),其余 UVT 默认培育派 sponsor。</li>
  * </ul>
  */
 public record VRankRewardRuleRow(

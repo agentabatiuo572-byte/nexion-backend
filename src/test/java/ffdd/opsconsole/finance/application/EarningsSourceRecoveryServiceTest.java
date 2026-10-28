@@ -39,7 +39,7 @@ class EarningsSourceRecoveryServiceTest {
     }
 
     @ParameterizedTest @CsvSource({"USDT,withdrawable", "USDT,pending_review", "USDT,bonus_locked",
-            "NEX,withdrawable", "NEX,pending_review", "NEX,bonus_locked"})
+            "UVT,withdrawable", "UVT,pending_review", "UVT,bonus_locked"})
     void recoversOnlyOriginalAssetAndKeepsEveryRiskBucket(String asset, String bucket) {
         entry(asset, bucket, "0", "0");
         var result = service.recoverReward(request(asset, "10"), "key-1");
@@ -66,9 +66,9 @@ class EarningsSourceRecoveryServiceTest {
     }
 
     @Test void repeatedLegitimateRecoveryDoesNotSubtractOwnRecoveryTwice() {
-        entry("NEX", "withdrawable", "3", "100");
+        entry("UVT", "withdrawable", "3", "100");
         when(mapper.lockRecoveryWallet(7L, 0)).thenReturn(new RecoveryWallet(70L, bd("0"), bd("7"), bd("999"), bd("103")));
-        var result = service.recoverReward(request("NEX", "7"), "second");
+        var result = service.recoverReward(request("UVT", "7"), "second");
         assertThat(result.recovered()).isEqualByComparingTo("7");
         assertThat(result.cumulativeRecovered()).isEqualByComparingTo("10");
         assertThat(result.remainingEntitlement()).isZero();
@@ -92,7 +92,7 @@ class EarningsSourceRecoveryServiceTest {
     }
 
     @Test void ownershipAssetSourceAndEnvironmentMustMatchOriginalEntry() {
-        entry("NEX", "withdrawable", "0", "0");
+        entry("UVT", "withdrawable", "0", "0");
         assertThatThrownBy(() -> service.recoverReward(request("USDT", "10"), "wrong-asset"))
                 .hasMessage("EARNINGS_RECOVERY_SOURCE_MISMATCH");
         verify(mapper, never()).debitRecoveredReward(anyLong(), anyString(), any(), anyInt());

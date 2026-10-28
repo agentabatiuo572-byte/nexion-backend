@@ -30,9 +30,9 @@ public final class OpsDomainCatalog {
     private static final Map<String, UpdateCorrection> UPDATE_CORRECTIONS = List.of(
                     new UpdateCorrection("I9_CROSS_AGENT_TRANSFER", DomainCode.I, "Support conversations can transfer across agents."),
                     new UpdateCorrection("E3B_DEVICE_RESTORE", DomainCode.E, "Mistaken recycled devices can be restored to offline."),
-                    new UpdateCorrection("G3_WEEKLY_CURVE", DomainCode.G, "NEX market curve uses seven day keyframes."),
+                    new UpdateCorrection("G3_WEEKLY_CURVE", DomainCode.G, "UVT market curve uses seven day keyframes."),
                     new UpdateCorrection("D5_H1_WITHDRAW_NEX_GATE", DomainCode.H, "Withdraw friction gate is owned by H1 and mirrored by D5."),
-                    new UpdateCorrection("H5_CHECKIN_NEX_REWARD", DomainCode.H, "Check-in rewards issue NEX instead of points."),
+                    new UpdateCorrection("H5_CHECKIN_NEX_REWARD", DomainCode.H, "Check-in rewards issue UVT instead of points."),
                     new UpdateCorrection("J1_GATE_SHRINK", DomainCode.J, "Kill switch excludes sunset subscription and old vault gates."))
             .stream()
             .collect(Collectors.toUnmodifiableMap(UpdateCorrection::key, Function.identity()));

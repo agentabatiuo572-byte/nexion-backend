@@ -20,8 +20,8 @@ public interface H3WeeklyExchangeReferralMapper {
                 AND COALESCE(u.sandbox,0)=0
              WHERE o.user_id=#{userId} AND o.exchange_no=#{exchangeNo} AND o.is_deleted=0
                AND UPPER(o.status)='COMPLETED'
-               AND ((UPPER(o.from_asset)='NEX' AND UPPER(o.to_asset)='USDT')
-                 OR (UPPER(o.from_asset)='USDT' AND UPPER(o.to_asset)='NEX'))
+               AND ((UPPER(o.from_asset)='UVT' AND UPPER(o.to_asset)='USDT')
+                 OR (UPPER(o.from_asset)='USDT' AND UPPER(o.to_asset)='UVT'))
              LIMIT 1
             """)
     VerifiedExchange verifiedCompletedExchange(@Param("userId") Long userId, @Param("exchangeNo") String exchangeNo);

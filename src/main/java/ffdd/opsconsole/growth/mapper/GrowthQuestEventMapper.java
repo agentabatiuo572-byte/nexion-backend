@@ -270,7 +270,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                        END,
                        2
                      ),
-                     ' NEX'
+                     ' UVT'
                    ) AS shadow,
                    claim_no AS cardTok,
                    claimed_at AS claimedAt,
@@ -318,7 +318,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                        END,
                        2
                      ),
-                     ' NEX'
+                     ' UVT'
                    ) AS shadow,
                    claim_no AS cardTok,
                    claimed_at AS claimedAt,
@@ -432,7 +432,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    'MISSION' AS taskKind,
                    mission_name AS task,
                    mission_name AS cond,
-                   CONCAT(reward_points, ' NEX') AS reward,
+                   CONCAT(reward_points, ' UVT') AS reward,
                    CASE status WHEN 1 THEN 'active' WHEN 2 THEN 'archived' ELSE 'paused' END AS status,
                    CASE WHEN EXISTS(
                          SELECT 1 FROM nx_growth_quest_event_binding b
@@ -925,7 +925,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    AND e.achieved_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
               ) AS weekMsTrigger,
               (
-                SELECT CONCAT(COALESCE(SUM(e.reward_nex), 0), ' NEX')
+                SELECT CONCAT(COALESCE(SUM(e.reward_nex), 0), ' UVT')
                   FROM nx_earning_milestone e
                  WHERE e.is_deleted = 0
                    AND e.achieved_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)

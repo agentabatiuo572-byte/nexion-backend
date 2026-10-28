@@ -104,13 +104,13 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
               JOIN nx_user inviter ON inviter.id = s.inviter_user_id
                JOIN nx_wallet_ledger production_ledger
                 ON production_ledger.user_id = #{userId} AND production_ledger.biz_no = CONCAT(s.settlement_no, ':INVITER')
-               AND production_ledger.biz_type = 'REFERRAL_REWARD' AND production_ledger.asset = 'NEX'
+               AND production_ledger.biz_type = 'REFERRAL_REWARD' AND production_ledger.asset = 'UVT'
                AND production_ledger.direction = 'IN' AND production_ledger.status = 'SUCCESS'
                AND production_ledger.amount = s.inviter_nex AND production_ledger.is_deleted = 0
                AND #{sourceEnvironment} = 'PRODUCTION'
               JOIN nx_earnings_release_entry e
                 ON e.user_id = #{userId} AND e.source_ref = CONCAT(s.settlement_no, ':INVITER:NEX')
-               AND e.asset = 'NEX' AND e.amount = s.inviter_nex AND e.status = 'ACTIVE'
+               AND e.asset = 'UVT' AND e.amount = s.inviter_nex AND e.status = 'ACTIVE'
                AND e.source_type = #{sourceType} AND e.source_environment = #{sourceEnvironment}
                AND e.is_deleted = 0
              WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
@@ -136,13 +136,13 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
               JOIN nx_user inviter ON inviter.id = s.inviter_user_id
                JOIN nx_wallet_ledger production_ledger
                 ON production_ledger.user_id = #{userId} AND production_ledger.biz_no = CONCAT(s.settlement_no, ':INVITER')
-               AND production_ledger.biz_type = 'REFERRAL_REWARD' AND production_ledger.asset = 'NEX'
+               AND production_ledger.biz_type = 'REFERRAL_REWARD' AND production_ledger.asset = 'UVT'
                AND production_ledger.direction = 'IN' AND production_ledger.status = 'SUCCESS'
                AND production_ledger.amount = s.inviter_nex AND production_ledger.is_deleted = 0
                AND #{sourceEnvironment} = 'PRODUCTION'
               JOIN nx_earnings_release_entry e
                 ON e.user_id = #{userId} AND e.source_ref = CONCAT(s.settlement_no, ':INVITER:NEX')
-               AND e.asset = 'NEX' AND e.amount = s.inviter_nex AND e.status = 'ACTIVE'
+               AND e.asset = 'UVT' AND e.amount = s.inviter_nex AND e.status = 'ACTIVE'
                AND e.source_type = #{sourceType} AND e.source_environment = #{sourceEnvironment}
                AND e.is_deleted = 0
              WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
@@ -225,7 +225,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
               JOIN nx_h8_sandbox_referral_ledger sandbox_ledger
                 ON sandbox_ledger.user_id = #{userId} AND sandbox_ledger.settlement_no = s.settlement_no
                AND sandbox_ledger.run_id = #{runId}
-               AND sandbox_ledger.asset = 'NEX' AND sandbox_ledger.status = 'SUCCESS'
+               AND sandbox_ledger.asset = 'UVT' AND sandbox_ledger.status = 'SUCCESS'
                AND sandbox_ledger.amount = s.inviter_nex AND sandbox_ledger.is_deleted = 0
                AND sandbox_ledger.source = 'mock' AND sandbox_ledger.source_environment = 'SANDBOX'
              WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
@@ -252,7 +252,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
               JOIN nx_h8_sandbox_referral_ledger sandbox_ledger
                 ON sandbox_ledger.user_id = #{userId} AND sandbox_ledger.settlement_no = s.settlement_no
                AND sandbox_ledger.run_id = #{runId}
-               AND sandbox_ledger.asset = 'NEX' AND sandbox_ledger.status = 'SUCCESS'
+               AND sandbox_ledger.asset = 'UVT' AND sandbox_ledger.status = 'SUCCESS'
                AND sandbox_ledger.amount = s.inviter_nex AND sandbox_ledger.is_deleted = 0
                AND sandbox_ledger.source = 'mock' AND sandbox_ledger.source_environment = 'SANDBOX'
              WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0

@@ -22,10 +22,10 @@ class AppExchangeRecoveryControllerTest {
     void routeUsesAuthenticatedUserAndOriginalKeyIgnoringSpoofedOwner() throws Exception {
         var auth = new UsernamePasswordAuthenticationToken("7", null, List.of());
         auth.setDetails(Map.of("subjectType", "USER"));
-        var request = new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20.00"), true);
+        var request = new AppExchangeService.SwapRequest("USDT_TO_UVT", new BigDecimal("20.00"), true);
         when(service.recovery(7L, "original-key", request)).thenReturn(ApiResult.ok(Map.of("status", "NOT_FOUND")));
         mvc.perform(get("/api/exchange/recovery").principal(auth).header("Idempotency-Key", "original-key")
-                        .param("direction", "USDT_TO_NEX").param("fromAmount", "20.00").param("queueIfCapped", "true")
+                        .param("direction", "USDT_TO_UVT").param("fromAmount", "20.00").param("queueIfCapped", "true")
                         .param("userId", "8").param("runId", "spoofed-run"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.status").value("NOT_FOUND"));
@@ -44,7 +44,7 @@ class AppExchangeRecoveryControllerTest {
         invalidId.setDetails(Map.of("subjectType", "USER"));
         for (var auth : java.util.Arrays.asList(null, admin, missingSubject, unauthenticated, invalidId)) {
             var request = get("/api/exchange/recovery").header("Idempotency-Key", "original-key")
-                    .param("direction", "USDT_TO_NEX").param("fromAmount", "20");
+                    .param("direction", "USDT_TO_UVT").param("fromAmount", "20");
             if (auth != null) request.principal(auth);
             mvc.perform(request)
                     .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(403));

@@ -118,7 +118,7 @@ class EarningsCentralFundEvidenceTest {
         var order=inOrder(mapper,journal);order.verify(mapper).lockCreditUser(7L,0);order.verify(mapper).lockCreditWallet(7L,0);order.verify(journal).begin(List.of(7L));order.verify(mapper).insert(any());
     }
     @Test void outerCompoundCreditDoesNotDoubleBindButRetainsActualEntryAndMoney() {
-        service.creditRewardInFundOperation(7L,"H2_TRIAL_BONUS","trial:NEX","NEX",n("20"),"trial-idem");
+        service.creditRewardInFundOperation(7L,"H2_TRIAL_BONUS","trial:NEX","UVT",n("20"),"trial-idem");
         assertEquals(n("20"),wallet.get("nexAvailable"));assertEquals("H2_TRIAL_BONUS",entry.get("sourceType"));assertEquals(1,raws.size());verifyNoInteractions(journal);
     }
     @Test void sameSourceColumnFlagTypeMustRemainCanonicalRatherThanUsingWalletRawFlagEquivalence()throws Exception {
@@ -128,7 +128,7 @@ class EarningsCentralFundEvidenceTest {
         assertDoesNotThrow(()->verifyReceipt(0));
     }
     @Test void actualManualReleaseNativeBooleanWalletAtNumericRawCheckpointIsValidWithoutNewRevision()throws Exception {
-        String no=protectedCredit("NEX");service.manualReleaseOnce(no,new EarningsManualReleaseRequest("approved investigation","superadmin"));
+        String no=protectedCredit("UVT");service.manualReleaseOnce(no,new EarningsManualReleaseRequest("approved investigation","superadmin"));
         assertEquals(2,receipts.size());assertEquals(1,raws.size());assertEquals(1L,wallet.get("revision"));
         var verified=verifyReceipt(1);assertEquals(no+":RELEASE",verified.coveredPhase());assertEquals(1,verified.checkpoints().size());assertEquals(1,verified.checkpoints().get(0).previousOperationId());
         assertEquals(verifyReceipt(0).stamp().succeededAt(),verified.stamp().succeededAt());
@@ -160,7 +160,7 @@ class EarningsCentralFundEvidenceTest {
         audits.clear();assertThrows(IllegalArgumentException.class,()->verifyReceipt(1));
     }
     @Test void actualPartialRecoveryPreservesBucketAndOnlyReferencesTheOriginalEarning()throws Exception {
-        String no=protectedCredit("NEX");recoveryStorage(n("15"));var result=recover(no,"NEX","8");
+        String no=protectedCredit("UVT");recoveryStorage(n("15"));var result=recover(no,"UVT","8");
         assertEquals(n("5"),result.recovered());assertEquals(n("3"),result.outstanding());assertEquals("bonus_locked",entry.get("bucket"));
         assertEquals(n("15"),wallet.get("nexAvailable"));assertEquals(n("0"),wallet.get("usdtAvailable"));assertEquals(2,raws.size());
         assertEquals("EARNINGS:"+no,events(1).get(0).reference());assertEquals(result.recoveryNo()+":RECOVER",verifyReceipt(1).coveredPhase());
@@ -176,7 +176,7 @@ class EarningsCentralFundEvidenceTest {
         assertThrows(IllegalArgumentException.class,()->evidence.verifyCoverage(Set.of(7L),inputs(),Set.of(no+":CREDIT")));
     }
     @Test void otherRecoveryExclusionRequiresEveryOriginalSqlSourcePredicate()throws Exception {
-        String no=protectedCredit("NEX");recoveryStorage(n("15"));recover(no,"NEX","8");
+        String no=protectedCredit("UVT");recoveryStorage(n("15"));recover(no,"UVT","8");
         recoveries.get(0).put("debitCounterBefore",n("25"));
         var r=receipts.get(1);var source=(ObjectNode)json.readTree(r.sourceSnapshotJson());((ObjectNode)source.path("recovery")).put("debitCounterBefore",n("25"));
         var otherEntry=new LinkedHashMap<>(entry);otherEntry.put("entryNo","ER-OTHER");otherEntry.put("recoveredAmount",n("10"));

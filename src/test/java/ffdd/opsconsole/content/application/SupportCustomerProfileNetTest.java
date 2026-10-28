@@ -49,7 +49,7 @@ class SupportCustomerProfileNetTest {
         var rows=currencies(service.profile(1L));var usdt=rows.stream().filter(r->"USDT".equals(r.get("currency"))).findFirst().orElseThrow();
         assertThat(usdt).containsEntry("balance","77").containsEntry("creditedDepositTotal","11").containsEntry("netContributionTotal","-12.000001");
         assertThat(((Map<?,?>)usdt.get("fieldStatuses")).get("netContributionTotal")).isEqualTo("READY");
-        assertThat(rows.stream().filter(r->"NEX".equals(r.get("currency"))).findFirst().orElseThrow()).containsEntry("netContributionTotal","0");
+        assertThat(rows.stream().filter(r->"UVT".equals(r.get("currency"))).findFirst().orElseThrow()).containsEntry("netContributionTotal","0");
         verify(funds).readNetContributions(List.of(1L));
     }
     @Test void unknownNetHasIndependentNullStatusWhileOldBalancesStayAvailable() throws Exception {

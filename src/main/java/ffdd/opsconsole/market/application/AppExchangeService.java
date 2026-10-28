@@ -87,7 +87,7 @@ public class AppExchangeService {
         requireCanonicalReadRuntime();
         BigDecimal price = requirePublicPrice();
         return ApiResult.ok(linked(
-                "asset", "NEX", "currency", "USDT", "currentPrice", price,
+                "asset", "UVT", "currency", "USDT", "currentPrice", price,
                 "userDailyCapUsdt", number(USER_CAP, "50"),
                 "platformDailyCapUsdt", number(PLATFORM_CAP, "20000"),
                 "feePct", number(FEE_PCT, "0"), "feeMinUsdt", number(FEE_MIN, "0.50"),
@@ -118,7 +118,7 @@ public class AppExchangeService {
                 .map(this::marketHistoryPoint)
                 .toList();
         return ApiResult.ok(linked(
-                "asset", "NEX", "currency", "USDT", "currentPrice", price,
+                "asset", "UVT", "currency", "USDT", "currentPrice", price,
                 "costBasis", number(COST_BASIS, "0.085"),
                 "frames", frames, "sparkline", frames.stream().map(NexMarketCurveFrame::targetPrice).toList(),
                 "history", history, "history24h", history24h, "historyMaxDays", 365,
@@ -267,9 +267,9 @@ public class AppExchangeService {
         BigDecimal netUsdt = money(grossUsdt.subtract(fee));
         BigDecimal toAmount = "USDT".equals(request.fromAsset())
                 ? netUsdt.divide(price, 6, RoundingMode.DOWN) : netUsdt;
-        String toAsset = "USDT".equals(request.fromAsset()) ? "NEX" : "USDT";
+        String toAsset = "USDT".equals(request.fromAsset()) ? "UVT" : "USDT";
         BigDecimal usdtDelta = "USDT".equals(request.fromAsset()) ? request.fromAmount().negate() : toAmount;
-        BigDecimal nexDelta = "NEX".equals(request.fromAsset()) ? request.fromAmount().negate() : toAmount;
+        BigDecimal nexDelta = "UVT".equals(request.fromAsset()) ? request.fromAmount().negate() : toAmount;
         var fundBefore=exchangeFunds.begin(userId);
         if (mapper.applyWalletDelta(userId, usdtDelta, nexDelta) != 1) {
             throw new BizException(409, "EXCHANGE_WALLET_INSUFFICIENT_OR_CONFLICT");
@@ -341,12 +341,12 @@ public class AppExchangeService {
                 ? grossUsdt.divide(price, 6, RoundingMode.DOWN) : grossUsdt;
         String exchangeNo = exchangeNo();
         AppExchangeMapper.ExchangeWrite write = new AppExchangeMapper.ExchangeWrite(userId, exchangeNo,
-                request.fromAsset(), "USDT".equals(request.fromAsset()) ? "NEX" : "USDT",
+                request.fromAsset(), "USDT".equals(request.fromAsset()) ? "UVT" : "USDT",
                 request.fromAmount(), toAmount, price, status);
         var fundBefore=queueable?exchangeFunds.begin(userId):null;
         if (queueable) {
             BigDecimal usdtHold = "USDT".equals(request.fromAsset()) ? request.fromAmount().negate() : BigDecimal.ZERO;
-            BigDecimal nexHold = "NEX".equals(request.fromAsset()) ? request.fromAmount().negate() : BigDecimal.ZERO;
+            BigDecimal nexHold = "UVT".equals(request.fromAsset()) ? request.fromAmount().negate() : BigDecimal.ZERO;
             if (mapper.applyWalletDelta(userId, usdtHold, nexHold) != 1) {
                 throw new BizException(409, "EXCHANGE_WALLET_INSUFFICIENT_OR_CONFLICT");
             }
@@ -382,7 +382,7 @@ public class AppExchangeService {
     private void refundReservedSource(AppExchangeMapper.QueuedRow queued) {
         if (mapper.sourceReservationExists(queued.exchangeNo()) <= 0) return;
         BigDecimal usdtRefund = "USDT".equals(queued.fromAsset()) ? queued.fromAmount() : BigDecimal.ZERO;
-        BigDecimal nexRefund = "NEX".equals(queued.fromAsset()) ? queued.fromAmount() : BigDecimal.ZERO;
+        BigDecimal nexRefund = "UVT".equals(queued.fromAsset()) ? queued.fromAmount() : BigDecimal.ZERO;
         if (mapper.applyWalletDelta(queued.userId(), usdtRefund, nexRefund) != 1) {
             throw new BizException(409, "EXCHANGE_QUEUE_REFUND_CONFLICT");
         }
@@ -437,7 +437,7 @@ public class AppExchangeService {
         requireExchangeSubject(userId);
         NormalizedSwap normalized = normalize(request);
         var receipt = idempotency.recoveryResult("APP:G2_SWAP:USER:" + userId, idempotencyKey,
-                sha256(String.valueOf(normalized)), ApiResult.class);
+                sha256(normalized.retainedFingerprint()), ApiResult.class);
         Map<String, Object> result = linked("status", receipt.status().name(),
                 "sourceEnvironment", "PRODUCTION", "runId", "");
         if (receipt.status() != AdminIdempotencyService.RecoveryStatus.SUCCEEDED) return ApiResult.ok(result);
@@ -465,8 +465,8 @@ public class AppExchangeService {
                 || request.fromAmount().compareTo(BigDecimal.ZERO) <= 0) throw new BizException(422, "EXCHANGE_REQUEST_INVALID");
         String direction = request.direction().trim().toUpperCase(Locale.ROOT).replace("-", "_");
         String from = switch (direction) {
-            case "USDT_TO_NEX", "USDT2NEX" -> "USDT";
-            case "NEX_TO_USDT", "NEX2USDT" -> "NEX";
+            case "USDT_TO_UVT", "USDT2UVT" -> "USDT";
+            case "UVT_TO_USDT", "UVT2USDT" -> "UVT";
             default -> throw new BizException(422, "EXCHANGE_DIRECTION_INVALID");
         };
         BigDecimal amount = request.fromAmount().setScale(6, RoundingMode.DOWN);
@@ -581,7 +581,7 @@ public class AppExchangeService {
      */
     private Map<String, Object> sandboxCaps() {
         return linked(
-                "asset", "NEX", "currency", "USDT",
+                "asset", "UVT", "currency", "USDT",
                 "currentPrice", sandboxNumber("nexion.exchange.sandbox.current-price", "0.125"),
                 "userDailyCapUsdt", sandboxNumber("nexion.exchange.sandbox.user-daily-cap-usdt", "50"),
                 "platformDailyCapUsdt", sandboxNumber("nexion.exchange.sandbox.platform-daily-cap-usdt", "20000"),
@@ -601,7 +601,7 @@ public class AppExchangeService {
                         new BigDecimal("0.01")))
                 .toList();
         return linked(
-                "asset", "NEX", "currency", "USDT",
+                "asset", "UVT", "currency", "USDT",
                 "currentPrice", sandboxNumber("nexion.exchange.sandbox.current-price", "0.125"),
                 "costBasis", sandboxNumber("nexion.exchange.sandbox.cost-basis", "0.085"),
                 "frames", frames, "sparkline", sparkline, "history", List.of(), "history24h", List.of(), "historyMaxDays", 365,
@@ -692,7 +692,7 @@ public class AppExchangeService {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private ApiResult<Map<String, Object>> executeOnce(String scope,String key,Object request,Supplier<ApiResult<Map<String,Object>>> action) {
-        return (ApiResult<Map<String,Object>>) (ApiResult) idempotency.executeRetained("APP:G2_" + scope,key,sha256(String.valueOf(request)),
+        return (ApiResult<Map<String,Object>>) (ApiResult) idempotency.executeRetained("APP:G2_" + scope,key,sha256(request instanceof NormalizedSwap swap ? swap.retainedFingerprint() : String.valueOf(request)),
                 ApiResult.class,(Supplier) action);
     }
     private String sha256(String value) {
@@ -706,7 +706,13 @@ public class AppExchangeService {
     }
 
     public record SwapRequest(String direction,BigDecimal fromAmount,Boolean queueIfCapped) {}
-    private record NormalizedSwap(String fromAsset,BigDecimal fromAmount,boolean queueIfCapped) {}
+    private record NormalizedSwap(String fromAsset,BigDecimal fromAmount,boolean queueIfCapped) {
+        // Keep retained request hashes stable across the token rename; request validation accepts UVT only.
+        String retainedFingerprint() {
+            return "NormalizedSwap[fromAsset=" + ("UVT".equals(fromAsset) ? "NEX" : fromAsset)
+                    + ", fromAmount=" + fromAmount + ", queueIfCapped=" + queueIfCapped + "]";
+        }
+    }
     private record ExternalAsset(String symbol,String name,String category) {}
     private record CachedMarketHistory(long loadedAtMillis,List<AppExchangeMapper.MarketPoint> points) {}
 }

@@ -202,7 +202,7 @@ class FundsHistorySnapshotMySqlTest {
     private static void exchangePagesRetainIssuedBoundariesAfterSoftDeletion(Connection connection) throws Exception {
         try (var command = connection.createStatement()) {
             command.execute("CREATE TABLE nx_exchange_order (id BIGINT PRIMARY KEY,user_id BIGINT,exchange_no VARCHAR(64),from_asset VARCHAR(16),to_asset VARCHAR(16),from_amount DECIMAL(20,6),to_amount DECIMAL(20,6),rate DECIMAL(20,6),status VARCHAR(32),created_at DATETIME,is_deleted INT)");
-            command.execute("INSERT INTO nx_exchange_order VALUES (500,1,'EX-500','USDT','NEX',25,25,1,'COMPLETED','2026-09-01',0),(450,1,'EX-450','USDT','NEX',25,25,1,'CANCELLED','2026-09-01',0),(900,2,'EX-OTHER','USDT','NEX',25,25,1,'COMPLETED','2026-09-01',0)");
+            command.execute("INSERT INTO nx_exchange_order VALUES (500,1,'EX-500','USDT','UVT',25,25,1,'COMPLETED','2026-09-01',0),(450,1,'EX-450','USDT','UVT',25,25,1,'CANCELLED','2026-09-01',0),(900,2,'EX-OTHER','USDT','UVT',25,25,1,'COMPLETED','2026-09-01',0)");
         }
         String max = sql(AppExchangeMapper.class, "maxIssuedHistoryId", Long.class);
         String list = sql(AppExchangeMapper.class, "userOrdersAt", Long.class, long.class, int.class, long.class);
@@ -211,7 +211,7 @@ class FundsHistorySnapshotMySqlTest {
         assertThat(boundary).isEqualTo(500);
         assertThat(rowsPage(connection, list, "exchangeNo", 1L, boundary, 0, 1)).containsExactly("EX-500");
         try (var command = connection.createStatement()) {
-            command.execute("INSERT INTO nx_exchange_order VALUES (501,1,'EX-501','USDT','NEX',25,25,1,'FAILED','2026-09-01',0)");
+            command.execute("INSERT INTO nx_exchange_order VALUES (501,1,'EX-501','USDT','UVT',25,25,1,'FAILED','2026-09-01',0)");
         }
         assertThat(rowsPage(connection, list, "exchangeNo", 1L, boundary, 1, 1)).containsExactly("EX-450");
         assertThat(scalar(connection, count, 1L, boundary)).isEqualTo(2);

@@ -25,7 +25,7 @@ class AppWalletBillsServiceTest {
     @Test
     void h8RewardsPreserveLedgerFactsAcrossListPaginationAndRecentSummary() {
         for (String role : List.of("NEWCOMER", "INVITER")) {
-            for (String asset : List.of("USDT", "NEX")) {
+            for (String asset : List.of("USDT", "UVT")) {
                 for (String direction : List.of("IN", "OUT")) {
                     AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
                     var row = new AppWalletBillsMapper.LedgerRow(597L,
@@ -88,7 +88,7 @@ class AppWalletBillsServiceTest {
                 AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
                 when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
                 when(mapper.rows(7L, 200)).thenReturn(List.of(new AppWalletBillsMapper.LedgerRow(
-                        598L, input[1], input[0], "NEX", direction, new BigDecimal("0.015000"),
+                        598L, input[1], input[0], "UVT", direction, new BigDecimal("0.015000"),
                         BigDecimal.ONE, "SUCCESS", "新用户邀请奖励", LocalDateTime.of(2026, 10, 17, 12, 0))));
                 var result = new AppWalletBillsService(mapper, environment("prod")).list(7L).getData();
                 assertThat((List<?>) result.get("bills")).singleElement()
@@ -176,7 +176,7 @@ class AppWalletBillsServiceTest {
     @Test
     void exactDecimalCompanionsSurviveJsonForBothAssetsAndEveryBillReadPath() throws Exception {
         ObjectMapper json = new ObjectMapper();
-        for (String asset : List.of("USDT", "NEX")) {
+        for (String asset : List.of("USDT", "UVT")) {
             for (String decimal : List.of("0.000001", "1.000001", "999999999999.999999", "1E+10")) {
                 AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
                 BigDecimal amount = new BigDecimal(decimal);
@@ -239,7 +239,7 @@ class AppWalletBillsServiceTest {
         when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
         when(mapper.count(7L)).thenReturn(1L);
         when(mapper.rows(7L, 50, 0)).thenReturn(List.of(new AppWalletBillsMapper.LedgerRow(
-                12L, "QUEST:H3:7", "QUEST_REWARD", "NEX", "IN", new BigDecimal("50"),
+                12L, "QUEST:H3:7", "QUEST_REWARD", "UVT", "IN", new BigDecimal("50"),
                 new BigDecimal("50"), "POSTED", "quest reward", LocalDateTime.of(2026, 8, 23, 21, 0))));
         var service = new AppWalletBillsService(mapper, environment("dev"));
 
@@ -302,11 +302,11 @@ class AppWalletBillsServiceTest {
                 new AppWalletBillsMapper.LedgerRow(31L, withdrawalNo + ":USDT:PRINCIPAL", "WITHDRAW_NET_PRINCIPAL", "USDT", "OUT", new BigDecimal("1"), new BigDecimal("9"), "POSTED", "D2 withdrawal net principal", LocalDateTime.now()),
                 new AppWalletBillsMapper.LedgerRow(32L, withdrawalNo + ":USDT:NETWORK_FEE", "WITHDRAW_NETWORK_FEE", "USDT", "OUT", new BigDecimal("1"), new BigDecimal("8"), "POSTED", "D5 actual network fee", LocalDateTime.now()),
                 new AppWalletBillsMapper.LedgerRow(33L, withdrawalNo + ":USDT:PENALTY_FEE", "WITHDRAW_PENALTY_FEE", "USDT", "OUT", new BigDecimal("1"), new BigDecimal("7"), "POSTED", "H1 actual penalty fee", LocalDateTime.now()),
-                new AppWalletBillsMapper.LedgerRow(34L, withdrawalNo + ":NEX:OFFSET", "WITHDRAW_FEE_OFFSET", "NEX", "OUT", new BigDecimal("1"), new BigDecimal("6"), "POSTED", "D5 NEX fee offset", LocalDateTime.now()),
+                new AppWalletBillsMapper.LedgerRow(34L, withdrawalNo + ":NEX:OFFSET", "WITHDRAW_FEE_OFFSET", "UVT", "OUT", new BigDecimal("1"), new BigDecimal("6"), "POSTED", "D5 UVT fee offset", LocalDateTime.now()),
                 new AppWalletBillsMapper.LedgerRow(35L, withdrawalNo + ":PAYOUT:USDT:REFUND", "WITHDRAW_PAYOUT_REFUND", "USDT", "IN", new BigDecimal("1"), new BigDecimal("7"), "POSTED", "provider internal return", LocalDateTime.now()),
-                new AppWalletBillsMapper.LedgerRow(36L, withdrawalNo + ":PAYOUT:NEX:REFUND", "WITHDRAW_PAYOUT_NEX_REFUND", "NEX", "IN", new BigDecimal("1"), new BigDecimal("8"), "POSTED", "provider internal NEX return", LocalDateTime.now()),
+                new AppWalletBillsMapper.LedgerRow(36L, withdrawalNo + ":PAYOUT:NEX:REFUND", "WITHDRAW_PAYOUT_NEX_REFUND", "UVT", "IN", new BigDecimal("1"), new BigDecimal("8"), "POSTED", "provider internal UVT return", LocalDateTime.now()),
                 new AppWalletBillsMapper.LedgerRow(37L, "D2-REFUND-" + withdrawalNo, "WITHDRAW_REFUND", "USDT", "IN", new BigDecimal("1"), new BigDecimal("9"), "POSTED", "D2 refund", LocalDateTime.now()),
-                new AppWalletBillsMapper.LedgerRow(38L, "D2-NEX-REFUND-" + withdrawalNo, "WITHDRAW_FEE_OFFSET_REFUND", "NEX", "IN", new BigDecimal("1"), new BigDecimal("10"), "POSTED", "D2 NEX refund", LocalDateTime.now())));
+                new AppWalletBillsMapper.LedgerRow(38L, "D2-NEX-REFUND-" + withdrawalNo, "WITHDRAW_FEE_OFFSET_REFUND", "UVT", "IN", new BigDecimal("1"), new BigDecimal("10"), "POSTED", "D2 UVT refund", LocalDateTime.now())));
         var service = new AppWalletBillsService(mapper, environment("dev"));
 
         @SuppressWarnings("unchecked")
@@ -383,7 +383,7 @@ class AppWalletBillsServiceTest {
         when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
         when(mapper.count(7L)).thenReturn(3L);
         when(mapper.rows(7L, 50, 0)).thenReturn(List.of(
-                ledgerRow(61L, "SUCCESS", "COMPUTE_TASK_REWARD", "NEX", "IN", LocalDateTime.now()),
+                ledgerRow(61L, "SUCCESS", "COMPUTE_TASK_REWARD", "UVT", "IN", LocalDateTime.now()),
                 ledgerRow(62L, "SUCCESS", "EARN", "USDT", "IN", LocalDateTime.now()),
                 ledgerRow(63L, "SUCCESS", "FUTURE_ORDER_REFUND", "USDT", "IN", LocalDateTime.now())));
         var service = new AppWalletBillsService(mapper, environment("dev"));
@@ -502,9 +502,9 @@ class AppWalletBillsServiceTest {
         when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
         LocalDateTime first = LocalDateTime.of(2026, 8, 31, 12, 0, 0, 123_456_000);
         when(mapper.rowsAfter(7L, 3, null, null, null, null, null))
-                .thenReturn(List.of(ledgerRow(31L, "SUCCESS", "QUEST_REWARD", "NEX", "IN", first),
+                .thenReturn(List.of(ledgerRow(31L, "SUCCESS", "QUEST_REWARD", "UVT", "IN", first),
                         ledgerRow(30L, "SUCCESS", "ORDER_PURCHASE", "USDT", "OUT", first),
-                        ledgerRow(29L, "SUCCESS", "EARN", "NEX", "IN", first.minusSeconds(1))));
+                        ledgerRow(29L, "SUCCESS", "EARN", "UVT", "IN", first.minusSeconds(1))));
         var service = new AppWalletBillsService(mapper, environment("prod"));
 
         Map<String, Object> firstPage = service.list(7L, 1, 2, null, null, null, "start").getData();
@@ -522,8 +522,8 @@ class AppWalletBillsServiceTest {
         when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
         LocalDateTime boundary = LocalDateTime.of(2026, 8, 31, 12, 0, 0, 123_456_000);
         when(mapper.rowsAfter(7L, 2, null, null, null, null, null)).thenReturn(List.of(
-                ledgerRow(52L, "SUCCESS", "EARN", "NEX", "IN", boundary.plusNanos(1)),
-                ledgerRow(51L, "SUCCESS", "EARN", "NEX", "IN", boundary)));
+                ledgerRow(52L, "SUCCESS", "EARN", "UVT", "IN", boundary.plusNanos(1)),
+                ledgerRow(51L, "SUCCESS", "EARN", "UVT", "IN", boundary)));
         when(mapper.count(7L)).thenReturn(2L);
         var service = new AppWalletBillsService(mapper, environment("prod"));
 
@@ -548,9 +548,9 @@ class AppWalletBillsServiceTest {
                         LocalDateTime.of(2026, 8, 30, 23, 0), new BigDecimal("-2"), new BigDecimal("5"), 8L,
                         new BigDecimal("1.4"), new BigDecimal("0.6")));
         when(mapper.recentNexRows(7L, 10)).thenReturn(List.of(
-                ledgerRow(42L, "SUCCESS", "PURCHASE_REWARD", "NEX", "IN", LocalDateTime.of(2026, 8, 31, 8, 0)),
-                ledgerRow(41L, "PENDING", "QUEST_REWARD", "NEX", "IN", LocalDateTime.of(2026, 8, 31, 7, 0)),
-                ledgerRow(40L, "SUCCESS", "TRIAL_BONUS", "NEX", "IN", LocalDateTime.of(2026, 8, 31, 6, 0))));
+                ledgerRow(42L, "SUCCESS", "PURCHASE_REWARD", "UVT", "IN", LocalDateTime.of(2026, 8, 31, 8, 0)),
+                ledgerRow(41L, "PENDING", "QUEST_REWARD", "UVT", "IN", LocalDateTime.of(2026, 8, 31, 7, 0)),
+                ledgerRow(40L, "SUCCESS", "TRIAL_BONUS", "UVT", "IN", LocalDateTime.of(2026, 8, 31, 6, 0))));
         Clock clock = Clock.fixed(Instant.parse("2026-08-31T16:30:00Z"), ZoneOffset.UTC);
         var service = new AppWalletBillsService(mapper, environment("prod"), clock);
 
@@ -634,7 +634,7 @@ class AppWalletBillsServiceTest {
     }
 
     /**
-     * zentao #219:三门课程当天各发 10 NEX,奖励账本里三笔完全同名(通用「奖励入账」)
+     * zentao #219:三门课程当天各发 10 UVT,奖励账本里三笔完全同名(通用「奖励入账」)
      * 且无来源,用户与客服无法逐笔追溯。课程奖励必须有**自己的**表现码与可区分来源。
      */
     @Test
@@ -644,14 +644,14 @@ class AppWalletBillsServiceTest {
         when(mapper.count(7L)).thenReturn(3L);
         when(mapper.rows(7L, 50, 0)).thenReturn(List.of(
                 new AppWalletBillsMapper.LedgerRow(31L, "LEARN:7:account-security:v1", "LEARNING_REWARD",
-                        "NEX", "IN", new BigDecimal("10"), new BigDecimal("30"), "SUCCESS",
+                        "UVT", "IN", new BigDecimal("10"), new BigDecimal("30"), "SUCCESS",
                         "完成课程 account-security v1", LocalDateTime.of(2026, 9, 21, 8, 0)),
                 new AppWalletBillsMapper.LedgerRow(32L, "LEARN:7:orders-and-bills:v1", "LEARNING_REWARD",
-                        "NEX", "IN", new BigDecimal("10"), new BigDecimal("20"), "SUCCESS",
+                        "UVT", "IN", new BigDecimal("10"), new BigDecimal("20"), "SUCCESS",
                         "完成课程 orders-and-bills v1", LocalDateTime.of(2026, 9, 21, 9, 0)),
                 // 沙箱行多一段 runId,形状不同但课程身份仍在末两段。
                 new AppWalletBillsMapper.LedgerRow(33L, "LEARN:RUN-9:7:tasks-and-learning:v1", "LEARNING_REWARD",
-                        "NEX", "IN", new BigDecimal("10"), new BigDecimal("10"), "SUCCESS",
+                        "UVT", "IN", new BigDecimal("10"), new BigDecimal("10"), "SUCCESS",
                         "完成课程 tasks-and-learning v1", LocalDateTime.of(2026, 9, 21, 10, 0))));
         var service = new AppWalletBillsService(mapper, environment("dev"));
 
@@ -675,13 +675,13 @@ class AppWalletBillsServiceTest {
         when(mapper.count(7L)).thenReturn(3L);
         when(mapper.rows(7L, 50, 0)).thenReturn(List.of(
                 new AppWalletBillsMapper.LedgerRow(41L, "LEARN:7", "LEARNING_REWARD",
-                        "NEX", "IN", new BigDecimal("10"), new BigDecimal("20"), "SUCCESS",
+                        "UVT", "IN", new BigDecimal("10"), new BigDecimal("20"), "SUCCESS",
                         "legacy", LocalDateTime.of(2026, 9, 21, 8, 0)),
                 new AppWalletBillsMapper.LedgerRow(42L, "LEARN:7:UPPER CASE:v1", "LEARNING_REWARD",
-                        "NEX", "IN", new BigDecimal("10"), new BigDecimal("10"), "SUCCESS",
+                        "UVT", "IN", new BigDecimal("10"), new BigDecimal("10"), "SUCCESS",
                         "legacy", LocalDateTime.of(2026, 9, 21, 9, 0)),
                 new AppWalletBillsMapper.LedgerRow(43L, "PRIVATE:7:account-security:v1", "LEARNING_REWARD",
-                        "NEX", "IN", new BigDecimal("10"), new BigDecimal("10"), "SUCCESS",
+                        "UVT", "IN", new BigDecimal("10"), new BigDecimal("10"), "SUCCESS",
                         "legacy", LocalDateTime.of(2026, 9, 21, 10, 0))));
         var service = new AppWalletBillsService(mapper, environment("dev"));
 

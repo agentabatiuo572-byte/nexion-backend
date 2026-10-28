@@ -65,7 +65,7 @@ class F2NetworkCommissionReplayMySqlAcceptanceTest {
                 .isEqualTo(2L);
         assertThat(jdbc.queryForList(
                 "SELECT currency FROM nx_commission_event WHERE order_no=? ORDER BY currency", String.class, orderNo))
-                .containsExactly("NEX", "USDT");
+                .containsExactly("UVT", "USDT");
         assertThat(jdbc.queryForObject(
                 "SELECT COUNT(*) FROM nx_wallet_ledger WHERE remark LIKE ?", Long.class, "%" + orderNo + "%"))
                 .isEqualTo(2L);
@@ -77,7 +77,7 @@ class F2NetworkCommissionReplayMySqlAcceptanceTest {
                     "SELECT id FROM nx_user WHERE id=? AND status='ACTIVE' AND is_deleted=0 FOR UPDATE",
                     Long.class, userId)).isEqualTo(userId);
             return post("USDT", new BigDecimal("10.000000"), BigDecimal.ZERO)
-                    + post("NEX", BigDecimal.ZERO, new BigDecimal("500.000000"));
+                    + post("UVT", BigDecimal.ZERO, new BigDecimal("500.000000"));
         });
     }
 

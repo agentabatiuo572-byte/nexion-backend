@@ -68,7 +68,7 @@ class EarningsSourceRecoveryMySqlTest {
         setup();
         migrate(); migrate();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() AND TRIGGER_NAME='nx_wallet_earnings_debit_counter_v1'", Integer.class)).isEqualTo(1);
-        for (String asset : List.of("USDT", "NEX")) for (String bucket : List.of("withdrawable", "pending_review", "bonus_locked")) {
+        for (String asset : List.of("USDT", "UVT")) for (String bucket : List.of("withdrawable", "pending_review", "bonus_locked")) {
             long user = user(); String entry = credit(user, asset, bucket, "10");
             var first = recover(user, entry, asset, "3", marker + entry + "a");
             var second = recover(user, entry, asset, "7", marker + entry + "b");
@@ -93,7 +93,7 @@ class EarningsSourceRecoveryMySqlTest {
             record("asset-bucket-and-replay", Map.of("asset", asset, "bucket", bucket, "first", first, "second", second));
         }
 
-        for (String asset : List.of("USDT", "NEX")) {
+        for (String asset : List.of("USDT", "UVT")) {
             long multiUser = user();
             String first = credit(multiUser, asset, "withdrawable", "2.125001");
             String second = credit(multiUser, asset, "bonus_locked", "2.125001");
@@ -154,20 +154,20 @@ class EarningsSourceRecoveryMySqlTest {
         record("fully-spent-source-never-uses-another-reward", Map.of("receipt", spentReceipt));
 
         long isolatedUser = user(); String isolated = credit(isolatedUser, "USDT", "bonus_locked", "10");
-        credit(isolatedUser, "NEX", "withdrawable", "20");
-        movement(isolatedUser,"NEX","-15","UPDATE nx_user_wallet SET nex_available=nex_available-15 WHERE user_id=?");
+        credit(isolatedUser, "UVT", "withdrawable", "20");
+        movement(isolatedUser,"UVT","-15","UPDATE nx_user_wallet SET nex_available=nex_available-15 WHERE user_id=?");
         assertThat(recover(isolatedUser, isolated, "USDT", "10", marker + "currency").recovered()).isEqualByComparingTo("10");
-        assertThat(balance(isolatedUser, "NEX")).isEqualByComparingTo("5");
+        assertThat(balance(isolatedUser, "UVT")).isEqualByComparingTo("5");
         record("currencies-independent", Map.of("userId", isolatedUser));
 
         long preciseUser=user();String preciseAmount="999999999999.999999";
-        String precise=credit(preciseUser,"NEX","withdrawable",preciseAmount);
-        var preciseReceipt=recover(preciseUser,precise,"NEX",preciseAmount,marker+"precision");
+        String precise=credit(preciseUser,"UVT","withdrawable",preciseAmount);
+        var preciseReceipt=recover(preciseUser,precise,"UVT",preciseAmount,marker+"precision");
         assertThat(preciseReceipt.recovered()).isEqualByComparingTo(preciseAmount);
-        assertThat(recover(preciseUser,precise,"NEX",preciseAmount,marker+"precision")).isEqualTo(preciseReceipt);
+        assertThat(recover(preciseUser,precise,"UVT",preciseAmount,marker+"precision")).isEqualTo(preciseReceipt);
         record("maximum-six-decimal-amount-replays-exactly-through-durable-json",Map.of("receipt",preciseReceipt));
 
-        for (String asset : List.of("USDT", "NEX")) for (String bucket : List.of("withdrawable", "pending_review", "bonus_locked")) {
+        for (String asset : List.of("USDT", "UVT")) for (String bucket : List.of("withdrawable", "pending_review", "bonus_locked")) {
             long legacyUser = user(); String legacy = "LEGACY-" + UUID.randomUUID();
             jdbc.update("INSERT INTO nx_earnings_release_entry(entry_no,user_id,source_type,source_ref,asset,amount,bucket,idempotency_key) VALUES(?,?,'PROMOTION_REWARD',?,?,10,?,?)", legacy, legacyUser, legacy, asset, bucket, legacy);
             jdbc.update("UPDATE nx_user_wallet SET usdt_available=50,nex_available=50 WHERE user_id=?", legacyUser);
@@ -177,24 +177,24 @@ class EarningsSourceRecoveryMySqlTest {
             record("legacy-fail-closed", Map.of("asset", asset, "bucket", bucket, "receipt", legacyReceipt));
         }
 
-        long rollbackUser = user(); String rollbackEntry = credit(rollbackUser, "NEX", "bonus_locked", "10");
+        long rollbackUser = user(); String rollbackEntry = credit(rollbackUser, "UVT", "bonus_locked", "10");
         String rollbackKey = marker + "rollback";
         assertThatThrownBy(() -> tx.execute(status -> {
-            var receipt = service.recoverReward(request(rollbackUser, rollbackEntry, "NEX", "10"), rollbackKey);
+            var receipt = service.recoverReward(request(rollbackUser, rollbackEntry, "UVT", "10"), rollbackKey);
             post(receipt);
             throw new IllegalStateException("injected downstream transaction failure");
         })).hasMessage("injected downstream transaction failure");
-        assertThat(balance(rollbackUser, "NEX")).isEqualByComparingTo("10");
+        assertThat(balance(rollbackUser, "UVT")).isEqualByComparingTo("10");
         assertThat(jdbc.queryForObject("SELECT earnings_nex_debited FROM nx_user_wallet WHERE user_id=?", BigDecimal.class, rollbackUser)).isZero();
         assertThat(jdbc.queryForObject("SELECT recovered_amount FROM nx_earnings_release_entry WHERE entry_no=?", BigDecimal.class, rollbackEntry)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_earnings_source_recovery WHERE entry_no=?", Integer.class, rollbackEntry)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_wallet_ledger WHERE user_id=? AND direction='OUT'", Integer.class, rollbackUser)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log WHERE resource_id=?", Integer.class, rollbackEntry)).isZero();
         assertThat(jdbc.queryForObject("SELECT status FROM nx_admin_idempotency_record WHERE idempotency_key=?", String.class, rollbackKey)).isEqualTo("FAILED");
-        var retriedRollback = recover(rollbackUser, rollbackEntry, "NEX", "10", rollbackKey);
+        var retriedRollback = recover(rollbackUser, rollbackEntry, "UVT", "10", rollbackKey);
         assertThat(retriedRollback.recovered()).isEqualByComparingTo("10");
-        assertThat(recover(rollbackUser, rollbackEntry, "NEX", "10", rollbackKey)).isEqualTo(retriedRollback);
-        assertThat(balance(rollbackUser, "NEX")).isZero();
+        assertThat(recover(rollbackUser, rollbackEntry, "UVT", "10", rollbackKey)).isEqualTo(retriedRollback);
+        assertThat(balance(rollbackUser, "UVT")).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_wallet_ledger WHERE user_id=? AND direction='OUT'", Integer.class, rollbackUser)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_earnings_source_recovery WHERE entry_no=?", Integer.class, rollbackEntry)).isEqualTo(1);
         record("outer-failure-rolls-wallet-counter-entry-receipt-D4-audit-back-and-same-key-retries-once", Map.of("userId", rollbackUser));
@@ -209,7 +209,7 @@ class EarningsSourceRecoveryMySqlTest {
         record("required-audit-fails-closed", Map.of("userId", auditUser));
 
         concurrentRecoveries();
-        for (String asset : List.of("USDT", "NEX")) {
+        for (String asset : List.of("USDT", "UVT")) {
             concurrentDebitAndRecovery(asset);
             concurrentDifferentSourcesWithOldReadSnapshot(asset);
         }
@@ -376,7 +376,7 @@ class EarningsSourceRecoveryMySqlTest {
         });
     }
     private BigDecimal balance(long user,String asset) {
-        return jdbc.queryForObject("SELECT CASE ? WHEN 'USDT' THEN usdt_available WHEN 'NEX' THEN nex_available END FROM nx_user_wallet WHERE user_id=?",BigDecimal.class,asset,user);
+        return jdbc.queryForObject("SELECT CASE ? WHEN 'USDT' THEN usdt_available WHEN 'UVT' THEN nex_available END FROM nx_user_wallet WHERE user_id=?",BigDecimal.class,asset,user);
     }
     private void record(String name,Map<String,Object> details){evidence.add(Map.of("name",name,"result","PASS","details",details));}
 }

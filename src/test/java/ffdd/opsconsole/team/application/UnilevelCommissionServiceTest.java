@@ -32,8 +32,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 /**
  * F2 UnilevelCommissionService 单元测试。
- * 覆盖:L1-L7 上级链×费率→commission_event network(USDT+NEX)+D4、幂等防重、空上级/空费率/非法入参退化、
- * depthGate(L4+ 上级需 ≥ V2)、NEX 派发(nex_per_usd × USDT 佣金)。
+ * 覆盖:L1-L7 上级链×费率→commission_event network(USDT+UVT)+D4、幂等防重、空上级/空费率/非法入参退化、
+ * depthGate(L4+ 上级需 ≥ V2)、UVT 派发(nex_per_usd × USDT 佣金)。
  */
 @ExtendWith(MockitoExtension.class)
 class UnilevelCommissionServiceTest {
@@ -94,7 +94,7 @@ class UnilevelCommissionServiceTest {
 
     @Test
     void settle_twoLayers_eachAncestorGetsUsdtCommissionEventAndLedger() {
-        // buyer 990686 → L1=990685(10%) + L2=990684(5%);订单 subtotal=$1000,无 NEX 配置
+        // buyer 990686 → L1=990685(10%) + L2=990684(5%);订单 subtotal=$1000,无 UVT 配置
         when(teamCommissionMapper.listUplineChain(990686L, 7))
                 .thenReturn(List.of(upline(990685L, 1), upline(990684L, 2)));
         when(teamCommissionMapper.unilevelRates())
@@ -297,7 +297,7 @@ class UnilevelCommissionServiceTest {
     }
 
     // ============================================================
-    // F2 NEX 派发(nex_per_usd × USDT 佣金)
+    // F2 UVT 派发(nex_per_usd × USDT 佣金)
     // ============================================================
 
     @Test
@@ -322,7 +322,7 @@ class UnilevelCommissionServiceTest {
                 eq(new BigDecimal("100.000000")), eq(new BigDecimal("0.000000")),
                 eq("COOLING"), anyInt(), anyString());
         verify(commissionRepository).insertNetworkCommissionEvent(eq(990685L), eq("network"), eq(990686L),
-                eq(1), eq("ORD-N"), eq(new BigDecimal("1000")), eq("NEX"),
+                eq(1), eq("ORD-N"), eq(new BigDecimal("1000")), eq("UVT"),
                 eq(new BigDecimal("0.000000")), eq(new BigDecimal("10.000000")),
                 eq("COOLING"), anyInt(), anyString());
         verify(ledgerPostingFacade, times(2)).postLedgerEntry(anyString(), anyLong(), anyString(),

@@ -280,12 +280,12 @@ class OpsReferralRewardServiceTest {
         verify(mapper).lockRewardMutation();
         verify(earningsRelease).creditReward(eq(22L), eq("H8_REFERRAL"), anyString(), eq("USDT"),
                 decimal("5"), eq("PRODUCTION"), anyString());
-        verify(earningsRelease).creditReward(eq(22L), eq("H8_REFERRAL"), anyString(), eq("NEX"),
+        verify(earningsRelease).creditReward(eq(22L), eq("H8_REFERRAL"), anyString(), eq("UVT"),
                 decimal("20"), eq("PRODUCTION"), anyString());
-        verify(earningsRelease).creditReward(eq(11L), eq("H8_REFERRAL"), anyString(), eq("NEX"),
+        verify(earningsRelease).creditReward(eq(11L), eq("H8_REFERRAL"), anyString(), eq("UVT"),
                 decimal("10"), eq("PRODUCTION"), anyString());
         verify(ledger).postLedgerEntry(anyString(), eq(22L), eq("REFERRAL_REWARD"), eq("USDT"), eq("IN"), decimal("5"), eq("SUCCESS"), anyString());
-        verify(ledger).postLedgerEntry(anyString(), eq(11L), eq("REFERRAL_REWARD"), eq("NEX"), eq("IN"), decimal("10"), eq("SUCCESS"), anyString());
+        verify(ledger).postLedgerEntry(anyString(), eq(11L), eq("REFERRAL_REWARD"), eq("UVT"), eq("IN"), decimal("10"), eq("SUCCESS"), anyString());
         verify(audit, times(2)).recordRequired(any());
     }
 
@@ -302,7 +302,7 @@ class OpsReferralRewardServiceTest {
                 request(10, "development canonical referral settlement"));
 
         assertThat(result).containsEntry("settled", 1).containsEntry("skipped", 0);
-        verify(earningsRelease).creditReward(eq(11L), eq("H8_REFERRAL"), anyString(), eq("NEX"),
+        verify(earningsRelease).creditReward(eq(11L), eq("H8_REFERRAL"), anyString(), eq("UVT"),
                 decimal("10"), eq("PRODUCTION"), anyString());
     }
 
@@ -597,9 +597,9 @@ class OpsReferralRewardServiceTest {
         verify(mapper, never()).findPendingReferrals(any(), anyString(), anyInt(), anyBoolean(), anyInt(), eq(null));
         verify(earningsRelease).creditReward(eq(32L), eq("H8_REFERRAL"), anyString(), eq("USDT"),
                 decimal("5"), eq("PRODUCTION"), anyString());
-        verify(earningsRelease).creditReward(eq(32L), eq("H8_REFERRAL"), anyString(), eq("NEX"),
+        verify(earningsRelease).creditReward(eq(32L), eq("H8_REFERRAL"), anyString(), eq("UVT"),
                 decimal("20"), eq("PRODUCTION"), anyString());
-        verify(earningsRelease).creditReward(eq(7L), eq("H8_REFERRAL"), anyString(), eq("NEX"),
+        verify(earningsRelease).creditReward(eq(7L), eq("H8_REFERRAL"), anyString(), eq("UVT"),
                 decimal("10"), eq("PRODUCTION"), anyString());
         verify(earningsRelease, times(3)).creditReward(any(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
         verify(outbox).publish(anyString(), anyString(), eq("H8_REFERRAL_REWARD_BATCH_COMPLETED"),

@@ -550,7 +550,7 @@ public class OpsUser360Service {
                 "total", earningRows.size(),
                 "records", earningRows,
                 "totalUsdt", money(sumAsset(earningRows, "USDT")),
-                "totalNex", money(sumAsset(earningRows, "NEX")),
+                "totalNex", money(sumAsset(earningRows, "UVT")),
                 "deviceDailyUsdt", deviceSection.get("dailyUsdt"),
                 "deviceDailyNex", deviceSection.get("dailyNex"),
                 "sources", List.of("nx_wallet_ledger", "nx_user_device"),
@@ -569,7 +569,7 @@ public class OpsUser360Service {
                 "members", teamSection.get("records"),
                 "commissionRows", commissionRows,
                 "commissionUsdt", money(sumAsset(commissionRows, "USDT")),
-                "commissionNex", money(sumAsset(commissionRows, "NEX")),
+                "commissionNex", money(sumAsset(commissionRows, "UVT")),
                 "sources", List.of("nx_team_member", "nx_wallet_ledger"),
                 "sourceStatus", "READY");
     }
@@ -625,7 +625,7 @@ public class OpsUser360Service {
         return section(
                 "notifications", notificationSection.get("records"),
                 "activityAudit", activityAudit,
-                "checkInRewardAsset", "NEX",
+                "checkInRewardAsset", "UVT",
                 "sunsetCompatibility", List.of("legacy points records are read-only migration context"),
                 "sourceStatus", "READY");
     }

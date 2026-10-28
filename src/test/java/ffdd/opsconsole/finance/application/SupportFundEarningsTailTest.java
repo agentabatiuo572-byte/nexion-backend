@@ -12,7 +12,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 class SupportFundEarningsTailTest {
     final EarningsCentralFundEvidenceTest f=new EarningsCentralFundEvidenceTest();
     @BeforeEach void storage(){f.storage();}
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"})
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"})
     void canonicalIdentifiersRemainExactAcrossCreditRecoveryAndRelease(String asset)throws Exception {
         String no=f.protectedCredit(asset);f.recoveryStorage(EarningsCentralFundEvidenceTest.n("0"));f.recover(no,asset,"8");
         f.service.manualReleaseOnce(no,new EarningsManualReleaseRequest("approved investigation","superadmin"));
@@ -25,7 +25,7 @@ class SupportFundEarningsTailTest {
             assertDoesNotThrow(()->f.evidence.verify(f.operation(operation),source,proof,f.events(operation),f.inputs()));
         }
     }
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"})
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"})
     void malformedIdentifiersCannotUseTheNumericCanonicalizationPath(String asset)throws Exception {
         f.protectedCredit(asset);var r=f.receipts.get(0);
         var codec=new SupportFundJournalBindingService(f.raw,org.mockito.Mockito.mock(javax.sql.DataSource.class),f.json);
@@ -35,23 +35,23 @@ class SupportFundEarningsTailTest {
             assertThrows(IllegalArgumentException.class,()->f.evidence.verify(f.operation(0),source,f.json.readTree(r.sourceProofJson()),f.events(0),f.inputs()));
         }
     }
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"})
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"})
     void protectedBirthCannotBecomeWithdrawableWithoutActualRelease(String asset)throws Exception {
         String no=f.protectedCredit(asset);f.entry.put("bucket","withdrawable");
         assertThrows(IllegalArgumentException.class,()->f.verifyReceipt(0));
     }
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"})
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"})
     void releaseAuthorityWithoutReleaseTimeCannotBeAProvenTail(String asset)throws Exception {
         String no=f.protectedCredit(asset);f.entry.put("releaseSource","manual");
         assertThrows(IllegalArgumentException.class,()->f.verifyReceipt(0));
         assertThrows(IllegalArgumentException.class,()->f.evidence.verifyCoverage(Set.of(7L),f.inputs(),Set.of(no+":CREDIT")));
     }
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"})
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"})
     void unreleasedOriginalProtectedBucketCannotChangeToAnotherProtectedBucket(String asset)throws Exception {
         f.protectedCredit(asset);f.entry.put("bucket","pending_review");
         assertThrows(IllegalArgumentException.class,()->f.verifyReceipt(0));
     }
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"})
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"})
     void unsupportedAndMalformedCurrentStateFailsClosed(String asset)throws Exception {
         f.protectedCredit(asset);var original=new LinkedHashMap<>(f.entry);
         var mutations=new ArrayList<Map<String,Object>>();
@@ -64,7 +64,7 @@ class SupportFundEarningsTailTest {
             assertThrows(IllegalArgumentException.class,()->f.verifyReceipt(0));});
         assertAll(assertions);
     }
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"})
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"})
     void realLaterReleaseAfterActualRecoveryRetainsValidBirthAndRecoveryHistory(String asset)throws Exception {
         String no=f.protectedCredit(asset);f.recoveryStorage(EarningsCentralFundEvidenceTest.n("0"));var recovery=f.recover(no,asset,"8");
         f.service.manualReleaseOnce(no,new EarningsManualReleaseRequest("approved investigation","superadmin"));
@@ -72,27 +72,27 @@ class SupportFundEarningsTailTest {
         assertDoesNotThrow(()->f.evidence.verifyCoverage(Set.of(7L),f.inputs(),Set.of(no+":CREDIT",recovery.recoveryNo()+":RECOVER",no+":RELEASE")));
         assertThrows(IllegalArgumentException.class,()->f.evidence.verifyCoverage(Set.of(7L),f.inputs(),Set.of(no+":CREDIT",recovery.recoveryNo()+":RECOVER")));
     }
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"})
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"})
     void actualRecoveryAfterReleaseDoesNotInvalidateOriginalReleaseSnapshot(String asset)throws Exception {
         String no=f.protectedCredit(asset);f.service.manualReleaseOnce(no,new EarningsManualReleaseRequest("approved investigation","superadmin"));
         f.recoveryStorage(EarningsCentralFundEvidenceTest.n("0"));var recovery=f.recover(no,asset,"8");
         assertDoesNotThrow(()->f.verifyReceipt(0));assertDoesNotThrow(()->f.verifyReceipt(1));assertDoesNotThrow(()->f.verifyReceipt(2));
         assertDoesNotThrow(()->f.evidence.verifyCoverage(Set.of(7L),f.inputs(),Set.of(no+":CREDIT",no+":RELEASE",recovery.recoveryNo()+":RECOVER")));
     }
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"})
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"})
     void validLookingCurrentReleaseCannotInventAReleaseForWithdrawableBirth(String asset)throws Exception {
         f.service.creditReward(7L,"PROMOTION_REWARD","reward-7",asset,EarningsCentralFundEvidenceTest.n("20"),"idem-7");
         f.entry.put("releasedAt",f.at);f.entry.put("releaseSource","manual");
         assertThrows(IllegalArgumentException.class,()->f.verifyReceipt(0));
     }
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"})
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"})
     void realReleaseCannotRegressToProtectedOrLoseItsAuthority(String asset)throws Exception {
         String no=f.protectedCredit(asset);f.service.manualReleaseOnce(no,new EarningsManualReleaseRequest("approved investigation","superadmin"));
         assertDoesNotThrow(()->f.verifyReceipt(0));f.entry.put("bucket","bonus_locked");
         assertThrows(IllegalArgumentException.class,()->f.verifyReceipt(0));f.entry.put("bucket","withdrawable");f.entry.put("releaseSource",null);
         assertThrows(IllegalArgumentException.class,()->f.verifyReceipt(0));
     }
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"})
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"})
     void recoveryPhaseCannotInventAMutableReleaseWithinItsSnapshot(String asset)throws Exception {
         f.protectedCredit(asset);f.recoveryStorage(EarningsCentralFundEvidenceTest.n("0"));f.recover((String)f.entry.get("entryNo"),asset,"8");
         var r=f.receipts.get(1);var source=(ObjectNode)f.json.readTree(r.sourceSnapshotJson());

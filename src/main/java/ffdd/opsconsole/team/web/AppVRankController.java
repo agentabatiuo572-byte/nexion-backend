@@ -221,7 +221,7 @@ public class AppVRankController {
 
     private BigDecimal cultivationBonus(List<VRankRewardRuleRow> rewardRules) {
         return rewardRules.stream()
-                .filter(rule -> "nex".equalsIgnoreCase(rule.rewardType()))
+                .filter(rule -> "uvt".equalsIgnoreCase(rule.rewardType()))
                 .map(VRankRewardRuleRow::amount)
                 .filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);

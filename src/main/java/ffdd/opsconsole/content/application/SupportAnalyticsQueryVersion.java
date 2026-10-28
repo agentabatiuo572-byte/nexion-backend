@@ -265,12 +265,12 @@ public final class SupportAnalyticsQueryVersion {
         for(var d:snapshot.changes()) {
             if(d.contributionId()==null || d.currency()==null)return ReadState.UNKNOWN;
             var o=origins.get(d.contributionId());
-            if(o==null || o.customerId()!=d.originCustomerId() || !Set.of("USDT","NEX").contains(d.currency()) || d.amount()==null
+            if(o==null || o.customerId()!=d.originCustomerId() || !Set.of("USDT","UVT").contains(d.currency()) || d.amount()==null
                 || !netStamp(d.succeededAt(),d.businessZone(),d.fractionalSecondDigits(),d.sourceReference()) || d.succeededAt().isBefore(o.formedAt()))return ReadState.UNKNOWN;
             totals.merge(d.originCustomerId()+":"+d.currency(),d.amount(),BigDecimal::add);
         }
         for(var c:customers.values())if(c.usdt().compareTo(totals.getOrDefault(c.customerId()+":USDT",BigDecimal.ZERO))!=0
-            || c.nex().compareTo(totals.getOrDefault(c.customerId()+":NEX",BigDecimal.ZERO))!=0)return ReadState.UNKNOWN;
+            || c.nex().compareTo(totals.getOrDefault(c.customerId()+":UVT",BigDecimal.ZERO))!=0)return ReadState.UNKNOWN;
         return ReadState.COMPLETE;
     }
     private static boolean netStamp(LocalDateTime at,String zone,int digits,String source) {

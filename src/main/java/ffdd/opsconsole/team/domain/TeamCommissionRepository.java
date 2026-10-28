@@ -160,7 +160,7 @@ public interface TeamCommissionRepository {
 
     /**
      * 查 L1 上线 sponsor_user_id(来自 nx_sponsorship.user_id=userId)。
-     * 无绑定/已软删返回 null(培育类 NEX 派发时若 null → fallback 派本人)。
+     * 无绑定/已软删返回 null(培育类 UVT 派发时若 null → fallback 派本人)。
      */
     Long findSponsorUserId(Long userId);
 
@@ -176,9 +176,9 @@ public interface TeamCommissionRepository {
      * @param userId          接收方 user_id(培育类=sponsor,本人奖励=被晋升人)
      * @param commissionType  {@code vrank_reward}(本人奖励) / {@code cultivation}(培育类给 sponsor)
      * @param sourceUserId    触发用户(被晋升人);cultivation 时为下线
-     * @param currency        USDT / NEX
-     * @param amountUsdt      USDT 金额(NEX 类为 0)
-     * @param amountNex       NEX 金额(USDT 类为 0)
+     * @param currency        USDT / UVT
+     * @param amountUsdt      USDT 金额(UVT 类为 0)
+     * @param amountNex       UVT 金额(USDT 类为 0)
      * @param status          默认 PENDING(冷却) — 由后续结算流程 UNLOCKED
      * @param coolingDays     冷却天数(unlock_at = NOW()+coolingDays;PRD line231 默认30,读 commission/cooling-days 配置)
      * @param remark          审计备注(含 rank_code/operator)

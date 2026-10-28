@@ -7,9 +7,9 @@ import java.util.regex.Pattern;
 
 /** Resolves the PC-managed full / grace / expired Day-One reward policy. */
 final class DayOneTriRewardPolicy {
-    /** The PC contract deliberately accepts one canonical, NEX-denominated ladder only. */
+    /** The PC contract deliberately accepts one canonical, UVT-denominated ladder only. */
     private static final Pattern STANDARD_POLICY = Pattern.compile(
-            "^\\s*([0-9]+(?:\\.[0-9]+)?)\\s*/\\s*([0-9]+(?:\\.[0-9]+)?)\\s*/\\s*(0(?:\\.0+)?)\\s+NEX\\s*$",
+            "^\\s*([0-9]+(?:\\.[0-9]+)?)\\s*/\\s*([0-9]+(?:\\.[0-9]+)?)\\s*/\\s*(0(?:\\.0+)?)\\s+UVT\\s*$",
             Pattern.CASE_INSENSITIVE);
     private static final long FULL_REWARD_HOURS = 24L;
 
@@ -35,7 +35,7 @@ final class DayOneTriRewardPolicy {
 
     static String normalizePolicy(String rawPolicy) {
         BigDecimal[] rewards = parse(rawPolicy);
-        return plain(rewards[0]) + " / " + plain(rewards[1]) + " / " + plain(rewards[2]) + " NEX";
+        return plain(rewards[0]) + " / " + plain(rewards[1]) + " / " + plain(rewards[2]) + " UVT";
     }
 
     private static BigDecimal[] parse(String rawPolicy) {

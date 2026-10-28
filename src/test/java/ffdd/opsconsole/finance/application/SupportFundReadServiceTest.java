@@ -295,10 +295,10 @@ class SupportFundReadServiceTest {
     @Test void actualCentralEarningsCreditHasNoContributionUntilConsumed() throws Exception {
         earning("withdrawable",false,false);ready();assertEquals(0,read().customers().get(0).usdt().signum());assertTrue(read().origins().isEmpty());
     }
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"}) void actualTreasuryCommissionIsUncreditedIncome(String asset) throws Exception {
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"}) void actualTreasuryCommissionIsUncreditedIncome(String asset) throws Exception {
         commission(asset,false);ready();assertEquals(0,read().customers().get(0).usdt().signum());assertEquals(0,read().customers().get(0).nex().signum());assertTrue(read().origins().isEmpty());
     }
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"}) void actualTreasuryClawbackPreservesZeroContribution(String asset) throws Exception {
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"}) void actualTreasuryClawbackPreservesZeroContribution(String asset) throws Exception {
         commission(asset,false);commission(asset,true);ready();assertTrue(read().changes().isEmpty());assertTrue(read().origins().isEmpty());
     }
     @Test void commissionClawbackAfterConsumptionAndRechargeDoesNotReverseTheirContribution() throws Exception {
@@ -543,7 +543,7 @@ class SupportFundReadServiceTest {
         trial.put("chargeUsdt",BigDecimal.ZERO);trial.put("amountUsdt",BigDecimal.ZERO);trial.put("remainderUsdt",new BigDecimal("3"));trial.put("shadowNex",new BigDecimal("2"));trial.put("paidAt",AT);trial.put("settledAt",AT);
         for(String field:List.of("userSandbox","userDeleted","claimDeleted","deviceDeleted","orderDeleted"))trial.put(field,false);
         var entries=new ArrayList<Map<String,Object>>();var rewardJson=new ArrayList<Map<String,Object>>();var rewardLedgerJson=new ArrayList<Map<String,Object>>();var events=new ArrayList<Event>();
-        for(String asset:List.of("USDT","NEX")) {
+        for(String asset:List.of("USDT","UVT")) {
             String no="trial-"+asset,ref=claim+(asset.equals("USDT")?":REMAINDER":":NEX");BigDecimal amount=new BigDecimal(asset.equals("USDT")?"3":"2");
             var entry=new LinkedHashMap<String,Object>();entry.put("entryNo",no);entry.put("userId",1L);entry.put("sourceType",asset.equals("USDT")?"H2_TRIAL_REMAINDER":"H2_TRIAL_BONUS");entry.put("sourceRef",ref);
             entry.put("asset",asset);entry.put("amount",amount);entry.put("bucket",bucket);entry.put("status","ACTIVE");entry.put("sourceEnvironment","PRODUCTION");entry.put("isDeleted",false);
@@ -552,7 +552,7 @@ class SupportFundReadServiceTest {
             var typed=new EarningsReleaseMapper.RecoveryEntry(no,1L,entry.get("sourceType").toString(),ref,asset,amount,bucket,"ACTIVE","PRODUCTION",0,BigDecimal.ZERO,BigDecimal.ZERO,11L);
             var method=SupportPaymentSourceService.class.getDeclaredMethod("rewardSnapshot",EarningsReleaseMapper.RecoveryEntry.class);method.setAccessible(true);
             @SuppressWarnings("unchecked") var snapshot=(Map<String,Object>)method.invoke(null,typed);rewardJson.add(snapshot);
-            advanceCash(asset.equals("USDT")?amount:BigDecimal.ZERO,asset.equals("NEX")?amount:BigDecimal.ZERO);
+            advanceCash(asset.equals("USDT")?amount:BigDecimal.ZERO,asset.equals("UVT")?amount:BigDecimal.ZERO);
             var ledger=new LinkedHashMap<String,Object>();ledger.put("id",100L+entries.size());ledger.put("sourceId","nx_wallet_ledger:"+(100+entries.size()));ledger.put("customerId",1L);ledger.put("businessId",ref);ledger.put("ledgerType","TRIAL_BONUS");
             ledger.put("status","POSTED");ledger.put("successAt",AT);ledger.put("deleted",false);ledger.put("currency",asset);ledger.put("direction","IN");ledger.put("amount",amount);
             ledger.put("balanceAfter",wallet.get(asset.equals("USDT")?"usdtAvailable":"nexAvailable"));ledger.put("remark","actual reward");ledger.put("updatedAt",AT);paymentLedgers.add(ledger);rewardLedgerJson.add(strings(ledger));
@@ -610,13 +610,13 @@ class SupportFundReadServiceTest {
         });
         var adapter=new SupportExchangeFundAdapter(binder,exchangeMapper,exchanges,json);var before=adapter.begin(1);
         advanceCash(new BigDecimal("-4"),phase.equals("HOLD")?BigDecimal.ZERO:new BigDecimal("2"));
-        var order=new LinkedHashMap<String,Object>();order.put("id",101L);order.put("customerId",1L);order.put("exchangeNo",no);order.put("fromAsset","USDT");order.put("toAsset","NEX");
+        var order=new LinkedHashMap<String,Object>();order.put("id",101L);order.put("customerId",1L);order.put("exchangeNo",no);order.put("fromAsset","USDT");order.put("toAsset","UVT");
         order.put("fromAmount",new BigDecimal("4.000000"));order.put("toAmount",new BigDecimal("2.000000"));order.put("rate",new BigDecimal("2.00000000"));
         order.put("status",phase.equals("HOLD")?"QUEUED":"COMPLETED");order.put("createdAt",AT);order.put("updatedAt",AT);
         order.put("deleted",false);order.put("userSandbox",false);order.put("userDeleted",false);exchangeOrders.add(order);
         for(String suffix:phase.equals("HOLD")?List.of("HOLD"):List.of("OUT","IN")) {
             boolean incoming=suffix.equals("IN");var ledger=new LinkedHashMap<String,Object>();ledger.put("id",incoming?203L:202L);
-            ledger.put("customerId",1L);ledger.put("exchangeNo",no);ledger.put("bizNo",no+"-"+suffix);ledger.put("bizType","EXCHANGE_SWAP");ledger.put("asset",incoming?"NEX":"USDT");
+            ledger.put("customerId",1L);ledger.put("exchangeNo",no);ledger.put("bizNo",no+"-"+suffix);ledger.put("bizType","EXCHANGE_SWAP");ledger.put("asset",incoming?"UVT":"USDT");
             ledger.put("direction",incoming?"IN":"OUT");ledger.put("amount",new BigDecimal(incoming?"2.000000":"4.000000"));ledger.put("balanceAfter",wallet.get(incoming?"nexAvailable":"usdtAvailable"));
             ledger.put("status","SUCCESS");ledger.put("createdAt",AT);ledger.put("updatedAt",AT);ledger.put("deleted",0);exchangeLedgers.add(ledger);
         }
@@ -628,7 +628,7 @@ class SupportFundReadServiceTest {
         advanceCash(cancel?new BigDecimal("4"):BigDecimal.ZERO,cancel?BigDecimal.ZERO:new BigDecimal("2"));
         var order=exchangeOrders.get(0);order.put("status",cancel?"CANCELLED":"COMPLETED");order.put("updatedAt",at);
         var ledger=new LinkedHashMap<String,Object>();ledger.put("id",204L);ledger.put("customerId",1L);ledger.put("exchangeNo",no);
-        ledger.put("bizNo",no+(cancel?"-REFUND":"-IN"));ledger.put("bizType","EXCHANGE_SWAP");ledger.put("asset",cancel?"USDT":"NEX");ledger.put("direction","IN");
+        ledger.put("bizNo",no+(cancel?"-REFUND":"-IN"));ledger.put("bizType","EXCHANGE_SWAP");ledger.put("asset",cancel?"USDT":"UVT");ledger.put("direction","IN");
         ledger.put("amount",new BigDecimal(cancel?"4.000000":"2.000000"));ledger.put("balanceAfter",wallet.get(cancel?"usdtAvailable":"nexAvailable"));
         ledger.put("status","SUCCESS");ledger.put("createdAt",at);ledger.put("updatedAt",at);ledger.put("deleted",0);exchangeLedgers.add(ledger);
         adapter.recorded(before,no,cancel?"CANCEL":"COMPLETE",BigDecimal.ZERO);readOnly();
@@ -645,11 +645,11 @@ class SupportFundReadServiceTest {
     private void commission(String asset,boolean reverse) throws Exception {
         writable();String phase=reverse?"REVERSE":"RELEASE";var amount=n("3");
         if(!reverse)commissionEvents.add(row("id",55L,"customerId",1L,"commissionType","network","sourceUserId",2L,"sourceUserName","Source","layerNo",1,
-            "orderNo","ORDER-reader","orderAmountUsd",n("100"),"amountUsdt",asset.equals("USDT")?amount:n("0"),"amountNex",asset.equals("NEX")?amount:n("0"),
+            "orderNo","ORDER-reader","orderAmountUsd",n("100"),"amountUsdt",asset.equals("USDT")?amount:n("0"),"amountNex",asset.equals("UVT")?amount:n("0"),
             "asset",asset,"status","UNLOCKED","version",1L,"unlockAt",AT,"frozenFromStatus",null,"remark","Commission","createdAt",AT,"updatedAt",AT,
             "deleted",false,"userSandbox",false,"userDeleted",false));
         var adapter=new SupportCommissionFundAdapter(binder,commissionMapper,commissions,json);var before=adapter.begin(1,55,phase);
-        var delta=reverse?amount.negate():amount;advanceCash(asset.equals("USDT")?delta:BigDecimal.ZERO,asset.equals("NEX")?delta:BigDecimal.ZERO);
+        var delta=reverse?amount.negate():amount;advanceCash(asset.equals("USDT")?delta:BigDecimal.ZERO,asset.equals("UVT")?delta:BigDecimal.ZERO);
         if(reverse){commissionEvents.get(0).put("status","REVERSED");commissionEvents.get(0).put("version",2L);}
         commissionLedgers.add(row("id",400L+commissionLedgers.size(),"customerId",1L,"bizNo",SupportCommissionFundAdapter.ledgerNo(55,phase),"bizType","TEAM_COMMISSION",
             "asset",asset,"direction",reverse?"OUT":"IN","amount",amount,"balanceAfter",wallet.get(asset.equals("USDT")?"usdtAvailable":"nexAvailable"),
@@ -664,7 +664,7 @@ class SupportFundReadServiceTest {
             "rewardUsdt",usd,"rewardNex",nex,"earningStatus","CREDITED","sourceEnvironment","PRODUCTION","proofHash","a".repeat(64),"completedAt",AT,"createdAt",AT,"updatedAt",AT,"deleted",0,"userSandbox",0,"userDeleted",0));
         deviceTasks.add(row("id",99L,"customerId",1L,"deviceId",11L,"taskNo",taskNo,"taskId","TASK-IG","taskType","IG","rewardUsdt",usd,"status","COMPLETED","sourceEnvironment","PRODUCTION",
             "clientName","Production compute","startedAt",AT.minusMinutes(1),"completedAt",AT,"proofConsumedAt",AT,"deleted",0));
-        for(String asset:dual?List.of("USDT","NEX"):List.of("USDT")){
+        for(String asset:dual?List.of("USDT","UVT"):List.of("USDT")){
             boolean dollar=asset.equals("USDT");long id=dollar?1L:2L;var amount=dollar?usd:nex;
             deviceLedgers.add(row("id",id,"customerId",1L,"bizNo",dollar?taskNo:"CLOUD_SHARE_DAILY:11:2026-10-10","bizType","COMPUTE_TASK_REWARD","asset",asset,"direction","IN","amount",amount,
                 "balanceAfter",dollar?usdAfter:wallet.get("nexAvailable"),"status","SUCCESS","createdAt",AT,"updatedAt",AT,"deleted",0));

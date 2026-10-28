@@ -230,7 +230,7 @@ public class DirectReferralPolicyService {
     }
     private boolean purchaseAmplifies(DirectReferralPolicy.Rule after,DirectReferralPolicy.Rule before,BigDecimal coefficient,boolean currentRead) {
         if(before.enabled()&&after.enabled())return before.usdtSharePct().compareTo(after.usdtSharePct())!=0;
-        if(before.enabled())return true; // Restoring full USDT increases that asset even if NEX shrinks.
+        if(before.enabled())return true; // Restoring full USDT increases that asset even if UVT shrinks.
         if(!after.enabled())return false;
         return coefficient.signum()==0||new BigDecimal("100").subtract(after.usdtSharePct()).movePointLeft(2).compareTo(coefficient.multiply(zeroPrice(currentRead)))>0;
     }

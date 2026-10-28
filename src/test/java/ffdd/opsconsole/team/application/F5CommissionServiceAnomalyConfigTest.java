@@ -172,14 +172,14 @@ class F5CommissionServiceAnomalyConfigTest {
         when(mapper.aggregateCommissionKinds()).thenReturn(List.of(
                 Map.of("kind", "network", "currency", "USDT", "amount", new BigDecimal("10"), "count", 1L),
                 Map.of("kind", "binary", "currency", "USDT", "amount", new BigDecimal("20"), "count", 2L),
-                Map.of("kind", "peer", "currency", "NEX", "amount", new BigDecimal("30"), "count", 3L),
-                Map.of("kind", "cultivation", "currency", "NEX", "amount", new BigDecimal("40"), "count", 4L),
+                Map.of("kind", "peer", "currency", "UVT", "amount", new BigDecimal("30"), "count", 3L),
+                Map.of("kind", "cultivation", "currency", "UVT", "amount", new BigDecimal("40"), "count", 4L),
                 Map.of("kind", "leadership", "currency", "USDT", "amount", new BigDecimal("50"), "count", 5L),
-                Map.of("kind", "genesis", "currency", "NEX", "amount", new BigDecimal("60"), "count", 6L),
+                Map.of("kind", "genesis", "currency", "UVT", "amount", new BigDecimal("60"), "count", 6L),
                 Map.of("kind", "direct_purchase", "currency", "USDT", "amount", new BigDecimal("6"), "count", 1L),
-                Map.of("kind", "direct_purchase", "currency", "NEX", "amount", new BigDecimal("400"), "count", 1L),
+                Map.of("kind", "direct_purchase", "currency", "UVT", "amount", new BigDecimal("400"), "count", 1L),
                 Map.of("kind", "direct_device_earning", "currency", "USDT", "amount", new BigDecimal("0.33"), "count", 1L),
-                Map.of("kind", "direct_device_earning", "currency", "NEX", "amount", new BigDecimal("22"), "count", 1L)));
+                Map.of("kind", "direct_device_earning", "currency", "UVT", "amount", new BigDecimal("22"), "count", 1L)));
         when(mapper.aggregateCommissionStatuses()).thenReturn(List.of(
                 Map.of("status", "unlocked", "currency", "USDT", "amount", BigDecimal.ONE, "count", 1L),
                 Map.of("status", "cooling", "currency", "USDT", "amount", BigDecimal.ONE, "count", 2L),
@@ -187,7 +187,7 @@ class F5CommissionServiceAnomalyConfigTest {
                 Map.of("status", "reversed", "currency", "USDT", "amount", BigDecimal.ONE, "count", 4L),
                 Map.of("status", "frozen", "currency", "USDT", "amount", BigDecimal.ONE, "count", 5L),
                 Map.of("status", "rejected", "currency", "USDT", "amount", BigDecimal.ZERO, "count", 1L),
-                Map.of("status", "recovery_pending", "currency", "NEX", "amount", BigDecimal.ONE, "count", 1L)));
+                Map.of("status", "recovery_pending", "currency", "UVT", "amount", BigDecimal.ONE, "count", 1L)));
 
         Map<String, Object> overview = service.overview(
                 new F5CommissionQuery(null, null, null, null, null, null, 20)).getData();
@@ -197,7 +197,7 @@ class F5CommissionServiceAnomalyConfigTest {
         assertThat((List<Map<String, Object>>) overview.get("statusDistribution"))
                 .extracting(row -> row.get("name"))
                 .containsExactly("已解锁可提", "冷却计提中", "已提现", "已撤销", "已冻结", "已拒绝", "待追回");
-        assertThat(overview.get("summary").toString()).contains("USDT 86.33", "NEX 552.00");
+        assertThat(overview.get("summary").toString()).contains("USDT 86.33", "UVT 552.00");
         assertThat((Map<String, Object>) overview.get("summary"))
                 .containsEntry("frozenCount", 5L)
                 .doesNotContainKey("abnormalOrFrozenCount");

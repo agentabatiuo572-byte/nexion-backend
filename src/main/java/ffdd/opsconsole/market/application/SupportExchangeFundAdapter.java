@@ -52,7 +52,7 @@ public class SupportExchangeFundAdapter {
         if(!Set.of("IMMEDIATE","HOLD","COMPLETE","CANCEL").contains(phase) || !("HOLD".equals(phase)?"QUEUED":"CANCEL".equals(phase)?"CANCELLED":"COMPLETED").equals(status))throw new IllegalStateException("Exchange phase mismatch");
         BigDecimal gross=decimal(order.get("fromAmount")),target=decimal(order.get("toAmount")),fee=money(actualFeeUsdt);
         String from=String.valueOf(order.get("fromAsset")),to=String.valueOf(order.get("toAsset"));
-        if(!Set.of("USDT","NEX").contains(from)||from.equals(to)||!Set.of("USDT","NEX").contains(to)||gross.signum()<=0||target.signum()<0||!(order.get("updatedAt") instanceof LocalDateTime))throw new IllegalStateException("Exchange original invalid");
+        if(!Set.of("USDT","UVT").contains(from)||from.equals(to)||!Set.of("USDT","UVT").contains(to)||gross.signum()<=0||target.signum()<0||!(order.get("updatedAt") instanceof LocalDateTime))throw new IllegalStateException("Exchange original invalid");
         boolean reserved=source.ledgers().stream().anyMatch(l->(exchangeNo+"-HOLD").equals(l.get("bizNo"))&&"EXCHANGE_SWAP".equals(l.get("bizType"))&&"OUT".equals(l.get("direction"))&&"SUCCESS".equals(l.get("status"))&&flag(l.get("deleted"))==0);
         if(Set.of("IMMEDIATE","COMPLETE").contains(phase))verifyAmounts(source,gross,target,fee,from);
         var after=wallet(token.customer());
@@ -102,7 +102,7 @@ public class SupportExchangeFundAdapter {
     private static int flag(Object value){if(value instanceof Boolean b)return b?1:0;return decimal(value).intValueExact();}
     static List<Event> events(long customer,String exchangeNo,String phase,String fromAsset,
                               BigDecimal fromAmount,BigDecimal toAmount,BigDecimal feeUsdt) {
-        if(exchangeNo==null||!exchangeNo.matches("[^\\s:]{1,107}")||!Set.of("IMMEDIATE","HOLD","COMPLETE","CANCEL").contains(phase)||!Set.of("USDT","NEX").contains(fromAsset))throw new IllegalArgumentException("Invalid exchange event source");
+        if(exchangeNo==null||!exchangeNo.matches("[^\\s:]{1,107}")||!Set.of("IMMEDIATE","HOLD","COMPLETE","CANCEL").contains(phase)||!Set.of("USDT","UVT").contains(fromAsset))throw new IllegalArgumentException("Invalid exchange event source");
         BigDecimal gross,target,fee;
         try{gross=money(fromAmount);target=money(toAmount);fee=money(feeUsdt);}catch(ArithmeticException invalid){throw new IllegalArgumentException("Invalid exchange precision",invalid);}
         if(gross.signum()<=0||target.signum()<0||fee.signum()<0||target.signum()==0&&!Set.of("HOLD","CANCEL").contains(phase))throw new IllegalArgumentException("Invalid exchange event amounts");
@@ -114,7 +114,7 @@ public class SupportExchangeFundAdapter {
             return List.of(new Event(id+":0",Action.MOVE,"HOLD".equals(phase)?available:held,"HOLD".equals(phase)?held:available,null,gross,null));
         }
         var source="COMPLETE".equals(phase)?held:available;
-        var destination=new Account(customer,"USDT".equals(fromAsset)?"NEX":"USDT","available");
+        var destination=new Account(customer,"USDT".equals(fromAsset)?"UVT":"USDT","available");
         if(fee.signum()==0)return List.of(new Event(id+":0",Action.EXCHANGE,source,destination,null,gross,target));
         if("USDT".equals(fromAsset)) {
             if(fee.compareTo(gross)>=0)throw new IllegalArgumentException("Fee exceeds exchange source");

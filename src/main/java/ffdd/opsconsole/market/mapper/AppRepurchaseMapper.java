@@ -64,7 +64,7 @@ public interface AppRepurchaseMapper {
 
     @Select("""
             SELECT price_usdt FROM nx_price_index
-             WHERE is_deleted=0 AND status='ACTIVE' AND metric_code IN ('NEX','NEX_USDT')
+             WHERE is_deleted=0 AND status='ACTIVE' AND metric_code IN ('UVT','UVT_USDT')
              ORDER BY sampled_at DESC,id DESC LIMIT 1
             """)
     BigDecimal latestNexUsdtPrice();

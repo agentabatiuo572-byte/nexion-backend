@@ -470,7 +470,7 @@ class OpsUser360ServiceTest {
                 .containsEntry("nex", new BigDecimal("3500.00"));
         assertThat(financial).containsEntry("sourceStatus", "READY");
         assertThat(engagement)
-                .containsEntry("checkInRewardAsset", "NEX")
+                .containsEntry("checkInRewardAsset", "UVT")
                 .containsEntry("sourceStatus", "READY");
         assertThat(commerce)
                 .containsEntry("total", 1)

@@ -1327,7 +1327,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    a.amount_usd AS amountUsd,
                    CONCAT(CASE WHEN a.direction = 'CREDIT' THEN '+' ELSE '-' END,
                           CASE WHEN a.asset = 'USDT' THEN CONCAT('$', CAST(a.amount AS CHAR))
-                               ELSE CONCAT(CAST(a.amount AS CHAR), ' NEX') END) AS amountLabel,
+                               ELSE CONCAT(CAST(a.amount AS CHAR), ' UVT') END) AS amountLabel,
                    a.reason_code AS reasonCode,
                    a.reason,
                    a.evidence_ref AS evidenceRef,
@@ -1406,7 +1406,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    a.amount_usd AS amountUsd,
                    CONCAT(CASE WHEN a.direction = 'CREDIT' THEN '+' ELSE '-' END,
                           CASE WHEN a.asset = 'USDT' THEN CONCAT('$', CAST(a.amount AS CHAR))
-                               ELSE CONCAT(CAST(a.amount AS CHAR), ' NEX') END) AS amountLabel,
+                               ELSE CONCAT(CAST(a.amount AS CHAR), ' UVT') END) AS amountLabel,
                    a.reason_code AS reasonCode,
                    a.reason,
                    a.evidence_ref AS evidenceRef,

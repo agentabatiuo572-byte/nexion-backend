@@ -570,7 +570,7 @@ class OpsTrustDisclosureServiceTest {
     @Test
     void appPublishedSectionsWithholdMigrationListingsEvenIfGivenAnHttpsUrl() {
         addRemainingPublishedAppTrustSections();
-        var migrationFields = listingFields(1, "NEX Market", "https://exchange.example/nex");
+        var migrationFields = listingFields(1, "UVT Market", "https://exchange.example/nex");
         repository.sectionVersions.put("listings::v1", new TrustSectionVersionView(
                 "listings", "v1", "Listings", "structured fields", migrationFields,
                 "published", 1L, "migration:20260712", "2026-07-12"));
@@ -585,7 +585,7 @@ class OpsTrustDisclosureServiceTest {
     void appPublishedSectionsWithholdOperatorListingClaimsEvenWithHttpsLinks() {
         addRemainingPublishedAppTrustSections();
         var fields = new ArrayList<TrustSectionVersionView.Field>();
-        fields.addAll(listingFields(1, "NEX Market", "/pages/market/market"));
+        fields.addAll(listingFields(1, "UVT Market", "/pages/market/market"));
         fields.addAll(listingFields(2, "Example Exchange", "https://exchange.example/markets/nex"));
         fields.addAll(listingFields(3, "No Evidence Exchange", ""));
         repository.sectionVersions.put("listings::v1", new TrustSectionVersionView(
@@ -625,9 +625,9 @@ class OpsTrustDisclosureServiceTest {
         repository.sectionVersions.put("nexNarrative::v1", new TrustSectionVersionView(
                 "nexNarrative", "v1", "Narrative", "structured fields",
                 List.of(
-                        new TrustSectionVersionView.Field("hero.zh", "Headline", "NEX"),
-                        new TrustSectionVersionView.Field("hero.vi", "Headline", "NEX"),
-                        new TrustSectionVersionView.Field("hero.en", "Headline", "NEX"),
+                        new TrustSectionVersionView.Field("hero.zh", "Headline", "UVT"),
+                        new TrustSectionVersionView.Field("hero.vi", "Headline", "UVT"),
+                        new TrustSectionVersionView.Field("hero.en", "Headline", "UVT"),
                         new TrustSectionVersionView.Field("subhero.zh", "Subhead", "透明、可验证，并服务于真实使用场景。"),
                         new TrustSectionVersionView.Field("subhero.vi", "Subhead", "Minh bạch, có thể kiểm chứng và hướng đến tiện ích thực tế."),
                         new TrustSectionVersionView.Field("subhero.en", "Subhead", "Transparent, verifiable and built for real utility."),
@@ -649,7 +649,7 @@ class OpsTrustDisclosureServiceTest {
         assertThat(narrativeFields.stream().filter(f -> f.key().startsWith("subhero.")))
                 .allSatisfy(field -> assertThat(field.value()).isEmpty());
         assertThat(narrativeFields.stream().filter(f -> f.key().startsWith("hero.")))
-                .allSatisfy(field -> assertThat(field.value()).isEqualTo("NEX"));
+                .allSatisfy(field -> assertThat(field.value()).isEqualTo("UVT"));
     }
 
     @Test
@@ -994,7 +994,7 @@ class OpsTrustDisclosureServiceTest {
     void updateGateRejectsSunsetFeatureReactivation() {
         A2ReplayContext.enterReplay();
         var result = service.updateGateScope("idem-i5-gate", new DisclosureGateUpdateRequest(
-                "提现 + NEX v2 锁仓",
+                "提现 + UVT v2 锁仓",
                 "Marina K.",
                 "调整合规闸范围"));
 
@@ -1772,7 +1772,7 @@ class OpsTrustDisclosureServiceTest {
                     new DisclosureChapterView("MAS", "v11", "02", "硬件衰减与产量波动", "Suy giảm phần cứng", "Hardware decay and output variance", "中文正文", "Nội dung", "English body")));
             gates.put("withdraw", new DisclosureGateActionView("withdraw", "提现", "提交提现前服务器先验披露确认", "已实装", "ok", true));
             gates.put("staking", new DisclosureGateActionView("staking", "质押锁仓", "确认状态过期时拦截质押入口", "已实装", "warn", false));
-            gates.put("nexv2", new DisclosureGateActionView("nexv2", "NEX v2 历史锁仓", "已下线历史兼容项，只读展示，不允许重新启用", "已下线 · 历史兼容", "dim", false));
+            gates.put("nexv2", new DisclosureGateActionView("nexv2", "UVT v2 历史锁仓", "已下线历史兼容项，只读展示，不允许重新启用", "已下线 · 历史兼容", "dim", false));
             activeGateKeys.add("withdraw");
         }
 

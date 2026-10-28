@@ -49,7 +49,7 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
                COALESCE((SELECT SUM(e.amount) FROM nx_earning_event e WHERE e.receipt_no=r.receipt_no AND e.user_id=r.user_id
                  AND e.user_device_id=r.user_device_id AND e.asset='USDT' AND e.status='POSTED' AND e.wallet_posted_at IS NOT NULL AND e.is_deleted=0),0) amountUsdt,
                COALESCE((SELECT SUM(e.amount) FROM nx_earning_event e WHERE e.receipt_no=r.receipt_no AND e.user_id=r.user_id
-                 AND e.user_device_id=r.user_device_id AND e.asset='NEX' AND e.status='POSTED' AND e.wallet_posted_at IS NOT NULL AND e.is_deleted=0),0) amountNex,
+                 AND e.user_device_id=r.user_device_id AND e.asset='UVT' AND e.status='POSTED' AND e.wallet_posted_at IS NOT NULL AND e.is_deleted=0),0) amountNex,
                r.user_device_id sourceDeviceId,u.sandbox sandbox,0 refunded,
                CASE WHEN r.earning_status='CREDITED' AND r.source_environment='PRODUCTION'
                  AND r.task_no IS NOT NULL AND r.task_no NOT LIKE 'DEV-TASK%'
@@ -75,7 +75,7 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
       WITH RECURSIVE descendants AS (
        SELECT e.id,0 depth FROM nx_commission_event e WHERE e.order_no=#{ref} AND e.commission_type IN ('network','direct_purchase') AND e.is_deleted=0
        UNION ALL SELECT p.result_commission_id,d.depth+1 FROM descendants d JOIN nx_commission_operation p ON p.source_commission_id=d.id AND p.operation_type='REISSUE' WHERE d.depth<32)
-      SELECT DISTINCT e.id,e.user_id,e.currency,CASE WHEN e.currency='NEX' THEN e.amount_nex ELSE e.amount_usdt END amount,
+      SELECT DISTINCT e.id,e.user_id,e.currency,CASE WHEN e.currency='UVT' THEN e.amount_nex ELSE e.amount_usdt END amount,
        EXISTS(SELECT 1 FROM nx_wallet_ledger l WHERE l.biz_no=CONCAT('F5-COMMISSION-',e.id,'-RELEASE') AND l.direction='IN' AND l.status='SUCCESS') credited,
        EXISTS(SELECT 1 FROM nx_wallet_ledger l WHERE l.biz_no=CONCAT('F5-COMMISSION-',e.id,'-REVERSE') AND l.direction='OUT' AND l.status='SUCCESS') reversed
       FROM descendants d JOIN nx_commission_event e ON e.id=d.id AND e.is_deleted=0 WHERE d.depth>0 ORDER BY e.user_id,e.id
@@ -193,7 +193,7 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
     int groupStatus(@Param("no") String no,@Param("status") String status,@Param("reason") String reason);
     @Update("UPDATE nx_direct_referral_settlement SET credited_at=NOW(),status='UNLOCKED',updated_at=NOW() WHERE settlement_no=#{no} AND credited_at IS NULL")
     int credited(String no);
-    @Update("UPDATE nx_direct_referral_settlement SET credited_usdt_at=CASE WHEN #{asset}='USDT' THEN NOW() ELSE credited_usdt_at END,credited_nex_at=CASE WHEN #{asset}='NEX' THEN NOW() ELSE credited_nex_at END,updated_at=NOW() WHERE settlement_no=#{no}")
+    @Update("UPDATE nx_direct_referral_settlement SET credited_usdt_at=CASE WHEN #{asset}='USDT' THEN NOW() ELSE credited_usdt_at END,credited_nex_at=CASE WHEN #{asset}='UVT' THEN NOW() ELSE credited_nex_at END,updated_at=NOW() WHERE settlement_no=#{no}")
     int creditedAsset(@Param("no") String no,@Param("asset") String asset);
     @Update("""
       UPDATE nx_direct_referral_settlement SET cancelled_usdt=#{targetUsdt},cancelled_nex=#{targetNex},reversal_recorded=#{complete},refund_ratio=#{ratio},

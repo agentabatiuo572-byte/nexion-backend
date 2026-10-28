@@ -374,7 +374,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
                     "REVIEW_REJECTED".equals(order.status()));
         }
         BigDecimal usdtBefore = actualUserBalance(userId, "USDT").orElse(BigDecimal.ZERO);
-        BigDecimal nexBefore = actualUserBalance(userId, "NEX").orElse(BigDecimal.ZERO);
+        BigDecimal nexBefore = actualUserBalance(userId, "UVT").orElse(BigDecimal.ZERO);
         if (mapper.releasePendingWithdrawalWithNex(userId, safeAmount, safeNexBurned) != 1) {
             throw new IllegalStateException("WITHDRAWAL_PENDING_FUNDS_INCONSISTENT");
         }
@@ -393,7 +393,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
                     compactKey("D2-NEX-REFUND-", safeBiz(withdrawalNo), 96),
                     userId,
                     "WITHDRAW_FEE_OFFSET_REFUND",
-                    "NEX",
+                    "UVT",
                     "IN",
                     safeNexBurned,
                     nexBefore.add(safeNexBurned),
@@ -521,7 +521,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
         String normalizedAsset = requiredUpperOrOriginal(asset, "D4_LEDGER_ASSET_REQUIRED", true);
         String normalizedDirection = requiredUpperOrOriginal(direction, "D4_LEDGER_DIRECTION_REQUIRED", true);
         String normalizedStatus = requiredUpperOrOriginal(status, "D4_LEDGER_STATUS_REQUIRED", true);
-        if (!java.util.Set.of("USDT", "NEX").contains(normalizedAsset)) {
+        if (!java.util.Set.of("USDT", "UVT").contains(normalizedAsset)) {
             throw new IllegalArgumentException("D4_LEDGER_ASSET_INVALID");
         }
         if (!java.util.Set.of("IN", "OUT").contains(normalizedDirection)) {
@@ -597,7 +597,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
         }
         TreasuryLedgerMapper.CommissionFundsRow event = mapper.lockCommissionFundsEvent(eventId);
         if (event == null || event.userId() == null || event.userId() <= 0
-                || event.asset() == null || !java.util.Set.of("USDT", "NEX").contains(event.asset())
+                || event.asset() == null || !java.util.Set.of("USDT", "UVT").contains(event.asset())
                 || event.amount() == null || event.amount().signum() <= 0) {
             throw new IllegalStateException("COMMISSION_FUNDS_EVENT_INVALID");
         }

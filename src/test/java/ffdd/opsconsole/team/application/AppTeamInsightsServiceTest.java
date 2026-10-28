@@ -401,7 +401,7 @@ class AppTeamInsightsServiceTest {
                         new BigDecimal("99"), new BigDecimal("9.9"), new BigDecimal("50"), "USDT",
                         "COOLING", LocalDateTime.of(2026, 8, 13, 0, 0), LocalDateTime.of(2026, 9, 12, 0, 0)),
                 new AppTeamInsightsMapper.UnilevelRow(22L, 8L, "Bob", 1, "ORD-1", "2026-W33",
-                        new BigDecimal("99"), BigDecimal.ZERO, new BigDecimal("495"), "NEX",
+                        new BigDecimal("99"), BigDecimal.ZERO, new BigDecimal("495"), "UVT",
                         "COOLING", LocalDateTime.of(2026, 8, 13, 0, 0), LocalDateTime.of(2026, 9, 12, 0, 0))));
         when(mapper.unilevelSplit(eq(7L), eq(0), any(LocalDateTime.class), any(), any())).thenReturn(new AppTeamInsightsMapper.UnilevelSplitRow(
                 new BigDecimal("9.9"), new BigDecimal("495"), 2,

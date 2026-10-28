@@ -91,7 +91,7 @@ public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
       """)
     List<java.util.Map<String,Object>> supportCreditAnomalies(@Param("userId") Long userId);
 
-    @Select("SELECT 'USDT' currency,usdt_available availableBalance FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 UNION ALL SELECT 'NEX',nex_available FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0")
+    @Select("SELECT 'USDT' currency,usdt_available availableBalance FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 UNION ALL SELECT 'UVT',nex_available FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0")
     List<java.util.Map<String,Object>> supportBalances(@Param("userId") Long userId);
 
     @Select("<script>"+SupportFinanceSql.FLOWS+" SELECT * FROM flows "+SupportFinanceSql.FLOW_FILTER+" ORDER BY createdAt DESC,sourceId DESC LIMIT #{limit} OFFSET #{offset}</script>")

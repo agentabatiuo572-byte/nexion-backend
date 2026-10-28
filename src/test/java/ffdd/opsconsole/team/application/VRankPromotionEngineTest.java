@@ -368,12 +368,12 @@ class VRankPromotionEngineTest {
         assertThat(ledgerPostingFacade.entries).isEmpty();
     }
 
-    /** 培育类 NEX 奖励:派给 L1 上线 sponsor,commission_type=cultivation,source_user_id=被晋升人。 */
+    /** 培育类 UVT 奖励:派给 L1 上线 sponsor,commission_type=cultivation,source_user_id=被晋升人。 */
     @Test
     void dispatchCultivationNexRewardGoesToSponsor() {
-        // given:V6 NEX 1000 亿的培育奖(参考 seed 数据);5003 的 sponsor=5004
+        // given:V6 UVT 1000 亿的培育奖(参考 seed 数据);5003 的 sponsor=5004
         commissionRepository.rewardRules.add(new ffdd.opsconsole.team.domain.VRankRewardRuleRow(
-                "r-v6-nex", "V6", "nex", new BigDecimal("1000000000"), null, null, null, 1));
+                "r-v6-nex", "V6", "uvt", new BigDecimal("1000000000"), null, null, null, 1));
         commissionRepository.sponsorMap.put(5003L, 5004L);
 
         // when
@@ -386,7 +386,7 @@ class VRankPromotionEngineTest {
         assertThat(event).containsEntry("userId", 5004L);
         assertThat(event).containsEntry("commissionType", "cultivation");
         assertThat(event).containsEntry("sourceUserId", 5003L);
-        assertThat(event).containsEntry("currency", "NEX");
+        assertThat(event).containsEntry("currency", "UVT");
         assertThat(event.get("amountNex")).isEqualTo(new BigDecimal("1000000000"));
 
         // payout:user_id=被晋升人(5003),sponsor_user_id=5004
@@ -394,17 +394,17 @@ class VRankPromotionEngineTest {
         VRankRewardPayout payout = commissionRepository.payouts.get(0);
         assertThat(payout.userId()).isEqualTo(5003L);
         assertThat(payout.sponsorUserId()).isEqualTo(5004L);
-        assertThat(payout.rewardType()).isEqualTo("nex");
+        assertThat(payout.rewardType()).isEqualTo("uvt");
         assertThat(ledgerPostingFacade.releasedCommissionIds).containsExactly(payout.commissionEventId());
         assertThat(payout.billId()).isEqualTo("F5-COMMISSION-" + payout.commissionEventId() + "-RELEASE");
         assertThat(ledgerPostingFacade.entries).isEmpty();
     }
 
-    /** 培育类 NEX 无 sponsor → fallback 派本人(commission_type=vrank_reward,sponsorUserId=null)。 */
+    /** 培育类 UVT 无 sponsor → fallback 派本人(commission_type=vrank_reward,sponsorUserId=null)。 */
     @Test
     void dispatchNexRewardFallbackToSelfWhenNoSponsor() {
         commissionRepository.rewardRules.add(new ffdd.opsconsole.team.domain.VRankRewardRuleRow(
-                "r-v6-nex", "V6", "nex", new BigDecimal("500"), null, null, null, 1));
+                "r-v6-nex", "V6", "uvt", new BigDecimal("500"), null, null, null, 1));
         // sponsorMap 不设 5005 的 sponsor
 
         rewardDispatcher.dispatch(5005L, "V6", VRankEvaluationSnapshot.empty(),

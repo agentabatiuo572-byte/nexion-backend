@@ -34,6 +34,19 @@ import org.springframework.core.env.Environment;
 
 class AppExchangeServiceTest {
     @Test
+    void oldTokenDirectionsAreRejectedBeforeAnyWalletMutation() {
+        for (String direction : List.of("USDT_TO_NEX", "NEX_TO_USDT", "USDT2NEX", "NEX2USDT")) {
+            assertThatThrownBy(() -> service.swap(7L, "old-token-direction",
+                    new AppExchangeService.SwapRequest(direction, BigDecimal.TEN, false)))
+                    .hasMessage("EXCHANGE_DIRECTION_INVALID");
+        }
+        verify(mapper, never()).applyWalletDelta(any(), any(), any());
+        verify(mapper, never()).insertOrder(any());
+        verifyNoInteractions(idempotency);
+    }
+
+
+    @Test
     @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named = "NEXION_SNAPSHOT_RACE_IT", matches = "true")
     void outerTransactionSeesUsageCommittedWhileWaitingForExecutionMutex() throws Exception {
         // Only this UUID-named fixture is written; all business mappers remain mocked.
@@ -72,7 +85,7 @@ class AppExchangeServiceTest {
                 try (var statement = competing.createStatement()) {
                     statement.executeQuery("SELECT id FROM " + table + " WHERE id=1 FOR UPDATE").close();
                     var pending = worker.submit(() -> transactionalService.swap(7L, "isolated-cap-race",
-                            new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), false)));
+                            new AppExchangeService.SwapRequest("USDT_TO_UVT", new BigDecimal("20"), false)));
                     assertThat(beforeLock.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
                     statement.executeUpdate("INSERT INTO " + table + " VALUES (2,20)");
                     competing.commit();
@@ -99,7 +112,7 @@ class AppExchangeServiceTest {
                 feeAllocationService, new ObjectMapper(),
                 Clock.fixed(Instant.parse("2026-07-22T10:00:00Z"), ZoneOffset.UTC), environment,
                 java.util.Optional.empty(),mock(SupportExchangeFundAdapter.class));
-        var request = new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), false);
+        var request = new AppExchangeService.SwapRequest("USDT_TO_UVT", new BigDecimal("20"), false);
         var first = actual.swap(7L, "late-exchange-retry", request);
         durable.advanceBeyondLease();
         when(mapper.currentPrice()).thenReturn(new BigDecimal("2"));
@@ -115,7 +128,7 @@ class AppExchangeServiceTest {
         verify(feeAllocationService, org.mockito.Mockito.times(1)).allocate(anyString(), any(), any());
         verify(durable.records, never()).resetExpiredById(any(), anyString(), any());
         assertThatThrownBy(() -> actual.swap(7L, "late-exchange-retry",
-                new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("21"), false)))
+                new AppExchangeService.SwapRequest("USDT_TO_UVT", new BigDecimal("21"), false)))
                 .hasMessageContaining("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
         verify(mapper, org.mockito.Mockito.times(1)).applyWalletDelta(eq(7L), any(), any());
         verify(mapper, org.mockito.Mockito.times(1)).insertOrder(any());
@@ -124,10 +137,10 @@ class AppExchangeServiceTest {
 
     @Test
     void historyPaginationPinsTheAccountHighWaterMarkAcrossConcurrentInserts() {
-        var firstRow = new AppExchangeMapper.ExchangeRow("EX-HISTORY-0001", "USDT", "NEX",
+        var firstRow = new AppExchangeMapper.ExchangeRow("EX-HISTORY-0001", "USDT", "UVT",
                 new BigDecimal("10"), new BigDecimal("10"), BigDecimal.ONE, "COMPLETED",
                 java.time.LocalDateTime.parse("2026-07-22T10:00:00"));
-        var secondRow = new AppExchangeMapper.ExchangeRow("EX-HISTORY-0002", "USDT", "NEX",
+        var secondRow = new AppExchangeMapper.ExchangeRow("EX-HISTORY-0002", "USDT", "UVT",
                 new BigDecimal("9"), new BigDecimal("9"), BigDecimal.ONE, "COMPLETED",
                 java.time.LocalDateTime.parse("2026-07-22T10:00:00"));
         when(mapper.maxIssuedHistoryId(7L)).thenReturn(40L);
@@ -226,7 +239,7 @@ class AppExchangeServiceTest {
     @Test
     void completesSwapUsingBalanceCapAndRegionControlsOnly() {
         var result = service.swap(7L, "idem-g2-direct",
-                new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), false));
+                new AppExchangeService.SwapRequest("USDT_TO_UVT", new BigDecimal("20"), false));
 
         assertThat(result.getCode()).isZero();
         assertThat(((java.util.Map<?, ?>) result.getData().get("order")).get("status"))
@@ -246,7 +259,7 @@ class AppExchangeServiceTest {
         when(mapper.userTodayUsdt(7L)).thenReturn(new BigDecimal("990"));
 
         var result = service.swap(7L, "idem-g2-queue-reserve",
-                new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), true));
+                new AppExchangeService.SwapRequest("USDT_TO_UVT", new BigDecimal("20"), true));
 
         assertThat(((java.util.Map<?, ?>) result.getData().get("order")).get("status"))
                 .isEqualTo("QUEUED");
@@ -270,7 +283,7 @@ class AppExchangeServiceTest {
                 org.mockito.ArgumentMatchers.argThat(value -> value.compareTo(BigDecimal.ZERO) == 0))).thenReturn(0);
 
         assertThatThrownBy(() -> service.swap(7L, "idem-g2-queue-no-funds",
-                new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), true)))
+                new AppExchangeService.SwapRequest("USDT_TO_UVT", new BigDecimal("20"), true)))
                 .hasMessageContaining("EXCHANGE_WALLET_INSUFFICIENT_OR_CONFLICT");
         verify(mapper, never()).insertOrder(any());
     }
@@ -319,7 +332,7 @@ class AppExchangeServiceTest {
         when(config.activeValue("wallet.exchange.min_usdt")).thenReturn(Optional.of("3"));
 
         assertThatThrownBy(() -> service.swap(7L, "idem-g2-minimum",
-                new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("2.99"), false)))
+                new AppExchangeService.SwapRequest("USDT_TO_UVT", new BigDecimal("2.99"), false)))
                 .hasMessageContaining("EXCHANGE_AMOUNT_BELOW_MINIMUM");
     }
 
@@ -491,7 +504,7 @@ class AppExchangeServiceTest {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"test"});
 
         assertThatThrownBy(() -> service.swap(7L, "idem-sandbox-isolated",
-                new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), false)))
+                new AppExchangeService.SwapRequest("USDT_TO_UVT", new BigDecimal("20"), false)))
                 .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(503))
                 .hasMessageContaining("EXCHANGE_SANDBOX_ISOLATED_TABLE_UNAVAILABLE");
     }
@@ -501,7 +514,7 @@ class AppExchangeServiceTest {
         when(mapper.userSandbox(7L)).thenReturn(1);
 
         assertThatThrownBy(() -> service.swap(7L, "idem-g2-sandbox-user",
-                new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), false)))
+                new AppExchangeService.SwapRequest("USDT_TO_UVT", new BigDecimal("20"), false)))
                 .hasMessageContaining("EXCHANGE_PRODUCTION_USER_REQUIRED");
     }
 }

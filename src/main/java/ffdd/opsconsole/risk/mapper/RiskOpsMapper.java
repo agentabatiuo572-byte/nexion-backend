@@ -1227,7 +1227,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    CONCAT(COUNT(DISTINCT settlement.invited_user_id), ' 个关联账户'),
                    CONCAT(COUNT(DISTINCT settlement.id), ' 已发 / 0 已拦'),
                    CONCAT(ROUND(SUM(settlement.newcomer_usdt), 2), ' USDT + ',
-                          ROUND(SUM(settlement.newcomer_nex), 2), ' NEX'),
+                          ROUND(SUM(settlement.newcomer_nex), 2), ' UVT'),
                    CONCAT('K1 实体簇内新人礼已结算 ', COUNT(DISTINCT settlement.id), ' 笔'),
                    NULL,
                    CASE

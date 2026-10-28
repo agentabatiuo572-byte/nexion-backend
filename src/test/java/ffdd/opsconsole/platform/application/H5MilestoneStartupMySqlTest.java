@@ -43,7 +43,7 @@ class H5MilestoneStartupMySqlTest {
                         source.indexOf("INSERT INTO nx_streak_power_up")).trim();
                 jdbc.execute(seed);
                 assertThat(jdbc.queryForList("SELECT reward_type FROM nx_streak_milestone WHERE milestone_day IN (3,7)", String.class))
-                        .containsOnly("NEX");
+                        .containsOnly("UVT");
                 jdbc.update("UPDATE nx_streak_milestone SET reward_type='POINTS',reward_amount=5.125,reward_name='legacy',status=0 WHERE milestone_day=3");
                 jdbc.update("UPDATE nx_streak_milestone SET reward_type='USDT',reward_amount=2.75,reward_name='PC custom',status=0 WHERE milestone_day=7");
                 jdbc.update("UPDATE nx_streak_milestone SET is_deleted=1,status=0,reward_amount=42 WHERE milestone_day=14");
@@ -53,7 +53,7 @@ class H5MilestoneStartupMySqlTest {
                             "scripts/migrations/20260909_h5_legacy_milestone_reward.sql"));
                 }
                 assertThat(jdbc.queryForMap("SELECT reward_type,reward_name,status FROM nx_streak_milestone WHERE milestone_day=3"))
-                        .containsEntry("reward_type", "NEX").containsEntry("reward_name", "+5.125 NEX").containsEntry("status", 0);
+                        .containsEntry("reward_type", "UVT").containsEntry("reward_name", "+5.125 UVT").containsEntry("status", 0);
                 assertThat(jdbc.queryForMap("SELECT reward_type,reward_name,status FROM nx_streak_milestone WHERE milestone_day=7"))
                         .containsEntry("reward_type", "USDT").containsEntry("reward_name", "PC custom").containsEntry("status", 0);
                 assertThat(jdbc.queryForObject("SELECT reward_amount FROM nx_streak_milestone WHERE milestone_day=7", java.math.BigDecimal.class))

@@ -893,7 +893,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
 
     @Select("""
             SELECT id FROM nx_wallet_ledger
-             WHERE user_id=#{userId} AND biz_no=#{bizNo} AND asset='NEX' AND direction='IN'
+             WHERE user_id=#{userId} AND biz_no=#{bizNo} AND asset='UVT' AND direction='IN'
              LIMIT 1 FOR UPDATE
             """)
     Long lockDailyCloudShareNex(@Param("userId") Long userId, @Param("bizNo") String bizNo);
@@ -1029,8 +1029,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     @Insert("""
             INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,
               balance_after,status,remark,created_at,updated_at,is_deleted)
-            SELECT #{userId},#{bizNo},'COMPUTE_TASK_REWARD','NEX','IN',#{amount},
-                   #{balanceAfter},'SUCCESS','Cloud Share daily NEX from settled compute receipt',#{now},#{now},0
+            SELECT #{userId},#{bizNo},'COMPUTE_TASK_REWARD','UVT','IN',#{amount},
+                   #{balanceAfter},'SUCCESS','Cloud Share daily UVT from settled compute receipt',#{now},#{now},0
               FROM nx_compute_receipt r
              WHERE r.receipt_no=#{receiptNo} AND r.user_id=#{userId}
                AND r.user_device_id=#{deviceId} AND r.reward_nex=#{amount}
@@ -1045,7 +1045,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     @Insert("""
             INSERT INTO nx_earning_event(event_no,user_id,user_device_id,receipt_no,asset,amount,
               status,wallet_posted_at,created_at,updated_at,is_deleted)
-            SELECT #{eventNo},#{userId},#{deviceId},#{receiptNo},'NEX',#{amount},
+            SELECT #{eventNo},#{userId},#{deviceId},#{receiptNo},'UVT',#{amount},
                    'POSTED',#{now},#{now},#{now},0
               FROM nx_compute_receipt r
              WHERE r.receipt_no=#{receiptNo} AND r.user_id=#{userId}

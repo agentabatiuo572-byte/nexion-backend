@@ -75,7 +75,7 @@ public class DirectReferralService {
         if(takeUsdt.signum()>0||takeNex.signum()>0){
             if(mapper.debit(id,sandbox,takeUsdt,takeNex)!=1)throw conflict();
             if(takeUsdt.signum()>0)ledger.postLedgerEntry(no+"-RECOVER-USDT-"+recoveredUsdt.add(takeUsdt).toPlainString(),id,"TEAM_COMMISSION","USDT","OUT",takeUsdt,"SUCCESS","Direct referral recovery | "+no);
-            if(takeNex.signum()>0)ledger.postLedgerEntry(no+"-RECOVER-NEX-"+recoveredNex.add(takeNex).toPlainString(),id,"TEAM_COMMISSION","NEX","OUT",takeNex,"SUCCESS","Direct referral recovery | "+no);
+            if(takeNex.signum()>0)ledger.postLedgerEntry(no+"-RECOVER-NEX-"+recoveredNex.add(takeNex).toPlainString(),id,"TEAM_COMMISSION","UVT","OUT",takeNex,"SUCCESS","Direct referral recovery | "+no);
         }
         recoveredUsdt=recoveredUsdt.add(takeUsdt);recoveredNex=recoveredNex.add(takeNex);
         BigDecimal pendingUsdt=dueUsdt.subtract(takeUsdt),pendingNex=dueNex.subtract(takeNex);
@@ -113,10 +113,10 @@ public class DirectReferralService {
         String type=sandbox==1?"MOCK_DIRECT_REFERRAL":"DIRECT_REFERRAL";boolean changed=false,newUsdt=false;
         for(var event:events){
             if(selectedEvent!=null&&!selectedEvent.equals(number(event,"id")))continue;
-            String asset=text(event,"currency"),suffix=asset.toLowerCase(Locale.ROOT);BigDecimal amount=money(row,"amount_"+suffix);
+            String asset=text(event,"currency"),suffix=("USDT".equals(asset)?"usdt":"nex");BigDecimal amount=money(row,"amount_"+suffix);
             if(amount.signum()<=0||money(row,"cancelled_"+suffix).compareTo(amount)>=0||assetCredited(row,suffix))continue;
             if(!Set.of("COOLING","PENDING","UNLOCKED").contains(text(event,"status")))throw new BizException(409,"DIRECT_REFERRAL_GROUP_STATE_CONFLICT");
-            earnings.creditReward(id,type,no+":"+asset,asset,amount,text(row,"source_environment"),no+":"+asset);
+            earnings.creditReward(id,type,no+":"+("USDT".equals(asset)?"USDT":"NEX"),asset,amount,text(row,"source_environment"),no+":"+("USDT".equals(asset)?"USDT":"NEX"));
             ledger.postLedgerEntry(no+"-RELEASE",id,"TEAM_COMMISSION",asset,"IN",amount,"SUCCESS","Direct referral wallet release | "+no);
             mapper.creditedAsset(no,asset);mapper.recoveredEventStatus(number(event,"id"),"UNLOCKED");changed=true;if("USDT".equals(asset))newUsdt=true;
         }
@@ -262,7 +262,7 @@ public class DirectReferralService {
             var capture=scope.sandbox()==0&&supportFund!=null?supportFund.begin("R:"+id):null;
             BigDecimal take=due.min(zero(balance).max(BigDecimal.ZERO));
             if(take.signum()>0){
-                if(mapper.debit(user,scope.sandbox(),"USDT".equals(asset)?take:BigDecimal.ZERO,"NEX".equals(asset)?take:BigDecimal.ZERO)!=1)throw conflict();
+                if(mapper.debit(user,scope.sandbox(),"USDT".equals(asset)?take:BigDecimal.ZERO,"UVT".equals(asset)?take:BigDecimal.ZERO)!=1)throw conflict();
                 recovered=recovered.add(take);ledger.postLedgerEntry("DR-REISSUE-"+id+"-RECOVER-"+recovered.toPlainString(),user,"TEAM_COMMISSION",asset,"OUT",take,"SUCCESS","Seven layer reissue recovery | "+order);
             }
             BigDecimal pending=target.subtract(recovered).max(BigDecimal.ZERO);
@@ -297,9 +297,9 @@ public class DirectReferralService {
             if(snapshot.has("orderBasisUsdt"))orderBasis=snapshot.path("orderBasisUsdt").decimalValue();
             else {var scope=policies.scope();var order=mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),text(row,"source_ref"));var plan=json.readTree(text(order,"chain_and_rules"));if(!plan.has("orderBasisUsdt"))throw new BizException(503,"UNILEVEL_SNAPSHOT_BASIS_MISSING");orderBasis=plan.path("orderBasisUsdt").decimalValue();}
         }}catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new IllegalStateException("UNILEVEL_SNAPSHOT_INVALID",e);}
-        for(String asset:List.of("USDT","NEX")){
-            BigDecimal amount=money(row,"amount_"+asset.toLowerCase(Locale.ROOT));if(amount.signum()<=0)continue;
-            if(mapper.insertLayerCommission(number(row,"beneficiary_user_id"),text(row,"source_type"),number(row,"source_user_id"),text(row,"source_user_name"),layer,text(row,"source_ref"),orderBasis,"USDT".equals(asset)?amount:BigDecimal.ZERO,"NEX".equals(asset)?amount:BigDecimal.ZERO,asset,text(row,"status"),time(row,"release_at"),no)!=1)throw conflict();
+        for(String asset:List.of("USDT","UVT")){
+            BigDecimal amount=money(row,"amount_"+("USDT".equals(asset)?"usdt":"nex"));if(amount.signum()<=0)continue;
+            if(mapper.insertLayerCommission(number(row,"beneficiary_user_id"),text(row,"source_type"),number(row,"source_user_id"),text(row,"source_user_name"),layer,text(row,"source_ref"),orderBasis,"USDT".equals(asset)?amount:BigDecimal.ZERO,"UVT".equals(asset)?amount:BigDecimal.ZERO,asset,text(row,"status"),time(row,"release_at"),no)!=1)throw conflict();
             if("USDT".equals(asset))usdtId=mapper.lastId();else nexId=mapper.lastId();
         }
         if(mapper.linkEvents(no,usdtId,nexId)!=1)throw conflict();

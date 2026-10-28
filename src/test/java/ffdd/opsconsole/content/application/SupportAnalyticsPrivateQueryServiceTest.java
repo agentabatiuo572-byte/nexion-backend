@@ -233,13 +233,13 @@ class SupportAnalyticsPrivateQueryServiceTest {
         totals.put(5L,netTotals(null,null,Status.AVAILABLE));totals.put(6L,List.of());
         assertThat(netOrder(totals,"USDT",Direction.DESC)).containsExactly(2L,10L,4L,3L,1L,5L,6L);
         assertThat(netOrder(totals,"USDT",Direction.ASC)).containsExactly(3L,4L,2L,10L,1L,5L,6L);
-        assertThat(netOrder(totals,"NEX",Direction.DESC)).containsExactly(2L,3L,4L,10L,1L,5L,6L);
-        assertThat(netOrder(totals,"NEX",Direction.ASC)).containsExactly(10L,4L,2L,3L,1L,5L,6L);
+        assertThat(netOrder(totals,"UVT",Direction.DESC)).containsExactly(2L,3L,4L,10L,1L,5L,6L);
+        assertThat(netOrder(totals,"UVT",Direction.ASC)).containsExactly(10L,4L,2L,3L,1L,5L,6L);
         for(Status status:List.of(Status.PARTIAL,Status.UNKNOWN,Status.FAILED,Status.UNAVAILABLE))
             assertThat(SupportAnalyticsPrivateQueryService.net(netTotals("0","0",status),"USDT")).isNull();
     }
     private static List<CustomerCurrencyTotals> netTotals(String usdt,String nex,Status status){
-        return List.of(netTotal("USDT",usdt,status),netTotal("NEX",nex,status));
+        return List.of(netTotal("USDT",usdt,status),netTotal("UVT",nex,status));
     }
     private static CustomerCurrencyTotals netTotal(String currency,String value,Status status){
         var amount=value==null?null:new BigDecimal(value);

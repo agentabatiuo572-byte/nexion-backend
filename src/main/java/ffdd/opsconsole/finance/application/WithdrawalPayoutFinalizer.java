@@ -263,8 +263,8 @@ public class WithdrawalPayoutFinalizer {
                     "Provider payout failed; reserved withdrawal returned");
             if (nexBurned.signum() > 0) {
                 ledger.postLedgerEntry(row.withdrawalNo() + ":PAYOUT:NEX:REFUND", row.userId(),
-                        "WITHDRAW_PAYOUT_NEX_REFUND", "NEX", "IN", nexBurned, "POSTED",
-                        "Provider payout failed; NEX fee offset returned");
+                        "WITHDRAW_PAYOUT_NEX_REFUND", "UVT", "IN", nexBurned, "POSTED",
+                        "Provider payout failed; UVT fee offset returned");
             }
             if(fundBefore!=null)withdrawalFunds.returned(fundBefore,row.withdrawalNo());
         }

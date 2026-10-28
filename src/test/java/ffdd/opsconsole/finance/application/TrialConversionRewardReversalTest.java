@@ -89,7 +89,7 @@ class TrialConversionRewardReversalTest {
                 eq("TRIAL-REFUND-RECOVER:TRC-1:USDT"));
         verify(ledger).postLedgerEntry("TRIAL-1:REMAINDER:REVERSAL", 7L, "TRIAL_BONUS_REVERSAL", "USDT", "OUT",
                 new BigDecimal("65.560000"), "SUCCESS", "Trial reward reversed with refund E4-REFUND-TRC-1");
-        verify(ledger).postLedgerEntry("TRIAL-1:NEX:REVERSAL", 7L, "TRIAL_BONUS_REVERSAL", "NEX", "OUT",
+        verify(ledger).postLedgerEntry("TRIAL-1:NEX:REVERSAL", 7L, "TRIAL_BONUS_REVERSAL", "UVT", "OUT",
                 new BigDecimal("30.000000"), "SUCCESS", "Trial reward reversed with refund E4-REFUND-TRC-1");
         // Two recoveries plus the outcome audit, each in a new transaction after the refund commit.
         verify(transactions, times(3)).commit(any());
@@ -104,7 +104,7 @@ class TrialConversionRewardReversalTest {
         when(earnings.recoverReward(any(), eq("TRIAL-REFUND-RECOVER:TRC-1:USDT")))
                 .thenReturn(receipt("USDT", new BigDecimal("65.560000"), new BigDecimal("20.000000")));
         when(earnings.recoverReward(any(), eq("TRIAL-REFUND-RECOVER:TRC-1:NEX")))
-                .thenReturn(receipt("NEX", new BigDecimal("30.000000"), BigDecimal.ZERO.setScale(6)));
+                .thenReturn(receipt("UVT", new BigDecimal("30.000000"), BigDecimal.ZERO.setScale(6)));
 
         reverseAndCommit();
 
@@ -128,19 +128,19 @@ class TrialConversionRewardReversalTest {
         when(earnings.recoverReward(any(), eq("TRIAL-REFUND-RECOVER:TRC-1:USDT")))
                 .thenThrow(new BizException(409, "EARNINGS_RECOVERY_ACCOUNT_MISSING"));
         when(earnings.recoverReward(any(), eq("TRIAL-REFUND-RECOVER:TRC-1:NEX")))
-                .thenReturn(receipt("NEX", new BigDecimal("30.000000"), new BigDecimal("30.000000")));
+                .thenReturn(receipt("UVT", new BigDecimal("30.000000"), new BigDecimal("30.000000")));
 
         reverseAndCommit();
 
         verify(transactions).rollback(any());
-        verify(ledger).postLedgerEntry(eq("TRIAL-1:NEX:REVERSAL"), eq(7L), anyString(), eq("NEX"), eq("OUT"),
+        verify(ledger).postLedgerEntry(eq("TRIAL-1:NEX:REVERSAL"), eq(7L), anyString(), eq("UVT"), eq("OUT"),
                 eq(new BigDecimal("30.000000")), anyString(), anyString());
         AuditLogWriteRequest outcome = audited().get(1);
         assertThat(outcome.getAction()).isEqualTo("H2_TRIAL_REFUND_REWARD_MANUAL_REVIEW");
         List<Map<String, Object>> rewards = (List<Map<String, Object>>) ((Map<String, Object>) outcome.getDetail())
                 .get("rewards");
         assertThat(rewards.get(0)).containsEntry("asset", "USDT").containsEntry("error", "EARNINGS_RECOVERY_ACCOUNT_MISSING");
-        assertThat(rewards.get(1)).containsEntry("asset", "NEX").containsEntry("outstanding", new BigDecimal("0.000000"));
+        assertThat(rewards.get(1)).containsEntry("asset", "UVT").containsEntry("outstanding", new BigDecimal("0.000000"));
     }
 
     private void reverseAndCommit() {
@@ -159,7 +159,7 @@ class TrialConversionRewardReversalTest {
                         "USDT", new BigDecimal("65.560000"), "ACTIVE", "k1", "PRODUCTION", 0));
         when(earningsMapper.findBySource("H2_TRIAL_BONUS", "TRIAL-1:NEX", 7L)).thenReturn(
                 new EarningsReleaseMapper.ExistingEntry("ER-NEX", 7L, "H2_TRIAL_BONUS", "TRIAL-1:NEX",
-                        "NEX", new BigDecimal("30.000000"), "ACTIVE", "k2", "PRODUCTION", 0));
+                        "UVT", new BigDecimal("30.000000"), "ACTIVE", "k2", "PRODUCTION", 0));
     }
 
     private static RewardRecoveryReceipt receipt(String asset, BigDecimal requested, BigDecimal recovered) {

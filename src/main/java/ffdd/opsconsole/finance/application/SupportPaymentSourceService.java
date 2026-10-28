@@ -776,7 +776,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
         validateReward(token,entry);
         if(token.rewards.stream().anyMatch(r->r.entryNo().equals(entryNo) || r.asset().equals(entry.asset())))
             throw failure("PAYMENT_FUND_TRIAL_REWARD_DUPLICATE");
-        if(!token.rewards.isEmpty() && !"NEX".equals(entry.asset()))throw failure("PAYMENT_FUND_TRIAL_REWARD_ORDER");
+        if(!token.rewards.isEmpty() && !"UVT".equals(entry.asset()))throw failure("PAYMENT_FUND_TRIAL_REWARD_ORDER");
         token.rewards.add(entry);
     }
 
@@ -1012,7 +1012,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
             throw failure("PAYMENT_FUND_TRIAL_REWARD_SOURCE_MISMATCH");
         String suffix,type;
         if("USDT".equals(entry.asset())) {suffix=":REMAINDER";type="H2_TRIAL_REMAINDER";}
-        else if("NEX".equals(entry.asset())) {suffix=":NEX";type="H2_TRIAL_BONUS";}
+        else if("UVT".equals(entry.asset())) {suffix=":NEX";type="H2_TRIAL_BONUS";}
         else throw failure("PAYMENT_FUND_TRIAL_REWARD_SOURCE_MISMATCH");
         if(!type.equals(entry.sourceType()) || !(claim(c)+suffix).equals(entry.sourceRef()))
             throw failure("PAYMENT_FUND_TRIAL_REWARD_SOURCE_MISMATCH");
@@ -1072,7 +1072,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
                 Action action="withdrawable".equals(actual.bucket())?Action.EARNINGS:Action.PROTECTED_EARNINGS;
                 events.add(new Event(rewardId,action,null,new Account(c.customer(),actual.asset(),"available"),null,actual.amount(),null));
                 steps.add(new CashStep("nx_earnings_release_entry:"+actual.entryNo(),rewardId,
-                    "USDT".equals(actual.asset())?actual.amount():BigDecimal.ZERO,"NEX".equals(actual.asset())?actual.amount():BigDecimal.ZERO));
+                    "USDT".equals(actual.asset())?actual.amount():BigDecimal.ZERO,"UVT".equals(actual.asset())?actual.amount():BigDecimal.ZERO));
                 rewardSources.add(rewardSnapshot(actual));rewardLedgers.add(immutable(ledger));
             }
         } else if(!token.rewards.isEmpty())throw failure("PAYMENT_FUND_UNEXPECTED_REWARDS");
@@ -1185,7 +1185,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
             || decimal(source,"amountUsdt")==null || decimal(source,"amountUsdt").compareTo(fact.amount())!=0
             || !Objects.equals(time(source,"paidAt"),fact.succeededAt()) || time(source,"settledAt")==null)
             throw failure("PAYMENT_FUND_TRIAL_SOURCE_MISMATCH");
-        for(String asset:List.of("USDT","NEX")) {
+        for(String asset:List.of("USDT","UVT")) {
             BigDecimal amount=decimal(source,asset.equals("USDT")?"remainderUsdt":"shadowNex");
             var actual=token.rewards.stream().filter(r->asset.equals(r.asset())).toList();
             if(amount==null || amount.signum()<0 || (amount.signum()==0?!actual.isEmpty():actual.size()!=1 || actual.get(0).amount().compareTo(amount)!=0))

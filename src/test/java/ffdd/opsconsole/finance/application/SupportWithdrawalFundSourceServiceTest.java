@@ -15,7 +15,7 @@ import ffdd.opsconsole.finance.mapper.WithdrawalPayoutMapper;
 import org.mockito.ArgumentCaptor;
 
 class SupportWithdrawalFundSourceServiceTest {
-    private static final BigDecimal GROSS=new BigDecimal("100"), NEX=new BigDecimal("5");
+    private static final BigDecimal GROSS=new BigDecimal("100"), UVT=new BigDecimal("5");
     @Test void providerConfirmationUsesOneWholeSecondBeforeMysqlRoundingAndFundVerification() {
         var fixture=new Fixture("CONFIRM",BigDecimal.ZERO);
         var clock=java.time.Clock.fixed(java.time.Instant.parse("2026-10-13T12:47:34.900Z"),java.time.ZoneOffset.UTC);
@@ -48,14 +48,14 @@ class SupportWithdrawalFundSourceServiceTest {
     }
     @Test void jdbcBooleanFlagsBindEveryProductionWithdrawalPhase() {
         for(String phase:List.of("RESERVE","CONFIRM","RETURN")) {
-            var fixture=new Fixture(phase,NEX);
+            var fixture=new Fixture(phase,UVT);
             for(String key:List.of("sandbox","isDeleted")) {
                 fixture.before.put(key,false);fixture.after.put(key,false);
                 String cap=Character.toUpperCase(key.charAt(0))+key.substring(1);
                 fixture.raw.put("old"+cap,false);fixture.raw.put("new"+cap,false);
             }
             fixture.order.put("userSandbox",false);fixture.order.put("userDeleted",false);
-            var rows=ledgers();rows.add(ledger("WD1:NEX:OFFSET","WITHDRAW_FEE_OFFSET","NEX",NEX));
+            var rows=ledgers();rows.add(ledger("WD1:NEX:OFFSET","WITHDRAW_FEE_OFFSET","UVT",UVT));
             rows.forEach(row->row.put("isDeleted",false));when(fixture.mapper.fundReservationLedgers("WD1")).thenReturn(rows);
             var before=fixture.service.begin(7);
             if("CONFIRM".equals(phase))fixture.service.confirmed(before,"WD1",Fixture.AT);
@@ -79,23 +79,23 @@ class SupportWithdrawalFundSourceServiceTest {
     }
     @Test void allOutcomeEventsUseTheActualAllocationContract() {
         for(String phase:List.of("RESERVE","CONFIRM","RETURN"))
-            SupportWithdrawalFundSourceService.events(7,"WD1",phase,GROSS,NEX).forEach(SupportFundAllocation::validate);
+            SupportWithdrawalFundSourceService.events(7,"WD1",phase,GROSS,UVT).forEach(SupportFundAllocation::validate);
     }
     @Test void grossIncludesTheFeeAndNexRemainsIndependent() {
-        var events=SupportWithdrawalFundSourceService.events(7,"WD1","RESERVE",GROSS,NEX);
+        var events=SupportWithdrawalFundSourceService.events(7,"WD1","RESERVE",GROSS,UVT);
         assertThat(events).hasSize(2);assertThat(events.get(0).amount()).isEqualByComparingTo("100");
         assertThat(events.get(1).action()).isEqualTo(Action.FEE);
-        assertThat(events.get(1).from().currency()).isEqualTo("NEX");
+        assertThat(events.get(1).from().currency()).isEqualTo("UVT");
         assertThat(events.get(1).amount()).isEqualByComparingTo("5");
     }
     @Test void returnRestoresSourcesWithoutCreatingANewContribution() {
-        var allocation=new SupportFundAllocation();var usdt=new Account(7,"USDT","available");var nex=new Account(7,"NEX","available");
+        var allocation=new SupportFundAllocation();var usdt=new Account(7,"USDT","available");var nex=new Account(7,"UVT","available");
         allocation.apply(new Event("d1",Action.DEPOSIT,null,usdt,null,GROSS,null));
-        allocation.apply(new Event("d2",Action.DEPOSIT,null,nex,null,NEX,null));
-        allocation.applyBatch(SupportWithdrawalFundSourceService.events(7,"WD1","RESERVE",GROSS,NEX));
-        allocation.applyBatch(SupportWithdrawalFundSourceService.events(7,"WD1","RETURN",GROSS,NEX));
+        allocation.apply(new Event("d2",Action.DEPOSIT,null,nex,null,UVT,null));
+        allocation.applyBatch(SupportWithdrawalFundSourceService.events(7,"WD1","RESERVE",GROSS,UVT));
+        allocation.applyBatch(SupportWithdrawalFundSourceService.events(7,"WD1","RETURN",GROSS,UVT));
         assertThat(allocation.balance(usdt)).isEqualByComparingTo(GROSS);
-        assertThat(allocation.balance(nex)).isEqualByComparingTo(NEX);
+        assertThat(allocation.balance(nex)).isEqualByComparingTo(UVT);
         assertThat(allocation.total("USDT")).isEqualByComparingTo(GROSS);
     }
     @Test void committedAttemptAndExactLedgerComponentsProveThisOrder() {
@@ -118,8 +118,8 @@ class SupportWithdrawalFundSourceServiceTest {
         assertThat(SupportWithdrawalFundSourceService.reservation(order(),wrong)).isFalse();
     }
     @Test void nexOffsetIsNotAddedToUsdtGross() {
-        var order=order();order.put("nexBurned",NEX);var rows=ledgers();
-        rows.add(ledger("WD1:NEX:OFFSET","WITHDRAW_FEE_OFFSET","NEX",NEX));
+        var order=order();order.put("nexBurned",UVT);var rows=ledgers();
+        rows.add(ledger("WD1:NEX:OFFSET","WITHDRAW_FEE_OFFSET","UVT",UVT));
         assertThat(SupportWithdrawalFundSourceService.reservation(order,rows)).isTrue();
     }
     @Test void missingReserveStaysUnknownOnReplay() {
@@ -149,7 +149,7 @@ class SupportWithdrawalFundSourceServiceTest {
     }
     @Test void reserveAndReturnBindAllIndependentCurrencyEventsToTheirOneActualRevision() throws Exception {
         for(String phase:List.of("RESERVE","RETURN")) {
-            var fixture=new Fixture(phase,NEX);fixture.returnedOrReserved(phase);
+            var fixture=new Fixture(phase,UVT);fixture.returnedOrReserved(phase);
             var receipt=fixture.receipt();var events=fixture.json.readTree(receipt.orderedEventsJson());
             assertThat(events).hasSize(2);
             var proof=fixture.json.readTree(receipt.sourceProofJson());
@@ -214,7 +214,7 @@ class SupportWithdrawalFundSourceServiceTest {
             order.put("completedAt",AT);order.put("nexBurned",nex);order.put("userSandbox",0);order.put("userDeleted",0);
             when(journal.lockWallet(7)).thenReturn(List.of(before),List.of(after));
             when(journal.journal("inc1",1,2)).thenReturn(List.of(raw));when(mapper.fundOrder("WD1")).thenReturn(order);
-            var rows=ledgers();if(nex.signum()>0)rows.add(ledger("WD1:NEX:OFFSET","WITHDRAW_FEE_OFFSET","NEX",nex));
+            var rows=ledgers();if(nex.signum()>0)rows.add(ledger("WD1:NEX:OFFSET","WITHDRAW_FEE_OFFSET","UVT",nex));
             when(mapper.fundReservationLedgers("WD1")).thenReturn(rows);
             when(fund.bind(any(),any())).thenAnswer(i->{var input=i.getArgument(1,SupportFundJournalFacade.ReceiptInput.class);
                 return new SupportFundJournalFacade.BoundReceipt(1,input.operationKey(),"a".repeat(64),1);});

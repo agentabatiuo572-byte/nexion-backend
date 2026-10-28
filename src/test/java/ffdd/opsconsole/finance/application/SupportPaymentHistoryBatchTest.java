@@ -222,7 +222,7 @@ class SupportPaymentHistoryBatchTest {
                 case DEPOSIT_ORDER->{result.add(Arguments.of(source,"projectId",101L));result.add(Arguments.of(source,"cid",2L));result.add(Arguments.of(source,"ledgerId",2L));}
                 case CARD_TOPUP->{result.add(Arguments.of(source,"provider","OTHER"));result.add(Arguments.of(source,"providerPaymentId","OTHER"));result.add(Arguments.of(source,"orderNo","OTHER"));result.add(Arguments.of(source,"deleted",1));}
                 case VIETQR,HDPAY->{result.add(Arguments.of(source,"rail","OTHER"));result.add(Arguments.of(source,"target","OTHER"));result.add(Arguments.of(source,"deleted",1));}
-                case WALLET_ORDER->{result.add(Arguments.of(source,"provider","OTHER"));result.add(Arguments.of(source,"currency","NEX"));result.add(Arguments.of(source,"ledgerId",2L));result.add(Arguments.of(source,"successAt",AT.plusSeconds(1)));result.add(Arguments.of(source,"businessId","OTHER"));}
+                case WALLET_ORDER->{result.add(Arguments.of(source,"provider","OTHER"));result.add(Arguments.of(source,"currency","UVT"));result.add(Arguments.of(source,"ledgerId",2L));result.add(Arguments.of(source,"successAt",AT.plusSeconds(1)));result.add(Arguments.of(source,"businessId","OTHER"));}
                 case TRIAL_CONVERT->{result.add(Arguments.of(source,"id",2L));result.add(Arguments.of(source,"orderNo","OTHER"));}
                 default->throw new AssertionError(source);
             }

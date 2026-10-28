@@ -94,8 +94,8 @@ public class SupportFundDirectReferralEvidence {
         for(var event:events) {
             var ledger=one(added,"asset",event.from().currency());
             require("OUT".equals(ledger.get("direction"))&&"SUCCESS".equals(ledger.get("status"))&&"TEAM_COMMISSION".equals(ledger.get("bizType"))&&flag(ledger.get("deleted"))==0&&number(ledger.get("customerId"))==event.from().customerId()&&amount(ledger.get("amount")).compareTo(event.amount())==0);
-            String suffix=event.from().currency().toLowerCase(Locale.ROOT);BigDecimal cumulative=settlement?amount(after.subject().get("recovered_"+suffix)):amount(after.recovery().get("recovered_amount"));
-            String biz=settlement?after.key().substring(2)+"-RECOVER-"+event.from().currency()+"-"+cumulative.stripTrailingZeros().toPlainString():"DR-REISSUE-"+after.key().substring(2)+"-RECOVER-"+cumulative.stripTrailingZeros().toPlainString();
+            String suffix=("USDT".equals(event.from().currency())?"usdt":"nex");BigDecimal cumulative=settlement?amount(after.subject().get("recovered_"+suffix)):amount(after.recovery().get("recovered_amount"));
+            String biz=settlement?after.key().substring(2)+"-RECOVER-"+("USDT".equals(event.from().currency())?"USDT":"NEX")+"-"+cumulative.stripTrailingZeros().toPlainString():"DR-REISSUE-"+after.key().substring(2)+"-RECOVER-"+cumulative.stripTrailingZeros().toPlainString();
             String actual=text(ledger.get("bizNo"));require(actual.startsWith(biz.substring(0,biz.lastIndexOf('-')+1))&&new BigDecimal(actual.substring(actual.lastIndexOf('-')+1)).compareTo(cumulative)==0);
             require(amount(ledger.get("balanceAfter")).compareTo(amount(proof.path("cashAfter").path(event.from().currency().equals("USDT")?"usdtAvailable":"nexAvailable")))==0&&coveredLedgers.add(number(ledger.get("id"))));
         }
@@ -112,13 +112,13 @@ public class SupportFundDirectReferralEvidence {
             require(before.recovery()==null&&after.recovery()==null&&before.entries().size()==after.entries().size()&&before.events().size()==after.events().size());
             for(var entry:before.entries()) {
                 var current=one(after.entries(),"entryNo",entry.get("entryNo"));sameExcept(entry,current,ENTRY_MUTABLE);originalCredit(entry,input);
-                String asset=text(entry.get("asset"));BigDecimal target=amount(after.subject().get("cancelled_"+asset.toLowerCase(Locale.ROOT)));
+                String asset=text(entry.get("asset"));BigDecimal target=amount(after.subject().get("cancelled_"+("USDT".equals(asset)?"usdt":"nex")));
                 require((!failure&&target.signum()>0?"REVERSED":entry.get("status")).equals(current.get("status")));
             }
             boolean complete=amount(after.subject().get("cancelled_usdt")).compareTo(amount(after.subject().get("amount_usdt")))>=0&&amount(after.subject().get("cancelled_nex")).compareTo(amount(after.subject().get("amount_nex")))>=0;
             require(flag(after.subject().get("reversal_recorded"))==(complete?1:0)&&amount(after.subject().get("refund_ratio")).compareTo(complete?BigDecimal.ONE:BigDecimal.ZERO)==0);
-            for(String asset:List.of("USDT","NEX")) {
-                String s=asset.toLowerCase(Locale.ROOT);BigDecimal target=amount(after.subject().get("cancelled_"+s)),prior=amount(before.subject().get("recovered_"+s)),current=amount(after.subject().get("recovered_"+s));
+            for(String asset:List.of("USDT","UVT")) {
+                String s=("USDT".equals(asset)?"usdt":"nex");BigDecimal target=amount(after.subject().get("cancelled_"+s)),prior=amount(before.subject().get("recovered_"+s)),current=amount(after.subject().get("recovered_"+s));
                 require(target.compareTo(amount(before.subject().get("cancelled_"+s)))>=0&&target.compareTo(amount(after.subject().get("amount_"+s)))<=0);
                 boolean credited=before.subject().get("credited_"+s+"_at")!=null||(before.subject().get("credited_at")!=null&&before.subject().get("credited_usdt_at")==null&&before.subject().get("credited_nex_at")==null);
                 if(credited&&amount(before.subject().get("amount_"+s)).signum()>0)require(before.entries().stream().filter(e->asset.equals(e.get("asset"))).count()==1);
@@ -169,15 +169,15 @@ public class SupportFundDirectReferralEvidence {
             require(source.key().substring(2).equals(source.subject().get("settlement_no"))&&"PRODUCTION".equals(source.subject().get("source_environment"))&&"".equals(source.subject().get("run_id")));
             if(Set.of("direct_purchase","network").contains(source.subject().get("source_type")))require(text(source.subject().get("source_ref")).equals(originalOrder(source,false)));
             for(String s:List.of("usdt","nex"))for(String prefix:List.of("amount_","cancelled_","recovered_","recovery_pending_"))require(amount(source.subject().get(prefix+s)).signum()>=0);
-            var eventIds=new HashSet<Long>();for(String asset:List.of("USDT","NEX")) {
-                String suffix=asset.toLowerCase(Locale.ROOT);Object id=source.subject().get(suffix+"_event_id");if(id==null)continue;
+            var eventIds=new HashSet<Long>();for(String asset:List.of("USDT","UVT")) {
+                String suffix=("USDT".equals(asset)?"usdt":"nex");Object id=source.subject().get(suffix+"_event_id");if(id==null)continue;
                 require(number(id)>0&&eventIds.add(number(id)));var event=one(source.events(),"id",id);
                 require(number(event.get("user_id"))==SupportDirectReferralReadFacade.customer(source)&&asset.equals(event.get("currency"))&&flag(event.get("is_deleted"))==0&&flag(event.get("support_user_sandbox"))==0&&flag(event.get("support_user_deleted"))==0);
                 require(amount(event.get("amount_"+suffix)).compareTo(amount(source.subject().get("amount_"+suffix)))==0&&amount(event.get("amount_"+(asset.equals("USDT")?"nex":"usdt"))).signum()==0);
             }
             require(eventIds.size()==source.events().size());
-            var assets=new HashSet<String>();for(var e:source.entries())require(assets.add(text(e.get("asset")))&&Set.of("USDT","NEX").contains(e.get("asset"))&&number(e.get("id"))>0&&number(e.get("sourceWalletId"))>0&&number(e.get("userId"))==SupportDirectReferralReadFacade.customer(source)&&text(e.get("sourceRef")).equals(source.key().substring(2)+":"+text(e.get("asset")))&&amount(e.get("amount")).compareTo(amount(source.subject().get("amount_"+text(e.get("asset")).toLowerCase(Locale.ROOT))))==0);
-        }else require(number(source.subject().get("id"))==Long.parseLong(source.key().substring(2))&&flag(source.subject().get("is_deleted"))==0&&Set.of("USDT","NEX").contains(source.subject().get("currency")));
+            var assets=new HashSet<String>();for(var e:source.entries())require(assets.add(text(e.get("asset")))&&Set.of("USDT","UVT").contains(e.get("asset"))&&number(e.get("id"))>0&&number(e.get("sourceWalletId"))>0&&number(e.get("userId"))==SupportDirectReferralReadFacade.customer(source)&&text(e.get("sourceRef")).equals(source.key().substring(2)+":"+("USDT".equals(e.get("asset"))?"USDT":"NEX"))&&amount(e.get("amount")).compareTo(amount(source.subject().get("amount_"+("USDT".equals(e.get("asset"))?"usdt":"nex"))))==0);
+        }else require(number(source.subject().get("id"))==Long.parseLong(source.key().substring(2))&&flag(source.subject().get("is_deleted"))==0&&Set.of("USDT","UVT").contains(source.subject().get("currency")));
         var seen=new HashSet<Long>();for(var l:source.ledgers())require(seen.add(number(l.get("id"))));
     }
     private String originalOrder(Source source,boolean requireRefund) {
@@ -233,7 +233,7 @@ public class SupportFundDirectReferralEvidence {
         }else {
             require(rows.size()==1&&legs.size()==1&&number(after.path("revision"))==revision+1&&number(legs.get(0).get("revision"))==revision+1&&incarnation.equals(legs.get(0).get("incarnation"))&&proof.path("cashTrace").size()==1);
             var row=rows.get(0);walletRaw(before,row,"old");walletRaw(after,row,"new");var trace=proof.path("cashTrace").get(0);keys(trace,Set.of("sourceId","eventIds","journal"));require((op.get("sourceTable")+":"+op.get("sourceKey")).equals(text(trace.path("sourceId")))&&equal(trace.path("journal"),row)&&equal(trace.path("eventIds"),events.stream().map(Event::id).toList()));
-            Cash b=cash(before),a=cash(after);BigDecimal u=events.stream().filter(e->e.from().currency().equals("USDT")).map(Event::amount).reduce(BigDecimal.ZERO,BigDecimal::add),n=events.stream().filter(e->e.from().currency().equals("NEX")).map(Event::amount).reduce(BigDecimal.ZERO,BigDecimal::add);
+            Cash b=cash(before),a=cash(after);BigDecimal u=events.stream().filter(e->e.from().currency().equals("USDT")).map(Event::amount).reduce(BigDecimal.ZERO,BigDecimal::add),n=events.stream().filter(e->e.from().currency().equals("UVT")).map(Event::amount).reduce(BigDecimal.ZERO,BigDecimal::add);
             require(a.usdt().compareTo(b.usdt().subtract(u))==0&&a.nex().compareTo(b.nex().subtract(n))==0&&a.pending().equals(b.pending())&&a.risk().equals(b.risk()));points.add(new Point(incarnation,revision+1,user,b,a,events.stream().map(Event::id).toList()));
         }
     }

@@ -61,8 +61,8 @@ class AppGrowthWheelServiceTest {
     void b1BelowRedlineDowngradesCertainUsdtResultToComfortNexTier() {
         when(mapper.countDailySpin(eq(8L), eq(42L), any(LocalDate.class))).thenReturn(0);
         WheelTier comfort = new WheelTier(
-                1L, "comfort-nex-5", "+5 NEX", BigDecimal.ZERO, false,
-                "nex", new BigDecimal("5"), null, 0);
+                1L, "comfort-nex-5", "+5 UVT", BigDecimal.ZERO, false,
+                "uvt", new BigDecimal("5"), null, 0);
         WheelTier usdt = new WheelTier(
                 2L, "usdt-500", "$500 USDT", new BigDecimal("100.0000"), true,
                 "usdt", new BigDecimal("500"), null, 5);
@@ -75,14 +75,14 @@ class AppGrowthWheelServiceTest {
                 eq("B1_COVERAGE_REDLINE"))).thenReturn(1);
         when(mapper.lockWalletNex(42L)).thenReturn(BigDecimal.TEN);
         when(mapper.creditWalletNex(42L, new BigDecimal("5"))).thenReturn(1);
-        when(mapper.insertWalletLedger(eq(42L), anyString(), eq("NEX"),
+        when(mapper.insertWalletLedger(eq(42L), anyString(), eq("UVT"),
                 eq(new BigDecimal("5")), eq(new BigDecimal("15")))).thenReturn(1);
 
         var result = service.spin(42L, "evt-spring-spin", "spin-key");
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("downgraded", true)
-                .containsEntry("rewardType", "NEX")
+                .containsEntry("rewardType", "UVT")
                 .containsEntry("downgradeReason", "B1_COVERAGE_REDLINE");
         verify(mapper, never()).creditWalletUsdt(any(), any());
         verify(outbox).publishUserEvent(
@@ -93,11 +93,11 @@ class AppGrowthWheelServiceTest {
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void exhaustedComfortTierIsSkippedForBothStockAndCashGuardDowngrades(boolean cashPrize) {
-        WheelTier exhausted = new WheelTier(1L, "full-nex", "+5 NEX",
+        WheelTier exhausted = new WheelTier(1L, "full-nex", "+5 UVT",
                 cashPrize ? BigDecimal.ZERO : new BigDecimal("100"), false,
-                "nex", new BigDecimal("5"), null, 1);
-        WheelTier available = new WheelTier(2L, "available-nex", "+3 NEX", BigDecimal.ZERO,
-                false, "nex", new BigDecimal("3"), null, 2);
+                "uvt", new BigDecimal("5"), null, 1);
+        WheelTier available = new WheelTier(2L, "available-nex", "+3 UVT", BigDecimal.ZERO,
+                false, "uvt", new BigDecimal("3"), null, 2);
         WheelTier usdt = new WheelTier(3L, "usdt-1", "$1 USDT", new BigDecimal("100"),
                 true, "usdt", BigDecimal.ONE, null, 0);
         when(mapper.lockActiveTiers()).thenReturn(cashPrize
@@ -109,7 +109,7 @@ class AppGrowthWheelServiceTest {
                 anyString(), eq(available), eq(true), eq(reason))).thenReturn(1);
         when(mapper.lockWalletNex(42L)).thenReturn(BigDecimal.TEN);
         when(mapper.creditWalletNex(42L, new BigDecimal("3"))).thenReturn(1);
-        when(mapper.insertWalletLedger(eq(42L), anyString(), eq("NEX"),
+        when(mapper.insertWalletLedger(eq(42L), anyString(), eq("UVT"),
                 eq(new BigDecimal("3")), eq(new BigDecimal("13")))).thenReturn(1);
 
         var result = service.spin(42L, "evt-spring-spin", "stock-fallback");
@@ -126,8 +126,8 @@ class AppGrowthWheelServiceTest {
     void exhaustedComfortPoolPreservesBothDailyAndBonusEligibility(int usedDaily) {
         when(mapper.countDailySpin(eq(8L), eq(42L), any(LocalDate.class))).thenReturn(usedDaily);
         when(mapper.lockAvailableTicket(42L)).thenReturn(new SpinTicket("bonus-ticket"));
-        WheelTier comfort = new WheelTier(1L, "full-nex", "+5 NEX", BigDecimal.ZERO,
-                false, "nex", new BigDecimal("5"), null, 1);
+        WheelTier comfort = new WheelTier(1L, "full-nex", "+5 UVT", BigDecimal.ZERO,
+                false, "uvt", new BigDecimal("5"), null, 1);
         WheelTier otherNonCash = new WheelTier(2L, "points-1", "+1 point", BigDecimal.ZERO,
                 false, "points", BigDecimal.ONE, null, 0);
         WheelTier usdt = new WheelTier(3L, "usdt-1", "$1 USDT", new BigDecimal("100"),
@@ -157,7 +157,7 @@ class AppGrowthWheelServiceTest {
         when(mapper.findEndedWheelEvent("evt-anniversary-spin"))
                 .thenReturn(new WheelEvent(9L, "evt-anniversary-spin"));
         when(mapper.listWheelHistory(42L, "evt-anniversary-spin", 20)).thenReturn(List.of(Map.of(
-                "spinId", "prior-spin", "tierName", "prior-tier", "rewardType", "NEX",
+                "spinId", "prior-spin", "tierName", "prior-tier", "rewardType", "UVT",
                 "rewardAmount", 5, "spinDate", "2025-10-01", "sourceType", "DAILY",
                 "awardedAt", "2025-10-01T01:00:00", "downgraded", false)));
 

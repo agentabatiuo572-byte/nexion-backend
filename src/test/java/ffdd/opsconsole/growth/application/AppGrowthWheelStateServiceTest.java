@@ -42,12 +42,12 @@ class AppGrowthWheelStateServiceTest {
         when(mapper.countDailySpin(eq(8L), eq(42L), any())).thenReturn(0);
         when(mapper.countAvailableTickets(42L)).thenReturn(2);
         when(mapper.listActiveTiers()).thenReturn(List.of(
-                new WheelTier(1L, "comfort-nex-5", "+5 NEX", new BigDecimal("38.0000"), false,
-                        "nex", new BigDecimal("5"), null, 0)));
+                new WheelTier(1L, "comfort-nex-5", "+5 UVT", new BigDecimal("38.0000"), false,
+                        "uvt", new BigDecimal("5"), null, 0)));
         when(mapper.listWheelHistory(42L, "evt-spring-spin", 20)).thenReturn(List.of(
                 Map.of("spinId", "SPIN-1", "spinDate", "2026-08-15", "sourceType", "DAILY",
-                        "tierId", 1L, "rewardType", "NEX", "rewardAmount", new BigDecimal("5"),
-                        "rewardName", "+5 NEX", "downgraded", false, "downgradeReason", "NONE",
+                        "tierId", 1L, "rewardType", "UVT", "rewardAmount", new BigDecimal("5"),
+                        "rewardName", "+5 UVT", "downgraded", false, "downgradeReason", "NONE",
                         "awardedAt", "2026-08-15T01:02:03")));
 
         ApiResult<Map<String, Object>> result = service.state(42L, "evt-spring-spin");
@@ -74,7 +74,7 @@ class AppGrowthWheelStateServiceTest {
                 .thenReturn(new WheelEvent(8L, "evt-spring-spin"));
         when(mapper.listWheelHistory(42L, "evt-spring-spin", 20)).thenReturn(List.of(
                 Map.of("spinId", "SPIN-1", "spinDate", utc.substring(0, 10), "sourceType", "DAILY",
-                        "tierId", 1L, "rewardType", "NEX", "rewardAmount", new BigDecimal("30"),
+                        "tierId", 1L, "rewardType", "UVT", "rewardAmount", new BigDecimal("30"),
                         "rewardName", "nex-30", "downgraded", false, "downgradeReason", "NONE",
                         "awardedAt", awardedAt)));
 

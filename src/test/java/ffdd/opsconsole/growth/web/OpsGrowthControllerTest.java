@@ -122,7 +122,7 @@ class OpsGrowthControllerTest {
 
     @Test
     void updateQuestConfigDelegatesWithIdempotencyHeader() {
-        GrowthConfigUpdateRequest request = new GrowthConfigUpdateRequest("reward", "80 NEX", "adjust", "superadmin");
+        GrowthConfigUpdateRequest request = new GrowthConfigUpdateRequest("reward", "80 UVT", "adjust", "superadmin");
         when(growthService.updateQuestConfig("idem-h3-config", "dayOne.tasks.0.reward", request))
                 .thenReturn(ApiResult.ok(Map.of("ok", true)));
 
@@ -187,7 +187,7 @@ class OpsGrowthControllerTest {
 
     @Test
     void updateQuestEventRewardDelegatesWithIdempotencyHeader() {
-        GrowthConfigUpdateRequest request = new GrowthConfigUpdateRequest("reward", "3000 NEX", "adjust", "superadmin");
+        GrowthConfigUpdateRequest request = new GrowthConfigUpdateRequest("reward", "3000 UVT", "adjust", "superadmin");
         when(growthService.updateQuestEventReward("idem-h4-reward", "ref-5", request))
                 .thenReturn(ApiResult.ok(Map.of("ok", true)));
 
@@ -258,7 +258,7 @@ class OpsGrowthControllerTest {
 
     @Test
     void updateStreakMilestoneDelegatesWithIdempotencyHeader() {
-        GrowthConfigUpdateRequest request = new GrowthConfigUpdateRequest("reward", "+20 NEX", "adjust", "superadmin");
+        GrowthConfigUpdateRequest request = new GrowthConfigUpdateRequest("reward", "+20 UVT", "adjust", "superadmin");
         when(growthService.updateStreakMilestone("idem-h5-ms", 1, request))
                 .thenReturn(ApiResult.ok(Map.of("ok", true)));
 

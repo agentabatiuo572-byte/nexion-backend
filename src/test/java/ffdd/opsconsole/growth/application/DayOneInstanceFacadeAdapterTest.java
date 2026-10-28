@@ -40,7 +40,7 @@ class DayOneInstanceFacadeAdapterTest {
         when(mapper.lockRegisteredUser(42L))
                 .thenReturn(new RegisteredUser(42L, LocalDateTime.of(2026, 9, 9, 10, 30, 15)));
         lenient().when(mapper.lockConfigValue("growth.quest.day_one.eligibility_hours")).thenReturn("72");
-        lenient().when(mapper.lockConfigValue("growth.quest.day_one.tri_reward")).thenReturn("500 / 200 / 0 NEX");
+        lenient().when(mapper.lockConfigValue("growth.quest.day_one.tri_reward")).thenReturn("500 / 200 / 0 UVT");
         lenient().when(rhythmFacade.snapshot()).thenReturn(rhythm());
     }
 
@@ -55,7 +55,7 @@ class DayOneInstanceFacadeAdapterTest {
                         "/pages/store/store", 10, "BIND_STORE", "SYSTEM", "H3_DAY_ONE_STORE_PAGE_VIEWED", "user_id")));
         DayOneInstanceSnapshot stored = new DayOneInstanceSnapshot(71L, 42L, "DAY_ONE:20260909T103015",
                 "SNAPSHOT", LocalDateTime.of(2026, 9, 9, 10, 30, 15), 72, 24,
-                LocalDateTime.of(2026, 9, 12, 10, 30, 15), "500 / 200 / 0 NEX",
+                LocalDateTime.of(2026, 9, 12, 10, 30, 15), "500 / 200 / 0 UVT",
                 new BigDecimal("4"), 1, 2, "hash");
         when(mapper.insertInstanceIfAbsent(any())).thenReturn(1);
         when(mapper.insertItem(any(), any(), any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(1);
@@ -104,7 +104,7 @@ class DayOneInstanceFacadeAdapterTest {
     void replayedRegistrationReturnsExistingInstanceWithoutReReadingMutableDefinitions() {
         DayOneInstanceSnapshot existing = new DayOneInstanceSnapshot(71L, 42L, "DAY_ONE:20260909T103015",
                 "SNAPSHOT", LocalDateTime.of(2026, 9, 9, 10, 30, 15), 72, 24,
-                LocalDateTime.of(2026, 9, 12, 10, 30, 15), "500 / 200 / 0 NEX",
+                LocalDateTime.of(2026, 9, 12, 10, 30, 15), "500 / 200 / 0 UVT",
                 new BigDecimal("4"), 1, 2, "hash");
         when(mapper.lockExistingInstance(42L, "DAY_ONE:20260909T103015")).thenReturn(existing);
 

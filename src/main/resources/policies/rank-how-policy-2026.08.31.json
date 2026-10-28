@@ -93,7 +93,7 @@
         {
           "id": "unlock-cultivation",
           "title": "培育与晋升奖励",
-          "body": "奖励金额、币种和收款人按该等级的奖励清单处理。培育类 NEX 通常发给直属推荐人；指定本人领取或没有推荐人时，按规则发给晋升会员。",
+          "body": "奖励金额、币种和收款人按该等级的奖励清单处理。培育类 UVT 通常发给直属推荐人；指定本人领取或没有推荐人时，按规则发给晋升会员。",
           "order": 15
         },
         {
@@ -158,8 +158,8 @@
         },
         {
           "id": "result-cultivation",
-          "title": "NEX 奖励",
-          "body": "该等级已配置的 NEX 奖励规则金额合计为 {cultivation}。实际收款人由奖励规则和直属推荐关系确定，不等于本人或推荐人已经到账。",
+          "title": "UVT 奖励",
+          "body": "该等级已配置的 UVT 奖励规则金额合计为 {cultivation}。实际收款人由奖励规则和直属推荐关系确定，不等于本人或推荐人已经到账。",
           "order": 26
         },
         {
@@ -272,7 +272,7 @@
         {
           "id": "unlock-cultivation",
           "title": "Cultivation and promotion rewards",
-          "body": "Amounts, currencies and recipients follow the rank reward list. Cultivation NEX normally goes to the direct sponsor; rules marked for self-payment or without a sponsor pay the promoted member.",
+          "body": "Amounts, currencies and recipients follow the rank reward list. Cultivation UVT normally goes to the direct sponsor; rules marked for self-payment or without a sponsor pay the promoted member.",
           "order": 15
         },
         {
@@ -337,8 +337,8 @@
         },
         {
           "id": "result-cultivation",
-          "title": "NEX rewards",
-          "body": "NEX reward rules at this rank total {cultivation}. The reward rule and direct-sponsor relationship determine recipients; this is not an amount already paid to either party.",
+          "title": "UVT rewards",
+          "body": "UVT reward rules at this rank total {cultivation}. The reward rule and direct-sponsor relationship determine recipients; this is not an amount already paid to either party.",
           "order": 26
         },
         {
@@ -451,7 +451,7 @@
         {
           "id": "unlock-cultivation",
           "title": "Thưởng đào tạo và thăng hạng",
-          "body": "Số tiền, loại tiền và người nhận theo danh sách thưởng của bậc. NEX đào tạo thường trả người giới thiệu trực tiếp; quy tắc tự nhận hoặc không có người giới thiệu sẽ trả thành viên thăng hạng.",
+          "body": "Số tiền, loại tiền và người nhận theo danh sách thưởng của bậc. UVT đào tạo thường trả người giới thiệu trực tiếp; quy tắc tự nhận hoặc không có người giới thiệu sẽ trả thành viên thăng hạng.",
           "order": 15
         },
         {
@@ -516,8 +516,8 @@
         },
         {
           "id": "result-cultivation",
-          "title": "Thưởng NEX",
-          "body": "Tổng số tiền trong quy tắc thưởng NEX của bậc này là {cultivation}. Quy tắc thưởng và quan hệ giới thiệu trực tiếp quyết định người nhận; đây không phải khoản đã trả.",
+          "title": "Thưởng UVT",
+          "body": "Tổng số tiền trong quy tắc thưởng UVT của bậc này là {cultivation}. Quy tắc thưởng và quan hệ giới thiệu trực tiếp quyết định người nhận; đây không phải khoản đã trả.",
           "order": 26
         },
         {

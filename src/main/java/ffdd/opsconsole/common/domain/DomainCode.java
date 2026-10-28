@@ -7,7 +7,7 @@ public enum DomainCode {
     D("finance", "Finance and wallet", "finance"),
     E("device", "Device and commerce", "devices"),
     F("team", "Team commission", "teams"),
-    G("market", "NEX market and products", "markets"),
+    G("market", "UVT market and products", "markets"),
     H("growth", "Phase and growth", "growth"),
     I("content", "Content compliance and support", "content"),
     J("emergency", "Emergency compliance", "emergency"),

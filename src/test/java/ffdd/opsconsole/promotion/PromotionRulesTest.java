@@ -40,7 +40,7 @@ class PromotionRulesTest {
     }
     @Test void firstEligibleUnitUsesRulePriorityNotInputSequence(){
         Map<String,Object> c=contract("FIRST_PURCHASE"),r=map(maps(c.get("rules")).get(0)),second=copy(r);
-        second.put("ruleId","R2");second.put("productNo","P2");second.put("priority",0);second.put("buyerReward",reward("B2","BUYER","NEX"));c.put("rules",List.of(r,second));
+        second.put("ruleId","R2");second.put("productNo","P2");second.put("priority",0);second.put("buyerReward",reward("B2","BUYER","UVT"));c.put("rules",List.of(r,second));
         var got=evaluate(c,List.of(new Selection("P1",4),new Selection("P2",6)),buyer(0,0,null),null,values("mode","FIRST_ELIGIBLE_UNIT","restoreAfterRefund",false));
         assertEquals(1,got.size());assertEquals("P2",got.get(0).productNo());
     }
@@ -49,13 +49,13 @@ class PromotionRulesTest {
         assertEquals(1,evaluate(contract("REPURCHASE"),List.of(new Selection("P1",2)),buyer(1,1,null),null,null).size());
     }
     @Test void allCombinationRequiresEveryThreshold(){
-        Map<String,Object> c=contract("MULTI_PRODUCT"),r=copy(maps(c.get("rules")).get(0));r.put("ruleId","R2");r.put("productNo","P2");r.put("buyerReward",reward("B2","BUYER","NEX"));
+        Map<String,Object> c=contract("MULTI_PRODUCT"),r=copy(maps(c.get("rules")).get(0));r.put("ruleId","R2");r.put("productNo","P2");r.put("buyerReward",reward("B2","BUYER","UVT"));
         c.put("rules",List.of(maps(c.get("rules")).get(0),r));c.put("combinationMatch","ALL");
         assertTrue(evaluate(c,List.of(new Selection("P1",4),new Selection("P2",1)),buyer(0,0,null),null,null).isEmpty());
         assertEquals(3,evaluate(c,List.of(new Selection("P1",4),new Selection("P2",2)),buyer(0,0,null),null,null).size());
     }
     @Test void referralOnlyUsesActualDirectSponsorAndSeparatesBeneficiaries(){
-        Map<String,Object> c=contract("DIRECT_REFERRAL"),r=copy(maps(c.get("rules")).get(0));r.put("inviterReward",reward("I1","DIRECT_INVITER","NEX"));c.put("rules",List.of(r));
+        Map<String,Object> c=contract("DIRECT_REFERRAL"),r=copy(maps(c.get("rules")).get(0));r.put("inviterReward",reward("I1","DIRECT_INVITER","UVT"));c.put("rules",List.of(r));
         Account sponsor=new Account(2,now.minus(Duration.ofDays(40)),"V0","JP",null,true,1,1,now,0);
         var first=values("mode","FIRST_ELIGIBLE_ORDER","restoreAfterRefund",false);
         assertTrue(evaluate(c,List.of(new Selection("P1",2)),buyer(0,0,3L),sponsor,first).isEmpty());

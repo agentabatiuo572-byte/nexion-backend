@@ -209,7 +209,7 @@ public class OpsTeamService implements AuditReplayable {
             vRank("V6", "teamGv", "legCount", "legRank"),
             vRank("V7", "teamGv", "legCount", "legRank"),
             vRank("V8", "teamGv", "legCount", "legRank"));
-    private static final Set<String> VRANK_REWARD_TYPES = Set.of("usdt", "nex", "voucher", "sku", "custom");
+    private static final Set<String> VRANK_REWARD_TYPES = Set.of("usdt", "uvt", "voucher", "sku", "custom");
     private static final List<F2PolicyParamSeed> F2_POLICY_PARAM_SEEDS = List.of(
             new F2PolicyParamSeed("clampMin", "影响分下限", "F.influence.clampMin", "1.0", "", "InfluenceScore 下限;clamp 后参与版税权重计算。", false, false, ""),
             new F2PolicyParamSeed("clampMax", "影响分上限", "F.influence.clampMax", "5.0", "", "InfluenceScore 上限;clamp 后参与版税权重计算。", false, false, ""),
@@ -219,7 +219,7 @@ public class OpsTeamService implements AuditReplayable {
             new F2PolicyParamSeed("peer", "peer 平级比例", "F.peer.rate", "5%", "brand", "同 V 级平级奖励比例(V3+)。放大佣金流出。", true, true, "%"),
             new F2PolicyParamSeed("depth", "深度起算层", "F.unilevel.depthGate", "L4", "cyan", "从该层起按阶位门槛校验；L1-L7。", false, false, ""),
             new F2PolicyParamSeed("depthRank", "深度最低阶位", "F.unilevel.depthGateRank", "V2", "cyan", "深度起算层及以下的上级最低 V 阶；V0-V8。", false, false, ""),
-            new F2PolicyParamSeed("nexcap", "NEX/USDT 折算上限", "F.unilevel.nexCap", "$50/d", "", "单用户单日 NEX 派发折算 USDT 的上限。", false, false, ""),
+            new F2PolicyParamSeed("nexcap", "UVT/USDT 折算上限", "F.unilevel.nexCap", "$50/d", "", "单用户单日 UVT 派发折算 USDT 的上限。", false, false, ""),
             new F2PolicyParamSeed("backfill", "回溯窗口", "F.unilevel.backfill", "0d", "", "改后是否回溯已计提,原则上不回溯。", true, false, "天"));
     private static final List<F2PolicyParamSeed> F_SHARED_POLICY_PARAM_SEEDS = List.of(
             new F2PolicyParamSeed("binary-threshold", "两轨结算门槛", "F.binary.threshold", "$1,000 / 轨", "", "最低门槛;改后对下一周期结算生效。", false, false, ""),
@@ -492,7 +492,7 @@ public class OpsTeamService implements AuditReplayable {
         response.put("rateTiers", rateTiers());
         response.put("payoutAssetPolicy", Map.of(
                 "primary", "USDT",
-                "secondary", "NEX",
+                "secondary", "UVT",
                 "points", "SUNSET_HISTORY_ONLY"));
         response.put("guardrails", guardrails());
         response.put("configValues", configValues());
@@ -669,7 +669,7 @@ public class OpsTeamService implements AuditReplayable {
             String rank, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
         Map<String, Object> item = normalizeReward(nextRewardId(seed.v()), request);
-        // 资金类奖励(USDT/NEX,金额>0)放大平台资金流出,B1 备付金覆盖率红线预检;低于红线直接拒。
+        // 资金类奖励(USDT/UVT,金额>0)放大平台资金流出,B1 备付金覆盖率红线预检;低于红线直接拒。
         if (isFundRewardItem(item) && coverageBelowRedline()) {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
@@ -711,7 +711,7 @@ public class OpsTeamService implements AuditReplayable {
             throw new IllegalArgumentException("F1 V-Rank reward not found");
         }
         Map<String, Object> item = normalizeReward(id, request);
-        // 资金类奖励(USDT/NEX,金额>0)放大平台资金流出,B1 备付金覆盖率红线预检;低于红线直接拒。
+        // 资金类奖励(USDT/UVT,金额>0)放大平台资金流出,B1 备付金覆盖率红线预检;低于红线直接拒。
         if (isFundRewardItem(item) && coverageBelowRedline()) {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
@@ -1380,7 +1380,7 @@ public class OpsTeamService implements AuditReplayable {
         try {
             if (isUnilevelRuleKey(key)) {
                 if (key.startsWith("F.unilevel.nex.L")) {
-                    // nexPerUsd 上调 = 每美元兑更多 NEX,放大 NEX 派发
+                    // nexPerUsd 上调 = 每美元兑更多 UVT,放大 UVT 派发
                     return parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
                 }
                 // usdtRate 百分比上调 = 版税费率放大
@@ -2657,7 +2657,7 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("id", requireText(id, "TEAM_VRANK_REWARD_ID_REQUIRED"));
         item.put("type", type);
-        if ("usdt".equals(type) || "nex".equals(type)) {
+        if ("usdt".equals(type) || "uvt".equals(type)) {
             if (request.amount() == null || request.amount().compareTo(BigDecimal.ZERO) <= 0) {
                 throw new IllegalArgumentException("F1 V-Rank fund reward amount must be positive");
             }
@@ -2684,10 +2684,10 @@ public class OpsTeamService implements AuditReplayable {
         return item;
     }
 
-    /** 判定为资金类奖励:USDT/NEX 且金额>0。资金类放大平台资金流出,写入受 B1 备付金覆盖率约束。 */
+    /** 判定为资金类奖励:USDT/UVT 且金额>0。资金类放大平台资金流出,写入受 B1 备付金覆盖率约束。 */
     private boolean isFundRewardItem(Map<String, Object> item) {
         String type = String.valueOf(item.getOrDefault("type", ""));
-        if (!"usdt".equals(type) && !"nex".equals(type)) {
+        if (!"usdt".equals(type) && !"uvt".equals(type)) {
             return false;
         }
         return decimalValue(item.get("amount"), BigDecimal.ZERO).compareTo(BigDecimal.ZERO) > 0;
@@ -3519,17 +3519,17 @@ public class OpsTeamService implements AuditReplayable {
 
         // 资金类(usdt/nex)B1 预检 + 新 commission_event + ledgerPostingFacade.postLedgerEntry
         // SKU 按原 payout 标的联动真实权益;券/custom 保留既有分支。
-        if ("usdt".equals(rewardType) || "nex".equals(rewardType)) {
+        if ("usdt".equals(rewardType) || "uvt".equals(rewardType)) {
             if (amount.compareTo(BigDecimal.ZERO) > 0 && coverageBelowRedline()) {
                 return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
-            String currency = "usdt".equals(rewardType) ? "USDT" : "NEX";
+            String currency = "usdt".equals(rewardType) ? "USDT" : "UVT";
             Long recipientUserId = sponsorUserId != null ? sponsorUserId : userId;
             Long sourceUserId = sponsorUserId != null ? userId : null;
             String commissionType = sponsorUserId != null ? "cultivation" : "vrank_reward";
             BigDecimal amountUsdt = "USDT".equals(currency) ? amount : BigDecimal.ZERO;
-            BigDecimal amountNex = "NEX".equals(currency) ? amount : BigDecimal.ZERO;
+            BigDecimal amountNex = "UVT".equals(currency) ? amount : BigDecimal.ZERO;
             String remark = "F1 V-Rank reward REISSUE | rank=" + rankCode + " type=" + rewardType + " operator=" + operator;
             Long newCommissionEventId = commissionRepository.insertCommissionEvent(
                     recipientUserId, commissionType, sourceUserId, currency,
@@ -3642,7 +3642,7 @@ public class OpsTeamService implements AuditReplayable {
 
         // 资金类 D4 红冲:UPDATE nx_commission_event.status='REVERSED' + ledgerPostingFacade 反向 OUT 条目
         // 权益类(voucher/sku/custom)无 commission_event_id,跳过 D4
-        if (("usdt".equals(rewardType) || "nex".equals(rewardType)) && commissionEventId != null) {
+        if (("usdt".equals(rewardType) || "uvt".equals(rewardType)) && commissionEventId != null) {
             int reversed = commissionRepository.reverseCommissionEvent(commissionEventId);
             if (reversed != 1) {
                 throw new IllegalStateException("PAYOUT_COMMISSION_REVERSE_CONFLICT");

@@ -184,7 +184,7 @@ public class SupportAnalyticsService {
     }
     private static List<CustomerCurrencyTotals> withNet(List<CustomerCurrencyTotals> old,Set<Long> roots,Query q,NetRead net) {
         var byCurrency=new TreeMap<String,CustomerCurrencyTotals>();old.forEach(x->byCurrency.put(x.currency(),x));
-        Set<String> currencies=q.currency()==null?Set.of("USDT","NEX"):Set.of(q.currency());
+        Set<String> currencies=q.currency()==null?Set.of("USDT","UVT"):Set.of(q.currency());
         for(String currency:currencies){var x=byCurrency.get(currency);
             Money absent=new Money(null,null,null,null,null,Status.UNAVAILABLE,List.of("HISTORY_NOT_REQUESTED"));
             byCurrency.put(currency,new CustomerCurrencyTotals(currency,x==null?absent:x.deposits(),x==null?absent:x.purchases(),net.money(roots,currency,null,null,null,null)));}
@@ -193,7 +193,7 @@ public class SupportAnalyticsService {
     private static FinancialSummary withNet(FinancialSummary old,Set<Long> roots,Query q,NetRead net,ReadScope scope,Set<Long> groups,Long group) {
         if(old.status()==Status.UNAVAILABLE)return old;
         var byCurrency=new TreeMap<String,CurrencyTotals>();old.currencies().forEach(x->byCurrency.put(x.currency(),x));
-        Set<String> currencies=q.currency()==null?Set.of("USDT","NEX"):Set.of(q.currency());
+        Set<String> currencies=q.currency()==null?Set.of("USDT","UVT"):Set.of(q.currency());
         Money absent=new Money(null,null,null,null,null,Status.UNKNOWN,List.of("COMPLETE_HISTORY_NOT_PROVEN"));
         for(String currency:currencies){var x=byCurrency.get(currency);var amount=net.money(roots,currency,q.basis()==Basis.PERIOD_EVENT?q:null,scope,groups,group);
             byCurrency.put(currency,new CurrencyTotals(currency,x==null?absent:x.deposits(),x==null?absent:x.purchases(),x==null?absent:x.purchaseRefunds(),amount));}
@@ -227,7 +227,7 @@ public class SupportAnalyticsService {
             var totals=new HashMap<String,BigDecimal>();var formations=new HashMap<String,BigDecimal>();
             for(var change:c.net.changes()) {
                 var o=change==null?null:origins.get(change.contributionId());
-                if(o==null || o.customerId()!=change.originCustomerId() || change.amount()==null || change.currency()==null || !Set.of("USDT","NEX").contains(change.currency())
+                if(o==null || o.customerId()!=change.originCustomerId() || change.amount()==null || change.currency()==null || !Set.of("USDT","UVT").contains(change.currency())
                         || !netStamp(change.succeededAt(),change.businessZone(),change.fractionalSecondDigits(),change.sourceReference(),asOf)
                         || !change.businessZone().equals(o.businessZone()) || change.succeededAt().isBefore(o.formedAt()))return unknown(c.financialIds);
                 totals.merge(change.originCustomerId()+":"+change.currency(),change.amount(),BigDecimal::add);
@@ -240,7 +240,7 @@ public class SupportAnalyticsService {
             }
             for(var row:customers.values())if(row.state()==EvidenceState.READY)
                 if(row.usdt()==null || row.nex()==null || totals.getOrDefault(row.customerId()+":USDT",BigDecimal.ZERO).compareTo(row.usdt())!=0
-                        || totals.getOrDefault(row.customerId()+":NEX",BigDecimal.ZERO).compareTo(row.nex())!=0)gaps.add(row.customerId());
+                        || totals.getOrDefault(row.customerId()+":UVT",BigDecimal.ZERO).compareTo(row.nex())!=0)gaps.add(row.customerId());
             for(var o:origins.values()) {
                 var formed=formations.get(o.contributionId());var f=c.facts.get(o.paymentFactId());
                 if(f==null || formed==null || formed.signum()<=0 || formed.compareTo(f.amount())>0
@@ -249,10 +249,10 @@ public class SupportAnalyticsService {
             return new NetRead(c.net,Map.copyOf(customers),Map.copyOf(origins),c.validAttributions,Set.copyOf(gaps),false);
         }
         Money money(Set<Long> roots,String currency,Query period,ReadScope scope,Set<Long> groups,Long group) {
-            if(!Set.of("USDT","NEX").contains(currency) || !complete(roots) || period!=null && scope.mode()==ReadMode.MANAGED && groups.isEmpty() && !roots.isEmpty())
+            if(!Set.of("USDT","UVT").contains(currency) || !complete(roots) || period!=null && scope.mode()==ReadMode.MANAGED && groups.isEmpty() && !roots.isEmpty())
                 return new Money(null,null,null,null,null,Status.UNKNOWN,List.of("NET_SOURCE_UNVERIFIED"));
             BigDecimal amount=BigDecimal.ZERO;
-            if(period==null)for(long id:roots)amount=amount.add("USDT".equals(currency)?customers.get(id).usdt():"NEX".equals(currency)?customers.get(id).nex():BigDecimal.ZERO);
+            if(period==null)for(long id:roots)amount=amount.add("USDT".equals(currency)?customers.get(id).usdt():"UVT".equals(currency)?customers.get(id).nex():BigDecimal.ZERO);
             else for(var change:snapshot.changes()) {
                 if(!roots.contains(change.originCustomerId()) || !currency.equals(change.currency()))continue;
                 var at=change.succeededAt().atZone(ZoneId.of(change.businessZone())).withZoneSameInstant(ZoneId.of(period.businessZone())).toLocalDateTime();

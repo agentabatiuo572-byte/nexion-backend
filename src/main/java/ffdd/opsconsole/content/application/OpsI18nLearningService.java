@@ -71,7 +71,7 @@ public class OpsI18nLearningService {
     private static final Pattern JSON_LIKE_PATTERN = Pattern.compile("^\\s*[\\[{]");
     private static final Pattern MANUAL_URL_PATTERN = Pattern.compile("https?://|href\\s*=|href=#", Pattern.CASE_INSENSITIVE);
     private static final Pattern HTML_TAG_PATTERN = Pattern.compile("<\\s*/?\\s*[a-z][^>]*>", Pattern.CASE_INSENSITIVE);
-    private static final Pattern SUNSET_PATTERN = Pattern.compile("premium|nex\\s*v?2|nexv2|points|积分", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SUNSET_PATTERN = Pattern.compile("premium|(?:nex|uvt)\\s*v?2|points|积分", Pattern.CASE_INSENSITIVE);
     private static final Pattern COURSE_ID_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9-]{2,80}$");
     private static final Pattern COURSE_VERSION_PATTERN = Pattern.compile("^v[1-9][0-9]{0,8}$", Pattern.CASE_INSENSITIVE);
     private static final Pattern MESSAGE_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z0-9_-]+)+$");
@@ -684,7 +684,7 @@ public class OpsI18nLearningService {
     }
 
     private String weeklyNexPayout() {
-        return learningRepository.weeklyGrantedLearningReward().setScale(2, RoundingMode.HALF_UP).toPlainString() + " NEX";
+        return learningRepository.weeklyGrantedLearningReward().setScale(2, RoundingMode.HALF_UP).toPlainString() + " UVT";
     }
 
     private String featuredCourseId(List<LearningCourseView> courses) {

@@ -119,7 +119,7 @@ class E4OrderRefundSettlementFacadeAdapterTest {
 
     private static Stream<Arguments> legalApprovalReasons() {
         String actualReason = "UVEL TEST W84 R1788基线与B原单、1299 USDT、钱包渠道已核对；由suadmin审批superadmin工单，"
-                + "执行一次后核验退款和Main直推64.95 USDT及523.790322 NEX追回，不走外部通道。";
+                + "执行一次后核验退款和Main直推64.95 USDT及523.790322 UVT追回，不走外部通道。";
         String shortUnicodeReason = "批准钱包退款🚀并保留完整审批理由";
         return Stream.of(
                 Arguments.of("actual legal approval: 274 characters", actualReason,

@@ -55,7 +55,7 @@ public class AppMarketSandboxService {
         if (request == null) throw new BizException(422, "EXCHANGE_REQUEST_INVALID");
         String from = direction(request.direction());
         BigDecimal amount = amount(request.fromAmount(), "EXCHANGE_AMOUNT_INVALID");
-        String expectedHash = hash(from + ":" + amount.stripTrailingZeros() + ":" + Boolean.TRUE.equals(request.queueIfCapped()));
+        String expectedHash = hash(("UVT".equals(from) ? "NEX" : from) + ":" + amount.stripTrailingZeros() + ":" + Boolean.TRUE.equals(request.queueIfCapped()));
         AppMarketSandboxMapper.ExchangeOrder row = mapper.exchangeRecoveryByKey(run, userId, key);
         Map<String,Object> result = linked("status", "NOT_FOUND", "sourceEnvironment", "SANDBOX", "runId", run);
         if (row == null) return ApiResult.ok(result);
@@ -82,7 +82,7 @@ public class AppMarketSandboxService {
         BigDecimal min = from.equals("USDT") ? number("nexion.exchange.sandbox.min-usdt", "1") : number("nexion.exchange.sandbox.min-nex", "10");
         if (amount.compareTo(min) < 0) throw new BizException(422, "EXCHANGE_AMOUNT_BELOW_MINIMUM");
         String run = runId();
-        String hash = hash(from + ":" + amount.stripTrailingZeros() + ":" + Boolean.TRUE.equals(request.queueIfCapped()));
+        String hash = hash(("UVT".equals(from) ? "NEX" : from) + ":" + amount.stripTrailingZeros() + ":" + Boolean.TRUE.equals(request.queueIfCapped()));
         AppMarketSandboxMapper.ExchangeOrder prior = mapper.exchangeByKey(run, userId, key);
         if (prior != null) return replayExchange(prior, hash, run, userId);
         AppMarketSandboxMapper.ExchangeWallet wallet = exchangeWallet(run, userId);
@@ -103,7 +103,7 @@ public class AppMarketSandboxService {
         boolean queued = capped;
         BigDecimal to = from.equals("USDT") ? money(amount.subtract(fee(gross)).divide(price, 6, RoundingMode.DOWN)) : money(amount.multiply(price).subtract(fee(gross)));
         if (to.signum() <= 0) throw new BizException(422, "EXCHANGE_RECEIVE_AMOUNT_INVALID");
-        String toAsset = from.equals("USDT") ? "NEX" : "USDT";
+        String toAsset = from.equals("USDT") ? "UVT" : "USDT";
         String no = "EX-SBX-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         try {
             mapper.insertExchangeOrder(new AppMarketSandboxMapper.ExchangeWrite(run,userId,no,key,hash,from,toAsset,amount,to,price,queued ? "QUEUED" : "COMPLETED"));
@@ -114,7 +114,7 @@ public class AppMarketSandboxService {
         }
         if (!queued) {
             BigDecimal usdt = wallet.usdtAvailable().add(from.equals("USDT") ? amount.negate() : to);
-            BigDecimal nex = wallet.nexAvailable().add(from.equals("NEX") ? amount.negate() : to);
+            BigDecimal nex = wallet.nexAvailable().add(from.equals("UVT") ? amount.negate() : to);
             if (usdt.signum() < 0 || nex.signum() < 0 || mapper.updateExchangeWallet(run,userId,usdt,nex,wallet.version()) != 1) {
                 throw new BizException(409, "EXCHANGE_WALLET_INSUFFICIENT_OR_CONFLICT");
             }
@@ -326,7 +326,7 @@ public class AppMarketSandboxService {
         qualificationCodes.add(owned>0?"HOLDINGS_CONFIRMED":"NO_ACTIVE_HOLDINGS");
         Map<String,Object> result=linked("eligible",eligible,"reasons",reasons,"qualificationReasonCodes",qualificationCodes,"ownedCount",owned,"maxPerUser",policy.effectiveMaxPerUser(),"remainingCap",remaining,
                 "minAccountAgeDays",policy.effectiveMinAccountAgeDays(),"accountAgeDays",ageDays,"halted",false,"status","CONFIG_UNAVAILABLE",
-                "reservedAllocation",null,"reservedAllocationUnit","NEX","priorityRank",null,"priorityTier","NONE",
+                "reservedAllocation",null,"reservedAllocationUnit","UVT","priorityRank",null,"priorityTier","NONE",
                 "policyVersion",null,"effectiveAt",null,"asOf",now.toString(),"serverTime",now.toString(),
                 "provenance",linked("source","nx_genesis_sandbox_holding+nx_config_item","environment","SANDBOX","runId",run),
                 "serverCanonical",true,"source","mock","sourceEnvironment","SANDBOX","runId",run);
@@ -382,7 +382,7 @@ public class AppMarketSandboxService {
         if(acquiringQuantity>0&&owned+acquiringQuantity>policy.effectiveMaxPerUser())throw new BizException(409,"GENESIS_USER_CAP_REACHED");
     }
     private BigDecimal fee(BigDecimal gross){ BigDecimal pct=nonNegativeNumber("nexion.exchange.sandbox.fee-pct","0"); if(pct.compareTo(BigDecimal.valueOf(100))>0)throw new BizException(503,"SANDBOX_CONFIG_INVALID"); return money(gross.multiply(pct).divide(BigDecimal.valueOf(100),12,RoundingMode.HALF_UP)); }
-    private String direction(String v){ String s=StringUtils.hasText(v)?v.trim().toUpperCase(Locale.ROOT).replace("-","_"):""; return switch(s){case "USDT_TO_NEX","USDT2NEX"->"USDT";case "NEX_TO_USDT","NEX2USDT"->"NEX";default->throw new BizException(422,"EXCHANGE_DIRECTION_INVALID");}; }
+    private String direction(String v){ String s=StringUtils.hasText(v)?v.trim().toUpperCase(Locale.ROOT).replace("-","_"):""; return switch(s){case "USDT_TO_UVT","USDT2UVT"->"USDT";case "UVT_TO_USDT","UVT2USDT"->"UVT";default->throw new BizException(422,"EXCHANGE_DIRECTION_INVALID");}; }
     private String key(String v,String error){ if(!StringUtils.hasText(v)||v.trim().length()>200)throw new BizException(422,error); return v.trim(); }
     private BigDecimal number(String key,String fallback){ BigDecimal value=parseNumber(key,fallback); if(value.signum()<=0)throw new BizException(503,"SANDBOX_CONFIG_INVALID"); return value; }
     private BigDecimal nonNegativeNumber(String key,String fallback){ BigDecimal value=parseNumber(key,fallback); if(value.signum()<0)throw new BizException(503,"SANDBOX_CONFIG_INVALID"); return value; }

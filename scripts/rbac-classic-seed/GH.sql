@@ -23,8 +23,8 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('finprod_g2_swap_toggle',         'G2 swap 全局熔断/恢复(止血·同步J1)', 'API', '/finance-products/exchange',   'HIGH',  1, 1, 0),
   ('finprod_g2_queue_cancel',        'G2 强制取消排队单(不可逆·退回余额)', 'API', '/finance-products/exchange',   'HIGH',  1, 1, 0),
 
-  -- G3 NEX 行情引擎 /finance-products/market（6 点）
-  ('finprod_g3_read',                'G3 NEX 行情页面读',            'API', '/finance-products/market',     'READ',  0, 1, 0),
+  -- G3 UVT 行情引擎 /finance-products/market（6 点）
+  ('finprod_g3_read',                'G3 UVT 行情页面读',            'API', '/finance-products/market',     'READ',  0, 1, 0),
   ('finprod_g3_write',               'G3 行情常规写(波动/排程/pin/loop/override非价/推进)', 'API', '/finance-products/market',     'WRITE', 0, 1, 0),
   ('finprod_g3_curve_target_price_write', 'G3 周曲线目标价(升价放大NEX负债·过B1)', 'API', '/finance-products/market',     'HIGH',  1, 1, 0),
   ('finprod_g3_curve_pump_prob_write',   'G3 周曲线上行概率(升概率放大流出)', 'API', '/finance-products/market',     'HIGH',  1, 1, 0),
@@ -71,7 +71,7 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('growth_h4_write',               'H4 活动常规写(活动/转盘档位·护栏)', 'API', '/growth/events',               'WRITE', 0, 1, 0),
   ('growth_h4_wheel_pool_write',     'H4 转盘奖池/概率签名(真实出金·过B1)', 'API', '/growth/events',               'HIGH',  1, 1, 0),
 
-  -- H5 签到 & NEX /growth/daily（3 点）
+  -- H5 签到 & UVT /growth/daily（3 点）
   ('growth_h5_read',                 'H5 签到&NEX页面读',            'API', '/growth/daily',                'READ',  0, 1, 0),
   ('growth_h5_write',               'H5 签到常规写(里程碑/Power-Up/收益/间隔)', 'API', '/growth/daily',                'WRITE', 0, 1, 0),
   ('growth_h5_rule_write',           'H5 签到规则Lucky概率(升概率放大NEX派发)', 'API', '/growth/daily',                'HIGH',  1, 1, 0),

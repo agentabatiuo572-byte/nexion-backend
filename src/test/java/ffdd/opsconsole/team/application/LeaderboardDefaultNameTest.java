@@ -56,7 +56,7 @@ class LeaderboardDefaultNameTest {
         var data = service.leaderboard(7L, "week", 1, 100, at, null).getData();
         @SuppressWarnings("unchecked") var rows = (List<Map<String, Object>>) data.get("rows");
         assertThat(rows).extracting(row -> row.get("handle")).containsExactly("UVE***", "Nex***", "Nex***",
-                "Nex***", "Nex***", "NEX***", "Nex***", "Nex***", "Use***", "Use***", "Al",
+                "Nex***", "Nex***", "UVT***", "Nex***", "Nex***", "Use***", "Use***", "Al",
                 "Nex***", "Nex***", "Nex***");
         assertThat(rows).allSatisfy(row -> {
             assertThat(row).containsEntry("earnedUSDT", new BigDecimal("131.89"))

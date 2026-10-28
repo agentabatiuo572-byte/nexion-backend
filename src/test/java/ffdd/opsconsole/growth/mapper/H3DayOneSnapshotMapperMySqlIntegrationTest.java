@@ -134,7 +134,7 @@ class H3DayOneSnapshotMapperMySqlIntegrationTest {
         assertThat(read.instanceId()).isEqualTo(stored.id());
         assertThat(read.snapshotStatus()).isEqualTo("SNAPSHOT");
         assertThat(read.requiredTaskCount()).isEqualTo(7);
-        assertThat(read.triReward()).isEqualTo("500 / 200 / 0 NEX");
+        assertThat(read.triReward()).isEqualTo("500 / 200 / 0 UVT");
         assertThat(read.questBonusMultiplier()).isEqualByComparingTo("2.000000");
         assertThat(read.rhythmMonth()).isEqualTo(3);
     }
@@ -152,7 +152,7 @@ class H3DayOneSnapshotMapperMySqlIntegrationTest {
 
         DayOneInstanceSnapshot header = dayOne.findLatestByUserId(1201L);
         assertThat(header.requiredTaskCount()).isEqualTo(7);
-        assertThat(header.triReward()).isEqualTo("500 / 200 / 0 NEX");
+        assertThat(header.triReward()).isEqualTo("500 / 200 / 0 UVT");
         assertThat(header.questBonusMultiplier()).isEqualByComparingTo("2.000000");
         assertThat(header.rhythmMonth()).isEqualTo(3);
         assertThat(dayOne.listItems(stored.id())).hasSize(7).allSatisfy(item -> {
@@ -259,7 +259,7 @@ class H3DayOneSnapshotMapperMySqlIntegrationTest {
                     (long) index, "BIND_" + index, "SYSTEM", "EVENT_" + index, "DAY_" + index);
         }
         jdbc.update("INSERT INTO nx_config_item(config_key,config_value,status,is_deleted)"
-                        + " VALUES ('growth.quest.day_one.tri_reward','500 / 200 / 0 NEX',1,0)"
+                        + " VALUES ('growth.quest.day_one.tri_reward','500 / 200 / 0 UVT',1,0)"
                         + " ON DUPLICATE KEY UPDATE config_value=VALUES(config_value),status=1,is_deleted=0");
     }
 
@@ -275,7 +275,7 @@ class H3DayOneSnapshotMapperMySqlIntegrationTest {
 
     private static DayOneInstanceSnapshot snapshot(Long userId, String key, LocalDateTime enteredAt) {
         return new DayOneInstanceSnapshot(null, userId, key, "SNAPSHOT", enteredAt, 72, 24,
-                enteredAt.plusHours(72), "500 / 200 / 0 NEX", new BigDecimal("2.000000"), 3, 7, "a".repeat(64));
+                enteredAt.plusHours(72), "500 / 200 / 0 UVT", new BigDecimal("2.000000"), 3, 7, "a".repeat(64));
     }
 
     private void runFormalMigration(DataSource dataSource) throws Exception {

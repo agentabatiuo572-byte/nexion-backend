@@ -269,7 +269,7 @@ class AppProductCatalogServiceTest {
                 .containsEntry("specDocumentUrl", "https://www.nvidia.com/")
                 .containsEntry("warranty", "36 months")
                 .containsEntry("phoneDailyEarn", "0.06 USDT/day")
-                .containsEntry("phoneDailyEarnNEX", "12 NEX/day");
+                .containsEntry("phoneDailyEarnNEX", "12 UVT/day");
     }
 
     @Test

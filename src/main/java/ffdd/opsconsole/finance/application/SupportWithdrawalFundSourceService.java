@@ -115,7 +115,7 @@ public class SupportWithdrawalFundSourceService {
                 action==Action.RESERVE?new Account(customerId,"USDT","available"):null,null,
                 action==Action.RESERVE?null:reserve,action==Action.RESERVE?gross:null,null));
         if(nex.signum()>0 && action==Action.RESERVE)
-            events.add(new Event(fee,Action.FEE,new Account(customerId,"NEX","available"),null,null,nex,null));
+            events.add(new Event(fee,Action.FEE,new Account(customerId,"UVT","available"),null,null,nex,null));
         if(nex.signum()>0 && action==Action.RETURN)
             events.add(new Event("REFUND:"+withdrawalNo+":NEX",Action.REFUND,null,null,fee,nex,null));
         return List.copyOf(events);
@@ -167,7 +167,7 @@ public class SupportWithdrawalFundSourceService {
         if(expected.values().stream().anyMatch(v -> v.signum()<0) || ledgers==null)return false;
         var found=new HashSet<String>();BigDecimal usdt=BigDecimal.ZERO,fee=BigDecimal.ZERO;
         for(var row:ledgers) {
-            String biz=Objects.toString(row.get("bizNo"));String asset=biz.endsWith(":NEX:OFFSET")?"NEX":"USDT";
+            String biz=Objects.toString(row.get("bizNo"));String asset=biz.endsWith(":NEX:OFFSET")?"UVT":"USDT";
             String type=biz.endsWith(":PRINCIPAL")?"WITHDRAW_NET_PRINCIPAL":biz.endsWith(":BANK_FEE")?"WITHDRAW_BANK_FEE"
                     :biz.endsWith(":NETWORK_FEE")?"WITHDRAW_NETWORK_FEE":biz.endsWith(":PENALTY_FEE")?"WITHDRAW_PENALTY_FEE":"WITHDRAW_FEE_OFFSET";
             boolean feeComponent="BANK-VND".equals(order.get("chain"))?biz.equals(no+":USDT:BANK_FEE"):

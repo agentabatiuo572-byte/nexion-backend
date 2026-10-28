@@ -28,27 +28,27 @@ public interface SupportDirectReferralReadFacade extends DomainFacade {
     static String operationKey(String key,long predecessor,Source after) {
         var state=new StringBuilder(key).append('\n').append(predecessor);
         if(key.startsWith("S:"))for(String field:List.of("cancelled_usdt","cancelled_nex","recovered_usdt","recovered_nex","recovery_pending_usdt","recovery_pending_nex","status","updated_at"))state.append('\n').append(stable(after.subject().get(field)));
-        else {state.append('\n').append(number(after.subject().get("version")));for(String field:List.of("event_id","order_no","source_environment","run_id","user_id","asset","target_amount","recovered_amount","pending_amount","updated_at"))state.append('\n').append(stable(after.recovery().get(field)));}
+        else {state.append('\n').append(number(after.subject().get("version")));for(String field:List.of("event_id","order_no","source_environment","run_id","user_id","asset","target_amount","recovered_amount","pending_amount","updated_at"))state.append('\n').append(stable("asset".equals(field)&&"UVT".equals(after.recovery().get(field))?"NEX":after.recovery().get(field)));}
         try{return "DIRECT_RECOVERY:"+HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(state.toString().getBytes(StandardCharsets.UTF_8)));}
         catch(java.security.NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}
     }
     private static Object stable(Object value) {if(value instanceof Number)return new BigDecimal(value.toString()).stripTrailingZeros().toPlainString();if(value instanceof java.sql.Timestamp t)return t.toLocalDateTime().toString();if(value instanceof java.time.LocalDateTime t)return t.toString();return value;}
     static List<Event> events(Source before,Source after,String operationKey) {
         var events=new ArrayList<Event>();long user=customer(after);
-        for(String asset:List.of("USDT","NEX")) {
+        for(String asset:List.of("USDT","UVT")) {
             BigDecimal prior,current;String original;
             if(after.key().startsWith("S:")) {
-                String suffix=asset.toLowerCase(Locale.ROOT);prior=amount(before.subject().get("recovered_"+suffix));current=amount(after.subject().get("recovered_"+suffix));
+                String suffix=("USDT".equals(asset)?"usdt":"nex");prior=amount(before.subject().get("recovered_"+suffix));current=amount(after.subject().get("recovered_"+suffix));
                 var linked=before.entries().stream().filter(e->asset.equals(e.get("asset"))).toList();
                 if(current.compareTo(prior)==0)continue;
-                original=linked.size()==1?"EARNINGS:"+linked.get(0).get("entryNo"):"DIRECT_REFERRAL_UNVERIFIED:"+after.key()+":"+asset;
+                original=linked.size()==1?"EARNINGS:"+linked.get(0).get("entryNo"):"DIRECT_REFERRAL_UNVERIFIED:"+after.key()+":"+("USDT".equals(asset)?"USDT":"NEX");
             } else {
                 if(!asset.equals(after.subject().get("currency")))continue;
                 prior=before.recovery()==null?BigDecimal.ZERO:amount(before.recovery().get("recovered_amount"));current=amount(after.recovery().get("recovered_amount"));
                 original="COMMISSION:"+number(after.subject().get("id"))+":RELEASE";
             }
             BigDecimal take=current.subtract(prior);if(take.signum()<0)throw new IllegalArgumentException("Regressed Direct recovery");
-            if(take.signum()>0)events.add(new Event(operationKey+":"+asset,Action.valueOf("CLAWBACK"),new Account(user,asset,"available"),null,original,take,null));
+            if(take.signum()>0)events.add(new Event(operationKey+":"+("USDT".equals(asset)?"USDT":"NEX"),Action.valueOf("CLAWBACK"),new Account(user,asset,"available"),null,original,take,null));
         }
         return List.copyOf(events);
     }

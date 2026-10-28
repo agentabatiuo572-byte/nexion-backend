@@ -284,6 +284,21 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void oldTokenMonthlyAndStreakRewardsAreRejectedWithoutBusinessWrites() {
+        var monthly = service.createMonthlyMission("old-token-monthly",
+                new ffdd.opsconsole.growth.dto.GrowthMonthlyMissionRequest("month-old", "Monthly", "", "",
+                        0, 12, "CHECK_IN", 1, "NEX", BigDecimal.ONE, "Legacy", "reject legacy currency", "superadmin"));
+        assertThat(monthly.getMessage()).isEqualTo("CHALLENGE_REWARD_TYPE_INVALID");
+        seedCheckInConfiguredRows();
+        String before = String.valueOf(findRow(streakMilestones, "id", "1").get("reward"));
+        var streak = service.updateStreakMilestone("old-token-streak", 1,
+                new GrowthConfigUpdateRequest("reward", "+20 NEX", "reject legacy currency", "superadmin"));
+        assertThat(streak.getMessage()).isEqualTo("REWARD_TYPE_UNSUPPORTED");
+        assertThat(findRow(streakMilestones, "id", "1")).containsEntry("reward", before);
+        org.mockito.Mockito.verifyNoInteractions(auditLogService);
+    }
+
+    @Test
     void checkInUsesNexAndKeepsPointsSunset() {
         seedCheckInConfiguredRows();
         seedEarnMilestones();
@@ -292,7 +307,7 @@ class OpsGrowthServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData())
-                .containsEntry("rewardAsset", "NEX")
+                .containsEntry("rewardAsset", "UVT")
                 .containsEntry("pointsSystemStatus", "SUNSET_HISTORY_ONLY");
         assertThat(result.getData().get("disabledOutputs").toString()).contains("已退役积分账本写入");
         assertThat(result.getData().get("rules")).asList().hasSize(6);
@@ -303,7 +318,7 @@ class OpsGrowthServiceTest {
         assertThat(result.getData().get("stats"))
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .containsEntry("todaySign", 12)
-                .containsEntry("weekMsNex", "180 NEX");
+                .containsEntry("weekMsNex", "180 UVT");
         assertThat(result.getData()).containsKeys("tickInterval", "coverage");
     }
 
@@ -787,7 +802,7 @@ class OpsGrowthServiceTest {
     void trackableCampaignCreationRequiresAPositiveTarget() {
         for (int target : new int[]{0, -1, 1_000_000_001}) {
             var request = new GrowthQuestEventRequest("trackable-test", "Test campaign", "seasonal", "ongoing",
-                    "10 NEX", false, true, "Complete the configured condition", "", target, "", null, null,
+                    "10 UVT", false, true, "Complete the configured condition", "", target, "", null, null,
                     "Validate configured campaign target", "test-admin");
             var result = service.createQuestEvent("target-" + target, request);
             assertThat(result.getCode()).isNotZero();
@@ -802,7 +817,7 @@ class OpsGrowthServiceTest {
         for (String kind : new String[]{"seasonal", "discount", "wheel"}) {
             boolean trackable = "seasonal".equals(kind);
             var request = new GrowthQuestEventRequest("create-" + kind, "Test campaign", kind, "upcoming",
-                    "10 NEX", false, trackable, "Campaign condition", "", trackable ? 1 : 0, "", null, null,
+                    "10 UVT", false, trackable, "Campaign condition", "", trackable ? 1 : 0, "", null, null,
                     "Validate supported campaign creation", "test-admin");
             assertThat(service.createQuestEvent("create-key-" + kind, request).getCode()).isZero();
         }
@@ -816,7 +831,7 @@ class OpsGrowthServiceTest {
     @Test
     void directOngoingCreationCannotBypassTheLocalizedPublicationGate() {
         var request = new GrowthQuestEventRequest("new-campaign", "Campaign", "seasonal", "ongoing",
-                "10 NEX", false, false, "Campaign condition", "", 0, "", null, null,
+                "10 UVT", false, false, "Campaign condition", "", 0, "", null, null,
                 "Check direct publication", "test-admin");
 
         var result = service.createQuestEvent("create-untranslated", request);
@@ -838,8 +853,8 @@ class OpsGrowthServiceTest {
         var managed = serviceWithH4Rules(rules);
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85"));
         for (var entry : Map.of("evt-refer-5-get-pro", "Pro 设备1台",
-                "evt-black-friday", "购物优惠券", "evt-onboarding-7d", "200 NEX + 补签卡",
-                "evt-regional-pk", "NEX 与 USDT 展示说明").entrySet()) {
+                "evt-black-friday", "购物优惠券", "evt-onboarding-7d", "200 UVT + 补签卡",
+                "evt-regional-pk", "UVT 与 USDT 展示说明").entrySet()) {
             var request = new GrowthQuestEventRequest(entry.getKey(), "Test campaign", "referral", "ongoing",
                     entry.getValue(), true, false, "Campaign condition", "", 0, "", null, null,
                     "Validate structured reward draft", "test-admin");
@@ -849,7 +864,7 @@ class OpsGrowthServiceTest {
         var inserts = mockingDetails(questEventMapper).getInvocations().stream()
                 .filter(invocation -> invocation.getMethod().getName().equals("insertEvent")).toList();
         assertThat(inserts).hasSize(4).allSatisfy(invocation -> {
-            assertThat(invocation.getArgument(9, String.class)).isEqualTo("NEX");
+            assertThat(invocation.getArgument(9, String.class)).isEqualTo("UVT");
             assertThat(invocation.getArgument(10, BigDecimal.class)).isZero();
             assertThat(invocation.getArgument(12, String.class)).isNull();
             assertThat(invocation.getArgument(14, Integer.class)).isZero();
@@ -861,14 +876,14 @@ class OpsGrowthServiceTest {
         var managed = serviceWithH4Rules(mock(H4EventRuleService.class));
         for (var creator : List.of(service, managed)) {
             String code = creator == service ? "evt-refer-5-get-pro" : "custom-referral";
-            for (String reward : List.of("Pro 设备1台", "10 NEX + 1 USDT", "0 NEX")) {
+            for (String reward : List.of("Pro 设备1台", "10 UVT + 1 USDT", "0 UVT")) {
                 var request = new GrowthQuestEventRequest(code, "Test campaign", "referral", "upcoming",
                         reward, false, false, "", "", 0, "", null, null, "Check legacy reward validation", "test-admin");
                 assertThat(creator.createQuestEvent("legacy-draft", request).getCode()).isNotZero();
             }
             coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85"));
             var request = new GrowthQuestEventRequest(code, "Test campaign", "referral", "upcoming",
-                    "10 NEX", false, false, "", "", 0, "", null, null, "Check legacy coverage validation", "test-admin");
+                    "10 UVT", false, false, "", "", 0, "", null, null, "Check legacy coverage validation", "test-admin");
             assertThat(creator.createQuestEvent("legacy-coverage", request).getCode())
                     .isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
         }
@@ -906,20 +921,20 @@ class OpsGrowthServiceTest {
     @Test
     void knownCodeWithoutRegisteredRuleRetainsLegacyRewardEdits() {
         String code = "evt-refer-5-get-pro";
-        seedQuestEvents("{\"id\":\"evt-refer-5-get-pro\",\"kind\":\"referral\",\"reward\":\"10 NEX\"}");
+        seedQuestEvents("{\"id\":\"evt-refer-5-get-pro\",\"kind\":\"referral\",\"reward\":\"10 UVT\"}");
         var rules = mock(H4EventRuleService.class);
         when(rules.find(code, false)).thenReturn(null);
         var managed = serviceWithH4Rules(rules);
         assertThat(managed.updateQuestEventReward("legacy-device", code,
-                new GrowthConfigUpdateRequest("reward", "Pro 设备1台", "Check legacy edit", "test-admin", "10 NEX")).getMessage())
+                new GrowthConfigUpdateRequest("reward", "Pro 设备1台", "Check legacy edit", "test-admin", "10 UVT")).getMessage())
                 .isEqualTo("EVENT_REWARD_ASSET_INVALID");
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85"));
         assertThat(managed.updateQuestEventReward("legacy-increase", code,
-                new GrowthConfigUpdateRequest("reward", "20 NEX", "Check legacy edit", "test-admin", "10 NEX")).getCode())
+                new GrowthConfigUpdateRequest("reward", "20 UVT", "Check legacy edit", "test-admin", "10 UVT")).getCode())
                 .isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
         assertThat(managed.updateQuestEventReward("legacy-decrease", code,
-                new GrowthConfigUpdateRequest("reward", "5 NEX", "Check legacy edit", "test-admin", "10 NEX")).getCode()).isZero();
-        verify(questEventMapper).updateReward(eq(code), eq("5 NEX"), eq("NEX"), eq(new BigDecimal("5")), any());
+                new GrowthConfigUpdateRequest("reward", "5 UVT", "Check legacy edit", "test-admin", "10 UVT")).getCode()).isZero();
+        verify(questEventMapper).updateReward(eq(code), eq("5 UVT"), eq("UVT"), eq(new BigDecimal("5")), any());
         verify(questEventMapper, never()).updateRewardName(anyString(), anyString(), any());
     }
 
@@ -930,7 +945,7 @@ class OpsGrowthServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData())
                 .containsEntry("domain", "H3_H4")
-                .containsEntry("rewardAsset", "NEX")
+                .containsEntry("rewardAsset", "UVT")
                 .containsEntry("pointsSystemStatus", "SUNSET_HISTORY_ONLY");
         assertThat(result.getData().get("dayOneTasks")).asList().isEmpty();
         assertThat(result.getData().get("weeklyTier1")).asList().isEmpty();
@@ -998,7 +1013,7 @@ class OpsGrowthServiceTest {
     void questEventsReadsH3ConfigAndH4EventBusinessRows() {
         seedQuestBusinessRows();
         configFacade.values.put("growth.quest.day_one.tasks",
-                "[{\"id\":0,\"task\":\"DB 首日任务\",\"href\":\"/db/day-one\",\"reward\":\"11 NEX\",\"completionType\":\"event\"}]");
+                "[{\"id\":0,\"task\":\"DB 首日任务\",\"href\":\"/db/day-one\",\"reward\":\"11 UVT\",\"completionType\":\"event\"}]");
         configFacade.values.put("growth.quest.weekly.t1.rows",
                 "[{\"cond\":\"DB 一档\",\"reward\":\"22\"}]");
         configFacade.values.put("growth.quest.weekly.t2.rows",
@@ -1010,8 +1025,8 @@ class OpsGrowthServiceTest {
         configFacade.values.put("growth.quest.task_contracts",
                 "[{\"taskId\":0,\"taskKey\":\"db.task\",\"serverEvent\":\"db.server\",\"downstream\":\"db.downstream\",\"b3\":true,\"retentionOnly\":false,\"day7\":\"DB Day7\",\"bi\":\"db.bi\",\"sample24h\":1,\"anomalyPct\":\"0.1%\"}]");
         configFacade.values.put("growth.quest.day_one.window_ms", "24h 全额 / 72h 宽限");
-        configFacade.values.put("growth.quest.day_one.tri_reward", "500 / 200 / 0 NEX");
-        configFacade.values.put("growth.quest.weekly.champ_bonus", "+500 NEX");
+        configFacade.values.put("growth.quest.day_one.tri_reward", "500 / 200 / 0 UVT");
+        configFacade.values.put("growth.quest.weekly.champ_bonus", "+500 UVT");
         configFacade.values.put("growth.quest.promo_banner",
                 "{\"baseReward\":\"配置横幅不应生效\",\"multiplier\":\"9.9\",\"countdownDays\":\"9\",\"countdownHours\":\"9\",\"targetDevice\":\"配置设备\",\"targetDaily\":\"99.00\",\"status\":\"config\"}");
         configFacade.values.put("growth.event.rows",
@@ -1029,8 +1044,8 @@ class OpsGrowthServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData())
                 .containsEntry("dayOneWindow", "24h 全额 / 72h 宽限")
-                .containsEntry("dayOneTriReward", "500 / 200 / 0 NEX")
-                .containsEntry("weeklyChampionBonus", "+500 NEX")
+                .containsEntry("dayOneTriReward", "500 / 200 / 0 UVT")
+                .containsEntry("weeklyChampionBonus", "+500 UVT")
                 .containsEntry("wheelSignature", "DB 奖|$10|100|true|真实流出|10||0");
         assertThat(result.getData().get("dayOneTasks")).asList()
                 .hasSize(1)
@@ -1744,7 +1759,7 @@ class OpsGrowthServiceTest {
     @Test
     void updateQuestEventStatusWritesBusinessTableAndAudit() {
         seedQuestEvents(
-                "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"upcoming\",\"reward\":\"10 NEX\",\"featured\":false}");
+                "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"upcoming\",\"reward\":\"10 UVT\",\"featured\":false}");
         seedEventLocalizedContent("regional-pk");
 
         ApiResult<Map<String, Object>> result = service.updateQuestEventStatus(
@@ -1768,7 +1783,7 @@ class OpsGrowthServiceTest {
     @Test
     void publishingAnEventWithoutChineseAndVietnameseContentIsBlockedWithTheMissingList() {
         seedQuestEvents(
-                "{\"id\":\"evt-spring-spin\",\"name\":\"Daily Lucky Spin\",\"state\":\"upcoming\",\"reward\":\"10 NEX\",\"featured\":false}");
+                "{\"id\":\"evt-spring-spin\",\"name\":\"Daily Lucky Spin\",\"state\":\"upcoming\",\"reward\":\"10 UVT\",\"featured\":false}");
 
         ApiResult<Map<String, Object>> result = service.updateQuestEventStatus(
                 "idem-h4-status-unlocalized",
@@ -1788,10 +1803,10 @@ class OpsGrowthServiceTest {
     @Test
     void publishingAnEventWithOnlyEnglishConfiguredIsStillBlocked() {
         seedQuestEvents(
-                "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"upcoming\",\"reward\":\"10 NEX\",\"featured\":false}");
+                "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"upcoming\",\"reward\":\"10 UVT\",\"featured\":false}");
         configFacade.values.put("growth.content.localized",
                 "{\"event\":{\"regional-pk\":{\"en\":{\"name\":\"Regional PK\",\"description\":\"English copy\","
-                        + "\"rewardName\":\"10 NEX\"}}}}");
+                        + "\"rewardName\":\"10 UVT\"}}}}");
 
         ApiResult<Map<String, Object>> result = service.updateQuestEventStatus(
                 "idem-h4-status-en-only",
@@ -1808,7 +1823,7 @@ class OpsGrowthServiceTest {
     @Test
     void nullLocalizedLeafCannotPassThePublicationGate() {
         seedQuestEvents(
-                "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"upcoming\",\"reward\":\"10 NEX\",\"featured\":false}");
+                "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"upcoming\",\"reward\":\"10 UVT\",\"featured\":false}");
         seedEventLocalizedContent("regional-pk");
         configFacade.values.put("growth.content.localized",
                 configFacade.values.get("growth.content.localized").replace("\"中文说明\"", "null"));
@@ -1824,7 +1839,7 @@ class OpsGrowthServiceTest {
     @Test
     void endingAnEventIsNotBlockedByMissingLocalizedContent() {
         seedQuestEvents(
-                "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"ongoing\",\"reward\":\"10 NEX\",\"featured\":false}");
+                "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"ongoing\",\"reward\":\"10 UVT\",\"featured\":false}");
 
         ApiResult<Map<String, Object>> result = service.updateQuestEventStatus(
                 "idem-h4-status-end",
@@ -1866,8 +1881,8 @@ class OpsGrowthServiceTest {
     @Test
     void settingSecondFeaturedOngoingEventReturns422() {
         seedQuestEvents(
-                "{\"id\":\"current-featured\",\"name\":\"Current\",\"state\":\"ongoing\",\"reward\":\"10 NEX\",\"featured\":true}",
-                "{\"id\":\"ref-5\",\"name\":\"Referral\",\"state\":\"ongoing\",\"reward\":\"10 NEX\",\"featured\":false}");
+                "{\"id\":\"current-featured\",\"name\":\"Current\",\"state\":\"ongoing\",\"reward\":\"10 UVT\",\"featured\":true}",
+                "{\"id\":\"ref-5\",\"name\":\"Referral\",\"state\":\"ongoing\",\"reward\":\"10 UVT\",\"featured\":false}");
         when(questEventMapper.featuredOngoingEventIdsForUpdate("ref-5")).thenReturn(List.of(101L));
 
         ApiResult<Map<String, Object>> result = service.updateQuestEventFeatured(
@@ -1882,7 +1897,7 @@ class OpsGrowthServiceTest {
     @Test
     void disabledBooleanAliasTurnsOffEventFeatured() {
         seedQuestEvents(
-                "{\"id\":\"pro-7d\",\"name\":\"Pro 7d\",\"state\":\"ongoing\",\"reward\":\"10 NEX\",\"featured\":true}");
+                "{\"id\":\"pro-7d\",\"name\":\"Pro 7d\",\"state\":\"ongoing\",\"reward\":\"10 UVT\",\"featured\":true}");
 
         ApiResult<Map<String, Object>> result = service.updateQuestEventFeatured(
                 "idem-h4-featured-off",
@@ -1941,11 +1956,11 @@ class OpsGrowthServiceTest {
         ApiResult<Map<String, Object>> result = service.updateStreakMilestone(
                 "idem-h5-ms",
                 1,
-                new GrowthConfigUpdateRequest("reward", "+20 NEX", "adjust streak", "superadmin"));
+                new GrowthConfigUpdateRequest("reward", "+20 UVT", "adjust streak", "superadmin"));
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values).doesNotContainKey("growth.checkin.streak_milestone.1.reward");
-        assertThat(findRow(streakMilestones, "id", "1")).containsEntry("reward", "+20 NEX");
+        assertThat(findRow(streakMilestones, "id", "1")).containsEntry("reward", "+20 UVT");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
@@ -2099,14 +2114,14 @@ class OpsGrowthServiceTest {
 
     @Test
     void phaseOverviewReadsSunsetExclusionsFromConfig() {
-        configFacade.values.put("growth.sunset.exclusions", "Premium, NEX v2; Points");
+        configFacade.values.put("growth.sunset.exclusions", "Premium, UVT v2; Points");
 
         ApiResult<Map<String, Object>> result = service.phases();
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
-                .containsExactly("Premium", "NEX v2", "Points");
+                .containsExactly("Premium", "UVT v2", "Points");
     }
 
     @Test
@@ -2796,8 +2811,8 @@ class OpsGrowthServiceTest {
     private void seedEventLocalizedContent(String eventCode) {
         configFacade.values.put("growth.content.localized",
                 "{\"event\":{\"" + eventCode + "\":{"
-                        + "\"zh\":{\"name\":\"区域 PK 赛\",\"description\":\"中文说明\",\"rewardName\":\"10 NEX\"},"
-                        + "\"vi\":{\"name\":\"Giải PK khu vực\",\"description\":\"Mô tả\",\"rewardName\":\"10 NEX\"}"
+                        + "\"zh\":{\"name\":\"区域 PK 赛\",\"description\":\"中文说明\",\"rewardName\":\"10 UVT\"},"
+                        + "\"vi\":{\"name\":\"Giải PK khu vực\",\"description\":\"Mô tả\",\"rewardName\":\"10 UVT\"}"
                         + "}}}");
     }
 
@@ -2863,9 +2878,9 @@ class OpsGrowthServiceTest {
                 "lucky2Actual", "8.3%",
                 "weekRevive", 3,
                 "weekMsTrigger", 9,
-                "weekMsNex", "180 NEX"));
+                "weekMsNex", "180 UVT"));
         checkInRules.clear();
-        checkInRules.add(row("key", "baseline", "name", "每日基础 NEX", "sub", "", "cur", "2", "hot", false));
+        checkInRules.add(row("key", "baseline", "name", "每日基础 UVT", "sub", "", "cur", "2", "hot", false));
         checkInRules.add(row("key", "bonus7", "name", "连续 7 天加奖", "sub", "", "cur", "5", "hot", false));
         checkInRules.add(row("key", "luckyMultiplierMax", "name", "幸运倍率上限", "sub", "", "cur", "2", "hot", true));
         checkInRules.add(row("key", "p15", "name", "幸运 1.5x 概率", "sub", "", "cur", "15", "hot", true));
@@ -2873,7 +2888,7 @@ class OpsGrowthServiceTest {
         checkInRules.add(row("key", "broken", "name", "断签阈值", "sub", "", "cur", "48", "hot", false));
         streakMilestones.clear();
         for (int i = 0; i < 7; i++) {
-            streakMilestones.add(row("id", i, "day", (i + 1) + " 天", "reward", "+" + (i + 1) + " NEX", "kind", "nex"));
+            streakMilestones.add(row("id", i, "day", (i + 1) + " 天", "reward", "+" + (i + 1) + " UVT", "kind", "nex"));
         }
         powerUps.clear();
         for (int i = 0; i < 4; i++) {
@@ -2897,7 +2912,7 @@ class OpsGrowthServiceTest {
     }
 
     private void seedQuestBusinessRows() {
-        missionRows.put("DAY_ONE", new ArrayList<>(List.of(row("id", 0, "task", "DB 首日任务", "href", "/db/day-one", "reward", "11 NEX", "completionType", "event"))));
+        missionRows.put("DAY_ONE", new ArrayList<>(List.of(row("id", 0, "task", "DB 首日任务", "href", "/db/day-one", "reward", "11 UVT", "completionType", "event"))));
         missionRows.put("WEEKLY_T1", new ArrayList<>(List.of(row("cond", "DB 一档", "reward", "22"))));
         missionRows.put("WEEKLY_T2", new ArrayList<>(List.of(row("cond", "DB 二档", "reward", "33"))));
         monthlyMissions.clear();

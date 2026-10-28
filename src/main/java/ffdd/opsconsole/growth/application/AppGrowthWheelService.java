@@ -43,7 +43,7 @@ import org.springframework.util.StringUtils;
 public class AppGrowthWheelService {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final BigDecimal ONE_HUNDRED = new BigDecimal("100.0000");
-    private static final Set<String> REWARD_KINDS = Set.of("nex", "points", "usdt", "coupon");
+    private static final Set<String> REWARD_KINDS = Set.of("uvt", "points", "usdt", "coupon");
 
     private final AppGrowthWheelMapper mapper;
     private final VoucherGrantFacade voucherGrantFacade;
@@ -245,7 +245,7 @@ public class AppGrowthWheelService {
             throw new BizException(409, "WHEEL_PROBABILITY_SUM_INVALID");
         }
         if (tiers.stream().noneMatch(row -> !Boolean.TRUE.equals(row.realOutflow())
-                && "nex".equals(row.rewardKind()))) {
+                && "uvt".equals(row.rewardKind()))) {
             throw new BizException(409, "WHEEL_COMFORT_TIER_MISSING");
         }
     }
@@ -263,7 +263,7 @@ public class AppGrowthWheelService {
     private WheelTier comfortTier(List<WheelTier> tiers, LocalDate spinDate) {
         return tiers.stream()
                 .filter(row -> !Boolean.TRUE.equals(row.realOutflow()))
-                .filter(row -> "nex".equals(row.rewardKind()))
+                .filter(row -> "uvt".equals(row.rewardKind()))
                 .filter(row -> stockGuardFailure(row, spinDate) == null)
                 .findFirst()
                 .orElseThrow(() -> new BizException(409, "WHEEL_COMFORT_TIER_MISSING"));
@@ -314,7 +314,7 @@ public class AppGrowthWheelService {
     private void award(Long userId, String spinNo, WheelTier tier) {
         BigDecimal amount = tier.rewardAmount();
         switch (tier.rewardKind()) {
-            case "nex" -> creditWallet(userId, spinNo, "NEX", amount);
+            case "uvt" -> creditWallet(userId, spinNo, "UVT", amount);
             case "usdt" -> creditWallet(userId, spinNo, "USDT", amount);
             case "points" -> {
                 int points = wholeNumber(amount);
@@ -339,8 +339,8 @@ public class AppGrowthWheelService {
             changed = "USDT".equals(asset)
                     ? mapper.creditWalletUsdt(userId, amount) : mapper.creditWalletNex(userId, amount);
         } else {
-            earningsReleaseService.creditReward(userId, "H4_WHEEL", spinNo + ":" + asset,
-                    asset, amount, "H4:" + spinNo + ":" + asset);
+            earningsReleaseService.creditReward(userId, "H4_WHEEL", spinNo + ":" + ("USDT".equals(asset) ? "USDT" : "NEX"),
+                    asset, amount, "H4:" + spinNo + ":" + ("USDT".equals(asset) ? "USDT" : "NEX"));
             changed = 1;
         }
         if (changed != 1 || mapper.insertWalletLedger(userId, spinNo, asset, amount, before.add(amount)) != 1) {

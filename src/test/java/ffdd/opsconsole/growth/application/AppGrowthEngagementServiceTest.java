@@ -231,7 +231,7 @@ class AppGrowthEngagementServiceTest {
                 "status", "CLAIMABLE")));
         DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
                 LocalDateTime.now().minusHours(2), LocalDateTime.now().plusHours(70),
-                "500 / 200 / 0 NEX", new BigDecimal("2"));
+                "500 / 200 / 0 UVT", new BigDecimal("2"));
         when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
         when(mapper.dayOneSnapshotState(42L, 71L)).thenReturn(List.of(
                 Map.of("questCode", "SNAPSHOT_ONLY", "name", "Original member name",
@@ -364,7 +364,7 @@ class AppGrowthEngagementServiceTest {
     void questStateKeepsIndividuallyVerifiableFrozenHistoryWhenHeaderCountDoesNotMatch() {
         DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
-                "500 / 200 / 0 NEX", new BigDecimal("2"));
+                "500 / 200 / 0 UVT", new BigDecimal("2"));
         when(mapper.questState(42L, "en")).thenReturn(List.of(Map.of(
                 "questCode", "CURRENT_WEEK", "layer", "WEEKLY_T1")));
         when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
@@ -388,7 +388,7 @@ class AppGrowthEngagementServiceTest {
     void questStateDropsDuplicateAndWrongInstanceRowsFromCorruptFrozenHistory() {
         DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 3,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
-                "500 / 200 / 0 NEX", new BigDecimal("2"));
+                "500 / 200 / 0 UVT", new BigDecimal("2"));
         when(mapper.questState(42L, "en")).thenReturn(List.of(Map.of(
                 "questCode", "CURRENT_WEEK", "layer", "WEEKLY_T1")));
         when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
@@ -415,7 +415,7 @@ class AppGrowthEngagementServiceTest {
     void questStateReturnsNoDayOneRowsWhenNoCorruptFrozenRowIsIndividuallyVerifiable() {
         DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
-                "500 / 200 / 0 NEX", new BigDecimal("2"));
+                "500 / 200 / 0 UVT", new BigDecimal("2"));
         when(mapper.questState(42L, "en")).thenReturn(List.of(Map.of(
                 "questCode", "CURRENT_WEEK", "layer", "WEEKLY_T1")));
         when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
@@ -438,7 +438,7 @@ class AppGrowthEngagementServiceTest {
     void questStateReadsTheFrozenDayOneHeaderWhenTheCurrentH1DialIsUnavailable() {
         DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 1,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
-                "500 / 200 / 0 NEX", new BigDecimal("2"));
+                "500 / 200 / 0 UVT", new BigDecimal("2"));
         when(rhythm.snapshot()).thenReturn(new GrowthRhythmSnapshot(
                 24, 3, "P2", 50, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
                 new BigDecimal("0.2"), 30, new BigDecimal("5000"), new BigDecimal("1.5"), false,
@@ -471,7 +471,7 @@ class AppGrowthEngagementServiceTest {
         LocalDateTime enteredAt = LocalDateTime.of(2026, 9, 9, 0, 0);
         LocalDateTime eligibleUntil = LocalDateTime.of(2026, 9, 12, 0, 0);
         DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 1, enteredAt, eligibleUntil,
-                "500 / 200 / 0 NEX", new BigDecimal("2"));
+                "500 / 200 / 0 UVT", new BigDecimal("2"));
         when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
         when(mapper.questState(42L, "en")).thenReturn(List.of());
         when(mapper.dayOneSnapshotState(42L, 71L)).thenReturn(List.of(Map.of(
@@ -500,7 +500,7 @@ class AppGrowthEngagementServiceTest {
     void questStateKeepsExpiredFrozenDayOneHistoryWithZeroReward() {
         LocalDateTime enteredAt = LocalDateTime.of(2026, 9, 9, 0, 0);
         DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 1, enteredAt,
-                enteredAt.plusHours(72), "500 / 200 / 0 NEX", new BigDecimal("2"));
+                enteredAt.plusHours(72), "500 / 200 / 0 UVT", new BigDecimal("2"));
         when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
         when(mapper.questState(42L, "en")).thenReturn(List.of(Map.of(
                 "questCode", "CURRENT_WEEK", "layer", "WEEKLY_T1", "status", "PENDING")));
@@ -528,7 +528,7 @@ class AppGrowthEngagementServiceTest {
                 List.of("H1.rhythm.currentMonth"), false, List.of("growth.phase.month.3.questBonusMultiplier")));
         when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(dayOneSnapshot("EMPTY", 0,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
-                "500 / 200 / 0 NEX", BigDecimal.ONE));
+                "500 / 200 / 0 UVT", BigDecimal.ONE));
 
         assertThatThrownBy(() -> service.questState(42L)).hasMessage("H1_RHYTHM_UNAVAILABLE");
         verify(mapper, never()).questState(anyLong(), anyString());
@@ -538,7 +538,7 @@ class AppGrowthEngagementServiceTest {
         when(mapper.questState(42L, "en")).thenReturn(List.of());
         when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(dayOneSnapshot("EMPTY", 0,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
-                "500 / 200 / 0 NEX", BigDecimal.ONE));
+                "500 / 200 / 0 UVT", BigDecimal.ONE));
         when(mapper.questPromoBanner()).thenReturn(Map.of());
 
         var result = service.questState(42L);
@@ -574,7 +574,7 @@ class AppGrowthEngagementServiceTest {
 
     @Test
     void eventJoinAndClaimUsePersistedEventStateAndRealNexLedger() {
-        EventReward event = new EventReward(8L, "EV-1", 1, "NEX", new BigDecimal("4"), null);
+        EventReward event = new EventReward(8L, "EV-1", 1, "UVT", new BigDecimal("4"), null);
         when(mapper.lockOpenEvent("EV-1")).thenReturn(event);
         when(mapper.joinEvent(42L, event)).thenReturn(1);
 
@@ -646,7 +646,7 @@ class AppGrowthEngagementServiceTest {
     void dayOneClaimRejectsAConfiguredSnapshotWhoseExactMemberSetIsNotComplete() {
         DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
-                "500 / 200 / 0 NEX", new BigDecimal("2"));
+                "500 / 200 / 0 UVT", new BigDecimal("2"));
         when(mapper.lockDayOneSnapshot(42L, snapshot.instanceKey())).thenReturn(snapshot);
         when(mapper.lockDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey())).thenReturn(List.of(
                 new DayOneSnapshotQuestState("DAY-1", "CLAIMABLE"),
@@ -665,7 +665,7 @@ class AppGrowthEngagementServiceTest {
     void dayOneClaimRejectsAHeaderWhoseLockedFrozenMemberCountIsShort() {
         DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
-                "500 / 200 / 0 NEX", new BigDecimal("2"));
+                "500 / 200 / 0 UVT", new BigDecimal("2"));
         when(mapper.lockDayOneSnapshot(42L, snapshot.instanceKey())).thenReturn(snapshot);
         when(mapper.lockDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey()))
                 .thenReturn(List.of(new DayOneSnapshotQuestState("DAY-1", "CLAIMABLE")));
@@ -682,7 +682,7 @@ class AppGrowthEngagementServiceTest {
     void dayOneClaimUsesTheSnapshotAfterCurrentDefinitionWasRemovedAndH1Changed() {
         DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
-                "500 / 200 / 0 NEX", new BigDecimal("2"));
+                "500 / 200 / 0 UVT", new BigDecimal("2"));
         when(mapper.lockDayOneSnapshot(42L, snapshot.instanceKey())).thenReturn(snapshot);
         when(mapper.lockDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey())).thenReturn(List.of(
                 new DayOneSnapshotQuestState("DAY-1", "CLAIMABLE"),
@@ -706,14 +706,14 @@ class AppGrowthEngagementServiceTest {
     void dayOneClaimRejectsEmptyLegacyExpiredAndStaleSnapshotInstancesWithoutWrites() {
         DayOneSnapshot empty = dayOneSnapshot("EMPTY", 0,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
-                "500 / 200 / 0 NEX", BigDecimal.ONE);
+                "500 / 200 / 0 UVT", BigDecimal.ONE);
         when(mapper.lockDayOneSnapshot(42L, empty.instanceKey())).thenReturn(empty);
         assertThat(service.claimQuest(42L, "DAY-1", empty.instanceKey(), "empty-instance").getMessage())
                 .isEqualTo("DAY_ONE_EMPTY_INSTANCE");
 
         DayOneSnapshot expired = dayOneSnapshot("SNAPSHOT", 1,
                 LocalDateTime.now().minusHours(73), LocalDateTime.now().minusHours(1),
-                "500 / 200 / 0 NEX", BigDecimal.ONE);
+                "500 / 200 / 0 UVT", BigDecimal.ONE);
         when(mapper.lockDayOneSnapshot(42L, expired.instanceKey())).thenReturn(expired);
         assertThat(service.claimQuest(42L, "DAY-1", expired.instanceKey(), "expired-instance").getMessage())
                 .isEqualTo("QUEST_EXPIRED");
@@ -728,7 +728,7 @@ class AppGrowthEngagementServiceTest {
     void dayOneClaimRejectsDuplicateFrozenQuestCodesBeforeTheCasWrite() {
         DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
-                "500 / 200 / 0 NEX", BigDecimal.ONE);
+                "500 / 200 / 0 UVT", BigDecimal.ONE);
         when(mapper.lockDayOneSnapshot(42L, snapshot.instanceKey())).thenReturn(snapshot);
         when(mapper.lockDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey())).thenReturn(List.of(
                 new DayOneSnapshotQuestState("DAY-1", "CLAIMABLE"),
@@ -745,7 +745,7 @@ class AppGrowthEngagementServiceTest {
     void dayOneClaimRequiresTheRequestedSnapshotMemberAndTheCasCountPreventsSecondPayout() {
         DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
                 LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
-                "500 / 200 / 0 NEX", BigDecimal.ONE);
+                "500 / 200 / 0 UVT", BigDecimal.ONE);
         when(mapper.lockDayOneSnapshot(42L, snapshot.instanceKey())).thenReturn(snapshot, snapshot);
         when(mapper.lockDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey())).thenReturn(List.of(
                 new DayOneSnapshotQuestState("DAY-1", "CLAIMABLE"),
@@ -870,7 +870,7 @@ class AppGrowthEngagementServiceTest {
         assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION")
                 .containsEntry("runId", "");
         verify(earningsRelease).creditReward(
-                42L, "DAILY_CHECK_IN", "DAILY:42:" + today, "NEX",
+                42L, "DAILY_CHECK_IN", "DAILY:42:" + today, "UVT",
                 new BigDecimal("2.000000"), "GROWTH:DAILY:42:" + today + ":NEX");
     }
 
@@ -934,7 +934,7 @@ class AppGrowthEngagementServiceTest {
 
     @Test
     void dailyAndEarningMilestonesUseSeparateUniqueLedgersAndEvents() {
-        DailyMilestone daily = new DailyMilestone(3L, 7, "NEX", new BigDecimal("5"), null);
+        DailyMilestone daily = new DailyMilestone(3L, 7, "UVT", new BigDecimal("5"), null);
         when(mapper.lockClaimableDailyMilestone(42L, 3L)).thenReturn(daily);
         when(mapper.claimDailyMilestone(42L, daily)).thenReturn(1);
         wallet(new BigDecimal("10"));

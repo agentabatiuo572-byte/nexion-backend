@@ -94,7 +94,7 @@ public class F5CommissionService {
             throw new BizException(500, "F5_COMMISSION_KIND_UNKNOWN");
         }
         if (java.util.stream.Stream.concat(kindAggregates.stream(), statusAggregates.stream())
-                .anyMatch(row -> !Set.of("USDT", "NEX").contains(text(row.get("currency")).toUpperCase(Locale.ROOT)))) {
+                .anyMatch(row -> !Set.of("USDT", "UVT").contains(text(row.get("currency")).toUpperCase(Locale.ROOT)))) {
             throw new BizException(500, "F5_COMMISSION_CURRENCY_UNKNOWN");
         }
         if (statusAggregates.stream().anyMatch(row -> !STATUSES.contains(text(row.get("status"))))) {
@@ -240,7 +240,7 @@ public class F5CommissionService {
                 if (!commissionId.equals("CM-" + eventId)
                         || userId == null || userId <= 0
                         || !KINDS.contains(kind)
-                        || !Set.of("USDT", "NEX").contains(currency)
+                        || !Set.of("USDT", "UVT").contains(currency)
                         || !STATUSES.contains(status)
                         || row.get("amount") == null || decimal(row.get("amount")).signum() < 0) {
                     throw new BizException(500, "F5_EXPORT_ROW_INVALID");
@@ -887,7 +887,7 @@ public class F5CommissionService {
                 linked("kind", "network", "days", days, "policy", COOLING_DAYS_KEY),
                 linked("kind", "binary", "days", days, "policy", COOLING_DAYS_KEY),
                 linked("kind", "peer", "days", 0, "policy", "无独立冷却"),
-                linked("kind", "cultivation", "days", 0, "policy", "NEX 即时入账"),
+                linked("kind", "cultivation", "days", 0, "policy", "UVT 即时入账"),
                 linked("kind", "leadership", "days", 0, "policy", "周结后即时入账"),
                 linked("kind", "genesis", "days", 0, "policy", "每日排放即时入账"));
     }
@@ -910,7 +910,7 @@ public class F5CommissionService {
 
     private String currencyLabel(List<Map<String, Object>> rows) {
         Map<String, Object> totals = currencySnapshot(rows);
-        return "USDT " + totals.get("usdt") + " · NEX " + totals.get("nex");
+        return "USDT " + totals.get("usdt") + " · UVT " + totals.get("nex");
     }
 
     private Map<String, Object> currencySnapshot(List<Map<String, Object>> rows) {
@@ -918,7 +918,7 @@ public class F5CommissionService {
         long count = 0L;
         for (Map<String, Object> row : rows) {
             String currency = text(row.get("currency")).toUpperCase(Locale.ROOT);
-            if (!Set.of("USDT", "NEX").contains(currency)) {
+            if (!Set.of("USDT", "UVT").contains(currency)) {
                 throw new BizException(500, "F5_COMMISSION_CURRENCY_UNKNOWN");
             }
             BigDecimal amount = decimal(row.get("amount"));
@@ -931,7 +931,7 @@ public class F5CommissionService {
         }
         return linked(
                 "usdt", totals.getOrDefault("USDT", BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP),
-                "nex", totals.getOrDefault("NEX", BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP),
+                "nex", totals.getOrDefault("UVT", BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP),
                 "count", count);
     }
 
@@ -950,7 +950,7 @@ public class F5CommissionService {
             throw new IllegalArgumentException("COMMISSION_KIND_INVALID");
         }
         String currency = normalizedOptional(query == null ? null : query.currency());
-        if (currency != null && !Set.of("usdt", "nex").contains(currency)) {
+        if (currency != null && !Set.of("usdt", "uvt").contains(currency)) {
             throw new IllegalArgumentException("COMMISSION_CURRENCY_INVALID");
         }
         String status = normalizedOptional(query == null ? null : query.status());

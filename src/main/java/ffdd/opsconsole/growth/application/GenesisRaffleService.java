@@ -120,7 +120,7 @@ public class GenesisRaffleService {
         Set<String> ids=new HashSet<>();int count=0;
         for(Prize prize:request.prizes()){
             if(prize==null||prize.id()==null||!prize.id().matches("[A-Za-z0-9_-]{1,64}")||!ids.add(prize.id())
-                    ||prize.rewardType()==null||!Set.of("NEX","USDT","DEVICE").contains(prize.rewardType())||prize.quantity()<1||prize.quantity()>100)
+                    ||prize.rewardType()==null||!Set.of("UVT","USDT","DEVICE").contains(prize.rewardType())||prize.quantity()<1||prize.quantity()>100)
                 throw new BizException(422,"RAFFLE_PRIZE_INVALID");
             for(String name:Arrays.asList(prize.nameZh(),prize.nameEn(),prize.nameVi()))
                 if(name==null||name.isBlank()||name.length()>160)throw new BizException(422,"RAFFLE_PRIZE_NAME_REQUIRED");

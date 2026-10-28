@@ -91,7 +91,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
     private static final Pattern JSON_LIKE_PATTERN = Pattern.compile("^\\s*[\\[{]");
     private static final Pattern MANUAL_URL_PATTERN = Pattern.compile("https?://|href\\s*=|href=#", Pattern.CASE_INSENSITIVE);
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[a-zA-Z0-9_.-]+}");
-    private static final Pattern SUNSET_PATTERN = Pattern.compile("premium|nex\\s*v?2|nexv2|points|积分", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SUNSET_PATTERN = Pattern.compile("premium|(?:nex|uvt)\\s*v?2|points|积分", Pattern.CASE_INSENSITIVE);
     private static final Pattern TRUST_VERSION_PATTERN = Pattern.compile("^v[1-9][0-9]{0,8}$", Pattern.CASE_INSENSITIVE);
     private static final Pattern DISCLOSURE_VERSION_PATTERN = Pattern.compile(
             "^v[1-9][0-9]{0,8}(?:\\.[0-9]{1,8})*$", Pattern.CASE_INSENSITIVE);
@@ -253,10 +253,10 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                         trustField("leader1Previous.vi", "Ghi chú", "Chỉ dùng để kiểm thử biệt lập"),
                         trustField("leader1Previous.en", "Note", "For isolated acceptance only"),
                         trustField("leader1Url", "Profile", ""))),
-                sandboxTrustSection("nexNarrative", "Run-scoped NEX narrative", "Hero copy", List.of(
-                        trustField("hero.zh", "主标题", "算力需求支持的 NEX"),
-                        trustField("hero.vi", "Tiêu đề", "NEX được hỗ trợ bởi nhu cầu tính toán"),
-                        trustField("hero.en", "Headline", "NEX backed by compute demand"),
+                sandboxTrustSection("nexNarrative", "Run-scoped UVT narrative", "Hero copy", List.of(
+                        trustField("hero.zh", "主标题", "算力需求支持的 UVT"),
+                        trustField("hero.vi", "Tiêu đề", "UVT được hỗ trợ bởi nhu cầu tính toán"),
+                        trustField("hero.en", "Headline", "UVT backed by compute demand"),
                         trustField("subhero.zh", "副标题", "数据来自当前隔离运行"),
                         trustField("subhero.vi", "Phụ đề", "Dữ liệu thuộc lượt chạy biệt lập hiện tại"),
                         trustField("subhero.en", "Subhead", "Data belongs to the current isolated run"))),
@@ -2003,7 +2003,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                         new TrustDisclosureActionRequest(longVal(p, "expectedRevision"), null, operator, reason));
             }
             case "i7_course_reward_adjust" -> {
-                // 委托 OpsI18nLearningService + amplifies=true: 改 rewardNex 放大未来 NEX 流出,B1 红线前置由原方法 coverageFacade.snapshot() 只读 guard 保留
+                // 委托 OpsI18nLearningService + amplifies=true: 改 rewardNex 放大未来 UVT 流出,B1 红线前置由原方法 coverageFacade.snapshot() 只读 guard 保留
                 LearningRewardUpdateRequest req = new LearningRewardUpdateRequest(bdVal(p, "rewardNex"), operator, reason);
                 return i18nLearningService.updateCourseReward(str(p, "courseId"), idem, req);
             }

@@ -108,7 +108,7 @@ class OpsDashboardServiceTest {
                         "/api/admin/content/conversations/overview");
         Map<String, Object> exportTarget = cast(data.get("exportTarget"));
         assertThat(exportTarget).containsEntry("href", "/analytics/export");
-        assertThat(data.toString()).doesNotContain("Premium").doesNotContain("Points").doesNotContain("NEX v2");
+        assertThat(data.toString()).doesNotContain("Premium").doesNotContain("Points").doesNotContain("UVT v2");
 
         Map<String, Object> operations = cast(data.get("operations"));
         assertThat(operations).containsEntry("pendingWithdrawalCount", 2L);
@@ -139,7 +139,7 @@ class OpsDashboardServiceTest {
                 .doesNotContain("online")
                 .doesNotContain("server profile contracts")
                 .doesNotContain("server-canonical")
-                .doesNotContain("active NEX rules");
+                .doesNotContain("active UVT rules");
     }
 
     private WithdrawalOrderView withdrawal(String withdrawalNo, String status, BigDecimal amount) {

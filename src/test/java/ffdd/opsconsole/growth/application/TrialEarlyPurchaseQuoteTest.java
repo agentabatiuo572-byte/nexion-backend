@@ -204,7 +204,7 @@ class TrialEarlyPurchaseQuoteTest {
         verify(mapper).settleWallet(7L, new BigDecimal("1239.000000"), BigDecimal.ZERO, BigDecimal.ZERO);
         verify(earnings).creditRewardInFundOperation(7L, "H2_TRIAL_REMAINDER", "TRIAL-1:REMAINDER", "USDT",
                 new BigDecimal("65.560000"), "H2:TRIAL-1:REMAINDER:USDT");
-        verify(earnings).creditRewardInFundOperation(7L, "H2_TRIAL_BONUS", "TRIAL-1:NEX", "NEX",
+        verify(earnings).creditRewardInFundOperation(7L, "H2_TRIAL_BONUS", "TRIAL-1:NEX", "UVT",
                 new BigDecimal("30.000000"), "H2:TRIAL-1:NEX");
         verify(mapper).insertConversionOrder(eq(7L), anyString(), eq(9L), eq(new BigDecimal("1299")),
                 eq(new BigDecimal("60.000000")), eq(new BigDecimal("1239.000000")));

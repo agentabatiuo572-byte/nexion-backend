@@ -137,7 +137,7 @@ class OpsUserServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().get("sunsetCompatibility").toString())
                 .contains("Premium history")
-                .contains("NEX v2 maturity")
+                .contains("UVT v2 maturity")
                 .contains("Points adjustments are rejected");
     }
 
@@ -485,7 +485,7 @@ class OpsUserServiceTest {
         assertThat(workbook)
                 .contains("用户编码")
                 .contains("USDT余额,UVT余额")
-                .doesNotContain("NEX余额")
+                .doesNotContain("UVT余额")
                 .contains("U00000001")
                 .doesNotContain("userId")
                 .doesNotContain("<th>ID</th>")
@@ -545,7 +545,7 @@ class OpsUserServiceTest {
 
         assertThat(new String(file.body(), StandardCharsets.UTF_8))
                 .contains("用户编码", "生命周期", "V-Rank", "手机号(脱敏)")
-                .doesNotContain("风险分", "风险等级", "设备数", "USDT余额", "UVT余额", "NEX余额");
+                .doesNotContain("风险分", "风险等级", "设备数", "USDT余额", "UVT余额", "UVT余额");
     }
 
     @Test
@@ -864,7 +864,7 @@ class OpsUserServiceTest {
         ApiResult<Map<String, Object>> result = service.createAssetAdjustment(
                 1L,
                 "idem-user",
-                new UserAssetAdjustmentRequest("NEX", "CREDIT", "10", "manual compensation", "superadmin"));
+                new UserAssetAdjustmentRequest("UVT", "CREDIT", "10", "manual compensation", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
     }
@@ -878,7 +878,7 @@ class OpsUserServiceTest {
         ApiResult<Map<String, Object>> result = service.createAssetAdjustment(
                 1L,
                 "idem-c3-immediate",
-                c3Request("NEX", "DEBIT", "3.5", "SYSTEM_CORRECTION", "manual correction after support ticket", "ticket:C3-001"));
+                c3Request("UVT", "DEBIT", "3.5", "SYSTEM_CORRECTION", "manual correction after support ticket", "ticket:C3-001"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData())
@@ -937,7 +937,7 @@ class OpsUserServiceTest {
         ApiResult<Map<String, Object>> result = service.createAssetAdjustment(
                 1L,
                 "idem-c3-tiny-nex",
-                c3Request("NEX", "DEBIT", "0.000001", "SYSTEM_CORRECTION", "verified tiny-amount precision correction", "ticket:C3-precision-001"));
+                c3Request("UVT", "DEBIT", "0.000001", "SYSTEM_CORRECTION", "verified tiny-amount precision correction", "ticket:C3-precision-001"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("amountUsd", new BigDecimal("0.00000012"));
@@ -1025,7 +1025,7 @@ class OpsUserServiceTest {
 
             String reversalNo = "ADJ-A2-REVERSE-AUTHORIZED";
             userRepository.adjustments.put(reversalNo, userRepository.adjustment(
-                    reversalNo, 1L, "NEX", "DEBIT", new BigDecimal("0.000001"),
+                    reversalNo, 1L, "UVT", "DEBIT", new BigDecimal("0.000001"),
                     "approved adjustment for A2 authority verification", "finance_maker", "APPROVED",
                     "finance_checker", "original review completed", 8130L));
             ApiResult<Map<String, Object>> reversal = service.reverseAssetAdjustment(
@@ -1066,7 +1066,7 @@ class OpsUserServiceTest {
         ApiResult<Map<String, Object>> result = service.createAssetAdjustment(
                 1L,
                 "idem-c3-nex-usd-limit",
-                c3Request("NEX", "CREDIT", "10001", "SYSTEM_CORRECTION", "verified NEX correction below USD equivalent cap", "ticket:C3-limit-001"));
+                c3Request("UVT", "CREDIT", "10001", "SYSTEM_CORRECTION", "verified UVT correction below USD equivalent cap", "ticket:C3-limit-001"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("amountUsd", new BigDecimal("1200.12"));
@@ -1148,15 +1148,15 @@ class OpsUserServiceTest {
         ApiResult<Map<String, Object>> created = service.createAssetAdjustment(
                 1L,
                 "idem-c3-create",
-                new UserAssetAdjustmentRequest("NEX", "DEBIT", "3.5", "manual correction after support ticket", "superadmin"));
+                new UserAssetAdjustmentRequest("UVT", "DEBIT", "3.5", "manual correction after support ticket", "superadmin"));
 
         ApiResult<PageResult<UserAssetAdjustmentView>> page = service.assetAdjustments(
-                new UserAssetAdjustmentQueryRequest("PENDING_REVIEW", "NEX", 1L, null, 1, 20, null));
+                new UserAssetAdjustmentQueryRequest("PENDING_REVIEW", "UVT", 1L, null, 1, 20, null));
         ApiResult<UserAssetAdjustmentDetail> detail = service.assetAdjustmentDetail(String.valueOf(created.getData().get("adjustmentNo")));
 
         assertThat(page.getCode()).isZero();
         assertThat(page.getData().getTotal()).isEqualTo(1);
-        assertThat(page.getData().getRecords().get(0).asset()).isEqualTo("NEX");
+        assertThat(page.getData().getRecords().get(0).asset()).isEqualTo("UVT");
         assertThat(detail.getCode()).isZero();
         assertThat(detail.getData().sources()).contains("wallet asset adjustments");
         assertThat(detail.getData().user().userNo()).isEqualTo("U00000001");
@@ -1168,7 +1168,7 @@ class OpsUserServiceTest {
                 1L,
                 "idem-c3-h7",
                 new UserAssetAdjustmentRequest(
-                        "NEX",
+                        "UVT",
                         "DEBIT",
                         "3.5",
                         "manual compensation with voucher evidence",
@@ -1195,11 +1195,11 @@ class OpsUserServiceTest {
         service.createAssetAdjustment(
                 1L,
                 "idem-c3-pending",
-                new UserAssetAdjustmentRequest("NEX", "DEBIT", "3.5", "pending correction", "superadmin"));
+                new UserAssetAdjustmentRequest("UVT", "DEBIT", "3.5", "pending correction", "superadmin"));
         String approvedNo = String.valueOf(service.createAssetAdjustment(
                         1L,
                         "idem-c3-terminal",
-                        new UserAssetAdjustmentRequest("NEX", "DEBIT", "2", "approved correction", "superadmin"))
+                        new UserAssetAdjustmentRequest("UVT", "DEBIT", "2", "approved correction", "superadmin"))
                 .getData()
                 .get("adjustmentNo"));
         service.approveAssetAdjustment(
@@ -1207,7 +1207,7 @@ class OpsUserServiceTest {
                 "idem-c3-terminal-approve",
                 new UserAssetAdjustmentReviewRequest("independent checker approved terminal correction", "checker"));
         ApiResult<PageResult<UserAssetAdjustmentView>> result = service.assetAdjustments(
-                new UserAssetAdjustmentQueryRequest(null, "NEX", null, null, 1, 20, true));
+                new UserAssetAdjustmentQueryRequest(null, "UVT", null, null, 1, 20, true));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().getRecords())
@@ -1218,7 +1218,7 @@ class OpsUserServiceTest {
 
     @Test
     void approvingAssetAdjustmentWritesAuditAndStatus() {
-        String adjustmentNo = userRepository.seedPendingAdjustment("NEX", "DEBIT", "3.5");
+        String adjustmentNo = userRepository.seedPendingAdjustment("UVT", "DEBIT", "3.5");
 
         ApiResult<UserAssetAdjustmentDetail> result = service.approveAssetAdjustment(
                 adjustmentNo,
@@ -1234,7 +1234,7 @@ class OpsUserServiceTest {
                 .containsEntry("bizNo", adjustmentNo)
                 .containsEntry("bizType", "ADJUSTMENT")
                 .containsEntry("userId", 1L)
-                .containsEntry("asset", "NEX")
+                .containsEntry("asset", "UVT")
                 .containsEntry("direction", "OUT")
                 .containsEntry("status", "SUCCESS");
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
@@ -1253,7 +1253,7 @@ class OpsUserServiceTest {
 
     @Test
     void makerCannotApproveOwnAssetAdjustment() {
-        String adjustmentNo = userRepository.seedPendingAdjustment("NEX", "DEBIT", "3.5");
+        String adjustmentNo = userRepository.seedPendingAdjustment("UVT", "DEBIT", "3.5");
 
         ApiResult<UserAssetAdjustmentDetail> result = service.approveAssetAdjustment(
                 adjustmentNo,
@@ -1268,7 +1268,7 @@ class OpsUserServiceTest {
 
     @Test
     void makerCanWithdrawPendingAdjustmentButAnotherOperatorCannot() {
-        String makerOwned = userRepository.seedPendingAdjustment("NEX", "DEBIT", "3.5", "admin:superadmin");
+        String makerOwned = userRepository.seedPendingAdjustment("UVT", "DEBIT", "3.5", "admin:superadmin");
         SecurityContextHolder.getContext().setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
                 "superadmin", "n/a", List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority(
                         "user_c3_adjust_create"))));
@@ -1297,7 +1297,7 @@ class OpsUserServiceTest {
 
     @Test
     void successfulWithdrawCasWithMissingReadbackThrowsBeforeSuccessAudit() throws Exception {
-        String adjustmentNo = userRepository.seedPendingAdjustment("NEX", "DEBIT", "3.5", "admin:superadmin");
+        String adjustmentNo = userRepository.seedPendingAdjustment("UVT", "DEBIT", "3.5", "admin:superadmin");
         userRepository.withdrawReadbackMissing = true;
         SecurityContextHolder.getContext().setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
                 "superadmin", "n/a", List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority(
@@ -1320,7 +1320,7 @@ class OpsUserServiceTest {
     void reversingApprovedDebitRestoresOriginalBalanceEvenWhenCoverageIsBelowRedline() {
         String originalNo = "ADJ-ORIGINAL-DEBIT";
         userRepository.adjustments.put(originalNo, userRepository.adjustment(
-                originalNo, 1L, "NEX", "DEBIT", new BigDecimal("0.000001"),
+                originalNo, 1L, "UVT", "DEBIT", new BigDecimal("0.000001"),
                 "original debit accepted before coverage changed", "finance_maker", "APPROVED",
                 "finance_checker", "original review completed", 8123L));
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(
@@ -1345,7 +1345,7 @@ class OpsUserServiceTest {
     void c3CheckerWithExactReverseAuthorityCanReverseWithoutPrivilegedRoleCode() {
         String originalNo = "ADJ-CUSTOM-CHECKER-REVERSE";
         userRepository.adjustments.put(originalNo, userRepository.adjustment(
-                originalNo, 1L, "NEX", "DEBIT", new BigDecimal("0.000001"),
+                originalNo, 1L, "UVT", "DEBIT", new BigDecimal("0.000001"),
                 "original debit approved by a different maker", "finance_maker", "APPROVED",
                 "finance_checker", "original review completed", 8140L));
         when(roleResolver.resolveCode()).thenReturn("CUSTOM_C3_CHECKER");
@@ -1375,7 +1375,7 @@ class OpsUserServiceTest {
     void c3ReverseRejectsAuthenticatedCallerWithoutExactAuthorityBeforeBusinessEffects() {
         String originalNo = "ADJ-NO-REVERSE-AUTHORITY";
         userRepository.adjustments.put(originalNo, userRepository.adjustment(
-                originalNo, 1L, "NEX", "DEBIT", new BigDecimal("0.000001"),
+                originalNo, 1L, "UVT", "DEBIT", new BigDecimal("0.000001"),
                 "original debit approved by a different maker", "finance_maker", "APPROVED",
                 "finance_checker", "original review completed", 8141L));
         when(roleResolver.resolveCode()).thenReturn("SUPER_ADMIN");
@@ -1409,7 +1409,7 @@ class OpsUserServiceTest {
         UserAssetAdjustmentReviewRequest request =
                 new UserAssetAdjustmentReviewRequest("restore the approved debit exactly once", "superadmin");
         userRepository.adjustments.put(originalNo, userRepository.adjustment(
-                originalNo, 1L, "NEX", "DEBIT", new BigDecimal("0.000001"),
+                originalNo, 1L, "UVT", "DEBIT", new BigDecimal("0.000001"),
                 "original debit for replay verification", "finance_maker", "APPROVED",
                 "finance_checker", "original review completed", 8124L));
 
@@ -1436,7 +1436,7 @@ class OpsUserServiceTest {
         UserAssetAdjustmentReviewRequest request =
                 new UserAssetAdjustmentReviewRequest("restore the approved debit exactly once", "superadmin");
         userRepository.adjustments.put(originalNo, userRepository.adjustment(
-                originalNo, 1L, "NEX", "DEBIT", new BigDecimal("0.000001"),
+                originalNo, 1L, "UVT", "DEBIT", new BigDecimal("0.000001"),
                 "original debit for new key verification", "finance_maker", "APPROVED",
                 "finance_checker", "original review completed", 8125L));
 
@@ -1480,7 +1480,7 @@ class OpsUserServiceTest {
         String adjustmentNo = String.valueOf(service.createAssetAdjustment(
                 1L,
                 "idem-c3-create",
-                new UserAssetAdjustmentRequest("NEX", "DEBIT", "3.5", "manual correction after support ticket", "superadmin"))
+                new UserAssetAdjustmentRequest("UVT", "DEBIT", "3.5", "manual correction after support ticket", "superadmin"))
                 .getData()
                 .get("adjustmentNo"));
         ApiResult<UserAssetAdjustmentDetail> first = service.approveAssetAdjustment(
@@ -1498,7 +1498,7 @@ class OpsUserServiceTest {
 
     @Test
     void creditApprovalBelowRedlineRejectsAndReturns422() {
-        String adjustmentNo = userRepository.seedPendingAdjustment("NEX", "CREDIT", "3.5");
+        String adjustmentNo = userRepository.seedPendingAdjustment("UVT", "CREDIT", "3.5");
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(
                 new BigDecimal("80.00"), new BigDecimal("85.00"), true,
                 new BigDecimal("80000"), new BigDecimal("100000"), BigDecimal.ONE);
@@ -1537,7 +1537,7 @@ class OpsUserServiceTest {
 
     @Test
     void rejectingAssetAdjustmentWritesAuditAndStatus() {
-        String adjustmentNo = userRepository.seedPendingAdjustment("NEX", "CREDIT", "3.5");
+        String adjustmentNo = userRepository.seedPendingAdjustment("UVT", "CREDIT", "3.5");
 
         ApiResult<UserAssetAdjustmentDetail> result = service.rejectAssetAdjustment(
                 adjustmentNo,
@@ -2123,7 +2123,7 @@ class OpsUserServiceTest {
 
     @Test
     void replayC3AdjustApproveInvokesApproveAndSucceeds() {
-        String adjustmentNo = userRepository.seedPendingAdjustment("NEX", "DEBIT", "2.5");
+        String adjustmentNo = userRepository.seedPendingAdjustment("UVT", "DEBIT", "2.5");
         AuditReplayCommand cmd = new AuditReplayCommand("C", "c3_adjust_approve", Map.of(
                 "adjustmentNo", adjustmentNo));
         AuditReplayContext ctx = new AuditReplayContext("checker", "replay approve adjustment", "idem-replay-c3-approve");
@@ -2450,8 +2450,8 @@ class OpsUserServiceTest {
                     "ADJ-1179", 1L, "USDT", "DEBIT", new BigDecimal("35.00"),
                     "系统纠错 · 小额重复入账", "finance_lin", "APPROVED", "finance_wu", "账单核对通过"));
             adjustments.putIfAbsent("ADJ-1175", adjustment(
-                    "ADJ-1175", 1L, "NEX", "CREDIT", new BigDecimal("1200.00"),
-                    "活动补发 · NEX 奖励补发", "growth_lee", "APPROVED", "finance_wu", "活动名单复核通过"));
+                    "ADJ-1175", 1L, "UVT", "CREDIT", new BigDecimal("1200.00"),
+                    "活动补发 · UVT 奖励补发", "growth_lee", "APPROVED", "finance_wu", "活动名单复核通过"));
         }
 
         private String seedPendingAdjustment(String asset, String direction, String amountText) {
@@ -3097,7 +3097,7 @@ class OpsUserServiceTest {
                     direction,
                     amount,
                     amountUsd,
-                    ("CREDIT".equals(direction) ? "+" : "-") + amount + ("USDT".equals(asset) ? " USDT" : " NEX"),
+                    ("CREDIT".equals(direction) ? "+" : "-") + amount + ("USDT".equals(asset) ? " USDT" : " UVT"),
                     reasonCode,
                     reason,
                     evidenceRef,

@@ -33,7 +33,7 @@ class PromotionMetricsBreakdownTest {
     }
     @Test void wideExactTotalsSplitNativeAssetsDeviceSkuAndBeneficiaryRoles(){
         var first=fact("USDT",null,"1","BUYER","600000000000.000000");var second=copy(first);second.put("orderNo","order-2");
-        var facts=List.of(first,second,fact("NEX",null,"1","BUYER","1.000001"),fact("DEVICE","gift-a","1","BUYER","2.000000"),fact("DEVICE","gift-b","1","BUYER","3.000000"),fact("USDT",null,"1","DIRECT_INVITER","4.000000"));
+        var facts=List.of(first,second,fact("UVT",null,"1","BUYER","1.000001"),fact("DEVICE","gift-a","1","BUYER","2.000000"),fact("DEVICE","gift-b","1","BUYER","3.000000"),fact("USDT",null,"1","DIRECT_INVITER","4.000000"));
         var groups=PromotionMetricsService.groupRewards(facts);var sku=maps(groups.get("SKU"));assertEquals(4,sku.size());
         var dollars=sku.stream().filter(r->"USDT".equals(r.get("asset"))).findFirst().orElseThrow();assertEquals("1200000000004.000000",dollars.get("amount"));assertEquals("1200000000004.000000",dollars.get("issued"));assertEquals(2L,dollars.get("orders"));assertEquals(1L,dollars.get("beneficiaries"));
         assertEquals(5,maps(groups.get("BENEFICIARY")).size());assertEquals(4,maps(groups.get("TEMPLATE")).size());

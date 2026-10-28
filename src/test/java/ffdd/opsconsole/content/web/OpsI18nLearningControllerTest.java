@@ -132,7 +132,7 @@ class OpsI18nLearningControllerTest {
     @Test
     void i6ReadRoleReceivesTheCompleteAuthoritativeOverviewContract() {
         I18nLearningOverview overview = new I18nLearningOverview(
-                new I18nLearningStats(1, 1, 0, 1, "10 NEX", BigDecimal.valueOf(120), BigDecimal.valueOf(100)),
+                new I18nLearningStats(1, 1, 0, 1, "10 UVT", BigDecimal.valueOf(120), BigDecimal.valueOf(100)),
                 List.of(), List.of(), List.of(), null, List.of(),
                 List.of(new ffdd.opsconsole.content.domain.LearningCourseView(
                         "course-1", "课程", "基础", "Article", "Beginner", BigDecimal.TEN,

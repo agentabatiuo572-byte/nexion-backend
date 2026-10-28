@@ -163,7 +163,7 @@ public class OpsGrowthService implements AuditReplayable {
     private static final Set<String> EVENT_STATES = Set.of("upcoming", "ongoing", "ended");
     private static final Set<String> EVENT_KINDS = Set.of(
             "discount", "referral", "wheel", "regional", "boost", "seasonal", "holding", "onboarding");
-    private static final Set<String> WHEEL_REWARD_KINDS = Set.of("nex", "points", "usdt", "coupon");
+    private static final Set<String> WHEEL_REWARD_KINDS = Set.of("uvt", "points", "usdt", "coupon");
     private static final Set<String> WHEEL_GUARD_KEYS = Set.of("budget", "cap", "kill");
     private static final Map<String, Set<String>> H3_BINDING_EVENT_TYPES = Map.of(
             "ORDER", Set.of("checkout.started"),
@@ -790,7 +790,7 @@ public class OpsGrowthService implements AuditReplayable {
         ensureQuestEventSeedData();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "H3_H4");
-        response.put("rewardAsset", "NEX");
+        response.put("rewardAsset", "UVT");
         response.put("h3Stats", questStats());
         response.put("h4Stats", eventStats());
         response.put("dayOneWindow", dayOneWindow());
@@ -1017,10 +1017,10 @@ public class OpsGrowthService implements AuditReplayable {
             String state = h4EventRules == null ? normalizeEventState(request.state()) : "upcoming";
             String reward = wheelEvent
                     ? "Wheel pool award"
-                    : normalizePlainText(StringUtils.hasText(request.reward()) ? request.reward() : "0 NEX", 128);
+                    : normalizePlainText(StringUtils.hasText(request.reward()) ? request.reward() : "0 UVT", 128);
             boolean ruleManaged = supportsH4EventRules(id);
             // H4 economic terms live in the disabled rule draft, not in display copy.
-            String rewardType = wheelEvent || ruleManaged ? "NEX" : eventRewardAsset(reward);
+            String rewardType = wheelEvent || ruleManaged ? "UVT" : eventRewardAsset(reward);
             BigDecimal rewardAmount = wheelEvent || ruleManaged ? BigDecimal.ZERO : rewardFlow(reward);
             if (!wheelEvent && !ruleManaged && rewardAmount.signum() <= 0) {
                 return validation("EVENT_REWARD_INVALID");
@@ -1196,7 +1196,10 @@ public class OpsGrowthService implements AuditReplayable {
             if (targetValue < 1) {
                 throw new IllegalArgumentException("CHALLENGE_TARGET_VALUE_INVALID");
             }
-            String rewardType = normalizePlainText(StringUtils.hasText(request.rewardType()) ? request.rewardType() : "NEX", 32).toUpperCase(Locale.ROOT);
+            String rewardType = normalizePlainText(StringUtils.hasText(request.rewardType()) ? request.rewardType() : "UVT", 32).toUpperCase(Locale.ROOT);
+            if (!Set.of("USDT", "UVT", "SPIN", "BADGE").contains(rewardType)) {
+                throw new IllegalArgumentException("CHALLENGE_REWARD_TYPE_INVALID");
+            }
             BigDecimal rewardAmount = request.rewardAmount() == null ? BigDecimal.ZERO : request.rewardAmount();
             if (rewardAmount.compareTo(BigDecimal.ZERO) < 0) {
                 throw new IllegalArgumentException("CHALLENGE_REWARD_AMOUNT_INVALID");
@@ -1526,7 +1529,7 @@ public class OpsGrowthService implements AuditReplayable {
                 return validation("WHEEL_PROBABILITY_TOTAL_EXCEEDS_100");
             }
             int realOutflow = (request.realOutflow() != null && request.realOutflow() == 1) ? 1 : 0;
-            String rewardKind = normalizePlainText(StringUtils.hasText(request.rewardKind()) ? request.rewardKind() : "nex", 64).toLowerCase(Locale.ROOT);
+            String rewardKind = normalizePlainText(StringUtils.hasText(request.rewardKind()) ? request.rewardKind() : "uvt", 64).toLowerCase(Locale.ROOT);
             if (!WHEEL_REWARD_KINDS.contains(rewardKind)) {
                 return validation("WHEEL_TIER_KIND_INVALID");
             }
@@ -1897,7 +1900,7 @@ public class OpsGrowthService implements AuditReplayable {
                     "oldValue", oldReward, "newValue", newReward,
                     "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
             Map<String, Object> response = questTasks().getData();
-            response.put("updated", Map.of("key", configKey, "value", newReward + " NEX"));
+            response.put("updated", Map.of("key", configKey, "value", newReward + " UVT"));
             return ApiResult.ok(response);
         }
         Matcher monthlyReward = Pattern.compile("^monthly\\.([A-Za-z0-9_-]{2,64})\\.reward$")
@@ -2346,7 +2349,7 @@ public class OpsGrowthService implements AuditReplayable {
         ensureCheckInSeedData();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "H5");
-        response.put("rewardAsset", "NEX");
+        response.put("rewardAsset", "UVT");
         response.put("baseRewardNex", currentCheckInValue("baseRewardNex"));
         response.put("streakBonusNex", currentCheckInValue("streakBonusNex"));
         response.put("luckyMultiplierMax", currentCheckInValue("luckyMultiplierMax"));
@@ -2480,6 +2483,9 @@ public class OpsGrowthService implements AuditReplayable {
             return validation("STREAK_MILESTONE_ID_INVALID");
         }
         String reward = requireText(request.value(), "reward is required");
+        String rewardType;
+        try { rewardType = rewardTypeFromReward(reward); }
+        catch (IllegalArgumentException ex) { return validation(ex.getMessage()); }
         String persistedReward = String.valueOf(current.get().get("reward"));
         String expectedReward = StringUtils.hasText(request.expectedValue())
                 ? request.expectedValue().trim()
@@ -2494,7 +2500,7 @@ public class OpsGrowthService implements AuditReplayable {
         }
         if (questEventMapper.isEmpty()
                 || questEventMapper.get().updateStreakMilestoneRewardCas(
-                        milestoneId, reward, rewardTypeFromReward(reward), newFlow, persistedReward) <= 0) {
+                        milestoneId, reward, rewardType, newFlow, persistedReward) <= 0) {
             return ApiResult.fail(409, "H5_CONFIG_STALE");
         }
         audit("H5_STREAK_MILESTONE_CHANGED", "STREAK_MILESTONE", String.valueOf(milestoneId), request.operator(), Map.of(
@@ -2647,7 +2653,7 @@ public class OpsGrowthService implements AuditReplayable {
         boolean disclosureGateActive = disclosureGateActive(WITHDRAW_STAKING_DISCLOSURE_GATE_KEY);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "D5_H1");
-        response.put("asset", "NEX");
+        response.put("asset", "UVT");
         response.put("enabled", !disclosureGateActive);
         response.put("blockedBy", disclosureGateActive ? "I5_DISCLOSURE_GATE" : null);
         response.put("disclosureGate", Map.of("staking", disclosureGateActive));
@@ -2914,8 +2920,8 @@ public class OpsGrowthService implements AuditReplayable {
         }
         String configKey = withdrawGateConfigKey(key);
         String mirrorKey = withdrawGateMirrorKey(key);
-        configFacade.upsertAdminValue(configKey, newValue.toPlainString(), "NUMBER", "growth", "H1 withdraw NEX gate");
-        configFacade.upsertAdminValue(mirrorKey, newValue.toPlainString(), "NUMBER", "wallet", "D5 mirror of H1 withdraw NEX gate");
+        configFacade.upsertAdminValue(configKey, newValue.toPlainString(), "NUMBER", "growth", "H1 withdraw UVT gate");
+        configFacade.upsertAdminValue(mirrorKey, newValue.toPlainString(), "NUMBER", "wallet", "D5 mirror of H1 withdraw UVT gate");
         audit("H1_WITHDRAW_NEX_GATE_CHANGED", "WITHDRAW_NEX_GATE", configKey, request.operator(), Map.of(
                 "key", key,
                 "mirrorKey", mirrorKey,
@@ -3172,7 +3178,7 @@ public class OpsGrowthService implements AuditReplayable {
                     event.put("name", stringValue(row.get("name"), ""));
                     event.put("kind", stringValue(row.get("kind"), "EVENT_ACTIONS"));
                     event.put("state", stringValue(row.get("state"), "ongoing"));
-                    event.put("reward", stringValue(row.get("reward"), "0 NEX"));
+                    event.put("reward", stringValue(row.get("reward"), "0 UVT"));
                     event.put("rewardName", stringValue(row.get("rewardName"), ""));
                     event.put("description", stringValue(row.get("description"), ""));
                     event.put("featured", truthy(row.get("featured")));
@@ -3902,10 +3908,10 @@ public class OpsGrowthService implements AuditReplayable {
         if (readTimeBusinessSeedsDisabled()) {
             return;
         }
-        seedIfMissing(WITHDRAW_MIN_BALANCE_KEY, "100", "NUMBER", "growth", "H1 withdraw NEX gate seed");
-        seedIfMissing(WITHDRAW_HOLD_DAYS_KEY, "7", "NUMBER", "growth", "H1 withdraw NEX gate seed");
-        seedIfMissing(WITHDRAW_MIN_BALANCE_MIRROR_KEY, "100", "NUMBER", "wallet", "D5 mirror of H1 withdraw NEX gate seed");
-        seedIfMissing(WITHDRAW_HOLD_DAYS_MIRROR_KEY, "7", "NUMBER", "wallet", "D5 mirror of H1 withdraw NEX gate seed");
+        seedIfMissing(WITHDRAW_MIN_BALANCE_KEY, "100", "NUMBER", "growth", "H1 withdraw UVT gate seed");
+        seedIfMissing(WITHDRAW_HOLD_DAYS_KEY, "7", "NUMBER", "growth", "H1 withdraw UVT gate seed");
+        seedIfMissing(WITHDRAW_MIN_BALANCE_MIRROR_KEY, "100", "NUMBER", "wallet", "D5 mirror of H1 withdraw UVT gate seed");
+        seedIfMissing(WITHDRAW_HOLD_DAYS_MIRROR_KEY, "7", "NUMBER", "wallet", "D5 mirror of H1 withdraw UVT gate seed");
     }
 
     private void seedIfMissing(String key, String value, String type, String group, String remark) {
@@ -4992,8 +4998,8 @@ public class OpsGrowthService implements AuditReplayable {
         return switch (key) {
             case "dayOne.windowMs" -> "24h 全额 / 72h 宽限";
             case "dayOne.eligibilityHours" -> "72";
-            case "dayOne.triReward" -> "500 / 200 / 0 NEX";
-            case "weekly.champBonus" -> "+500 NEX × P3 1.1×";
+            case "dayOne.triReward" -> "500 / 200 / 0 UVT";
+            case "weekly.champBonus" -> "+500 UVT × P3 1.1×";
             case "wheel.pool" -> "8 档 · EV $" + wheelEvUsd().toPlainString() + "/spin";
             default -> throw new IllegalArgumentException("QUEST_CONFIG_KEY_INVALID");
         };
@@ -5083,12 +5089,13 @@ public class OpsGrowthService implements AuditReplayable {
 
     private String eventRewardAsset(String reward) {
         String value = reward == null ? "" : reward.toUpperCase(Locale.ROOT);
-        boolean nex = value.matches(".*\\bNEX\\b.*");
+        if (value.matches(".*(?<![A-Z0-9_])NEX(?![A-Z0-9_]).*")) throw new IllegalArgumentException("EVENT_REWARD_ASSET_INVALID");
+        boolean nex = value.matches(".*\\bUVT\\b.*");
         boolean usdt = value.matches(".*\\bUSDT\\b.*");
         if (nex == usdt) {
             throw new IllegalArgumentException("EVENT_REWARD_ASSET_INVALID");
         }
-        return usdt ? "USDT" : "NEX";
+        return usdt ? "USDT" : "UVT";
     }
 
     private boolean updateBusinessEventStatus(String eventId, String status) {
@@ -5576,6 +5583,7 @@ public class OpsGrowthService implements AuditReplayable {
 
     private String rewardTypeFromReward(String reward) {
         String normalized = reward == null ? "" : reward.toUpperCase(Locale.ROOT);
+        if (normalized.matches(".*(?<![A-Z0-9_])NEX(?![A-Z0-9_]).*")) throw new IllegalArgumentException("REWARD_TYPE_UNSUPPORTED");
         if (normalized.contains("USDT") || normalized.contains("$")) {
             return "USDT";
         }
@@ -5585,11 +5593,12 @@ public class OpsGrowthService implements AuditReplayable {
         if (normalized.contains("BADGE") || normalized.contains("徽章")) {
             return "BADGE";
         }
-        return "NEX";
+        if (normalized.contains("UVT")) return "UVT";
+        throw new IllegalArgumentException("REWARD_TYPE_UNSUPPORTED");
     }
 
     private String formatSignedNex(BigDecimal value) {
-        return "+" + value.stripTrailingZeros().toPlainString() + " NEX";
+        return "+" + value.stripTrailingZeros().toPlainString() + " UVT";
     }
 
     private String formatPercentNumber(BigDecimal value) {

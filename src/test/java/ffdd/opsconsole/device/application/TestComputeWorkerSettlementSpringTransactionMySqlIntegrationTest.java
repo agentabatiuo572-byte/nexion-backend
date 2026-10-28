@@ -496,7 +496,7 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
 
     @Test void dailyNexIsNotPaidAgainAndPendingDeactivationKeepsOriginalSharedTransition() {
         claim();
-        jdbc.update("INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,balance_after,status) VALUES(7,'CLOUD_SHARE_DAILY:11:2026-10-02','COMPUTE_TASK_REWARD','NEX','IN',3,20,'SUCCESS')");
+        jdbc.update("INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,balance_after,status) VALUES(7,'CLOUD_SHARE_DAILY:11:2026-10-02','COMPUTE_TASK_REWARD','UVT','IN',3,20,'SUCCESS')");
         jdbc.update("UPDATE nx_user_device SET pending_deactivate=1");
         assertThat(app.testWorkerComplete(grant,grant.taskNo(),"complete-daily",result()).getCode()).isZero();
         assertBalances("10.25","20");

@@ -19,24 +19,24 @@ class SupportExchangeFundAdapterTest {
     @Test void immediateUsdtMinimumFeePreservesOriginalContributionAndExactNetNex(){
         var f=funds("USDT","1.000001");var events=events("IMMEDIATE","USDT","1.000001","0.166667","0.500000");
         assertThat(events).extracting(Event::action).containsExactly(Action.FEE,Action.EXCHANGE);
-        assertThat(f.applyBatch(events)).isEmpty();assertThat(f.balance(a("USDT"))).isZero();assertThat(f.balance(a("NEX"))).isEqualByComparingTo("0.166667");assertThat(f.total("USDT")).isEqualByComparingTo("1.000001");
+        assertThat(f.applyBatch(events)).isEmpty();assertThat(f.balance(a("USDT"))).isZero();assertThat(f.balance(a("UVT"))).isEqualByComparingTo("0.166667");assertThat(f.total("USDT")).isEqualByComparingTo("1.000001");
     }
     @Test void nexFeeUsesOnlyConvertedUsdtAndDoesNotTakeExistingUsdtLots(){
-        var f=funds("NEX","10");f.apply(new Event("other-usdt",Action.DEPOSIT,null,a("USDT"),null,n("50"),null));
-        var events=events("IMMEDIATE","NEX","10","0.666667","0.500000");
+        var f=funds("UVT","10");f.apply(new Event("other-usdt",Action.DEPOSIT,null,a("USDT"),null,n("50"),null));
+        var events=events("IMMEDIATE","UVT","10","0.666667","0.500000");
         assertThat(events).extracting(Event::action).containsExactly(Action.EXCHANGE,Action.FEE,Action.MOVE);
-        assertThat(f.applyBatch(events)).isEmpty();assertThat(f.balance(a("USDT"))).isEqualByComparingTo("50.666667");assertThat(f.total("NEX")).isEqualByComparingTo("10");assertThat(f.total("USDT")).isEqualByComparingTo("50");assertThat(f.heldBalances()).isEmpty();
+        assertThat(f.applyBatch(events)).isEmpty();assertThat(f.balance(a("USDT"))).isEqualByComparingTo("50.666667");assertThat(f.total("UVT")).isEqualByComparingTo("10");assertThat(f.total("USDT")).isEqualByComparingTo("50");assertThat(f.heldBalances()).isEmpty();
     }
     @Test void queuedUsdtHeldIsTheOnlySourceForCompletion(){
         var f=funds("USDT","20");f.applyBatch(events("HOLD","USDT","20","20","0"));
         f.apply(new Event("later",Action.DEPOSIT,null,a("USDT"),null,n("50"),null));
         assertThat(f.balance(held("USDT"))).isEqualByComparingTo("20");
         assertThat(f.applyBatch(events("COMPLETE","USDT","20","6.333333","1"))).isEmpty();
-        assertThat(f.balance(a("USDT"))).isEqualByComparingTo("50");assertThat(f.balance(a("NEX"))).isEqualByComparingTo("6.333333");assertThat(f.heldBalances()).isEmpty();assertThat(f.total("USDT")).isEqualByComparingTo("70");
+        assertThat(f.balance(a("USDT"))).isEqualByComparingTo("50");assertThat(f.balance(a("UVT"))).isEqualByComparingTo("6.333333");assertThat(f.heldBalances()).isEmpty();assertThat(f.total("USDT")).isEqualByComparingTo("70");
     }
     @Test void queuedNexCancelRestoresOnlyItsOriginalLotAndReplayDoesNotAddContribution(){
-        var f=funds("NEX","10");f.applyBatch(events("HOLD","NEX","10","5","0"));var cancel=events("CANCEL","NEX","10","5","0");
-        assertThat(f.applyBatch(cancel)).isEmpty();assertThat(f.applyBatch(cancel)).isEmpty();assertThat(f.balance(a("NEX"))).isEqualByComparingTo("10");assertThat(f.total("NEX")).isEqualByComparingTo("10");assertThat(f.heldBalances()).isEmpty();
+        var f=funds("UVT","10");f.applyBatch(events("HOLD","UVT","10","5","0"));var cancel=events("CANCEL","UVT","10","5","0");
+        assertThat(f.applyBatch(cancel)).isEmpty();assertThat(f.applyBatch(cancel)).isEmpty();assertThat(f.balance(a("UVT"))).isEqualByComparingTo("10");assertThat(f.total("UVT")).isEqualByComparingTo("10");assertThat(f.heldBalances()).isEmpty();
     }
     @Test void zeroFeeIsOneExactExchangeAndRoundingNeverManufacturesAFee(){
         var events=events("IMMEDIATE","USDT","2.999999","0.999999","0");

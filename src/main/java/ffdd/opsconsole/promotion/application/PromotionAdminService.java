@@ -134,7 +134,7 @@ public class PromotionAdminService {
         var markets=options.options("user","regions").getData().stream().filter(o->!o.disabled()).map(o->values("id",o.value(),"name",localized(o.label()))).toList();
         var allowed=SecurityContextHolder.getContext().getAuthentication().getAuthorities().stream().map(a->a.getAuthority()).filter(a->a.startsWith("growth_promotion_")||"user_c1_read".equals(a)).sorted().toList();
         var visible=has("growth_promotion_policy_read")?db.list("SELECT * FROM nx_promotion_policy ORDER BY policy_id,version").stream().map(resolver::view).toList():List.of();
-        return values("assets",List.of(values("asset","USDT","scale",6,"minimumUnit","0.000001"),values("asset","NEX","scale",6,"minimumUnit","0.000001")),"skus",skus,"ranks",ranks,"markets",markets,"policies",visible,"nativeContracts",nativeOptions,"capabilities",allowed,"serverTime",Instant.now().toString());
+        return values("assets",List.of(values("asset","USDT","scale",6,"minimumUnit","0.000001"),values("asset","UVT","scale",6,"minimumUnit","0.000001")),"skus",skus,"ranks",ranks,"markets",markets,"policies",visible,"nativeContracts",nativeOptions,"capabilities",allowed,"serverTime",Instant.now().toString());
     }
     private static Map<String,Object> localized(String value){return values("zh",value,"en",value,"vi",value);}
     @org.springframework.transaction.annotation.Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)

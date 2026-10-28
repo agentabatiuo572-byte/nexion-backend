@@ -52,7 +52,7 @@ class AppGrowthWheelSandboxServiceTest {
         when(mapper.insertReward(anyString(), eq(42L), anyString(), anyString(), any(), any())).thenReturn(1);
         when(mapper.findSpin(anyString(), eq(42L), anyString())).thenReturn(new SandboxSpin(
                 "SBX-SPIN-1", LocalDate.of(2026, 8, 15), "DAILY", "2026-08-15", 1L,
-                "comfort-nex-5", "NEX", new BigDecimal("5"), "+5 NEX", false, "NONE", null));
+                "comfort-nex-5", "UVT", new BigDecimal("5"), "+5 UVT", false, "NONE", null));
     }
 
     @Test
@@ -144,9 +144,9 @@ class AppGrowthWheelSandboxServiceTest {
 
     private List<SandboxTier> tiers() {
         return List.of(
-                new SandboxTier(1L, "comfort-nex-5", "+5 NEX", new BigDecimal("38"), "nex", new BigDecimal("5"), false, 0),
+                new SandboxTier(1L, "comfort-nex-5", "+5 UVT", new BigDecimal("38"), "uvt", new BigDecimal("5"), false, 0),
                 new SandboxTier(2L, "points-50", "+50 points", new BigDecimal("24"), "points", new BigDecimal("50"), false, 0),
-                new SandboxTier(3L, "nex-30", "+30 NEX", new BigDecimal("33"), "nex", new BigDecimal("30"), false, 0),
+                new SandboxTier(3L, "nex-30", "+30 UVT", new BigDecimal("33"), "uvt", new BigDecimal("30"), false, 0),
                 new SandboxTier(4L, "usdt-1", "$1 USDT", new BigDecimal("5"), "usdt", new BigDecimal("1"), false, 0));
     }
 }

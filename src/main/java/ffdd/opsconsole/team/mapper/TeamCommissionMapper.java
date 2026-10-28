@@ -155,14 +155,14 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                        AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
                     UNION ALL
                     SELECT 'weeklyNexPayout' AS id,
-                           '本周 NEX 派发' AS label,
+                           '本周 UVT 派发' AS label,
                            ROUND(SUM(amount_nex), 2) AS value,
-                           CONCAT(COUNT(1), ' 笔 NEX 佣金事件') AS sub,
+                           CONCAT(COUNT(1), ' 笔 UVT 佣金事件') AS sub,
                            'cyan' AS tone,
                            COUNT(1) AS sampleCount
                       FROM nx_commission_event
                      WHERE is_deleted = 0
-                       AND UPPER(currency) = 'NEX'
+                       AND UPPER(currency) = 'UVT'
                        AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
                    ) metric
              WHERE metric.sampleCount > 0
@@ -781,7 +781,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    LOWER(commission_type) AS kind,
                    CONCAT('U', LPAD(user_id, GREATEST(8, CHAR_LENGTH(CAST(user_id AS CHAR))), '0')) AS user,
                    CASE
-                     WHEN UPPER(currency) = 'NEX' THEN amount_nex
+                     WHEN UPPER(currency) = 'UVT' THEN amount_nex
                      ELSE amount_usdt
                    END AS amount,
                    currency,
@@ -1320,7 +1320,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    user_id AS userId,
                    version,
                    CASE
-                     WHEN UPPER(currency) = 'NEX' THEN amount_nex
+                     WHEN UPPER(currency) = 'UVT' THEN amount_nex
                      ELSE amount_usdt
                    END AS amount,
                    currency

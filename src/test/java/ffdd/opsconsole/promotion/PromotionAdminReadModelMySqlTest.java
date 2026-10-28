@@ -20,7 +20,7 @@ class PromotionAdminReadModelMySqlTest {
         var admin=h.proxy(h.admin);var evidence=new ArrayList<Map<String,Object>>();
         try{
             var common=h.commonPolicies();
-            for(String asset:List.of("USDT","NEX","DEVICE")){
+            for(String asset:List.of("USDT","UVT","DEVICE")){
                 var reward="DEVICE".equals(asset)?values("rewardRuleId","reward-buyer","beneficiaryRole","BUYER","type","DEVICE","giftProductNo",rt.gift,"quantity",1,"deviceRightsProfile",h.devicePolicy(rt.gift)):values("rewardRuleId","reward-buyer","beneficiaryRole","BUYER","type",asset,"calculation","FIXED","amount","2.125001","assetPolicy",h.assetPolicy(asset));
                 var contract=h.contract(rt.buy,reward,common);String activity=h.publish(contract);long recipient=rt.user();
                 String paid=rt.create(recipient,rt.quote(recipient,activity,1),1);rt.pay(recipient,paid);String obligation=rt.obligations(paid).get(0);assertEquals("ISSUED",rt.rewards.issue(obligation,id("READMODELISSUE")).get("state"));

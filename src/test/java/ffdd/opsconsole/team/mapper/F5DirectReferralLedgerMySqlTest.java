@@ -82,17 +82,17 @@ class F5DirectReferralLedgerMySqlTest {
     }
 
     @Test void dualCurrencyReleaseLinksBothEventsOnceAndPreservesPaginationCount() {
-        event(395, "direct_purchase", "USDT"); event(396, "direct_purchase", "NEX");
+        event(395, "direct_purchase", "USDT"); event(396, "direct_purchase", "UVT");
         group("DR-PAIR", 3778, 395L, 396L);
         ledger(1, "DR-PAIR-RELEASE", 3778, "USDT", "IN");
-        ledger(2, "DR-PAIR-RELEASE", 3778, "NEX", "IN");
+        ledger(2, "DR-PAIR-RELEASE", 3778, "UVT", "IN");
         assertThat(rows()).hasSize(2).allSatisfy(row -> assertThat(row.get("ledgerBizNo")).isEqualTo("DR-PAIR-RELEASE"));
         assertThat(mapper.countEvents(null, null, 3778L, null, null)).isEqualTo(2);
         assertThat(mapper.queryEvents(null, null, 3778L, null, null, 396L, 1)).singleElement()
                 .satisfies(row -> assertThat(((Number) row.get("eventId")).longValue()).isEqualTo(395));
-        jdbc.update("DELETE FROM nx_wallet_ledger WHERE asset='NEX'");
+        jdbc.update("DELETE FROM nx_wallet_ledger WHERE asset='UVT'");
         assertThat(biz(395)).isEqualTo("DR-PAIR-RELEASE");
-        assertThat(biz(396)).isNull(); // USDT entry must not stand in for NEX.
+        assertThat(biz(396)).isNull(); // USDT entry must not stand in for UVT.
         jdbc.update("UPDATE nx_commission_event SET is_deleted=1 WHERE id=395");
         assertThat(rows()).singleElement().satisfies(row -> assertThat(((Number) row.get("eventId")).longValue()).isEqualTo(396));
     }
@@ -107,7 +107,7 @@ class F5DirectReferralLedgerMySqlTest {
         ledger(2, "DR-WRONG-USER-RELEASE", 3778, "USDT", "IN");
         ledger(3, "DR-WRONG-SLOT-RELEASE", 3778, "USDT", "IN");
         ledger(4, "DR-RIGHT-RELEASE", 9988, "USDT", "IN");
-        ledger(5, "DR-RIGHT-RELEASE", 3778, "NEX", "IN");
+        ledger(5, "DR-RIGHT-RELEASE", 3778, "UVT", "IN");
         ledger(6, "DR-RIGHT-RELEASE", 3778, "USDT", "IN");
         jdbc.update("UPDATE nx_wallet_ledger SET is_deleted=1 WHERE id=6");
         group("DR-WRONG-KIND", 3778, 395L, null);
@@ -121,12 +121,12 @@ class F5DirectReferralLedgerMySqlTest {
     }
 
     @Test void recoveryUsesOwnAssetExactGroupAndLatestActualEntry() {
-        event(395, "direct_device_earning", "USDT"); event(396, "direct_device_earning", "NEX");
+        event(395, "direct_device_earning", "USDT"); event(396, "direct_device_earning", "UVT");
         group("DR-REC", 3778, 395L, 396L);
         ledger(1, "DR-REC-RELEASE", 3778, "USDT", "IN");
         ledger(2, "DR-REC-RECOVER-USDT-0.5", 3778, "USDT", "OUT");
         ledger(3, "DR-REC-RECOVER-USDT-0.9", 3778, "USDT", "OUT");
-        ledger(4, "DR-REC-RECOVER-NEX-7.62", 3778, "NEX", "OUT");
+        ledger(4, "DR-REC-RECOVER-NEX-7.62", 3778, "UVT", "OUT");
         ledger(5, "DR-REC-OTHER-RECOVER-USDT-9", 3778, "USDT", "OUT");
         ledger(6, "DR-REC-RECOVER-NEX-999", 3778, "USDT", "OUT");
         ledger(7, "DR-REC-RECOVER-USDT-", 3778, "USDT", "OUT");
@@ -147,10 +147,10 @@ class F5DirectReferralLedgerMySqlTest {
     }
 
     @Test void legacyNetworkAndF5ReleaseReverseAndReissueRemainAvailable() {
-        event(101, "network", "USDT"); event(102, "network", "NEX");
+        event(101, "network", "USDT"); event(102, "network", "UVT");
         event(103, "peer", "USDT"); event(104, "peer", "USDT"); event(105, "peer", "USDT");
         ledger(1, "F2-NETWORK-101", 3778, "USDT", "IN");
-        ledger(2, "F2-NETWORK-NEX-102", 3778, "NEX", "IN");
+        ledger(2, "F2-NETWORK-NEX-102", 3778, "UVT", "IN");
         ledger(3, "F5-COMMISSION-103-RELEASE", 3778, "USDT", "IN");
         ledger(4, "F5-COMMISSION-104-REVERSE", 3778, "USDT", "OUT");
         ledger(5, "F5-REISSUE-105", 3778, "USDT", "IN");
@@ -176,7 +176,7 @@ class F5DirectReferralLedgerMySqlTest {
         assertThat(mapper.aggregateCommissionKinds()).isEmpty();
         assertThat(mapper.aggregateCommissionStatuses()).isEmpty();
 
-        event(100, "direct_purchase", "USDT"); event(90, "leadership", "USDT"); event(80, "cultivation", "NEX");
+        event(100, "direct_purchase", "USDT"); event(90, "leadership", "USDT"); event(80, "cultivation", "UVT");
         jdbc.update("UPDATE nx_commission_event SET amount_usdt=10 WHERE id=100");
         jdbc.update("UPDATE nx_commission_event SET amount_usdt=20 WHERE id=90");
         jdbc.update("UPDATE nx_commission_event SET amount_nex=50 WHERE id=80");
@@ -194,7 +194,7 @@ class F5DirectReferralLedgerMySqlTest {
         assertThat(statuses).hasSize(2);
         assertThat(statuses.stream().filter(row -> "USDT".equals(row.get("currency"))).findFirst().orElseThrow().get("amount"))
                 .isEqualTo(new java.math.BigDecimal("30.000000"));
-        assertThat(statuses.stream().filter(row -> "NEX".equals(row.get("currency"))).findFirst().orElseThrow().get("amount"))
+        assertThat(statuses.stream().filter(row -> "UVT".equals(row.get("currency"))).findFirst().orElseThrow().get("amount"))
                 .isEqualTo(new java.math.BigDecimal("50.000000"));
 
         event(1, "unregistered_reward", "USDT"); event(2, null, "USDT");

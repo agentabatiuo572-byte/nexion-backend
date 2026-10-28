@@ -173,7 +173,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "G2");
-        response.put("asset", "NEX");
+        response.put("asset", "UVT");
         response.put("currency", "USDT");
         response.put("currentPrice", currentPrice());
         response.put("stats", map(
@@ -388,7 +388,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 .map(StakingPoolDef::lockedUsd)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal nexPoolUsd = poolDefs.stream()
-                .filter(pool -> "NEX".equalsIgnoreCase(pool.product()))
+                .filter(pool -> "UVT".equalsIgnoreCase(pool.product()))
                 .map(StakingPoolDef::lockedUsd)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         long pendingCount = marketRepository.stakingPositionCountByStatus("PENDING_LOCK");
@@ -1051,7 +1051,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         NexMarketCurveFrame activeFrame = frameFor(frames, activeDay);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "G3");
-        response.put("asset", "NEX");
+        response.put("asset", "UVT");
         response.put("currency", "USDT");
         response.put("currentPrice", currentPrice());
         response.put("activeDayIndex", activeDay);
@@ -1063,7 +1063,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("coverage", coverage());
         response.put("sunsetExclusions", sunsetExclusions());
         response.put("serverCanonical", true);
-        response.put("sources", List.of("nx_config_item:" + WEEKLY_CURVE_KEY, "nx_price_index:NEX_USDT", "nx_config_item:" + SUNSET_EXCLUSIONS_KEY));
+        response.put("sources", List.of("nx_config_item:" + WEEKLY_CURVE_KEY, "nx_price_index:UVT_USDT", "nx_config_item:" + SUNSET_EXCLUSIONS_KEY));
         return ApiResult.ok(response);
     }
 
@@ -1084,13 +1084,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         }
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "G3");
-        response.put("asset", "NEX");
+        response.put("asset", "UVT");
         response.put("currency", "USDT");
         response.put("window", "24h");
         response.put("intervalMinutes", intervalMinutes);
         response.put("points", samples);
         response.put("serverCanonical", true);
-        response.put("sources", List.of("nx_price_index:NEX_USDT"));
+        response.put("sources", List.of("nx_price_index:UVT_USDT"));
         return ApiResult.ok(response);
     }
 
@@ -1143,7 +1143,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             }
         }
         String curveJson = writeCurve(frames);
-        configFacade.upsertAdminValue(WEEKLY_CURVE_KEY, curveJson, "JSON", "wallet", "G3 weekly NEX market curve");
+        configFacade.upsertAdminValue(WEEKLY_CURVE_KEY, curveJson, "JSON", "wallet", "G3 weekly UVT market curve");
         int activeDayIndex = effectiveActiveDayIndex();
         auditRequired("G3_WEEKLY_CURVE_CHANGED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, request.operator(), Map.of(
                 "oldPeakPrice", weekPeak(before),
@@ -1217,7 +1217,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 return redline;
             }
         }
-        configFacade.upsertAdminValue(configKey, value, "STRING", "wallet", "G3 NEX market curve control");
+        configFacade.upsertAdminValue(configKey, value, "STRING", "wallet", "G3 UVT market curve control");
         if (pinned != null) {
             applyFrame(pinned, loadCurve());
         }
@@ -1288,7 +1288,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             case "deviationPct" -> updateNumericOverride(
                     idempotencyKey, overrideKey, DEVIATION_KEY, value, request, new BigDecimal("50"), "G3 oracle deviation alert override");
             case "costBasis" -> updateNumericOverride(
-                    idempotencyKey, overrideKey, COST_BASIS_KEY, value, request, null, "G3 NEX cost basis override");
+                    idempotencyKey, overrideKey, COST_BASIS_KEY, value, request, null, "G3 UVT cost basis override");
             case "oracle" -> updateStringOverride(
                     idempotencyKey, overrideKey, ORACLE_KEY, value, request, "G3 oracle source override");
             case "paused" -> updateBooleanOverride(idempotencyKey, value, request);
@@ -1364,7 +1364,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private void ensureNexMarketSeedData() {
-        // Intentionally empty: read paths must not seed NEX market business data.
+        // Intentionally empty: read paths must not seed UVT market business data.
     }
 
     private GenesisSeriesView genesisSeriesOrEmpty() {
@@ -1409,7 +1409,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 normalized.stripTrailingZeros().toPlainString(),
                 "NUMBER",
                 "wallet",
-                "G3 manual active NEX price override");
+                "G3 manual active UVT price override");
         marketRepository.publishNexUsdtPrice(
                 normalized,
                 deltaPercent(oldPrice, normalized),
@@ -1476,7 +1476,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 return redline;
             }
         }
-        configFacade.upsertAdminValue(PAUSED_KEY, parsed.toString(), "BOOLEAN", "wallet", "G3 NEX market engine pause override");
+        configFacade.upsertAdminValue(PAUSED_KEY, parsed.toString(), "BOOLEAN", "wallet", "G3 UVT market engine pause override");
         auditOverride("paused", PAUSED_KEY, oldValue, parsed, idempotencyKey, request);
         return overview();
     }
@@ -1485,7 +1485,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         BigDecimal oldPrice = currentPrice();
         BigDecimal newPrice = frame.targetPrice().setScale(8, RoundingMode.HALF_UP);
         configFacade.upsertAdminValue(ACTIVE_DAY_INDEX_KEY, String.valueOf(frame.dayIndex()), "NUMBER", "wallet", "G3 persisted active curve day");
-        configFacade.upsertAdminValue(CURRENT_PRICE_KEY, newPrice.stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active NEX price");
+        configFacade.upsertAdminValue(CURRENT_PRICE_KEY, newPrice.stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active UVT price");
         configFacade.upsertAdminValue(PUMP_PROBABILITY_KEY, frame.pumpProbability().stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active pump probability");
         configFacade.upsertAdminValue(VOLATILITY_KEY, frame.volatilityPct().stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active volatility");
         marketRepository.publishNexUsdtPrice(
@@ -2532,6 +2532,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return normalized.contains("premium")
                 || normalized.contains("nexv2")
                 || normalized.contains("nex.v2")
+                || normalized.contains("uvtv2")
+                || normalized.contains("uvt.v2")
                 || normalized.contains("points")
                 || normalized.contains("积分");
     }
@@ -2614,7 +2616,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     key, GENESIS_AIRDROP_PCT_KEY, "NUMBER", "8",
                     "Genesis 排放分配占比",
                     "为 Genesis 权益与其社区范围预留的协议排放份额",
-                    "提高占比会放大未来 NEX 排放负债并触发 B1 覆盖率预检",
+                    "提高占比会放大未来 UVT 排放负债并触发 B1 覆盖率预检",
                     true, GenesisParamKind.PERCENT);
             case "emissionCurve" -> new GenesisParamDef(
                     key, GENESIS_EMISSION_CURVE_KEY, "STRING", "TGE 10% · halve every 6 months",
@@ -2901,7 +2903,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                         "范围 $0-10,000 · 放宽过红线", true, null),
                 cap("platformDailyCap", "平台日额度", "全平台每天兑换总池", platformCap, displayUsd(platformCap),
                         "范围 $0-10,000,000 · 放宽过红线", true, percent(todayUsd, platformCap)),
-                cap("fee", "兑换手续费率", "每笔 NEX->USDT 抽成 · 当前可为免费推广期", feePct, displayPct(feePct),
+                cap("fee", "兑换手续费率", "每笔 UVT->USDT 抽成 · 当前可为免费推广期", feePct, displayPct(feePct),
                         "范围 0%-10% · 降费=放大流出过红线", true, null),
                 cap("feeMin", "最低手续费", "开费后小额兑换的保底费", feeMin, displayUsd(feeMin),
                         "范围 $0-5 · 随费率启用生效", true, null),
@@ -3145,7 +3147,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         coverage.put("coverageRatio", snapshot.coverageRatio());
         coverage.put("redlinePct", snapshot.redlinePct());
         coverage.put("redlineBreached", snapshot.coverageRatio().compareTo(snapshot.redlinePct()) < 0);
-        coverage.put("precheck", "week peak NEX liability is checked before raising price or pump probability");
+        coverage.put("precheck", "week peak UVT liability is checked before raising price or pump probability");
         return coverage;
     }
 

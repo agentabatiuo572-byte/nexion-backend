@@ -341,8 +341,8 @@ class OpsNovaServiceTest {
                 "每周回顾",
                 "/me/weekly",
                 "v1",
-                "每周回顾", "你本周获得 {amount} NEX",
-                "Tổng kết tuần", "Bạn đã nhận {amount} NEX tuần này",
+                "每周回顾", "你本周获得 {amount} UVT",
+                "Tổng kết tuần", "Bạn đã nhận {amount} UVT tuần này",
                 "", "",
                 "Marina K.",
                 "新增每周回顾模板"));
@@ -391,7 +391,7 @@ class OpsNovaServiceTest {
 
         var result = service.createTemplate("idem-i2-placeholder-template", new NovaTemplateCreateRequest(
                 "placeholderChannel", "占位符模板", "/earn", "v1",
-                "到账提醒", "到账 {amount} NEX", "Thông báo", "Đã nhận {value} NEX", "", "",
+                "到账提醒", "到账 {amount} UVT", "Thông báo", "Đã nhận {value} UVT", "", "",
                 "Marina K.", "校验中越占位符一致性"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
@@ -483,14 +483,14 @@ class OpsNovaServiceTest {
         LocalDateTime occurredAt = LocalDateTime.now(TEST_CLOCK).minusHours(1);
         var result = service.ingestTrustedSocialEvent("idem-social-create", new TrustedNovaSocialEvent(
                         "withdrawal", "withdrawal-90001", "NEXION_CORE", "nx_withdrawal_order",
-                        "Nguyen Van An", "Ho Chi Minh City", new BigDecimal("18420"), "NEX",
+                        "Nguyen Van An", "Ho Chi Minh City", new BigDecimal("18420"), "UVT",
                         "Withdrawal settled", occurredAt), occurredAt.plusHours(12),
                 "Marina K.", "接入真实提现到账事件");
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().actorDisplay()).isEqualTo("N***");
         assertThat(result.getData().cityDisplay()).isEqualTo("H***");
-        assertThat(result.getData().amountDisplay()).isEqualTo("10K–50K NEX");
+        assertThat(result.getData().amountDisplay()).isEqualTo("10K–50K UVT");
         assertThat(result.getData().sourceEventId()).startsWith("evt_").doesNotContain("90001");
         assertThat(result.getData().sourceTable()).isEqualTo("nx_withdrawal_order");
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
@@ -553,7 +553,7 @@ class OpsNovaServiceTest {
 
     @Test
     void listSocialEventsMarksExpiredRowsAndCanFilter() {
-        NovaSocialEventView active = novaRepository.addEvent("withdrawal", "active-1", "A***", "H***", "1K–5K NEX",
+        NovaSocialEventView active = novaRepository.addEvent("withdrawal", "active-1", "A***", "H***", "1K–5K UVT",
                 "ACTIVE", LocalDateTime.now(TEST_CLOCK).minusMinutes(5), LocalDateTime.now(TEST_CLOCK).plusHours(1));
         novaRepository.addEvent("vrank", "expired-1", "B***", "D***", "",
                 "ACTIVE", LocalDateTime.now(TEST_CLOCK).minusDays(2), LocalDateTime.now(TEST_CLOCK).minusHours(1));
@@ -580,7 +580,7 @@ class OpsNovaServiceTest {
         assertThat(service.deleteSocialEvent(created.id(), "idem-delete-1", delete).getCode()).isZero();
         assertThat(service.deleteSocialEvent(created.id(), "idem-delete-2", delete).getCode()).isZero();
 
-        NovaSocialEventView expiring = novaRepository.addEvent("withdrawal", "withdrawal-expire-now", "A***", "H***", "1K–5K NEX",
+        NovaSocialEventView expiring = novaRepository.addEvent("withdrawal", "withdrawal-expire-now", "A***", "H***", "1K–5K UVT",
                 "ACTIVE", LocalDateTime.now(TEST_CLOCK), LocalDateTime.now(TEST_CLOCK).plusDays(1));
         NovaSocialEventStatusRequest expire = new NovaSocialEventStatusRequest("EXPIRED", "Marina K.", "运营确认立即过期");
         assertThat(service.updateSocialEventStatus(expiring.id(), "idem-expire-now", expire).getCode()).isZero();
@@ -605,14 +605,14 @@ class OpsNovaServiceTest {
         assertThat(empty.getCode()).isZero();
         assertThat(empty.getData()).isNull();
 
-        novaRepository.addEvent("withdrawal", "withdrawal-sample", "N***", "H***", "10K–50K NEX",
+        novaRepository.addEvent("withdrawal", "withdrawal-sample", "N***", "H***", "10K–50K UVT",
                 "ACTIVE", LocalDateTime.now(TEST_CLOCK).minusMinutes(1), LocalDateTime.now(TEST_CLOCK).plusHours(1));
         var sample = service.sampleSocialEvent("VI");
 
         assertThat(sample.getCode()).isZero();
         assertThat(sample.getData().sourceEventId()).startsWith("evt_").doesNotContain("withdrawal-sample");
         assertThat(sample.getData().language()).isEqualTo("VI");
-        assertThat(sample.getData().body()).contains("N***", "10K–50K NEX");
+        assertThat(sample.getData().body()).contains("N***", "10K–50K UVT");
     }
 
     @Test
@@ -662,7 +662,7 @@ class OpsNovaServiceTest {
     private static TrustedNovaSocialEvent socialEventRequest(String type, String sourceEventId) {
         LocalDateTime occurredAt = LocalDateTime.now(TEST_CLOCK).minusMinutes(1);
         return new TrustedNovaSocialEvent(type, sourceEventId, "NEXION_CORE", "nx_withdrawal_order",
-                "Nguyen Van An", "Ho Chi Minh City", new BigDecimal("4200"), "NEX", "Verified source", occurredAt);
+                "Nguyen Van An", "Ho Chi Minh City", new BigDecimal("4200"), "UVT", "Verified source", occurredAt);
     }
 
     private static NovaChannelUpsertRequest channelRequest(String key) {

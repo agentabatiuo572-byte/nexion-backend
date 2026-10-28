@@ -164,14 +164,14 @@ class SupportLeaderboardServiceTest {
         assertEquals("9",row.get("agentId"));assertEquals("1000000000000000000.123456789",((Map<?,?>)row.get("amount")).get("value"));
     }
     @Test void defaultAndLegacyRequestsExposeOneSignedNetAmountWithoutPrivateCustomerData(){Harness h=new Harness();
-        Context c=context(Board.netContribution,"NEX",NOW.minusSeconds(30));
+        Context c=context(Board.netContribution,"UVT",NOW.minusSeconds(30));
         var original=candidate(c,9,1);var signed=new Candidate(original.agentId(),original.name(),null,original.groupName(),original.qualification(),original.firstPayment(),original.customers(),
-            new Amount(new BigDecimal("-35.123456"),"NEX",c.referenceMonth(),AmountKind.NET_CONTRIBUTION,Coverage.COMPLETE,Reason.NONE,"net-only"),null);
+            new Amount(new BigDecimal("-35.123456"),"UVT",c.referenceMonth(),AmountKind.NET_CONTRIBUTION,Coverage.COMPLETE,Reason.NONE,"net-only"),null);
         Snapshot s=SupportLeaderboard.calculate(c,"net-only",Coverage.COMPLETE,List.of(signed));
         when(h.publicationMapper.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));
         when(h.publication.latest(any(),isNull())).thenReturn(new Publication(23,c.evaluatedAt().plusSeconds(1),s));
         for(String alias:Arrays.asList(null,"deposit","purchase","netContribution")) {
-            Map<String,List<String>> query=new HashMap<>();query.put("currency",List.of("NEX"));if(alias!=null)query.put("board",List.of(alias));
+            Map<String,List<String>> query=new HashMap<>();query.put("currency",List.of("UVT"));if(alias!=null)query.put("board",List.of(alias));
             var body=h.service.page(query);assertEquals("netContribution",body.get("board"));
             var row=(Map<?,?>)((List<?>)body.get("rows")).get(0);var amount=(Map<?,?>)row.get("amount");
             assertEquals("NET_CONTRIBUTION",amount.get("kind"));assertEquals("-35.123456",amount.get("value"));

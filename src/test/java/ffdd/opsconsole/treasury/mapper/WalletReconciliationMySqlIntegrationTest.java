@@ -107,7 +107,7 @@ class WalletReconciliationMySqlIntegrationTest {
         jdbc.update("INSERT INTO nx_user_wallet VALUES (1,1,10,0),(2,2,30,0),(3,3,40,1),(4,4,NULL,0),(5,5,-2,0)");
         ledger(1,1L,"USDT","SUCCESS",0,"9");
         ledger(2,1L,"USDT","FAILED",0,"999");
-        ledger(3,2L,"NEX","SUCCESS",0,"999");
+        ledger(3,2L,"UVT","SUCCESS",0,"999");
         ledger(4,3L,"USDT","SUCCESS",0,"12");
         ledger(5,7L,"USDT","SUCCESS",0,"8");
         ledger(6,4L,"USDT","SUCCESS",0,null);
@@ -144,7 +144,7 @@ class WalletReconciliationMySqlIntegrationTest {
             jdbc.update("INSERT INTO nx_user_wallet VALUES (?,?,?,?)", user,user,
                     BigDecimal.valueOf(random.nextInt(200000)-100000,6),random.nextInt(5)==0 ? 1 : 0);
         }
-        String[] assets={"USDT","usdt","NEX",null};
+        String[] assets={"USDT","usdt","UVT",null};
         String[] statuses={"SUCCESS","success","PENDING","FAILED",null};
         for (int id=1; id<=600; id++) {
             ledger(id,(long)random.nextInt(45),assets[random.nextInt(assets.length)],

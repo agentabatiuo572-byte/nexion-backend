@@ -300,7 +300,7 @@ class AppLearningServiceTest {
         assertThat(first.getData().rewardGranted()).isTrue();
         assertThat(replay.getData()).isEqualTo(first.getData());
         verify(earningsRelease, times(1)).creditReward(42L, "LEARNING_REWARD", "LEARN:42:test-course:v2",
-                "NEX", new BigDecimal("20.000000"), "PRODUCTION", "LEARN:42:test-course:v2:NEX");
+                "UVT", new BigDecimal("20.000000"), "PRODUCTION", "LEARN:42:test-course:v2:NEX");
         verify(ledger, times(1)).postLedgerEntry(anyString(), anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
         verify(outbox, times(1)).publish(
                 "LEARNING", "42:test-course:v2", "LEARNING_COURSE_COMPLETED",
@@ -595,7 +595,7 @@ class AppLearningServiceTest {
                 org.mockito.ArgumentMatchers.eq("test-course"), org.mockito.ArgumentMatchers.eq("v2"),
                 org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
         verify(earningsRelease, times(1)).creditReward(42L, "LEARNING_REWARD", "LEARN:42:test-course:v2",
-                "NEX", new BigDecimal("20.000000"), "PRODUCTION", "LEARN:42:test-course:v2:NEX");
+                "UVT", new BigDecimal("20.000000"), "PRODUCTION", "LEARN:42:test-course:v2:NEX");
     }
 
     @Test

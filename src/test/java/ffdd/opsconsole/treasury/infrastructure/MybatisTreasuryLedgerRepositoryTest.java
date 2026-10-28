@@ -16,6 +16,18 @@ import org.junit.jupiter.api.Test;
 import org.springframework.dao.DuplicateKeyException;
 
 class MybatisTreasuryLedgerRepositoryTest {
+    @Test
+    void oldTokenAssetIsRejectedBeforeLocksOrWrites() {
+        TreasuryLedgerMapper mapper = mock(TreasuryLedgerMapper.class);
+        MybatisTreasuryLedgerRepository repository = new MybatisTreasuryLedgerRepository(mapper,
+                mock(EventOutboxService.class), mock(ffdd.opsconsole.treasury.facade.SupportCommissionCaptureFacade.class));
+        assertThatThrownBy(() -> repository.postLedgerEntry("legacy-test", 7L, "LEARNING_REWARD", "NEX",
+                "IN", BigDecimal.ONE, "SUCCESS", "legacy rejected"))
+                .hasMessage("D4_LEDGER_ASSET_INVALID");
+        org.mockito.Mockito.verifyNoInteractions(mapper);
+    }
+
+
 
     @Test
     void withdrawalComponentsKeepRunningBalanceContinuousAndEachFirstInsertPublishesOutbox() {
@@ -38,21 +50,21 @@ class MybatisTreasuryLedgerRepositoryTest {
         when(mapper.insertLedgerEntry(
                 "WD-1:USDT:NETWORK_FEE", 7L, "WITHDRAW_NETWORK_FEE", "USDT", "OUT",
                 new BigDecimal("2.000000"), new BigDecimal("20.000000"), "POSTED",
-                "D5 actual network fee after NEX offset")).thenReturn(1);
+                "D5 actual network fee after UVT offset")).thenReturn(1);
         when(mapper.insertLedgerEntry(
                 "WD-1:USDT:PENALTY_FEE", 7L, "WITHDRAW_PENALTY_FEE", "USDT", "OUT",
                 new BigDecimal("20.000000"), BigDecimal.ZERO.setScale(6), "POSTED",
-                "H1 actual withdrawal penalty after NEX offset")).thenReturn(1);
+                "H1 actual withdrawal penalty after UVT offset")).thenReturn(1);
 
         repository.postLedgerEntry(
                 "WD-1:USDT:PRINCIPAL", 7L, "WITHDRAW_NET_PRINCIPAL", "USDT", "OUT",
                 new BigDecimal("78.000000"), "POSTED", "D2 withdrawal net principal");
         repository.postLedgerEntry(
                 "WD-1:USDT:NETWORK_FEE", 7L, "WITHDRAW_NETWORK_FEE", "USDT", "OUT",
-                new BigDecimal("2.000000"), "POSTED", "D5 actual network fee after NEX offset");
+                new BigDecimal("2.000000"), "POSTED", "D5 actual network fee after UVT offset");
         repository.postLedgerEntry(
                 "WD-1:USDT:PENALTY_FEE", 7L, "WITHDRAW_PENALTY_FEE", "USDT", "OUT",
-                new BigDecimal("20.000000"), "POSTED", "H1 actual withdrawal penalty after NEX offset");
+                new BigDecimal("20.000000"), "POSTED", "H1 actual withdrawal penalty after UVT offset");
 
         verify(outbox).publish("WALLET_LEDGER", "WD-1:USDT:PRINCIPAL", "wallet.ledger_posted", Map.of(
                 "bizNo", "WD-1:USDT:PRINCIPAL", "userId", 7L,
@@ -79,7 +91,7 @@ class MybatisTreasuryLedgerRepositoryTest {
         when(mapper.lockReserveWithdrawal("WD-1")).thenReturn(new TreasuryLedgerMapper.ReserveWithdrawal(
                 7L,"USDT-BEP20",new BigDecimal("100"),"REVIEW_REJECTED",null,null));
         when(mapper.actualUserBalance(7L, "USDT")).thenReturn(new BigDecimal("20.000000"));
-        when(mapper.actualUserBalance(7L, "NEX")).thenReturn(new BigDecimal("5.000000"));
+        when(mapper.actualUserBalance(7L, "UVT")).thenReturn(new BigDecimal("5.000000"));
         when(mapper.releasePendingWithdrawalWithNex(
                 7L, new BigDecimal("100.000000"), new BigDecimal("50.000000"))).thenReturn(1);
         when(mapper.insertLedgerEntry(
@@ -87,7 +99,7 @@ class MybatisTreasuryLedgerRepositoryTest {
                 new BigDecimal("100.000000"), new BigDecimal("120.000000"), "SUCCESS", "rejected"))
                 .thenReturn(1);
         when(mapper.insertLedgerEntry(
-                "D2-NEX-REFUND-WD-1", 7L, "WITHDRAW_FEE_OFFSET_REFUND", "NEX", "IN",
+                "D2-NEX-REFUND-WD-1", 7L, "WITHDRAW_FEE_OFFSET_REFUND", "UVT", "IN",
                 new BigDecimal("50.000000"), new BigDecimal("55.000000"), "SUCCESS", "rejected"))
                 .thenReturn(1);
 
@@ -100,7 +112,7 @@ class MybatisTreasuryLedgerRepositoryTest {
                 "D2-REFUND-WD-1", 7L, "WITHDRAW_REFUND", "USDT", "IN",
                 new BigDecimal("100.000000"), new BigDecimal("120.000000"), "SUCCESS", "rejected");
         verify(mapper).insertLedgerEntry(
-                "D2-NEX-REFUND-WD-1", 7L, "WITHDRAW_FEE_OFFSET_REFUND", "NEX", "IN",
+                "D2-NEX-REFUND-WD-1", 7L, "WITHDRAW_FEE_OFFSET_REFUND", "UVT", "IN",
                 new BigDecimal("50.000000"), new BigDecimal("55.000000"), "SUCCESS", "rejected");
     }
 

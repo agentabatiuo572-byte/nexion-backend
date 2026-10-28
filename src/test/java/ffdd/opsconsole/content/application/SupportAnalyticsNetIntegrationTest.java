@@ -36,7 +36,7 @@ class SupportAnalyticsNetIntegrationTest {
         when(funds.readNetContributions(any())).thenReturn(new NetSnapshot(List.of(new NetCustomer(1L,EvidenceState.READY,List.of(),BigDecimal.ZERO,BigDecimal.ZERO)),List.of(),List.of()));
     }
     @Test void provenZeroUsdtComesFromFacadeRatherThanUnknownOrOldRechargeArithmetic(){readyZero("USDT");}
-    @Test void provenZeroNexComesFromSameFacadeEvidence(){readyZero("NEX");}
+    @Test void provenZeroNexComesFromSameFacadeEvidence(){readyZero("UVT");}
     private void readyZero(String currency){
         var result=service.summarize(new Query(ReadMode.PERSONAL,null,null,Basis.CURRENT_CUSTOMER_HISTORY,null,null,"Asia/Shanghai",currency));
         var net=result.financialSummary().currencies().get(0).net();

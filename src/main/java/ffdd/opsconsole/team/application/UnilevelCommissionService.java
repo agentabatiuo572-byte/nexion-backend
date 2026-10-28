@@ -49,7 +49,7 @@ public class UnilevelCommissionService {
     private static final int MAX_DEPTH = 7;
     private static final String COMMISSION_NETWORK = "network";
     private static final String CURRENCY_USDT = "USDT";
-    private static final String CURRENCY_NEX = "NEX";
+    private static final String CURRENCY_NEX = "UVT";
     private static final String STATUS_COOLING = "COOLING";
 
     /**
@@ -92,7 +92,7 @@ public class UnilevelCommissionService {
                 || orderNo == null || orderNo.isBlank()) {
             return 0;
         }
-        // One paid order emits both USDT and NEX rows. Concurrent replay workers
+        // One paid order emits both USDT and UVT rows. Concurrent replay workers
         // can otherwise interleave those unique-key inserts in opposite lock order
         // and deadlock before the idempotency check becomes visible. The canonical
         // buyer row is the stable transaction-scoped serialization fence.
@@ -201,18 +201,18 @@ public class UnilevelCommissionService {
                             "orderNo", orderNo,
                             "commissionEventId", usdtEventId));
 
-            // ② NEX commission_event(nex_per_usd × finalUsdt 佣金;nexAmount>0 才派发,L2-L7 经 finalUsdt 隐式乘 InfluenceScore)+ D4 IN/PENDING
+            // ② UVT commission_event(nex_per_usd × finalUsdt 佣金;nexAmount>0 才派发,L2-L7 经 finalUsdt 隐式乘 InfluenceScore)+ D4 IN/PENDING
             BigDecimal nexPerUsd = nexPerUsdByLevel.get("L" + layer);
             if (nexPerUsd != null && nexPerUsd.signum() > 0) {
                 BigDecimal nexAmount = finalUsdt.multiply(nexPerUsd).setScale(6, RoundingMode.HALF_UP);
                 if (nexAmount.signum() > 0) {
                     Long nexEventId = commissionRepository.insertNetworkCommissionEvent(
                             ancestor, COMMISSION_NETWORK, buyerUserId, layer, orderNo, orderSubtotalUsdt,
-                            CURRENCY_NEX, ZERO, nexAmount, STATUS_COOLING, coolingDays, remark + " NEX");
+                            CURRENCY_NEX, ZERO, nexAmount, STATUS_COOLING, coolingDays, remark + " UVT");
                     if (nexEventId != null) {
                         ledgerPostingFacade.postLedgerEntry(
                                 "F2-NETWORK-NEX-" + nexEventId, ancestor, "TEAM_COMMISSION", CURRENCY_NEX,
-                                "IN", nexAmount, "PENDING", "F2 unilevel NEX commission | " + remark);
+                                "IN", nexAmount, "PENDING", "F2 unilevel UVT commission | " + remark);
                     } else {
                         throw new BizException(409, "UNILEVEL_COMMISSION_WRITE_CONFLICT");
                     }

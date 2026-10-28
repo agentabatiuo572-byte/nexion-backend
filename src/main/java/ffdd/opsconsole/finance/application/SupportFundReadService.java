@@ -283,7 +283,7 @@ public class SupportFundReadService {
                 for(long root:componentRoots) {
                     var total=replay.totals().get(root);boolean ready=replay.state()==State.READY;
                     result.add(new NetCustomer(root,ready?EvidenceState.READY:EvidenceState.UNKNOWN,
-                        replay.reasons().stream().map(Enum::name).toList(),ready?total.get("USDT"):null,ready?total.get("NEX"):null));
+                        replay.reasons().stream().map(Enum::name).toList(),ready?total.get("USDT"):null,ready?total.get("UVT"):null));
                 }
                 for(var origin:replay.origins().values())if(componentRoots.contains(origin.customerId())) {
                     var at=origin.formedAt();publicOrigins.add(new ContributionOrigin(origin.contributionId(),origin.customerId(),origin.paymentFactId(),
@@ -521,7 +521,7 @@ public class SupportFundReadService {
             else require(Set.of("pending_review","bonus_locked").contains(originalBucket) &&"withdrawable".equals(entry.get("bucket"))
                 &&Set.of("manual","attest").contains(entry.get("releaseSource")),Gap.SOURCE);
             String suffix=asset.equals("USDT")?":REMAINDER":":NEX",type=asset.equals("USDT")?"H2_TRIAL_REMAINDER":"H2_TRIAL_BONUS";
-            require(Set.of("USDT","NEX").contains(asset) &&(claim+suffix).equals(entry.get("sourceRef")) &&type.equals(entry.get("sourceType")),Gap.SOURCE);
+            require(Set.of("USDT","UVT").contains(asset) &&(claim+suffix).equals(entry.get("sourceRef")) &&type.equals(entry.get("sourceType")),Gap.SOURCE);
             BigDecimal amount=decimal(entry.get("amount"));require(amount.signum()>0
                 &&amount.compareTo(decimal(trial.get(asset.equals("USDT")?"remainderUsdt":"shadowNex")))==0,Gap.SOURCE);
             var sourceLedger=ledgers.stream().filter(row->(claim+suffix).equals(row.get("businessId")) &&number(row,"customerId")==customer).toList();
@@ -531,7 +531,7 @@ public class SupportFundReadService {
             events.add(new Event("EARNINGS:"+no,"withdrawable".equals(originalBucket)?Action.EARNINGS:Action.PROTECTED_EARNINGS,
                 null,new Account(customer,asset,"available"),null,amount,null));
         }
-        for(String asset:List.of("USDT","NEX"))require(decimal(trial.get(asset.equals("USDT")?"remainderUsdt":"shadowNex")).signum()==0?!assets.contains(asset):assets.contains(asset),Gap.SOURCE);
+        for(String asset:List.of("USDT","UVT"))require(decimal(trial.get(asset.equals("USDT")?"remainderUsdt":"shadowNex")).signum()==0?!assets.contains(asset):assets.contains(asset),Gap.SOURCE);
         return List.copyOf(events);
     }
     private Stamp withdrawal(Map<String,Object> op,JsonNode source,JsonNode proof,List<Event> events,List<Map<String,Object>> orders,

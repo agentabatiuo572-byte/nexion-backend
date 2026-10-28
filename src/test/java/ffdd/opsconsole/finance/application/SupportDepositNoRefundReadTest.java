@@ -60,12 +60,12 @@ class SupportDepositNoRefundReadTest {
 
     @Test void certifiedDepositTotalsIgnoreRefundAbsenceKeepFullHistoryAndBothCurrencies() throws Exception {
         var facts=new ArrayList<Fact>();for(int i=1;i<=31;i++)facts.add(fact(i,"USDT","1.000001",Kind.DEPOSIT));
-        facts.add(fact(32,"NEX","2.123456",Kind.DEPOSIT));facts.add(fact(33,"USDT","80",Kind.DEVICE_PURCHASE));
+        facts.add(fact(32,"UVT","2.123456",Kind.DEPOSIT));facts.add(fact(33,"USDT","80",Kind.DEVICE_PURCHASE));
         var snapshot=snapshot(facts,complete());
         var usdt=money(facts,snapshot,Kind.DEPOSIT,"USDT",false,false);
         assertThat(usdt.status()).isEqualTo(Status.AVAILABLE);assertThat(usdt.observedAmount()).isEqualByComparingTo("31.000031");
         assertThat(usdt.confirmedAmount()).isEqualByComparingTo("31.000031");assertThat(usdt.confirmedEvents()).isEqualTo(31);assertThat(usdt.reasons()).isEmpty();
-        assertThat(money(facts,snapshot,Kind.DEPOSIT,"NEX",false,false).confirmedAmount()).isEqualByComparingTo("2.123456");
+        assertThat(money(facts,snapshot,Kind.DEPOSIT,"UVT",false,false).confirmedAmount()).isEqualByComparingTo("2.123456");
         var purchases=money(facts,snapshot,Kind.DEVICE_PURCHASE,"USDT",false,false);
         assertThat(purchases.status()).isEqualTo(Status.PARTIAL);assertThat(purchases.confirmedAmount()).isNull();
         assertThat(purchases.reasons()).contains("COMPLETE_HISTORY_NOT_PROVEN");

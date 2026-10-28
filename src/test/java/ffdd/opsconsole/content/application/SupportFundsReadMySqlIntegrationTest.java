@@ -108,7 +108,7 @@ class SupportFundsReadMySqlIntegrationTest {
                     for(String status:List.of("SUBMITTED","REVIEW_PENDING","EXTENDED_HOLD","REVIEW_PASSED","PROCESSING","SENT"))
                         expected.put(withdraw(zero,"USDT",status,"10.123456","0.123456","10.000000",false),WithdrawalState.PROCESSING);
                     expected.put(withdraw(zero,"USDT","CONFIRMED","10.123456","0.123456","10.000000",true),WithdrawalState.SUCCESS);
-                    expected.put(withdraw(zero,"NEX","SUCCESS","999999999999.123456","0.000001","999999999999.123455",true),WithdrawalState.SUCCESS);
+                    expected.put(withdraw(zero,"UVT","SUCCESS","999999999999.123456","0.000001","999999999999.123455",true),WithdrawalState.SUCCESS);
                     for(String status:List.of("REVIEW_REJECTED","ADDRESS_INVALID","TX_FAILED","REFUNDED"))
                         expected.put(withdraw(zero,"USDT",status,"10","1","9",false),WithdrawalState.NOT_SUCCESSFUL);
                     expected.put(withdraw(zero,"USDT","FROZEN","10","1","9",false),WithdrawalState.HELD);
@@ -142,7 +142,7 @@ class SupportFundsReadMySqlIntegrationTest {
 
                     // Existing single-customer service uses real production mappers; no credit sources are seeded.
                     var old=legacy.totals(compatible);assertThat(old.get("balanceSourceStatus")).isEqualTo("READY");
-                    Map<String,Object> usdt=legacyCurrency(old,"USDT"),nex=legacyCurrency(old,"NEX");
+                    Map<String,Object> usdt=legacyCurrency(old,"USDT"),nex=legacyCurrency(old,"UVT");
                     assertThat(usdt).containsEntry("availableBalance","20.123456").containsEntry("creditedDepositTotal","0")
                         .containsEntry("successfulWithdrawalPrincipalTotal","10.123456").containsEntry("successfulWithdrawalFeeTotal","0.123456")
                         .containsEntry("successfulWithdrawalNetTotal","10").containsEntry("processingWithdrawalPrincipalTotal","3.654321");
@@ -166,7 +166,7 @@ class SupportFundsReadMySqlIntegrationTest {
                 assertThat(outside.queryForObject("SELECT CONNECTION_ID()",Long.class)).isNotEqualTo(probe.reads.get(0).connectionId());
                 assertThat(outside.update("UPDATE nx_user_wallet SET usdt_available=11.000001,nex_available=21.000002,version=version+1,updated_at=NOW() WHERE user_id=? AND version=7",customer)).isEqualTo(1);
                 assertThat(outside.update("UPDATE nx_withdrawal_order SET status='CONFIRMED',amount=4.123456,fee=0.123456,d2_gross_fee=0.123456,d2_actual_fee=0.123456,d2_net_receive=4.000000,completed_at=NOW(),updated_at=NOW() WHERE id=? AND user_id=? AND status='SUBMITTED'",withdrawal,customer)).isEqualTo(1);
-                withdrawUsing(outside,customer,"NEX","SUCCESS","6.000003","0.000003","6.000000",true);
+                withdrawUsing(outside,customer,"UVT","SUCCESS","6.000003","0.000003","6.000000",true);
             });
             probe.reads.clear();
             reader.executeWithoutResult(tx->{

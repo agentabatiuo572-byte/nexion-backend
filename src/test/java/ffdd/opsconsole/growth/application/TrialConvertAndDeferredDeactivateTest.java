@@ -169,7 +169,7 @@ class TrialConvertAndDeferredDeactivateTest {
         verify(earningsRelease).creditRewardInFundOperation(eq(7L), eq("H2_TRIAL_REMAINDER"), eq("TRIAL-1:REMAINDER"),
                 eq("USDT"), eq(new BigDecimal("65.560000")), eq("H2:TRIAL-1:REMAINDER:USDT"));
         verify(earningsRelease).creditRewardInFundOperation(eq(7L), eq("H2_TRIAL_BONUS"), eq("TRIAL-1:NEX"),
-                eq("NEX"), eq(new BigDecimal("195.000000")), eq("H2:TRIAL-1:NEX"));
+                eq("UVT"), eq(new BigDecimal("195.000000")), eq("H2:TRIAL-1:NEX"));
         verify(capture).trialReward(any(Prepared.class), eq("ER-LEGACY-USDT"));
         verify(capture).trialReward(any(Prepared.class), eq("ER-LEGACY-NEX"));
         verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
@@ -222,7 +222,7 @@ class TrialConvertAndDeferredDeactivateTest {
         when(earningsRelease.creditRewardInFundOperation(eq(7L), eq("H2_TRIAL_REMAINDER"), eq("TRIAL-1:REMAINDER"),
                 eq("USDT"), eq(new BigDecimal("65.560000")), eq("H2:TRIAL-1:REMAINDER:USDT"))).thenReturn("ER-LEGACY-USDT");
         when(earningsRelease.creditRewardInFundOperation(eq(7L), eq("H2_TRIAL_BONUS"), eq("TRIAL-1:NEX"),
-                eq("NEX"), eq(new BigDecimal("195.000000")), eq("H2:TRIAL-1:NEX"))).thenReturn("ER-LEGACY-NEX");
+                eq("UVT"), eq(new BigDecimal("195.000000")), eq("H2:TRIAL-1:NEX"))).thenReturn("ER-LEGACY-NEX");
         when(mapper.lockHardwarePurchaseTiers("stellarbox-s1")).thenReturn(List.of(
                 new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Tier(
                         1L, "S1", "stellarbox-s1", 0, BigDecimal.ZERO, 10, "ALL", 1)));

@@ -38,10 +38,10 @@ import org.springframework.util.StringUtils;
  *       ② INSERT nx_commission_event(commission_type='vrank_reward',currency='USDT',user_id=被晋升人);
  *       ③ ledgerPostingFacade.postLedgerEntry(direction='IN',status='PENDING',bizType='TEAM_COMMISSION');
  *       ④ INSERT nx_v_rank_reward_payout(status='GRANTED',commission_event_id,bill_id)。</li>
- *   <li><b>nex(培育类 NEX)</b> — 默认派给 L1 上线 sponsor(承接培育奖语义,PRD §8.2.5):
+ *   <li><b>nex(培育类 UVT)</b> — 默认派给 L1 上线 sponsor(承接培育奖语义,PRD §8.2.5):
  *       commission_type='cultivation',user_id=sponsor,source_user_id=被晋升人;
  *       若 reward 的 custom_label 含 "self"/"direct" 标记,或 sponsor 不存在 → fallback 派本人(commission_type='vrank_reward')。
- *       其余流程同 usdt(currency='NEX')。B1 预检同 usdt。</li>
+ *       其余流程同 usdt(currency='UVT')。B1 预检同 usdt。</li>
  *   <li><b>voucher</b> — 调 H7 {@link VoucherGrantFacade} 原子写入用户券权属,随后 payout 记
  *       {@code GRANTED};H7 内部负责幂等、必达审计与 outbox,权益类不入 D4。</li>
  *   <li><b>sku</b> — 原子创建 PENDING_GRANT payout 与 PENDING 履约队列；后台消费者库存预占、
@@ -71,9 +71,9 @@ import org.springframework.util.StringUtils;
 @Slf4j
 public class VRankRewardDispatcher {
 
-    /** 资金类奖励币种(USDT/NEX → D4 台账方向一致,仅 currency 字段区分)。 */
+    /** 资金类奖励币种(USDT/UVT → D4 台账方向一致,仅 currency 字段区分)。 */
     private static final String CURRENCY_USDT = "USDT";
-    private static final String CURRENCY_NEX = "NEX";
+    private static final String CURRENCY_NEX = "UVT";
 
     /** commission_event.commission_type — 本人奖励 / 培育类给 sponsor。 */
     private static final String COMMISSION_TYPE_VRANK_REWARD = "vrank_reward";
@@ -94,7 +94,7 @@ public class VRankRewardDispatcher {
 
     /** reward_type 白名单(对齐 OpsTeamService.VRANK_REWARD_TYPES)。 */
     private static final String REWARD_TYPE_USDT = "usdt";
-    private static final String REWARD_TYPE_NEX = "nex";
+    private static final String REWARD_TYPE_NEX = "uvt";
     private static final String REWARD_TYPE_VOUCHER = "voucher";
     private static final String REWARD_TYPE_SKU = "sku";
     private static final String REWARD_TYPE_CUSTOM = "custom";
@@ -190,13 +190,13 @@ public class VRankRewardDispatcher {
     }
 
     // ============================================================
-    // 资金类(USDT/NEX)→ B1 预检 + INSERT commission_event + postLedgerEntry + INSERT payout
+    // 资金类(USDT/UVT)→ B1 预检 + INSERT commission_event + postLedgerEntry + INSERT payout
     // ============================================================
 
     /**
-     * 派发资金类奖励(USDT 或 培育类 NEX)。
+     * 派发资金类奖励(USDT 或 培育类 UVT)。
      *
-     * @param currency        USDT / NEX
+     * @param currency        USDT / UVT
      * @param isCultivation   true=培育类(派 sponsor),false=本人奖励(派本人)
      */
     private void dispatchFundReward(Long userId,
@@ -229,7 +229,7 @@ public class VRankRewardDispatcher {
                 sourceUserId = userId;
                 commissionType = COMMISSION_TYPE_CULTIVATION;
             } else {
-                log.info("V-Rank cultivation NEX has no sponsor for user {}, fallback to self: rank={}",
+                log.info("V-Rank cultivation UVT has no sponsor for user {}, fallback to self: rank={}",
                         userId, rankCode);
                 // sponsor 不存在 → fallback 派本人(commission_type 仍为 vrank_reward)
             }
@@ -302,7 +302,7 @@ public class VRankRewardDispatcher {
     }
 
     /**
-     * NEX 奖励特殊路由:默认培育类(sponsor 收),custom_label 含 "self"/"direct" 或无 sponsor 时 fallback 本人。
+     * UVT 奖励特殊路由:默认培育类(sponsor 收),custom_label 含 "self"/"direct" 或无 sponsor 时 fallback 本人。
      */
     private void dispatchNexReward(Long userId,
                                    String rankCode,
@@ -456,7 +456,7 @@ public class VRankRewardDispatcher {
                 .orElse(DEFAULT_COOLING_DAYS);
     }
 
-    /** NEX custom_label 含 "self"/"direct" → 视为"本人 NEX"(非培育,派本人)。 */
+    /** UVT custom_label 含 "self"/"direct" → 视为"本人 UVT"(非培育,派本人)。 */
     private boolean hasSelfMarker(String customLabel) {
         if (!StringUtils.hasText(customLabel)) {
             return false;

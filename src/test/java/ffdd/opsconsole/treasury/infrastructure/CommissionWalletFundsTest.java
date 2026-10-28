@@ -67,7 +67,7 @@ class CommissionWalletFundsTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"USDT", "NEX"})
+    @ValueSource(strings = {"USDT", "UVT"})
     void releaseAndReversalMoveTheActualWalletOnceAndRecordExactBalances(String asset) {
         funds(asset);
         repository.releaseCommissionFunds(EVENT);
@@ -156,7 +156,7 @@ class CommissionWalletFundsTest {
 
     @Test
     void outboxFailurePropagatesToTheTransactionOwner() {
-        funds("NEX");
+        funds("UVT");
         when(outbox.publish(eq("WALLET_LEDGER"), anyString(), eq("wallet.ledger_posted"), any()))
                 .thenThrow(new IllegalStateException("outbox unavailable"));
         assertThatThrownBy(() -> repository.releaseCommissionFunds(EVENT)).hasMessage("outbox unavailable");

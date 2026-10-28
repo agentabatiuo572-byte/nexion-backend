@@ -352,7 +352,7 @@ class AppGenesisServiceTest {
 
         Map<String, Object> data = service.eligibility(42L).getData();
         assertThat(data).containsEntry("reservedAllocation", new BigDecimal("251.00"))
-                .containsEntry("reservedAllocationUnit", "NEX")
+                .containsEntry("reservedAllocationUnit", "UVT")
                 .containsEntry("priorityRank", 2)
                 .containsEntry("priorityTier", "TOP_3")
                 .containsEntry("policyVersion", "genesis-holder-v2")
@@ -373,7 +373,7 @@ class AppGenesisServiceTest {
                 .containsEntry("reservedAllocation", null)
                 .containsEntry("priorityRank", null)
                 .containsEntry("priorityTier", "NONE")
-                .containsEntry("reservedAllocationUnit", "NEX");
+                .containsEntry("reservedAllocationUnit", "UVT");
     }
 
     @Test

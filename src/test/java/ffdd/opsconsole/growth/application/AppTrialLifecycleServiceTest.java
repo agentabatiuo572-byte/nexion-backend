@@ -1092,7 +1092,7 @@ class AppTrialLifecycleServiceTest {
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L),eq(0L),eq(77L),any(),any(),any(),any(),any(),any(), any(),anyString())).thenReturn(1);
         when(earningsRelease.creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_REMAINDER"),eq("TRIAL-ZERO:REMAINDER"),eq("USDT"),any(),anyString())).thenReturn("ER-USDT");
-        when(earningsRelease.creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_BONUS"),eq("TRIAL-ZERO:NEX"),eq("NEX"),any(),anyString())).thenReturn("ER-NEX");
+        when(earningsRelease.creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_BONUS"),eq("TRIAL-ZERO:NEX"),eq("UVT"),any(),anyString())).thenReturn("ER-NEX");
         var target=new AppTrialLifecycleService(capture,mapper,earningsRelease,idempotency,coverage,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,fixed);
         assertThat(target.convert(7L,"stellarbox-s1",BigDecimal.ZERO,"zero-rewards").getCode()).isZero();
         var order=org.mockito.Mockito.inOrder(mapper,capture,earningsRelease,audit);
@@ -1100,7 +1100,7 @@ class AppTrialLifecycleServiceTest {
         order.verify(mapper).settleWallet(eq(7L),eq(new BigDecimal("0.000000")),eq(BigDecimal.ZERO),eq(BigDecimal.ZERO));
         order.verify(earningsRelease).creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_REMAINDER"),eq("TRIAL-ZERO:REMAINDER"),eq("USDT"),eq(new BigDecimal("30.000000")),anyString());
         order.verify(capture).trialReward(any(Prepared.class),eq("ER-USDT"));
-        order.verify(earningsRelease).creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_BONUS"),eq("TRIAL-ZERO:NEX"),eq("NEX"),eq(new BigDecimal("5.000000")),anyString());
+        order.verify(earningsRelease).creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_BONUS"),eq("TRIAL-ZERO:NEX"),eq("UVT"),eq(new BigDecimal("5.000000")),anyString());
         order.verify(capture).trialReward(any(Prepared.class),eq("ER-NEX"));
         order.verify(audit).recordRequired(any());order.verify(capture).record(any(Prepared.class));
         verify(capture,never()).insertLedger(any(),any(),any(),anyString());

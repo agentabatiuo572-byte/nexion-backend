@@ -253,7 +253,7 @@ public class AppWithdrawalService {
     public ApiResult<Map<String, Object>> submit(
             Long userId, BigDecimal amount, String chain, String address, String idempotencyKey) {
         // Compatibility callers never expressed an offset intent; defaulting them
-        // to true would silently burn NEX. Only the explicit D5 request may opt in.
+        // to true would silently burn UVT. Only the explicit D5 request may opt in.
         return submit(userId, amount, chain, address, currentPolicy().policyVersion(), false, idempotencyKey);
     }
 
@@ -722,13 +722,13 @@ public class AppWithdrawalService {
                 netReceive, "D2 withdrawal net principal");
         postPositiveLedger(
                 withdrawalNo + ":USDT:NETWORK_FEE", userId, "WITHDRAW_NETWORK_FEE", "USDT",
-                actualNetworkFee, "D5 actual network fee after NEX offset");
+                actualNetworkFee, "D5 actual network fee after UVT offset");
         postPositiveLedger(
                 withdrawalNo + ":USDT:PENALTY_FEE", userId, "WITHDRAW_PENALTY_FEE", "USDT",
-                actualPenaltyFee, "H1 actual withdrawal penalty after NEX offset");
+                actualPenaltyFee, "H1 actual withdrawal penalty after UVT offset");
         postPositiveLedger(
-                withdrawalNo + ":NEX:OFFSET", userId, "WITHDRAW_FEE_OFFSET", "NEX",
-                nexBurned, "D5 NEX fee offset; penalty first, then network fee");
+                withdrawalNo + ":NEX:OFFSET", userId, "WITHDRAW_FEE_OFFSET", "UVT",
+                nexBurned, "D5 UVT fee offset; penalty first, then network fee");
     }
 
     private void postPositiveLedger(

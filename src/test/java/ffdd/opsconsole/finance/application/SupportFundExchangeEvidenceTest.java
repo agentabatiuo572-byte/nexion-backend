@@ -32,7 +32,7 @@ class SupportFundExchangeEvidenceTest {
     String encode(Object v){try{return json.writeValueAsString(v);}catch(Exception e){throw new AssertionError(e);}}
     String key(String phase){try{return "EXCHANGE:"+HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest((NO+"\n"+phase).getBytes(java.nio.charset.StandardCharsets.UTF_8)));}catch(Exception e){throw new AssertionError(e);}}
     Map<String,Object> wallet(BigDecimal usd,BigDecimal nex,long revision){return row("id",19L,"customerId",7L,"incarnation",INC,"revision",revision,"version",10+revision,"usdtAvailable",usd,"nexAvailable",nex,"riskHeld",n("0"),"pendingWithdrawal",n("0"),"sandbox",0,"deleted",0);}
-    Map<String,Object> order(String status,String asset,BigDecimal target,LocalDateTime at){return row("id",77L,"customerId",7L,"exchangeNo",NO,"fromAsset",asset,"toAsset",asset.equals("USDT")?"NEX":"USDT","fromAmount",n("20"),"toAmount",target,"rate",new BigDecimal("3.00000000"),"status",status,"createdAt",HOLD_AT,"updatedAt",at,"deleted",0,"userSandbox",0,"userDeleted",0);}
+    Map<String,Object> order(String status,String asset,BigDecimal target,LocalDateTime at){return row("id",77L,"customerId",7L,"exchangeNo",NO,"fromAsset",asset,"toAsset",asset.equals("USDT")?"UVT":"USDT","fromAmount",n("20"),"toAmount",target,"rate",new BigDecimal("3.00000000"),"status",status,"createdAt",HOLD_AT,"updatedAt",at,"deleted",0,"userSandbox",0,"userDeleted",0);}
     Map<String,Object> ledger(long id,String suffix,String asset,String direction,BigDecimal amount,BigDecimal after,LocalDateTime at){return row("id",id,"customerId",7L,"exchangeNo",NO,"bizNo",NO+suffix,"bizType","EXCHANGE_SWAP","asset",asset,"direction",direction,"amount",amount,"balanceAfter",after,"status","SUCCESS","createdAt",at,"updatedAt",at,"deleted",0);}
     final class Fixture {
         String phase,asset;Map<String,Object> current;List<Map<String,Object>> ledgers=new ArrayList<>(),fees=new ArrayList<>(),raw=new ArrayList<>(),ops=new ArrayList<>(),parties=new ArrayList<>(),legs=new ArrayList<>();
@@ -43,7 +43,7 @@ class SupportFundExchangeEvidenceTest {
     Fixture fixture(String phase,String asset){
         var f=new Fixture();f.phase=phase;f.asset=asset;boolean reserved=!phase.equals("IMMEDIATE");
         BigDecimal fee=Set.of("IMMEDIATE","COMPLETE").contains(phase)?n("1"):n("0");
-        BigDecimal grossTarget=asset.equals("USDT")?n("6.666666"):n("60"),netTarget=asset.equals("USDT")?n("6.333333"):n("59");BigDecimal target=Set.of("HOLD","CANCEL").contains(phase)?grossTarget:netTarget;String targetAsset=asset.equals("USDT")?"NEX":"USDT";
+        BigDecimal grossTarget=asset.equals("USDT")?n("6.666666"):n("60"),netTarget=asset.equals("USDT")?n("6.333333"):n("59");BigDecimal target=Set.of("HOLD","CANCEL").contains(phase)?grossTarget:netTarget;String targetAsset=asset.equals("USDT")?"UVT":"USDT";
         String status=phase.equals("HOLD")?"QUEUED":phase.equals("CANCEL")?"CANCELLED":"COMPLETED";
         f.current=order(status,asset,target,phase.equals("HOLD")||phase.equals("IMMEDIATE")?HOLD_AT:TERMINAL_AT);
         var holdLedger=ledger(1,"-HOLD",asset,"OUT",n("20"),n("80"),HOLD_AT);
@@ -52,8 +52,8 @@ class SupportFundExchangeEvidenceTest {
         if(Set.of("IMMEDIATE","COMPLETE").contains(phase))f.ledgers.add(ledger(3,"-IN",targetAsset,"IN",target,n("100").add(target),(LocalDateTime)f.current.get("updatedAt")));
         if(phase.equals("CANCEL"))f.ledgers.add(ledger(4,"-REFUND",asset,"IN",n("20"),n("100"),TERMINAL_AT));
         if(fee.signum()>0)f.fees.add(row("id",9L,"exchangeNo",NO,"totalFeeUsdt",fee,"burnRatio",new BigDecimal(".30"),"burnPoolUsdt",n(".3"),"feeBufferUsdt",n(".7"),"priceUsdt",new BigDecimal("3.00000000"),"nexEquivalent",n(".1"),"createdAt",f.current.get("updatedAt"),"updatedAt",f.current.get("updatedAt"),"deleted",0));
-        if(reserved&&!phase.equals("HOLD"))append(f,"HOLD",order("QUEUED",asset,grossTarget,HOLD_AT),List.of(holdLedger),List.of(),null,wallet(n("100"),n("100"),0),wallet(asset.equals("USDT")?n("80"):n("100"),asset.equals("NEX")?n("80"):n("100"),1),n("0"),1);
-        var before=wallet(reserved&&!phase.equals("HOLD")&&asset.equals("USDT")?n("80"):n("100"),reserved&&!phase.equals("HOLD")&&asset.equals("NEX")?n("80"):n("100"),f.ops.size());
+        if(reserved&&!phase.equals("HOLD"))append(f,"HOLD",order("QUEUED",asset,grossTarget,HOLD_AT),List.of(holdLedger),List.of(),null,wallet(n("100"),n("100"),0),wallet(asset.equals("USDT")?n("80"):n("100"),asset.equals("UVT")?n("80"):n("100"),1),n("0"),1);
+        var before=wallet(reserved&&!phase.equals("HOLD")&&asset.equals("USDT")?n("80"):n("100"),reserved&&!phase.equals("HOLD")&&asset.equals("UVT")?n("80"):n("100"),f.ops.size());
         BigDecimal usd=(BigDecimal)before.get("usdtAvailable"),nex=(BigDecimal)before.get("nexAvailable");
         if(phase.equals("HOLD")||phase.equals("IMMEDIATE")){if(asset.equals("USDT"))usd=usd.subtract(n("20"));else nex=nex.subtract(n("20"));}
         if(Set.of("IMMEDIATE","COMPLETE").contains(phase)){if(targetAsset.equals("USDT"))usd=usd.add(target);else nex=nex.add(target);}
@@ -71,7 +71,7 @@ class SupportFundExchangeEvidenceTest {
         for(var side:List.of("old","new")){var wallet=side.equals("old")?before:after;for(var mapping:Map.of("id","Id","customerId","UserId","version","Version","usdtAvailable","UsdtAvailable","nexAvailable","NexAvailable","riskHeld","CregisRiskHeld","pendingWithdrawal","PendingWithdraw","sandbox","Sandbox","deleted","IsDeleted").entrySet())raw.put(side+mapping.getValue(),wallet.get(mapping.getKey()));raw.put(side+"CreatedAt",HOLD_AT.minusDays(1));}
         f.ops.add(op);f.raw.add(raw);f.parties.add(row("operationId",id,"customerId",7L));f.legs.add(row("operationId",id,"incarnation",INC,"revision",id));f.source=source;f.proof=proof;f.operation=op;f.events=events;
     }
-    static Stream<String> phases(){return Stream.of("IMMEDIATE-USDT","IMMEDIATE-NEX","HOLD-USDT","HOLD-NEX","COMPLETE-USDT","COMPLETE-NEX","CANCEL-USDT","CANCEL-NEX");}
+    static Stream<String> phases(){return Stream.of("IMMEDIATE-USDT","IMMEDIATE-UVT","HOLD-USDT","HOLD-UVT","COMPLETE-USDT","COMPLETE-UVT","CANCEL-USDT","CANCEL-UVT");}
     @ParameterizedTest @MethodSource("phases") void allRealPhasesKeepExactRawGroupAndSourceStamp(String spec){var parts=spec.split("-");var f=fixture(parts[0],parts[1]);var v=f.verify();assertThat(v.coveredPhase()).isEqualTo(NO+":"+parts[0]);assertThat(v.points()).hasSize(1);assertThat(v.points().get(0).eventIds()).containsExactlyElementsOf(f.events.stream().map(Event::id).toList());assertThat(v.stamp().succeededAt()).isEqualTo(f.current.get("updatedAt"));}
     @ParameterizedTest @ValueSource(strings={"HOLD","IMMEDIATE","COMPLETE","CANCEL"}) void reverseCoverageIncludesEveryPhaseAndOnlyTrueQueuedHolding(String phase){var f=fixture(phase,"USDT");var covered=new HashSet<String>();for(var op:f.ops)covered.add(NO+":"+op.get("phase"));var holdings=evidence.verifyCoverage(Set.of(7L),f.input(),covered);assertThat(holdings).hasSize(phase.equals("HOLD")?1:0);if(!holdings.isEmpty()){assertThat(holdings.get(0).amount()).isEqualByComparingTo("20");assertThat(holdings.get(0).account().slot()).isEqualTo("held:exchange-"+NO);}}
     static Stream<String> corruptions(){return Stream.of("extraLedger","duplicateLedger","foreignLedger","badLedgerType","badLedgerAsset","badLedgerAmount","deletedLedger","failedLedger","duplicateFee","badFeeTotal","badFeePrice","badFeeCurrency","missingHold","holdSnapshotChanged","cashAfterWrong","rawForeignOwner","rawVersionGap","duplicateLeg","foreignLeg","wrongEventIds","eventOrder","walletIncarnation","sourceStamp","missingPrecision","beforeOrder","unexpectedProofKey");}
@@ -89,7 +89,7 @@ class SupportFundExchangeEvidenceTest {
             case "duplicateFee" -> f.fees.add(new HashMap<>(f.fees.get(0)));
             case "badFeeTotal" -> f.fees.get(0).put("totalFeeUsdt",n("2"));
             case "badFeePrice" -> f.fees.get(0).put("priceUsdt",new BigDecimal("3.00000001"));
-            case "badFeeCurrency" -> f.source.put("feeCurrency","NEX");
+            case "badFeeCurrency" -> f.source.put("feeCurrency","UVT");
             case "missingHold" -> {f.ops.remove(0);f.legs.remove(0);f.parties.remove(0);}
             case "holdSnapshotChanged" -> {var old=(ObjectNode)read(f.ops.get(0).get("sourceSnapshotJson"));((ObjectNode)old.get("order")).put("fromAmount",21);f.ops.get(0).put("sourceSnapshotJson",encode(old));}
             case "cashAfterWrong" -> ((ObjectNode)f.proof.get("cashAfter")).put("nexAvailable",999);
@@ -121,7 +121,7 @@ class SupportFundExchangeEvidenceTest {
         var receipt=org.mockito.ArgumentCaptor.forClass(ffdd.opsconsole.finance.facade.SupportFundJournalFacade.ReceiptInput.class);verify(journal).bind(any(),receipt.capture());f.source=(ObjectNode)read(receipt.getValue().sourceSnapshotJson());f.proof=(ObjectNode)read(receipt.getValue().sourceProofJson());f.operation.put("orderedEventsJson",receipt.getValue().orderedEventsJson());assertThat(f.verify().points()).hasSize(1);
     }
     @ParameterizedTest @ValueSource(strings={"GEO_BLOCKED","USER_CAP","PLATFORM_CAP"}) void realNoCashGateRequiresNoLedgerFeeOrReceipt(String status){var f=fixture("IMMEDIATE","USDT");f.current.put("status",status);f.ledgers.clear();f.fees.clear();f.ops.clear();f.parties.clear();f.legs.clear();f.raw.clear();assertThat(evidence.verifyCoverage(Set.of(7L),f.input(),Set.of())).isEmpty();f.ledgers.add(ledger(8,"-OUT","USDT","OUT",n("20"),n("80"),HOLD_AT));assertThatThrownBy(()->evidence.verifyCoverage(Set.of(7L),f.input(),Set.of())).isInstanceOf(IllegalArgumentException.class);}
-    @ParameterizedTest @ValueSource(strings={"USDT","NEX"}) void zeroActualFeeKeepsOnlyTheRealExchange(String asset){
+    @ParameterizedTest @ValueSource(strings={"USDT","UVT"}) void zeroActualFeeKeepsOnlyTheRealExchange(String asset){
         var f=fixture("IMMEDIATE",asset);var target=asset.equals("USDT")?n("6.666666"):n("60");var balance=n("100").add(target);var cashField=asset.equals("USDT")?"nexAvailable":"usdtAvailable";var rawField=asset.equals("USDT")?"newNexAvailable":"newUsdtAvailable";
         f.current.put("toAmount",target);f.ledgers.get(1).put("amount",target);f.ledgers.get(1).put("balanceAfter",balance);f.fees.clear();f.raw.get(0).put(rawField,balance);((ObjectNode)f.proof.get("cashAfter")).put(cashField,balance);
         f.source.set("order",node(f.current));f.source.set("ledgers",json.valueToTree(normalize(f.ledgers)));f.source.putArray("feeAllocations");f.source.put("feeAmount",n("0"));f.events=exchange.events(new SupportExchangeReadFacade.Source(f.current,f.ledgers,f.fees),"IMMEDIATE");f.proof.set("eventIds",json.valueToTree(f.events.stream().map(Event::id).toList()));f.operation.put("orderedEventsJson",encode(f.events));
