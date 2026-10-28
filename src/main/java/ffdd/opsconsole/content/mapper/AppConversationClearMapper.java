@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.mapper;
 import java.util.List;
 import org.apache.ibatis.annotations.*;
 
+@SuppressWarnings("MybatisPlusBaseMapper")
 public interface AppConversationClearMapper {
     record PeerRow(String conversationNo, String peerKey, String ownerAgentId, String ownerAgentName,
             Long version, long throughMessageId, long lastMessageId, boolean userScopeCleared, boolean archived) {}

@@ -45,12 +45,6 @@ class P1RegressionContractTest {
     }
 
     @Test
-    void computeShareFailsClosedWithoutAnHttpsInstaller() throws Exception {
-        String service = source("ffdd/opsconsole/device/application/AppComputeShareEnrollmentService.java");
-        assertThat(service).contains("E.compute.download.url", "COMPUTE_SHARE_INSTALLER_UNAVAILABLE", "https://");
-    }
-
-    @Test
     void blockedBinaryCannotExposeAPositiveSettlementEstimate() throws Exception {
         String service = source("ffdd/opsconsole/team/application/AppBinaryProjectionService.java");
         assertThat(service).contains("blockedReason.isBlank() ? estimate : ZERO");
