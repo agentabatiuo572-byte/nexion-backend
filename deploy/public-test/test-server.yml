@@ -57,10 +57,6 @@ nexion:
       mode: DISABLED
     hdpay:
       mode: DISABLED
-  janus:
-    executor:
-      mode: PRODUCTION
-      production-applied-enabled: false
   compute-task:
     executor:
       mode: PRODUCTION

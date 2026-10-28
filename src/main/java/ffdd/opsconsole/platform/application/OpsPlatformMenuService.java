@@ -74,6 +74,8 @@ public class OpsPlatformMenuService {
         if (!StringUtils.hasText(menuCode)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "MENU_CODE_REQUIRED");
         }
+        if (java.util.Set.of("K6", "MENU_RISK_K6").contains(menuCode)
+                || "/risk/janus-c2".equals(request.routePath())) return ApiResult.fail(410, "MENU_RETIRED");
         AdminMenuEntity existing = menuMapper.selectByMenuCodeForUpdate(menuCode);
         if (existing != null && !Integer.valueOf(1).equals(existing.getIsDeleted())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "MENU_CODE_DUPLICATE");
@@ -131,6 +133,8 @@ public class OpsPlatformMenuService {
         if (entity == null) {
             return ApiResult.fail(404, "MENU_NODE_NOT_FOUND");
         }
+        if (java.util.Set.of("K6", "MENU_RISK_K6").contains(entity.getMenuCode())
+                || "/risk/janus-c2".equals(request.routePath())) return ApiResult.fail(410, "MENU_RETIRED");
         ApiResult<Void> versionGuard = requireVersion(request.expectedVersion(), versionOf(entity));
         if (versionGuard != null) {
             return rejectMutation(entity, "UPDATE", versionGuard.getCode(), versionGuard.getMessage(),

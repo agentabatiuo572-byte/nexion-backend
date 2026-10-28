@@ -1,7 +1,6 @@
 package ffdd.opsconsole.device.application;
 
 import ffdd.opsconsole.device.dto.AppTaskCompleteRequest;
-import ffdd.opsconsole.janus.application.JanusSandboxEnrollmentService;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -39,7 +38,6 @@ public class ComputeTaskProofVerifier {
     private final long maxSkewMs;
     private final Clock clock;
     private final Environment environment;
-    private final JanusSandboxEnrollmentService sandboxEnrollmentService;
 
     @PostConstruct
     void validateProfile() {
@@ -74,11 +72,8 @@ public class ComputeTaskProofVerifier {
             return new Verification(false, sha256(canonical + "\n" + trim(request.proofSignature())));
         }
         if ("SANDBOX".equals(proofMode)) {
-            if (!"SANDBOX".equals(mode) || !"sandbox".equals(trim(request.executorId()))
-                    || !sandboxEnrollmentService.verify(userId, deviceInstanceNo, trim(request.proofSignature()))) {
-                throw untrusted("TASK_ASSIGNMENT_SANDBOX_ISOLATION_MISMATCH");
-            }
-            return new Verification(true, sha256(canonical + "\n" + trim(request.proofSignature())));
+            // The retired device enrollment cannot authorize new task completions.
+            throw untrusted("TASK_ASSIGNMENT_SANDBOX_ISOLATION_MISMATCH");
         }
         throw untrusted("TASK_ASSIGNMENT_PROOF_MODE_INVALID");
     }

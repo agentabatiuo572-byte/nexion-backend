@@ -289,8 +289,7 @@ public class OpsDomainRuntimeService {
                 api("RiskScoringModel", "/api/admin/risk/scoring/overview", "risk_k4_read", "risk_k4_write", false),
                 api("RiskScoringAction", "/api/admin/risk/scoring/**", "risk_k4_read", "risk_k4_write", false),
                 api("WithdrawRule", "/api/admin/risk/withdraw-rules", "risk_k3_read", "risk_k3_write", true),
-                api("WithdrawRuleDryRun", "/api/admin/risk/withdraw-rules/dry-runs", "risk_k3_read", "risk_k3_write", false),
-                api("JanusApprovedTarget", "/api/admin/janus/remote-targets/**", "risk_k6_read", "risk_k6_target_manage", false)));
+                api("WithdrawRuleDryRun", "/api/admin/risk/withdraw-rules/dry-runs", "risk_k3_read", "risk_k3_write", false)));
         map.put(DomainCode.L, List.of(
                 api("BIReport", "/api/admin/bi/reports", "bi_l5_read", "bi_l5_write", false),
                 api("BIReportAction", "/api/admin/bi/reports/{reportId}/{action}", "bi_l5_read", "bi_l5_write", false),

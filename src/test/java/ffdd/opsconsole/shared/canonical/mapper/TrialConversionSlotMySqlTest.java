@@ -5,7 +5,6 @@ import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper;
 import ffdd.opsconsole.device.mapper.DeviceCatalogMapper;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
-import ffdd.opsconsole.device.mapper.AppComputeShareEnrollmentMapper;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import java.math.BigDecimal;
 import java.sql.Connection;
@@ -68,7 +67,7 @@ class TrialConversionSlotMySqlTest {
         jdbc.execute("CREATE TABLE nx_wallet_ledger(id BIGINT PRIMARY KEY AUTO_INCREMENT,user_id BIGINT,biz_no VARCHAR(100),biz_type VARCHAR(40),asset VARCHAR(16),direction VARCHAR(8),amount DECIMAL(24,6),status VARCHAR(32),created_at DATETIME,is_deleted INT DEFAULT 0)");
         var config=new Configuration(new Environment("trial-slots",new SpringManagedTransactionFactory(),ds));
         config.addMapper(DeviceCatalogMapper.class);config.addMapper(CanonicalStateMapper.class);config.addMapper(AppTrialLifecycleMapper.class);config.addMapper(AppBundleOrderMapper.class);config.addMapper(PromotionMapper.class);
-        config.addMapper(AppTradeinMapper.class);config.addMapper(AppComputeShareEnrollmentMapper.class);
+        config.addMapper(AppTradeinMapper.class);
         var session=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));
         catalog=session.getMapper(DeviceCatalogMapper.class);slots=session.getMapper(CanonicalStateMapper.class);trial=session.getMapper(AppTrialLifecycleMapper.class);bundle=session.getMapper(AppBundleOrderMapper.class);promotion=session.getMapper(PromotionMapper.class);
     }

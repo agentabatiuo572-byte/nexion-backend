@@ -10,11 +10,6 @@ import org.junit.jupiter.api.Test;
 class SlotCapacityMapperSqlContractTest {
 
     @Test
-    void computeSharePairingCountsEveryOccupiedPhysicalLifecycleState() throws Exception {
-        assertPhysicalOccupiedSlotPredicate(select(AppComputeShareEnrollmentMapper.class, "activeDeviceCount"));
-    }
-
-    @Test
     void tradeinCapacityCountsEveryOccupiedPhysicalLifecycleState() throws Exception {
         assertPhysicalOccupiedSlotPredicate(select(AppTradeinMapper.class, "countActiveDevices"));
     }

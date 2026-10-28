@@ -5,9 +5,7 @@ import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.shared.canonical.mapper.AppBundleOrderMapper;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
-import ffdd.opsconsole.device.mapper.AppComputeShareEnrollmentMapper;
 import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
-import ffdd.opsconsole.device.application.AppComputeShareEnrollmentService;
 import ffdd.opsconsole.device.infrastructure.MybatisDeviceOpsRepository;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -64,7 +62,6 @@ class PhoneActivationCapacityMySqlTest {
     private AppTradeinMapper tradeinMapper;
     private DeviceOpsMapper opsMapper;
     private AppCanonicalBoundaryService canonicalService;
-    private AppComputeShareEnrollmentService computeService;
     private MybatisDeviceOpsRepository deviceRepository;
     private PhoneActivationCapacityContract service;
     private TransactionTemplate transaction;
@@ -128,7 +125,6 @@ class PhoneActivationCapacityMySqlTest {
                 + "(3,'other-capacity-box','Other synthetic box','DEVICE','ACTIVE')");
         var config = new Configuration(new Environment("phone-capacity", new SpringManagedTransactionFactory(), dataSource));
         config.addMapper(CanonicalStateMapper.class);
-        config.addMapper(AppComputeShareEnrollmentMapper.class);
         config.addMapper(DeviceOpsMapper.class);
         config.addMapper(AppBundleOrderMapper.class);
         config.addMapper(PromotionMapper.class);
@@ -140,8 +136,6 @@ class PhoneActivationCapacityMySqlTest {
         tradeinMapper = session.getMapper(AppTradeinMapper.class);
         opsMapper = session.getMapper(DeviceOpsMapper.class);
         var platform = mock(PlatformConfigFacade.class);
-        when(platform.activeValue("E.compute.computeShareEnabled")).thenReturn(Optional.of("on"));
-        when(platform.activeValue("E.compute.download.url")).thenReturn(Optional.of("https://downloads.nexion.example/janus"));
         var idempotency = mock(AdminIdempotencyService.class);
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
@@ -155,9 +149,6 @@ class PhoneActivationCapacityMySqlTest {
                 mock(ffdd.opsconsole.finance.application.FundsSandboxProfileGuard.class),
                 new ffdd.opsconsole.commerce.application.CommerceAcceptanceRun("inventory-capacity-test"),
                 mock(StorefrontProductReleasePolicy.class), new StorefrontPurchaseGatePolicy(), environment);
-        computeService = new AppComputeShareEnrollmentService(session.getMapper(AppComputeShareEnrollmentMapper.class),
-                platform, idempotency, mock(AuditLogService.class), mock(EventOutboxService.class), environment,
-                Clock.systemUTC(), mapper);
         deviceRepository = new MybatisDeviceOpsRepository(session.getMapper(DeviceOpsMapper.class), mock(OpsReadTimeSeedPolicy.class), mapper);
         var manager = new DataSourceTransactionManager(dataSource);
         var proxy = new ProxyFactory(new PhoneActivationCapacityService(mapper));
@@ -255,45 +246,6 @@ class PhoneActivationCapacityMySqlTest {
             assertThat(mapper.lockReservedTrialSlotCount(user)).isEqualTo(1);
             assertFull(user);
         });
-    }
-
-    @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings={"order","gift"})
-    void pcPairingCannotDisplaceMixedTrialAndOrderOrGiftReservations(String reservation) {
-        long user = user(false);
-        jdbc.update("UPDATE nx_config_item SET config_value='6' WHERE config_key='device.max_active_slots'");
-        for (int i=0;i<4;i++) device(user);
-        trial(user, "ACTIVE");
-        if ("gift".equals(reservation)) promotion(user);
-        else order(user, 1, "SINGLE", "PENDING_PAYMENT", "WAITING_PAYMENT");
-        String enrollment = enrollment(user);
-        transaction.executeWithoutResult(status -> {
-            assertThat(computeService.create(user, "NVIDIA RTX 4070", "pc-mixed-" + user).getMessage())
-                    .isEqualTo("COMPUTE_SHARE_DEVICE_CAPACITY_REACHED");
-            assertThat(computeService.claim(user, enrollment, "731904", "JANUS-PC-" + user,
-                    "NVIDIA RTX 4070", 12, 240).getMessage()).isEqualTo("COMPUTE_SHARE_DEVICE_CAPACITY_REACHED");
-            assertThat(deviceRepository.countOccupiedSlotsForE5Activation(user)).isEqualTo(6);
-        });
-        assertThat(mapper.activeDeviceCount(user)).isEqualTo(4);
-    }
-
-    @Test void pcClaimAndE5UseTheSixthConvertedDeviceAfterAnOlderSnapshot() {
-        long user = user(false);
-        jdbc.update("UPDATE nx_config_item SET config_value='6' WHERE config_key='device.max_active_slots'");
-        for (int i=0;i<5;i++) device(user);
-        trial(user, "ACTIVE");
-        String enrollment = enrollment(user);
-        afterOlderSnapshot(user, ignored -> {
-            device(user);
-            jdbc.update("UPDATE nx_trial_claim SET status='REDEEMED' WHERE user_id=?",user);
-        }, ignored -> {
-            assertThat(mapper.activeDeviceCount(user)).isEqualTo(5);
-            assertThat(mapper.lockReservedTrialSlotCount(user)).isZero();
-            assertThat(computeService.claim(user, enrollment, "731904", "JANUS-PC-" + user,
-                    "NVIDIA RTX 4070", 12, 240).getMessage()).isEqualTo("COMPUTE_SHARE_DEVICE_CAPACITY_REACHED");
-            assertThat(deviceRepository.countOccupiedSlotsForE5Activation(user)).isEqualTo(6);
-        });
-        assertThat(mapper.activeDeviceCount(user)).isEqualTo(6);
     }
 
     @Test void fulfilledPromotionNestedExclusionUsesCurrentRead() {
@@ -459,29 +411,6 @@ class PhoneActivationCapacityMySqlTest {
         });
     }
 
-    @Test void pcPairingCanUseLastSlotAlongsideAlreadyDeliveredInventory() {
-        long user = user(false);
-        jdbc.update("UPDATE nx_config_item SET config_value='6' WHERE config_key='device.max_active_slots'");
-        for (int i=0; i<4; i++) device(user);
-        trial(user, "ACTIVE");
-        capacityKeepOrder(user);
-        long inventory = deliverCapacityKeep(user);
-        transaction.executeWithoutResult(status -> {
-            var created = computeService.create(user, "NVIDIA RTX 4070", "pc-inventory-" + user);
-            assertThat(created.getCode()).as(created.getMessage()).isZero();
-            var receipt = created.getData();
-            var claimed = computeService.claim(user, String.valueOf(receipt.get("enrollmentNo")),
-                    String.valueOf(receipt.get("pairingCode")), "JANUS-PC-" + user, "NVIDIA RTX 4070", 12, 240);
-            assertThat(claimed.getCode()).as(claimed.getMessage()).isZero();
-            assertThat(deviceRepository.countOccupiedSlotsForE5Activation(user)).isEqualTo(6);
-            assertThat(canonicalService.activateDevice(user, inventory, 0L, 6, "activate-after-pc-" + user).getMessage())
-                    .isEqualTo("DEVICE_SLOT_CAP_EXCEEDED");
-        });
-        assertThat(mapper.activeDeviceCount(user)).isEqualTo(5);
-        assertThat(jdbc.queryForMap("SELECT status,ownership_status FROM nx_user_device WHERE id=?", inventory))
-                .containsEntry("status", "INACTIVE").containsEntry("ownership_status", "OWNED");
-    }
-
     private void assertCapacityKeepReservations(long user, int expected) {
         assertThat(mapper.reservedDeviceOrderCount(user)).isEqualTo(expected);
         assertThat(mapper.lockReservedDeviceOrderCount(user, false)).isEqualTo(expected);
@@ -553,14 +482,6 @@ class PhoneActivationCapacityMySqlTest {
     private void trial(long user, String state) {
         jdbc.update("INSERT INTO nx_trial_claim(user_id,claim_no,status,device_name,claimed_at,expires_at) "
                 + "VALUES(?,?,?,'Synthetic trial',NOW(),DATE_ADD(NOW(),INTERVAL 3 DAY))",user,"TRIAL-"+user,state);
-    }
-
-    private String enrollment(long user) {
-        String enrollment="CSE-"+user;
-        jdbc.update("INSERT INTO nx_compute_share_enrollment(enrollment_no,user_id,requested_gpu_model,pairing_code_hash,status,expires_at) "
-                + "VALUES(?,?,'NVIDIA RTX 4070',?,'PENDING',DATE_ADD(NOW(),INTERVAL 10 MINUTE))",
-                enrollment,user,AppComputeShareEnrollmentService.hashPairingCode(enrollment,"731904"));
-        return enrollment;
     }
 
     private void afterOlderSnapshot(long user, Consumer<Long> commitOther, Consumer<Long> check) {

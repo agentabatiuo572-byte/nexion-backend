@@ -23,7 +23,7 @@ class RiskReleaseParamsServiceTest {
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final TreasuryCoverageFacade coverage = mock(TreasuryCoverageFacade.class);
     private final RiskReleaseParamsService service = new RiskReleaseParamsService(config,
-            mock(AdminIdempotencyService.class), mock(AuditLogService.class), coverage, false);
+            mock(AdminIdempotencyService.class), mock(AuditLogService.class), coverage);
 
     @BeforeEach
     void config() {
@@ -53,6 +53,17 @@ class RiskReleaseParamsServiceTest {
                                 .isEqualTo("K1_RELEASE_VERSION_CONFLICT"));
     }
 
+    @Test void missingRetiredAttestationConfigCannotBreakOrdinaryReleasePolicy() {
+        when(config.activeValue("risk.k1.release.appAttestationReleaseHours")).thenReturn(Optional.empty());
+        assertThat(service.releaseWindowHours()).isEqualTo(24);
+        assertThat(service.freeSlots()).isEqualTo(1);
+        assertThat(service.rows()).filteredOn(row -> "appAttestationReleaseHours".equals(row.get("key")))
+                .singleElement().satisfies(row -> assertThat(row).containsEntry("value","1").containsEntry("adjustable",false));
+        assertThatThrownBy(() -> service.update("appAttestationReleaseHours","retired",
+                new RiskReleaseParamUpdateRequest("1",4L,"retirement regression","superadmin")))
+                .hasMessage("K1_TRUSTED_ATTESTATION_RETIRED");
+    }
+
     @Test
     void unsignedJanusCarrierForcesManualOnlyAndRejectsFakeAutomaticMode() {
         assertThat(service.rows()).filteredOn(row -> "releaseMode".equals(row.get("key")))
@@ -63,7 +74,7 @@ class RiskReleaseParamsServiceTest {
                 new RiskReleaseParamUpdateRequest("attest_or_manual", 4L,
                         "carrier trust is not signed", "superadmin")))
                 .isInstanceOfSatisfying(BizException.class, ex ->
-                        assertThat(ex.getMessage()).isEqualTo("K1_TRUSTED_ATTESTATION_HOLD"));
+                        assertThat(ex.getMessage()).isEqualTo("K1_TRUSTED_ATTESTATION_RETIRED"));
     }
 
     @Test

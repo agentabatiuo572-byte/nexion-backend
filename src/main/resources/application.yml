@@ -65,21 +65,6 @@ nexion:
       max-output-chars: ${NEXION_NOVA_AI_MAX_OUTPUT_CHARS:8000}
       max-output-tokens: ${NEXION_NOVA_AI_MAX_OUTPUT_TOKENS:1024}
       max-concurrent-requests: ${NEXION_NOVA_AI_MAX_CONCURRENT_REQUESTS:1}
-  janus:
-    executor:
-      # Deployed profiles use the canonical executor. Legacy Sandbox keys remain
-      # only as fail-closed compatibility inputs for isolated automated tests.
-      mode: ${NEXION_JANUS_EXECUTOR_MODE:PRODUCTION}
-      sandbox-targets: ${NEXION_JANUS_SANDBOX_TARGETS:}
-      # Test-harness credential TTL; no deployed development profile enables it.
-      sandbox-enrollment-ttl-ms: ${NEXION_JANUS_SANDBOX_ENROLLMENT_TTL_MS:900000}
-      production-keys: ${NEXION_JANUS_PRODUCTION_KEYS:}
-      max-skew-ms: ${NEXION_JANUS_MAX_SKEW_MS:120000}
-      # Production applied proofs stay disabled until attested enrollment and native WebView handoff ship.
-      production-applied-enabled: ${NEXION_JANUS_PRODUCTION_APPLIED_ENABLED:false}
-    remote-target:
-      # Comma-separated exact HTTPS origins. Empty fails closed.
-      allowed-origins: ${NEXION_JANUS_REMOTE_TARGET_ALLOWED_ORIGINS:}
   risk:
     k3:
       address-reputation:
