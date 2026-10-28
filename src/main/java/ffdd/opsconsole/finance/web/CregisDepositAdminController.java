@@ -30,6 +30,14 @@ public class CregisDepositAdminController {
     private final CregisDepositSwitchService switches;
     private final ffdd.opsconsole.finance.cregis.CregisAddressPoolPolicyService poolPolicies;
 
+    private final ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
+
+    @GetMapping("/deposit-policy")
+    @PreAuthorize("hasAuthority('finance_d1_read')")
+    public ApiResult<ffdd.opsconsole.finance.cregis.CregisDepositPolicy> depositPolicy() {
+        return ApiResult.ok(depositPolicies.current());
+    }
+
     @GetMapping("/addresses/policy")
     @PreAuthorize("hasAuthority('finance_d1_read')")
     public ApiResult<ffdd.opsconsole.finance.cregis.CregisAddressPoolPolicy> poolPolicy() {

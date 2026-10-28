@@ -111,6 +111,7 @@ public class CregisDepositReconciliation {
                     || (expected > rows.size() && fetched.rows().isEmpty()))
                 throw new IllegalStateException("CREGIS_RECONCILE_PAGE_INCOMPLETE");
             for (CregisGateway.DepositRow row : fetched.rows()) {
+                deposits.discoverProviderRow(row);
                 if (!cids.add(row.cid())) throw new IllegalStateException("CREGIS_RECONCILE_DUPLICATE_CID");
                 rows.add(row);
             }

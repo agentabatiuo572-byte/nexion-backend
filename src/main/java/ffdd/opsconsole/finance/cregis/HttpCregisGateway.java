@@ -222,7 +222,7 @@ public final class HttpCregisGateway implements CregisGateway {
                     || time.longValue() > endSecond || amount.scale() > 6 || amount.precision() > 18)
                 throw invalidResponse();
             parsed.add(new DepositRow(cid.longValue(), chainId, tokenId.toLowerCase(Locale.ROOT),
-                    address.toLowerCase(Locale.ROOT), amount, txid.toLowerCase(Locale.ROOT),
+                    address.toLowerCase(Locale.ROOT), amount, (txid.toLowerCase(Locale.ROOT).startsWith("0x") ? txid.toLowerCase(Locale.ROOT) : "0x"+txid.toLowerCase(Locale.ROOT)),
                     status.intValue(), Long.parseLong(height.asText()), time.longValue()));
         }
         return new DepositPage(total.longValue(), List.copyOf(parsed));

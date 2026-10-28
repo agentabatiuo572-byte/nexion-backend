@@ -302,6 +302,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261022_01_cregis_exception_claim.sql")
   (Join-Path $root "scripts\migrations\20261022_02_cregis_exception_refund.sql")
   (Join-Path $root "scripts\migrations\20261022_03_cregis_reorg_resolution.sql")
+  # Historical deposits must pass the policy snapshot preflight before PROVIDER mode starts.
+  (Join-Path $root "scripts\migrations\20261028_cregis_deposit_policy.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions_order_receipt.sql")
   (Join-Path $root "scripts\migrations\20261007_earnings_source_recovery.sql")
