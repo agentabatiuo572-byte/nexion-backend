@@ -29,8 +29,8 @@ class PhoneModelLockServiceTest {
 
     @Test void releasingAHeldInstallationMarksItReleasedAndIsAudited() {
         when(mapper.lockUserSandbox(9L)).thenReturn(0);
-        when(mapper.modelLocks(9L, "PRODUCTION", "")).thenReturn(List.of(row("ios", "iPhone 8", "MODEL_CHANGED", null)),
-                List.of(row(null, null, "MODEL_CHANGED", "true")));
+        when(mapper.modelLock(9L, "install-a", "PRODUCTION", "")).thenReturn(row("ios", "iPhone 8", "MODEL_CHANGED", null),
+                row(null, null, "MODEL_CHANGED", "true"));
         when(mapper.releaseModelLock(9L, "install-a", "PRODUCTION", "", 4L)).thenReturn(1);
         Map<String, Object> view = service.release(account, "install-a", 4L, 17L, "用户从备份恢复到新手机", "key-release-01");
         assertThat(view).containsEntry("released", true).containsEntry("releasable", false).containsEntry("lockedModel", null);
@@ -45,12 +45,12 @@ class PhoneModelLockServiceTest {
 
     @Test void aRetryIsANoOpAndANewerCalibrationIsAConflict() {
         when(mapper.lockUserSandbox(9L)).thenReturn(0);
-        when(mapper.modelLocks(9L, "PRODUCTION", "")).thenReturn(List.of(row(null, null, "MODEL_CHANGED", "true")));
+        when(mapper.modelLock(9L, "install-a", "PRODUCTION", "")).thenReturn(row(null, null, "MODEL_CHANGED", "true"));
         assertThat(service.release(account, "install-a", 4L, 17L, "用户从备份恢复到新手机", "key-release-01")).containsEntry("released", true);
         verify(mapper, never()).releaseModelLock(any(), any(), any(), any(), anyLong());
         verify(audit, never()).recordRequired(any());
         // The customer calibrated the new phone after support looked: the lock now belongs to it.
-        when(mapper.modelLocks(9L, "PRODUCTION", "")).thenReturn(List.of(recalibrated(row("ios", "iPhone 16 Pro", null, null))));
+        when(mapper.modelLock(9L, "install-a", "PRODUCTION", "")).thenReturn(recalibrated(row("ios", "iPhone 16 Pro", null, null)));
         assertThatThrownBy(() -> service.release(account, "install-a", 4L, 17L, "用户从备份恢复到新手机", "key-release-01"))
                 .hasMessage("PHONE_MODEL_LOCK_RELEASE_CONFLICT");
         assertThatThrownBy(() -> service.release(account, "missing", 4L, 17L, "用户从备份恢复到新手机", "key-release-02"))
