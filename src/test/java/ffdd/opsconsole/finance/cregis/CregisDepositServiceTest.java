@@ -513,9 +513,47 @@ class CregisDepositServiceTest {
                 mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class), DepositPolicyFixture.policy()));
         assertThat(service.address(userId)).isEqualTo(Map.of("enabled", true, "creditEnabled", creditEnabled,
                 "network", "BEP20", "address", ADDRESS, "confirmations", 15,
-                "feeUsdt", BigDecimal.ONE, "minDepositUsdt", BigDecimal.TEN));
+                "feeUsdt", BigDecimal.ONE, "minDepositUsdt", BigDecimal.TEN,
+                "feeUsdtExact", "1", "minDepositUsdtExact", "10"));
         verify(router, never()).provider();
         verify(db, never()).creditWallet(any(), anyLong(), anyLong());
+    }
+
+    @Test
+    void addressAndDepositAmountsIncludeExactStringsWithoutChangingLegacyNumbers() {
+        CregisProperties props = properties();
+        props.setDepositEnabled(true);
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        riskReady(db);
+        when(db.addressForUser(42, CregisConstants.BSC_CHAIN_ID)).thenReturn(List.of(Map.of(
+                "projectId", 88L, "state", "READY", "address", ADDRESS)));
+        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1, "creditEnabled", 1));
+        var policy = mock(CregisDepositPolicyService.class);
+        when(policy.current()).thenReturn(new CregisDepositPolicy(1, new BigDecimal("999999999999.999999"),
+                new BigDecimal("0.000001"), 15));
+        when(db.deposits(42, 88, 15)).thenReturn(List.of(
+                Map.of("grossAmountUsdt", new BigDecimal("999999999999.999999"),
+                        "creditedUsdt", new BigDecimal("999999999999.999998")),
+                Map.of("grossAmountUsdt", new BigDecimal("0.000001"), "creditedUsdt", new BigDecimal("0.000000"))));
+        var service = new CregisDepositService(props, mock(CregisGatewayRouter.class), mock(BscDepositProof.class),
+                new CregisSigner(), new ObjectMapper(), db, mock(PlatformTransactionManager.class),
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture,
+                mock(CregisPayoutControl.class), mock(CregisExceptionSourceService.class),
+                mock(CregisReorgResolutionService.class), policy);
+
+        ObjectMapper mapper = new ObjectMapper();
+        var address = mapper.valueToTree(service.address(42));
+        assertThat(address.get("minDepositUsdt").isNumber()).isTrue();
+        assertThat(address.get("feeUsdt").isNumber()).isTrue();
+        assertThat(address.get("minDepositUsdtExact").textValue()).isEqualTo("999999999999.999999");
+        assertThat(address.get("feeUsdtExact").textValue()).isEqualTo("0.000001");
+        var rows = mapper.valueToTree(service.deposits(42));
+        assertThat(rows.get(0).get("grossAmountUsdt").isNumber()).isTrue();
+        assertThat(rows.get(0).get("creditedUsdt").isNumber()).isTrue();
+        assertThat(rows.get(0).get("grossAmountUsdtExact").textValue()).isEqualTo("999999999999.999999");
+        assertThat(rows.get(0).get("creditedUsdtExact").textValue()).isEqualTo("999999999999.999998");
+        assertThat(rows.get(1).get("grossAmountUsdtExact").textValue()).isEqualTo("0.000001");
+        assertThat(rows.get(1).get("creditedUsdtExact").textValue()).isEqualTo("0.000000");
     }
 
     @ParameterizedTest
@@ -601,7 +639,8 @@ class CregisDepositServiceTest {
                 mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class), DepositPolicyFixture.policy()));
         assertThat(service.address(42)).isEqualTo(Map.of("enabled", true, "creditEnabled", expectedCreditEnabled,
                 "network", "BEP20", "address", ADDRESS, "confirmations", 15,
-                "feeUsdt", BigDecimal.ONE, "minDepositUsdt", BigDecimal.TEN));
+                "feeUsdt", BigDecimal.ONE, "minDepositUsdt", BigDecimal.TEN,
+                "feeUsdtExact", "1", "minDepositUsdtExact", "10"));
         verify(db).assignPoolAddress(1, 42, 120, BLOCK);
         verify(db, never()).assignPoolAddress(1, 42, 106, BLOCK);
         verify(db, never()).creditWallet(any(), anyLong(), anyLong());
