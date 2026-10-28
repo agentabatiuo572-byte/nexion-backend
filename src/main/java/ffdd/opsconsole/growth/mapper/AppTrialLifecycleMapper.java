@@ -446,6 +446,12 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             """)
     Attribution attribution(@Param("userId") Long userId);
 
+    @Select("SELECT settlement_snapshot FROM nx_trial_claim WHERE id=#{claimId} AND is_deleted=0")
+    String settlementSnapshot(@Param("claimId") Long claimId);
+
+    @Select("SELECT payment_status FROM nx_order WHERE order_no=#{orderNo} AND user_id=#{userId} AND is_deleted=0")
+    String orderPaymentStatus(@Param("orderNo") String orderNo, @Param("userId") Long userId);
+
     record PolicyRow(String policyKey, String currentValue) {
     }
 
