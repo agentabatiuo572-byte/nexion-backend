@@ -207,7 +207,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
                 && Objects.equals(text(row,"resourceId"),claim) && Objects.equals(text(row,"bizNo"),claim)
                 && "PRODUCTION".equals(detail.path("sourceEnvironment").asText()) && detail.path("serverCanonical").isBoolean() && detail.path("serverCanonical").booleanValue()
                 && detail.path("runId").isTextual() && detail.path("runId").textValue().isEmpty()
-                && "NEXION_USDT_WALLET".equals(detail.path("paymentRail").asText())
+                && "UVEL_USDT_WALLET".equals(detail.path("paymentRail").asText())
                 && Objects.equals(detail.path("orderNo").asText(),fact.orderNo()) && auditAmount(detail.path("amountUsdt"),fact)
                 && auditNumber(row,"deviceMatched")==1;
         }
@@ -216,7 +216,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
             return Set.of("SINGLE","BUNDLE").contains(fact.orderType()) && "APP_ORDER_WALLET_PAYMENT".equals(action)
                 && "ORDER".equals(type) && Objects.equals(text(row,"resourceId"),fact.orderNo())
                 && Objects.equals(path,"/api/orders/"+fact.orderNo()+"/pay") && detail.path("canonical").isBoolean() && detail.path("canonical").booleanValue()
-                && "NEXGRID_WALLET".equals(detail.path("paymentRail").asText()) && detail.path("paymentNo").isTextual()
+                && "UVEL_WALLET".equals(detail.path("paymentRail").asText()) && detail.path("paymentNo").isTextual()
                 && Objects.equals(detail.path("paymentNo").textValue(),text(row,"paymentNo")) && auditAmount(detail.path("amountUsdt"),fact);
         }
         if(auditNumber(row,"deviceMatched")!=1)return false;
@@ -909,7 +909,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
     }
     private static boolean walletConfirmation(Map<String,Object> payment,long customer,String order,String paymentNo,BigDecimal amount,long ledger) {
         return number(payment,"customerId")==customer && number(payment,"deleted")==0
-            && "NEXGRID_WALLET".equals(text(payment,"provider")) && "USDT".equals(text(payment,"currency"))
+            && "UVEL_WALLET".equals(text(payment,"provider")) && "USDT".equals(text(payment,"currency"))
             && Objects.equals(text(payment,"orderNo"),order) && Objects.equals(text(payment,"businessId"),paymentNo)
             && Set.of("PAID","CONFIRMED","SUCCESS","REFUNDED").contains(Objects.toString(payment.get("status"),""))
             && (payment.get("ledgerId")==null || number(payment,"ledgerId")>0 && number(payment,"ledgerId")==ledger)

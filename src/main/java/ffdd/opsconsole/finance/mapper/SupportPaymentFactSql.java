@@ -88,13 +88,13 @@ final class SupportPaymentFactSql {
         CASE WHEN o.order_type IN ('TRADE_IN','CAPACITY_KEEP') THEN 1
           WHEN (SELECT COUNT(*) FROM nx_payment_record p WHERE p.payment_no=o.payment_no
             AND p.order_no=o.order_no AND p.user_id=o.user_id AND p.amount_usdt=o.amount_usdt
-            AND p.currency='USDT' AND p.provider='NEXGRID_WALLET' AND p.paid_at IS NOT NULL AND p.is_deleted=0
+            AND p.currency='USDT' AND p.provider='UVEL_WALLET' AND p.paid_at IS NOT NULL AND p.is_deleted=0
             AND p.payment_status IN ('PAID','CONFIRMED','SUCCESS','REFUNDED')
             AND (p.wallet_ledger_id IS NULL OR p.wallet_ledger_id=l.id))=1
           THEN 1 ELSE 0 END sourceLinked,
         (SELECT MIN(p.paid_at) FROM nx_payment_record p WHERE p.payment_no=o.payment_no
           AND p.order_no=o.order_no AND p.user_id=o.user_id AND p.amount_usdt=o.amount_usdt
-          AND p.currency='USDT' AND p.provider='NEXGRID_WALLET' AND p.is_deleted=0
+          AND p.currency='USDT' AND p.provider='UVEL_WALLET' AND p.is_deleted=0
           AND p.payment_status IN ('PAID','CONFIRMED','SUCCESS','REFUNDED')
           AND (p.wallet_ledger_id IS NULL OR p.wallet_ledger_id=l.id)) sourceConfirmationAt,
         """ + LEDGER + """

@@ -167,7 +167,7 @@ class SupportPaymentSourceServiceTest {
         audit.put("actorId",7L);audit.put("method","POST");audit.put("path","/api/orders/order-1/pay");
         audit.put("action","APP_ORDER_WALLET_PAYMENT");audit.put("auditAt",at.plusSeconds(2));
         audit.put("paidAt",row.get("succeededAt"));audit.put("amount",new BigDecimal("80"));audit.put("paymentNo","payment-1");
-        audit.put("detail","{\"canonical\":true,\"paymentRail\":\"NEXGRID_WALLET\",\"paymentNo\":\"payment-1\",\"amountUsdt\":80}");
+        audit.put("detail","{\"canonical\":true,\"paymentRail\":\"UVEL_WALLET\",\"paymentNo\":\"payment-1\",\"amountUsdt\":80}");
         when(mapper.historyPaymentAudits(anyList())).thenReturn(List.of(audit));
         var pipeline=actualHistory(sources);
         assertThat(pipeline.readHistory(List.of(7L)).customerCoverage()).filteredOn(c->c.source()==Source.WALLET_ORDER).hasSize(1)
@@ -219,7 +219,7 @@ class SupportPaymentSourceServiceTest {
             Map<String,Object> detail;
             if(source==Source.TRIAL_CONVERT) {
                 audit.put("resourceType","TRIAL_CLAIM");
-                detail=Map.of("sourceEnvironment","PRODUCTION","serverCanonical",true,"runId","","paymentRail","NEXION_USDT_WALLET","orderNo","order-1","amountUsdt",80);
+                detail=Map.of("sourceEnvironment","PRODUCTION","serverCanonical",true,"runId","","paymentRail","UVEL_USDT_WALLET","orderNo","order-1","amountUsdt",80);
             } else if(source==Source.CAPACITY_KEEP) {
                 audit.put("resourceType","DEVICE_ORDER");audit.put("path","/api/app/trade-in/capacity-keep");
                 detail=Map.of("decisionSource","server","after",Map.of("orderNo","order-1","walletDebitUsdt",80,"targetDeviceId",4));
@@ -1240,7 +1240,7 @@ class SupportPaymentSourceServiceTest {
         return row;
     }
     private Map<String,Object> confirmation(LocalDateTime paid,String amount) {
-        return Map.of("id",2L,"customerId",7L,"businessId","payment-1","orderNo","order-1","provider","NEXGRID_WALLET",
+        return Map.of("id",2L,"customerId",7L,"businessId","payment-1","orderNo","order-1","provider","UVEL_WALLET",
             "currency","USDT","amount",new BigDecimal(amount),"successAt",paid,"status","PAID");
     }
     private Map<String,Object> intent(String rail,String status,String amount) {

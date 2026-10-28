@@ -86,7 +86,7 @@ class SupportPaymentFundBindingTest {
         intent.put("status","OPEN");intent.put("amount",BigDecimal.ZERO);intent.put("rail",source==Source.HDPAY?"HDPAY":"MANUAL");
         intent.put("target","WALLET_TOPUP");intent.put("deleted",0);markers.put(3L,intent);when(mapper.intent(anyString())).thenReturn(List.of(intent));
         var payment=new LinkedHashMap<String,Object>();payment.put("id",2L);payment.put("customerId",7L);payment.put("businessId","payment-1");payment.put("orderNo","order-1");
-        payment.put("provider","NEXGRID_WALLET");payment.put("currency","USDT");payment.put("amount",source==Source.ORDER_REFUND?new BigDecimal("80"):charge);
+        payment.put("provider","UVEL_WALLET");payment.put("currency","USDT");payment.put("amount",source==Source.ORDER_REFUND?new BigDecimal("80"):charge);
         payment.put("deleted",0);payment.put("status",source==Source.ORDER_REFUND?"PAID":"PENDING");
         if(source==Source.ORDER_REFUND) {payment.put("successAt",at);payment.put("ledgerId",201L);order.put("status","PAID");order.put("successAt",at);}
         markers.put(2L,payment);when(mapper.payments(anyString())).thenReturn(List.of(payment));

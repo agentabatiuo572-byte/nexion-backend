@@ -173,7 +173,7 @@ public class AppOrderCommandService {
                 return ApiResult.fail(409, "ORDER_VOUCHER_SETTLEMENT_INVALID");
             }
         }
-        String paymentRail = fullyDiscounted ? "VOUCHER" : "NEXGRID_WALLET";
+        String paymentRail = fullyDiscounted ? "VOUCHER" : "UVEL_WALLET";
         String paymentNo = (fullyDiscounted ? "PAY-VOUCHER-" : "PAY-WALLET-") + sha256(userId + "|" + orderNo)
                 .substring(0, 32).toUpperCase(Locale.ROOT);
         AppOrderCommandMapper.DevelopmentWallet wallet = null;

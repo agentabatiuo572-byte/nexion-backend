@@ -355,7 +355,7 @@ class SupportFirstChargeCommittedRuntimeTest extends SupportAnalyticsRuntimeFixt
         var event=physical("SELECT * FROM nx_event_outbox WHERE aggregate_type='ORDER' AND aggregate_id=? AND event_name='checkout.completed'",order);
         var capture=physical("SELECT * FROM nx_support_payment_attribution WHERE customer_id=? AND order_no=? AND kind='DEVICE_PURCHASE'",customer,order);
         rememberCommittedEvidence(customer,"PURCHASE_PAID_BEFORE_ASSERTIONS",Map.of("payment",payment,"ledger",ledger,"device",device,"outbox",event,"capture",capture));
-        assertThat(payment).singleElement().satisfies(row->{assertThat(row.get("payment_status")).isEqualTo("PAID");assertThat(row.get("provider")).isEqualTo("NEXGRID_WALLET");});
+        assertThat(payment).singleElement().satisfies(row->{assertThat(row.get("payment_status")).isEqualTo("PAID");assertThat(row.get("provider")).isEqualTo("UVEL_WALLET");});
         assertThat(ledger).singleElement().satisfies(row->assertThat(row.get("status")).isEqualTo("SUCCESS"));
         assertThat(device).hasSize(1);assertThat(event).hasSize(1);assertThat(capture).hasSize(1);assertOwner(capture.get(0));
         return Map.of("payment",payment,"ledger",ledger,"device",device,"outbox",event,"capture",capture);

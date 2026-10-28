@@ -206,7 +206,7 @@ public class CommerceSandboxTrialService {
         result.put("trialGateEnabled", true);
         result.put("version", row == null ? 0L : row.version());
         result.put("source", "nx_trial_claim_sandbox");
-        result.put("paymentRail", "NEXION_USDT_WALLET");
+        result.put("paymentRail", "UVEL_USDT_WALLET");
         result.put("sourceEnvironment", "SANDBOX");
         result.put("runId", acceptanceRun.requireRunId());
         result.put("config", Map.ofEntries(

@@ -482,7 +482,7 @@ class OpsNovaServiceTest {
     void createSocialEventMasksSensitiveDisplayFieldsAndAudits() {
         LocalDateTime occurredAt = LocalDateTime.now(TEST_CLOCK).minusHours(1);
         var result = service.ingestTrustedSocialEvent("idem-social-create", new TrustedNovaSocialEvent(
-                        "withdrawal", "withdrawal-90001", "NEXION_CORE", "nx_withdrawal_order",
+                        "withdrawal", "withdrawal-90001", "UVEL_CORE", "nx_withdrawal_order",
                         "Nguyen Van An", "Ho Chi Minh City", new BigDecimal("18420"), "UVT",
                         "Withdrawal settled", occurredAt), occurredAt.plusHours(12),
                 "Marina K.", "接入真实提现到账事件");
@@ -514,10 +514,40 @@ class OpsNovaServiceTest {
     }
 
     @Test
+    void migratedSourceReplaysTheSameSocialRowWithoutResettingDispatchHistory() {
+        var at=LocalDateTime.now(TEST_CLOCK).minusMinutes(1);
+        var original=novaRepository.addEvent("withdrawal","retained-source-17","N***","H***","<1K USDT",
+                "ACTIVE",at,at.plusHours(2));
+        novaRepository.markSocialEventDispatched(original.id(),at);
+        var result=service.ingestTrustedSocialEvent("renamed-source-replay",socialEventRequest("withdrawal","retained-source-17"),
+                at.plusHours(2),"system","replay existing renamed source");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().id()).isEqualTo(original.id());
+        assertThat(novaRepository.socialEvents).singleElement().satisfies(row->{
+            assertThat(row.sourceSystem()).isEqualTo("UVEL_CORE");
+            assertThat(row.sourceEventId()).isEqualTo("retained-source-17");
+            assertThat(row.dispatchCount()).isEqualTo(1L);
+            assertThat(row.lastDispatchedAt()).isEqualTo(at);
+        });
+        org.mockito.Mockito.verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void oldCoreSymbolDoesNotCreateAnotherTrustedSocialEvent() {
+        var at=LocalDateTime.now(TEST_CLOCK).minusMinutes(1);
+        var result=service.ingestTrustedSocialEvent("legacy-core-rejected",new TrustedNovaSocialEvent("withdrawal",
+                "retained-source-17","NEXION_CORE","nx_withdrawal_order","N***","H***",BigDecimal.ONE,"USDT","existing",at),
+                at.plusHours(2),"system","reject old internal source symbol");
+        assertThat(result.getMessage()).isEqualTo("NOVA_SOCIAL_EVENT_SOURCE_NOT_TRUSTED");
+        assertThat(novaRepository.socialEvents).isEmpty();
+        org.mockito.Mockito.verifyNoInteractions(auditLogService);
+    }
+
+    @Test
     void newUserEventUsesPrivacyThresholdBandRatherThanMoneyBand() {
         LocalDateTime occurredAt = LocalDateTime.now(TEST_CLOCK).minusHours(1);
         TrustedNovaSocialEvent event = new TrustedNovaSocialEvent(
-                "newUsers", "newUsers:2026071210", "NEXION_CORE", "nx_user",
+                "newUsers", "newUsers:2026071210", "UVEL_CORE", "nx_user",
                 "", "全网", new BigDecimal("42"), "人", "完整小时注册用户聚合", occurredAt);
 
         var result = service.ingestTrustedSocialEvent("idem-new-users-band", event, occurredAt.plusHours(12),
@@ -531,7 +561,7 @@ class OpsNovaServiceTest {
     void sourceDeduplicationUsesTypeSystemAndSourceIdComposite() {
         TrustedNovaSocialEvent withdrawal = socialEventRequest("withdrawal", "shared-1");
         TrustedNovaSocialEvent genesis = new TrustedNovaSocialEvent(
-                "genesis", "shared-1", "NEXION_CORE", "nx_genesis_order", "An", "HCMC",
+                "genesis", "shared-1", "UVEL_CORE", "nx_genesis_order", "An", "HCMC",
                 new BigDecimal("4200"), "USDT", "SERIES-A", LocalDateTime.now(TEST_CLOCK).minusMinutes(1));
 
         assertThat(service.ingestTrustedSocialEvent("idem-composite-w", withdrawal, LocalDateTime.now(TEST_CLOCK).plusHours(2),
@@ -661,7 +691,7 @@ class OpsNovaServiceTest {
 
     private static TrustedNovaSocialEvent socialEventRequest(String type, String sourceEventId) {
         LocalDateTime occurredAt = LocalDateTime.now(TEST_CLOCK).minusMinutes(1);
-        return new TrustedNovaSocialEvent(type, sourceEventId, "NEXION_CORE", "nx_withdrawal_order",
+        return new TrustedNovaSocialEvent(type, sourceEventId, "UVEL_CORE", "nx_withdrawal_order",
                 "Nguyen Van An", "Ho Chi Minh City", new BigDecimal("4200"), "UVT", "Verified source", occurredAt);
     }
 
@@ -877,7 +907,7 @@ class OpsNovaServiceTest {
         NovaSocialEventView addEvent(String type, String sourceEventId, String actor, String city, String amount,
                                      String status, LocalDateTime occurredAt, LocalDateTime expiresAt) {
             NovaSocialEventView event = new NovaSocialEventView(nextSocialEventId++, type, sourceEventId, actor, city,
-                    amount, "Verified", "NEXION_CORE", sourceTable(type), status, occurredAt, expiresAt,
+                    amount, "Verified", "UVEL_CORE", sourceTable(type), status, occurredAt, expiresAt,
                     occurredAt, null, 0L, occurredAt, occurredAt);
             socialEvents.add(event);
             return event;
