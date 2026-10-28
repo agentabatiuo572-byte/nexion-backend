@@ -23,7 +23,8 @@ public record GrowthPublicStatsUpdateRequest(
         BigDecimal homePaidStepMax,
         Boolean homeDisplayEnabled,
         Integer registeredUsersTickIntervalSec,
-        Long registeredUsersTickStep) {
+        Long registeredUsersTickStepMin,
+        Long registeredUsersTickStepMax) {
 
     public GrowthPublicStatsUpdateRequest(Integer fleetDevices, BigDecimal onlineRatePct, Integer onlineJitter,
             Long registeredUsersBase, BigDecimal registeredUsersMonthlyGrowthPct, Long virtualUserCount,
@@ -40,7 +41,7 @@ public record GrowthPublicStatsUpdateRequest(
         this(fleetDevices, onlineRatePct, onlineJitter, registeredUsersBase, registeredUsersMonthlyGrowthPct,
                 virtualUserCount, hashratePercentileTable, expectedVersion, reason, operator, homeOnlineCurrent,
                 homeOnlineStepMin, homeOnlineStepMax, homePaidCurrent, homePaidStepMin, homePaidStepMax,
-                homeDisplayEnabled, null, null);
+                homeDisplayEnabled, null, null, null);
     }
 
 
