@@ -62,7 +62,7 @@ public class SupportCustomerProfileService {
             var user=response.getData();if(user==null)return null;
             var data=new LinkedHashMap<String,Object>();data.put("customerId",user.id());data.put("userNo",user.userNo());
             data.put("nickname",user.nickname());String avatar=mapper.avatar(customer);
-            data.put("avatar",ownedAvatar(customer,avatar)?"/api/admin/content/support-workbench/customers/"+customer+"/avatar":null);
+            data.put("avatar",ffdd.opsconsole.content.domain.SupportCustomerAvatar.ref(customer,avatar));
             data.put("level",first(user.vRank(),user.userLevel()));
             data.put("phoneMasked",user.phoneMasked());data.put("region",user.countryCode());data.put("registeredAt",businessUtc(user.registeredAt()));
             data.put("lastLoginAt",businessUtc(user.lastLoginAt()));data.put("accountStatus",user.status());return data;
@@ -257,7 +257,7 @@ public class SupportCustomerProfileService {
     }
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public SupportAttachmentService.Content avatar(Long customer) {
-        ownership.requireRead(customer);String key=mapper.avatar(customer);if(!ownedAvatar(customer,key))throw new BizException(404,"CUSTOMER_AVATAR_NOT_FOUND");
+        ownership.requireRead(customer);String key=mapper.avatar(customer);if(!ffdd.opsconsole.content.domain.SupportCustomerAvatar.owned(customer,key))throw new BizException(404,"CUSTOMER_AVATAR_NOT_FOUND");
         // Existing customer-upload contract caps stored avatar bytes at 2 MiB.
         try(var stream=storage.get(key)) {
             byte[] bytes=stream.readNBytes(2*1024*1024+1);if(bytes.length>2*1024*1024)throw new java.io.IOException();
@@ -265,7 +265,6 @@ public class SupportCustomerProfileService {
             if(mime==null)throw new java.io.IOException();return new SupportAttachmentService.Content(mime,bytes);
         }catch(java.io.IOException|RuntimeException ex){throw new BizException(503,"CUSTOMER_AVATAR_UNAVAILABLE");}
     }
-    private static boolean ownedAvatar(Long customer,String key){return key!=null && key.startsWith("users/"+customer+"/avatar/") && !key.contains("..");}
     private static String businessUtc(LocalDateTime at){return at==null?null:at.atZone(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE).toInstant().toString();}
     @SuppressWarnings("unchecked") private static List<ConversationCustomerProfile.LedgerEntry> legacyLedger(Map<String,Object> finance) {
         var recent=finance.get("recentFlows");if(!(recent instanceof Map<?,?> section) || !(section.get("data") instanceof Map<?,?> data) || !(data.get("records") instanceof List<?> rows))return List.of();
