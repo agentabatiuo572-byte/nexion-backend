@@ -71,7 +71,7 @@ public final class B3FunnelAnalytics {
         if (relevantRaw != relevantIdentified) {
             return unavailable(
                     "ACTOR_COVERAGE_INCOMPLETE",
-                    "存在缺少用户标识或事件时间的主漏斗事实，已停止计算，避免产生伪转化率",
+                    "部分漏斗数据缺少用户或时间，已停止计算，以免转化率失真",
                     cohort, phase, ref, day0WindowSeconds);
         }
 
@@ -88,7 +88,7 @@ public final class B3FunnelAnalytics {
         if (selectedRegistrations.isEmpty()) {
             return unavailable(
                     "EMPTY_REGISTRATION_DENOMINATOR",
-                    "当前筛选范围没有可确认的注册用户，转化率不可计算；请检查 A4 注册事件或调整筛选条件。",
+                    "当前筛选范围内没有注册用户，无法计算转化率；请调整筛选条件，或到「用户行为事件」检查注册事件。",
                     cohort, phase, ref, day0WindowSeconds);
         }
         Map<String, List<EventFact>> byActor = allEvents.stream()
@@ -113,7 +113,7 @@ public final class B3FunnelAnalytics {
                     "cvrFromPrev", cvr,
                     "momDelta", null,
                     "lifecycleLabel", LIFECYCLES.get(index),
-                    "kpiTarget", index == 1 ? "5%–10%（store→首购）" : null,
+                    "kpiTarget", index == 1 ? "5%–10%（浏览商城→首购）" : null,
                     "color", COLORS.get(index),
                     "source", "nx_event_outbox:" + STAGE_EVENTS.get(index)));
         }
@@ -132,7 +132,7 @@ public final class B3FunnelAnalytics {
                 "dailyFirstPurchase", dailyFirstPurchase(registered, purchased),
                 "purchaseChannels", purchaseChannels(registered, purchased),
                 "sources", List.of("nx_event_outbox", "nx_event_schema_registry"),
-                "sourceStatement", "仅统计 schema_registered=1 且权威性满足 A4 规则的事件；主漏斗按同一用户严格有序推进");
+                "sourceStatement", "只统计已登记并通过校验的事件；同一用户必须按 注册→首购→复投→提现 的顺序推进");
     }
 
     public static Map<String, Object> cohortTrend(
@@ -306,7 +306,7 @@ public final class B3FunnelAnalytics {
                 "dailyFirstPurchase", dailyFirstPurchase(Map.of(), Map.of()),
                 "purchaseChannels", List.of(),
                 "sources", List.of("nx_event_outbox", "nx_event_schema_registry"),
-                "sourceStatement", "A4 权威事件事实不足，当前已停止计算");
+                "sourceStatement", "用户行为事件数据不足，已停止计算");
     }
 
     private static Map<String, Object> filters(String cohort, String phase, String ref) {

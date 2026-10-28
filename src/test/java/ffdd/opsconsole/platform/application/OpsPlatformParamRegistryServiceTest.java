@@ -212,7 +212,7 @@ class OpsPlatformParamRegistryServiceTest {
             assertThat(row.currentValue()).isEqualTo("off");
         });
         assertThat(overview.sources().get(0).status()).isEqualTo("PARTIAL");
-        assertThat(overview.sources().get(0).detail()).contains("2 项", "未展示");
+        assertThat(overview.sources().get(0).detail()).contains("2 项", "暂不显示");
         assertThat(overview.sources().get(0).rowCount()).isEqualTo(6);
         assertThat(overview.stats().registeredCount()).isEqualTo(6);
         assertThat(overview.toString()).doesNotContain("private-configuration-payload");
@@ -291,7 +291,7 @@ class OpsPlatformParamRegistryServiceTest {
             PlatformParamRegistryOverview overview = service.overview().getData();
             assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).isEmpty();
             assertThat(overview.sources().get(0).status()).isEqualTo("PARTIAL");
-            assertThat(overview.sources().get(0).detail()).contains("1 项", "未展示");
+            assertThat(overview.sources().get(0).detail()).contains("1 项", "暂不显示");
         }
     }
 
@@ -347,7 +347,7 @@ class OpsPlatformParamRegistryServiceTest {
         assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).singleElement().satisfies(row -> {
             assertThat(row.stale()).isTrue();
             assertThat(row.sourceStatus()).isEqualTo("PARTIAL");
-            assertThat(row.currentValue()).contains("读取失败");
+            assertThat(row.currentValue()).contains("加载失败");
             assertThat(row.currentValue()).doesNotContain("1.2s");
         });
     }
@@ -360,7 +360,7 @@ class OpsPlatformParamRegistryServiceTest {
         assertThat(rows).hasSize(6);
         assertThat(rows).filteredOn(row -> row.canonicalKey().equals("E.compute.phoneCalibration.policy"))
                 .singleElement().satisfies(row -> {
-                    assertThat(row.currentValue()).isEqualTo("尚未发布 · 前往 E6 配置");
+                    assertThat(row.currentValue()).isEqualTo("还没发布 · 请到「算力与设备配置」设置");
                     assertThat(row.ownerRoute()).isEqualTo("/devices/compute-config");
                 });
         assertThat(rows).filteredOn(row -> row.canonicalKey().equals("E.compute.phoneBinding.allowReplacement"))

@@ -78,15 +78,15 @@ public class OpsAuditCenterService {
     private static final List<AuditLogSeed> AUDIT_LOG_SEEDS = List.of();
 
     private static final List<AuditConfirmCategory> CONFIRM_CATEGORY_SEEDS = List.of(
-            new AuditConfirmCategory("资金/资产调整", "余额增减(C3)· 手工账单(D4)· 储备注入(B1/D3)· 对账核销(D1)", "财务 / 超管"),
-            new AuditConfirmCategory("大额资金放行", "提现放行/冻结/退款(D2)· 渠道退款(D1)", "财务 / 超管"),
-            new AuditConfirmCategory("参数批改", "红黄线(B1)· 提现参数(D5)· OTP/锁定(C6)· Phase dial(H1)· 试用敏感参数(H2)", "对应域角色 / 超管(dial 放大方向需风控或超管)"),
-            new AuditConfirmCategory("风险模型裁决", "K4 权重分档(执行门槛升超管)", "超管 / 风控"),
-            new AuditConfirmCategory("熔断闸", "6 功能闸 + 地区屏蔽(J1/J2 管理面)", "超管"),
-            new AuditConfirmCategory("账户高敏处置", "冻结/解冻 · impersonate(C2)· 2FA/密码(C5)", "风控 / 超管"),
-            new AuditConfirmCategory("批量簇冻结", "关联账户簇批量冻结(K1)", "风控 / 超管"),
-            new AuditConfirmCategory("后台账号治理", "建/停/启/改角色/重置双因子(A1)", "超管"),
-            new AuditConfirmCategory("平台配置", "feature flag · 系统参数(A3)· 内容发布(I 域)", "超管 / 内容"));
+            new AuditConfirmCategory("资金/资产调整", "余额调整 · 手工账单 · 储备注入 · 充值对账核销", "财务 / 超管"),
+            new AuditConfirmCategory("大额资金放行", "提现放行、冻结、退款 · 充值渠道退款", "财务 / 超管"),
+            new AuditConfirmCategory("参数批改", "资金健康线 · 提现参数 · 短信验证码与登录锁定 · 运营阶段调节项 · 试用关键参数", "对应模块负责人 / 超管（调高运营阶段调节项需风控或超管）"),
+            new AuditConfirmCategory("风险评分规则", "评分权重和分档（启用需超管）", "超管 / 风控"),
+            new AuditConfirmCategory("紧急停用", "业务紧急停用开关 · 地区访问限制", "超管"),
+            new AuditConfirmCategory("账户高敏处置", "冻结 / 解冻 · 代用户查看 · 两步验证 / 密码", "风控 / 超管"),
+            new AuditConfirmCategory("批量簇冻结", "关联账户组批量冻结", "风控 / 超管"),
+            new AuditConfirmCategory("后台账号治理", "新建、停用、启用、改角色、重置两步验证", "超管"),
+            new AuditConfirmCategory("平台配置", "功能开关 · 系统参数 · 内容发布", "超管 / 内容"));
 
     private final PlatformConfigRepository configRepository;
     private final AuditLogService auditLogService;
@@ -1123,11 +1123,11 @@ public class OpsAuditCenterService {
     private List<AuditMechanismParam> mechanismParams(Map<String, PlatformConfigItem> configs) {
         return List.of(
                 new AuditMechanismParam("reason_required", "理由必填",
-                        "所有高敏动作的确认弹窗都校验 reason,为空或过短不写入", "强制", true),
+                        "所有敏感操作都要填写理由，为空或太短不能提交", "强制", true),
                 paramView(mechanismConfig("ttl"), value(configs, "admin.a2.reason_min_chars", "8 字")),
                 paramView(mechanismConfig("retention"), value(configs, "admin.a2.retention_months", "13 个月")),
                 new AuditMechanismParam("confirm_list", "操作确认适用动作清单",
-                        "哪些动作必须打开独立确认弹窗,汇总自各域", "9 大类", false),
+                        "哪些操作必须单独确认，按模块汇总", "9 大类", false),
                 paramView(mechanismConfig("schema"), value(configs, "admin.a2.schema_version", "v3")));
     }
 
@@ -1143,7 +1143,7 @@ public class OpsAuditCenterService {
 
     private AuditMechanismParam paramView(MechanismConfig config, String value) {
         String displayValue = "schema".equals(config.key())
-                ? (StringUtils.hasText(value) ? "统一 schema · " + normalizeSchemaValue(value) : "")
+                ? (StringUtils.hasText(value) ? "统一字段 · " + normalizeSchemaValue(value) : "")
                 : value;
         return new AuditMechanismParam(config.key(), config.name(), config.sub(), displayValue, config.locked());
     }
@@ -1155,11 +1155,11 @@ public class OpsAuditCenterService {
         String normalized = normalizeText(key).toLowerCase(Locale.ROOT);
         return switch (normalized) {
             case "ttl" -> new MechanismConfig("ttl", "理由最短长度",
-                    "默认 8 字;用于确认弹窗提交前校验,历史审计原文保留", "admin.a2.reason_min_chars", false);
+                    "默认 8 字；提交确认前检查，已有记录不受影响", "admin.a2.reason_min_chars", false);
             case "retention" -> new MechanismConfig("retention", "日志保留期",
-                    "覆盖整个 12 月运营周期 + 1 个月缓冲,合规取证底线", "admin.a2.retention_months", false);
-            case "schema" -> new MechanismConfig("schema", "审计字段结构",
-                    "全后台统一一套字段;加事件/加属性走注册流程", "admin.a2.schema_version", false);
+                    "覆盖 12 个月运营周期，再多留 1 个月，满足合规取证要求", "admin.a2.retention_months", false);
+            case "schema" -> new MechanismConfig("schema", "记录字段",
+                    "全后台使用同一套字段；新增事件或字段要先登记", "admin.a2.schema_version", false);
             default -> null;
         };
     }

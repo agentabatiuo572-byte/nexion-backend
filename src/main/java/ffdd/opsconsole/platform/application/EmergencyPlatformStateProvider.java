@@ -26,17 +26,17 @@ public class EmergencyPlatformStateProvider implements PlatformEmergencyStatePro
                     boolean enabled = Boolean.TRUE.equals(gate.get("enabled"));
                     Map<String, Object> row = new LinkedHashMap<>();
                     row.put("key", text(gate.get("key"), "unknown"));
-                    row.put("name", text(gate.get("name"), "未知功能闸"));
+                    row.put("name", text(gate.get("name"), "未知开关"));
                     row.put("status", enabled ? "enabled" : "disabled");
                     row.put("up", enabled);
                     row.put("lastChange", text(gate.get("lastChange"), "暂无变更时间"));
-                    row.put("chain", "J1 应急控制 · nx_emergency_control_setting");
+                    row.put("chain", "紧急停用开关");
                     row.put("source", "J1:/api/admin/emergency/kill-switches");
                     rows.add(row);
                 }
             }
         } catch (RuntimeException ex) {
-            rows.add(unavailable("j1-unavailable", "J1 功能闸读取失败", "J1 应急控制"));
+            rows.add(unavailable("j1-unavailable", "紧急停用开关加载失败", "紧急停用开关"));
         }
 
         try {
@@ -46,15 +46,15 @@ public class EmergencyPlatformStateProvider implements PlatformEmergencyStatePro
             boolean clear = blocked == 0 && limited == 0;
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("key", "geo-block");
-            row.put("name", "地区屏蔽");
-            row.put("status", clear ? "空列表 · 无封锁" : blocked + " 个屏蔽 · " + limited + " 个限流");
+            row.put("name", "地区访问限制");
+            row.put("status", clear ? "没有限制" : blocked + " 个地区禁止访问 · " + limited + " 个地区限流");
             row.put("up", clear);
             row.put("lastChange", latestChange(overview.get("recentChanges")));
-            row.put("chain", "J2 地区屏蔽 · nx_emergency_geo_country_policy");
+            row.put("chain", "地区访问限制");
             row.put("source", "J2:/api/admin/emergency/geo-block");
             rows.add(row);
         } catch (RuntimeException ex) {
-            rows.add(unavailable("j2-unavailable", "J2 地区屏蔽读取失败", "J2 地区屏蔽"));
+            rows.add(unavailable("j2-unavailable", "地区访问限制加载失败", "地区访问限制"));
         }
         return List.copyOf(rows);
     }
@@ -63,10 +63,10 @@ public class EmergencyPlatformStateProvider implements PlatformEmergencyStatePro
         return Map.of(
                 "key", key,
                 "name", name,
-                "status", "读取失败",
+                "status", "加载失败",
                 "up", false,
                 "lastChange", LocalDateTime.now().toString(),
-                "chain", chain + " · 当前不可确认",
+                "chain", chain + " · 暂时无法确认",
                 "source", chain);
     }
 

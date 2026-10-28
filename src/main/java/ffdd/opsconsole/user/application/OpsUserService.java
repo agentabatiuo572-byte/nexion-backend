@@ -183,13 +183,13 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     30,
                     7,
                     true,
-                    "只读展示，敏感操作仍由后端强制二次验证"));
+                    "这里只展示，不能修改；敏感操作仍要二次验证"));
     private static final List<RegistrationRiskParamDefinition> REGISTRATION_RISK_PARAM_DEFINITIONS = List.of(
             new RegistrationRiskParamDefinition(
                     "otp",
                     "otpTtl",
                     "有效期",
-                    "过期作废，客户端只做格式校验，真值在服务器",
+                    "过期后验证码失效，以系统校验为准",
                     "auth.risk.otp_ttl_minutes",
                     "分钟",
                     1,
@@ -205,7 +205,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     "otp",
                     "otpCooldown",
                     "重发冷却",
-                    "防短信轰炸的第一道闸",
+                    "防止短信被恶意刷发",
                     "auth.risk.otp_send_cooldown_seconds",
                     "秒",
                     30,
@@ -216,7 +216,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     0,
                     0,
                     0,
-                    "范围 30-300 秒，服务端实时执行"),
+                    "范围 30-300 秒，保存后立即生效"),
             new RegistrationRiskParamDefinition(
                     "otp",
                     "otpMax24h",
@@ -3127,7 +3127,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 "复核理由:" + text(adjustment.reviewReason()));
         List<String> redlines = adjustment.credit()
                 ? List.of("入账前校验资金覆盖率红线", "当前仅支持 USDT 与 NEX")
-                : List.of("扣减需要确认理由并保留完整审计记录");
+                : List.of("扣减需要填写理由，并记入操作记录");
         return new UserAssetAdjustmentDetail(
                 adjustment,
                 account,
@@ -3278,7 +3278,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 "",
                 nextVersion,
                 false,
-                "空值表示开启，非空为服务端绝对恢复时刻；到期自动恢复",
+                "留空表示开启；填写时间表示关闭到这个时间，到期自动恢复",
                 CAPTCHA_OFF_WINDOW_KEY));
     }
 

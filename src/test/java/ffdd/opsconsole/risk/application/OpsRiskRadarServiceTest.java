@@ -188,7 +188,7 @@ class OpsRiskRadarServiceTest {
         assertThat(((List<Map<String, Object>>) radar.get("recentAlerts")).get(0))
                 .containsEntry("signalNo", "SIG-20260808-001")
                 .containsEntry("level", "P1")
-                .containsEntry("message", "反多账户命中")
+                .containsEntry("message", "多账户风险")
                 .containsEntry("target", "/risk/multi-account")
                 .containsEntry("handlingStatusAvailable", true)
                 .containsEntry("handlingStatus", "open")

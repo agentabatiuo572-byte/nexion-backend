@@ -44,9 +44,9 @@ public final class ComputeConfigRegistry {
     // These are not editable parameters and never authorize device enrollment.
     public static final List<GpuTierDef> LEGACY_WIRE_GPU_TIERS = List.of(
         new GpuTierDef("G1", "入门显卡", "集显或旧独显,只放轻量任务。", "Intel Iris Xe", "40", List.of("gtx 1650", "gtx 1060", "gtx 1050", "integrated", "iris xe", "vega")),
-        new GpuTierDef("G2", "标准显卡", "主流入门独显,也是未知型号的保守兜底档。", "NVIDIA RTX 3060", "90", List.of("rtx 3060", "rtx 3050", "rtx 2060", "gtx 1080", "rx 6600")),
+        new GpuTierDef("G2", "标准显卡", "主流入门独显，识别不出型号时也归到这一档。", "NVIDIA RTX 3060", "90", List.of("rtx 3060", "rtx 3050", "rtx 2060", "gtx 1080", "rx 6600")),
         new GpuTierDef("G3", "进阶显卡", "中端独显,可承接更长的推理任务。", "NVIDIA RTX 4060", "160", List.of("rtx 4060 ti", "rtx 4060", "rtx 3070", "rx 7600", "rx 6700")),
-        new GpuTierDef("G4", "高阶显卡", "高性能个人显卡,默认演示型号落在此档。", "NVIDIA RTX 4070", "290", List.of("rtx 4070 ti", "rtx 4070", "rtx 3080", "rx 7800")),
+        new GpuTierDef("G4", "高阶显卡", "高性能个人显卡。", "NVIDIA RTX 4070", "290", List.of("rtx 4070 ti", "rtx 4070", "rtx 3080", "rx 7800")),
         new GpuTierDef("G5", "超高阶显卡", "高端工作站或旗舰上一代独显。", "NVIDIA RTX 4080", "460", List.of("rtx 5080", "rtx 4080", "rx 7900", "a5000")),
         new GpuTierDef("G6", "旗舰显卡", "旗舰显卡或数据中心卡,仅承接高收益任务。", "NVIDIA RTX 4090", "660", List.of("rtx 5090", "rtx 4090", "h100", "a100", "l40")));
 

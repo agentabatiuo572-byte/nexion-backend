@@ -62,7 +62,7 @@ public class OpsNovaService {
     private static final List<NovaOptionView> SOCIAL_EVENT_TYPE_OPTIONS = List.of(
             new NovaOptionView("withdrawal", "提现到账"),
             new NovaOptionView("vrank", "V 等级晋升"),
-            new NovaOptionView("genesis", "Genesis 成交"),
+            new NovaOptionView("genesis", "创世节点成交"),
             new NovaOptionView("aiClient", "AI 客户消费（数据源未接入）"),
             new NovaOptionView("newUsers", "每小时新增用户"));
     private static final List<NovaOptionView> SOCIAL_EVENT_STATUS_OPTIONS = List.of(
@@ -78,20 +78,20 @@ public class OpsNovaService {
             new NovaOptionView("/earn", "收益任务"),
             new NovaOptionView("/support", "客服中心"));
     private static final List<NovaEventDrivenView> EVENT_DRIVEN_CHANNELS = List.of(
-            new NovaEventDrivenView("risk-alert", "设备掉线或任务失败的异常状态机即时触发，不使用周期扫描。",
-                    "E5/K 域异常状态机", "warn", "事件触发"),
-            new NovaEventDrivenView("team_event", "服务端 cadence 配置消费 referral.bound / commission.paid。",
-                    "F 域团队事件", "ok", "已接入"),
-            new NovaEventDrivenView("staking_event", "服务端 cadence 配置消费质押仓位真实事件。",
-                    "G1 质押事件", "ok", "已接入"),
-            new NovaEventDrivenView("market_event", "服务端 cadence 配置消费 market.curve_advanced 广播事实。",
-                    "G3 市场事件", "ok", "已接入"),
-            new NovaEventDrivenView("weekly-quest-refresh", "归入 quest 配置 key，具体触发时点由 H3 任务状态机负责。",
-                    "H3 任务状态机", "warn", "事件触发"));
+            new NovaEventDrivenView("risk-alert", "设备掉线或任务失败时立即推送。",
+                    "设备运行与风控异常", "warn", "事件触发"),
+            new NovaEventDrivenView("team_event", "有新的邀请绑定或佣金发放时，按设定频率推送。",
+                    "团队事件", "ok", "已接入"),
+            new NovaEventDrivenView("staking_event", "用户的质押有新动态时，按设定频率推送。",
+                    "质押事件", "ok", "已接入"),
+            new NovaEventDrivenView("market_event", "行情曲线更新时，按设定频率推送。",
+                    "行情事件", "ok", "已接入"),
+            new NovaEventDrivenView("weekly-quest-refresh", "每周任务刷新时推送，刷新时间在「用户任务管理」设置。",
+                    "用户任务管理", "warn", "事件触发"));
     private static final Map<String, DistributionOption> DISTRIBUTION_OPTIONS = List.of(
                     new DistributionOption("withdrawal", "提现到账", "var(--admin-cat-3)"),
                     new DistributionOption("vrank", "V 等级晋升", "var(--admin-cat-5)"),
-                    new DistributionOption("genesis", "Genesis 成交", "var(--admin-cat-7)"),
+                    new DistributionOption("genesis", "创世节点成交", "var(--admin-cat-7)"),
                     new DistributionOption("aiClient", "AI 客户消费", "var(--admin-cat-2)"),
                     new DistributionOption("newUsers", "每小时新增用户", "var(--admin-cat-4)"))
             .stream()
@@ -187,7 +187,7 @@ public class OpsNovaService {
             String sourceTable = sourceTable(sourceType);
             if ("aiClient".equals(sourceType)) {
                 results.add(new NovaSocialSyncResult.SourceResult(sourceType, "", "UNAVAILABLE", 0, 0, 0,
-                        "尚无真实 AI 计费事件表，系统不会生成替代数据"));
+                        "AI 客户消费数据还没接入，暂不显示"));
                 continue;
             }
             LocalDateTime until = "newUsers".equals(sourceType) ? now.truncatedTo(ChronoUnit.HOURS) : now;
@@ -220,7 +220,7 @@ public class OpsNovaService {
             insertedTotal += inserted;
             duplicateTotal += duplicates;
             results.add(new NovaSocialSyncResult.SourceResult(sourceType, sourceTable, "AVAILABLE",
-                    discovered.size(), inserted, duplicates, "只同步已验证终态且仍在有效期内的真实事件"));
+                    discovered.size(), inserted, duplicates, "只同步已完成且仍在有效期内的事件"));
         }
         NovaSocialSyncResult result = new NovaSocialSyncResult(discoveredTotal, insertedTotal, duplicateTotal, List.copyOf(results));
         audit("I2_NOVA_SOCIAL_EVENTS_SYNCED", "social-events", operator(request.operator()), idempotencyKey, request.reason(), Map.of(
@@ -1054,7 +1054,7 @@ public class OpsNovaService {
                 default -> "84h";
             };
         }
-        String phaseLabel = channel.phaseKeyed() + " · H1 当前 " + currentPhase + " → " + effectiveCooldown;
+        String phaseLabel = channel.phaseKeyed() + " · 当前运营阶段 " + currentPhase + " → " + effectiveCooldown;
         return new NovaChannelView(
                 channel.key(), channel.name(), channel.trigger(), channel.tick(), effectiveCooldown,
                 phaseLabel, channel.ctr(), channel.enabled());

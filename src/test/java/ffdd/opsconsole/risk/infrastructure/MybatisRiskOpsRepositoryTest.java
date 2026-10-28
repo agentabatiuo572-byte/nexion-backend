@@ -399,7 +399,7 @@ class MybatisRiskOpsRepositoryTest {
                 "canonical evidence", "risk.tamper_detected");
         verify(mapper).applyTamperScore("U00000042", 20);
         verify(mapper).insertTamperScoreContribution(
-                "U00000042", "服务器篡改拦截事件 TAMPER-event-42", 10);
+                "U00000042", "篡改拦截事件 TAMPER-event-42", 10);
         var ordered = inOrder(mapper);
         ordered.verify(mapper).ensureTamperScoreUser("U00000042");
         ordered.verify(mapper).lockTamperScoreValue("U00000042");

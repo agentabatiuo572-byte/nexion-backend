@@ -84,7 +84,7 @@ public class BusinessCalendarService {
             for (BusinessCalendar.Version seed : BusinessCalendar.seed()) {
                 mapper.seed(seed.track(), seed.zone().getId(), "Asia/Shanghai".equals(seed.zone().getId()) ? "CN" : "VN",
                         offsetMinutes(seed.zone()), seed.effectiveDate(), seed.effectiveStorageAt(),
-                        "Asia/Shanghai".equals(seed.zone().getId()) ? "历史口径：北京时间" : "增长与团队自 2026-10-19 起按越南时间切分");
+                        "Asia/Shanghai".equals(seed.zone().getId()) ? "历史数据按北京时间" : "增长与团队自 2026-10-19 起按越南时间切分");
             }
             refresh();
         } catch (RuntimeException ex) {
