@@ -1056,7 +1056,7 @@ class OpsDeviceServiceTest {
     @Test
     void createSkuRequiresCommandAndAudits() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
-        DeviceSkuUpsertRequest request = skuRequest("stellarbox-legacy", "NexGridBox Legacy", "pending");
+        DeviceSkuUpsertRequest request = skuRequest("stellarbox-legacy", "UVELBox Legacy", "pending");
 
         ApiResult<DeviceSkuView> result = service.createSku("idem-sku", request);
 
@@ -1104,32 +1104,33 @@ class OpsDeviceServiceTest {
                 .getMessage()).isEqualTo("SKU_STOCK_INVALID");
     }
 
-    @Test
-    void e1SkuRejectsRetiredBrandOnCreateRenameAndPublishButKeepsLegacyEditAvailable() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"NexionBox", "NexGridBox", "NEX GRID", "StellarBox", "StellarRack"})
+    void e1SkuRejectsRetiredBrandOnCreateRenameAndPublishButKeepsLegacyEditAvailable(String retiredName) {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
         ApiResult<DeviceSkuView> create = service.createSku("idem-retired-create",
-                skuRequest("stellarbox-new", "NexionBox New", "pending"));
+                skuRequest("stellarbox-new", retiredName + " New", "pending"));
         assertThat(create.getMessage()).isEqualTo("RETIRED_BRAND_IN_PUBLISHED_COPY");
         assertThat(catalogRepository.sku).isNull();
 
         catalogRepository.sku = sku("stellarbox-legacy", "NexGridBox Legacy", "pending", "P1");
         String revision = catalogRepository.sku.updatedAt().toString();
         ApiResult<DeviceSkuView> rename = service.updateSku("stellarbox-legacy", revision,
-                "idem-retired-rename", skuRequest("stellarbox-legacy", "NexionBox Revised", "pending"));
+                "idem-retired-rename", skuRequest("stellarbox-legacy", retiredName + " Revised", "pending"));
         assertThat(rename.getMessage()).isEqualTo("RETIRED_BRAND_IN_PUBLISHED_COPY");
         assertThat(catalogRepository.sku.name()).isEqualTo("NexGridBox Legacy");
 
-        catalogRepository.sku = sku("stellarbox-legacy", "NexionBox Legacy", "pending", "P1");
+        catalogRepository.sku = sku("stellarbox-legacy", retiredName + " Legacy", "pending", "P1");
         ApiResult<DeviceSkuView> publish = service.updateSkuStatus("stellarbox-legacy", revision,
                 "idem-retired-publish", new DeviceSkuStatusRequest("on", "禁止旧品牌商品重新上架处理", "superadmin"));
         assertThat(publish.getMessage()).isEqualTo("RETIRED_BRAND_IN_PUBLISHED_COPY");
-        assertThat(catalogRepository.sku.name()).isEqualTo("NexionBox Legacy");
+        assertThat(catalogRepository.sku.name()).isEqualTo(retiredName + " Legacy");
         assertThat(catalogRepository.sku.status()).isEqualTo("pending");
         assertThat(catalogRepository.lastSkuRequest).isNull();
 
         ApiResult<DeviceSkuView> edit = service.updateSku("stellarbox-legacy", revision,
                 "idem-legacy-price-edit", withPriceAndStatus(
-                        skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending"),
+                        skuRequest("stellarbox-legacy", retiredName + " Legacy", "pending"),
                         new BigDecimal("1300"), "pending"));
         assertThat(edit.getCode()).isZero();
     }
@@ -1159,7 +1160,7 @@ class OpsDeviceServiceTest {
     void createSkuPersistsStructuredPurchaseGateForServerEnforcedCheckout() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
         DeviceSkuUpsertRequest request = withPurchaseGate(
-                skuRequest("stellarbox-legacy", "NexGridBox Legacy", "pending"),
+                skuRequest("stellarbox-legacy", "UVELBox Legacy", "pending"),
                 new ffdd.opsconsole.device.domain.DevicePurchaseGateView(
                         2, null, null, "all", null, null, null, true));
 
@@ -1478,7 +1479,7 @@ class OpsDeviceServiceTest {
     @Test
     void createShareSkuAllowsBlankUnlockPhase() {
         DeviceSkuUpsertRequest request =
-                skuRequest("shared-rack-test", "NexGrid Shared Rack", "pending", " Share ", "HK-1", 2, "active", "");
+                skuRequest("shared-rack-test", "UVEL Shared Rack", "pending", " Share ", "HK-1", 2, "active", "");
 
         ApiResult<DeviceSkuView> result = service.createSku("idem-share-sku", request);
 
@@ -1535,7 +1536,7 @@ class OpsDeviceServiceTest {
 
         ApiResult<DeviceSkuView> result = service.createSku(
                 "idem-generation-default",
-                skuRequest("stellarbox-no-generation", "NexGridBox Compatible", "pending", "Entry", "HK-1", null, "active", "P1"));
+                skuRequest("stellarbox-no-generation", "UVELBox Compatible", "pending", "Entry", "HK-1", null, "active", "P1"));
 
         assertThat(result.getCode()).isZero();
         assertThat(catalogRepository.lastSkuRequest.generation()).isEqualTo(1);
@@ -1547,7 +1548,7 @@ class OpsDeviceServiceTest {
         catalogRepository.phases.put("2", phase("2", "启动期", 20));
         configFacade.values.put("H1.rhythm.totalMonths", "12");
         configFacade.values.put("H1.rhythm.currentMonth", "1");
-        catalogRepository.sku = sku("stellarbox-legacy", "NexGridBox Legacy", "pending", "1");
+        catalogRepository.sku = sku("stellarbox-legacy", "UVELBox Legacy", "pending", "1");
 
         catalogRepository.generationGates.put(
                 "stellarbox-legacy",
@@ -1588,7 +1589,7 @@ class OpsDeviceServiceTest {
 
     @Test
     void listingRefusesTestIdentifiedSkuSoItNeverReachesTheAppCatalogue() {
-        catalogRepository.sku = sku("stellarbox-test", "NexGridBox Test", "pending", "");
+        catalogRepository.sku = sku("stellarbox-test", "UVELBox Test", "pending", "");
 
         ApiResult<DeviceSkuView> result = service.updateSkuStatus(
                 "stellarbox-test", "idem-list-test-identity",
@@ -1615,7 +1616,7 @@ class OpsDeviceServiceTest {
 
     @Test
     void skuWithEffectiveEarningsStillLists() {
-        catalogRepository.sku = sku("cloud-share", "NexGrid Cloud Share", "pending", "");
+        catalogRepository.sku = sku("cloud-share", "UVEL Cloud Share", "pending", "");
 
         ApiResult<DeviceSkuView> listed = service.updateSkuStatus(
                 "cloud-share", "idem-list-earns", new DeviceSkuStatusRequest("on", "有收益商品可上架", "superadmin"));
@@ -1652,7 +1653,7 @@ class OpsDeviceServiceTest {
 
     @Test
     void skuWithoutActiveGateCanBeListed() {
-        catalogRepository.sku = sku("cloud-share", "NexGrid Cloud Share", "pending", "");
+        catalogRepository.sku = sku("cloud-share", "UVEL Cloud Share", "pending", "");
         ApiResult<DeviceSkuView> listed = service.updateSkuStatus(
                 "cloud-share", "idem-list-no-gate", new DeviceSkuStatusRequest("on", "无需阶段商品上架", "superadmin"));
 
@@ -2012,7 +2013,7 @@ class OpsDeviceServiceTest {
         String generatedPhaseId = catalogRepository.phases.keySet().iterator().next();
         ApiResult<DeviceSkuView> skuResult = service.createSku(
                 "idem-sku-s1",
-                skuRequest("stellarbox-s1", "NexGridBox S1", "pending", "Entry", "HK-1", 1, "active", generatedPhaseId));
+                skuRequest("stellarbox-s1", "UVELBox S1", "pending", "Entry", "HK-1", 1, "active", generatedPhaseId));
 
         assertThat(generatedPhaseId).matches("\\d+");
         assertThat(catalogRepository.phases.get(generatedPhaseId).label()).isEqualTo("代际第一代");
@@ -2173,7 +2174,7 @@ class OpsDeviceServiceTest {
 
         assertThatThrownBy(() -> service.createSku(
                         "idem-required-audit",
-                        skuRequest("stellarbox-audit", "NexGridBox Audit", "pending")))
+                        skuRequest("stellarbox-audit", "UVELBox Audit", "pending")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("audit unavailable");
         verify(auditLogService).recordRequired(any());

@@ -596,7 +596,7 @@ class OpsNovaServiceTest {
                 "social", "全网真实动态", "真实事件触发", "20 min", "30 min", "", BigDecimal.ZERO, true));
         novaRepository.templates.put("social", new NovaTemplateView(
                 "social", "真实动态模板", "NONE", "v1",
-                "NexGrid 真实动态", "{actor} 在 {city} 完成 {amount}",
+                "UVEL 真实动态", "{actor} 在 {city} 完成 {amount}",
                 "Hoạt động thực", "{actor} tại {city} hoàn tất {amount}",
                 "Verified activity", "{actor} in {city} completed {amount}", "PUBLISHED"));
         novaRepository.distribution.add(new NovaSocialDistributionItem("withdrawal", "提现到账", 100, "red"));

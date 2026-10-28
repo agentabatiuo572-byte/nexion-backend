@@ -36,10 +36,10 @@ class MybatisI18nIntegrityScanTest {
         String badKey = "home.abExperimentBanner";
         I18nMessagePairView badPublished = pair(badKey, "ccccc",
                 "Find the NexionBox that fits you now", "Tìm NexionBox phù hợp", "published", "v3");
-        I18nMessagePairView validDraft = pair(badKey, "寻找适合您的 NexGridBox",
-                "Find the NexGridBox that fits you", "Tìm NexGridBox phù hợp", "draft", "v4");
-        I18nMessagePairView validPublished = pair("home.welcome", "欢迎使用 NexGrid",
-                "Welcome to NexGrid", "Chào mừng đến với NexGrid", "published", "v2");
+        I18nMessagePairView validDraft = pair(badKey, "寻找适合您的 UVELBox",
+                "Find the UVELBox that fits you", "Tìm UVELBox phù hợp", "draft", "v4");
+        I18nMessagePairView validPublished = pair("home.welcome", "欢迎使用 UVEL",
+                "Welcome to UVEL", "Chào mừng đến với UVEL", "published", "v2");
         doReturn(List.of(validDraft, validPublished)).when(repository).listMessagePairs();
         doReturn(Optional.of(badPublished)).when(repository).findPublishedMessagePair(badKey);
         doReturn(Optional.of(validPublished)).when(repository).findPublishedMessagePair("home.welcome");

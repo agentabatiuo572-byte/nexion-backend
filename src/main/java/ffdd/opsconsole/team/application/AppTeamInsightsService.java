@@ -94,29 +94,13 @@ public class AppTeamInsightsService {
             frozen = leaderboardSnapshot(scope, period, snapshotAt, requestedPage, requestedSnapshotVersion);
         }
         List<AppTeamInsightsMapper.LeaderboardRow> source = frozen.candidates();
-        // Match the original snapshot name before masking; never replace a frozen custom nickname.
-        var legacyNameIds = source.stream().filter(row -> row.nickname() != null
-                && row.nickname().matches("NexGrid [0-9]{4}"))
-                .map(AppTeamInsightsMapper.LeaderboardRow::userId).distinct().toList();
-        Map<Long, String> verifiedLegacyNames = new LinkedHashMap<>();
-        if (!legacyNameIds.isEmpty()) {
-            for (var identity : mapper.leaderboardNameIdentities(legacyNameIds, scope.sandbox())) {
-                if (identity.phoneSuffix() != null && identity.phoneSuffix().matches("[0-9]{4}")) {
-                    verifiedLegacyNames.put(identity.userId(), "NexGrid " + identity.phoneSuffix());
-                }
-            }
-        }
         List<Map<String, Object>> rows = new ArrayList<>();
         Integer myRank = null; BigDecimal gap = BigDecimal.ZERO;
         for (int index = 0; index < source.size(); index++) {
             var row = source.get(index);
             BigDecimal earned = zero(row.earnedUsdt());
             Map<String, Object> item = new LinkedHashMap<>();
-            String displayName = ffdd.opsconsole.shared.canonical.DisplayBranding.resetNickname(row.nickname());
-            if (displayName != null && displayName.equals(verifiedLegacyNames.get(row.userId()))) {
-                displayName = "UVEL " + displayName.substring("NexGrid ".length());
-            }
-            item.put("rank", row.rank()); item.put("handle", mask(displayName, row.userId()));
+            item.put("rank", row.rank()); item.put("handle", mask(row.nickname(), row.userId()));
             item.put("flag", "🌐"); item.put("cc", "--"); item.put("directs", count(row.directs()));
             item.put("teamSize", count(row.teamSize())); item.put("earnedUSDT", earned); item.put("delta", 0);
             item.put("vRank", rank(row.vRank())); item.put("hasDevice", row.hasDevice() != null && row.hasDevice() == 1);

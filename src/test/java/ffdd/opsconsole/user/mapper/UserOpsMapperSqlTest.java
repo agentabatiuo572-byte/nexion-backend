@@ -8,6 +8,14 @@ import org.junit.jupiter.api.Test;
 
 class UserOpsMapperSqlTest {
     @Test
+    void teamNamesUseCurrentStoredIdentityAndHistoricalFallbackWithoutBrandAliases() throws Exception {
+        String sql = String.join(" ", UserOpsMapper.class.getMethod("teamMembers", Long.class, int.class)
+                .getAnnotation(Select.class).value());
+        assertThat(sql).contains("COALESCE(u.nickname, tm.nickname) AS nickname", "tm.member_no", "u.is_deleted = 0");
+        assertThat(sql).doesNotContain("NexGrid", "CONCAT('UVEL");
+    }
+
+    @Test
     void c5SessionRevocationKeepsExpiryAndAuditTimeInUtcPlusEight() throws Exception {
         String activeCount = String.join(" ", UserOpsMapper.class.getMethod("countActiveSessions")
                 .getAnnotation(Select.class).value());
@@ -184,7 +192,7 @@ class UserOpsMapperSqlTest {
                 .contains("WHEN tm.member_no REGEXP '^U[0-9]{8,}$'")
                 .contains("THEN CAST(SUBSTRING(tm.member_no, 2) AS UNSIGNED)")
                 .contains("ELSE tm.member_user_id")
-                .contains("ELSE COALESCE(u.nickname, tm.nickname)")
+                .contains("COALESCE(u.nickname, tm.nickname) AS nickname")
                 .as("不能再把反规范化列当作唯一来源")
                 .doesNotContain("                   nickname,");
     }

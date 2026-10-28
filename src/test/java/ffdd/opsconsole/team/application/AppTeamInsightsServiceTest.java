@@ -47,12 +47,12 @@ class AppTeamInsightsServiceTest {
                 .replaceAll("\\s+", " ");
 
         assertThat(sql).contains("CASE WHEN ce.source_user_name REGEXP '[^[:space:]]' THEN ce.source_user_name END",
-                "source.nickname)", "END sourceUserName", "LEFT JOIN nx_user u ON u.id=ce.user_id",
+                "source.nickname) sourceUserName", "LEFT JOIN nx_user u ON u.id=ce.user_id",
                 "LEFT JOIN nx_user source ON source.id=ce.source_user_id",
                 "source.sandbox=u.sandbox", "source.is_deleted=0",
                 "WHERE ce.user_id=#{userId} AND ce.is_deleted=0 AND ce.created_at <= #{snapshotAt}",
                 "ORDER BY ce.created_at DESC,ce.id DESC LIMIT #{offset},#{limit}");
-        assertThat(sql).doesNotContain("WHERE source.", "AND source.status=", "NOW()", "CURDATE()");
+        assertThat(sql).doesNotContain("WHERE source.", "AND source.status=", "NOW()", "CURDATE()", "NexGrid", "CONCAT('UVEL");
     }
 
     @Test
@@ -138,6 +138,19 @@ class AppTeamInsightsServiceTest {
                 .doesNotContain("CURDATE()", "NOW()");
         assertThat(unilevelEventsSql).contains("#{snapshotAt}", "#{fromInclusive}", "#{toExclusive}")
                 .doesNotContain("CURDATE()", "NOW()");
+    }
+
+    @Test
+    void leaderboardMasksTheStoredNicknameWithoutBrandSubstitution() {
+        var mapper = mock(AppTeamInsightsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0, "V5"));
+        when(mapper.leaderboardEligible(eq("week"), eq(0), any(), any(), eq(BigDecimal.ZERO), eq(50), any()))
+                .thenReturn(List.of(new AppTeamInsightsMapper.LeaderboardRow(1, 7L, "NexGrid-F343FA44", "V5", BigDecimal.TEN, 2, 8, 1),
+                        new AppTeamInsightsMapper.LeaderboardRow(2, 8L, "UVEL-F343FA44", "V4", BigDecimal.ONE, 1, 3, 0)));
+        var data = service(mapper, new MockEnvironment()).leaderboard(7L, "week", 1, 20, "2026-08-30T15:59:59Z").getData();
+        @SuppressWarnings("unchecked") var rows = (List<Map<String, Object>>) data.get("rows");
+        assertThat(rows).extracting(row -> row.get("handle")).containsExactly("Nex***", "UVE***");
+        verify(mapper, org.mockito.Mockito.never()).leaderboardNameIdentities(any(), any());
     }
 
     @Test

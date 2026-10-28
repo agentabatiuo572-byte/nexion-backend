@@ -48,10 +48,10 @@ class UserOpsMapperTeamMembersMySqlTest {
 
             record NameCase(String live, String phone, String fallback, int deleted, String expected) { }
             var names = java.util.List.of(
-                    new NameCase("NexGrid-F343FA44", null, "Old", 0, "UVEL-F343FA44"),
+                    new NameCase("NexGrid-F343FA44", null, "Old", 0, "NexGrid-F343FA44"),
                     new NameCase("NexGrid-f343fa44", null, "Old", 0, "NexGrid-f343fa44"),
                     new NameCase("NexGrid-F343FA44 ", null, "Old", 0, "NexGrid-F343FA44 "),
-                    new NameCase("NexGrid 1057", "18000001057", "Old", 0, "UVEL 1057"),
+                    new NameCase("NexGrid 1057", "18000001057", "Old", 0, "NexGrid 1057"),
                     new NameCase("NexGrid 1057", "18000009999", "Old", 0, "NexGrid 1057"),
                     new NameCase("NexGrid 1057", null, "Old", 0, "NexGrid 1057"),
                     new NameCase("Custom NexGrid 1057", "18000001057", "Old", 0, "Custom NexGrid 1057"),

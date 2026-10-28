@@ -3,6 +3,8 @@ package ffdd.opsconsole.shared.canonical;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * zentao #73:退役品牌检测必须真的抓到「Nexion 作前缀」的复合名。
@@ -40,12 +42,22 @@ class RetiredBrandGateTest {
         assertThat(RetiredBrandGate.carriesRetiredBrand("annexion report")).isFalse();
         assertThat(RetiredBrandGate.carriesRetiredBrand("connexion log")).isFalse();
         assertThat(RetiredBrandGate.carriesRetiredBrand("Annexion")).isFalse();
+        assertThat(RetiredBrandGate.carriesRetiredBrand("xNexion")).isFalse();
+        assertThat(RetiredBrandGate.carriesRetiredBrand("7Nexion")).isFalse();
+        assertThat(RetiredBrandGate.carriesRetiredBrand("stellar performance")).isFalse();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"NexGrid", "NexGridBox Pro v2", "NEX GRID", "nex-grid Rack", "NEX_GRID", "StellarBox",
+            "StellarRack Pro", "stellar box", "STELLAR RACK", "欢迎来到NexGrid", "Use StellarBox"})
+    void rejectsAllRetiredDisplayProductPrefixes(String name) {
+        assertThat(RetiredBrandGate.carriesRetiredBrand(name)).isTrue();
     }
 
     @Test
     void acceptsTheCurrentBrand() {
-        assertThat(RetiredBrandGate.carriesRetiredBrand("NexGridBox Pro v2")).isFalse();
-        assertThat(RetiredBrandGate.carriesRetiredBrand("NexGrid")).isFalse();
+        assertThat(RetiredBrandGate.carriesRetiredBrand("UVELBox Pro v2")).isFalse();
+        assertThat(RetiredBrandGate.carriesRetiredBrand("UVEL UVT")).isFalse();
         assertThat(RetiredBrandGate.carriesRetiredBrand("")).isFalse();
         assertThat(RetiredBrandGate.carriesRetiredBrand(null)).isFalse();
     }
@@ -53,7 +65,8 @@ class RetiredBrandGateTest {
     @Test
     void anyCarriesRetiredBrandChecksEverySuppliedField() {
         assertThat(RetiredBrandGate.anyCarriesRetiredBrand("NexGrid", "NexGridBox", "NexionRack")).isTrue();
-        assertThat(RetiredBrandGate.anyCarriesRetiredBrand("NexGrid", "NexGridBox")).isFalse();
+        assertThat(RetiredBrandGate.anyCarriesRetiredBrand("NexGrid", "NexGridBox")).isTrue();
+        assertThat(RetiredBrandGate.anyCarriesRetiredBrand("UVEL", "UVT")).isFalse();
         assertThat(RetiredBrandGate.anyCarriesRetiredBrand((String[]) null)).isFalse();
     }
 
@@ -65,7 +78,7 @@ class RetiredBrandGateTest {
     void sqlPredicateUsesTheSameCaseInsensitiveWordStartPattern() {
         String sql = RetiredBrandGate.matchesSql("name");
 
-        assertThat(sql).isEqualTo("REGEXP_LIKE(COALESCE(name,''), '(^|[^[:alnum:]])nexion', 'i')");
+        assertThat(sql).isEqualTo("REGEXP_LIKE(COALESCE(name,''), '" + RetiredBrandGate.RETIRED_BRAND_REGEX + "', 'i')");
         // 后边界不能回来 —— 它正是漏掉 NexionBox 的那一半。
         assertThat(RetiredBrandGate.RETIRED_BRAND_REGEX).doesNotContain("|$)");
     }

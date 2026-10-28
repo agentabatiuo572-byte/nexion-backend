@@ -740,11 +740,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             SELECT l.id,
                    l.user_id AS userId,
                    CONCAT('U', LPAD(l.user_id, GREATEST(8, LENGTH(CAST(l.user_id AS CHAR))), '0')) AS userNo,
-                   CASE WHEN CHAR_LENGTH(u.nickname) = 16 AND REGEXP_LIKE(u.nickname, '^NexGrid-[0-9A-F]{8}$', 'c')
-                        THEN CONCAT('UVEL-',SUBSTRING(u.nickname,9))
-                        WHEN RIGHT(u.phone,4) REGEXP '^[0-9]{4}$'
-                             AND CAST(u.nickname AS BINARY) = CAST(CONCAT('NexGrid ',RIGHT(u.phone,4)) AS BINARY)
-                        THEN CONCAT('UVEL ',RIGHT(u.phone,4)) ELSE u.nickname END AS nickname,
+                   u.nickname AS nickname,
                    l.biz_no AS bizNo,
                    l.biz_type AS bizType,
                    l.asset,
@@ -804,11 +800,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             SELECT l.id,
                    l.user_id AS userId,
                    CONCAT('U', LPAD(l.user_id, GREATEST(8, LENGTH(CAST(l.user_id AS CHAR))), '0')) AS userNo,
-                   CASE WHEN CHAR_LENGTH(u.nickname) = 16 AND REGEXP_LIKE(u.nickname, '^NexGrid-[0-9A-F]{8}$', 'c')
-                        THEN CONCAT('UVEL-',SUBSTRING(u.nickname,9))
-                        WHEN RIGHT(u.phone,4) REGEXP '^[0-9]{4}$'
-                             AND CAST(u.nickname AS BINARY) = CAST(CONCAT('NexGrid ',RIGHT(u.phone,4)) AS BINARY)
-                        THEN CONCAT('UVEL ',RIGHT(u.phone,4)) ELSE u.nickname END AS nickname,
+                   u.nickname AS nickname,
                    l.biz_no AS bizNo,
                    l.biz_type AS bizType,
                    l.asset,

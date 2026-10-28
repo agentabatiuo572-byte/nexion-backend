@@ -3,7 +3,7 @@ package ffdd.opsconsole.shared.canonical;
 import java.util.regex.Pattern;
 
 /**
- * The single server-side gate that keeps the retired {@code Nexion} brand out of
+ * The single server-side gate that keeps retired product brands out of
  * every user-facing published copy.
  *
  * <p>Why a shared gate rather than a per-domain check: the brand rename is a
@@ -25,7 +25,9 @@ public final class RetiredBrandGate {
     }
 
     /**
-     * Retired brand tokens. Case-insensitive, anchored at a **word start** only.
+     * Retired display prefixes: Nexion, NexGrid / NEX GRID, StellarBox and StellarRack.
+     * Case-insensitive, anchored at an ASCII word start only. Explicit ASCII ranges
+     * keep the Java Pattern and MySQL REGEXP_LIKE boundary equivalent.
      * Kept as a regex rather than a bare list so {@code Nexion}-prefixed product
      * names are caught while words that merely contain the letters are not.
      *
@@ -36,7 +38,7 @@ public final class RetiredBrandGate {
      * 旧品牌商品名(zentao #73)。前边界足以排除 {@code annexion} / {@code connexion}
      * 这类只是**包含**该字母序列的词,因为那里的 'n' 前面是字母。</p>
      */
-    public static final String RETIRED_BRAND_REGEX = "(^|[^[:alnum:]])nexion";
+    public static final String RETIRED_BRAND_REGEX = "(^|[^A-Za-z0-9])(nexion|nex[ _-]*grid|stellar[ _-]*(box|rack))";
 
     private static final Pattern RETIRED_BRAND = Pattern.compile(RETIRED_BRAND_REGEX, Pattern.CASE_INSENSITIVE);
 
@@ -71,6 +73,6 @@ public final class RetiredBrandGate {
 
     /** Human-readable detail naming the retired token, for audit detail maps. */
     public static String detail() {
-        return "copy still carries the retired brand 'Nexion'; use '" + CURRENT_BRAND + "'";
+        return "copy still carries a retired Nexion, NexGrid or Stellar product name; use '" + CURRENT_BRAND + "'";
     }
 }

@@ -4,11 +4,6 @@ package ffdd.opsconsole.shared.canonical;
 public final class DisplayBranding {
     private DisplayBranding() { }
 
-    public static String resetNickname(String value) {
-        return value != null && value.matches("NexGrid-[0-9A-F]{8}")
-                ? "UVEL-" + value.substring(8) : value;
-    }
-
     public static String sessionName(String value) {
         if (value == null || value.isBlank()) return "UVEL App / H5";
         return switch (value.trim()) {
