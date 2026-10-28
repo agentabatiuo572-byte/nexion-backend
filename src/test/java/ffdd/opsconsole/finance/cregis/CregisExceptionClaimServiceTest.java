@@ -29,13 +29,14 @@ class CregisExceptionClaimServiceTest {
     final TreasuryLedgerRepository treasury=mock(TreasuryLedgerRepository.class);
     final SupportPaymentAttributionFacade attribution=mock(SupportPaymentAttributionFacade.class);
     final AuditObjectLockMapper locks=mock(AuditObjectLockMapper.class);
-    final CregisExceptionClaimService service=new CregisExceptionClaimService(config,ownership,sources,admins,db,deposits,idempotency,audit,treasury,attribution,locks);
+    final CregisDepositPolicyService policies=mock(CregisDepositPolicyService.class);
+    final CregisExceptionClaimService service=new CregisExceptionClaimService(config,ownership,sources,admins,db,deposits,idempotency,audit,treasury,attribution,locks,policies);
     final String tx="0x"+"a".repeat(64),address="0x"+"b".repeat(40),block="0x"+"c".repeat(64);
     final CregisExceptionSourceService.Source source=new CregisExceptionSourceService.Source(88,77,tx,3,address,BigDecimal.TEN);
     final CregisExceptionOwnershipService.Evidence proof=new CregisExceptionOwnershipService.Evidence(new CregisExceptionOwnershipService.SourceRef("OBSERVATION",101),source,
             "0x"+"d".repeat(40),"UNATTRIBUTED_HOLD",null,20,block,15,"e".repeat(64),Instant.now());
     final Map<String,Object> row=new HashMap<>();
-    @BeforeEach void setup(){var policies=mock(CregisDepositPolicyService.class); when(policies.snapshot(anyLong(),anyString())).thenReturn(new CregisDepositPolicy(0,BigDecimal.TEN,BigDecimal.ONE,15)); service.setPolicies(policies); config.setMode(CregisProperties.Mode.PROVIDER);config.setProjectId(88);config.setDepositCreditEnabled(true);
+    @BeforeEach void setup(){when(policies.snapshot(anyLong(),anyString())).thenReturn(new CregisDepositPolicy(0,BigDecimal.TEN,BigDecimal.ONE,15)); config.setMode(CregisProperties.Mode.PROVIDER);config.setProjectId(88);config.setDepositCreditEnabled(true);
         when(admins.require(true)).thenReturn(9L);when(admins.require(false)).thenReturn(9L);
         when(idempotency.recoveryResult(any(),any(),any(),eq(Map.class))).thenReturn(new AdminIdempotencyService.RecoveryResult<>(AdminIdempotencyService.RecoveryStatus.NOT_FOUND,null));
         when(idempotency.executeRetained(any(),any(),any(),eq(Map.class),any())).thenAnswer(i->i.<Supplier<Map<String,Object>>>getArgument(4).get());

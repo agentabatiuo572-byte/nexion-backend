@@ -1,13 +1,15 @@
 package ffdd.opsconsole.finance.mapper;
 
 import ffdd.opsconsole.finance.cregis.CregisDepositPolicy;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.finance.infrastructure.CregisDepositPolicyEntity;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 @Mapper
-public interface CregisDepositPolicyMapper {
+public interface CregisDepositPolicyMapper extends BaseMapper<CregisDepositPolicyEntity> {
     @Select("SELECT id FROM nx_cregis_deposit_policy_lock WHERE id=1 FOR UPDATE")
     Integer lockPolicy();
     @Select("SELECT version,min_deposit_usdt AS minDepositUsdt,fee_usdt AS feeUsdt,confirmations FROM nx_cregis_deposit_policy ORDER BY version DESC LIMIT 1")
@@ -21,5 +23,5 @@ public interface CregisDepositPolicyMapper {
     @Insert("INSERT IGNORE INTO nx_cregis_deposit_policy_snapshot(project_id,chain_id,token_id,txid,policy_version,required_confirmations) VALUES(#{projectId},'BSC','USDT-BEP20',#{txid},#{version},#{confirmations})")
     int insertSnapshot(@Param("projectId") long projectId,@Param("txid") String txid,@Param("version") long version,@Param("confirmations") int confirmations);
     @Insert("INSERT INTO nx_cregis_deposit_policy(version,min_deposit_usdt,fee_usdt,confirmations,operation_id,reason) VALUES(#{policy.version},#{policy.minDepositUsdt},#{policy.feeUsdt},#{policy.confirmations},#{operationId},#{reason})")
-    int insert(@Param("policy") CregisDepositPolicy policy,@Param("operationId") String operationId,@Param("reason") String reason);
+    int insertPolicy(@Param("policy") CregisDepositPolicy policy,@Param("operationId") String operationId,@Param("reason") String reason);
 }

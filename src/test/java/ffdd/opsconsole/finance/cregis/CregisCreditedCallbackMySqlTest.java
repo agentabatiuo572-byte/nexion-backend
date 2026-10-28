@@ -78,8 +78,7 @@ class CregisCreditedCallbackMySqlTest {
         when(gateway.depositsByTxid(TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(77,CregisConstants.BSC_CHAIN_ID,CregisConstants.USDT_BEP20_TOKEN_ID,ADDRESS,BigDecimal.ONE,TXID,1)));
         when(chain.verify(TXID,ADDRESS,BigDecimal.ONE,101)).thenReturn(Optional.of(new BscDepositProof.Proof(0,101,BLOCK,15)));when(chain.blockHash(100)).thenReturn(BLOCK);
         var json=new ObjectMapper();
-        service=new CregisDepositService(config,router,chain,new CregisSigner(),json,session.getMapper(CregisDepositMapper.class),manager,null,null,new SupportPaymentAttributionService(null,null,null,ds,json),null,null,null);
-        service.setPolicies(policy);
+        service=new CregisDepositService(config,router,chain,new CregisSigner(),json,session.getMapper(CregisDepositMapper.class),manager,null,null,new SupportPaymentAttributionService(null,null,null,ds,json),null,null,null, policy);
     }
     @AfterEach void cleanup() {if(service!=null)service.closePoolWorkers();if(base!=null && schema!=null)base.execute("DROP DATABASE "+schema);}
 
@@ -141,8 +140,7 @@ class CregisCreditedCallbackMySqlTest {
         var treasury=mock(TreasuryLedgerRepository.class);
         var exceptions=mock(CregisExceptionSourceService.class);
         service.closePoolWorkers();
-        service=new CregisDepositService(config,router,chain,new CregisSigner(),new ObjectMapper(),mapper,manager,treasury,null,attribution,null,exceptions,null);
-        service.setPolicies(policy);
+        service=new CregisDepositService(config,router,chain,new CregisSigner(),new ObjectMapper(),mapper,manager,treasury,null,attribution,null,exceptions,null, policy);
         assertThat(service.receive(callback("1","1"))).isEqualTo("success");
         service.reconcile();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_cregis_deposit_event WHERE status='CREDITED' AND gross_amount=1 AND fee_amount=0 AND net_amount=1 AND ledger_id IS NOT NULL",Integer.class)).isEqualTo(1);

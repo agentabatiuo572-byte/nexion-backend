@@ -105,9 +105,7 @@ public class AuditReplayBusinessPermissionGuard {
     private final PlatformConfigFacade configFacade;
     private final ffdd.opsconsole.growth.application.WeeklyRegionPolicyService weeklyRegionPolicies;
     private final PhoneReplacementContract phoneReplacement;
-    private ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
-    @org.springframework.beans.factory.annotation.Autowired
-    void setDepositPolicies(ffdd.opsconsole.finance.cregis.CregisDepositPolicyService value) { this.depositPolicies = value; }
+    private final ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
             AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
@@ -122,6 +120,16 @@ public class AuditReplayBusinessPermissionGuard {
             PlatformConfigFacade configFacade,
             ffdd.opsconsole.growth.application.WeeklyRegionPolicyService weeklyRegionPolicies) {
         this(trustDisclosureRepository, roleResolver, emergencyControlRepository, directPolicies, configFacade, weeklyRegionPolicies, null);
+    }
+
+    public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
+            AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
+            org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.team.application.DirectReferralPolicyService> directPolicies,
+            PlatformConfigFacade configFacade,
+            ffdd.opsconsole.growth.application.WeeklyRegionPolicyService weeklyRegionPolicies,
+            PhoneReplacementContract phoneReplacement) {
+        this(trustDisclosureRepository, roleResolver, emergencyControlRepository, directPolicies, configFacade,
+                weeklyRegionPolicies, phoneReplacement, null);
     }
 
     public record DelegatedProposalDescriptor(

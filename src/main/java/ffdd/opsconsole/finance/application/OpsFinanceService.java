@@ -132,9 +132,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper;
     private final Clock clock;
     private final WithdrawalRiskTimePolicy riskTimePolicy;
-    private ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
-    @org.springframework.beans.factory.annotation.Autowired
-    void setDepositPolicies(ffdd.opsconsole.finance.cregis.CregisDepositPolicyService value) { this.depositPolicies = value; }
+    private final ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
 
     public ApiResult<Map<String, Object>> topupOverview() {
         ensureD1FallbackSeedData();
