@@ -59,6 +59,7 @@ class AppBundleOrderServiceTest {
         when(mapper.decrementStock(anyLong(), anyInt())).thenReturn(1);
         when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), anyInt(), any(), any(), any())).thenReturn(1);
         when(mapper.insertBundleItem(anyString(), any(), anyInt(), anyInt(), anyBoolean(), any())).thenReturn(1);
+        when(mapper.snapshotBundleComputePoints(anyString())).thenReturn(1);
         var service = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, null, null);
         var items = List.of(new AppBundleOrderService.BundleItem("s1", 2), new AppBundleOrderService.BundleItem("pro", 3));
@@ -105,6 +106,7 @@ class AppBundleOrderServiceTest {
         when(mapper.deviceSlotCap()).thenReturn(5);when(mapper.attribution(7L)).thenReturn(new AppBundleOrderMapper.Attribution("P1",1,"2026-W41"));
         when(mapper.decrementStock(anyLong(),anyInt())).thenReturn(1);when(mapper.insertBundleOrder(anyLong(),anyString(),anyLong(),anyInt(),anyInt(),any(),any(),any())).thenReturn(1);
         when(mapper.insertBundleItem(anyString(),any(),anyInt(),anyInt(),anyBoolean(),any())).thenReturn(1);
+        when(mapper.snapshotBundleComputePoints(anyString())).thenReturn(1);
         when(mapper.orderDeadlineEpoch(anyString(),anyInt())).thenReturn(java.time.Instant.now().plusSeconds(1800).getEpochSecond());
         var plan=new ffdd.opsconsole.promotion.application.PromotionOrderService.CreationPlan("Q1",7L,List.of(7L),List.of("s1","pro"),java.time.Instant.now().plusSeconds(600),
                 java.util.Map.of("public",java.util.Map.of("subtotalUsdt","800.000000","discountUsdt","140.000000","amountUsdt","660.000000")));
@@ -136,6 +138,7 @@ class AppBundleOrderServiceTest {
         when(mapper.decrementStock(anyLong(), anyInt())).thenReturn(1);
         when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), anyInt(), any(), any(), any())).thenReturn(1);
         when(mapper.insertBundleItem(anyString(), any(), anyInt(), anyInt(), anyBoolean(), any())).thenReturn(1);
+        when(mapper.snapshotBundleComputePoints(anyString())).thenReturn(1);
 
         var result = new AppBundleOrderService(mapper, idempotency, outbox, guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
@@ -198,6 +201,7 @@ class AppBundleOrderServiceTest {
         when(mapper.decrementStock(anyLong(), anyInt())).thenReturn(1);
         when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), anyInt(), any(), any(), any())).thenReturn(1);
         when(mapper.insertBundleItem(anyString(), any(), anyInt(), anyInt(), anyBoolean(), any())).thenReturn(1);
+        when(mapper.snapshotBundleComputePoints(anyString())).thenReturn(1);
 
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
@@ -442,6 +446,7 @@ class AppBundleOrderServiceTest {
         when(mapper.decrementStock(anyLong(), anyInt())).thenReturn(1);
         when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), anyInt(), any(), any(), any())).thenReturn(1);
         when(mapper.insertBundleItem(anyString(), any(), anyInt(), anyInt(), anyBoolean(), any())).thenReturn(1);
+        when(mapper.snapshotBundleComputePoints(anyString())).thenReturn(1);
 
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))

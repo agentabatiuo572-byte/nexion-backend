@@ -160,7 +160,7 @@ public class PublishedRankHowPolicyService {
     private Map<String, Object> publicRuleFacts() {
         Map<String, Object> facts = new LinkedHashMap<>();
         facts.put("permanentProtection", promotionEngine.permanentProtectionEnabled());
-        facts.put("qualifiedReferralSelfBuyUSD", promotionEngine.qualifiedReferralSelfBuyUsd());
+        facts.put("qualifiedReferralSelfComputePoints", promotionEngine.qualifiedReferralSelfComputePoints());
         facts.put("leadershipConfigured", leadershipPoolConfigGuard.isConfigured());
         return facts;
     }

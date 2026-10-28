@@ -22,3 +22,4 @@ fresh_db/04_event_registry_restore.sql
 migrations/20261028_janus_retirement.sql
 migrations/20261028_support_ticket_rbac_retirement.sql
 migrations/20261028_f5_commission_key_split.sql
+migrations/20261028_compute_points.sql

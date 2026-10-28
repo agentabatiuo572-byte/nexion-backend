@@ -42,17 +42,17 @@ class HardwareQuotaMemberIsolationMySqlTest {
                     var storefront = session.getMapper(CanonicalStateMapper.class);
                     // Valid direct 2 and descendant 20 contribute 100 + 25. Invalid roots and
                     // their otherwise valid descendants must contribute nothing.
-                    assertThat(payment.purchaseQuotaFacts(1L, month.fromOrderStorage(), month.untilOrderStorage()).monthlyVolumeUsd()).isEqualByComparingTo("125");
+                    assertThat(payment.purchaseQuotaFacts(1L, month.fromOrderStorage(), month.untilOrderStorage()).monthlyComputePoints()).isEqualByComparingTo("125");
                     assertThat(payment.purchaseQuotaFacts(1L, month.fromOrderStorage(), month.untilOrderStorage()).activeDirect()).isEqualTo(1L);
-                    assertThat(storefront.purchaseQuotaMonthlyVolume(1L)).isEqualByComparingTo("125");
-                    assertThat(payment.purchaseQuotaFacts(9L, month.fromOrderStorage(), month.untilOrderStorage()).monthlyVolumeUsd()).isEqualByComparingTo("40");
-                    assertThat(storefront.purchaseQuotaMonthlyVolume(9L)).isEqualByComparingTo("40");
-                    assertThat(payment.purchaseQuotaFacts(99L, month.fromOrderStorage(), month.untilOrderStorage()).monthlyVolumeUsd()).isEqualByComparingTo("0");
-                    assertThat(storefront.purchaseQuotaMonthlyVolume(99L)).isEqualByComparingTo("0");
+                    assertThat(storefront.purchaseQuotaMonthlyComputePoints(1L)).isEqualByComparingTo("125");
+                    assertThat(payment.purchaseQuotaFacts(9L, month.fromOrderStorage(), month.untilOrderStorage()).monthlyComputePoints()).isEqualByComparingTo("40");
+                    assertThat(storefront.purchaseQuotaMonthlyComputePoints(9L)).isEqualByComparingTo("40");
+                    assertThat(payment.purchaseQuotaFacts(99L, month.fromOrderStorage(), month.untilOrderStorage()).monthlyComputePoints()).isEqualByComparingTo("0");
+                    assertThat(storefront.purchaseQuotaMonthlyComputePoints(99L)).isEqualByComparingTo("0");
                     var quota = storefront.purchaseHardwareQuotas("stellarbox-pro").get(0);
                     assertThat(quota.quotaCode()).isEqualTo("PRO");
                     assertThat(quota.directRefs()).isEqualTo(2);
-                    assertThat(quota.monthVolumeUsd()).isEqualByComparingTo("1000");
+                    assertThat(quota.monthComputePoints()).isEqualByComparingTo("1000");
                     assertThat(quota.monthlyQuota()).isEqualTo(10);
                     assertThat(quota.usedThisMonth()).isEqualTo(3L);
                     assertThat(quota.unlockMode()).isEqualTo("ALL");
@@ -61,7 +61,7 @@ class HardwareQuotaMemberIsolationMySqlTest {
                             session.getMapper(ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.class),
                             session.getMapper(ffdd.opsconsole.device.mapper.AppTradeinMapper.class));
                     for (var settlementMapper : settlementMappers) {
-                        assertThat(settlementMapper.hardwarePurchaseFacts(1L, month.fromOrderStorage(), month.untilOrderStorage()).monthlyVolumeUsd()).isEqualByComparingTo("125");
+                        assertThat(settlementMapper.hardwarePurchaseFacts(1L, month.fromOrderStorage(), month.untilOrderStorage()).monthlyComputePoints()).isEqualByComparingTo("125");
                         assertThat(settlementMapper.hardwarePurchaseFacts(1L, month.fromOrderStorage(), month.untilOrderStorage()).activeDirect()).isEqualTo(1L);
                         assertThat(settlementMapper.lockHardwarePurchaseTiers("stellarbox-pro")).hasSize(1);
                         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
@@ -70,7 +70,7 @@ class HardwareQuotaMemberIsolationMySqlTest {
                                 .hasMessage("ORDER_MONTHLY_QUOTA_REQUIREMENTS_NOT_MET");
                     }
                     try (var update = connection.createStatement()) {
-                        update.execute("UPDATE nx_team_hardware_quota_tier SET direct_refs=0,month_volume_usd=0");
+                        update.execute("UPDATE nx_team_hardware_quota_tier SET direct_refs=0,month_compute_points=0");
                     }
                     session.clearCache();
                     for (var settlementMapper : settlementMappers) {
@@ -105,7 +105,7 @@ class HardwareQuotaMemberIsolationMySqlTest {
             sql.execute("CREATE TABLE nx_user (id BIGINT PRIMARY KEY,sponsor_user_id BIGINT,sandbox INT,status VARCHAR(32),is_deleted INT)");
             sql.execute("CREATE TABLE nx_team_member (user_id BIGINT,member_user_id BIGINT,level INT,is_deleted INT)");
             sql.execute("CREATE TABLE nx_order (user_id BIGINT,subtotal_usdt DECIMAL(20,6),payment_status VARCHAR(32),order_status VARCHAR(32),paid_at DATETIME,created_at DATETIME,is_deleted INT)");
-            sql.execute("CREATE TABLE nx_team_hardware_quota_tier (id BIGINT,product_no VARCHAR(64),quota_code VARCHAR(32),direct_refs INT,month_volume_usd DECIMAL(20,6),monthly_quota INT,unlock_mode VARCHAR(32),status INT,is_deleted INT)");
+            sql.execute("CREATE TABLE nx_team_hardware_quota_tier (id BIGINT,product_no VARCHAR(64),quota_code VARCHAR(32),direct_refs INT,month_compute_points DECIMAL(20,6),monthly_quota INT,unlock_mode VARCHAR(32),status INT,is_deleted INT)");
             sql.execute("CREATE TABLE nx_team_hardware_quota_usage (id BIGINT AUTO_INCREMENT PRIMARY KEY,quota_tier_id BIGINT,quantity INT,status VARCHAR(32),occurred_at DATETIME,is_deleted INT DEFAULT 0,quota_code VARCHAR(32),product_no VARCHAR(64),user_id BIGINT,order_no VARCHAR(64),usage_type VARCHAR(16),remark VARCHAR(128))");
             sql.execute("INSERT INTO nx_team_hardware_quota_tier VALUES (1,'stellarbox-pro','PRO',2,1000,10,'ALL',1,0)");
             sql.execute("INSERT INTO nx_team_hardware_quota_usage (quota_tier_id,quantity,status,occurred_at,is_deleted) VALUES (1,3,'ACTIVE',UTC_TIMESTAMP(),0),(1,8,'CANCELLED',UTC_TIMESTAMP(),0),(1,6,'ACTIVE',UTC_TIMESTAMP(),1),(1,7,'ACTIVE',DATE_SUB(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 1 DAY),0)");

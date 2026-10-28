@@ -3,7 +3,6 @@ package ffdd.opsconsole.team.infrastructure;
 import ffdd.opsconsole.team.domain.VRankEvaluationSnapshot;
 import ffdd.opsconsole.team.domain.VRankPerformanceRepository;
 import ffdd.opsconsole.team.mapper.VRankPerformanceMapper;
-import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -26,10 +25,10 @@ public class MybatisVRankPerformanceRepository implements VRankPerformanceReposi
         if (userId == null) {
             return VRankEvaluationSnapshot.empty();
         }
-        BigDecimal selfBuy = nullSafe(mapper.selfBuyUSD(userId));
-        BigDecimal teamVolume = nullSafe(mapper.teamVolumeUSD(userId));
-        BigDecimal v1Threshold = nullSafe(mapper.v1SelfBuyThreshold());
-        int directRefs = mapper.directRefsCount(userId, v1Threshold);
+        long selfPoints = mapper.selfComputePoints(userId);
+        long teamPoints = mapper.teamComputePoints(userId);
+        Long v1Threshold = mapper.v1SelfComputePoints();
+        int directRefs = mapper.directRefsCount(userId, v1Threshold == null ? 0L : v1Threshold);
         Map<Integer, Integer> legCounts = new LinkedHashMap<>();
         for (Map<String, Object> row : mapper.legCountsByLevel(userId)) {
             Integer level = integerOf(row.get("vLevel"));
@@ -38,11 +37,7 @@ public class MybatisVRankPerformanceRepository implements VRankPerformanceReposi
                 legCounts.merge(level, count, Integer::sum);
             }
         }
-        return new VRankEvaluationSnapshot(selfBuy, teamVolume, directRefs, legCounts);
-    }
-
-    private static BigDecimal nullSafe(BigDecimal value) {
-        return value == null ? BigDecimal.ZERO : value;
+        return new VRankEvaluationSnapshot(selfPoints, teamPoints, directRefs, legCounts);
     }
 
     private static Integer integerOf(Object raw) {

@@ -21,13 +21,13 @@ class AppTeamNetworkServiceTest {
         when(mapper.userScope(7L)).thenReturn(new AppTeamNetworkMapper.UserScope(0));
         when(mapper.membersPage(7L, 0L, 501)).thenReturn(List.of(new AppTeamNetworkMapper.MemberRow(
                 42L, "Member 42", null, "V1", 1, "A", 7L, LocalDateTime.of(2026, 8, 13, 0, 0),
-                new BigDecimal("12.5"), new BigDecimal("20"), "ACTIVE", "SG")));
+                125L, 200L, "ACTIVE", "SG")));
         var result = new AppTeamNetworkService(mapper, new MockEnvironment()).snapshot(7L);
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("totalMembers", 1).containsEntry("directMembers", 1)
                 .containsEntry("source", "server").containsEntry("sourceEnvironment", "PRODUCTION")
                 .containsEntry("runId", "").containsEntry("serverCanonical", true)
-                .containsEntry("lifetimeVolumeUsdt", null);
+                .containsEntry("monthComputePoints", 125L).containsEntry("lifetimeComputePoints", 200L);
         assertThat(result.getData().get("members").toString()).doesNotContain("sponsorId");
     }
 
@@ -156,7 +156,7 @@ class AppTeamNetworkServiceTest {
         return IntStream.range(startInclusive, startInclusive + count).mapToObj(index ->
                 new AppTeamNetworkMapper.MemberRow((long) index, "Member " + index, null, "V1", 1,
                         index % 2 == 0 ? "A" : "B", 7L, LocalDateTime.of(2026, 8, 13, 0, 0),
-                        BigDecimal.ZERO, null, "ACTIVE", "SG")).toList();
+                        0L, null, "ACTIVE", "SG")).toList();
     }
 
     private MockEnvironment developmentEnvironment() {

@@ -62,7 +62,7 @@ public class AppTeamQuotaService {
         factMap.put("directRefs", Math.max(0, facts.directRefs()));
         factMap.put("directInvites", Math.max(0, mapper.directInvites(userId)));
         factMap.put("activeDirect", Math.max(0, mapper.activeDirect(userId)));
-        factMap.put("teamVolumeUSD", nonNegative(facts.teamVolumeUSD()));
+        factMap.put("teamComputePoints", nonNegative(mapper.monthlyTeamComputePoints(userId)));
         List<Map<String, Object>> tiers = new ArrayList<>();
         for (AppTeamQuotaMapper.QuotaRow row : rows) {
             Map<String, Object> product = productsById.get(row.productNo());
@@ -78,8 +78,8 @@ public class AppTeamQuotaService {
                 // V-Rank directRefs 是“达到 V1 自购门槛的直推分支数”，不能混用。
                 conditions.add(condition("directRefs", row.directRefs(), factMap.get("activeDirect")));
             }
-            if (row.monthVolumeUsd() != null && row.monthVolumeUsd().signum() > 0) {
-                conditions.add(condition("teamVolume", row.monthVolumeUsd(), factMap.get("teamVolumeUSD")));
+            if (row.monthComputePoints() != null && row.monthComputePoints().signum() > 0) {
+                conditions.add(condition("teamComputePoints", row.monthComputePoints(), factMap.get("teamComputePoints")));
             }
             tier.put("conditions", conditions); tier.put("perks", perks(product));
             tier.put("available", Boolean.TRUE.equals(product.get("available")));

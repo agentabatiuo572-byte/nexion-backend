@@ -149,10 +149,12 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
 
     @Insert("""
             INSERT INTO nx_order(user_id,order_no,product_id,quantity,order_type,item_count,
-              subtotal_usdt,discount_usdt,amount_usdt,payment_status,order_status,activation_status,
+              subtotal_usdt,discount_usdt,amount_usdt,compute_points,payment_status,order_status,activation_status,
               paid_at,created_at,updated_at,is_deleted)
             VALUES(#{userId},#{orderNo},#{productId},1,'TRIAL_CONVERT',1,
-              #{subtotalUsdt},#{discountUsdt},#{amountUsdt},'PAID','COMPLETED','ACTIVATED',NOW(6),NOW(),NOW(),0)
+              #{subtotalUsdt},#{discountUsdt},#{amountUsdt},
+              (SELECT compute_points FROM nx_product WHERE id=#{productId}),
+              'PAID','COMPLETED','ACTIVATED',NOW(6),NOW(),NOW(),0)
             """)
     int insertConversionOrder(@Param("userId") Long userId, @Param("orderNo") String orderNo,
                               @Param("productId") Long productId, @Param("subtotalUsdt") BigDecimal subtotalUsdt,

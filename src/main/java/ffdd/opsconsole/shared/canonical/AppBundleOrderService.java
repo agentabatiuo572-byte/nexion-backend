@@ -338,6 +338,7 @@ public class AppBundleOrderService {
                 throw new BizException(409, "BUNDLE_ORDER_ITEM_CREATE_CONFLICT");
             }
         }
+        if (mapper.snapshotBundleComputePoints(orderNo) != 1) throw new BizException(409, "BUNDLE_ORDER_CREATE_CONFLICT");
         outbox.publishUserEvent("ORDER", orderNo, "checkout.started", userId,
                 normalizePhase(attribution.phase()), attribution.accountAgeMonths(), attribution.cohort(),
                 linked("userId", userId, "orderId", orderNo, "productId", products.get(0).id(),
@@ -362,7 +363,7 @@ public class AppBundleOrderService {
             return new StorefrontPurchaseGatePolicy.Facts(
                     facts.rank() == null ? 0 : facts.rank(),
                     facts.activeDirect() == null ? 0 : facts.activeDirect(),
-                    facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd());
+                    facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints());
         } catch (IllegalArgumentException ex) {
             return null;
         }

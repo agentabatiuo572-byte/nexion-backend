@@ -36,7 +36,7 @@ class CanonicalStateMapperHardwareQuotaMySqlTest {
     void mapsDecimalNullableAndDisabledRulesWithHalfOpenUtcMonthUsage() throws Exception {
         inSchema((jdbc, configuration) -> {
             jdbc.execute("CREATE TABLE nx_team_hardware_quota_tier(id BIGINT PRIMARY KEY,quota_code VARCHAR(64),"
-                    + "product_no VARCHAR(64),direct_refs INT,month_volume_usd DECIMAL(20,6),monthly_quota INT,"
+                    + "product_no VARCHAR(64),direct_refs INT,month_compute_points DECIMAL(20,6),monthly_quota INT,"
                     + "unlock_mode VARCHAR(16),status INT,is_deleted TINYINT) ENGINE=InnoDB");
             jdbc.execute("CREATE TABLE nx_team_hardware_quota_usage(id BIGINT PRIMARY KEY,quota_tier_id BIGINT,"
                     + "quantity INT,occurred_at DATETIME,status VARCHAR(20),is_deleted TINYINT) ENGINE=InnoDB");
@@ -64,14 +64,14 @@ class CanonicalStateMapperHardwareQuotaMySqlTest {
                         .containsExactly("EXACT", "NULLABLE", "NO-USAGE");
                 var exact = rows.get(0);
                 assertThat(exact.directRefs()).isEqualTo(3);
-                assertThat(exact.monthVolumeUsd()).isEqualByComparingTo("725.123456");
+                assertThat(exact.monthComputePoints()).isEqualByComparingTo("725.123456");
                 assertThat(exact.monthlyQuota()).isEqualTo(7);
                 assertThat(exact.usedThisMonth()).isEqualTo(5L);
                 assertThat(exact.unlockMode()).isEqualTo("EITHER");
                 assertThat(exact.status()).isEqualTo(1);
                 var nullable = rows.get(1);
                 assertThat(nullable.directRefs()).isNull();
-                assertThat(nullable.monthVolumeUsd()).isNull();
+                assertThat(nullable.monthComputePoints()).isNull();
                 assertThat(nullable.monthlyQuota()).isNull();
                 assertThat(nullable.usedThisMonth()).isZero();
                 assertThat(nullable.status()).isZero();
