@@ -157,6 +157,34 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void businessCalendarReadNeedsOnlyASignedInAdminWhileChangesKeepPlatformGrants() throws Exception {
+        authenticateTrustedAdmin("2792", "service_m1_read");
+        AtomicBoolean read = new AtomicBoolean(false);
+        filter.doFilter(request("GET", "/api/admin/platform/business-calendar"), new MockHttpServletResponse(), mark(read));
+        assertThat(read).isTrue();
+        for (String[] write : List.of(new String[] {"PUT", "/api/admin/platform/business-calendar"},
+                new String[] {"POST", "/api/admin/platform/business-calendar/cancel"})) {
+            AtomicBoolean denied = new AtomicBoolean(false);
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(request(write[0], write[1]), response, mark(denied));
+            assertThat(denied).isFalse();assertThat(response.getStatus()).isEqualTo(403);
+            assertThat(response.getContentAsString()).contains("ADMIN_PERMISSION_DENIED");
+        }
+        authenticate("service_m1_read");
+        ((UsernamePasswordAuthenticationToken) SecurityContextHolder.getContext().getAuthentication())
+                .setDetails(java.util.Map.of("subjectType", "USER"));
+        AtomicBoolean user = new AtomicBoolean(false);
+        MockHttpServletResponse userResponse = new MockHttpServletResponse();
+        filter.doFilter(request("GET", "/api/admin/platform/business-calendar"), userResponse, mark(user));
+        assertThat(user).isFalse();assertThat(userResponse.getContentAsString()).contains("ADMIN_SUBJECT_REQUIRED");
+        SecurityContextHolder.clearContext();
+        AtomicBoolean anonymous = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        filter.doFilter(request("GET", "/api/admin/platform/business-calendar"), response, mark(anonymous));
+        assertThat(anonymous).isFalse();assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
     void sharedReasonPolicyRejectsUserAndMissingSubjectEvenWithAnAuthority() throws Exception {
         for (String subject : List.of("USER", "MISSING")) {
             authenticate("growth_promotion_edit");
