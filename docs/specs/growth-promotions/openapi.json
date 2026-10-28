@@ -2663,7 +2663,7 @@
               "enum": [
                 "DEVICE",
                 "USDT",
-                "NEX"
+                "UVT"
               ]
             }
           }
@@ -4047,7 +4047,7 @@
                 "type": "string",
                 "enum": [
                   "USDT",
-                  "NEX"
+                  "UVT"
                 ]
               },
               "nativeContract": {
@@ -4541,7 +4541,7 @@
                 "type": "string",
                 "enum": [
                   "USDT",
-                  "NEX"
+                  "UVT"
                 ]
               },
               "calculation": {
@@ -4659,7 +4659,7 @@
                 "type": "string",
                 "enum": [
                   "USDT",
-                  "NEX",
+                  "UVT",
                   "DISCOUNT_USDT"
                 ]
               },
@@ -6649,7 +6649,7 @@
             "type": "string",
             "enum": [
               "USDT",
-              "NEX",
+              "UVT",
               "DEVICE",
               "DISCOUNT_USDT"
             ]
@@ -6706,7 +6706,7 @@
             "type": "string",
             "enum": [
               "USDT",
-              "NEX"
+              "UVT"
             ]
           },
           "issued": {
@@ -7306,7 +7306,7 @@
                   "type": "string",
                   "enum": [
                     "USDT",
-                    "NEX"
+                    "UVT"
                   ]
                 },
                 "scale": {
@@ -7917,7 +7917,7 @@
                 "type": "string",
                 "enum": [
                   "USDT",
-                  "NEX"
+                  "UVT"
                 ]
               },
               "calculation": {
@@ -8498,7 +8498,7 @@
                 "type": "string",
                 "enum": [
                   "USDT",
-                  "NEX"
+                  "UVT"
                 ]
               },
               "calculation": {
@@ -8687,7 +8687,7 @@
                 "type": "string",
                 "enum": [
                   "USDT",
-                  "NEX",
+                  "UVT",
                   "DISCOUNT_USDT"
                 ]
               },
@@ -9094,7 +9094,7 @@
                       "enum": [
                         "DEVICE",
                         "USDT",
-                        "NEX"
+                        "UVT"
                       ]
                     },
                     "reasonCode": {
@@ -9615,7 +9615,7 @@
             "type": "string",
             "enum": [
               "USDT",
-              "NEX",
+              "UVT",
               "DEVICE",
               "DISCOUNT_USDT"
             ]
@@ -9945,7 +9945,7 @@
             "type": "string",
             "enum": [
               "USDT",
-              "NEX",
+              "UVT",
               "DEVICE",
               "DISCOUNT_USDT"
             ]
@@ -10250,7 +10250,7 @@
                 "enum": [
                   "DEVICE",
                   "USDT",
-                  "NEX"
+                  "UVT"
                 ]
               },
               {
@@ -10431,7 +10431,7 @@
             "enum": [
               "DEVICE",
               "USDT",
-              "NEX"
+              "UVT"
             ]
           },
           "giftProductNo": {
@@ -10629,7 +10629,7 @@
               "string",
               "null"
             ],
-            "description": "DEVICE model name from the original approved E1 product contract evidence. Null for USDT/NEX; never resolved from the current store catalog."
+            "description": "DEVICE model name from the original approved E1 product contract evidence. Null for USDT/UVT; never resolved from the current store catalog."
           }
         },
         "required": [

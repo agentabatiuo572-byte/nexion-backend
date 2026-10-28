@@ -33,6 +33,7 @@ class F5CommissionKeySplitMigrationContractTest {
     @Test
     void splitOnlyTouchesRbacTablesAndGrantsTheAgreedMatrix() throws Exception {
         String sql = Files.readString(Path.of("scripts/migrations", MIGRATION), StandardCharsets.UTF_8)
+                .replace("\r\n", "\n")
                 .replaceAll("(?m)--[^\\r\\n]*", "");
         String upper = sql.toUpperCase(Locale.ROOT);
         assertThat(upper).doesNotContain("DROP ", "TRUNCATE ", "ALTER ", "NX_COMMISSION", "NX_WALLET");

@@ -2,6 +2,8 @@ package ffdd.opsconsole.bi.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ffdd.opsconsole.shared.config.BusinessCalendar;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -67,7 +69,8 @@ class B3FunnelAnalyticsTest {
 
     @Test
     void restoresEightDailyFirstPurchasePointsTargetAndChannelAttribution() {
-        LocalDateTime today = LocalDateTime.now().withHour(8).withMinute(0).withSecond(0).withNano(0);
+        LocalDateTime today = BusinessCalendar.legacy()
+                .storageStart(BusinessCalendar.legacy().dateAt(Instant.now())).plusHours(8);
         Map<String, Object> result = B3FunnelAnalytics.calculate(List.of(
                 event("auth.register_completed", "buyer", today, "P3", "partner-a"),
                 event("checkout.completed", "buyer", today.plusHours(1), "P3", "partner-a"),

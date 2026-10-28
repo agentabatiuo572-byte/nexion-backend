@@ -21,6 +21,13 @@ class PromotionContractValidatorTest {
         validator.validate("Amount","1.250000");
         for(Object value:List.of(1.25,"1.0000001","-1","1e2","NaN"))assertThrows(BizException.class,()->validator.validate("Amount",value));
     }
+    @Test void assetRewardsRequireUvTWhileHistoricalPolicyIdsRemainOpaque(){
+        var reward=values("type","UVT","amount","1.000000","assetPolicy",
+                values("policyId","fixture-NEX","version",1,"contentHash","a".repeat(64)));
+        validator.validate("RewardSpec",reward);
+        reward.put("type","NEX");
+        assertThrows(BizException.class,()->validator.validate("RewardSpec",reward));
+    }
     @Test void quoteRequiresCapabilitiesAndRejectsUnknownFields(){
         var request=values("items",List.of(values("productNo","P1","quantity",2)),"clientCapabilities",List.of("PROMOTION_QUOTE_V1","ORDER_ITEM_QUANTITIES_V1","PROMOTION_REWARDS_V1"));
         validator.validate("QuoteInput",request);
