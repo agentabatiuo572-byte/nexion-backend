@@ -112,8 +112,23 @@ class AdminRbacPhoneCalibrationTest {
                 .getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAuthority('device_e6_read')");
         assertThat(PhoneCalibrationAdminController.class.getDeclaredMethod("iosModelPresets")
                 .getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAuthority('device_e6_read')");
-        assertThat(Arrays.stream(PhoneCalibrationAdminController.class.getDeclaredMethods()).map(method -> method.getName()))
-                .containsExactlyInAnyOrder("read", "preview", "iosModelPresets");
+        // Model risk settings are saved directly by E6 writers; the calibration rules still publish only through A2.
+        assertThat(PhoneCalibrationAdminController.class.getDeclaredMethod("risk")
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAuthority('device_e6_read')");
+        assertThat(PhoneCalibrationAdminController.class.getDeclaredMethod("updateRisk", String.class,
+                ffdd.opsconsole.onboarding.application.PhoneModelRiskAdminService.Update.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAuthority('device_e6_write')");
+        assertThat(Arrays.stream(PhoneCalibrationAdminController.class.getDeclaredMethods()).map(method -> method.getName())
+                .filter(name -> !name.startsWith("lambda$")))
+                .containsExactlyInAnyOrder("read", "preview", "iosModelPresets", "risk", "updateRisk");
+    }
+
+    @Test
+    void riskSettingsNeedE6ReadToViewAndE6WriteToSave() throws Exception {
+        authenticate("device_e2_read");
+        assertRequest("GET", ROOT + "/risk", 403, "ADMIN_PERMISSION_DENIED");
+        authenticate("device_e6_read");
+        assertRequest("PUT", ROOT + "/risk", 403, "ADMIN_PERMISSION_DENIED");
     }
 
     private void authenticate(String... authorities) {
