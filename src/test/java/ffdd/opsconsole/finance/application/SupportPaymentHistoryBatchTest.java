@@ -36,6 +36,7 @@ class SupportPaymentHistoryBatchTest {
     private final List<Map<String,Object>> ledgers=new ArrayList<>();
     private final List<Envelope> captures=new ArrayList<>();
     private final Map<String,Integer> calls=new HashMap<>();
+    private boolean legacyProviderFixture;
     private final Set<Source> failedRoots=EnumSet.noneOf(Source.class),failedProjections=EnumSet.noneOf(Source.class);
     private final Set<SupportPaymentSourceMapper.Marker> failedMarkers=EnumSet.noneOf(SupportPaymentSourceMapper.Marker.class);
     private final SupportPaymentSourceMapper mapper=mock(SupportPaymentSourceMapper.class,inv->{
@@ -97,7 +98,11 @@ class SupportPaymentHistoryBatchTest {
         assertFalse(FrozenPreBatchPaymentSourceService74f.class.isAnnotationPresent(ffdd.opsconsole.common.boundary.ApplicationService.class));
         assertTrue(FrozenPreBatchPaymentSourceService74f.class.getProtectionDomain().getCodeSource().getLocation().toString().endsWith("/test-classes/"));
     }
-    private Snapshot read(boolean perItemReference) throws Exception{return service(perItemReference).readHistory(List.of(7L));}
+    private Snapshot read(boolean perItemReference) throws Exception {
+        // Keep the byte-frozen oracle unchanged; give each version its own equivalent wire symbol.
+        legacyProviderFixture=perItemReference;
+        return service(perItemReference).readHistory(List.of(7L));
+    }
     private void equivalent(SupportPaymentBatchCoverageExpectations coverage) throws Exception {
         var expected=read(true);var actual=read(false);
         assertEquals(expected.facts(),actual.facts());
@@ -259,7 +264,10 @@ class SupportPaymentHistoryBatchTest {
         return markers.getOrDefault(marker,List.of()).stream().filter(r->refs.stream().anyMatch(ref->switch(marker){
             case CREGIS_EVENT->Objects.equals(ref.get("projectId"),r.get("projectId"))&&Objects.equals(ref.get("cid"),r.get("cid"));
             case DEVICE->Objects.equals(ref.get("id"),r.get("id"));case PAYMENT->Objects.equals(ref.get("key"),r.get("orderNo"));
-            default->Objects.equals(ref.get("key"),r.get("businessId"));})).toList();
+            default->Objects.equals(ref.get("key"),r.get("businessId"));})).map(r->{
+                if(!legacyProviderFixture||!"UVEL_WALLET".equals(r.get("provider")))return r;
+                var legacy=new LinkedHashMap<String,Object>(r);legacy.put("provider","NEXGRID_WALLET");return legacy;
+            }).toList();
     }
     private void add(Source source,long index) throws Exception {
         if(source==Source.ORDER_REFUND)add(Source.WALLET_ORDER,index);
@@ -283,7 +291,7 @@ class SupportPaymentHistoryBatchTest {
         var marker=new HashMap<String,Object>(root);marker.put("businessId",source==Source.VIETQR||source==Source.HDPAY?"intent-"+index:key);
         SupportPaymentSourceMapper.Marker markerType=switch(source){case DEPOSIT_ORDER->SupportPaymentSourceMapper.Marker.CREGIS_EVENT;case CARD_TOPUP->SupportPaymentSourceMapper.Marker.CARD_SETTLEMENT;case VIETQR,HDPAY->SupportPaymentSourceMapper.Marker.INTENT;case WALLET_ORDER->SupportPaymentSourceMapper.Marker.PAYMENT;case TRIAL_CONVERT->SupportPaymentSourceMapper.Marker.DEVICE;default->null;};
         marker.put("projectId",100L);marker.put("cid",index);marker.put("target","WALLET_TOPUP");marker.put("rail",source==Source.HDPAY?"HDPAY":"MANUAL");
-        if(source==Source.CARD_TOPUP)marker.put("status","SETTLED");if(source==Source.WALLET_ORDER){marker.put("provider","NEXGRID_WALLET");marker.put("businessId","pay-"+index);marker.put("status","PAID");}
+        if(source==Source.CARD_TOPUP)marker.put("status","SETTLED");if(source==Source.WALLET_ORDER){marker.put("provider","UVEL_WALLET");marker.put("businessId","pay-"+index);marker.put("status","PAID");}
         if(markerType!=null)markers.computeIfAbsent(markerType,m->new ArrayList<>()).add(marker);
         var ledger=new HashMap<String,Object>();for(var pair:Map.of("id","ledgerId","customerId","ledgerCustomerId","businessId","ledgerBusinessId","ledgerType","ledgerType","currency","ledgerCurrency","amount","ledgerAmount","direction","ledgerDirection","status","ledgerStatus","deleted","ledgerDeleted","successAt","ledgerRecordedAt").entrySet())ledger.put(pair.getKey(),row.get(pair.getValue()));ledgers.add(ledger);
         captures.add(envelope(row,source==Source.DEPOSIT_ORDER?"100":source==Source.VIETQR?"intent-"+index:null));

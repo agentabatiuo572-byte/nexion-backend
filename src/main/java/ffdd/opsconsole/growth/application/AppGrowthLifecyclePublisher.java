@@ -80,7 +80,7 @@ public class AppGrowthLifecyclePublisher {
         Map<String, Object> detail = linked(
                 "trigger", "MANUAL", "result", normalize(outcome),
                 "amountUsdt", nonNegative(amountUsdt), "reason", normalize(reason),
-                "paymentRail", "NEXION_USDT_WALLET");
+                "paymentRail", "UVEL_USDT_WALLET");
         audit("H2_TRIAL_CHARGE_ATTEMPTED", "TRIAL_CLAIM", claimNo, claimNo, userId, detail);
         publish("TRIAL_CLAIM", claimNo, "trial.charge_attempted", userId, attribution, detail);
     }

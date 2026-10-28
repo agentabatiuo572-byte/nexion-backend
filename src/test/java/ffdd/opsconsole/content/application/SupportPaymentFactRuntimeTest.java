@@ -80,7 +80,7 @@ class SupportPaymentFactRuntimeTest {
         isolatedFixture("device-paid-free-trial",users->{
             long customer=user(users);String bundle=prefix+"bundle";
             order(customer,bundle,"BUNDLE","80",SETTLED);ledger(customer,bundle,"ORDER_PURCHASE","USDT","OUT","SUCCESS","80",SETTLED);
-            payment(customer,prefix+"pay",bundle,"NEXGRID_WALLET","80","PAID",null,SETTLED);
+            payment(customer,prefix+"pay",bundle,"UVEL_WALLET","80","PAID",null,SETTLED);
             jdbc.update("UPDATE nx_order SET payment_no=? WHERE order_no=?",prefix+"pay",bundle);
             for(int i=0;i<3;i++) device(customer,bundle,"ORDER",0);
             for(int i=0;i<2;i++) jdbc.update("INSERT INTO nx_order_item(order_no,product_id,product_name,quantity,unit_price_usdt,line_amount_usdt) VALUES(?,42,'fixture',2,40,80)",bundle);
@@ -117,11 +117,11 @@ class SupportPaymentFactRuntimeTest {
             ledger(customer,prefix+"orphan:CHARGE","TRIAL_CHARGE","USDT","OUT","POSTED","14",SETTLED);
             String drift=prefix+"drift";order(customer,drift,"SINGLE","16",SETTLED.plusDays(3));
             ledger(customer,drift,"ORDER_PURCHASE","USDT","OUT","SUCCESS","16",SETTLED);
-            payment(customer,prefix+"driftpay",drift,"NEXGRID_WALLET","16","PAID",null,SETTLED);
+            payment(customer,prefix+"driftpay",drift,"UVEL_WALLET","16","PAID",null,SETTLED);
             jdbc.update("UPDATE nx_order SET payment_no=? WHERE order_no=?",prefix+"driftpay",drift);
             String confirm=prefix+"confirm";order(customer,confirm,"SINGLE","17",SETTLED);
             ledger(customer,confirm,"ORDER_PURCHASE","USDT","OUT","SUCCESS","17",SETTLED);
-            payment(customer,prefix+"confirmpay",confirm,"NEXGRID_WALLET","17","PAID",null,SETTLED.minusDays(2));
+            payment(customer,prefix+"confirmpay",confirm,"UVEL_WALLET","17","PAID",null,SETTLED.minusDays(2));
             jdbc.update("UPDATE nx_order SET payment_no=? WHERE order_no=?",prefix+"confirmpay",confirm);
             long trialCustomer=user(users);String trial=prefix+"drifttrial",claim=prefix+"driftclaim";
             order(trialCustomer,trial,"TRIAL_CONVERT","18",SETTLED);long device=device(trialCustomer,trial,"TRIAL",0);

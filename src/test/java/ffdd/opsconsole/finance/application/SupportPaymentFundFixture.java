@@ -86,11 +86,11 @@ final class SupportPaymentFundFixture {
         Map<String,Object> detail;
         if(source.equals("WALLET_ORDER")) {
             audit.put("action","APP_ORDER_WALLET_PAYMENT");audit.put("resourceType","ORDER");audit.put("path","/api/orders/"+order+"/pay");
-            detail=Map.of("canonical",true,"paymentRail","NEXGRID_WALLET","paymentNo",payment.get("paymentNo"),"amountUsdt",payment.get("amount"));
+            detail=Map.of("canonical",true,"paymentRail","UVEL_WALLET","paymentNo",payment.get("paymentNo"),"amountUsdt",payment.get("amount"));
         } else if(source.equals("TRIAL_CONVERT")) {
             String claim=payment.get("businessId").toString().replace(":CHARGE","");audit.put("bizNo",claim);audit.put("resourceId",claim);
             audit.put("action","H2_TRIAL_CONVERTED");audit.put("resourceType","TRIAL_CLAIM");
-            detail=Map.of("sourceEnvironment","PRODUCTION","serverCanonical",true,"runId","","paymentRail","NEXION_USDT_WALLET","orderNo",order,"amountUsdt",payment.get("amount"));
+            detail=Map.of("sourceEnvironment","PRODUCTION","serverCanonical",true,"runId","","paymentRail","UVEL_USDT_WALLET","orderNo",order,"amountUsdt",payment.get("amount"));
         } else if(source.equals("CAPACITY_KEEP")) {
             audit.put("action","USER_CAPACITY_KEEP_PURCHASE_COMPLETED");audit.put("resourceType","DEVICE_ORDER");audit.put("path","/api/app/trade-in/capacity-keep");
             detail=Map.of("decisionSource","server","after",Map.of("orderNo",order,"walletDebitUsdt",payment.get("amount")));

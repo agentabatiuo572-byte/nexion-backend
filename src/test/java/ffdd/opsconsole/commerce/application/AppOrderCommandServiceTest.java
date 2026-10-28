@@ -449,7 +449,9 @@ class AppOrderCommandServiceTest {
                 .containsEntry("source", "server")
                 .containsEntry("sourceEnvironment", "PRODUCTION")
                 .containsEntry("runId", "")
-                .containsEntry("walletBalanceAfterUsdt", new BigDecimal("801.000000"));
+                .containsEntry("walletBalanceAfterUsdt", new BigDecimal("801.000000"))
+                .containsEntry("paymentMethod", "UVEL_WALLET")
+                .containsEntry("paymentNo", "PAY-WALLET-E6DE606A7BC7432988D9726146BB129E");
         verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("1199.000000"), 4L);
         verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), eq(new BigDecimal("1199.000000")), eq(new BigDecimal("801.000000")), eq("UVEL wallet order settlement"));
         verify(mapper).insertDevelopmentDevice(eq("ORD-DEV-1"), eq(7L), startsWith("NEX-ORD-"), eq(0));
@@ -457,7 +459,7 @@ class AppOrderCommandServiceTest {
                 eq("P3"), eq(0), eq("2026-W34"), argThat(payload -> payload instanceof Map<?, ?> map
                         && map.get("deviceId").equals(91L)
                         && map.get("instanceNo").equals("NEX-ORD-INSTANCE")
-                        && map.get("mode").equals("NEXGRID_WALLET")));
+                        && map.get("mode").equals("UVEL_WALLET")));
         verify(outbox).publishUserEvent(eq("ORDER"), eq("ORD-DEV-1"), eq("checkout.completed"), eq(7L),
                 eq("P3"), eq(0), eq("2026-W34"), argThat(payload -> payload instanceof Map<?, ?> map
                         && map.get("order_no").equals("ORD-DEV-1")
@@ -590,7 +592,9 @@ class AppOrderCommandServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("idempotent", true)
-                .containsEntry("walletBalanceAfterUsdt", new BigDecimal("801.000000"));
+                .containsEntry("walletBalanceAfterUsdt", new BigDecimal("801.000000"))
+                .containsEntry("paymentMethod", "UVEL_WALLET")
+                .containsEntry("paymentNo", "PAY-WALLET-AF2D80199A1F88C85A3C8B75AEC54D43");
         verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
         verify(mapper, never()).insertDevelopmentPurchaseLedger(anyString(), anyLong(), any(), any());
         verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());

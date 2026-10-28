@@ -248,7 +248,7 @@ public class OpsNovaService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_TYPE_UNSUPPORTED");
         }
         String expectedTable = sourceTable(source.eventType());
-        if (!"NEXION_CORE".equals(source.sourceSystem()) || !expectedTable.equals(source.sourceTable())) {
+        if (!"UVEL_CORE".equals(source.sourceSystem()) || !expectedTable.equals(source.sourceTable())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_SOURCE_NOT_TRUSTED");
         }
         String authenticatedOperator = operator(operator);
@@ -730,7 +730,7 @@ public class OpsNovaService {
                                          LocalDateTime since, LocalDateTime until) {
         return source != null
                 && eventType.equals(source.eventType())
-                && "NEXION_CORE".equals(source.sourceSystem())
+                && "UVEL_CORE".equals(source.sourceSystem())
                 && table.equals(source.sourceTable())
                 && source.occurredAt() != null
                 && !source.occurredAt().isBefore(since)

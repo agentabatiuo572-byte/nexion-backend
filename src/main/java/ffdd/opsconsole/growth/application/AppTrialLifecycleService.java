@@ -181,7 +181,7 @@ public class AppTrialLifecycleService {
         }
         int seatsAfterClaim = seatsAfterClaimValue;
         String claimNo = "TRIAL-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        String snapshot = "paymentRail=NEXION_USDT_WALLET,productCode=" + productCode
+        String snapshot = "paymentRail=UVEL_USDT_WALLET,productCode=" + productCode
                 + ",trialDays=" + days
                 + ",dailyUsdtSource=" + (productDailyUsdt != null ? "nx_product.estimated_daily_usdt" : "policy.shadowDailyUSD")
                 + ",dailyNexSource=" + (productDailyNex != null ? "nx_product.daily_nex" : "policy.shadowDailyNEX")
@@ -197,7 +197,7 @@ public class AppTrialLifecycleService {
         if (changed != 1) throw new BizException(409, "TRIAL_START_CONFLICT");
         Attribution attr = requireAttribution(userId);
         publish("TRIAL", claimNo, "trial.started", userId, attr, linked(
-                "trial_price_usdt", price, "trial_days", days, "payment_rail", "NEXION_USDT_WALLET"));
+                "trial_price_usdt", price, "trial_days", days, "payment_rail", "UVEL_USDT_WALLET"));
         record("H2_TRIAL_STARTED", claimNo, userId, linked("claimNo", claimNo, "policySnapshot", snapshot));
         Map<String, String> remainingPolicy = new LinkedHashMap<>(policy);
         remainingPolicy.put("seatsLeftToday", Integer.toString(seatsAfterClaim));
@@ -399,7 +399,7 @@ public class AppTrialLifecycleService {
             throw new BizException(409, "TRIAL_DEVICE_CREATE_CONFLICT");
         }
         Long deviceId = mapper.deviceIdByInstanceNo(instanceNo);
-        String snapshot = settlement.snapshot("convert", "NEXION_USDT_WALLET", product.productNo())
+        String snapshot = settlement.snapshot("convert", "UVEL_USDT_WALLET", product.productNo())
                 + ",orderNo=" + orderNo + ",promoDiscountUsdt=" + promoDiscount
                 + ",totalDiscountUsdt=" + discount + ",amountUsdt=" + amount
                 + ",trialDailyUsdt=" + row.dailyUsdt() + ",trialDailyNex=" + row.dailyNex()
@@ -414,7 +414,7 @@ public class AppTrialLifecycleService {
         Attribution attr = requireAttribution(userId);
         Map<String, Object> detail = linked("orderNo", orderNo, "productNo", product.productNo(),
                 "amountUsdt", amount, "discountUsdt", discount, "paymentStatus", "PAID",
-                "orderStatus", "PAID", "paymentRail", "NEXION_USDT_WALLET",
+                "orderStatus", "PAID", "paymentRail", "UVEL_USDT_WALLET",
                 "deviceId", deviceId, "shadowUsdt", settlement.shadowUsdt(),
                 "shadowNex", settlement.shadowNex(), "offsetUsdt", quote.offsetUsdt(),
                 "remainderUsdt", quote.remainderUsdt(), "discountApplied", promoDiscount,
@@ -575,7 +575,7 @@ public class AppTrialLifecycleService {
             Long userId, TrialRow row, String trigger, String result, BigDecimal amount, String reason) {
         Attribution attr = requireAttribution(userId);
         Map<String, Object> detail = linked("trigger", trigger, "result", result,
-                "amount_usdt", amount, "reason", reason, "payment_rail", "NEXION_USDT_WALLET");
+                "amount_usdt", amount, "reason", reason, "payment_rail", "UVEL_USDT_WALLET");
         publish("TRIAL", row.claimNo(), "trial.charge_attempted", userId, attr, detail);
         record("H2_TRIAL_CHARGE_ATTEMPTED", row.claimNo(), userId, detail);
     }
@@ -611,7 +611,7 @@ public class AppTrialLifecycleService {
             result.put("trialGateEnabled", trialGateEnabled);
             result.put("version", 0L);
             putCanonicalProvenance(result, "nx_trial_claim");
-            result.put("paymentRail", "NEXION_USDT_WALLET");
+            result.put("paymentRail", "UVEL_USDT_WALLET");
             result.put("config", safePolicy(policy, configuredProductCode,
                     catalogProduct == null ? null : catalogProduct.name(),
                     catalogProduct == null ? null : catalogProduct.priceUsdt(),
@@ -668,7 +668,7 @@ public class AppTrialLifecycleService {
             // Only full-term conversions take their rewards back on refund (TrialConversionRewardReversal).
             result.put("conversionRewardsReversed", refunded && FULL_TERM_POLICY.equals(snapshotValue(snapshot, "settlementPolicy")));
         }
-        result.put("paymentRail", "NEXION_USDT_WALLET");
+        result.put("paymentRail", "UVEL_USDT_WALLET");
         putCanonicalProvenance(result, "nx_trial_claim + nx_user_wallet");
         boolean frozenProduct = !restartable(effectiveState);
         // 已领取的试用:日收益以**该笔 claim 的快照**为准(row.dailyUsdt/dailyNex),不是当前目录价 ——

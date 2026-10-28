@@ -135,7 +135,7 @@ class NovaSocialRuntimeServiceTest {
     void queuesLocalizedStaticTemplateWithVerifiedEventSummaryAndMarksDispatch() {
         NovaSocialEventView event = new NovaSocialEventView(
                 88L, "withdrawal", "withdrawal:secret", "N***", "H***", "10K–50K UVT", "SUCCESS",
-                "NEXION_CORE", "nx_withdrawal_order", "ACTIVE", now.minusMinutes(2), now.plusHours(2),
+                "UVEL_CORE", "nx_withdrawal_order", "ACTIVE", now.minusMinutes(2), now.plusHours(2),
                 now.minusMinutes(1), null, 0L, now.minusMinutes(1), now.minusMinutes(1));
         when(novaRepository.activeSocialEventsByType("withdrawal", now, 100)).thenReturn(List.of(event));
         when(runtimeRepository.enqueueNotifications(

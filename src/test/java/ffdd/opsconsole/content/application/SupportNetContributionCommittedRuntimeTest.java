@@ -237,7 +237,7 @@ class SupportNetContributionCommittedRuntimeTest extends SupportAnalyticsRuntime
         assertThat(ledger).singleElement().satisfies(row->assertThat(row.get("status")).isEqualTo("SUCCESS"));
         var after=physical("SELECT * FROM nx_user_wallet WHERE user_id=?",customer);
         if(!before.equals(after))assertThat(decimal(after.get(0),"usdt_available")).isEqualByComparingTo(decimal(before.get(0),"usdt_available").subtract(decimal(ledger.get(0),"amount")));
-        assertThat(physical("SELECT * FROM nx_payment_record WHERE user_id=? AND order_no=?",customer,order)).singleElement().satisfies(row->{assertThat(row.get("payment_status")).isEqualTo("PAID");assertThat(row.get("provider")).isEqualTo("NEXGRID_WALLET");});
+        assertThat(physical("SELECT * FROM nx_payment_record WHERE user_id=? AND order_no=?",customer,order)).singleElement().satisfies(row->{assertThat(row.get("payment_status")).isEqualTo("PAID");assertThat(row.get("provider")).isEqualTo("UVEL_WALLET");});
         assertThat(physical("SELECT * FROM nx_event_outbox WHERE aggregate_type='ORDER' AND aggregate_id=? AND event_name='checkout.completed'",order)).hasSize(1);
         var paidOrder=physical("SELECT quantity FROM nx_order WHERE user_id=? AND order_no=?",customer,order);assertThat(paidOrder).hasSize(1);
         assertThat(physical("SELECT * FROM nx_user_device WHERE user_id=? AND source_order_no=?",customer,order)).hasSize(Math.toIntExact(number(paidOrder.get(0),"quantity")));

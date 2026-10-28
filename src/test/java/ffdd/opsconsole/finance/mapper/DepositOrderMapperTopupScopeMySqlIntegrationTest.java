@@ -120,7 +120,7 @@ class DepositOrderMapperTopupScopeMySqlIntegrationTest {
         payment(connection, 3, 7, "PAY-CHARGEBACK", "CARD-CHARGEBACK", "Card", "CHARGEBACK", null, "chargeback");
         payment(connection, 4, 7, "PAY-SETTLED", "CARD-SETTLED", "Card", "CONFIRMED", 2L, null);
         payment(connection, 5, 7, "PAY-GOODS-PAID", "GOODS-PAID", "DEVELOPMENT_SIMULATED", "PAID", null, null);
-        payment(connection, 6, 7, "PAY-GOODS-FAILED", "GOODS-FAILED", "NEXGRID_WALLET", "FAILED", null, "goods failure");
+        payment(connection, 6, 7, "PAY-GOODS-FAILED", "GOODS-FAILED", "UVEL_WALLET", "FAILED", null, "goods failure");
         payment(connection, 7, 7, "PAY-LEDGER", "CARD-LEDGER", "Card", "CONFIRMED", 3L, null);
         payment(connection, 8, 7, "PAY-NOT-TOPUP", "CARD-NOT-TOPUP", "Card", "CONFIRMED", null, null);
         payment(connection, 9, 7, "PAY-FOREIGN-LEDGER", "CARD-FOREIGN-LEDGER", "Card", "CONFIRMED", 4L, null);

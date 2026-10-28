@@ -404,7 +404,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                payment_status,signature_status,raw_callback,paid_at,created_at,updated_at,is_deleted)
             VALUES
               (#{paymentNo},#{orderNo},#{userId},
-               CASE WHEN #{amountUsdt}=0 THEN 'VOUCHER' ELSE 'NEXGRID_WALLET' END,
+               CASE WHEN #{amountUsdt}=0 THEN 'VOUCHER' ELSE 'UVEL_WALLET' END,
                #{paymentNo},#{amountUsdt},'USDT',
                'PAID','NOT_APPLICABLE',
                CASE WHEN #{amountUsdt}=0

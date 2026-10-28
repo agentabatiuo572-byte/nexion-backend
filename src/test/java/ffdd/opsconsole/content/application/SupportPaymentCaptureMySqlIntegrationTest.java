@@ -2376,7 +2376,7 @@ class SupportPaymentCaptureMySqlIntegrationTest {
                 successTimeWrite(f,crossSecond,"UPDATE nx_order SET payment_status='PAID',order_status='PAID',paid_at=/*SOURCE_TIME*/? WHERE order_no=?",0,successAt,f.order);
                 if(f.source==Source.WALLET_ORDER) {
                     f.payment="PAY-"+f.name;
-                    payment(f,"NEXGRID_WALLET","CONFIRMED",f.ledger,crossSecond?databaseLocalDateTime("SELECT NOW(6)"):ledgerAt);
+                    payment(f,"UVEL_WALLET","CONFIRMED",f.ledger,crossSecond?databaseLocalDateTime("SELECT NOW(6)"):ledgerAt);
                     if(crossSecond)jdbc.update("UPDATE nx_payment_record SET paid_at=NOW(6) WHERE payment_no=?",f.payment);
                     jdbc.update("UPDATE nx_order SET payment_no=? WHERE order_no=?",f.payment,f.order);
                 }

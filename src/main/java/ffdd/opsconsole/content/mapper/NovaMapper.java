@@ -876,7 +876,7 @@ public interface NovaMapper extends BaseMapper<Object> {
     @Select("""
             SELECT 'withdrawal' AS eventType,
                    CONCAT('withdrawal:', w.withdrawal_no) AS sourceEventId,
-                   'NEXION_CORE' AS sourceSystem,
+                   'UVEL_CORE' AS sourceSystem,
                    'nx_withdrawal_order' AS sourceTable,
                    COALESCE(u.nickname, '') AS actorName,
                    COALESCE(u.region, '') AS city,
@@ -898,7 +898,7 @@ public interface NovaMapper extends BaseMapper<Object> {
     @Select("""
             SELECT 'vrank' AS eventType,
                    CONCAT('vrank:', l.id) AS sourceEventId,
-                   'NEXION_CORE' AS sourceSystem,
+                   'UVEL_CORE' AS sourceSystem,
                    'nx_user_level_log' AS sourceTable,
                    COALESCE(u.nickname, '') AS actorName,
                    COALESCE(u.region, '') AS city,
@@ -923,7 +923,7 @@ public interface NovaMapper extends BaseMapper<Object> {
               FROM (
                     SELECT 'genesis' AS eventType,
                            CONCAT('genesis:', o.order_no) AS sourceEventId,
-                           'NEXION_CORE' AS sourceSystem, 'nx_genesis_order' AS sourceTable,
+                           'UVEL_CORE' AS sourceSystem, 'nx_genesis_order' AS sourceTable,
                            COALESCE(u.nickname, '') AS actorName, COALESCE(u.region, '') AS city,
                            o.amount_usdt AS amount, 'USDT' AS amountUnit,
                            o.series_code AS sourceNote, o.completed_at AS occurredAt
@@ -933,7 +933,7 @@ public interface NovaMapper extends BaseMapper<Object> {
                        AND o.completed_at >= #{since} AND o.completed_at < #{until}
                     UNION ALL
                     SELECT 'genesis', CONCAT('genesis:', o.order_no),
-                           'NEXION_CORE', 'nx_genesis_order',
+                           'UVEL_CORE', 'nx_genesis_order',
                            COALESCE(u.nickname, ''), COALESCE(u.region, ''),
                            o.amount_usdt, 'USDT', o.series_code, o.paid_at
                       FROM nx_genesis_order o
@@ -950,7 +950,7 @@ public interface NovaMapper extends BaseMapper<Object> {
     @Select("""
             SELECT 'newUsers' AS eventType,
                    CONCAT('newUsers:', DATE_FORMAT(MIN(u.created_at), '%Y%m%d%H')) AS sourceEventId,
-                   'NEXION_CORE' AS sourceSystem,
+                   'UVEL_CORE' AS sourceSystem,
                    'nx_user' AS sourceTable,
                    '' AS actorName,
                    '全网' AS city,
