@@ -30,30 +30,36 @@ UPDATE nx_order o JOIN nx_product p ON p.id = o.product_id
 
 SET @scale_self = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
                 AND TABLE_NAME = 'nx_v_rank_config' AND COLUMN_NAME = 'self_buy_usd');
+-- Scale while the column is still DECIMAL so fractional dollars are not rounded before x10.
+SET @sql = IF(@scale_self = 1, 'UPDATE nx_v_rank_config SET self_buy_usd = self_buy_usd * 10', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF(@scale_self = 1,
   'ALTER TABLE nx_v_rank_config CHANGE COLUMN self_buy_usd self_compute_points BIGINT NOT NULL DEFAULT 0',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-UPDATE nx_v_rank_config SET self_compute_points = self_compute_points * 10 WHERE @scale_self = 1;
 
 SET @scale_team = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
                 AND TABLE_NAME = 'nx_v_rank_config' AND COLUMN_NAME = 'team_volume_usd');
+-- Scale while the column is still DECIMAL so fractional dollars are not rounded before x10.
+SET @sql = IF(@scale_team = 1, 'UPDATE nx_v_rank_config SET team_volume_usd = team_volume_usd * 10', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF(@scale_team = 1,
   'ALTER TABLE nx_v_rank_config CHANGE COLUMN team_volume_usd team_compute_points BIGINT NOT NULL DEFAULT 0',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-UPDATE nx_v_rank_config SET team_compute_points = team_compute_points * 10 WHERE @scale_team = 1;
 
 DELETE FROM nx_v_rank_reward_rule WHERE UPPER(rank_code) IN ('V9','V10','V11','V12');
 DELETE FROM nx_v_rank_config WHERE UPPER(rank_code) IN ('V9','V10','V11','V12');
 
 SET @scale_quota = (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()
                 AND TABLE_NAME = 'nx_team_hardware_quota_tier' AND COLUMN_NAME = 'month_volume_usd');
+-- Scale while the column is still DECIMAL so fractional dollars are not rounded before x10.
+SET @sql = IF(@scale_quota = 1, 'UPDATE nx_team_hardware_quota_tier SET month_volume_usd = month_volume_usd * 10', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF(@scale_quota = 1,
   'ALTER TABLE nx_team_hardware_quota_tier CHANGE COLUMN month_volume_usd month_compute_points BIGINT NOT NULL DEFAULT 0',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-UPDATE nx_team_hardware_quota_tier SET month_compute_points = month_compute_points * 10 WHERE @scale_quota = 1;
 
 UPDATE nx_admin_device_sku
    SET purchase_gate_json = JSON_REMOVE(
