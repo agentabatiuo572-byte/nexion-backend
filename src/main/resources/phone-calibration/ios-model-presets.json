@@ -1,0 +1,626 @@
+{
+ "catalogVersion": "iphone-models-20261028",
+ "verifiedOn": "2026-10-28",
+ "scope": "ALL_SOLD_IPHONES_FROM_IPHONE_6",
+ "matchBy": "MODEL_ONLY",
+ "computeUnit": "platform",
+ "valueSource": "OPERATOR_PRESET",
+ "sources": [
+  "https://support.apple.com/en-us/108044",
+  "https://www.apple.com/shop/buy-iphone",
+  "https://everymac.com/devices/by-identifier/all-iphone-model-identifiers.html"
+ ],
+ "notice": "Operator presets, not Apple specifications or measured performance. Loading the catalog only fills an E6 draft; it takes effect after A2 approval.",
+ "models": [
+  {
+   "id": "ios-iphone-6",
+   "model": "iPhone 6",
+   "aliases": [
+    "iPhone7,2"
+   ],
+   "minComputeValue": 10,
+   "maxComputeValue": 20,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-6-plus",
+   "model": "iPhone 6 Plus",
+   "aliases": [
+    "iPhone7,1"
+   ],
+   "minComputeValue": 12,
+   "maxComputeValue": 22,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-6s",
+   "model": "iPhone 6s",
+   "aliases": [
+    "iPhone8,1"
+   ],
+   "minComputeValue": 15,
+   "maxComputeValue": 25,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-6s-plus",
+   "model": "iPhone 6s Plus",
+   "aliases": [
+    "iPhone8,2"
+   ],
+   "minComputeValue": 16,
+   "maxComputeValue": 26,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-se-1",
+   "model": "iPhone SE (1st generation)",
+   "aliases": [
+    "iPhone8,4"
+   ],
+   "minComputeValue": 15,
+   "maxComputeValue": 25,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-7",
+   "model": "iPhone 7",
+   "aliases": [
+    "iPhone9,1",
+    "iPhone9,3"
+   ],
+   "minComputeValue": 20,
+   "maxComputeValue": 30,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-7-plus",
+   "model": "iPhone 7 Plus",
+   "aliases": [
+    "iPhone9,2",
+    "iPhone9,4"
+   ],
+   "minComputeValue": 22,
+   "maxComputeValue": 32,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-8",
+   "model": "iPhone 8",
+   "aliases": [
+    "iPhone10,1",
+    "iPhone10,4"
+   ],
+   "minComputeValue": 25,
+   "maxComputeValue": 35,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-8-plus",
+   "model": "iPhone 8 Plus",
+   "aliases": [
+    "iPhone10,2",
+    "iPhone10,5"
+   ],
+   "minComputeValue": 27,
+   "maxComputeValue": 37,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-x",
+   "model": "iPhone X",
+   "aliases": [
+    "iPhone10,3",
+    "iPhone10,6"
+   ],
+   "minComputeValue": 30,
+   "maxComputeValue": 40,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-xr",
+   "model": "iPhone XR",
+   "aliases": [
+    "iPhone11,8"
+   ],
+   "minComputeValue": 35,
+   "maxComputeValue": 45,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-xs",
+   "model": "iPhone XS",
+   "aliases": [
+    "iPhone11,2"
+   ],
+   "minComputeValue": 38,
+   "maxComputeValue": 48,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-xs-max",
+   "model": "iPhone XS Max",
+   "aliases": [
+    "iPhone11,6"
+   ],
+   "minComputeValue": 40,
+   "maxComputeValue": 50,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-11",
+   "model": "iPhone 11",
+   "aliases": [
+    "iPhone12,1"
+   ],
+   "minComputeValue": 45,
+   "maxComputeValue": 60,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-11-pro",
+   "model": "iPhone 11 Pro",
+   "aliases": [
+    "iPhone12,3"
+   ],
+   "minComputeValue": 50,
+   "maxComputeValue": 65,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-11-pro-max",
+   "model": "iPhone 11 Pro Max",
+   "aliases": [
+    "iPhone12,5"
+   ],
+   "minComputeValue": 52,
+   "maxComputeValue": 67,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-se-2",
+   "model": "iPhone SE (2nd generation)",
+   "aliases": [
+    "iPhone12,8"
+   ],
+   "minComputeValue": 40,
+   "maxComputeValue": 55,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-12-mini",
+   "model": "iPhone 12 mini",
+   "aliases": [
+    "iPhone13,1"
+   ],
+   "minComputeValue": 55,
+   "maxComputeValue": 70,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-12",
+   "model": "iPhone 12",
+   "aliases": [
+    "iPhone13,2"
+   ],
+   "minComputeValue": 60,
+   "maxComputeValue": 75,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-12-pro",
+   "model": "iPhone 12 Pro",
+   "aliases": [
+    "iPhone13,3"
+   ],
+   "minComputeValue": 65,
+   "maxComputeValue": 80,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-12-pro-max",
+   "model": "iPhone 12 Pro Max",
+   "aliases": [
+    "iPhone13,4"
+   ],
+   "minComputeValue": 68,
+   "maxComputeValue": 83,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-13-mini",
+   "model": "iPhone 13 mini",
+   "aliases": [
+    "iPhone14,4"
+   ],
+   "minComputeValue": 65,
+   "maxComputeValue": 80,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-13",
+   "model": "iPhone 13",
+   "aliases": [
+    "iPhone14,5"
+   ],
+   "minComputeValue": 70,
+   "maxComputeValue": 85,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-13-pro",
+   "model": "iPhone 13 Pro",
+   "aliases": [
+    "iPhone14,2"
+   ],
+   "minComputeValue": 75,
+   "maxComputeValue": 90,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-13-pro-max",
+   "model": "iPhone 13 Pro Max",
+   "aliases": [
+    "iPhone14,3"
+   ],
+   "minComputeValue": 78,
+   "maxComputeValue": 93,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-se-3",
+   "model": "iPhone SE (3rd generation)",
+   "aliases": [
+    "iPhone14,6"
+   ],
+   "minComputeValue": 60,
+   "maxComputeValue": 75,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-14",
+   "model": "iPhone 14",
+   "aliases": [
+    "iPhone14,7"
+   ],
+   "minComputeValue": 75,
+   "maxComputeValue": 90,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-14-plus",
+   "model": "iPhone 14 Plus",
+   "aliases": [
+    "iPhone14,8"
+   ],
+   "minComputeValue": 78,
+   "maxComputeValue": 93,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-14-pro",
+   "model": "iPhone 14 Pro",
+   "aliases": [
+    "iPhone15,2"
+   ],
+   "minComputeValue": 85,
+   "maxComputeValue": 100,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-14-pro-max",
+   "model": "iPhone 14 Pro Max",
+   "aliases": [
+    "iPhone15,3"
+   ],
+   "minComputeValue": 88,
+   "maxComputeValue": 103,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-15",
+   "model": "iPhone 15",
+   "aliases": [
+    "iPhone15,4"
+   ],
+   "minComputeValue": 80,
+   "maxComputeValue": 100,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-15-plus",
+   "model": "iPhone 15 Plus",
+   "aliases": [
+    "iPhone15,5"
+   ],
+   "minComputeValue": 82,
+   "maxComputeValue": 102,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-15-pro",
+   "model": "iPhone 15 Pro",
+   "aliases": [
+    "iPhone16,1"
+   ],
+   "minComputeValue": 90,
+   "maxComputeValue": 110,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-15-pro-max",
+   "model": "iPhone 15 Pro Max",
+   "aliases": [
+    "iPhone16,2"
+   ],
+   "minComputeValue": 95,
+   "maxComputeValue": 115,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-16",
+   "model": "iPhone 16",
+   "aliases": [
+    "iPhone17,3"
+   ],
+   "minComputeValue": 80,
+   "maxComputeValue": 100,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_CURRENT_SNAPSHOT",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-16-plus",
+   "model": "iPhone 16 Plus",
+   "aliases": [
+    "iPhone17,4"
+   ],
+   "minComputeValue": 80,
+   "maxComputeValue": 100,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-16-pro",
+   "model": "iPhone 16 Pro",
+   "aliases": [
+    "iPhone17,1"
+   ],
+   "minComputeValue": 100,
+   "maxComputeValue": 120,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-16-pro-max",
+   "model": "iPhone 16 Pro Max",
+   "aliases": [
+    "iPhone17,2"
+   ],
+   "minComputeValue": 105,
+   "maxComputeValue": 125,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-16e",
+   "model": "iPhone 16e",
+   "aliases": [
+    "iPhone17,5"
+   ],
+   "minComputeValue": 70,
+   "maxComputeValue": 90,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-17",
+   "model": "iPhone 17",
+   "aliases": [
+    "iPhone18,3"
+   ],
+   "minComputeValue": 110,
+   "maxComputeValue": 130,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_CURRENT_SNAPSHOT",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-air",
+   "model": "iPhone Air",
+   "aliases": [
+    "iPhone18,4"
+   ],
+   "minComputeValue": 105,
+   "maxComputeValue": 125,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_CURRENT_SNAPSHOT",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-17-pro",
+   "model": "iPhone 17 Pro",
+   "aliases": [
+    "iPhone18,1"
+   ],
+   "minComputeValue": 120,
+   "maxComputeValue": 140,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-17-pro-max",
+   "model": "iPhone 17 Pro Max",
+   "aliases": [
+    "iPhone18,2"
+   ],
+   "minComputeValue": 125,
+   "maxComputeValue": 145,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_RELEASED_HISTORICAL",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-17e",
+   "model": "iPhone 17e",
+   "aliases": [
+    "iPhone18,5"
+   ],
+   "minComputeValue": 90,
+   "maxComputeValue": 110,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_CURRENT_SNAPSHOT",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+  },
+  {
+   "id": "ios-iphone-18-pro",
+   "model": "iPhone 18 Pro",
+   "aliases": [],
+   "minComputeValue": 140,
+   "maxComputeValue": 160,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_CURRENT_SNAPSHOT",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。硬件标识符尚未经两个来源核验，暂只按机型名匹配。"
+  },
+  {
+   "id": "ios-iphone-18-pro-max",
+   "model": "iPhone 18 Pro Max",
+   "aliases": [],
+   "minComputeValue": 145,
+   "maxComputeValue": 165,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_CURRENT_SNAPSHOT",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。硬件标识符尚未经两个来源核验，暂只按机型名匹配。"
+  },
+  {
+   "id": "ios-iphone-duo",
+   "model": "iPhone Duo",
+   "aliases": [],
+   "minComputeValue": 130,
+   "maxComputeValue": 150,
+   "enabled": true,
+   "valueSource": "OPERATOR_PRESET",
+   "catalogClass": "APPLE_CURRENT_SNAPSHOT",
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。硬件标识符尚未经两个来源核验，暂只按机型名匹配。"
+  }
+ ]
+}
