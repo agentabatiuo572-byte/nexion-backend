@@ -15,7 +15,7 @@
         {
           "id": "overview-detail",
           "title": "等级与奖励",
-          "body": "自购、有效直推、团队业绩和高等级直属共同参与评估。不同等级的权益由当前规则决定，奖励是否到账以实际发放记录为准。",
+          "body": "自购算力点、有效直推、团队算力点和高等级直属共同参与评估。不同等级的权益由当前规则决定，奖励是否到账以实际发放记录为准。",
           "order": 2
         },
         {
@@ -32,20 +32,20 @@
         },
         {
           "id": "requirement-self",
-          "title": "1. 自买金额",
-          "body": "按有效购买累计计算本人自购业绩，退款会相应扣减。以实际计入的订单和金额为准，不把示例或页面显示当作购买事实。",
+          "title": "1. 自购算力点",
+          "body": "每件商品带有固定的算力点，付款确认后计入本人自购算力点，退款会相应扣回。以实际计入的订单为准，不把示例或页面显示当作购买事实。",
           "order": 5
         },
         {
           "id": "requirement-direct",
           "title": "2. 有效直推人数",
-          "body": "直属成员按当前 V1 自购门槛 {referralThreshold} 判定，达到门槛才计入有效直推。目标等级另有所需人数，不能只看团队总人数。",
+          "body": "直属成员按当前 V1 自购算力点门槛 {referralThreshold} 判定，达到门槛才计入有效直推。目标等级另有所需人数，不能只看团队总人数。",
           "order": 6
         },
         {
           "id": "requirement-team",
-          "title": "3. 团队累计业绩",
-          "body": "按团队范围内符合条件的购买业绩累计，并扣除退款。所需业绩随目标等级不同而变化，具体缺口可在等级进度中查看。",
+          "title": "3. 团队算力点",
+          "body": "团队范围内成员付款确认的订单算力点累计计入，并扣除退款。所需算力点随目标等级不同而变化，具体缺口可在等级进度中查看。",
           "order": 7
         },
         {
@@ -111,13 +111,13 @@
         {
           "id": "example-self",
           "title": "阶段 1 — 核对自购",
-          "body": "{toRank} 的自购门槛：{selfBuy}。若本阶没有额外要求，已有低等级门槛仍需由系统核验。",
+          "body": "{toRank} 的自购算力点门槛：{selfComputePoints}。若本阶没有额外要求，已有低等级门槛仍需由系统核验。",
           "order": 18
         },
         {
           "id": "example-team",
           "title": "阶段 2 — 核对团队",
-          "body": "{toRank} 的团队业绩门槛：{teamVolume}；有效直推人数要求：{directRefs}。直属成员以当前 V1 自购门槛 {referralThreshold} 判定是否合格。",
+          "body": "{toRank} 的团队算力点门槛：{teamComputePoints}；有效直推人数要求：{directRefs}。直属成员以当前 V1 自购算力点门槛 {referralThreshold} 判定是否合格。",
           "order": 19
         },
         {
@@ -165,12 +165,12 @@
         {
           "id": "faq-members",
           "title": "为什么团队有人，我仍没有升级？",
-          "body": "成员数不等于有效直推数。直属成员需达到当前 V1 自购门槛 {referralThreshold}，你也需要同时满足相关自购、团队业绩及高等级直属条件。",
+          "body": "成员数不等于有效直推数。直属成员需达到当前 V1 自购算力点门槛 {referralThreshold}，你也需要同时满足相关自购算力点、团队算力点及高等级直属条件。",
           "order": 27
         },
         {
           "id": "faq-rank",
-          "title": "团队业绩减少后会怎样？",
+          "title": "团队算力点减少后会怎样？",
           "body": "{protection}",
           "order": 28
         },
@@ -194,7 +194,7 @@
         {
           "id": "overview-detail",
           "title": "Ranks and rewards",
-          "body": "Verified self-purchases, qualified direct referrals, team volume and ranked direct members are evaluated together. Benefits follow current rules; actual payments appear in reward records.",
+          "body": "Self compute points, qualified direct referrals, team compute points and ranked direct members are evaluated together. Benefits follow current rules; actual payments appear in reward records.",
           "order": 2
         },
         {
@@ -211,20 +211,20 @@
         },
         {
           "id": "requirement-self",
-          "title": "1. Self-purchase",
-          "body": "Eligible purchases contribute to your cumulative self-purchase performance; refunds reduce it. Only recorded eligible orders and amounts count.",
+          "title": "1. Self compute points",
+          "body": "Each product carries a fixed number of compute points. They count toward your self compute points once payment is confirmed, and refunds take them back. Only recorded eligible orders count.",
           "order": 5
         },
         {
           "id": "requirement-direct",
           "title": "2. Qualified direct referrals",
-          "body": "A direct member qualifies against the current V1 self-purchase threshold {referralThreshold}. The target rank also sets a required count; total team size alone does not establish qualification.",
+          "body": "A direct member qualifies against the current V1 self compute-point threshold {referralThreshold}. The target rank also sets a required count; total team size alone does not establish qualification.",
           "order": 6
         },
         {
           "id": "requirement-team",
-          "title": "3. Team volume",
-          "body": "Eligible purchases within your team contribute to volume, with refunds deducted. The required total depends on the target rank; your rank progress shows the remaining gap.",
+          "title": "3. Team compute points",
+          "body": "Compute points from confirmed orders within your team add up, with refunds deducted. The required total depends on the target rank; your rank progress shows the remaining gap.",
           "order": 7
         },
         {
@@ -290,13 +290,13 @@
         {
           "id": "example-self",
           "title": "Step 1 — Check self-purchase",
-          "body": "Self-purchase threshold for {toRank}: {selfBuy}. If this rank adds no threshold, earlier rank requirements must still be verified.",
+          "body": "Self compute-point threshold for {toRank}: {selfComputePoints}. If this rank adds no threshold, earlier rank requirements must still be verified.",
           "order": 18
         },
         {
           "id": "example-team",
           "title": "Step 2 — Check the team",
-          "body": "Team-volume threshold for {toRank}: {teamVolume}; qualified direct count: {directRefs}. Each direct qualifies against the current V1 self-purchase threshold {referralThreshold}.",
+          "body": "Team compute-point threshold for {toRank}: {teamComputePoints}; qualified direct count: {directRefs}. Each direct qualifies against the current V1 self compute-point threshold {referralThreshold}.",
           "order": 19
         },
         {
@@ -344,12 +344,12 @@
         {
           "id": "faq-members",
           "title": "Why has my rank not increased even though I have members?",
-          "body": "Team size is not the qualified direct count. Each direct must meet the current V1 self-purchase threshold {referralThreshold}; your applicable self-purchase, team-volume and ranked-direct conditions must also be met.",
+          "body": "Team size is not the qualified direct count. Each direct must meet the current V1 self compute-point threshold {referralThreshold}; your applicable self compute points, team compute points and ranked-direct conditions must also be met.",
           "order": 27
         },
         {
           "id": "faq-rank",
-          "title": "What happens if team performance falls?",
+          "title": "What happens if my team compute points go down?",
           "body": "{protection}",
           "order": 28
         },
@@ -373,7 +373,7 @@
         {
           "id": "overview-detail",
           "title": "Cấp bậc và phần thưởng",
-          "body": "Tự mua hợp lệ, tuyến trực tiếp đủ chuẩn, doanh số đội và cấp của thành viên trực tiếp được đánh giá cùng nhau. Quyền lợi theo quy tắc hiện tại; khoản đã trả được ghi trong lịch sử thưởng.",
+          "body": "Điểm tính toán tự mua, tuyến trực tiếp đủ chuẩn, điểm tính toán của đội và cấp của thành viên trực tiếp được đánh giá cùng nhau. Quyền lợi theo quy tắc hiện tại; khoản đã trả được ghi trong lịch sử thưởng.",
           "order": 2
         },
         {
@@ -390,20 +390,20 @@
         },
         {
           "id": "requirement-self",
-          "title": "1. Giá trị tự mua",
-          "body": "Giao dịch mua đủ điều kiện được cộng vào doanh số tự mua; hoàn tiền sẽ làm giảm số này. Chỉ tính đơn hàng và số tiền hợp lệ đã được ghi nhận.",
+          "title": "1. Điểm tính toán tự mua",
+          "body": "Mỗi sản phẩm có số điểm tính toán cố định. Điểm được cộng khi thanh toán được xác nhận và bị trừ lại khi hoàn tiền. Chỉ tính đơn hàng hợp lệ đã được ghi nhận.",
           "order": 5
         },
         {
           "id": "requirement-direct",
           "title": "2. Tuyến trực tiếp đủ chuẩn",
-          "body": "Thành viên trực tiếp được xét theo ngưỡng tự mua V1 hiện tại {referralThreshold}. Bậc mục tiêu còn quy định số người cần đạt; không chỉ dựa vào tổng thành viên đội.",
+          "body": "Thành viên trực tiếp được xét theo ngưỡng điểm tính toán tự mua V1 hiện tại {referralThreshold}. Bậc mục tiêu còn quy định số người cần đạt; không chỉ dựa vào tổng thành viên đội.",
           "order": 6
         },
         {
           "id": "requirement-team",
-          "title": "3. Doanh số đội",
-          "body": "Cộng giao dịch đủ điều kiện trong phạm vi đội và trừ hoàn tiền. Ngưỡng tùy bậc mục tiêu; trang tiến độ hiển thị phần còn thiếu.",
+          "title": "3. Điểm tính toán của đội",
+          "body": "Điểm tính toán từ các đơn đã xác nhận trong đội được cộng dồn, trừ phần hoàn tiền. Mức cần đạt tùy bậc mục tiêu; tiến độ cấp bậc cho biết phần còn thiếu.",
           "order": 7
         },
         {
@@ -469,13 +469,13 @@
         {
           "id": "example-self",
           "title": "Bước 1 — Kiểm tra tự mua",
-          "body": "Ngưỡng tự mua của {toRank}: {selfBuy}. Nếu bậc này không thêm ngưỡng, điều kiện bậc thấp vẫn cần được kiểm tra.",
+          "body": "Ngưỡng điểm tính toán tự mua của {toRank}: {selfComputePoints}. Nếu bậc này không thêm ngưỡng, điều kiện bậc thấp vẫn cần được kiểm tra.",
           "order": 18
         },
         {
           "id": "example-team",
           "title": "Bước 2 — Kiểm tra đội",
-          "body": "Ngưỡng doanh số đội của {toRank}: {teamVolume}; số tuyến trực tiếp đủ chuẩn: {directRefs}. Mỗi tuyến được xét theo ngưỡng tự mua V1 hiện tại {referralThreshold}.",
+          "body": "Ngưỡng điểm tính toán của đội cho {toRank}: {teamComputePoints}; số tuyến trực tiếp đủ chuẩn: {directRefs}. Mỗi tuyến được xét theo ngưỡng điểm tính toán tự mua V1 hiện tại {referralThreshold}.",
           "order": 19
         },
         {
@@ -523,12 +523,12 @@
         {
           "id": "faq-members",
           "title": "Vì sao có thành viên nhưng tôi chưa thăng hạng?",
-          "body": "Số thành viên không bằng số tuyến trực tiếp đủ chuẩn. Mỗi tuyến cần đạt ngưỡng tự mua V1 hiện tại {referralThreshold}; bạn cũng phải đạt điều kiện tự mua, doanh số đội và cấp tuyến trực tiếp áp dụng.",
+          "body": "Số thành viên không bằng số tuyến trực tiếp đủ chuẩn. Mỗi tuyến cần đạt ngưỡng điểm tính toán tự mua V1 hiện tại {referralThreshold}; bạn cũng phải đạt điều kiện điểm tính toán tự mua, điểm tính toán của đội và cấp tuyến trực tiếp áp dụng.",
           "order": 27
         },
         {
           "id": "faq-rank",
-          "title": "Nếu doanh số đội giảm thì sao?",
+          "title": "Nếu điểm tính toán của đội giảm thì sao?",
           "body": "{protection}",
           "order": 28
         },
