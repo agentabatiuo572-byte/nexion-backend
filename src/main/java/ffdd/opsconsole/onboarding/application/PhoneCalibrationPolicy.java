@@ -119,8 +119,9 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
                         || (r.minOsVersion() != null && r.maxOsMajor() < PhoneModelRisk.osVersion(r.minOsVersion())[0])))
                     || r.scales().size() > 3 || r.scales().stream().distinct().count() != r.scales().size()
                     || r.scales().stream().anyMatch(scale -> scale == null || scale < 1 || scale > 3)
-                    || r.screens().size() > 10 || r.screens().stream().distinct().count() != r.screens().size()
-                    || r.screens().stream().anyMatch(screen -> PhoneModelRisk.screen(screen) == null)) invalid();
+                    || r.screens().size() > 10 || r.screens().stream().anyMatch(screen -> PhoneModelRisk.screen(screen) == null)
+                    // Both orientations of one size are the same screen.
+                    || r.screens().stream().map(PhoneModelRisk::screen).distinct().count() != r.screens().size()) invalid();
             // A model or alias names exactly one rule, enabled or not, so a match is never ambiguous.
             for (String name : names(r)) if (!names.add(name)) throw new BizException(422, "PHONE_CALIBRATION_IOS_MODEL_DUPLICATE");
         }

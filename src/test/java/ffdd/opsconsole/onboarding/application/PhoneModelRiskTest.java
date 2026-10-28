@@ -53,6 +53,10 @@ class PhoneModelRiskTest {
     @Test void ruleFactsAreValidatedWithThePolicy() {
         var bad = new PhoneCalibrationPolicy.IosModelRule("ios-8", "iPhone 8", List.of(), BigDecimal.ONE, BigDecimal.TEN, true,
                 "OPERATOR_PRESET", null, null, "17.0", 16, List.of(4), List.of("big"));
+        var turned = new PhoneCalibrationPolicy.IosModelRule("ios-8", "iPhone 8", List.of(), BigDecimal.ONE, BigDecimal.TEN, true,
+                "OPERATOR_PRESET", null, null, null, null, List.of(), List.of("375x667", "667x375"));
+        assertThatThrownBy(() -> new PhoneCalibrationPolicy(1, 0, List.of(BigDecimal.ONE, BigDecimal.valueOf(2),
+                BigDecimal.valueOf(3), BigDecimal.TEN), List.of(), List.of(turned)).validate()).hasMessage("PHONE_CALIBRATION_POLICY_INVALID");
         assertThatThrownBy(() -> new PhoneCalibrationPolicy(1, 0, List.of(BigDecimal.ONE, BigDecimal.valueOf(2),
                 BigDecimal.valueOf(3), BigDecimal.TEN), List.of(), List.of(bad)).validate()).hasMessage("PHONE_CALIBRATION_POLICY_INVALID");
     }
