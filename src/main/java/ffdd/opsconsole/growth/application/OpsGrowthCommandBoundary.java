@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.growth.dto.GrowthPublicStatsUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -34,7 +35,12 @@ public class OpsGrowthCommandBoundary {
         String normalizedOperation = normalize(operation);
         String normalizedTarget = target == null || target.isBlank() ? "GLOBAL" : target.trim();
         String scope = commandScope(normalizedModule, normalizedOperation, normalizedTarget, request);
-        String requestHash = hash(scope + "|" + String.valueOf(request));
+        String requestText = String.valueOf(request);
+        // Preserve the deployed H9 fingerprint for retries from clients predating globeDisplay.
+        if (request instanceof GrowthPublicStatsUpdateRequest h9 && h9.globeDisplay() == null) {
+            requestText = requestText.substring(0, requestText.length() - ", globeDisplay=null]".length()) + "]";
+        }
+        String requestHash = hash(scope + "|" + requestText);
         try {
             return (ApiResult<Map<String, Object>>) idempotency.execute(
                     scope,

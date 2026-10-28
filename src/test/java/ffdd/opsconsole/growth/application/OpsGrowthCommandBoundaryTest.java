@@ -12,6 +12,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.growth.dto.GrowthPublicStatsUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -94,6 +95,19 @@ class OpsGrowthCommandBoundaryTest {
                 anyString(), eq(ApiResult.class), any(Supplier.class));
         verify(idempotency).execute(eq("H3_MISSION:DELETE:MONTHLY:task-d"), eq("idem-delete"),
                 anyString(), eq(ApiResult.class), any(Supplier.class));
+    }
+
+    @Test
+    void legacyH9RetryKeepsThePreviouslyDeployedFingerprint() throws Exception {
+        GrowthPublicStatsUpdateRequest request = new GrowthPublicStatsUpdateRequest(
+                12000, new java.math.BigDecimal("80"), 20, 5000L, new java.math.BigDecimal("5"), 100L,
+                List.of(), 3L, "update public stats", "superadmin");
+        String legacy = "GrowthPublicStatsUpdateRequest[fleetDevices=12000, onlineRatePct=80, onlineJitter=20, registeredUsersBase=5000, registeredUsersMonthlyGrowthPct=5, virtualUserCount=100, hashratePercentileTable=[], expectedVersion=3, reason=update public stats, operator=superadmin, homeOnlineCurrent=null, homeOnlineStepMin=null, homeOnlineStepMax=null, homePaidCurrent=null, homePaidStepMin=null, homePaidStepMax=null, homeDisplayEnabled=null, registeredUsersTickIntervalSec=null, registeredUsersTickStepMin=null, registeredUsersTickStepMax=null]";
+        String scope = "GROWTH:H9:PUBLIC_STATS_UPDATE:GLOBAL";
+        String expected = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest((scope + "|" + legacy).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        boundary.execute("H9", "PUBLIC_STATS_UPDATE", "GLOBAL", "legacy-h9", request, () -> ApiResult.ok(Map.of()));
+        verify(idempotency).execute(eq(scope), eq("legacy-h9"), eq(expected), eq(ApiResult.class), any(Supplier.class));
     }
 
     @Test

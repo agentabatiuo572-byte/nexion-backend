@@ -3,6 +3,7 @@ package ffdd.opsconsole.growth.application;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.growth.dto.GrowthPublicStatsUpdateRequest;
+import ffdd.opsconsole.growth.dto.GlobeDisplayConfig;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -128,6 +129,7 @@ public class GrowthPublicStatsService {
             MEMBER_ESTIMATE_FIELDS.forEach(key -> projection.put(key, values.get(key)));
         }
         projection.put("networkPulse", networkPulse(scope, result.getData()));
+        projection.put("globeDisplay", values.get("globeDisplay"));
         return ApiResult.ok(projection);
     }
 
@@ -373,6 +375,7 @@ public class GrowthPublicStatsService {
         }
         values.put("homeDisplayEnabled", request.homeDisplayEnabled() == null ? before.get("homeDisplayEnabled") : request.homeDisplayEnabled());
         values.put("homeDisplayAnchorAt", changed ? effectiveAt : before.get("homeDisplayAnchorAt"));
+        values.put("globeDisplay", request.globeDisplay() == null ? before.get("globeDisplay") : request.globeDisplay());
         return values;
     }
 
@@ -398,6 +401,7 @@ public class GrowthPublicStatsService {
         HOME_FIELDS.forEach(key -> defaults.put(key, 0));
         defaults.put("homeDisplayAnchorAt", anchor);
         defaults.put("homeDisplayEnabled", false);
+        defaults.put("globeDisplay", GlobeDisplayConfig.defaults());
         return defaults;
     }
 
@@ -432,6 +436,7 @@ public class GrowthPublicStatsService {
         if (!validBands(request.hashratePercentileTable())) {
             return "H9_PERCENTILE_TABLE_INVALID";
         }
+        if (request.globeDisplay() != null && !request.globeDisplay().valid()) return "H9_GLOBE_DISPLAY_INVALID";
         return null;
     }
 
@@ -448,6 +453,7 @@ public class GrowthPublicStatsService {
                 return "invalid";
             }
             if (!(values.get("homeDisplayEnabled") instanceof Boolean)) return "invalid";
+            if (!(values.get("globeDisplay") instanceof GlobeDisplayConfig globe) || !globe.valid()) return "invalid";
             long tickStored = TICK_FIELDS.stream().filter(key -> values.get(key) != null).count();
             if (tickStored != 0 && (tickStored != TICK_FIELDS.size() || !validMemberTick(intValue(values.get(TICK_INTERVAL)),
                     longValue(values.get(TICK_STEP_MIN)), longValue(values.get(TICK_STEP_MAX))))) {
@@ -514,6 +520,9 @@ public class GrowthPublicStatsService {
                     HOME_FIELDS.forEach(key -> stored.putIfAbsent(key, 0));
                     stored.putIfAbsent("homeDisplayAnchorAt", stored.get("effectiveAt"));
                     stored.putIfAbsent("homeDisplayEnabled", false);
+                    stored.put("globeDisplay", stored.containsKey("globeDisplay")
+                            ? objectMapper.convertValue(stored.get("globeDisplay"), GlobeDisplayConfig.class)
+                            : GlobeDisplayConfig.defaults());
                     Object legacyStep = stored.remove(LEGACY_TICK_STEP);
                     if (legacyStep != null) {
                         stored.putIfAbsent(TICK_STEP_MIN, legacyStep);
