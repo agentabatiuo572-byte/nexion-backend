@@ -1,5 +1,5 @@
 {
- "catalogVersion": "iphone-models-20261028",
+ "catalogVersion": "iphone-models-20261028b",
  "verifiedOn": "2026-10-28",
  "scope": "ALL_SOLD_IPHONES_FROM_IPHONE_6",
  "matchBy": "MODEL_ONLY",
@@ -8,9 +8,12 @@
  "sources": [
   "https://support.apple.com/en-us/108044",
   "https://www.apple.com/shop/buy-iphone",
-  "https://everymac.com/devices/by-identifier/all-iphone-model-identifiers.html"
+  "https://everymac.com/devices/by-identifier/all-iphone-model-identifiers.html",
+  "https://developer.apple.com/design/human-interface-guidelines/layout (device dimensions table, 2025-10 version)",
+  "https://9to5mac.com/2025/07/24/ios-26-supports-these-recent-iphones-but-drops-three-models/",
+  "https://appleinsider.com/articles/26/06/08/ios-27-keeps-iphone-11-and-newer-compatibility"
  ],
- "notice": "Operator presets, not Apple specifications or measured performance. Loading the catalog only fills an E6 draft; it takes effect after A2 approval.",
+ "notice": "Operator presets, not Apple specifications or measured performance. Device facts (launch iOS major, last supported iOS major, screen scale and default point size) feed the model risk checks; models without verified facts leave them empty. Loading the catalog only fills an E6 draft; it takes effect after A2 approval.",
  "models": [
   {
    "id": "ios-iphone-6",
@@ -23,7 +26,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "8.0",
+   "maxOsMajor": 12,
+   "scales": [
+    2
+   ],
+   "screens": [
+    "375x667"
+   ]
   },
   {
    "id": "ios-iphone-6-plus",
@@ -36,7 +47,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "8.0",
+   "maxOsMajor": 12,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "414x736"
+   ]
   },
   {
    "id": "ios-iphone-6s",
@@ -49,7 +68,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "9.0",
+   "maxOsMajor": 15,
+   "scales": [
+    2
+   ],
+   "screens": [
+    "375x667"
+   ]
   },
   {
    "id": "ios-iphone-6s-plus",
@@ -62,7 +89,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "9.0",
+   "maxOsMajor": 15,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "414x736"
+   ]
   },
   {
    "id": "ios-iphone-se-1",
@@ -75,7 +110,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "9.0",
+   "maxOsMajor": 15,
+   "scales": [
+    2
+   ],
+   "screens": [
+    "320x568"
+   ]
   },
   {
    "id": "ios-iphone-7",
@@ -89,7 +132,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "10.0",
+   "maxOsMajor": 15,
+   "scales": [
+    2
+   ],
+   "screens": [
+    "375x667"
+   ]
   },
   {
    "id": "ios-iphone-7-plus",
@@ -103,7 +154,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "10.0",
+   "maxOsMajor": 15,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "414x736"
+   ]
   },
   {
    "id": "ios-iphone-8",
@@ -117,7 +176,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "11.0",
+   "maxOsMajor": 16,
+   "scales": [
+    2
+   ],
+   "screens": [
+    "375x667"
+   ]
   },
   {
    "id": "ios-iphone-8-plus",
@@ -131,7 +198,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "11.0",
+   "maxOsMajor": 16,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "414x736"
+   ]
   },
   {
    "id": "ios-iphone-x",
@@ -145,7 +220,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "11.0",
+   "maxOsMajor": 16,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "375x812"
+   ]
   },
   {
    "id": "ios-iphone-xr",
@@ -158,7 +241,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "12.0",
+   "maxOsMajor": 18,
+   "scales": [
+    2
+   ],
+   "screens": [
+    "414x896"
+   ]
   },
   {
    "id": "ios-iphone-xs",
@@ -171,7 +262,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "12.0",
+   "maxOsMajor": 18,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "375x812"
+   ]
   },
   {
    "id": "ios-iphone-xs-max",
@@ -184,7 +283,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "12.0",
+   "maxOsMajor": 18,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "414x896"
+   ]
   },
   {
    "id": "ios-iphone-11",
@@ -197,7 +304,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "13.0",
+   "maxOsMajor": null,
+   "scales": [
+    2
+   ],
+   "screens": [
+    "414x896"
+   ]
   },
   {
    "id": "ios-iphone-11-pro",
@@ -210,7 +325,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "13.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "375x812"
+   ]
   },
   {
    "id": "ios-iphone-11-pro-max",
@@ -223,7 +346,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "13.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "414x896"
+   ]
   },
   {
    "id": "ios-iphone-se-2",
@@ -236,7 +367,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "13.0",
+   "maxOsMajor": null,
+   "scales": [
+    2
+   ],
+   "screens": [
+    "375x667"
+   ]
   },
   {
    "id": "ios-iphone-12-mini",
@@ -249,7 +388,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "14.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "375x812"
+   ]
   },
   {
    "id": "ios-iphone-12",
@@ -262,7 +409,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "14.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "390x844"
+   ]
   },
   {
    "id": "ios-iphone-12-pro",
@@ -275,7 +430,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "14.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "390x844"
+   ]
   },
   {
    "id": "ios-iphone-12-pro-max",
@@ -288,7 +451,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "14.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "428x926"
+   ]
   },
   {
    "id": "ios-iphone-13-mini",
@@ -301,7 +472,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "15.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "375x812"
+   ]
   },
   {
    "id": "ios-iphone-13",
@@ -314,7 +493,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "15.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "390x844"
+   ]
   },
   {
    "id": "ios-iphone-13-pro",
@@ -327,7 +514,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "15.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "390x844"
+   ]
   },
   {
    "id": "ios-iphone-13-pro-max",
@@ -340,7 +535,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "15.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "428x926"
+   ]
   },
   {
    "id": "ios-iphone-se-3",
@@ -353,7 +556,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "15.0",
+   "maxOsMajor": null,
+   "scales": [
+    2
+   ],
+   "screens": [
+    "375x667"
+   ]
   },
   {
    "id": "ios-iphone-14",
@@ -366,7 +577,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "16.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "390x844"
+   ]
   },
   {
    "id": "ios-iphone-14-plus",
@@ -379,7 +598,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "16.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "428x926"
+   ]
   },
   {
    "id": "ios-iphone-14-pro",
@@ -392,7 +619,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "16.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "393x852"
+   ]
   },
   {
    "id": "ios-iphone-14-pro-max",
@@ -405,7 +640,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "16.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "430x932"
+   ]
   },
   {
    "id": "ios-iphone-15",
@@ -418,7 +661,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "17.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "393x852"
+   ]
   },
   {
    "id": "ios-iphone-15-plus",
@@ -431,7 +682,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "17.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "430x932"
+   ]
   },
   {
    "id": "ios-iphone-15-pro",
@@ -444,7 +703,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "17.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "393x852"
+   ]
   },
   {
    "id": "ios-iphone-15-pro-max",
@@ -457,7 +724,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "17.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "430x932"
+   ]
   },
   {
    "id": "ios-iphone-16",
@@ -470,7 +745,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_CURRENT_SNAPSHOT",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "18.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "393x852"
+   ]
   },
   {
    "id": "ios-iphone-16-plus",
@@ -483,7 +766,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "18.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "430x932"
+   ]
   },
   {
    "id": "ios-iphone-16-pro",
@@ -496,7 +787,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "18.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "402x874"
+   ]
   },
   {
    "id": "ios-iphone-16-pro-max",
@@ -509,7 +808,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "18.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "440x956"
+   ]
   },
   {
    "id": "ios-iphone-16e",
@@ -522,7 +829,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "18.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "390x844"
+   ]
   },
   {
    "id": "ios-iphone-17",
@@ -535,7 +850,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_CURRENT_SNAPSHOT",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "26.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "402x874"
+   ]
   },
   {
    "id": "ios-iphone-air",
@@ -548,7 +871,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_CURRENT_SNAPSHOT",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "26.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "420x912"
+   ]
   },
   {
    "id": "ios-iphone-17-pro",
@@ -561,7 +892,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "26.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "402x874"
+   ]
   },
   {
    "id": "ios-iphone-17-pro-max",
@@ -574,7 +913,15 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_RELEASED_HISTORICAL",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "26.0",
+   "maxOsMajor": null,
+   "scales": [
+    3
+   ],
+   "screens": [
+    "440x956"
+   ]
   },
   {
    "id": "ios-iphone-17e",
@@ -587,7 +934,11 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_CURRENT_SNAPSHOT",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": null,
+   "maxOsMajor": null,
+   "scales": [],
+   "screens": []
   },
   {
    "id": "ios-iphone-18-pro",
@@ -598,7 +949,11 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_CURRENT_SNAPSHOT",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。硬件标识符尚未经两个来源核验，暂只按机型名匹配。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。硬件标识符尚未经两个来源核验，暂只按机型名匹配。",
+   "minOsVersion": null,
+   "maxOsMajor": null,
+   "scales": [],
+   "screens": []
   },
   {
    "id": "ios-iphone-18-pro-max",
@@ -609,7 +964,11 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_CURRENT_SNAPSHOT",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。硬件标识符尚未经两个来源核验，暂只按机型名匹配。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。硬件标识符尚未经两个来源核验，暂只按机型名匹配。",
+   "minOsVersion": null,
+   "maxOsMajor": null,
+   "scales": [],
+   "screens": []
   },
   {
    "id": "ios-iphone-duo",
@@ -620,7 +979,11 @@
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_CURRENT_SNAPSHOT",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。硬件标识符尚未经两个来源核验，暂只按机型名匹配。"
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。硬件标识符尚未经两个来源核验，暂只按机型名匹配。",
+   "minOsVersion": null,
+   "maxOsMajor": null,
+   "scales": [],
+   "screens": []
   }
  ]
 }
