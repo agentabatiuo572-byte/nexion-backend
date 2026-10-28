@@ -431,10 +431,10 @@ public interface OnboardingCalibrationMapper {
 
     /** Model reports of the account's installations touched within the window: the latest report and the lock. */
     @Select("""
-            SELECT JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')) platform,
-                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')) model,
-                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.platform')) lockPlatform,
-                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.model')) lockModel
+            SELECT NULLIF(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')),'null') platform,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')),'null') model,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.platform')),'null') lockPlatform,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.model')),'null') lockModel
               FROM nx_onboarding_calibration
              WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND run_id=#{runId} AND is_deleted=0
                AND updated_at >= NOW(6) - INTERVAL #{days} DAY
@@ -458,8 +458,8 @@ public interface OnboardingCalibrationMapper {
     /** The most flagged reported models per check within the window. */
     @Select("""
             SELECT f.code code,
-                   JSON_UNQUOTE(JSON_EXTRACT(c.signal_json,'$.platform')) platform,
-                   JSON_UNQUOTE(JSON_EXTRACT(c.signal_json,'$.model')) model,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.signal_json,'$.platform')),'null') platform,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.signal_json,'$.model')),'null') model,
                    COUNT(*) flagged,
                    SUM(JSON_UNQUOTE(JSON_EXTRACT(c.derived_json,'$.pendingReason'))=f.code) held
               FROM nx_onboarding_calibration c
@@ -473,22 +473,42 @@ public interface OnboardingCalibrationMapper {
     /** Every installation of the account with its model lock, for support. */
     @Select("""
             SELECT device_id deviceId,
-                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')) platform,
-                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')) model,
-                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.platform')) lockPlatform,
-                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.model')) lockModel,
-                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.calibrationStatus')) calibrationStatus,
-                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.pendingReason')) pendingReason,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')),'null') platform,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')),'null') model,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.platform')),'null') lockPlatform,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.model')),'null') lockModel,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.calibrationStatus')),'null') calibrationStatus,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.pendingReason')),'null') pendingReason,
                    activation_status activationStatus,
                    CAST(UNIX_TIMESTAMP(updated_at)*1000 AS UNSIGNED) updatedAt,
                    row_version rowVersion,
-                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.released')) released
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.released')),'null') released
               FROM nx_onboarding_calibration
              WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND run_id=#{runId} AND is_deleted=0
              ORDER BY updated_at DESC,id DESC LIMIT 50
             """)
     List<ModelLockRow> modelLocks(@Param("userId") Long userId, @Param("sourceEnvironment") String sourceEnvironment,
                                   @Param("runId") String runId);
+
+    /** One installation of the account with its model lock, whatever its age. */
+    @Select("""
+            SELECT device_id deviceId,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')),'null') platform,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')),'null') model,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.platform')),'null') lockPlatform,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.model')),'null') lockModel,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.calibrationStatus')),'null') calibrationStatus,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.pendingReason')),'null') pendingReason,
+                   activation_status activationStatus,
+                   CAST(UNIX_TIMESTAMP(updated_at)*1000 AS UNSIGNED) updatedAt,
+                   row_version rowVersion,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.released')),'null') released
+              FROM nx_onboarding_calibration
+             WHERE user_id=#{userId} AND device_id=#{deviceId} AND source_environment=#{sourceEnvironment}
+               AND run_id=#{runId} AND is_deleted=0
+            """)
+    ModelLockRow modelLock(@Param("userId") Long userId, @Param("deviceId") String deviceId,
+                           @Param("sourceEnvironment") String sourceEnvironment, @Param("runId") String runId);
 
     /**
      * Support releases an installation's model lock with an explicit marker, so the next calibration
@@ -498,7 +518,7 @@ public interface OnboardingCalibrationMapper {
      */
     @Update("""
             UPDATE nx_onboarding_calibration
-               SET derived_json=JSON_SET(derived_json,'$.installModelLock',JSON_OBJECT('released',TRUE))
+               SET derived_json=JSON_SET(derived_json,'$.installModelLock',JSON_OBJECT('released',TRUE)),updated_at=updated_at
              WHERE user_id=#{userId} AND device_id=#{deviceId} AND source_environment=#{sourceEnvironment}
                AND run_id=#{runId} AND is_deleted=0 AND row_version=#{expectedRevision}
             """)

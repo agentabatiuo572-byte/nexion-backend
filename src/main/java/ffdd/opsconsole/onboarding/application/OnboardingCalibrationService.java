@@ -111,9 +111,10 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                         risk.accountModelChurn() == PhoneModelRisk.Mode.OFF ? 0
                                 : accountModels(userId, scope, policy, reported, risk.churnWindowDays())));
         carryIosAllocations(current, derived);
-        // The first model an installation reports stays its lock until support releases it; with the
-        // check off, the lock simply follows the report so enabling it later starts from the current phone.
-        Map<String, String> nextLock = lock != null && risk.installModelLock() != PhoneModelRisk.Mode.OFF ? lock : reported;
+        // Enforced, the first model an installation reports stays its lock until support releases it.
+        // Observed or off, the lock follows the report, so enforcing later starts from each current
+        // phone instead of holding everyone who legitimately moved phones meanwhile.
+        Map<String, String> nextLock = lock != null && risk.installModelLock() == PhoneModelRisk.Mode.ENFORCE ? lock : reported;
         if (nextLock != null) derived.put(PhoneModelRisk.INSTALL_MODEL_LOCK, nextLock);
         long configRevision = Math.max(
                 tiers.stream().mapToLong(row -> row.revision() == null ? 0L : row.revision()).max().orElse(0L),
@@ -718,10 +719,11 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     /** A real phone never reports another model; name and identifier of one iPhone compare equal. */
     private static boolean lockChanged(PhoneCalibrationPolicy policy, Map<String, String> lock, Map<String, String> reported) {
         if (lock == null || reported == null) return false;
-        // Rows written before platforms were reported carry an empty platform: compare the model only.
-        String platform = lock.get("platform").isEmpty() ? reported.get("platform") : lock.get("platform");
-        return !java.util.Objects.equals(policy.modelIdentity(platform, lock.get("model")),
-                policy.modelIdentity(reported.get("platform"), reported.get("model")));
+        // A side without a platform (older rows or builds) compares under the other side's platform.
+        String lockPlatform = lock.get("platform").isEmpty() ? reported.get("platform") : lock.get("platform");
+        String reportPlatform = reported.get("platform").isEmpty() ? lockPlatform : reported.get("platform");
+        return !java.util.Objects.equals(policy.modelIdentity(lockPlatform, lock.get("model")),
+                policy.modelIdentity(reportPlatform, reported.get("model")));
     }
 
     /** Distinct models the account reported within the window, this report included. */
@@ -744,8 +746,10 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     }
 
     private static PhoneModelRisk.Facts facts(Signals signals) {
-        return new PhoneModelRisk.Facts(signals.platform(), signals.osVersion(), signals.pixelRatio(),
-                signals.screenWidth(), signals.screenHeight());
+        // An implausible scale only skips the scale check; it never rejects the calibration.
+        Double ratio = signals.pixelRatio() != null && Double.isFinite(signals.pixelRatio())
+                && signals.pixelRatio() >= 1 && signals.pixelRatio() <= 10 ? signals.pixelRatio() : null;
+        return new PhoneModelRisk.Facts(signals.platform(), signals.osVersion(), ratio, signals.screenWidth(), signals.screenHeight());
     }
 
     /** Keeps every allocation the row has held, newest first, when a recalibration overwrites its snapshot. */
@@ -860,8 +864,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                 && boundedText(s.model(), 128) && boundedText(s.brand(), 128) && boundedText(s.gpu(), 256)
                 && (s.platform() == null || boundedText(s.platform(), 16)) && (s.soc() == null || boundedText(s.soc(), 128))
                 && (s.osVersion() == null || boundedText(s.osVersion(), 32))
-                && integerOrNull(s.screenWidth(), 1, 10000) && integerOrNull(s.screenHeight(), 1, 10000)
-                && finiteOrNull(s.pixelRatio(), 1, 10);
+                && integerOrNull(s.screenWidth(), 1, 10000) && integerOrNull(s.screenHeight(), 1, 10000);
     }
 
     private boolean validAction(ActionRequest request) {

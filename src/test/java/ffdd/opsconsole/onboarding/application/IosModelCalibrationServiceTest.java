@@ -173,6 +173,8 @@ class IosModelCalibrationServiceTest {
         var result = calibrate("install-a", table.get("install-a").rowVersion(), "key-swap-001", "iPhone 16 Pro").getData();
         assertThat(result).containsEntry("calibrationStatus", "MATCHED").doesNotContainKey("riskFlags");
         assertThat((List<Object>) json(table.get("install-a").derivedJson()).get("riskFlags")).containsExactly("MODEL_CHANGED", "SIGNALS_MISSING");
+        // Observed, the lock follows the phone, so enforcing later does not hold this legitimate change.
+        assertThat((Map<String, Object>) json(table.get("install-a").derivedJson()).get("installModelLock")).containsEntry("model", "iPhone 16 Pro");
     }
 
     @Test void anAndroidInstallationLocksItsModelToo() {
@@ -232,6 +234,15 @@ class IosModelCalibrationServiceTest {
         assertThat((List<Object>) json(table.get("install-c").derivedJson()).get("riskFlags")).containsExactly("SCREEN_MISMATCH");
         calibrate("install-d", 0, "key-facts-04", "iPhone 16 Pro");
         assertThat((List<Object>) json(table.get("install-d").derivedJson()).get("riskFlags")).containsExactly("SIGNALS_MISSING");
+    }
+
+    @Test void aReportWithoutPlatformIsTheSamePhoneAndAnImplausibleScaleIsOnlySkipped() {
+        calibrate("install-a", 0, "key-first-01", "iPhone 16 Pro");
+        var noPlatform = new OnboardingCalibrationService.Signals(null, null, "iPhone 16 Pro", "Apple", "", null, null, 80, false, true,
+                "", "", null, null, null, 0.75);
+        var result = calibrateWith("install-a", table.get("install-a").rowVersion(), "key-plain-01", noPlatform).getData();
+        assertThat(json(table.get("install-a").derivedJson()).get("pendingReason")).isNotEqualTo("MODEL_CHANGED");
+        assertThat(result.get("pendingReason")).isNotEqualTo("MODEL_UNVERIFIED");
     }
 
     @Test void manyModelsOnOneAccountAreObservedNotHeld() {

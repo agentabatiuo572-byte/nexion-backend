@@ -77,9 +77,9 @@ public class PhoneModelLockService implements PhoneModelLockContract {
     }
 
     private OnboardingCalibrationMapper.ModelLockRow find(Account account, String installationId) {
-        return mapper.modelLocks(account.userId(), account.sourceEnvironment(), account.runId()).stream()
-                .filter(row -> installationId.equals(row.deviceId())).findFirst()
-                .orElseThrow(() -> new BizException(404, "PHONE_INSTALLATION_NOT_FOUND"));
+        var row = mapper.modelLock(account.userId(), installationId, account.sourceEnvironment(), account.runId());
+        if (row == null) throw new BizException(404, "PHONE_INSTALLATION_NOT_FOUND");
+        return row;
     }
 
     private PhoneCalibrationPolicy policy() {
