@@ -388,11 +388,12 @@ public interface OnboardingCalibrationMapper {
             """)
     List<ComparisonRow> activeComparisons();
 
-    /** The account's stored iPhone range allocations, newest first; the caller holds the user lock. */
+    /** Snapshots holding the account's iPhone range allocations, newest first; the caller holds the user lock. */
     @Select("""
             SELECT derived_json FROM nx_onboarding_calibration
              WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND run_id=#{runId} AND is_deleted=0
-               AND JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.calibrationMethod'))='IOS_MODEL_RANGE'
+               AND (JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.calibrationMethod'))='IOS_MODEL_RANGE'
+                    OR JSON_CONTAINS_PATH(derived_json,'one','$.iosAllocations'))
              ORDER BY updated_at DESC,id DESC
             """)
     List<String> iosRangeAllocations(@Param("userId") Long userId, @Param("sourceEnvironment") String sourceEnvironment,

@@ -970,14 +970,8 @@ public class OpsAuditCenterService {
     }
 
     private Map<String, Object> phoneCalibrationBaseline() {
-        var config = new ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService(new ffdd.opsconsole.platform.facade.PlatformConfigFacade() {
-            @Override public Optional<String> activeValue(String configKey) {
-                return configRepository.findActiveByKey(configKey).map(PlatformConfigItem::configValue);
-            }
-            @Override public void upsertAdminValue(String configKey, String value, String type, String group, String remark) {
-                throw new UnsupportedOperationException("read only");
-            }
-        }, java.time.Clock.systemUTC());
+        var config = new ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService(
+                new PlatformConfigFacadeAdapter(configRepository), java.time.Clock.systemUTC());
         ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService.State state;
         try {
             state = config.read();

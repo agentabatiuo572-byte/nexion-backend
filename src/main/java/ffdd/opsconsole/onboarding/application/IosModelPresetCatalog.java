@@ -20,9 +20,19 @@ public final class IosModelPresetCatalog {
                           String valueSource, List<String> sources, String notice,
                           List<PhoneCalibrationPolicy.IosModelRule> models) { }
 
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(IosModelPresetCatalog.class);
+    private static volatile Catalog cached;
+
     private IosModelPresetCatalog() { }
 
+    /** Parsed and validated once: the bundled resource cannot change while the process runs. */
     public static Catalog load() {
+        Catalog catalog = cached;
+        if (catalog == null) cached = catalog = read();
+        return catalog;
+    }
+
+    private static Catalog read() {
         try (InputStream in = IosModelPresetCatalog.class.getResourceAsStream(RESOURCE)) {
             if (in == null) throw new IllegalStateException("missing " + RESOURCE);
             Catalog catalog = JSON.readValue(in, Catalog.class);
@@ -31,6 +41,7 @@ public final class IosModelPresetCatalog {
                     List.of(), catalog.models()).validate();
             return catalog;
         } catch (BizException | java.io.IOException | IllegalStateException invalid) {
+            LOG.error("iPhone preset catalog {} is unusable", RESOURCE, invalid);
             throw new BizException(503, "PHONE_CALIBRATION_IOS_PRESETS_UNAVAILABLE");
         }
     }
