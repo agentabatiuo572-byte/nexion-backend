@@ -351,6 +351,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261028_h2_trial_early_purchase.sql")
   (Join-Path $root "scripts\migrations\20261028_janus_retirement.sql")
   (Join-Path $root "scripts\migrations\20261028_console_copy_plain.sql")
+  (Join-Path $root "scripts\migrations\20261028_h9_member_tick_default.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
