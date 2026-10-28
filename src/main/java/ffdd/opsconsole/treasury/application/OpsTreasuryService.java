@@ -494,10 +494,11 @@ public class OpsTreasuryService {
         return ("\ufeff" + csv).getBytes(StandardCharsets.UTF_8);
     }
 
-    @SuppressWarnings("unchecked")
-    // The liabilities API keeps its canonical labels; exports show the operator-facing names.
+    // The liabilities API keeps its canonical labels; exports show the operator-facing names
+    // (same names as the PC console's lib/admin/liability-labels.ts).
     private static Object liabilityExportLabel(Object category, Object label) {
         return switch (String.valueOf(category)) {
+            case "withdrawable_balance" -> "可提现余额";
             case "usdt_staking_principal" -> "USDT 质押本金";
             case "staking_interest" -> "质押应付利息";
             case "genesis_daily_emission" -> "创世节点应付分红";
@@ -510,6 +511,7 @@ public class OpsTreasuryService {
         };
     }
 
+    @SuppressWarnings("unchecked")
     @Transactional(rollbackFor = Exception.class)
     public byte[] liabilitiesCsv() {
         List<Map<String, Object>> rows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");

@@ -64,6 +64,7 @@ public class EmergencyPlatformStateProvider implements PlatformEmergencyStatePro
                 "key", key,
                 "name", name,
                 "status", "加载失败",
+                "available", false,
                 "up", false,
                 "lastChange", LocalDateTime.now().toString(),
                 "chain", chain + " · 暂时无法确认",

@@ -3126,7 +3126,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 "复核时间:" + text(adjustment.reviewedAt()),
                 "复核理由:" + text(adjustment.reviewReason()));
         List<String> redlines = adjustment.credit()
-                ? List.of("入账前校验资金覆盖率红线", "当前仅支持 USDT 与 NEX")
+                ? List.of("入账前校验资金覆盖率红线", "目前只支持 USDT 和 UVT")
                 : List.of("扣减需要填写理由，并记入操作记录");
         return new UserAssetAdjustmentDetail(
                 adjustment,

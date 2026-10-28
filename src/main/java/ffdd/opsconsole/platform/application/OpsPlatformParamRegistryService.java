@@ -96,7 +96,7 @@ public class OpsPlatformParamRegistryService {
         int emergencyCount = 0;
         for (Map<String, Object> state : emergency) {
             String key = text(state.get("key"));
-            if (key.endsWith("-unavailable") || "加载失败".equals(text(state.get("status")))) {
+            if (key.endsWith("-unavailable") || Boolean.FALSE.equals(state.get("available"))) {
                 emergencyPartial = true;
                 continue;
             }

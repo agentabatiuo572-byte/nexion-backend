@@ -386,9 +386,9 @@ public class OpsEventCenterService {
         // batches are disabled. Keeping it outside the seed policy prevents a false A4 pending state.
         batches.add(new EventDomainExtensionBatch(
                 "j-schema",
-                "J 域 schema 批",
+                "应急事件登记",
                 "inprogress",
-                "应急域(J3/J4)",
+                "篡改防御监控 / 监管要求应急处理",
                 "篡改事件已登记并上线；应急处理事件还没登记",
                 List.of(new EventDomainItem("risk.tamper_detected", true),
                         new EventDomainItem("admin.emergency_playbook_*", false)),
