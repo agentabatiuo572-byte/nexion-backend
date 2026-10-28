@@ -381,7 +381,7 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.purchaseHardwareQuotas("stellarbox-pro")).thenReturn(
                 List.of(new CanonicalStateMapper.HardwareQuota("PRO", 2, new BigDecimal("1000"), 10, 3, "ALL", 1)));
         when(mapper.purchaseQuotaActiveDirect(42L)).thenReturn(2);
-        when(mapper.purchaseQuotaMonthlyVolume(42L)).thenReturn(BigDecimal.ZERO);
+        when(mapper.purchaseQuotaMonthlyComputePoints(42L)).thenReturn(BigDecimal.ZERO);
 
         var result = service.purchaseEligibility(42L, "stellarbox-pro");
 
@@ -394,9 +394,9 @@ class AppCanonicalBoundaryServiceTest {
                     assertThat(policy.eligible()).isFalse();
                     assertThat(policy.conditions())
                             .extracting(StorefrontPurchaseGatePolicy.Condition::kind)
-                            .contains("activeDirect", "teamVolumeUsd", "monthlyQuota");
+                            .contains("activeDirect", "teamComputePoints", "monthlyQuota");
                 });
-        verify(mapper).purchaseQuotaMonthlyVolume(42L);
+        verify(mapper).purchaseQuotaMonthlyComputePoints(42L);
     }
 
     @Test
@@ -409,7 +409,7 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.purchaseHardwareQuotas("stellarbox-pro")).thenReturn(
                 List.of(new CanonicalStateMapper.HardwareQuota("PRO", 2, new BigDecimal("1000"), 10, 3, "ALL", 1)));
         when(mapper.purchaseQuotaActiveDirect(42L)).thenReturn(2);
-        when(mapper.purchaseQuotaMonthlyVolume(42L)).thenReturn(new BigDecimal("1000"));
+        when(mapper.purchaseQuotaMonthlyComputePoints(42L)).thenReturn(new BigDecimal("1000"));
 
         var result = service.purchaseEligibility(42L, "stellarbox-pro");
 
@@ -427,7 +427,7 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.purchaseHardwareQuotas("stellarbox-pro")).thenReturn(
                 List.of(new CanonicalStateMapper.HardwareQuota("PRO", 2, new BigDecimal("1000"), 10, 3, "EITHER", 1)));
         when(mapper.purchaseQuotaActiveDirect(42L)).thenReturn(2);
-        when(mapper.purchaseQuotaMonthlyVolume(42L)).thenReturn(BigDecimal.ZERO);
+        when(mapper.purchaseQuotaMonthlyComputePoints(42L)).thenReturn(BigDecimal.ZERO);
 
         var result = service.purchaseEligibility(42L, "stellarbox-pro");
 
@@ -444,7 +444,7 @@ class AppCanonicalBoundaryServiceTest {
                 new CanonicalStateMapper.HardwareQuota("PRO", 2, new BigDecimal("1000"), 10, 3, "EITHER", 1),
                 new CanonicalStateMapper.HardwareQuota("PRO_SECOND", 1, new BigDecimal("500"), 6, 1, "ALL", 1)));
         when(mapper.purchaseQuotaActiveDirect(42L)).thenReturn(2);
-        when(mapper.purchaseQuotaMonthlyVolume(42L)).thenReturn(BigDecimal.ZERO, new BigDecimal("500"));
+        when(mapper.purchaseQuotaMonthlyComputePoints(42L)).thenReturn(BigDecimal.ZERO, new BigDecimal("500"));
 
         var denied = service.purchaseEligibility(42L, "stellarbox-pro");
         assertThat(denied.getData()).containsEntry("eligible", false)
@@ -476,7 +476,7 @@ class AppCanonicalBoundaryServiceTest {
     void purchaseEligibilityF4bMonthlyVolumeUsesUtcMonthBoundaryForPlusEightDatetimeStorage()
             throws NoSuchMethodException {
         String sql = CanonicalStateMapper.class
-                .getMethod("purchaseQuotaMonthlyVolume", Long.class)
+                .getMethod("purchaseQuotaMonthlyComputePoints", Long.class)
                 .getAnnotation(Select.class)
                 .value()[0];
 

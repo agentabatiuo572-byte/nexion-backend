@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
 /** Server-side evaluator for the structured purchase gate stored with a SKU. */
 @Component
 public class StorefrontPurchaseGatePolicy {
-    private static final Set<String> KEYS = Set.of("rankMin", "activeDirectMin", "teamVolumeMin", "mode",
+    private static final Set<String> KEYS = Set.of("rankMin", "activeDirectMin", "teamComputePointsMin", "mode",
             "quotaCap", "quotaSold", "quotaPeriod", "enforce");
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -24,14 +24,14 @@ public class StorefrontPurchaseGatePolicy {
             String mode = text(gate, "mode");
             Integer rank = integer(gate, "rankMin");
             Integer direct = integer(gate, "activeDirectMin");
-            BigDecimal volume = decimal(gate, "teamVolumeMin");
+            BigDecimal volume = decimal(gate, "teamComputePointsMin");
             Integer cap = integer(gate, "quotaCap");
             Integer sold = integer(gate, "quotaSold");
             if (rank == null && gate.hasNonNull("rankMin") || direct == null && gate.hasNonNull("activeDirectMin")
-                    || volume == null && gate.hasNonNull("teamVolumeMin") || cap == null && gate.hasNonNull("quotaCap")
+                    || volume == null && gate.hasNonNull("teamComputePointsMin") || cap == null && gate.hasNonNull("quotaCap")
                     || sold == null && gate.hasNonNull("quotaSold")) return Decision.closed("PURCHASE_GATE_INVALID");
             if ((cap != null && sold == null) || (cap == null && sold != null)) return Decision.closed("PURCHASE_GATE_INVALID");
-            if (rank != null && (rank < 0 || rank > 12) || direct != null && (direct < 0 || direct > 1_000_000) || cap != null && cap < 1
+            if (rank != null && (rank < 0 || rank > 8) || direct != null && (direct < 0 || direct > 1_000_000) || cap != null && cap < 1
                     || sold != null && sold < 0 || cap != null && sold != null && sold > cap
                     || volume != null && volume.signum() < 0) return Decision.closed("PURCHASE_GATE_INVALID");
             if (gate.hasNonNull("quotaPeriod") && (!gate.path("quotaPeriod").isTextual()
@@ -51,11 +51,11 @@ public class StorefrontPurchaseGatePolicy {
             } else if ("all".equals(mode)) {
                 eligible = (rank == null || rank <= facts.rank())
                         && (direct == null || direct <= facts.activeDirect())
-                        && (volume == null || volume.compareTo(facts.teamVolumeUsd()) <= 0);
+                        && (volume == null || volume.compareTo(facts.teamComputePoints()) <= 0);
             } else {
                 eligible = (rank != null && rank <= facts.rank())
                         || (direct != null && direct <= facts.activeDirect())
-                        || (volume != null && volume.compareTo(facts.teamVolumeUsd()) <= 0);
+                        || (volume != null && volume.compareTo(facts.teamComputePoints()) <= 0);
             }
             if (!eligible) return Decision.closed("PURCHASE_GATE_NOT_MET");
             return Decision.open();
@@ -76,12 +76,12 @@ public class StorefrontPurchaseGatePolicy {
             String mode = text(gate, "mode");
             Integer rank = integer(gate, "rankMin");
             Integer direct = integer(gate, "activeDirectMin");
-            BigDecimal volume = decimal(gate, "teamVolumeMin");
+            BigDecimal volume = decimal(gate, "teamComputePointsMin");
             Integer cap = integer(gate, "quotaCap");
             Integer sold = integer(gate, "quotaSold");
             boolean enforce = gate.path("enforce").asBoolean();
             if (!enforce) return new Projection(false, mode.toUpperCase(Locale.ROOT), List.of(), Decision.open());
-            if ((rank != null && (rank < 0 || rank > 12)) || (direct != null && (direct < 0 || direct > 1_000_000))
+            if ((rank != null && (rank < 0 || rank > 8)) || (direct != null && (direct < 0 || direct > 1_000_000))
                     || (volume != null && volume.signum() < 0) || (cap != null && cap < 1) || (sold != null && sold < 0)
                     || (cap != null && sold != null && sold > cap) || ((cap == null) != (sold == null))) {
                 return new Projection(true, mode.toUpperCase(Locale.ROOT), List.of(), Decision.closed("PURCHASE_GATE_INVALID"));
@@ -90,7 +90,7 @@ public class StorefrontPurchaseGatePolicy {
             java.util.ArrayList<Condition> conditions = new java.util.ArrayList<>();
             if (rank != null) conditions.add(threshold("rank", BigDecimal.valueOf(rank), BigDecimal.valueOf(safeFacts.rank())));
             if (direct != null) conditions.add(threshold("activeDirect", BigDecimal.valueOf(direct), BigDecimal.valueOf(safeFacts.activeDirect())));
-            if (volume != null) conditions.add(threshold("teamVolumeUsd", volume, safeFacts.teamVolumeUsd()));
+            if (volume != null) conditions.add(threshold("teamComputePoints", volume, safeFacts.teamComputePoints()));
             if (cap != null) conditions.add(quota("lifetimeQuota", BigDecimal.valueOf(cap), BigDecimal.valueOf(sold)));
             Decision decision = evaluate(raw, facts);
             return new Projection(true, mode.toUpperCase(Locale.ROOT), List.copyOf(conditions), decision);
@@ -129,15 +129,15 @@ public class StorefrontPurchaseGatePolicy {
         if (!("all".equals(mode) || "either".equals(mode)) || !gate.path("enforce").isBoolean()) return false;
         Integer rank = integer(gate, "rankMin");
         Integer direct = integer(gate, "activeDirectMin");
-        BigDecimal volume = decimal(gate, "teamVolumeMin");
+        BigDecimal volume = decimal(gate, "teamComputePointsMin");
         Integer cap = integer(gate, "quotaCap");
         Integer sold = integer(gate, "quotaSold");
         // Optional DTO fields serialize as null; only non-null values require a valid type.
         if (rank == null && gate.hasNonNull("rankMin") || direct == null && gate.hasNonNull("activeDirectMin")
-                || volume == null && gate.hasNonNull("teamVolumeMin") || cap == null && gate.hasNonNull("quotaCap")
+                || volume == null && gate.hasNonNull("teamComputePointsMin") || cap == null && gate.hasNonNull("quotaCap")
                 || sold == null && gate.hasNonNull("quotaSold")) return false;
         if ((cap != null && sold == null) || (cap == null && sold != null)) return false;
-        if (rank != null && (rank < 0 || rank > 12) || direct != null && (direct < 0 || direct > 1_000_000)
+        if (rank != null && (rank < 0 || rank > 8) || direct != null && (direct < 0 || direct > 1_000_000)
                 || cap != null && cap < 1 || sold != null && sold < 0
                 || cap != null && sold != null && sold > cap || volume != null && volume.signum() < 0) return false;
         return !gate.has("quotaPeriod") || (gate.path("quotaPeriod").isNull() && cap == null)
@@ -159,9 +159,9 @@ public class StorefrontPurchaseGatePolicy {
         return node.path(key).decimalValue();
     }
 
-    public record Facts(int rank, int activeDirect, BigDecimal teamVolumeUsd) {
+    public record Facts(int rank, int activeDirect, BigDecimal teamComputePoints) {
         public Facts {
-            if (rank < 0 || activeDirect < 0 || teamVolumeUsd == null || teamVolumeUsd.signum() < 0) {
+            if (rank < 0 || activeDirect < 0 || teamComputePoints == null || teamComputePoints.signum() < 0) {
                 throw new IllegalArgumentException("PURCHASE_GATE_FACTS_INVALID");
             }
         }

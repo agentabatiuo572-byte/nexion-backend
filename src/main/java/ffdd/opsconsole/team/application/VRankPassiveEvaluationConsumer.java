@@ -67,7 +67,7 @@ public class VRankPassiveEvaluationConsumer {
             }
             evaluateUser(userId, message);
             if (CHECKOUT_COMPLETED.equals(message.getEventType())) {
-                // Same L1-L7 relationship/depth as VRankPerformanceMapper.teamVolumeUSD.
+                // Same L1-L7 relationship/depth as VRankPerformanceMapper.teamComputePoints.
                 // A paid order changes ancestors' eligibility even if its buyer never promotes.
                 Set<Long> evaluated = new HashSet<>();
                 evaluated.add(userId);

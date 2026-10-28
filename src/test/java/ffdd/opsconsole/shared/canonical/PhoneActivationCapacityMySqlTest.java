@@ -423,7 +423,7 @@ class PhoneActivationCapacityMySqlTest {
 
     private void capacityKeepOrder(long user) {
         var row = new AppTradeinMapper.PaidOrderWrite(user, "ORDER-" + user, 1L, "capacity-box", "Synthetic box",
-                BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.ONE);
+                BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.ONE, null);
         assertThat(tradeinMapper.insertCapacityKeepOrder(row)).isEqualTo(1);
         assertThat(tradeinMapper.insertPaidOrderItem(row)).isEqualTo(1);
     }

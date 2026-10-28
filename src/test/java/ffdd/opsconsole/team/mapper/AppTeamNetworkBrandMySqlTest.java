@@ -31,7 +31,7 @@ class AppTeamNetworkBrandMySqlTest {
             JdbcTemplate jdbc = new JdbcTemplate(dataSource);
             jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,nickname VARCHAR(100),phone VARCHAR(32),sponsor_user_id BIGINT,status VARCHAR(20) DEFAULT 'ACTIVE',is_deleted INT DEFAULT 0,sandbox INT DEFAULT 0,avatar_url VARCHAR(100),v_rank VARCHAR(10) DEFAULT 'V1',created_at DATETIME DEFAULT CURRENT_TIMESTAMP,region VARCHAR(20))");
             jdbc.execute("CREATE TABLE nx_binary_leg_assignment(owner_user_id BIGINT,member_user_id BIGINT,leg VARCHAR(10))");
-            jdbc.execute("CREATE TABLE nx_order(user_id BIGINT,subtotal_usdt DECIMAL(20,6),payment_status VARCHAR(20),order_status VARCHAR(20),is_deleted INT,paid_at DATETIME,created_at DATETIME)");
+            jdbc.execute("CREATE TABLE nx_order(user_id BIGINT,compute_points BIGINT,payment_status VARCHAR(20),order_status VARCHAR(20),is_deleted INT,paid_at DATETIME,created_at DATETIME)");
             jdbc.update("INSERT INTO nx_user(id,nickname) VALUES(1,'Owner')");
             record NameCase(String raw, String phone, String expected) { }
             var names = List.of(
@@ -58,7 +58,7 @@ class AppTeamNetworkBrandMySqlTest {
                 var sample = names.get(i);
                 jdbc.update("INSERT INTO nx_user(id,nickname,phone,sponsor_user_id) VALUES(?,?,?,1)", 100 + i, sample.raw(), sample.phone());
                 jdbc.update("INSERT INTO nx_binary_leg_assignment VALUES(1,?,?)", 100 + i, i % 2 == 0 ? "A" : "B");
-                jdbc.update("INSERT INTO nx_order VALUES(?,19.90,'PAID','COMPLETED',0,DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 9 HOUR),NOW())", 100 + i);
+                jdbc.update("INSERT INTO nx_order VALUES(?,199,'PAID','COMPLETED',0,DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 9 HOUR),NOW())", 100 + i);
             }
             jdbc.update("INSERT INTO nx_user(id,nickname,phone,sponsor_user_id,sandbox,status,is_deleted) VALUES(900,'NexGrid 1051','18000001051',1,1,'ACTIVE',0),(901,'NexGrid 1051','18000001051',1,0,'DISABLED',0),(902,'NexGrid 1051','18000001051',1,0,'ACTIVE',1),(903,'NexGrid 1051','18000001051',900,1,'ACTIVE',0)");
             Configuration config = new Configuration(new Environment("network-brand-owned", new JdbcTransactionFactory(), dataSource));
@@ -74,7 +74,7 @@ class AppTeamNetworkBrandMySqlTest {
                     assertThat(row.nickname()).as("name boundary %s", i).isEqualTo(names.get(i).expected());
                     assertThat(row.leg()).isEqualTo(i % 2 == 0 ? "A" : "B");
                     assertThat(row.level()).isEqualTo(1);
-                    assertThat(row.monthVolumeUsdt()).isEqualByComparingTo("19.90");
+                    assertThat(row.monthComputePoints()).isEqualTo(199L);
                     assertThat(jdbc.queryForObject("SELECT nickname FROM nx_user WHERE id=?", String.class, 100 + i)).isEqualTo(names.get(i).raw());
                 }
                 assertThat(mapper.membersPage(1L, 105, 2)).extracting(AppTeamNetworkMapper.MemberRow::memberUserId).containsExactly(106L, 107L);

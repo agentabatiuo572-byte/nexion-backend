@@ -96,9 +96,12 @@ public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReser
                    (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
                      WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
                        AND child.status='ACTIVE' AND child.is_deleted=0) activeDirect,
-                   (SELECT COALESCE(SUM(tm.volume),0) FROM nx_team_member tm JOIN nx_user member
+                   (SELECT COALESCE(SUM(o.compute_points),0) FROM nx_team_member tm JOIN nx_user member
                      ON member.id=tm.member_user_id AND member.sandbox=u.sandbox
-                    WHERE tm.user_id=u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) teamVolumeUsd
+                     JOIN nx_order o ON o.user_id=tm.member_user_id AND o.is_deleted=0
+                      AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
+                      AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
+                    WHERE tm.user_id=u.id AND tm.member_user_id<>u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) teamComputePoints
               FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
             """)
     PurchaseFacts purchaseFacts(@Param("userId") Long userId);
@@ -180,6 +183,16 @@ public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReser
                          @Param("quotaReserved") boolean quotaReserved,
                          @Param("quotaGateGeneration") Long quotaGateGeneration);
 
+    /** Each bundle order keeps the sum of its lines' per-unit compute points at the time of ordering. */
+    @Update("""
+            UPDATE nx_order o
+               SET o.compute_points = (SELECT COALESCE(SUM(i.quantity * p.compute_points),0)
+                                         FROM nx_order_item i JOIN nx_product p ON p.id = i.product_id
+                                        WHERE i.order_no = o.order_no AND i.is_deleted = 0)
+             WHERE o.order_no = #{orderNo} AND o.is_deleted = 0
+            """)
+    int snapshotBundleComputePoints(@Param("orderNo") String orderNo);
+
     @Select("SELECT UNIX_TIMESTAMP(TIMESTAMPADD(MINUTE,#{ttlMinutes},created_at)) FROM nx_order WHERE order_no=#{orderNo} AND is_deleted=0")
     Long orderDeadlineEpoch(@Param("orderNo") String orderNo, @Param("ttlMinutes") Integer ttlMinutes);
 
@@ -208,5 +221,5 @@ public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReser
         }
     }
     record Attribution(String phase, Integer accountAgeMonths, String cohort) { }
-    record PurchaseFacts(Integer rank, Integer activeDirect, BigDecimal teamVolumeUsd) { }
+    record PurchaseFacts(Integer rank, Integer activeDirect, BigDecimal teamComputePoints) { }
 }

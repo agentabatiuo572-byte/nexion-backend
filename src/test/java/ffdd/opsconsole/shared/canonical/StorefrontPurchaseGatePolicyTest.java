@@ -59,9 +59,9 @@ class StorefrontPurchaseGatePolicyTest {
 
     @ParameterizedTest
     @ValueSource(strings = {
-            "\"rankMin\":\"2\"", "\"rankMin\":2.5", "\"rankMin\":13", "\"rankMin\":-1",
-            "\"activeDirectMin\":false", "\"activeDirectMin\":1000001", "\"teamVolumeMin\":\"200\"",
-            "\"teamVolumeMin\":-1", "\"quotaCap\":2,\"quotaSold\":null",
+            "\"rankMin\":\"2\"", "\"rankMin\":2.5", "\"rankMin\":9", "\"rankMin\":-1",
+            "\"activeDirectMin\":false", "\"activeDirectMin\":1000001", "\"teamComputePointsMin\":\"200\"",
+            "\"teamComputePointsMin\":-1", "\"quotaCap\":2,\"quotaSold\":null",
             "\"quotaCap\":null,\"quotaSold\":0", "\"quotaCap\":0,\"quotaSold\":0",
             "\"quotaCap\":2,\"quotaSold\":3", "\"quotaCap\":2,\"quotaSold\":0,\"quotaPeriod\":null",
             "\"quotaPeriod\":\"month\"", "\"quotaPeriod\":false",
@@ -84,10 +84,10 @@ class StorefrontPurchaseGatePolicyTest {
 
     @Test
     void acceptsStructuredAllGateOnlyWhenServerFactsMeetEveryCondition() {
-        var gate = "{\"rankMin\":2,\"activeDirectMin\":3,\"teamVolumeMin\":5000,\"mode\":\"all\",\"enforce\":true}";
-        assertThat(policy.evaluate(gate, new StorefrontPurchaseGatePolicy.Facts(2, 3, new BigDecimal("5000")))).isEqualTo(
+        var gate = "{\"rankMin\":2,\"activeDirectMin\":3,\"teamComputePointsMin\":50000,\"mode\":\"all\",\"enforce\":true}";
+        assertThat(policy.evaluate(gate, new StorefrontPurchaseGatePolicy.Facts(2, 3, new BigDecimal("50000")))).isEqualTo(
                 StorefrontPurchaseGatePolicy.Decision.open());
-        assertThat(policy.evaluate(gate, new StorefrontPurchaseGatePolicy.Facts(2, 2, new BigDecimal("5000"))).code())
+        assertThat(policy.evaluate(gate, new StorefrontPurchaseGatePolicy.Facts(2, 2, new BigDecimal("50000"))).code())
                 .isEqualTo("PURCHASE_GATE_NOT_MET");
     }
 
@@ -102,7 +102,7 @@ class StorefrontPurchaseGatePolicyTest {
 
     @Test
     void displayOnlyGateNeverBlocksOrConsumesQuotaAfterStructuralValidation() {
-        String gate = "{\"rankMin\":12,\"quotaCap\":1,\"quotaSold\":1,\"mode\":\"all\",\"enforce\":false}";
+        String gate = "{\"rankMin\":8,\"quotaCap\":1,\"quotaSold\":1,\"mode\":\"all\",\"enforce\":false}";
         assertThat(policy.evaluate(gate, new StorefrontPurchaseGatePolicy.Facts(0, 0, BigDecimal.ZERO)))
                 .isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
         assertThat(policy.hasQuota(gate)).isFalse();

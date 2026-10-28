@@ -3125,6 +3125,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (request.price() == null || request.price().compareTo(BigDecimal.ZERO) <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_PRICE_REQUIRED");
         }
+        if (request.computePoints() != null && request.computePoints() < 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_COMPUTE_POINTS_INVALID");
+        }
         if (request.phoneDailyEarn() != null) {
             String error = DeviceSkuSpecifications.validatePhoneDailyEarn(request.phoneDailyEarn());
             if (error != null) return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), error);
@@ -3200,10 +3203,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!"all".equals(gate.mode()) && !"either".equals(gate.mode())) {
             return ApiResult.fail(422, "SKU_PURCHASE_GATE_MODE_INVALID");
         }
-        if (gate.enforce() == null || (gate.rankMin() != null && (gate.rankMin() < 0 || gate.rankMin() > 12))
+        if (gate.enforce() == null || (gate.rankMin() != null && (gate.rankMin() < 0 || gate.rankMin() > 8))
                 || (gate.activeDirectMin() != null
                 && (gate.activeDirectMin() < 0 || gate.activeDirectMin() > 1_000_000))
-                || (gate.teamVolumeMin() != null && gate.teamVolumeMin().signum() < 0)
+                || (gate.teamComputePointsMin() != null && gate.teamComputePointsMin().signum() < 0)
                 || (gate.quotaCap() != null && gate.quotaCap() < 1)
                 || (gate.quotaSold() != null && gate.quotaSold() < 0)
                 || (gate.quotaCap() == null) != (gate.quotaSold() == null)
@@ -3293,7 +3296,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.reason(),
                 operator(request.operator()),
                 inventoryMode.name(),
-                request.trialEligible(), request.specDocumentTitle(), request.specDocumentUrl());
+                request.trialEligible(), request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints());
     }
 
     private DeviceSkuUpsertRequest withTrialEligible(DeviceSkuUpsertRequest request, boolean trialEligible) {
@@ -3308,7 +3311,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.lifecycle(), request.supersededBy(), request.tradeinDiscount(), request.unlockPhase(),
                 request.purchaseGate(), request.imageAssetId(), request.imageObjectKey(), request.imagePreviewUrl(),
                 request.tag(), request.status(), request.reason(), request.operator(), request.inventoryMode(),
-                trialEligible, request.specDocumentTitle(), request.specDocumentUrl());
+                trialEligible, request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints());
     }
 
     private ProductInventoryMode inventoryMode(String raw) {
@@ -5225,7 +5228,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 str(p, "unlockPhase"), buildPurchaseGate(p), str(p, "imageAssetId"),
                 str(p, "imageObjectKey"), str(p, "imagePreviewUrl"), str(p, "tag"),
                 str(p, "status"), reason, operator, str(p, "inventoryMode"),
-                boolVal(p, "trialEligible"), str(p, "specDocumentTitle"), str(p, "specDocumentUrl"));
+                boolVal(p, "trialEligible"), str(p, "specDocumentTitle"), str(p, "specDocumentUrl"), longVal(p, "computePoints"));
     }
 
     /** 从 replay params 的 purchaseGate 子 map 重建 DevicePurchaseGateView;缺失返回 null。 */
@@ -5237,7 +5240,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         Map<String, Object> m = new LinkedHashMap<>();
         map.forEach((k, v) -> m.put(String.valueOf(k), v));
         return new DevicePurchaseGateView(
-                intVal(m, "rankMin"), intVal(m, "activeDirectMin"), decimal(m, "teamVolumeMin"),
+                intVal(m, "rankMin"), intVal(m, "activeDirectMin"), decimal(m, "teamComputePointsMin"),
                 str(m, "mode"), intVal(m, "quotaCap"), intVal(m, "quotaSold"),
                 str(m, "quotaPeriod"), boolVal(m, "enforce"));
     }

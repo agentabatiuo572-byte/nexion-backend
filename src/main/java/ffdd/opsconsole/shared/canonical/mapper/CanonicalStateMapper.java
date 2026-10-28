@@ -109,11 +109,11 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
     Integer activeUserEnvironment(@Param("userId") Long userId);
 
     record UserLock(Long id, boolean sandbox) { }
-    record HardwareQuota(String quotaCode, Integer directRefs, BigDecimal monthVolumeUsd, Integer monthlyQuota,
+    record HardwareQuota(String quotaCode, Integer directRefs, BigDecimal monthComputePoints, Integer monthlyQuota,
                          Long usedThisMonth, String unlockMode, Integer status) {
-        public HardwareQuota(String quotaCode, Integer directRefs, BigDecimal monthVolumeUsd, Integer monthlyQuota,
+        public HardwareQuota(String quotaCode, Integer directRefs, BigDecimal monthComputePoints, Integer monthlyQuota,
                              long usedThisMonth, String unlockMode, Integer status) {
-            this(quotaCode, directRefs, monthVolumeUsd, monthlyQuota, Long.valueOf(usedThisMonth), unlockMode, status);
+            this(quotaCode, directRefs, monthComputePoints, monthlyQuota, Long.valueOf(usedThisMonth), unlockMode, status);
         }
     }
 
@@ -153,9 +153,12 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                    (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
                      WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
                        AND child.status='ACTIVE' AND child.is_deleted=0) AS activeDirect,
-                   (SELECT COALESCE(SUM(tm.volume),0) FROM nx_team_member tm JOIN nx_user member
+                   (SELECT COALESCE(SUM(o.compute_points),0) FROM nx_team_member tm JOIN nx_user member
                      ON member.id=tm.member_user_id AND member.sandbox=u.sandbox
-                    WHERE tm.user_id=u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) AS teamVolumeUsd
+                     JOIN nx_order o ON o.user_id=tm.member_user_id AND o.is_deleted=0
+                      AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
+                      AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
+                    WHERE tm.user_id=u.id AND tm.member_user_id<>u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) AS teamComputePoints
               FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
             """)
     PurchaseFacts purchaseFacts(@Param("userId") Long userId);
@@ -171,7 +174,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
     int purchaseQuotaActiveDirect(@Param("userId") Long userId);
 
     /**
-     * F4b month_volume_usd uses the same versioned month as quota usage.
+     * F4b month_compute_points uses the same versioned month as quota usage.
      * nx_order.paid_at remains a +08 DATETIME; quota usage remains UTC.
      * E1 retains its established accumulated nx_team_member volume definition.
      */
@@ -193,7 +196,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                    AND child.sandbox=s.sandbox AND child.status='ACTIVE' AND child.is_deleted=0
                  WHERE s.depth < 7
             )
-            SELECT COALESCE(SUM(o.subtotal_usdt),0)
+            SELECT COALESCE(SUM(o.compute_points),0)
               FROM subtree s
               LEFT JOIN nx_order o ON o.user_id=s.member_user_id
                AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
@@ -204,12 +207,12 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
 
                AND o.is_deleted=0
             """)
-    BigDecimal purchaseQuotaMonthlyVolume(@Param("userId") Long userId);
+    BigDecimal purchaseQuotaMonthlyComputePoints(@Param("userId") Long userId);
 
     /** All F4b rules tied to this SKU, in settlement lock order, with current versioned Vietnam-month usage. */
     @Select("""
             SELECT t.quota_code AS quotaCode, t.direct_refs AS directRefs,
-                   t.month_volume_usd AS monthVolumeUsd, t.monthly_quota AS monthlyQuota,
+                   t.month_compute_points AS monthComputePoints, t.monthly_quota AS monthlyQuota,
                    COALESCE(SUM(CASE WHEN u.is_deleted=0 AND UPPER(u.status)='ACTIVE'
                          AND u.occurred_at>=""" + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
 
@@ -220,7 +223,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
               FROM nx_team_hardware_quota_tier t
               LEFT JOIN nx_team_hardware_quota_usage u ON u.quota_tier_id=t.id
              WHERE t.product_no=#{productNo} AND t.is_deleted=0
-             GROUP BY t.id,t.quota_code,t.direct_refs,t.month_volume_usd,t.monthly_quota,t.unlock_mode,t.status
+             GROUP BY t.id,t.quota_code,t.direct_refs,t.month_compute_points,t.monthly_quota,t.unlock_mode,t.status
              ORDER BY t.id ASC
             """)
     List<HardwareQuota> purchaseHardwareQuotas(@Param("productNo") String productNo);
@@ -857,11 +860,12 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
     @Insert("""
             INSERT INTO nx_order (
               user_id, order_no, product_id, quantity, order_type, item_count,
-              subtotal_usdt, discount_usdt, amount_usdt, payment_status,
+              subtotal_usdt, discount_usdt, amount_usdt, compute_points, payment_status,
               order_status, activation_status, created_at, updated_at, is_deleted
             ) VALUES (
               #{userId}, #{orderNo}, #{productId}, #{quantity}, 'SINGLE', #{quantity},
-              #{subtotalUsdt}, #{discountUsdt}, #{amountUsdt}, 'PENDING',
+              #{subtotalUsdt}, #{discountUsdt}, #{amountUsdt},
+              #{quantity} * (SELECT compute_points FROM nx_product WHERE id = #{productId}), 'PENDING',
               'PENDING_PAYMENT', 'WAITING_PAYMENT', NOW(), NOW(), 0
             )
             """)
@@ -1208,7 +1212,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
     record UserEventAttribution(String phase, Integer accountAgeMonths, String cohort) {
     }
 
-    record PurchaseFacts(Integer rank, Integer activeDirect, BigDecimal teamVolumeUsd) {
+    record PurchaseFacts(Integer rank, Integer activeDirect, BigDecimal teamComputePoints) {
     }
 
     record UserOrder(

@@ -12,9 +12,9 @@ import org.apache.ibatis.annotations.Select;
  *
  * <p>对应 {@link ffdd.opsconsole.team.domain.VRankPerformanceRepository} 的 4 个聚合查询:
  * <ol>
- *   <li>{@link #selfBuyUSD} — 用户自己已付订单的 SUM(subtotal_usdt)</li>
- *   <li>{@link #teamVolumeUSD} — L1-L7 递归 CTE 子树所有成员 selfBuy 之和(限深 7,不含自己)</li>
- *   <li>{@link #directRefsCount} — L1 直接成员中 selfBuy ≥ V1 门槛的 COUNT DISTINCT</li>
+ *   <li>{@link #selfComputePoints} — 用户自己已付订单的 SUM(compute_points)</li>
+ *   <li>{@link #teamComputePoints} — L1-L7 递归 CTE 子树所有成员自购算力点之和(限深 7,不含自己)</li>
+ *   <li>{@link #directRefsCount} — L1 直接成员中自购算力点 ≥ V1 门槛的 COUNT DISTINCT</li>
  *   <li>{@link #legCountsByLevel} — L1 直接成员按 v_rank 阶数字分组的成员数</li>
  * </ol>
  *
@@ -25,19 +25,19 @@ import org.apache.ibatis.annotations.Select;
  */
 public interface VRankPerformanceMapper extends BaseMapper<Object> {
 
-    /** 用户自己已付订单 SUM(subtotal_usdt)。 */
+    /** 用户自己已付订单 SUM(compute_points)。 */
     @Select("""
-            SELECT COALESCE(SUM(o.subtotal_usdt), 0)
+            SELECT COALESCE(SUM(o.compute_points), 0)
               FROM nx_order o
              WHERE o.user_id = #{userId}
                AND o.payment_status IN ('PAID', 'CONFIRMED', 'SUCCESS')
                AND o.order_status NOT IN ('REFUNDED', 'CHARGEBACK')
                AND o.is_deleted = 0
             """)
-    BigDecimal selfBuyUSD(@Param("userId") Long userId);
+    long selfComputePoints(@Param("userId") Long userId);
 
     /**
-     * L1-L7 子树所有成员 selfBuy 之和(WITH RECURSIVE 限深 7,不含用户自己)。
+     * L1-L7 子树所有成员自购算力点之和(WITH RECURSIVE 限深 7,不含用户自己)。
      *
      * <p>递归 CTE 起点:user_id=userId AND level=1 的直接成员(depth=1);
      * 递归步:加入 level=1 直接父子边扩展深度,WHERE s.depth &lt; 7 终止。
@@ -58,7 +58,7 @@ public interface VRankPerformanceMapper extends BaseMapper<Object> {
                    AND c.is_deleted = 0
                  WHERE s.depth < 7
             )
-            SELECT COALESCE(SUM(o.subtotal_usdt), 0)
+            SELECT COALESCE(SUM(o.compute_points), 0)
               FROM subtree s
               LEFT JOIN nx_order o
                 ON o.user_id = s.member_user_id
@@ -66,12 +66,12 @@ public interface VRankPerformanceMapper extends BaseMapper<Object> {
                AND o.order_status NOT IN ('REFUNDED', 'CHARGEBACK')
                AND o.is_deleted = 0
             """)
-    BigDecimal teamVolumeUSD(@Param("userId") Long userId);
+    long teamComputePoints(@Param("userId") Long userId);
 
     /**
-     * L1 直接成员中 selfBuy ≥ v1SelfBuyThreshold 的 COUNT DISTINCT。
+     * L1 直接成员中自购算力点 ≥ v1SelfComputePoints 的 COUNT DISTINCT。
      *
-     * @param v1SelfBuyThreshold V1 阶 self_buy_usd 门槛(来自 nx_v_rank_config)
+     * @param v1SelfComputePoints V1 阶 self_compute_points 门槛(来自 nx_v_rank_config)
      */
     @Select("""
             SELECT COUNT(*) FROM (
@@ -86,14 +86,14 @@ public interface VRankPerformanceMapper extends BaseMapper<Object> {
                    AND m.level = 1
                    AND m.is_deleted = 0
                  GROUP BY m.member_user_id
-                HAVING COALESCE(SUM(o.subtotal_usdt), 0) >= #{v1SelfBuyThreshold}
+                HAVING COALESCE(SUM(o.compute_points), 0) >= #{v1SelfComputePoints}
             ) AS qualified_refs
             """)
     int directRefsCount(@Param("userId") Long userId,
-                        @Param("v1SelfBuyThreshold") BigDecimal v1SelfBuyThreshold);
+                        @Param("v1SelfComputePoints") long v1SelfComputePoints);
 
     /**
-     * L1 直接成员按 v_rank 阶数字分组计数(V0=0..V12=12)。
+     * L1 直接成员按 v_rank 阶数字分组计数(V0=0..V8=8)。
      *
      * <p>返回每行 {@code (vLevel, memberCount)},v_level 已 CAST 为 INT。
      * 引擎消费时:legCounts[targetV] = SUM(memberCount WHERE vLevel >= targetV)。
@@ -115,16 +115,16 @@ public interface VRankPerformanceMapper extends BaseMapper<Object> {
     List<Map<String, Object>> legCountsByLevel(@Param("userId") Long userId);
 
     /**
-     * 读 V1 阶 self_buy_usd 门槛(供 directRefs 阈值用)。
+     * 读 V1 阶 self_compute_points 门槛(供 directRefs 阈值用)。
      * V1 行不存在时返回 0(口径退化:无 V1 配置时 directRefs 永远满足,需上层规避)。
      */
     @Select("""
-            SELECT COALESCE(self_buy_usd, 0)
+            SELECT COALESCE(self_compute_points, 0)
               FROM nx_v_rank_config
              WHERE rank_code = 'V1'
                AND is_deleted = 0
                AND status = 1
              LIMIT 1
             """)
-    BigDecimal v1SelfBuyThreshold();
+    Long v1SelfComputePoints();
 }

@@ -44,9 +44,9 @@ import org.springframework.util.StringUtils;
  * <h2>meetsAllConditions 字段规则</h2>
  * <ul>
  *   <li>字段 &gt; 0 才作为条件(缺失/null/0 视为该阶不要求此维度)。</li>
- *   <li>{@code self_buy_usd>0}:snapshot.selfBuyUSD &gt;= config。</li>
+ *   <li>{@code self_compute_points>0}:snapshot.selfComputePoints &gt;= config。</li>
  *   <li>{@code direct_refs>0}:snapshot.directRefs &gt;= config。</li>
- *   <li>{@code team_volume_usd>0}:snapshot.teamVolumeUSD &gt;= config。</li>
+ *   <li>{@code team_compute_points>0}:snapshot.teamComputePoints &gt;= config。</li>
  *   <li>{@code required_downline_count>0}:parse({@code required_downline_rank}) → targetV level,
  *       cumulativeLegCount(legCounts, targetV) &gt;= count。采用累加语义:
  *       L1 成员中 v_rank &gt;= targetV 的全部计入(即"达到 V{n} 阶的腿数")。
@@ -66,9 +66,9 @@ public class VRankPromotionEngine {
     /** 配置 key:F.vrank.permanent 不降级开关("on"/"off")。 */
     private static final String CONFIG_KEY_VRANK_PERMANENT = "team.ui.F.vrank.permanent";
 
-    /** 阶代码列表,索引对齐 sort_order(V0=0..V12=12)。 */
+    /** 阶代码列表,索引对齐 sort_order(V0=0..V8=8)。 */
     private static final List<String> VRANK_CODES = List.of(
-            "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11", "V12");
+            "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8");
 
     private final TeamCommissionRepository commissionRepository;
     private final VRankPerformanceRepository performanceRepository;
@@ -194,11 +194,9 @@ public class VRankPromotionEngine {
         if (target == null) {
             return false;
         }
-        // self_buy_usd > 0 → snapshot.selfBuyUSD >= config
-        if (gt(target.selfBuyUsd())) {
-            if (snapshot.selfBuyUSD().compareTo(target.selfBuyUsd()) < 0) {
-                return false;
-            }
+        // self_compute_points > 0 → snapshot.selfComputePoints >= config
+        if (target.selfComputePoints() > 0 && snapshot.selfComputePoints() < target.selfComputePoints()) {
+            return false;
         }
         // direct_refs > 0 → snapshot.directRefs >= config
         if (target.directRefs() > 0) {
@@ -206,11 +204,9 @@ public class VRankPromotionEngine {
                 return false;
             }
         }
-        // team_volume_usd > 0 → snapshot.teamVolumeUSD >= config
-        if (gt(target.teamVolumeUsd())) {
-            if (snapshot.teamVolumeUSD().compareTo(target.teamVolumeUsd()) < 0) {
-                return false;
-            }
+        // team_compute_points > 0 → snapshot.teamComputePoints >= config
+        if (target.teamComputePoints() > 0 && snapshot.teamComputePoints() < target.teamComputePoints()) {
+            return false;
         }
         // required_downline_count > 0 → legCounts[targetV] >= count
         if (target.requiredDownlineCount() > 0) {
@@ -243,7 +239,7 @@ public class VRankPromotionEngine {
         return sum;
     }
 
-    /** "V3" → 3;"V12" → 12;非法 → null。 */
+    /** "V3" → 3;"V8" → 8;非法 → null。 */
     Integer parseRankLevel(String rankCode) {
         if (!StringUtils.hasText(rankCode)) {
             return null;
@@ -300,16 +296,15 @@ public class VRankPromotionEngine {
     }
 
     /**
-     * Returns the V1 self-buy threshold used to qualify a direct referral, or {@code null}
-     * when V1 is absent. Null/zero self-buy on an existing V1 means no positive minimum,
-     * matching VRankPerformanceMapper.v1SelfBuyThreshold and its COALESCE semantics.
+     * Returns the V1 self compute-point threshold used to qualify a direct referral, or {@code null}
+     * when V1 is absent. Zero on an existing V1 means no positive minimum,
+     * matching VRankPerformanceMapper.v1SelfComputePoints and its COALESCE semantics.
      */
-    public BigDecimal qualifiedReferralSelfBuyUsd() {
+    public Long qualifiedReferralSelfComputePoints() {
         VRankConfigRow v1 = rankByIndex(commissionRepository.vRankConfigRows(), 1);
         if (v1 == null) return null;
-        BigDecimal threshold = v1.selfBuyUsd() == null ? BigDecimal.ZERO : v1.selfBuyUsd();
-        if (threshold.signum() < 0) throw new IllegalStateException("V_RANK_THRESHOLD_INVALID");
-        return threshold;
+        if (v1.selfComputePoints() < 0) throw new IllegalStateException("V_RANK_THRESHOLD_INVALID");
+        return v1.selfComputePoints();
     }
 
     private String serializeSnapshot(VRankEvaluationSnapshot snapshot) {
@@ -317,8 +312,8 @@ public class VRankPromotionEngine {
             return null;
         }
         Map<String, Object> json = new LinkedHashMap<>();
-        json.put("selfBuyUSD", snapshot.selfBuyUSD());
-        json.put("teamVolumeUSD", snapshot.teamVolumeUSD());
+        json.put("selfComputePoints", snapshot.selfComputePoints());
+        json.put("teamComputePoints", snapshot.teamComputePoints());
         json.put("directRefs", snapshot.directRefs());
         json.put("legCounts", snapshot.legCounts());
         try {

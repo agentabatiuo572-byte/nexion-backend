@@ -59,7 +59,7 @@ class VRankPromotionReplayMySqlIntegrationTest {
         jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,v_rank VARCHAR(16),updated_at DATETIME,is_deleted INT DEFAULT 0) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_team_member(id BIGINT PRIMARY KEY,user_id BIGINT,member_user_id BIGINT,level INT,v_rank VARCHAR(16),updated_at DATETIME,is_deleted INT DEFAULT 0) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_sponsorship(user_id BIGINT PRIMARY KEY,sponsor_user_id BIGINT,is_deleted INT DEFAULT 0) ENGINE=InnoDB");
-        jdbc.execute("CREATE TABLE nx_v_rank_config(id BIGINT PRIMARY KEY,rank_code VARCHAR(16),self_buy_usd DECIMAL(18,6),direct_refs INT,team_volume_usd DECIMAL(18,6),required_downline_rank VARCHAR(16),required_downline_count INT,sort_order INT,unilevel_depth VARCHAR(64),peer_bonus_rate DECIMAL(18,6),leadership_votes INT,status INT DEFAULT 1,is_deleted INT DEFAULT 0) ENGINE=InnoDB");
+        jdbc.execute("CREATE TABLE nx_v_rank_config(id BIGINT PRIMARY KEY,rank_code VARCHAR(16),self_compute_points DECIMAL(18,6),direct_refs INT,team_compute_points DECIMAL(18,6),required_downline_rank VARCHAR(16),required_downline_count INT,sort_order INT,unilevel_depth VARCHAR(64),peer_bonus_rate DECIMAL(18,6),leadership_votes INT,status INT DEFAULT 1,is_deleted INT DEFAULT 0) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_user_level_log(id BIGINT AUTO_INCREMENT PRIMARY KEY,user_id BIGINT,level_type VARCHAR(16),from_code VARCHAR(16),to_code VARCHAR(16),reason VARCHAR(64),operator VARCHAR(64),snapshot JSON,trigger_event_id VARCHAR(64),audit_no VARCHAR(64),is_manual INT) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE fixture_reward_effect(rank_code VARCHAR(16)) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_audit_log(id BIGINT PRIMARY KEY,biz_no VARCHAR(96),is_deleted INT DEFAULT 0) ENGINE=InnoDB");
@@ -85,7 +85,7 @@ class VRankPromotionReplayMySqlIntegrationTest {
         jdbc.update("INSERT INTO nx_user(id,v_rank) VALUES(100,'V0')");
         jdbc.update("INSERT INTO nx_team_member(id,user_id,member_user_id,level,v_rank) VALUES(1,100,100,0,'V0')");
         jdbc.update("INSERT INTO nx_sponsorship(user_id,sponsor_user_id) VALUES(200,100)");
-        jdbc.update("INSERT INTO nx_v_rank_config(id,rank_code,self_buy_usd,direct_refs,team_volume_usd,required_downline_count,sort_order,peer_bonus_rate,leadership_votes) VALUES(1,'V0',0,0,0,0,0,0,0),(2,'V1',500,3,0,0,1,0,0),(3,'V2',0,0,5000,0,2,0,0)");
+        jdbc.update("INSERT INTO nx_v_rank_config(id,rank_code,self_compute_points,direct_refs,team_compute_points,required_downline_count,sort_order,peer_bonus_rate,leadership_votes) VALUES(1,'V0',0,0,0,0,0,0,0),(2,'V1',500,3,0,0,1,0,0),(3,'V2',0,0,5000,0,2,0,0)");
         var configuration = new Configuration(new Environment("vrank-replay-isolated", new SpringManagedTransactionFactory(), source));
         configuration.addMapper(TeamCommissionMapper.class);
         configuration.addMapper(EventConsumerDeliveryMapper.class);
@@ -100,7 +100,7 @@ class VRankPromotionReplayMySqlIntegrationTest {
         doReturn(0).when(outbox).retireUnlinkedC1ProfileEvidence(anyInt());
         doReturn(0).when(outbox).requeuePublishedPendingBinding(anyString(), anyString());
         var performance = mock(VRankPerformanceRepository.class);
-        when(performance.computeSnapshot(100L)).thenReturn(new VRankEvaluationSnapshot(new BigDecimal("500"), new BigDecimal("6000"), 3, Map.of()));
+        when(performance.computeSnapshot(100L)).thenReturn(new VRankEvaluationSnapshot(500L, 6000L, 3, Map.of()));
         var config = mock(PlatformConfigFacade.class);
         when(config.activeValue(anyString())).thenReturn(Optional.empty());
         var rewards = mock(VRankRewardDispatcher.class);

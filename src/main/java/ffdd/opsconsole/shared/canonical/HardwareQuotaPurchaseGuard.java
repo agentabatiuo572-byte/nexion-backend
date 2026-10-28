@@ -17,7 +17,7 @@ public final class HardwareQuotaPurchaseGuard {
         if (tiers == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
         boolean needsFacts = tiers.stream().anyMatch(tier -> tier != null
                 && ((tier.directRefs() != null && tier.directRefs() > 0)
-                || (tier.monthVolumeUsd() != null && tier.monthVolumeUsd().signum() > 0)));
+                || (tier.monthComputePoints() != null && tier.monthComputePoints().signum() > 0)));
         var month = HardwareQuotaPeriod.atUtc(occurredAtUtc);
         var facts = needsFacts ? mapper.hardwarePurchaseFacts(userId, month.fromOrderStorage(), month.untilOrderStorage()) : null;
         if (needsFacts && facts == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
@@ -26,8 +26,8 @@ public final class HardwareQuotaPurchaseGuard {
                 throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
             }
             if (!Integer.valueOf(1).equals(tier.status())) throw new BizException(409, "ORDER_MONTHLY_QUOTA_PAUSED");
-            if (!requirementsMet(tier.directRefs(), tier.monthVolumeUsd(), tier.unlockMode(),
-                    facts == null ? null : facts.activeDirect(), facts == null ? null : facts.monthlyVolumeUsd())) {
+            if (!requirementsMet(tier.directRefs(), tier.monthComputePoints(), tier.unlockMode(),
+                    facts == null ? null : facts.activeDirect(), facts == null ? null : facts.monthlyComputePoints())) {
                 throw new BizException(409, "ORDER_MONTHLY_QUOTA_REQUIREMENTS_NOT_MET");
             }
             var usage = mapper.lockHardwarePurchaseUsage(tier.id(), month.fromUtc(), month.untilUtc());

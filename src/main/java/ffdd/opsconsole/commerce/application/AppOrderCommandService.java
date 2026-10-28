@@ -253,7 +253,7 @@ public class AppOrderCommandService {
         if (monthlyQuotas == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
         boolean quotaPrerequisitesRequired = monthlyQuotas.stream().anyMatch(tier -> tier != null
                 && ((tier.directRefs() != null && tier.directRefs() > 0)
-                || (tier.monthVolumeUsd() != null && tier.monthVolumeUsd().signum() > 0)));
+                || (tier.monthComputePoints() != null && tier.monthComputePoints().signum() > 0)));
         AppOrderCommandMapper.PurchaseQuotaFacts quotaFacts = quotaPrerequisitesRequired
                 ? mapper.purchaseQuotaFacts(userId, quotaMonth.fromOrderStorage(), quotaMonth.untilOrderStorage()) : null;
         if (quotaPrerequisitesRequired && quotaFacts == null) {
@@ -362,7 +362,7 @@ public class AppOrderCommandService {
                                                    AppOrderCommandMapper.PurchaseQuotaFacts facts) {
         if (facts == null) return false;
         return ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard.requirementsMet(
-                tier.directRefs(), tier.monthVolumeUsd(), tier.unlockMode(), facts.activeDirect(), facts.monthlyVolumeUsd());
+                tier.directRefs(), tier.monthComputePoints(), tier.unlockMode(), facts.activeDirect(), facts.monthlyComputePoints());
     }
 
     private boolean validWallet(AppOrderCommandMapper.DevelopmentWallet wallet) {
