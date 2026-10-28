@@ -50,9 +50,11 @@ public class PhoneCalibrationAdminController {
         var service = new PhoneCalibrationConfigService(config, clock);
         var policy = service.candidate(request.proposal(), service.read());
         long matched = 0, changed = 0, pending = 0;
+        // iPhone groups split per allocated value, so many groups share one hardware match.
+        Map<PhoneCalibrationPolicy.Hardware, PhoneCalibrationPolicy.Match> matches = new java.util.HashMap<>();
         for (var group : mapper.calibrationHardwareGroups()) {
-            var result = policy.match(new PhoneCalibrationPolicy.Hardware(group.platform(), group.model(),
-                    group.soc(), group.gpu(), group.memoryGb()));
+            var result = matches.computeIfAbsent(new PhoneCalibrationPolicy.Hardware(group.platform(), group.model(),
+                    group.soc(), group.gpu(), group.memoryGb()), policy::match);
             if (!result.matched()) pending += group.count();
             else {
                 matched += group.count();

@@ -60,7 +60,8 @@ class IosModelCalibrationServiceTest {
                 });
         when(mapper.iosRangeAllocations(9L, "PRODUCTION", "")).thenAnswer(call -> {
             var newestFirst = new java.util.ArrayList<>(table.values().stream()
-                    .map(CalibrationRow::derivedJson).filter(json -> json.contains("IOS_MODEL_RANGE")).toList());
+                    .map(CalibrationRow::derivedJson)
+                    .filter(json -> json.contains("IOS_MODEL_RANGE") || json.contains("iosAllocations")).toList());
             java.util.Collections.reverse(newestFirst);
             return newestFirst;
         });
@@ -85,6 +86,17 @@ class IosModelCalibrationServiceTest {
         assertThat(new BigDecimal(reinstall.get("computeValue").toString())).isEqualByComparingTo(value);
         assertThat(new BigDecimal(service.result(9L, "install-a").getData().get("computeValue").toString()))
                 .isEqualByComparingTo(value);
+    }
+
+    @Test void aDetourThroughAnotherReportedModelOnTheSameInstallCannotDrawAgain() {
+        BigDecimal value = new BigDecimal(calibrate("install-a", 0, "key-first-01", "iPhone 16 Pro").getData().get("computeValue").toString());
+        for (int i = 0; i < 10; i++) {
+            var detour = calibrate("install-a", table.get("install-a").rowVersion(), "key-detour-" + 10 + i, "iPhone99,9").getData();
+            assertThat(detour).containsEntry("calibrationStatus", "PENDING_VERIFICATION").doesNotContainKey("iosAllocations");
+            var back = calibrate("install-a", table.get("install-a").rowVersion(), "key-back-" + 10 + i, "iPhone 16 Pro").getData();
+            assertThat(new BigDecimal(back.get("computeValue").toString())).isEqualByComparingTo(value);
+            assertThat(back).doesNotContainKey("iosAllocations");
+        }
     }
 
     @Test void capacityIsNotPartOfTheModelAndCannotChangeTheAllocation() {

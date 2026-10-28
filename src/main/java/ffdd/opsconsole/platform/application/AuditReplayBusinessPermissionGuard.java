@@ -176,8 +176,16 @@ public class AuditReplayBusinessPermissionGuard {
                         || proposal.effectiveAt() > System.currentTimeMillis() + 366L * 86400000) {
                     return ApiResult.fail(422, "PHONE_CALIBRATION_PROPOSAL_INVALID");
                 }
+                var iosModelRules = proposal.iosModelRules();
+                if (iosModelRules == null) {
+                    // Such a proposal publishes the latest iPhone rules, so check the policy that will actually be written.
+                    var state = new ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService(configFacade,
+                            java.time.Clock.systemUTC()).read();
+                    var latest = state.scheduled() != null ? state.scheduled() : state.current();
+                    iosModelRules = latest == null ? List.of() : latest.iosModelRules();
+                }
                 new ffdd.opsconsole.onboarding.application.PhoneCalibrationPolicy(1, System.currentTimeMillis(),
-                        proposal.thresholds(), proposal.rules(), proposal.iosModelRules()).validate();
+                        proposal.thresholds(), proposal.rules(), iosModelRules).validate();
             } catch (RuntimeException invalid) {
                 return ApiResult.fail(422, "PHONE_CALIBRATION_PROPOSAL_INVALID");
             }
