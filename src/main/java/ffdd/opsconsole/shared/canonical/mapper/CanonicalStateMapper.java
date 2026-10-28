@@ -1282,6 +1282,18 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
         }
     }
 
+    /** Redeemed trial claims; the settlement snapshot names the conversion order and its discounts. */
+    record TrialConversion(String settlementSnapshot, BigDecimal rewardUsdt, BigDecimal rewardNex) {
+    }
+
+    @Select("""
+            SELECT settlement_snapshot AS settlementSnapshot, remainder_usdt AS rewardUsdt,
+                   COALESCE(settled_trial_nex, shadow_accrued_nex) AS rewardNex
+              FROM nx_trial_claim
+             WHERE user_id = #{userId} AND is_deleted = 0 AND UPPER(status) = 'REDEEMED'
+            """)
+    List<TrialConversion> trialConversions(@Param("userId") Long userId);
+
     record UserOrderLineItem(String sku, String name, Integer quantity,
                              BigDecimal unitPriceUsdt, BigDecimal lineAmountUsdt, Long orderLineId) {
         public UserOrderLineItem(String sku, String name, Integer quantity, BigDecimal unitPriceUsdt, BigDecimal lineAmountUsdt) {
