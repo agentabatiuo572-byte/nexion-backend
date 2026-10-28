@@ -28,6 +28,20 @@ class OpsOptionsServiceTest {
     }
 
     @Test
+    void retiredTicketOptionGroupsAreGoneAndFaqOptionsNoLongerOfferTheTicketSurface() {
+        for (String name : List.of("support-ticket-category", "support-ticket-categories", "support-ticket-status",
+                "support-ticket-statuses", "support-ticket-priority", "support-ticket-priorities")) {
+            var result = service.options("content", name);
+            assertThat(result.getCode()).as(name).isEqualTo(404);
+            assertThat(result.getMessage()).as(name).isEqualTo("OPTION_NOT_FOUND");
+        }
+        assertThat(service.options("content", "support-faq-surfaces").getData()).extracting(AdminOption::value)
+                .containsExactly("Help Center", "Nova");
+        assertThat(service.options("content", "support-faq-categories").getData()).extracting(AdminOption::value)
+                .containsExactly("general", "account", "withdrawal", "deposit", "hardware", "earnings", "genesis", "technical", "other");
+    }
+
+    @Test
     void novaTemplateCtasComeFromDynamicOptionsEndpoint() {
         List<AdminOption> options = service.options("content", "nova-template-ctas").getData();
 

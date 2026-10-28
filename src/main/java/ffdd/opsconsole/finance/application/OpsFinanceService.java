@@ -132,6 +132,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper;
     private final Clock clock;
     private final WithdrawalRiskTimePolicy riskTimePolicy;
+    private final ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
 
     public ApiResult<Map<String, Object>> topupOverview() {
         ensureD1FallbackSeedData();
@@ -2809,6 +2810,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     @Override
     public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
         Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+        if ("d_cregis_deposit_policy".equals(cmd.op())) return ApiResult.ok(depositPolicies.publish(p,ctx.operator()));
         String withdrawalNo = String.valueOf(p.get("withdrawalNo"));
         String action;
         switch (cmd.op()) {

@@ -18,7 +18,6 @@ public class OpsSupportCommandController {
     private final AdminIdempotencyRecordMapper records;
     private final SupportOwnershipService ownership;
     private final ObjectMapper json;
-    private final ffdd.opsconsole.content.domain.SupportTicketRepository tickets;
     private final ffdd.opsconsole.content.application.SupportBindingRandomService random;
     private final ffdd.opsconsole.content.application.SupportBulkService bulk;
     private final ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper timeoutPolicy;
@@ -31,12 +30,12 @@ public class OpsSupportCommandController {
             "SUPPORT_GROUP_MEMBER","SUPPORT_GROUP_QUALIFICATION","SUPPORT_GROUP_ROUTE");
 
     @GetMapping("/api/admin/content/support-workbench/commands/{key}")
-    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m2_read','service_m3_read','platform_a1_read')")
+    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read','platform_a1_read')")
     @Transactional
     public ApiResult<Map<String,Object>> recover(@PathVariable String key) throws com.fasterxml.jackson.core.JsonProcessingException {
         if(key==null || key.isBlank() || key.length()>128) throw new BizException(422,"IDEMPOTENCY_KEY_INVALID");
         long actor=ownership.actorId();
-        boolean supportRead=List.of("service_m1_read","service_m2_read","service_m3_read").stream().anyMatch(SupportOwnershipService::hasAuthority);
+        boolean supportRead=List.of("service_m1_read","service_m3_read").stream().anyMatch(SupportOwnershipService::hasAuthority);
         List<String> scopes=new ArrayList<>(SCOPES.stream().filter(s->supportRead || s.equals("SUPPORT_GROUP_QUALIFICATION"))
                 .map(s->s+":"+actor).toList());
         // Legacy timeout keys are global; only their existing configuration writers may recover them.
@@ -52,6 +51,8 @@ public class OpsSupportCommandController {
         if(found.size()!=1) throw new BizException(409,"SUPPORT_COMMAND_AMBIGUOUS");
         var receipt=found.get(0);
         if(!scopes.contains(receipt.getScope())) throw new BizException(404,"SUPPORT_COMMAND_NOT_FOUND");
+        // Ticket workflows are retired; their historical receipts (M2_*, M3_CONVERSATION_TO_TICKET) stay listed in
+        // SCOPES only so a lost response resolves to 410 instead of being replayed or reported as missing.
         if(receipt.getScope().contains("TICKET")) throw new BizException(410,"SUPPORT_TICKETS_RETIRED");
         if(receipt.getScope().startsWith("SUPPORT_GROUP_")) {
             if(key.length()>96)throw new BizException(422,"IDEMPOTENCY_KEY_INVALID");
@@ -82,7 +83,7 @@ public class OpsSupportCommandController {
             return ApiResult.ok(Map.of("status","SUCCEEDED","resultType",receipt.getScope().split(":")[0],
                     "result",bulk.detail(result.path("batchId").asText())));
         }
-        String permission=receipt.getScope().startsWith("M3_")?"service_m3_read":receipt.getScope().startsWith("M2_")?"service_m2_read":"service_m1_read";
+        String permission=receipt.getScope().startsWith("M3_")?"service_m3_read":"service_m1_read";
         if(!SupportOwnershipService.hasAuthority(permission)) throw new BizException(403,"SUPPORT_COMMAND_READ_FORBIDDEN");
         if(receipt.getScope().startsWith("SUPPORT_RANDOM:")) return ApiResult.ok(random.recover(key));
         if(!"SUCCEEDED".equals(receipt.getStatus())) return ApiResult.ok(Map.of("status",receipt.getStatus()));
@@ -93,19 +94,10 @@ public class OpsSupportCommandController {
         if(receipt.getScope().startsWith("SUPPORT_")) customers.forEach(ownership::requireManagingCustomer);
         else customers.forEach(ownership::requireRead);
         if(receipt.getScope().startsWith("SUPPORT_")) ownership.requireSupervisor();
-        if(receipt.getScope().startsWith("M2_") && restrictedTicket(response.path("data")))
-            return ApiResult.ok(Map.of("status","SUCCEEDED","contentRestricted",true));
         // Never project opaque successful content whose customer cannot be derived from the stored result.
         if(customers.isEmpty() && !receipt.getScope().startsWith("SUPPORT_RULES:"))
             return ApiResult.ok(Map.of("status","SUCCEEDED"));
         return ApiResult.ok(Map.of("status","SUCCEEDED","resultType",receipt.getScope().split(":")[0],"result",response));
-    }
-
-    private boolean restrictedTicket(JsonNode node) {
-        if(node.isObject() && node.path("ticketNo").isTextual()
-                && tickets.findByTicketNo(node.path("ticketNo").asText()).map(t->t.contentRestricted()).orElse(true)) return true;
-        for(var child:node) if(restrictedTicket(child)) return true;
-        return false;
     }
 
     private void collect(JsonNode node,Set<Long> customers) {
@@ -113,7 +105,6 @@ public class OpsSupportCommandController {
         if(!node.isObject())return;
         for(String field:List.of("customerId","userId")) if(node.path(field).canConvertToLong() && node.path(field).asLong()>0) customers.add(node.path(field).asLong());
         if(node.path("conversationNo").isTextual()) customers.add(ownership.conversationCustomer(node.path("conversationNo").asText()));
-        if(node.path("ticketNo").isTextual()) customers.add(ownership.ticketCustomer(node.path("ticketNo").asText()));
         node.elements().forEachRemaining(n->collect(n,customers));
     }
 }

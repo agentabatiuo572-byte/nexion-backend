@@ -105,6 +105,7 @@ public class AuditReplayBusinessPermissionGuard {
     private final PlatformConfigFacade configFacade;
     private final ffdd.opsconsole.growth.application.WeeklyRegionPolicyService weeklyRegionPolicies;
     private final PhoneReplacementContract phoneReplacement;
+    private final ffdd.opsconsole.finance.cregis.CregisDepositPolicyService depositPolicies;
 
     public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
             AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
@@ -119,6 +120,16 @@ public class AuditReplayBusinessPermissionGuard {
             PlatformConfigFacade configFacade,
             ffdd.opsconsole.growth.application.WeeklyRegionPolicyService weeklyRegionPolicies) {
         this(trustDisclosureRepository, roleResolver, emergencyControlRepository, directPolicies, configFacade, weeklyRegionPolicies, null);
+    }
+
+    public AuditReplayBusinessPermissionGuard(TrustDisclosureRepository trustDisclosureRepository,
+            AdminOperatorRoleResolver roleResolver, EmergencyControlRepository emergencyControlRepository,
+            org.springframework.beans.factory.ObjectProvider<ffdd.opsconsole.team.application.DirectReferralPolicyService> directPolicies,
+            PlatformConfigFacade configFacade,
+            ffdd.opsconsole.growth.application.WeeklyRegionPolicyService weeklyRegionPolicies,
+            PhoneReplacementContract phoneReplacement) {
+        this(trustDisclosureRepository, roleResolver, emergencyControlRepository, directPolicies, configFacade,
+                weeklyRegionPolicies, phoneReplacement, null);
     }
 
     public record DelegatedProposalDescriptor(
@@ -454,6 +465,15 @@ public class AuditReplayBusinessPermissionGuard {
         String domain = command.domain().trim().toUpperCase(Locale.ROOT);
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
         Map<String, Object> params = command.params() == null ? Map.of() : command.params();
+        if ("D".equals(domain) && "d_cregis_deposit_policy".equals(operation)) {
+            var proposed = ffdd.opsconsole.finance.cregis.CregisDepositPolicy.parse(params);
+            var current = depositPolicies.current();
+            if (current.version() != proposed.version()) throw new ffdd.opsconsole.shared.exception.BizException(409,"CREGIS_DEPOSIT_POLICY_VERSION_CONFLICT");
+            return new DelegatedProposalDescriptor("USDT BEP20 充值政策", "current",
+                    "最低 " + current.minDepositUsdt() + "，手续费 " + current.feeUsdt() + "，确认数 " + current.confirmations(),
+                    "最低 " + proposed.minDepositUsdt() + "，手续费 " + proposed.feeUsdt() + "，确认数 " + proposed.confirmations(),
+                    "D1", "fund", true, new AuditLockTarget("D", "cregis_deposit_policy", "current"));
+        }
         if ("C".equals(domain)) {
             return delegatedC2Descriptor(operation, params);
         }
@@ -1100,6 +1120,10 @@ public class AuditReplayBusinessPermissionGuard {
             case "A" -> switch (operation) {
                 case "a6_role_status_update", "a6_role_disable", "a6_role_delete" -> "platform_a6_write";
                 case "a6_role_grants_update" -> "platform_a6_role_grants_update";
+                default -> null;
+            };
+            case "D" -> switch (operation) {
+                case "d_cregis_deposit_policy" -> "finance_d1_channel_manage";
                 default -> null;
             };
             case "C" -> switch (operation) {

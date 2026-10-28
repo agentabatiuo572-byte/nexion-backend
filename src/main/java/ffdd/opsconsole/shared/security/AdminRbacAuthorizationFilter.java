@@ -112,8 +112,11 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             // The sample search requires simulate AND C1 read at the controller/service boundary.
             rule("/api/admin/growth/promotion-account-samples", null),
             rule("/api/admin/growth/**", "growth_"),
-            rule("/api/admin/content/tickets", "service_"),
-            rule("/api/admin/content/tickets/**", "service_"),
+            // Seat capacity is M1; every other retired ticket-desk route only reaches the 410 retirement response.
+            rule("/api/admin/content/tickets/load-config", "service_m1_"),
+            rule("/api/admin/content/tickets/load-config/**", "service_m1_"),
+            rule("/api/admin/content/tickets", null),
+            rule("/api/admin/content/tickets/**", null),
             rule("/api/admin/content/conversations", "service_"),
             rule("/api/admin/content/conversations/**", "service_"),
             rule("/api/admin/content/knowledge", "service_"),
@@ -283,7 +286,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             return RequiredAuthority.exact("platform_a1_write");
         }
         if (read && pathMatcher.match("/api/admin/content/support-workbench/commands/*", path)) {
-            return RequiredAuthority.exact("service_m1_read", "service_m2_read", "service_m3_read", "platform_a1_read");
+            return RequiredAuthority.exact("service_m1_read", "service_m3_read", "platform_a1_read");
         }
         if (HttpMethod.GET.matches(method) && path.equals("/api/admin/config/phone-calibration")) {
             return RequiredAuthority.exact("device_e6_read", "device_e2_read");

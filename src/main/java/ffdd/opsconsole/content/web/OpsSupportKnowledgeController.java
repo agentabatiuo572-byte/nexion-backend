@@ -5,11 +5,9 @@ import ffdd.opsconsole.content.application.OpsSupportKnowledgeService;
 import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.domain.SupportFaqView;
 import ffdd.opsconsole.content.domain.SupportKnowledgeOverview;
-import ffdd.opsconsole.content.domain.SupportSlaView;
 import ffdd.opsconsole.content.dto.SupportFaqStatusRequest;
 import ffdd.opsconsole.content.dto.SupportFaqUpsertRequest;
 import ffdd.opsconsole.content.dto.SupportKnowledgeDeleteRequest;
-import ffdd.opsconsole.content.dto.SupportSlaUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.nio.charset.StandardCharsets;
@@ -106,16 +104,5 @@ public class OpsSupportKnowledgeController {
             @RequestBody SupportKnowledgeDeleteRequest request) {
         return executeCommand("M4_SUPPORT_FAQ_DELETE:" + faqId, idempotencyKey, request,
                 () -> knowledgeService.deleteFaq(faqId, idempotencyKey, request));
-    }
-
-    // SLA 矩阵编辑 — M4 知识库与SLA 写
-    @PreAuthorize("hasAuthority('service_m4_write')")
-    @PatchMapping("/sla/{category}")
-    public ApiResult<SupportSlaView> updateSla(
-            @PathVariable String category,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody SupportSlaUpdateRequest request) {
-        return executeCommand("M4_SUPPORT_SLA_UPDATE:" + category, idempotencyKey, request,
-                () -> knowledgeService.updateSla(category, idempotencyKey, request));
     }
 }

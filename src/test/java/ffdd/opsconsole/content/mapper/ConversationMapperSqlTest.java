@@ -141,20 +141,6 @@ class ConversationMapperSqlTest {
                 .doesNotContain("&gt;");
     }
 
-    @Test
-    void ticketConversionIsAnAtomicTerminalClaim() throws Exception {
-        String sql = String.join("\n", ConversationMapper.class
-                .getMethod("markConvertedToTicket", String.class, String.class, Long.class, LocalDateTime.class)
-                .getAnnotation(Update.class)
-                .value());
-
-        assertThat(sql)
-                .contains("status='CLOSED'")
-                .contains("status<>'CLOSED'")
-                .contains("version=#{expectedVersion}")
-                .contains("last_message=#{message}");
-    }
-
     private String updateSql(String method, Class<?>... parameterTypes) throws Exception {
         return String.join("\n", ConversationMapper.class
                 .getMethod(method, parameterTypes)

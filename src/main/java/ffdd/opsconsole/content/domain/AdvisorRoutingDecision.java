@@ -6,6 +6,5 @@ public record AdvisorRoutingDecision(
         String targetName,
         Long agentAdminId,
         boolean dedicated,
-        boolean fallbackTicket,
         String reason) {
 }

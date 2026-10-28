@@ -467,22 +467,6 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                                  @Param("expectedVersion") Long expectedVersion,
                                  @Param("now") LocalDateTime now);
 
-    @Update("""
-            UPDATE nx_conversation
-               SET status='CLOSED',
-                   last_message=#{message},
-                   last_message_at=#{now},
-                   version=version+1,
-                   updated_at=#{now}
-             WHERE conversation_no=#{conversationNo}
-               AND status<>'CLOSED'
-               AND version=#{expectedVersion}
-               AND is_deleted=0
-            """)
-    int markConvertedToTicket(@Param("conversationNo") String conversationNo, @Param("message") String message,
-                              @Param("expectedVersion") Long expectedVersion,
-                              @Param("now") LocalDateTime now);
-
     @SelectProvider(type=ScopedSql.class,method="count")
     long countConversationsScoped(@Param("status") String status,@Param("type") String type,
             @Param("ownerAgentId") String owner,@Param("userId") Long user,@Param("keyword") String keyword,

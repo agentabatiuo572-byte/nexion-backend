@@ -9,16 +9,10 @@ import ffdd.opsconsole.content.domain.ContentConversationDetail;
 import ffdd.opsconsole.content.domain.ContentConversationMessageView;
 import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationRepository;
-import ffdd.opsconsole.content.domain.ConversationTicketResult;
 import ffdd.opsconsole.content.domain.SupportFaqView;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
-import ffdd.opsconsole.content.domain.SupportSlaView;
-import ffdd.opsconsole.content.domain.SupportTicketDetail;
-import ffdd.opsconsole.content.domain.SupportTicketRepository;
-import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.domain.DedicatedAdvisorBindingView;
-import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -51,17 +45,12 @@ import org.springframework.context.ApplicationEventPublisher;
 @ApplicationService
 @RequiredArgsConstructor
 public class AppSupportService {
-    private static final Set<String> CATEGORIES = Set.of(
-            "account", "withdrawal", "deposit", "hardware", "earnings", "genesis", "technical", "other");
-    private static final Set<String> TICKET_STATUSES = Set.of(
-            "OPEN", "IN_PROGRESS", "PENDING_USER", "RESOLVED", "CLOSED");
     private static final Set<String> CONVERSATION_STATUSES = Set.of("OPEN", "TRANSFERRED", "RESOLVED", "CLOSED");
     private static final Set<String> CONVERSATION_TYPES = Set.of("SUPPORT", "ADVISOR");
-    private static final Set<String> FAQ_SURFACES = Set.of("Help Center", "Ticket Create");
+    private static final Set<String> FAQ_SURFACES = Set.of("Help Center");
     private static final DateTimeFormatter NUMBER_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
     private static final int APP_MESSAGE_WINDOW = 100;
 
-    private final SupportTicketRepository ticketRepository;
     private final ConversationRepository conversationRepository;
     private final SupportKnowledgeRepository knowledgeRepository;
     private final AdminIdempotencyService idempotencyService;
@@ -84,131 +73,6 @@ public class AppSupportService {
         if (!validUser(userId)) return forbidden();
         return ApiResult.ok(supportAgentRepository.findAppAdvisor(userId)
                 .orElseGet(ffdd.opsconsole.content.domain.AppSupportAdvisorView::unbound));
-    }
-
-    public ApiResult<PageResult<SupportTicketView>> tickets(
-            Long userId, String status, Long pageNum, Long pageSize) {
-        productionPathGuard.requireAllowed(userId);
-        if (!validUser(userId)) return forbidden();
-        String normalizedStatus = normalizeUpper(status);
-        if (StringUtils.hasText(normalizedStatus) && !TICKET_STATUSES.contains(normalizedStatus)) {
-            return validation("SUPPORT_TICKET_STATUS_UNSUPPORTED");
-        }
-        SupportTicketQueryRequest query = new SupportTicketQueryRequest(
-                null, normalizedStatus, null, null, null, userId, null,
-                bounded(pageNum, 1, 100000, 1), bounded(pageSize, 1, 100, 50));
-        return ApiResult.ok(ticketRepository.pageTickets(query));
-    }
-
-    public ApiResult<PageResult<SupportTicketView>> ticketCursor(
-            Long userId, String status, Long beforeId, Long pageSize) {
-        productionPathGuard.requireAllowed(userId);
-        if (!validUser(userId)) return forbidden();
-        if (!validHistoryCursor(beforeId)) return validation("SUPPORT_LIST_CURSOR_INVALID");
-        String normalizedStatus = normalizeUpper(status);
-        if (StringUtils.hasText(normalizedStatus) && !TICKET_STATUSES.contains(normalizedStatus)) {
-            return validation("SUPPORT_TICKET_STATUS_UNSUPPORTED");
-        }
-        SupportTicketQueryRequest query = new SupportTicketQueryRequest(
-                null, normalizedStatus, null, null, null, userId, null,
-                1L, bounded(pageSize, 1, 100, 50));
-        return ApiResult.ok(ticketRepository.pageTicketsBeforeId(query, beforeId));
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<SupportTicketDetail> markTicketRead(Long userId, String ticketNo, CloseRequest request) {
-        productionPathGuard.requireAllowed(userId);
-        if (!validUser(userId)) return forbidden();
-        if (request == null || !validExpectation(request.expectedStatus(), request.expectedVersion())) {
-            return validation("SUPPORT_TICKET_READ_INVALID");
-        }
-        SupportTicketView ticket = ownedTicket(userId, ticketNo);
-        if (ticket == null) return hiddenNotFound("SUPPORT_TICKET_NOT_FOUND");
-        if (!matches(ticket.status(), ticket.version(), request.expectedStatus(), request.expectedVersion())) return conflict();
-        if (ticket.userUnreadCount() != null && ticket.userUnreadCount() > 0
-                && !ticketRepository.markUserReadCas(ticket, LocalDateTime.now(clock))) return conflict();
-        return ticket(userId, ticketNo);
-    }
-
-    public ApiResult<SupportTicketDetail> ticket(Long userId, String ticketNo) {
-        return ticket(userId, ticketNo, null);
-    }
-
-    public ApiResult<SupportTicketDetail> ticket(Long userId, String ticketNo, Long beforeMessageId) {
-        productionPathGuard.requireAllowed(userId);
-        if (!validUser(userId)) return forbidden();
-        if (!validHistoryCursor(beforeMessageId)) return validation("SUPPORT_HISTORY_CURSOR_INVALID");
-        SupportTicketView ticket = ownedTicket(userId, ticketNo);
-        if (ticket == null) return hiddenNotFound("SUPPORT_TICKET_NOT_FOUND");
-        return ApiResult.ok(ticketDetail(ticket, beforeMessageId));
-    }
-
-    // The customer mutex serializes admissions; avoid cross-account range gap locks.
-    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
-    public ApiResult<SupportTicketDetail> createTicket(
-            Long userId, String idempotencyKey, CreateTicketRequest request) {
-        productionPathGuard.requireAllowed(userId);
-        if (!validUser(userId)) return forbidden();
-        if (!validKey(idempotencyKey)) return idempotencyRequired();
-        if (request == null || !validCategory(request.category())
-                || !boundedText(request.title(), 1, 160) || !boundedText(request.body(), 1, 2000)) {
-            return validation("SUPPORT_TICKET_INPUT_INVALID");
-        }
-        return idempotent("APP_SUPPORT_TICKET_CREATE:" + userId, idempotencyKey, hash(request), () -> {
-            LocalDateTime now = LocalDateTime.now(clock);
-            String ticketNo = uniqueNo("TK-APP-", now);
-            SupportTicketView created = ticketRepository.createTicket(
-                    ticketNo, userId, normalizeLower(request.category()), "NORMAL",
-                    request.title().trim(), request.body().trim(), null, "Unassigned", "user:" + userId, now);
-            audit("APP_SUPPORT_TICKET_CREATED", "SUPPORT_TICKET", created.ticketNo(), userId,
-                    Map.of("category", created.category(), "idempotencyKey", idempotencyKey.trim()));
-            return ApiResult.ok(new SupportTicketDetail(created, ticketRepository.messages(created.ticketNo())));
-        });
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<SupportTicketDetail> replyTicket(
-            Long userId, String ticketNo, String idempotencyKey, ReplyRequest request) {
-        productionPathGuard.requireAllowed(userId);
-        if (!validUser(userId)) return forbidden();
-        if (!validKey(idempotencyKey)) return idempotencyRequired();
-        if (request == null || !boundedText(request.body(), 1, 2000) || !validExpectation(request.expectedStatus(), request.expectedVersion())) {
-            return validation("SUPPORT_TICKET_REPLY_INVALID");
-        }
-        return idempotent("APP_SUPPORT_TICKET_REPLY:" + userId, idempotencyKey, hash(ticketNo, request), () -> {
-            SupportTicketView ticket = ownedTicket(userId, ticketNo);
-            if (ticket == null) return hiddenNotFound("SUPPORT_TICKET_NOT_FOUND");
-            if (!matches(ticket.status(), ticket.version(), request.expectedStatus(), request.expectedVersion())) return conflict();
-            if ("CLOSED".equals(normalizeUpper(ticket.status())) || Boolean.TRUE.equals(ticket.archived())) {
-                return invalidState();
-            }
-            if (!ticketRepository.appendUserReplyCas(ticket, request.body().trim(), LocalDateTime.now(clock))) return conflict();
-            audit("APP_SUPPORT_TICKET_REPLIED", "SUPPORT_TICKET", ticket.ticketNo(), userId,
-                    Map.of("bodyLength", request.body().trim().length(), "idempotencyKey", idempotencyKey.trim()));
-            return ticket(userId, ticket.ticketNo());
-        });
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<SupportTicketDetail> closeTicket(
-            Long userId, String ticketNo, String idempotencyKey, CloseRequest request) {
-        productionPathGuard.requireAllowed(userId);
-        if (!validUser(userId)) return forbidden();
-        if (!validKey(idempotencyKey)) return idempotencyRequired();
-        if (request == null || !validExpectation(request.expectedStatus(), request.expectedVersion())) {
-            return validation("SUPPORT_TICKET_CLOSE_INVALID");
-        }
-        return idempotent("APP_SUPPORT_TICKET_CLOSE:" + userId, idempotencyKey, hash(ticketNo, request), () -> {
-            SupportTicketView ticket = ownedTicket(userId, ticketNo);
-            if (ticket == null) return hiddenNotFound("SUPPORT_TICKET_NOT_FOUND");
-            if (!matches(ticket.status(), ticket.version(), request.expectedStatus(), request.expectedVersion())) return conflict();
-            if ("CLOSED".equals(normalizeUpper(ticket.status())) || Boolean.TRUE.equals(ticket.archived())) return invalidState();
-            LocalDateTime now = LocalDateTime.now(clock);
-            if (!ticketRepository.updateStatusCas(ticket, "CLOSED", "user:" + userId, now)) return conflict();
-            audit("APP_SUPPORT_TICKET_CLOSED", "SUPPORT_TICKET", ticket.ticketNo(), userId,
-                    Map.of("from", ticket.status(), "idempotencyKey", idempotencyKey.trim()));
-            return ticket(userId, ticket.ticketNo());
-        });
     }
 
     @Transactional(readOnly = true)
@@ -355,64 +219,6 @@ public class AppSupportService {
         return currentConversationResult(userId, retained);
     }
 
-    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
-    public ApiResult<ConversationTicketResult> convertConversationToTicket(
-            Long userId, String conversationNo, String idempotencyKey, ConvertToTicketRequest request) {
-        productionPathGuard.requireAllowed(userId);
-        if (!validUser(userId)) return forbidden();
-        if (!validKey(idempotencyKey)) return idempotencyRequired();
-        if (request == null || !validCategory(request.category()) || !boundedText(request.title(), 1, 160)
-                || !validExpectation(request.expectedStatus(), request.expectedVersion())) {
-            return validation("CONVERSATION_TICKET_INPUT_INVALID");
-        }
-        return idempotent("APP_CONVERSATION_TO_TICKET:" + userId, idempotencyKey, hash(conversationNo, request), () -> {
-            ownership.lockCustomer(userId);
-            ContentConversationView conversation = conversationRepository
-                    .findByConversationNoForUpdate(safeNo(conversationNo)).orElse(null);
-            if (conversation == null || !userId.equals(conversation.userId())) return hiddenNotFound("CONVERSATION_NOT_FOUND");
-            if (!matches(conversation.status(), conversation.version(), request.expectedStatus(), request.expectedVersion())
-                    || "CLOSED".equals(normalizeUpper(conversation.status()))) return conversationConflict();
-            LocalDateTime now = LocalDateTime.now(clock);
-            String ticketNo = uniqueNo("TK-APP-", now);
-            ownership.requireHandled(conversation.conversationNo());
-            if (!conversationRepository.markConvertedToTicket(conversation, ticketNo, "user:" + userId, now)) {
-                return conversationConflict();
-            }
-            String transcript = conversationRepository
-                    .recentUserVisibleMessages(conversation.conversationNo(), APP_MESSAGE_WINDOW).stream()
-                    .map(message -> message.senderName() + ": " + message.transcriptText())
-                    .reduce((left, right) -> left + "\n" + right)
-                    .orElse(conversation.lastMessage());
-            SupportTicketView ticket = ticketRepository.createTicket(
-                    ticketNo, userId, normalizeLower(request.category()), "NORMAL", request.title().trim(),
-                    StringUtils.hasText(transcript) ? transcript : "Conversation " + conversation.conversationNo(),
-                    null, "Unassigned", "user:" + userId, now);
-            ticketRepository.markConversationSource(ticket.ticketNo(),conversation.conversationNo());
-            ticket=ticketRepository.findByTicketNo(ticket.ticketNo()).orElseThrow();
-            ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
-            audit("APP_CONVERSATION_CONVERTED_TO_TICKET", "CONVERSATION", conversation.conversationNo(), userId,
-                    Map.of("ticketNo", ticketNo, "idempotencyKey", idempotencyKey.trim()));
-            publishAfterCommit(ConversationMessageEvent.builder()
-                    .conversationNo(updated.conversationNo()).eventType(ConversationMessageEvent.EventType.STATUS)
-                    .senderType("SYSTEM").senderName("System").body("CONVERTED_TO_TICKET")
-                    .ts(now).ownerAgentId(updated.ownerAgentId()).ownerAgentName(updated.ownerAgentName()).build());
-            return ApiResult.ok(new ConversationTicketResult(
-                    conversationDetail(updated, null).conversation(),
-                    ticketDetail(ticket, null)));
-        });
-    }
-
-    private SupportTicketDetail ticketDetail(SupportTicketView ticket, Long beforeMessageId) {
-        List<ffdd.opsconsole.content.domain.SupportTicketMessageView> fetched = beforeMessageId == null
-                ? ticketRepository.recentUserVisibleMessages(ticket.ticketNo(), APP_MESSAGE_WINDOW + 1)
-                : ticketRepository.recentUserVisibleMessagesBefore(ticket.ticketNo(), beforeMessageId, APP_MESSAGE_WINDOW + 1);
-        boolean truncated = fetched.size() > APP_MESSAGE_WINDOW;
-        List<ffdd.opsconsole.content.domain.SupportTicketMessageView> page = fetched.stream()
-                .skip(truncated ? 1 : 0).toList();
-        Long nextCursor = truncated && !page.isEmpty() ? page.get(0).id() : null;
-        return new SupportTicketDetail(ticket, page, null, truncated, nextCursor);
-    }
-
     private ApiResult<ContentConversationDetail> replayConversation(Long userId,String no) {
         // The customer mutex serializes sends, but cannot refresh an older RR consistent-read snapshot.
         var conversation=conversationRepository.findByConversationNoForUpdate(no).orElse(null);
@@ -492,22 +298,6 @@ public class AppSupportService {
     }
 
     /**
-     * Exposes configured M4 targets only.  They are not historical response statistics.
-     */
-    public ApiResult<List<AppSupportSlaTarget>> slaTargets(Long userId) {
-        productionPathGuard.requireAllowed(userId);
-        if (!validUser(userId)) return forbidden();
-        return ApiResult.ok(knowledgeRepository.listSla().stream()
-                .filter(row -> validCategory(row.category()))
-                .filter(row -> row.firstResponseMins() != null && row.firstResponseMins() > 0)
-                .filter(row -> row.resolutionHours() != null && row.resolutionHours() > 0)
-                .sorted(java.util.Comparator.comparing(SupportSlaView::category))
-                .map(row -> new AppSupportSlaTarget(
-                        row.category(), row.firstResponseMins(), row.resolutionHours(), false))
-                .toList());
-    }
-
-    /**
      * Read-only recovery for App support commands.  The opaque key is scoped to
      * the authenticated user by the only command scopes the production API writes.
      * A missing command is the only case returned as 404; in-flight, failed and
@@ -525,6 +315,7 @@ public class AppSupportService {
         if (records.isEmpty()) return hiddenNotFound("SUPPORT_COMMAND_NOT_FOUND");
         if (records.size() != 1) return conflict("SUPPORT_COMMAND_AMBIGUOUS");
         AdminIdempotencyRecordEntity record = records.get(0);
+        // Ticket workflows are retired; their historical receipts must never be replayed.
         if (record.getScope().contains("TICKET")) return ApiResult.fail(410, "SUPPORT_TICKETS_RETIRED");
         return switch (normalizeUpper(record.getStatus())) {
             case "SUCCEEDED" -> recoverSucceededCommand(userId, record);
@@ -563,6 +354,7 @@ public class AppSupportService {
         }
     }
 
+    // Retired ticket scopes stay listed so their historical receipts resolve to 410 instead of 404.
     private List<String> commandScopes(Long userId) {
         return List.of(
                 "APP_SUPPORT_TICKET_CREATE:" + userId,
@@ -576,9 +368,7 @@ public class AppSupportService {
 
     private String commandResultType(String scope) {
         if (scope == null) return null;
-        if (scope.startsWith("APP_SUPPORT_TICKET_")) return "ticket";
         if (scope.startsWith("APP_CONVERSATION_USER_CLEAR:")) return "CONVERSATION_USER_CLEAR";
-        if (scope.startsWith("APP_CONVERSATION_TO_TICKET:")) return "conversation-ticket";
         if (scope.startsWith("APP_CONVERSATION_")) return "conversation";
         return null;
     }
@@ -586,11 +376,6 @@ public class AppSupportService {
     @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> idempotent(String scope, String key, String requestHash, Supplier<ApiResult<T>> action) {
         return (ApiResult<T>) idempotencyService.executeRetained(scope, key.trim(), requestHash, ApiResult.class, (Supplier) action);
-    }
-
-    private SupportTicketView ownedTicket(Long userId, String ticketNo) {
-        if (!StringUtils.hasText(ticketNo)) return null;
-        return ticketRepository.findByTicketNo(ticketNo.trim()).filter(row -> userId.equals(row.userId())).orElse(null);
     }
 
     private ContentConversationView ownedConversation(Long userId, String conversationNo) {
@@ -686,10 +471,6 @@ public class AppSupportService {
 
     private boolean validUser(Long userId) { return userId != null && userId > 0; }
     private boolean validKey(String value) { return StringUtils.hasText(value) && value.trim().length() <= 128; }
-    private boolean validCategory(String value) { return CATEGORIES.contains(normalizeLower(value)); }
-    private boolean boundedText(String value, int min, int max) {
-        return StringUtils.hasText(value) && value.trim().length() >= min && value.trim().length() <= max;
-    }
     private boolean validExpectation(String status, Long version) {
         return StringUtils.hasText(status) && version != null && version >= 0;
     }
@@ -708,13 +489,10 @@ public class AppSupportService {
     private <T> ApiResult<T> hiddenNotFound(String code) { return ApiResult.fail(404, code); }
     private <T> ApiResult<T> validation(String code) { return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), code); }
     private <T> ApiResult<T> idempotencyRequired() { return ApiResult.fail(400, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name()); }
-    private <T> ApiResult<T> conflict() { return ApiResult.fail(409, "SUPPORT_TICKET_CONFLICT"); }
     private <T> ApiResult<T> conflict(String code) { return ApiResult.fail(409, code); }
     private <T> ApiResult<T> conversationConflict() { return ApiResult.fail(409, "CONVERSATION_CONFLICT"); }
-    private <T> ApiResult<T> invalidState() { return ApiResult.fail(409, "SUPPORT_TICKET_INVALID_STATE"); }
     private <T> ApiResult<T> invalidConversationState() { return ApiResult.fail(409, "CONVERSATION_INVALID_STATE"); }
 
-    public record CreateTicketRequest(String category, String title, String body) {}
     public record ReplyRequest(String body, String expectedStatus, Long expectedVersion,
             String kind,String attachmentId,String clientMessageId,
             @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=ffdd.opsconsole.content.dto.SupportBindingRequest.StrictId.class) Long expectedAssignmentId) {
@@ -727,7 +505,6 @@ public class AppSupportService {
                 : ", kind="+kind+", attachmentId="+attachmentId+", clientMessageId="+clientMessageId+", expectedAssignmentId="+expectedAssignmentId+"]");
         }
     }
-    public record CloseRequest(String expectedStatus, Long expectedVersion) {}
     public record StartConversationRequest(String conversationType, String openingText,
             String kind,String attachmentId,String clientMessageId,
             @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=ffdd.opsconsole.content.dto.SupportBindingRequest.StrictId.class) Long expectedAssignmentId) {
@@ -741,7 +518,4 @@ public class AppSupportService {
         }
     }
     public record ConversationCategoryAvailability(String type, boolean enabled) {}
-    public record ConvertToTicketRequest(String category, String title, String expectedStatus, Long expectedVersion) {}
-    public record AppSupportSlaTarget(
-            String category, Integer firstResponseMins, Integer resolutionHours, boolean statisticsAvailable) {}
 }

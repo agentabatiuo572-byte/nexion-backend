@@ -31,7 +31,6 @@ public class SupportBindingService {
     private final ApplicationEventPublisher events;
     private final ffdd.opsconsole.content.domain.SupportAgentRepository agents;
     private final ProductionSupportPathGuard production;
-    private final SupportTicketOwnerService ticketOwners;
     private final SupportGroupMapper groups;
     private final SupportUnboundPolicyService unboundPolicy;
 
@@ -206,7 +205,6 @@ public class SupportBindingService {
             mapper.leavePool(c.id());
             closeQueueRoute(c.id());
             var current=mapper.current(c.id());
-            ticketOwners.synchronizeCurrentOwner(c.id());
             // S4 must handle this synchronous event in the same transaction (never AFTER_COMMIT).
             // Exceptions roll back assignment/history/audit together; no maintenance completion is claimed by S3.
             events.publishEvent(new SupportAssignmentChanged(c.id(),old,current));
@@ -241,7 +239,6 @@ public class SupportBindingService {
                 return;
             }
             mapper.insertAssignment(parent.agentAdminId(),customer,"registration","Registration invitation inheritance","INHERITED",parent.segmentRootId(),parent.depth()+1,parent.id(),rules.version(),"registration:"+customer);
-            ticketOwners.synchronizeCurrentOwner(customer);
             return;
         }
         if ("DEPTH_LIMIT".equals(reason)) mapper.enterDepthLimitedPool(customer,parent.agentAdminId());
@@ -316,7 +313,6 @@ public class SupportBindingService {
                 mapper.attemptPool(customer,"WAITING_CANDIDATE","CANDIDATE_CHANGED");return null;
             }
             mapper.insertAssignment(candidate,customer,actor,reason,"RANDOM",customer,0,null,rules.version(),operation);
-            ticketOwners.synchronizeCurrentOwner(customer);
             mapper.attemptPool(customer,"ASSIGNED","ASSIGNED");
             var attempt=mapper.poolAttempt(customer);
             audit.recordRequired(AuditLogWriteRequest.builder().action("SUPPORT_RANDOM_ASSIGNMENT_COMMITTED")

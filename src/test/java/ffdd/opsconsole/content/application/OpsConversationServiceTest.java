@@ -20,22 +20,17 @@ import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationCustomerProfile;
 import ffdd.opsconsole.content.domain.ConversationRepository;
 import ffdd.opsconsole.content.domain.CustomerProfileRepository;
-import ffdd.opsconsole.content.domain.SupportTicketMessageView;
-import ffdd.opsconsole.content.domain.SupportTicketRepository;
-import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.dto.ConversationArchiveRequest;
 import ffdd.opsconsole.content.dto.ConversationArchiveBatchRequest;
 import ffdd.opsconsole.content.dto.ConversationInitiateRequest;
 import ffdd.opsconsole.content.dto.ConversationQueryRequest;
 import ffdd.opsconsole.content.dto.ConversationReplyRequest;
 import ffdd.opsconsole.content.dto.ConversationStatusRequest;
-import ffdd.opsconsole.content.dto.ConversationTicketRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferDecisionRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferRequest;
 import ffdd.opsconsole.content.dto.CustomerNoteRemoveRequest;
 import ffdd.opsconsole.content.dto.CustomerNoteRequest;
 import ffdd.opsconsole.content.dto.CustomerTagRequest;
-import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import java.time.Clock;
 import java.time.Instant;
@@ -59,7 +54,6 @@ class OpsConversationServiceTest {
     }
     @org.junit.jupiter.api.AfterEach void clearAuthentication(){org.springframework.security.core.context.SecurityContextHolder.clearContext();}
     private final FakeConversationRepository conversationRepository = new FakeConversationRepository();
-    private final FakeSupportTicketRepository ticketRepository = new FakeSupportTicketRepository();
     private final OpsSupportAgentService supportAgentService = mock(OpsSupportAgentService.class);
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
@@ -81,7 +75,6 @@ class OpsConversationServiceTest {
         when(supportAgentService.assignableSupportAgent(11L)).thenReturn(java.util.Optional.of(assignable));
         return new OpsConversationService(
                 conversationRepository,
-                ticketRepository,
                 supportAgentService,
                 configFacade,
                 auditLogService,
@@ -98,7 +91,6 @@ class OpsConversationServiceTest {
     @Test
     void directOpsServiceGatewayFailsClosedBeforeAnyFormalConversationDependency() {
         ConversationRepository conversations = mock(ConversationRepository.class);
-        SupportTicketRepository tickets = mock(SupportTicketRepository.class);
         OpsSupportAgentService agents = mock(OpsSupportAgentService.class);
         PlatformConfigFacade config = mock(PlatformConfigFacade.class);
         AuditLogService audit = mock(AuditLogService.class);
@@ -107,7 +99,7 @@ class OpsConversationServiceTest {
         doThrow(new RuntimeException("SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
                 .when(productionGuard).requireOpsWriteAllowed();
         OpsConversationService direct = new OpsConversationService(
-                conversations, tickets, agents, config, audit, clock,
+                conversations, agents, config, audit, clock,
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
                 mock(ffdd.opsconsole.user.application.OpsUserService.class),
                 mock(ffdd.opsconsole.finance.application.OpsFinanceService.class),
@@ -116,7 +108,7 @@ class OpsConversationServiceTest {
 
         assertThatThrownBy(direct::runTimeoutFallback).isInstanceOf(RuntimeException.class);
 
-        verifyNoInteractions(conversations, tickets, agents, config, audit, profiles);
+        verifyNoInteractions(conversations, agents, config, audit, profiles);
     }
 
     @Test
@@ -409,7 +401,7 @@ class OpsConversationServiceTest {
             "spoofed-operator","TEXT",null,"SERVICE","bulk-client-01",3L,List.of());
         var p=new SupportHumanMessageService.Prepared(1001L,"ADMIN",7L,"bulk-client-01","TEXT","SERVICE",null,null,"hash",null,null,null,null,null);
         when(humanMessages.prepareForActor(eq(7L),eq(1001L),any(),eq("CREATE"),eq(request),any(),any(),any(),org.mockito.ArgumentMatchers.isNull(),eq(3L))).thenReturn(p);
-        when(supportAgentService.routeAdvisorForUser(1001L)).thenReturn(new AdvisorRoutingDecision("agent","7","Task Advisor",7L,true,false,"CURRENT_ASSIGNMENT"));
+        when(supportAgentService.routeAdvisorForUser(1001L)).thenReturn(new AdvisorRoutingDecision("agent","7","Task Advisor",7L,true,"CURRENT_ASSIGNMENT"));
         var result=service.initiateWithMessageIdForActor(7L,"bulk-initiate-key",request);
         assertThat(result.result().getCode()).isZero();
         assertThat(result.result().getData().ownerAgentId()).isEqualTo("7");
@@ -478,7 +470,7 @@ class OpsConversationServiceTest {
 
     @Test
     void initiateCreatesBackendConversationAndAudits() {
-        when(supportAgentService.routeAdvisorForUser(any())).thenReturn(new ffdd.opsconsole.content.domain.AdvisorRoutingDecision("agent","1","Agent One",1L,true,false,"CURRENT_ASSIGNMENT"));
+        when(supportAgentService.routeAdvisorForUser(any())).thenReturn(new ffdd.opsconsole.content.domain.AdvisorRoutingDecision("agent","1","Agent One",1L,true,"CURRENT_ASSIGNMENT"));
         var result = service.initiate(
                 "idem-i9-init",
                 new ConversationInitiateRequest("support", 1001L, "agent-1", "Agent One",
@@ -498,7 +490,6 @@ class OpsConversationServiceTest {
                         "Dedicated Advisor",
                         88L,
                         true,
-                        false,
                         "M5_ASSIGNED_ADVISOR"));
 
         var result = service.initiate(
@@ -526,7 +517,6 @@ class OpsConversationServiceTest {
                         "备勤池",
                         null,
                         false,
-                        true,
                         "NO_ADVISOR_AVAILABLE"));
 
         var result = service.initiate(
@@ -536,7 +526,6 @@ class OpsConversationServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().ownerAgentId()).isEqualTo("standby-pool");
-        assertThat(ticketRepository.ticket).isNull();
     }
 
     @Test
@@ -776,53 +765,6 @@ class OpsConversationServiceTest {
     }
 
     @Test
-    void convertToTicketCreatesSupportTicketAndClosesConversation() {
-        conversationRepository.conversation = conversation("CV-1", "OPEN");
-
-        var result = service.convertToTicket(
-                "CV-1",
-                "idem-i9-ticket",
-                new ConversationTicketRequest("account", "HIGH", "Need account follow-up", 11L, "Tessa", "escalate to ticket", "Marina K."));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().conversation().status()).isEqualTo("CLOSED");
-        assertThat(result.getData().ticket().ticket().ticketNo()).startsWith("TK-");
-        assertThat(ticketRepository.ticket.category()).isEqualTo("account");
-        assertThat(ticketRepository.ticket.priority()).isEqualTo("HIGH");
-    }
-
-    @Test
-    void convertToTicketRejectsASecondConversionForTheSameConversation() {
-        conversationRepository.conversation = conversation("CV-1", "OPEN");
-        ConversationTicketRequest request = new ConversationTicketRequest(
-                "account", "HIGH", "Need account follow-up", 11L, "Tessa", "escalate to ticket", "Marina K.");
-
-        var first = service.convertToTicket("CV-1", "idem-i9-ticket-1", request);
-        var second = service.convertToTicket("CV-1", "idem-i9-ticket-2", request);
-
-        assertThat(first.getCode()).isZero();
-        assertThat(second.getCode()).isEqualTo(409);
-        assertThat(second.getMessage()).isEqualTo("INVALID_STATE_TRANSITION");
-        assertThat(conversationRepository.conversation.status()).isEqualTo("CLOSED");
-    }
-
-    @Test
-    void convertToTicketRejectsAConcurrentRequestThatLosesTheAtomicClaim() {
-        conversationRepository.conversation = conversation("CV-1", "OPEN");
-        conversationRepository.conversionClaimSucceeds = false;
-
-        var result = service.convertToTicket(
-                "CV-1",
-                "idem-i9-ticket-race",
-                new ConversationTicketRequest(
-                        "account", "HIGH", "Need account follow-up", 11L, "Tessa", "escalate to ticket", "Marina K."));
-
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("CONVERSATION_ALREADY_CONVERTED_TO_TICKET");
-        assertThat(ticketRepository.ticket).isNull();
-    }
-
-    @Test
     void overviewExposesI9TransferStateMachine() {
         when(ownership.supervisor(1L)).thenReturn(true);
         var result = service.overview();
@@ -925,7 +867,6 @@ class OpsConversationServiceTest {
         private LocalDateTime lastCutoff;
         private int lastLimit;
         private boolean fallbackClaimSucceeds = true;
-        private boolean conversionClaimSucceeds = true;
         private String receiptStatus = "sent";
         private boolean stateClaimSucceeds = true;
         private int failStateClaimOnAttempt = Integer.MAX_VALUE;
@@ -1209,14 +1150,6 @@ class OpsConversationServiceTest {
         }
 
         @Override
-        public boolean markConvertedToTicket(ContentConversationView conversation, String ticketNo, String operator, LocalDateTime now) {
-            if (!conversionClaimSucceeds || "CLOSED".equalsIgnoreCase(conversation.status())) {
-                return false;
-            }
-            return updateStatus(conversation, "CLOSED", operator, now);
-        }
-
-        @Override
         public ContentConversationView createConversation(String conversationNo, Long userId, String conversationType,
                                                          String ownerAgentId, String ownerAgentName,
                                                          String openingText, LocalDateTime now) {
@@ -1282,110 +1215,6 @@ class OpsConversationServiceTest {
         @Override
         public void upsertAdminValue(String configKey, String configValue, String valueType, String configGroup, String remark) {
             values.put(configKey, configValue);
-        }
-    }
-
-    private static final class FakeSupportTicketRepository implements SupportTicketRepository {
-        @Override public void markConversationSource(String ticketNo,String conversationNo) {}
-        private SupportTicketView ticket;
-        private List<SupportTicketMessageView> messages = List.of();
-
-        @Override
-        public void ensureSeedData(LocalDateTime now) {
-        }
-
-        @Override
-        public Map<String, Object> counters() {
-            return Map.of("active", 1L);
-        }
-
-        @Override
-        public PageResult<SupportTicketView> pageTickets(SupportTicketQueryRequest request) {
-            return new PageResult<>(ticket == null ? 0 : 1, 1, 20, ticket == null ? List.of() : List.of(ticket));
-        }
-
-        @Override
-        public Optional<SupportTicketView> findByTicketNo(String ticketNo) {
-            return Optional.ofNullable(ticket);
-        }
-
-        @Override
-        public List<SupportTicketMessageView> messages(String ticketNo) {
-            return messages;
-        }
-
-        @Override
-        public SupportTicketView createTicket(
-                String ticketNo,
-                Long userId,
-                String category,
-                String priority,
-                String title,
-                String body,
-                Long assignedAdminId,
-                String assignedAdminName,
-                String operator,
-                LocalDateTime now) {
-            ticket = new SupportTicketView(
-                    10L,
-                    ticketNo,
-                    userId,
-                    category,
-                    priority,
-                    "OPEN",
-                    title,
-                    body,
-                    assignedAdminId,
-                    assignedAdminName,
-                    0,
-                    1,
-                    1,
-                    now,
-                    null,
-                    now,
-                    now,
-                    false,
-                    null);
-            messages = List.of(new SupportTicketMessageView(
-                    10L,
-                    10L,
-                    ticketNo,
-                    userId,
-                    "user",
-                    "User",
-                    body,
-                    now));
-            return ticket;
-        }
-
-        @Override
-        public void appendReply(SupportTicketView ticket, String body, String operator, LocalDateTime now) {
-        }
-
-        @Override
-        public void updateStatus(SupportTicketView ticket, String status, String operator, LocalDateTime now) {
-        }
-
-        @Override
-        public void updatePriority(SupportTicketView ticket, String priority, LocalDateTime now) {
-        }
-
-        @Override
-        public void assign(SupportTicketView ticket, Long assignedAdminId, String assignedAdminName, LocalDateTime now) {
-        }
-
-        @Override
-        public void archive(SupportTicketView ticket, boolean archived, String operator, LocalDateTime now) {
-        }
-
-        @Override
-        public void appendSystemTrace(SupportTicketView ticket, String body, LocalDateTime now) {
-            messages = java.util.stream.Stream.concat(
-                    messages.stream(),
-                    java.util.stream.Stream.of(new SupportTicketMessageView(
-                            (long) messages.size() + 1, ticket.id(), ticket.ticketNo(), null,
-                            "system", "系统", body, now)))
-                    .toList();
         }
     }
 }

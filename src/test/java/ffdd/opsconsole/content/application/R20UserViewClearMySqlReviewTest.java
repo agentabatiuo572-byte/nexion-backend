@@ -492,12 +492,12 @@ class R20UserViewClearMySqlReviewTest {
             when(config.activeValue("I.session.cat.advisor.enabled")).thenReturn(Optional.of("on"));
             management = proxy(new AppConversationManagementService(session.getMapper(AppConversationClearMapper.class),
                     ownership, guard, idempotency, json, audit, events), AppConversationManagementService.class);
-            app = proxy(new AppSupportService(mock(SupportTicketRepository.class), repository,
+            app = proxy(new AppSupportService(repository,
                     mock(SupportKnowledgeRepository.class), idempotency, audit, events, clock, guard,
                     session.getMapper(AdminIdempotencyRecordMapper.class), json,
                     new MybatisSupportAgentRepository(session.getMapper(SupportAgentMapper.class)), config,
                     ownership, human, visibility, org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class)), AppSupportService.class);
-            ops = proxy(new OpsConversationService(repository, mock(SupportTicketRepository.class),
+            ops = proxy(new OpsConversationService(repository,
                     mock(OpsSupportAgentService.class), config, audit, clock,
                     mock(ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.class),
                     mock(ffdd.opsconsole.user.application.OpsUserService.class),

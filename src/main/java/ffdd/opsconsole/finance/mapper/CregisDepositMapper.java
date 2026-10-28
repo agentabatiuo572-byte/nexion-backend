@@ -14,6 +14,27 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity> {
+    @Select("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('nx_cregis_deposit_policy','nx_cregis_deposit_policy_snapshot','nx_cregis_deposit_policy_lock','nx_cregis_deposit_policy_install')")
+    int policySchemaTableCount();
+    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_policy_install WHERE id=1")
+    int depositPolicyInstallCount();
+    @Select("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND (TABLE_NAME='nx_cregis_deposit_policy_snapshot' AND COLUMN_NAME IN ('project_id','chain_id','token_id','txid','policy_version','required_confirmations') OR TABLE_NAME='nx_cregis_exception_claim' AND COLUMN_NAME IN ('policy_version','policy_fee_usdt'))")
+    int policySchemaColumnCount();
+    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_policy")
+    int depositPolicyCount();
+    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_policy_lock WHERE id=1")
+    int depositPolicyLockCount();
+    @Select("""
+        SELECT (SELECT COUNT(*) FROM nx_cregis_deposit_event e WHERE NOT EXISTS
+          (SELECT 1 FROM nx_cregis_deposit_policy_snapshot s WHERE s.project_id=e.project_id AND s.txid=CASE WHEN LOWER(e.txid) LIKE '0x%' THEN LOWER(e.txid) ELSE CONCAT('0x',LOWER(e.txid)) END AND s.chain_id='BSC' AND s.token_id='USDT-BEP20'))
+        + (SELECT COUNT(*) FROM nx_cregis_chain_observation o WHERE NOT EXISTS
+          (SELECT 1 FROM nx_cregis_deposit_policy_snapshot s WHERE s.project_id=o.project_id AND s.txid=CASE WHEN LOWER(o.txid) LIKE '0x%' THEN LOWER(o.txid) ELSE CONCAT('0x',LOWER(o.txid)) END AND s.chain_id='BSC' AND s.token_id='USDT-BEP20'))
+        + (SELECT COUNT(*) FROM nx_cregis_deposit_delivery d WHERE d.accepted=1 AND
+          (JSON_VALID(d.raw_json)=0 OR d.txid IS NULL OR NOT EXISTS
+           (SELECT 1 FROM nx_cregis_deposit_policy_snapshot s WHERE s.project_id=CAST(JSON_UNQUOTE(JSON_EXTRACT(d.raw_json,'$.pid')) AS UNSIGNED) AND s.txid=CASE WHEN LOWER(d.txid) LIKE '0x%' THEN LOWER(d.txid) ELSE CONCAT('0x',LOWER(d.txid)) END AND s.chain_id='BSC' AND s.token_id='USDT-BEP20')))
+        + (SELECT COUNT(*) FROM nx_cregis_deposit_policy_snapshot s LEFT JOIN nx_cregis_deposit_policy p ON p.version=s.policy_version WHERE p.version IS NULL OR s.required_confirmations<15)
+        """)
+    long incompletePolicySnapshotCount();
     @Select("SELECT COUNT(*) FROM nx_cregis_risk_alert WHERE project_id=#{projectId} AND kind='AUTO_FORWARD_UNKNOWN' AND resolved_at IS NULL")
     int openAutoForwardUnknownAlertCount(long projectId);
     @Select("""
@@ -504,26 +525,36 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
 
     @Select("""
             SELECT * FROM (
-              SELECT CONCAT('CR-',cid) AS depositId,txid AS txHash,address,
-                     gross_amount AS grossAmountUsdt,
-                      CASE WHEN status IN ('CREDITED','REORG_INVESTIGATING','PROVIDER_CONFLICT_HOLD')
-                           THEN net_amount ELSE 0 END AS creditedUsdt,
-                     confirmations,status,UNIX_TIMESTAMP(created_at)*1000 AS createdAt,
-                     UNIX_TIMESTAMP(credited_at)*1000 AS creditedAt
-                FROM nx_cregis_deposit_event WHERE user_id=#{userId}
+              SELECT CONCAT('CR-',e.cid) AS depositId,e.txid AS txHash,e.address,
+                     e.gross_amount AS grossAmountUsdt,
+                      CASE WHEN e.status IN ('CREDITED','REORG_INVESTIGATING','PROVIDER_CONFLICT_HOLD')
+                           THEN e.net_amount ELSE 0 END AS creditedUsdt,
+                     e.confirmations,e.status,UNIX_TIMESTAMP(e.created_at)*1000 AS createdAt,
+                     UNIX_TIMESTAMP(e.credited_at)*1000 AS creditedAt,
+                     GREATEST(s.required_confirmations,#{safetyFloor}) AS requiredConfirmations
+                FROM nx_cregis_deposit_event e
+                LEFT JOIN nx_cregis_deposit_policy_snapshot s ON s.project_id=e.project_id
+                 AND s.chain_id='BSC' AND s.token_id='USDT-BEP20'
+                 AND s.txid=CASE WHEN LOWER(e.txid) LIKE '0x%' THEN LOWER(e.txid) ELSE CONCAT('0x',LOWER(e.txid)) END
+               WHERE e.user_id=#{userId} AND e.project_id=#{projectId}
               UNION ALL
               SELECT CONCAT('CR-',d.cid),d.txid,d.address,d.gross_amount,0,0,'CONFIRMING',
-                     UNIX_TIMESTAMP(MIN(d.created_at))*1000,NULL
+                     UNIX_TIMESTAMP(MIN(d.created_at))*1000,NULL,
+                     GREATEST(s.required_confirmations,#{safetyFloor})
                 FROM nx_cregis_deposit_delivery d
                 JOIN nx_cregis_deposit_address a ON a.project_id=#{projectId} AND a.address=d.address
                  AND a.user_id=#{userId} AND a.state='READY'
+                LEFT JOIN nx_cregis_deposit_policy_snapshot s ON s.project_id=#{projectId}
+                 AND s.chain_id='BSC' AND s.token_id='USDT-BEP20'
+                 AND s.txid=CASE WHEN LOWER(d.txid) LIKE '0x%' THEN LOWER(d.txid) ELSE CONCAT('0x',LOWER(d.txid)) END
                WHERE d.accepted=1 AND d.processed_at IS NULL AND d.cid IS NOT NULL
                  AND NOT EXISTS (SELECT 1 FROM nx_cregis_deposit_event e
                                   WHERE e.project_id=#{projectId} AND e.cid=d.cid)
-               GROUP BY d.cid,d.txid,d.address,d.gross_amount
+               GROUP BY d.cid,d.txid,d.address,d.gross_amount,s.required_confirmations
             ) deposit_rows ORDER BY createdAt DESC LIMIT 50
             """)
-    List<Map<String, Object>> deposits(@Param("userId") long userId, @Param("projectId") long projectId);
+    List<Map<String, Object>> deposits(@Param("userId") long userId, @Param("projectId") long projectId,
+                                       @Param("safetyFloor") int safetyFloor);
 
     @Select("""
             SELECT CAST(e.id AS CHAR) AS id,CAST(e.cid AS CHAR) AS cid,
@@ -930,7 +961,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     Map<String, Object> reviewEventSnapshot(@Param("id") long id);
     @Select("""
             SELECT c.id,c.event_id AS eventId,e.cid,e.user_id AS userId,
-              e.gross_amount AS grossAmount,e.gross_amount - 1 AS proposedNetAmount,
+              e.gross_amount AS grossAmount,p.fee_usdt AS feeAmount,e.gross_amount - p.fee_usdt AS proposedNetAmount,
               e.address,e.txid,
               e.block_number AS blockNumber,e.block_hash AS blockHash,
               e.log_index AS logIndex,e.confirmations,c.action,c.reason,
@@ -939,6 +970,8 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
               c.created_at AS createdAt,c.checked_at AS checkedAt
             FROM nx_cregis_review_case c
               JOIN nx_cregis_deposit_event e ON e.id=c.event_id
+              LEFT JOIN nx_cregis_deposit_policy_snapshot s ON s.project_id=e.project_id AND s.chain_id='BSC' AND s.token_id='USDT-BEP20' AND s.txid=e.txid
+              LEFT JOIN nx_cregis_deposit_policy p ON p.version=s.policy_version
             WHERE c.project_id=#{projectId} AND c.status='MAKER_DONE'
               AND (#{beforeId}=0 OR c.id<#{beforeId})
             ORDER BY c.id DESC LIMIT 50
