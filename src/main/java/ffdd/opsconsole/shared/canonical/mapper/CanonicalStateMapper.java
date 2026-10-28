@@ -965,7 +965,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                        AND wb.bill_no = CONCAT('E4-BILL-', o.order_no)
                        AND wb.type = 'ORDER_REFUND' AND wb.token = 'USDT'
                        AND wb.direction = 'IN' AND wb.amount > 0
-                     ORDER BY wb.occurred_at DESC, wb.id DESC LIMIT 1) AS refundBillNo
+                     ORDER BY wb.occurred_at DESC, wb.id DESC LIMIT 1) AS refundBillNo,
+                   o.refund_reason_code AS refundReasonCode
               FROM nx_order o
               LEFT JOIN nx_product p
                 ON p.id = o.product_id AND p.is_deleted = 0
@@ -1237,7 +1238,22 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             LocalDateTime refundedAt,
             BigDecimal refundAmountUsdt,
             String refundChannel,
-            String refundBillNo) {
+            String refundBillNo,
+            String refundReasonCode) {
+
+        public UserOrder(String orderNo, Long productId, String productNo, String productName, Integer quantity,
+                  BigDecimal unitPriceUsdt, BigDecimal discountUsdt, BigDecimal amountUsdt,
+                  String paymentMethod, String paymentStatus, String orderStatus, String activationStatus,
+                  String orderType, LocalDateTime placedAt, LocalDateTime paidAt, LocalDateTime activatedAt,
+                  String dataCenter, String tradeinNo, Long sourceDeviceId, Long targetDeviceId,
+                  String targetDeviceInstanceNo, Integer itemCount, BigDecimal subtotalUsdt,
+                  LocalDateTime refundedAt, BigDecimal refundAmountUsdt, String refundChannel, String refundBillNo) {
+            this(orderNo, productId, productNo, productName, quantity, unitPriceUsdt, discountUsdt,
+                    amountUsdt, paymentMethod, paymentStatus, orderStatus, activationStatus, orderType,
+                    placedAt, paidAt, activatedAt, dataCenter, tradeinNo, sourceDeviceId, targetDeviceId,
+                    targetDeviceInstanceNo, itemCount, subtotalUsdt, refundedAt, refundAmountUsdt,
+                    refundChannel, refundBillNo, null);
+        }
 
         public UserOrder(String orderNo, Long productId, String productNo, String productName, Integer quantity,
                   BigDecimal unitPriceUsdt, BigDecimal discountUsdt, BigDecimal amountUsdt,
@@ -1248,7 +1264,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             this(orderNo, productId, productNo, productName, quantity, unitPriceUsdt, discountUsdt,
                     amountUsdt, paymentMethod, paymentStatus, orderStatus, activationStatus, orderType,
                     placedAt, paidAt, activatedAt, dataCenter, tradeinNo, sourceDeviceId, targetDeviceId,
-                    targetDeviceInstanceNo, itemCount, subtotalUsdt, null, null, null, null);
+                    targetDeviceInstanceNo, itemCount, subtotalUsdt, null, null, null, null, null);
         }
 
         public UserOrder(String orderNo, Long productId, String productNo, String productName, Integer quantity,
@@ -1262,7 +1278,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                     placedAt, paidAt, activatedAt, dataCenter, tradeinNo, sourceDeviceId, targetDeviceId,
                     targetDeviceInstanceNo, quantity, unitPriceUsdt == null || quantity == null
                             ? null : unitPriceUsdt.multiply(BigDecimal.valueOf(quantity)),
-                    null, null, null, null);
+                    null, null, null, null, null);
         }
     }
 

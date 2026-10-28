@@ -2697,6 +2697,47 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void refundOrderStoresUserVisibleReasonAndAuditsIt() {
+        catalogRepository.order = order("OD-1", "paid");
+
+        ApiResult<DeviceOrderView> result = service.refundOrder("OD-1", "idem-order-refund-reason",
+                new DeviceOrderActionRequest(null, "WALLET", "duplicate wallet charge", "superadmin", " duplicate_payment "));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(catalogRepository.refundReasons).containsEntry("OD-1", "DUPLICATE_PAYMENT");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("refundReasonCode", "DUPLICATE_PAYMENT")
+                .containsEntry("reason", "duplicate wallet charge");
+    }
+
+    @Test
+    void refundOrderRejectsUnknownReasonBeforeAnyChange() {
+        catalogRepository.order = order("OD-1", "paid");
+
+        ApiResult<DeviceOrderView> result = service.refundOrder("OD-1", "idem-order-refund-bad-reason",
+                new DeviceOrderActionRequest(null, "WALLET", "customer refund approved", "superadmin", "OPS_INTERNAL_NOTE"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("E4_REFUND_REASON_INVALID");
+        assertThat(catalogRepository.order.state()).isEqualTo("paid");
+        assertThat(catalogRepository.refundReasons).isEmpty();
+        assertThat(refundSettlementFacade.entries).isEmpty();
+    }
+
+    @Test
+    void refundOrderWithoutReasonKeepsLegacyTicketsWorking() {
+        catalogRepository.order = order("OD-1", "paid");
+
+        ApiResult<DeviceOrderView> result = service.refundOrder("OD-1", "idem-order-refund-legacy",
+                new DeviceOrderActionRequest(null, "customer refund approved", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(catalogRepository.refundReasons).isEmpty();
+    }
+
+    @Test
     void refundOrderUsesCanonicalB1RedlineErrorContract() {
         catalogRepository.order = order("OD-1", "paid");
         when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
@@ -3052,6 +3093,19 @@ class OpsDeviceServiceTest {
                 .containsEntry("fromStatus", "on")
                 .containsEntry("toStatus", "off")
                 .containsEntry("idempotencyKey", "idem-replay-e1-sku-status");
+    }
+
+    @Test
+    void replayE4OrderRefundCarriesUserVisibleReason() {
+        catalogRepository.order = order("OD-1", "paid");
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("E", "e4_order_refund",
+                        Map.of("orderNo", "OD-1", "refundChannel", "WALLET", "refundReasonCode", "USER_REQUEST")),
+                new AuditReplayContext("superadmin", "user asked to cancel", "idem-replay-e4-refund-reason"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(catalogRepository.refundReasons).containsEntry("OD-1", "USER_REQUEST");
     }
 
     @Test
@@ -4054,6 +4108,7 @@ class OpsDeviceServiceTest {
         private DeviceOrderFacts orderFacts;
         private List<DeviceOrderFundingView> orderFunding = List.of();
         private int rollbackOrderAssetsCalls;
+        private final Map<String, String> refundReasons = new java.util.HashMap<>();
         private DeviceSkuUpsertRequest lastSkuRequest;
         private final Map<String, DevicePhaseView> phases = new LinkedHashMap<>();
         private final Map<String, DeviceGenerationGateView> generationGates = new LinkedHashMap<>();
@@ -4760,6 +4815,11 @@ class OpsDeviceServiceTest {
             }
             order = order(order.orderNo(), state);
             return Optional.of(order);
+        }
+
+        @Override
+        public void recordOrderRefundReason(String orderNo, String refundReasonCode) {
+            refundReasons.put(orderNo, refundReasonCode);
         }
 
         @Override
