@@ -469,7 +469,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -512,7 +512,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -700,7 +700,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -743,7 +743,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -875,7 +875,7 @@
             "inviterReward": {
               "rewardRuleId": "inviter-rule-A",
               "beneficiaryRole": "DIRECT_INVITER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "10.000000",
               "assetPolicy": {
@@ -914,7 +914,7 @@
             "inviterReward": {
               "rewardRuleId": "inviter-rule-D",
               "beneficiaryRole": "DIRECT_INVITER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "10.000000",
               "assetPolicy": {
@@ -953,7 +953,7 @@
             "inviterReward": {
               "rewardRuleId": "inviter-rule-E",
               "beneficiaryRole": "DIRECT_INVITER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "10.000000",
               "assetPolicy": {
@@ -980,7 +980,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -992,7 +992,7 @@
             "inviterReward": {
               "rewardRuleId": "inviter-rule-F",
               "beneficiaryRole": "DIRECT_INVITER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "10.000000",
               "assetPolicy": {
@@ -1034,7 +1034,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -1222,7 +1222,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -1265,7 +1265,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -1453,7 +1453,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -1496,7 +1496,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -1757,7 +1757,7 @@
                   "buyerReward": {
                     "rewardRuleId": "reward-NEX-BUYER",
                     "beneficiaryRole": "BUYER",
-                    "type": "NEX",
+                    "type": "UVT",
                     "calculation": "FIXED",
                     "amount": "1000.000000",
                     "disclosure": {
@@ -2009,7 +2009,7 @@
               "buyerReward": {
                 "rewardRuleId": "reward-NEX-BUYER",
                 "beneficiaryRole": "BUYER",
-                "type": "NEX",
+                "type": "UVT",
                 "calculation": "FIXED",
                 "amount": "1000.000000",
                 "disclosure": {
@@ -2626,7 +2626,7 @@
               "minimumUnit": "0.000001"
             },
             {
-              "asset": "NEX",
+              "asset": "UVT",
               "scale": 6,
               "minimumUnit": "0.000001"
             }
@@ -3108,7 +3108,7 @@
                   "buyerReward": {
                     "rewardRuleId": "reward-NEX-BUYER",
                     "beneficiaryRole": "BUYER",
-                    "type": "NEX",
+                    "type": "UVT",
                     "calculation": "FIXED",
                     "amount": "1000.000000",
                     "assetPolicy": {
@@ -3151,7 +3151,7 @@
                   "total": "200.000000"
                 },
                 {
-                  "asset": "NEX",
+                  "asset": "UVT",
                   "total": "10000.000000"
                 }
               ],
@@ -3422,7 +3422,7 @@
                     "buyerReward": {
                       "rewardRuleId": "reward-NEX-BUYER",
                       "beneficiaryRole": "BUYER",
-                      "type": "NEX",
+                      "type": "UVT",
                       "calculation": "FIXED",
                       "amount": "1000.000000",
                       "assetPolicy": {
@@ -3465,7 +3465,7 @@
                     "total": "200.000000"
                   },
                   {
-                    "asset": "NEX",
+                    "asset": "UVT",
                     "total": "10000.000000"
                   }
                 ],
@@ -3675,7 +3675,7 @@
                 "buyerReward": {
                   "rewardRuleId": "reward-NEX-BUYER",
                   "beneficiaryRole": "BUYER",
-                  "type": "NEX",
+                  "type": "UVT",
                   "calculation": "FIXED",
                   "amount": "1000.000000",
                   "assetPolicy": {
@@ -3718,7 +3718,7 @@
                 "total": "200.000000"
               },
               {
-                "asset": "NEX",
+                "asset": "UVT",
                 "total": "10000.000000"
               }
             ],
@@ -3916,7 +3916,7 @@
               "buyerReward": {
                 "rewardRuleId": "reward-NEX-BUYER",
                 "beneficiaryRole": "BUYER",
-                "type": "NEX",
+                "type": "UVT",
                 "calculation": "FIXED",
                 "amount": "1000.000000",
                 "assetPolicy": {
@@ -3959,7 +3959,7 @@
               "total": "200.000000"
             },
             {
-              "asset": "NEX",
+              "asset": "UVT",
               "total": "10000.000000"
             }
           ],
@@ -4160,7 +4160,7 @@
               "buyerReward": {
                 "rewardRuleId": "reward-NEX-BUYER",
                 "beneficiaryRole": "BUYER",
-                "type": "NEX",
+                "type": "UVT",
                 "calculation": "FIXED",
                 "amount": "1000.000000",
                 "assetPolicy": {
@@ -4203,7 +4203,7 @@
               "total": "200.000000"
             },
             {
-              "asset": "NEX",
+              "asset": "UVT",
               "total": "10000.000000"
             }
           ],
@@ -4573,7 +4573,7 @@
               "unrecoverable": "0.000000"
             },
             {
-              "asset": "NEX",
+              "asset": "UVT",
               "issued": "0.000000",
               "reversed": "0.000000",
               "pending": "0.000000",
@@ -5048,7 +5048,7 @@
                 "buyerReward": {
                   "rewardRuleId": "reward-NEX-BUYER",
                   "beneficiaryRole": "BUYER",
-                  "type": "NEX",
+                  "type": "UVT",
                   "calculation": "FIXED",
                   "amount": "1000.000000",
                   "disclosure": {
@@ -6180,7 +6180,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -6223,7 +6223,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -6467,7 +6467,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -6510,7 +6510,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -6699,7 +6699,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -6742,7 +6742,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -7532,7 +7532,7 @@
               "buyerReward": {
                 "rewardRuleId": "reward-NEX-BUYER",
                 "beneficiaryRole": "BUYER",
-                "type": "NEX",
+                "type": "UVT",
                 "calculation": "FIXED",
                 "amount": "1000.000000",
                 "disclosure": {
@@ -8055,7 +8055,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -8098,7 +8098,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -8287,7 +8287,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -8330,7 +8330,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -8519,7 +8519,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -8562,7 +8562,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -8817,7 +8817,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "disclosure": {
@@ -8884,7 +8884,7 @@
             "unrecoverable": "0.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "issued": "0.000000",
             "reversed": "0.000000",
             "pending": "0.000000",
@@ -9012,7 +9012,7 @@
             "unrecoverable": "0.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "issued": "0.000000",
             "reversed": "0.000000",
             "pending": "0.000000",
@@ -9336,7 +9336,7 @@
             "unrecoverable": "0.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "issued": "0.000000",
             "reversed": "0.000000",
             "pending": "0.000000",
@@ -9621,7 +9621,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -9664,7 +9664,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -9778,7 +9778,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -9966,7 +9966,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -10178,7 +10178,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -10221,7 +10221,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -10408,7 +10408,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -10451,7 +10451,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],
@@ -10639,7 +10639,7 @@
             "buyerReward": {
               "rewardRuleId": "reward-NEX-BUYER",
               "beneficiaryRole": "BUYER",
-              "type": "NEX",
+              "type": "UVT",
               "calculation": "FIXED",
               "amount": "1000.000000",
               "assetPolicy": {
@@ -10682,7 +10682,7 @@
             "total": "200.000000"
           },
           {
-            "asset": "NEX",
+            "asset": "UVT",
             "total": "10000.000000"
           }
         ],

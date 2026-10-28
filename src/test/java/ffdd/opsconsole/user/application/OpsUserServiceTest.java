@@ -485,7 +485,7 @@ class OpsUserServiceTest {
         assertThat(workbook)
                 .contains("用户编码")
                 .contains("USDT余额,UVT余额")
-                .doesNotContain("UVT余额")
+                .doesNotContain("NEX余额")
                 .contains("U00000001")
                 .doesNotContain("userId")
                 .doesNotContain("<th>ID</th>")
