@@ -248,7 +248,8 @@ public class AppTradeinService {
 
         AppTradeinMapper.PaidOrderWrite order = new AppTradeinMapper.PaidOrderWrite(
                 userId, orderNo, evaluation.target().id(), evaluation.target().productNo(),
-                evaluation.target().name(), quote.targetPriceUsdt(), quote.discountUsdt(), quote.payableUsdt());
+                evaluation.target().name(), quote.targetPriceUsdt(), quote.discountUsdt(), quote.payableUsdt(),
+                evaluation.source().productId());
         if (mapper.insertPaidOrder(order) != 1 || mapper.insertPaidOrderItem(order) != 1) {
             throw new BizException(409, "TRADEIN_ORDER_CREATE_CONFLICT");
         }
@@ -385,7 +386,7 @@ public class AppTradeinService {
 
         AppTradeinMapper.PaidOrderWrite order = new AppTradeinMapper.PaidOrderWrite(
                 userId, orderNo, target.id(), target.productNo(), target.name(),
-                quote.targetPriceUsdt(), BigDecimal.ZERO.setScale(6), quote.payableUsdt());
+                quote.targetPriceUsdt(), BigDecimal.ZERO.setScale(6), quote.payableUsdt(), source.productId());
         if (mapper.insertPaidOrder(order) != 1 || mapper.insertPaidOrderItem(order) != 1) {
             throw new BizException(409, "TRADEIN_ORDER_CREATE_CONFLICT");
         }
@@ -493,7 +494,7 @@ public class AppTradeinService {
 
         AppTradeinMapper.PaidOrderWrite order = new AppTradeinMapper.PaidOrderWrite(
                 userId, orderNo, target.id(), target.productNo(), target.name(),
-                quote.targetPriceUsdt(), BigDecimal.ZERO.setScale(6), quote.payableUsdt());
+                quote.targetPriceUsdt(), BigDecimal.ZERO.setScale(6), quote.payableUsdt(), null);
         if (mapper.insertCapacityKeepOrder(order) != 1 || mapper.insertPaidOrderItem(order) != 1) {
             throw new BizException(409, "CAPACITY_KEEP_ORDER_CREATE_CONFLICT");
         }
@@ -663,7 +664,7 @@ public class AppTradeinService {
             return purchaseGatePolicy.evaluate(raw, facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
                     facts.rank() == null ? 0 : facts.rank(),
                     facts.activeDirect() == null ? 0 : facts.activeDirect(),
-                    facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd()));
+                    facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()));
         } catch (IllegalArgumentException ex) {
             return StorefrontPurchaseGatePolicy.Decision.closed("PURCHASE_GATE_FACTS_INVALID");
         }

@@ -41,9 +41,9 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Select("""
             SELECT c.rank_code AS v,
                    c.title_cn AS label,
-                   c.self_buy_usd AS selfBuyUsd,
+                   c.self_compute_points AS selfComputePoints,
                    c.direct_refs AS directRefs,
-                   c.team_volume_usd AS teamGvUsd,
+                   c.team_compute_points AS teamComputePoints,
                    c.required_downline_count AS legCount,
                    c.required_downline_rank AS legRank,
                    c.unilevel_depth AS unilevelDepth,
@@ -74,8 +74,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
               ) p ON p.rank_code = UPPER(c.rank_code)
              WHERE c.is_deleted = 0
                AND c.status = 1
-             GROUP BY c.id, c.rank_code, c.title_cn, c.self_buy_usd, c.direct_refs,
-                      c.team_volume_usd, c.required_downline_count, c.required_downline_rank,
+             GROUP BY c.id, c.rank_code, c.title_cn, c.self_compute_points, c.direct_refs,
+                      c.team_compute_points, c.required_downline_count, c.required_downline_rank,
                       c.unilevel_depth, c.peer_bonus_rate, c.leadership_votes,
                       c.status, c.physical_reward, c.sort_order
              ORDER BY c.sort_order ASC, c.id ASC
@@ -84,7 +84,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_v_rank_config
-               SET self_buy_usd = #{value},
+               SET self_compute_points = #{value},
                    updated_at = NOW()
              WHERE rank_code = #{rank}
                AND is_deleted = 0
@@ -102,7 +102,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_v_rank_config
-               SET team_volume_usd = #{value},
+               SET team_compute_points = #{value},
                    updated_at = NOW()
              WHERE rank_code = #{rank}
                AND is_deleted = 0
@@ -245,7 +245,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT c.rank_code AS name,
-                   CONCAT('Team volume >= ', ROUND(c.team_volume_usd, 0), ' USDT') AS requirement,
+                   CONCAT('Team compute points >= ', c.team_compute_points) AS requirement,
                    CONCAT(ROUND(c.peer_bonus_rate * 100, 2), '%') AS rate,
                    CASE
                      WHEN totals.total_count = 0 THEN '0%'
@@ -263,7 +263,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
               ) totals
              WHERE c.is_deleted = 0
                AND c.status = 1
-             GROUP BY c.id, c.rank_code, c.team_volume_usd, c.peer_bonus_rate, c.sort_order, totals.total_count
+             GROUP BY c.id, c.rank_code, c.team_compute_points, c.peer_bonus_rate, c.sort_order, totals.total_count
              ORDER BY c.sort_order ASC, c.id ASC
             """)
     List<Map<String, Object>> rateTiers();
@@ -375,7 +375,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    ) AS monthLeadershipUsd,
                    COUNT(DISTINCT CASE
                      WHEN m.user_id = m.member_user_id
-                      AND m.v_rank REGEXP '^V([1-9]|1[0-2])$'
+                      AND m.v_rank REGEXP '^V[1-8]$'
                      THEN m.member_user_id END) AS participantCount
               FROM nx_team_member m
              WHERE m.is_deleted = 0
@@ -421,7 +421,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    t.product_no AS productNo,
                    COALESCE(t.display_name, t.quota_code) AS name,
                    t.direct_refs AS directRefs,
-                   t.month_volume_usd AS monthVolumeUsd,
+                   t.month_compute_points AS monthComputePoints,
                    t.unlock_mode AS unlockMode,
                    COALESCE(SUM(CASE WHEN u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE' THEN u.quantity ELSE 0 END), 0) AS current,
                    t.monthly_quota AS cap,
@@ -438,7 +438,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE t.is_deleted = 0
                AND t.status = 1
              GROUP BY t.id, t.display_name, t.quota_code, t.product_no, t.direct_refs,
-                      t.month_volume_usd, t.unlock_mode, t.monthly_quota, t.sort_order
+                      t.month_compute_points, t.unlock_mode, t.monthly_quota, t.sort_order
              ORDER BY t.sort_order ASC, t.id ASC
             """)
     List<Map<String, Object>> quotaRows();
@@ -1047,14 +1047,14 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     // ============================================================
 
     /**
-     * 读 13 阶 nx_v_rank_config,按 sort_order 升序(V0..V12)。
+     * 读 9 阶 nx_v_rank_config,按 sort_order 升序(V0..V8)。
      * Sprint6 扩展:补 unilevel_depth/peer_bonus_rate/leadership_votes 三列,供 overrideVRank 联动预览读。
      */
     @Select("""
             SELECT rank_code AS rankCode,
-                   self_buy_usd AS selfBuyUsd,
+                   self_compute_points AS selfComputePoints,
                    direct_refs AS directRefs,
-                   team_volume_usd AS teamVolumeUsd,
+                   team_compute_points AS teamComputePoints,
                    required_downline_rank AS requiredDownlineRank,
                    required_downline_count AS requiredDownlineCount,
                    sort_order AS sortOrder,
@@ -1279,7 +1279,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
      * L1-L7 下级子树本月 PAID 订单 subtotal_usdt 之和(不含 userId 自己)。
      *
      * <p>递归 CTE 起点为 userId 的 level=1 直接下级(depth=1),递归步扩展 level=1 父子边,
-     * WHERE s.depth < 7 限深 L7(参考 listUplineChain 的递归 + VRankPerformanceMapper.teamVolumeUSD 子树 SUM 范式)。
+     * WHERE s.depth < 7 限深 L7(参考 listUplineChain 的递归 + VRankPerformanceMapper.teamComputePoints 子树 SUM 范式)。
      * 月份口径取 COALESCE(paid_at, created_at) 的年月 = 当月;PAID/CONFIRMED/SUCCESS 且排除 REFUNDED/CHARGEBACK。
      * 用于 resolveInfluenceScore:clamp(1 + log10(volume/100), clampMin, clampMax) → L2-L7 扩展层佣金乘数。
      */
@@ -1340,7 +1340,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
               FROM nx_team_member m
               JOIN nx_v_rank_config c ON c.rank_code = m.v_rank AND c.is_deleted = 0
              WHERE m.user_id = m.member_user_id
-               AND m.v_rank REGEXP '^V([1-9]|1[0-2])$'
+               AND m.v_rank REGEXP '^V[1-8]$'
                AND CAST(SUBSTRING(m.v_rank, 2) AS UNSIGNED) >= #{minRank}
                AND c.leadership_votes > 0
                AND m.is_deleted = 0

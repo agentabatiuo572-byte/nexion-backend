@@ -22,9 +22,10 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
                    (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
                      WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
                        AND child.status='ACTIVE' AND child.is_deleted=0) AS activeDirect,
-                   (SELECT COALESCE(SUM(tm.volume),0) FROM nx_team_member tm JOIN nx_user member
+                   /* Sandbox runs never read canonical orders; seeded member volume stands in at ten points per unit. */
+                   (SELECT ROUND(COALESCE(SUM(tm.volume),0) * 10) FROM nx_team_member tm JOIN nx_user member
                      ON member.id=tm.member_user_id AND member.sandbox=u.sandbox
-                    WHERE tm.user_id=u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) AS teamVolumeUsd
+                    WHERE tm.user_id=u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) AS teamComputePoints
               FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
             """)
     PurchaseGateFacts purchaseGateFacts(@Param("userId") Long userId);
@@ -418,7 +419,7 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
                     null, "FINITE", runId);
         }
     }
-    record PurchaseGateFacts(Integer rank, Integer activeDirect, BigDecimal teamVolumeUsd) { }
+    record PurchaseGateFacts(Integer rank, Integer activeDirect, BigDecimal teamComputePoints) { }
     record SandboxEligibilityProduct(
             String productNo, String unlockPhase, String purchaseGateJson,
             String productType, String inventoryMode, String gpuModel, Integer vramTotalGb,

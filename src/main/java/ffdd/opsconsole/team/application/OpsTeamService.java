@@ -168,7 +168,7 @@ public class OpsTeamService implements AuditReplayable {
         if (key.matches("^F\\.unilevel\\.L[1-7]\\.paused$")) {
             return "network_f2_policy_amplify";
         }
-        if (key.matches("^F\\.fulfillment\\.V(?:[1-9]|1[0-2])\\.queue\\.status$")) {
+        if (key.matches("^F\\.fulfillment\\.V[1-8]\\.queue\\.status$")) {
             return "network_f1_write";
         }
         // F.binary.*(默认 match_rate;threshold/matchRate 已在静态表精确映射,其余 binary 字段保守要求 match_rate 防越权)
@@ -198,7 +198,7 @@ public class OpsTeamService implements AuditReplayable {
         return null;
     }
     private static final List<String> VRANK_LEVELS = List.of(
-            "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11", "V12");
+            "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8");
     private static final List<VRankSeed> VRANK_SEEDS = List.of(
             vRank("V0"),
             vRank("V1", "selfBuy", "directRefs"),
@@ -208,11 +208,7 @@ public class OpsTeamService implements AuditReplayable {
             vRank("V5", "teamGv", "legCount", "legRank"),
             vRank("V6", "teamGv", "legCount", "legRank"),
             vRank("V7", "teamGv", "legCount", "legRank"),
-            vRank("V8", "teamGv", "legCount", "legRank"),
-            vRank("V9", "teamGv"),
-            vRank("V10", "teamGv"),
-            vRank("V11", "teamGv"),
-            vRank("V12", "teamGv"));
+            vRank("V8", "teamGv", "legCount", "legRank"));
     private static final Set<String> VRANK_REWARD_TYPES = Set.of("usdt", "nex", "voucher", "sku", "custom");
     private static final List<F2PolicyParamSeed> F2_POLICY_PARAM_SEEDS = List.of(
             new F2PolicyParamSeed("clampMin", "影响分下限", "F.influence.clampMin", "1.0", "", "InfluenceScore 下限;clamp 后参与版税权重计算。", false, false, ""),
@@ -222,7 +218,7 @@ public class OpsTeamService implements AuditReplayable {
             new F2PolicyParamSeed("min", "版税支付阈值", "F.royalty.minPayout", "$10", "", "最小可提金额。调高 = 凑不够提不出。", false, false, ""),
             new F2PolicyParamSeed("peer", "peer 平级比例", "F.peer.rate", "5%", "brand", "同 V 级平级奖励比例(V3+)。放大佣金流出。", true, true, "%"),
             new F2PolicyParamSeed("depth", "深度起算层", "F.unilevel.depthGate", "L4", "cyan", "从该层起按阶位门槛校验；L1-L7。", false, false, ""),
-            new F2PolicyParamSeed("depthRank", "深度最低阶位", "F.unilevel.depthGateRank", "V2", "cyan", "深度起算层及以下的上级最低 V 阶；V0-V12。", false, false, ""),
+            new F2PolicyParamSeed("depthRank", "深度最低阶位", "F.unilevel.depthGateRank", "V2", "cyan", "深度起算层及以下的上级最低 V 阶；V0-V8。", false, false, ""),
             new F2PolicyParamSeed("nexcap", "NEX/USDT 折算上限", "F.unilevel.nexCap", "$50/d", "", "单用户单日 NEX 派发折算 USDT 的上限。", false, false, ""),
             new F2PolicyParamSeed("backfill", "回溯窗口", "F.unilevel.backfill", "0d", "", "改后是否回溯已计提,原则上不回溯。", true, false, "天"));
     private static final List<F2PolicyParamSeed> F_SHARED_POLICY_PARAM_SEEDS = List.of(
@@ -1440,7 +1436,7 @@ public class OpsTeamService implements AuditReplayable {
 
     private int depthGateRank(String value) {
         String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
-        if (!normalized.matches("V(?:[0-9]|1[0-2])")) throw new IllegalArgumentException("F_TEAM_DEPTH_GATE_RANK_INVALID");
+        if (!normalized.matches("V[0-8]")) throw new IllegalArgumentException("F_TEAM_DEPTH_GATE_RANK_INVALID");
         return Integer.parseInt(normalized.substring(1));
     }
 
@@ -1564,9 +1560,9 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("v", level);
         row.put("label", textValue(raw, "label", level));
-        row.put("selfBuy", fields.contains("selfBuy") ? moneyCompact(intValue(raw.get("selfBuyUsd"), 0)) : null);
+        row.put("selfBuy", fields.contains("selfBuy") ? intValue(raw.get("selfComputePoints"), 0) : null);
         row.put("directRefs", fields.contains("directRefs") ? intValue(raw.get("directRefs"), 0) : null);
-        row.put("teamGv", fields.contains("teamGv") ? moneyCompact(intValue(raw.get("teamGvUsd"), 0)) : null);
+        row.put("teamGv", fields.contains("teamGv") ? intValue(raw.get("teamComputePoints"), 0) : null);
         row.put("legCount", fields.contains("legCount") ? intValue(raw.get("legCount"), 0) : null);
         row.put("legRank", fields.contains("legRank") ? textValue(raw, "legRank", "") : null);
         row.put("unilevelDepth", textValue(raw, "unilevelDepth", ""));
@@ -1990,9 +1986,9 @@ public class OpsTeamService implements AuditReplayable {
         row.put("productNo", String.valueOf(raw.getOrDefault("productNo", "")));
         row.put("name", String.valueOf(raw.getOrDefault("name", "Quota")));
         row.put("directRefs", intValue(raw.get("directRefs"), 0));
-        BigDecimal monthVolumeUsd = decimalValue(raw.get("monthVolumeUsd"), BigDecimal.ZERO);
-        row.put("monthVolumeUsd", monthVolumeUsd);
-        row.put("monthVolumeUsdText", monthVolumeUsd.toPlainString());
+        BigDecimal monthComputePoints = decimalValue(raw.get("monthComputePoints"), BigDecimal.ZERO);
+        row.put("monthComputePoints", monthComputePoints);
+        row.put("monthComputePointsText", monthComputePoints.toPlainString());
         row.put("unlockMode", "EITHER".equalsIgnoreCase(String.valueOf(raw.get("unlockMode"))) ? "EITHER" : "ALL");
         row.put("current", current);
         row.put("cap", cap);
@@ -2568,7 +2564,7 @@ public class OpsTeamService implements AuditReplayable {
         }
     }
 
-    // V-Rank 13 阶头衔(V0-V12)· 每阶须为非空文本。
+    // V-Rank 9 阶头衔(V0-V8)· 每阶须为非空文本。
     private void validateVrankTitles(String value) {
         try {
             var node = JSON_PROBE.readTree(value);
@@ -2811,12 +2807,16 @@ public class OpsTeamService implements AuditReplayable {
         if (("directRefs".equals(field) || "legCount".equals(field)) && parseDecimal(value).compareTo(BigDecimal.ZERO) < 0) {
             throw new IllegalArgumentException("F1 V-Rank count threshold must be non-negative");
         }
+        if (("selfBuy".equals(field) || "teamGv".equals(field))
+                && (parseDecimal(value).signum() < 0 || parseDecimal(value).stripTrailingZeros().scale() > 0)) {
+            throw new IllegalArgumentException("F1 V-Rank compute-point threshold must be a non-negative whole number");
+        }
         return "legRank".equals(field) ? value.toUpperCase(Locale.ROOT) : value;
     }
 
     private Object vRankThresholdBusinessValue(String field, String value) {
         return switch (field) {
-            case "selfBuy", "teamGv" -> BigDecimal.valueOf(moneyLabelToInt(value, 0));
+            case "selfBuy", "teamGv" -> parseDecimal(value).longValueExact();
             case "directRefs", "legCount" -> parseDecimal(value).setScale(0, RoundingMode.DOWN).intValue();
             case "legRank" -> value;
             default -> throw new IllegalArgumentException("Unsupported F1 V-Rank threshold field");
@@ -3186,7 +3186,7 @@ public class OpsTeamService implements AuditReplayable {
     /**
      * 端点 2:F1-MD1 手动晋升/回滚(越级 / 降阶处置)。
      *
-     * <p>流程:① requireCommand(Idempotency-Key + reason) ② targetV ∈ V0-V12 + direction 与 (targetV vs currentV) 一致
+     * <p>流程:① requireCommand(Idempotency-Key + reason) ② targetV ∈ V0-V8 + direction 与 (targetV vs currentV) 一致
      * ③ A2 对象锁 lockMapper.countActiveByTarget("F","vrank_override",userId)>0 → 409 OBJECT_LOCKED_BY_A2
      * ④ @Transactional:UPDATE nx_team_member.v_rank + INSERT nx_user_level_log(is_manual=1, reason="[MANUAL]"+reason)
      * ⑤ promote 方向调 rewardDispatcher.dispatch(MANUAL ctx) 越级派奖;rollback 不派奖不剥夺

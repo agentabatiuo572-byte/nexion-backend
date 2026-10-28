@@ -109,9 +109,9 @@ class VRankPromotionEngineTest {
                                int downlineCount, int sortOrder) {
         return new VRankConfigRow(
                 code,
-                new BigDecimal(selfBuy),
+                Long.parseLong(selfBuy),
                 directRefs,
-                new BigDecimal(teamVolume),
+                Long.parseLong(teamVolume),
                 downlineRank,
                 downlineCount,
                 sortOrder,
@@ -128,7 +128,7 @@ class VRankPromotionEngineTest {
         // 当前 V0,selfBuy=100(不够 V1 的 500),即使 teamVolume 巨大也只能停在 V0
         commissionRepository.memberVRanks.put(1001L, "V0");
         performanceRepository.snapshot = new VRankEvaluationSnapshot(
-                new BigDecimal("100"), new BigDecimal("99999999"), 0, Map.of());
+                100L, 99999999L, 0, Map.of());
 
         String result = engine.evaluate(VRankPromotionContext.systemEvaluation(1001L));
 
@@ -141,7 +141,7 @@ class VRankPromotionEngineTest {
         // 同一快照同时满足 V1/V2,但单个触发事件只能 V0→V1,下一事件再评 V2。
         commissionRepository.memberVRanks.put(1002L, "V0");
         performanceRepository.snapshot = new VRankEvaluationSnapshot(
-                new BigDecimal("500"), new BigDecimal("6000"), 3, Map.of());
+                500L, 6000L, 3, Map.of());
 
         String result = engine.evaluate(VRankPromotionContext.systemEvaluation(1002L));
 
@@ -151,7 +151,7 @@ class VRankPromotionEngineTest {
         Map<String, Object> log = commissionRepository.userLevelLogs.get(0);
         assertThat(log).containsEntry("fromCode", "V0").containsEntry("toCode", "V1");
         assertThat((String) log.get("auditNo")).startsWith("VRANK-1002-V0-V1-");
-        assertThat(log.get("snapshotJson")).asString().contains("selfBuyUSD");
+        assertThat(log.get("snapshotJson")).asString().contains("selfComputePoints");
     }
 
     @Test
@@ -161,7 +161,7 @@ class VRankPromotionEngineTest {
         // →V4 失败(teamVolume<50000)。reachable=V3。permanent 默认 off → 用户从 V5 降到 V3。
         commissionRepository.memberVRanks.put(1003L, "V5");
         performanceRepository.snapshot = new VRankEvaluationSnapshot(
-                new BigDecimal("500"), new BigDecimal("30000"), 3,
+                500L, 30000L, 3,
                 Map.of(2, 2)); // V2 腿=2(>=2 满足 V3 的 leg 要求)
 
         String result = engine.evaluate(VRankPromotionContext.systemEvaluation(1003L));
@@ -210,14 +210,14 @@ class VRankPromotionEngineTest {
         configFacade.values.put("team.ui.F.vrank.permanent", "on");
 
         assertThat(engine.permanentProtectionEnabled()).isTrue();
-        assertThat(engine.qualifiedReferralSelfBuyUsd()).isEqualByComparingTo("500");
+        assertThat(engine.qualifiedReferralSelfComputePoints()).isEqualTo(500L);
     }
 
     @Test
     void qualifiedReferralFactPreservesAConfiguredZeroMinimum() {
         commissionRepository.vRankConfigRows.set(1, row("V1", "0", 3, "0", null, 0, 1));
 
-        assertThat(engine.qualifiedReferralSelfBuyUsd()).isEqualByComparingTo("0");
+        assertThat(engine.qualifiedReferralSelfComputePoints()).isZero();
     }
 
     // ============================================================
@@ -228,7 +228,7 @@ class VRankPromotionEngineTest {
         // V1: selfBuy=500 + directRefs=3(无 teamVolume 要求),构造 selfBuy=500/directRefs=3/teamVolume=0 应通过
         commissionRepository.memberVRanks.put(3001L, "V0");
         performanceRepository.snapshot = new VRankEvaluationSnapshot(
-                new BigDecimal("500"), BigDecimal.ZERO, 3, Map.of());
+                500L, 0L, 3, Map.of());
 
         String result = engine.evaluate(VRankPromotionContext.systemEvaluation(3001L));
 
@@ -244,7 +244,7 @@ class VRankPromotionEngineTest {
     void meetsAllConditionsDirectRefsLessThanConfigReturnsFalse() {
         VRankConfigRow v1 = commissionRepository.vRankConfigRows.get(1); // selfBuy=500, directRefs=3
         VRankEvaluationSnapshot snapshot = new VRankEvaluationSnapshot(
-                new BigDecimal("500"), BigDecimal.ZERO, 2, Map.of());
+                500L, 0L, 2, Map.of());
 
         assertThat(engine.meetsAllConditions(snapshot, v1)).isFalse();
     }
@@ -253,7 +253,7 @@ class VRankPromotionEngineTest {
     void meetsAllConditionsAllFieldsSatisfiedReturnsTrue() {
         VRankConfigRow v1 = commissionRepository.vRankConfigRows.get(1);
         VRankEvaluationSnapshot snapshot = new VRankEvaluationSnapshot(
-                new BigDecimal("1000"), BigDecimal.ZERO, 5, Map.of());
+                1000L, 0L, 5, Map.of());
 
         assertThat(engine.meetsAllConditions(snapshot, v1)).isTrue();
     }
@@ -264,7 +264,7 @@ class VRankPromotionEngineTest {
         VRankConfigRow v5 = commissionRepository.vRankConfigRows.get(5);
         // legCounts: V3=1, V4=2 → 累加 V3+ = 3,满足 >=3
         VRankEvaluationSnapshot snapshot = new VRankEvaluationSnapshot(
-                BigDecimal.ZERO, new BigDecimal("100000"), 0, Map.of(3, 1, 4, 2));
+                0L, 100000L, 0, Map.of(3, 1, 4, 2));
 
         assertThat(engine.meetsAllConditions(snapshot, v5)).isTrue();
     }
@@ -274,7 +274,7 @@ class VRankPromotionEngineTest {
         VRankConfigRow v3 = commissionRepository.vRankConfigRows.get(3); // V2 腿>=2
         // legCounts: V2=1 → 1 < 2,不满足
         VRankEvaluationSnapshot snapshot = new VRankEvaluationSnapshot(
-                BigDecimal.ZERO, new BigDecimal("20000"), 0, Map.of(2, 1));
+                0L, 20000L, 0, Map.of(2, 1));
 
         assertThat(engine.meetsAllConditions(snapshot, v3)).isFalse();
     }
@@ -283,10 +283,10 @@ class VRankPromotionEngineTest {
     void meetsAllConditionsMissingDownlineRankButCountPositiveReturnsFalse() {
         // 配了 count>0 但 rank 为 null:保守视为不满足
         VRankConfigRow broken = new VRankConfigRow(
-                "VX", BigDecimal.ZERO, 0, new BigDecimal("1000"), null, 1, 99,
+                "VX", 0L, 0, 1000L, null, 1, 99,
                 null, BigDecimal.ZERO, 0);
         VRankEvaluationSnapshot snapshot = new VRankEvaluationSnapshot(
-                BigDecimal.ZERO, new BigDecimal("1000"), 0, Map.of());
+                0L, 1000L, 0, Map.of());
 
         assertThat(engine.meetsAllConditions(snapshot, broken)).isFalse();
     }
@@ -525,7 +525,7 @@ class VRankPromotionEngineTest {
                 "r-v1-usdt", "V1", "usdt", new BigDecimal("50"), null, null, null, 1));
         commissionRepository.memberVRanks.put(5010L, "V0");
         performanceRepository.snapshot = new VRankEvaluationSnapshot(
-                new BigDecimal("500"), new BigDecimal("0"), 3, Map.of());
+                500L, 0L, 3, Map.of());
 
         String result = engine.evaluate(VRankPromotionContext.systemEvaluation(5010L));
 

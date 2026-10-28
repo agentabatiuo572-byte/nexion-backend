@@ -5,7 +5,7 @@ package ffdd.opsconsole.team.domain;
  *
  * <p>为什么必须单一来源:同一事实此前只在 {@code CommissionGuideRuleService} 里以
  * 字面量形式出现,App 的「玩法说明」据此显示「未开放」,而 V-Rank 等级阶梯接口没有
- * 这个字段,于是 /pages/team/rank 把 V3–V12 的「平级 5%」当成已生效权益逐级展示 ——
+ * 这个字段,于是 /pages/team/rank 把 V3–V8 的「平级 5%」当成已生效权益逐级展示 ——
  * 同一个能力在两页给出相反结论(zentao #79)。
  *
  * <p>判定口径与佣金指南一致:没有部署对应的事件生成器,就不算有能力。仅仅存在

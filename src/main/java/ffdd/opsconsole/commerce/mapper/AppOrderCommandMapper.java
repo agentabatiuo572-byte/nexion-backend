@@ -18,7 +18,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
     @Select("""
             SELECT t.id, t.quota_code quotaCode, t.product_no productNo,
                    t.monthly_quota monthlyQuota, t.direct_refs directRefs,
-                   t.month_volume_usd monthVolumeUsd, t.unlock_mode unlockMode, t.status,
+                   t.month_compute_points monthComputePoints, t.unlock_mode unlockMode, t.status,
                    CASE WHEN UPPER(COALESCE(o.order_type,'SINGLE'))='BUNDLE' THEN oi.quantity ELSE o.quantity END quantity
               FROM nx_order o
               LEFT JOIN nx_order_item oi ON oi.order_no=o.order_no AND oi.is_deleted=0
@@ -54,7 +54,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                       AND owner.status='ACTIVE' AND owner.is_deleted=0
                     WHERE child.sponsor_user_id=owner.id AND child.sandbox=owner.sandbox
                       AND child.status='ACTIVE' AND child.is_deleted=0) AS activeDirect,
-                   COALESCE(SUM(o.subtotal_usdt),0) AS monthlyVolumeUsd
+                   COALESCE(SUM(o.compute_points),0) AS monthlyComputePoints
               FROM subtree s
               LEFT JOIN nx_order o ON o.user_id=s.member_user_id
                AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
@@ -84,12 +84,12 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
             @Param("orderNo") String orderNo, @Param("occurredAt") java.time.LocalDateTime occurredAt);
 
     record MonthlyQuota(Long id, String quotaCode, String productNo, Integer monthlyQuota, Integer directRefs,
-                        BigDecimal monthVolumeUsd, String unlockMode, Integer status, Integer quantity) {
+                        BigDecimal monthComputePoints, String unlockMode, Integer status, Integer quantity) {
         public MonthlyQuota(Long id, String quotaCode, String productNo, Integer monthlyQuota, Integer status, Integer quantity) {
             this(id, quotaCode, productNo, monthlyQuota, null, null, "ALL", status, quantity);
         }
     }
-    record PurchaseQuotaFacts(Long activeDirect, BigDecimal monthlyVolumeUsd) { }
+    record PurchaseQuotaFacts(Long activeDirect, BigDecimal monthlyComputePoints) { }
 
     @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Integer activeUserEnvironment(@Param("userId") Long userId);

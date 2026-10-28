@@ -95,7 +95,7 @@ class TeamCommissionMapperVRankMySqlIntegrationTest {
     private void createTables() {
         jdbc.execute("CREATE TABLE nx_user (id BIGINT PRIMARY KEY, is_deleted TINYINT NOT NULL)");
         jdbc.execute("CREATE TABLE nx_team_member (id BIGINT PRIMARY KEY, user_id BIGINT NOT NULL, member_user_id BIGINT NOT NULL, v_rank VARCHAR(16), is_deleted TINYINT NOT NULL)");
-        jdbc.execute("CREATE TABLE nx_v_rank_config (id BIGINT PRIMARY KEY, rank_code VARCHAR(16), title_cn VARCHAR(64), self_buy_usd DECIMAL(18,2), direct_refs INT, team_volume_usd DECIMAL(18,2), required_downline_count INT, required_downline_rank VARCHAR(16), unilevel_depth INT, peer_bonus_rate DECIMAL(18,6), leadership_votes INT, status TINYINT, physical_reward VARCHAR(128), is_deleted TINYINT, sort_order INT)");
+        jdbc.execute("CREATE TABLE nx_v_rank_config (id BIGINT PRIMARY KEY, rank_code VARCHAR(16), title_cn VARCHAR(64), self_compute_points DECIMAL(18,2), direct_refs INT, team_compute_points DECIMAL(18,2), required_downline_count INT, required_downline_rank VARCHAR(16), unilevel_depth INT, peer_bonus_rate DECIMAL(18,6), leadership_votes INT, status TINYINT, physical_reward VARCHAR(128), is_deleted TINYINT, sort_order INT)");
     }
 
     private void seed() {
@@ -113,7 +113,7 @@ class TeamCommissionMapperVRankMySqlIntegrationTest {
     }
 
     private void config(long id, String rank, int votes) {
-        jdbc.update("INSERT INTO nx_v_rank_config(id,rank_code,title_cn,self_buy_usd,direct_refs,team_volume_usd,required_downline_count,required_downline_rank,unilevel_depth,peer_bonus_rate,leadership_votes,status,physical_reward,is_deleted,sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        jdbc.update("INSERT INTO nx_v_rank_config(id,rank_code,title_cn,self_compute_points,direct_refs,team_compute_points,required_downline_count,required_downline_rank,unilevel_depth,peer_bonus_rate,leadership_votes,status,physical_reward,is_deleted,sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 id, rank, rank, 0, 0, 0, 0, "", 0, 0, votes, 1, "", 0, id);
     }
 

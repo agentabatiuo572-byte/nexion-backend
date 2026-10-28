@@ -905,7 +905,7 @@ public class AppCanonicalBoundaryService {
                     facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
                             facts.rank() == null ? 0 : facts.rank(),
                             facts.activeDirect() == null ? 0 : facts.activeDirect(),
-                            facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd()));
+                            facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()));
             return decision.allowed();
         } catch (IllegalArgumentException ex) {
             return false;
@@ -1020,8 +1020,8 @@ public class AppCanonicalBoundaryService {
         }
         CanonicalStateMapper.PurchaseFacts facts = needsE1Facts ? mapper.purchaseFacts(userId) : null;
         int quotaActiveDirect = needsF4bFacts ? Math.max(0, mapper.purchaseQuotaActiveDirect(userId)) : 0;
-        BigDecimal quotaMonthlyVolume = needsF4bFacts
-                ? zero(mapper.purchaseQuotaMonthlyVolume(userId)) : BigDecimal.ZERO;
+        BigDecimal quotaMonthlyComputePoints = needsF4bFacts
+                ? zero(mapper.purchaseQuotaMonthlyComputePoints(userId)) : BigDecimal.ZERO;
         Map<String, PurchaseEligibilityDecision> decisions = new LinkedHashMap<>();
         for (String candidate : normalized) {
             CanonicalStateMapper.ProductStock product = products.get(candidate);
@@ -1032,10 +1032,10 @@ public class AppCanonicalBoundaryService {
                     facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
                             facts.rank() == null ? 0 : facts.rank(),
                             facts.activeDirect() == null ? 0 : facts.activeDirect(),
-                            facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd()));
+                            facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()));
             decisions.put(candidate, combinePurchasePolicies(e1Decision,
                     e1Policy(product.purchaseGateJson(), facts, e1Decision),
-                    hardwareQuotaPolicies(hardwareQuotas.get(candidate), quotaActiveDirect, quotaMonthlyVolume)));
+                    hardwareQuotaPolicies(hardwareQuotas.get(candidate), quotaActiveDirect, quotaMonthlyComputePoints)));
         }
         return ApiResult.ok(decisions);
     }
@@ -1088,7 +1088,7 @@ public class AppCanonicalBoundaryService {
                     facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
                             facts.rank() == null ? 0 : facts.rank(),
                             facts.activeDirect() == null ? 0 : facts.activeDirect(),
-                            facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd())));
+                            facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints())));
         }
         return ApiResult.ok(decisions);
     }
@@ -1106,7 +1106,7 @@ public class AppCanonicalBoundaryService {
 
     private boolean hardwareQuotaNeedsFacts(CanonicalStateMapper.HardwareQuota quota) {
         return quota != null && ((quota.directRefs() != null && quota.directRefs() > 0)
-                || (quota.monthVolumeUsd() != null && quota.monthVolumeUsd().signum() > 0));
+                || (quota.monthComputePoints() != null && quota.monthComputePoints().signum() > 0));
     }
 
     private PurchaseEligibilityPolicy e1Policy(String rawGate, CanonicalStateMapper.PurchaseFacts facts,
@@ -1114,7 +1114,7 @@ public class AppCanonicalBoundaryService {
         StorefrontPurchaseGatePolicy.Projection projection = purchaseGatePolicy.project(rawGate,
                 facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
                         facts.rank() == null ? 0 : facts.rank(), facts.activeDirect() == null ? 0 : facts.activeDirect(),
-                        facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd()));
+                        facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()));
         boolean eligible = decision.eligible();
         String code = eligible ? "ELIGIBLE" : decision.decisionCode();
         return new PurchaseEligibilityPolicy("E1", eligible, code, projection.mode(), projection.conditions());
@@ -1139,8 +1139,8 @@ public class AppCanonicalBoundaryService {
             conditions.add(thresholdCondition("activeDirect", BigDecimal.valueOf(quota.directRefs()),
                     BigDecimal.valueOf(Math.max(0, activeDirect))));
         }
-        if (quota.monthVolumeUsd() != null && quota.monthVolumeUsd().signum() > 0) {
-            conditions.add(thresholdCondition("teamVolumeUsd", quota.monthVolumeUsd(), volume));
+        if (quota.monthComputePoints() != null && quota.monthComputePoints().signum() > 0) {
+            conditions.add(thresholdCondition("teamComputePoints", quota.monthComputePoints(), volume));
         }
         long used = quota.usedThisMonth() == null ? 0L : Math.max(0L, quota.usedThisMonth());
         BigDecimal cap = BigDecimal.valueOf(quota.monthlyQuota());
@@ -1332,7 +1332,7 @@ public class AppCanonicalBoundaryService {
         if (StringUtils.hasText(product.purchaseGateJson())
                 && !purchaseGateAllowed(product.purchaseGateJson(), sandboxFacts == null ? null
                         : new CanonicalStateMapper.PurchaseFacts(sandboxFacts.rank(), sandboxFacts.activeDirect(),
-                                sandboxFacts.teamVolumeUsd()))) {
+                                sandboxFacts.teamComputePoints()))) {
             return ApiResult.fail(409, "COMMERCE_SANDBOX_PURCHASE_GATE_BLOCKED");
         }
         StorefrontProductReleasePolicy.Decision release =

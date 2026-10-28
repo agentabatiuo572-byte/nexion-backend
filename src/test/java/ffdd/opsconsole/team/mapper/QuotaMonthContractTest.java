@@ -22,7 +22,7 @@ class QuotaMonthContractTest {
         String cas = TeamCommissionMapper.class.getMethod("updateHardwareQuotaTierCas", String.class, int.class, int.class)
                 .getAnnotation(Update.class).value()[0];
         assertThat(cas).contains(HardwareQuotaPeriod.SQL_MONTH_START_UTC, HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC);
-        String volume = CanonicalStateMapper.class.getMethod("purchaseQuotaMonthlyVolume", Long.class)
+        String volume = CanonicalStateMapper.class.getMethod("purchaseQuotaMonthlyComputePoints", Long.class)
                 .getAnnotation(Select.class).value()[0];
         assertThat(volume).contains(HardwareQuotaPeriod.SQL_MONTH_START_ORDER_STORAGE, HardwareQuotaPeriod.SQL_NEXT_MONTH_START_ORDER_STORAGE);
     }

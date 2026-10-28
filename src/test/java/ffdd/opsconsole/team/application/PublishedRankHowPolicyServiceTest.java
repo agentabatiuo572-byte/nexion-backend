@@ -107,7 +107,7 @@ class PublishedRankHowPolicyServiceTest {
         VRankPromotionEngine promotionEngine = mock(VRankPromotionEngine.class);
         LeadershipPoolConfigGuard leadershipGuard = mock(LeadershipPoolConfigGuard.class);
         when(promotionEngine.permanentProtectionEnabled()).thenReturn(true);
-        when(promotionEngine.qualifiedReferralSelfBuyUsd()).thenReturn(new BigDecimal("125.50"));
+        when(promotionEngine.qualifiedReferralSelfComputePoints()).thenReturn(1255L);
         when(leadershipGuard.isConfigured()).thenReturn(true);
 
         var result = new PublishedRankHowPolicyService(
@@ -116,9 +116,9 @@ class PublishedRankHowPolicyServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat((java.util.Map<String, Object>) result.getData().get("rules"))
-                .containsOnlyKeys("permanentProtection", "qualifiedReferralSelfBuyUSD", "leadershipConfigured")
+                .containsOnlyKeys("permanentProtection", "qualifiedReferralSelfComputePoints", "leadershipConfigured")
                 .containsEntry("permanentProtection", true)
-                .containsEntry("qualifiedReferralSelfBuyUSD", new BigDecimal("125.50"))
+                .containsEntry("qualifiedReferralSelfComputePoints", 1255L)
                 .containsEntry("leadershipConfigured", true);
     }
 
@@ -128,7 +128,7 @@ class PublishedRankHowPolicyServiceTest {
         VRankPromotionEngine promotionEngine = mock(VRankPromotionEngine.class);
         LeadershipPoolConfigGuard leadershipGuard = mock(LeadershipPoolConfigGuard.class);
         when(promotionEngine.permanentProtectionEnabled()).thenReturn(false);
-        when(promotionEngine.qualifiedReferralSelfBuyUsd()).thenReturn(null);
+        when(promotionEngine.qualifiedReferralSelfComputePoints()).thenReturn(null);
         when(leadershipGuard.isConfigured()).thenReturn(false);
 
         var result = new PublishedRankHowPolicyService(
@@ -137,7 +137,7 @@ class PublishedRankHowPolicyServiceTest {
 
         assertThat((java.util.Map<String, Object>) result.getData().get("rules"))
                 .containsEntry("permanentProtection", false)
-                .containsEntry("qualifiedReferralSelfBuyUSD", null)
+                .containsEntry("qualifiedReferralSelfComputePoints", null)
                 .containsEntry("leadershipConfigured", false);
     }
 
@@ -145,7 +145,7 @@ class PublishedRankHowPolicyServiceTest {
         VRankPromotionEngine promotionEngine = mock(VRankPromotionEngine.class);
         LeadershipPoolConfigGuard leadershipGuard = mock(LeadershipPoolConfigGuard.class);
         when(promotionEngine.permanentProtectionEnabled()).thenReturn(false);
-        when(promotionEngine.qualifiedReferralSelfBuyUsd()).thenReturn(null);
+        when(promotionEngine.qualifiedReferralSelfComputePoints()).thenReturn(null);
         when(leadershipGuard.isConfigured()).thenReturn(false);
         return new PublishedRankHowPolicyService(
                 config, environment, mock(AuditLogService.class), promotionEngine, leadershipGuard);

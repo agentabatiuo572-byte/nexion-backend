@@ -7,13 +7,13 @@ import java.math.BigDecimal;
  *
  * <p>晋升引擎逐阶判定时消费。字段语义对齐 schema.sql 的 nx_v_rank_config:
  * <ul>
- *   <li>{@link #rankCode} — V0..V12</li>
- *   <li>{@link #selfBuyUsd} — 自购门槛(>0 才作为条件)</li>
+ *   <li>{@link #rankCode} — V0..V8</li>
+ *   <li>{@link #selfComputePoints} — 自购算力点门槛(>0 才作为条件)</li>
  *   <li>{@link #directRefs} — 直接推荐人数门槛(>0 才作为条件)</li>
- *   <li>{@link #teamVolumeUsd} — 团队 L1-L7 业绩门槛(>0 才作为条件)</li>
+ *   <li>{@link #teamComputePoints} — 团队 L1-L7 算力点门槛(>0 才作为条件)</li>
  *   <li>{@link #requiredDownlineRank} — 下线要求的 V 阶代码(如 "V2"),配合 {@link #requiredDownlineCount}</li>
  *   <li>{@link #requiredDownlineCount} — 下线达到 {@link #requiredDownlineRank} 阶的最少条数</li>
- *   <li>{@link #sortOrder} — 阶序(V0=0..V12=12)</li>
+ *   <li>{@link #sortOrder} — 阶序(V0=0..V8=8)</li>
  *   <li>{@link #unilevelDepth} — 层级深度描述(如 "L1-L7",字符串;Sprint6 扩展,联动预览读)</li>
  *   <li>{@link #peerBonusRate} — 平级奖励比例(0-1 之间小数;Sprint6 扩展,联动预览读)</li>
  *   <li>{@link #leadershipVotes} — 领导池票权(Sprint6 扩展,联动预览读;对齐 nx_v_rank_config.leadership_votes)</li>
@@ -27,9 +27,9 @@ import java.math.BigDecimal;
  */
 public record VRankConfigRow(
         String rankCode,
-        BigDecimal selfBuyUsd,
+        long selfComputePoints,
         int directRefs,
-        BigDecimal teamVolumeUsd,
+        long teamComputePoints,
         String requiredDownlineRank,
         int requiredDownlineCount,
         int sortOrder,

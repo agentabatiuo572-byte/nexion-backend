@@ -593,9 +593,9 @@ class OpsTeamServiceTest {
         commissionRepository.vRankRows.add(new LinkedHashMap<>(Map.of(
                 "v", "V3",
                 "label", "Builder",
-                "selfBuyUsd", BigDecimal.ZERO,
+                "selfComputePoints", 0L,
                 "directRefs", 0,
-                "teamGvUsd", new BigDecimal("20000"),
+                "teamComputePoints", 200000L,
                 "legCount", 2,
                 "legRank", "V1",
                 "votes", 4,
@@ -606,16 +606,16 @@ class OpsTeamServiceTest {
                 "V3",
                 "teamGv",
                 "idem-f1-threshold",
-                new TeamCommissionConfigUpdateRequest(null, "$25k", "raise v3 team gate", "superadmin"));
+                new TeamCommissionConfigUpdateRequest(null, "250000", "raise v3 team gate", "superadmin"));
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values).doesNotContainKey("team.ui.F.vrank.V3.teamGv");
-        assertThat(commissionRepository.vRankRows.get(0)).containsEntry("teamGvUsd", new BigDecimal("25000"));
+        assertThat(commissionRepository.vRankRows.get(0)).containsEntry("teamComputePoints", 250000L);
         List<Map<String, Object>> rows = (List<Map<String, Object>>) result.getData().get("vrankRows");
         assertThat(rows)
                 .filteredOn(row -> "V3".equals(row.get("v")))
                 .singleElement()
-                .satisfies(row -> assertThat(row).containsEntry("teamGv", "$25k"));
+                .satisfies(row -> assertThat(row).containsEntry("teamGv", 250000));
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("F_TEAM_VRANK_THRESHOLD_CHANGED");
@@ -1787,9 +1787,9 @@ class OpsTeamServiceTest {
         commissionRepository.vRankRows.add(new LinkedHashMap<>(Map.of(
                 "v", "V5",
                 "label", "Advocate",
-                "selfBuyUsd", BigDecimal.ZERO,
+                "selfComputePoints", 0L,
                 "directRefs", 0,
-                "teamGvUsd", BigDecimal.ZERO,
+                "teamComputePoints", 0L,
                 "legCount", 0,
                 "legRank", "",
                 "votes", 4,
@@ -1828,9 +1828,9 @@ class OpsTeamServiceTest {
         commissionRepository.vRankRows.add(new LinkedHashMap<>(Map.of(
                 "v", "V5",
                 "label", "Advocate",
-                "selfBuyUsd", BigDecimal.ZERO,
+                "selfComputePoints", 0L,
                 "directRefs", 0,
-                "teamGvUsd", BigDecimal.ZERO,
+                "teamComputePoints", 0L,
                 "legCount", 0,
                 "legRank", "",
                 "votes", 4,
@@ -1867,7 +1867,7 @@ class OpsTeamServiceTest {
                 "id", 7L, "quotaCode", "PRO", "name", "Pro", "current", 2, "cap", 10));
         either.put("productNo", "P-REAL");
         either.put("directRefs", 8);
-        either.put("monthVolumeUsd", new BigDecimal("725.50"));
+        either.put("monthComputePoints", new BigDecimal("725.50"));
         either.put("unlockMode", "either");
         Map<String, Object> unknown = new LinkedHashMap<>(either);
         unknown.put("id", 8L);
@@ -1880,7 +1880,7 @@ class OpsTeamServiceTest {
         assertThat(rows).hasSize(2);
         assertThat(rows.get(0)).containsEntry("productNo", "P-REAL")
                 .containsEntry("directRefs", 8)
-                .containsEntry("monthVolumeUsd", new BigDecimal("725.50"))
+                .containsEntry("monthComputePoints", new BigDecimal("725.50"))
                 .containsEntry("unlockMode", "EITHER")
                 .containsEntry("current", 2).containsEntry("cap", 10);
         assertThat(rows.get(1)).containsEntry("unlockMode", "ALL");
@@ -1894,14 +1894,14 @@ class OpsTeamServiceTest {
             commissionRepository.quotaRows.clear();
             commissionRepository.quotaRows.add(new LinkedHashMap<>(Map.of(
                     "id", 7L, "quotaCode", "PRO", "name", "Pro", "current", 2, "cap", 10,
-                    "productNo", "P-REAL", "directRefs", 8, "monthVolumeUsd", amount, "unlockMode", "ALL")));
+                    "productNo", "P-REAL", "directRefs", 8, "monthComputePoints", amount, "unlockMode", "ALL")));
 
             List<Map<String, Object>> rows = (List<Map<String, Object>>) service.leadershipPool().getData().get("quotaRows");
 
-            assertThat(rows.get(0)).containsEntry("monthVolumeUsd", amount)
-                    .containsEntry("monthVolumeUsdText", value);
+            assertThat(rows.get(0)).containsEntry("monthComputePoints", amount)
+                    .containsEntry("monthComputePointsText", value);
             assertThat(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(rows.get(0)))
-                    .contains("\"monthVolumeUsdText\":\"" + value + "\"");
+                    .contains("\"monthComputePointsText\":\"" + value + "\"");
         }
     }
 
@@ -2237,9 +2237,9 @@ class OpsTeamServiceTest {
             for (Map<String, Object> row : vRankRows) {
                 if (rank.equals(row.get("v"))) {
                     switch (field) {
-                        case "selfBuy" -> row.put("selfBuyUsd", value);
+                        case "selfBuy" -> row.put("selfComputePoints", value);
                         case "directRefs" -> row.put("directRefs", value);
-                        case "teamGv" -> row.put("teamGvUsd", value);
+                        case "teamGv" -> row.put("teamComputePoints", value);
                         case "legCount" -> row.put("legCount", value);
                         case "legRank" -> row.put("legRank", value);
                         default -> {

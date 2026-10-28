@@ -73,9 +73,12 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                    (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
                      WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
                        AND child.status='ACTIVE' AND child.is_deleted=0) AS activeDirect,
-                   (SELECT COALESCE(SUM(tm.volume),0) FROM nx_team_member tm JOIN nx_user member
+                   (SELECT COALESCE(SUM(o.compute_points),0) FROM nx_team_member tm JOIN nx_user member
                      ON member.id=tm.member_user_id AND member.sandbox=u.sandbox
-                    WHERE tm.user_id=u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) AS teamVolumeUsd
+                     JOIN nx_order o ON o.user_id=tm.member_user_id AND o.is_deleted=0
+                      AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
+                      AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
+                    WHERE tm.user_id=u.id AND tm.member_user_id<>u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) AS teamComputePoints
               FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
             """)
     PurchaseGateFacts purchaseGateFacts(@Param("userId") Long userId);
@@ -473,20 +476,26 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
     @Insert("""
             INSERT INTO nx_order
               (user_id,order_no,product_id,quantity,order_type,item_count,subtotal_usdt,discount_usdt,
-               amount_usdt,payment_status,order_status,activation_status,paid_at,created_at,updated_at,is_deleted)
+               amount_usdt,compute_points,payment_status,order_status,activation_status,paid_at,created_at,updated_at,is_deleted)
             VALUES
               (#{row.userId},#{row.orderNo},#{row.productId},1,'TRADE_IN',1,#{row.targetPriceUsdt},
-               #{row.discountUsdt},#{row.walletDebitUsdt},'PAID','COMPLETED','ACTIVATED',NOW(6),NOW(),NOW(),0)
+               #{row.discountUsdt},#{row.walletDebitUsdt},
+               GREATEST((SELECT compute_points FROM nx_product WHERE id=#{row.productId})
+                 - COALESCE((SELECT compute_points FROM nx_product WHERE id=#{row.sourceProductId}),0),0),
+               'PAID','COMPLETED','ACTIVATED',NOW(6),NOW(),NOW(),0)
             """)
     int insertPaidOrder(@Param("row") PaidOrderWrite row);
 
     @Insert("""
             INSERT INTO nx_order
               (user_id,order_no,product_id,quantity,order_type,item_count,subtotal_usdt,discount_usdt,
-               amount_usdt,payment_status,order_status,activation_status,paid_at,created_at,updated_at,is_deleted)
+               amount_usdt,compute_points,payment_status,order_status,activation_status,paid_at,created_at,updated_at,is_deleted)
             VALUES
               (#{row.userId},#{row.orderNo},#{row.productId},1,'CAPACITY_KEEP',1,#{row.targetPriceUsdt},
-               #{row.discountUsdt},#{row.walletDebitUsdt},'PAID','PAID','WAITING_PROVISIONING',NOW(6),NOW(),NOW(),0)
+               #{row.discountUsdt},#{row.walletDebitUsdt},
+               GREATEST((SELECT compute_points FROM nx_product WHERE id=#{row.productId})
+                 - COALESCE((SELECT compute_points FROM nx_product WHERE id=#{row.sourceProductId}),0),0),
+               'PAID','PAID','WAITING_PROVISIONING',NOW(6),NOW(),NOW(),0)
             """)
     int insertCapacityKeepOrder(@Param("row") PaidOrderWrite row);
 
@@ -572,7 +581,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
     record UserEventAttribution(String phase, Integer accountAgeMonths, String cohort) {
     }
 
-    record PurchaseGateFacts(Integer rank, Integer activeDirect, BigDecimal teamVolumeUsd) { }
+    record PurchaseGateFacts(Integer rank, Integer activeDirect, BigDecimal teamComputePoints) { }
 
     record SourceDevice(Long id, Long userId, String instanceNo, Long productId, String productNo,
                         String productName, String productTier, String status, BigDecimal actualPaidUsdt) {
@@ -696,8 +705,10 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
         }
     }
 
+    /** sourceProductId is the device given up in a replacement; its points are netted out of the order. */
     record PaidOrderWrite(Long userId, String orderNo, Long productId, String productNo, String productName,
-                          BigDecimal targetPriceUsdt, BigDecimal discountUsdt, BigDecimal walletDebitUsdt) {
+                          BigDecimal targetPriceUsdt, BigDecimal discountUsdt, BigDecimal walletDebitUsdt,
+                          Long sourceProductId) {
     }
 
     record DeliveredDeviceWrite(Long userId, String orderNo, Long productId, String productNo,
