@@ -32,11 +32,11 @@ public class OpsPhaseOverviewService {
             dial("newUserBonusMultiplier", "新用户加成", "倍", "相关功能上线后生效", false),
             dial("inviteRewardMultiplier", "邀请加成", "倍", "相关功能上线后生效", false),
             dial("reinvestMultiplier", "复投加成", "倍", "复投激励上线后生效", false),
-            dial("withdrawPenaltyFeeRate", "提现惩罚费率", "%", "D 域 V1 已生效", true),
-            dial("withdrawCooldownDays", "提现冷却", "天", "D 域 V1 已生效", true),
-            dial("binaryDailyCap", "双轨日封顶", "USDT", "F 域 V2 后生效", false),
+            dial("withdrawPenaltyFeeRate", "提现惩罚费率", "%", "已生效", true),
+            dial("withdrawCooldownDays", "提现冷却", "天", "已生效", true),
+            dial("binaryDailyCap", "左右团队每日封顶", "USDT", "左右团队结算上线后生效", false),
             dial("questBonusMultiplier", "任务加成", "倍", "用户任务上线后生效", false),
-            dial("complianceHoldEnabled", "增强合规审查", "", "D 域 V1 已生效", true));
+            dial("complianceHoldEnabled", "增强合规审查", "", "已生效", true));
 
     private final OpsPhaseMapper mapper;
     private final GrowthRhythmFacade growthRhythmFacade;
@@ -305,7 +305,7 @@ public class OpsPhaseOverviewService {
         }
         candidates.add(lever("提现", "费率 " + plain(snapshot.withdrawPenaltyFeeRate()) + "% / 冷却 "
                 + snapshot.withdrawCooldownDays() + " 天", "控制资金流出节奏"));
-        candidates.add(lever("结算", "双轨日封顶 " + plain(snapshot.binaryDailyCap()) + " USDT", "限制单日佣金峰值"));
+        candidates.add(lever("结算", "左右团队每日封顶 " + plain(snapshot.binaryDailyCap()) + " USDT", "限制单日佣金峰值"));
         return List.copyOf(candidates.subList(0, Math.min(3, candidates.size())));
     }
 

@@ -86,20 +86,20 @@ UPDATE nx_growth_trial_policy
 INSERT INTO nx_growth_trial_policy
   (policy_key,policy_name,description,current_value,value_type,hot,section,server_only,sort_order,is_deleted)
 VALUES
-  ('trialDays','试用天数','新建试用锁定','3','NUMBER',0,'newonly',0,10,0),
-  ('graceDays','宽限天数','新建试用锁定','7','NUMBER',0,'newonly',0,20,0),
-  ('extensionDays','延长天数','新建试用锁定','3','NUMBER',0,'newonly',0,30,0),
-  ('discountRate','购买折扣率','购买时由服务端重算','15','NUMBER',0,'live',0,40,0),
-  ('discountCapUSD','抵扣上限','购买时由服务端重算','50','NUMBER',0,'live',0,50,0),
-  ('autoChargeAtEnd','到期自动扣款','新建试用锁定','开','STRING',1,'newonly',0,60,0),
+  ('trialDays','试用天数','只影响新开始的试用','3','NUMBER',0,'newonly',0,10,0),
+  ('graceDays','宽限天数','只影响新开始的试用','7','NUMBER',0,'newonly',0,20,0),
+  ('extensionDays','延长天数','只影响新开始的试用','3','NUMBER',0,'newonly',0,30,0),
+  ('discountRate','购买折扣率','用户购买时按最新设置计算','15','NUMBER',0,'live',0,40,0),
+  ('discountCapUSD','抵扣上限','用户购买时按最新设置计算','50','NUMBER',0,'live',0,50,0),
+  ('autoChargeAtEnd','到期自动扣款','只影响新开始的试用','开','STRING',1,'newonly',0,60,0),
   ('highQualityThresholdUSD','高质量延长阈值','达到后可进入延长状态','100','NUMBER',0,'live',0,70,0),
-  ('chargeFailRate','扣款失败概率','仅服务端裁决','1','NUMBER',1,'live',1,80,0),
-  ('trialProductId','试用目标商品','从 E1 在售实物 SKU 选择','stellarbox-s1','STRING',0,'newonly',0,90,0),
-  ('trialPriceUSD','试用设备价格','由 E1 目标商品售价同步','1299','NUMBER',1,'newonly',0,100,0),
-  ('shadowDailyUSD','每日影子收益 USDT','新建试用锁定','38.52','NUMBER',0,'newonly',0,110,0),
-  ('shadowDailyNEX','每日影子收益 NEX','新建试用锁定','65','NUMBER',0,'newonly',0,120,0),
-  ('cooldownDays','再次试用冷却天数','实时资格校验','30','NUMBER',0,'live',0,130,0),
-  ('phaseOpen','当前阶段是否开放','由 H1 当前阶段派发，只读','开放','STRING',0,'live',0,140,0),
+  ('chargeFailRate','扣款失败概率','只由系统判定，不对外显示','1','NUMBER',1,'live',1,80,0),
+  ('trialProductId','试用目标商品','从「商品管理与上架条件」中在售的实物商品里选择','stellarbox-s1','STRING',0,'newonly',0,90,0),
+  ('trialPriceUSD','试用设备价格','自动跟随所选商品的售价','1299','NUMBER',1,'newonly',0,100,0),
+  ('shadowDailyUSD','试用每日收益 USDT','只影响新开始的试用','38.52','NUMBER',0,'newonly',0,110,0),
+  ('shadowDailyNEX','试用每日收益 UVT','只影响新开始的试用','65','NUMBER',0,'newonly',0,120,0),
+  ('cooldownDays','再次试用冷却天数','每次申请试用时检查','30','NUMBER',0,'live',0,130,0),
+  ('phaseOpen','当前阶段是否开放','由「运营阶段设置」决定，这里只能查看','开放','STRING',0,'live',0,140,0),
   ('autoPushEnabled','自动推送','实时生效','开','STRING',0,'live',0,150,0),
   ('autoPushDelayMs','自动推送延迟','实时生效','1500','NUMBER',0,'live',0,160,0),
   ('autoPushCooldownHours','自动推送冷却','实时生效','24','NUMBER',0,'live',0,170,0),
@@ -141,11 +141,11 @@ INSERT INTO nx_growth_checkin_rule
 VALUES
   ('baseline','每日基础奖励','签到成功固定奖励','1','NUMBER',0,10,0),
   ('bonus7','连续7天奖励','连续7天额外奖励','5','NUMBER',0,20,0),
-  ('luckyMultiplierMax','Lucky最高倍率','服务端RNG倍率上限','2','NUMBER',1,30,0),
-  ('p15','1.5倍概率','服务端RNG概率百分比','15','NUMBER',1,40,0),
-  ('p2','2倍概率','服务端RNG概率百分比','5','NUMBER',1,50,0),
+  ('luckyMultiplierMax','幸运奖励最高倍率','随机奖励倍率的上限','2','NUMBER',1,30,0),
+  ('p15','1.5倍概率','抽中这一档的概率（百分比）','15','NUMBER',1,40,0),
+  ('p2','2倍概率','抽中这一档的概率（百分比）','5','NUMBER',1,50,0),
   ('broken','断签判定小时','超过后断签','48','NUMBER',0,60,0),
-  ('revive','Streak Saver张数','默认可恢复次数','1','NUMBER',0,70,0)
+  ('revive','断签补救卡张数','默认可恢复次数','1','NUMBER',0,70,0)
 ON DUPLICATE KEY UPDATE
   rule_name=VALUES(rule_name),description=VALUES(description),value_type=VALUES(value_type),
   hot=VALUES(hot),sort_order=VALUES(sort_order),is_deleted=0;

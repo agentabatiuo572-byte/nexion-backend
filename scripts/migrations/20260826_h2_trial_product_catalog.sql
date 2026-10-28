@@ -6,7 +6,7 @@ START TRANSACTION;
 
 UPDATE nx_growth_trial_policy
    SET current_value = 'stellarbox-s1',
-       description = '从 E1 在售实物 SKU 选择',
+       description = '从「商品管理与上架条件」中在售的实物商品里选择',
        updated_at = NOW()
  WHERE policy_key = 'trialProductId'
    AND current_value = 'device-trial-standard'
@@ -20,14 +20,14 @@ JOIN nx_product product
   ON product.product_no = target.current_value
  AND product.is_deleted = 0
    SET policy.current_value = TRIM(TRAILING '.' FROM TRIM(TRAILING '0' FROM CAST(product.price_usdt AS CHAR))),
-       policy.description = '由 E1 目标商品售价同步',
+       policy.description = '自动跟随所选商品的售价',
        policy.updated_at = NOW()
  WHERE policy.policy_key = 'trialPriceUSD'
    AND policy.is_deleted = 0
    AND product.price_usdt > 0
    AND (
      policy.current_value <> TRIM(TRAILING '.' FROM TRIM(TRAILING '0' FROM CAST(product.price_usdt AS CHAR)))
-     OR policy.description <> '由 E1 目标商品售价同步'
+     OR policy.description <> '自动跟随所选商品的售价'
    );
 
 UPDATE nx_product
