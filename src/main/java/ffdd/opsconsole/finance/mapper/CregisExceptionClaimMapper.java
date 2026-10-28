@@ -7,7 +7,7 @@ import org.apache.ibatis.annotations.*;
 
 @Mapper
 public interface CregisExceptionClaimMapper extends BaseMapper<Object> {
-    @Insert("INSERT INTO nx_cregis_exception_claim(case_no,project_id,source_type,source_id,cid,txid,log_index,address,from_address,gross_amount,target_user_id,challenge_id,evidence_hash,maker_id,reason) VALUES(#{r.caseNo},#{r.projectId},#{r.sourceType},#{r.sourceId},#{r.cid},#{r.txid},#{r.logIndex},#{r.address},#{r.fromAddress},#{r.grossAmount},#{r.targetUserId},#{r.challengeId},#{r.evidenceHash},#{r.makerId},#{r.reason})")
+    @Insert("INSERT INTO nx_cregis_exception_claim(case_no,project_id,source_type,source_id,cid,txid,log_index,address,from_address,gross_amount,target_user_id,challenge_id,evidence_hash,maker_id,reason,policy_version,policy_fee_usdt) VALUES(#{r.caseNo},#{r.projectId},#{r.sourceType},#{r.sourceId},#{r.cid},#{r.txid},#{r.logIndex},#{r.address},#{r.fromAddress},#{r.grossAmount},#{r.targetUserId},#{r.challengeId},#{r.evidenceHash},#{r.makerId},#{r.reason},#{r.policyVersion},#{r.policyFeeUsdt})")
     int insertCase(@Param("r") Map<String,Object> row);
     @Select("SELECT LAST_INSERT_ID()") Long lastId();
     @Select("SELECT * FROM nx_cregis_exception_claim WHERE project_id=#{project} AND id=#{id}")

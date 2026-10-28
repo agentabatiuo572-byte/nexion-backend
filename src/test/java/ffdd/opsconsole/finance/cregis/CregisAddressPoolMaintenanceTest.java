@@ -61,10 +61,10 @@ class CregisAddressPoolMaintenanceTest {
         when(db.recordPoolCandidate(anyString(),anyString())).thenAnswer(i->{requests.stream().filter(r->r.get("requestId").equals(i.getArgument(0))).findFirst().orElseThrow().put("state","VERIFYING");return 1;});
         when(provider.createAddress(eq(CHAIN),anyString(),anyString(),anyString()))
             .thenAnswer(i->new CregisGateway.Address(CHAIN,ADDRESS,i.getArgument(3)));
-        service=new CregisDepositService(config,router,chain,new CregisSigner(),new ObjectMapper(),db,tx,
+        service=DepositPolicyFixture.withPolicy(new CregisDepositService(config,router,chain,new CregisSigner(),new ObjectMapper(),db,tx,
             mock(TreasuryLedgerRepository.class),mock(FinanceWithdrawalControlFacade.class),
             mock(SupportPaymentAttributionFacade.class),mock(CregisPayoutControl.class),
-            mock(CregisExceptionSourceService.class),mock(CregisReorgResolutionService.class));
+            mock(CregisExceptionSourceService.class),mock(CregisReorgResolutionService.class)));
     }
     @Test void batchQueuesAndCreatesFiftyBeyondSixtyTotalWithAtMostTwoConcurrentCalls() throws Exception {
         when(db.allocatedAddressCount(88,CHAIN)).thenReturn(10000);
