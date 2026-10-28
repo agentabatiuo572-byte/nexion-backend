@@ -657,6 +657,17 @@ public class AppTrialLifecycleService {
         if (preview != null && row.priceUsdt() != null && row.priceUsdt().signum() > 0 && row.offsetCapUsdt() != null) {
             result.put("quote", quoteView(quote(row, policy, now), row.priceUsdt()));
         }
+        if ("REDEEMED".equals(effectiveState)) {
+            // The purchase order may have been refunded since; the App must not keep saying "purchased".
+            String snapshot = mapper.settlementSnapshot(row.id());
+            String orderNo = snapshotValue(snapshot, "orderNo");
+            String paymentStatus = orderNo.isEmpty() ? null : mapper.orderPaymentStatus(orderNo, userId);
+            boolean refunded = "REFUNDED".equalsIgnoreCase(paymentStatus);
+            result.put("conversionOrderNo", paymentStatus == null ? null : orderNo);
+            result.put("conversionRefunded", refunded);
+            // Only full-term conversions take their rewards back on refund (TrialConversionRewardReversal).
+            result.put("conversionRewardsReversed", refunded && FULL_TERM_POLICY.equals(snapshotValue(snapshot, "settlementPolicy")));
+        }
         result.put("paymentRail", "NEXION_USDT_WALLET");
         putCanonicalProvenance(result, "nx_trial_claim + nx_user_wallet");
         boolean frozenProduct = !restartable(effectiveState);
