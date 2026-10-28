@@ -27,6 +27,6 @@ DROP PROCEDURE add_h2_trial_column;
 INSERT INTO nx_growth_trial_policy
   (policy_key,policy_name,description,current_value,value_type,hot,section,server_only,sort_order,is_deleted)
 VALUES
-  ('earlyPurchaseDiscountUSD','试用中提前购买立减','试用原期内转购：补齐完整试用权益并再减此金额（封顶至应付，0=关闭）','10','NUMBER',1,'pricing',0,126,0)
+  ('earlyPurchaseDiscountUSD','试用中提前购买立减','用户在试用期内提前购买时，在试用抵扣之外再减这个金额（不超过应付金额，填 0 表示关闭）','10','NUMBER',1,'pricing',0,126,0)
 ON DUPLICATE KEY UPDATE policy_name=VALUES(policy_name),description=VALUES(description),
   value_type='NUMBER',section='pricing',server_only=0,is_deleted=0;

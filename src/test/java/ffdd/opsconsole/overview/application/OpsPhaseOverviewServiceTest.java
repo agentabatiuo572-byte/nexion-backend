@@ -49,7 +49,7 @@ class OpsPhaseOverviewServiceTest {
 
         assertThat((List<?>) data.get("dials")).hasSize(8);
         assertThat((List<?>) data.get("phaseDistribution")).hasSize(6);
-        assertThat(String.valueOf(data.get("sourceStatement"))).contains("H1");
+        assertThat(String.valueOf(data.get("sourceStatement"))).contains("运营阶段设置");
         assertThat(String.valueOf(data)).doesNotContain("Premium", "NEXv2", "NEX v2");
         verify(auditLogService).recordRequired(any());
     }

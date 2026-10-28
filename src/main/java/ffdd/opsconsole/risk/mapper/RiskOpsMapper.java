@@ -1510,7 +1510,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               (model_version,row_version,state,weights_json,input_sources_json,score_mapping_json,band_low_max,band_high_min,
                auto_escalate_score,reason,created_by,published_by,published_at,is_deleted)
             VALUES (1,0,'active',#{weightsJson},#{sourcesJson},#{mappingJson},40,70,85,
-                    'K4 canonical initial model','system','system',NOW(),0)
+                    '系统初始评分规则','system','system',NOW(),0)
             """)
     int insertInitialScoreModel(@Param("weightsJson") String weightsJson, @Param("sourcesJson") String sourcesJson,
                                 @Param("mappingJson") String mappingJson);

@@ -391,7 +391,7 @@ public class OpsBiService implements AuditReplayable {
                 true,
                 "PARTIAL",
                 "READY",
-                "L4-MD1 已确认；24 小时限时下载"));
+                "已确认；下载链接 24 小时内有效"));
         reportRepository.saveSnapshotCsv(created.reportId(), networkTreeCsv(rows));
         Map<String, Object> auditDetail = linked(
                 "reportId", created.reportId(),
@@ -474,7 +474,7 @@ public class OpsBiService implements AuditReplayable {
         response.put("maskRules", l5MaskRules());
         response.put("crossModuleBlockers", List.of(
                 linked("code", "PII_DECRYPTION", "label", "敏感字段解密导出", "status", "BLOCKED",
-                        "reason", "当前管理端 API 明确禁止明文敏感字段导出")));
+                        "reason", "后台不允许导出明文敏感信息")));
         response.put("statusEnum", List.of(
                 "PENDING", "PENDING_CONFIRM", "PENDING_SPLIT_CONFIRM",
                 "GENERATING", "READY", "EXPIRED", "FAILED"));
@@ -491,7 +491,7 @@ public class OpsBiService implements AuditReplayable {
         response.put("window", normalizedWindow);
         response.put("available", false);
         response.put("status", "BLOCKED_CROSS_MODULE");
-        response.put("message", "行为热力数据源尚未接入，页面不会用业务表行数冒充用户行为事件");
+        response.put("message", "用户行为数据还没接入，暂时无法显示热力图");
         response.put("requiredEvents", List.of("app.page_viewed", "app.element_clicked"));
         response.put("missingDependencies", List.of(
                 linked("module", "APP", "item", "页面浏览埋点 app.page_viewed"),
@@ -1416,23 +1416,23 @@ public class OpsBiService implements AuditReplayable {
                 "activeDevices", "当前活跃设备", "periodPurchasedDevices", "期间设备购置数",
                 "periodRetiredDevices", "期间设备退役数", "periodLockedDevices", "期间设备锁定数",
                 "periodFirstYieldDevices", "期间完成首次产出设备", "dailyYieldUsdt", "期间产出 USDT",
-                "dailyYieldNex", "期间产出 UVT", "degradationLossUsdt", "衰减影响 USDT"), "A4 设备/产出事件");
+                "dailyYieldNex", "期间产出 UVT", "degradationLossUsdt", "衰减影响 USDT"), "设备与产出事件");
         appendOperationsSummary(rows, slice, "任务", mutableObjectMap(tasks.get("summary")), Map.of(
-                "dispatched", "任务派发量", "completed", "任务完成量", "acceptanceRate", "任务承接率",
-                "queueSaturation", "队列饱和度", "checkinActive", "签到活跃人数"), "A4 任务/签到事件");
+                "dispatched", "任务分配量", "completed", "任务完成量", "acceptanceRate", "任务承接率",
+                "queueSaturation", "队列饱和度", "checkinActive", "签到活跃人数"), "任务与签到事件");
         appendOperationsSummary(rows, slice, "网络", mutableObjectMap(network.get("summary")), Map.of(
-                "directRefs", "直推用户数（被推荐用户去重）", "commissionEvents", "佣金事件数",
-                "commissionPaidUsdt", "佣金派发 USDT", "teamGmvUsdt", "团队 GMV USDT",
-                "promotionRate", "L4→L5 推广率", "commissionTriggerRate", "团队佣金触发率"), "A4/F 团队事件");
+                "directRefs", "直接邀请用户数（去重）", "commissionEvents", "佣金事件数",
+                "commissionPaidUsdt", "佣金发放 USDT", "teamGmvUsdt", "团队 GMV USDT",
+                "promotionRate", "L4→L5 推广率", "commissionTriggerRate", "团队佣金触发率"), "团队事件");
         Object phaseRows = dashboard.get("phaseEffect");
         if (phaseRows instanceof List<?> values) {
             for (Object value : values) {
                 Map<String, Object> phase = mutableObjectMap(value);
                 String phaseCode = stringValue(phase.get("phase"));
-                appendOperationsFact(rows, slice, "Phase", phaseCode + " 活跃人数", phase.get("activeUsers"), "人", "A4/H1 Phase 事件");
-                appendOperationsFact(rows, slice, "Phase", phaseCode + " 留存率", phase.get("retentionRate"), "%", "A4/H1 Phase 事件");
-                appendOperationsFact(rows, slice, "Phase", phaseCode + " 转化率", phase.get("conversionRate"), "%", "A4/H1 Phase 事件");
-                appendOperationsFact(rows, slice, "Phase", phaseCode + " 产出", phase.get("yieldUsdt"), "USDT", "A4/H1 Phase 事件");
+                appendOperationsFact(rows, slice, "运营阶段", phaseCode + " 活跃人数", phase.get("activeUsers"), "人", "运营阶段事件");
+                appendOperationsFact(rows, slice, "运营阶段", phaseCode + " 留存率", phase.get("retentionRate"), "%", "运营阶段事件");
+                appendOperationsFact(rows, slice, "运营阶段", phaseCode + " 转化率", phase.get("conversionRate"), "%", "运营阶段事件");
+                appendOperationsFact(rows, slice, "运营阶段", phaseCode + " 产出", phase.get("yieldUsdt"), "USDT", "运营阶段事件");
             }
         }
         return rows;
@@ -1557,7 +1557,7 @@ public class OpsBiService implements AuditReplayable {
             case "stakingPositions" -> "质押持仓";
             case "walletLedgerRows" -> "钱包流水";
             case "supportTickets" -> "客服工单";
-            case "auditLogs" -> "审计日志";
+            case "auditLogs" -> "操作记录";
             default -> "其他业务指标";
         };
     }
@@ -1567,7 +1567,7 @@ public class OpsBiService implements AuditReplayable {
             case "totalBills" -> "钱包账单总数";
             case "earningBills" -> "收益账单";
             case "teamCommissionBills" -> "团队佣金账单";
-            case "genesisDividendBills" -> "Genesis 排放账单";
+            case "genesisDividendBills" -> "创世节点分红账单";
             case "refundBills" -> "退款账单";
             default -> "其他财务事实";
         };
@@ -1657,30 +1657,30 @@ public class OpsBiService implements AuditReplayable {
 
     private List<Map<String, Object>> exportSafetyParams() {
         return List.of(
-                linked("k", "聚合导出", "v", "仅支持 KPI / 漏斗 / 财务 / 运营聚合快照", "fixed", true,
-                        "s", "导出内容来自对应 L1-L4 服务端实时聚合，创建时固化为只读快照"),
-                linked("k", "监管报告", "v", "I5 当前法域 × 披露版本", "fixed", true,
-                        "s", "只输出七章完整性、确认进度及业务聚合指标，不输出逐用户明细"),
-                linked("k", "账单明细", "v", "D4 八类强制脱敏", "fixed", true,
-                        "s", "敏感财务明细须确认 8-200 字用途，最多 10 万行并写统一导出审计"),
+                linked("k", "汇总数据导出", "v", "关键指标 / 漏斗 / 财务 / 运营", "fixed", true,
+                        "s", "导出创建时的汇总数据，之后不再变化"),
+                linked("k", "监管报告", "v", "按当前地区和披露版本生成", "fixed", true,
+                        "s", "只包含七个章节的完整性、确认进度和汇总指标，不含单个用户明细"),
+                linked("k", "账单明细", "v", "8 类敏感字段强制脱敏", "fixed", true,
+                        "s", "导出敏感财务明细要填写 8–200 字用途，最多 10 万行，并记入操作记录"),
                 linked("k", "单任务行数上限", "v", "100 万行", "fixed", true,
-                        "s", "超过上限的明细导出不在当前 L5 接口放行"),
+                        "s", "超过上限的明细不能导出"),
                 linked("k", "下载链接有效期", "v", "24 小时", "fixed", true,
-                        "s", "令牌仅保存哈希且过期后失效"),
-                linked("k", "敏感数据明文导出", "v", "不可关闭的服务端阻断", "fixed", true,
-                        "s", "当前管理端不提供解密或原始敏感数据导出路径"));
+                        "s", "过期后链接失效"),
+                linked("k", "敏感数据明文导出", "v", "始终禁止", "fixed", true,
+                        "s", "后台不提供解密导出，也不能导出原始敏感数据"));
     }
 
     private List<Map<String, Object>> l5MaskRules() {
         return List.of(
                 linked("f", "手机号", "cat", "隐私信息", "catTone", "bad", "rule", "masked",
-                        "ruleNote", "当前聚合快照不包含该字段", "dec", "不允许", "appr", "服务端阻断"),
+                        "ruleNote", "汇总数据不含这个字段", "dec", "不允许", "appr", "系统禁止"),
                 linked("f", "卡 Token", "cat", "隐私信息", "catTone", "bad", "rule", "partial",
-                        "ruleNote", "仅允许后 4 位策略", "dec", "不允许", "appr", "服务端阻断"),
+                        "ruleNote", "只显示后 4 位", "dec", "不允许", "appr", "系统禁止"),
                 linked("f", "地址 / 证件", "cat", "隐私信息", "catTone", "bad", "rule", "masked",
-                        "ruleNote", "当前聚合快照不包含该字段", "dec", "不允许", "appr", "服务端阻断"),
+                        "ruleNote", "汇总数据不含这个字段", "dec", "不允许", "appr", "系统禁止"),
                 linked("f", "聚合金额", "cat", "资金", "catTone", "warn", "rule", "partial",
-                        "ruleNote", "仅输出汇总值，不输出账户明细", "dec", "不适用", "appr", "创建理由留痕"));
+                        "ruleNote", "只输出汇总值，不含账户明细", "dec", "不适用", "appr", "创建时填写理由并记录"));
     }
 
     private Map<String, Object> mask(String field, String className, String policy, String note) {
@@ -1746,11 +1746,11 @@ public class OpsBiService implements AuditReplayable {
         return switch (normalizeText(code)) {
             case "P1" -> "重心:获客、注册和首笔收益体验";
             case "P2" -> "重心:激活和首购转化";
-            case "P3" -> "重心:拉新 + 首购转化,放宽试用,谨慎放大资金流出";
+            case "P3" -> "重心:拉新和首购转化,放宽试用,谨慎增加资金流出";
             case "P4" -> "重心:复投、留存和任务节奏稳定";
             case "P5" -> "重心:收紧奖励、控制提现和佣金流出";
-            case "P6" -> "重心:软退场、报表归档和风险敞口收口";
-            default -> "重心:等待 H1 节奏配置";
+            case "P6" -> "重心:平稳退出、报表归档和收紧风险缺口";
+            default -> "重心:等待设置运营阶段";
         };
     }
 

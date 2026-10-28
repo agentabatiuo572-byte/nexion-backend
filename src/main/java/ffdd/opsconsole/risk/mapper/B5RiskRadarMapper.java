@@ -344,9 +344,9 @@ public interface B5RiskRadarMapper {
                              WHEN LOWER(signal_type)='risk.withdraw_held' THEN 'withdraw-held'
                            END AS category,
                            CASE
-                             WHEN LOWER(signal_type) IN ('risk.multi_account_flagged','risk.multi_account_incident_created') THEN '反多账户命中'
+                             WHEN LOWER(signal_type) IN ('risk.multi_account_flagged','risk.multi_account_incident_created') THEN '多账户风险'
                              WHEN LOWER(signal_type) IN ('risk.arbitrage_suspected','risk.leaderboard_velocity_flagged') THEN '套利可疑'
-                             WHEN LOWER(signal_type)='risk.trial_cycle_detected' THEN 'Trial 循环养号'
+                             WHEN LOWER(signal_type)='risk.trial_cycle_detected' THEN '反复试用养号'
                              WHEN LOWER(signal_type)='risk.withdraw_held' THEN '提现冻结'
                            END AS label,
                            user_id AS userId

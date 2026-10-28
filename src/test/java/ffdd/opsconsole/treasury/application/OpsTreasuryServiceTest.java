@@ -166,7 +166,7 @@ class OpsTreasuryServiceTest {
                 new ffdd.opsconsole.treasury.dto.TreasuryExportRequest("核对平台代币展示名称", "superadmin")),
                 java.nio.charset.StandardCharsets.UTF_8);
 
-        assertThat(direct).contains("\"nex_v2_future\",\"UVT v2 未来兑付\"")
+        assertThat(direct).contains("\"nex_v2_future\",\"UVT 锁仓到期应付\"")
                 .doesNotContain("NEX v2 未来兑付");
         assertThat(approved).isEqualTo(direct);
         assertThat(service.liabilities(true).getData()).isEqualTo(before);
@@ -983,8 +983,8 @@ class OpsTreasuryServiceTest {
                         .containsEntry("href", "/risk/scoring")
                         .containsEntry("sev", "p0")
                         .satisfies(item -> assertThat(item.get("t").toString())
-                                .contains("自动升级线 80", "1 个账户", "k4-v23")))
-                .anySatisfy(row -> assertThat(row.get("t").toString()).contains("1 个账户等待当前模型重算"));
+                                .contains("自动上报分数线 80", "1 个账户", "k4-v23")))
+                .anySatisfy(row -> assertThat(row.get("t").toString()).contains("1 个账户等待按当前规则重新评分"));
         assertThat((List<String>) riskRadar.get("sources"))
                 .contains("nx_admin_risk_score_user:current-model",
                         "nx_admin_risk_score_user:fresh-current-model",
@@ -1009,7 +1009,7 @@ class OpsTreasuryServiceTest {
                 .anySatisfy(row -> assertThat(row)
                         .containsEntry("sev", "p1")
                         .containsEntry("href", "/risk/scoring")
-                        .satisfies(item -> assertThat(item.get("t").toString()).contains("停止推测")));
+                        .satisfies(item -> assertThat(item.get("t").toString()).contains("暂不统计")));
     }
 
     @Test
