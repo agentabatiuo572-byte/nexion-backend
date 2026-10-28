@@ -28,7 +28,8 @@ class PhoneCalibrationConfigServiceTest {
     private PhoneCalibrationConfigService.Proposal proposal(long revision,long effectiveAt,String score) {
         return new PhoneCalibrationConfigService.Proposal(revision,effectiveAt,
                 PhoneCalibrationPolicyTest.policy(List.of()).thresholds(),
-                List.of(PhoneCalibrationPolicyTest.rule("fixture","Test phone",score)));
+                List.of(PhoneCalibrationPolicyTest.tier("fixture",score,score,true,
+                        PhoneCalibrationPolicyTest.chip("fixture-chip","Fixture chip","FIXTURE1"))), null);
     }
     @Test void emptyCatalogHasNoInventedProductionRules() {
         assertThat(service(1000).read().revision()).isZero();
@@ -65,7 +66,7 @@ class PhoneCalibrationConfigServiceTest {
         var after = service(2000).publish(proposal(1, 0, "18.4"));
         assertThat(after.current().iosModelRules()).extracting(PhoneCalibrationPolicy.IosModelRule::model)
                 .containsExactly("iPhone 16 Pro");
-        assertThat(after.current().rules()).hasSize(1);
+        assertThat(after.current().androidSocRules()).hasSize(1);
         // An explicit empty list is a deliberate removal of every iPhone rule.
         var cleared = new PhoneCalibrationConfigService.Proposal(2, 0, after.current().thresholds(), List.of(), List.of());
         assertThat(service(3000).publish(cleared).current().iosModelRules()).isEmpty();

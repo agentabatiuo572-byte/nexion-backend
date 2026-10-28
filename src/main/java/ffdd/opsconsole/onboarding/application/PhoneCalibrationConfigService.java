@@ -18,12 +18,19 @@ public final class PhoneCalibrationConfigService {
         this.clock = clock;
     }
     public record State(long revision, PhoneCalibrationPolicy current, PhoneCalibrationPolicy scheduled) { }
-    /** A null iosModelRules (a client that predates them) keeps the latest published iPhone rules. */
+    /**
+     * A null iosModelRules keeps the latest published iPhone rules. "rules" (the retired Android hardware
+     * rules) is ignored, so an A2 ticket written before chip tiers still reads and replays as no Android rules.
+     */
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties("rules")
     public record Proposal(long expectedRevision, long effectiveAt, List<java.math.BigDecimal> thresholds,
-                           List<PhoneCalibrationPolicy.Rule> rules, List<PhoneCalibrationPolicy.IosModelRule> iosModelRules) {
+                           List<PhoneCalibrationPolicy.AndroidSocRule> androidSocRules,
+                           List<PhoneCalibrationPolicy.IosModelRule> iosModelRules,
+                           PhoneCalibrationPolicy.AndroidPresetRemovals androidPresetRemovals) {
         public Proposal(long expectedRevision, long effectiveAt, List<java.math.BigDecimal> thresholds,
-                        List<PhoneCalibrationPolicy.Rule> rules) {
-            this(expectedRevision, effectiveAt, thresholds, rules, null);
+                        List<PhoneCalibrationPolicy.AndroidSocRule> androidSocRules,
+                        List<PhoneCalibrationPolicy.IosModelRule> iosModelRules) {
+            this(expectedRevision, effectiveAt, thresholds, androidSocRules, iosModelRules, null);
         }
     }
 
@@ -41,7 +48,8 @@ public final class PhoneCalibrationConfigService {
         var iosModelRules = proposal.iosModelRules() != null ? proposal.iosModelRules()
                 : latest == null ? List.<PhoneCalibrationPolicy.IosModelRule>of() : latest.iosModelRules();
         PhoneCalibrationPolicy policy = new PhoneCalibrationPolicy(state.revision() + 1,
-                Math.max(clock.millis(), proposal.effectiveAt()), proposal.thresholds(), proposal.rules(), iosModelRules);
+                Math.max(clock.millis(), proposal.effectiveAt()), proposal.thresholds(), proposal.androidSocRules(),
+                iosModelRules, proposal.androidPresetRemovals());
         policy.validate();
         return policy;
     }
