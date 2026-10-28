@@ -107,6 +107,8 @@ public interface DeviceCatalogRepository {
     Optional<DeviceOrderView> updateOrderState(
             String orderNo, String expectedState, String state, LocalDateTime now);
 
+    void recordOrderRefundReason(String orderNo, String refundReasonCode);
+
     void recordOrderHistory(
             String orderNo,
             String fromState,

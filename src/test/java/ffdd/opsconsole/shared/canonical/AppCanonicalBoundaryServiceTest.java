@@ -780,6 +780,26 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void refundedOrdersExposeTheUserVisibleRefundReason() {
+        when(mapper.userOrders(42L)).thenReturn(List.of(new CanonicalStateMapper.UserOrder(
+                "ORD-R", 4L, "stellarbox-s1", "StellarBox S1", 1,
+                new BigDecimal("1299"), new BigDecimal("110"), new BigDecimal("1189"),
+                "USDT_WALLET", "REFUNDED", "REFUNDED", "REFUNDED", "SINGLE",
+                LocalDateTime.of(2026, 10, 28, 13, 1), LocalDateTime.of(2026, 10, 28, 13, 1), null,
+                null, null, null, null, null, 1, new BigDecimal("1299"),
+                LocalDateTime.of(2026, 10, 28, 13, 2), new BigDecimal("1189"), "WALLET",
+                "E4-BILL-ORD-R", "USER_REQUEST")));
+
+        var result = service.orders(42L);
+
+        @SuppressWarnings("unchecked")
+        var orders = (List<Map<String, Object>>) result.getData().get("orders");
+        assertThat(orders.get(0))
+                .containsEntry("refundBillNo", "E4-BILL-ORD-R")
+                .containsEntry("refundReasonCode", "USER_REQUEST");
+    }
+
+    @Test
     void pendingOrdersExposeTheServerAuthoritativePaymentDeadline() {
         when(mapper.userOrders(42L)).thenReturn(List.of(userOrder(
                 "PENDING", "PENDING", "WAITING_PAYMENT")));
