@@ -109,7 +109,7 @@ class OpsTeamServiceTest {
         commissionRepository.vRankRows.addAll(java.util.stream.IntStream.rangeClosed(0, 12)
                 .mapToObj(v -> new LinkedHashMap<String, Object>(Map.of("v", "V" + v))).toList());
         // updateConfig/updateUiConfig service 层二次校验需 admin id + 权限码;默认 stub 全 network_f2/f3/f4/f5 码通过。
-        // A1 批1a:补 network_f5_commission_dispose / reject 以覆盖 F5 状态处置权限分流。
+        // F5 状态处置按资金影响分键:freeze / release / reverse。
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
                 new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(1L, null, List.of()));
         org.mockito.Mockito.when(permissionCache.getPermissionCodes(org.mockito.ArgumentMatchers.anyLong())).thenReturn(java.util.Set.of(
@@ -117,7 +117,8 @@ class OpsTeamServiceTest {
                 "network_f3_read", "network_f3_write", "network_f3_match_rate",
                 "network_f4_read", "network_f4_write", "network_f4_pool_fund",
                 "network_f4_ambassador_approve", "network_f4_leaderboard_control",
-                "network_f5_read", "network_f5_write", "network_f5_commission_dispose", "network_f5_commission_reject",
+                "network_f5_read", "network_f5_write", "network_f5_commission_freeze", "network_f5_commission_release",
+                "network_f5_commission_reverse",
                 "network_f1_write", "network_f1_permanent_protection"));
     }
 
@@ -1473,10 +1474,34 @@ class OpsTeamServiceTest {
     }
 
     @Test
+    void f5StatusChangesRequireTheKeyForTheirMoneyEffect() {
+        commissionRepository.commissionEvents.add(new LinkedHashMap<>(Map.of(
+                "id", "CM-7790", "kind", "network", "user", "U00001990", "amount", new BigDecimal("120"),
+                "currency", "USDT", "cooldownPercent", 40, "cooldownLabel", "冷却 10d",
+                "state", "cooling", "version", 0L)));
+
+        org.mockito.Mockito.when(permissionCache.getPermissionCodes(org.mockito.ArgumentMatchers.anyLong()))
+                .thenReturn(java.util.Set.of("network_f5_commission_freeze"));
+        assertThat(service.updateConfig("idem-f5-unlock-by-freezer", new TeamCommissionConfigUpdateRequest(
+                "F.commission.CM-7790.status", "unlocked", "release early", "risk-lead", 0L)).getCode()).isEqualTo(403);
+        assertThat(ledgerPostingFacade.releasedCommissionIds).isEmpty();
+
+        org.mockito.Mockito.when(permissionCache.getPermissionCodes(org.mockito.ArgumentMatchers.anyLong()))
+                .thenReturn(java.util.Set.of("network_f5_commission_release", "network_f5_commission_reverse"));
+        assertThat(service.updateConfig("idem-f5-freeze-by-finance", new TeamCommissionConfigUpdateRequest(
+                "F.commission.CM-7790.status", "frozen", "stop loss", "finance-lead", 0L)).getCode()).isEqualTo(403);
+
+        org.mockito.Mockito.when(permissionCache.getPermissionCodes(org.mockito.ArgumentMatchers.anyLong()))
+                .thenReturn(java.util.Set.of("network_f5_commission_freeze"));
+        assertThat(service.updateConfig("idem-f5-freeze-by-freezer", new TeamCommissionConfigUpdateRequest(
+                "F.commission.CM-7790.status", "frozen", "stop loss", "risk-lead", 0L)).getCode()).isZero();
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void commissionsExposeF5AuditRowsAndReflectBackendStatusOverrides() {
         // A1 批1a:fixture 改 unlocked → rejected(原 计提→frozen 改 frozen 不再 post ledger)。
-        // rejected 触发 OUT/SUCCESS 对冲分录(bizNo 含 REJECTED),覆盖红冲路径 + 状态机 + commission_reject 权限分流。
+        // rejected 触发 OUT/SUCCESS 对冲分录(bizNo 含 REJECTED),覆盖红冲路径 + 状态机 + commission_reverse 权限分流。
         commissionRepository.commissionEvents.add(new LinkedHashMap<>(Map.of(
                 "id", "CM-7781",
                 "kind", "network",
@@ -1979,7 +2004,7 @@ class OpsTeamServiceTest {
                 "network_f2_policy_amplify",
                 "network_f3_match_rate",
                 "network_f4_write",
-                "network_f5_commission_dispose")) {
+                "network_f5_commission_release")) {
             org.mockito.Mockito.when(permissionCache.getPermissionCodes(org.mockito.ArgumentMatchers.anyLong()))
                     .thenReturn(java.util.Set.of(otherDomainAuthority));
 

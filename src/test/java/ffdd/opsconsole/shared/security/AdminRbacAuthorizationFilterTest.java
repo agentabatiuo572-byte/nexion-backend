@@ -777,7 +777,7 @@ class AdminRbacAuthorizationFilterTest {
     void routesCanonicalF5CommissionWritesThroughNetworkAuthorities() throws Exception {
         AtomicBoolean reverseInvoked = new AtomicBoolean(false);
         AtomicBoolean suspendInvoked = new AtomicBoolean(false);
-        authenticate("network_f5_commission_reject");
+        authenticate("network_f5_commission_reverse", "network_f5_commission_suspend");
 
         filter.doFilter(
                 request("POST", "/api/admin/commissions/CM-1/reverse"),

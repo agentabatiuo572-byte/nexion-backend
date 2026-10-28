@@ -66,8 +66,11 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   -- F5 佣金事件审计 /network/commissions
   ('network_f5_read',                         'F5 佣金事件审计 - 读',             'API', '/network/commissions',    'READ',  0, 1, 0),
   ('network_f5_write',                        'F5 佣金事件审计 - 常规写',         'API', '/network/commissions',    'WRITE', 0, 1, 0),
-  ('network_f5_commission_dispose',           '佣金资金状态处置(冻结/解锁/解冻)', 'API', '/network/commissions',    'HIGH',  1, 1, 0),
-  ('network_f5_commission_reject',            '佣金驳回(红冲)',                  'API', '/network/commissions',    'HIGH',  1, 1, 0)
+  ('network_f5_commission_freeze',            '佣金冻结与解冻',                   'API', '/network/commissions',    'HIGH',  1, 1, 0),
+  ('network_f5_commission_suspend',           '暂停用户佣金',                     'API', '/network/commissions',    'HIGH',  1, 1, 0),
+  ('network_f5_commission_release',           '佣金提前解锁与支付',               'API', '/network/commissions',    'HIGH',  1, 1, 0),
+  ('network_f5_commission_reverse',           '佣金冲正',                         'API', '/network/commissions',    'HIGH',  1, 1, 0),
+  ('network_f5_commission_reissue',           '佣金补发',                         'API', '/network/commissions',    'HIGH',  1, 1, 0)
 ON DUPLICATE KEY UPDATE
   permission_name = VALUES(permission_name),
   resource_type   = VALUES(resource_type),
@@ -77,8 +80,8 @@ ON DUPLICATE KEY UPDATE
   status          = 1,
   is_deleted      = 0;
 
--- 统计：46 行 = 11 READ + 11 WRITE + 24 HIGH
+-- 统计：49 行 = 11 READ + 11 WRITE + 27 HIGH
 --   E 域 6 页 24 点（6R + 6W + 12 高敏）
---   F 域 5 页 22 点（5R + 5W + 12 高敏 — Sprint5 新增 network_f1_promote_user;Sprint6 新增 network_f1_reward_reissue/reverse）
--- amplifies=1 共 24 条（所有 HIGH 类型）；READ/WRITE 均 amplifies=0
+--   F 域 5 页 25 点（5R + 5W + 15 高敏 — Sprint5 新增 network_f1_promote_user;Sprint6 新增 network_f1_reward_reissue/reverse;F5 佣金处置拆为 5 把）
+-- amplifies=1 共 27 条（所有 HIGH 类型）；READ/WRITE 均 amplifies=0
 -- 未生成 role_permission（后续统一处理）
