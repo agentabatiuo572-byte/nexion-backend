@@ -47,9 +47,7 @@ public class CregisDepositService {
     private final CregisPayoutControl payouts;
     private final CregisExceptionSourceService exceptionSources;
     private final CregisReorgResolutionService reorgResolutions;
-    private CregisDepositPolicyService policies;
-    @org.springframework.beans.factory.annotation.Autowired
-    void setPolicies(CregisDepositPolicyService value) { this.policies = value; }
+    private final CregisDepositPolicyService policies;
 
     public CregisDepositService(CregisProperties config, CregisGatewayRouter router,
                                 BscDepositProof chain, CregisSigner signer, ObjectMapper json,
@@ -57,7 +55,8 @@ public class CregisDepositService {
                                 TreasuryLedgerRepository treasury,
                                 FinanceWithdrawalControlFacade withdrawalControl,
                                 SupportPaymentAttributionFacade paymentAttribution, CregisPayoutControl payouts,
-                                CregisExceptionSourceService exceptionSources, CregisReorgResolutionService reorgResolutions) {
+                                CregisExceptionSourceService exceptionSources, CregisReorgResolutionService reorgResolutions,
+                                CregisDepositPolicyService policies) {
         this.config = config;
         this.router = router;
         this.chain = chain;
@@ -71,6 +70,7 @@ public class CregisDepositService {
         this.payouts = payouts;
         this.exceptionSources = exceptionSources;
         this.reorgResolutions = reorgResolutions;
+        this.policies = policies;
     }
 
     public Map<String, Object> address(long userId) {

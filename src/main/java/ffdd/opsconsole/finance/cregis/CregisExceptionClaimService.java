@@ -32,9 +32,7 @@ public class CregisExceptionClaimService {
     private final TreasuryLedgerRepository treasury;
     private final SupportPaymentAttributionFacade attribution;
     private final AuditObjectLockMapper locks;
-    private CregisDepositPolicyService policies;
-    @org.springframework.beans.factory.annotation.Autowired
-    void setPolicies(CregisDepositPolicyService value) { this.policies=value; }
+    private final CregisDepositPolicyService policies;
 
     public Map<String,Object> page(long before,int limit) {
         admins.require(false);

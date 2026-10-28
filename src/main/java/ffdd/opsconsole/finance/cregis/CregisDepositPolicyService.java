@@ -56,7 +56,7 @@ public class CregisDepositPolicyService {
         if (before == null) throw new BizException(503,"CREGIS_DEPOSIT_POLICY_MISSING");
         if (before.version() != requested.version()) throw new BizException(409,"CREGIS_DEPOSIT_POLICY_VERSION_CONFLICT");
         var after = new CregisDepositPolicy(before.version()+1,requested.minDepositUsdt(),requested.feeUsdt(),requested.confirmations());
-        if (db.insert(after,A2ReplayContext.operationId(),String.valueOf(params.get("reason")).trim()) != 1) throw new IllegalStateException("CREGIS_DEPOSIT_POLICY_INSERT_FAILED");
+        if (db.insertPolicy(after,A2ReplayContext.operationId(),String.valueOf(params.get("reason")).trim()) != 1) throw new IllegalStateException("CREGIS_DEPOSIT_POLICY_INSERT_FAILED");
         audit.recordRequired(AuditLogWriteRequest.builder().action("CREGIS_DEPOSIT_POLICY_UPDATE").resourceType("CREGIS_DEPOSIT_POLICY")
                 .resourceId("current").actorType("ADMIN").actorUsername(operator).riskLevel("HIGH").result("SUCCESS")
                 .detail(Map.of("before",before,"after",after,"reason",params.get("reason"),"operationId",A2ReplayContext.operationId())).build());
