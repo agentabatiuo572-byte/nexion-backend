@@ -800,6 +800,33 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void trialConversionOrdersCarryTheirDiscountBreakdownAndCreditedRewards() {
+        when(mapper.userOrders(42L)).thenReturn(List.of(new CanonicalStateMapper.UserOrder(
+                "TRC-1", 4L, "stellarbox-s1", "StellarBox S1", 1,
+                new BigDecimal("1299"), new BigDecimal("110"), new BigDecimal("1189"),
+                "USDT_WALLET", "PAID", "COMPLETED", "ACTIVATED", "SINGLE",
+                LocalDateTime.of(2026, 10, 28, 13, 1), LocalDateTime.of(2026, 10, 28, 13, 1),
+                LocalDateTime.of(2026, 10, 28, 13, 1), "Singapore", null, null, 30L, "DEV-30"),
+                userOrder("PENDING", "PENDING", "WAITING_PAYMENT")));
+        when(mapper.trialConversions(42L)).thenReturn(List.of(new CanonicalStateMapper.TrialConversion(
+                "trigger=convert,offsetUsdt=0.06,orderNo=TRC-1,promoDiscountUsdt=50.000000,totalDiscountUsdt=110.000000,"
+                        + "settlementPolicy=FULL_TERM_ON_CONVERSION,earlyDiscountUsdt=10.000000",
+                new BigDecimal("65.56"), new BigDecimal("195"))));
+
+        @SuppressWarnings("unchecked")
+        var orders = (List<Map<String, Object>>) service.orders(42L).getData().get("orders");
+
+        assertThat(orders.get(0).get("trialSettlement")).isEqualTo(Map.of(
+                "settlementPolicy", "FULL_TERM_ON_CONVERSION",
+                "promoDiscountUsdt", new BigDecimal("50.000000"),
+                "offsetUsdt", new BigDecimal("50.000000"),
+                "earlyDiscountUsdt", new BigDecimal("10.000000"),
+                "rewardUsdt", new BigDecimal("65.56"),
+                "rewardNex", new BigDecimal("195")));
+        assertThat(orders.get(1)).doesNotContainKey("trialSettlement");
+    }
+
+    @Test
     void pendingOrdersExposeTheServerAuthoritativePaymentDeadline() {
         when(mapper.userOrders(42L)).thenReturn(List.of(userOrder(
                 "PENDING", "PENDING", "WAITING_PAYMENT")));

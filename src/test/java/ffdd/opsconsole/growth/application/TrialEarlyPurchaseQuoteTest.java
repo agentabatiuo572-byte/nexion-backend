@@ -262,6 +262,36 @@ class TrialEarlyPurchaseQuoteTest {
     }
 
     /** Claimed {@code hoursAgo} before NOW; ACTIVE claims expire after the original 3 days. */
+    @Test
+    void aRedeemedTrialReportsItsOrderAndWhetherThatOrderWasRefunded() {
+        when(mapper.trial(7L)).thenReturn(trial("REDEEMED", 12, new BigDecimal("1299")));
+        when(mapper.settlementSnapshot(1L)).thenReturn(
+                "trigger=convert,orderNo=TRC-1,amountUsdt=1189,settlementPolicy=FULL_TERM_ON_CONVERSION");
+        when(mapper.orderPaymentStatus("TRC-1", 7L)).thenReturn("REFUNDED");
+
+        Map<String, Object> state = service(NOW).state(7L).getData();
+
+        assertThat(state).containsEntry("conversionOrderNo", "TRC-1").containsEntry("conversionRefunded", true)
+                .containsEntry("conversionRewardsReversed", true);
+
+        when(mapper.settlementSnapshot(1L)).thenReturn("trigger=convert,orderNo=TRC-1,amountUsdt=1199");
+        assertThat(service(NOW).state(7L).getData()).containsEntry("conversionRefunded", true)
+                .containsEntry("conversionRewardsReversed", false);
+
+        when(mapper.orderPaymentStatus("TRC-1", 7L)).thenReturn("PAID");
+        assertThat(service(NOW).state(7L).getData()).containsEntry("conversionRefunded", false);
+    }
+
+    @Test
+    void aRedeemedTrialWithoutAnOrderInItsSnapshotNamesNoOrder() {
+        when(mapper.trial(7L)).thenReturn(trial("REDEEMED", 12, new BigDecimal("1299")));
+        when(mapper.settlementSnapshot(1L)).thenReturn("trigger=convert");
+
+        Map<String, Object> state = service(NOW).state(7L).getData();
+
+        assertThat(state).containsEntry("conversionOrderNo", null).containsEntry("conversionRefunded", false);
+    }
+
     private static TrialRow trial(String status, long hoursAgo, BigDecimal price) {
         LocalDateTime claimedAt = BUSINESS_NOW.minusHours(hoursAgo);
         LocalDateTime expiresAt = "EXTENDED".equals(status) ? BUSINESS_NOW.plusDays(2) : claimedAt.plusDays(3);
