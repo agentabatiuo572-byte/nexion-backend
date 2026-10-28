@@ -65,7 +65,7 @@ class SupportGroupScopeRuntimeTest {
     private List<Map<String,Object>> originalBindings;
     private long boss,managerA,managerB,agentA,agentB,dual,agentC,legacy,groupA,groupB,groupD;
     private long boundA,boundB,personal,managed,queue,unrouted;
-    private String attachmentPath,ticketNo,batchId;
+    private String attachmentPath,batchId;
     private static final String TESTCASE="currentGroupScopeCoversListsObjectsQueueCommandsAndSubscriptions";
 
     @Test void currentGroupScopeCoversListsObjectsQueueCommandsAndSubscriptions() throws Exception {
@@ -261,10 +261,6 @@ class SupportGroupScopeRuntimeTest {
     }
 
     private void createPrivateObjects(String conversation) throws Exception {
-        String tickets="/api/admin/content/tickets";
-        JsonNode created=ok(http("POST",tickets,agentA,Map.of("userId",boundA,"category","withdrawal","priority","NORMAL","title",run+"权限工单","body","实际创建的范围验收工单","operator",run,"reason",reason),key()));
-        ticketNo=created.path("ticket").path("ticketNo").asText();assertThat(ticketNo).isNotBlank();
-        ok(get(tickets+"/"+ticketNo,managerA));denied(get(tickets+"/"+ticketNo,managerB));
         String asset=uploadAttachment(boundA,agentA);
         JsonNode detail=ok(get("/api/admin/content/conversations/"+conversation,agentA)).path("conversation");
         Map<String,Object> reply=new LinkedHashMap<>();reply.put("body","");reply.put("expectedStatus",detail.path("status").asText());reply.put("expectedVersion",detail.path("version").asLong());reply.put("reason",reason);reply.put("operator",run);reply.put("kind","IMAGE");reply.put("attachmentId",asset);reply.put("intent","SERVICE");reply.put("clientMessageId",key());reply.put("expectedAssignmentId",bindings.current(boundA).id());
@@ -324,7 +320,6 @@ class SupportGroupScopeRuntimeTest {
             assertThat(search(managerB,ca)).contains("conversation:"+ca);
             JsonNode searchEntry=get("/api/admin/platform/search?keyword="+ca,managerA);
             rejected(searchEntry,403);assertThat(searchEntry.path("message").asText()).isEqualTo("ADMIN_PERMISSION_DENIED");
-            denied(get("/api/admin/content/tickets/"+ticketNo,managerA));ok(get("/api/admin/content/tickets/"+ticketNo,managerB));
             assertThat(binary(attachmentPath,managerA).statusCode()).isEqualTo(404);
             assertThat(binary(attachmentPath,managerB).statusCode()).isEqualTo(200);
             String bulk="/api/admin/content/support-workbench/bulk/"+batchId;
@@ -334,7 +329,7 @@ class SupportGroupScopeRuntimeTest {
             ok(http("POST",bulk+"/cancel",agentA,new ffdd.opsconsole.content.dto.SupportBulkRequest.Mutation(currentBatch.path("version").asLong(),reason),key()));
             assertThat(ok(get("/api/admin/content/support-agents/binding-pool?keyword="+run,managerA)).path("total").asLong()).isZero();
             var revocation=new LinkedHashMap<String,Object>();
-            for(String field:List.of("ownerChangedReadback","oldTokenAndUrlDenied","socketWatchAndTypingDenied","sseInvalidated","dualPersonalStillReadable","managementHasNoPersonalRows","oldTicketAndAttachmentDenied","oldBulkSummaryAndRecipientsDenied","frozenAssignmentRejected","sseCurrentMessagesFiltered","socketCurrentEventsFiltered","searchRechecksCurrentScope"))revocation.put(field,true);
+            for(String field:List.of("ownerChangedReadback","oldTokenAndUrlDenied","socketWatchAndTypingDenied","sseInvalidated","dualPersonalStillReadable","managementHasNoPersonalRows","oldAttachmentDenied","oldBulkSummaryAndRecipientsDenied","frozenAssignmentRejected","sseCurrentMessagesFiltered","socketCurrentEventsFiltered","searchRechecksCurrentScope"))revocation.put(field,true);
             revocation.put("searchEvidenceLayer","DIRECT_SERVICE");revocation.put("searchHttpEntry","RBAC_DENIED_EXPECTED");
             proofs.put("BE-G24-OBJECTS",revocation);
         }
@@ -440,7 +435,7 @@ class SupportGroupScopeRuntimeTest {
     }
     private long actor(String label,String role,String seat) {long id=ledger.createSql(run+"_"+label,"!disabled-fixture-password",run+label,role,seat);actors.add(id);return id;}
     private String token(long id) {return bearer.computeIfAbsent(id,actor->{String username=jdbc.queryForObject("SELECT username FROM nx_admin WHERE id=?",String.class,actor);return tokens.createToken(actor,"ADMIN",username,List.of(),sessions.createSession(actor,username));});}
-    private void as(long id) {var auth=new UsernamePasswordAuthenticationToken(String.valueOf(id),null,List.of("platform_a1_read","platform_a1_write","service_m1_read","service_m1_write","service_m2_read","service_m2_write","service_m3_read","service_m3_write").stream().map(SimpleGrantedAuthority::new).toList());auth.setDetails(Map.of("subjectType","ADMIN","username",run));SecurityContextHolder.getContext().setAuthentication(auth);}
+    private void as(long id) {var auth=new UsernamePasswordAuthenticationToken(String.valueOf(id),null,List.of("platform_a1_read","platform_a1_write","service_m1_read","service_m1_write","service_m3_read","service_m3_write").stream().map(SimpleGrantedAuthority::new).toList());auth.setDetails(Map.of("subjectType","ADMIN","username",run));SecurityContextHolder.getContext().setAuthentication(auth);}
     private String key(){return run+"-"+UUID.randomUUID();}
     private JsonNode get(String path,long actor) throws Exception {return http("GET",path,actor,null,null);}
     private JsonNode http(String method,String path,long actor,Object body,String key) throws Exception {

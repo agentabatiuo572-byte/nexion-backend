@@ -19,7 +19,6 @@ import ffdd.opsconsole.content.domain.SupportAgentProfileRecord;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.domain.SupportAgentRepository.SupportOperatorRecord;
 import ffdd.opsconsole.content.domain.SupportAgentRepository.SupportOperatorScope;
-import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
@@ -269,21 +268,6 @@ class OpsSupportAgentServiceTest {
         assertThat(service.transferTargets()).anyMatch(target -> "2".equals(target.get("targetId")));
         assertThat(service.assignableSupportAgent(2L)).isPresent();
         assertThat(service.currentAssignableSupportAgent()).isPresent();
-    }
-
-    @Test
-    void retiredTicketAssignmentReturnsNoIndependentCandidates() {
-        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        fake.ticketAssigneeCandidates.add(new SupportTicketAssigneeCandidateView(2L, "Available Support"));
-
-        ApiResult<List<SupportTicketAssigneeCandidateView>> result = service.ticketAssigneeCandidates();
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).isEmpty();
-        assertThat(fake.seededAdminIds).isEmpty();
-        assertThat(fake.ensureSchemaCalls).isZero();
-        assertThat(fake.profiles).isEmpty();
-        verifyNoInteractions(accountService);
     }
 
     @Test
@@ -946,7 +930,6 @@ class OpsSupportAgentServiceTest {
         private final List<SupportAgentAssignmentView> assignments = new ArrayList<>();
         private final List<Long> users = LongStream.rangeClosed(1001L, 1101L).boxed().toList();
         private final List<Long> seededAdminIds = new ArrayList<>();
-        private final List<SupportTicketAssigneeCandidateView> ticketAssigneeCandidates = new ArrayList<>();
         private final List<AdminAccountOverview.OperatorRecord> operators = new ArrayList<>();
         private final Map<Long, Long> agentGroups = new LinkedHashMap<>();
         private final Map<Long, Long> groupOwners = new LinkedHashMap<>();
@@ -979,7 +962,6 @@ class OpsSupportAgentServiceTest {
             profiles.clear();
             assignments.clear();
             seededAdminIds.clear();
-            ticketAssigneeCandidates.clear();
             operators.clear();
             agentGroups.clear();
             groupOwners.clear();
@@ -1025,11 +1007,6 @@ class OpsSupportAgentServiceTest {
         @Override
         public void ensureSchema() {
             ensureSchemaCalls += 1;
-        }
-
-        @Override
-        public List<SupportTicketAssigneeCandidateView> listTicketAssigneeCandidates() {
-            return List.copyOf(ticketAssigneeCandidates);
         }
 
         @Override

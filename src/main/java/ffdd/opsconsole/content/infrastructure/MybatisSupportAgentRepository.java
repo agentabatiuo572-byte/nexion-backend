@@ -4,7 +4,6 @@ import ffdd.opsconsole.content.domain.SupportAgentAssignmentView;
 import ffdd.opsconsole.content.domain.SupportAgentProfileRecord;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.domain.DedicatedAdvisorBindingView;
-import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.mapper.SupportAgentMapper;
 import ffdd.opsconsole.content.mapper.SupportAgentMapper.SupportAgentProfileRow;
 import ffdd.opsconsole.content.mapper.SupportAgentMapper.SupportRoleRow;
@@ -50,12 +49,6 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
                 mapper.addActiveUserUniqueIndex();
             }
         });
-    }
-
-    @Override
-    public List<SupportTicketAssigneeCandidateView> listTicketAssigneeCandidates() {
-        List<SupportTicketAssigneeCandidateView> candidates = mapper.listTicketAssigneeCandidates();
-        return candidates == null ? List.of() : List.copyOf(candidates);
     }
 
     @Override

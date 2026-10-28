@@ -8,16 +8,16 @@ import org.junit.jupiter.api.Test;
 
 class OpsSupportProductionWriteGuardContractTest {
     @Test
-    void everyTicketMutationAndConversationCommandGatewayRejectsIsolatedProfiles() throws Exception {
-        String tickets = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/web/OpsSupportTicketController.java"));
+    void everySeatCapacityMutationAndConversationCommandGatewayRejectsIsolatedProfiles() throws Exception {
+        String seatCapacity = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/web/OpsSupportLoadConfigController.java"));
         String conversations = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/web/OpsConversationController.java"));
         String agents = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/web/OpsSupportAgentController.java"));
         String knowledge = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/web/OpsSupportKnowledgeController.java"));
         String timeout = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/web/OpsConversationTimeoutPolicyController.java"));
         String receipt = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/web/AppConversationReceiptController.java"));
         String templates = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/web/OpsSessionTemplateController.java"));
-        assertThat(occurrences(tickets, "productionPathGuard.requireOpsWriteAllowed()"))
-                .isEqualTo(10);
+        assertThat(occurrences(seatCapacity, "productionPathGuard.requireOpsWriteAllowed()"))
+                .isEqualTo(2);
         assertThat(conversations).contains("productionPathGuard.requireOpsWriteAllowed();")
                 .contains("private <T> ApiResult<T> executeCommand");
         assertThat(occurrences(agents, "productionPathGuard.requireOpsWriteAllowed()"))

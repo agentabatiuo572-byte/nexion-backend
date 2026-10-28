@@ -2,9 +2,7 @@ package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.common.boundary.AdminSearchHit;
 import ffdd.opsconsole.content.domain.ContentConversationView;
-import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.dto.ConversationQueryRequest;
-import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
 import ffdd.opsconsole.content.facade.ContentSearchFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -17,32 +15,7 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class ContentSearchFacadeAdapter implements ContentSearchFacade {
-    private final OpsSupportTicketService ticketService;
     private final OpsConversationService conversationService;
-
-    @Override
-    public List<AdminSearchHit> searchSupportTickets(String keyword, int limit) {
-        if(!SupportOwnershipService.hasAuthority("service_m2_read")) return List.of();
-        String q = trim(keyword);
-        if (!StringUtils.hasText(q)) {
-            return List.of();
-        }
-        ApiResult<PageResult<SupportTicketView>> result = ticketService.tickets(
-                new SupportTicketQueryRequest("all", null, null, null, null, null, q, 1L, (long) limit));
-        PageResult<SupportTicketView> page = result == null ? null : result.getData();
-        if (result == null || result.getCode() != 0 || page == null || page.getRecords() == null) {
-            return List.of();
-        }
-        return page.getRecords().stream()
-                .map(ticket -> new AdminSearchHit(
-                        "ticket",
-                        ticket.ticketNo(),
-                        ticket.ticketNo() + " · " + text(ticket.title(), "未命名工单"),
-                        join(ticket.category(), ticket.priority(), ticket.status(), assigned(ticket.assignedAdminName())),
-                        "/service/tickets?ticket=" + ticket.ticketNo(),
-                        exactScore(q, ticket.ticketNo(), ticket.title(), ticket.assignedAdminName())))
-                .toList();
-    }
 
     @Override
     public List<AdminSearchHit> searchConversations(String keyword, int limit) {
@@ -72,10 +45,6 @@ public class ContentSearchFacadeAdapter implements ContentSearchFacade {
                         "/service/sessions?conversation=" + conversation.conversationNo(),
                         exactScore(q, conversation.conversationNo(), conversation.ownerAgentName(), conversation.ownerAgentId())))
                 .toList();
-    }
-
-    private String assigned(String assignedAdminName) {
-        return StringUtils.hasText(assignedAdminName) ? "负责人 " + assignedAdminName.trim() : null;
     }
 
     private String firstText(String first, String second) {

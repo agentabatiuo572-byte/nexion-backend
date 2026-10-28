@@ -41,19 +41,7 @@ public class OpsSupportAcceptanceSandboxController {
     @PostMapping("/conversations/{id}/transfer")
     @PreAuthorize("hasAuthority('service_m3_write')")
     public ApiResult<Object> transfer(@PathVariable String id,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> body) { return ApiResult.ok(service.adminTransfer(id,key,body).get("result")); }
-    @GetMapping("/tickets")
-    @PreAuthorize("hasAuthority('service_m3_read')")
-    public ApiResult<List<Map<String,Object>>> tickets() { guard.requireAvailable(); return ApiResult.ok(service.adminTickets()); }
-    @GetMapping("/tickets/{id}")
-    @PreAuthorize("hasAuthority('service_m3_read')")
-    public ApiResult<Map<String,Object>> ticket(@PathVariable String id) { return ApiResult.ok(service.adminTicket(id)); }
     @GetMapping("/commands/{key}")
     @PreAuthorize("hasAuthority('service_m3_read')")
     public ApiResult<Map<String,Object>> command(@PathVariable String key) { return ApiResult.ok(service.adminCommandResult(key)); }
-    @PostMapping("/tickets/{id}/reply")
-    @PreAuthorize("hasAuthority('service_m3_write')")
-    public ApiResult<Object> ticketReply(@PathVariable String id,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> body) { return ApiResult.ok(service.adminTicketReply(id,key,body).get("result")); }
-    @PostMapping("/tickets/{id}/close")
-    @PreAuthorize("hasAuthority('service_m3_write')")
-    public ApiResult<Object> ticketClose(@PathVariable String id,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> body) { return ApiResult.ok(service.adminTicketClose(id,key,body).get("result")); }
 }
