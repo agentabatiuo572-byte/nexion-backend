@@ -404,7 +404,7 @@ public class AppUserSecurityService {
         }
         return new AppSecurityStateResponse.Session(
                 row.getRefreshTokenId(),
-                ffdd.opsconsole.shared.canonical.DisplayBranding.sessionName(row.getDeviceName()),
+                StringUtils.hasText(row.getDeviceName()) ? row.getDeviceName().trim() : "UVEL App / H5",
                 maskIp(row.getClientIp()),
                 lastActiveAt,
                 current);
