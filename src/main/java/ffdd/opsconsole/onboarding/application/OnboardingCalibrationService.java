@@ -85,7 +85,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                 : mapper.findForUpdate(userId, deviceId);
         if (current != null && request.idempotencyKey().trim().equals(current.idempotencyKey())) {
             return hash.equals(current.requestHash())
-                    ? ApiResult.ok(project(current))
+                    ? ApiResult.ok(appProject(current))
                     : ApiResult.fail(409, "ONBOARDING_IDEMPOTENCY_CONFLICT");
         }
         if (current != null && !deviceId.equals(current.deviceId())) {
@@ -131,7 +131,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                     : mapper.find(userId, deviceId);
             if (winner != null && request.idempotencyKey().trim().equals(winner.idempotencyKey())
                     && hash.equals(winner.requestHash())) {
-                return ApiResult.ok(project(winner));
+                return ApiResult.ok(appProject(winner));
             }
             return ApiResult.fail(409, "ONBOARDING_CALIBRATION_REVISION_CONFLICT");
         }
@@ -147,7 +147,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                 : mapper.find(userId, deviceId);
         return saved == null
                 ? ApiResult.fail(503, "ONBOARDING_CALIBRATION_READBACK_FAILED")
-                : ApiResult.ok(project(saved));
+                : ApiResult.ok(appProject(saved));
     }
 
     @Transactional(readOnly = true)
@@ -158,7 +158,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         CalibrationRow row = scope.sandbox()
                 ? mapper.findScoped(userId, deviceId.trim(), scope.sourceEnvironment(), scope.runId())
                 : mapper.find(userId, deviceId.trim());
-        return row == null ? ApiResult.fail(404, "ONBOARDING_CALIBRATION_NOT_FOUND") : ApiResult.ok(project(row));
+        return row == null ? ApiResult.fail(404, "ONBOARDING_CALIBRATION_NOT_FOUND") : ApiResult.ok(appProject(row));
     }
 
     /** Read the same prerequisites enforced by activation without changing calibration or binding. */
@@ -280,13 +280,15 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         return ApiResult.ok(receiptMap(receipt));
     }
 
+    /** The receipt keeps the full result for audit; the App copy drops the range, also from receipts stored earlier. */
     private Map<String,Object> receiptMap(PhoneReplacementContract.Receipt receipt) {
         Map<String,Object> result = new LinkedHashMap<>();
-        if (receipt.originalResult() instanceof Map<?,?> original)
-            original.forEach((key, value) -> result.put(String.valueOf(key), value));
+        Object original = PhoneCalibrationPolicy.appView(receipt.originalResult());
+        if (original instanceof Map<?,?> map)
+            map.forEach((key, value) -> result.put(String.valueOf(key), value));
         result.put("operationId", receipt.operationId());
         result.put("operationStatus", receipt.status());
-        result.put("originalResult", receipt.originalResult());
+        result.put("originalResult", original);
         result.put("currentBinding", receipt.currentResource());
         result.put("auditRef", receipt.auditRef());
         return result;
@@ -319,7 +321,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
             // A successful retry remains a read of its existing receipt. Every
             // new initial deferral rechecks under the same user lock as binding.
             if (current != null && key.equals(current.activationIdempotencyKey())) {
-                return hash.equals(current.activationRequestHash()) ? ApiResult.ok(project(current))
+                return hash.equals(current.activationRequestHash()) ? ApiResult.ok(appProject(current))
                         : ApiResult.fail(409, "ONBOARDING_ACTIVATION_IDEMPOTENCY_CONFLICT");
             }
             if (mapper.phoneBinding(userId, scope.sourceEnvironment(), scope.runId()) != null
@@ -351,7 +353,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                         : mapper.find(userId, deviceId);
                 return saved == null
                         ? ApiResult.fail(503, "ONBOARDING_ACTIVATION_READBACK_FAILED")
-                        : ApiResult.ok(project(saved));
+                        : ApiResult.ok(appProject(saved));
             }
             current = scope.sandbox()
                     ? mapper.findForUpdateScoped(userId, deviceId, scope.sourceEnvironment(), scope.runId())
@@ -364,7 +366,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
             if (!hash.equals(current.activationRequestHash())) {
                 return ApiResult.fail(409, "ONBOARDING_ACTIVATION_IDEMPOTENCY_CONFLICT");
             }
-            return ApiResult.ok(project(current));
+            return ApiResult.ok(appProject(current));
         }
         if (request.expectedRevision() != current.rowVersion()) {
             return ApiResult.fail(409, "ONBOARDING_CALIBRATION_REVISION_CONFLICT");
@@ -383,7 +385,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                 : mapper.find(userId, deviceId);
         return saved == null
                 ? ApiResult.fail(503, "ONBOARDING_ACTIVATION_READBACK_FAILED")
-                : ApiResult.ok(project(saved));
+                : ApiResult.ok(appProject(saved));
     }
 
     private Long bindPhoneDevice(Long userId, CalibrationRow row, Scope scope) {
@@ -548,6 +550,11 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         } catch (RuntimeException invalid) {
             throw new BizException(503, "ONBOARDING_CALIBRATION_PAYLOAD_INVALID");
         }
+    }
+
+    /** What the App receives: the canonical result without the operator range. */
+    private Map<String, Object> appProject(CalibrationRow row) {
+        return PhoneCalibrationPolicy.appView(project(row));
     }
 
     Map<String, Object> project(CalibrationRow row) {
@@ -715,9 +722,9 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
             // Snapshot of the rule the value was drawn from, kept even after the rule changes or is deleted.
             result.put("calibrationMethod", PhoneCalibrationPolicy.IOS_MODEL_RANGE);
             result.put("model", match.model());
-            result.put("minComputeValue", match.minComputeValue());
-            result.put("maxComputeValue", match.maxComputeValue());
-            result.put("valueSource", PhoneCalibrationPolicy.OPERATOR_PRESET);
+            result.put(PhoneCalibrationPolicy.MIN_COMPUTE_VALUE, match.minComputeValue());
+            result.put(PhoneCalibrationPolicy.MAX_COMPUTE_VALUE, match.maxComputeValue());
+            result.put(PhoneCalibrationPolicy.VALUE_SOURCE, PhoneCalibrationPolicy.OPERATOR_PRESET);
         }
         TierRow tier = matchedTier == null ? null : tiers.get(matchedTier - 1);
         result.put("tierName", tier == null ? null : tier.name());
