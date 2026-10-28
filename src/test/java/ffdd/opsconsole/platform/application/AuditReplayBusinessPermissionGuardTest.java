@@ -1199,7 +1199,7 @@ class AuditReplayBusinessPermissionGuardTest {
                     .isInstanceOf(PhoneReplacementException.class).hasMessage("INVALID_POLICY");
         }
         var mixed = new java.util.LinkedHashMap<>(phoneValues());
-        mixed.put("E.compute.download.enTitle", "unrelated");
+        mixed.put("E.compute.continuityFullHours", "unrelated");
         for (var values : List.of(mixed, Map.<String, Object>of(PHONE_PREFIX + "allowReplacement", "on"))) {
             assertThatThrownBy(() -> realGuard.validateProposalContext(phoneRequest(values, 3L, false)))
                     .isInstanceOf(PhoneReplacementException.class).hasMessage("INVALID_POLICY");
@@ -1262,41 +1262,32 @@ class AuditReplayBusinessPermissionGuardTest {
 
         when(roleResolver.resolveCode()).thenReturn("GROWTH");
         authenticate("platform_a2_proposal_create", "device_e6_flag_toggle");
+        // The PC compute-share flag retired with Janus; phone replacement is the only E6 flag left.
         AuditReplayCommand flag = new AuditReplayCommand(
                 "E", "e6_compute_config", Map.of(
-                        "paramKey", "E.compute.computeShareEnabled", "value", "off"));
+                        "paramKey", "E.compute.phoneBinding.allowReplacement", "value", "off"));
         assertThat(guard.validateProposal(flag).getCode()).isZero();
         assertThat(guard.validateProposal(coefficient).getCode()).isEqualTo(403);
-
-        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
-                "client copy", "E.compute.computeShareEnabled", "on", "off", "growth", "growth",
-                "param", false, true, "gate", "disable unshipped entry", "E6", flag,
-                new AuditLockTarget("E", "e6_compute_config", "E.compute.computeShareEnabled"), null);
-        var canonical = guard.validateProposalContext(request);
-        assertThat(canonical.getCode()).isZero();
-        assertThat(canonical.getData())
-                .extracting(
-                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::action,
-                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::objectId,
-                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::afterValue,
-                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::sourceDomain)
-                .containsExactly("关闭电脑共享算力入口", "E.compute.computeShareEnabled", "off", "E6");
+        AuditReplayCommand retired = new AuditReplayCommand(
+                "E", "e6_compute_config", Map.of(
+                        "paramKey", "E.compute.computeShareEnabled", "value", "off"));
+        assertThat(guard.validateProposal(retired).getCode()).isEqualTo(403);
     }
 
     @Test
     void delegatedE6BatchUsesServerCanonicalSortedTargetsAndFailsClosedForMaliciousKeys() {
         authenticate("platform_a2_proposal_create", "device_e6_write");
         Map<String, Object> values = Map.of(
-                "E.compute.download.zhGuide", "新说明",
-                "E.compute.download.enTitle", "New title");
+                "E.compute.yieldEstimate.dailyUsdtPerBaseline", "0.07",
+                "E.compute.continuityFullHours", "3");
         AuditReplayCommand command = new AuditReplayCommand(
                 "E", "e6_compute_config_batch", Map.of("values", values));
         List<AuditLockTarget> canonicalTargets = List.of(
-                new AuditLockTarget("E", "e6_compute_config", "E.compute.download.enTitle"),
-                new AuditLockTarget("E", "e6_compute_config", "E.compute.download.zhGuide"));
+                new AuditLockTarget("E", "e6_compute_config", "E.compute.continuityFullHours"),
+                new AuditLockTarget("E", "e6_compute_config", "E.compute.yieldEstimate.dailyUsdtPerBaseline"));
         AuditOperationProposalRequest valid = new AuditOperationProposalRequest(
                 "client copy",
-                "E.compute.download.enTitle,E.compute.download.zhGuide",
+                "E.compute.continuityFullHours,E.compute.yieldEstimate.dailyUsdtPerBaseline",
                 "client before",
                 "client after",
                 "e6-maker",
@@ -1305,7 +1296,7 @@ class AuditReplayBusinessPermissionGuardTest {
                 false,
                 false,
                 "gate",
-                "update localized download copy",
+                "update yield estimate inputs",
                 "E6",
                 command,
                 null,
@@ -1316,7 +1307,7 @@ class AuditReplayBusinessPermissionGuardTest {
         assertThat(canonical.getCode()).isZero();
         assertThat(canonical.getData().target()).isNull();
         assertThat(canonical.getData().objectId())
-                .isEqualTo("E.compute.download.enTitle,E.compute.download.zhGuide");
+                .isEqualTo("E.compute.continuityFullHours,E.compute.yieldEstimate.dailyUsdtPerBaseline");
 
         AuditOperationProposalRequest duplicateTarget = new AuditOperationProposalRequest(
                 valid.action(), valid.obj(), valid.beforeValue(), valid.afterValue(),
@@ -1331,7 +1322,7 @@ class AuditReplayBusinessPermissionGuardTest {
                 valid.operator(), valid.operatorRole(), valid.type(), valid.amplifies(), valid.sos(),
                 valid.roleGate(), valid.reason(), valid.sourceDomain(), command, null,
                 List.of(
-                        new AuditLockTarget("D", "e6_compute_config", "E.compute.download.enTitle"),
+                        new AuditLockTarget("D", "e6_compute_config", "E.compute.continuityFullHours"),
                         canonicalTargets.get(1)));
         assertThat(guard.validateProposalContext(crossDomainTarget).getMessage())
                 .isEqualTo("A2_BUSINESS_CONTEXT_MISMATCH");
@@ -1340,11 +1331,11 @@ class AuditReplayBusinessPermissionGuardTest {
                 "E",
                 "e6_compute_config_batch",
                 Map.of("values", Map.of(
-                        "E.compute.download.zhGuide", "safe",
+                        "E.compute.yieldEstimate.dailyUsdtPerBaseline", "0.07",
                         "D.finance.dailyLimit", "999999")));
         AuditOperationProposalRequest maliciousRequest = new AuditOperationProposalRequest(
                 valid.action(),
-                "D.finance.dailyLimit,E.compute.download.zhGuide",
+                "D.finance.dailyLimit,E.compute.yieldEstimate.dailyUsdtPerBaseline",
                 valid.beforeValue(),
                 valid.afterValue(),
                 valid.operator(),
@@ -1359,7 +1350,7 @@ class AuditReplayBusinessPermissionGuardTest {
                 null,
                 List.of(
                         new AuditLockTarget("D", "finance_config", "D.finance.dailyLimit"),
-                        new AuditLockTarget("E", "e6_compute_config", "E.compute.download.zhGuide")));
+                        new AuditLockTarget("E", "e6_compute_config", "E.compute.yieldEstimate.dailyUsdtPerBaseline")));
         assertThat(guard.validateProposalContext(maliciousRequest).getMessage())
                 .isEqualTo("A2_BUSINESS_CONTEXT_UNMAPPED");
 

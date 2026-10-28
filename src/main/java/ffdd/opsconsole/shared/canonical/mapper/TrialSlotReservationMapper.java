@@ -4,6 +4,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 /** A trial is a reserved physical slot, never an extra purchased device. */
+@SuppressWarnings("MybatisPlusBaseMapper")
 public interface TrialSlotReservationMapper {
     String RESERVED_TRIAL = """
             SELECT tc.id FROM nx_trial_claim tc
