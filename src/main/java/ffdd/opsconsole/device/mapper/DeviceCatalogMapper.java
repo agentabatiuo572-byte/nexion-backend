@@ -1624,6 +1624,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                          @Param("state") String state,
                          @Param("now") LocalDateTime now);
 
+    @Update("UPDATE nx_order SET refund_reason_code=#{refundReasonCode} WHERE order_no=#{orderNo} AND is_deleted=0")
+    int updateOrderRefundReason(@Param("orderNo") String orderNo, @Param("refundReasonCode") String refundReasonCode);
+
     @Insert("""
             INSERT INTO nx_order_state_history
               (order_no,from_state,to_state,reason,operator,idempotency_key,created_at)
