@@ -309,7 +309,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).insertConversionOrderItem(anyString(), anyLong(), anyString(), anyString(), any());
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
                 anyString(), anyString(), anyString(), any());
-        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
+        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), anyString());
         verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
     }
 
@@ -823,7 +823,7 @@ class AppTrialLifecycleServiceTest {
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(9L), eq("stellarbox-s1"),
                 eq("Entry"), eq("DEVICE"), anyString(), eq("Trial"), any())).thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
-        when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString()))
+        when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(), anyString()))
                 .thenReturn(1);
 
         ApiResult<Map<String, Object>> result = service.redeemEarly(7L, "h2-success");
@@ -837,7 +837,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).insertConversionOrderItem(anyString(), anyLong(), anyString(), anyString(), any());
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
                 anyString(), anyString(), anyString(), any());
-        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
+        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), anyString());
         verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
         verify(outbox, never()).publishUserEvent(eq("TRIAL"), eq("TRIAL-1"), eq("trial.redeemed"),
                 eq(7L), eq("P2"), eq(2), eq("2026-W30"), any());
@@ -862,7 +862,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).insertConversionOrderItem(anyString(), anyLong(), anyString(), anyString(), any());
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
                 anyString(), anyString(), anyString(), any());
-        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
+        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), anyString());
             org.mockito.Mockito.verifyNoInteractions(capture);
     }
 
@@ -951,7 +951,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).insertConversionOrderItem(anyString(), anyLong(), anyString(), anyString(), any());
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
                 anyString(), anyString(), anyString(), any());
-        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
+        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), anyString());
         verify(outbox).publishUserEvent(eq("TRIAL"), eq("TRIAL-STALE"), eq("trial.cancelled"),
                 eq(7L), eq("P2"), eq(2), eq("2026-W30"), any());
     }
@@ -974,7 +974,7 @@ class AppTrialLifecycleServiceTest {
         when(mapper.insertConversionOrderItem(anyString(), eq(9L), eq("stellarbox-s1"), anyString(), any())).thenReturn(1);
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(9L), eq("stellarbox-s1"), eq("Entry"), eq("DEVICE"), anyString(), eq("Trial"), any())).thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
-        when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
+        when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
         var fixedService = new AppTrialLifecycleService(capture, mapper, earningsRelease, idempotency, coverage, audit, outbox,
                 productReleasePolicy, canonicalStateMapper, environment, fixed);
         var result = fixedService.convert(7L, "stellarbox-s1", new BigDecimal("1239.00"), "direct-reward-conversion");
@@ -1090,7 +1090,7 @@ class AppTrialLifecycleServiceTest {
         when(mapper.insertConversionOrderItem(anyString(),eq(9L),eq("stellarbox-s1"),anyString(),any())).thenReturn(1);
         when(mapper.insertPurchasedDevice(eq(7L),anyString(),eq(9L),eq("stellarbox-s1"),eq("Entry"),eq("DEVICE"),anyString(),eq("Trial"),any())).thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
-        when(mapper.markRedeemed(eq(1L),eq(0L),eq(77L),any(),any(),any(),any(),any(),any(),anyString())).thenReturn(1);
+        when(mapper.markRedeemed(eq(1L),eq(0L),eq(77L),any(),any(),any(),any(),any(),any(), any(),anyString())).thenReturn(1);
         when(earningsRelease.creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_REMAINDER"),eq("TRIAL-ZERO:REMAINDER"),eq("USDT"),any(),anyString())).thenReturn("ER-USDT");
         when(earningsRelease.creditRewardInFundOperation(eq(7L),eq("H2_TRIAL_BONUS"),eq("TRIAL-ZERO:NEX"),eq("NEX"),any(),anyString())).thenReturn("ER-NEX");
         var target=new AppTrialLifecycleService(capture,mapper,earningsRelease,idempotency,coverage,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,fixed);

@@ -105,7 +105,7 @@ class TrialConvertAndDeferredDeactivateTest {
                 eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299"))))
                 .thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
-        when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString()))
+        when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(), anyString()))
                 .thenReturn(1);
 
         if (failCapture) {
@@ -141,7 +141,7 @@ class TrialConvertAndDeferredDeactivateTest {
         verify(mapper).insertConversionOrder(eq(7L), anyString(), eq(11L),
                 eq(new BigDecimal("1299")), eq(new BigDecimal("20.041666")),
                 eq(new BigDecimal("1278.958334")));
-        verify(mapper).markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString());
+        verify(mapper).markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(), anyString());
         verify(mapper).insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
                 eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")));
         org.mockito.Mockito.verify(capture).prepare(7L, Source.TRIAL_CONVERT, "USER:7");
@@ -175,7 +175,7 @@ class TrialConvertAndDeferredDeactivateTest {
         verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
         verify(mapper).insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
                 eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")));
-        verify(mapper).markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(),
+        verify(mapper).markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(),
                 argThat(snapshot -> snapshot.contains("trialDailyUsdt=38.52")
                         && snapshot.contains("deviceDailyUsdt=1") && snapshot.contains("deviceDailyNex=1")));
     }
@@ -215,7 +215,7 @@ class TrialConvertAndDeferredDeactivateTest {
                 .hasMessage("TRIAL_DEVICE_CREATE_CONFLICT");
         verify(tx).rollback(status);
         verify(tx, never()).commit(any());
-        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
+        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     private void stubLegacyConversion() {
@@ -243,7 +243,7 @@ class TrialConvertAndDeferredDeactivateTest {
                 eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299"))))
                 .thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
-        when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString()))
+        when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(), anyString()))
                 .thenReturn(1);
 
     }
@@ -259,7 +259,7 @@ class TrialConvertAndDeferredDeactivateTest {
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("TRIAL_PRODUCT_NOT_ELIGIBLE");
         verify(mapper, never()).decrementProductStock(anyLong());
-        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
+        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -276,7 +276,7 @@ class TrialConvertAndDeferredDeactivateTest {
         assertThat(result.getMessage()).isEqualTo("TRIAL_PRODUCT_NOT_AVAILABLE");
         verify(mapper, never()).decrementProductStock(anyLong());
         verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
-        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
+        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -292,7 +292,7 @@ class TrialConvertAndDeferredDeactivateTest {
         assertThat(result.getMessage()).isEqualTo("TRIAL_AMOUNT_MISMATCH");
         verify(mapper, never()).decrementProductStock(anyLong());
         verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
-        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
+        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test

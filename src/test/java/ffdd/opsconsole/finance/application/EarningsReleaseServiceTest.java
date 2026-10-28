@@ -60,75 +60,22 @@ class EarningsReleaseServiceTest {
     @BeforeEach
     void defaults() {
         when(sandboxProfile.isStrictProductionRuntime()).thenReturn(true);
-        when(params.attestationHours()).thenReturn(1);
         when(params.releaseWindowHours()).thenReturn(24);
         when(params.freeSlots()).thenReturn(1);
         when(params.freezeFrom()).thenReturn(3);
         when(params.freeSlotRequiresBinding()).thenReturn(true);
-        when(mapper.proofIdentityMatches(any(),eq("JANUS_PRODUCTION_EXECUTOR"))).thenReturn(1);
-        when(mapper.consumeAppliedProof(anyString(),any(),anyString(),any(),anyString(),anyString())).thenReturn(1);
         when(params.requireCoverageForAmplifyingRelease()).thenReturn(
                 new TreasuryCoverageSnapshot(new BigDecimal("120"), new BigDecimal("105"), true));
     }
 
     @Test
-    void unboundAppReportCannotMintTrustedOnlineSeconds() {
-        when(mapper.trustedDeviceBinding(7L, "phone-1")).thenReturn(0);
-
-        service.recordTrustedAttestation(proof("phone-1"));
-
-        verify(mapper, never()).recordAttestation(any(), anyString(), anyString());
-        verify(mapper, never()).release(anyString(), anyString());
-    }
-
-    @Test
-    void clusterQuotaIsLockedBeforeCountingAndReleasing() {
-        ProtectedEntry entry = new ProtectedEntry("ER-1", 7L, "K1-C1", "USDT",
-                BigDecimal.ONE, "pending_review");
-        when(mapper.trustedDeviceBinding(7L, "phone-1")).thenReturn(1);
-        when(mapper.recordAttestation(7L, "phone-1", "PRODUCTION")).thenReturn(1);
-        when(mapper.attestedSeconds(7L, "PRODUCTION")).thenReturn(3600L);
-        when(mapper.protectedEntryScopes(7L, "PRODUCTION")).thenReturn(List.of(entry));
-        when(mapper.protectedEntries(7L, "PRODUCTION")).thenReturn(List.of(entry));
-        when(mapper.lockCluster("K1-C1")).thenReturn("K1-C1");
-        when(mapper.releasedAccountsInWindow("K1-C1", 7L, 24)).thenReturn(0);
-        when(mapper.releaseFromJanusProof("ER-1", "JANUS_PRODUCTION_EXECUTOR")).thenReturn(1);
-
-        service.recordTrustedAttestation(proof("phone-1"));
-
-        InOrder order = inOrder(mapper);
-        order.verify(mapper).lockCreditUser(7L, 0);
-        order.verify(mapper).lockCreditWallet(7L, 0);
-        order.verify(mapper).protectedEntryScopes(7L, "PRODUCTION");
-        order.verify(mapper).lockCluster("K1-C1");
-        order.verify(mapper).protectedEntries(7L, "PRODUCTION");
-        order.verify(mapper).releasedAccountsInWindow("K1-C1", 7L, 24);
-        order.verify(mapper).releaseFromJanusProof("ER-1", "JANUS_PRODUCTION_EXECUTOR");
-        verify(audit).recordRequiredForTrustedActor(any());
-    }
-
-    @Test
-    void deletedClusterFailsClosedBeforeQuotaCountOrRelease() {
-        ProtectedEntry entry = new ProtectedEntry("ER-GONE", 7L, "K1-GONE", "USDT",
-                BigDecimal.ONE, "pending_review");
-        when(mapper.trustedDeviceBinding(7L, "phone-1")).thenReturn(1);
-        when(mapper.recordAttestation(7L, "phone-1", "PRODUCTION")).thenReturn(1);
-        when(mapper.attestedSeconds(7L, "PRODUCTION")).thenReturn(3600L);
-        when(mapper.protectedEntries(7L, "PRODUCTION")).thenReturn(List.of(entry));
-        when(mapper.lockCluster("K1-GONE")).thenReturn(null);
-
-        assertThatThrownBy(() -> service.recordTrustedAttestation(proof("phone-1")))
-                .isInstanceOfSatisfying(BizException.class, ex ->
-                        org.assertj.core.api.Assertions.assertThat(ex.getMessage())
-                                .isEqualTo("EARNINGS_RELEASE_CLUSTER_MISSING"));
-        verify(mapper, never()).releasedAccountsInWindow(anyString(), any(), anyInt());
-        verify(mapper, never()).release(anyString(), anyString());
-    }
-
-    private EarningsReleaseService.TrustedAttestationProof proof(String deviceId) {
-        return new EarningsReleaseService.TrustedAttestationProof(
-                "proof-"+deviceId,7L,deviceId,1L,"ACTIVATED",
-                "JANUS_PRODUCTION_EXECUTOR","e".repeat(64));
+    void retiredDeviceProofHasNoNewFinancialWriteEntryPoint() {
+        assertThat(java.util.Arrays.stream(EarningsReleaseService.class.getMethods())
+                .map(java.lang.reflect.Method::getName))
+                .doesNotContain("recordTrustedAttestation");
+        assertThat(java.util.Arrays.stream(EarningsReleaseMapper.class.getMethods())
+                .map(java.lang.reflect.Method::getName))
+                .doesNotContain("releaseFromJanusProof", "consumeAppliedProof", "recordAttestation");
     }
 
     @Test

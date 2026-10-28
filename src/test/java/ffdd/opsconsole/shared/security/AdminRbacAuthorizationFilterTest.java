@@ -40,6 +40,22 @@ class AdminRbacAuthorizationFilterTest {
         SecurityContextHolder.clearContext();
     }
 
+    @Test void retiredJanusPathsReachOnlyTheGoneControllerForAuthenticatedAdmins() throws Exception {
+        var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders
+                .standaloneSetup(new ffdd.opsconsole.shared.web.RetiredDeviceIntegrationController())
+                .addFilters(filter).build();
+        authenticateTrustedAdmin("7");
+        for (String path : List.of("/api/admin/janus", "/api/admin/janus/devices", "/api/admin/janus/strategies/old/publish")) {
+            for (var method : List.of(org.springframework.http.HttpMethod.GET, org.springframework.http.HttpMethod.POST)) {
+                mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request(method,path))
+                        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isGone());
+            }
+        }
+        SecurityContextHolder.clearContext();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/admin/janus/devices"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isUnauthorized());
+    }
+
     @Test void verificationRecoveryUsesExactGrantInsteadOfUnrelatedC5Read() throws Exception {
         String path="/api/admin/users/profiles/71/phone-replacement-verifications/by-idempotency-key";
         for(String method:List.of("GET","HEAD")) {
@@ -197,36 +213,6 @@ class AdminRbacAuthorizationFilterTest {
         assertThat(invoked).isTrue();
     }
 
-    @Test
-    void janusRoutesUseTheK6RiskAuthorities() throws Exception {
-        AtomicBoolean readInvoked = new AtomicBoolean(false);
-        AtomicBoolean writeInvoked = new AtomicBoolean(false);
-        authenticate("risk_k6_read", "risk_k6_write");
-
-        filter.doFilter(request("GET", "/api/admin/janus/health"),
-                new MockHttpServletResponse(), mark(readInvoked));
-        filter.doFilter(request("POST", "/api/admin/janus/exports"),
-                new MockHttpServletResponse(), mark(writeInvoked));
-
-        assertThat(readInvoked).isTrue();
-        assertThat(writeInvoked).isTrue();
-
-        AtomicBoolean deniedWriteInvoked = new AtomicBoolean(false);
-        MockHttpServletResponse deniedWrite = new MockHttpServletResponse();
-        authenticate("risk_k6_read");
-        filter.doFilter(request("POST", "/api/admin/janus/exports"),
-                deniedWrite, mark(deniedWriteInvoked));
-        assertThat(deniedWriteInvoked).isFalse();
-        assertThat(deniedWrite.getStatus()).isEqualTo(403);
-
-        AtomicBoolean deniedReadInvoked = new AtomicBoolean(false);
-        MockHttpServletResponse deniedRead = new MockHttpServletResponse();
-        authenticate("risk_k6_write");
-        filter.doFilter(request("GET", "/api/admin/janus/health"),
-                deniedRead, mark(deniedReadInvoked));
-        assertThat(deniedReadInvoked).isFalse();
-        assertThat(deniedRead.getStatus()).isEqualTo(403);
-    }
 
     @Test
     void permitsOverviewRoleOnDashboardAndBDomainTreasuryRoutes() throws Exception {

@@ -76,6 +76,8 @@ public class OpsA1PermissionRegistrationService {
         String name = text(request.permissionName(), "A1_PERMISSION_NAME_REQUIRED");
         if (name.length() > 96) throw invalid("A1_PERMISSION_NAME_INVALID");
         String path = text(request.resourcePath(), "A1_PERMISSION_PATH_REQUIRED");
+        if (code.startsWith("risk_k6_") || path.equals("/api/admin/janus")
+                || path.startsWith("/api/admin/janus/")) throw invalid("A1_PERMISSION_RETIRED");
         if (!path.startsWith("/api/admin/") || path.contains("..") || path.length() > 255) {
             throw invalid("A1_PERMISSION_PATH_INVALID");
         }

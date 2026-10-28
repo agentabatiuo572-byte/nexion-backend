@@ -116,15 +116,16 @@ class AppTrialLifecycleControllerIntegrationTest {
         AppTrialLifecycleService service = mock(AppTrialLifecycleService.class);
         AppTrialLifecycleController controller = new AppTrialLifecycleController(service);
         BigDecimal expectedAmount = new BigDecimal("1277.33");
-        when(service.convert(42L, "stellarbox-s1", expectedAmount, "convert-key"))
+        when(service.convert(42L, "stellarbox-s1", expectedAmount, "FULL_TERM_ON_CONVERSION:abc", "convert-key"))
                 .thenReturn(ApiResult.ok(Map.of("orderNo", "TRC-1")));
 
         ApiResult<Map<String, Object>> result = controller.convert(
-                new AppTrialLifecycleController.ConvertRequest("stellarbox-s1", expectedAmount),
+                new AppTrialLifecycleController.ConvertRequest("stellarbox-s1", expectedAmount,
+                        "FULL_TERM_ON_CONVERSION:abc"),
                 "convert-key", auth("42", "USER"));
 
         assertThat(result.getCode()).isZero();
-        verify(service).convert(42L, "stellarbox-s1", expectedAmount, "convert-key");
+        verify(service).convert(42L, "stellarbox-s1", expectedAmount, "FULL_TERM_ON_CONVERSION:abc", "convert-key");
     }
 
     private AppTrialLifecycleController controller(AppTrialLifecycleMapper mapper,

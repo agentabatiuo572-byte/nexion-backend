@@ -2886,15 +2886,8 @@ class OpsDeviceServiceTest {
         ApiResult<ComputeConfigView> r = newServiceWithEmptyConfig().computeConfig();
 
         assertThat(r.getData().domain()).isEqualTo("E6");
-        assertThat(r.getData().flags()).hasSize(1);
-        assertThat(r.getData().flags().get(0).enabled()).isFalse();
-        assertThat(r.getData().gpuTiers()).hasSize(6);
-        assertThat(r.getData().gpuTiers().get(0).tops()).isEqualTo("40");
-        assertThat(r.getData().gpuTiers().get(0).keywords().get(0))
-                .extracting(
-                        ComputeConfigView.KeywordView::slot,
-                        ComputeConfigView.KeywordView::value)
-                .containsExactly("keyword1", "gtx 1650");
+        assertThat(r.getData().flags()).isEmpty();
+        assertThat(r.getData().gpuTiers()).isEmpty();
         assertThat(r.getData().download().url()).isEmpty();
     }
 
@@ -2907,7 +2900,7 @@ class OpsDeviceServiceTest {
         configFacade.values.put(ComputeConfigRegistry.downloadKey("url"), downloadUrl);
 
         assertThat(serviceWithDownloadPublicationResult(null).computeConfig().getData().download().url())
-                .isEqualTo(downloadUrl);
+                .isEmpty();
         configFacade.values.remove("platform.compute.download.allowedTargets");
         assertThat(serviceWithDownloadPublicationResult(null).computeConfig().getData().download().url())
                 .isEmpty();
@@ -2927,6 +2920,9 @@ class OpsDeviceServiceTest {
                 .platformComputeConfig().getData();
 
         assertThat(projection.featureFlags().computeShareEnabled()).isFalse();
+        // Existing installed App/H5 parsers require the historical shape; none of it enables writes.
+        assertThat(projection.computerCompute().flags()).hasSize(1);
+        assertThat(projection.computerCompute().gpuTiers()).hasSize(6);
         assertThat(projection.computerCompute().flags())
                 .filteredOn(flag -> "computeShareEnabled".equals(flag.key()))
                 .allMatch(flag -> !flag.enabled());
@@ -2974,8 +2970,8 @@ class OpsDeviceServiceTest {
 
     @Test
     void directComputeConfigMutationRequiresA2Confirmation() {
-        String paramKey = ComputeConfigRegistry.flagKey("computeShareEnabled");
-        ComputeConfigParamUpdateRequest request = new ComputeConfigParamUpdateRequest("on", "enable share", "superadmin");
+        String paramKey = ComputeConfigRegistry.coeffKey("continuityFullHours");
+        ComputeConfigParamUpdateRequest request = new ComputeConfigParamUpdateRequest("4", "update continuity hours", "superadmin");
 
         ApiResult<ComputeConfigParamResponse> result = service.updateComputeConfigParam(paramKey, "idem-e6", request);
 
@@ -2986,104 +2982,24 @@ class OpsDeviceServiceTest {
         verify(auditLogService, never()).recordRequired(any());
     }
 
-    @Test
-    void replayComputeConfigFlagIsIdempotentAuditedAndPublished() {
-        String paramKey = ComputeConfigRegistry.flagKey("computeShareEnabled");
-        configFacade.values.put("platform.compute.download.allowedTargets", "https://downloads.nexion.example/releases/");
-        configFacade.values.put(ComputeConfigRegistry.downloadKey("url"), "https://downloads.nexion.example/releases/janus.msi");
-        ComputeConfigParamUpdateRequest request = new ComputeConfigParamUpdateRequest("on", "enable share", "spoofed-client");
-        authenticate("device_e6_flag_toggle");
-        A2ReplayContext.enterReplay();
 
-        ApiResult<ComputeConfigParamResponse> result = service.updateComputeConfigParam(paramKey, "idem-e6", request);
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().paramKey()).isEqualTo(paramKey);
-        assertThat(result.getData().value()).isEqualTo("on");
-        assertThat(configFacade.values).containsEntry(paramKey, "on");
-        verify(idempotencyService).execute(eq("E6_COMPUTE_CONFIG_UPDATE"), eq("idem-e6"), anyString(), eq(ApiResult.class), any());
-        verify(outboxService).publish(eq("E6_COMPUTE_CONFIG"), eq(paramKey), eq("compute.flag_toggled"), any());
 
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequired(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("compute.flag_toggled");
-        assertThat(captor.getValue().getResourceType()).isEqualTo("E6_COMPUTE_CONFIG");
-        assertThat(captor.getValue().getResourceId()).isEqualTo(paramKey);
-        assertThat(detailMap(captor.getValue().getDetail()))
-                .containsEntry("paramKey", paramKey)
-                .containsEntry("before", "off")
-                .containsEntry("after", "on")
-                .containsEntry("idempotencyKey", "idem-e6");
-    }
 
     @Test
-    void replayComputeConfigNonCoefficientUsesStringParamEventContract() {
-        String paramKey = ComputeConfigRegistry.gpuTierKey("G3", "label");
-        authenticate("device_e6_write");
-        A2ReplayContext.enterReplay();
-
-        ApiResult<ComputeConfigParamResponse> result = service.updateComputeConfigParam(
-                paramKey, "idem-e6-param",
-                new ComputeConfigParamUpdateRequest("专业显卡", "rename tier", "spoofed-client"));
-
-        assertThat(result.getCode()).isZero();
-        verify(outboxService).publish(eq("E6_COMPUTE_CONFIG"), eq(paramKey), eq("compute.param_changed"), any());
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequired(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("compute.param_changed");
-    }
-
-    @Test
-    void replayComputeConfigBatchValidatesEverythingBeforeAtomicWrite() {
-        String labelKey = ComputeConfigRegistry.gpuTierKey("G3", "label");
-        String topsKey = ComputeConfigRegistry.gpuTierKey("G3", "tops");
-        configFacade.values.put(labelKey, "进阶显卡");
-        configFacade.values.put(topsKey, "160");
-        A2ReplayContext.enterReplay();
-
-        ApiResult<ComputeConfigBatchResponse> rejected = service.updateComputeConfigBatch(
-                "idem-e6-batch-invalid",
-                new ComputeConfigBatchUpdateRequest(
-                        Map.of(labelKey, "专业显卡", topsKey, "0"),
-                        "reject partial write", "superadmin"));
-
-        assertThat(rejected.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(configFacade.values)
-                .containsEntry(labelKey, "进阶显卡")
-                .containsEntry(topsKey, "160");
-
-        ApiResult<ComputeConfigBatchResponse> updated = service.updateComputeConfigBatch(
-                "idem-e6-batch-valid",
-                new ComputeConfigBatchUpdateRequest(
-                        Map.of(labelKey, "专业显卡", topsKey, "180"),
-                        "atomic tier update", "superadmin"));
-
-        assertThat(updated.getCode()).isZero();
-        assertThat(updated.getData().values()).containsEntry(labelKey, "专业显卡").containsEntry(topsKey, "180");
-        assertThat(configFacade.values).containsEntry(labelKey, "专业显卡").containsEntry(topsKey, "180");
-        verify(outboxService).publish(eq("E6_COMPUTE_CONFIG"), eq("batch"), eq("compute.config_changed"), any());
-    }
-
-    @Test
-    void replayComputeConfigRejectsCrossTierOrderAndDuplicateKeywords() {
-        String g3Tops = ComputeConfigRegistry.gpuTierKey("G3", "tops");
-        String g2Keyword = ComputeConfigRegistry.gpuTierKey("G2", "keyword1");
-        A2ReplayContext.enterReplay();
-
-        ApiResult<ComputeConfigParamResponse> invalidOrder = service.updateComputeConfigParam(
-                g3Tops, "idem-e6-tops-order",
-                new ComputeConfigParamUpdateRequest("80", "reject overlapping GPU tiers", "superadmin"));
-        ApiResult<ComputeConfigBatchResponse> duplicateKeyword = service.updateComputeConfigBatch(
-                "idem-e6-keyword-duplicate",
-                new ComputeConfigBatchUpdateRequest(
-                        Map.of(g2Keyword, "gtx 1650"),
-                        "reject ambiguous GPU matching", "superadmin"));
-
-        assertThat(invalidOrder.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(invalidOrder.getMessage()).isEqualTo("COMPUTE_GPU_TOPS_ORDER_INVALID");
-        assertThat(duplicateKeyword.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(duplicateKeyword.getMessage()).isEqualTo("COMPUTE_GPU_KEYWORD_DUPLICATE");
-        assertThat(configFacade.values).doesNotContainKeys(g3Tops, g2Keyword);
+    void retiredComputeKeysRejectDirectBatchAndA2ReplayWithoutWriting() {
+        for (boolean replay : new boolean[]{false,true}) {
+            if (replay) A2ReplayContext.enterReplay();
+            for (String key : List.of("E.compute.computeShareEnabled", "E.compute.gpuTier.G3.tops", "E.compute.download.url")) {
+                var before = new java.util.LinkedHashMap<>(configFacade.values);
+                var single=service.updateComputeConfigParam(key,"retired-single",new ComputeConfigParamUpdateRequest("on","retirement regression","superadmin"));
+                var batch=service.updateComputeConfigBatch("retired-batch",new ComputeConfigBatchUpdateRequest(Map.of(key,"on"),"retirement regression","superadmin"));
+                assertThat(single.getMessage()).isEqualTo("COMPUTE_PARAM_KEY_INVALID");
+                assertThat(batch.getCode()).isNotZero();
+                assertThat(configFacade.values).isEqualTo(before);
+            }
+        }
+        verify(outboxService,never()).publish(anyString(),anyString(),anyString(),any());
     }
 
     @Test

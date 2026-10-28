@@ -21,10 +21,7 @@ public final class ComputeConfigRegistry {
     public static String downloadKey(String field) { return PARAM_PREFIX + "download." + field; }
 
     public record FlagDef(String key, String label, String desc, boolean defaultOn, String frontendEffect) {}
-    public static final List<FlagDef> FLAGS = List.of(
-        new FlagDef("computeShareEnabled", "电脑共享算力入口",
-            "控制客户端『电脑共享算力』PC 弱入口与下载页的显隐。", false,
-            "开启后客户端显现电脑算力 PC 入口与下载页;关闭则隐藏。"));
+    public static final List<FlagDef> FLAGS = List.of();
 
     public record CoeffDef(String key, String label, String defaultVal, String unit, String desc, String frontendEffect) {}
     public static final List<CoeffDef> COEFFICIENTS = List.of(
@@ -40,9 +37,12 @@ public final class ComputeConfigRegistry {
         new YieldDef("nexPerUsdt", "NEX 折算系数", "166.67", "NEX / USDT"));
 
     public record GpuTierDef(String id, String label, String desc, String defaultModel, String defaultTops, List<String> keywords) {}
-    public static final List<String> GPU_TIER_IDS = List.of("G1", "G2", "G3", "G4", "G5", "G6");
+    public static final List<String> GPU_TIER_IDS = List.of();
     public static final List<String> KEYWORD_SLOTS = List.of("keyword1", "keyword2", "keyword3", "keyword4", "keyword5", "keyword6");
-    public static final List<GpuTierDef> GPU_TIERS = List.of(
+    public static final List<GpuTierDef> GPU_TIERS = List.of();
+    // Fixed, read-only metadata for installed clients that require all six historical tiers.
+    // These are not editable parameters and never authorize device enrollment.
+    public static final List<GpuTierDef> LEGACY_WIRE_GPU_TIERS = List.of(
         new GpuTierDef("G1", "入门显卡", "集显或旧独显,只放轻量任务。", "Intel Iris Xe", "40", List.of("gtx 1650", "gtx 1060", "gtx 1050", "integrated", "iris xe", "vega")),
         new GpuTierDef("G2", "标准显卡", "主流入门独显,也是未知型号的保守兜底档。", "NVIDIA RTX 3060", "90", List.of("rtx 3060", "rtx 3050", "rtx 2060", "gtx 1080", "rx 6600")),
         new GpuTierDef("G3", "进阶显卡", "中端独显,可承接更长的推理任务。", "NVIDIA RTX 4060", "160", List.of("rtx 4060 ti", "rtx 4060", "rtx 3070", "rx 7600", "rx 6700")),
@@ -50,13 +50,9 @@ public final class ComputeConfigRegistry {
         new GpuTierDef("G5", "超高阶显卡", "高端工作站或旗舰上一代独显。", "NVIDIA RTX 4080", "460", List.of("rtx 5080", "rtx 4080", "rx 7900", "a5000")),
         new GpuTierDef("G6", "旗舰显卡", "旗舰显卡或数据中心卡,仅承接高收益任务。", "NVIDIA RTX 4090", "660", List.of("rtx 5090", "rtx 4090", "h100", "a100", "l40")));
 
+
     public record DownloadFieldDef(String field, String label, String defaultVal) {}
-    public static final List<DownloadFieldDef> DOWNLOAD_FIELDS = List.of(
-        new DownloadFieldDef("url", "客户端下载地址", ""),
-        new DownloadFieldDef("zhTitle", "中文标题", "电脑显卡算力共享"),
-        new DownloadFieldDef("zhGuide", "中文说明", "下载桌面客户端,使用同一账号登录,连接后电脑会出现在设备仓库中。"),
-        new DownloadFieldDef("enTitle", "英文标题", "Computer GPU share"),
-        new DownloadFieldDef("enGuide", "英文说明", "Download the desktop client, sign in with the same account, and the computer appears in device inventory after connection."));
+    public static final List<DownloadFieldDef> DOWNLOAD_FIELDS = List.of();
 
     private static final List<String> ALL_PARAM_KEYS = List.copyOf(exactParamKeys());
     private static final Set<String> EXACT_PARAM_KEYS = Set.copyOf(ALL_PARAM_KEYS);
@@ -67,7 +63,7 @@ public final class ComputeConfigRegistry {
     }
 
     public static boolean isFlagParamKey(String key) {
-        return flagKey("computeShareEnabled").equals(key) || phoneBindingKey("allowReplacement").equals(key);
+        return phoneBindingKey("allowReplacement").equals(key);
     }
 
     public static boolean isCoefficientParamKey(String key) {

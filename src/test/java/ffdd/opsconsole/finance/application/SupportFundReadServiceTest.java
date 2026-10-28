@@ -368,7 +368,7 @@ class SupportFundReadServiceTest {
         audit.put("action","K1_EARNINGS_MANUALLY_RELEASED");audit.put("result","SUCCESS");audit.put("isDeleted",false);
         audit.put("detailJson",json.writeValueAsString(Map.of("userId",1L,"before","bonus_locked","after","withdrawable","reason","test release authority","coverageAtSubmit",BigDecimal.ONE,"coverageRedline",BigDecimal.ONE)));
         earningAudits.add(audit);when(sourceMapper.fundReleaseAudit("trial-USDT","K1_EARNINGS_MANUALLY_RELEASED")).thenReturn(audit);
-        source.release(before,original,"MANUAL",null);readOnly();ready();assertEquals(0,read().customers().get(0).usdt().signum());assertTrue(read().changes().isEmpty());
+        source.release(before,original);readOnly();ready();assertEquals(0,read().customers().get(0).usdt().signum());assertTrue(read().changes().isEmpty());
     }
     @Test void actualGenesisConsumptionDeduplicatesRechargeInCompleteReader() throws Exception {
         deposit();genesisPurchase();var result=read();ready();
@@ -527,7 +527,7 @@ class SupportFundReadServiceTest {
             audit.put("action","K1_EARNINGS_MANUALLY_RELEASED");audit.put("result","SUCCESS");audit.put("isDeleted",false);
             audit.put("detailJson",json.writeValueAsString(Map.of("userId",1L,"before",bucket,"after","withdrawable","reason","test release authority","coverageAtSubmit",BigDecimal.ONE,"coverageRedline",BigDecimal.ONE)));
             earningAudits.add(audit);when(sourceMapper.fundReleaseAudit(no,"K1_EARNINGS_MANUALLY_RELEASED")).thenReturn(audit);
-            source.release(before,original,"MANUAL",null);
+            source.release(before,original);
         }
         readOnly();
     }

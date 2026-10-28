@@ -73,7 +73,7 @@ public final class PromotionRuntimeHarness {
         audit=new AuditLogService(session.getMapper(AuditLogMapper.class),new AuditLogSanitizer(json),new ApplicationNameProperties(),new AuditProperties(),session.getMapper(AdminMapper.class),a2);
         var idemMapper=session.getMapper(AdminIdempotencyRecordMapper.class);var expiry=proxy(new AdminIdempotencyExpiryTransitionExecutor(idemMapper));
         idempotency=new AdminIdempotencyService(proxy(new AdminIdempotencyTransactionExecutor(idemMapper,json,expiry)),Clock.systemUTC());
-        earningsPolicy=new RiskReleaseParamsService(config,idempotency,audit,null,false);
+        earningsPolicy=new RiskReleaseParamsService(config,idempotency,audit,null);
         natives=new PromotionNativeContractResolver(db,config,earningsPolicy,a2,new MockEnvironment().withProperty("spring.profiles.active","test"),30);
         validator=new PromotionContractValidator(json);resolver=new PromotionPolicyResolver(db,validator,natives);policies=new PromotionPolicyService(db,validator,resolver,natives);
         admin=new PromotionAdminService(db,validator,resolver,policies,natives,null,null,null,null,idempotency,audit,a2,null,org.mockito.Mockito.mock(PromotionBannerService.class),org.mockito.Mockito.mock(PromotionAccountSampleService.class));

@@ -39,9 +39,6 @@ nexion:
   compute-task:
     executor:
       mode: PRODUCTION
-  janus:
-    executor:
-      mode: PRODUCTION
   geo-block:
     allow-loopback-without-country: true
   analytics:

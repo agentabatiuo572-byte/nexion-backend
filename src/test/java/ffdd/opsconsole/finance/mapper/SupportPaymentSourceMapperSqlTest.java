@@ -50,7 +50,9 @@ class SupportPaymentSourceMapperSqlTest {
     }
     @Test void trialFundReadsActualClaimRewardsAndProductionIdentityWithCurrentSharedLocks() {
         String sql=bound("trialFundSource",Map.of("customerId",7L,"claimNo","claim-1"));
-        assertThat(sql).contains("c.remainder_usdt remainderUsdt","c.shadow_accrued_nex shadowNex","d.source_environment deviceEnvironment",
+        assertThat(sql).contains("c.remainder_usdt remainderUsdt",
+            // FEAT-TRIAL05: credited UVT total; rows settled before it fall back to the real accrual.
+            "COALESCE(c.settled_trial_nex,c.shadow_accrued_nex) shadowNex","d.source_environment deviceEnvironment",
             "d.id=c.user_device_id","o.order_no=d.source_order_no","u.id=c.user_id","c.user_id=? AND c.claim_no=? FOR SHARE OF c,d,o,u")
             .doesNotContain("FOR UPDATE","LIMIT","${");
     }

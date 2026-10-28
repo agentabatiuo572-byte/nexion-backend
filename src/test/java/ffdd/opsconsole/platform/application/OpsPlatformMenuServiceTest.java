@@ -29,6 +29,26 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsPlatformMenuServiceTest {
+    @Test void retiredMenuCannotBeRecreatedOrAssignedToAnOrdinaryMenu() {
+        var mapper=mock(AdminMenuMapper.class);
+        var service=new OpsPlatformMenuService(mapper,mock(AdminRoleMenuMapper.class),
+                mock(AdminPermissionMapper.class),mock(AuditLogService.class),passThroughIdempotency());
+        var auth=new UsernamePasswordAuthenticationToken("41",null,List.of());
+        auth.setDetails(Map.of("subjectType","ADMIN","username","alice.admin"));
+        SecurityContextHolder.getContext().setAuthentication(auth);
+        for (String code:List.of("K6","MENU_RISK_K6","Z9")) {
+            var created=service.createNode("retired-"+code,new PlatformMenuNodeCreateRequest(code,"Retired","Retired",null,
+                    "/risk/janus-c2",null,99,"retirement regression","alice.admin"));
+            assertThat(created.getCode()).isEqualTo(410);
+        }
+        var ordinary=new AdminMenuEntity();ordinary.setId(91L);ordinary.setMenuCode("Z9");ordinary.setStatus(1);ordinary.setIsDeleted(0);
+        when(mapper.selectActiveForUpdate(91L)).thenReturn(ordinary);
+        var updated=service.updateNode(91L,"retired-update",new PlatformMenuNodeUpdateRequest(null,null,
+                "/risk/janus-c2",null,null,null,"retirement regression","alice.admin"));
+        assertThat(updated.getCode()).isEqualTo(410);
+        verify(mapper,never()).insert(any(AdminMenuEntity.class));
+        verify(mapper,never()).updateById(any(AdminMenuEntity.class));
+    }
     @AfterEach
     void clearSecurityContext() {
         SecurityContextHolder.clearContext();

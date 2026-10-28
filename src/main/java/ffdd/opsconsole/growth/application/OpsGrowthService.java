@@ -157,7 +157,8 @@ public class OpsGrowthService implements AuditReplayable {
             "autoPushDelayMs",
             "autoPushCooldownHours",
             "autoPushMaxPerSession",
-            "seatsLeftToday");
+            "seatsLeftToday",
+            "earlyPurchaseDiscountUSD");
     private static final Set<String> TRIAL_TERMINAL_STATES = Set.of("cancelled", "redeemed", "failed");
     private static final Set<String> EVENT_STATES = Set.of("upcoming", "ongoing", "ended");
     private static final Set<String> EVENT_KINDS = Set.of(
@@ -3612,6 +3613,14 @@ public class OpsGrowthService implements AuditReplayable {
         if (Set.of("autoChargeAtEnd", "phaseOpen", "autoPushEnabled").contains(key)) {
             return normalizeTrialAutoCharge(value);
         }
+        if ("earlyPurchaseDiscountUSD".equals(key)) {
+            // A fixed USDT amount off what is left to pay; 0 switches the early-conversion quote off.
+            BigDecimal amount = parseDecimal(value.replace("$", "").replace(",", ""));
+            if (amount.stripTrailingZeros().scale() > 2) {
+                throw new IllegalArgumentException("TRIAL_EARLY_DISCOUNT_SCALE_INVALID");
+            }
+            return bounded(amount, BigDecimal.ZERO, new BigDecimal("100")).stripTrailingZeros().toPlainString();
+        }
         if (Set.of("discountRate").contains(key)) {
             return bounded(parseDecimal(value.replace("%", "")), BigDecimal.ZERO, new BigDecimal("100")).stripTrailingZeros().toPlainString();
         }
@@ -3837,7 +3846,8 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private String trialParamValueType(String key) {
-        return Set.of("discountRate", "discountCapUSD", "trialOffsetCapUSD", "highQualityThresholdUSD", "chargeFailRate",
+        return Set.of("discountRate", "discountCapUSD", "trialOffsetCapUSD", "earlyPurchaseDiscountUSD",
+                "highQualityThresholdUSD", "chargeFailRate",
                 "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX", "autoPushDelayMs",
                 "autoPushCooldownHours", "autoPushMaxPerSession", "seatsLeftToday").contains(key)
                 || isTrialDayParam(key) ? "NUMBER" : "STRING";
