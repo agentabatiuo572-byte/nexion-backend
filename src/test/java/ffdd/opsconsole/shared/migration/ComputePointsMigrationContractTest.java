@@ -15,16 +15,18 @@ class ComputePointsMigrationContractTest {
     private static final String MIGRATION = "20261028_compute_points.sql";
 
     @Test
-    void migrationIsTheLastStartupMigration() throws Exception {
+    void migrationRunsInTheStartupChainAfterTheF5CommissionKeySplit() throws Exception {
         String installer = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"), StandardCharsets.UTF_8);
         var matcher = Pattern.compile("\"scripts\\\\migrations\\\\([^\"]+\\.sql)\"").matcher(installer);
         List<String> migrations = new ArrayList<>();
         while (matcher.find()) migrations.add(matcher.group(1));
-        assertThat(migrations).last().isEqualTo(MIGRATION);
+        assertThat(migrations).containsOnlyOnce(MIGRATION);
+        assertThat(migrations.indexOf(MIGRATION))
+                .isGreaterThan(migrations.indexOf("20261028_f5_commission_key_split.sql"));
 
         List<String> post = Files.readAllLines(Path.of("scripts/fresh_db/post.txt"), StandardCharsets.UTF_8).stream()
                 .map(String::trim).filter(line -> !line.isEmpty() && !line.startsWith("#")).toList();
-        assertThat(post).last().isEqualTo("migrations/" + MIGRATION);
+        assertThat(post).contains("migrations/" + MIGRATION);
     }
 
     @Test
