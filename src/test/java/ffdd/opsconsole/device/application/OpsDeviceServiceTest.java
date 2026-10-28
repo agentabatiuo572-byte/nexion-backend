@@ -1167,6 +1167,25 @@ class OpsDeviceServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(catalogRepository.lastSkuRequest.purchaseGate()).isEqualTo(request.purchaseGate());
+        assertThat(catalogRepository.lastSkuRequest.purchaseGate().activeDirectMin()).isZero();
+        assertThat(catalogRepository.lastSkuRequest.purchaseGate().teamComputePointsMin()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(catalogRepository.lastSkuRequest.purchaseGate().quotaCap()).isNull();
+    }
+
+    @Test
+    void createSkuStillRejectsNegativeMinimumsAndZeroQuotaCap() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        var invalidGates = java.util.List.of(
+                new ffdd.opsconsole.device.domain.DevicePurchaseGateView(-1, null, null, "all", null, null, null, true),
+                new ffdd.opsconsole.device.domain.DevicePurchaseGateView(null, -1, null, "all", null, null, null, true),
+                new ffdd.opsconsole.device.domain.DevicePurchaseGateView(null, null, BigDecimal.ONE.negate(), "all", null, null, null, true),
+                new ffdd.opsconsole.device.domain.DevicePurchaseGateView(null, null, null, "all", 0, 0, "lifetime", true));
+        for (int index = 0; index < invalidGates.size(); index++) {
+            var result = service.createSku("idem-sku-gate-invalid-" + index,
+                    withPurchaseGate(skuRequest("stellarbox-legacy", "Gate SKU", "pending"), invalidGates.get(index)));
+            assertThat(result.getMessage()).isEqualTo("SKU_PURCHASE_GATE_INVALID");
+        }
+        assertThat(catalogRepository.lastSkuRequest).isNull();
     }
 
     @Test
