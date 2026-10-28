@@ -135,6 +135,21 @@ class AppUserSecurityServiceTest {
         assertThat(state.passwordChangedAt()).isEqualTo(now.minusDays(3));
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"  ", "NexGrid H5", "Nexion H5", "UVEL H5", "My NexGrid phone"})
+    void overviewReturnsTheStoredSessionLabelWithoutBrandAliases(String deviceName) {
+        var current = session("current", deviceName, "203.0.113.8", LocalDateTime.now());
+        when(sessions.currentUserSession(42L, "current", 30)).thenReturn(current);
+        when(sessions.pageOtherUserSessions(42L, "current", 30, null)).thenReturn(List.of());
+
+        var state = service.overview(42L, "current");
+
+        assertThat(state.sessions().get(0).deviceName()).isEqualTo(
+                org.springframework.util.StringUtils.hasText(deviceName) ? deviceName.trim() : "UVEL App / H5");
+        assertThat(current.getDeviceName()).isEqualTo(deviceName);
+    }
+
     @Test
     void rotatedBearerStillIdentifiesItsLiveSuccessorAsCurrent() {
         var successor = session("successor", "NexGrid H5", "203.0.113.8", LocalDateTime.now());
