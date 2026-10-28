@@ -116,12 +116,6 @@ public class SupportOwnershipService {
                 || groups.readableAgent(new ReadScope(actor,ReadMode.MANAGED,null,null),agent)==1;
     }
 
-    @Transactional
-    public void readTicket(String no) {
-        Long customer=ticketCustomer(no);
-        if(!canReadCurrent(actorId(),customer)) throw new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND");
-    }
-
     /** One actually permitted object mode; it does not change a collection's chosen mode. */
     @Transactional
     public ReadScope customerQueryScope(Long customer) {
@@ -282,5 +276,4 @@ public class SupportOwnershipService {
     }
 
     public void writeConversation(String no, boolean lock) { requireWriter(conversationCustomer(no), lock); }
-    public void writeTicket(String no, boolean lock) { requireWriter(ticketCustomer(no), lock); }
 }

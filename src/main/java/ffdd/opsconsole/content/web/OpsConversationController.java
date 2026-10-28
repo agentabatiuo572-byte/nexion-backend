@@ -7,14 +7,12 @@ import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.domain.ContentConversationDetail;
 import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationCustomerProfile;
-import ffdd.opsconsole.content.domain.ConversationTicketResult;
 import ffdd.opsconsole.content.dto.ConversationArchiveRequest;
 import ffdd.opsconsole.content.dto.ConversationArchiveBatchRequest;
 import ffdd.opsconsole.content.dto.ConversationInitiateRequest;
 import ffdd.opsconsole.content.dto.ConversationQueryRequest;
 import ffdd.opsconsole.content.dto.ConversationReplyRequest;
 import ffdd.opsconsole.content.dto.ConversationStatusRequest;
-import ffdd.opsconsole.content.dto.ConversationTicketRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferDecisionRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferRequest;
 import ffdd.opsconsole.content.dto.CustomerNoteRemoveRequest;
@@ -216,26 +214,6 @@ public class OpsConversationController {
         return executeCommand("M3_CONVERSATION_ARCHIVE", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
             ApiResult<ContentConversationView> result = conversationService.archive(conversationNo, idempotencyKey, request);
             publishStatus(result.getData(), "ARCHIVED");
-            return result;
-        });
-    }
-
-    // 会话转工单 — M3 即时会话台 写
-    @PreAuthorize("hasAuthority('service_m3_write')")
-    @PostMapping("/{conversationNo}/ticket")
-    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class,
-            isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
-    public ApiResult<ConversationTicketResult> convertToTicket(
-            @PathVariable String conversationNo,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody ConversationTicketRequest request) {
-        ownership.writeConversation(conversationNo,true);
-        return executeCommand("M3_CONVERSATION_TO_TICKET", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
-            ApiResult<ConversationTicketResult> result = conversationService.convertToTicket(conversationNo, idempotencyKey, request);
-            if (result.getData() != null) publishAfterCommit(ConversationMessageEvent.builder()
-                    .conversationNo(conversationNo).eventType(ConversationMessageEvent.EventType.STATUS)
-                    .senderType("SYSTEM").senderName("系统").body("CONVERTED_TO_TICKET")
-                    .ts(LocalDateTime.now()).build());
             return result;
         });
     }

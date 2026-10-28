@@ -144,7 +144,7 @@ class AppConversationUserClearTest {
 
     @Test void oldAcknowledgement20ReadbackHydratesCurrent30AndClearReadbackKeepsOriginalBoundary() throws Exception {
         var records = mock(AdminIdempotencyRecordMapper.class);
-        var app = new AppSupportService(mock(SupportTicketRepository.class), conversations, mock(SupportKnowledgeRepository.class),
+        var app = new AppSupportService(conversations, mock(SupportKnowledgeRepository.class),
                 idempotency, audit, events, Clock.systemUTC(), mock(ProductionSupportPathGuard.class), records, json,
                 mock(SupportAgentRepository.class), mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), ownership,
                 mock(SupportHumanMessageService.class), visibility, org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class));

@@ -16,7 +16,6 @@ import ffdd.opsconsole.content.domain.ConversationRepository;
 import ffdd.opsconsole.content.domain.CustomerProfileRepository;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
-import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.infrastructure.MybatisConversationRepository;
 import ffdd.opsconsole.content.mapper.ConversationMapper;
 import ffdd.opsconsole.content.mapper.ConversationMessageMapper;
@@ -611,11 +610,6 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
         }
 
         @Bean
-        SupportTicketRepository supportTicketRepository() {
-            return mock(SupportTicketRepository.class);
-        }
-
-        @Bean
         SupportKnowledgeRepository supportKnowledgeRepository() {
             return mock(SupportKnowledgeRepository.class);
         }
@@ -682,7 +676,6 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
 
         @Bean
         AppSupportService appSupportService(
-                SupportTicketRepository tickets,
                 ConversationRepository conversations,
                 SupportKnowledgeRepository knowledge,
                 AdminIdempotencyService idempotency,
@@ -694,7 +687,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
                 ObjectMapper json,
                 SupportAgentRepository agents,
                 PlatformConfigFacade config) {
-            return new AppSupportService(tickets, conversations, knowledge, idempotency, audit, events, clock,
+            return new AppSupportService(conversations, knowledge, idempotency, audit, events, clock,
                     guard, idempotencyRecords, json, agents, config, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(),
                     ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class));
         }
@@ -702,7 +695,6 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
         @Bean
         OpsConversationService opsConversationService(
                 ConversationRepository conversations,
-                SupportTicketRepository tickets,
                 ffdd.opsconsole.content.application.OpsSupportAgentService agents,
                 PlatformConfigFacade config,
                 AuditLogService audit,
@@ -714,7 +706,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
                 OpsRiskService risks,
                 CustomerProfileRepository profiles,
                 ProductionSupportPathGuard guard) {
-            return new OpsConversationService(conversations, tickets, agents, config, audit, clock, seeds,
+            return new OpsConversationService(conversations, agents, config, audit, clock, seeds,
                     users, finance, devices, risks, profiles, guard, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class), mock(ffdd.opsconsole.content.application.SupportCustomerProfileService.class));
         }
 
@@ -725,8 +717,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
 
         @Bean
         AppSupportController appSupportController(AppSupportService service, ProductionSupportPathGuard guard) {
-            return new AppSupportController(service, guard,
-                    mock(ffdd.opsconsole.content.application.SupportTicketCreationPolicyService.class));
+            return new AppSupportController(service, guard);
         }
 
         @Bean

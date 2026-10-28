@@ -12,7 +12,6 @@ import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.domain.SupportAgentRepository.SupportOperatorRecord;
 import ffdd.opsconsole.content.domain.SupportAgentRepository.SupportOperatorScope;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
-import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentBatchAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentProfileUpdateRequest;
@@ -87,11 +86,6 @@ public class OpsSupportAgentService {
                 publicPositions(),
                 List.of("advisor"),
                 List.of("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment")));
-    }
-
-    /** Individual tickets inherit their owner's formal advisor binding; independent assignment is retired. */
-    public ApiResult<List<SupportTicketAssigneeCandidateView>> ticketAssigneeCandidates() {
-        return ApiResult.ok(List.of());
     }
 
     @Transactional
@@ -251,8 +245,8 @@ public class OpsSupportAgentService {
     public AdvisorRoutingDecision routeAdvisorForUser(Long userId) {
         var advisor=repository.findActiveDedicatedAdvisor(userId).orElse(null);
         return advisor==null
-                ? new AdvisorRoutingDecision("unassigned", "binding-pool", "待分配", null, false, false, "UNBOUND")
-                : new AdvisorRoutingDecision("agent", String.valueOf(advisor.adminId()), advisor.name(), advisor.adminId(), true, false, "CURRENT_ASSIGNMENT");
+                ? new AdvisorRoutingDecision("unassigned", "binding-pool", "待分配", null, false, "UNBOUND")
+                : new AdvisorRoutingDecision("agent", String.valueOf(advisor.adminId()), advisor.name(), advisor.adminId(), true, "CURRENT_ASSIGNMENT");
     }
 
     @Transactional

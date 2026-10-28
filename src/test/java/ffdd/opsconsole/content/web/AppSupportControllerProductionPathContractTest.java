@@ -11,12 +11,11 @@ class AppSupportControllerProductionPathContractTest {
     void everySharedAppSupportEntryPassesTheProductionPathGuardBeforeTheService() throws Exception {
         String source = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/web/AppSupportController.java"));
         String[] guardedServiceCalls = new String[] {
-                "service.tickets", "service.ticketCursor", "service.ticket", "service.createTicket", "service.replyTicket",
-                "service.closeTicket", "service.markTicketRead", "service.conversations", "service.conversationCategories",
+                "service.conversations", "service.conversationCategories",
                 "service.conversationCursor", "service.conversation",
                 "service.markConversationRead", "service.startConversation", "service.replyConversation",
-                "service.convertConversationToTicket", "service.faqs", "service.faqPage", "service.slaTargets",
-                "service.commandResult", "service.advisor", "creationPolicy.policy"};
+                "service.faqs", "service.faqPage",
+                "service.commandResult", "service.advisor"};
         assertThat(occurrences(source, "guarded(userId)")).isEqualTo(guardedServiceCalls.length);
         for (String serviceCall : guardedServiceCalls) {
             if (serviceCall.equals("service.advisor")) {
@@ -40,9 +39,9 @@ class AppSupportControllerProductionPathContractTest {
         String source = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/web/AppSupportController.java"));
 
         assertThat(source).contains("@GetMapping(\"/conversation-categories\")", "service.conversationCategories(userId)",
-                "@GetMapping(\"/tickets/creation-policy\")", "creationPolicy.policy(userId)",
-                "@GetMapping(\"/sla-targets\")", "service.slaTargets(userId)",
                 "@GetMapping(\"/commands/{key}\")", "service.commandResult(userId, key)");
+        // Ticket admission policy and SLA targets are retired and answered 410 by RetiredSupportTickets.
+        assertThat(source).doesNotContain("/tickets", "/sla-targets", "/ticket\"");
         assertThat(source).doesNotContain("@PostMapping(\"/commands")
                 .doesNotContain("@PutMapping(\"/commands")
                 .doesNotContain("@DeleteMapping(\"/commands");

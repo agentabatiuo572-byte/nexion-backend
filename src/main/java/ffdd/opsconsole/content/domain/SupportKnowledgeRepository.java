@@ -68,9 +68,4 @@ public interface SupportKnowledgeRepository {
     }
 
     void upsertSla(String category, SupportSlaUpdateRequest request, LocalDateTime now);
-
-    default boolean updateSlaCas(String category, SupportSlaUpdateRequest request, Long expectedVersion, LocalDateTime now) {
-        upsertSla(category, request, now);
-        return true;
-    }
 }

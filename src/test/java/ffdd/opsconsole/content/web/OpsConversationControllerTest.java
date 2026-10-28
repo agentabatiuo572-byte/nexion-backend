@@ -15,13 +15,11 @@ import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.domain.ContentConversationDetail;
 import ffdd.opsconsole.content.domain.ContentConversationMessageView;
 import ffdd.opsconsole.content.domain.ContentConversationView;
-import ffdd.opsconsole.content.domain.ConversationTicketResult;
 import ffdd.opsconsole.content.dto.ConversationArchiveRequest;
 import ffdd.opsconsole.content.dto.ConversationArchiveBatchRequest;
 import ffdd.opsconsole.content.dto.ConversationInitiateRequest;
 import ffdd.opsconsole.content.dto.ConversationReplyRequest;
 import ffdd.opsconsole.content.dto.ConversationStatusRequest;
-import ffdd.opsconsole.content.dto.ConversationTicketRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferDecisionRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferRequest;
 import ffdd.opsconsole.content.dto.CustomerNoteRemoveRequest;
@@ -134,27 +132,6 @@ class OpsConversationControllerTest {
     }
 
     @Test
-    void ticketConversionEventAlsoPublishesOnlyAfterCommit() {
-        ConversationTicketRequest request = new ConversationTicketRequest(
-                "account", "HIGH", "Need follow-up", 11L, "Tessa", "escalate to ticket", "agent-1");
-        when(conversationService.convertToTicket("CV-1", "idem-ticket-commit", request))
-                .thenReturn(ApiResult.ok(new ConversationTicketResult(conversation("CV-1", "hello"), null)));
-
-        TransactionSynchronizationManager.initSynchronization();
-        try {
-            controller.convertToTicket("CV-1", "idem-ticket-commit", request);
-
-            org.mockito.Mockito.verifyNoInteractions(eventPublisher);
-            TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
-            var event = org.mockito.ArgumentCaptor.forClass(ConversationMessageEvent.class);
-            verify(eventPublisher).publishEvent(event.capture());
-            assertThat(event.getValue().getEventType()).isEqualTo(ConversationMessageEvent.EventType.STATUS);
-        } finally {
-            TransactionSynchronizationManager.clearSynchronization();
-        }
-    }
-
-    @Test
     void equalBodyRepliesKeepTheirOwnPersistedIdsWhenPublicationInterleaves() {
         ConversationReplyRequest request = new ConversationReplyRequest("hello", "agent reply", "agent-1");
         ContentConversationView view = conversation("CV-1", "hello");
@@ -215,17 +192,6 @@ class OpsConversationControllerTest {
         assertThat(controller.waitTransfer("CV-1", "idem-i9-wait", request).getCode()).isZero();
 
         verify(conversationService).waitTransfer("CV-1", "idem-i9-wait", request);
-    }
-
-    @Test
-    void convertToTicketDelegatesWithIdempotencyHeader() {
-        ConversationTicketRequest request =
-                new ConversationTicketRequest("account", "HIGH", "Need follow-up", 11L, "Tessa", "escalate to ticket", "agent-1");
-        when(conversationService.convertToTicket("CV-1", "idem-i9-ticket", request)).thenReturn(ApiResult.ok(null));
-
-        assertThat(controller.convertToTicket("CV-1", "idem-i9-ticket", request).getCode()).isZero();
-
-        verify(conversationService).convertToTicket("CV-1", "idem-i9-ticket", request);
     }
 
     @Test
