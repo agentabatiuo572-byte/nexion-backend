@@ -667,7 +667,7 @@ class DirectReferralMySqlRuntimeTest {
         when(commissions.commissionEvents(anyInt())).thenAnswer(call->jdbc.queryForList("SELECT CONCAT('CM-',id) id,commission_type kind,CONCAT('U',user_id) user,CASE WHEN currency='NEX' THEN amount_nex ELSE amount_usdt END amount,currency,status rawStatus,version FROM nx_commission_event WHERE order_no LIKE ? ORDER BY id LIMIT 100",marker+"%"));
         when(commissions.recordCommissionOperation(anyString(),anyString(),anyString(),anyLong(),anyString(),anyString())).thenReturn(true);
         var permissions=mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class);
-        when(permissions.getPermissionCodes(anyLong())).thenReturn(Set.of("network_f5_commission_dispose","network_f5_commission_reject"));
+        when(permissions.getPermissionCodes(anyLong())).thenReturn(Set.of("network_f5_commission_freeze","network_f5_commission_release","network_f5_commission_reverse"));
         ops=proxy(new OpsTeamService(platform,coverage,ledger,audit,ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),mock(ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository.class),commissions,permissions,mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),mock(VRankPromotionEngine.class),mock(VRankRewardDispatcher.class),outbox,mock(LeadershipPoolService.class),f5,idempotency,null,provider,mock(VRankSkuFulfillmentService.class), null));
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(1L,null,List.of()));
         long base=900000000L+System.currentTimeMillis()%100000000;a=base;b=base+1;c=base+2;d=base+3;

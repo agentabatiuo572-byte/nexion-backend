@@ -80,7 +80,7 @@ public class F5CommissionController {
     }
 
     @PostMapping("/commissions/{commissionId}/reverse")
-    @PreAuthorize("hasAuthority('network_f5_commission_reject')")
+    @PreAuthorize("hasAuthority('network_f5_commission_reverse')")
     public ApiResult<Map<String, Object>> reverse(
             @PathVariable String commissionId,
             @RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String idempotencyKey,
@@ -89,7 +89,7 @@ public class F5CommissionController {
     }
 
     @PostMapping("/commissions/reissue")
-    @PreAuthorize("hasAuthority('network_f5_commission_dispose')")
+    @PreAuthorize("hasAuthority('network_f5_commission_reissue')")
     public ApiResult<Map<String, Object>> reissue(
             @RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String idempotencyKey,
             @RequestBody F5CommissionReissueRequest request) {
@@ -97,7 +97,7 @@ public class F5CommissionController {
     }
 
     @PostMapping("/users/{userId}/commission/suspend")
-    @PreAuthorize("hasAuthority('network_f5_commission_reject')")
+    @PreAuthorize("hasAuthority('network_f5_commission_suspend')")
     public ApiResult<Map<String, Object>> suspend(
             @PathVariable Long userId,
             @RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String idempotencyKey,
