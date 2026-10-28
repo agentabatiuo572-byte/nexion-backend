@@ -16,7 +16,8 @@ class StorefrontPurchaseGatePolicyTest {
     void acceptsNormalSkuDtoNullOptionalsWithoutLosingRankEnforcement() throws Exception {
         String gate = new ObjectMapper().writeValueAsString(
                 new DevicePurchaseGateView(2, null, null, "all", null, null, null, true));
-        assertThat(gate).contains("\"activeDirectMin\":null", "\"quotaCap\":null", "\"quotaPeriod\":null");
+        assertThat(gate).contains("\"activeDirectMin\":0", "\"teamComputePointsMin\":0",
+                "\"quotaCap\":null", "\"quotaPeriod\":null");
         var qualified = new StorefrontPurchaseGatePolicy.Facts(5, 0, BigDecimal.ZERO);
         assertThat(policy.evaluate(gate, qualified)).isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
         assertThat(policy.project(gate, qualified).conditions()).singleElement()
@@ -30,6 +31,68 @@ class StorefrontPurchaseGatePolicyTest {
                 .isEqualTo("PURCHASE_GATE_NOT_MET");
         assertThat(policy.evaluate(gate, null).code()).isEqualTo("PURCHASE_GATE_FACTS_UNAVAILABLE");
         assertThat(policy.hasQuota(gate)).isFalse();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"all", "either"})
+    void zeroMinimumsCannotBypassPositiveRankAndDoNotAppearInProjection(String mode) {
+        String gate = "{\"mode\":\"" + mode + "\",\"enforce\":true,"
+                + "\"rankMin\":2,\"activeDirectMin\":0,\"teamComputePointsMin\":0}";
+        var below = new StorefrontPurchaseGatePolicy.Facts(1, 0, BigDecimal.ZERO);
+        var qualified = new StorefrontPurchaseGatePolicy.Facts(2, 0, BigDecimal.ZERO);
+        assertThat(policy.evaluate(gate, below).code()).isEqualTo("PURCHASE_GATE_NOT_MET");
+        assertThat(policy.evaluate(gate, qualified)).isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
+        assertThat(policy.evaluate(gate, null).code()).isEqualTo("PURCHASE_GATE_FACTS_UNAVAILABLE");
+        assertThat(policy.project(gate, below).conditions()).singleElement().satisfies(condition -> {
+            assertThat(condition.kind()).isEqualTo("rank");
+            assertThat(condition.met()).isFalse();
+        });
+        assertThat(policy.project(gate, null).decision().code()).isEqualTo("PURCHASE_GATE_FACTS_UNAVAILABLE");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"all", "either"})
+    void zeroMissingAndLegacyNullMinimumsNeedNoFactsButRetainQuota(String mode) {
+        String controls = "{\"mode\":\"" + mode + "\",\"enforce\":true";
+        for (String fields : new String[]{"", ",\"rankMin\":0,\"activeDirectMin\":0,\"teamComputePointsMin\":0",
+                ",\"rankMin\":null,\"activeDirectMin\":null,\"teamComputePointsMin\":null"}) {
+            String gate = controls + fields + "}";
+            assertThat(policy.evaluate(gate, null)).isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
+            assertThat(policy.project(gate, null).conditions()).isEmpty();
+            assertThat(policy.project(gate, null).decision()).isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
+            assertThat(policy.hasQuota(gate)).isFalse();
+            String available = controls + fields + ",\"quotaCap\":2,\"quotaSold\":0,\"quotaPeriod\":\"lifetime\"}";
+            assertThat(policy.evaluate(available, null)).isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
+            String soldOut = controls + fields + ",\"quotaCap\":2,\"quotaSold\":2,\"quotaPeriod\":\"lifetime\"}";
+            assertThat(policy.hasQuota(soldOut)).isTrue();
+            assertThat(policy.evaluate(soldOut, null).code()).isEqualTo("PURCHASE_GATE_SOLD_OUT");
+            assertThat(policy.project(soldOut, null).conditions()).singleElement()
+                    .satisfies(condition -> assertThat(condition.kind()).isEqualTo("lifetimeQuota"));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", ",\"rankMin\":null,\"activeDirectMin\":null,\"teamComputePointsMin\":null"})
+    void dtoDefaultsOnlyMissingMinimumsToZeroAndPreservesUnlimitedQuota(String fields) throws Exception {
+        var json = new ObjectMapper();
+        var dto = json.readValue("{\"mode\":\"all\",\"enforce\":true" + fields + "}", DevicePurchaseGateView.class);
+        assertThat(dto.rankMin()).isZero();
+        assertThat(dto.activeDirectMin()).isZero();
+        assertThat(dto.teamComputePointsMin()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(dto.quotaCap()).isNull();
+        assertThat(dto.quotaSold()).isNull();
+        assertThat(json.writeValueAsString(dto)).contains("\"rankMin\":0", "\"activeDirectMin\":0",
+                "\"teamComputePointsMin\":0", "\"quotaCap\":null", "\"quotaSold\":null");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"all", "either"})
+    void legacyNullableMinimumsStillEnforcePositiveThreshold(String mode) {
+        String gate = "{\"mode\":\"" + mode + "\",\"enforce\":true,"
+                + "\"rankMin\":2,\"activeDirectMin\":null,\"teamComputePointsMin\":null}";
+        assertThat(policy.evaluate(gate, new StorefrontPurchaseGatePolicy.Facts(1, 0, BigDecimal.ZERO)).code())
+                .isEqualTo("PURCHASE_GATE_NOT_MET");
+        assertThat(policy.project(gate, null).decision().code()).isEqualTo("PURCHASE_GATE_FACTS_UNAVAILABLE");
     }
 
     @Test

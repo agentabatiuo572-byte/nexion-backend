@@ -42,20 +42,23 @@ public class StorefrontPurchaseGatePolicy {
             if (cap != null && sold != null && sold >= cap) {
                 return Decision.closed("PURCHASE_GATE_SOLD_OUT");
             }
-            boolean hasCondition = rank != null || direct != null || volume != null;
+            boolean hasRank = rank != null && rank > 0;
+            boolean hasDirect = direct != null && direct > 0;
+            boolean hasVolume = volume != null && volume.signum() > 0;
+            boolean hasCondition = hasRank || hasDirect || hasVolume;
             if (hasCondition && facts == null) return Decision.closed("PURCHASE_GATE_FACTS_UNAVAILABLE");
             if (facts == null) facts = new Facts(0, 0, BigDecimal.ZERO);
             boolean eligible;
             if (!hasCondition) {
                 eligible = true;
             } else if ("all".equals(mode)) {
-                eligible = (rank == null || rank <= facts.rank())
-                        && (direct == null || direct <= facts.activeDirect())
-                        && (volume == null || volume.compareTo(facts.teamComputePoints()) <= 0);
+                eligible = (!hasRank || rank <= facts.rank())
+                        && (!hasDirect || direct <= facts.activeDirect())
+                        && (!hasVolume || volume.compareTo(facts.teamComputePoints()) <= 0);
             } else {
-                eligible = (rank != null && rank <= facts.rank())
-                        || (direct != null && direct <= facts.activeDirect())
-                        || (volume != null && volume.compareTo(facts.teamComputePoints()) <= 0);
+                eligible = (hasRank && rank <= facts.rank())
+                        || (hasDirect && direct <= facts.activeDirect())
+                        || (hasVolume && volume.compareTo(facts.teamComputePoints()) <= 0);
             }
             if (!eligible) return Decision.closed("PURCHASE_GATE_NOT_MET");
             return Decision.open();
@@ -88,9 +91,9 @@ public class StorefrontPurchaseGatePolicy {
             }
             Facts safeFacts = facts == null ? new Facts(0, 0, BigDecimal.ZERO) : facts;
             java.util.ArrayList<Condition> conditions = new java.util.ArrayList<>();
-            if (rank != null) conditions.add(threshold("rank", BigDecimal.valueOf(rank), BigDecimal.valueOf(safeFacts.rank())));
-            if (direct != null) conditions.add(threshold("activeDirect", BigDecimal.valueOf(direct), BigDecimal.valueOf(safeFacts.activeDirect())));
-            if (volume != null) conditions.add(threshold("teamComputePoints", volume, safeFacts.teamComputePoints()));
+            if (rank != null && rank > 0) conditions.add(threshold("rank", BigDecimal.valueOf(rank), BigDecimal.valueOf(safeFacts.rank())));
+            if (direct != null && direct > 0) conditions.add(threshold("activeDirect", BigDecimal.valueOf(direct), BigDecimal.valueOf(safeFacts.activeDirect())));
+            if (volume != null && volume.signum() > 0) conditions.add(threshold("teamComputePoints", volume, safeFacts.teamComputePoints()));
             if (cap != null) conditions.add(quota("lifetimeQuota", BigDecimal.valueOf(cap), BigDecimal.valueOf(sold)));
             Decision decision = evaluate(raw, facts);
             return new Projection(true, mode.toUpperCase(Locale.ROOT), List.copyOf(conditions), decision);
