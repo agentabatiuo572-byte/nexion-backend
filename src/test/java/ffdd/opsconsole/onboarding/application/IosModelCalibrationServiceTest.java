@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
 
 /** I01–I03, I06–I08, I10, I11 and I19 against the calibration transaction with an in-memory table. */
+@SuppressWarnings("unchecked")
 class IosModelCalibrationServiceTest {
     private final OnboardingCalibrationMapper mapper = mock(OnboardingCalibrationMapper.class);
     private final Environment environment = mock(Environment.class);
@@ -149,6 +150,114 @@ class IosModelCalibrationServiceTest {
         String byName = service.hardwareKey(table.get("install-a"));
         calibrate("install-a", table.get("install-a").rowVersion(), "key-ident-01", "iPhone17,1");
         assertThat(service.hardwareKey(table.get("install-a"))).isEqualTo(byName);
+    }
+
+    @Test void anInstallationReportingAnotherModelIsHeldWithoutADrawAndTheAppIsNotToldWhy() {
+        calibrate("install-a", 0, "key-first-01", "iPhone 16 Pro");
+        for (String key : List.of("key-swap-001", "key-swap-002")) {
+            var held = calibrate("install-a", table.get("install-a").rowVersion(), key, "iPhone 17 Pro").getData();
+            assertThat(held).containsEntry("calibrationStatus", "PENDING_VERIFICATION").containsEntry("pendingReason", "MODEL_UNVERIFIED")
+                    .containsEntry("computeValue", null).doesNotContainKeys("riskFlags", "installModelLock");
+            Map<String, Object> stored = json(table.get("install-a").derivedJson());
+            assertThat(stored).containsEntry("pendingReason", "MODEL_CHANGED");
+            assertThat((Map<String, Object>) stored.get("installModelLock")).containsEntry("model", "iPhone 16 Pro");
+        }
+        // Its own identifier is the same phone.
+        assertThat(calibrate("install-a", table.get("install-a").rowVersion(), "key-back-0001", "iPhone17,1").getData())
+                .containsEntry("calibrationStatus", "MATCHED");
+    }
+
+    @Test void observingTheLockFlagsTheChangeButCalibratesAsBefore() {
+        risk("{\"revision\":1,\"installModelLock\":\"OBSERVE\"}");
+        calibrate("install-a", 0, "key-first-01", "iPhone 15");
+        var result = calibrate("install-a", table.get("install-a").rowVersion(), "key-swap-001", "iPhone 16 Pro").getData();
+        assertThat(result).containsEntry("calibrationStatus", "MATCHED").doesNotContainKey("riskFlags");
+        assertThat((List<Object>) json(table.get("install-a").derivedJson()).get("riskFlags")).containsExactly("MODEL_CHANGED", "SIGNALS_MISSING");
+    }
+
+    @Test void anAndroidInstallationLocksItsModelToo() {
+        calibrateWith("install-x", 0, "key-pixel-01", android("Pixel 8"));
+        var held = calibrateWith("install-x", table.get("install-x").rowVersion(), "key-pixel-02", android("Pixel 9")).getData();
+        assertThat(held).containsEntry("pendingReason", "MODEL_UNVERIFIED");
+        assertThat(json(table.get("install-x").derivedJson())).containsEntry("pendingReason", "MODEL_CHANGED");
+    }
+
+    @Test void aReleasedLockTakesTheNextReportedModel() {
+        calibrate("install-a", 0, "key-first-01", "iPhone 16 Pro");
+        calibrate("install-a", table.get("install-a").rowVersion(), "key-swap-001", "iPhone 15");
+        // What OnboardingCalibrationMapper.releaseModelLock does for support.
+        var row = table.get("install-a");
+        Map<String, Object> derived = json(row.derivedJson());
+        derived.remove("installModelLock");
+        table.put("install-a", row(row.deviceId(), row.signalJson(), write(derived), row.rowVersion(), row.idempotencyKey()));
+        calibrate("install-a", table.get("install-a").rowVersion(), "key-after-001", "iPhone 15");
+        Map<String, Object> stored = json(table.get("install-a").derivedJson());
+        assertThat(stored).containsEntry("pendingReason", "MODEL_UNKNOWN");
+        assertThat((Map<String, Object>) stored.get("installModelLock")).containsEntry("model", "iPhone 15");
+    }
+
+    @Test void iPhoneFactsAreComparedWithTheRuleBeforeAnyDraw() {
+        publishWithFacts();
+        risk("{\"revision\":1,\"osVersion\":\"ENFORCE\",\"screenScale\":\"ENFORCE\"}");
+        var oldOs = calibrateWith("install-a", 0, "key-facts-01", ios("iPhone 16 Pro", "16.7", 3.0, 402, 874)).getData();
+        assertThat(oldOs).containsEntry("pendingReason", "MODEL_UNVERIFIED").containsEntry("computeValue", null);
+        assertThat(json(table.get("install-a").derivedJson())).containsEntry("pendingReason", "OS_MISMATCH")
+                .doesNotContainKey("iosAllocations");
+        var scale = calibrateWith("install-b", 0, "key-facts-02", ios("iPhone 16 Pro", "18.1", 2.0, 402, 874)).getData();
+        assertThat(scale).containsEntry("pendingReason", "MODEL_UNVERIFIED");
+        assertThat(json(table.get("install-b").derivedJson())).containsEntry("pendingReason", "SCALE_MISMATCH");
+        // Display Zoom and older builds are only observed.
+        var zoomed = calibrateWith("install-c", 0, "key-facts-03", ios("iPhone 16 Pro", "18.1", 3.0, 375, 812)).getData();
+        assertThat(zoomed).containsEntry("calibrationStatus", "MATCHED").doesNotContainKey("riskFlags");
+        assertThat((List<Object>) json(table.get("install-c").derivedJson()).get("riskFlags")).containsExactly("SCREEN_MISMATCH");
+        calibrate("install-d", 0, "key-facts-04", "iPhone 16 Pro");
+        assertThat((List<Object>) json(table.get("install-d").derivedJson()).get("riskFlags")).containsExactly("SIGNALS_MISSING");
+    }
+
+    @Test void manyModelsOnOneAccountAreObservedNotHeld() {
+        when(mapper.accountModelReports(9L, "PRODUCTION", "", 30)).thenReturn(List.of(
+                new OnboardingCalibrationMapper.ModelReport("android", "Pixel 8", "android", "Pixel 8"),
+                new OnboardingCalibrationMapper.ModelReport("ios", "iPhone 15", "ios", "iPhone 15")));
+        var result = calibrate("install-a", 0, "key-churn-01", "iPhone 16 Pro").getData();
+        assertThat(result).containsEntry("calibrationStatus", "MATCHED");
+        assertThat((List<Object>) json(table.get("install-a").derivedJson()).get("riskFlags")).contains("ACCOUNT_MODEL_CHURN");
+    }
+
+    private void risk(String settings) {
+        when(config.activeValue(PhoneModelRiskConfig.KEY)).thenReturn(Optional.of(settings));
+    }
+
+    private void publishWithFacts() {
+        when(config.activeValue(PhoneCalibrationConfigService.KEY)).thenReturn(Optional.of(
+                "{\"revision\":1,\"current\":{\"version\":1,\"effectiveAt\":0,"
+                + "\"thresholds\":[19,25,35,47],\"rules\":[],\"iosModelRules\":[{\"id\":\"ios-iphone-16-pro\","
+                + "\"model\":\"iPhone 16 Pro\",\"aliases\":[\"iPhone17,1\"],\"minComputeValue\":100,"
+                + "\"maxComputeValue\":120,\"enabled\":true,\"valueSource\":\"OPERATOR_PRESET\",\"minOsVersion\":\"18.0\","
+                + "\"scales\":[3],\"screens\":[\"402x874\"]}]},\"scheduled\":null}"));
+    }
+
+    private static OnboardingCalibrationService.Signals ios(String model, String os, Double scale, Integer width, Integer height) {
+        return new OnboardingCalibrationService.Signals(null, null, model, "Apple", "", scale, null, 80, false, true, "ios", "",
+                os, width, height);
+    }
+
+    private static OnboardingCalibrationService.Signals android(String model) {
+        return new OnboardingCalibrationService.Signals(8.0, 8, model, "Google", "Mali", null, null, 80, false, true, "android", "Tensor");
+    }
+
+    private ffdd.opsconsole.shared.api.ApiResult<Map<String, Object>> calibrateWith(String device, long expected, String key,
+                                                                                    OnboardingCalibrationService.Signals signals) {
+        var result = service.calibrate(9L, new OnboardingCalibrationService.Request(device, expected, key, signals));
+        assertThat(result.getCode()).as(result.getMessage()).isZero();
+        return result;
+    }
+
+    private static String write(Map<String, Object> value) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(value);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+            throw new IllegalStateException(invalid);
+        }
     }
 
     private ffdd.opsconsole.shared.api.ApiResult<Map<String, Object>> calibrate(String device, long expected, String key,
