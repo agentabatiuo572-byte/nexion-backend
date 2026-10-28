@@ -308,7 +308,7 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
      * A calibration result, or an activation receipt holding one under originalResult, as the App
      * may see it: the user's own value without the range it was drawn from, the risk flags or the
      * model lock, an Android result's chip and tier rule, the raw identifiers in the echoed signals,
-     * and a held calibration's risk reason generalised. Other values pass through.
+     * and a held calibration's risk or chip reason generalised. Other values pass through.
      */
     public static Object appView(Object result) {
         if (!(result instanceof java.util.Map<?, ?> map)) return result;
@@ -325,7 +325,8 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
                 return;
             }
             // Which model check held the calibration is not told to the user.
-            Object shown = "pendingReason".equals(name) && value instanceof String reason && PhoneModelRisk.ENFORCEABLE.contains(reason) ? PhoneModelRisk.APP_REASON : value;
+            Object shown = "pendingReason".equals(name) && value instanceof String reason
+                    && (PhoneModelRisk.ENFORCEABLE.contains(reason) || reason.startsWith("SOC_")) ? PhoneModelRisk.APP_REASON : value;
             view.put(name, "originalResult".equals(name) ? appView(shown) : shown);
         });
         return view;

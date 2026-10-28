@@ -279,6 +279,9 @@ class IosModelCalibrationServiceTest {
         var swapped = calibrateWith("install-x", table.get("install-x").rowVersion(), "key-soc-0003", androidSoc("Pixel 8", "SM8650")).getData();
         assertThat(swapped).containsEntry("calibrationStatus", "PENDING_VERIFICATION").containsEntry("pendingReason", "MODEL_UNVERIFIED");
         assertThat(json(table.get("install-x").derivedJson())).containsEntry("pendingReason", "SOC_CHANGED");
+        var unknown = calibrateWith("install-z", 0, "key-soc-0004", androidSoc("Phone Z", "MT6833")).getData();
+        assertThat(unknown).containsEntry("pendingReason", "MODEL_UNVERIFIED");
+        assertThat(json(table.get("install-z").derivedJson())).containsEntry("pendingReason", "SOC_UNKNOWN");
     }
 
     private void publishAndroid() {
