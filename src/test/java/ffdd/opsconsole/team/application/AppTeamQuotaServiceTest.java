@@ -25,7 +25,7 @@ class AppTeamQuotaServiceTest {
         when(mapper.activeDirect(7L)).thenReturn(2L);
         var performance = mock(VRankPerformanceRepository.class);
         when(performance.computeSnapshot(7L)).thenReturn(new VRankEvaluationSnapshot(
-                BigDecimal.ZERO, new BigDecimal("150000"), 3, Map.of()));
+                0L, 150000L, 3, Map.of()));
         var catalog = mock(AppProductCatalogService.class);
         when(catalog.catalog(7L)).thenReturn(ApiResult.ok(Map.of(
                 "source", "mock", "products", List.of(Map.of("id", "stellarbox-pro", "price", new BigDecimal("899"), "available", true)))));
@@ -61,7 +61,7 @@ class AppTeamQuotaServiceTest {
         when(mapper.activeDirect(7L)).thenReturn(2L);
         var performance = mock(VRankPerformanceRepository.class);
         when(performance.computeSnapshot(7L)).thenReturn(new VRankEvaluationSnapshot(
-                BigDecimal.ZERO, new BigDecimal("150000"), 8, Map.of()));
+                0L, 150000L, 8, Map.of()));
         var catalog = mock(AppProductCatalogService.class);
         when(catalog.catalog(7L)).thenReturn(ApiResult.ok(Map.of(
                 "source", "nx_product", "products", List.of(Map.of(

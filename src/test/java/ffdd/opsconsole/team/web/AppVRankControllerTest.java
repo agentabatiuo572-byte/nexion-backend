@@ -136,7 +136,7 @@ class AppVRankControllerTest {
         when(users.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0, "V2"));
         when(commission.currentMemberVRank(7L)).thenReturn("V2");
         when(performance.computeSnapshot(7L)).thenReturn(new VRankEvaluationSnapshot(
-                new BigDecimal("1198"), new BigDecimal("5240"), 5, Map.of(1, 3)));
+                1198L, 5240L, 5, Map.of(1, 3)));
 
         var result = new AppVRankController(commission, performance, users, new MockEnvironment())
                 .current(userAuthentication(7L));
@@ -158,7 +158,7 @@ class AppVRankControllerTest {
         when(users.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0, "V2"));
         when(commission.currentMemberVRank(7L)).thenReturn("V2");
         when(performance.computeSnapshot(7L)).thenReturn(new VRankEvaluationSnapshot(
-                new BigDecimal("1198"), new BigDecimal("5240"), 5, Map.of(1, 3)));
+                1198L, 5240L, 5, Map.of(1, 3)));
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("dev");
 

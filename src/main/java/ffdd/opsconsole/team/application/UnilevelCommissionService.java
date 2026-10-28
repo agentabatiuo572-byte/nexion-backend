@@ -355,7 +355,7 @@ public class UnilevelCommissionService {
     private int resolveDepthGateRankNum(boolean currentRead) {
         String raw = configValue(CONFIG_KEY_DEPTH_GATE_RANK,currentRead).orElse("");
         String normalized = raw == null ? "" : raw.trim().toUpperCase();
-        if (!normalized.matches("V(?:[0-9]|1[0-2])")) {
+        if (!normalized.matches("V[0-8]")) {
             throw new BizException(503, "F_TEAM_DEPTH_GATE_CONFIG_INVALID");
         }
         return Integer.parseInt(normalized.substring(1));
@@ -429,7 +429,7 @@ public class UnilevelCommissionService {
         }
     }
 
-    /** 解析阶位代码为数字用于比较:"V2"→2, null/""→0(V0), "V12"→12, 非法→0。 */
+    /** 解析阶位代码为数字用于比较:"V2"→2, null/""→0(V0), "V8"→8, 非法→0。 */
     private static int parseRankNum(String rank) {
         if (rank == null || rank.isBlank()) {
             return 0;

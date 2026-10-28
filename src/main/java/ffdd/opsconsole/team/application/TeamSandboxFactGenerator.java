@@ -130,13 +130,13 @@ public final class TeamSandboxFactGenerator {
     static Map<String, Object> network(String runId, long userId) {
         Scope scope = scope(runId, userId, "network");
         List<Map<String, Object>> members = new ArrayList<>();
-        BigDecimal monthVolume = BigDecimal.ZERO;
+        long monthVolume = 0;
         int direct = 0;
         int active = 0;
         for (int i = 1; i <= 14; i++) {
             int layer = 1 + (i - 1) % 4;
-            BigDecimal volume = amount(scope.digest(), "network-volume:" + i, 25, 240);
-            monthVolume = monthVolume.add(volume);
+            long volume = number(scope.digest(), "network-points:" + i, 250, 2400);
+            monthVolume += volume;
             if (layer == 1) direct++;
             String status = i % 7 == 0 ? "OFFLINE" : "ACTIVE";
             if ("ACTIVE".equals(status)) active++;
@@ -149,8 +149,8 @@ public final class TeamSandboxFactGenerator {
             member.put("leg", i % 2 == 0 ? "B" : "A");
             member.put("joinedAt", EPOCH.plus(number(scope.digest(), "network-joined:" + i, 1, 60), ChronoUnit.DAYS)
                     .atOffset(ZoneOffset.UTC).toInstant().toString());
-            member.put("monthVolumeUsdt", volume);
-            member.put("lifetimeVolumeUsdt", null);
+            member.put("monthComputePoints", volume);
+            member.put("lifetimeComputePoints", volume);
             member.put("status", status);
             member.put("region", i % 2 == 0 ? "Sandbox-A" : "Sandbox-B");
             members.add(member);
@@ -159,8 +159,8 @@ public final class TeamSandboxFactGenerator {
         result.put("totalMembers", members.size());
         result.put("directMembers", direct);
         result.put("activeMembers", active);
-        result.put("monthVolumeUsdt", monthVolume);
-        result.put("lifetimeVolumeUsdt", null);
+        result.put("monthComputePoints", monthVolume);
+        result.put("lifetimeComputePoints", monthVolume);
         result.put("members", members);
         result.put("generatedAt", scope.generatedAt());
         return result;
@@ -168,11 +168,11 @@ public final class TeamSandboxFactGenerator {
 
     public static Map<String, Object> currentRank(String runId, long userId) {
         Scope scope = scope(runId, userId, "rank");
-        int rank = number(scope.digest(), "current-rank", 0, 12);
+        int rank = number(scope.digest(), "current-rank", 0, 8);
         Map<String, Object> progress = new LinkedHashMap<>();
-        progress.put("selfBuyUSD", amount(scope.digest(), "self-buy", 0, 2000));
+        progress.put("selfComputePoints", number(scope.digest(), "self-points", 0, 20000));
         progress.put("directRefs", number(scope.digest(), "direct-refs", 0, 12));
-        progress.put("teamVolumeUSD", amount(scope.digest(), "team-volume", 0, 10000));
+        progress.put("teamComputePoints", number(scope.digest(), "team-points", 0, 100000));
         Map<String, Object> counts = new LinkedHashMap<>();
         for (int i = 0; i <= Math.min(rank, 4); i++) counts.put(String.valueOf(i), number(scope.digest(), "downline:" + i, 0, 4));
         progress.put("vDownlineCounts", counts);

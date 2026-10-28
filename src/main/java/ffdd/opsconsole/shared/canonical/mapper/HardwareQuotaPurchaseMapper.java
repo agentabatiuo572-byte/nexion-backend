@@ -13,7 +13,7 @@ import org.apache.ibatis.annotations.Select;
 public interface HardwareQuotaPurchaseMapper {
     @Select("""
             SELECT id,quota_code AS quotaCode,product_no AS productNo,direct_refs AS directRefs,
-                   month_volume_usd AS monthVolumeUsd,monthly_quota AS monthlyQuota,
+                   month_compute_points AS monthComputePoints,monthly_quota AS monthlyQuota,
                    unlock_mode AS unlockMode,status
               FROM nx_team_hardware_quota_tier
              WHERE product_no=#{productNo} AND is_deleted=0 ORDER BY id FOR UPDATE
@@ -43,7 +43,7 @@ public interface HardwareQuotaPurchaseMapper {
                       AND owner.status='ACTIVE' AND owner.is_deleted=0
                     WHERE child.sponsor_user_id=owner.id AND child.sandbox=owner.sandbox
                       AND child.status='ACTIVE' AND child.is_deleted=0) AS activeDirect,
-                   COALESCE(SUM(o.subtotal_usdt),0) AS monthlyVolumeUsd
+                   COALESCE(SUM(o.compute_points),0) AS monthlyComputePoints
               FROM subtree s
               LEFT JOIN nx_order o ON o.user_id=s.member_user_id
                AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
@@ -72,6 +72,6 @@ public interface HardwareQuotaPurchaseMapper {
             @Param("orderNo") String orderNo, @Param("occurredAt") LocalDateTime occurredAt);
 
     record Tier(Long id, String quotaCode, String productNo, Integer directRefs,
-                BigDecimal monthVolumeUsd, Integer monthlyQuota, String unlockMode, Integer status) { }
-    record Facts(Long activeDirect, BigDecimal monthlyVolumeUsd) { }
+                BigDecimal monthComputePoints, Integer monthlyQuota, String unlockMode, Integer status) { }
+    record Facts(Long activeDirect, BigDecimal monthlyComputePoints) { }
 }

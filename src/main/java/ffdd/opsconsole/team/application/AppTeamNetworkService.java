@@ -53,11 +53,12 @@ public class AppTeamNetworkService {
         if (hasMore) rows = rows.subList(0, MAX_NETWORK_MEMBERS);
         String nextCursor = hasMore ? String.valueOf(rows.get(rows.size() - 1).memberUserId()) : null;
         List<Map<String, Object>> members = new ArrayList<>();
-        BigDecimal month = BigDecimal.ZERO;
+        long month = 0; long lifetime = 0;
         int direct = 0; int active = 0;
         for (var row : rows) {
-            BigDecimal monthValue = zero(row.monthVolumeUsdt());
-            month = month.add(monthValue);
+            long monthValue = points(row.monthComputePoints());
+            long lifetimeValue = points(row.lifetimeComputePoints());
+            month += monthValue; lifetime += lifetimeValue;
             if (row.level() != null && row.level() == 1) direct++;
             if ("ACTIVE".equals(row.status())) active++;
             Map<String, Object> item = new LinkedHashMap<>();
@@ -65,19 +66,19 @@ public class AppTeamNetworkService {
             item.put("avatarUrl", row.avatarUrl()); item.put("vRank", rank(row.vRank())); item.put("layer", row.level());
             item.put("leg", row.leg());
             item.put("joinedAt", row.joinedAt() == null ? null : row.joinedAt().atZone(BUSINESS_ZONE).toInstant().toString());
-            item.put("monthVolumeUsdt", monthValue); item.put("lifetimeVolumeUsdt", null);
+            item.put("monthComputePoints", monthValue); item.put("lifetimeComputePoints", lifetimeValue);
             item.put("status", row.status()); item.put("region", row.region()); members.add(item);
         }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("nextCursor", nextCursor);
         result.put("totalMembers", members.size()); result.put("directMembers", direct); result.put("activeMembers", active);
-        result.put("monthVolumeUsdt", month); result.put("lifetimeVolumeUsdt", null); result.put("members", members);
+        result.put("monthComputePoints", month); result.put("lifetimeComputePoints", lifetime); result.put("members", members);
         result.put("source", "server"); result.put("sourceEnvironment", "PRODUCTION");
         result.put("runId", ""); result.put("serverCanonical", true);
         result.put("generatedAt", java.time.Instant.now().toString());
         return ApiResult.ok(result);
     }
-    private BigDecimal zero(BigDecimal value) { return value == null || value.signum() < 0 ? BigDecimal.ZERO : value; }
+    private long points(Long value) { return value == null || value < 0 ? 0L : value; }
     private String fallback(String value, String replacement) { return value == null || value.isBlank() ? replacement : value.trim(); }
     private int rank(String value) { try { return Integer.parseInt(fallback(value, "V0").replaceFirst("^[Vv]", "")); } catch (RuntimeException ignored) { return 0; } }
     private String normalize(String value) { return value == null ? "" : value.trim().toLowerCase(Locale.ROOT); }

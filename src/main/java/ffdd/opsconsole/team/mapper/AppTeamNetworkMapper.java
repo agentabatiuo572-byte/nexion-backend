@@ -56,14 +56,21 @@ public interface AppTeamNetworkMapper extends BaseMapper<Object> {
                      ELSE NULL
                    END leg,
                    n.sponsor_user_id sponsorUserId,u.created_at joinedAt,
-                   (SELECT COALESCE(SUM(o.subtotal_usdt),0) FROM nx_order o
+                   (SELECT COALESCE(SUM(CASE
+                              WHEN COALESCE(o.paid_at,o.created_at)>=""" + VietnamBusinessPeriodSql.MONTH_START + """
+                               AND COALESCE(o.paid_at,o.created_at)<""" + VietnamBusinessPeriodSql.NEXT_MONTH_START + """
+                              THEN o.compute_points ELSE 0 END),0) FROM nx_order o
                      WHERE o.user_id=u.id
                        AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
                        AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
                        AND o.is_deleted=0
-                       AND COALESCE(o.paid_at,o.created_at)>=""" + VietnamBusinessPeriodSql.MONTH_START + """
-                       AND COALESCE(o.paid_at,o.created_at)<""" + VietnamBusinessPeriodSql.NEXT_MONTH_START + """
-                   ) monthVolumeUsdt,NULL lifetimeVolumeUsdt,
+                   ) monthComputePoints,
+                   (SELECT COALESCE(SUM(o.compute_points),0) FROM nx_order o
+                     WHERE o.user_id=u.id
+                       AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
+                       AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
+                       AND o.is_deleted=0
+                   ) lifetimeComputePoints,
                    CASE WHEN u.status='ACTIVE' THEN 'ACTIVE' ELSE 'OFFLINE' END status,u.region
               FROM network n JOIN nx_user u ON u.id=n.member_user_id
               LEFT JOIN nx_binary_leg_assignment a ON a.owner_user_id=#{userId} AND a.member_user_id=n.root_user_id
@@ -77,7 +84,7 @@ public interface AppTeamNetworkMapper extends BaseMapper<Object> {
     default List<MemberRow> members(Long userId) { return membersPage(userId, 0, 501); }
 
     record MemberRow(Long memberUserId, String nickname, String avatarUrl, String vRank, Integer level,
-                     String leg, Long sponsorUserId, LocalDateTime joinedAt, BigDecimal monthVolumeUsdt,
-                     BigDecimal lifetimeVolumeUsdt, String status, String region) { }
+                     String leg, Long sponsorUserId, LocalDateTime joinedAt, Long monthComputePoints,
+                     Long lifetimeComputePoints, String status, String region) { }
     record UserScope(Integer sandbox) { }
 }

@@ -131,7 +131,7 @@ public class CommerceAcceptanceSandboxService {
                         facts = new StorefrontPurchaseGatePolicy.Facts(
                                 gateFacts.rank() == null ? 0 : gateFacts.rank(),
                                 gateFacts.activeDirect() == null ? 0 : gateFacts.activeDirect(),
-                                gateFacts.teamVolumeUsd() == null ? BigDecimal.ZERO : gateFacts.teamVolumeUsd());
+                                gateFacts.teamComputePoints() == null ? BigDecimal.ZERO : gateFacts.teamComputePoints());
                     } catch (IllegalArgumentException ex) {
                         throw new BizException(503, "COMMERCE_SANDBOX_PURCHASE_GATE_FACTS_UNAVAILABLE");
                     }

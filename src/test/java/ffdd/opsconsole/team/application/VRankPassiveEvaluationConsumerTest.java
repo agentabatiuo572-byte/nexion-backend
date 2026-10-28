@@ -249,11 +249,16 @@ class VRankPassiveEvaluationConsumerTest {
     }
 
     private VRankEvaluationSnapshot snapshot(String self, String team, int refs) {
-        return new VRankEvaluationSnapshot(new BigDecimal(self), new BigDecimal(team), refs, Map.of());
+        return new VRankEvaluationSnapshot(points(self), points(team), refs, Map.of());
+    }
+
+    /** Fixtures keep the former dollar figures; points are ten per dollar. */
+    private static long points(String dollars) {
+        return Math.round(Double.parseDouble(dollars) * 10);
     }
 
     private VRankConfigRow rank(String code, String self, int refs, String team, int order) {
-        return new VRankConfigRow(code, new BigDecimal(self), refs, new BigDecimal(team), null, 0,
+        return new VRankConfigRow(code, points(self), refs, points(team), null, 0,
                 order, null, BigDecimal.ZERO, 0);
     }
 

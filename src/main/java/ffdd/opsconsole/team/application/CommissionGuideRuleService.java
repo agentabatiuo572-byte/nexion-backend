@@ -28,7 +28,7 @@ import org.springframework.util.StringUtils;
 public class CommissionGuideRuleService {
     private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
     private static final Pattern DEPTH_GATE_LAYER = Pattern.compile("L?([1-7])", Pattern.CASE_INSENSITIVE);
-    private static final Pattern DEPTH_GATE_RANK = Pattern.compile("V([0-9]|1[0-2])", Pattern.CASE_INSENSITIVE);
+    private static final Pattern DEPTH_GATE_RANK = Pattern.compile("V([0-8])", Pattern.CASE_INSENSITIVE);
     private static final Pattern PHASE = Pattern.compile("P[1-6]", Pattern.CASE_INSENSITIVE);
     private static final BigDecimal ONE_HUNDRED = new BigDecimal("100");
 

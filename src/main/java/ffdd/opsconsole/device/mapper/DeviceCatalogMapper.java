@@ -103,7 +103,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
              AS publishBlockReason,
             p.created_at AS createdAt,
             p.updated_at AS updatedAt,
-            s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl
+            s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl,p.compute_points AS computePoints
             """;
 
     String TASK_COLUMNS = """
@@ -1011,14 +1011,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Insert("""
             INSERT INTO nx_product (
-              product_no,name,product_type,tier,status,price_usdt,hashrate,estimated_daily_usdt,daily_nex,stock,inventory_mode,trial_eligible,
+              product_no,name,product_type,tier,status,price_usdt,compute_points,hashrate,estimated_daily_usdt,daily_nex,stock,inventory_mode,trial_eligible,
               badge,tagline,store_status,store_visible,sort_order,generation,gpu_model,vram_total_gb,
               share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,rating_value,review_count,
               created_at,updated_at,is_deleted
             ) VALUES (
               #{sku.skuId},#{sku.name},CASE WHEN #{sku.tier}='Share' THEN 'SHARE' ELSE 'DEVICE' END,#{sku.tier},
               CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
-              #{sku.price},#{sku.canonicalHashrate},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.canonicalStock},#{sku.inventoryMode},#{sku.trialEligible},
+              #{sku.price},COALESCE(#{sku.computePoints},ROUND(#{sku.price}*10)),#{sku.canonicalHashrate},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.canonicalStock},#{sku.inventoryMode},#{sku.trialEligible},
               #{sku.badge},#{sku.tagline},#{sku.status},CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,0,
               COALESCE(#{sku.generation},1),#{sku.gpu},#{sku.canonicalVramGb},#{sku.shareYieldMin},#{sku.shareYieldMax},
               #{sku.supersededBy},CAST(#{sku.unlockPhaseId} AS CHAR),0,COALESCE(#{sku.rating},0),COALESCE(#{sku.reviews},0),
@@ -1065,7 +1065,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             UPDATE nx_product
                SET name=#{sku.name},tier=#{sku.tier},
                    status=CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
-                   price_usdt=#{sku.price},hashrate=#{sku.canonicalHashrate},estimated_daily_usdt=#{sku.dailyEarn},daily_nex=#{sku.dailyEarnNex},
+                   price_usdt=#{sku.price},compute_points=COALESCE(#{sku.computePoints},compute_points),hashrate=#{sku.canonicalHashrate},estimated_daily_usdt=#{sku.dailyEarn},daily_nex=#{sku.dailyEarnNex},
                    stock=#{sku.canonicalStock},inventory_mode=#{sku.inventoryMode},trial_eligible=#{sku.trialEligible},badge=#{sku.badge},tagline=#{sku.tagline},store_status=#{sku.status},
                    store_visible=CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,generation=COALESCE(#{sku.generation},1),
                    gpu_model=#{sku.gpu},vram_total_gb=#{sku.canonicalVramGb},share_yield_min=#{sku.shareYieldMin},
@@ -1855,7 +1855,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             Boolean publishBlocked,
             String publishBlockReason,
             LocalDateTime createdAt,
-            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl) {
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
+    /** Callers that do not set computePoints leave it unset. */
+    public SkuRow(String skuId, String name, String tier, String tagline, String badge, String gpu, String vram, String hashRate, String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex, BigDecimal price, BigDecimal dailyEarn, BigDecimal dailyEarnNex, BigDecimal shareYieldMin, BigDecimal shareYieldMax, String baseRate, Long sold, String stock, String productType, String inventoryMode, Boolean trialEligible, BigDecimal rating, Long reviews, Long aiImageGenPerMin, Long aiLlmTokensPerSec, Long aiVideoMinPerHour, Long aiFineTuneMins, String aiUnlocks, String featuresJson, Integer generation, String lifecycle, String supersededBy, BigDecimal tradeinDiscount, String unlockPhase, String purchaseGateJson, String imageAssetId, String imageObjectKey, String imagePreviewUrl, String tag, String status, Boolean publishBlocked, String publishBlockReason, LocalDateTime createdAt, LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl) {
+        this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, productType, inventoryMode, trialEligible, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, featuresJson, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGateJson, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, publishBlocked, publishBlockReason, createdAt, updatedAt, specDocumentTitle, specDocumentUrl, null);
+    }
+
         /** Existing callers without a product document keep an empty document. */
         public SkuRow(
             String skuId,
@@ -1959,7 +1964,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String inventoryMode,
             Boolean trialEligible,
             LocalDateTime createdAt,
-            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl) {
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
+    /** Callers that do not set computePoints leave it unset. */
+    public SkuWrite(String skuId, String name, String tier, String tagline, String badge, String gpu, String vram, String hashRate, String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex, BigDecimal price, BigDecimal dailyEarn, BigDecimal dailyEarnNex, BigDecimal shareYieldMin, BigDecimal shareYieldMax, String baseRate, Long sold, String stock, BigDecimal rating, Long reviews, Long aiImageGenPerMin, Long aiLlmTokensPerSec, Long aiVideoMinPerHour, Long aiFineTuneMins, String aiUnlocks, String featuresJson, Integer generation, String lifecycle, String supersededBy, BigDecimal tradeinDiscount, Long unlockPhaseId, String purchaseGateJson, String imageAssetId, String imageObjectKey, String imagePreviewUrl, String tag, String status, BigDecimal canonicalHashrate, Integer canonicalVramGb, Integer canonicalStock, String inventoryMode, Boolean trialEligible, LocalDateTime createdAt, LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl) {
+        this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, featuresJson, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhaseId, purchaseGateJson, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, canonicalHashrate, canonicalVramGb, canonicalStock, inventoryMode, trialEligible, createdAt, updatedAt, specDocumentTitle, specDocumentUrl, null);
+    }
+
         /** Existing callers without a product document keep an empty document. */
         public SkuWrite(
             String skuId,

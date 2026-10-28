@@ -280,9 +280,9 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     private VRankConfigRow toVRankConfigRow(Map<String, Object> raw) {
         return new VRankConfigRow(
                 text(raw, "rankCode"),
-                decimal(raw.get("selfBuyUsd")),
+                decimal(raw.get("selfComputePoints")).longValue(),
                 integer(raw.get("directRefs"), 0),
-                decimal(raw.get("teamVolumeUsd")),
+                decimal(raw.get("teamComputePoints")).longValue(),
                 textOr(raw.get("requiredDownlineRank"), null),
                 integer(raw.get("requiredDownlineCount"), 0),
                 integer(raw.get("sortOrder"), 0),

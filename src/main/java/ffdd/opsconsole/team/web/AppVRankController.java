@@ -104,9 +104,9 @@ public class AppVRankController {
         }
         VRankEvaluationSnapshot snapshot = performanceRepository.computeSnapshot(userId);
         Map<String, Object> progress = new LinkedHashMap<>();
-        progress.put("selfBuyUSD", snapshot.selfBuyUSD());
+        progress.put("selfComputePoints", snapshot.selfComputePoints());
         progress.put("directRefs", snapshot.directRefs());
-        progress.put("teamVolumeUSD", snapshot.teamVolumeUSD());
+        progress.put("teamComputePoints", snapshot.teamComputePoints());
         progress.put("vDownlineCounts", snapshot.legCounts());
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("source", "nx_team_member + server VRankPerformanceRepository");
@@ -156,7 +156,7 @@ public class AppVRankController {
         List<Map<String, Object>> rows = new ArrayList<>();
         for (Map<String, Object> source : commissionRepository.vRankRows()) {
             String rankCode = String.valueOf(source.getOrDefault("v", ""));
-            if (!rankCode.matches("V(?:[0-9]|1[0-2])")) {
+            if (!rankCode.matches("V[0-8]")) {
                 continue;
             }
             int rank = Integer.parseInt(rankCode.substring(1));
@@ -167,9 +167,9 @@ public class AppVRankController {
                     String.valueOf(source.getOrDefault("label", rankCode)));
             row.put("title", title);
             row.put("cnTitle", title);
-            row.put("selfBuyUSD", source.get("selfBuyUsd"));
+            row.put("selfComputePoints", source.get("selfComputePoints"));
             row.put("directRefs", source.get("directRefs"));
-            row.put("teamVolumeUSD", source.get("teamGvUsd"));
+            row.put("teamComputePoints", source.get("teamComputePoints"));
             row.put("requiredDownlineRank", source.get("legRank"));
             row.put("requiredDownlineCount", source.get("legCount"));
             row.put("directBonus", directBonus);
