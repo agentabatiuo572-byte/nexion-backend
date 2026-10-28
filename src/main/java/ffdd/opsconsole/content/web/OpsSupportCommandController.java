@@ -30,12 +30,12 @@ public class OpsSupportCommandController {
             "SUPPORT_GROUP_MEMBER","SUPPORT_GROUP_QUALIFICATION","SUPPORT_GROUP_ROUTE");
 
     @GetMapping("/api/admin/content/support-workbench/commands/{key}")
-    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m2_read','service_m3_read','platform_a1_read')")
+    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read','platform_a1_read')")
     @Transactional
     public ApiResult<Map<String,Object>> recover(@PathVariable String key) throws com.fasterxml.jackson.core.JsonProcessingException {
         if(key==null || key.isBlank() || key.length()>128) throw new BizException(422,"IDEMPOTENCY_KEY_INVALID");
         long actor=ownership.actorId();
-        boolean supportRead=List.of("service_m1_read","service_m2_read","service_m3_read").stream().anyMatch(SupportOwnershipService::hasAuthority);
+        boolean supportRead=List.of("service_m1_read","service_m3_read").stream().anyMatch(SupportOwnershipService::hasAuthority);
         List<String> scopes=new ArrayList<>(SCOPES.stream().filter(s->supportRead || s.equals("SUPPORT_GROUP_QUALIFICATION"))
                 .map(s->s+":"+actor).toList());
         // Legacy timeout keys are global; only their existing configuration writers may recover them.
@@ -105,7 +105,6 @@ public class OpsSupportCommandController {
         if(!node.isObject())return;
         for(String field:List.of("customerId","userId")) if(node.path(field).canConvertToLong() && node.path(field).asLong()>0) customers.add(node.path(field).asLong());
         if(node.path("conversationNo").isTextual()) customers.add(ownership.conversationCustomer(node.path("conversationNo").asText()));
-        if(node.path("ticketNo").isTextual()) customers.add(ownership.ticketCustomer(node.path("ticketNo").asText()));
         node.elements().forEachRemaining(n->collect(n,customers));
     }
 }

@@ -472,6 +472,16 @@ class AppSupportServiceTest {
     }
 
     @Test
+    void retiredTicketCreateFaqSurfaceIsRejectedLikeAnyUnknownSurface() {
+        for (String surface : List.of("Ticket Create", "ticket create", "Unknown Surface")) {
+            var result = service.faqPage(42L, "en-US", null, surface, 1L, 20L);
+            assertThat(result.getCode()).as(surface).isEqualTo(422);
+            assertThat(result.getMessage()).as(surface).isEqualTo("SUPPORT_FAQ_SURFACE_UNSUPPORTED");
+        }
+        verifyNoInteractions(knowledge);
+    }
+
+    @Test
     void legacyFaqListFailsClosedInsteadOfSilentlyTruncatingPublishedContent() {
         when(knowledge.countPublishedFaqs("en-US", "Help Center", "")).thenReturn(51L);
         when(knowledge.listPublishedFaqPage("en-US", "Help Center", "", 0L, 50))

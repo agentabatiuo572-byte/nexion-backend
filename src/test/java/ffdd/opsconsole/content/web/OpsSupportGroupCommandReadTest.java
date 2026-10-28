@@ -84,6 +84,6 @@ class OpsSupportGroupCommandReadTest {
     @Test void commandPreAuthorizeIncludesA1ButRetainsOriginalServiceCapabilities()throws Exception {
         String expression=OpsSupportCommandController.class.getMethod("recover",String.class)
                 .getAnnotation(org.springframework.security.access.prepost.PreAuthorize.class).value();
-        assertThat(expression).contains("platform_a1_read","service_m1_read","service_m2_read","service_m3_read");
+        assertThat(expression).contains("platform_a1_read","service_m1_read","service_m3_read").doesNotContain("service_m2_");
     }
 }

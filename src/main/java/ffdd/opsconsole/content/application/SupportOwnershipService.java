@@ -222,12 +222,6 @@ public class SupportOwnershipService {
         return id;
     }
 
-    public Long ticketCustomer(String no) {
-        Long id = mapper.ticketCustomer(no);
-        if (id == null) throw new BizException(404, "TICKET_NOT_FOUND");
-        return id;
-    }
-
     @Transactional
     public void readConversation(String no) { requireRead(conversationCustomer(no)); }
     @Transactional
