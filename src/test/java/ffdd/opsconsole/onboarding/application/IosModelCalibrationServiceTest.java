@@ -215,8 +215,9 @@ class IosModelCalibrationServiceTest {
     }
 
     @Test void manyModelsOnOneAccountAreObservedNotHeld() {
-        when(mapper.accountModelReports(9L, "PRODUCTION", "", 30)).thenReturn(List.of(
+        when(mapper.accountModelReports(9L, "PRODUCTION", "", 30)).thenReturn(java.util.Arrays.asList(
                 new OnboardingCalibrationMapper.ModelReport("android", "Pixel 8", "android", "Pixel 8"),
+                null, // a deferred installation without any report reads back as null
                 new OnboardingCalibrationMapper.ModelReport("ios", "iPhone 15", "ios", "iPhone 15")));
         var result = calibrate("install-a", 0, "key-churn-01", "iPhone 16 Pro").getData();
         assertThat(result).containsEntry("calibrationStatus", "MATCHED");

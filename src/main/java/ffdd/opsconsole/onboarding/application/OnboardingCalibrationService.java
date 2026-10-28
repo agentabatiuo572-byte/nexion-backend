@@ -723,6 +723,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         java.util.Set<String> models = new java.util.HashSet<>();
         if (reported != null) models.add(policy.modelIdentity(reported.get("platform"), reported.get("model")));
         for (var row : mapper.accountModelReports(userId, scope.sourceEnvironment(), scope.runId(), days)) {
+            if (row == null) continue; // MyBatis maps a row whose columns are all NULL (an empty report) to null.
             String platform = row.platform() == null ? "" : row.platform();
             if (row.model() != null && !row.model().isBlank()) models.add(policy.modelIdentity(platform, row.model()));
             if (row.lockModel() != null && !row.lockModel().isBlank()) {
