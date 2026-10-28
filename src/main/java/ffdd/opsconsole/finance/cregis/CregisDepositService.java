@@ -95,7 +95,9 @@ public class CregisDepositService {
                     "enabled", true, "creditEnabled", config.isDepositCreditEnabled() && on(gate, "creditEnabled"),
                     "network", "BEP20", "address", row.get("address"),
                     "confirmations", currentPolicy.confirmations(), "feeUsdt", currentPolicy.feeUsdt(),
-                    "minDepositUsdt", currentPolicy.minDepositUsdt());
+                    "minDepositUsdt", currentPolicy.minDepositUsdt(),
+                    "feeUsdtExact", currentPolicy.feeUsdt().toPlainString(),
+                    "minDepositUsdtExact", currentPolicy.minDepositUsdt().toPlainString());
             throw new BizException(409, "CREGIS_ADDRESS_REQUIRES_REVIEW");
         }
         Map<String, Object> visibleGate = db.provisionGate();
@@ -155,7 +157,8 @@ public class CregisDepositService {
                 && on(currentGate, "creditEnabled");
         return Map.of("enabled", true, "creditEnabled", creditEnabled,
                 "network", "BEP20", "address", assigned.get("address"),
-                "confirmations", currentPolicy.confirmations(), "feeUsdt", currentPolicy.feeUsdt(), "minDepositUsdt", currentPolicy.minDepositUsdt());
+                "confirmations", currentPolicy.confirmations(), "feeUsdt", currentPolicy.feeUsdt(), "minDepositUsdt", currentPolicy.minDepositUsdt(),
+                "feeUsdtExact", currentPolicy.feeUsdt().toPlainString(), "minDepositUsdtExact", currentPolicy.minDepositUsdt().toPlainString());
     }
 
     private Map<String,Object> preparingAddress() {
@@ -288,7 +291,12 @@ public class CregisDepositService {
         if (userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
         if (config.getMode() != CregisProperties.Mode.PROVIDER) return List.of();
         if (config.getDepositConfirmations() < 15) throw new BizException(503, "CREGIS_CONFIRMATIONS_INVALID");
-        return db.deposits(userId, config.getProjectId(), config.getDepositConfirmations());
+        return db.deposits(userId, config.getProjectId(), config.getDepositConfirmations()).stream().map(row -> {
+            Map<String, Object> result = new java.util.LinkedHashMap<>(row);
+            result.put("grossAmountUsdtExact", ((BigDecimal) row.get("grossAmountUsdt")).toPlainString());
+            result.put("creditedUsdtExact", ((BigDecimal) row.get("creditedUsdt")).toPlainString());
+            return result;
+        }).toList();
     }
 
     public Map<String, Object> adminDeposits(long beforeId, int limit) {
