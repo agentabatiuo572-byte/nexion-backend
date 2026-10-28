@@ -222,9 +222,12 @@ WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK');
 -- E: growth
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'E%' WHERE r.role_code='GROWTH';
--- F: growth
+-- F: growth；财务与风控只见 F5 佣金事件审计。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'F%' WHERE r.role_code='GROWTH';
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('F','F5')
+WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK','RISK_LEAD');
 -- G: finance+growth
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'G%' WHERE r.role_code IN ('FINANCE','GROWTH');

@@ -83,8 +83,7 @@ public class OpsTeamService implements AuditReplayable {
     /**
      * updateConfig/updateUiConfig key→权限码(service 层二次精确校验,防跨域越权)。
      * 涵盖 ACTIVE_KEYS(数值政策) + UI keys(F.* 配置面、动态 key 由 {@link #resolvePermissionCode} 前缀兜底)。
-     * F.commission.{id}.status 静态映射到 dispose 类;reject 类(rejected 终态)由 updateCommissionEventStatus
-     * 按 toCanonical 二次分流到 network_f5_commission_reject,EF.sql:64-65 注册。
+     * F.commission.{id}.status 不在此映射:所需权限取决于状态转换,由 updateCommissionEventStatus 按 from/to 精确判定。
      */
     private static final Map<String, String> CONFIG_KEY_PERMISSION = Map.ofEntries(
             Map.entry("directRoyaltyPct", "network_f2_royalty_rate"),
@@ -148,9 +147,7 @@ public class OpsTeamService implements AuditReplayable {
             Map.entry("F.quota.monthlyStock", "network_f4_write"),
             Map.entry("F.leaderboard.poolUsd", "network_f4_pool_fund"),
             Map.entry("F.leaderboard.minUsd", "network_f4_write"),
-            Map.entry("F.leaderboard.period.status", "network_f4_leaderboard_control"),
-            // F5 佣金事件 dispose 类默认权限;rejected 终态由 updateCommissionEventStatus 二次分流到 commission_reject。
-            Map.entry("F.commission.status", "network_f5_commission_dispose"));
+            Map.entry("F.leaderboard.period.status", "network_f4_leaderboard_control"));
 
     /**
      * 动态 key 前缀→权限码兜底(A1 批1a 修复4):CONFIG_KEY_PERMISSION 静态 Map 无法覆盖 F.unilevel.L{n}/F.commission.{id}
@@ -181,10 +178,6 @@ public class OpsTeamService implements AuditReplayable {
         // F.pool.* → pool_fund
         if (key.startsWith("F.pool.")) {
             return "network_f4_pool_fund";
-        }
-        // F.commission.{id}.status → dispose 默认;rejected 由 updateCommissionEventStatus 二次分流 commission_reject
-        if (key.startsWith("F.commission.") && key.endsWith(".status")) {
-            return "network_f5_commission_dispose";
         }
         // F4 · A1 批2b 修复2:F.pool.votes.V{n} 票权动态分发 → f4_write(权重调整非直接放大流出,走常规写)。
         if (key.startsWith("F.pool.votes.")) {
@@ -1253,16 +1246,17 @@ public class OpsTeamService implements AuditReplayable {
         if (!isLegalCommissionStateTransition(fromCanonical, toCanonical)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
-        // A1 批1a 修复3:F5 权限强制 — dispose(frozen/unlocked/settled/paid)与 reject(rejected 终态)分权限。
-        // EF.sql:64-65 注册 network_f5_commission_dispose / network_f5_commission_reject,controller:106 @PreAuthorize 兜底任一。
+        // F5 权限按资金影响分键:冻结/解冻(止损)、解锁/支付(放钱)、红冲(退钱)。
         if (!A2ReplayContext.isReplaying()) {
             Long adminId = parseAdminIdFromContext();
             if (adminId == null) {
                 return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
             }
-            String f5Required = "REJECTED".equals(toCanonical)
-                    ? "network_f5_commission_reject"
-                    : "network_f5_commission_dispose";
+            String f5Required = switch (toCanonical) {
+                case "REJECTED" -> "network_f5_commission_reverse";
+                case "FROZEN", "COOLING" -> "network_f5_commission_freeze";
+                default -> "network_f5_commission_release";
+            };
             if (!permissionCache.getPermissionCodes(adminId).contains(f5Required)) {
                 return ApiResult.fail(403, "PERMISSION_DENIED");
             }

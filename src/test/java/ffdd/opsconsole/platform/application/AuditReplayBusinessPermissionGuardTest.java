@@ -659,7 +659,7 @@ class AuditReplayBusinessPermissionGuardTest {
                         "key", "F.commission.CM-71.status",
                         "value", "frozen",
                         "expectedVersion", 6));
-        authenticate("platform_a2_proposal_create", "network_f5_commission_dispose");
+        authenticate("platform_a2_proposal_create", "network_f5_commission_freeze");
 
         assertThat(guard.validateProposal(freeze).getCode()).isZero();
         AuditOperationProposalRequest request = new AuditOperationProposalRequest(
@@ -693,6 +693,7 @@ class AuditReplayBusinessPermissionGuardTest {
                 "unlock isolated commission", "F5", unlock,
                 new AuditLockTarget("F", "commission_event", "CM-71"), null));
         assertThat(unlockCanonical.getCode()).isZero();
+        assertThat(guard.validateProposal(unlock).getMessage()).endsWith("network_f5_commission_release");
         assertThat(unlockCanonical.getData().amplifies()).isTrue();
         assertThat(unlockCanonical.getData().operationType()).isEqualTo("fund");
 
@@ -728,19 +729,19 @@ class AuditReplayBusinessPermissionGuardTest {
                 new Scenario(
                         new AuditReplayCommand("F", "f5_commission_reverse", Map.of(
                                 "commissionId", "CM-41", "refundRef", "refund-41")),
-                        "network_f5_commission_reject", "CM-41",
+                        "network_f5_commission_reverse", "CM-41",
                         new AuditLockTarget("F", "commission_event", "CM-41"), null),
                 new Scenario(
                         new AuditReplayCommand("F", "f5_commission_reissue", Map.of(
                                 "commissionIds", List.of("CM-41", "CM-42"))),
-                        "network_f5_commission_dispose", "CM-41,CM-42", null,
+                        "network_f5_commission_reissue", "CM-41,CM-42", null,
                         List.of(
                                 new AuditLockTarget("F", "commission_event", "CM-41"),
                                 new AuditLockTarget("F", "commission_event", "CM-42"))),
                 new Scenario(
                         new AuditReplayCommand("F", "f5_commission_suspension", Map.of(
                                 "userId", 41, "kinds", List.of("binary", "network"), "suspended", true)),
-                        "network_f5_commission_reject", "41:binary,network",
+                        "network_f5_commission_suspend", "41:binary,network",
                         new AuditLockTarget("F", "commission_user_kind", "41:binary,network"), null));
 
         for (Scenario scenario : scenarios) {
@@ -763,7 +764,7 @@ class AuditReplayBusinessPermissionGuardTest {
             assertThat(guard.validateProposalContext(missingOrWrongLock).getCode()).isEqualTo(403);
         }
 
-        authenticate("platform_a2_proposal_create", "network_f5_commission_reject");
+        authenticate("platform_a2_proposal_create", "network_f5_commission_reverse");
         AuditReplayCommand crossCall = new AuditReplayCommand("F", "f5_commission_reverse", Map.of(
                 "commissionIds", List.of("CM-41")));
         assertThat(guard.validateProposal(crossCall).getCode()).isZero();

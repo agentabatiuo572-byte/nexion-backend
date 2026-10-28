@@ -63,7 +63,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/commands/**", "platform_"),
             rule("/api/admin/media/**", "device_e1_"),
             // F5 canonical command lives under /users but is owned by the network domain.
-            // Let the controller's exact network_f5_commission_reject guard decide access;
+            // Let the controller's exact network_f5_commission_suspend guard decide access;
             // the generic user_* prefix would otherwise reject valid F5 operators first.
             rule("/api/admin/users/*/commission/suspend", null),
             rule("/api/admin/users/**", "user_"),

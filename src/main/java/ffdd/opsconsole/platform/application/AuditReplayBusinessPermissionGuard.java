@@ -1197,15 +1197,16 @@ public class AuditReplayBusinessPermissionGuard {
                 default -> null;
             };
             // A1 批1a 修复3:F5 佣金事件 A2 越权守卫(原无 F 域 case → 持 platform_a2_proposal_create/approve 可任意处置佣金)。
-            // 按 params.value 目标状态分流 dispose/reject;细分由 OpsTeamService.updateCommissionEventStatus 二次校验兜底。
+            // 按 params.value 目标状态分流 freeze/release/reverse;OpsTeamService.updateCommissionEventStatus 二次校验兜底。
             case "F" -> switch (operation) {
                 case "f_seven_layer_activation" -> "network_f2_policy_amplify";
                 case "f_direct_referral_policy" -> "network_f2_royalty_rate";
                 case "f_config", "f_ui_config", "f_unilevel_rule" ->
                         fConfigAuthority(operation, command.params());
                 case "f_commission_status" -> f5CommissionAuthority(command.params());
-                case "f5_commission_reverse", "f5_commission_suspension" -> "network_f5_commission_reject";
-                case "f5_commission_reissue" -> "network_f5_commission_dispose";
+                case "f5_commission_reverse" -> "network_f5_commission_reverse";
+                case "f5_commission_suspension" -> "network_f5_commission_suspend";
+                case "f5_commission_reissue" -> "network_f5_commission_reissue";
                 case "f_vrank_override" -> "network_f1_promote_user";
                 case "f_reward_payout_action" -> f1RewardPayoutAuthority(command.params());
                 case "f4_pool_settle", "f4_leaderboard_period_payout" -> "network_f4_pool_fund";
@@ -1359,14 +1360,18 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     /**
-     * F5 佣金事件状态处置权限分流:rejected 终态(红冲)→ commission_reject;
-     * 其余 dispose 类(frozen/unlocked/settled/paid)→ commission_dispose。
-     * EF.sql:64-65 注册,f_commission_status 传入 params.value 为新状态(同 OpsTeamService.canonicalCommissionState 归一化)。
+     * F5 佣金事件状态处置权限分流(按目标状态,与 OpsTeamService.canonicalCommissionState 同一归一化):
+     * 红冲 → commission_reverse;冻结/解冻回冷却 → commission_freeze;解锁/结算/支付 → commission_release。
      */
     private String f5CommissionAuthority(Map<String, Object> params) {
         String targetValue = value(params, "value").toLowerCase(Locale.ROOT);
-        boolean isReject = Set.of("rejected", "reversed", "异常回退", "驳回", "红冲").contains(targetValue);
-        return isReject ? "network_f5_commission_reject" : "network_f5_commission_dispose";
+        if (Set.of("rejected", "reversed", "异常回退", "驳回", "红冲").contains(targetValue)) {
+            return "network_f5_commission_reverse";
+        }
+        if (Set.of("frozen", "冻结", "cooling", "pending", "计提").contains(targetValue)) {
+            return "network_f5_commission_freeze";
+        }
+        return "network_f5_commission_release";
     }
 
     private String f1RewardPayoutAuthority(Map<String, Object> params) {

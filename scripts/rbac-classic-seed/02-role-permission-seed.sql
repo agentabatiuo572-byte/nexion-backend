@@ -276,10 +276,28 @@ WHERE r.role_code='SUPER_ADMIN'
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'device_%'
 WHERE r.role_code='GROWTH' AND p.status=1 AND p.is_deleted=0;
--- F 域(network_)：增长
+-- F 域(network_)：增长；F5 佣金资金动作不归增长，见下方 F5 职责矩阵。
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'network_%'
-WHERE r.role_code='GROWTH' AND p.status=1 AND p.is_deleted=0;
+WHERE r.role_code='GROWTH' AND LEFT(p.permission_code,22) <> 'network_f5_commission_'
+  AND p.status=1 AND p.is_deleted=0;
+-- F5 职责矩阵：财务/风控/审计可读；冻结解冻归风控主管与财务主管，暂停归风控主管，
+-- 放钱（解锁/支付、补发）与冲正归财务主管；异常阈值归增长与风控主管。
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK','RISK_LEAD')
+  AND p.permission_code='network_f5_read' AND p.status=1 AND p.is_deleted=0;
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code='RISK_LEAD'
+  AND p.permission_code IN ('network_f5_write','network_f5_commission_freeze','network_f5_commission_suspend')
+  AND p.status=1 AND p.is_deleted=0;
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code='FINANCE_LEAD'
+  AND p.permission_code IN ('network_f5_commission_freeze','network_f5_commission_release',
+                            'network_f5_commission_reverse','network_f5_commission_reissue')
+  AND p.status=1 AND p.is_deleted=0;
 
 -- Sprint5 F1 V-Rank 评估/手动晋升回滚(network_f1_promote_user,HIGH)显式授权 SUPER_ADMIN/GROWTH,
 -- 即使上面 LIKE 'network_%' 通配已覆盖,这里显式补一行表达意图(防 LIKE 通配被改时静默丢失)。

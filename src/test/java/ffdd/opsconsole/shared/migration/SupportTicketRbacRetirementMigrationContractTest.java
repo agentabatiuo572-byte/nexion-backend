@@ -17,18 +17,18 @@ class SupportTicketRbacRetirementMigrationContractTest {
     private static final String MIGRATION = "20261028_support_ticket_rbac_retirement.sql";
 
     @Test
-    void retirementIsTheLastStartupMigrationSoItRunsAfterTheClassicRbacSeed() throws Exception {
+    void retirementRunsInTheStartupChainAfterTheClassicRbacSeed() throws Exception {
         String installer = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"), StandardCharsets.UTF_8);
         var matcher = Pattern.compile("\"scripts\\\\migrations\\\\([^\"]+\\.sql)\"").matcher(installer);
         List<String> migrations = new ArrayList<>();
         while (matcher.find()) migrations.add(matcher.group(1));
         assertThat(migrations).first().isEqualTo("20260712_rbac_classic.sql");
-        assertThat(migrations).last().isEqualTo(MIGRATION);
         assertThat(migrations).containsOnlyOnce(MIGRATION);
+        assertThat(migrations.indexOf(MIGRATION)).isGreaterThan(migrations.indexOf("20261028_janus_retirement.sql"));
 
         List<String> post = Files.readAllLines(Path.of("scripts/fresh_db/post.txt"), StandardCharsets.UTF_8).stream()
                 .map(String::trim).filter(line -> !line.isEmpty() && !line.startsWith("#")).toList();
-        assertThat(post).last().isEqualTo("migrations/" + MIGRATION);
+        assertThat(post).contains("migrations/" + MIGRATION);
         assertThat(post.indexOf("migrations/" + MIGRATION)).isGreaterThan(post.indexOf("migrations/20261028_janus_retirement.sql"));
     }
 
