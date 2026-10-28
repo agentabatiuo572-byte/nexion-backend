@@ -37,7 +37,14 @@ public final class PhoneModelRiskConfig {
     public PhoneModelRisk.Settings save(PhoneModelRisk.Settings next, long expectedRevision, long actor, String reason) {
         if (next == null) throw new BizException(422, "PHONE_RISK_SETTINGS_INVALID");
         config.insertAdminValueIfMissing(KEY, encode(PhoneModelRisk.Settings.DEFAULTS), "JSON", "e6_compute", "手机机型风控");
-        PhoneModelRisk.Settings before = parse(config.activeValueForUpdate(KEY).orElse(null));
+        PhoneModelRisk.Settings before;
+        try {
+            before = parse(config.activeValueForUpdate(KEY).orElse(null));
+        } catch (BizException unreadable) {
+            // read() shows the defaults (revision 0) for an unreadable value; let E6 overwrite it from there.
+            LOG.error("phone model risk settings {} are unreadable; replacing them", KEY, unreadable);
+            before = PhoneModelRisk.Settings.DEFAULTS;
+        }
         if (before.revision() != expectedRevision) throw new BizException(409, "PHONE_RISK_SETTINGS_VERSION_CONFLICT");
         PhoneModelRisk.Settings saved = new PhoneModelRisk.Settings(before.revision() + 1, next.installModelLock(),
                 next.osVersion(), next.screenScale(), next.screenSize(), next.missingSignals(), next.accountModelChurn(),
