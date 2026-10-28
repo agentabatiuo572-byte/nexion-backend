@@ -61,28 +61,28 @@ public class OpsKillSwitchService {
     private static final DateTimeFormatter CHANGE_TIME = DateTimeFormatter.ofPattern("MM-dd HH:mm");
 
     private static final List<GateSeed> GATE_SEEDS = List.of(
-            new GateSeed("withdraw", "提现闸", "提现申请、审核与链上广播", "控制所有提现资金出口", "提现出口一键止血", true, true, "immediate", ""),
-            new GateSeed("staking", "质押闸", "新质押与高息档恢复", "控制新增质押和未来利息负债", "恢复会增加未来利息负债", true, true, "delayed", ""),
-            new GateSeed("genesis", "Genesis 闸", "创世节点购买与二级市场", "控制节点购买、分红和交易流", "恢复会立即放大节点排放和交易流", true, true, "immediate", ""),
-            new GateSeed("exchange", "兑换闸", "NEX 与 USDT 兑换", "控制兑换资金出口", "兑换出口一键止血", true, true, "immediate", ""),
-            new GateSeed("trial", "试用闸", "试用权益派发与续期", "控制不直接出金的试用权益", "不直接出钱但影响增长权益", false, false, "none", ""));
+            new GateSeed("withdraw", "提现开关", "提现申请、审核和链上转账", "控制所有提现", "出现资金风险时一键停止提现", true, true, "immediate", ""),
+            new GateSeed("staking", "质押开关", "新增质押和高收益档位", "控制新增质押和以后要付的利息", "恢复后，以后要付的利息会增加", true, true, "delayed", ""),
+            new GateSeed("genesis", "创世节点开关", "创世节点购买和转让市场", "控制节点购买、分红和交易", "恢复后，节点分红和交易会马上增加", true, true, "immediate", ""),
+            new GateSeed("exchange", "兑换开关", "UVT 与 USDT 兑换", "控制兑换", "出现资金风险时一键停止兑换", true, true, "immediate", ""),
+            new GateSeed("trial", "试用开关", "试用权益发放和续期", "控制试用权益（不直接付钱）", "不直接付钱，但会影响拉新", false, false, "none", ""));
 
     private static final List<EmergencySlaSeed> EMERGENCY_SLA_SEEDS = List.of(
-            new EmergencySlaSeed("autoConfirmMins", "自动关停补录时限", "R1/R2 自动关停后，值班人员须在此时限内补录处置理由", "30", "分钟", "number", true),
+            new EmergencySlaSeed("autoConfirmMins", "自动关停补录时限", "R1/R2 自动关停后，值班人员要在这个时间内补填处理原因", "30", "分钟", "number", true),
             new EmergencySlaSeed("recoverGate", "恢复业务的备付金门槛", "备付金覆盖率达到这条线,才允许恢复会往外付钱的业务", "", "%", "number", false));
 
     private static final List<AutoRuleSeed> AUTO_RULE_SEEDS = List.of(
             new AutoRuleSeed("withdrawSurge", "提现激增 / 挤兑", "资金安全 · R1", "surge",
-                    List.of("24h 提现申请额 ÷ 真实储备 ≥ ", "40%", "(B5 挤兑红线)→ 自动熔断 ", "提现", ""),
-                    "触发阈值", "40", "number", "%", "automatic", false, "同 B5 挤兑红线", "阈值权威归 B5(bankrunRed,默认 40%),J1 引用不另持"),
+                    List.of("24 小时提现申请额 ÷ 真实储备 ≥ ", "40%", "（挤兑红线）→ 自动暂停 ", "提现", ""),
+                    "触发阈值", "40", "number", "%", "automatic", false, "与「风险提醒」的挤兑红线相同", "这个阈值在「风险提醒」设置（默认 40%），这里只引用"),
             new AutoRuleSeed("maturityGap", "对账缺口", "资金安全 · R2", "gap",
-                    List.of("钱包余额与最新账本余额差额 > ", "50,000 USDT", " → 自动熔断 ", "兑换", "(停止 NEX↔USDT 流出,待对账恢复)"),
+                    List.of("钱包余额与最新账本余额相差 > ", "50,000 USDT", " → 自动暂停 ", "兑换", "（对账恢复正常后再开放）"),
                     "触发阈值", "50000", "number", "USDT", "automatic", true, "", ""),
             new AutoRuleSeed("tamperCluster", "篡改告警激增", "风控 · R3", "shield",
-                    List.of("单账户超 ", "告警阈值", " 或全域环比突增 → ", "仅自动告警 · 人工研判后手动熔断", "(J3 不持处置权)"),
-                    "触发阈值", "10", "number", "次 / 24h", "advisory", false, "同 J3 告警阈值", "阈值与 J3 告警阈值配置同源,调整在 J3 页头完成"),
+                    List.of("单账户超过 ", "告警阈值", " 或全平台环比突增 → ", "只自动告警，人工判断后再手动暂停", "（「篡改防御监控」只告警，不自动处理）"),
+                    "触发阈值", "10", "number", "次 / 24 小时", "advisory", false, "与「篡改防御监控」的告警阈值相同", "这个阈值在「篡改防御监控」页面顶部调整"),
             new AutoRuleSeed("regulatoryDirective", "监管指令", "合规 · R4", "clock",
-                    List.of("监管点名 / 法务事件(事由必填)→ ", "人工经应急快速通道发起", "(机器不替监管判定)", "", ""),
+                    List.of("监管点名或法务事件（必须填写原因）→ ", "由人工通过应急快速通道发起", "（系统不自动判断）", "", ""),
                     "触发方式", "人工 · 应急快速通道", "text", "", "manual", false, "", ""));
 
     private final EmergencyControlRepository emergencyRepository;
@@ -400,7 +400,7 @@ public class OpsKillSwitchService {
                             : "KILL_SWITCH_RECOVERY_CONFLICT");
         }
         writeEmergencyFlag(normalizedKey, false, actor);
-        writeLastChange(normalizedKey, actor, "下游联动恢复");
+        writeLastChange(normalizedKey, actor, "关联业务自动恢复");
         return matrix(coverage);
     }
 
@@ -479,7 +479,7 @@ public class OpsKillSwitchService {
                 reason,
                 "J4",
                 "J4_ROLLBACK:" + normalizedExecutionId + ":" + normalizedKey);
-        writeLastChange(normalizedKey, actor, "J4 回滚 " + normalizedExecutionId);
+        writeLastChange(normalizedKey, actor, "应急处理回滚 " + normalizedExecutionId);
         return restored;
     }
 
@@ -1011,7 +1011,7 @@ public class OpsKillSwitchService {
             row.put("tag", seed.tag());
             row.put("icon", seed.icon());
             row.put("cond", "withdrawSurge".equals(seed.id())
-                    ? List.of("24h 提现申请额 ÷ 真实储备 ≥ ", threshold + "%", "(B5 挤兑红线)→ 自动熔断 ", "提现", "")
+                    ? List.of("24 小时提现申请额 ÷ 真实储备 ≥ ", threshold + "%", "（挤兑红线）→ 自动暂停 ", "提现", "")
                     : seed.condition());
             row.put("thrK", seed.thresholdKey());
             row.put("thr", threshold);

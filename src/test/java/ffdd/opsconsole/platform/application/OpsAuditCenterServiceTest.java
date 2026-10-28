@@ -1088,7 +1088,7 @@ class OpsAuditCenterServiceTest {
                 new AuditMechanismParamUpdateRequest("v4", "registered schema v4 rollout", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().value()).isEqualTo("统一 schema · v4");
+        assertThat(result.getData().value()).isEqualTo("统一字段 · v4");
         assertThat(repository.items.get(A2RuntimePolicy.SCHEMA_VERSION_KEY).configValue()).isEqualTo("v4");
         verify(auditLogService).recordRequired(any());
     }
@@ -1216,7 +1216,7 @@ class OpsAuditCenterServiceTest {
                 new AuditMechanismParamUpdateRequest("v".repeat(33), "reject oversized schema version", "superadmin"));
 
         assertThat(valid.getCode()).isZero();
-        assertThat(valid.getData().value()).isEqualTo("统一 schema · v4");
+        assertThat(valid.getData().value()).isEqualTo("统一字段 · v4");
         assertThat(invalidChars.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(tooLong.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
     }

@@ -413,9 +413,9 @@ class OpsBiServiceTest {
                 .containsEntry("networkTreeExport", true)
                 .containsEntry("configMutation", false);
         assertThat(result.getData().get("exportParams").toString())
-                .contains("24 小时", "100 万", "不可关闭");
+                .contains("24 小时", "100 万", "始终禁止");
         assertThat(result.getData().get("maskRules").toString())
-                .contains("手机号", "卡 Token", "服务端阻断");
+                .contains("手机号", "卡 Token", "系统禁止");
         assertThat(result.getData().get("crossModuleBlockers").toString())
                 .doesNotContain("D4_BILL_EXPORT")
                 .doesNotContain("I5_REGULATORY")
@@ -1149,7 +1149,7 @@ class OpsBiServiceTest {
                 .contains("\"钱包账单\",\"钱包账单总数\",\"12\",\"笔\",\"钱包流水\"")
                 .contains("\"钱包账单\",\"收益账单\",\"4\",\"笔\",\"钱包流水\"")
                 .contains("\"钱包账单\",\"团队佣金账单\",\"3\",\"笔\",\"钱包流水\"")
-                .contains("\"钱包账单\",\"Genesis 排放账单\",\"1\",\"笔\",\"钱包流水\"")
+                .contains("\"钱包账单\",\"创世节点分红账单\",\"1\",\"笔\",\"钱包流水\"")
                 .contains("\"钱包账单\",\"退款账单\",\"2\",\"笔\",\"钱包流水\"")
                 .doesNotContain("report_id")
                 .doesNotContain("nx_");
@@ -1236,8 +1236,8 @@ class OpsBiServiceTest {
         assertThat(reportRepository.report.status()).isEqualTo("READY");
         assertThat(reportRepository.snapshots.get(reportRepository.report.reportId()))
                 .contains("\"分类\",\"周期/阶段\",\"运营指标\",\"值\",\"单位\",\"数据来源\"")
-                .contains("\"设备\",\"当前窗口 / ALL\",\"期间设备购置数\",\"0\",\"条\",\"A4 设备/产出事件\"")
-                .contains("\"网络\",\"当前窗口 / ALL\",\"佣金事件数\",\"7\",\"条\",\"A4/F 团队事件\"")
+                .contains("\"设备\",\"当前窗口 / ALL\",\"期间设备购置数\",\"0\",\"条\",\"设备与产出事件\"")
+                .contains("\"网络\",\"当前窗口 / ALL\",\"佣金事件数\",\"7\",\"条\",\"团队事件\"")
                 .contains("\"期间产出 UVT\",\"1.25\",\"UVT\"")
                 .contains("\"期间产出 USDT\",\"2.50\",\"USDT\"")
                 .doesNotContain("NEX")

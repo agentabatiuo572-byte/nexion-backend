@@ -19,7 +19,7 @@ INSERT INTO nx_nova_social_distribution
 VALUES
   ('withdrawal', '提现到账', 30, 'var(--admin-cat-3)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0),
   ('vrank', 'V 等级晋升', 25, 'var(--admin-cat-5)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0),
-  ('genesis', 'Genesis 成交', 25, 'var(--admin-cat-7)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0),
+  ('genesis', '创世节点成交', 25, 'var(--admin-cat-7)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0),
   ('aiClient', 'AI 客户消费', 0, 'var(--admin-cat-2)', 'system', '真实数据源未接入，默认不参与抽样', NOW(), NOW(), 0),
   ('newUsers', '每小时新增用户', 20, 'var(--admin-cat-4)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE dist_key = VALUES(dist_key);

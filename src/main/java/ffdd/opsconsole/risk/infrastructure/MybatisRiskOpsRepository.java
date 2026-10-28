@@ -297,7 +297,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         int appliedPoints = Math.max(0, after - before);
         mapper.insertTamperScoreContribution(
                 canonicalUserNo,
-                "服务器篡改拦截事件 " + signalNo,
+                "篡改拦截事件 " + signalNo,
                 appliedPoints);
         // B5 reads the same committed nx_risk_signal rows in its radar feed, so successful insertion
         // is the durable B5 acceptance boundary rather than a locally inferred UI flag.
@@ -1246,9 +1246,9 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     private void projectActiveModel(RiskScoreModelView model) {
         if (!K4RiskScorer.isCurrentModelSnapshot(model)) return;
         List<String[]> metadata = List.of(
-                new String[]{"multiAccount", "多账户", "K1 多账户簇"},
-                new String[]{"arbitrage", "套利与刷量", "K2 套利信号"},
-                new String[]{"withdrawVelocity", "提现速度", "24 小时提现事实"},
+                new String[]{"multiAccount", "多账户", "多账户风险排查"},
+                new String[]{"arbitrage", "套利与刷量", "异常套利与刷量排查"},
+                new String[]{"withdrawVelocity", "提现速度", "近 24 小时提现记录"},
                 new String[]{"accountAge", "账户年龄", "用户注册时间"},
                 new String[]{"anomalyBehavior", "异常行为", "行为与篡改事件"});
         for (int index = 0; index < metadata.size(); index++) {

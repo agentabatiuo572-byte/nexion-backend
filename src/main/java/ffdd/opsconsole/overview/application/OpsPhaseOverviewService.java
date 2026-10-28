@@ -29,14 +29,14 @@ public class OpsPhaseOverviewService {
     private static final Pattern PHASE = Pattern.compile("P[1-6]");
     private static final Set<String> GRANULARITIES = Set.of("PHASE", "MONTH");
     private static final List<DialDefinition> DIALS = List.of(
-            dial("newUserBonusMultiplier", "新用户加成", "倍", "H3–H6 域 V3 后生效", false),
-            dial("inviteRewardMultiplier", "邀请加成", "倍", "H3–H6 域 V3 后生效", false),
-            dial("reinvestMultiplier", "复投加成", "倍", "G7 域 V3 后生效", false),
-            dial("withdrawPenaltyFeeRate", "提现惩罚费率", "%", "D 域 V1 已生效", true),
-            dial("withdrawCooldownDays", "提现冷却", "天", "D 域 V1 已生效", true),
-            dial("binaryDailyCap", "双轨日封顶", "USDT", "F 域 V2 后生效", false),
-            dial("questBonusMultiplier", "任务加成", "倍", "H3 域 V3 后生效", false),
-            dial("complianceHoldEnabled", "增强合规审查", "", "D 域 V1 已生效", true));
+            dial("newUserBonusMultiplier", "新用户加成", "倍", "相关功能上线后生效", false),
+            dial("inviteRewardMultiplier", "邀请加成", "倍", "相关功能上线后生效", false),
+            dial("reinvestMultiplier", "复投加成", "倍", "复投激励上线后生效", false),
+            dial("withdrawPenaltyFeeRate", "提现惩罚费率", "%", "已生效", true),
+            dial("withdrawCooldownDays", "提现冷却", "天", "已生效", true),
+            dial("binaryDailyCap", "左右团队每日封顶", "USDT", "左右团队结算上线后生效", false),
+            dial("questBonusMultiplier", "任务加成", "倍", "用户任务上线后生效", false),
+            dial("complianceHoldEnabled", "增强合规审查", "", "已生效", true));
 
     private final OpsPhaseMapper mapper;
     private final GrowthRhythmFacade growthRhythmFacade;
@@ -71,12 +71,12 @@ public class OpsPhaseOverviewService {
                 "nextPivot", nextPivot(current),
                 "monthLeverCombo", leverCombo(selected),
                 "attributionLinks", List.of(
-                        linked("key", "H1", "label", "H1 Phase 效果归因", "href", h1AttributionHref(filter.phase(), current.currentPhase())),
-                        linked("key", "B3", "label", "B3 转化归因", "href", "/overview/funnel?phase=" + valueOrAll(filter.phase())),
-                        linked("key", "B1", "label", "B1 全局资金健康", "href", "/overview/dual-ledger"),
-                        linked("key", "B2", "label", "B2 全局到期与资金池", "href", "/overview/liquidity")),
-                "sourceStatement", "H1 当前月权威节奏；B4 只读展示，不在本地重算或修改",
-                "sources", List.of("H1 当前月权威值", "账户创建时间聚合", "A2 管理审计"),
+                        linked("key", "H1", "label", "运营阶段效果分析", "href", h1AttributionHref(filter.phase(), current.currentPhase())),
+                        linked("key", "B3", "label", "用户转化分析", "href", "/overview/funnel?phase=" + valueOrAll(filter.phase())),
+                        linked("key", "B1", "label", "资金与应付款总览", "href", "/overview/dual-ledger"),
+                        linked("key", "B2", "label", "可用资金与应付款", "href", "/overview/liquidity")),
+                "sourceStatement", "按「运营阶段设置」的当前月份展示，这里只能查看，不能修改",
+                "sources", List.of("运营阶段设置", "账户注册时间统计", "操作记录"),
                 "asOf", OffsetDateTime.now().toString());
         audit("admin.phase_overview_viewed", "GET", "READ", linked(
                 "granularity", filter.granularity(),
@@ -199,7 +199,7 @@ public class OpsPhaseOverviewService {
                     "label", definition.label(),
                     "currentValue", value,
                     "unit", definition.unit(),
-                    "source", "H1 月 " + current.currentMonth() + " 权威值",
+                    "source", "运营阶段设置 · 第 " + current.currentMonth() + " 个月",
                     "v1Status", definition.v1Status(),
                     "v1Active", definition.v1Active(),
                     "adjustHref", "/growth/phase?dial=" + definition.key()
@@ -213,7 +213,7 @@ public class OpsPhaseOverviewService {
                     "atMonth", null,
                     "daysLeft", null,
                     "changes", List.of(),
-                    "basis", "H1 当前月份",
+                    "basis", "运营阶段设置的当前月份",
                     "message", "已到节奏最后一个月");
         }
         int nextMonth = current.currentMonth() + 1;
@@ -231,7 +231,7 @@ public class OpsPhaseOverviewService {
                 "atMonth", nextMonth,
                 "daysLeft", null,
                 "changes", changes,
-                "basis", "H1 尚未提供下一切换时间",
+                "basis", "还没有设置下次切换时间",
                 "message", "月 " + nextMonth + " 的配置变化已确认，切换时间暂不可用");
     }
 
@@ -305,7 +305,7 @@ public class OpsPhaseOverviewService {
         }
         candidates.add(lever("提现", "费率 " + plain(snapshot.withdrawPenaltyFeeRate()) + "% / 冷却 "
                 + snapshot.withdrawCooldownDays() + " 天", "控制资金流出节奏"));
-        candidates.add(lever("结算", "双轨日封顶 " + plain(snapshot.binaryDailyCap()) + " USDT", "限制单日佣金峰值"));
+        candidates.add(lever("结算", "左右团队每日封顶 " + plain(snapshot.binaryDailyCap()) + " USDT", "限制单日佣金峰值"));
         return List.copyOf(candidates.subList(0, Math.min(3, candidates.size())));
     }
 
