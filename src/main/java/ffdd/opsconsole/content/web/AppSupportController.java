@@ -4,10 +4,7 @@ import ffdd.opsconsole.content.application.AppSupportService;
 import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.domain.ContentConversationDetail;
 import ffdd.opsconsole.content.domain.ContentConversationView;
-import ffdd.opsconsole.content.domain.ConversationTicketResult;
 import ffdd.opsconsole.content.domain.SupportFaqView;
-import ffdd.opsconsole.content.domain.SupportTicketDetail;
-import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import java.util.List;
@@ -29,15 +26,6 @@ import org.springframework.web.bind.annotation.RestController;
 public class AppSupportController {
     private final AppSupportService service;
     private final ProductionSupportPathGuard productionPathGuard;
-    private final ffdd.opsconsole.content.application.SupportTicketCreationPolicyService creationPolicy;
-
-    @GetMapping("/tickets/creation-policy")
-    public ApiResult<ffdd.opsconsole.content.application.SupportTicketCreationPolicyService.CreationPolicy> ticketCreationPolicy(
-            Authentication authentication, jakarta.servlet.http.HttpServletResponse response) {
-        response.setHeader("Cache-Control", "no-store");
-        Long userId = userId(authentication);
-        return guarded(userId) ? ApiResult.ok(creationPolicy.policy(userId)) : forbidden();
-    }
 
     @GetMapping("/advisor")
     public ApiResult<ffdd.opsconsole.content.domain.AppSupportAdvisorView> advisor(
@@ -48,69 +36,6 @@ public class AppSupportController {
         if (!guarded(userId)) return forbidden();
         if (!parameters.isEmpty()) return ApiResult.fail(422, "SUPPORT_ADVISOR_PARAMETERS_UNSUPPORTED");
         return service.advisor(userId);
-    }
-
-    @GetMapping("/tickets")
-    public ApiResult<PageResult<SupportTicketView>> tickets(
-            @RequestParam(required = false) String status,
-            @RequestParam(required = false) Long pageNum,
-            @RequestParam(required = false) Long pageSize,
-            Authentication authentication) {
-        Long userId = userId(authentication);
-        return guarded(userId) ? service.tickets(userId, status, pageNum, pageSize) : forbidden();
-    }
-
-    @GetMapping("/tickets/cursor")
-    public ApiResult<PageResult<SupportTicketView>> ticketCursor(
-            @RequestParam(required = false) String status,
-            @RequestParam(required = false) Long beforeId,
-            @RequestParam(required = false) Long pageSize,
-            Authentication authentication) {
-        Long userId = userId(authentication);
-        return guarded(userId) ? service.ticketCursor(userId, status, beforeId, pageSize) : forbidden();
-    }
-
-    @PostMapping("/tickets/{ticketNo}/read")
-    public ApiResult<SupportTicketDetail> markTicketRead(@PathVariable String ticketNo,
-            @RequestBody AppSupportService.CloseRequest request, Authentication authentication) {
-        Long userId = userId(authentication);
-        return guarded(userId) ? service.markTicketRead(userId, ticketNo, request) : forbidden();
-    }
-
-    @GetMapping("/tickets/{ticketNo}")
-    public ApiResult<SupportTicketDetail> ticket(@PathVariable String ticketNo,
-            @RequestParam(required = false) Long beforeMessageId, Authentication authentication) {
-        Long userId = userId(authentication);
-        return guarded(userId) ? service.ticket(userId, ticketNo, beforeMessageId) : forbidden();
-    }
-
-    @PostMapping("/tickets")
-    public ApiResult<SupportTicketDetail> createTicket(
-            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-            @RequestBody AppSupportService.CreateTicketRequest request,
-            Authentication authentication) {
-        Long userId = userId(authentication);
-        return guarded(userId) ? service.createTicket(userId, idempotencyKey, request) : forbidden();
-    }
-
-    @PostMapping("/tickets/{ticketNo}/replies")
-    public ApiResult<SupportTicketDetail> replyTicket(
-            @PathVariable String ticketNo,
-            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-            @RequestBody AppSupportService.ReplyRequest request,
-            Authentication authentication) {
-        Long userId = userId(authentication);
-        return guarded(userId) ? service.replyTicket(userId, ticketNo, idempotencyKey, request) : forbidden();
-    }
-
-    @PostMapping("/tickets/{ticketNo}/close")
-    public ApiResult<SupportTicketDetail> closeTicket(
-            @PathVariable String ticketNo,
-            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-            @RequestBody AppSupportService.CloseRequest request,
-            Authentication authentication) {
-        Long userId = userId(authentication);
-        return guarded(userId) ? service.closeTicket(userId, ticketNo, idempotencyKey, request) : forbidden();
     }
 
     @GetMapping("/conversations")
@@ -181,18 +106,6 @@ public class AppSupportController {
         return guarded(userId) ? service.replyConversation(userId, conversationNo, idempotencyKey, request) : forbidden();
     }
 
-    @PostMapping("/conversations/{conversationNo}/ticket")
-    public ApiResult<ConversationTicketResult> convertConversationToTicket(
-            @PathVariable String conversationNo,
-            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-            @RequestBody AppSupportService.ConvertToTicketRequest request,
-            Authentication authentication) {
-        Long userId = userId(authentication);
-        return guarded(userId)
-                ? service.convertConversationToTicket(userId, conversationNo, idempotencyKey, request)
-                : forbidden();
-    }
-
     @GetMapping("/faqs")
     public ApiResult<List<SupportFaqView>> faqs(
             @RequestParam(required = false) String language,
@@ -218,12 +131,6 @@ public class AppSupportController {
     // Kept for direct controller callers compiled against the original three-argument contract.
     ApiResult<List<SupportFaqView>> faqs(String language, String category, Authentication authentication) {
         return faqs(language, category, null, authentication);
-    }
-
-    @GetMapping("/sla-targets")
-    public ApiResult<List<AppSupportService.AppSupportSlaTarget>> slaTargets(Authentication authentication) {
-        Long userId = userId(authentication);
-        return guarded(userId) ? service.slaTargets(userId) : forbidden();
     }
 
     @GetMapping("/commands/{key}")

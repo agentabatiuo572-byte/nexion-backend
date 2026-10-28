@@ -171,13 +171,6 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
                 now);
     }
 
-    @Override
-    public boolean updateSlaCas(String category, SupportSlaUpdateRequest request, Long expectedVersion, LocalDateTime now) {
-        return slaRuleMapper.updateRule(
-                category.trim().toLowerCase(Locale.ROOT), request.firstResponseMins(), request.resolutionHours(),
-                request.queue().trim(), request.escalation().trim(), expectedVersion, now) == 1;
-    }
-
     private int toDbStatus(String status) {
         return "DRAFT".equalsIgnoreCase(status) ? 0 : 1;
     }

@@ -65,11 +65,8 @@ public class OpsOptionsService {
             case "review-status", "review-statuses" -> ApiResult.ok(options("展示", "published", "隐藏", "hidden"));
             case "transfer-targets" -> ApiResult.ok(optionRows(optionsMapper::transferTargets));
             case "support-agents" -> ApiResult.ok(optionRows(optionsMapper::supportAgents));
-            case "support-ticket-category", "support-ticket-categories" -> ApiResult.ok(options("账号问题", "account", "提现问题", "withdrawal", "充值问题", "deposit", "硬件设备", "hardware", "收益问题", "earnings", "Genesis 权益", "genesis", "技术问题", "technical", "其他", "other"));
-            case "support-ticket-status", "support-ticket-statuses" -> ApiResult.ok(options("待处理", "OPEN", "处理中", "IN_PROGRESS", "待用户回复", "PENDING_USER", "已解决", "RESOLVED", "已关闭", "CLOSED"));
-            case "support-ticket-priority", "support-ticket-priorities" -> ApiResult.ok(options("低", "LOW", "普通", "NORMAL", "高", "HIGH", "紧急", "URGENT"));
             case "support-faq-category", "support-faq-categories" -> ApiResult.ok(options("通用", "general", "账号问题", "account", "提现问题", "withdrawal", "充值问题", "deposit", "硬件设备", "hardware", "收益问题", "earnings", "Genesis 权益", "genesis", "技术问题", "technical", "其他", "other"));
-            case "support-faq-surface", "support-faq-surfaces" -> ApiResult.ok(options("帮助中心", "Help Center", "创建工单页", "Ticket Create", "Nova AI", "Nova"));
+            case "support-faq-surface", "support-faq-surfaces" -> ApiResult.ok(options("帮助中心", "Help Center", "Nova AI", "Nova"));
             case "support-faq-status", "support-faq-statuses" -> ApiResult.ok(options("已发布", "PUBLISHED", "草稿", "DRAFT"));
             case "support-sla-queue", "support-sla-queues" -> ApiResult.ok(optionRows(optionsMapper::supportSlaQueues));
             case "support-sla-escalation", "support-sla-escalations" -> ApiResult.ok(optionRows(optionsMapper::supportSlaEscalations));

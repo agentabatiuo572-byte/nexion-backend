@@ -175,103 +175,6 @@ class SupportBindingRuntimeTest {
         Files.writeString(Path.of(System.getenv("S3_EVIDENCE_DIR"),"send-transfer-evidence.json"),"{\"sendFirstCommitsBeforeTransfer\":true,\"transferFirstRevokesWaitingSend\":true}");
     }
 
-    @Test void convertedPrivateTextIsHiddenButInternalCollaborationRemains() throws Exception {
-        long boss=admin("PRIVATE_BOSS","SUPER_ADMIN","MANAGER"),first=admin("PRIVATE_G1","SUPPORT","DEDICATED"),second=admin("PRIVATE_G2","SUPPORT","DEDICATED");
-        serviceMembers(boss,first,second);
-        String one=token(first),two=token(second),superToken=token(boss);
-        for(boolean appConversion:List.of(false,true)) {
-            as(boss);long customer=register(appConversion?"PRIVATE_APP":"PRIVATE_ADMIN",null);transfer(first,List.of(customer),key());
-            String marker="private"+UUID.randomUUID().toString().replace("-","");
-            var c=app.startConversation(customer,key(),new AppSupportService.StartConversationRequest("support",marker)).getData().conversation();
-            long through=jdbc.queryForObject("SELECT MAX(id) FROM nx_conversation_message WHERE conversation_no=? AND sender_type='user'",Long.class,c.conversationNo());
-            assertThat(http("POST","/api/admin/content/conversations/"+c.conversationNo()+"/replies",one,
-                Map.of("body","Handled source question","expectedStatus",c.status(),"expectedVersion",c.version(),"replyTargets",List.of(Map.of("conversationNo",c.conversationNo(),"throughMessageId",through)),"reason","Private source preparation"),key()).path("code").asInt()).isZero();
-            var fresh=app.conversation(customer,c.conversationNo()).getData().conversation();String customerToken=userToken(customer);
-            String path=(appConversion?"/api/app/support":"/api/admin/content")+"/conversations/"+c.conversationNo()+"/ticket";
-            var converted=http("POST",path,appConversion?customerToken:one,Map.of("category","withdrawal","priority","NORMAL","title",marker,"expectedStatus",fresh.status(),"expectedVersion",fresh.version(),"reason","Private transcript conversion"),key());
-            assertThat(converted.path("code").asInt()).as("convert %s: %s",appConversion,converted).isZero();
-            var ticket=converted.path("data").path("ticket").path("ticket");String no=ticket.path("ticketNo").asText();
-            assertThat(no).isNotBlank();assertThat(ticket.path("sourceConversationNo").asText()).isEqualTo(c.conversationNo());
-            String endpoint="/api/admin/content/tickets/"+no,noteKey=key();
-            var note=Map.of("body","Internal coordination stays readable","expectedStatus",ticket.path("status").asText(),"expectedVersion",ticket.path("version").asLong(),"reason","Internal coordination verification");
-            assertThat(http("POST",endpoint+"/internal-notes",one,note,noteKey).toString()).contains(marker);
-            as(boss);transfer(second,List.of(customer),key());
-            var hidden=http("GET",endpoint,one,null,null);assertCustomerNotFound(hidden);
-            assertThat(hidden.toString()).doesNotContain(marker,"Internal coordination stays readable");
-            for(String query:List.of("userId="+customer,"keyword="+marker)) {
-                var listing=http("GET","/api/admin/content/tickets?scope=all&"+query,one,null,null);
-                assertThat(listing.path("code").asInt()).isZero();assertThat(listing.path("data").path("total").isIntegralNumber()).isTrue();
-                assertThat(listing.path("data").path("total").asLong()).isZero();assertThat(listing.path("data").path("records").isArray()).isTrue();assertThat(listing.path("data").path("records")).isEmpty();
-                assertThat(listing.toString()).doesNotContain(marker,"Internal coordination stays readable");
-            }
-            assertCustomerNotFound(http("POST",endpoint+"/internal-notes",one,note,noteKey));
-            var acquired=http("GET",endpoint,two,null,null);assertThat(acquired.path("code").asInt()).isZero();
-            assertThat(acquired.toString()).contains(marker,"Internal coordination stays readable");
-            var h=acquired.path("data").path("ticket");
-            var status=Map.of("status","IN_PROGRESS","expectedStatus",h.path("status").asText(),"expectedVersion",h.path("version").asLong(),"reason","Current advisor collaboration after transfer");
-            assertCustomerNotFound(http("PATCH",endpoint+"/status",one,status,key()));
-            var changed=http("PATCH",endpoint+"/status",two,status,key());
-            assertThat(changed.path("code").asInt()).isZero();assertThat(changed.toString()).contains(marker,"Internal coordination stays readable");
-            var next=changed.path("data").path("ticket");
-            var newNote=Map.of("body","Current advisor may coordinate internally","expectedStatus",next.path("status").asText(),"expectedVersion",next.path("version").asLong(),"reason","Current advisor internal permission preserved");
-            assertCustomerNotFound(http("POST",endpoint+"/internal-notes",one,newNote,key()));
-            var secondNote=http("POST",endpoint+"/internal-notes",two,newNote,key());
-            assertThat(secondNote.path("code").asInt()).isZero();assertThat(secondNote.toString()).contains(marker,"Current advisor may coordinate internally");
-            for(String allowed:List.of(two,superToken)) {
-                var allowedDetail=http("GET",endpoint,allowed,null,null);assertThat(allowedDetail.path("code").asInt()).isZero();
-                assertThat(allowedDetail.toString()).contains(marker,"Internal coordination stays readable","Current advisor may coordinate internally");
-            }
-            var appDetail=http("GET","/api/app/support/tickets/"+no,customerToken,null,null);assertThat(appDetail.path("code").asInt()).isZero();
-            assertThat(appDetail.toString()).contains(marker).doesNotContain("Internal coordination stays readable","Current advisor may coordinate internally");
-            var current=http("GET",endpoint,two,null,null).path("data").path("ticket");String privateKey=key();
-            var privateReply=Map.of("body","Private reply "+marker,"expectedStatus",current.path("status").asText(),"expectedVersion",current.path("version").asLong(),"reason","Module read revocation verification");
-            assertThat(http("POST",endpoint+"/replies",two,privateReply,privateKey).path("code").asInt()).isZero();
-            var preEscalation=http("GET",endpoint,two,null,null).path("data").path("ticket");String escalationKey=key();
-            var escalation=Map.of("ownerAgentId",String.valueOf(second),"expectedStatus",preEscalation.path("status").asText(),"expectedVersion",preEscalation.path("version").asLong(),"reason","Restricted escalation replay contract");
-            if(!appConversion)assertThat(http("POST",endpoint+"/escalate",two,escalation,escalationKey).path("code").asInt()).isZero();
-            var grants=jdbc.queryForList("SELECT rp.id FROM nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE r.role_code='SUPPORT' AND p.permission_code='service_m3_read' AND rp.is_deleted=0",Long.class);
-            try {
-                grants.forEach(id->SharedMutationJournal.sql(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-disable-3","UPDATE nx_admin_role_permission SET is_deleted=1 WHERE id=?",id));permissions.evict(second);
-                assertThat(http("GET",endpoint,two,null,null).toString()).doesNotContain(marker);
-                var receipt=http("GET","/api/admin/content/support-workbench/commands/"+privateKey,two,null,null);
-                assertThat(receipt.path("code").asInt()).isZero();assertThat(receipt.toString()).doesNotContain(marker);
-                assertThat(http("POST",endpoint+"/replies",two,privateReply,privateKey).toString()).doesNotContain(marker);
-                var escalated=http("POST",endpoint+"/escalate",two,escalation,escalationKey);
-                assertThat(escalated.path("code").asInt()).as("restricted escalate: %s",escalated).isZero();
-                assertThat(escalated.path("data").path("conversation").path("conversationNo").asText()).isNotBlank();
-                assertThat(escalated.toString()).doesNotContain(marker);
-                String escalatedNo=escalated.path("data").path("conversation").path("conversationNo").asText();
-                var beforeReplay=escalationFacts(customer,no,escalatedNo,second,escalationKey);
-                assertThat(beforeReplay.get("tickets")).isEqualTo(1L);
-                assertThat(beforeReplay.get("conversations")).isEqualTo(2L);
-                assertThat(((Map<?,?>)beforeReplay.get("conversationMessages")).get("escalationOpenings")).isEqualTo(1L);
-                assertThat(beforeReplay.get("successAudits")).isEqualTo(1L);
-                var replay=http("POST",endpoint+"/escalate",two,escalation,escalationKey);
-                assertThat(replay.toString()).doesNotContain(marker);
-                var firstTime=escalated.at("/data/ticket/slaTarget/evaluatedAt");
-                var replayTime=replay.at("/data/ticket/slaTarget/evaluatedAt");
-                assertThat(firstTime.isTextual()).isTrue();assertThat(replayTime.isTextual()).isTrue();
-                var firstAt=LocalDateTime.parse(firstTime.textValue(),DateTimeFormatConfig.DATE_TIME_FORMATTER);
-                var replayAt=LocalDateTime.parse(replayTime.textValue(),DateTimeFormatConfig.DATE_TIME_FORMATTER);
-                assertThat(firstAt.format(DateTimeFormatConfig.DATE_TIME_FORMATTER)).isEqualTo(firstTime.textValue());
-                assertThat(replayAt.format(DateTimeFormatConfig.DATE_TIME_FORMATTER)).isEqualTo(replayTime.textValue());
-                assertThat(replayAt).isAfterOrEqualTo(firstAt);
-                var retained=escalated.deepCopy();var repeated=replay.deepCopy();
-                // The restricted detail re-evaluates SLA time; every other response field remains exact.
-                ((ObjectNode)retained.at("/data/ticket/slaTarget")).remove("evaluatedAt");
-                ((ObjectNode)repeated.at("/data/ticket/slaTarget")).remove("evaluatedAt");
-                assertThat(repeated).isEqualTo(retained);
-                var afterReplay=escalationFacts(customer,no,escalatedNo,second,escalationKey);
-                assertThat(afterReplay.get("successAudits")).isEqualTo(1L);
-                assertThat(afterReplay).as("Same-key escalation must not duplicate persisted facts").isEqualTo(beforeReplay);
-            } finally {grants.forEach(id->SharedMutationJournal.restorePermission(jdbc,run,"SupportBindingRuntimeTest",rulesOwner,"SupportBindingRuntimeTest#grant-restore-4",id));permissions.evict(second);}
-            jdbc.update("UPDATE nx_support_ticket SET source_conversation_no=NULL WHERE ticket_no=?",no);
-            assertCustomerNotFound(http("GET",endpoint,one,null,null));
-            assertThat(http("GET",endpoint,two,null,null).toString()).contains(marker);
-        }
-        Files.writeString(Path.of(System.getenv("S3_EVIDENCE_DIR"),"ticket-private-evidence.json"),"{\"adminAndAppConversion\":true,\"detailListKeywordReplayHidden\":true,\"internalNotesStatusPreserved\":true,\"unknownRestricted\":true,\"currentSupervisorAndAppRead\":true}");
-    }
-
     @Test void disabledProfileCannotReadM1Customers() throws Exception {
         long boss=admin("DISABLED_BOSS","SUPER_ADMIN","MANAGER"),agent=admin("DISABLED_G1","SUPPORT","DEDICATED");as(boss);
         serviceMembers(boss,agent);
@@ -282,31 +185,6 @@ class SupportBindingRuntimeTest {
         for(String path:List.of("/api/admin/content/support-agents","/api/admin/content/support-agents/page"))
             assertThat(http("GET",path,token,null,null).path("code").asInt()).as("disabled profile %s",path).isEqualTo(403);
         assertThat(mapper.current(customer).agentAdminId()).isEqualTo(agent);
-    }
-
-    @Test void ticketWritesRequireCurrentAdvisorAndPersistActualAuthor() throws Exception {
-        long boss=admin("TICKET_BOSS","SUPER_ADMIN","MANAGER"),first=admin("TICKET_G1","SUPPORT","DEDICATED"),second=admin("TICKET_G2","SUPPORT","DEDICATED");
-        serviceMembers(boss,first,second);
-        as(boss);long customer=register("TICKET_CUSTOMER",null);transfer(first,List.of(customer),key());
-        String one=token(first),two=token(second),superToken=token(boss);
-        var create=Map.of("userId",customer,"category","withdrawal","priority","NORMAL","title","Runtime support ticket","body","Real advisor ticket opening","operator","spoofed","reason","Real ticket ownership verification");
-        assertThat(http("POST","/api/admin/content/tickets",two,create,key()).path("code").asInt()).isEqualTo(404);
-        assertThat(http("POST","/api/admin/content/tickets",superToken,create,key()).path("code").asInt()).isEqualTo(404);
-        var created=http("POST","/api/admin/content/tickets",one,create,key());assertThat(created.path("code").asInt()).as("ticket create: %s",created).isZero();
-        var ticket=created.path("data").path("ticket");String no=ticket.path("ticketNo").asText();
-        assertThat(jdbc.queryForObject("SELECT sender_id FROM nx_support_ticket_message WHERE ticket_no=? AND sender_type='agent' ORDER BY id LIMIT 1",Long.class,no)).isEqualTo(first);
-        String replyKey=key();var reply=Map.of("body","Real ticket reply","expectedStatus",ticket.path("status").asText(),"expectedVersion",ticket.path("version").asLong(),"reason","Real ticket reply authorization");
-        assertThat(http("POST","/api/admin/content/tickets/"+no+"/replies",one,reply,replyKey).path("code").asInt()).isZero();
-        assertModuleRecoveryRevoked(first,"SUPPORT","service_m2_read",one,replyKey);
-        as(boss);transfer(second,List.of(customer),key());
-        assertThat(http("POST","/api/admin/content/tickets/"+no+"/replies",one,reply,replyKey).path("code").asInt()).isEqualTo(404);
-        var latest=http("GET","/api/admin/content/tickets/"+no,two,null,null).path("data").path("ticket");
-        jdbc.update("UPDATE nx_support_agent_profile SET busy=1,transferable=0,max_concurrent=0 WHERE admin_id=?",second);
-        var escalation=Map.of("ownerAgentId",String.valueOf(first),"ownerAgentName","spoofed","expectedStatus",latest.path("status").asText(),"expectedVersion",latest.path("version").asLong(),"reason","Escalation retains current advisor");
-        var escalated=http("POST","/api/admin/content/tickets/"+no+"/escalate",two,escalation,key());
-        assertThat(escalated.path("code").asInt()).as("ticket escalation: %s",escalated).isZero();
-        assertThat(escalated.path("data").path("conversation").path("ownerAgentId").asText()).isEqualTo(String.valueOf(second));
-        Files.writeString(Path.of(System.getenv("S3_EVIDENCE_DIR"),"ticket-evidence.json"),"{\"createReplyEscalateCurrentAdvisor\":true,\"realAuthor\":true,\"oldKeyDenied\":true}");
     }
 
     @Test void bindingRejectsNumericCoercionWithoutChangingAssignment() throws Exception {
@@ -353,8 +231,6 @@ class SupportBindingRuntimeTest {
         var old=app.startConversation(customer,key(),new AppSupportService.StartConversationRequest("support","Old pending question")).getData().conversation();
         var close=Map.of("status","CLOSED","expectedStatus",old.status(),"expectedVersion",old.version(),"reason","Try sealing unanswered messages");
         assertThat(http("PATCH","/api/admin/content/conversations/"+old.conversationNo()+"/status",token,close,key()).path("code").asInt()).isEqualTo(409);
-        var convert=Map.of("category","other","priority","NORMAL","title","Pending conversion","expectedStatus",old.status(),"expectedVersion",old.version(),"reason","Try converting unanswered messages");
-        assertThat(http("POST","/api/admin/content/conversations/"+old.conversationNo()+"/ticket",token,convert,key()).path("code").asInt()).isEqualTo(409);
         jdbc.update("UPDATE nx_conversation SET status='CLOSED' WHERE conversation_no=?",old.conversationNo());
         var historic=jdbc.queryForMap("SELECT status,version,last_message,updated_at FROM nx_conversation WHERE conversation_no=?",old.conversationNo());
         var fresh=app.startConversation(customer,key(),new AppSupportService.StartConversationRequest("support","New pending question")).getData().conversation();
@@ -647,18 +523,6 @@ class SupportBindingRuntimeTest {
     private String token(long id) {
         String username=jdbc.queryForObject("SELECT username FROM nx_admin WHERE id=?",String.class,id);
         return tokens.createToken(id,"ADMIN",username,List.of(),sessions.createSession(id,username));
-    }
-    private Map<String,Object> escalationFacts(long customer,String ticketNo,String conversationNo,long actor,String commandKey) {
-        return Map.of(
-                "tickets",jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_ticket WHERE user_id=?",Long.class,customer),
-                "conversations",jdbc.queryForObject("SELECT COUNT(*) FROM nx_conversation WHERE user_id=?",Long.class,customer),
-                "ticketMessages",jdbc.queryForMap("SELECT COUNT(*) total,COUNT(CASE WHEN sender_type='system' THEN 1 END) systemCount FROM nx_support_ticket_message WHERE ticket_no=?",ticketNo),
-                "conversationMessages",jdbc.queryForMap("SELECT COUNT(*) total,COUNT(CASE WHEN m.conversation_no=? AND m.sender_type='agent' THEN 1 END) escalationOpenings "
-                        + "FROM nx_conversation_message m JOIN nx_conversation c ON c.conversation_no=m.conversation_no WHERE c.user_id=?",conversationNo,customer),
-                "ticket",jdbc.queryForMap("SELECT status,version,message_count,updated_at FROM nx_support_ticket WHERE ticket_no=?",ticketNo),
-                "conversation",jdbc.queryForMap("SELECT status,version,unread_count,updated_at FROM nx_conversation WHERE conversation_no=?",conversationNo),
-                "successAudits",jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log WHERE action='M2_SUPPORT_TICKET_ESCALATED' AND resource_type='SUPPORT_TICKET' "
-                        + "AND resource_id=? AND actor_id=? AND result='SUCCESS' AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.idempotencyKey'))=?",Long.class,ticketNo,actor,commandKey));
     }
     private void assertModuleRecoveryRevoked(long actor,String role,String permission,String token,String commandKey) throws Exception {
         var ids=jdbc.queryForList("SELECT rp.id FROM nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE r.role_code=? AND p.permission_code=? AND rp.is_deleted=0",Long.class,role,permission);

@@ -81,10 +81,22 @@ class OpsSupportKnowledgeServiceTest {
     }
 
     @Test
+    void retiredTicketCreateSurfaceIsRejectedLikeAnyUnknownSurface() {
+        for (String surface : java.util.List.of("Ticket Create", "ticket create", "Unknown Surface")) {
+            var result = service.updateFaq("FAQ-001", "idem-m4-faq-retired-surface", new SupportFaqUpsertRequest(
+                    "account", surface, "Account security retry window?", "Retry after the security cooldown.",
+                    "DRAFT", "en-US", 20, "PUBLISHED", 1, "Marina K.", "retired FAQ surface"));
+            assertThat(result.getCode()).as(surface).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+            assertThat(result.getMessage()).as(surface).isEqualTo("SUPPORT_FAQ_SURFACE_UNSUPPORTED");
+        }
+        assertThat(service.overview().getData().surfaces()).containsExactlyInAnyOrder("Help Center", "Nova");
+    }
+
+    @Test
     void updateFaqChangesContent() {
         var result = service.updateFaq("FAQ-001", "idem-m4-faq-update", new SupportFaqUpsertRequest(
                 "account",
-                "Ticket Create",
+                "Help Center",
                 "Account security retry window?",
                 "Retry after the security cooldown and keep your contact method available.",
                 "DRAFT",
@@ -152,36 +164,6 @@ class OpsSupportKnowledgeServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(service.overview().getData().faqs()).isEmpty();
-    }
-
-    @Test
-    void updateSlaValidatesPositiveNumbers() {
-        var result = service.updateSla("withdrawal", "idem-m4-sla", new SupportSlaUpdateRequest(
-                0,
-                12,
-                "支付台",
-                "D2 withdrawal review",
-                1L,
-                "Marina K.",
-                "同步 SLA"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-    }
-
-    @Test
-    void updateSlaPersistsAndAudits() {
-        var result = service.updateSla("withdrawal", "idem-m4-sla", new SupportSlaUpdateRequest(
-                10,
-                8,
-                "支付台",
-                "D2 withdrawal review",
-                1L,
-                "Marina K.",
-                "提现 SLA 收紧"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().firstResponseMins()).isEqualTo(10);
-        assertThat(result.getData().resolutionHours()).isEqualTo(8);
     }
 
     @Test

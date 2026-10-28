@@ -5,12 +5,10 @@ import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.SupportFaqView;
 import ffdd.opsconsole.content.domain.SupportKnowledgeOverview;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
-import ffdd.opsconsole.content.domain.SupportSlaBaseline;
 import ffdd.opsconsole.content.domain.SupportSlaView;
 import ffdd.opsconsole.content.dto.SupportFaqStatusRequest;
 import ffdd.opsconsole.content.dto.SupportFaqUpsertRequest;
 import ffdd.opsconsole.content.dto.SupportKnowledgeDeleteRequest;
-import ffdd.opsconsole.content.dto.SupportSlaUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -33,8 +31,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsSupportKnowledgeService {
     private static final Set<String> FAQ_CATEGORIES = Set.of("general", "account", "withdrawal", "deposit", "hardware", "earnings", "genesis", "technical", "other");
-    private static final Set<String> SLA_CATEGORIES = SupportSlaBaseline.CATEGORIES;
-    private static final Set<String> SURFACES = Set.of("Help Center", "Ticket Create", "Nova");
+    private static final Set<String> SURFACES = Set.of("Help Center", "Nova");
     private static final Set<String> STATUSES = Set.of("PUBLISHED", "DRAFT");
     private static final Set<String> LANGUAGES = Set.of("zh-CN", "en-US", "vi-VN");
     private static final DateTimeFormatter FAQ_ID_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
@@ -188,58 +185,6 @@ public class OpsSupportKnowledgeService {
                 current.surface(), current.language(), current.sortOrder(), current.version() + 1, LocalDateTime.now(clock)),
                 "delete", request.operator(), request.reason());
         return ApiResult.ok();
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<SupportSlaView> updateSla(String category, String idempotencyKey, SupportSlaUpdateRequest request) {
-        ensureSeedData();
-        String normalizedCategory = normalizeCategory(category);
-        if (!SLA_CATEGORIES.contains(normalizedCategory)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_SLA_CATEGORY_UNSUPPORTED");
-        }
-        if (!StringUtils.hasText(idempotencyKey)) {
-            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
-        }
-        if (request == null || request.firstResponseMins() == null || request.resolutionHours() == null
-                || request.firstResponseMins() <= 0 || request.resolutionHours() <= 0) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_SLA_VALUE_INVALID");
-        }
-        if (!StringUtils.hasText(request.queue()) || !StringUtils.hasText(request.escalation())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_SLA_QUEUE_REQUIRED");
-        }
-        if (!validReason(request.reason())) {
-            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
-        }
-        SupportSlaView current = knowledgeRepository.listSla().stream()
-                .filter(row -> normalizedCategory.equals(row.category()))
-                .findFirst()
-                .orElse(null);
-        if (current == null || request.expectedVersion() == null || request.expectedVersion() < 1
-                || !request.expectedVersion().equals(current.version())) {
-            return ApiResult.fail(409, "SUPPORT_SLA_CONCURRENT_MODIFICATION");
-        }
-        if (!knowledgeRepository.updateSlaCas(normalizedCategory, request, request.expectedVersion(), LocalDateTime.now(clock))) {
-            return ApiResult.fail(409, "SUPPORT_SLA_CONCURRENT_MODIFICATION");
-        }
-        SupportSlaView updated = knowledgeRepository.listSla().stream()
-                .filter(row -> normalizedCategory.equals(row.category()))
-                .findFirst()
-                .orElse(new SupportSlaView(
-                        normalizedCategory,
-                        request.firstResponseMins(),
-                        request.resolutionHours(),
-                        request.queue().trim(),
-                        request.escalation().trim(),
-                        request.expectedVersion() + 1,
-                        LocalDateTime.now(clock)));
-        audit("M4_SUPPORT_SLA_CHANGED", normalizedCategory, request.operator(), Map.of(
-                "firstResponseMins", updated.firstResponseMins(),
-                "resolutionHours", updated.resolutionHours(),
-                "queue", updated.queue(),
-                "escalation", updated.escalation(),
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(updated);
     }
 
     private void ensureSeedData() {

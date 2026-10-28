@@ -213,9 +213,6 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
     @Select("SELECT user_id FROM nx_conversation WHERE conversation_no=#{no} AND is_deleted=0")
     Long conversationCustomer(String no);
 
-    @Select("SELECT user_id FROM nx_support_ticket WHERE ticket_no=#{no} AND is_deleted=0")
-    Long ticketCustomer(String no);
-
     // Legacy interval columns have second precision; fractional writes round into the future in MySQL.
     @Update("UPDATE nx_support_agent_user_assignment SET status='INACTIVE',ends_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP(6),version=version+1 WHERE id=#{id} AND status='ACTIVE' AND version=#{version}")
     int endAssignment(@Param("id") Long id,@Param("version") Long version);

@@ -22,36 +22,6 @@ public interface SupportAcceptanceSandboxMapper extends BaseMapper<Object> {
             """)
     int ensureRun(@Param("runId") String runId, @Param("accountId") Long accountId, @Param("now") LocalDateTime now);
 
-    @Select("""
-            SELECT ticket_no ticketNo,category,priority,title,LOWER(status) status,owner_agent_name assignedAdminName,
-                   last_message_at lastMessageAt,version,created_at createdAt,updated_at updatedAt,
-                   (SELECT COUNT(*) FROM nx_support_acceptance_sandbox_ticket_message m WHERE m.ticket_no=t.ticket_no) messageCount,0 userUnreadCount
-              FROM nx_support_acceptance_sandbox_ticket t WHERE account_id=#{accountId} AND run_id=#{runId} ORDER BY updated_at DESC
-            """)
-    List<Map<String,Object>> tickets(@Param("runId") String runId, @Param("accountId") Long accountId);
-    @Select("SELECT ticket_no ticketNo,account_id accountId,category,priority,title,LOWER(status) status,owner_agent_name assignedAdminName,last_message_at lastMessageAt,version,created_at createdAt,updated_at updatedAt FROM nx_support_acceptance_sandbox_ticket WHERE run_id=#{runId} AND source='mock' AND source_environment='SANDBOX' ORDER BY updated_at DESC")
-    List<Map<String,Object>> adminTickets(@Param("runId") String runId);
-    @Select("SELECT ticket_no ticketNo,account_id accountId,category,priority,title,LOWER(status) status,owner_agent_name assignedAdminName,last_message_at lastMessageAt,version,created_at createdAt,updated_at updatedAt FROM nx_support_acceptance_sandbox_ticket WHERE ticket_no=#{id} AND run_id=#{runId} AND source='mock' AND source_environment='SANDBOX'")
-    Map<String,Object> adminTicket(@Param("runId") String runId,@Param("id") String id);
-
-    @Select("""
-            SELECT ticket_no ticketNo,category,priority,title,LOWER(status) status,owner_agent_name assignedAdminName,
-                   last_message_at lastMessageAt,version,created_at createdAt,updated_at updatedAt,
-                   (SELECT COUNT(*) FROM nx_support_acceptance_sandbox_ticket_message m WHERE m.ticket_no=t.ticket_no) messageCount,0 userUnreadCount
-              FROM nx_support_acceptance_sandbox_ticket t WHERE ticket_no=#{id} AND account_id=#{accountId} AND run_id=#{runId}
-            """)
-    Map<String,Object> ticket(@Param("runId") String runId,@Param("accountId") Long accountId,@Param("id") String id);
-    @Select("SELECT id,ticket_no ticketNo,sender_type senderType,sender_name senderName,content,created_at createdAt FROM nx_support_acceptance_sandbox_ticket_message WHERE ticket_no=#{id} AND account_id=#{accountId} AND run_id=#{runId} ORDER BY id")
-    List<Map<String,Object>> ticketMessages(@Param("runId") String runId,@Param("accountId") Long accountId,@Param("id") String id);
-    @Insert("INSERT INTO nx_support_acceptance_sandbox_ticket(ticket_no,run_id,account_id,category,priority,title,status,owner_agent_name,last_message_at,version,source,source_environment,created_at,updated_at) VALUES(#{id},#{runId},#{accountId},#{category},'NORMAL',#{title},'OPEN','Unassigned',#{now},0,'mock','SANDBOX',#{now},#{now})")
-    int createTicket(@Param("id") String id,@Param("runId") String runId,@Param("accountId") Long accountId,@Param("category") String category,@Param("title") String title,@Param("now") LocalDateTime now);
-    @Insert("INSERT INTO nx_support_acceptance_sandbox_ticket_message(ticket_no,run_id,account_id,sender_type,sender_name,content,client_message_id,source,source_environment,created_at) VALUES(#{id},#{runId},#{accountId},'user','User',#{body},#{key},'mock','SANDBOX',#{now})")
-    int ticketMessage(@Param("id") String id,@Param("runId") String runId,@Param("accountId") Long accountId,@Param("body") String body,@Param("key") String key,@Param("now") LocalDateTime now);
-    @Update("UPDATE nx_support_acceptance_sandbox_ticket SET status=#{next},version=version+1,updated_at=#{now},last_message_at=#{now} WHERE ticket_no=#{id} AND account_id=#{accountId} AND run_id=#{runId} AND status=#{status} AND version=#{version} AND source='mock' AND source_environment='SANDBOX'")
-    int ticketCas(@Param("id") String id,@Param("runId") String runId,@Param("accountId") Long accountId,@Param("status") String status,@Param("version") Long version,@Param("next") String next,@Param("now") LocalDateTime now);
-    @Insert("INSERT INTO nx_support_acceptance_sandbox_ticket_message(ticket_no,run_id,account_id,sender_type,sender_name,content,client_message_id,source,source_environment,created_at) VALUES(#{id},#{runId},#{accountId},'agent',#{agent},#{body},#{key},'mock','SANDBOX',#{now})")
-    int agentTicketMessage(@Param("id") String id,@Param("runId") String runId,@Param("accountId") Long accountId,@Param("agent") String agent,@Param("body") String body,@Param("key") String key,@Param("now") LocalDateTime now);
-
     @Select("SELECT conversation_no conversationNo,conversation_type conversationType,LOWER(status) status,owner_agent_name ownerAgentName,unread_count unreadCount,last_message lastMessage,last_message_at lastMessageAt,version,updated_at updatedAt FROM nx_support_acceptance_sandbox_conversation WHERE account_id=#{accountId} AND run_id=#{runId} ORDER BY updated_at DESC")
     List<Map<String,Object>> conversations(@Param("runId") String runId,@Param("accountId") Long accountId);
     @Select("SELECT conversation_no conversationNo,account_id accountId,conversation_type conversationType,LOWER(status) status,owner_agent_name ownerAgentName,unread_count unreadCount,last_message lastMessage,last_message_at lastMessageAt,version,updated_at updatedAt FROM nx_support_acceptance_sandbox_conversation WHERE run_id=#{runId} AND source='mock' AND source_environment='SANDBOX' ORDER BY updated_at DESC")

@@ -87,10 +87,9 @@ class OpsDomainRuntimeServiceTest {
             assertThat(api.path()).isEqualTo("/api/admin/content/knowledge/overview");
             assertThat(api.writePermission()).isEqualTo("service_m4_write");
         });
-        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
-            assertThat(api.resource()).isEqualTo("SupportSlaRule");
-            assertThat(api.path()).isEqualTo("/api/admin/content/knowledge/sla/{category}");
-        });
+        // Ticket and SLA write families are retired (410 SUPPORT_TICKETS_RETIRED) and no longer advertised.
+        assertThat(result.getData().apiFamilies()).noneSatisfy(api ->
+                assertThat(api.resource()).isIn("SupportTicket", "SupportSlaRule"));
         assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
             assertThat(api.resource()).isEqualTo("CopyAbOverview");
             assertThat(api.path()).isEqualTo("/api/admin/content/copy-ab/overview");

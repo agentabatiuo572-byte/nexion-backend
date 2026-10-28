@@ -456,23 +456,6 @@ class SupportS4RuntimeTest {
         ok(http("POST",replyPath(no),adminToken,Map.of("body","Image received; continue in the ticket", "reason","Image ticket transcript verification",
                 "expectedStatus",source.path("status").asText(),"expectedVersion",source.path("version").asLong(),
                 "replyTargets",List.of(Map.of("conversationNo",no,"throughMessageId",imageMessage))),key()));
-        var ready=ok(http("GET","/api/app/support/conversations/"+no,user,null,null)).path("conversation");
-        var converted=ok(http("POST","/api/app/support/conversations/"+no+"/ticket",user,
-                Map.of("category","account","title","Image question follow-up","expectedStatus",ready.path("status").asText(),
-                        "expectedVersion",ready.path("version").asLong()),key()));
-        String ticketNo=converted.path("ticket").path("ticket").path("ticketNo").asText();
-        assertThat(ticketNo).isNotBlank();
-        var ticket=ok(http("GET","/api/app/support/tickets/"+ticketNo,user,null,null));
-        assertThat(ticket.toString()).contains("图片（在来源会话查看）");
-        assertThat(ticket.path("ticket").path("sourceConversationNo").asText()).isEqualTo(no);
-        assertThat(jdbc.queryForObject("SELECT source_conversation_no FROM nx_support_ticket WHERE ticket_no=?",String.class,ticketNo)).isEqualTo(no);
-        var restricted=http("GET","/api/admin/content/tickets/"+ticketNo,otherToken,null,null);
-        assertCode(restricted,404);assertThat(restricted.path("message").asText()).isEqualTo("SUPPORT_CUSTOMER_NOT_FOUND");
-        assertThat(restricted.hasNonNull("data")).isFalse();
-        assertThat(restricted.toString()).doesNotContain("图片（在来源会话查看）");
-        var ownedTicket=ok(http("GET","/api/admin/content/tickets/"+ticketNo,adminToken,null,null));
-        assertThat(ownedTicket.toString()).contains("图片（在来源会话查看）");assertThat(ownedTicket.path("ticket").path("sourceConversationNo").asText()).isEqualTo(no);
-        samples.put("captionlessImageTicket","Actual App conversion and current advisor read preserve image marker and source conversation; unrelated advisor receives exact 404 with no data.");
     }
 
     private String maintenancePath(){return "/api/admin/content/support-workbench/customers/"+customer+"/maintenance";}

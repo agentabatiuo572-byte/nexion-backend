@@ -24,7 +24,7 @@ class SupportRulesUpgradeTest {
     final AuditLogService audit=mock(AuditLogService.class);
     final SupportBindingService service=new SupportBindingService(mapper,ownership,idempotency,audit,
             mock(ApplicationEventPublisher.class),mock(SupportAgentRepository.class),mock(ProductionSupportPathGuard.class),
-            mock(SupportTicketOwnerService.class),mock(SupportGroupMapper.class),org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundPolicyService.class));
+            mock(SupportGroupMapper.class),org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundPolicyService.class));
     @BeforeEach void setup(){
         when(ownership.actorId()).thenReturn(7L);
         when(mapper.rulesWriteGrantSnapshot(7L)).thenReturn(java.util.List.of(11L));

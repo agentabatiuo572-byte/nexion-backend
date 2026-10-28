@@ -2,7 +2,6 @@ package ffdd.opsconsole.content.web;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.application.*;
-import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
@@ -19,7 +18,7 @@ class OpsSupportCommandScopeTest {
     final SupportOwnershipService ownership=mock(SupportOwnershipService.class);
     final ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper timeoutPolicy=mock(ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper.class);
     final OpsSupportCommandController controller=new OpsSupportCommandController(records,ownership,new ObjectMapper(),
-            mock(SupportTicketRepository.class),mock(SupportBindingRandomService.class),mock(SupportBulkService.class),timeoutPolicy);
+            mock(SupportBindingRandomService.class),mock(SupportBulkService.class),timeoutPolicy);
     @BeforeEach void login() {
         when(ownership.actorId()).thenReturn(7L);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken("7",null,
@@ -73,6 +72,16 @@ class OpsSupportCommandScopeTest {
         receipt("M3_CONVERSATION_TIMEOUT_POLICY");
         assertThatThrownBy(()->controller.recover("retained-key")).isInstanceOfSatisfying(BizException.class,
                 e->assertThat(e.getCode()).isEqualTo(403));
+    }
+    @Test void retiredTicketReceiptsAreFoundButAnswer410WithoutReplayingTheStoredBody() {
+        for(String scope:List.of("M2_SUPPORT_TICKET_CREATE:7","M2_SUPPORT_TICKET_REPLY:7","M2_SUPPORT_TICKET_ESCALATE:7","M3_CONVERSATION_TO_TICKET:7")) {
+            receipt(scope);
+            assertThatThrownBy(()->controller.recover("retained-key")).as(scope).isInstanceOfSatisfying(BizException.class,e->{
+                assertThat(e.getCode()).isEqualTo(410);assertThat(e.getMessage()).isEqualTo("SUPPORT_TICKETS_RETIRED");});
+        }
+        verify(records,atLeastOnce()).selectSupportCommand(argThat(s->s.containsAll(List.of("M2_SUPPORT_TICKET_REPLY:7","M3_CONVERSATION_TO_TICKET:7"))),eq("retained-key"));
+        verify(ownership,never()).lockCustomer(anyLong());
+        verify(ownership,never()).requireRead(anyLong());
     }
     private void receipt(String scope) {
         var row=new AdminIdempotencyRecordEntity();row.setScope(scope);row.setStatus("SUCCEEDED");

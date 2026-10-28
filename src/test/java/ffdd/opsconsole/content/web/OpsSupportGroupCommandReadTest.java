@@ -5,7 +5,6 @@ import static org.mockito.Mockito.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.application.*;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.*;
-import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
@@ -23,7 +22,7 @@ class OpsSupportGroupCommandReadTest {
     final SupportOwnershipService ownership=mock(SupportOwnershipService.class);
     final SupportBulkService bulk=mock(SupportBulkService.class);
     final OpsSupportCommandController controller=new OpsSupportCommandController(records,ownership,new ObjectMapper(),
-            mock(SupportTicketRepository.class),mock(SupportBindingRandomService.class),bulk,mock(ConversationTimeoutPolicyMapper.class));
+            mock(SupportBindingRandomService.class),bulk,mock(ConversationTimeoutPolicyMapper.class));
     @BeforeEach void setup(){login("service_m1_read","platform_a1_read");when(ownership.actorId()).thenReturn(7L);
         when(ownership.defaultQueryScope(null,null)).thenReturn(new ReadScope(7L,ReadMode.MANAGED,null,null));}
     @AfterEach void logout(){SecurityContextHolder.clearContext();}
@@ -85,6 +84,6 @@ class OpsSupportGroupCommandReadTest {
     @Test void commandPreAuthorizeIncludesA1ButRetainsOriginalServiceCapabilities()throws Exception {
         String expression=OpsSupportCommandController.class.getMethod("recover",String.class)
                 .getAnnotation(org.springframework.security.access.prepost.PreAuthorize.class).value();
-        assertThat(expression).contains("platform_a1_read","service_m1_read","service_m2_read","service_m3_read");
+        assertThat(expression).contains("platform_a1_read","service_m1_read","service_m3_read").doesNotContain("service_m2_");
     }
 }
