@@ -64,7 +64,8 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 UPDATE nx_admin_device_sku
    SET purchase_gate_json = JSON_REMOVE(
          JSON_SET(purchase_gate_json, '$.teamComputePointsMin',
-                  CAST(ROUND(JSON_EXTRACT(purchase_gate_json, '$.teamVolumeMin') * 10) AS SIGNED)),
+                  CASE WHEN JSON_TYPE(JSON_EXTRACT(purchase_gate_json, '$.teamVolumeMin')) = 'NULL' THEN NULL
+                       ELSE CAST(ROUND(JSON_EXTRACT(purchase_gate_json, '$.teamVolumeMin') * 10) AS SIGNED) END),
          '$.teamVolumeMin'),
        purchase_gate_generation = purchase_gate_generation + 1,
        updated_at = NOW()
