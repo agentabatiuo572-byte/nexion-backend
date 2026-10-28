@@ -40,7 +40,7 @@ class P1RegressionContractTest {
     void supportSurfacesAndNovaKnowledgeAreBothServerPublished() throws Exception {
         String support = source("ffdd/opsconsole/content/application/AppSupportService.java");
         String rag = source("ffdd/opsconsole/content/application/RagNovaAiGateway.java");
-        assertThat(support).contains("Ticket Create", "surface");
+        assertThat(support).contains("Help Center", "surface").doesNotContain("Ticket Create");
         assertThat(rag).contains("SupportKnowledgeRepository", "Nova");
     }
 

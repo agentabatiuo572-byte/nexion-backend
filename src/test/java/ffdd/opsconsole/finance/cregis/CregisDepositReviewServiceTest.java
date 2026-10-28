@@ -1,6 +1,7 @@
 package ffdd.opsconsole.finance.cregis;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -56,5 +57,24 @@ class CregisDepositReviewServiceTest {
                 .hasMessage("CREGIS_REVIEW_DIFFERENT_CHECKER_REQUIRED");
         verify(db, never()).checkReviewCase(9, 7, "RESOLVED", 0);
         verify(deposits, never()).preflightReviewedHold(17);
+    }
+    @Test
+    void legacyPendingEvidenceCannotApproveButCanBeRejectedWithoutCredit() {
+        var props=new CregisProperties();props.setMode(CregisProperties.Mode.PROVIDER);props.setProjectId(88);
+        var db=mock(CregisDepositMapper.class);var deposits=mock(CregisDepositService.class);var tx=mock(PlatformTransactionManager.class);
+        when(tx.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        var proof=new CregisDepositService.ReviewProof(17,77,42,"tx","address",BigDecimal.TEN,101,"block",0,15,100,"allocation",Instant.now());
+        String old=java.util.HexFormat.of().formatHex(sha("CREGIS_REVIEW_V1|17|77|42|tx|address|10|101|block|0|100|allocation"));
+        when(db.reviewCaseSnapshot(9)).thenReturn(Map.of("projectId",88L,"status","MAKER_DONE","version",0L,"makerId",7L,"eventId",17L,"evidenceHash",old));
+        when(db.lockReviewCase(9)).thenReturn(Map.of("projectId",88L,"status","MAKER_DONE","version",0L,"makerId",7L,"eventId",17L,"evidenceHash",old));
+        when(deposits.preflightReviewedHold(17)).thenReturn(proof);when(db.checkReviewCase(9,8,"REJECTED",0)).thenReturn(1);
+        var service=new CregisDepositReviewService(props,db,deposits,mock(AuditLogService.class),tx);
+        assertThatThrownBy(()->service.check(8,9,0,"APPROVE","Reviewed chain evidence")).hasMessage("CREGIS_REVIEW_EVIDENCE_CHANGED");
+        assertThat(service.check(8,9,0,"REJECT","Reject old evidence for fresh proposal").get("status")).isEqualTo("REJECTED");
+        verify(deposits,never()).creditReviewedHold(org.mockito.ArgumentMatchers.anyLong(),any());
+    }
+    private static byte[] sha(String value) {
+        try {return java.security.MessageDigest.getInstance("SHA-256").digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));}
+        catch (java.security.NoSuchAlgorithmException e) {throw new IllegalStateException(e);}
     }
 }

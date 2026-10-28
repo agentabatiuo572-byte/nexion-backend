@@ -108,7 +108,7 @@ class OpsFinanceServiceTest {
                     operatorRoleResolver,
                     appWithdrawalMapper,
                     withdrawalRiskRuleFacade,
-                    bankWithdrawalMapper, Clock.systemDefaultZone(), riskTimePolicy);
+                    bankWithdrawalMapper, Clock.systemDefaultZone(), riskTimePolicy, mock(ffdd.opsconsole.finance.cregis.CregisDepositPolicyService.class));
 
     @BeforeEach
     void setUpRiskDefaults() {
@@ -161,7 +161,7 @@ class OpsFinanceServiceTest {
                 operatorRoleResolver,
                 appWithdrawalMapper,
                 withdrawalRiskRuleFacade,
-                bankWithdrawalMapper, clock, riskTimePolicy);
+                bankWithdrawalMapper, clock, riskTimePolicy, mock(ffdd.opsconsole.finance.cregis.CregisDepositPolicyService.class));
     }
 
     @Test
@@ -2196,7 +2196,7 @@ class OpsFinanceServiceTest {
             var target=new OpsFinanceService(configFacade,growthRhythmFacade,emergencyRepository,coverageFacade,withdrawalRepository,
                     depositOpsRepository,riskOpsRepository,auditLogService,idempotencyService,OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
                     lockMapper,disclosureGateFacade,treasuryLedgerRepository,finalizer,withdrawalFunds,eventOutboxService,operatorRoleResolver,
-                    appWithdrawalMapper,withdrawalRiskRuleFacade,bankWithdrawalMapper,Clock.systemUTC(),riskTimePolicy);
+                    appWithdrawalMapper,withdrawalRiskRuleFacade,bankWithdrawalMapper,Clock.systemUTC(),riskTimePolicy, mock(ffdd.opsconsole.finance.cregis.CregisDepositPolicyService.class));
             transactional=WithdrawalCashClosureTest.transactionProxy(target,new WithdrawalCashClosureTest.MemoryTransactionManager(()->{},()->{
                 pending.set(new BigDecimal("200"));receipts.clear();withdrawalRepository.order=original;withdrawalRepository.lastStatus=null;
             }));

@@ -49,6 +49,27 @@ class OpsPlatformMenuServiceTest {
         verify(mapper,never()).insert(any(AdminMenuEntity.class));
         verify(mapper,never()).updateById(any(AdminMenuEntity.class));
     }
+    @Test void retiredTicketDeskMenuCannotBeRecreatedOrAssignedToAnOrdinaryMenu() {
+        var mapper=mock(AdminMenuMapper.class);
+        var service=new OpsPlatformMenuService(mapper,mock(AdminRoleMenuMapper.class),
+                mock(AdminPermissionMapper.class),mock(AuditLogService.class),passThroughIdempotency());
+        var auth=new UsernamePasswordAuthenticationToken("41",null,List.of());
+        auth.setDetails(Map.of("subjectType","ADMIN","username","alice.admin"));
+        SecurityContextHolder.getContext().setAuthentication(auth);
+        for (String[] entry:new String[][]{{"M2","/service/other"},{"menu_service_m2","/service/other"},{"Z9","/service/tickets"}}) {
+            var created=service.createNode("retired-"+entry[0],new PlatformMenuNodeCreateRequest(entry[0],"Retired","Retired",null,
+                    entry[1],null,99,"retirement regression","alice.admin"));
+            assertThat(created.getCode()).as(entry[0]).isEqualTo(410);
+            assertThat(created.getMessage()).isEqualTo("MENU_RETIRED");
+        }
+        var ordinary=new AdminMenuEntity();ordinary.setId(92L);ordinary.setMenuCode("Z9");ordinary.setStatus(1);ordinary.setIsDeleted(0);
+        when(mapper.selectActiveForUpdate(92L)).thenReturn(ordinary);
+        var updated=service.updateNode(92L,"retired-ticket-update",new PlatformMenuNodeUpdateRequest(null,null,
+                "/service/tickets",null,null,null,"retirement regression","alice.admin"));
+        assertThat(updated.getCode()).isEqualTo(410);
+        verify(mapper,never()).insert(any(AdminMenuEntity.class));
+        verify(mapper,never()).updateById(any(AdminMenuEntity.class));
+    }
     @AfterEach
     void clearSecurityContext() {
         SecurityContextHolder.clearContext();

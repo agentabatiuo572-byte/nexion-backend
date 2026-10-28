@@ -131,12 +131,6 @@ public interface ConversationRepository {
 
     boolean fallbackTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
 
-    /**
-     * Atomically claims a conversation for its single terminal conversion to a ticket.
-     * A false result means another request already closed/converted the conversation.
-     */
-    boolean markConvertedToTicket(ContentConversationView conversation, String ticketNo, String operator, LocalDateTime now);
-
     ContentConversationView createConversation(
             String conversationNo,
             Long userId,

@@ -13,23 +13,17 @@ import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationCustomerProfile;
 import ffdd.opsconsole.content.domain.ConversationRepository;
 import ffdd.opsconsole.content.domain.CustomerProfileRepository;
-import ffdd.opsconsole.content.domain.ConversationTicketResult;
-import ffdd.opsconsole.content.domain.SupportTicketDetail;
-import ffdd.opsconsole.content.domain.SupportTicketRepository;
-import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.dto.ConversationArchiveRequest;
 import ffdd.opsconsole.content.dto.ConversationArchiveBatchRequest;
 import ffdd.opsconsole.content.dto.ConversationInitiateRequest;
 import ffdd.opsconsole.content.dto.ConversationQueryRequest;
 import ffdd.opsconsole.content.dto.ConversationReplyRequest;
 import ffdd.opsconsole.content.dto.ConversationStatusRequest;
-import ffdd.opsconsole.content.dto.ConversationTicketRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferDecisionRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferRequest;
 import ffdd.opsconsole.content.dto.CustomerNoteRemoveRequest;
 import ffdd.opsconsole.content.dto.CustomerNoteRequest;
 import ffdd.opsconsole.content.dto.CustomerTagRequest;
-import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
 import ffdd.opsconsole.finance.application.OpsFinanceService;
@@ -68,10 +62,7 @@ public class OpsConversationService {
     private static final Set<String> TRANSFER_TARGET_TYPES = Set.of("agent", "queue", "standby");
     private static final Set<String> CONVERSATION_TYPES = Set.of("advisor", "support");
     private static final Set<String> DIRECT_STATUS_TARGETS = Set.of("OPEN", "RESOLVED", "CLOSED");
-    private static final Set<String> TICKET_CATEGORIES = Set.of("account", "withdrawal", "deposit", "hardware", "earnings", "genesis", "technical", "other");
-    private static final Set<String> TICKET_PRIORITIES = Set.of("LOW", "NORMAL", "HIGH", "URGENT");
     private static final DateTimeFormatter CONVERSATION_NO_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
-    private static final DateTimeFormatter TICKET_NO_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
     private static final String TIMEOUT_FALLBACK_CONFIG_KEY = "I.session.workbench.timeoutFallback";
     private static final int TRANSFER_TIMEOUT_MINUTES = 30;
     private static final int AUTO_FALLBACK_BATCH_SIZE = 50;
@@ -86,7 +77,6 @@ public class OpsConversationService {
     }
 
     private final ConversationRepository conversationRepository;
-    private final SupportTicketRepository ticketRepository;
     private final OpsSupportAgentService supportAgentService;
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
@@ -573,66 +563,6 @@ public class OpsConversationService {
         return List.of(); // Human assignment changes only through the formal customer transfer transaction.
     }
 
-    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
-    public ApiResult<ConversationTicketResult> convertToTicket(
-            String conversationNo,
-            String idempotencyKey,
-            ConversationTicketRequest request) {
-        productionPathGuard.requireOpsWriteAllowed();
-        ensureSeedData();
-        ApiResult<ConversationTicketResult> guard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        ownership.writeConversation(conversationNo, true);
-        ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
-        if (conversation == null) {
-            return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
-        }
-        if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
-                || "CLOSED".equalsIgnoreCase(conversation.status())) {
-            return invalidState();
-        }
-        String category = normalizeTicketCategory(request.category());
-        String priority = normalizeTicketPriority(request.priority());
-        if (!TICKET_CATEGORIES.contains(category)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_TICKET_CATEGORY_UNSUPPORTED");
-        }
-        if (!TICKET_PRIORITIES.contains(priority)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_TICKET_PRIORITY_UNSUPPORTED");
-        }
-        String actor = operator(request.operator());
-        LocalDateTime now = LocalDateTime.now(clock);
-        List<ContentConversationMessageView> messages = conversationRepository.messages(conversation.conversationNo());
-        String ticketNo = "TK-" + now.format(TICKET_NO_TIME);
-        replies.requireHandled(conversation.conversationNo());
-        if (!conversationRepository.markConvertedToTicket(conversation, ticketNo, actor, now)) {
-            return ApiResult.fail(409, "CONVERSATION_ALREADY_CONVERTED_TO_TICKET");
-        }
-        SupportTicketView created = ticketRepository.createTicket(
-                ticketNo,
-                conversation.userId(),
-                category,
-                priority,
-                titleOrDefault(request.title(), conversation),
-                transcriptBody(conversation, messages),
-                request.assignedAdminId(),
-                null, // Responsibility and its display name come from the formal customer binding.
-                actor,
-                now);
-        ticketRepository.markConversationSource(created.ticketNo(),conversation.conversationNo());
-        created=ticketRepository.findByTicketNo(created.ticketNo()).orElseThrow();
-        ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
-        SupportTicketDetail ticketDetail = new SupportTicketDetail(created, ticketRepository.messages(created.ticketNo()));
-        audit("I9_CONVERSATION_CONVERTED_TO_TICKET", conversation.conversationNo(), actor, auditDetail(
-                "ticketNo", created.ticketNo(),
-                "category", category,
-                "priority", priority,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(new ConversationTicketResult(updated, ticketDetail));
-    }
-
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationView> initiate(
             String idempotencyKey,
@@ -692,7 +622,6 @@ public class OpsConversationService {
         else humanMessages.committedForActor(prepared,persisted.messageId(),idempotencyKey);
         if(request.replyTargets()!=null) replies.handled(request.userId(),created.conversationNo(),persisted.messageId(),
                 new ConversationReplyRequest(text,created.status(),created.version(),request.reason(),request.operator(),request.replyTargets(),null));
-        SupportTicketView fallbackTicket = null;
         Map<String, Object> detail = auditDetail(
                 "conversationType", type,
                 "userId", request.userId() == null ? "audience" : request.userId(),
@@ -705,9 +634,6 @@ public class OpsConversationService {
                 "fallbackTicket", false,
                 "reason", reasonOrDefault(request.reason(), "single-user routine"),
                 "idempotencyKey", idempotencyKey.trim());
-        if (fallbackTicket != null) {
-            detail.put("fallbackTicketNo", fallbackTicket.ticketNo());
-        }
         if(persistedActor==null) audit("I9_CONVERSATION_INITIATED",created.conversationNo(),actor,detail);
         else auditForActor("I9_CONVERSATION_INITIATED",created.conversationNo(),persistedActor,detail);
         return new MessageCommandResult(ApiResult.ok(created), persisted.messageId());
@@ -717,26 +643,6 @@ public class OpsConversationService {
 
     private AdvisorRoutingDecision routingDecision(String type, ConversationInitiateRequest request, String actor) {
         return supportAgentService.routeAdvisorForUser(request.userId());
-    }
-
-    private SupportTicketView createAdvisorFallbackTicket(
-            ContentConversationView conversation,
-            String openingText,
-            AdvisorRoutingDecision routing,
-            String actor,
-            LocalDateTime now) {
-        String ticketNo = "TK-" + now.format(TICKET_NO_TIME);
-        return ticketRepository.createTicket(
-                ticketNo,
-                conversation.userId(),
-                "account",
-                "NORMAL",
-                "Advisor standby fallback for " + conversation.conversationNo(),
-                "Advisor conversation routed to " + routing.targetName() + ".\n" + openingText,
-                routing.agentAdminId(),
-                routing.targetName(),
-                actor,
-                now);
     }
 
     private void ensureSeedData() {
@@ -935,14 +841,6 @@ public class OpsConversationService {
         return length < REASON_MIN_LENGTH || length > REASON_MAX_LENGTH;
     }
 
-    private String normalizeTicketCategory(String category) {
-        return StringUtils.hasText(category) ? category.trim().toLowerCase(Locale.ROOT) : "account";
-    }
-
-    private String normalizeTicketPriority(String priority) {
-        return StringUtils.hasText(priority) ? priority.trim().toUpperCase(Locale.ROOT) : "NORMAL";
-    }
-
     private boolean canDirectStatusChange(String currentStatus, String targetStatus) {
         String current = normalizeStatus(currentStatus);
         if (current.equals(targetStatus)) return true;
@@ -950,24 +848,6 @@ public class OpsConversationService {
             case "OPEN" -> "RESOLVED".equals(targetStatus);
             case "RESOLVED" -> "OPEN".equals(targetStatus) || "CLOSED".equals(targetStatus);
             default -> false;
-        };
-    }
-
-    private String statusLabel(String status) {
-        return switch (normalizeStatus(status)) {
-            case "OPEN" -> "进行中";
-            case "TRANSFERRED" -> "转入待处理";
-            case "RESOLVED" -> "已解决";
-            case "CLOSED" -> "已关闭";
-            default -> "未知";
-        };
-    }
-
-    private String senderLabel(String senderType) {
-        return switch (StringUtils.hasText(senderType) ? senderType.trim().toUpperCase(Locale.ROOT) : "") {
-            case "USER" -> "用户";
-            case "AGENT" -> "坐席";
-            default -> "系统";
         };
     }
 
@@ -1008,36 +888,6 @@ public class OpsConversationService {
         }
     }
 
-    private String titleOrDefault(String title, ContentConversationView conversation) {
-        String value = StringUtils.hasText(title)
-                ? title.trim()
-                : "会话 " + conversation.conversationNo() + " 后续跟进";
-        return value.length() > 160 ? value.substring(0, 160) : value;
-    }
-
-    private String transcriptBody(ContentConversationView conversation, List<ContentConversationMessageView> messages) {
-        StringBuilder body = new StringBuilder();
-        body.append("会话号: ").append(conversation.conversationNo()).append('\n');
-        body.append("用户: ").append(conversation.userId()).append('\n');
-        body.append("状态: ").append(statusLabel(conversation.status())).append('\n');
-        for (ContentConversationMessageView message : messages) {
-            body.append('[')
-                    .append(senderLabel(message.senderType()))
-                    .append("] ")
-                    .append(message.senderName())
-                    .append(": ")
-                    .append(message.transcriptText())
-                    .append('\n');
-            if (body.length() >= 1997) {
-                return body.substring(0, 1997) + "...";
-            }
-        }
-        if (messages.isEmpty() && StringUtils.hasText(conversation.lastMessage())) {
-            body.append("[最后消息] ").append(conversation.lastMessage());
-        }
-        String result = body.toString().trim();
-        return result.length() > 2000 ? result.substring(0, 1997) + "..." : result;
-    }
 
     private Map<String, Object> auditDetail(Object... values) {
         Map<String, Object> detail = new LinkedHashMap<>();

@@ -22,9 +22,6 @@ import ffdd.opsconsole.content.domain.ConversationRepository;
 import ffdd.opsconsole.content.domain.DedicatedAdvisorBindingView;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
-import ffdd.opsconsole.content.domain.SupportTicketRepository;
-import ffdd.opsconsole.content.domain.SupportTicketMessageView;
-import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.domain.SupportSlaView;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -48,7 +45,6 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 class AppSupportServiceTest {
-    private final SupportTicketRepository tickets = mock(SupportTicketRepository.class);
     private final ConversationRepository conversations = mock(ConversationRepository.class);
     private final SupportKnowledgeRepository knowledge = mock(SupportKnowledgeRepository.class);
     private final SupportAgentRepository supportAgents = mock(SupportAgentRepository.class);
@@ -63,7 +59,7 @@ class AppSupportServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new AppSupportService(tickets, conversations, knowledge, idempotency, audit, eventPublisher, clock,
+        service = new AppSupportService(conversations, knowledge, idempotency, audit, eventPublisher, clock,
                 productionPathGuard, idempotencyRecords, new ObjectMapper().findAndRegisterModules(), supportAgents,
                 configFacade, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(),
                 ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class));
@@ -71,92 +67,12 @@ class AppSupportServiceTest {
             java.util.function.Supplier<?> action = invocation.getArgument(4);
             return action.get();
         });
-        when(tickets.recentUserVisibleMessages(anyString(), anyInt())).thenAnswer(invocation ->
-                tickets.userVisibleMessages(invocation.getArgument(0)));
         when(conversations.recentUserVisibleMessages(anyString(), anyInt())).thenAnswer(invocation ->
                 conversations.userVisibleMessages(invocation.getArgument(0)));
         when(conversations.currentRecentUserVisibleMessages(anyString(), anyInt())).thenAnswer(invocation ->
                 conversations.recentUserVisibleMessages(invocation.getArgument(0), invocation.getArgument(1)));
         when(conversations.findByConversationNoForUpdate(anyString())).thenAnswer(invocation ->
                 conversations.findByConversationNo(invocation.getArgument(0)));
-    }
-
-    @Test
-    void ticketListAlwaysForcesAuthenticatedUserOwnershipAndBoundsPageSize() {
-        when(tickets.pageTickets(any())).thenReturn(new PageResult<>(0, 1, 100, List.of()));
-
-        ApiResult<PageResult<SupportTicketView>> result = service.tickets(42L, null, 1L, 1000L);
-
-        assertThat(result.getCode()).isZero();
-        ArgumentCaptor<ffdd.opsconsole.content.dto.SupportTicketQueryRequest> query =
-                ArgumentCaptor.forClass(ffdd.opsconsole.content.dto.SupportTicketQueryRequest.class);
-        verify(tickets).pageTickets(query.capture());
-        assertThat(query.getValue().userId()).isEqualTo(42L);
-        assertThat(query.getValue().pageSize()).isEqualTo(100L);
-    }
-
-    @Test
-    void ticketCreationRequiresExistingPostInputAndIdempotencyValidation() {
-        var valid = new AppSupportService.CreateTicketRequest("technical", "Title", "Body");
-        assertThat(service.createTicket(42L, null, valid).getCode()).isEqualTo(400);
-        assertThat(service.createTicket(42L, "basic-create-key", null).getCode()).isEqualTo(422);
-        for (var request : List.of(
-                new AppSupportService.CreateTicketRequest("unknown", "Title", "Body"),
-                new AppSupportService.CreateTicketRequest("technical", " ", "Body"),
-                new AppSupportService.CreateTicketRequest("technical", "Title", " "),
-                new AppSupportService.CreateTicketRequest("technical", "x".repeat(161), "Body"),
-                new AppSupportService.CreateTicketRequest("technical", "Title", "x".repeat(2001)))) {
-            assertThat(service.createTicket(42L, "basic-create-key", request).getCode()).isEqualTo(422);
-        }
-        verifyNoInteractions(tickets, conversations, idempotency, audit, eventPublisher);
-    }
-
-    @Test
-    void ticketCreationKeepsPostRetainedKeyAndSameTicketResult() {
-        var results = new java.util.HashMap<String, Object>();
-        org.mockito.Mockito.doAnswer(invocation ->
-                results.computeIfAbsent(invocation.getArgument(0) + ":" + invocation.getArgument(1),
-                        key -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get()))
-                .when(idempotency).executeRetained(any(), any(), any(), any(), any());
-        when(tickets.createTicket(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(ticket(42L, "OPEN", 1L));
-        when(tickets.messages("TK-1")).thenReturn(List.of());
-        var request = new AppSupportService.CreateTicketRequest(" Technical ", " Title ", " Body ");
-
-        var first = service.createTicket(42L, " basic-create-key ", request);
-        var replay = service.createTicket(42L, " basic-create-key ", request);
-
-        assertThat(first.getCode()).isZero(); assertThat(replay).isSameAs(first);
-        assertThat(replay.getData().ticket().ticketNo()).isEqualTo("TK-1");
-        verify(idempotency, times(2)).executeRetained(org.mockito.ArgumentMatchers.eq("APP_SUPPORT_TICKET_CREATE:42"),
-                org.mockito.ArgumentMatchers.eq("basic-create-key"), anyString(), org.mockito.ArgumentMatchers.eq(ApiResult.class), any());
-        verify(tickets).createTicket(anyString(), org.mockito.ArgumentMatchers.eq(42L), org.mockito.ArgumentMatchers.eq("technical"),
-                org.mockito.ArgumentMatchers.eq("NORMAL"), org.mockito.ArgumentMatchers.eq("Title"), org.mockito.ArgumentMatchers.eq("Body"),
-                org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.eq("Unassigned"), org.mockito.ArgumentMatchers.eq("user:42"), any());
-        verify(audit).recordRequired(any());
-        verifyNoInteractions(conversations, eventPublisher);
-    }
-
-    @Test
-    void ticketReplyRejectsCrossUserAccessBeforeAnyMutation() {
-        when(tickets.findByTicketNo("TK-1")).thenReturn(Optional.of(ticket(7L, "OPEN", 3L)));
-
-        ApiResult<?> result = service.replyTicket(
-                42L, "TK-1", "idem-1", new AppSupportService.ReplyRequest("hello", "OPEN", 3L));
-
-        assertThat(result.getCode()).isEqualTo(404);
-        verify(tickets, never()).appendUserReplyCas(any(), any(), any());
-    }
-
-    @Test
-    void ticketReplyUsesServerVersionCasAndReportsConflict() {
-        when(tickets.findByTicketNo("TK-1")).thenReturn(Optional.of(ticket(42L, "OPEN", 3L)));
-        when(tickets.appendUserReplyCas(any(), any(), any())).thenReturn(false);
-
-        ApiResult<?> result = service.replyTicket(
-                42L, "TK-1", "idem-1", new AppSupportService.ReplyRequest("hello", "OPEN", 3L));
-
-        assertThat(result.getCode()).isEqualTo(409);
     }
 
     @Test
@@ -191,7 +107,7 @@ class AppSupportServiceTest {
         var executor = new ffdd.opsconsole.shared.idempotency.AdminIdempotencyTransactionExecutor(ledger, mapper,
                 mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyExpiryTransitionExecutor.class));
         var retained = new AdminIdempotencyService(executor, clock);
-        service = new AppSupportService(tickets, conversations, knowledge, retained, audit, eventPublisher, clock,
+        service = new AppSupportService(conversations, knowledge, retained, audit, eventPublisher, clock,
                 productionPathGuard, ledger, mapper, supportAgents, configFacade,
                 ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(),
                 ffdd.opsconsole.content.SupportTestDependencies.visibility(conversations), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportUnboundReceipt.class));
@@ -234,53 +150,6 @@ class AppSupportServiceTest {
     }
 
     @Test
-    void ticketReadClearsOnlyTheAuthenticatedOwnersUnreadHeaderAtItsOpenedVersion() {
-        SupportTicketView opened = ticket(42L, "OPEN", 3L, 1);
-        when(tickets.findByTicketNo("TK-1")).thenReturn(Optional.of(opened));
-        when(tickets.markUserReadCas(opened, LocalDateTime.now(clock))).thenReturn(true);
-
-        ApiResult<?> result = service.markTicketRead(
-                42L, "TK-1", new AppSupportService.CloseRequest("OPEN", 3L));
-
-        assertThat(result.getCode()).isZero();
-        verify(tickets).markUserReadCas(opened, LocalDateTime.now(clock));
-    }
-
-    @Test
-    void ticketReadRejectsAnotherUsersTicketBeforeAnyReadMutation() {
-        when(tickets.findByTicketNo("TK-1")).thenReturn(Optional.of(ticket(7L, "OPEN", 3L)));
-
-        ApiResult<?> result = service.markTicketRead(
-                42L, "TK-1", new AppSupportService.CloseRequest("OPEN", 3L));
-
-        assertThat(result.getCode()).isEqualTo(404);
-        verify(tickets, never()).markUserReadCas(any(), any());
-    }
-
-    @Test
-    void ticketReadRejectsAStaleOpenedVersionBeforeAnyReadMutation() {
-        when(tickets.findByTicketNo("TK-1")).thenReturn(Optional.of(ticket(42L, "OPEN", 4L)));
-
-        ApiResult<?> result = service.markTicketRead(
-                42L, "TK-1", new AppSupportService.CloseRequest("OPEN", 3L));
-
-        assertThat(result.getCode()).isEqualTo(409);
-        verify(tickets, never()).markUserReadCas(any(), any());
-    }
-
-    @Test
-    void ticketReadDoesNotClearAReplyThatArrivedAfterTheUserOpenedTheTicket() {
-        SupportTicketView newerAgentReply = ticket(42L, "OPEN", 4L);
-        when(tickets.findByTicketNo("TK-1")).thenReturn(Optional.of(newerAgentReply));
-
-        ApiResult<?> result = service.markTicketRead(
-                42L, "TK-1", new AppSupportService.CloseRequest("OPEN", 3L));
-
-        assertThat(result.getCode()).isEqualTo(409);
-        verify(tickets, never()).markUserReadCas(any(), any());
-    }
-
-    @Test
     void conversationDetailRejectsCrossUserAccess() {
         ContentConversationView conversation = new ContentConversationView(
                 1L, "CV-1", 7L, "support", "OPEN", "a1", "Agent", 0, "hello",
@@ -290,19 +159,6 @@ class AppSupportServiceTest {
 
         assertThat(service.conversation(42L, "CV-1").getCode()).isEqualTo(404);
         verify(conversations, never()).messages(any());
-    }
-
-    @Test
-    void ticketDetailUsesOnlyTheRepositoryUserVisibleProjection() {
-        when(tickets.findByTicketNo("TK-1")).thenReturn(Optional.of(ticket(42L, "OPEN", 3L)));
-        SupportTicketMessageView visible = new SupportTicketMessageView(
-                1L, 1L, "TK-1", 42L, "user", "User", "hello", LocalDateTime.now(clock));
-        when(tickets.userVisibleMessages("TK-1")).thenReturn(List.of(visible));
-
-        var result = service.ticket(42L, "TK-1");
-
-        assertThat(result.getData().messages()).containsExactly(visible);
-        verify(tickets, never()).messages("TK-1");
     }
 
     @Test
@@ -487,7 +343,7 @@ class AppSupportServiceTest {
                 42L, "direct-bypass", new AppSupportService.StartConversationRequest("SUPPORT", "help")))
                 .isInstanceOf(RuntimeException.class);
 
-        verifyNoInteractions(tickets, conversations, knowledge, idempotency, audit, eventPublisher);
+        verifyNoInteractions(conversations, knowledge, idempotency, audit, eventPublisher);
     }
 
     @Test
@@ -616,6 +472,16 @@ class AppSupportServiceTest {
     }
 
     @Test
+    void retiredTicketCreateFaqSurfaceIsRejectedLikeAnyUnknownSurface() {
+        for (String surface : List.of("Ticket Create", "ticket create", "Unknown Surface")) {
+            var result = service.faqPage(42L, "en-US", null, surface, 1L, 20L);
+            assertThat(result.getCode()).as(surface).isEqualTo(422);
+            assertThat(result.getMessage()).as(surface).isEqualTo("SUPPORT_FAQ_SURFACE_UNSUPPORTED");
+        }
+        verifyNoInteractions(knowledge);
+    }
+
+    @Test
     void legacyFaqListFailsClosedInsteadOfSilentlyTruncatingPublishedContent() {
         when(knowledge.countPublishedFaqs("en-US", "Help Center", "")).thenReturn(51L);
         when(knowledge.listPublishedFaqPage("en-US", "Help Center", "", 0L, 50))
@@ -625,18 +491,6 @@ class AppSupportServiceTest {
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("SUPPORT_FAQ_PAGE_REQUIRED");
-    }
-
-    @Test
-    void configuredSlaTargetsNeverClaimToBeHistoricalResponseStatistics() {
-        when(knowledge.listSla()).thenReturn(List.of(new SupportSlaView(
-                "withdrawal", 15, 12, "payments", "review", 4L, LocalDateTime.now(clock))));
-
-        var result = service.slaTargets(42L);
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsExactly(new AppSupportService.AppSupportSlaTarget(
-                "withdrawal", 15, 12, false));
     }
 
     @Test
@@ -744,16 +598,5 @@ class AppSupportServiceTest {
         LocalDateTime now = LocalDateTime.now(clock);
         return new ContentConversationView(1L, number, userId, "support", "CLOSED", null, "Unassigned",
                 1, "done", now, null, null, null, null, null, null, null, now, 9L);
-    }
-
-    private SupportTicketView ticket(Long userId, String status, Long version) {
-        return ticket(userId, status, version, 0);
-    }
-
-    private SupportTicketView ticket(Long userId, String status, Long version, int userUnreadCount) {
-        LocalDateTime now = LocalDateTime.now(clock);
-        return new SupportTicketView(
-                1L, "TK-1", userId, "technical", "NORMAL", status, "title", "body",
-                null, "Unassigned", userUnreadCount, 1, 1, now, null, now, now, false, null, version, true);
     }
 }

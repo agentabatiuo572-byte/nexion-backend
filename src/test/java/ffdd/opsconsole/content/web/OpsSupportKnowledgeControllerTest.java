@@ -95,22 +95,6 @@ class OpsSupportKnowledgeControllerTest {
         verify(knowledgeService).deleteFaq("FAQ-001", "idem-m4-delete", request);
     }
 
-    @Test
-    void updateSlaDelegatesWithIdempotencyHeader() {
-        SupportSlaUpdateRequest request = new SupportSlaUpdateRequest(
-                10,
-                8,
-                "支付台",
-                "D2 withdrawal review",
-                "Marina K.",
-                "提现 SLA 收紧");
-        when(knowledgeService.updateSla("withdrawal", "idem-m4-sla", request)).thenReturn(ApiResult.ok(null));
-
-        assertThat(controller.updateSla("withdrawal", "idem-m4-sla", request).getCode()).isZero();
-
-        verify(knowledgeService).updateSla("withdrawal", "idem-m4-sla", request);
-    }
-
     private static SupportFaqUpsertRequest faqRequest() {
         return new SupportFaqUpsertRequest(
                 "withdrawal",

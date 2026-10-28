@@ -8,11 +8,11 @@ import org.junit.jupiter.api.Test;
 
 class SupportAcceptanceSandboxStateContractTest {
     @Test
-    void onlyOpenOrResolvedSandboxTicketsAndConversationsMayBeMutated() throws Exception {
+    void onlyOpenOrResolvedSandboxConversationsMayBeMutated() throws Exception {
         String source = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/application/SupportAcceptanceSandboxService.java"));
-        assertThat(source).contains("requireReplyableTicket(t)", "requireOperableConversation(c)")
+        assertThat(source).contains("requireOperableConversation(c)")
                 .contains("!\"OPEN\".equals(status)&&!\"RESOLVED\".equals(status)")
-                .contains("SUPPORT_TICKET_INVALID_STATE", "CONVERSATION_INVALID_STATE");
+                .contains("CONVERSATION_INVALID_STATE");
     }
 
     @Test
@@ -23,9 +23,9 @@ class SupportAcceptanceSandboxStateContractTest {
     }
 
     @Test
-    void transferIsOpenOnlyWhileAppConversionPermitsEveryNonClosedState() throws Exception {
+    void transferIsOpenOnly() throws Exception {
         String source = Files.readString(Path.of("src/main/java/ffdd/opsconsole/content/application/SupportAcceptanceSandboxService.java"));
-        assertThat(source).contains("requireTransferableConversation(c)", "requireNotClosedConversation(c)")
-                .contains("!\"OPEN\".equals(status)", "\"CLOSED\".equals(upper(conversation,\"status\"))");
+        assertThat(source).contains("requireTransferableConversation(c)")
+                .contains("!\"OPEN\".equals(upper(conversation,\"status\"))");
     }
 }

@@ -330,18 +330,6 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
-    public boolean markConvertedToTicket(ContentConversationView conversation, String ticketNo, String operator, LocalDateTime now) {
-        String message = "会话已转工单 " + ticketNo;
-        int claimed = mapper.markConvertedToTicket(conversation.conversationNo(), message, conversation.version(), now);
-        if (claimed == 0) {
-            return false;
-        }
-        insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
-                operator + " " + message, now);
-        return true;
-    }
-
-    @Override
     public ContentConversationView createConversation(
             String conversationNo,
             Long userId,

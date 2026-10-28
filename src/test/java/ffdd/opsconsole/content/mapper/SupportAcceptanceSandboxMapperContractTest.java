@@ -14,11 +14,11 @@ class SupportAcceptanceSandboxMapperContractTest {
     @Test
     void sandboxWritesAreIndependentAndSourceBound() throws Exception {
         String create = sql(SupportAcceptanceSandboxMapper.class.getMethod(
-                "createTicket", String.class, String.class, Long.class, String.class, String.class, java.time.LocalDateTime.class), Insert.class);
+                "createConversation", String.class, String.class, Long.class, String.class, String.class, java.time.LocalDateTime.class), Insert.class);
         String receipt = sql(SupportAcceptanceSandboxMapper.class.getMethod(
                 "readCas", String.class, String.class, Long.class, Long.class, String.class, Long.class, String.class, java.time.LocalDateTime.class), Update.class);
-        assertThat(create).contains("nx_support_acceptance_sandbox_ticket", "'mock'", "'SANDBOX'")
-                .doesNotContain("nx_support_ticket");
+        assertThat(create).contains("nx_support_acceptance_sandbox_conversation", "'mock'", "'SANDBOX'")
+                .doesNotContain("nx_conversation", "nx_support_ticket");
         assertThat(receipt).contains("c.status=#{status}", "c.version=#{version}")
                 .doesNotContain("nx_conversation_message_receipt");
         String adminList = sql(SupportAcceptanceSandboxMapper.class.getMethod(

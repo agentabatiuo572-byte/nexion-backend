@@ -9,15 +9,6 @@ import org.junit.jupiter.api.Test;
 
 class AppSupportVisibilityMapperContractTest {
     @Test
-    void ticketAppProjectionExcludesInternalAndSystemMessagesAtSqlBoundary() throws Exception {
-        Method method = SupportTicketMessageMapper.class
-                .getMethod("listUserVisibleByTicketNo", String.class);
-        String sql = String.join(" ", method.getAnnotation(Select.class).value());
-        assertThat(sql).contains("sender_type IN ('user','agent')");
-        assertThat(sql).doesNotContain("internal");
-    }
-
-    @Test
     void conversationAppProjectionExcludesOperationalSystemTracesAtSqlBoundary() throws Exception {
         Method method = ConversationMessageMapper.class
                 .getMethod("listUserVisibleByConversationNo", String.class);

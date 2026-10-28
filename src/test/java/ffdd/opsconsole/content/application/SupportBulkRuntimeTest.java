@@ -354,7 +354,8 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
         for(String state:List.of("CLOSED","TRANSFERRED","ARCHIVED","CONVERTED")) {
             long customer=customer(first);String initial=batch(first,List.of(customer),"SERVICE","TEXT","Lifecycle original",null,null,null);send(initial,customer);String no=row(initial,customer).get("conversation_no").toString();
             String selection=preview(first,List.of(customer),List.of(),"SINGLE",null).path("selectionId").asText();
-            if("CONVERTED".equals(state)) {var header=jdbc.queryForMap("SELECT status,version FROM nx_conversation WHERE conversation_no=?",no);var converted=http("POST","/api/admin/content/conversations/"+no+"/ticket",token(first),new ConversationTicketRequest("other","NORMAL","Actual bulk lifecycle conversion",null,null,header.get("status").toString(),((Number)header.get("version")).longValue(),"Converted old segment proof",run),key());assertThat(converted.path("code").asInt()).isZero();}
+            // Conversion is retired; a historical converted segment is a closed header plus its ticket row.
+            if("CONVERTED".equals(state)) {jdbc.update("UPDATE nx_conversation SET status='CLOSED' WHERE conversation_no=?",no);jdbc.update("INSERT INTO nx_support_ticket(ticket_no,source_conversation_no,user_id,category,title) VALUES(?,?,?,?,?)","TK-HIST-"+customer,no,customer,"other","Historical bulk lifecycle conversion");}
             else if("ARCHIVED".equals(state))jdbc.update("UPDATE nx_conversation SET archived=1 WHERE conversation_no=?",no);
             else jdbc.update("UPDATE nx_conversation SET status=? WHERE conversation_no=?",state,no);
             long before=messageCount(customer),headers=jdbc.queryForObject("SELECT COUNT(*) FROM nx_conversation WHERE user_id=?",Long.class,customer);

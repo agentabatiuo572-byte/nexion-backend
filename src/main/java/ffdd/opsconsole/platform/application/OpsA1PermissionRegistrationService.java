@@ -78,6 +78,10 @@ public class OpsA1PermissionRegistrationService {
         String path = text(request.resourcePath(), "A1_PERMISSION_PATH_REQUIRED");
         if (code.startsWith("risk_k6_") || path.equals("/api/admin/janus")
                 || path.startsWith("/api/admin/janus/")) throw invalid("A1_PERMISSION_RETIRED");
+        // The M2 ticket desk is retired; only M1 seat capacity remains under its historical URL prefix.
+        if (code.startsWith("service_m2_") || path.equals("/service/tickets") || path.equals("/api/admin/content/tickets")
+                || (path.startsWith("/api/admin/content/tickets/") && !path.equals("/api/admin/content/tickets/load-config")
+                        && !path.startsWith("/api/admin/content/tickets/load-config/"))) throw invalid("A1_PERMISSION_RETIRED");
         if (!path.startsWith("/api/admin/") || path.contains("..") || path.length() > 255) {
             throw invalid("A1_PERMISSION_PATH_INVALID");
         }

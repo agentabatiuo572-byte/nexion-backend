@@ -29,13 +29,14 @@ class CregisExceptionClaimServiceTest {
     final TreasuryLedgerRepository treasury=mock(TreasuryLedgerRepository.class);
     final SupportPaymentAttributionFacade attribution=mock(SupportPaymentAttributionFacade.class);
     final AuditObjectLockMapper locks=mock(AuditObjectLockMapper.class);
-    final CregisExceptionClaimService service=new CregisExceptionClaimService(config,ownership,sources,admins,db,deposits,idempotency,audit,treasury,attribution,locks);
+    final CregisDepositPolicyService policies=mock(CregisDepositPolicyService.class);
+    final CregisExceptionClaimService service=new CregisExceptionClaimService(config,ownership,sources,admins,db,deposits,idempotency,audit,treasury,attribution,locks,policies);
     final String tx="0x"+"a".repeat(64),address="0x"+"b".repeat(40),block="0x"+"c".repeat(64);
     final CregisExceptionSourceService.Source source=new CregisExceptionSourceService.Source(88,77,tx,3,address,BigDecimal.TEN);
     final CregisExceptionOwnershipService.Evidence proof=new CregisExceptionOwnershipService.Evidence(new CregisExceptionOwnershipService.SourceRef("OBSERVATION",101),source,
             "0x"+"d".repeat(40),"UNATTRIBUTED_HOLD",null,20,block,15,"e".repeat(64),Instant.now());
     final Map<String,Object> row=new HashMap<>();
-    @BeforeEach void setup(){config.setMode(CregisProperties.Mode.PROVIDER);config.setProjectId(88);config.setDepositCreditEnabled(true);
+    @BeforeEach void setup(){when(policies.snapshot(anyLong(),anyString())).thenReturn(new CregisDepositPolicy(0,BigDecimal.TEN,BigDecimal.ONE,15)); config.setMode(CregisProperties.Mode.PROVIDER);config.setProjectId(88);config.setDepositCreditEnabled(true);
         when(admins.require(true)).thenReturn(9L);when(admins.require(false)).thenReturn(9L);
         when(idempotency.recoveryResult(any(),any(),any(),eq(Map.class))).thenReturn(new AdminIdempotencyService.RecoveryResult<>(AdminIdempotencyService.RecoveryStatus.NOT_FOUND,null));
         when(idempotency.executeRetained(any(),any(),any(),eq(Map.class),any())).thenAnswer(i->i.<Supplier<Map<String,Object>>>getArgument(4).get());
@@ -44,6 +45,7 @@ class CregisExceptionClaimServiceTest {
         when(deposits.lockProvisionGate()).thenReturn(Map.of("state","BLOCKED","switchReason","CREGIS_DEPOSIT_INCIDENT","version",2));
         when(db.lockObservation(88,101)).thenReturn(Map.of("status","UNATTRIBUTED_HOLD","txid",tx,"logIndex",3,"address",address,"grossAmount","10","blockNumber",20L));
         row.putAll(Map.of("id",1L,"case_no","CL-original","source_type","OBSERVATION","source_id",101L,"state","MAKER_DONE","version",0L,"maker_id",7L,"target_user_id",42L,"project_id",88L));
+        row.put("policy_version",0L);row.put("policy_fee_usdt",BigDecimal.ONE);
         row.putAll(Map.of("cid",77L,"txid",tx,"log_index",3,"address",address,"gross_amount",BigDecimal.TEN,"evidence_hash",proof.evidenceHash(),"challenge_id","challenge"));
         when(db.snapshot(88,1)).thenReturn(row);when(db.lock(88,1)).thenReturn(row);when(db.insertCase(any())).thenReturn(1);when(db.lastId()).thenReturn(1L);
         when(db.decide(anyLong(),anyLong(),anyLong(),anyLong(),anyString(),anyString())).thenReturn(1);
@@ -57,8 +59,9 @@ class CregisExceptionClaimServiceTest {
         when(deposits.ledgerId("CR-77")).thenReturn(11L);when(deposits.eventId(88,77)).thenReturn(12L);when(deposits.linkLedger(11,12)).thenReturn(1);
         when(deposits.insertDepositOrder(42,"CR-77",tx,3,new BigDecimal("9"),15,11)).thenReturn(1);
     }
+    private String policyEvidenceHash() {return CregisExceptionOwnershipService.sha(proof.evidenceHash()+"|0|1|15");}
     @Test void proposalConsumesNonceAndReservesSourceWithoutWalletMutation(){
-        var result=service.propose("key","challenge","signature",42,proof.evidenceHash(),"核实原始转账者签名后发起认领");
+        var result=service.propose("key","challenge","signature",42,policyEvidenceHash(),"核实原始转账者签名后发起认领");
         assertThat(result.get("state")).isEqualTo("MAKER_DONE");verify(sources).reserve(source,"CLAIM","CL-challenge");verify(ownership).consume(any(),eq("CL-challenge"));
         verify(deposits,never()).creditWallet(any(),anyLong(),anyLong());verifyNoInteractions(attribution,treasury);
     }
@@ -103,15 +106,15 @@ class CregisExceptionClaimServiceTest {
             "BLOCKED,0,EMERGENCY:MANUAL,false","BUSY,1,CREGIS_DEPOSIT_INCIDENT,false","BLOCKED,1,UNKNOWN,false"})
     void onlyExplicitAutomaticOrCheckedRepairGatesCanPropose(String state,int enabled,String reason,boolean allowed){
         when(deposits.lockProvisionGate()).thenReturn(Map.of("state",state,"creditEnabled",enabled,"switchReason",reason));
-        if(allowed)assertThat(service.propose("key","challenge","signature",42,proof.evidenceHash(),"核实原始转账者签名后发起认领").get("state")).isEqualTo("MAKER_DONE");
-        else assertThatThrownBy(()->service.propose("key","challenge","signature",42,proof.evidenceHash(),"核实原始转账者签名后发起认领")).hasMessage("CREGIS_EXCEPTION_RISK_GATE_BLOCKED");
+        if(allowed)assertThat(service.propose("key","challenge","signature",42,policyEvidenceHash(),"核实原始转账者签名后发起认领").get("state")).isEqualTo("MAKER_DONE");
+        else assertThatThrownBy(()->service.propose("key","challenge","signature",42,policyEvidenceHash(),"核实原始转账者签名后发起认领")).hasMessage("CREGIS_EXCEPTION_RISK_GATE_BLOCKED");
         verify(deposits,never()).setSwitches(anyInt(),anyInt(),anyInt(),any(),anyLong());
     }
     @Test void environmentDisabledCannotUseIncidentRepairAndManualA2SourceOrUserLocksBlock(){
         config.setDepositCreditEnabled(false);
-        assertThatThrownBy(()->service.propose("key","challenge","signature",42,proof.evidenceHash(),"核实原始转账者签名后发起认领")).hasMessage("CREGIS_EXCEPTION_RISK_GATE_BLOCKED");
+        assertThatThrownBy(()->service.propose("key","challenge","signature",42,policyEvidenceHash(),"核实原始转账者签名后发起认领")).hasMessage("CREGIS_EXCEPTION_RISK_GATE_BLOCKED");
         config.setDepositCreditEnabled(true);when(locks.countActiveByTarget("D","deposit","CR-77")).thenReturn(1);
-        assertThatThrownBy(()->service.propose("key","challenge","signature",42,proof.evidenceHash(),"核实原始转账者签名后发起认领")).hasMessage("CREGIS_EXCEPTION_OBJECT_LOCKED_BY_A2");
+        assertThatThrownBy(()->service.propose("key","challenge","signature",42,policyEvidenceHash(),"核实原始转账者签名后发起认领")).hasMessage("CREGIS_EXCEPTION_OBJECT_LOCKED_BY_A2");
         when(locks.countActiveByTarget("D","deposit","CR-77")).thenReturn(0);when(locks.countActiveByTarget("C","user","42")).thenReturn(1);
         assertThatThrownBy(()->service.decide("key",1,0,"APPROVE","独立复核原始来源及新鲜链上证据")).hasMessage("CREGIS_EXCEPTION_OBJECT_LOCKED_BY_A2");
         verify(db,never()).insertCase(any());verify(deposits,never()).creditWallet(any(),anyLong(),anyLong());

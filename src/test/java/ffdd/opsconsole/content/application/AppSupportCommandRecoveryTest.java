@@ -10,7 +10,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.domain.ConversationRepository;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
-import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
@@ -28,7 +27,7 @@ class AppSupportCommandRecoveryTest {
     private final AdminIdempotencyRecordMapper records = mock(AdminIdempotencyRecordMapper.class);
     private final ConversationRepository conversations = mock(ConversationRepository.class);
     private final AppSupportService service = new AppSupportService(
-            mock(SupportTicketRepository.class), conversations, mock(SupportKnowledgeRepository.class),
+            conversations, mock(SupportKnowledgeRepository.class),
             mock(AdminIdempotencyService.class), mock(AuditLogService.class), mock(ApplicationEventPublisher.class),
             Clock.fixed(Instant.parse("2026-08-31T00:00:00Z"), ZoneOffset.UTC),
             mock(ProductionSupportPathGuard.class), records, new ObjectMapper().findAndRegisterModules(),
