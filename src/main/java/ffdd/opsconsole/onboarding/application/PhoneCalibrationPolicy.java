@@ -7,35 +7,74 @@ import java.text.Normalizer;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.random.RandomGenerator;
 import java.util.stream.IntStream;
 
 /**
- * Platform compute points, never a claim of measured physical TOPS. Android
- * matches hardware rules with a fixed value; iOS matches only the published
- * iPhone model rules, whose operator-preset range is drawn once by
- * OnboardingCalibrationService and stored, never re-drawn by a match.
+ * Platform compute points, never a claim of measured physical TOPS. Android matches a chip tier by
+ * the SoC identifiers the phone reports; iOS matches the iPhone model rules. Both carry an
+ * operator-preset range that OnboardingCalibrationService draws from once and stores, never a match.
+ * "rules" (the retired fixed-value Android hardware rules) is ignored when read and never written.
  */
-public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDecimal> thresholds, List<Rule> rules,
-                                     List<IosModelRule> iosModelRules) {
-    public static final String HARDWARE_RULE = "HARDWARE_RULE";
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties("rules")
+public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDecimal> thresholds,
+                                     List<AndroidSocRule> androidSocRules, List<IosModelRule> iosModelRules,
+                                     AndroidPresetRemovals androidPresetRemovals) {
     public static final String IOS_MODEL_RANGE = "IOS_MODEL_RANGE";
+    public static final String ANDROID_SOC_RANGE = "ANDROID_SOC_RANGE";
     public static final String OPERATOR_PRESET = "OPERATOR_PRESET";
     /** Calibration result fields recording the operator range; kept on the server, never sent to the App. */
     public static final String MIN_COMPUTE_VALUE = "minComputeValue";
     public static final String MAX_COMPUTE_VALUE = "maxComputeValue";
     public static final String VALUE_SOURCE = "valueSource";
+    /** The Android chip a result was matched to: its name and stable key stay on the server. */
+    public static final String SOC = "soc";
+    public static final String SOC_KEY = "socKey";
     private static final Set<String> SERVER_ONLY_RESULT_KEYS = Set.of(MIN_COMPUTE_VALUE, MAX_COMPUTE_VALUE, VALUE_SOURCE,
-            PhoneModelRisk.RISK_FLAGS, PhoneModelRisk.INSTALL_MODEL_LOCK);
+            PhoneModelRisk.RISK_FLAGS, PhoneModelRisk.INSTALL_MODEL_LOCK, SOC, SOC_KEY);
+    /** Raw hardware identifiers in the echoed signals; the App never needs them back. */
+    private static final Set<String> SERVER_ONLY_SIGNAL_KEYS = Set.of("socIds", "soc", "gpu");
+    /** An Android result also keeps which tier rule and version it came from on the server. */
+    private static final Set<String> ANDROID_SERVER_ONLY_KEYS = Set.of("ruleId", "ruleVersion");
     public static final Set<String> CATALOG_CLASSES =
             Set.of("APPLE_CURRENT_SNAPSHOT", "APPLE_RELEASED_HISTORICAL", "OPERATOR_ADDED");
     /** Names that identify no specific model: they never match and cannot be configured. */
     private static final Set<String> GENERIC_MODELS = Set.of("iphone", "apple iphone", "apple", "ios", "unknown");
+    /** SoC identifiers that name a vendor or nothing; they never match and cannot be configured. */
+    public static final Set<String> GENERIC_SOC_IDS = Set.of("qcom", "qualcomm", "mediatek", "mtk", "samsung", "exynos",
+            "google", "unisoc", "sprd", "spreadtrum", "unknown", "default", "0", "null");
+    /**
+     * Identifiers verified to be shared by different chips (e.g. MT6833 for Dimensity 700 and 6020). They can never be
+     * published as aliases; a report carrying only such an identifier waits for verification.
+     */
+    public static final Set<String> AMBIGUOUS_SOC_IDS = Set.of("mt6833");
+    private static final int MAX_SOC_IDS = 4;
+    private static final int MAX_TIER_ALIASES = 100;
     private static final BigDecimal MAX_VALUE = new BigDecimal("1000000");
 
-    public record Rule(String id, String platform, String model, String soc, String gpu,
-                       BigDecimal minMemoryGb, BigDecimal maxMemoryGb, BigDecimal computeValue, String evidence) { }
+    /** One chip of an Android tier: its stable key and every verified identifier the phone may report for it. */
+    public record AndroidSocChip(String socKey, String name, String manufacturer, List<String> aliases) {
+        public AndroidSocChip {
+            aliases = aliases == null ? List.of() : List.copyOf(aliases);
+        }
+    }
+    /** An Android performance tier: one operator-preset range shared by all of its chips. */
+    public record AndroidSocRule(String id, String name, BigDecimal minComputeValue, BigDecimal maxComputeValue,
+                                 Boolean enabled, String valueSource, String note, List<AndroidSocChip> chips) {
+        public AndroidSocRule {
+            chips = chips == null ? List.of() : List.copyOf(chips);
+        }
+    }
+    /** Preset chips and aliases the operator removed on purpose, so reloading the presets does not bring them back. */
+    public record AndroidPresetRemovals(List<String> socKeys, List<String> aliases) {
+        public static final AndroidPresetRemovals NONE = new AndroidPresetRemovals(List.of(), List.of());
+        public AndroidPresetRemovals {
+            socKeys = socKeys == null ? List.of() : List.copyOf(socKeys);
+            aliases = aliases == null ? List.of() : List.copyOf(aliases);
+        }
+    }
     /**
      * One iPhone model regardless of storage, colour or regional SKU; aliases are verified SDK names.
      * The optional device facts (launch iOS, last supported major, screen scales and point sizes) feed
@@ -56,29 +95,43 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
                     null, null, List.of(), List.of());
         }
     }
-    public record Hardware(String platform, String model, String soc, String gpu, BigDecimal memoryGb) { }
-    /** A range match carries no computeValue or tier: both come from the stored allocation. */
+    /** socIds: every SoC identifier an Android phone reported; iOS reports only its model. */
+    public record Hardware(String platform, String model, List<String> socIds) {
+        public Hardware {
+            socIds = socIds == null ? List.of() : socIds.stream().filter(java.util.Objects::nonNull).toList();
+        }
+    }
+    /**
+     * Every match is a range match: no computeValue or tier, both come from the stored allocation.
+     * model is the iPhone model, or the chip name for Android; socKey is the Android chip's stable key.
+     */
     public record Match(String status, String ruleId, BigDecimal computeValue, Integer tier, long ruleVersion,
-                        String method, String model, BigDecimal minComputeValue, BigDecimal maxComputeValue) {
+                        String method, String model, BigDecimal minComputeValue, BigDecimal maxComputeValue, String socKey) {
         public Match(String status, String ruleId, BigDecimal computeValue, Integer tier, long ruleVersion) {
-            this(status, ruleId, computeValue, tier, ruleVersion, HARDWARE_RULE, null, null, null);
+            this(status, ruleId, computeValue, tier, ruleVersion, null, null, null, null, null);
+        }
+        public Match(String status, String ruleId, BigDecimal computeValue, Integer tier, long ruleVersion,
+                     String method, String model, BigDecimal minComputeValue, BigDecimal maxComputeValue) {
+            this(status, ruleId, computeValue, tier, ruleVersion, method, model, minComputeValue, maxComputeValue, null);
         }
         public boolean matched() { return "MATCHED".equals(status); }
-        public boolean range() { return IOS_MODEL_RANGE.equals(method); }
+        public boolean range() { return IOS_MODEL_RANGE.equals(method) || ANDROID_SOC_RANGE.equals(method); }
     }
 
     public PhoneCalibrationPolicy {
         thresholds = thresholds == null ? List.of() : List.copyOf(thresholds);
-        rules = rules == null ? List.of() : List.copyOf(rules);
+        androidSocRules = androidSocRules == null ? List.of() : List.copyOf(androidSocRules);
         iosModelRules = iosModelRules == null ? List.of() : List.copyOf(iosModelRules);
+        androidPresetRemovals = androidPresetRemovals == null ? AndroidPresetRemovals.NONE : androidPresetRemovals;
     }
 
-    public PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDecimal> thresholds, List<Rule> rules) {
-        this(version, effectiveAt, thresholds, rules, List.of());
+    public PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDecimal> thresholds,
+                                  List<AndroidSocRule> androidSocRules, List<IosModelRule> iosModelRules) {
+        this(version, effectiveAt, thresholds, androidSocRules, iosModelRules, AndroidPresetRemovals.NONE);
     }
 
     public void validate() {
-        if (version < 1 || effectiveAt < 0 || thresholds.size() != 4 || rules.size() > 500
+        if (version < 1 || effectiveAt < 0 || thresholds.size() != 4 || androidSocRules.size() > 50
                 || iosModelRules.size() > 500) invalid();
         BigDecimal previous = BigDecimal.ZERO;
         for (BigDecimal threshold : thresholds) {
@@ -86,24 +139,30 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
             previous = threshold;
         }
         Set<String> ids = new HashSet<>();
-        for (int i = 0; i < rules.size(); i++) {
-            Rule r = rules.get(i);
+        Set<String> socKeys = new HashSet<>(), socAliases = new HashSet<>();
+        for (AndroidSocRule r : androidSocRules) {
             if (r == null || r.id() == null || !r.id().matches("[A-Za-z0-9_-]{1,64}") || !ids.add(r.id())
-                    || !Set.of("android", "ios").contains(r.platform()) || !text(r.model(), 128, true)
-                    || !text(r.soc(), 128, false) || !text(r.gpu(), 256, false)
-                    || !positive(r.minMemoryGb()) || !positive(r.maxMemoryGb())
-                    || r.maxMemoryGb().compareTo(new BigDecimal("129")) > 0
-                    || r.maxMemoryGb().compareTo(r.minMemoryGb()) <= 0
-                    || !positive(r.computeValue()) || !text(r.evidence(), 500, false)) invalid();
-            for (int j = 0; j < i; j++) {
-                Rule other = rules.get(j);
-                if (sameHardware(r, other) && normalize(r.model()).equals(normalize(other.model()))
-                        && r.minMemoryGb().compareTo(other.maxMemoryGb()) < 0
-                        && other.minMemoryGb().compareTo(r.maxMemoryGb()) < 0) {
-                    throw new BizException(422, "PHONE_CALIBRATION_RULE_OVERLAP");
+                    || !text(r.name(), 64, false) || r.enabled() == null || !OPERATOR_PRESET.equals(r.valueSource())
+                    || (r.note() != null && !text(r.note(), 500, true))
+                    || !preset(r.minComputeValue()) || !preset(r.maxComputeValue())
+                    || r.minComputeValue().compareTo(r.maxComputeValue()) > 0 || r.chips().size() > MAX_TIER_ALIASES) invalid();
+            int aliases = 0;
+            for (AndroidSocChip chip : r.chips()) {
+                if (chip == null || chip.socKey() == null || !chip.socKey().matches("[a-z0-9_-]{1,64}") || !socKeys.add(chip.socKey())
+                        || !text(chip.name(), 128, false) || !text(chip.manufacturer(), 64, false) || chip.aliases().isEmpty()) invalid();
+                for (String alias : chip.aliases()) {
+                    String id = normalize(alias);
+                    if (!text(alias, 128, false) || GENERIC_SOC_IDS.contains(id) || AMBIGUOUS_SOC_IDS.contains(id)) invalid();
+                    // An identifier names exactly one chip, so a report can never resolve two ways.
+                    if (!socAliases.add(id)) throw new BizException(422, "PHONE_CALIBRATION_SOC_ALIAS_DUPLICATE");
                 }
+                aliases += chip.aliases().size();
             }
+            if (aliases > MAX_TIER_ALIASES) invalid();
         }
+        if (androidPresetRemovals.socKeys().size() > 500 || androidPresetRemovals.aliases().size() > 2000
+                || androidPresetRemovals.socKeys().stream().anyMatch(key -> !text(key, 64, false))
+                || androidPresetRemovals.aliases().stream().anyMatch(alias -> !text(alias, 128, false))) invalid();
         Set<String> names = new HashSet<>();
         for (IosModelRule r : iosModelRules) {
             if (r == null || r.id() == null || !r.id().matches("[A-Za-z0-9_-]{1,64}") || !ids.add(r.id())
@@ -129,24 +188,50 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
 
     public Match match(Hardware hardware) {
         validate();
-        if (hardware != null && "ios".equals(normalize(hardware.platform()))) return matchIos(hardware.model());
-        if (hardware == null || !text(hardware.platform(), 16, false) || !text(hardware.model(), 128, false)
-                || !text(hardware.soc(), 128, false) || !text(hardware.gpu(), 256, false)
-                || hardware.memoryGb() == null || hardware.memoryGb().signum() <= 0
-                || hardware.memoryGb().compareTo(new BigDecimal("128")) > 0) return pending("HARDWARE_INCOMPLETE");
-        List<Rule> modelRules = rules.stream().filter(r -> r.platform().equals(hardware.platform())
-                && !r.model().isBlank() && normalize(r.model()).equals(normalize(hardware.model()))).toList();
-        // A known model with a conflicting SoC/GPU must not fall back to a generic rule.
-        List<Rule> candidates = (modelRules.isEmpty() ? rules.stream().filter(r -> r.model().isBlank()).toList() : modelRules)
-                .stream().filter(r -> r.platform().equals(hardware.platform())
-                        && normalize(r.soc()).equals(normalize(hardware.soc()))
-                        && normalize(r.gpu()).equals(normalize(hardware.gpu()))
-                        && hardware.memoryGb().compareTo(r.minMemoryGb()) >= 0
-                        && hardware.memoryGb().compareTo(r.maxMemoryGb()) < 0).toList();
-        if (candidates.size() != 1) return pending(candidates.isEmpty()
-                ? (modelRules.isEmpty() ? "HARDWARE_UNKNOWN" : "HARDWARE_CONFLICT") : "HARDWARE_AMBIGUOUS");
-        Rule rule = candidates.get(0);
-        return new Match("MATCHED", rule.id(), rule.computeValue(), tierFor(rule.computeValue()), version);
+        String platform = hardware == null ? "" : normalize(hardware.platform());
+        if ("ios".equals(platform)) return matchIos(hardware.model());
+        if ("android".equals(platform)) return matchAndroid(hardware.socIds());
+        return pending("PLATFORM_UNSUPPORTED");
+    }
+
+    /**
+     * Every reported identifier is resolved, so the answer never depends on their order: one chip
+     * matches its tier, two different chips conflict even within one tier. Generic and known-shared
+     * identifiers never decide; an unknown one does not block a verified identifier beside it.
+     */
+    private Match matchAndroid(List<String> socIds) {
+        Set<String> reported = new java.util.LinkedHashSet<>();
+        for (String raw : socIds) {
+            String id = normalize(raw);
+            if (!id.isEmpty() && raw.length() <= 128 && !GENERIC_SOC_IDS.contains(id)) reported.add(id);
+            if (reported.size() >= MAX_SOC_IDS) break;
+        }
+        if (reported.isEmpty()) return pending("SOC_MISSING");
+        Map<String, AndroidSocRule> tiers = new java.util.LinkedHashMap<>();
+        Map<String, AndroidSocChip> chips = new java.util.LinkedHashMap<>();
+        for (String id : reported) {
+            if (AMBIGUOUS_SOC_IDS.contains(id)) continue;
+            for (AndroidSocRule rule : androidSocRules) for (AndroidSocChip chip : rule.chips()) {
+                if (chip.aliases().stream().map(PhoneCalibrationPolicy::normalize).anyMatch(id::equals)) {
+                    chips.put(chip.socKey(), chip);
+                    tiers.put(chip.socKey(), rule);
+                }
+            }
+        }
+        if (chips.size() > 1) return pending("SOC_CONFLICT");
+        if (chips.isEmpty()) return pending("SOC_UNKNOWN");
+        AndroidSocChip chip = chips.values().iterator().next();
+        AndroidSocRule rule = tiers.get(chip.socKey());
+        if (!rule.enabled()) return pending("SOC_DISABLED");
+        return new Match("MATCHED", rule.id(), null, null, version, ANDROID_SOC_RANGE, chip.name(),
+                rule.minComputeValue(), rule.maxComputeValue(), chip.socKey());
+    }
+
+    /** The Android chip with this stable key, for display; null when no tier holds it. */
+    public AndroidSocChip socChip(String socKey) {
+        if (socKey == null) return null;
+        for (AndroidSocRule rule : androidSocRules) for (AndroidSocChip chip : rule.chips()) if (socKey.equals(chip.socKey())) return chip;
+        return null;
     }
 
     /** The iPhone rule a match points to, for its device facts. */
@@ -219,23 +304,29 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
     }
 
     private Match pending(String reason) { return new Match(reason, null, null, null, version); }
-    private static boolean sameHardware(Rule a, Rule b) {
-        return a.platform().equals(b.platform()) && normalize(a.soc()).equals(normalize(b.soc()))
-                && normalize(a.gpu()).equals(normalize(b.gpu()));
-    }
     /**
      * A calibration result, or an activation receipt holding one under originalResult, as the App
      * may see it: the user's own value without the range it was drawn from, the risk flags or the
-     * model lock, and a held calibration's risk reason generalised. Other values pass through.
+     * model lock, an Android result's chip and tier rule, the raw identifiers in the echoed signals,
+     * and a held calibration's risk or chip reason generalised. Other values pass through.
      */
     public static Object appView(Object result) {
         if (!(result instanceof java.util.Map<?, ?> map)) return result;
+        boolean android = ANDROID_SOC_RANGE.equals(map.get("calibrationMethod"))
+                || map.get("signals") instanceof Map<?, ?> signals && "android".equals(signals.get("platform"));
         java.util.Map<String, Object> view = new java.util.LinkedHashMap<>();
         map.forEach((key, value) -> {
             String name = String.valueOf(key);
-            if (SERVER_ONLY_RESULT_KEYS.contains(name)) return;
+            if (SERVER_ONLY_RESULT_KEYS.contains(name) || android && ANDROID_SERVER_ONLY_KEYS.contains(name)) return;
+            if ("signals".equals(name) && value instanceof Map<?, ?> signals) {
+                java.util.Map<String, Object> echoed = new java.util.LinkedHashMap<>();
+                signals.forEach((field, raw) -> { if (!SERVER_ONLY_SIGNAL_KEYS.contains(String.valueOf(field))) echoed.put(String.valueOf(field), raw); });
+                view.put(name, echoed);
+                return;
+            }
             // Which model check held the calibration is not told to the user.
-            Object shown = "pendingReason".equals(name) && value instanceof String reason && PhoneModelRisk.ENFORCEABLE.contains(reason) ? PhoneModelRisk.APP_REASON : value;
+            Object shown = "pendingReason".equals(name) && value instanceof String reason
+                    && (PhoneModelRisk.ENFORCEABLE.contains(reason) || reason.startsWith("SOC_")) ? PhoneModelRisk.APP_REASON : value;
             view.put(name, "originalResult".equals(name) ? appView(shown) : shown);
         });
         return view;

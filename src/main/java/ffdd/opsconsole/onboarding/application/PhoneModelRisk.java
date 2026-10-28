@@ -16,6 +16,8 @@ public final class PhoneModelRisk {
 
     /** The same installation reported a different model than the one it is locked to (iOS and Android). */
     public static final String MODEL_CHANGED = "MODEL_CHANGED";
+    /** The same Android installation resolved to a different chip than the one it is locked to; follows the lock's mode. */
+    public static final String SOC_CHANGED = "SOC_CHANGED";
     /** The iOS version is older than the model shipped with or newer than it can run. */
     public static final String OS_MISMATCH = "OS_MISMATCH";
     /** The screen scale is not one the model has. */
@@ -27,7 +29,7 @@ public final class PhoneModelRisk {
     /** The account reported many distinct models within the window (iOS and Android); never enforced. */
     public static final String ACCOUNT_MODEL_CHURN = "ACCOUNT_MODEL_CHURN";
     /** Reasons this class can make a calibration pending; the App only ever sees {@link #APP_REASON}. */
-    public static final Set<String> ENFORCEABLE = Set.of(MODEL_CHANGED, OS_MISMATCH, SCALE_MISMATCH, SIGNALS_MISSING);
+    public static final Set<String> ENFORCEABLE = Set.of(MODEL_CHANGED, SOC_CHANGED, OS_MISMATCH, SCALE_MISMATCH, SIGNALS_MISSING);
     public static final String APP_REASON = "MODEL_UNVERIFIED";
     /** Server-only result fields: the flagged checks, and the installation's locked model. */
     public static final String RISK_FLAGS = "riskFlags";
@@ -79,8 +81,14 @@ public final class PhoneModelRisk {
      */
     public static Outcome evaluate(Settings settings, Facts facts, PhoneCalibrationPolicy.IosModelRule rule,
                                    boolean lockChanged, int accountModels) {
+        return evaluate(settings, facts, rule, lockChanged, false, accountModels);
+    }
+
+    public static Outcome evaluate(Settings settings, Facts facts, PhoneCalibrationPolicy.IosModelRule rule,
+                                   boolean lockChanged, boolean chipChanged, int accountModels) {
         List<Finding> findings = new ArrayList<>();
         if (lockChanged) add(findings, MODEL_CHANGED, settings.installModelLock());
+        if (chipChanged) add(findings, SOC_CHANGED, settings.installModelLock());
         if (accountModels >= settings.churnModelCount()) add(findings, ACCOUNT_MODEL_CHURN, settings.accountModelChurn());
         if (rule != null && "ios".equals(PhoneCalibrationPolicy.normalize(facts.platform()))) iosFacts(settings, facts, rule, findings);
         String pending = findings.stream().filter(finding -> finding.mode() == Mode.ENFORCE).map(Finding::code)

@@ -1,5 +1,6 @@
 package ffdd.opsconsole.onboarding.web;
 
+import ffdd.opsconsole.onboarding.application.AndroidSocPresetCatalog;
 import ffdd.opsconsole.onboarding.application.IosModelPresetCatalog;
 import ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService;
 import ffdd.opsconsole.onboarding.application.PhoneCalibrationPolicy;
@@ -56,6 +57,13 @@ public class PhoneCalibrationAdminController {
         return ApiResult.ok(IosModelPresetCatalog.load());
     }
 
+    /** The versioned Android chip-tier presets; loading them only fills an E6 draft that still goes through A2. */
+    @GetMapping("/android-soc-presets")
+    @PreAuthorize("hasAuthority('device_e6_read')")
+    public ApiResult<AndroidSocPresetCatalog.Catalog> androidSocPresets() {
+        return ApiResult.ok(AndroidSocPresetCatalog.load());
+    }
+
     /** Model risk settings take effect when saved; they are not part of the A2-approved rules. */
     @GetMapping("/risk")
     @PreAuthorize("hasAuthority('device_e6_read')")
@@ -77,20 +85,17 @@ public class PhoneCalibrationAdminController {
         var service = new PhoneCalibrationConfigService(config, clock);
         var policy = service.candidate(request.proposal(), service.read());
         long matched = 0, changed = 0, pending = 0;
-        // iPhone groups split per allocated value, so many groups share one hardware match.
+        // Groups split per allocated value, so many groups share one hardware match.
         Map<PhoneCalibrationPolicy.Hardware, PhoneCalibrationPolicy.Match> matches = new java.util.HashMap<>();
         for (var group : mapper.calibrationHardwareGroups()) {
             var result = matches.computeIfAbsent(new PhoneCalibrationPolicy.Hardware(group.platform(), group.model(),
-                    group.soc(), group.gpu(), group.memoryGb()), policy::match);
+                    group.socIdList()), policy::match);
             if (!result.matched()) pending += group.count();
             else {
                 matched += group.count();
-                // A stored iPhone allocation stays valid while it is inside the new range; nothing is drawn here.
-                boolean same = result.range()
-                        ? PhoneCalibrationPolicy.within(result, group.computeValue())
-                                && Integer.valueOf(policy.tierFor(group.computeValue())).equals(group.tier())
-                        : result.tier().equals(group.tier()) && group.computeValue() != null
-                                && result.computeValue().compareTo(group.computeValue()) == 0;
+                // A stored allocation stays valid while it is inside the new range; nothing is drawn here.
+                boolean same = PhoneCalibrationPolicy.within(result, group.computeValue())
+                        && Integer.valueOf(policy.tierFor(group.computeValue())).equals(group.tier());
                 if (!same) changed += group.count();
             }
         }

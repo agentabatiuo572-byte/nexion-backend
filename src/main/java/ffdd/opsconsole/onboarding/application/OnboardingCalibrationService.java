@@ -47,7 +47,10 @@ import org.springframework.transaction.annotation.Transactional;
 public class OnboardingCalibrationService implements ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final java.security.SecureRandom RANDOM = new java.security.SecureRandom();
-    /** Internal ledger in derived_json: normalized iPhone model to the value this row was ever allocated. */
+    /**
+     * Internal ledger in derived_json: each range key (normalized iPhone model, or "android-tier:" plus the
+     * stable tier rule id) to the value this row was ever allocated. The JSON key predates Android tiers.
+     */
     private static final String IOS_ALLOCATIONS = "iosAllocations";
 
     private final OnboardingCalibrationMapper mapper;
@@ -104,17 +107,14 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         Map<String, String> lock = installModelLock(current);
         Map<String, String> reported = reportedModel(request.signals());
         PhoneModelRisk.Settings risk = new PhoneModelRiskConfig(configFacade, clock).read();
-        Map<String, Object> derived = derive(request.signals(), tiers, match -> storedIosValue(userId, scope, match),
+        Map<String, Object> derived = derive(request.signals(), tiers, match -> storedRangeValue(userId, scope, match),
                 (policy, match) -> PhoneModelRisk.evaluate(risk, facts(request.signals()),
-                        match.matched() && match.range() ? policy.iosRule(match.ruleId()) : null,
-                        lockChanged(policy, lock, reported),
+                        match.matched() && PhoneCalibrationPolicy.IOS_MODEL_RANGE.equals(match.method()) ? policy.iosRule(match.ruleId()) : null,
+                        lockChanged(policy, lock, reported), chipChanged(lock, match),
                         risk.accountModelChurn() == PhoneModelRisk.Mode.OFF ? 0
                                 : accountModels(userId, scope, policy, reported, risk.churnWindowDays())));
-        carryIosAllocations(current, derived);
-        // Enforced, the first model an installation reports stays its lock until support releases it.
-        // Observed or off, the lock follows the report, so enforcing later starts from each current
-        // phone instead of holding everyone who legitimately moved phones meanwhile.
-        Map<String, String> nextLock = lock != null && risk.installModelLock() == PhoneModelRisk.Mode.ENFORCE ? lock : reported;
+        carryRangeAllocations(current, derived);
+        Map<String, String> nextLock = nextLock(lock, reported, derived, risk);
         if (nextLock != null) derived.put(PhoneModelRisk.INSTALL_MODEL_LOCK, nextLock);
         long configRevision = Math.max(
                 tiers.stream().mapToLong(row -> row.revision() == null ? 0L : row.revision()).max().orElse(0L),
@@ -439,7 +439,8 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         try {
             Signals signals = JSON.readValue(row.signalJson(), Signals.class);
             var matched = policy.match(hardware(signals));
-            if (PhoneCalibrationPolicy.IOS_MODEL_RANGE.equals(result.get("calibrationMethod"))) {
+            if (PhoneCalibrationPolicy.IOS_MODEL_RANGE.equals(result.get("calibrationMethod"))
+                    || PhoneCalibrationPolicy.ANDROID_SOC_RANGE.equals(result.get("calibrationMethod"))) {
                 // Review the stored allocation against the rule; never draw again to compare.
                 BigDecimal stored = decimal(result.get("computeValue"));
                 if (!matched.matched() || !matched.range() || !matched.ruleId().equals(result.get("ruleId"))
@@ -504,6 +505,12 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         try {
             Signals signals = JSON.readValue(row.signalJson(), Signals.class);
             Map<String, Object> derived = JSON.readValue(row.derivedJson(), new TypeReference<>() { });
+            // An Android phone is its model and stable chip: a chip moved between tiers, renamed or
+            // reported under another alias stays the same phone. Tier, rule version and value never count.
+            if (PhoneCalibrationPolicy.ANDROID_SOC_RANGE.equals(derived.get("calibrationMethod"))) {
+                return sha256(writeJson(List.of("android", PhoneCalibrationPolicy.normalize(signals.model()),
+                        String.valueOf(derived.get(PhoneCalibrationPolicy.SOC_KEY)))));
+            }
             // An iPhone is identified by its canonical model, whether the SDK reported the name or an identifier.
             Object model = PhoneCalibrationPolicy.IOS_MODEL_RANGE.equals(derived.get("calibrationMethod"))
                     ? derived.get("model") : signals.model();
@@ -659,20 +666,19 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     }
 
     private PhoneCalibrationPolicy.Hardware hardware(Signals signals) {
-        return new PhoneCalibrationPolicy.Hardware(signals.platform(), signals.model(), signals.soc(), signals.gpu(),
-                signals.memGB() == null ? null : BigDecimal.valueOf(signals.memGB()));
+        return new PhoneCalibrationPolicy.Hardware(signals.platform(), signals.model(), signals.socIds());
     }
 
     /**
-     * The account's earlier allocation for the same canonical iPhone model, if it is still inside the
-     * matched range. A retry with a new idempotency key, a reinstall, an unrelated rule publish or a
-     * detour through another reported model therefore reads the stored value instead of drawing again.
+     * The account's earlier allocation for the same range (iPhone model or Android tier), if it is still
+     * inside the matched range. A retry with a new idempotency key, a reinstall, an unrelated rule publish
+     * or a detour through another report therefore reads the stored value instead of drawing again.
      */
-    private BigDecimal storedIosValue(Long userId, Scope scope, PhoneCalibrationPolicy.Match match) {
-        String model = PhoneCalibrationPolicy.normalize(match.model());
+    private BigDecimal storedRangeValue(Long userId, Scope scope, PhoneCalibrationPolicy.Match match) {
+        String key = allocationKey(match.method(), match.model(), match.ruleId());
         for (String json : mapper.iosRangeAllocations(userId, scope.sourceEnvironment(), scope.runId())) {
             try {
-                Object stored = iosAllocations(JSON.readValue(json, new TypeReference<>() { })).get(model);
+                Object stored = rangeAllocations(JSON.readValue(json, new TypeReference<>() { })).get(key);
                 if (stored == null) continue;
                 BigDecimal value = decimal(stored);
                 if (PhoneCalibrationPolicy.within(match, value)) return value;
@@ -681,6 +687,12 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
             }
         }
         return null;
+    }
+
+    /** iPhones share a value per canonical model; Android phones per tier rule, whatever chip of the tier. */
+    private static String allocationKey(Object method, Object model, Object ruleId) {
+        return PhoneCalibrationPolicy.ANDROID_SOC_RANGE.equals(method) ? "android-tier:" + ruleId
+                : PhoneCalibrationPolicy.normalize(String.valueOf(model));
     }
 
     /**
@@ -694,7 +706,9 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
             if (derived.get(PhoneModelRisk.INSTALL_MODEL_LOCK) instanceof Map<?, ?> lock) {
                 if (Boolean.TRUE.equals(lock.get("released"))) return null;
                 if (lock.get("model") instanceof String model && !model.isBlank()) {
-                    return lockOf(lock.get("platform") instanceof String platform ? platform : "", model);
+                    Map<String, String> stored = lockOf(lock.get("platform") instanceof String platform ? platform : "", model);
+                    if (lock.get(PhoneCalibrationPolicy.SOC_KEY) instanceof String socKey) stored.put(PhoneCalibrationPolicy.SOC_KEY, socKey);
+                    return stored;
                 }
             }
             Map<String, Object> signals = JSON.readValue(row.signalJson(), new TypeReference<>() { });
@@ -714,6 +728,34 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         lock.put("platform", PhoneCalibrationPolicy.normalize(platform));
         lock.put("model", model.trim());
         return lock;
+    }
+
+    /**
+     * The installation's chip lock is the first chip it was identified as; a report that resolves to
+     * another chip changed phones. Unknown reports set no chip, so a later identification is not a change.
+     */
+    private static boolean chipChanged(Map<String, String> lock, PhoneCalibrationPolicy.Match match) {
+        return lock != null && lock.get(PhoneCalibrationPolicy.SOC_KEY) != null && match.matched() && match.socKey() != null
+                && !lock.get(PhoneCalibrationPolicy.SOC_KEY).equals(match.socKey());
+    }
+
+    /**
+     * Enforced, the first model (and, once identified, chip) an installation reports stays its lock until
+     * support releases it. Observed or off, the lock follows the report, so enforcing later starts from each
+     * current phone instead of holding everyone who legitimately moved phones meanwhile.
+     */
+    private static Map<String, String> nextLock(Map<String, String> lock, Map<String, String> reported,
+                                                Map<String, Object> derived, PhoneModelRisk.Settings risk) {
+        String socKey = derived.get(PhoneCalibrationPolicy.SOC_KEY) instanceof String key ? key : null;
+        if (lock != null && risk.installModelLock() == PhoneModelRisk.Mode.ENFORCE) {
+            Map<String, String> kept = new LinkedHashMap<>(lock);
+            if (kept.get(PhoneCalibrationPolicy.SOC_KEY) == null && socKey != null) kept.put(PhoneCalibrationPolicy.SOC_KEY, socKey);
+            return kept;
+        }
+        if (reported == null) return lock;
+        Map<String, String> next = new LinkedHashMap<>(reported);
+        if (socKey != null) next.put(PhoneCalibrationPolicy.SOC_KEY, socKey);
+        return next;
     }
 
     /** A real phone never reports another model; name and identifier of one iPhone compare equal. */
@@ -753,11 +795,11 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     }
 
     /** Keeps every allocation the row has held, newest first, when a recalibration overwrites its snapshot. */
-    private void carryIosAllocations(CalibrationRow previous, Map<String, Object> derived) {
-        Map<String, Object> ledger = new LinkedHashMap<>(iosAllocations(derived));
+    private void carryRangeAllocations(CalibrationRow previous, Map<String, Object> derived) {
+        Map<String, Object> ledger = new LinkedHashMap<>(rangeAllocations(derived));
         if (previous != null) {
             try {
-                iosAllocations(JSON.readValue(previous.derivedJson(), new TypeReference<>() { })).forEach(ledger::putIfAbsent);
+                rangeAllocations(JSON.readValue(previous.derivedJson(), new TypeReference<>() { })).forEach(ledger::putIfAbsent);
             } catch (JsonProcessingException unreadable) {
                 // Nothing reusable survives an unreadable snapshot.
             }
@@ -765,12 +807,13 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         if (!ledger.isEmpty()) derived.put(IOS_ALLOCATIONS, ledger);
     }
 
-    /** The snapshot's own iPhone allocation followed by its ledger; rows written before the ledger have only the former. */
-    private static Map<String, Object> iosAllocations(Map<String, Object> snapshot) {
+    /** The snapshot's own range allocation followed by its ledger; rows written before the ledger have only the former. */
+    private static Map<String, Object> rangeAllocations(Map<String, Object> snapshot) {
         Map<String, Object> out = new LinkedHashMap<>();
-        if (PhoneCalibrationPolicy.IOS_MODEL_RANGE.equals(snapshot.get("calibrationMethod"))
+        Object method = snapshot.get("calibrationMethod");
+        if ((PhoneCalibrationPolicy.IOS_MODEL_RANGE.equals(method) || PhoneCalibrationPolicy.ANDROID_SOC_RANGE.equals(method))
                 && "MATCHED".equals(snapshot.get("calibrationStatus")) && snapshot.get("computeValue") != null) {
-            out.put(PhoneCalibrationPolicy.normalize(String.valueOf(snapshot.get("model"))), snapshot.get("computeValue"));
+            out.put(allocationKey(method, snapshot.get("model"), snapshot.get("ruleId")), snapshot.get("computeValue"));
         }
         if (snapshot.get(IOS_ALLOCATIONS) instanceof Map<?, ?> ledger) {
             ledger.forEach((model, value) -> { if (value != null) out.putIfAbsent(String.valueOf(model), value); });
@@ -809,8 +852,13 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         result.put("tier", matchedTier);
         if (match.range()) {
             // Snapshot of the rule the value was drawn from, kept even after the rule changes or is deleted.
-            result.put("calibrationMethod", PhoneCalibrationPolicy.IOS_MODEL_RANGE);
-            result.put("model", match.model());
+            result.put("calibrationMethod", match.method());
+            if (PhoneCalibrationPolicy.ANDROID_SOC_RANGE.equals(match.method())) {
+                result.put(PhoneCalibrationPolicy.SOC, match.model());
+                result.put(PhoneCalibrationPolicy.SOC_KEY, match.socKey());
+            } else {
+                result.put("model", match.model());
+            }
             result.put(PhoneCalibrationPolicy.MIN_COMPUTE_VALUE, match.minComputeValue());
             result.put(PhoneCalibrationPolicy.MAX_COMPUTE_VALUE, match.maxComputeValue());
             result.put(PhoneCalibrationPolicy.VALUE_SOURCE, PhoneCalibrationPolicy.OPERATOR_PRESET);
@@ -864,7 +912,8 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                 && boundedText(s.model(), 128) && boundedText(s.brand(), 128) && boundedText(s.gpu(), 256)
                 && (s.platform() == null || boundedText(s.platform(), 16)) && (s.soc() == null || boundedText(s.soc(), 128))
                 && (s.osVersion() == null || boundedText(s.osVersion(), 32))
-                && integerOrNull(s.screenWidth(), 1, 10000) && integerOrNull(s.screenHeight(), 1, 10000);
+                && integerOrNull(s.screenWidth(), 1, 10000) && integerOrNull(s.screenHeight(), 1, 10000)
+                && (s.socIds() == null || s.socIds().size() <= 4 && s.socIds().stream().allMatch(id -> id != null && boundedText(id, 128)));
     }
 
     private boolean validAction(ActionRequest request) {
@@ -970,7 +1019,14 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                           @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String osVersion,
                           @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Integer screenWidth,
                           @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Integer screenHeight,
-                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Double pixelRatio) {
+                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Double pixelRatio,
+                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) List<String> socIds) {
+        public Signals(Double memGB, Integer cores, String model, String brand, String gpu, Double pxDensity,
+                       Double pingMs, Integer batteryLevel, Boolean charging, Boolean networkReachable,
+                       String platform, String soc, String osVersion, Integer screenWidth, Integer screenHeight, Double pixelRatio) {
+            this(memGB, cores, model, brand, gpu, pxDensity, pingMs, batteryLevel, charging, networkReachable, platform, soc,
+                    osVersion, screenWidth, screenHeight, pixelRatio, null);
+        }
         public Signals(Double memGB, Integer cores, String model, String brand, String gpu, Double pxDensity,
                        Double pingMs, Integer batteryLevel, Boolean charging, Boolean networkReachable,
                        String platform, String soc) {
