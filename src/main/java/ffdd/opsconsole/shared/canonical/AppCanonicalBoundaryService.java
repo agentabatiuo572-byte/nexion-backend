@@ -773,11 +773,50 @@ public class AppCanonicalBoundaryService {
         List<CanonicalStateMapper.UserOrder> fetched = rows == null ? List.of() : rows;
         boolean hasMore = !legacyRead && fetched.size() > pageSize;
         List<CanonicalStateMapper.UserOrder> page = hasMore ? fetched.subList(0, pageSize) : fetched;
-        List<Map<String, Object>> orders = page
-                .stream().map(row -> projectUserOrder(userId, row, overlays.get(row.orderNo()))).toList();
+        Map<String, Map<String, Object>> trialSettlements = page.stream()
+                .anyMatch(row -> row.orderNo() != null && row.orderNo().startsWith("TRC-"))
+                ? trialSettlements(userId) : Map.of();
+        List<Map<String, Object>> orders = page.stream().map(row -> {
+            Map<String, Object> projected = projectUserOrder(userId, row, overlays.get(row.orderNo()));
+            Map<String, Object> trial = trialSettlements.get(row.orderNo());
+            if (trial != null) projected.put("trialSettlement", trial);
+            return projected;
+        }).toList();
         String nextCursor = hasMore && !page.isEmpty() ? page.get(page.size() - 1).orderNo() : null;
         return ApiResult.ok(linked("orders", orders, "source", "server", "sourceEnvironment", "PRODUCTION",
                 "runId", null, "serverCanonical", true, "nextCursor", nextCursor));
+    }
+
+    /** Trial-conversion breakdown keyed by order: discounts applied at checkout and rewards credited. */
+    private Map<String, Map<String, Object>> trialSettlements(Long userId) {
+        List<CanonicalStateMapper.TrialConversion> rows = mapper.trialConversions(userId);
+        Map<String, Map<String, Object>> byOrder = new LinkedHashMap<>();
+        for (CanonicalStateMapper.TrialConversion row : rows == null ? List.<CanonicalStateMapper.TrialConversion>of() : rows) {
+            Map<String, String> facts = new LinkedHashMap<>();
+            for (String token : (row.settlementSnapshot() == null ? "" : row.settlementSnapshot()).split(",")) {
+                int eq = token.indexOf('=');
+                if (eq > 0) facts.put(token.substring(0, eq).trim(), token.substring(eq + 1).trim());
+            }
+            String orderNo = facts.get("orderNo");
+            if (orderNo == null || orderNo.isBlank()) continue;
+            BigDecimal promo = snapshotDecimal(facts.get("promoDiscountUsdt"));
+            BigDecimal early = snapshotDecimal(facts.get("earlyDiscountUsdt"));
+            // The snapshot's own offsetUsdt is the real accrual; the applied credit is the rest of the discount.
+            BigDecimal offset = snapshotDecimal(facts.get("totalDiscountUsdt")).subtract(promo).subtract(early).max(BigDecimal.ZERO);
+            byOrder.put(orderNo, linked(
+                    "settlementPolicy", facts.getOrDefault("settlementPolicy", "ACCRUED_ON_CONVERSION"),
+                    "promoDiscountUsdt", promo, "offsetUsdt", offset, "earlyDiscountUsdt", early,
+                    "rewardUsdt", zero(row.rewardUsdt()), "rewardNex", zero(row.rewardNex())));
+        }
+        return byOrder;
+    }
+
+    private static BigDecimal snapshotDecimal(String value) {
+        try {
+            return value == null || value.isBlank() ? BigDecimal.ZERO : new BigDecimal(value).max(BigDecimal.ZERO);
+        } catch (NumberFormatException invalid) {
+            return BigDecimal.ZERO;
+        }
     }
 
     private Map<String, Object> projectUserOrder(Long userId, CanonicalStateMapper.UserOrder order,
