@@ -103,7 +103,7 @@ class EventQuestClaimWindowMySqlTest {
             jdbc.update("UPDATE nx_user_event_quest SET progress_value=1 WHERE user_id=9");
             session.clearCache();
             var earned = mapper.lockClaimableEvent(9L, "event-1");
-            assertThat(earned.rewardType()).isEqualTo("NEX");
+            assertThat(earned.rewardType()).isEqualTo("UVT");
             assertThat(earned.rewardAmount()).isEqualByComparingTo("30.123456");
             assertThat(earned.badgeCode()).isEqualTo("BADGE-A");
             assertThat(mapper.claimEvent(9L, "event-1")).isEqualTo(1);
@@ -233,9 +233,9 @@ class EventQuestClaimWindowMySqlTest {
                     + "UNIQUE KEY uk_user_event(user_id,quest_code)) ENGINE=InnoDB");
             jdbc.update("INSERT INTO nx_event_quest(id,quest_code,target_value,status,is_deleted,badge_achievement_code,"
                     + "starts_at,ends_at,reward_type,reward_amount) VALUES(1,'event-1',1,1,0,'BADGE-A',"
-                    + "'2026-09-06 09:00:00','2026-09-06 10:00:00','NEX',30.123456)");
+                    + "'2026-09-06 09:00:00','2026-09-06 10:00:00','UVT',30.123456)");
             jdbc.update("INSERT INTO nx_user_event_quest(user_id,quest_id,quest_code,progress_value,claim_status,reward_type,reward_amount,is_deleted)"
-                    + " VALUES(7,1,'event-1',1,'CLAIMABLE','NEX',10.123456,0),(8,1,'event-1',1,'CLAIMABLE','NEX',10.123456,0)");
+                    + " VALUES(7,1,'event-1',1,'CLAIMABLE','UVT',10.123456,0),(8,1,'event-1',1,'CLAIMABLE','UVT',10.123456,0)");
             jdbc.execute("SET time_zone='+07:00'");
             Configuration config = new Configuration(new Environment("event-claim-fixture", new JdbcTransactionFactory(), dataSource));
             config.setMapUnderscoreToCamelCase(true);

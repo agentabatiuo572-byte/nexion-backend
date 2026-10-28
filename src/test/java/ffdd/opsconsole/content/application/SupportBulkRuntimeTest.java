@@ -102,10 +102,10 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
             jdbc.update("INSERT INTO nx_customer_tag(user_id,tag,last_operator,is_deleted,created_at,updated_at) VALUES(?,'bulk-authoritative',?,0,NOW(),NOW())",known,run);
             for(String table:List.of("nx_wallet_ledger","nx_deposit_order","nx_withdrawal_order"))
                 assertThat(jdbc.queryForObject("SELECT numeric_scale FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name='amount'",Integer.class,table)).as("Actual %s amount precision",table).isEqualTo(6);
-            deposit(known,"USDT","0.1");deposit(known,"USDT","0.2");deposit(known,"NEX","99.000001");withdrawal(known,"0.125001");
+            deposit(known,"USDT","0.1");deposit(known,"USDT","0.2");deposit(known,"UVT","99.000001");withdrawal(known,"0.125001");
             for(String table:List.of("nx_wallet_ledger","nx_deposit_order")) {
                 assertThat(jdbc.queryForObject("SELECT SUM(amount) FROM "+table+" WHERE user_id=? AND asset='USDT'",java.math.BigDecimal.class,known)).as("Persisted %s USDT",table).isEqualByComparingTo("0.3");
-                assertThat(jdbc.queryForObject("SELECT SUM(amount) FROM "+table+" WHERE user_id=? AND asset='NEX'",java.math.BigDecimal.class,known)).as("Persisted %s NEX",table).isEqualByComparingTo("99.000001");
+                assertThat(jdbc.queryForObject("SELECT SUM(amount) FROM "+table+" WHERE user_id=? AND asset='UVT'",java.math.BigDecimal.class,known)).as("Persisted %s UVT",table).isEqualByComparingTo("99.000001");
             }
             assertThat(jdbc.queryForObject("SELECT SUM(amount) FROM nx_withdrawal_order WHERE user_id=? AND asset='USDT'",java.math.BigDecimal.class,known)).as("Persisted withdrawal principal").isEqualByComparingTo("0.125001");
             // A successful source lacking a committed matching ledger is genuinely UNKNOWN.
@@ -130,7 +130,7 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
             assertThat(preview(first,List.of(unknown),List.of(),"EXPLICIT",filter(null,null,null,null,null,null,null,null,"0","0",null,null,true,null)).path("count").asInt()).isEqualTo(1);
             var money=json.valueToTree(finance.totals(known));
             var usdt=java.util.stream.StreamSupport.stream(money.path("byCurrency").spliterator(),false).filter(row->"USDT".equals(row.path("currency").asText())).findFirst().orElseThrow();
-            var nex=java.util.stream.StreamSupport.stream(money.path("byCurrency").spliterator(),false).filter(row->"NEX".equals(row.path("currency").asText())).findFirst().orElseThrow();
+            var nex=java.util.stream.StreamSupport.stream(money.path("byCurrency").spliterator(),false).filter(row->"UVT".equals(row.path("currency").asText())).findFirst().orElseThrow();
             assertThat(new java.math.BigDecimal(usdt.path("creditedDepositTotal").asText())).isEqualByComparingTo("0.3");assertThat(new java.math.BigDecimal(usdt.path("successfulWithdrawalPrincipalTotal").asText())).isEqualByComparingTo("0.125001");assertThat(new java.math.BigDecimal(nex.path("creditedDepositTotal").asText())).isEqualByComparingTo("99.000001");
             // Fault injection is limited to the authoritative source reader; bulk/HTTP/storage remain real.
             doThrow(new org.springframework.dao.DataAccessResourceFailureException("Isolated financial source failure")).when(finance).totals(known);
@@ -144,7 +144,7 @@ class SupportBulkRuntimeTest extends SupportBulkRuntimeFixture {
             } finally {SharedMutationJournal.cleanupSql(jdbc,run,"SupportBulkRuntimeTest",boss,"SupportBulkRuntimeTest#rules-sql-2","UPDATE nx_support_rules SET maintenance_days=?,version=version+1,updated_by=?,updated_at=UTC_TIMESTAMP(6) WHERE id=1",days,boss);}
             assertThat(preview(first,List.of(known),List.of(),"EXPLICIT",filter(null,"DUE",null,null,null,null,null,null,null,null,null,null,false,null)).path("count").asInt()).isEqualTo(1);
         } finally {jdbc.update("UPDATE nx_support_activity_coverage SET coverage_start_at=? WHERE id=1",coverage);}
-        proof("B03","filtersKeepUtcMoneyPrecisionAndUnknownSeparateFromZero","Real activity projection distinguishes ACTIVE/DORMANT/UNKNOWN; exact UTC registration/activity bounds, DUE, V3, stored string tag and currency-specific decimal sums match. Actual deposit/ledger/withdrawal amount columns retain six decimal places; raw persisted USDT 0.1+0.2=0.3, withdrawal 0.125001 and NEX 99.000001 exactly match the authoritative source and identical inclusive amount bounds. Unlinked successful deposit stays UNKNOWN and only explicit includeUnknown admits it; injected authoritative-source failure yields FINANCE_ERROR rather than zero. Real unset maintenanceDays makes DUE unknown, excluded by default and included only explicitly; restored configuration returns known DUE.");writeProof("bulk-runtime.json");
+        proof("B03","filtersKeepUtcMoneyPrecisionAndUnknownSeparateFromZero","Real activity projection distinguishes ACTIVE/DORMANT/UNKNOWN; exact UTC registration/activity bounds, DUE, V3, stored string tag and currency-specific decimal sums match. Actual deposit/ledger/withdrawal amount columns retain six decimal places; raw persisted USDT 0.1+0.2=0.3, withdrawal 0.125001 and UVT 99.000001 exactly match the authoritative source and identical inclusive amount bounds. Unlinked successful deposit stays UNKNOWN and only explicit includeUnknown admits it; injected authoritative-source failure yields FINANCE_ERROR rather than zero. Real unset maintenanceDays makes DUE unknown, excluded by default and included only explicitly; restored configuration returns known DUE.");writeProof("bulk-runtime.json");
     }
 
     @Test @Order(3) void serviceMaintenanceAndStoppedHelpPreservePendingCursor() throws Exception {

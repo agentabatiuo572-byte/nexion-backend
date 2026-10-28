@@ -181,7 +181,7 @@ class PromotionExecutionReviewMySqlTest {
         record("rr-task-commits-before-gift-recovery-lock",values("order",order,"reward",reward,"device",device,"retainedOwnership",true,"inventoryReturned",false));
     }
     void reconcileCurrentRead(Map<String,Object> common) throws Exception{
-        for(String asset:List.of("USDT","NEX","DEVICE")){
+        for(String asset:List.of("USDT","UVT","DEVICE")){
             var spec="DEVICE".equals(asset)?deviceSpec():values("rewardRuleId","coin","beneficiaryRole","BUYER","type",asset,"calculation","FIXED","amount","1.000001","assetPolicy",h.assetPolicy(asset));
             String activity=h.publish(h.contract(life.buy,spec,common));long buyer=life.user();String order=life.create(buyer,life.quote(buyer,activity,1),1);life.pay(buyer,order);String reward=life.obligations(order).get(0);
             var result=raceAfterOldSnapshot(buyer,reward,()->life.rewards.issue(reward,id("ISSUERACE")),()->life.rewards.reconcile(reward,id("RECONCILERACE")));
@@ -193,7 +193,7 @@ class PromotionExecutionReviewMySqlTest {
         }
     }
     void adminRevisionCurrentRead(Map<String,Object> common) throws Exception{
-        for(String asset:List.of("USDT","NEX","DEVICE")){
+        for(String asset:List.of("USDT","UVT","DEVICE")){
             var spec="DEVICE".equals(asset)?deviceSpec():values("rewardRuleId","coin","beneficiaryRole","BUYER","type",asset,"calculation","FIXED","amount","1.000001","assetPolicy",h.assetPolicy(asset));
             String activity=h.publish(h.contract(life.buy,spec,common));long buyer=life.user();String order=life.create(buyer,life.quote(buyer,activity,1),1);life.pay(buyer,order);String reward=life.obligations(order).get(0);
             long oldRevision=number(life.rewards.get(buyer,reward,false).get("revision"));String command=id("STALEADMIN");

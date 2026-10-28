@@ -21,7 +21,7 @@ import org.junit.jupiter.api.Test;
  * zentao #195:连签增益指向的业务已停售时,页面仍承诺「30 天 质押活动入口」并显示解锁倒计时。
  *
  * <p>根因不在判据写错,而在**读数取错文档**:{@code stakingAvailable()} 原先读
- * {@code OpsNexMarketService.overview()} —— 那是 G3 NEX **价格市场**总览,响应里没有
+ * {@code OpsNexMarketService.overview()} —— 那是 G3 UVT **价格市场**总览,响应里没有
  * {@code stats}/{@code pools} 两个键,于是两个 {@code instanceof} 守卫都不成立、
  * 各自走「当作开着」的默认分支,方法**恒返回 true**。任务面读公开目录如实标「业务暂停」,
  * 连签增益读这个恒真值继续承诺 —— 同一事实两端各说一套。</p>

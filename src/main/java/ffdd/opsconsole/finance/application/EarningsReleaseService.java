@@ -34,7 +34,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor(onConstructor_=@org.springframework.beans.factory.annotation.Autowired)
 public class EarningsReleaseService {
     private static final Set<String> BUCKETS = Set.of("withdrawable", "pending_review", "bonus_locked");
-    private static final Set<String> ASSETS = Set.of("USDT", "NEX");
+    private static final Set<String> ASSETS = Set.of("USDT", "UVT");
     private static final Set<String> SOURCE_ENVIRONMENTS = Set.of("PRODUCTION", "SANDBOX");
     // Other domains have their own reversal owners. Do not let two owners recover the same source.
     private static final Set<String> RECOVERY_SOURCES = Set.of("PROMOTION_REWARD", "MOCK_PROMOTION_REWARD",
@@ -77,7 +77,7 @@ public class EarningsReleaseService {
         String scope = "EARNINGS_RECOVERY:" + command.sourceEnvironment() + ":" + command.userId();
         // Length-prefixed fields avoid delimiter collisions without a second serialization system.
         String payload = List.of(command.userId().toString(), command.entryNo(), command.sourceType(),
-                command.sourceRef(), command.asset(), command.sourceEnvironment(), command.amount().toPlainString(),
+                command.sourceRef(), "UVT".equals(command.asset()) ? "NEX" : command.asset(), command.sourceEnvironment(), command.amount().toPlainString(),
                 command.reason(), command.actor()).stream().map(v -> v.length() + ":" + v)
                 .collect(java.util.stream.Collectors.joining());
         return idempotency.executeRetained(scope, idempotencyKey, hash(payload), RewardRecoveryReceipt.class,

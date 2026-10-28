@@ -573,7 +573,7 @@ public interface AppGrowthEngagementMapper {
             INSERT INTO nx_wallet_ledger
               (user_id,biz_no,biz_type,asset,direction,amount,balance_after,status,remark,created_at,updated_at,is_deleted)
             VALUES
-              (#{userId},#{bizNo},#{bizType},'NEX','IN',#{amount},#{balanceAfter},'POSTED',#{remark},NOW(),NOW(),0)
+              (#{userId},#{bizNo},#{bizType},'UVT','IN',#{amount},#{balanceAfter},'POSTED',#{remark},NOW(),NOW(),0)
             """)
     int insertNexLedger(
             @Param("userId") Long userId,

@@ -104,7 +104,7 @@ class DevelopmentCommissionHowInitializerTest {
         for (String locale : List.of("zh", "en", "vi")) {
             var blocks = entry.path("locales").path(locale).path("blocks");
             assertThat(blocks.findValuesAsText("id")).contains("direct-referral-scope");
-            assertThat(String.join(" ", blocks.findValuesAsText("body"))).contains("USDT", "NEX").doesNotContain("L1", "L2", "L7", "{", "}");
+            assertThat(String.join(" ", blocks.findValuesAsText("body"))).contains("USDT", "UVT").doesNotContain("L1", "L2", "L7", "{", "}");
         }
     }
 

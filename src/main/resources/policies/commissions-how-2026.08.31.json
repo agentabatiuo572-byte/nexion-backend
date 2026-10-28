@@ -97,7 +97,7 @@
             "id": "network",
             "kind": "text",
             "title": "网络版税",
-            "body": "推荐网络内有效订单可触发逐层奖励。当前 USDT 比例：{networkRates}。NEX 按该层实际 USDT 奖励乘对应系数：{networkNex}。深度资格：{networkGate}；{exitCap}。深层奖励还受影响力、活动政策、层级暂停及最终资格校验影响。"
+            "body": "推荐网络内有效订单可触发逐层奖励。当前 USDT 比例：{networkRates}。UVT 按该层实际 USDT 奖励乘对应系数：{networkNex}。深度资格：{networkGate}；{exitCap}。深层奖励还受影响力、活动政策、层级暂停及最终资格校验影响。"
           },
           {
             "id": "binary",
@@ -115,7 +115,7 @@
             "id": "cultivation",
             "kind": "text",
             "title": "培育奖励",
-            "body": "等级奖励配置中的 NEX 金额合计：{cultivationRules}。这些金额可能包含本人奖励和推荐人奖励，不能全部理解为推荐人所得；真实接收人由对应奖励规则及有效推荐关系决定。同一次晋升的同一奖励不能重复发放。"
+            "body": "等级奖励配置中的 UVT 金额合计：{cultivationRules}。这些金额可能包含本人奖励和推荐人奖励，不能全部理解为推荐人所得；真实接收人由对应奖励规则及有效推荐关系决定。同一次晋升的同一奖励不能重复发放。"
           },
           {
             "id": "leadership",
@@ -169,7 +169,7 @@
             "id": "example-day",
             "kind": "text",
             "title": "配置算例 · 非个人收益",
-            "body": "假设订单基数为 {exampleBase}，仅展示 L1 基础比例与 NEX 系数的计算。暂停、资格、退款和总出口保护可能改变实际结算。"
+            "body": "假设订单基数为 {exampleBase}，仅展示 L1 基础比例与 UVT 系数的计算。暂停、资格、退款和总出口保护可能改变实际结算。"
           },
           {
             "id": "example-network",
@@ -181,7 +181,7 @@
             "id": "example-cultivation",
             "kind": "text",
             "title": "培育奖励",
-            "body": "{exampleRank} 的 NEX 奖励配置合计（含不同接收人规则）"
+            "body": "{exampleRank} 的 UVT 奖励配置合计（含不同接收人规则）"
           },
           {
             "id": "example-peer",
@@ -205,7 +205,7 @@
             "id": "example-note",
             "kind": "text",
             "title": "示例边界",
-            "body": "本例不产生订单或奖励。NEX 与 USDT 不直接相加；未开放、未配置、未结算不记作已获得收益。真实金额、舍入及到账以事件和钱包账单为准。"
+            "body": "本例不产生订单或奖励。UVT 与 USDT 不直接相加；未开放、未配置、未结算不记作已获得收益。真实金额、舍入及到账以事件和钱包账单为准。"
           },
           {
             "id": "faq",
@@ -269,7 +269,7 @@
             "id": "network",
             "kind": "text",
             "title": "Network royalties",
-            "body": "Valid orders in the referral network can trigger rewards along the ancestry. Current USDT rates: {networkRates}. NEX equals the actual USDT reward at that level multiplied by its factor: {networkNex}. Depth eligibility: {networkGate}; {exitCap}. Deeper rewards also depend on influence, promotions, paused levels and final eligibility checks."
+            "body": "Valid orders in the referral network can trigger rewards along the ancestry. Current USDT rates: {networkRates}. UVT equals the actual USDT reward at that level multiplied by its factor: {networkNex}. Depth eligibility: {networkGate}; {exitCap}. Deeper rewards also depend on influence, promotions, paused levels and final eligibility checks."
           },
           {
             "id": "binary",
@@ -287,7 +287,7 @@
             "id": "cultivation",
             "kind": "text",
             "title": "Cultivation rewards",
-            "body": "Total NEX amounts in rank-reward configuration: {cultivationRules}. Totals may combine self and sponsor rewards, not a sponsor-only entitlement. Each rule and the valid referral relationship determine the recipient. The same promotion reward cannot be issued twice."
+            "body": "Total UVT amounts in rank-reward configuration: {cultivationRules}. Totals may combine self and sponsor rewards, not a sponsor-only entitlement. Each rule and the valid referral relationship determine the recipient. The same promotion reward cannot be issued twice."
           },
           {
             "id": "leadership",
@@ -341,7 +341,7 @@
             "id": "example-day",
             "kind": "text",
             "title": "Configuration example · not personal income",
-            "body": "Assume an order base of {exampleBase}. This illustrates only the L1 base rate and NEX factor. Pauses, eligibility, refunds and total payout protection may alter actual settlement."
+            "body": "Assume an order base of {exampleBase}. This illustrates only the L1 base rate and UVT factor. Pauses, eligibility, refunds and total payout protection may alter actual settlement."
           },
           {
             "id": "example-network",
@@ -353,7 +353,7 @@
             "id": "example-cultivation",
             "kind": "text",
             "title": "Cultivation",
-            "body": "{exampleRank} NEX configuration total (rules may have different recipients)"
+            "body": "{exampleRank} UVT configuration total (rules may have different recipients)"
           },
           {
             "id": "example-peer",
@@ -377,7 +377,7 @@
             "id": "example-note",
             "kind": "text",
             "title": "Example limits",
-            "body": "This example creates no order or reward. Do not add NEX directly to USDT or treat unavailable, unconfigured or unsettled rewards as earned income. Actual amounts, rounding and payments follow events and wallet bills."
+            "body": "This example creates no order or reward. Do not add UVT directly to USDT or treat unavailable, unconfigured or unsettled rewards as earned income. Actual amounts, rounding and payments follow events and wallet bills."
           },
           {
             "id": "faq",
@@ -441,7 +441,7 @@
             "id": "network",
             "kind": "text",
             "title": "Hoa hồng mạng lưới",
-            "body": "Đơn hàng hợp lệ trong mạng giới thiệu có thể tạo thưởng theo từng tầng. Tỷ lệ USDT hiện tại: {networkRates}. NEX bằng thưởng USDT thực tế của tầng nhân hệ số: {networkNex}. Điều kiện độ sâu: {networkGate}; {exitCap}. Tầng sâu còn phụ thuộc ảnh hưởng, khuyến mãi, tạm dừng và kiểm tra điều kiện cuối cùng."
+            "body": "Đơn hàng hợp lệ trong mạng giới thiệu có thể tạo thưởng theo từng tầng. Tỷ lệ USDT hiện tại: {networkRates}. UVT bằng thưởng USDT thực tế của tầng nhân hệ số: {networkNex}. Điều kiện độ sâu: {networkGate}; {exitCap}. Tầng sâu còn phụ thuộc ảnh hưởng, khuyến mãi, tạm dừng và kiểm tra điều kiện cuối cùng."
           },
           {
             "id": "binary",
@@ -459,7 +459,7 @@
             "id": "cultivation",
             "kind": "text",
             "title": "Thưởng đào tạo",
-            "body": "Tổng NEX trong cấu hình thưởng theo hạng: {cultivationRules}. Tổng có thể gồm thưởng bản thân và người giới thiệu, không phải toàn bộ dành cho người giới thiệu. Người nhận phụ thuộc từng quy tắc và quan hệ giới thiệu hợp lệ. Cùng một thưởng thăng hạng không được phát hai lần."
+            "body": "Tổng UVT trong cấu hình thưởng theo hạng: {cultivationRules}. Tổng có thể gồm thưởng bản thân và người giới thiệu, không phải toàn bộ dành cho người giới thiệu. Người nhận phụ thuộc từng quy tắc và quan hệ giới thiệu hợp lệ. Cùng một thưởng thăng hạng không được phát hai lần."
           },
           {
             "id": "leadership",
@@ -513,7 +513,7 @@
             "id": "example-day",
             "kind": "text",
             "title": "Ví dụ cấu hình · không phải thu nhập cá nhân",
-            "body": "Giả sử cơ sở đơn hàng là {exampleBase}. Chỉ minh họa tỷ lệ cơ bản L1 và hệ số NEX. Tạm dừng, điều kiện, hoàn tiền và giới hạn tổng chi có thể thay đổi quyết toán thực tế."
+            "body": "Giả sử cơ sở đơn hàng là {exampleBase}. Chỉ minh họa tỷ lệ cơ bản L1 và hệ số UVT. Tạm dừng, điều kiện, hoàn tiền và giới hạn tổng chi có thể thay đổi quyết toán thực tế."
           },
           {
             "id": "example-network",
@@ -525,7 +525,7 @@
             "id": "example-cultivation",
             "kind": "text",
             "title": "Đào tạo",
-            "body": "Tổng NEX cấu hình {exampleRank} (có thể có nhiều người nhận)"
+            "body": "Tổng UVT cấu hình {exampleRank} (có thể có nhiều người nhận)"
           },
           {
             "id": "example-peer",
@@ -549,7 +549,7 @@
             "id": "example-note",
             "kind": "text",
             "title": "Giới hạn ví dụ",
-            "body": "Ví dụ không tạo đơn hay thưởng. Không cộng trực tiếp NEX với USDT; chưa mở, chưa cấu hình, chưa quyết toán không phải thu nhập đã nhận. Số tiền, làm tròn và thanh toán theo sự kiện và hóa đơn ví."
+            "body": "Ví dụ không tạo đơn hay thưởng. Không cộng trực tiếp UVT với USDT; chưa mở, chưa cấu hình, chưa quyết toán không phải thu nhập đã nhận. Số tiền, làm tròn và thanh toán theo sự kiện và hóa đơn ví."
           },
           {
             "id": "faq",

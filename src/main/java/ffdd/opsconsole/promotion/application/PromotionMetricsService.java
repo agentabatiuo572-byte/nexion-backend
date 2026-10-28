@@ -44,7 +44,7 @@ public class PromotionMetricsService {
             """,activity);
         long issued=db.count("""
             SELECT COUNT(*) FROM nx_promotion_reward r JOIN nx_promotion_reservation s ON s.reservation_id=r.reservation_id
-            WHERE r.activity_id=? AND ((s.asset IN ('USDT','NEX') AND EXISTS(
+            WHERE r.activity_id=? AND ((s.asset IN ('USDT','UVT') AND EXISTS(
               SELECT 1 FROM nx_wallet_ledger l WHERE l.biz_no=r.original_ledger_no AND l.user_id=r.beneficiary_id
                 AND l.asset=s.asset AND l.amount=s.amount AND l.direction='IN' AND l.status='SUCCESS'))
               OR (s.asset='DEVICE' AND s.amount=(SELECT COUNT(*) FROM nx_promotion_device_receipt x
@@ -135,7 +135,7 @@ public class PromotionMetricsService {
         }
         var manifestRewards=rewardFacts(rewards,now);var groupings=groupRewards(manifestRewards);
         List<Map<String,Object>> assets=new ArrayList<>();long gifts=0;
-        for(String asset:List.of("USDT","NEX")){
+        for(String asset:List.of("USDT","UVT")){
             var total=values("asset",asset);for(String measure:List.of("issued","pending","reversed","unrecoverable")){
                 BigDecimal amount=BigDecimal.ZERO;for(var fact:manifestRewards)if(asset.equals(fact.get("asset")))amount=amount.add(decimal(fact.get(measure)));total.put(measure,money(amount));
             }assets.add(total);

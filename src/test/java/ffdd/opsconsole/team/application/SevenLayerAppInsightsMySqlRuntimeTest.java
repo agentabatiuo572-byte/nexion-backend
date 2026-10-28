@@ -130,7 +130,7 @@ class SevenLayerAppInsightsMySqlRuntimeTest {
     private long event(String kind,int layer,String usdt,String nex,String state) {
         long id=nextEvent++;
         jdbc.update("INSERT INTO nx_commission_event(id,user_id,commission_type,source_user_id,source_user_name,layer_no,order_no,order_amount_usd,amount_usdt,amount_nex,currency,status,created_at,unlock_at) VALUES(?,?,?,?,'Projection',?,?,1000,?,?,?,?,?,?)",
-            id,owner,kind,owner+1,layer,marker+"-ORDER-"+kind+"-"+state,new BigDecimal(usdt),new BigDecimal(nex),new BigDecimal(usdt).signum()>0?"USDT":"NEX",state,AT,AT.plusDays(30));
+            id,owner,kind,owner+1,layer,marker+"-ORDER-"+kind+"-"+state,new BigDecimal(usdt),new BigDecimal(nex),new BigDecimal(usdt).signum()>0?"USDT":"UVT",state,AT,AT.plusDays(30));
         return id;
     }
     private void group(String suffix,String kind,int layer,String usdt,String nex,String state,String env,String run,long recipient,LocalDateTime at,Long usdtEvent,Long nexEvent) {

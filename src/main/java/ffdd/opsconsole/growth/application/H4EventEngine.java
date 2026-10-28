@@ -177,7 +177,7 @@ public class H4EventEngine {
     }
     private static List<Map<String,Object>> rewards(Map<String,Object> r){
         List<Map<String,Object>> result=new ArrayList<>();
-        if(number(r.get("rewardNex")).signum()>0)result.add(values("type","NEX","amount",r.get("rewardNex")));
+        if(number(r.get("rewardNex")).signum()>0)result.add(values("type","UVT","amount",r.get("rewardNex")));
         if(number(r.get("streakSavers")).signum()>0)result.add(values("type","STREAK_SAVER","amount",0,"quantity",r.get("streakSavers")));
         if(r.containsKey("giftProductNo"))result.add(values("type","DEVICE","amount",0,"productNo",r.get("giftProductNo"),"quantity",r.get("giftQuantity")));
         if(number(r.get("poolUsdt")).signum()>0)result.add(values("type","USDT","amount",r.get("poolUsdt"),"pool",true));
@@ -190,7 +190,7 @@ public class H4EventEngine {
         if(r.containsKey("voucherId")||r.containsKey("promotionActivityId"))parts.add(zh?"促销优惠":vi?"Ưu đãi khuyến mãi":"Promotional offer");
         if(number(r.get("multiplier")).signum()>0)parts.add((zh?"签到奖励":vi?"Thưởng điểm danh":"Check-in reward")+" × "+number(r.get("multiplier")).stripTrailingZeros().toPlainString());
         for(var reward:rewards(r)) {
-            String type=text(reward.get("type"));String label=switch(type){case "NEX"->"UVT";case "USDT"->"USDT "+(zh?"总奖池":vi?"tổng quỹ thưởng":"total pool");case "DEVICE"->zh?"设备":vi?"thiết bị":"device";case "STREAK_SAVER"->zh?"补签卡":vi?"thẻ bù điểm danh":"streak saver";default->zh?"创世抽奖券":vi?"vé quay Genesis":"Genesis raffle tickets";};
+            String type=text(reward.get("type"));String label=switch(type){case "UVT"->"UVT";case "USDT"->"USDT "+(zh?"总奖池":vi?"tổng quỹ thưởng":"total pool");case "DEVICE"->zh?"设备":vi?"thiết bị":"device";case "STREAK_SAVER"->zh?"补签卡":vi?"thẻ bù điểm danh":"streak saver";default->zh?"创世抽奖券":vi?"vé quay Genesis":"Genesis raffle tickets";};
             parts.add(number(reward.get("quantity")==null?reward.get("amount"):reward.get("quantity")).stripTrailingZeros().toPlainString()+" "+label);
         }
         return parts.isEmpty()?(zh?"查看活动规则":vi?"Xem thể lệ":"View event rules"):String.join(" + ",parts);
@@ -225,11 +225,11 @@ public class H4EventEngine {
         Map<String,Object> receipt;
         if("onboarding".equals(rule.get("kind"))){
             BigDecimal amount=number(r.get("rewardNex"));spend(rule,"nex",amount,number(r.get("budgetNex")));
-            credit(id,code+":"+id,"NEX",amount);
+            credit(id,code+":"+id,"UVT",amount);
             int savers=number(r.get("streakSavers")).intValueExact();
             db.write("INSERT IGNORE INTO nx_user_streak(user_id,current_streak,longest_streak,streak_savers,created_at,updated_at,is_deleted) VALUES(?,0,0,0,NOW(),NOW(),0)",id);
             db.write("UPDATE nx_user_streak SET streak_savers=streak_savers+?,updated_at=NOW() WHERE user_id=? AND is_deleted=0",savers,id);
-            receipt=values("rewardType","NEX","rewardAmount",amount,"streakSavers",savers);
+            receipt=values("rewardType","UVT","rewardAmount",amount,"streakSavers",savers);
         }else{
             receipt="referral".equals(rule.get("kind"))?commerce.awardQualifiedReferral(id,code,r):commerce.awardReinvestTickets(id,code,r,effectiveStart(rule),effectiveEnd(rule),claimKey);
             boolean device="DEVICE".equals(receipt.get("rewardType"));
@@ -247,7 +247,7 @@ public class H4EventEngine {
         if(number(rule.get("spent_nex")).add(BigDecimal.valueOf(total-base)).compareTo(number(r.get("budgetNex")))>0)return base;
         spend(rule,"nex",BigDecimal.valueOf(total-base),number(r.get("budgetNex")));
         db.write("INSERT INTO nx_growth_event_claim(event_code,user_id,claim_key,status,reward_json) VALUES(?,?,?,'CLAIMED',?)",
-                rule.get("event_code"),id,date.toString(),policies.encode(values("rewardType","NEX","rewardAmount",total-base)));
+                rule.get("event_code"),id,date.toString(),policies.encode(values("rewardType","UVT","rewardAmount",total-base)));
         return total;
     }
     @Transactional(rollbackFor=Exception.class)
@@ -282,8 +282,8 @@ public class H4EventEngine {
         var snapshot=coverage.snapshot();
         if(snapshot==null||!snapshot.reliable()||snapshot.coverageRatio()==null||snapshot.redlinePct()==null
                 ||snapshot.coverageRatio().compareTo(snapshot.redlinePct())<0)throw new BizException(409,"COVERAGE_REDLINE");
-        earnings.creditReward(id,"EVENT_REWARD",ref,asset,amount,"H4:"+ref+":"+asset);
-        ledger.postLedgerEntry("H4:"+ref+":"+asset,id,"EVENT_REWARD",asset,"IN",amount,"SUCCESS","Activity reward");
+        earnings.creditReward(id,"EVENT_REWARD",ref,asset,amount,"H4:"+ref+":"+("USDT".equals(asset)?"USDT":"NEX"));
+        ledger.postLedgerEntry("H4:"+ref+":"+("USDT".equals(asset)?"USDT":"NEX"),id,"EVENT_REWARD",asset,"IN",amount,"SUCCESS","Activity reward");
     }
     private String country(Map<String,Object> user){return switch(text(user.get("country_code")).replace("+","")){case "84"->"VN";case "86"->"CN";default->text(user.get("country_code")).matches("[A-Z]{2}")?text(user.get("country_code")):"";};}
     private String regionFor(Map<String,Object> user,Map<String,Object> rules){

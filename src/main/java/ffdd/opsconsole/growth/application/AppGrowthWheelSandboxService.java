@@ -36,7 +36,7 @@ import org.springframework.util.StringUtils;
 public class AppGrowthWheelSandboxService {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final BigDecimal ONE_HUNDRED = new BigDecimal("100.0000");
-    private static final Set<String> REWARD_KINDS = Set.of("nex", "points", "usdt", "coupon");
+    private static final Set<String> REWARD_KINDS = Set.of("uvt", "points", "usdt", "coupon");
     private static final Clock CLOCK = Clock.systemUTC();
 
     private final AppGrowthWheelSandboxMapper mapper;
@@ -189,7 +189,7 @@ public class AppGrowthWheelSandboxService {
         streak.put("checkedInToday", false);
         streak.put("lastCheckInDate", null);
         return ApiResult.ok(linked(
-                "rewardAsset", "NEX",
+                "rewardAsset", "UVT",
                 "serverDate", today().toString(),
                 "nextResetAtUtc", today().plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toString(),
                 "streak", streak,
@@ -300,9 +300,9 @@ public class AppGrowthWheelSandboxService {
         }
         mapper.ensureScope(scope.runId(), scope.userId());
         // Fixed local fixture; it never reads the canonical tier/guard pool.
-        mapper.ensureTier(scope.runId(), scope.userId(), "comfort-nex-5", "+5 NEX", new BigDecimal("38.0000"), "nex", new BigDecimal("5"), 10);
+        mapper.ensureTier(scope.runId(), scope.userId(), "comfort-nex-5", "+5 UVT", new BigDecimal("38.0000"), "uvt", new BigDecimal("5"), 10);
         mapper.ensureTier(scope.runId(), scope.userId(), "points-50", "+50 points", new BigDecimal("24.0000"), "points", new BigDecimal("50"), 20);
-        mapper.ensureTier(scope.runId(), scope.userId(), "nex-30", "+30 NEX", new BigDecimal("33.0000"), "nex", new BigDecimal("30"), 30);
+        mapper.ensureTier(scope.runId(), scope.userId(), "nex-30", "+30 UVT", new BigDecimal("33.0000"), "uvt", new BigDecimal("30"), 30);
         mapper.ensureTier(scope.runId(), scope.userId(), "usdt-1", "$1 USDT", new BigDecimal("5.0000"), "usdt", new BigDecimal("1"), 40);
         mapper.ensureGuard(scope.runId(), scope.userId(), "kill", "off");
         mapper.ensureGuard(scope.runId(), scope.userId(), "budget", "0");

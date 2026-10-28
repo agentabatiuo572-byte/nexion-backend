@@ -198,7 +198,7 @@ class OnboardingActivationTransactionMySqlTest {
         jdbc.update("INSERT INTO nx_trial_claim(user_id,claim_no,status,user_device_id,device_name,claimed_at,expires_at) "
                 +"VALUES(?,?,'ACTIVE',?,'Trial box',NOW(),DATE_ADD(NOW(),INTERVAL 3 DAY))",user,"trial-claim-"+user,trialDevice);
         jdbc.update("INSERT INTO nx_user_wallet(user_id,usdt_available,nex_available,lifetime_earned,version) VALUES(?,10,20,10,7)",user);
-        for(String asset:List.of("USDT","NEX")){
+        for(String asset:List.of("USDT","UVT")){
             int amount="USDT".equals(asset)?10:20;
             jdbc.update("INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,balance_after,status) "
                     +"VALUES(?,?,'COMPUTE_TASK_REWARD',?,'IN',?,?,'SUCCESS')",user,"settled-before-replacement-"+user,asset,amount,amount);

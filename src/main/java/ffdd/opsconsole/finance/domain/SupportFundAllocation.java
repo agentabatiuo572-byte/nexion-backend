@@ -18,7 +18,7 @@ public final class SupportFundAllocation {
         REORG_DEBIT, REORG_REFUND, REVOKE_DEPOSIT, RESTORE_DEPOSIT }
     public record Account(long customerId, String currency, String slot) {
         public Account {
-            require(customerId > 0 && ("USDT".equals(currency) || "NEX".equals(currency)), "Invalid account");
+            require(customerId > 0 && ("USDT".equals(currency) || "UVT".equals(currency)), "Invalid account");
             require(slot != null && (slot.equals("available") || slot.matches("(?:held|risk):[^\\s:]{1,128}")), "Invalid fund slot");
         }
     }
@@ -59,7 +59,7 @@ public final class SupportFundAllocation {
                 .flatMap(r -> r.lots().stream()).map(Lot::quantity).reduce(ZERO, BigDecimal::add);
     }
     public BigDecimal total(String currency) {
-        require("USDT".equals(currency) || "NEX".equals(currency), "Invalid currency");
+        require("USDT".equals(currency) || "UVT".equals(currency), "Invalid currency");
         return totals.getOrDefault(currency, ZERO);
     }
 

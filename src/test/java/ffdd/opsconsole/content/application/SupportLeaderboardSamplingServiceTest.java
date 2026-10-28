@@ -85,7 +85,7 @@ class SupportLeaderboardSamplingServiceTest {
 
     @Test void noRequestsSampleSixRealShapedStreamsWithOneCompleteFinancialRead(){Fixture f=new Fixture();
         var result=f.sampling.sample();assertEquals(6,result.committed());assertEquals(6,result.due());assertEquals(0,result.failed());
-        assertEquals(Set.of("USDT","NEX"),f.publication.committed.stream().map(s->s.context().currency()).collect(java.util.stream.Collectors.toSet()));
+        assertEquals(Set.of("USDT","UVT"),f.publication.committed.stream().map(s->s.context().currency()).collect(java.util.stream.Collectors.toSet()));
         assertEquals(3,f.publication.committed.stream().map(s->s.context().board()).distinct().count());
         for(Snapshot s:f.publication.committed){assertEquals(AT,s.context().evaluatedAt());assertNull(s.rows().get(0).amount().value());
             assertEquals(Coverage.UNKNOWN,s.rows().get(0).amount().coverage());assertEquals(MovementKind.UNAVAILABLE,s.rows().get(0).movement().kind());

@@ -70,7 +70,7 @@ public interface AppExchangeMapper {
 
     @Select("""
             SELECT price_usdt FROM nx_price_index
-             WHERE metric_code IN ('NEX','NEX_USDT') AND status='ACTIVE' AND is_deleted=0
+             WHERE metric_code IN ('UVT','UVT_USDT') AND status='ACTIVE' AND is_deleted=0
                AND sampled_at>=DATE_SUB(NOW(),INTERVAL 5 MINUTE)
                AND sampled_at<=DATE_ADD(NOW(),INTERVAL 1 MINUTE)
              ORDER BY sampled_at DESC,id DESC LIMIT 1
@@ -81,7 +81,7 @@ public interface AppExchangeMapper {
             WITH base AS (
                 SELECT id,price_usdt AS priceUsdt,sampled_at AS sampledAt
                  FROM nx_price_index
-                 WHERE metric_code IN ('NEX','NEX_USDT') AND status='ACTIVE' AND is_deleted=0
+                 WHERE metric_code IN ('UVT','UVT_USDT') AND status='ACTIVE' AND is_deleted=0
                    AND sampled_at>=DATE_SUB(NOW(),INTERVAL 366 DAY)
                    AND sampled_at<=DATE_ADD(NOW(),INTERVAL 1 MINUTE)
             ), fiveMinute AS (

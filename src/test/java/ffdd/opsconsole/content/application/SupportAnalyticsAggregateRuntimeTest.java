@@ -41,7 +41,7 @@ class SupportAnalyticsAggregateRuntimeTest extends SupportAnalyticsRuntimeFixtur
             assertThat(f.path("sourceObservationStatus").asText()).isEqualTo("COMPLETE");
             assertThat(f.path("customerCount").asLong()).isEqualTo(2);assertThat(result.path("records")).hasSize(1);
             assertMoney(currency(f,"USDT").path("confirmedAmount"),"1000000000000.123457");
-            assertMoney(currency(f,"NEX").path("confirmedAmount"),"2.000003");
+            assertMoney(currency(f,"UVT").path("confirmedAmount"),"2.000003");
             assertThat(f.path("historicalEnvironmentStatus").asText()).isEqualTo("UNKNOWN");
             assertThat(f.path("eventOwnershipStatus").asText()).isEqualTo("UNKNOWN");
             assertThat(f.path("withdrawalReadScope").asText()).isEqualTo("CURRENT_CUSTOMER_RAW_ROWS");
@@ -54,7 +54,7 @@ class SupportAnalyticsAggregateRuntimeTest extends SupportAnalyticsRuntimeFixtur
         assertThat(partial.path("walletReadReasons").toString()).contains("WALLET_MISSING");
         for(var amount:partial.path("balances"))assertThat(amount.path("confirmedAmount").isNull()).isTrue();
         assertThat(fresh("SELECT usdt_available,nex_available FROM nx_user_wallet WHERE user_id=?",a)).singleElement().satisfies(row->{assertThat((BigDecimal)row.get("usdt_available")).isEqualByComparingTo("999999999999.123456");assertThat((BigDecimal)row.get("nex_available")).isEqualByComparingTo("0.000001");});
-        checked("Autowiring uses actual four-argument funds facade and real HTTP. Full selected-customer balance exceeds one-page total; exact USDT/NEX, repeated size-independent aggregate, missing wallet is PARTIAL/null confirmed; raw withdrawals keep history/ownership UNKNOWN");
+        checked("Autowiring uses actual four-argument funds facade and real HTTP. Full selected-customer balance exceeds one-page total; exact USDT/UVT, repeated size-independent aggregate, missing wallet is PARTIAL/null confirmed; raw withdrawals keep history/ownership UNKNOWN");
     }
 
     @Test void crossGroupFourNodeInvitationIsAggregateOnlyAndCurrentScopeNeverExpands()throws Exception {
@@ -90,7 +90,7 @@ class SupportAnalyticsAggregateRuntimeTest extends SupportAnalyticsRuntimeFixtur
         assertThat(ids(analytics(manager,"keyword="+run),"customerId")).isEmpty();
         JsonNode current=analytics(foreignManager,"keyword="+run);assertThat(ids(current,"customerId")).containsExactly(customer);
         assertMoney(currency(current.path("funds"),"USDT").path("confirmedAmount"),"10.123456");
-        assertMoney(currency(current.path("funds"),"NEX").path("confirmedAmount"),"20.654321");
+        assertMoney(currency(current.path("funds"),"UVT").path("confirmedAmount"),"20.654321");
         rejected(request("GET","/api/admin/content/support-workbench/customers/"+customer,manager,null,null),403,404);
         checked("Committed production transfer and independent binding readback: old manager loses current customer/funds/detail, new manager receives same exact two-currency balances. Event-period preservation remains existing native-suite responsibility, not signed here");
     }

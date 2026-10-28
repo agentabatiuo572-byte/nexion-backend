@@ -426,7 +426,7 @@ public class SupportLeaderboardSourceService {
         for(ContributionChange change:raw.net().changes()) {
             ContributionOrigin origin=origins.get(change.contributionId());
             if(origin==null || origin.customerId()!=change.originCustomerId() || change.amount()==null
-                    || !Set.of("USDT","NEX").contains(change.currency())
+                    || !Set.of("USDT","UVT").contains(change.currency())
                     || !stamp(change.succeededAt(),change.businessZone(),change.fractionalSecondDigits(),change.sourceReference())
                     || change.succeededAt().isBefore(origin.formedAt()))throw failed();
             totals.merge(change.originCustomerId()+":"+change.currency(),change.amount(),BigDecimal::add);
@@ -451,7 +451,7 @@ public class SupportLeaderboardSourceService {
         }
         for(NetCustomer customer:customers.values())if(customer.state()==EvidenceState.READY) {
             if(totals.getOrDefault(customer.customerId()+":USDT",BigDecimal.ZERO).compareTo(customer.usdt())!=0
-                    || totals.getOrDefault(customer.customerId()+":NEX",BigDecimal.ZERO).compareTo(customer.nex())!=0) {
+                    || totals.getOrDefault(customer.customerId()+":UVT",BigDecimal.ZERO).compareTo(customer.nex())!=0) {
                 reason=Reason.SOURCE_INCOMPLETE;rejectedRoots.add(customer.customerId());
             }
         }

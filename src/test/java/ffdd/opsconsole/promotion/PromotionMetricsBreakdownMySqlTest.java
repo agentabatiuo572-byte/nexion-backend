@@ -24,13 +24,13 @@ class PromotionMetricsBreakdownMySqlTest {
             var common=h.commonPolicies();String third=h.run+"-metrics-third";
             rt.cloneCatalogRow("nx_product","product_no",rt.buy,third);rt.cloneCatalogRow("nx_admin_device_sku","sku_id",rt.buy,third);
             var usdt=values("rewardRuleId","reward-usdt","beneficiaryRole","BUYER","type","USDT","calculation","FIXED","amount","2.125001","assetPolicy",h.assetPolicy("USDT"));
-            var nex=values("rewardRuleId","reward-nex","beneficiaryRole","BUYER","type","NEX","calculation","FIXED","amount","3.000002","assetPolicy",h.assetPolicy("NEX"));
+            var nex=values("rewardRuleId","reward-nex","beneficiaryRole","BUYER","type","UVT","calculation","FIXED","amount","3.000002","assetPolicy",h.assetPolicy("UVT"));
             var device=values("rewardRuleId","reward-device","beneficiaryRole","BUYER","type","DEVICE","giftProductNo",rt.gift,"quantity",1,"deviceRightsProfile",h.devicePolicy(rt.gift));
             var contract=h.contract(rt.buy,usdt,common);contract.put("template","MULTI_PRODUCT");
             var rules=new ArrayList<Map<String,Object>>(maps(contract.get("rules")));
             var r2=copy(rules.get(0));r2.put("ruleId","r2");r2.put("productNo",rt.gift);r2.put("buyerReward",nex);r2.put("priority",2);rules.add(r2);
             var r3=copy(rules.get(0));r3.put("ruleId","r3");r3.put("productNo",third);r3.put("buyerReward",device);r3.put("priority",3);rules.add(r3);contract.put("rules",rules);
-            contract.put("budgets",List.of(values("asset","USDT","total","10000.000000"),values("asset","NEX","total","10000.000000"),values("asset","DEVICE","productNo",rt.gift,"total",100)));
+            contract.put("budgets",List.of(values("asset","USDT","total","10000.000000"),values("asset","UVT","total","10000.000000"),values("asset","DEVICE","productNo",rt.gift,"total",100)));
             String activity=h.publish(contract);long buyer1=rt.user(),buyer2=rt.user(),buyer3=rt.user();
             String order1=rt.create(buyer1,rt.quote(buyer1,activity,2),2);rt.pay(buyer1,order1);var firstIds=rt.obligations(order1);
             assertEquals(2,firstIds.size());assertEquals("ISSUED",rt.rewards.issue(firstIds.get(0),id("GROUPISSUE")).get("state"));
@@ -49,7 +49,7 @@ class PromotionMetricsBreakdownMySqlTest {
             var sales=maps(first.get("salesBySku"));assertEquals(3,sales.size());
             assertEquals(decimal(first.get("grossPaidUsdt")),sales.stream().map(r->decimal(r.get("grossPaidUsdt"))).reduce(java.math.BigDecimal.ZERO,java.math.BigDecimal::add));
             assertTrue(sales.stream().allMatch(r->number(r.get("paidOrders"))==1&&"0.000000".equals(r.get("refundUsdt"))));
-            assertEquals("2.125001",asset(first,"USDT").get("issued"));assertEquals("2.125001",asset(first,"USDT").get("pending"));assertEquals("3.000002",asset(first,"NEX").get("issued"));
+            assertEquals("2.125001",asset(first,"USDT").get("issued"));assertEquals("2.125001",asset(first,"USDT").get("pending"));assertEquals("3.000002",asset(first,"UVT").get("issued"));
             assertNull(first.get("giftCostUsdt"));assertNull(first.get("roi"));assertNull(first.get("conversionRate"));
             var firstPage=map(first.get("breakdown"));assertEquals(3,number(firstPage.get("total")));assertEquals(1,maps(firstPage.get("rows")).size());assertEquals("1",firstPage.get("nextCursor"));
             var stored=h.db.requiredRow("SELECT * FROM nx_promotion_report_snapshot WHERE snapshot_id=?",snapshot);var originalManifest=parse(stored.get("row_manifest_json"));

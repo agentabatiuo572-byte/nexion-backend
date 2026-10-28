@@ -91,7 +91,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditReplayable {
     private static final Set<String> USER_STATUSES = Set.of("ACTIVE", "FROZEN", "BANNED", "RESTRICTED");
-    private static final Set<String> ASSETS = Set.of("USDT", "NEX");
+    private static final Set<String> ASSETS = Set.of("USDT", "UVT");
     private static final Set<String> DIRECTIONS = Set.of("CREDIT", "DEBIT");
     private static final Set<String> ADJUSTMENT_STATUSES = Set.of(
             "PENDING", "PENDING_REVIEW", "APPROVED", "REJECTED", "SUSPENDED", "WITHDRAWN");
@@ -287,7 +287,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 ? userRepository.supportOverview(supportOwnership.defaultQueryScope(null,null)) : userRepository.overview());
         response.put("domain", "C");
         response.put("capabilities", List.of("UserProfile", "AccountSecurity", "ManualAssetAdjustment"));
-        response.put("sunsetCompatibility", List.of("Premium history is read-only", "NEX v2 maturity is historical", "Points adjustments are rejected"));
+        response.put("sunsetCompatibility", List.of("Premium history is read-only", "UVT v2 maturity is historical", "Points adjustments are rejected"));
         response.put("sources", List.of("nx_user", "nx_user_session", "nx_wallet_asset_adjustment"));
         return ApiResult.ok(response);
     }
@@ -899,7 +899,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                         "accountList", accountList == null ? "NONE" : accountList.kind()));
                 screen.put("assetSummary", List.of(
                         Map.of("symbol", "USDT", "available", account.walletUsdt()),
-                        Map.of("symbol", "NEX", "available", account.walletNex())));
+                        Map.of("symbol", "UVT", "available", account.walletNex())));
                 screen.put("deviceSummary", Map.of("total", account.deviceCount(), "active", account.activeDeviceCount()));
                 screen.put("entries", List.of("钱包", "设备", "我的"));
             }
@@ -908,7 +908,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 screen.put("title", "钱包");
                 screen.put("assets", List.of(
                         Map.of("symbol", "USDT", "available", account.walletUsdt()),
-                        Map.of("symbol", "NEX", "available", account.walletNex())));
+                        Map.of("symbol", "UVT", "available", account.walletNex())));
                 screen.put("accountStatus", account.status());
                 screen.put("actions", Map.of("deposit", false, "withdraw", false, "transfer", false));
                 screen.put("readOnlyHint", "模拟登录只读模式，充值、提现和转账均不可操作");
@@ -1967,7 +1967,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 }
                 TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
                 BigDecimal nexRate = c3NexUsdRate(coverage);
-                if ("NEX".equals(asset) && nexRate.signum() <= 0) {
+                if ("UVT".equals(asset) && nexRate.signum() <= 0) {
                     return c3Reject(422, "C3_NEX_PRICE_UNAVAILABLE", String.valueOf(userId), userId, actor, idempotencyKey);
                 }
                 BigDecimal amountUsd = ("USDT".equals(asset) ? amount : amount.multiply(nexRate))
@@ -2045,7 +2045,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 ? userRepository.findAssetAdjustment(request.reversalOf().trim()).orElse(null)
                 : null;
         BigDecimal nexUsdRate = c3NexUsdRate(coverage);
-        if ("NEX".equals(asset) && nexUsdRate.signum() <= 0
+        if ("UVT".equals(asset) && nexUsdRate.signum() <= 0
                 && (reversalOriginal == null || reversalOriginal.amountUsd() == null)) {
             return c3Reject(422, "C3_NEX_PRICE_UNAVAILABLE", String.valueOf(userId), userId,
                     operator(request.operator()), idempotencyKey);
@@ -2164,7 +2164,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         overview.put("maxAdjustmentAmount", C3_MAX_AMOUNT_USD);
         overview.put("nexUsdRate", c3NexUsdRate(coverage));
         overview.put("sources", List.of("wallet asset adjustments", "user accounts", "treasury coverage", "required audit", "event outbox"));
-        overview.put("sunsetCompatibility", List.of("Points adjustments are rejected", "Premium and NEX v2 are read-only historical concepts"));
+        overview.put("sunsetCompatibility", List.of("Points adjustments are rejected", "Premium and UVT v2 are read-only historical concepts"));
         return ApiResult.ok(overview);
     }
 

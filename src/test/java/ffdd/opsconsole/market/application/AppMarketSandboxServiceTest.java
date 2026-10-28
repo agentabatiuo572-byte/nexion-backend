@@ -49,7 +49,7 @@ class AppMarketSandboxServiceTest {
     void productionProfileCannotEnterSandboxWriteRail() {
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class); MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-alpha");
         AppMarketSandboxService service=new AppMarketSandboxService(mapper,env,Optional.empty());
-        assertThatThrownBy(()->service.swap(7L,"k",new AppExchangeService.SwapRequest("USDT_TO_NEX",new BigDecimal("2"),false)))
+        assertThatThrownBy(()->service.swap(7L,"k",new AppExchangeService.SwapRequest("USDT_TO_UVT",new BigDecimal("2"),false)))
                 .hasMessageContaining("MARKET_SANDBOX_PROFILE_REQUIRED");
         verifyNoInteractions(mapper);
     }
@@ -62,7 +62,7 @@ class AppMarketSandboxServiceTest {
         AppMarketSandboxService service=new AppMarketSandboxService(mapper,env,Optional.empty());
 
         assertThatThrownBy(()->service.swap(7L,"k",new AppExchangeService.SwapRequest(
-                "USDT_TO_NEX",new BigDecimal("2"),false)))
+                "USDT_TO_UVT",new BigDecimal("2"),false)))
                 .hasMessageContaining("MARKET_SANDBOX_PROFILE_REQUIRED");
         verifyNoInteractions(mapper);
     }
@@ -78,7 +78,7 @@ class AppMarketSandboxServiceTest {
         when(mapper.exchangeWallet("run-alpha",7L)).thenReturn(new AppMarketSandboxMapper.ExchangeWallet("run-alpha",7L,new BigDecimal("100"),BigDecimal.ZERO,0L));
         when(mapper.insertExchangeOrder(any())).thenReturn(1); when(mapper.updateExchangeWallet(anyString(),anyLong(),any(),any(),anyLong())).thenReturn(1); when(mapper.insertExchangeLedger(any())).thenReturn(1);
         AppMarketSandboxService service=new AppMarketSandboxService(mapper,env,Optional.empty());
-        service.swap(7L,"k",new AppExchangeService.SwapRequest("USDT_TO_NEX",new BigDecimal("2"),false));
+        service.swap(7L,"k",new AppExchangeService.SwapRequest("USDT_TO_UVT",new BigDecimal("2"),false));
         verify(mapper).ensureExchangeWallet(eq("run-alpha"),eq(7L),any(),any()); verify(mapper).updateExchangeWallet(eq("run-alpha"),eq(7L),any(),any(),eq(0L));
         verify(mapper,times(2)).insertExchangeLedger(any());
     }
@@ -100,9 +100,9 @@ class AppMarketSandboxServiceTest {
         when(mapper.userSandbox(7L)).thenReturn(1);
         when(mapper.exchangeWallet("run-page",7L)).thenReturn(new AppMarketSandboxMapper.ExchangeWallet(
                 "run-page",7L,BigDecimal.TEN,BigDecimal.ONE,0L));
-        var first = new AppMarketSandboxMapper.ExchangeOrderView("EX-1","USDT","NEX",BigDecimal.ONE,
+        var first = new AppMarketSandboxMapper.ExchangeOrderView("EX-1","USDT","UVT",BigDecimal.ONE,
                 BigDecimal.TEN,BigDecimal.ONE,"COMPLETED",LocalDateTime.now().minusMinutes(1));
-        var second = new AppMarketSandboxMapper.ExchangeOrderView("EX-2","NEX","USDT",BigDecimal.TEN,
+        var second = new AppMarketSandboxMapper.ExchangeOrderView("EX-2","UVT","USDT",BigDecimal.TEN,
                 BigDecimal.ONE,BigDecimal.ONE,"COMPLETED",LocalDateTime.now());
         when(mapper.countExchangeOrders("run-page",7L)).thenReturn(2L);
         when(mapper.exchangeOrdersPage("run-page",7L,1L,1)).thenReturn(List.of(second));
@@ -124,7 +124,7 @@ class AppMarketSandboxServiceTest {
         when(mapper.userSandbox(7L)).thenReturn(1);
         when(mapper.exchangeWallet("run-deep-page",7L)).thenReturn(new AppMarketSandboxMapper.ExchangeWallet(
                 "run-deep-page",7L,BigDecimal.TEN,BigDecimal.ONE,0L));
-        var oldest = new AppMarketSandboxMapper.ExchangeOrderView("EX-51","USDT","NEX",BigDecimal.ONE,
+        var oldest = new AppMarketSandboxMapper.ExchangeOrderView("EX-51","USDT","UVT",BigDecimal.ONE,
                 BigDecimal.TEN,BigDecimal.ONE,"COMPLETED",LocalDateTime.now().minusDays(1));
         when(mapper.countExchangeOrders("run-deep-page",7L)).thenReturn(51L);
         when(mapper.exchangeOrdersPage("run-deep-page",7L,50L,50)).thenReturn(List.of(oldest));
@@ -149,7 +149,7 @@ class AppMarketSandboxServiceTest {
         when(mapper.platformCompletedGrossToday("run-caps")).thenReturn(new BigDecimal("49"));
 
         AppMarketSandboxService service=new AppMarketSandboxService(mapper,env,Optional.empty());
-        assertThatThrownBy(()->service.swap(7L,"cap-key",new AppExchangeService.SwapRequest("USDT_TO_NEX",new BigDecimal("2"),false)))
+        assertThatThrownBy(()->service.swap(7L,"cap-key",new AppExchangeService.SwapRequest("USDT_TO_UVT",new BigDecimal("2"),false)))
                 .hasMessage("EXCHANGE_DAILY_CAP_EXCEEDED");
         verify(mapper,never()).insertExchangeOrder(any());
     }

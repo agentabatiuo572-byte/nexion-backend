@@ -376,7 +376,7 @@ public class AppGrowthEngagementService {
                 : checkedInToday instanceof Number number && number.intValue() != 0);
         streak.putIfAbsent("lastCheckInDate", null);
         return ApiResult.ok(productionResponse(linked(
-                "rewardAsset", "NEX",
+                "rewardAsset", "UVT",
                 "serverDate", today.toString(),
                 "nextResetAtUtc", ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam().startOf(today.plusDays(1)).toString(),
                 "streak", streak,
@@ -386,7 +386,7 @@ public class AppGrowthEngagementService {
                 "rules", safeList(mapper.checkInRuleState()),
                 "powerUps", streakPowerUpsWithAvailability(userId),
                 "topStreakers", safeList(mapper.topStreakers()),
-                "source", "nx_user_streak + nx_daily_check_in + NEX wallet + milestone ledgers + nx_achievement")));
+                "source", "nx_user_streak + nx_daily_check_in + UVT wallet + milestone ledgers + nx_achievement")));
     }
 
     /**
@@ -769,7 +769,7 @@ public class AppGrowthEngagementService {
             if (mapper.claimEvent(userId, code) != 1) throw conflict("EVENT_CLAIM_CONFLICT");
             String rewardType = reward.rewardType() == null ? "" : reward.rewardType().trim().toUpperCase(Locale.ROOT);
             BigDecimal amount = reward.rewardAmount() == null ? BigDecimal.ZERO : reward.rewardAmount();
-            if ("NEX".equals(rewardType)) {
+            if ("UVT".equals(rewardType)) {
                 amount = positive(amount);
                 creditNex(userId, "EVENT:" + code + ":" + userId, "EVENT_REWARD", amount, "H4 event reward");
             } else if ("USDT".equals(rewardType)) {
@@ -927,7 +927,7 @@ public class AppGrowthEngagementService {
             String bizNo = "DAILY-MS:" + userId + ":" + row.milestoneId();
             int tickets = 0;
             switch (rewardType) {
-                case "NEX" -> creditNex(userId, bizNo, "DAILY_MILESTONE", positive(amount),
+                case "UVT" -> creditNex(userId, bizNo, "DAILY_MILESTONE", positive(amount),
                         "H5 daily milestone claim");
                 case "USDT" -> creditUsdt(userId, bizNo, "DAILY_MILESTONE", positive(amount),
                         "H5 daily milestone claim");
@@ -1172,7 +1172,7 @@ public class AppGrowthEngagementService {
         if (earningsReleaseService == null) {
             if (mapper.creditWalletNex(userId, amount) != 1) throw conflict("USER_WALLET_CONFLICT");
         } else {
-            creditReleasedReward(userId, bizType, bizNo, "NEX", amount,
+            creditReleasedReward(userId, bizType, bizNo, "UVT", amount,
                     "GROWTH:" + bizNo + ":NEX");
         }
         if (mapper.insertNexLedger(userId, bizNo, bizType, amount, before.add(amount), remark) != 1) {
@@ -1301,7 +1301,7 @@ public class AppGrowthEngagementService {
     private String normalizeDailyRewardType(String rewardType) {
         String normalized = StringUtils.hasText(rewardType)
                 ? rewardType.trim().toUpperCase(Locale.ROOT) : "";
-        if (!Set.of("USDT", "NEX", "SPIN", "BADGE").contains(normalized)) {
+        if (!Set.of("USDT", "UVT", "SPIN", "BADGE").contains(normalized)) {
             throw conflict("REWARD_TYPE_UNSUPPORTED");
         }
         return normalized;

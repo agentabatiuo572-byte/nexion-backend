@@ -273,7 +273,7 @@ class OpsFinanceServiceTest {
         ApiResult<Map<String, Object>> result = service.updateWithdrawalParam(
                 "idem-d5-nex-offset",
                 new WithdrawalParamUpdateRequest(
-                        "nexFeeOffsetRate", "0.55", "adjust NEX fee offset for current liquidity", "superadmin"));
+                        "nexFeeOffsetRate", "0.55", "adjust UVT fee offset for current liquidity", "superadmin"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("nexFeeOffsetRate", new BigDecimal("0.55"));

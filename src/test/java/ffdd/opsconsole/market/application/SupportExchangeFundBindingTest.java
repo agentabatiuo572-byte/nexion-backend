@@ -25,7 +25,7 @@ class SupportExchangeFundBindingTest {
         var after=new HashMap<>(wallet("0","6.333333",3));after.put("version",99L);
         assertThatThrownBy(()->SupportExchangeFundAdapter.verifyWallet(before,after,n("-20"),n("6.333333"),1)).isInstanceOf(IllegalStateException.class);
     }
-    static Map<String,Object> order(String status){return Map.of("id",77L,"customerId",7L,"exchangeNo","EX-abcdefgh","fromAsset","USDT","toAsset","NEX","fromAmount",n("20"),"toAmount",n("6.333333"),"rate",n("3.00000000"),"status",status,"updatedAt",LocalDateTime.of(2026,10,11,12,13,14));}
+    static Map<String,Object> order(String status){return Map.of("id",77L,"customerId",7L,"exchangeNo","EX-abcdefgh","fromAsset","USDT","toAsset","UVT","fromAmount",n("20"),"toAmount",n("6.333333"),"rate",n("3.00000000"),"status",status,"updatedAt",LocalDateTime.of(2026,10,11,12,13,14));}
     static Map<String,Object> fee(){return Map.of("exchangeNo","EX-abcdefgh","totalFeeUsdt",n("1"),"burnPoolUsdt",n(".3"),"feeBufferUsdt",n(".7"),"priceUsdt",n("3.00000000"),"deleted",0);}
     void prepare(Map<String,Object> before,Map<String,Object> after,Map<String,Object> order,List<Map<String,Object>> ledgers,List<Map<String,Object>> fees,int legs){
         when(mapper.wallets(7)).thenReturn(List.of(before),List.of(after));
@@ -70,7 +70,7 @@ class SupportExchangeFundBindingTest {
         adapter.recorded(adapter.begin(7),"EX-abcdefgh","IMMEDIATE",n("1"));verify(fund).bind(any(),any());
     }
     @Test void nexDirectionBindsOnlyRealNetUsdtAndFeeFromItsConvertedSource() throws Exception {
-        var o=new HashMap<>(order("COMPLETED"));o.put("fromAsset","NEX");o.put("toAsset","USDT");o.put("fromAmount",n("10"));o.put("toAmount",n(".666667"));o.put("rate",n(".11666667"));
+        var o=new HashMap<>(order("COMPLETED"));o.put("fromAsset","UVT");o.put("toAsset","USDT");o.put("fromAmount",n("10"));o.put("toAmount",n(".666667"));o.put("rate",n(".11666667"));
         var f=new HashMap<>(fee());f.put("priceUsdt",n(".11666667"));f.put("totalFeeUsdt",n(".5"));f.put("burnPoolUsdt",n(".15"));f.put("feeBufferUsdt",n(".35"));
         prepare(wallet("50","10",2),wallet("50.666667","0",3),o,List.of(),List.of(f),1);
         adapter.recorded(adapter.begin(7),"EX-abcdefgh","IMMEDIATE",n(".5"));

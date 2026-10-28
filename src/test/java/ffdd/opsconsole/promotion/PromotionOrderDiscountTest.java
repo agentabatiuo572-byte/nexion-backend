@@ -60,7 +60,7 @@ class PromotionOrderDiscountTest {
     }
     @Test void existingCoinAndDeviceRewardsNeverReduceOrderPrice(){
         var base=price(List.of(line("PRO","1500.000000","0.000000")));
-        var result=PromotionQuoteService.applyDiscounts(base,List.of(values("reward",values("type","USDT","amount","500")),values("reward",values("type","NEX","amount","10")),values("reward",values("type","DEVICE","quantity",1))));
+        var result=PromotionQuoteService.applyDiscounts(base,List.of(values("reward",values("type","USDT","amount","500")),values("reward",values("type","UVT","amount","10")),values("reward",values("type","DEVICE","quantity",1))));
         assertEquals("1500.000000",result.get("amountUsdt"));assertEquals("0.000000",result.get("promotionDiscountUsdt"));
     }
     @Test void realQuoteRequiresEligibilityAndBudgetAndFreezesDiscountSnapshot() throws Exception {

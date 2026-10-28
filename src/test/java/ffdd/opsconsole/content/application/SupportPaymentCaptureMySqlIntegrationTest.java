@@ -502,18 +502,18 @@ class SupportPaymentCaptureMySqlIntegrationTest {
             String legacy=unique();
             assertThat(jdbc.update("""
                 INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,balance_after,status,created_at)
-                VALUES(?,?,'CHAIN_TOPUP','NEX','IN',12.123456,12.123456,'SUCCESS',?)
+                VALUES(?,?,'CHAIN_TOPUP','UVT','IN',12.123456,12.123456,'SUCCESS',?)
                 """,customer,legacy,older)).isEqualTo(1);
-            long ledger=jdbc.queryForObject("SELECT id FROM nx_wallet_ledger WHERE user_id=? AND biz_no=? AND asset='NEX'",Long.class,customer,legacy);
+            long ledger=jdbc.queryForObject("SELECT id FROM nx_wallet_ledger WHERE user_id=? AND biz_no=? AND asset='UVT'",Long.class,customer,legacy);
             assertThat(jdbc.update("""
                 INSERT INTO nx_deposit_order(user_id,deposit_no,chain_name,chain_tx_hash,asset,amount,status,ledger_id,credited_at,created_at)
-                VALUES(?,?,'BEP20',?,'NEX',12.123456,'CREDITED',?,?,?)
+                VALUES(?,?,'BEP20',?,'UVT',12.123456,'CREDITED',?,?,?)
                 """,customer,legacy,legacy,ledger,older,older)).isEqualTo(1);
             Fixture deposit=pending(Source.HDPAY,customer);Prepared dp=prepare(deposit);settle(deposit,dp,true);capture.record(dp);
             Fixture purchase=pending(Source.WALLET_ORDER,customer);Prepared pp=prepare(purchase);settle(purchase,pp,true);capture.record(pp);
             Snapshot money=finance.readHistory(List.of(customer));
             assertThat(money.facts()).filteredOn(f -> f.ledgerId()==ledger).singleElement().satisfies(f -> {
-                assertThat(f.currency()).isEqualTo("NEX");assertThat(f.amount()).isEqualByComparingTo("12.123456");
+                assertThat(f.currency()).isEqualTo("UVT");assertThat(f.amount()).isEqualByComparingTo("12.123456");
             });
             Fact from=money.facts().stream().filter(f -> f.factId().equals(deposit.factId())).findFirst().orElseThrow();
             Fact to=money.facts().stream().filter(f -> f.factId().equals(purchase.factId())).findFirst().orElseThrow();
@@ -522,7 +522,7 @@ class SupportPaymentCaptureMySqlIntegrationTest {
             assertThat(start).isBefore(end);
             Result period=statsAs(agent,new Query(ReadMode.PERSONAL,null,null,Basis.PERIOD_EVENT,start,end,"UTC","USDT"));
             assertThat(period.currentCustomers()).singleElement().satisfies(c -> {
-                assertThat(c.first().observedCandidate().currency()).isEqualTo("NEX");
+                assertThat(c.first().observedCandidate().currency()).isEqualTo("UVT");
                 assertThat(c.first().observedCandidate().succeededAt()).isEqualTo(older.atZone(ZoneId.of(money.businessZone()))
                     .withZoneSameInstant(ZoneId.of("UTC")).toLocalDateTime());
             });
@@ -531,8 +531,8 @@ class SupportPaymentCaptureMySqlIntegrationTest {
             assertThat(statsCurrency(period,"USDT").deposits().observedAmount()).isEqualByComparingTo("10");
             assertThat(statsCurrency(period,"USDT").purchases().observedAmount()).isEqualByComparingTo("0");
             Result all=statsAs(agent,statsQuery(ReadMode.PERSONAL,null,Basis.CURRENT_CUSTOMER_HISTORY,null));
-            assertThat(all.financialSummary().currencies()).extracting(c -> c.currency()).containsExactly("NEX","USDT");
-            assertThat(statsCurrency(all,"NEX").deposits().observedAmount()).isEqualByComparingTo("12.123456");
+            assertThat(all.financialSummary().currencies()).extracting(c -> c.currency()).containsExactly("UVT","USDT");
+            assertThat(statsCurrency(all,"UVT").deposits().observedAmount()).isEqualByComparingTo("12.123456");
             assertThat(statsCurrency(all,"USDT").deposits().observedAmount()).isEqualByComparingTo("10");
             assertThat(statsCurrency(all,"USDT").purchases().observedAmount()).isEqualByComparingTo("10");
             assertStatsUncertified(period);assertStatsUncertified(all);

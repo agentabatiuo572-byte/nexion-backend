@@ -161,7 +161,7 @@ class OpsNexMarketServiceTest {
         assertThat(result.getData()).containsKey("overrides");
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
-                .contains("Premium", "NEX v2", "Points");
+                .contains("Premium", "UVT v2", "Points");
     }
 
     @Test
@@ -404,7 +404,7 @@ class OpsNexMarketServiceTest {
     void cancelQueuedExchangeAtomicallyRefundsReservedNex() {
         marketRepository.orders = List.of(exchange("EX-Q-NEX", "QUEUED"));
         when(exchangeOrderMapper.lockQueuedForCancellation("EX-Q-NEX")).thenReturn(
-                new ExchangeOrderMapper.QueuedCancellationRow(10001L, "EX-Q-NEX", "NEX", new BigDecimal("100")));
+                new ExchangeOrderMapper.QueuedCancellationRow(10001L, "EX-Q-NEX", "UVT", new BigDecimal("100")));
         when(exchangeOrderMapper.sourceReservationExists("EX-Q-NEX")).thenReturn(1);
         when(exchangeOrderMapper.lockWalletForQueuedCancellation(10001L)).thenReturn(
                 new ExchangeOrderMapper.WalletBalanceRow(new BigDecimal("80"), new BigDecimal("300")));
@@ -807,7 +807,7 @@ class OpsNexMarketServiceTest {
                 .containsEntry("redlineBreached", false);
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
-                .contains("Premium", "NEX v2", "Points");
+                .contains("Premium", "UVT v2", "Points");
     }
 
     @Test
@@ -913,7 +913,7 @@ class OpsNexMarketServiceTest {
                 .contains("nx_genesis_series", "nx_genesis_holding", "nx_genesis_order");
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
-                .contains("Premium", "NEX v2", "Points");
+                .contains("Premium", "UVT v2", "Points");
     }
 
     @Test
@@ -1128,7 +1128,7 @@ class OpsNexMarketServiceTest {
                 .contains("pending_lock", "active", "mature_unclaimed", "early_withdrawn");
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
-                .contains("Premium", "NEX v2", "Points");
+                .contains("Premium", "UVT v2", "Points");
     }
 
     @Test
@@ -1574,7 +1574,7 @@ class OpsNexMarketServiceTest {
                 "demo-user",
                 "US",
                 exchangeNo,
-                "NEX",
+                "UVT",
                 "USDT",
                 new BigDecimal("100"),
                 amountUsdt,
@@ -1582,7 +1582,7 @@ class OpsNexMarketServiceTest {
                 status,
                 status,
                 "warn",
-                "NEX→USDT",
+                "UVT→USDT",
                 amountUsdt,
                 null,
                 null,
@@ -1622,7 +1622,7 @@ class OpsNexMarketServiceTest {
     }
 
     private void seedSunsetExclusions() {
-        configFacade.values.put("G.sunset.exclusions", "Premium, NEX v2, Points");
+        configFacade.values.put("G.sunset.exclusions", "Premium, UVT v2, Points");
     }
 
     private static final class FakeEmergencyControlRepository implements EmergencyControlRepository {

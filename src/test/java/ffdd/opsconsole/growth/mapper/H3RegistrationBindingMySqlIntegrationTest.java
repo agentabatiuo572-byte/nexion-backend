@@ -52,7 +52,7 @@ class H3RegistrationBindingMySqlIntegrationTest {
         for (String code : List.of("bind_bank_card","visit_earn","visit_store","view_product_roi","setup_profile","invite_friend")) {
             jdbc.update("INSERT INTO nx_mission(mission_code,mission_name,mission_category,action_route,reward_points,mission_type,status) VALUES(?,?, 'EXPLORE',?,10,'DAY_ONE',1)",code,code,"/pages/me/profile");
         }
-        jdbc.update("INSERT INTO nx_config_item VALUES('growth.quest.day_one.tri_reward','500 / 200 / 0 NEX',1,0)");
+        jdbc.update("INSERT INTO nx_config_item VALUES('growth.quest.day_one.tri_reward','500 / 200 / 0 UVT',1,0)");
         run("scripts/migrations/20260909_h3_day_one_instance_snapshot.sql");
     }
 

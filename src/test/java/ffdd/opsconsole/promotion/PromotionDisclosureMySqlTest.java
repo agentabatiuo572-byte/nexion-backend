@@ -17,7 +17,7 @@ class PromotionDisclosureMySqlTest {
         ReflectionTestUtils.setField(h.admin,"orders",f.orders);ReflectionTestUtils.setField(h.admin,"rewards",f.rewards);
         var publicApi=new PromotionPublicService(h.db,new PromotionEvaluationService(h.db),f.rewards,org.mockito.Mockito.mock(PromotionBannerService.class));
         var evidence=new ArrayList<Object>();
-        for(String asset:List.of("USDT","NEX","DEVICE")){
+        for(String asset:List.of("USDT","UVT","DEVICE")){
             var spec="DEVICE".equals(asset)?values("rewardRuleId","reward-buyer","beneficiaryRole","BUYER","type",asset,"giftProductNo",f.gift,"quantity",1,"deviceRightsProfile",h.devicePolicy(f.gift))
                 :values("rewardRuleId","reward-buyer","beneficiaryRole","BUYER","type",asset,"calculation","FIXED","amount","1.000001","assetPolicy",h.assetPolicy(asset));
             var contract=h.contract(f.buy,spec,common);String activity=h.publish(contract);long buyer=f.user();

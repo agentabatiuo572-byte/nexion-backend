@@ -98,7 +98,7 @@ class SupportAnalyticsPrivateQueryProfileFundsTest {
     }
     @Test void readyWalletAmountsAreConfirmedPerCurrencyWhileWithdrawalCoverageRemainsUnknown() {
         var c=new Funding();var response=c.api.query(Map.of());assertThat(money(response,"USDT")).containsEntry("observedAmount","10").containsEntry("confirmedAmount","10");
-        assertThat(money(response,"NEX")).containsEntry("observedAmount","2").containsEntry("confirmedAmount","2");
+        assertThat(money(response,"UVT")).containsEntry("observedAmount","2").containsEntry("confirmedAmount","2");
         @SuppressWarnings("unchecked") var f=(Map<String,Object>)response.get("funds");assertThat(f).containsEntry("historicalEnvironmentStatus","UNKNOWN").containsEntry("eventOwnershipStatus","UNKNOWN").containsEntry("sourceObservationStatus","COMPLETE").containsEntry("walletReadStatus","READY").containsEntry("withdrawalReadStatus","READY");
         @SuppressWarnings("unchecked") var totals=(List<Map<String,Object>>)f.get("withdrawals");assertThat(object(totals.get(0).get("successNet"))).containsEntry("observedAmount","9").containsEntry("confirmedAmount",null);
         verify(c.facade,times(1)).readCurrent(List.of(100L));
@@ -125,12 +125,12 @@ class SupportAnalyticsPrivateQueryProfileFundsTest {
         var response=c.api.query(Map.of());assertThat(response).containsEntry("versionState","UNKNOWN").containsEntry("queryVersion",null);assertThat(money(response,"USDT")).containsEntry("confirmedAmount",null);
     }
     @Test void eachWalletSourceTupleAndWithdrawalSourceTupleChangeRejectsTheOldPage() {
-        for(String domain:List.of("WALLET_ID","WALLET_VERSION","USDT","NEX","WALLET_UPDATE","WITHDRAW_ID","PRINCIPAL_FEE_NET","STATUS","COMPLETED","WITHDRAW_UPDATE")) {
+        for(String domain:List.of("WALLET_ID","WALLET_VERSION","USDT","UVT","WALLET_UPDATE","WITHDRAW_ID","PRINCIPAL_FEE_NET","STATUS","COMPLETED","WITHDRAW_UPDATE")) {
             var c=new Funding();String token=c.token();var w=c.snapshot.wallets().rows().get(0);var d=c.snapshot.withdrawals().rows().get(0);
             WalletEvidence wallet=w;WithdrawalEvidence withdrawal=d;
             if(domain.equals("WALLET_ID"))wallet=new WalletEvidence(100,9000L,w.version(),w.usdtAvailable(),w.nexAvailable(),T,w.state(),w.reasons());
             if(domain.equals("WALLET_VERSION"))wallet=wallet(100,2,"10","2");
-            if(domain.equals("USDT"))wallet=wallet(100,1,"11","2");if(domain.equals("NEX"))wallet=wallet(100,1,"10","3");
+            if(domain.equals("USDT"))wallet=wallet(100,1,"11","2");if(domain.equals("UVT"))wallet=wallet(100,1,"10","3");
             if(domain.equals("WALLET_UPDATE"))wallet=new WalletEvidence(100,w.walletId(),w.version(),w.usdtAvailable(),w.nexAvailable(),T.minusSeconds(1),w.state(),w.reasons());
             if(domain.equals("WITHDRAW_ID"))withdrawal=withdrawal(8,100,"CONFIRMED",WithdrawalState.SUCCESS,"10","1","9");
             if(domain.equals("PRINCIPAL_FEE_NET"))withdrawal=withdrawal(7,100,"CONFIRMED",WithdrawalState.SUCCESS,"20","2","18");
@@ -203,7 +203,7 @@ class SupportAnalyticsPrivateQueryProfileFundsTest {
         @SuppressWarnings("unchecked") var groups=(List<Map<String,Object>>)((Map<?,?>)response.get("funds")).get("groups");
         @SuppressWarnings("unchecked") var groupFunds=(Map<String,Object>)groups.get(0).get("funds");
         assertThat(groups.get(0)).containsEntry("groupId","9");assertThat(money(Map.of("funds",groupFunds),"USDT")).containsEntry("confirmedAmount","10");
-        @SuppressWarnings("unchecked") var customerFunds=(Map<String,Object>)firstCustomer(response).get("funds");assertThat(money(Map.of("funds",customerFunds),"NEX")).containsEntry("confirmedAmount","2");
+        @SuppressWarnings("unchecked") var customerFunds=(Map<String,Object>)firstCustomer(response).get("funds");assertThat(money(Map.of("funds",customerFunds),"UVT")).containsEntry("confirmedAmount","2");
     }
     @Test void authorizedEmptyRootsDoNotReadFundSourcesOrInventWithdrawalHistoryZero() {
         var c=new Funding();c.f.capture.current=Map.of();c.f.capture.financialIds=Set.of();c.f.capture.snapshot=null;c.f.capture.first=Map.of();c.f.capture.firstHistory=Map.of();c.f.capture.trees=Map.of();c.f.capture.activities=Map.of();result(c,List.of());
@@ -232,12 +232,12 @@ class SupportAnalyticsPrivateQueryProfileFundsTest {
         var selectedCurrent=object(response.get("selectedCurrent"));assertThat(selectedCurrent).containsEntry("ownLifetime",List.of());
         assertThat(object(selectedCurrent.get("firstConfirmed"))).containsEntry("observed",0L).containsEntry("confirmed",0L);
         assertThat(money(response,"USDT")).containsEntry("observedAmount","0").containsEntry("confirmedAmount","0");
-        assertThat(money(response,"NEX")).containsEntry("observedAmount","0").containsEntry("confirmedAmount","0");
+        assertThat(money(response,"UVT")).containsEntry("observedAmount","0").containsEntry("confirmedAmount","0");
         @SuppressWarnings("unchecked") var groups=(List<Map<String,Object>>)object(response.get("funds")).get("groups");assertThat(groups).hasSize(1);
         assertThat(groups.get(0)).containsEntry("groupId","9");var groupFunds=object(groups.get(0).get("funds"));
         assertThat(groupFunds).containsEntry("customerCount",0L).containsEntry("withdrawals",List.of()).containsEntry("historicalEnvironmentStatus","UNKNOWN");
         assertThat(money(Map.of("funds",groupFunds),"USDT")).containsEntry("observedAmount","0").containsEntry("confirmedAmount","0");
-        assertThat(money(Map.of("funds",groupFunds),"NEX")).containsEntry("observedAmount","0").containsEntry("confirmedAmount","0");
+        assertThat(money(Map.of("funds",groupFunds),"UVT")).containsEntry("observedAmount","0").containsEntry("confirmedAmount","0");
         String token=(String)response.get("queryVersion");assertThat(token).startsWith("saq-v1:");assertThat(c.api.query(query).get("queryVersion")).isEqualTo(token);
         c.snapshot=snapshot(List.of(100L),List.of(wallet(100,2,"20","3")),ReadState.READY,List.of(),c.snapshot.withdrawals().rows(),ReadState.READY,List.of());
         assertThatThrownBy(()->c.api.query(Map.of("keyword",List.of("NO_MATCH_CUSTOMER"),"pageNum",List.of("2"),"expectedVersion",List.of(token))))
@@ -263,11 +263,11 @@ class SupportAnalyticsPrivateQueryProfileFundsTest {
         verify(c.facade,times(1)).readCurrent(List.of(100L,200L));
         assertThat(object(response.get("funds"))).containsEntry("sourceObservationStatus","COMPLETE").containsEntry("walletReadStatus","PARTIAL").containsEntry("balanceStatus","PARTIAL").containsEntry("walletReadReasons",List.of("WALLET_MISSING"));
         assertThat(money(response,"USDT")).containsEntry("observedAmount","10").containsEntry("confirmedAmount",null);
-        assertThat(money(response,"NEX")).containsEntry("observedAmount","2").containsEntry("confirmedAmount",null);
+        assertThat(money(response,"UVT")).containsEntry("observedAmount","2").containsEntry("confirmedAmount",null);
         @SuppressWarnings("unchecked") var rows=(List<Map<String,Object>>)response.get("records");
         var known=object(rows.stream().filter(r->"100".equals(r.get("customerId"))).findFirst().orElseThrow().get("funds"));
         var missing=object(rows.stream().filter(r->"200".equals(r.get("customerId"))).findFirst().orElseThrow().get("funds"));
-        assertThat(known).containsEntry("balanceStatus","READY");assertThat(money(Map.of("funds",known),"USDT")).containsEntry("confirmedAmount","10");assertThat(money(Map.of("funds",known),"NEX")).containsEntry("confirmedAmount","2");
-        assertThat(missing).containsEntry("balanceStatus","UNKNOWN");assertThat(money(Map.of("funds",missing),"USDT")).containsEntry("observedAmount",null).containsEntry("confirmedAmount",null);assertThat(money(Map.of("funds",missing),"NEX")).containsEntry("observedAmount",null).containsEntry("confirmedAmount",null);
+        assertThat(known).containsEntry("balanceStatus","READY");assertThat(money(Map.of("funds",known),"USDT")).containsEntry("confirmedAmount","10");assertThat(money(Map.of("funds",known),"UVT")).containsEntry("confirmedAmount","2");
+        assertThat(missing).containsEntry("balanceStatus","UNKNOWN");assertThat(money(Map.of("funds",missing),"USDT")).containsEntry("observedAmount",null).containsEntry("confirmedAmount",null);assertThat(money(Map.of("funds",missing),"UVT")).containsEntry("observedAmount",null).containsEntry("confirmedAmount",null);
     }
 }

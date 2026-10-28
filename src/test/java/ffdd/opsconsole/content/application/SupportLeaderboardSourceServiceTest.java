@@ -37,7 +37,7 @@ import static org.mockito.Mockito.*;
 
 class SupportLeaderboardSourceServiceTest {
     @Test void postCutoverCompleteSourcesProduceMonthlyRanksAndPodium() {
-        for(String currency:List.of("USDT","NEX"))for(Board board:List.of(Board.firstPayment,Board.netContribution)) {
+        for(String currency:List.of("USDT","UVT"))for(Board board:List.of(Board.firstPayment,Board.netContribution)) {
             var f=completeMonthly(currency);var read=f.read(context(board,currency,Scope.all,Set.of()));
             assertEquals(Coverage.COMPLETE,read.candidateCoverage());assertEquals(List.of(7L),read.candidates().stream().map(Candidate::agentId).toList());
             var ranked=SupportLeaderboard.calculate(read.context(),read.sourceVersion(),read.candidateCoverage(),read.candidates());
@@ -47,7 +47,7 @@ class SupportLeaderboardSourceServiceTest {
     }
     @Test void missingFutureAndCrossMonthCutoversKeepCompleteMetricsUnranked() {
         for(LocalDateTime cutover:Arrays.asList(null,NOW.plusSeconds(1),LocalDateTime.parse("2026-10-07T00:00:00"))) {
-            var f=completeMonthly("NEX");when(f.mapper.qualificationCutoverUtc()).thenReturn(cutover);
+            var f=completeMonthly("UVT");when(f.mapper.qualificationCutoverUtc()).thenReturn(cutover);
             var read=f.read(Board.firstPayment);assertEquals(Coverage.PARTIAL,read.candidateCoverage());
             assertEquals(Coverage.COMPLETE,read.candidates().get(0).firstPayment().coverage());
             var ranked=SupportLeaderboard.calculate(read.context(),read.sourceVersion(),read.candidateCoverage(),read.candidates());
@@ -57,7 +57,7 @@ class SupportLeaderboardSourceServiceTest {
     @Test void missingQualificationMembershipAndBrokenHistoryRemainPartial() {
         var gap=LocalDateTime.parse("2026-10-03T00:00:00");
         for(int defect=0;defect<7;defect++) {
-            var f=completeMonthly("NEX");
+            var f=completeMonthly("UVT");
             if(defect==0)when(f.mapper.qualifications()).thenReturn(List.of());
             if(defect==1)when(f.mapper.memberships()).thenReturn(List.of());
             if(defect==2)when(f.mapper.qualifications()).thenReturn(List.of(q(1,7,"ENABLED",START,gap),new QualificationInterval(2L,7L,"ENABLED",2L,gap.plusSeconds(1),null)));
@@ -72,17 +72,17 @@ class SupportLeaderboardSourceServiceTest {
     @Test void disabledRemovedAndExplicitlyUngroupedHistoriesCanBeComplete() {
         var at=LocalDateTime.parse("2026-10-03T00:00:00");
         for(String state:List.of("DISABLED","REMOVED")) {
-            var f=completeMonthly("NEX");when(f.mapper.currentBindings()).thenReturn(List.of());
+            var f=completeMonthly("UVT");when(f.mapper.currentBindings()).thenReturn(List.of());
             when(f.mapper.accounts()).thenReturn(List.of(account(7,"甲",0),account(8,"主管",1)));
             when(f.mapper.qualifications()).thenReturn(List.of(q(1,7,"ENABLED",START,at),new QualificationInterval(2L,7L,state,2L,at,null)));
             when(f.mapper.memberships()).thenReturn(List.of(new MemberInterval(1L,7L,null,1L,START,state.equals("REMOVED")?at:null)));
             assertEquals(Coverage.COMPLETE,f.read(Board.firstPayment).candidateCoverage());
         }
-        var f=completeMonthly("NEX");when(f.mapper.memberships()).thenReturn(List.of(new MemberInterval(1L,7L,null,1L,START,null)));
+        var f=completeMonthly("UVT");when(f.mapper.memberships()).thenReturn(List.of(new MemberInterval(1L,7L,null,1L,START,null)));
         assertEquals(Coverage.COMPLETE,f.read(Board.firstPayment).candidateCoverage());
     }
     @Test void cutoverTimestampChangesSourceVersionEvenWhenBothMonthsAreCovered() {
-        var f=completeMonthly("NEX");var before=f.read(Board.firstPayment);
+        var f=completeMonthly("UVT");var before=f.read(Board.firstPayment);
         when(f.mapper.qualificationCutoverUtc()).thenReturn(START.minusDays(1));var after=f.read(Board.firstPayment);
         assertEquals(Coverage.COMPLETE,before.candidateCoverage());assertEquals(Coverage.COMPLETE,after.candidateCoverage());
         assertEquals(before.candidates().get(0).firstPayment(),after.candidates().get(0).firstPayment());
@@ -94,26 +94,26 @@ class SupportLeaderboardSourceServiceTest {
         f.net(fact,change(fact,"1.25",fact.succeededAt()));return f;
     }
     @Test void firstPaymentCannotBypassTheAuthorizedCurrentGroup() {
-        var f=completeMonthly("NEX");
+        var f=completeMonthly("UVT");
         when(f.mapper.memberships()).thenReturn(List.of(new MemberInterval(1L,7L,200L,1L,START,null)));
-        var fact=fact(1,101,Kind.DEPOSIT,"NEX",START.plusMonths(1));var row=owner(fact,7L,200L,"KNOWN");
+        var fact=fact(1,101,Kind.DEPOSIT,"UVT",START.plusMonths(1));var row=owner(fact,7L,200L,"KNOWN");
         when(f.mapper.attributions()).thenReturn(List.of(row));when(f.mapper.attributionProofs()).thenReturn(List.of(netProof(fact,row)));
-        assertTrue(f.read(context(Board.firstPayment,"NEX",Scope.ownGroup,Set.of(100L))).candidates().isEmpty());
-        assertEquals(List.of(7L),f.read(context(Board.firstPayment,"NEX",Scope.ownGroup,Set.of(200L))).candidates().stream().map(Candidate::agentId).toList());
+        assertTrue(f.read(context(Board.firstPayment,"UVT",Scope.ownGroup,Set.of(100L))).candidates().isEmpty());
+        assertEquals(List.of(7L),f.read(context(Board.firstPayment,"UVT",Scope.ownGroup,Set.of(200L))).candidates().stream().map(Candidate::agentId).toList());
     }
     @Test void outOfScopeFirstPaymentDoesNotDowngradeCandidateCoverage() {
-        var f=completeMonthly("NEX");when(f.mapper.qualifications()).thenReturn(List.of());
+        var f=completeMonthly("UVT");when(f.mapper.qualifications()).thenReturn(List.of());
         when(f.mapper.memberships()).thenReturn(List.of(new MemberInterval(1L,7L,200L,1L,START,null)));
-        var fact=fact(1,101,Kind.DEPOSIT,"NEX",START.plusMonths(1));var row=owner(fact,7L,200L,"KNOWN");
+        var fact=fact(1,101,Kind.DEPOSIT,"UVT",START.plusMonths(1));var row=owner(fact,7L,200L,"KNOWN");
         when(f.mapper.attributions()).thenReturn(List.of(row));when(f.mapper.attributionProofs()).thenReturn(List.of(netProof(fact,row)));
-        var outside=f.read(context(Board.firstPayment,"NEX",Scope.ownGroup,Set.of(100L)));
+        var outside=f.read(context(Board.firstPayment,"UVT",Scope.ownGroup,Set.of(100L)));
         assertTrue(outside.candidates().isEmpty());assertEquals(Coverage.COMPLETE,outside.candidateCoverage());
-        assertEquals(Coverage.PARTIAL,f.read(context(Board.firstPayment,"NEX",Scope.ownGroup,Set.of(200L))).candidateCoverage());
+        assertEquals(Coverage.PARTIAL,f.read(context(Board.firstPayment,"UVT",Scope.ownGroup,Set.of(200L))).candidateCoverage());
     }
     @Test void provenNeverEnabledDisabledChainNeedsNoMembershipOrProfile() {
         var at=LocalDateTime.parse("2026-10-03T00:00:00");
         for(int defect=0;defect<4;defect++) {
-            var f=completeMonthly("NEX");
+            var f=completeMonthly("UVT");
             when(f.mapper.accounts()).thenReturn(List.of(account(7,"甲",1),new Account(9L,"未启用",1,0,1L,null,null,null,null,null,null,null,null,1,0)));
             var first=new QualificationInterval(2L,9L,defect==1?"ENABLED":"DISABLED",defect==2?2L:1L,START,at);
             when(f.mapper.qualifications()).thenReturn(List.of(q(1,7,"ENABLED",START,null),first,
@@ -121,14 +121,14 @@ class SupportLeaderboardSourceServiceTest {
             var read=f.read(Board.firstPayment);assertEquals(defect==0?Coverage.COMPLETE:Coverage.PARTIAL,read.candidateCoverage(),"defect "+defect);
             if(defect==0)assertEquals(List.of(7L),read.candidates().stream().map(Candidate::agentId).toList());
         }
-        var f=completeMonthly("NEX");when(f.mapper.qualifications()).thenReturn(List.of(q(1,7,"DISABLED",START,null)));
+        var f=completeMonthly("UVT");when(f.mapper.qualifications()).thenReturn(List.of(q(1,7,"DISABLED",START,null)));
         when(f.mapper.memberships()).thenReturn(List.of());
         assertEquals(Coverage.PARTIAL,f.read(Board.firstPayment).candidateCoverage());
     }
     @Test void zeroDurationQualificationAndMembershipTransitionsPreserveVersionContinuity() {
         var at=LocalDateTime.parse("2026-10-03T00:00:00");
         for(int intervals=1;intervals<=3;intervals++) {
-            var f=completeMonthly("NEX");
+            var f=completeMonthly("UVT");
             if((intervals&1)!=0)when(f.mapper.qualifications()).thenReturn(List.of(
                 new QualificationInterval(2L,7L,"ENABLED",3L,at,null),q(1,7,"ENABLED",START,at),
                 new QualificationInterval(3L,7L,"DISABLED",2L,at,at)));
@@ -143,14 +143,14 @@ class SupportLeaderboardSourceServiceTest {
     @Test void firstVersionMidMonthQualificationsCanBeCompleteOnlyWithoutEarlierOwnership() {
         var at=LocalDateTime.parse("2026-10-03T00:00:00");
         for(String state:List.of("ENABLED","DISABLED"))for(int defect=0;defect<5;defect++) {
-            var f=completeMonthly("NEX");when(f.mapper.accounts()).thenReturn(List.of(account(7,"甲",1),account(9,"新客服",1)));
+            var f=completeMonthly("UVT");when(f.mapper.accounts()).thenReturn(List.of(account(7,"甲",1),account(9,"新客服",1)));
             when(f.mapper.qualifications()).thenReturn(List.of(q(1,7,"ENABLED",START,null),
                 new QualificationInterval(2L,9L,state,defect==1?2L:1L,at,defect==4?at.plusDays(1):null)));
             if(state.equals("ENABLED"))when(f.mapper.memberships()).thenReturn(List.of(new MemberInterval(1L,7L,100L,1L,START,null),
                 new MemberInterval(2L,9L,100L,1L,at,null)));
             if(defect==2)when(f.mapper.currentBindings()).thenReturn(List.of(new Binding(1L,1L,9L,1L,at.minusSeconds(1),null)));
             if(defect==3) {
-                var fact=fact(1,101,Kind.DEPOSIT,"NEX",at.atOffset(ZoneOffset.UTC).atZoneSameInstant(SupportLeaderboard.BUSINESS_ZONE).toLocalDateTime().minusSeconds(1));
+                var fact=fact(1,101,Kind.DEPOSIT,"UVT",at.atOffset(ZoneOffset.UTC).atZoneSameInstant(SupportLeaderboard.BUSINESS_ZONE).toLocalDateTime().minusSeconds(1));
                 var row=owner(fact,9L,100L,"KNOWN");f.financial(List.of(fact),ready(1));f.net(fact,change(fact,"1.25",fact.succeededAt()));
                 when(f.mapper.attributions()).thenReturn(List.of(row));when(f.mapper.attributionProofs()).thenReturn(List.of(netProof(fact,row)));
             }
@@ -165,7 +165,7 @@ class SupportLeaderboardSourceServiceTest {
         }
         var enabled=at.plusDays(2);
         for(int defect=0;defect<5;defect++) {
-            var f=completeMonthly("NEX");when(f.mapper.accounts()).thenReturn(List.of(account(7,"甲",1),account(9,"新客服",1)));
+            var f=completeMonthly("UVT");when(f.mapper.accounts()).thenReturn(List.of(account(7,"甲",1),account(9,"新客服",1)));
             when(f.mapper.qualifications()).thenReturn(List.of(q(1,7,"ENABLED",START,null),
                 new QualificationInterval(2L,9L,"DISABLED",defect==3?2L:1L,at,enabled),
                 new QualificationInterval(3L,9L,"ENABLED",defect==3?3L:2L,enabled,null)));
@@ -203,7 +203,7 @@ class SupportLeaderboardSourceServiceTest {
         assertEquals(Coverage.COMPLETE,fixture.read(Board.customers).candidates().get(0).customers().coverage());
     }
     @Test void actualReplayPartialFormationDoesNotCountCreditedDepositAgain() {
-        for(String currency:List.of("USDT","NEX")) {
+        for(String currency:List.of("USDT","UVT")) {
             var deposit=money(fact(1,101,Kind.DEPOSIT,currency,START),"50");
             var purchase=money(fact(1,201,Kind.DEVICE_PURCHASE,currency,START.plusMonths(1)),"60");
             var account=new SupportFundAllocation.Account(1,currency,"available");
@@ -219,7 +219,7 @@ class SupportLeaderboardSourceServiceTest {
     @Test void actualReplayAllowsUnequalFormationLots() {assertReplayFormationLots("6");}
     @Test void actualReplayAllowsIdenticalFormationLotsWithoutInventingLegIdentity() {assertReplayFormationLots("5");}
     private static void assertReplayFormationLots(String first) {
-        for(String currency:List.of("USDT","NEX")) {
+        for(String currency:List.of("USDT","UVT")) {
             var net=earningsPurchase(currency,first,START.plusMonths(1));
             assertEquals(2,net.changes().size());
             if(first.equals("5"))assertEquals(net.changes().get(0),net.changes().get(1));
@@ -228,7 +228,7 @@ class SupportLeaderboardSourceServiceTest {
         }
     }
     @Test void actualReplayMultiLotRefundUsesSuccessMonthAndOriginalDisabledUnboundAgentGroup() {
-        for(String currency:List.of("USDT","NEX"))for(String refund:List.of("8","10")) {
+        for(String currency:List.of("USDT","UVT"))for(String refund:List.of("8","10")) {
             var account=new SupportFundAllocation.Account(1,currency,"available");
             var purchase=money(fact(1,201,Kind.DEVICE_PURCHASE,currency,START),"10");
             var net=replay(currency,Map.of("c",purchase),
@@ -247,7 +247,7 @@ class SupportLeaderboardSourceServiceTest {
         }
     }
     @Test void actualReplayPartialFormationRefundReversesOnlyNewContribution() {
-        for(String currency:List.of("USDT","NEX")) {
+        for(String currency:List.of("USDT","UVT")) {
             var account=new SupportFundAllocation.Account(1,currency,"available");
             var deposit=money(fact(1,101,Kind.DEPOSIT,currency,START),"50");
             var purchase=money(fact(1,201,Kind.DEVICE_PURCHASE,currency,START),"60");
@@ -260,7 +260,7 @@ class SupportLeaderboardSourceServiceTest {
         }
     }
     @Test void actualReplaySameSecondConsumptionRefundAndNewConsumptionRetainSeparateOrigins() {
-        for(String currency:List.of("USDT","NEX")) {
+        for(String currency:List.of("USDT","UVT")) {
             var account=new SupportFundAllocation.Account(1,currency,"available");var at=START.plusMonths(1);
             var first=money(fact(1,201,Kind.DEVICE_PURCHASE,currency,at),"10");
             var second=money(fact(1,202,Kind.DEVICE_PURCHASE,currency,at),"10");
@@ -275,7 +275,7 @@ class SupportLeaderboardSourceServiceTest {
         }
     }
     @Test void actualReplayRepeatedCreditedConsumptionDoesNotRequireAnInventedFormation() {
-        for(String currency:List.of("USDT","NEX")) {
+        for(String currency:List.of("USDT","UVT")) {
             var account=new SupportFundAllocation.Account(1,currency,"available");var at=START.plusMonths(1);
             var deposit=money(fact(1,101,Kind.DEPOSIT,currency,START),"50");
             var first=money(fact(1,201,Kind.DEVICE_PURCHASE,currency,at),"20");var second=money(fact(1,202,Kind.DEVICE_PURCHASE,currency,at),"20");
@@ -289,7 +289,7 @@ class SupportLeaderboardSourceServiceTest {
         }
     }
     @Test void tamperedRealReplayCannotHideMissingOversizedOrMismatchedFormationWithAReadyLabel() {
-        for(String currency:List.of("USDT","NEX")) {
+        for(String currency:List.of("USDT","UVT")) {
             var at=START.plusMonths(1);var purchase=money(fact(1,201,Kind.DEVICE_PURCHASE,currency,at),"10");
             var valid=earningsPurchase(currency,"5",at);var rows=valid.changes();
             var doubled=new ArrayList<>(rows);doubled.addAll(rows);
@@ -309,7 +309,7 @@ class SupportLeaderboardSourceServiceTest {
                 assertUnknownMoney(read,Reason.SOURCE_INCOMPLETE);
                 assertTrue(SupportLeaderboard.calculate(read.context(),read.sourceVersion(),read.candidateCoverage(),read.candidates()).rows().stream().allMatch(r->r.rank()==null));
             }
-            var wrongCurrency=rows.stream().map(c->new ContributionChange(c.contributionId(),c.originCustomerId(),currency.equals("USDT")?"NEX":"USDT",c.amount(),c.succeededAt(),c.businessZone(),c.fractionalSecondDigits(),c.sourceReference())).toList();
+            var wrongCurrency=rows.stream().map(c->new ContributionChange(c.contributionId(),c.originCustomerId(),currency.equals("USDT")?"UVT":"USDT",c.amount(),c.succeededAt(),c.businessZone(),c.fractionalSecondDigits(),c.sourceReference())).toList();
             assert503(()->withReplay(new NetSnapshot(valid.customers(),valid.origins(),wrongCurrency),purchase).read(context(Board.netContribution,currency,Scope.all,Set.of())));
             assert503(()->withReplay(new NetSnapshot(valid.customers(),List.of(valid.origins().get(0),valid.origins().get(0)),rows),purchase).read(context(Board.netContribution,currency,Scope.all,Set.of())));
             var wrongRoot=rows.stream().map(c->new ContributionChange(c.contributionId(),2,c.currency(),c.amount(),c.succeededAt(),c.businessZone(),c.fractionalSecondDigits(),c.sourceReference())).toList();
@@ -321,7 +321,7 @@ class SupportLeaderboardSourceServiceTest {
         }
     }
     @Test void tamperedRealDepositFormationMustEqualActualPaymentEvenWithAnAlignedTail() {
-        for(String currency:List.of("USDT","NEX")) {
+        for(String currency:List.of("USDT","UVT")) {
             var at=START.plusMonths(1);var deposit=money(fact(1,101,Kind.DEPOSIT,currency,at),"10");
             var account=new SupportFundAllocation.Account(1,currency,"available");
             var valid=replay(currency,Map.of("d",deposit),trace(new Event("d",Action.DEPOSIT,null,account,null,BigDecimal.TEN,null),at));
@@ -332,7 +332,7 @@ class SupportLeaderboardSourceServiceTest {
         }
     }
     private static List<NetCustomer> tail(String currency,String amount) {
-        return List.of(new NetCustomer(1,EvidenceState.READY,List.of(),currency.equals("USDT")?new BigDecimal(amount):BigDecimal.ZERO,currency.equals("NEX")?new BigDecimal(amount):BigDecimal.ZERO));
+        return List.of(new NetCustomer(1,EvidenceState.READY,List.of(),currency.equals("USDT")?new BigDecimal(amount):BigDecimal.ZERO,currency.equals("UVT")?new BigDecimal(amount):BigDecimal.ZERO));
     }
     private record Trace(Event event,LocalDateTime at) {}
     private static Trace trace(Event event,LocalDateTime at) {return new Trace(event,at);}
@@ -349,13 +349,13 @@ class SupportLeaderboardSourceServiceTest {
         var result=new SupportFundReplay().replay(Set.of(1L),operations,Map.of(1L,cash(allocation)),factIds,List.of());
         assertEquals(SupportFundReplay.State.READY,result.state(),()->result.toString());
         var totals=result.totals().get(1L);
-        return new NetSnapshot(List.of(new NetCustomer(1,EvidenceState.READY,List.of(),totals.get("USDT"),totals.get("NEX"))),
+        return new NetSnapshot(List.of(new NetCustomer(1,EvidenceState.READY,List.of(),totals.get("USDT"),totals.get("UVT"))),
             result.origins().values().stream().map(o->new ContributionOrigin(o.contributionId(),o.customerId(),o.paymentFactId(),o.formedAt().succeededAt(),o.formedAt().businessZone(),o.formedAt().fractionalSecondDigits(),o.formedAt().sourceReference())).toList(),
             result.changes().stream().map(c->new ContributionChange(c.contributionId(),c.originCustomerId(),c.currency(),c.amount(),c.occurredAt().succeededAt(),c.occurredAt().businessZone(),c.occurredAt().fractionalSecondDigits(),c.occurredAt().sourceReference())).toList());
     }
     private static SupportFundReplay.Cash cash(SupportFundAllocation allocation) {
         return new SupportFundReplay.Cash(allocation.balance(new SupportFundAllocation.Account(1,"USDT","available")),
-            allocation.balance(new SupportFundAllocation.Account(1,"NEX","available")),
+            allocation.balance(new SupportFundAllocation.Account(1,"UVT","available")),
             allocation.pendingWithdrawal(new SupportFundAllocation.Account(1,"USDT","available")),BigDecimal.ZERO);
     }
     private static NetSnapshot earningsPurchase(String currency,String first,LocalDateTime at) {
@@ -412,7 +412,7 @@ class SupportLeaderboardSourceServiceTest {
             when(mapper.attributions()).thenReturn(Arrays.stream(facts).map(SupportLeaderboardSourceServiceTest::attribution).toList());
             when(mapper.attributionProofs()).thenReturn(Arrays.stream(facts).map(f -> netProof(f,attribution(f))).toList());
         }
-        SupportLeaderboardSourceService.Read read(Board board) {return read(context(board,"NEX",Scope.all,Set.of()));}
+        SupportLeaderboardSourceService.Read read(Board board) {return read(context(board,"UVT",Scope.all,Set.of()));}
         SupportLeaderboardSourceService.Read read(Context context) {
             TransactionSynchronizationManager.setActualTransactionActive(true);
             TransactionSynchronizationManager.setCurrentTransactionIsolationLevel(Connection.TRANSACTION_REPEATABLE_READ);
@@ -459,25 +459,25 @@ class SupportLeaderboardSourceServiceTest {
         var f=new Fixture();when(f.mapper.memberships()).thenReturn(List.of(new MemberInterval(1L,7L,100L,1L,START,NOW.minusDays(1)),
             new MemberInterval(2L,7L,200L,2L,NOW.minusDays(1),null)));
         var fact=fact(1,2,Kind.DEPOSIT,"USDT",LocalDateTime.parse("2026-10-01T10:00:00"));f.events(fact);f.financial(List.of(fact),ready(1));
-        var r=f.read(context(Board.firstPayment,"NEX",Scope.ownGroup,Set.of(200L)));
+        var r=f.read(context(Board.firstPayment,"UVT",Scope.ownGroup,Set.of(200L)));
         assertEquals("当前二组",r.candidates().get(0).groupName());assertEquals(1L,r.candidates().get(0).firstPayment().value());
-        assertTrue(f.read(context(Board.customers,"NEX",Scope.ownGroup,Set.of(100L))).candidates().isEmpty());
+        assertTrue(f.read(context(Board.customers,"UVT",Scope.ownGroup,Set.of(100L))).candidates().isEmpty());
     }
     @Test void ownGroupExcludesExplicitlyUngroupedMemberWhileAllKeepsCandidate() {
         var f=new Fixture();when(f.mapper.memberships()).thenReturn(List.of(new MemberInterval(1L,7L,null,1L,START,null)));
-        assertTrue(f.read(context(Board.customers,"NEX",Scope.ownGroup,Set.of(100L))).candidates().isEmpty());
+        assertTrue(f.read(context(Board.customers,"UVT",Scope.ownGroup,Set.of(100L))).candidates().isEmpty());
         var all=f.read(Board.customers);assertEquals(List.of(7L),all.candidates().stream().map(Candidate::agentId).toList());
         assertEquals("待分组",all.candidates().get(0).groupName());assertEquals(1L,all.candidates().get(0).customers().value());
         assertEquals(Coverage.COMPLETE,all.candidateCoverage());
     }
     @Test void managedGroupsExcludeUngroupedAndMissingMemberWhileAllKeepsCandidate() {
         var f=new Fixture();when(f.mapper.memberships()).thenReturn(List.of(new MemberInterval(1L,7L,null,1L,START,null)));
-        assertTrue(f.read(context(Board.customers,"NEX",Scope.managedGroups,Set.of(100L,200L))).candidates().isEmpty());
+        assertTrue(f.read(context(Board.customers,"UVT",Scope.managedGroups,Set.of(100L,200L))).candidates().isEmpty());
         var all=f.read(Board.customers);assertEquals(List.of(7L),all.candidates().stream().map(Candidate::agentId).toList());
         assertEquals("待分组",all.candidates().get(0).groupName());assertEquals(1L,all.candidates().get(0).customers().value());
         assertEquals(Coverage.COMPLETE,all.candidateCoverage());
         when(f.mapper.memberships()).thenReturn(List.of());
-        assertTrue(f.read(context(Board.customers,"NEX",Scope.managedGroups,Set.of(100L,200L))).candidates().isEmpty());
+        assertTrue(f.read(context(Board.customers,"UVT",Scope.managedGroups,Set.of(100L,200L))).candidates().isEmpty());
         assertEquals(List.of(7L),f.read(Board.customers).candidates().stream().map(Candidate::agentId).toList());
     }
     @Test void missingNicknameUsesNeutralStablePublicKeyAndAvatarOnlyUsesControlledReference() {
@@ -490,15 +490,15 @@ class SupportLeaderboardSourceServiceTest {
     }
     @Test void lifetimeFirstUsesSharedCanonicalOrderingAcrossCurrenciesBeforeMonthlyFilter() {
         var f=new Fixture();var old=fact(1,2,Kind.DEPOSIT,"USDT",LocalDateTime.parse("2026-09-30T23:00:00"));
-        var later=fact(1,3,Kind.DEVICE_PURCHASE,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));f.events(old,later);f.financial(List.of(later,old),ready(1));
+        var later=fact(1,3,Kind.DEVICE_PURCHASE,"UVT",LocalDateTime.parse("2026-10-01T10:00:00"));f.events(old,later);f.financial(List.of(later,old),ready(1));
         var r=f.read(Board.firstPayment);assertEquals(0L,r.candidates().get(0).firstPayment().value());assertEquals(Coverage.COMPLETE,r.candidates().get(0).firstPayment().coverage());
-        var same=LocalDateTime.parse("2026-10-01T10:00:00");var d2=fact(1,2,Kind.DEPOSIT,"USDT",same);var d11=fact(1,11,Kind.DEPOSIT,"NEX",same);
-        var purchase=fact(1,1,Kind.DEVICE_PURCHASE,"NEX",same);
+        var same=LocalDateTime.parse("2026-10-01T10:00:00");var d2=fact(1,2,Kind.DEPOSIT,"USDT",same);var d11=fact(1,11,Kind.DEPOSIT,"UVT",same);
+        var purchase=fact(1,1,Kind.DEVICE_PURCHASE,"UVT",same);
         assertEquals(d11,SupportAnalyticsService.selectFirstFacts(List.of(d2,purchase,d11)).get(1L));
         assertEquals(d11,SupportAnalyticsService.selectFirstFacts(List.of(d11,d2,purchase)).get(1L));
     }
     @Test void confirmedFirstCountIsIndependentFromUnknownNetContribution() {
-        for(String currency:List.of("NEX","USDT")) {
+        for(String currency:List.of("UVT","USDT")) {
             var f=new Fixture();var fact=fact(1,2,Kind.DEPOSIT,"USDT",LocalDateTime.parse("2026-10-01T10:00:00"));
             when(f.mapper.qualificationCutoverUtc()).thenReturn(START);
             f.events(fact);f.financial(List.of(fact),ready(1));var r=f.read(context(Board.firstPayment,currency,Scope.all,Set.of()));
@@ -515,7 +515,7 @@ class SupportLeaderboardSourceServiceTest {
         }
     }
     @Test void missingOrRejectedCanonicalAttributionDoesNotAwardConfirmedFirst() {
-        var f=new Fixture();var fact=fact(1,2,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));f.financial(List.of(fact),ready(1));
+        var f=new Fixture();var fact=fact(1,2,Kind.DEPOSIT,"UVT",LocalDateTime.parse("2026-10-01T10:00:00"));f.financial(List.of(fact),ready(1));
         var unknown=f.read(Board.firstPayment).candidates().get(0).firstPayment();assertNull(unknown.value());assertEquals(Reason.ATTRIBUTION_UNKNOWN,unknown.reason());f.events(fact);
         var s=snapshot(List.of(fact),ready(1));when(f.finance.readHistory(any())).thenReturn(new SupportPaymentFacts.Snapshot(s.facts(),
             List.of(new SupportPaymentFacts.Issue(Source.CARD_TOPUP,fact.sourceIds().get(0),"CAPTURED_SOURCE_PROOF_MISMATCH",1L)),s.coverage(),s.businessZone(),s.evaluatedAt(),s.firstHistory()));
@@ -540,7 +540,7 @@ class SupportLeaderboardSourceServiceTest {
     @Test void fingerprintTracksQualificationVersionAndFullCanonicalSourceVersionWithoutMetricChange() {
         var f=new Fixture();var first=f.read(Board.customers);when(f.mapper.qualifications()).thenReturn(List.of(new QualificationInterval(1L,7L,"ENABLED",2L,START,null)));
         assertNotEquals(first.sourceVersion(),f.read(Board.customers).sourceVersion());
-        var fact=fact(1,2,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));f.events(fact);f.financial(List.of(fact),ready(1));
+        var fact=fact(1,2,Kind.DEPOSIT,"UVT",LocalDateTime.parse("2026-10-01T10:00:00"));f.events(fact);f.financial(List.of(fact),ready(1));
         var before=f.read(Board.firstPayment);var changed=new Fact(fact.factId(),fact.kind(),fact.source(),fact.sourceIds(),fact.customerId(),fact.ledgerId(),fact.sourceBusinessId(),
             fact.orderNo(),fact.orderType(),fact.originalFactId(),fact.currency(),fact.amount(),fact.succeededAt(),fact.successTimeField(),fact.fractionalSecondDigits(),
             fact.providerPaidAt(),fact.ledgerRecordedAt(),fact.sourceConfirmationAt(),"source-v2",fact.historicalEnvironmentStatus());
@@ -553,7 +553,7 @@ class SupportLeaderboardSourceServiceTest {
         var s=snapshot(List.of(),List.of(new SupportPaymentFacts.FirstHistory(1,Status.UNKNOWN,List.of("HISTORY_UNVERIFIED"))));
         when(f.finance.readHistory(any())).thenReturn(new SupportPaymentFacts.Snapshot(s.facts(),s.issues(),s.coverage(),s.businessZone(),s.evaluatedAt().plusSeconds(1),s.firstHistory()));
         var b=f.read(Board.customers);assertEquals(a.sourceVersion(),b.sourceVersion());assertNotEquals(a.context().evaluatedAt(),b.context().evaluatedAt());
-        var fact=fact(1,2,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));f.events(fact);f.financial(List.of(fact),ready(1));
+        var fact=fact(1,2,Kind.DEPOSIT,"UVT",LocalDateTime.parse("2026-10-01T10:00:00"));f.events(fact);f.financial(List.of(fact),ready(1));
         var withProof=f.read(Board.customers);when(f.mapper.attributionProofs()).thenReturn(List.of(proof(fact.factId(),"evidence-v2")));
         assertNotEquals(withProof.sourceVersion(),f.read(Board.customers).sourceVersion());
         var financial=snapshot(List.of(fact),ready(1));var changed=new ArrayList<>(financial.coverage());var c=changed.get(0);
@@ -568,12 +568,12 @@ class SupportLeaderboardSourceServiceTest {
         assertEquals(r.sourceVersion(),r.candidates().get(0).amount().sourceVersion());
     }
     @Test void explicitCallerRepeatableReadIsMandatoryAndMissingScopeGroupConflicts() throws Exception {
-        var f=new Fixture();TransactionSynchronizationManager.clear();assertThrows(IllegalStateException.class,() -> f.service.readForAuthorizedLeaderboard(context(Board.customers,"NEX",Scope.all,Set.of())));
+        var f=new Fixture();TransactionSynchronizationManager.clear();assertThrows(IllegalStateException.class,() -> f.service.readForAuthorizedLeaderboard(context(Board.customers,"UVT",Scope.all,Set.of())));
         TransactionSynchronizationManager.setActualTransactionActive(true);TransactionSynchronizationManager.setCurrentTransactionIsolationLevel(Connection.TRANSACTION_READ_COMMITTED);
-        try {assertThrows(IllegalStateException.class,() -> f.service.readForAuthorizedLeaderboard(context(Board.customers,"NEX",Scope.all,Set.of())));} finally {TransactionSynchronizationManager.clear();}
+        try {assertThrows(IllegalStateException.class,() -> f.service.readForAuthorizedLeaderboard(context(Board.customers,"UVT",Scope.all,Set.of())));} finally {TransactionSynchronizationManager.clear();}
         Transactional annotation=SupportLeaderboardSourceService.class.getMethod("readForAuthorizedLeaderboard",Context.class).getAnnotation(Transactional.class);
         assertEquals(Propagation.MANDATORY,annotation.propagation());assertTrue(annotation.readOnly());
-        assertEquals(409,assertThrows(BizException.class,() -> f.read(context(Board.customers,"NEX",Scope.ownGroup,Set.of(999L)))).getCode());
+        assertEquals(409,assertThrows(BizException.class,() -> f.read(context(Board.customers,"UVT",Scope.ownGroup,Set.of(999L)))).getCode());
     }
     @Test void oneCapturedTupleReusesTheSoleProjectionAndCannotCrossTransactionBoundaries() {
         var f=new Fixture();TransactionSynchronizationManager.setActualTransactionActive(true);
@@ -582,12 +582,12 @@ class SupportLeaderboardSourceServiceTest {
         var material=f.service.captureForSampling();
         try {
             var all=f.service.projectCaptured(material,context(Board.customers,"USDT",Scope.all,Set.of()));
-            var own=f.service.projectCaptured(material,context(Board.customers,"NEX",Scope.ownGroup,Set.of(100L)));
+            var own=f.service.projectCaptured(material,context(Board.customers,"UVT",Scope.ownGroup,Set.of(100L)));
             assertEquals(1L,all.candidates().get(0).customers().value());assertEquals(1L,own.candidates().get(0).customers().value());
             assertEquals(all.context().evaluatedAt(),own.context().evaluatedAt());
             verify(f.finance,times(1)).readHistory(List.of(1L));verify(f.mapper,times(1)).accounts();
             TransactionSynchronizationManager.clearSynchronization();TransactionSynchronizationManager.initSynchronization();
-            assertThrows(IllegalStateException.class,()->f.service.projectCaptured(material,context(Board.customers,"NEX",Scope.all,Set.of())));
+            assertThrows(IllegalStateException.class,()->f.service.projectCaptured(material,context(Board.customers,"UVT",Scope.all,Set.of())));
         }finally {TransactionSynchronizationManager.clear();}
     }
     @Test void samplingCaptureRequiresActiveRrSynchronizationWithoutWeakeningOriginalSingleRead() {
@@ -618,10 +618,10 @@ class SupportLeaderboardSourceServiceTest {
         assertEquals(0,new BigDecimal("-35").compareTo(all.candidates().stream().filter(c->c.agentId()==7).findFirst().orElseThrow().amount().value()));
     }
     @Test void oneNetAmountIsSharedAcrossAllThreeBoardsAndCurrenciesNeverConvert() {
-        var f=new Fixture();var deposit=money(fact(1,1,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-10-01T10:00:00")),"123.123456");
+        var f=new Fixture();var deposit=money(fact(1,1,Kind.DEPOSIT,"UVT",LocalDateTime.parse("2026-10-01T10:00:00")),"123.123456");
         f.events(deposit);f.financial(List.of(deposit),ready(1));f.net(deposit,change(deposit,"123.123456",deposit.succeededAt()));
         for(Board board:List.of(Board.netContribution,Board.firstPayment,Board.customers)) {
-            assertMoney(f.read(context(board,"NEX",Scope.all,Set.of())),"123.123456");
+            assertMoney(f.read(context(board,"UVT",Scope.all,Set.of())),"123.123456");
             assertMoney(f.read(context(board,"USDT",Scope.all,Set.of())),"0");
             assertEquals(AmountKind.NET_CONTRIBUTION,f.read(board).candidates().get(0).amount().kind());
         }
@@ -637,7 +637,7 @@ class SupportLeaderboardSourceServiceTest {
         assertMoney(f.read(Board.netContribution),"0");verify(f.funds).readNetContributions(List.of());
     }
     @Test void unknownComponentAllowsOnlyReadySubtotalWithoutRankAndKeepsFirstAndCustomersIndependent() {
-        var f=new Fixture();var deposit=fact(1,1,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));
+        var f=new Fixture();var deposit=fact(1,1,Kind.DEPOSIT,"UVT",LocalDateTime.parse("2026-10-01T10:00:00"));
         f.events(deposit);f.financial(List.of(deposit),ready(1));f.net(deposit,change(deposit,"1.25",deposit.succeededAt()));
         when(f.mapper.productionCustomers()).thenReturn(List.of(1L,2L));
         var net=f.funds.readNetContributions(List.of(1L));
@@ -663,7 +663,7 @@ class SupportLeaderboardSourceServiceTest {
         assertTrue(projected.rows().stream().allMatch(r->r.rank()==null));assertEquals(State.PROVISIONAL,projected.state());
     }
     @Test void attributionProofMissingConflictingOrUnknownNeverAwardsNetAmount() {
-        var f=new Fixture();var deposit=fact(1,1,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));
+        var f=new Fixture();var deposit=fact(1,1,Kind.DEPOSIT,"UVT",LocalDateTime.parse("2026-10-01T10:00:00"));
         f.events(deposit);f.financial(List.of(deposit),ready(1));f.net(deposit,change(deposit,"1.25",deposit.succeededAt()));
         assertMoney(f.read(Board.netContribution),"1.25");
         var saved=netProof(deposit,attribution(deposit));
@@ -675,7 +675,7 @@ class SupportLeaderboardSourceServiceTest {
         assertUnknownMoney(f.read(Board.netContribution),Reason.ATTRIBUTION_UNKNOWN);
     }
     @Test void unassignedOwnerIsExcludedWithoutSpreadingButUnknownIsNotZero() {
-        var f=new Fixture();var deposit=fact(1,1,Kind.DEPOSIT,"NEX",LocalDateTime.parse("2026-10-01T10:00:00"));
+        var f=new Fixture();var deposit=fact(1,1,Kind.DEPOSIT,"UVT",LocalDateTime.parse("2026-10-01T10:00:00"));
         f.financial(List.of(deposit),ready(1));f.net(deposit,change(deposit,"1.25",deposit.succeededAt()));
         for(String status:List.of("UNASSIGNED","UNKNOWN")) {
             var row=owner(deposit,null,null,status);when(f.mapper.attributions()).thenReturn(List.of(row));when(f.mapper.attributionProofs()).thenReturn(List.of(netProof(deposit,row)));
@@ -683,7 +683,7 @@ class SupportLeaderboardSourceServiceTest {
         }
     }
     @Test void netSuccessMonthIsHalfOpenAndCutoffInclusiveAndChangesMustResolveOrigin() {
-        var f=new Fixture();var deposit=money(fact(1,1,Kind.DEPOSIT,"NEX",START),"10");f.events(deposit);f.financial(List.of(deposit),ready(1));
+        var f=new Fixture();var deposit=money(fact(1,1,Kind.DEPOSIT,"UVT",START),"10");f.events(deposit);f.financial(List.of(deposit),ready(1));
         var cutoff=NOW.atOffset(ZoneOffset.UTC).atZoneSameInstant(SupportLeaderboard.BUSINESS_ZONE).toLocalDateTime();
         f.net(deposit,change(deposit,"10",START),change(deposit,"-1",LocalDateTime.parse("2026-10-01T00:00:00")),change(deposit,"-2",cutoff),change(deposit,"-1",cutoff.plusSeconds(1)),change(deposit,"-1",LocalDateTime.parse("2026-11-01T00:00:00")));
         assertMoney(f.read(Board.netContribution),"-3");
@@ -691,7 +691,7 @@ class SupportLeaderboardSourceServiceTest {
         assert503(()->f.read(Board.netContribution));
     }
     @Test void missingFormationOrTailDisagreementDoesNotTreatReadyLabelAsCompleteHistory() {
-        var f=new Fixture();var deposit=fact(1,1,Kind.DEPOSIT,"NEX",START);f.events(deposit);f.financial(List.of(deposit),ready(1));
+        var f=new Fixture();var deposit=fact(1,1,Kind.DEPOSIT,"UVT",START);f.events(deposit);f.financial(List.of(deposit),ready(1));
         doReturn(new NetSnapshot(List.of(new NetCustomer(1,EvidenceState.READY,List.of(),BigDecimal.ZERO,new BigDecimal("1.25"))),List.of(origin(deposit)),List.of())).when(f.funds).readNetContributions(any());
         assertUnknownMoney(f.read(Board.netContribution),Reason.SOURCE_INCOMPLETE);
         doReturn(null).when(f.funds).readNetContributions(any());assert503(()->f.read(Board.netContribution));
@@ -700,7 +700,7 @@ class SupportLeaderboardSourceServiceTest {
     @Test void currencyCannotBeGuessedFromAnotherOriginAndFormationCannotBeCountedTwice() {
         var f=new Fixture();var deposit=money(fact(1,1,Kind.DEPOSIT,"USDT",START),"10");f.events(deposit);f.financial(List.of(deposit),ready(1));
         var formation=change(deposit,"10",START);
-        var wrongCurrency=new ContributionChange(origin(deposit).contributionId(),1,"NEX",BigDecimal.ONE,START.plusDays(1),"Asia/Shanghai",0,"wrong-currency");
+        var wrongCurrency=new ContributionChange(origin(deposit).contributionId(),1,"UVT",BigDecimal.ONE,START.plusDays(1),"Asia/Shanghai",0,"wrong-currency");
         f.net(deposit,formation,wrongCurrency);assert503(()->f.read(Board.netContribution));
         var duplicateFormation=new ContributionChange(formation.contributionId(),1,"USDT",formation.amount(),START,"Asia/Shanghai",0,"duplicate-formation");
         f.net(deposit,formation,duplicateFormation);assertUnknownMoney(f.read(Board.netContribution),Reason.SOURCE_INCOMPLETE);

@@ -44,7 +44,7 @@ class H4WheelParticipationProjectionTest {
                 "starts_at", now.minusDays(2), "ends_at", ended ? now.minusDays(1) : now.plusDays(1));
         var source = values("eventCode", CODE, "kind", "wheel", "userStatus", status,
                 "progressValue", progress, "targetValue", 1, "trackable", 0,
-                "rewardType", "NEX", "rewardAmount", 30);
+                "rewardType", "UVT", "rewardAmount", 30);
         when(policies.find(CODE, false)).thenReturn(rule);
         when(policies.rules(rule)).thenReturn(Map.of());
         when(events.eventState(USER_ID, "zh")).thenReturn(List.of(source));
@@ -56,7 +56,7 @@ class H4WheelParticipationProjectionTest {
         assertThat(list).hasSize(1);
         assertThat(list.get(0)).containsEntry("userStatus", status)
                 .containsEntry("progressValue", progress).containsEntry("targetValue", 1)
-                .containsEntry("trackable", false).containsEntry("rewardType", "NEX")
+                .containsEntry("trackable", false).containsEntry("rewardType", "UVT")
                 .containsEntry("rewardAmount", 30);
         assertThat(detail).containsEntry("userStatus", status)
                 .containsEntry("progressValue", progress).containsEntry("targetValue", 1)

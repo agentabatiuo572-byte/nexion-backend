@@ -453,7 +453,7 @@ class SupportFundJournalBindingServiceTest {
                 case RELEASE -> from + ",\"reference\":\"original\"";
                 case RECOVER, CLAWBACK, REORG_DEBIT -> from + ",\"reference\":\"original\",\"amount\":1";
                 case MOVE -> from + ",\"to\":{\"customerId\":7,\"currency\":\"USDT\",\"slot\":\"held:move\"},\"amount\":1";
-                case EXCHANGE -> from + ",\"to\":{\"customerId\":7,\"currency\":\"NEX\",\"slot\":\"available\"},\"amount\":1,\"targetAmount\":2";
+                case EXCHANGE -> from + ",\"to\":{\"customerId\":7,\"currency\":\"UVT\",\"slot\":\"available\"},\"amount\":1,\"targetAmount\":2";
                 case TRADE -> from + ",\"to\":{\"customerId\":8,\"currency\":\"USDT\",\"slot\":\"available\"},\"amount\":1,\"targetAmount\":1";
             };
             mapper.operation = null; mapper.parties.clear();

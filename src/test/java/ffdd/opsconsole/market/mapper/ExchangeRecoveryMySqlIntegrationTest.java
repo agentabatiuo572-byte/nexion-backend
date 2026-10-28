@@ -68,12 +68,12 @@ class ExchangeRecoveryMySqlIntegrationTest {
         jdbc.update("DELETE FROM nx_user");
         jdbc.update("INSERT INTO nx_user VALUES(7,'ACTIVE',0,0),(8,'ACTIVE',0,0),(9,'ACTIVE',0,1),(10,'DISABLED',0,0),(11,'ACTIVE',1,0)");
         for (int user = 7; user <= 11; user++) {
-            jdbc.update("INSERT INTO nx_exchange_order VALUES(?,? ,?,'USDT','NEX',20,100,0.2,'QUEUED',NOW(),0)", user,user,"EX-"+user);
+            jdbc.update("INSERT INTO nx_exchange_order VALUES(?,? ,?,'USDT','UVT',20,100,0.2,'QUEUED',NOW(),0)", user,user,"EX-"+user);
         }
-        jdbc.update("INSERT INTO nx_exchange_order VALUES(12,7,'EX-deleted','USDT','NEX',20,100,0.2,'QUEUED',NOW(),1)");
-        jdbc.update("INSERT INTO nx_exchange_sandbox_order VALUES(1,'run-a',9,'EX-sbx-1','same-key','hash-a','USDT','NEX',20,100,0.2,'QUEUED',NOW()),"
-                + "(2,'run-b',9,'EX-sbx-2','same-key','hash-b','USDT','NEX',20,100,0.2,'CANCELLED',NOW()),"
-                + "(3,'run-a',12,'EX-sbx-3','same-key','hash-c','USDT','NEX',20,100,0.2,'COMPLETED',NOW())");
+        jdbc.update("INSERT INTO nx_exchange_order VALUES(12,7,'EX-deleted','USDT','UVT',20,100,0.2,'QUEUED',NOW(),1)");
+        jdbc.update("INSERT INTO nx_exchange_sandbox_order VALUES(1,'run-a',9,'EX-sbx-1','same-key','hash-a','USDT','UVT',20,100,0.2,'QUEUED',NOW()),"
+                + "(2,'run-b',9,'EX-sbx-2','same-key','hash-b','USDT','UVT',20,100,0.2,'CANCELLED',NOW()),"
+                + "(3,'run-a',12,'EX-sbx-3','same-key','hash-c','USDT','UVT',20,100,0.2,'COMPLETED',NOW())");
     }
 
     @Test void exactOrderCannotLeakAnotherOwnerInactiveDeletedOrSandboxUser() {

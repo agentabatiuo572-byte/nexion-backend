@@ -127,7 +127,7 @@ class SupportPaymentFundBindingTest {
         var actual=new RecoveryEntry(entry,7L,asset.equals("USDT")?"H2_TRIAL_REMAINDER":"H2_TRIAL_BONUS","claim-1"+suffix,asset,reward,bucket,
             "ACTIVE","PRODUCTION",0,BigDecimal.ZERO,BigDecimal.ZERO,70L);
         when(cash.earnings.lockRecoveryEntry(entry)).thenReturn(actual);
-        cash.advance(asset.equals("USDT")?reward:BigDecimal.ZERO,asset.equals("NEX")?reward:BigDecimal.ZERO);
+        cash.advance(asset.equals("USDT")?reward:BigDecimal.ZERO,asset.equals("UVT")?reward:BigDecimal.ZERO);
         service.trialReward(before,entry);
         trial.put(asset.equals("USDT")?"remainderUsdt":"shadowNex",reward);
         var ledger=ledger(asset.equals("USDT")?301:302,"claim-1"+suffix,"TRIAL_BONUS",asset,"IN",reward,
@@ -186,7 +186,7 @@ class SupportPaymentFundBindingTest {
     }
     @ParameterizedTest @ValueSource(strings={"0","10"})
     void trialAlwaysOwnsChargeThenUsdtAndNexRewardsWithActualProtectedBucket(String charge) throws Exception {
-        pending(Source.TRIAL_CONVERT,new BigDecimal(charge));cashAndLedger();reward("USDT","4","pending_review");reward("NEX","3","withdrawable");
+        pending(Source.TRIAL_CONVERT,new BigDecimal(charge));cashAndLedger();reward("USDT","4","pending_review");reward("UVT","3","withdrawable");
         assertThat(record().isPresent()).isEqualTo(!charge.equals("0"));
         var events=operation("orderedEventsJson");assertThat(events).hasSize(charge.equals("0")?2:3);
         int offset=charge.equals("0")?0:1;
@@ -212,7 +212,7 @@ class SupportPaymentFundBindingTest {
         assertThatThrownBy(this::record).hasMessage("PAYMENT_FUND_CASH_TRACE_MISMATCH");assertThat(cash.operations).isEmpty();
     }
     @Test void sameCountAndTotalCannotHideWrongOrderedTrialRevisions() {
-        pending(Source.TRIAL_CONVERT,BigDecimal.TEN);cashAndLedger();reward("USDT","4","withdrawable");reward("NEX","3","withdrawable");
+        pending(Source.TRIAL_CONVERT,BigDecimal.TEN);cashAndLedger();reward("USDT","4","withdrawable");reward("UVT","3","withdrawable");
         cash.journal.get(1).put("newUsdtAvailable",new BigDecimal("93"));
         assertThatThrownBy(this::record).hasMessage("PAYMENT_FUND_CASH_TRACE_MISMATCH");assertThat(cash.operations).isEmpty();
     }
@@ -222,13 +222,13 @@ class SupportPaymentFundBindingTest {
         assertThatThrownBy(this::record).hasMessage("PAYMENT_FUND_TRIAL_SOURCE_MISMATCH");assertThat(cash.operations).isEmpty();
     }
     @Test void actualClaimRewardAmountAndFreshEntryMustAgree() {
-        pending(Source.TRIAL_CONVERT,BigDecimal.ZERO);cashAndLedger();reward("NEX","3","bonus_locked");trial.put("shadowNex",new BigDecimal("4"));
+        pending(Source.TRIAL_CONVERT,BigDecimal.ZERO);cashAndLedger();reward("UVT","3","bonus_locked");trial.put("shadowNex",new BigDecimal("4"));
         assertThatThrownBy(this::record).hasMessage("PAYMENT_FUND_TRIAL_REWARD_SOURCE_MISMATCH");assertThat(cash.operations).isEmpty();
     }
     @Test void missingOrExtraTrialRewardAndForeignEntryCannotBeReplacedByCallerAmounts() {
         pending(Source.TRIAL_CONVERT,BigDecimal.ZERO);cashAndLedger();trial.put("shadowNex",BigDecimal.ONE);
         assertThatThrownBy(this::record).hasMessage("PAYMENT_FUND_TRIAL_REWARD_SOURCE_MISMATCH");
-        when(cash.earnings.lockRecoveryEntry("forged")).thenReturn(new RecoveryEntry("forged",8L,"H2_TRIAL_BONUS","claim-1:NEX","NEX",BigDecimal.ONE,"withdrawable","ACTIVE","PRODUCTION",0,BigDecimal.ZERO,BigDecimal.ZERO,70L));
+        when(cash.earnings.lockRecoveryEntry("forged")).thenReturn(new RecoveryEntry("forged",8L,"H2_TRIAL_BONUS","claim-1:NEX","UVT",BigDecimal.ONE,"withdrawable","ACTIVE","PRODUCTION",0,BigDecimal.ZERO,BigDecimal.ZERO,70L));
         assertThatThrownBy(()->service.trialReward(before,"forged")).hasMessage("PAYMENT_FUND_TRIAL_REWARD_SOURCE_MISMATCH");
     }
     @Test void prepareAndOldReplayNeverBeginOrBackfillAnEmptyCashInterval() {

@@ -271,9 +271,9 @@ public class AppLearningService {
                 granted = grantReward(sandbox, rewardNo, userId, course) == 1;
                 if (granted) {
                     if (!sandbox) earningsReleaseService.creditReward(userId,
-                            "LEARNING_REWARD", rewardNo, "NEX", course.rewardNex(), "PRODUCTION", rewardNo + ":NEX");
+                            "LEARNING_REWARD", rewardNo, "UVT", course.rewardNex(), "PRODUCTION", rewardNo + ":NEX");
                     if (!sandbox) {
-                        treasuryLedgerPostingFacade.postLedgerEntry(rewardNo, userId, "LEARNING_REWARD", "NEX", "IN",
+                        treasuryLedgerPostingFacade.postLedgerEntry(rewardNo, userId, "LEARNING_REWARD", "UVT", "IN",
                                 course.rewardNex(), "SUCCESS", "完成课程 " + course.id() + " " + course.version());
                     }
                 }

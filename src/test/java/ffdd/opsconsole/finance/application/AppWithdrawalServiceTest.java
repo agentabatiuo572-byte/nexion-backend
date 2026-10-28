@@ -324,9 +324,9 @@ class AppWithdrawalServiceTest {
         verify(ledger).postLedgerEntry(
                 anyString(), eq(7L), eq("WITHDRAW_NETWORK_FEE"), eq("USDT"), eq("OUT"),
                 eq(new BigDecimal("1.000000")), eq("POSTED"),
-                eq("D5 actual network fee after NEX offset"));
+                eq("D5 actual network fee after UVT offset"));
         verify(ledger, never()).postLedgerEntry(
-                anyString(), eq(7L), eq("WITHDRAW_FEE_OFFSET"), eq("NEX"), eq("OUT"),
+                anyString(), eq(7L), eq("WITHDRAW_FEE_OFFSET"), eq("UVT"), eq("OUT"),
                 any(), anyString(), anyString());
         verify(ledger, never()).postLedgerEntry(
                 anyString(), eq(7L), eq("WITHDRAW_PENALTY_FEE"), eq("USDT"), eq("OUT"),

@@ -135,9 +135,9 @@ class SupportFundsReadServiceTest {
     }
     @Test void multiCurrencyWithdrawalRowsKeepSourceAmountsAndLocalTimeWithoutAnyConversionOrTotals() {
         when(mapper.withdrawals(any())).thenReturn(List.of(withdrawal(201,1,"USDT","10.123456","0.123456","10.000000","CONFIRMED",AT),
-            withdrawal(202,1,"NEX","999999999999.123456","0.000001","999999999999.123455","SUCCESS",AT)));
+            withdrawal(202,1,"UVT","999999999999.123456","0.000001","999999999999.123455","SUCCESS",AT)));
         var result=service.readCurrent(List.of(1L));assertThat(result.businessZone()).isEqualTo("Asia/Shanghai");
-        assertThat(result.withdrawals().rows()).extracting(WithdrawalEvidence::currency).containsExactly("USDT","NEX");
+        assertThat(result.withdrawals().rows()).extracting(WithdrawalEvidence::currency).containsExactly("USDT","UVT");
         assertThat(result.withdrawals().rows()).allSatisfy(w->{assertThat(w.state()).isEqualTo(WithdrawalState.SUCCESS);assertThat(w.completedAt()).isEqualTo(AT);assertThat(w.principal()).isEqualByComparingTo(w.actualFee().add(w.net()));});
     }
     @Test void partialWithdrawalEvidenceRetainsKnownRowsWithoutClaimingCompleteHistoryOrSuccessfulZero() {

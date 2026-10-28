@@ -106,7 +106,7 @@ class SupportLeaderboardRuntimeTest extends SupportAnalyticsRuntimeFixture {
 
     @Test void realFourBoardsKeepTwoCurrenciesCurrentBindingsAndUnprovedMoneySeparate() throws Exception {
         long reader=rankAgents.get(0);Map<Long,Integer> countRanks=new LinkedHashMap<>();
-        for(Board board:List.of(Board.netContribution,Board.firstPayment,Board.customers))for(String currency:List.of("USDT","NEX")){
+        for(Board board:List.of(Board.netContribution,Board.firstPayment,Board.customers))for(String currency:List.of("USDT","UVT")){
             JsonNode page=board(reader,board,currency,"");
             assertThat(page.path("referenceMonth").asText()).isEqualTo(month().toString());
             assertThat(page.path("currency").asText()).isEqualTo(currency);
@@ -134,7 +134,7 @@ class SupportLeaderboardRuntimeTest extends SupportAnalyticsRuntimeFixture {
         rejectBoard(reader,Board.customers,"USDT","&month="+month(),422);
         rejectBoard(reader,Board.deposit,"USDT","&month="+month().minusMonths(1),422);
         rejectBoard(reader,Board.deposit,"VND","",422);
-        checked("Four real HTTP boards xUSDT/NEX keep current bound counts independent; uncaptured first histories and unproved refund/net money stay null, no authoritative monetary ranks or fake movement");
+        checked("Four real HTTP boards xUSDT/UVT keep current bound counts independent; uncaptured first histories and unproved refund/net money stay null, no authoritative monetary ranks or fake movement");
     }
 
     @Test void productionTransfersRecomputeOwnedVersionWithoutRewritingAnyPriorPublication() throws Exception {

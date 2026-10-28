@@ -288,12 +288,12 @@ public interface AppWithdrawalMapper {
                    CASE WHEN UPPER(w.status) IN ('REFUNDED','REVIEW_REJECTED','REJECTED','FAILED','TX_FAILED','TX_ORPHANED','DEAD','ADDRESS_INVALID')
                         THEN w.retriable ELSE NULL END retriable,
                    COALESCE((SELECT SUM(l.amount) FROM nx_wallet_ledger l
-                              WHERE l.user_id=w.user_id AND l.asset='NEX' AND l.direction='IN'
+                              WHERE l.user_id=w.user_id AND l.asset='UVT' AND l.direction='IN'
                                 AND l.biz_type='WITHDRAW_FEE_OFFSET_REFUND'
                                 AND l.biz_no=CONCAT('D2-NEX-REFUND-',w.withdrawal_no)
                                 AND l.is_deleted=0),0) nexRefunded,
                    (SELECT MAX(l.created_at) FROM nx_wallet_ledger l
-                     WHERE l.user_id=w.user_id AND l.asset='NEX' AND l.direction='IN'
+                     WHERE l.user_id=w.user_id AND l.asset='UVT' AND l.direction='IN'
                        AND l.biz_type='WITHDRAW_FEE_OFFSET_REFUND'
                        AND l.biz_no=CONCAT('D2-NEX-REFUND-',w.withdrawal_no)
                        AND l.is_deleted=0) nexRefundedAt
@@ -344,12 +344,12 @@ public interface AppWithdrawalMapper {
                    CASE WHEN UPPER(w.status) IN ('REFUNDED','REVIEW_REJECTED','REJECTED','FAILED','TX_FAILED','TX_ORPHANED','DEAD','ADDRESS_INVALID')
                         THEN w.retriable ELSE NULL END retriable,
                    COALESCE((SELECT SUM(l.amount) FROM nx_wallet_ledger l
-                              WHERE l.user_id=w.user_id AND l.asset='NEX' AND l.direction='IN'
+                              WHERE l.user_id=w.user_id AND l.asset='UVT' AND l.direction='IN'
                                 AND l.biz_type='WITHDRAW_FEE_OFFSET_REFUND'
                                 AND l.biz_no=CONCAT('D2-NEX-REFUND-',w.withdrawal_no)
                                 AND l.is_deleted=0),0) nexRefunded,
                    (SELECT MAX(l.created_at) FROM nx_wallet_ledger l
-                     WHERE l.user_id=w.user_id AND l.asset='NEX' AND l.direction='IN'
+                     WHERE l.user_id=w.user_id AND l.asset='UVT' AND l.direction='IN'
                        AND l.biz_type='WITHDRAW_FEE_OFFSET_REFUND'
                        AND l.biz_no=CONCAT('D2-NEX-REFUND-',w.withdrawal_no)
                        AND l.is_deleted=0) nexRefundedAt

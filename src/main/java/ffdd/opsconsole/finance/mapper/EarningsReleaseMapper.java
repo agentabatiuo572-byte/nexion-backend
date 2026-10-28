@@ -44,7 +44,7 @@ public interface EarningsReleaseMapper {
     Long previousFundOperation(@Param("userId") long userId);
     @Select("SELECT user_id userId,source_environment sourceEnvironment FROM nx_earnings_release_entry WHERE entry_no=#{entryNo}")
     Map<String,Object> fundEntryRoute(@Param("entryNo") String entryNo);
-    @Insert("INSERT IGNORE INTO nx_earnings_release_entry(entry_no,user_id,cluster_id,source_type,source_ref,asset,amount,bucket,status,idempotency_key,source_environment,is_deleted,source_debit_baseline,source_wallet_id) SELECT #{entryNo},#{userId},#{clusterId},#{sourceType},#{sourceRef},#{asset},#{amount},#{bucket},'ACTIVE',#{idempotencyKey},#{sourceEnvironment},0,CASE #{asset} WHEN 'USDT' THEN earnings_usdt_debited WHEN 'NEX' THEN earnings_nex_debited END,id FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0")
+    @Insert("INSERT IGNORE INTO nx_earnings_release_entry(entry_no,user_id,cluster_id,source_type,source_ref,asset,amount,bucket,status,idempotency_key,source_environment,is_deleted,source_debit_baseline,source_wallet_id) SELECT #{entryNo},#{userId},#{clusterId},#{sourceType},#{sourceRef},#{asset},#{amount},#{bucket},'ACTIVE',#{idempotencyKey},#{sourceEnvironment},0,CASE #{asset} WHEN 'USDT' THEN earnings_usdt_debited WHEN 'UVT' THEN earnings_nex_debited END,id FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0")
     int insert(EntryWrite write);
 
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND is_deleted=0 AND sandbox=#{expectedSandbox} FOR UPDATE")
@@ -56,11 +56,11 @@ public interface EarningsReleaseMapper {
     @Update("""
             UPDATE nx_user_wallet SET
                 usdt_available=usdt_available-CASE WHEN #{asset}='USDT' THEN #{amount} ELSE 0 END,
-                nex_available=nex_available-CASE WHEN #{asset}='NEX' THEN #{amount} ELSE 0 END,
+                nex_available=nex_available-CASE WHEN #{asset}='UVT' THEN #{amount} ELSE 0 END,
                 version=version+1,updated_at=NOW()
              WHERE user_id=#{userId} AND sandbox=#{expectedSandbox} AND is_deleted=0
-               AND #{amount}>0 AND #{asset} IN ('USDT','NEX')
-               AND CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'NEX' THEN nex_available END>=#{amount}
+               AND #{amount}>0 AND #{asset} IN ('USDT','UVT')
+               AND CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'UVT' THEN nex_available END>=#{amount}
             """)
     int debitRecoveredReward(@Param("userId") Long userId, @Param("asset") String asset,
             @Param("amount") BigDecimal amount, @Param("expectedSandbox") int expectedSandbox);

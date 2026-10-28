@@ -98,7 +98,7 @@ public class AppTeamQuotaService {
 
     private List<String> perks(Map<String, Object> product) {
         List<String> result = new ArrayList<>();
-        if (product.get("dailyEarnNEX") != null) result.add(String.valueOf(product.get("dailyEarnNEX")) + " NEX/day");
+        if (product.get("dailyEarnNEX") != null) result.add(String.valueOf(product.get("dailyEarnNEX")) + " UVT/day");
         if (product.get("gpu") != null && !"unavailable".equals(product.get("gpu"))) result.add(String.valueOf(product.get("gpu")));
         if (product.get("vram") != null && !"unavailable".equals(product.get("vram"))) result.add(String.valueOf(product.get("vram")));
         return result;

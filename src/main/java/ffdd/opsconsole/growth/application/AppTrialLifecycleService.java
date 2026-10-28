@@ -368,7 +368,7 @@ public class AppTrialLifecycleService {
         }
         if (quote.rewardNex().signum() > 0) {
             String entryNo = earningsReleaseService.creditRewardInFundOperation(userId, "H2_TRIAL_BONUS", row.claimNo() + ":NEX",
-                    "NEX", quote.rewardNex(), "H2:" + row.claimNo() + ":NEX");
+                    "UVT", quote.rewardNex(), "H2:" + row.claimNo() + ":NEX");
             paymentAttribution.trialReward(prepared, entryNo);
         }
         BigDecimal usdtAfter = wallet.usdt().subtract(amount).add(quote.remainderUsdt());
@@ -381,8 +381,8 @@ public class AppTrialLifecycleService {
                 userId, row.claimNo() + ":REMAINDER", "TRIAL_BONUS", "USDT", "IN",
                 quote.remainderUsdt(), usdtAfter, "H2 shadow remainder credited after purchase");
         if (quote.rewardNex().signum() > 0) mapper.insertLedger(
-                userId, row.claimNo() + ":NEX", "TRIAL_BONUS", "NEX", "IN",
-                quote.rewardNex(), nexAfter, "H2 shadow NEX credited after purchase");
+                userId, row.claimNo() + ":NEX", "TRIAL_BONUS", "UVT", "IN",
+                quote.rewardNex(), nexAfter, "H2 shadow UVT credited after purchase");
         String orderNo = "TRC-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         if (mapper.decrementProductStock(product.id()) != 1) throw new BizException(409, "TRIAL_PRODUCT_STOCK_CONFLICT");
         if (mapper.insertConversionOrder(userId, orderNo, product.id(), subtotal, discount, amount) != 1

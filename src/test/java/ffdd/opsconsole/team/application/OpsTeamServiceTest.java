@@ -161,7 +161,7 @@ class OpsTeamServiceTest {
     @Test
     void overviewDeclaresSunsetExclusions() {
         configFacade.values.put("team.ui.F.sunset.exclusions",
-                "Premium rank unlock, Points commission payout; NEX v2 lock reward");
+                "Premium rank unlock, Points commission payout; UVT v2 lock reward");
 
         ApiResult<Map<String, Object>> result = service.overview();
 
@@ -169,7 +169,7 @@ class OpsTeamServiceTest {
         assertThat(result.getData().get("sunsetExclusions").toString())
                 .contains("Premium")
                 .contains("Points")
-                .contains("NEX v2");
+                .contains("UVT v2");
     }
 
     @Test
@@ -642,12 +642,12 @@ class OpsTeamServiceTest {
                 "V3",
                 rewardId,
                 "idem-f1-update",
-                new VRankRewardRequest("nex", new BigDecimal("1200"), null, null, null, "change reward type", "superadmin"));
+                new VRankRewardRequest("uvt", new BigDecimal("1200"), null, null, null, "change reward type", "superadmin"));
         assertThat(updated.getCode()).isZero();
         assertThat(commissionRepository.vRankRewards.get("V3"))
                 .filteredOn(item -> rewardId.equals(item.get("id")))
                 .singleElement()
-                .satisfies(item -> assertThat(item).containsEntry("type", "nex"));
+                .satisfies(item -> assertThat(item).containsEntry("type", "uvt"));
 
         ApiResult<Map<String, Object>> removed = service.removeVRankReward(
                 "V3",
@@ -880,8 +880,8 @@ class OpsTeamServiceTest {
                 .satisfies(row -> assertThat(row.get("usdtPct").toString()).isEqualTo("10"));
     }
 
-    // 批2a · 修复1 NEX 路径补强:F.unilevel.nex.L{1-7} 调 NEX 奖励走 updateUnilevelRule(nexPerUsd),
-    // 不进 422 白名单分支(与 USDT 路径 F.unilevel.L{1-7} 对称)。前端 f2-rates.tsx 调 NEX 按钮 paramKey 对齐后端 isUnilevelRuleKey。
+    // 批2a · 修复1 UVT 路径补强:F.unilevel.nex.L{1-7} 调 UVT 奖励走 updateUnilevelRule(nexPerUsd),
+    // 不进 422 白名单分支(与 USDT 路径 F.unilevel.L{1-7} 对称)。前端 f2-rates.tsx 调 UVT 按钮 paramKey 对齐后端 isUnilevelRuleKey。
     @Test
     @SuppressWarnings("unchecked")
     void updateF2UnilevelNexPathUpdatesNexPerUsd() {
@@ -894,7 +894,7 @@ class OpsTeamServiceTest {
 
         ApiResult<Map<String, Object>> result = service.updateConfig(
                 "idem-f2-unilevel-nex",
-                new TeamCommissionConfigUpdateRequest("F.unilevel.nex.L1", "55", "raise NEX reward", "superadmin"));
+                new TeamCommissionConfigUpdateRequest("F.unilevel.nex.L1", "55", "raise UVT reward", "superadmin"));
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values).doesNotContainKey("team.ui.F.unilevel.nex.L1");
@@ -2969,7 +2969,7 @@ class OpsTeamServiceTest {
     void rewardPayoutsQueryFiltersByTypeVStatusUserId() {
         commissionRepository.rewardPayouts.add(makePayoutRow("pay-001", 8001L, "V1", "usdt",
                 "GRANTED", "2026-07-21 10:00:00"));
-        commissionRepository.rewardPayouts.add(makePayoutRow("pay-002", 8002L, "V2", "nex",
+        commissionRepository.rewardPayouts.add(makePayoutRow("pay-002", 8002L, "V2", "uvt",
                 "GRANTED", "2026-07-20 10:00:00"));
         commissionRepository.rewardPayouts.add(makePayoutRow("pay-003", 8003L, "V3", "voucher",
                 "REVERSED", "2026-07-19 10:00:00"));

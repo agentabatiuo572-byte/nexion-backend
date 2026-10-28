@@ -145,7 +145,7 @@ class SupportPaymentFactServiceTest {
             case "customerId" -> unmatched.put(changed,8L);
             case "kind" -> unmatched.put(changed,"DEVICE_PURCHASE");
             case "businessId" -> unmatched.put(changed,"other-payment");
-            case "currency" -> unmatched.put(changed,"NEX");
+            case "currency" -> unmatched.put(changed,"UVT");
             case "amount" -> unmatched.put(changed,new BigDecimal("10.000001"));
             default -> throw new IllegalArgumentException(changed);
         }
@@ -241,7 +241,7 @@ class SupportPaymentFactServiceTest {
     }
     @Test void missingTimeLinkCurrencyOrSuccessfulStatusDoesNotBecomeFact() {
         var noTime=row(Source.CARD_TOPUP,Kind.DEPOSIT,101,"a","10");noTime.remove("succeededAt");
-        var badCurrency=row(Source.CARD_TOPUP,Kind.DEPOSIT,102,"b","10");badCurrency.put("ledgerCurrency","NEX");
+        var badCurrency=row(Source.CARD_TOPUP,Kind.DEPOSIT,102,"b","10");badCurrency.put("ledgerCurrency","UVT");
         var badLink=row(Source.CARD_TOPUP,Kind.DEPOSIT,103,"c","10");badLink.put("sourceLinked",0);
         var badState=row(Source.CARD_TOPUP,Kind.DEPOSIT,104,"d","10");badState.put("ledgerStatus","PENDING");
         var noLedgerTime=row(Source.CARD_TOPUP,Kind.DEPOSIT,105,"e","10");noLedgerTime.remove("ledgerRecordedAt");
@@ -293,7 +293,7 @@ class SupportPaymentFactServiceTest {
         var order=row(Source.WALLET_ORDER,Kind.DEVICE_PURCHASE,201,"order-1","80");order.put("orderNo","order-1");
         var tooMuch=row(Source.ORDER_REFUND,Kind.DEVICE_PURCHASE_REFUND,301,"E4-REFUND-order-1","81");tooMuch.put("orderNo","order-1");
         var missing=row(Source.ORDER_REFUND,Kind.DEVICE_PURCHASE_REFUND,302,"E4-REFUND-missing","10");missing.put("orderNo","missing");
-        var wrong=row(Source.ORDER_REFUND,Kind.DEVICE_PURCHASE_REFUND,303,"E4-REFUND-order-2","10");wrong.put("orderNo","order-1");wrong.put("currency","NEX");wrong.put("ledgerCurrency","NEX");
+        var wrong=row(Source.ORDER_REFUND,Kind.DEVICE_PURCHASE_REFUND,303,"E4-REFUND-order-2","10");wrong.put("orderNo","order-1");wrong.put("currency","UVT");wrong.put("ledgerCurrency","UVT");
         when(mapper.orders(any())).thenReturn(List.of(order));when(mapper.refunds(any())).thenReturn(List.of(tooMuch,missing,wrong));
         var snapshot=service.read(List.of(7L));
         assertThat(snapshot.facts()).hasSize(1);

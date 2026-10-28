@@ -264,10 +264,10 @@ class ReferralRewardEffectiveAtMySqlIntegrationTest {
 
     private void verifiedProjection(String settlementNo, String amount, String balance, LocalDateTime createdAt) {
         jdbc.update("INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,balance_after,status,created_at,is_deleted)"
-                        + " VALUES (?,?, 'REFERRAL_REWARD','NEX','IN',?,?,'SUCCESS',?,0)",
+                        + " VALUES (?,?, 'REFERRAL_REWARD','UVT','IN',?,?,'SUCCESS',?,0)",
                 INVITER, settlementNo + ":INVITER", new BigDecimal(amount), new BigDecimal(balance), createdAt);
         jdbc.update("INSERT INTO nx_earnings_release_entry(user_id,source_ref,asset,amount,status,source_type,source_environment,bucket,is_deleted)"
-                        + " VALUES (?,?,'NEX',?,'ACTIVE','H8_REFERRAL','PRODUCTION','AVAILABLE',0)",
+                        + " VALUES (?,?,'UVT',?,'ACTIVE','H8_REFERRAL','PRODUCTION','AVAILABLE',0)",
                 INVITER, settlementNo + ":INVITER:NEX", new BigDecimal(amount));
     }
 

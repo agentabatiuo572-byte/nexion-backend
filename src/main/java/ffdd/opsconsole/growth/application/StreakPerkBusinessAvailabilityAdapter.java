@@ -32,7 +32,7 @@ import org.springframework.stereotype.Service;
  * <p>🔴 <b>历史教训(zentao #195)</b>:本类原先读 {@code OpsNexMarketService.overview()}
  * 的 {@code stats.stakingGateOn} 与 {@code pools[].sellable}。那两个键属于**另一个方法**
  * ({@code OpsNexMarketService.stakingOverview()} / {@code stakingPoolRow()}),而
- * {@code overview()} 是 **G3 NEX 价格市场**总览,响应只有
+ * {@code overview()} 是 **G3 UVT 价格市场**总览,响应只有
  * domain/currentPrice/frames/controls/coverage 等键 —— 没有 {@code stats},也没有
  * {@code pools}。两个 {@code instanceof} 守卫于是都不成立、各自走「当作开着」的默认分支,
  * 方法**恒返回 true**。后果:质押四档全部 STOPPED 时,任务面(读公开目录)如实标

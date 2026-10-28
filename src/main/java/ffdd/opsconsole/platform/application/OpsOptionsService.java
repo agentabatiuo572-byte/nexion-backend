@@ -37,7 +37,7 @@ public class OpsOptionsService {
             case "roles", "role" -> ApiResult.ok(roleOptions());
             case "permissions", "permission" -> ApiResult.ok(permissionOptions());
             case "user-status" -> ApiResult.ok(options("正常", "ACTIVE", "冻结", "FROZEN", "注销", "CLOSED"));
-            case "asset-adjustment-asset", "asset-adjustment-assets" -> ApiResult.ok(options("USDT", "USDT", "NEX", "NEX"));
+            case "asset-adjustment-asset", "asset-adjustment-assets" -> ApiResult.ok(options("USDT", "USDT", "UVT", "UVT"));
             case "asset-adjustment-direction", "asset-adjustment-directions" -> ApiResult.ok(options("增加", "CREDIT", "扣减", "DEBIT"));
             case "asset-adjustment-reason", "asset-adjustment-reasons" -> ApiResult.ok(options("客服补偿", "CUSTOMER_COMPENSATION", "系统纠错", "SYSTEM_CORRECTION", "活动补发", "CAMPAIGN_REISSUE", "争议退回", "DISPUTE_REVERSAL"));
             case "asset-adjustment-status", "asset-adjustment-statuses" -> ApiResult.ok(options("待复核", "PENDING_REVIEW", "已通过", "APPROVED", "已驳回", "REJECTED", "红线挂起", "SUSPENDED"));

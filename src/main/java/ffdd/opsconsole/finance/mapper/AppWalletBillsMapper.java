@@ -130,21 +130,21 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
                 AND COALESCE(amount,0)>0 AND UPPER(asset)='USDT' THEN GREATEST(COALESCE(amount,0),0) ELSE 0 END),0) rewardsUsdt,
               COALESCE(SUM(CASE WHEN bill_category IN ('refer','achievement','reward') AND UPPER(direction)='IN'
                 AND NOT (UPPER(biz_type)='TEAM_COMMISSION' AND UPPER(status)='CANCELLED')
-                AND COALESCE(amount,0)>0 AND UPPER(asset)='NEX' THEN GREATEST(COALESCE(amount,0),0) ELSE 0 END),0) rewardsNex,
+                AND COALESCE(amount,0)>0 AND UPPER(asset)='UVT' THEN GREATEST(COALESCE(amount,0),0) ELSE 0 END),0) rewardsNex,
               MAX(CASE WHEN bill_category IN ('refer','achievement','reward') AND UPPER(direction)='IN'
                 AND NOT (UPPER(biz_type)='TEAM_COMMISSION' AND UPPER(status)='CANCELLED')
                 AND COALESCE(amount,0)>0 THEN created_at END) latestRewardAt,
               COALESCE(SUM(CASE WHEN created_at >= #{dayStart} AND created_at < #{nextDay}
-                AND UPPER(asset)='NEX' AND UPPER(status) IN ('SUCCESS','POSTED','COMPLETED','CONFIRMED','PENDING')
+                AND UPPER(asset)='UVT' AND UPPER(status) IN ('SUCCESS','POSTED','COMPLETED','CONFIRMED','PENDING')
                 THEN CASE WHEN UPPER(direction)='IN' THEN GREATEST(COALESCE(amount,0),0)
                           ELSE -GREATEST(COALESCE(amount,0),0) END ELSE 0 END),0) todayNexEarn,
-              COALESCE(SUM(CASE WHEN UPPER(asset)='NEX' AND UPPER(status)='PENDING'
+              COALESCE(SUM(CASE WHEN UPPER(asset)='UVT' AND UPPER(status)='PENDING'
                 THEN GREATEST(COALESCE(amount,0),0) ELSE 0 END),0) pendingNex,
               COALESCE(SUM(CASE WHEN created_at >= #{monthStart} AND created_at < #{nextMonth} THEN 1 ELSE 0 END),0) monthBillCount,
               COALESCE(SUM(CASE WHEN bill_category IN ('refer','achievement','reward') AND UPPER(direction)='IN'
-                AND UPPER(asset)='NEX' AND UPPER(status) IN ('SUCCESS','POSTED','COMPLETED','CONFIRMED')
+                AND UPPER(asset)='UVT' AND UPPER(status) IN ('SUCCESS','POSTED','COMPLETED','CONFIRMED')
                 THEN GREATEST(COALESCE(amount,0),0) ELSE 0 END),0) settledRewardsNex,
-              GREATEST(COALESCE(SUM(CASE WHEN UPPER(asset)='NEX'
+              GREATEST(COALESCE(SUM(CASE WHEN UPPER(asset)='UVT'
                 AND UPPER(status) IN ('SUCCESS','POSTED','COMPLETED','CONFIRMED') THEN CASE
                   WHEN UPPER(biz_type)='WITHDRAW_FEE_OFFSET' AND UPPER(direction)='OUT'
                     THEN GREATEST(COALESCE(amount,0),0)
@@ -179,7 +179,7 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
             SELECT id,biz_no bizNo,biz_type bizType,UPPER(asset) asset,UPPER(direction) direction,
                    amount,balance_after balanceAfter,UPPER(status) status,remark,created_at createdAt
               FROM nx_wallet_ledger
-             WHERE user_id=#{userId} AND is_deleted=0 AND UPPER(asset)='NEX'
+             WHERE user_id=#{userId} AND is_deleted=0 AND UPPER(asset)='UVT'
                AND UPPER(status) NOT IN ('FAILED','REJECTED','CANCELLED')
              ORDER BY created_at DESC,id DESC LIMIT #{limit}
             """)

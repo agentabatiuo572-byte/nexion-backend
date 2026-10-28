@@ -74,18 +74,18 @@ class SupportAnalyticsServiceTest {
         assertThat(unknown.financialSummary().firstCandidates().confirmedValue()).isNull();
     }
     @Test void provenFirstUsesFullHistoryBeforeCurrencyOrPeriodAndStableTieBeforeSummingSourceAmounts() {
-        var earliest=fact(1,100,Kind.DEVICE_PURCHASE,"NEX","7.123456",AT.minusDays(1),null);
+        var earliest=fact(1,100,Kind.DEVICE_PURCHASE,"UVT","7.123456",AT.minusDays(1),null);
         var later=fact(1,101,Kind.DEPOSIT,"USDT","10.654321",AT,null);
         var proof=List.of(new SupportPaymentFacts.FirstHistory(1,SupportPaymentFacts.Status.READY,List.of()));
         when(finance.readHistory(any())).thenReturn(withFirstHistory(List.of(later,earliest),proof));events(List.of(earliest,later));
         var filtered=service.summarize(period(ReadMode.PERSONAL,"USDT","Asia/Shanghai",AT.minusHours(1),AT.plusHours(1)));
         assertThat(filtered.currentCustomers().get(0).first().state()).isEqualTo(FirstState.CONFIRMED);
-        assertThat(filtered.currentCustomers().get(0).first().observedCandidate().currency()).isEqualTo("NEX");
+        assertThat(filtered.currentCustomers().get(0).first().observedCandidate().currency()).isEqualTo("UVT");
         assertThat(filtered.financialSummary().firstCandidates().confirmedValue()).isZero();
         when(finance.readHistory(any())).thenReturn(withFirstHistory(List.of(later,earliest),proof),withFirstHistory(List.of(earliest,later),proof));
         var first=service.summarize(history(null));var reversed=service.summarize(history(null));
         assertThat(reversed.financialSummary().firstSources()).isEqualTo(first.financialSummary().firstSources());
-        assertThat(first.financialSummary().firstSources()).filteredOn(c->c.currency().equals("NEX")).singleElement().satisfies(c->{assertThat(c.purchases().confirmedAmount()).isEqualByComparingTo("7.123456");assertThat(c.deposits().confirmedEvents()).isZero();});
+        assertThat(first.financialSummary().firstSources()).filteredOn(c->c.currency().equals("UVT")).singleElement().satisfies(c->{assertThat(c.purchases().confirmedAmount()).isEqualByComparingTo("7.123456");assertThat(c.deposits().confirmedEvents()).isZero();});
         assertThat(first.financialSummary().firstSources()).filteredOn(c->c.currency().equals("USDT")).singleElement().satisfies(c->assertThat(c.deposits().confirmedEvents()).isZero());
         var purchase=fact(1,30,Kind.DEVICE_PURCHASE,"USDT","30",AT,null);var d2=fact(1,2,Kind.DEPOSIT,"USDT","2",AT,null);var d11=fact(1,11,Kind.DEPOSIT,"USDT","11",AT,null);
         when(finance.readHistory(any())).thenReturn(withFirstHistory(List.of(purchase,d2,d11),proof),withFirstHistory(List.of(d11,d2,purchase),proof));
@@ -145,7 +145,7 @@ class SupportAnalyticsServiceTest {
     void localSourceFailureCannotEraseTheKnownZeroFirstSubsetOfAnotherCompleteCustomer(String scenario) {
         when(mapper.currentCustomers(any())).thenReturn(List.of(current(1),current(2)));
         List<Fact> facts=scenario.equals("NONE")?List.of():List.of(fact(2,20,Kind.DEPOSIT,
-            scenario.equals("OTHER_CURRENCY")?"NEX":"USDT","2.123456",AT.minusDays(1),null));
+            scenario.equals("OTHER_CURRENCY")?"UVT":"USDT","2.123456",AT.minusDays(1),null));
         var base=snapshot(facts);
         when(finance.readHistory(any())).thenReturn(new Snapshot(base.facts(),List.of(new SupportPaymentFacts.Issue(Source.CARD_TOPUP,null,"SOURCE_READ_FAILED",1L)),base.coverage(),base.businessZone(),base.evaluatedAt(),List.of(
             new SupportPaymentFacts.FirstHistory(1,SupportPaymentFacts.Status.UNKNOWN,List.of("SOURCE_READ_FAILED")),new SupportPaymentFacts.FirstHistory(2,SupportPaymentFacts.Status.READY,List.of()))));
@@ -194,17 +194,17 @@ class SupportAnalyticsServiceTest {
     }
 
     @Test void multiCurrencyFirstIsChosenBeforeWindowAndCurrencyAndAmountsNeverMix() {
-        Fact nex=fact(1,10,Kind.DEPOSIT,"NEX","12.123456",AT.minusDays(10),null);
+        Fact nex=fact(1,10,Kind.DEPOSIT,"UVT","12.123456",AT.minusDays(10),null);
         Fact usdt=fact(1,11,Kind.DEPOSIT,"USDT","20.000001",AT,null);
         when(finance.readHistory(any())).thenReturn(snapshot(List.of(usdt,nex)));
         events(List.of(nex,usdt));
         Result period=service.summarize(period(ReadMode.PERSONAL,"USDT","Asia/Shanghai",AT.minusHours(1),AT.plusHours(1)));
         assertThat(period.financialSummary().firstCandidates().observedValue()).isZero();
-        assertThat(period.currentCustomers().get(0).first().observedCandidate().currency()).isEqualTo("NEX");
+        assertThat(period.currentCustomers().get(0).first().observedCandidate().currency()).isEqualTo("UVT");
         assertThat(period.financialSummary().currencies()).hasSize(1);
         assertThat(period.financialSummary().currencies().get(0).deposits().observedAmount()).isEqualByComparingTo("20.000001");
         Result all=service.summarize(history(null));
-        assertThat(all.financialSummary().currencies()).extracting(CurrencyTotals::currency).containsExactly("NEX","USDT");
+        assertThat(all.financialSummary().currencies()).extracting(CurrencyTotals::currency).containsExactly("USDT","UVT");
         assertUnknown(all);
     }
 
@@ -508,7 +508,7 @@ class SupportAnalyticsServiceTest {
     }
     private static AttributionRow corrupt(AttributionRow r,String violation) {
         return new AttributionRow(r.factId(),r.customerId(),r.kind(),r.source(),r.ledgerId(),r.sourceBusinessId(),
-            violation.equals("ORDER")?"wrong":r.orderNo(),r.orderType(),r.originalFactId(),violation.equals("CURRENCY")?"NEX":r.currency(),
+            violation.equals("ORDER")?"wrong":r.orderNo(),r.orderType(),r.originalFactId(),violation.equals("CURRENCY")?"UVT":r.currency(),
             violation.equals("AMOUNT")?r.amount().add(BigDecimal.ONE):r.amount(),violation.equals("TIME")?r.succeededAt().plusNanos(1000):r.succeededAt(),
             violation.equals("ZONE")?"UTC":r.sourceBusinessZone(),r.successTimeField(),r.fractionalSecondDigits(),violation.equals("MODE")?"OLD_SOURCE":r.captureMode(),
             violation.equals("SCHEMA")?"future":r.captureSchemaVersion(),r.agentAdminId(),r.groupId(),r.ownerAdminId(),r.agentStatus(),r.groupStatus(),r.ownerStatus());
@@ -544,7 +544,7 @@ class SupportAnalyticsServiceTest {
     @Test void singleCustomerProfileReadsOnlyAuthorizedRootAndAggregatesHiddenDescendantsSeparately() {
         var complete=enriched();long hidden=9009009L;
         when(mapper.currentCustomer(PERSONAL,1L)).thenReturn(List.of(metricsCurrent(1,7L,100L,"BOUND","GROUPED")));
-        when(finance.readHistory(List.of(1L))).thenReturn(withFirstHistory(List.of(fact(1,101,Kind.DEPOSIT,"NEX","3.123456",AT,null),
+        when(finance.readHistory(List.of(1L))).thenReturn(withFirstHistory(List.of(fact(1,101,Kind.DEPOSIT,"UVT","3.123456",AT,null),
             fact(1,102,Kind.DEPOSIT,"USDT","1",AT.plusSeconds(1),null)),
             List.of(new SupportPaymentFacts.FirstHistory(1,SupportPaymentFacts.Status.READY,List.of()))));
         when(finance.readHistory(List.of(hidden))).thenReturn(snapshot(List.of(fact(hidden,999,Kind.DEPOSIT,"USDT","500.000001",AT,null))));
@@ -553,7 +553,7 @@ class SupportAnalyticsServiceTest {
         var result=complete.statisticsForCustomer(1L,PERSONAL);
         assertThat(result).containsOnlyKeys("first","lifetime","lifetimeStatus","invitations","activity");
         var first=(Map<?,?>)result.get("first");assertThat(first.get("state")).isEqualTo("CONFIRMED");
-        assertThat(first.get("kind")).isEqualTo("DEPOSIT");assertThat(first.get("currency")).isEqualTo("NEX");assertThat(first.get("amount")).isEqualTo("3.123456");
+        assertThat(first.get("kind")).isEqualTo("DEPOSIT");assertThat(first.get("currency")).isEqualTo("UVT");assertThat(first.get("amount")).isEqualTo("3.123456");
         assertThat((List<?>)result.get("lifetime")).hasSize(2);
         assertThat(result.toString()).contains("500.000001").doesNotContain("9009009","customerId","factId","owner");
         verify(mapper).currentCustomer(PERSONAL,1L);verify(mapper,never()).currentCustomers(any());
@@ -597,7 +597,7 @@ class SupportAnalyticsServiceTest {
         var complete=enriched();long hidden=9009009L;
         when(mapper.currentCustomers(any())).thenReturn(List.of(metricsCurrent(1,7L,100L,"BOUND","GROUPED"),metricsCurrent(2,7L,100L,"BOUND","GROUPED")));
         var own=new ArrayList<Fact>();for(int i=1;i<=40;i++)own.add(fact(1,i,Kind.DEPOSIT,"USDT","1.000001",AT.minusDays(2),null));
-        own.add(fact(1,80,Kind.DEVICE_PURCHASE,"USDT","80.123456",AT,null));own.add(fact(2,81,Kind.DEPOSIT,"NEX","3.654321",AT,null));
+        own.add(fact(1,80,Kind.DEVICE_PURCHASE,"USDT","80.123456",AT,null));own.add(fact(2,81,Kind.DEPOSIT,"UVT","3.654321",AT,null));
         when(finance.readHistory(List.of(1L,2L))).thenReturn(withFirstHistory(own,List.of(new SupportPaymentFacts.FirstHistory(1,SupportPaymentFacts.Status.READY,List.of()))));
         when(finance.readHistory(List.of(hidden))).thenReturn(snapshot(List.of(fact(hidden,999,Kind.DEPOSIT,"USDT","500.000001",AT.minusDays(9),null))));
         doReturn(List.of(
@@ -773,7 +773,7 @@ class SupportAnalyticsServiceTest {
         assertThat(result.toString()).doesNotContain("9009009","private-source-10","private-business-10");
     }
     @ParameterizedTest
-    @CsvSource({"NEX,0","USDT,-2"})
+    @CsvSource({"UVT,0","USDT,-2"})
     void groupFirstKnownZeroUsesItsOwnHistoryBeforePeriodAndCurrencyFilters(String firstCurrency,int daysOffset) {
         var complete=enriched();var managed=new ReadScope(8L,ReadMode.MANAGED,null,null);when(ownership.queryScope(ReadMode.MANAGED,null,null)).thenReturn(managed);
         when(mapper.currentCustomers(managed)).thenReturn(List.of(metricsCurrent(2,7L,200L,"BOUND","GROUPED")));

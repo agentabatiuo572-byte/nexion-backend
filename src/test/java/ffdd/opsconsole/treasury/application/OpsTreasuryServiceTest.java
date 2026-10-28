@@ -167,10 +167,10 @@ class OpsTreasuryServiceTest {
                 java.nio.charset.StandardCharsets.UTF_8);
 
         assertThat(direct).contains("\"nex_v2_future\",\"UVT 锁仓到期应付\"")
-                .doesNotContain("NEX v2 未来兑付");
+                .doesNotContain("UVT v2 未来兑付");
         assertThat(approved).isEqualTo(direct);
         assertThat(service.liabilities(true).getData()).isEqualTo(before);
-        assertThat(before.get("breakdown").toString()).contains("NEX v2 未来兑付", "nex_v2_future");
+        assertThat(before.get("breakdown").toString()).contains("UVT v2 未来兑付", "nex_v2_future");
     }
 
     @Test
@@ -1153,7 +1153,7 @@ class OpsTreasuryServiceTest {
                 "REF:U76543210007:trace-1");
         for (int index = 0; index < refs.size(); index++) {
             ledgerRepository.bills.add(new TreasuryLedgerBillView(
-                    (long) index + 1, userId, userNo, "user", refs.get(index), "QUEST_REWARD", "NEX", "IN",
+                    (long) index + 1, userId, userNo, "user", refs.get(index), "QUEST_REWARD", "UVT", "IN",
                     BigDecimal.ONE, BigDecimal.valueOf(index + 1), "POSTED", "reward",
                     LocalDateTime.now(CLOCK), LocalDateTime.now(CLOCK)));
         }
@@ -1188,7 +1188,7 @@ class OpsTreasuryServiceTest {
                 "+7:other", "-7:other", "@7:other", null, "");
         for (int index = 0; index < refs.size(); index++) {
             ledgerRepository.bills.add(new TreasuryLedgerBillView(
-                    (long) index + 1, 7L, "U00000007", "user", refs.get(index), "QUEST_REWARD", "NEX", "IN",
+                    (long) index + 1, 7L, "U00000007", "user", refs.get(index), "QUEST_REWARD", "UVT", "IN",
                     BigDecimal.ONE, BigDecimal.ONE, "SUCCESS", "reward",
                     LocalDateTime.now(CLOCK), LocalDateTime.now(CLOCK)));
         }
@@ -1261,7 +1261,7 @@ class OpsTreasuryServiceTest {
                 new BigDecimal("25"), new BigDecimal("25"), "SUCCESS", "historical",
                 LocalDateTime.parse("2026-06-15T10:00:00"), LocalDateTime.parse("2026-06-15T10:00:00")));
         ledgerRepository.actualBalances.put("10001:USDT", new BigDecimal("999"));
-        ledgerRepository.actualBalances.put("10001:NEX", new BigDecimal("888"));
+        ledgerRepository.actualBalances.put("10001:UVT", new BigDecimal("888"));
 
         ApiResult<Map<String, Object>> result = service.runningBalance(
                 10001L, "2026-06-15", "2026-06-16");
@@ -1292,16 +1292,16 @@ class OpsTreasuryServiceTest {
                 (Map<String, BigDecimal>) result.getData().get("categorySums");
         assertThat(categorySums).hasSize(16)
                 .containsEntry("swap:USDT", BigDecimal.ZERO)
-                .containsEntry("swap:NEX", BigDecimal.ZERO)
+                .containsEntry("swap:UVT", BigDecimal.ZERO)
                 .containsEntry("topup:USDT", new BigDecimal("100"))
-                .containsEntry("topup:NEX", BigDecimal.ZERO)
+                .containsEntry("topup:UVT", BigDecimal.ZERO)
                 .containsEntry("withdraw:USDT", BigDecimal.ZERO)
                 .containsEntry("earning:USDT", BigDecimal.ZERO)
                 .containsEntry("commission:USDT", BigDecimal.ZERO)
                 .containsEntry("refund:USDT", BigDecimal.ZERO)
                 .containsEntry("bonus:USDT", BigDecimal.ZERO)
                 .containsEntry("purchase:USDT", BigDecimal.ZERO)
-                .containsEntry("purchase:NEX", BigDecimal.ZERO);
+                .containsEntry("purchase:UVT", BigDecimal.ZERO);
     }
 
     @Test
@@ -1312,16 +1312,16 @@ class OpsTreasuryServiceTest {
                 new TreasuryLedgerBillView(1L, 10001L, "U00010001", "user", "TASK-USDT", "COMPUTE_TASK_REWARD",
                         "USDT", "IN", new BigDecimal("0.045005"), new BigDecimal("100.045005"), "SUCCESS", "task", time, time),
                 new TreasuryLedgerBillView(2L, 10001L, "U00010001", "user", "TASK-NEX", "COMPUTE_TASK_REWARD",
-                        "NEX", "IN", new BigDecimal("3"), new BigDecimal("13"), "SUCCESS", "task", time, time),
+                        "UVT", "IN", new BigDecimal("3"), new BigDecimal("13"), "SUCCESS", "task", time, time),
                 new TreasuryLedgerBillView(3L, 10001L, "U00010001", "user", "CHECK-IN", "DAILY_CHECK_IN",
-                        "NEX", "IN", BigDecimal.ONE, new BigDecimal("14"), "SUCCESS", "check-in", time, time),
+                        "UVT", "IN", BigDecimal.ONE, new BigDecimal("14"), "SUCCESS", "check-in", time, time),
                 new TreasuryLedgerBillView(4L, 10001L, "U00010001", "user", "REFERRAL", "REFERRAL_REWARD",
                         "USDT", "IN", new BigDecimal("2"), new BigDecimal("102.045005"), "SUCCESS", "referral", time, time),
                 new TreasuryLedgerBillView(5L, 10001L, "U00010001", "user", "PURCHASE", "ORDER_PURCHASE",
                         "USDT", "OUT", BigDecimal.ONE, new BigDecimal("101.045005"), "SUCCESS", "purchase", time, time)));
         List<TreasuryLedgerBillView> originalRows = List.copyOf(ledgerRepository.bills);
         ledgerRepository.actualBalances.put("10001:USDT", new BigDecimal("101.045005"));
-        ledgerRepository.actualBalances.put("10001:NEX", new BigDecimal("14"));
+        ledgerRepository.actualBalances.put("10001:UVT", new BigDecimal("14"));
 
         var page = service.ledgerBills(new TreasuryLedgerQueryRequest(null, 10001L, null, 1, 20)).getData();
         assertThat(page.getTotal()).isEqualTo(5);
@@ -1331,13 +1331,13 @@ class OpsTreasuryServiceTest {
         assertThat((Map<String, BigDecimal>) userLedger.get("categorySums")).hasSize(16)
                 .containsEntry("earning:USDT", new BigDecimal("0.045005"))
                 .containsEntry("purchase:USDT", BigDecimal.ONE.negate())
-                .containsEntry("purchase:NEX", BigDecimal.ZERO)
-                .containsEntry("earning:NEX", new BigDecimal("3"))
+                .containsEntry("purchase:UVT", BigDecimal.ZERO)
+                .containsEntry("earning:UVT", new BigDecimal("3"))
                 .containsEntry("bonus:USDT", new BigDecimal("2"))
-                .containsEntry("bonus:NEX", BigDecimal.ONE);
+                .containsEntry("bonus:UVT", BigDecimal.ONE);
         assertThat((Map<String, BigDecimal>) userLedger.get("sums"))
                 .containsEntry("USDT", new BigDecimal("1.045005"))
-                .containsEntry("NEX", new BigDecimal("4"));
+                .containsEntry("UVT", new BigDecimal("4"));
         assertThat(userLedger).containsEntry("currentUsdtBalance", new BigDecimal("101.045005"))
                 .containsEntry("currentNexBalance", new BigDecimal("14"));
         assertThat(service.runningBalance(10001L).getData())
@@ -1349,14 +1349,14 @@ class OpsTreasuryServiceTest {
                 "D4 W65 category regression"), java.nio.charset.StandardCharsets.UTF_8);
         assertThat(csv)
                 .contains("\"earning\",\"compute_task_reward\",\"USDT\",\"IN\",\"0.045005\",\"100.045005\"")
-                .contains("\"earning\",\"compute_task_reward\",\"NEX\",\"IN\",\"3\",\"13\"")
-                .contains("\"bonus\",\"daily_check_in\",\"NEX\",\"IN\",\"1\",\"14\"")
+                .contains("\"earning\",\"compute_task_reward\",\"UVT\",\"IN\",\"3\",\"13\"")
+                .contains("\"bonus\",\"daily_check_in\",\"UVT\",\"IN\",\"1\",\"14\"")
                 .contains("\"bonus\",\"referral_reward\"")
                 .contains("\"purchase\",\"order_purchase\",\"USDT\",\"OUT\",\"1\",\"101.045005\"")
                 .doesNotContain("U00010001");
         assertThat(ledgerRepository.bills).containsExactlyElementsOf(originalRows);
         assertThat(ledgerRepository.actualBalances).containsExactlyInAnyOrderEntriesOf(Map.of(
-                "10001:USDT", new BigDecimal("101.045005"), "10001:NEX", new BigDecimal("14")));
+                "10001:USDT", new BigDecimal("101.045005"), "10001:UVT", new BigDecimal("14")));
     }
 
     @SuppressWarnings("unchecked")

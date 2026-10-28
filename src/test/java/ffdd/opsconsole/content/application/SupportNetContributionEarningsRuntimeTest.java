@@ -120,7 +120,7 @@ class SupportNetContributionEarningsRuntimeTest extends SupportNetContributionSe
         assertThat(negatives.stream().map(c->c.amount().negate()).reduce(BigDecimal.ZERO,BigDecimal::add)).isEqualByComparingTo(creditedTaken);
         assertThat(negatives).allSatisfy(c->{assertThat(c.currency()).isEqualTo("USDT");assertThat(c.originCustomerId()).isEqualTo(customer);});
         assertThat(analytics(agent,"view=CUSTOMERS&basis=CURRENT_CUSTOMER_HISTORY&currency=USDT&keyword="+run).path("records").get(0).path("first")).isEqualTo(firstBefore);
-        checked("One actual frozen-price compute result credited USDT/NEX through the production device writer. Actual earnings consumption forms one contribution; original WALLET refund and replay reverse it and restore the original earnings source. Subsequent mixed-source minimum withdrawal deducts only original recharge including its fee share. This is not a pure-earnings-wallet or external payout claim. Provider/risk/dispatch inputs are explicit isolated test prerequisites; no reward/price/policy/reserve edits.");
+        checked("One actual frozen-price compute result credited USDT/UVT through the production device writer. Actual earnings consumption forms one contribution; original WALLET refund and replay reverse it and restore the original earnings source. Subsequent mixed-source minimum withdrawal deducts only original recharge including its fee share. This is not a pure-earnings-wallet or external payout claim. Provider/risk/dispatch inputs are explicit isolated test prerequisites; no reward/price/policy/reserve edits.");
     }
 
     long retainedEarningsCustomer() throws Exception {

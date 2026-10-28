@@ -80,7 +80,7 @@ public class OpsTreasuryService {
     private static final List<String> D4_BILL_TYPE_ORDER = List.of(
             "swap", "topup", "withdraw", "earning", "commission", "refund", "bonus", "purchase");
     private static final Set<String> D4_BILL_TYPES = Set.copyOf(D4_BILL_TYPE_ORDER);
-    private static final List<String> D4_ASSET_ORDER = List.of("USDT", "NEX");
+    private static final List<String> D4_ASSET_ORDER = List.of("USDT", "UVT");
     private static final int D4_MAX_AUDIT_ROWS = 100_000;
     private static final List<String> D3_RESERVE_CATEGORIES = List.of("usdt", "otherLiquid");
     private static final List<String> D3_LIABILITY_CATEGORIES = List.of(
@@ -223,7 +223,7 @@ public class OpsTreasuryService {
                 liability("usdt_staking_principal", "USDT staking 本金", ledgerRepository.sumActiveStakingPrincipalUsdt(), "nx_staking_position.amount_usdt"),
                 liability("staking_interest", "staking 应付利息", ledgerRepository.sumActiveStakingInterestUsdt(), "nx_staking_position.estimated_interest_usdt"),
                 liability("genesis_daily_emission", "Genesis 排放承诺", ledgerRepository.genesisDailyLiabilityUsd(), "nx_genesis_holding × nx_genesis_series.daily_dividend_rate_pct"),
-                liability("nex_v2_future", "NEX v2 未来兑付", safe(ledgerRepository.sumActiveNexLocked()).add(safe(ledgerRepository.sumActiveNexReward())).multiply(nexRate), "nx_nex_lock_order active maturity"),
+                liability("nex_v2_future", "UVT v2 未来兑付", safe(ledgerRepository.sumActiveNexLocked()).add(safe(ledgerRepository.sumActiveNexReward())).multiply(nexRate), "nx_nex_lock_order active maturity"),
                 liability("withdrawal_queue", "待提现 queue", ledgerRepository.sumActiveWithdrawalQueueUsdt(), "nx_withdrawal_order active queue"),
                 liability("commission_cooling", "佣金冷却未解锁", ledgerRepository.sumPendingCommissionUsdt(), "nx_wallet_ledger pending commission"),
                 liability("lock_other", "锁仓本息其他", ledgerRepository.legacyLockOtherLiabilityUsd(), "nx_treasury_legacy_lock_liability active principal + accrued interest"),
@@ -618,7 +618,7 @@ public class OpsTreasuryService {
                 "generatedAt", now,
                 "sources", List.of(
                         "nx_treasury_reserve_ledger",
-                        "nx_price_index:NEX_USDT",
+                        "nx_price_index:UVT_USDT",
                         "nx_user_wallet",
                         "nx_wallet_ledger",
                         "nx_withdrawal_order",
@@ -1149,7 +1149,7 @@ public class OpsTreasuryService {
                 "sums", sums,
                 "categorySums", categorySums,
                 "currentUsdtBalance", ledgerRepository.actualUserBalance(userId, "USDT").orElse(BigDecimal.ZERO),
-                "currentNexBalance", ledgerRepository.actualUserBalance(userId, "NEX").orElse(BigDecimal.ZERO),
+                "currentNexBalance", ledgerRepository.actualUserBalance(userId, "UVT").orElse(BigDecimal.ZERO),
                 "sources", List.of("nx_wallet_ledger", "nx_user_wallet"));
         return ApiResult.ok(response);
     }
@@ -1219,7 +1219,7 @@ public class OpsTreasuryService {
         String reconciliationNote;
         if (currentWalletScope) {
             reconciliation = new LinkedHashMap<>();
-            for (String asset : List.of("USDT", "NEX")) {
+            for (String asset : List.of("USDT", "UVT")) {
                 BigDecimal wallet = ledgerRepository.actualUserBalance(userId, asset).orElse(BigDecimal.ZERO);
                 BigDecimal difference = wallet.subtract(latestLedger.getOrDefault(asset, BigDecimal.ZERO));
                 reconciliation.put(asset, difference);

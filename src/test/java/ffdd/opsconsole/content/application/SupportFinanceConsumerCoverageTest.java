@@ -69,7 +69,7 @@ class SupportFinanceConsumerCoverageTest {
         assertThat(money.status()).isEqualTo(Status.UNKNOWN);assertThat(money.observedAmount()).isNull();assertThat(money.confirmedAmount()).isNull();
     }
     @Test void purchaseGrossDoesNotBorrowRefundProofAndCurrenciesStaySeparate() {
-        var facts=List.of(fact(1,1,Kind.DEVICE_PURCHASE,"USDT","80.123456"),fact(1,2,Kind.DEVICE_PURCHASE,"NEX","500"));
+        var facts=List.of(fact(1,1,Kind.DEVICE_PURCHASE,"USDT","80.123456"),fact(1,2,Kind.DEVICE_PURCHASE,"UVT","500"));
         var scoped=ready(1,PURCHASES).stream().map(c->new CustomerCoverage(c.customerId(),c.source(),c.historyStatus(),c.refundStatus(),
             c.historicalEnvironmentStatus(),c.supportedFrom(),List.of("REFUND_SOURCE_READ_FAILED"))).toList();
         var result=summary(snapshot(facts,scoped),1L).financialSummary().currencies().get(0);

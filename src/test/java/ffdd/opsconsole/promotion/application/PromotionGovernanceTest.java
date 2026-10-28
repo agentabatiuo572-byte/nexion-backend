@@ -58,9 +58,9 @@ class PromotionGovernanceTest {
         var contract=values("template","SKU_GIFT","buyerAudience",audience,"rules",List.of(),"budgets",List.of());
         assertThrows(RuntimeException.class,()->PromotionAdminService.validateConfiguration(contract));
         audience.put("registrationAge",values("minDays",null,"maxDays",null));
-        contract.put("rules",List.of(values("buyerReward",values("type","NEX","amount","1.000000"))));
+        contract.put("rules",List.of(values("buyerReward",values("type","UVT","amount","1.000000"))));
         assertThrows(RuntimeException.class,()->PromotionAdminService.validateConfiguration(contract));
-        contract.put("budgets",List.of(values("asset","NEX","total","10.000000")));
+        contract.put("budgets",List.of(values("asset","UVT","total","10.000000")));
         assertDoesNotThrow(()->PromotionAdminService.validateConfiguration(contract));
         contract.put("template","REPURCHASE");assertThrows(RuntimeException.class,()->PromotionAdminService.validateConfiguration(contract));
     }

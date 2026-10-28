@@ -26,7 +26,7 @@ class PromotionReversalQueueMySqlTest {
             long buyer=buyers.get(id);String refund=refunds.get(id);
             var row=h.db.requiredRow("SELECT r.*,s.amount FROM nx_promotion_reward r JOIN nx_promotion_reservation s ON s.reservation_id=r.reservation_id WHERE r.obligation_id=?",id);
             String key="PROMOTION-RECOVER-"+sha256(id+":WHOLE_ORDER_REFUND:"+refund);keys.put(key,buyer);
-            String payload=List.of(String.valueOf(buyer),text(row.get("original_earnings_entry_no")),"PROMOTION_REWARD",id,"NEX","PRODUCTION",decimal(row.get("amount")).setScale(6).toPlainString(),"Confirmed whole-order wallet refund","PROMOTION_ENGINE")
+            String payload=List.of(String.valueOf(buyer),text(row.get("original_earnings_entry_no")),"PROMOTION_REWARD",id,"UVT","PRODUCTION",decimal(row.get("amount")).setScale(6).toPlainString(),"Confirmed whole-order wallet refund","PROMOTION_ENGINE")
                 .stream().map(v->v.length()+":"+v).collect(java.util.stream.Collectors.joining());
             String state=id.equals(healthy)?"FAILED":ids.indexOf(id)<25?"PROCESSING":"UNKNOWN";
             int deleted=ids.indexOf(id)==49?1:0;
@@ -81,7 +81,7 @@ class PromotionReversalQueueMySqlTest {
         for(var fence:unrelated)assertEquals(fence,h.db.requiredRow("SELECT * FROM nx_admin_idempotency_record WHERE scope=? AND idempotency_key=?",fence.get("scope"),fence.get("idempotency_key")));
         assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_promotion_reversal WHERE obligation_id=?",healthy));
         assertEquals(1,h.db.count("SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=?","PROMOTION-REVERSE-"+healthy));
-        life.budget(activity,"NEX","reversed",amount("1.000001"));
+        life.budget(activity,"UVT","reversed",amount("1.000001"));
         var report=values("completed",true,"run",h.run,"activity",activity,"healthyObligation",healthy,"blockedCount",50,"dispatches",dispatches,"queued",queued,"maxDispatches",maxDispatches,"unknownFencesPreserved",true,"singleActualRecovery",true);
         Files.writeString(Path.of("C:/Users/jason/.codex/workflow-runs/growth-promotions-20261007/promotion-reversal-queue-runtime.json"),json(report));
     }

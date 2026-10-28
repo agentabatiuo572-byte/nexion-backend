@@ -134,7 +134,7 @@ class NovaSocialRuntimeServiceTest {
     @Test
     void queuesLocalizedStaticTemplateWithVerifiedEventSummaryAndMarksDispatch() {
         NovaSocialEventView event = new NovaSocialEventView(
-                88L, "withdrawal", "withdrawal:secret", "N***", "H***", "10K–50K NEX", "SUCCESS",
+                88L, "withdrawal", "withdrawal:secret", "N***", "H***", "10K–50K UVT", "SUCCESS",
                 "NEXION_CORE", "nx_withdrawal_order", "ACTIVE", now.minusMinutes(2), now.plusHours(2),
                 now.minusMinutes(1), null, 0L, now.minusMinutes(1), now.minusMinutes(1));
         when(novaRepository.activeSocialEventsByType("withdrawal", now, 100)).thenReturn(List.of(event));
@@ -159,9 +159,9 @@ class NovaSocialRuntimeServiceTest {
         verify(runtimeRepository).enqueueNotifications(eq(88L), bizNo.capture(), any(), bodyZh.capture(), any(), bodyVi.capture(),
                 any(), bodyEn.capture(), eq(""), eq(now.minusMinutes(10)), eq(now));
         assertThat(bizNo.getValue().split("-")).hasSize(3);
-        assertThat(bodyZh.getValue()).contains("N***", "H***", "10K–50K NEX");
-        assertThat(bodyVi.getValue()).contains("N***", "H***", "10K–50K NEX");
-        assertThat(bodyEn.getValue()).contains("N***", "H***", "10K–50K NEX");
+        assertThat(bodyZh.getValue()).contains("N***", "H***", "10K–50K UVT");
+        assertThat(bodyVi.getValue()).contains("N***", "H***", "10K–50K UVT");
+        assertThat(bodyEn.getValue()).contains("N***", "H***", "10K–50K UVT");
         verify(runtimeRepository).markDispatchedIfStillActive(88L, now);
         verify(runtimeRepository).markNotificationsDelivered(bizNo.getValue(), now);
         verify(outbox, org.mockito.Mockito.times(3)).publishUserEvent(

@@ -128,7 +128,7 @@ public final class SupportFundReplay {
         require(ordered.size()==operations.size(),Gap.CAUSAL_ORDER);
         var allocation=new SupportFundAllocation();var origins=new LinkedHashMap<String,Origin>();
         var changes=new ArrayList<ConfirmedChange>();var totals=new HashMap<Long,Map<String,BigDecimal>>();
-        for(long id:component)totals.put(id,new HashMap<>(Map.of("USDT",BigDecimal.ZERO,"NEX",BigDecimal.ZERO)));
+        for(long id:component)totals.put(id,new HashMap<>(Map.of("USDT",BigDecimal.ZERO,"UVT",BigDecimal.ZERO)));
         for(var op:ordered) {
             var events=new HashMap<String,Event>();op.events().forEach(event->events.put(event.id(),event));
             var applied=new HashSet<String>();
@@ -175,7 +175,7 @@ public final class SupportFundReplay {
     }
     private static void cash(SupportFundAllocation funds,long id,Cash cash) {
         require(funds.balance(new Account(id,"USDT","available")).compareTo(cash.usdt())==0
-                && funds.balance(new Account(id,"NEX","available")).compareTo(cash.nex())==0
+                && funds.balance(new Account(id,"UVT","available")).compareTo(cash.nex())==0
                 && funds.pendingWithdrawal(new Account(id,"USDT","available")).compareTo(cash.pending())==0
                 && funds.heldBalances().entrySet().stream().filter(e->e.getKey().customerId()==id &&e.getKey().currency().equals("USDT")
                     &&e.getKey().slot().startsWith("risk:")).map(Map.Entry::getValue).reduce(BigDecimal.ZERO,BigDecimal::add).compareTo(cash.risk())==0,Gap.CASH_TRACE);

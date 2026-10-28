@@ -163,7 +163,7 @@ class DirectReferralMySqlRuntimeTest {
             jdbc.update("UPDATE nx_price_index SET status='INACTIVE' WHERE status='ACTIVE'");orderBasis("MISSING-PRICE",d,"1000");service.settle("direct_purchase",ref("MISSING-PRICE"),d);
             var waiting=layerRow("MISSING-PRICE",1);assertThat(waiting.get("status")).isEqualTo("WAITING_CALCULATION");assertThat(waiting.get("nex_usdt_price")).isNull();assertThat(commissionRows("MISSING-PRICE")).hasSize(12);
             jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=?",a,d);jdbc.update("UPDATE nx_commission_rule SET usdt_rate=0.01 WHERE commission_type='UNILEVEL' AND layer_no=2");
-            jdbc.update("UPDATE nx_price_index SET status='ACTIVE' WHERE metric_code='NEX_USDT' AND sampled_at='2099-01-01'");publishV2(true,"80",0);service.settle("direct_purchase",ref("MISSING-PRICE"),d);
+            jdbc.update("UPDATE nx_price_index SET status='ACTIVE' WHERE metric_code='UVT_USDT' AND sampled_at='2099-01-01'");publishV2(true,"80",0);service.settle("direct_purchase",ref("MISSING-PRICE"),d);
             var resolved=layerRow("MISSING-PRICE",1);assertThat(resolved.get("beneficiary_user_id")).isEqualTo(c);assertThat((BigDecimal)resolved.get("amount_usdt")).isEqualByComparingTo("60");assertThat((BigDecimal)resolved.get("amount_nex")).isEqualByComparingTo("4000");assertThat(resolved.get("release_at")).isEqualTo(waiting.get("release_at"));
             assertThat((BigDecimal)layerRow("MISSING-PRICE",2).get("amount_usdt")).isEqualByComparingTo("50");jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=?",c,d);jdbc.update("UPDATE nx_commission_rule SET usdt_rate=0.05 WHERE commission_type='UNILEVEL' AND layer_no=2");
             record("funds-direct-split","R13-R14-missing-price-persists-source-before-retry",Map.of("waiting",waiting,"resolved",resolved,"order",orderRow("MISSING-PRICE")));
@@ -209,7 +209,7 @@ class DirectReferralMySqlRuntimeTest {
         assertThatThrownBy(()->transaction.executeWithoutResult(tx->{
             assertThat(policies.at(LocalDateTime.ofInstant(clock.instant(),ZoneId.of("Asia/Shanghai"))).purchase().enabled()).isTrue();
             separately(()->publishV2(false,"60",0));when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(new BigDecimal("50"),new BigDecimal("100"),true));
-            long version=mapper.latestVersionForUpdate();String op=ref("RR-BASELINE");A2ReplayContext.enterReplay(op);try{policies.publish(op,new DirectReferralPolicyRequest(2,version,policies.lockSevenLayerRevision(),new DirectReferralPolicyRequest.PurchaseSplit(true,new BigDecimal("60")),null,rule("5",0),"current baseline must detect NEX amplification"));}finally{A2ReplayContext.exitReplay();}
+            long version=mapper.latestVersionForUpdate();String op=ref("RR-BASELINE");A2ReplayContext.enterReplay(op);try{policies.publish(op,new DirectReferralPolicyRequest(2,version,policies.lockSevenLayerRevision(),new DirectReferralPolicyRequest.PurchaseSplit(true,new BigDecimal("60")),null,rule("5",0),"current baseline must detect UVT amplification"));}finally{A2ReplayContext.exitReplay();}
         })).hasMessage("COVERAGE_BELOW_REDLINE");
         transaction.executeWithoutResult(tx->{
             assertThat(policies.sevenLayerReference().get("legacyNexPerUsd")).isEqualTo(new BigDecimal("2.000000"));
@@ -484,7 +484,7 @@ class DirectReferralMySqlRuntimeTest {
         assertThat(groupRow("NO-PRICE").get("status")).isEqualTo("WAITING_CALCULATION");
         assertThat(groupRow("NO-PRICE").get("beneficiary_user_id")).isEqualTo(a);
         assertThat(wallet(a)).isEqualTo(before);
-        jdbc.update("UPDATE nx_price_index SET status='ACTIVE' WHERE metric_code='NEX_USDT' AND sampled_at='2099-01-01'");
+        jdbc.update("UPDATE nx_price_index SET status='ACTIVE' WHERE metric_code='UVT_USDT' AND sampled_at='2099-01-01'");
         service.settle("direct_purchase",ref("NO-PRICE"),b);assertDelta(before,wallet(a),"6","400");
         order("ROOT",a,"100");service.settle("direct_purchase",ref("ROOT"),a);
         jdbc.update("UPDATE nx_user SET sponsor_user_id=id WHERE id=?",d);order("SELF",d,"100");service.settle("direct_purchase",ref("SELF"),d);
@@ -641,11 +641,11 @@ class DirectReferralMySqlRuntimeTest {
         var releaseMapper=session.getMapper(EarningsReleaseMapper.class);
         var earnings=spy(new EarningsReleaseService(releaseMapper,risk,mock(AdminIdempotencyService.class),audit,profile));
         doAnswer(call->{
-            if("NEX".equals(call.getArgument(3))&&failNex.get()){
+            if("UVT".equals(call.getArgument(3))&&failNex.get()){
                 assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_earnings_release_entry WHERE source_ref=?",Long.class,call.<String>getArgument(2).replace(":NEX",":USDT"))).isEqualTo(1);
                 throw new IllegalStateException("injected second currency failure");
             }
-            if("NEX".equals(call.getArgument(3))&&changeRisk.get())jdbc.update("UPDATE nx_admin_risk_multi_account_cluster SET account_count=4 WHERE cluster_id=?",marker);
+            if("UVT".equals(call.getArgument(3))&&changeRisk.get())jdbc.update("UPDATE nx_admin_risk_multi_account_cluster SET account_count=4 WHERE cluster_id=?",marker);
             return call.callRealMethod();})
                 .when(earnings).creditReward(anyLong(),anyString(),anyString(),anyString(),any(BigDecimal.class),anyString(),anyString());
         treasury=proxy(new MybatisTreasuryLedgerRepository(session.getMapper(TreasuryLedgerMapper.class),outbox,ffdd.opsconsole.treasury.application.SupportCommissionTestCapture.real(session,dataSource,json)));
@@ -664,7 +664,7 @@ class DirectReferralMySqlRuntimeTest {
         var provider=mock(org.springframework.beans.factory.ObjectProvider.class);when(provider.getIfAvailable()).thenReturn(service);
         f5=new F5CommissionService(session.getMapper(F5CommissionMapper.class),platform,coverage,ledger,audit,outbox,idempotency,provider);
         var commissions=mock(ffdd.opsconsole.team.domain.TeamCommissionRepository.class);
-        when(commissions.commissionEvents(anyInt())).thenAnswer(call->jdbc.queryForList("SELECT CONCAT('CM-',id) id,commission_type kind,CONCAT('U',user_id) user,CASE WHEN currency='NEX' THEN amount_nex ELSE amount_usdt END amount,currency,status rawStatus,version FROM nx_commission_event WHERE order_no LIKE ? ORDER BY id LIMIT 100",marker+"%"));
+        when(commissions.commissionEvents(anyInt())).thenAnswer(call->jdbc.queryForList("SELECT CONCAT('CM-',id) id,commission_type kind,CONCAT('U',user_id) user,CASE WHEN currency='UVT' THEN amount_nex ELSE amount_usdt END amount,currency,status rawStatus,version FROM nx_commission_event WHERE order_no LIKE ? ORDER BY id LIMIT 100",marker+"%"));
         when(commissions.recordCommissionOperation(anyString(),anyString(),anyString(),anyLong(),anyString(),anyString())).thenReturn(true);
         var permissions=mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class);
         when(permissions.getPermissionCodes(anyLong())).thenReturn(Set.of("network_f5_commission_freeze","network_f5_commission_release","network_f5_commission_reverse"));
@@ -672,7 +672,7 @@ class DirectReferralMySqlRuntimeTest {
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(1L,null,List.of()));
         long base=900000000L+System.currentTimeMillis()%100000000;a=base;b=base+1;c=base+2;d=base+3;
         user(a,null);user(b,a);user(c,b);user(d,c);
-        jdbc.update("INSERT INTO nx_price_index(metric_code,metric_label,unit_label,price_usdt,status,sampled_at) VALUES('NEX_USDT','acceptance','USDT',0.01,'ACTIVE','2099-01-01')");
+        jdbc.update("INSERT INTO nx_price_index(metric_code,metric_label,unit_label,price_usdt,status,sampled_at) VALUES('UVT_USDT','acceptance','USDT',0.01,'ACTIVE','2099-01-01')");
     }
     @SuppressWarnings("unchecked") private <T>T proxy(T target){var factory=new ProxyFactory(target);factory.setProxyTargetClass(true);factory.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(dataSource),new AnnotationTransactionAttributeSource()));return(T)factory.getProxy();}
     private void user(long id,Long sponsor){jdbc.update("INSERT INTO nx_user(id,country_code,phone,client_ip,password_hash,nickname,referral_code,sponsor_user_id,sandbox) VALUES(?,'00',?,'127.0.0.1','fixture','Member',?,?,0)",id,String.valueOf(id),String.valueOf(id),sponsor);jdbc.update("INSERT INTO nx_user_wallet(user_id) VALUES(?)",id);}
@@ -685,7 +685,7 @@ class DirectReferralMySqlRuntimeTest {
         jdbc.update("INSERT IGNORE INTO nx_user_device(id,user_id,product_id,name,device_type,instance_no,status,source_environment,run_id) VALUES(?,?,1,'acceptance','PHONE',?,'ACTIVE','PRODUCTION','')",device,user,ref("DEVICE-"+name));
         jdbc.update("INSERT INTO nx_compute_receipt(user_id,user_device_id,task_no,receipt_no,task_type,client_name,reward_usdt,reward_nex,earning_status,source_environment,proof_hash,completed_at) VALUES(?,?,?,?,'TEST','acceptance',?,?,'CREDITED','PRODUCTION','proof',?)",user,device,task,receipt,new BigDecimal(usdt),new BigDecimal(nex),LocalDateTime.ofInstant(clock.instant(),ZoneId.of("Asia/Shanghai")));
         jdbc.update("INSERT INTO nx_compute_task(task_no,user_id,user_device_id,task_type,client_name,status,completed_at) VALUES(?,?,?,'TEST','acceptance','COMPLETED',?)",task,user,device,LocalDateTime.ofInstant(clock.instant(),ZoneId.of("Asia/Shanghai")));
-        for(String asset:List.of("USDT","NEX"))jdbc.update("INSERT INTO nx_earning_event(event_no,user_id,user_device_id,receipt_no,asset,amount,status,wallet_posted_at) VALUES(?,?,?,?,?,?,'POSTED',NOW())",receipt+asset,user,device,receipt,asset,new BigDecimal("USDT".equals(asset)?usdt:nex));
+        for(String asset:List.of("USDT","UVT"))jdbc.update("INSERT INTO nx_earning_event(event_no,user_id,user_device_id,receipt_no,asset,amount,status,wallet_posted_at) VALUES(?,?,?,?,?,?,'POSTED',NOW())",receipt+asset,user,device,receipt,asset,new BigDecimal("USDT".equals(asset)?usdt:nex));
         jdbc.update("UPDATE nx_user_wallet SET usdt_available=usdt_available+?,nex_available=nex_available+? WHERE user_id=?",new BigDecimal(usdt),new BigDecimal(nex),user);
     }
     private Map<String,Object>wallet(long user){return jdbc.queryForMap("SELECT usdt_available,nex_available FROM nx_user_wallet WHERE user_id=?",user);}

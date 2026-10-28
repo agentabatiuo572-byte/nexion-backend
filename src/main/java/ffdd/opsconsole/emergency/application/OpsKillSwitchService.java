@@ -812,8 +812,8 @@ public class OpsKillSwitchService {
     private List<Map<String, Object>> retiredGates() {
         List<Map<String, Object>> retired = new ArrayList<>();
         retired.add(retired("premium", "Premium subscription is sunset"));
-        retired.add(retired("nexv2", "NEX v2 vault is sunset; only historical maturity remains"));
-        retired.add(retired("points", "Points system is sunset and replaced by NEX reward rules"));
+        retired.add(retired("nexv2", "UVT v2 vault is sunset; only historical maturity remains"));
+        retired.add(retired("points", "Points system is sunset and replaced by UVT reward rules"));
         return retired;
     }
 

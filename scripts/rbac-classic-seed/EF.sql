@@ -20,7 +20,7 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('device_e2_read',                          'E2 收益与任务引擎 - 读',           'API', '/devices/tasks',          'READ',  0, 1, 0),
   ('device_e2_write',                         'E2 收益与任务引擎 - 常规写',       'API', '/devices/tasks',          'WRITE', 0, 1, 0),
   ('device_e2_phone_tier_usdt',               '手机档位日产 USDT 调整',           'API', '/devices/tasks',          'HIGH',  1, 1, 0),
-  ('device_e2_phone_tier_nex',                '手机档位日产 NEX 调整',            'API', '/devices/tasks',          'HIGH',  1, 1, 0),
+  ('device_e2_phone_tier_nex',                '手机档位日产 UVT 调整',            'API', '/devices/tasks',          'HIGH',  1, 1, 0),
   -- E3 生命周期 & Trade-in /devices/trade-in
   ('device_e3_read',                          'E3 生命周期与 Trade-in - 读',      'API', '/devices/trade-in',       'READ',  0, 1, 0),
   ('device_e3_write',                         'E3 生命周期与 Trade-in - 常规写',  'API', '/devices/trade-in',       'WRITE', 0, 1, 0),

@@ -68,23 +68,23 @@ class AppWalletBillsMySqlIntegrationTest {
                 "STAKING_COMPUTE_TASK_REWARD", "EXCHANGE_COMPUTE_TASK_REWARD", "QUEST_COMPUTE_TASK_REWARD",
                 "TRIAL_CHARGE", "TRIAL_BONUS", "DAILY_CHECK_IN", "TASK", "REWARD", "ADJUSTMENT", ""};
         for (int index = 0; index < types.length; index++) {
-            ledger(USER, "TYPE-" + index, types[index], index % 2 == 0 ? "NEX" : "USDT", "IN",
+            ledger(USER, "TYPE-" + index, types[index], index % 2 == 0 ? "UVT" : "USDT", "IN",
                     "1.123456", "0", "SUCCESS", DAY.plusHours(1).plusSeconds(index), 0);
         }
-        ledger(USER, "NULL-DIRECTION", "COMPUTE_TASK_REWARD", "NEX", null, "9.000001", "0", "SUCCESS", DAY, 0);
-        ledger(USER, "OUT", "COMPUTE_TASK_REWARD", "NEX", "OUT", "2.123456", "0", "SUCCESS", DAY, 0);
-        ledger(USER, "ZERO", "COMPUTE_TASK_REWARD", "NEX", "IN", "0", "0", "SUCCESS", DAY, 0);
-        ledger(USER, "NEGATIVE", "COMPUTE_TASK_REWARD", "NEX", "IN", "-3.123456", "0", "SUCCESS", DAY, 0);
-        ledger(USER, "NULL-AMOUNT", "COMPUTE_TASK_REWARD", "NEX", "IN", null, "0", "SUCCESS", DAY, 0);
-        ledger(USER, "PENDING", "COMPUTE_TASK_REWARD", "NEX", "IN", "4.123456", "0", "PENDING", DAY, 0);
-        ledger(USER, "NULL-STATUS", "COMPUTE_TASK_REWARD", "NEX", "IN", "5.123456", "0", null, DAY, 0);
-        ledger(USER, "CANCELLED-COMMISSION", "TEAM_COMMISSION", "NEX", "IN", "6.123456", "0", "CANCELLED", DAY, 0);
-        ledger(USER, "FEE", "WITHDRAW_FEE_OFFSET", "NEX", "OUT", "7.123456", "0", "SUCCESS", DAY, 0);
-        ledger(USER, "FEE-REFUND", "WITHDRAW_FEE_OFFSET_REFUND", "NEX", "IN", "1.123456", "0", "SUCCESS", DAY, 0);
-        ledger(USER, "PRINCIPAL-REFUND", "WITHDRAW_PAYOUT_NEX_REFUND", "NEX", "IN", "2.123456", "0", "SUCCESS", DAY, 0);
-        ledger(USER, "NEXT-DAY", "COMPUTE_TASK_REWARD", "NEX", "IN", "8.123456", "0", "SUCCESS", DAY.plusDays(1), 0);
-        ledger(OTHER_USER, "OTHER", "COMPUTE_TASK_REWARD", "NEX", "IN", "999", "0", "SUCCESS", DAY, 0);
-        ledger(USER, "DELETED", "COMPUTE_TASK_REWARD", "NEX", "IN", "999", "0", "SUCCESS", DAY, 1);
+        ledger(USER, "NULL-DIRECTION", "COMPUTE_TASK_REWARD", "UVT", null, "9.000001", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "OUT", "COMPUTE_TASK_REWARD", "UVT", "OUT", "2.123456", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "ZERO", "COMPUTE_TASK_REWARD", "UVT", "IN", "0", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "NEGATIVE", "COMPUTE_TASK_REWARD", "UVT", "IN", "-3.123456", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "NULL-AMOUNT", "COMPUTE_TASK_REWARD", "UVT", "IN", null, "0", "SUCCESS", DAY, 0);
+        ledger(USER, "PENDING", "COMPUTE_TASK_REWARD", "UVT", "IN", "4.123456", "0", "PENDING", DAY, 0);
+        ledger(USER, "NULL-STATUS", "COMPUTE_TASK_REWARD", "UVT", "IN", "5.123456", "0", null, DAY, 0);
+        ledger(USER, "CANCELLED-COMMISSION", "TEAM_COMMISSION", "UVT", "IN", "6.123456", "0", "CANCELLED", DAY, 0);
+        ledger(USER, "FEE", "WITHDRAW_FEE_OFFSET", "UVT", "OUT", "7.123456", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "FEE-REFUND", "WITHDRAW_FEE_OFFSET_REFUND", "UVT", "IN", "1.123456", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "PRINCIPAL-REFUND", "WITHDRAW_PAYOUT_NEX_REFUND", "UVT", "IN", "2.123456", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "NEXT-DAY", "COMPUTE_TASK_REWARD", "UVT", "IN", "8.123456", "0", "SUCCESS", DAY.plusDays(1), 0);
+        ledger(OTHER_USER, "OTHER", "COMPUTE_TASK_REWARD", "UVT", "IN", "999", "0", "SUCCESS", DAY, 0);
+        ledger(USER, "DELETED", "COMPUTE_TASK_REWARD", "UVT", "IN", "999", "0", "SUCCESS", DAY, 1);
 
         String sql = String.join("\n", AppWalletBillsMapper.class.getMethod("summary", Long.class,
                 LocalDateTime.class, LocalDateTime.class, LocalDateTime.class, LocalDateTime.class)
@@ -204,17 +204,17 @@ class AppWalletBillsMySqlIntegrationTest {
 
     @Test
     void dailyMetricsExcludeUnsettledRewardsAndNetBothWithdrawalRefundPaths() {
-        ledger(USER, "SIGN-IN", "DAILY_CHECK_IN", "NEX", "IN", "4", "4", "POSTED", DAY, 0);
-        ledger(USER, "TRIAL", "TRIAL_BONUS", "NEX", "IN", "195", "199", "SUCCESS", DAY, 0);
-        ledger(USER, "PENDING-REWARD", "QUEST_REWARD", "NEX", "IN", "100", "299", "PENDING", DAY, 0);
-        ledger(USER, "FAILED-REWARD", "QUEST_REWARD", "NEX", "IN", "200", "499", "FAILED", DAY, 0);
-        ledger(USER, "OFFSET", "WITHDRAW_FEE_OFFSET", "NEX", "OUT", "30", "169", "POSTED", DAY, 0);
-        ledger(USER, "REJECT-REFUND", "WITHDRAW_FEE_OFFSET_REFUND", "NEX", "IN", "5", "174", "SUCCESS", DAY, 0);
-        ledger(USER, "PAYOUT-REFUND", "WITHDRAW_PAYOUT_NEX_REFUND", "NEX", "IN", "7", "181", "POSTED", DAY, 0);
-        ledger(USER, "SWAP", "EXCHANGE", "NEX", "OUT", "50", "131", "POSTED", DAY, 0);
-        ledger(USER, "PENDING-OFFSET", "WITHDRAW_FEE_OFFSET", "NEX", "OUT", "500", "131", "PENDING", DAY, 0);
-        ledger(OTHER_USER, "OTHER-REWARD", "DAILY_CHECK_IN", "NEX", "IN", "999", "999", "POSTED", DAY, 0);
-        ledger(USER, "DELETED-REWARD", "DAILY_CHECK_IN", "NEX", "IN", "999", "999", "POSTED", DAY, 1);
+        ledger(USER, "SIGN-IN", "DAILY_CHECK_IN", "UVT", "IN", "4", "4", "POSTED", DAY, 0);
+        ledger(USER, "TRIAL", "TRIAL_BONUS", "UVT", "IN", "195", "199", "SUCCESS", DAY, 0);
+        ledger(USER, "PENDING-REWARD", "QUEST_REWARD", "UVT", "IN", "100", "299", "PENDING", DAY, 0);
+        ledger(USER, "FAILED-REWARD", "QUEST_REWARD", "UVT", "IN", "200", "499", "FAILED", DAY, 0);
+        ledger(USER, "OFFSET", "WITHDRAW_FEE_OFFSET", "UVT", "OUT", "30", "169", "POSTED", DAY, 0);
+        ledger(USER, "REJECT-REFUND", "WITHDRAW_FEE_OFFSET_REFUND", "UVT", "IN", "5", "174", "SUCCESS", DAY, 0);
+        ledger(USER, "PAYOUT-REFUND", "WITHDRAW_PAYOUT_NEX_REFUND", "UVT", "IN", "7", "181", "POSTED", DAY, 0);
+        ledger(USER, "SWAP", "EXCHANGE", "UVT", "OUT", "50", "131", "POSTED", DAY, 0);
+        ledger(USER, "PENDING-OFFSET", "WITHDRAW_FEE_OFFSET", "UVT", "OUT", "500", "131", "PENDING", DAY, 0);
+        ledger(OTHER_USER, "OTHER-REWARD", "DAILY_CHECK_IN", "UVT", "IN", "999", "999", "POSTED", DAY, 0);
+        ledger(USER, "DELETED-REWARD", "DAILY_CHECK_IN", "UVT", "IN", "999", "999", "POSTED", DAY, 1);
         var summary = mapper.summary(USER, DAY, DAY.plusDays(1), DAY.withDayOfMonth(1), DAY.plusMonths(1));
         assertThat(summary.todayNexEarn()).isEqualByComparingTo("-269");
         assertThat(summary.settledRewardsNex()).isEqualByComparingTo("199");
@@ -226,7 +226,7 @@ class AppWalletBillsMySqlIntegrationTest {
     @Test
     void replacedCommissionAccrualDoesNotDoubleCountRewardTotalsOrLatestRewardTime() {
         ledger(USER, "F2-NETWORK-71", "TEAM_COMMISSION", "USDT", "IN", "2", "10", "PENDING", DAY, 0);
-        ledger(USER, "F2-NETWORK-NEX-72", "TEAM_COMMISSION", "NEX", "IN", "3", "20", "PENDING", DAY, 0);
+        ledger(USER, "F2-NETWORK-NEX-72", "TEAM_COMMISSION", "UVT", "IN", "3", "20", "PENDING", DAY, 0);
         var pending = mapper.summary(USER, DAY, DAY.plusDays(1), DAY.withDayOfMonth(1), DAY.plusMonths(1));
         assertThat(pending.rewardsUsdt()).isEqualByComparingTo("2");
         assertThat(pending.rewardsNex()).isEqualByComparingTo("3");
@@ -234,7 +234,7 @@ class AppWalletBillsMySqlIntegrationTest {
                 DAY.plusHours(2), USER);
         ledger(USER, "F5-COMMISSION-71-RELEASE", "TEAM_COMMISSION", "USDT", "IN", "2", "12", "SUCCESS",
                 DAY.plusHours(1), 0);
-        ledger(USER, "F5-COMMISSION-72-RELEASE", "TEAM_COMMISSION", "NEX", "IN", "3", "23", "SUCCESS",
+        ledger(USER, "F5-COMMISSION-72-RELEASE", "TEAM_COMMISSION", "UVT", "IN", "3", "23", "SUCCESS",
                 DAY.plusHours(1), 0);
         var released = mapper.summary(USER, DAY, DAY.plusDays(1), DAY.withDayOfMonth(1), DAY.plusMonths(1));
         assertThat(released.rewardsUsdt()).isEqualByComparingTo("2");
@@ -245,31 +245,31 @@ class AppWalletBillsMySqlIntegrationTest {
     @Test
     void keysetFiltersAndSummaryStayScopedAndExactAcrossMoreThanOneThousandRows() {
         for (int index = 0; index < 1_100; index++) {
-            ledger(USER, "BULK-" + index, "EARN", "NEX", "IN", "1", "100", "SUCCESS",
+            ledger(USER, "BULK-" + index, "EARN", "UVT", "IN", "1", "100", "SUCCESS",
                     DAY.plusHours(12).minusSeconds(index), 0);
         }
         LocalDateTime tie = DAY.plusHours(13).plusNanos(123_456_000);
-        ledger(USER, "TIE-A", "EARN", "NEX", "IN", "1", "101", "SUCCESS", tie, 0);
-        ledger(USER, "TIE-B", "EARN", "NEX", "IN", "1", "102", "SUCCESS", tie, 0);
-        ledger(OTHER_USER, "OTHER", "EARN", "NEX", "IN", "999", "999", "SUCCESS", DAY.plusHours(14), 0);
-        ledger(USER, "DELETED", "EARN", "NEX", "IN", "999", "999", "SUCCESS", DAY.plusHours(14), 1);
-        ledger(USER, "ZERO", "EARN", "NEX", "IN", "0", "0", "SUCCESS", DAY.plusHours(10), 0);
-        ledger(USER, "NEGATIVE", "EARN", "NEX", "IN", "-1", "0", "SUCCESS", DAY.plusHours(10), 0);
-        ledger(USER, "NULL-AMOUNT", "EARN", "NEX", "IN", null, "0", "SUCCESS", DAY.plusHours(10), 0);
-        ledger(USER, "STAKE-ACH", "STAKE_ACHIEVEMENT", "NEX", "IN", "7", "107", "SUCCESS", DAY.plusHours(9), 0);
-        ledger(USER, "ORDER-QUEST", "ORDER_QUEST", "NEX", "IN", "8", "108", "SUCCESS", DAY.plusHours(9), 0);
-        ledger(USER, "QUEST", "QUEST_REWARD", "NEX", "IN", "3", "111", "POSTED", DAY.plusHours(8), 0);
+        ledger(USER, "TIE-A", "EARN", "UVT", "IN", "1", "101", "SUCCESS", tie, 0);
+        ledger(USER, "TIE-B", "EARN", "UVT", "IN", "1", "102", "SUCCESS", tie, 0);
+        ledger(OTHER_USER, "OTHER", "EARN", "UVT", "IN", "999", "999", "SUCCESS", DAY.plusHours(14), 0);
+        ledger(USER, "DELETED", "EARN", "UVT", "IN", "999", "999", "SUCCESS", DAY.plusHours(14), 1);
+        ledger(USER, "ZERO", "EARN", "UVT", "IN", "0", "0", "SUCCESS", DAY.plusHours(10), 0);
+        ledger(USER, "NEGATIVE", "EARN", "UVT", "IN", "-1", "0", "SUCCESS", DAY.plusHours(10), 0);
+        ledger(USER, "NULL-AMOUNT", "EARN", "UVT", "IN", null, "0", "SUCCESS", DAY.plusHours(10), 0);
+        ledger(USER, "STAKE-ACH", "STAKE_ACHIEVEMENT", "UVT", "IN", "7", "107", "SUCCESS", DAY.plusHours(9), 0);
+        ledger(USER, "ORDER-QUEST", "ORDER_QUEST", "UVT", "IN", "8", "108", "SUCCESS", DAY.plusHours(9), 0);
+        ledger(USER, "QUEST", "QUEST_REWARD", "UVT", "IN", "3", "111", "POSTED", DAY.plusHours(8), 0);
         ledger(USER, "COMMISSION", "TEAM_COMMISSION", "USDT", "IN", "2", "2", "PENDING", DAY.plusHours(7), 0);
-        ledger(USER, "PENDING", "EARN", "NEX", "IN", "4", "112", "PENDING", DAY.plusHours(6), 0);
-        ledger(USER, "FAILED", "EARN", "NEX", "IN", "5", "117", "FAILED", DAY.plusHours(5), 0);
-        ledger(USER, "NEXT-MONTH", "EARN", "NEX", "IN", "13", "130", "SUCCESS", DAY.plusDays(1), 0);
+        ledger(USER, "PENDING", "EARN", "UVT", "IN", "4", "112", "PENDING", DAY.plusHours(6), 0);
+        ledger(USER, "FAILED", "EARN", "UVT", "IN", "5", "117", "FAILED", DAY.plusHours(5), 0);
+        ledger(USER, "NEXT-MONTH", "EARN", "UVT", "IN", "13", "130", "SUCCESS", DAY.plusDays(1), 0);
 
         List<AppWalletBillsMapper.LedgerRow> first = mapper.rowsAfter(USER, 51, null, null, null, null, null);
         List<Long> expectedIds = jdbc.queryForList("SELECT id FROM nx_wallet_ledger WHERE user_id=? AND is_deleted=0"
                 + " ORDER BY created_at DESC,id DESC", Long.class, USER);
         assertThat(expectedIds).hasSize(1_112);
         AppWalletBillsMapper.LedgerRow boundary = first.get(49);
-        ledger(USER, "CONCURRENT-NEW", "EARN", "NEX", "IN", "1", "131", "SUCCESS", DAY.plusDays(2), 0);
+        ledger(USER, "CONCURRENT-NEW", "EARN", "UVT", "IN", "1", "131", "SUCCESS", DAY.plusDays(2), 0);
         List<AppWalletBillsMapper.LedgerRow> second = mapper.rowsAfter(USER, 51, null, null, null,
                 boundary.createdAt(), boundary.id());
 
@@ -305,7 +305,7 @@ class AppWalletBillsMySqlIntegrationTest {
                 DAY.withDayOfMonth(1).plusMonths(1));
         assertThat(summary.rewardsUsdt()).isEqualByComparingTo("2");
         assertThat(summary.rewardsNex()).isEqualByComparingTo("11");
-        // All valid daily NEX ledger rows contribute by direction, regardless of presentation category.
+        // All valid daily UVT ledger rows contribute by direction, regardless of presentation category.
         assertThat(summary.todayNexEarn()).isEqualByComparingTo("1124");
         assertThat(summary.pendingNex()).isEqualByComparingTo("4");
         assertThat(summary.monthBillCount()).isEqualTo(1_111L);
@@ -333,7 +333,7 @@ class AppWalletBillsMySqlIntegrationTest {
                             if ("summary".equals(method.getName())) {
                                 writerPool.submit(() -> concurrentWriter.update("""
                                         INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,balance_after,status,remark,created_at,is_deleted)
-                                        VALUES(701,'LATE-SNAPSHOT-REWARD','QUEST_REWARD','NEX','IN',500,500,'SUCCESS','concurrent',UTC_TIMESTAMP(6),0)
+                                        VALUES(701,'LATE-SNAPSHOT-REWARD','QUEST_REWARD','UVT','IN',500,500,'SUCCESS','concurrent',UTC_TIMESTAMP(6),0)
                                         """)).get(10, TimeUnit.SECONDS);
                             }
                             return value;

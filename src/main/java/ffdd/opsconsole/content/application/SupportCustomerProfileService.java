@@ -146,7 +146,7 @@ public class SupportCustomerProfileService {
             if(!(item instanceof Map<?,?> source) || !(source.get("currency") instanceof String currency) || currencies.containsKey(currency))throw new IllegalStateException("SUPPORT_FINANCE_CURRENCY_INVALID");
             currencies.put(currency,new LinkedHashMap<>((Map<String,Object>)source));
         }
-        for(String currency:List.of("USDT","NEX")) {
+        for(String currency:List.of("USDT","UVT")) {
             var row=currencies.computeIfAbsent(currency,key->{var missing=new LinkedHashMap<String,Object>();missing.put("currency",key);var states=new LinkedHashMap<String,String>();
                 for(String field:List.of("creditedDepositTotal","depositRefundTotal","successfulWithdrawalPrincipalTotal","successfulWithdrawalFeeTotal","successfulWithdrawalNetTotal","processingWithdrawalPrincipalTotal","balance","availableBalance")){missing.put(field,null);states.put(field,"READY".equals(legacyStatus)?"UNKNOWN":legacyStatus);}
                 missing.put("fieldStatuses",states);return missing;});

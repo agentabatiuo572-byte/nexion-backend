@@ -194,7 +194,7 @@ class TrialConversionSlotMySqlTest {
     @Test void trialFundingFindsOnlyTheExactOwnedUsdtChargeForBothLegacyAndNewOrders(){
         for(boolean old:List.of(true,false)){
             reset();if(old)legacy();else converted();charge();
-            jdbc.update("INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,status,created_at) VALUES(7,'TRIAL-FIXTURE:NEX','TRIAL_BONUS','NEX','IN',3,'POSTED',NOW()),(7,'TRIAL-FIXTURE:REMAINDER','TRIAL_BONUS','USDT','IN',2,'POSTED',NOW())");
+            jdbc.update("INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,status,created_at) VALUES(7,'TRIAL-FIXTURE:NEX','TRIAL_BONUS','UVT','IN',3,'POSTED',NOW()),(7,'TRIAL-FIXTURE:REMAINDER','TRIAL_BONUS','USDT','IN',2,'POSTED',NOW())");
             var rows=catalog.listOrderFunding("TRC-FIXTURE");
             assertThat(rows).hasSize(1);
             assertThat(rows.get(0).bizNo()).isEqualTo("TRIAL-FIXTURE:CHARGE");
@@ -206,7 +206,7 @@ class TrialConversionSlotMySqlTest {
     }
     @Test void unrelatedOrUnprovenTrialChargeCannotBecomeOrderFunding(){
         for(String mutation:List.of("UPDATE nx_wallet_ledger SET user_id=8", "UPDATE nx_wallet_ledger SET biz_no='OTHER:CHARGE'",
-          "UPDATE nx_wallet_ledger SET asset='NEX'","UPDATE nx_wallet_ledger SET direction='IN'", "UPDATE nx_wallet_ledger SET biz_type='OTHER'",
+          "UPDATE nx_wallet_ledger SET asset='UVT'","UPDATE nx_wallet_ledger SET direction='IN'", "UPDATE nx_wallet_ledger SET biz_type='OTHER'",
           "UPDATE nx_wallet_ledger SET status='FAILED'","UPDATE nx_wallet_ledger SET amount=1245","UPDATE nx_wallet_ledger SET is_deleted=1",
           "UPDATE nx_trial_claim SET user_id=8","UPDATE nx_trial_claim SET status='GRACE'","UPDATE nx_trial_claim SET user_device_id=999",
           "UPDATE nx_trial_claim SET settled_at=NULL","UPDATE nx_trial_claim SET is_deleted=1","UPDATE nx_user_device SET source_order_no='OTHER'",

@@ -16,7 +16,7 @@ public interface NexMarketMapper extends BaseMapper<PriceIndexEntity> {
               FROM nx_price_index
              WHERE is_deleted = 0
                AND status = 'ACTIVE'
-               AND metric_code IN ('NEX','NEX_USDT')
+               AND metric_code IN ('UVT','UVT_USDT')
             """)
     int countActiveNexUsdtPrices();
 
@@ -25,12 +25,12 @@ public interface NexMarketMapper extends BaseMapper<PriceIndexEntity> {
               FROM nx_price_index
              WHERE is_deleted = 0
                AND status = 'ACTIVE'
-               AND metric_code IN ('NEX','NEX_USDT')
+               AND metric_code IN ('UVT','UVT_USDT')
              ORDER BY sampled_at DESC, id DESC
              LIMIT 1
             """)
     BigDecimal latestNexUsdtPrice();
-    @Select("SELECT price_usdt FROM nx_price_index WHERE is_deleted=0 AND status='ACTIVE' AND metric_code IN ('NEX','NEX_USDT') ORDER BY sampled_at DESC,id DESC LIMIT 1 FOR UPDATE")
+    @Select("SELECT price_usdt FROM nx_price_index WHERE is_deleted=0 AND status='ACTIVE' AND metric_code IN ('UVT','UVT_USDT') ORDER BY sampled_at DESC,id DESC LIMIT 1 FOR UPDATE")
     BigDecimal latestNexUsdtPriceForUpdate();
 
     @Select("""
@@ -38,7 +38,7 @@ public interface NexMarketMapper extends BaseMapper<PriceIndexEntity> {
               FROM nx_price_index
              WHERE is_deleted = 0
                AND status = 'ACTIVE'
-               AND metric_code IN ('NEX','NEX_USDT')
+               AND metric_code IN ('UVT','UVT_USDT')
              ORDER BY sampled_at DESC, id DESC
              LIMIT 1
             """)
@@ -51,7 +51,7 @@ public interface NexMarketMapper extends BaseMapper<PriceIndexEntity> {
               FROM nx_price_index
              WHERE is_deleted = 0
                AND status = 'ACTIVE'
-               AND metric_code IN ('NEX','NEX_USDT')
+               AND metric_code IN ('UVT','UVT_USDT')
              ORDER BY sampled_at DESC, id DESC
              LIMIT #{limit}
             """)
@@ -64,7 +64,7 @@ public interface NexMarketMapper extends BaseMapper<PriceIndexEntity> {
               FROM nx_price_index
              WHERE is_deleted = 0
                AND status = 'ACTIVE'
-               AND metric_code IN ('NEX','NEX_USDT')
+               AND metric_code IN ('UVT','UVT_USDT')
                AND sampled_at >= #{since}
              ORDER BY sampled_at ASC, id ASC
             """)
@@ -75,7 +75,7 @@ public interface NexMarketMapper extends BaseMapper<PriceIndexEntity> {
               metric_code, metric_label, unit_label, price_usdt, delta_percent,
               volume_24h_usdt, sparkline, status, sampled_at, is_deleted
             ) VALUES(
-              'NEX_USDT', 'NEX / USDT', 'per NEX', #{priceUsdt}, #{deltaPercent},
+              'UVT_USDT', 'UVT / USDT', 'per UVT', #{priceUsdt}, #{deltaPercent},
               0, CAST(#{sparklineJson} AS JSON), 'ACTIVE', #{sampledAt}, 0
             )
             """)

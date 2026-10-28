@@ -17,7 +17,7 @@ class GenesisRaffleServiceTest {
                 "2026-10-25T00:00:00Z","2026-11-01T00:00:00Z",prizes,"Configure a reviewed campaign");
     }
     @Test void acceptsFiniteCurrencyAndDevicePrizes(){
-        assertThatCode(()->GenesisRaffleService.validate(request(List.of(prize("uvt","NEX","20",10,null),prize("device","DEVICE","1",1,"stellarbox-pro")))))
+        assertThatCode(()->GenesisRaffleService.validate(request(List.of(prize("uvt","UVT","20",10,null),prize("device","DEVICE","1",1,"stellarbox-pro")))))
                 .doesNotThrowAnyException();
     }
     @Test void rejectsUnknownAssetsFractionalDevicesAndExcessLiability(){
@@ -27,8 +27,8 @@ class GenesisRaffleServiceTest {
             assertThatThrownBy(()->GenesisRaffleService.validate(request(List.of(prize)))).isInstanceOf(BizException.class);
     }
     @Test void rejectsDuplicateIdsAndMoreThanOneHundredAwards(){
-        assertThatThrownBy(()->GenesisRaffleService.validate(request(List.of(prize("a","NEX","1",1,null),prize("a","USDT","1",1,null))))).isInstanceOf(BizException.class);
-        assertThatThrownBy(()->GenesisRaffleService.validate(request(List.of(prize("a","NEX","1",100,null),prize("b","NEX","1",1,null))))).isInstanceOf(BizException.class);
+        assertThatThrownBy(()->GenesisRaffleService.validate(request(List.of(prize("a","UVT","1",1,null),prize("a","USDT","1",1,null))))).isInstanceOf(BizException.class);
+        assertThatThrownBy(()->GenesisRaffleService.validate(request(List.of(prize("a","UVT","1",100,null),prize("b","UVT","1",1,null))))).isInstanceOf(BizException.class);
     }
     @Test void eachTicketHasExactlyOnePositionInTheWeightedPopulation(){
         long[] counts={2,0,3};

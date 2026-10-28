@@ -134,7 +134,7 @@ class AppGrowthWheelRetainedCommandTest {
         assertThat(result.getCode()).isZero();
         String spinId = (String) result.getData().get("spinId");
         verify(earnings).creditReward(42L, "H4_WHEEL", spinId + ":NEX",
-                "NEX", new BigDecimal("5"), "H4:" + spinId + ":NEX");
+                "UVT", new BigDecimal("5"), "H4:" + spinId + ":NEX");
         verify(records).resetFailedById(eq(1L), eq(row.getRequestHash()), any());
         verify(records, never()).resetExpiredById(any(), any(), any());
         verify(records).markSucceeded(eq(1L), contains(spinId));
@@ -145,14 +145,14 @@ class AppGrowthWheelRetainedCommandTest {
         when(mapper.lockOpenWheelEvent(EVENT)).thenReturn(new WheelEvent(8L, EVENT));
         when(mapper.attribution(42L)).thenReturn(new Attribution("P2", 3, "2026-W43"));
         var prize = new WheelTier(1L, "nex-5", "5 UVT", new BigDecimal("100"),
-                false, "nex", new BigDecimal("5"), null, 0);
+                false, "uvt", new BigDecimal("5"), null, 0);
         var other = new WheelTier(2L, "nex-1", "1 UVT", BigDecimal.ZERO,
-                false, "nex", BigDecimal.ONE, null, 0);
+                false, "uvt", BigDecimal.ONE, null, 0);
         when(mapper.lockActiveTiers()).thenReturn(List.of(prize, other));
         when(mapper.insertSpin(anyString(), any(), eq(42L), eq(TODAY), eq("DAILY"),
                 eq(TODAY.toString()), eq(prize), eq(false), eq("NONE"))).thenReturn(1);
         when(mapper.lockWalletNex(42L)).thenReturn(BigDecimal.TEN);
-        when(mapper.insertWalletLedger(eq(42L), anyString(), eq("NEX"),
+        when(mapper.insertWalletLedger(eq(42L), anyString(), eq("UVT"),
                 eq(new BigDecimal("5")), eq(new BigDecimal("15")))).thenReturn(1);
     }
 
@@ -167,7 +167,7 @@ class AppGrowthWheelRetainedCommandTest {
         row.setStatus(status);
         row.setExpiresAt(LocalDateTime.now(clock).plusDays(expired ? -1 : 1));
         if (status.equals("SUCCEEDED")) row.setResponseJson(
-                "{\"code\":0,\"message\":\"success\",\"data\":{\"spinId\":\"SPIN-ORIGINAL\",\"rewardType\":\"NEX\",\"rewardAmount\":5}}");
+                "{\"code\":0,\"message\":\"success\",\"data\":{\"spinId\":\"SPIN-ORIGINAL\",\"rewardType\":\"UVT\",\"rewardAmount\":5}}");
         return row;
     }
 }

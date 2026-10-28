@@ -425,7 +425,7 @@ public class OpsPlatformParamRegistryService {
             return channel + " 渠道 · " + tokenLabel(parts[parts.length - 1]);
         }
         if (normalized.startsWith("wallet.nex_market.")) {
-            return "NEX 行情 · " + tokenLabel(lastToken(key));
+            return "UVT 行情 · " + tokenLabel(lastToken(key));
         }
         if (normalized.startsWith("e.compute.gputier.")) {
             return "GPU 档位关键词";

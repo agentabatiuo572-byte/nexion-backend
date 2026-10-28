@@ -791,8 +791,8 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         entity.setLastChange(seed.lastChange());
         if ("home.conversionBanner".equals(seed.key())) {
             entity.setDraftVersion("v8");
-            entity.setDraftZh("完成 {amount} USDT 复投并获得 {nex} NEX 奖励");
-            entity.setDraftEn("Reinvest {amount} USDT and earn {nex} NEX");
+            entity.setDraftZh("完成 {amount} USDT 复投并获得 {nex} UVT 奖励");
+            entity.setDraftEn("Reinvest {amount} USDT and earn {nex} UVT");
             entity.setDraftSurface("Home");
             entity.setDraftAudience("全量");
             entity.setDraftTrafficSplit("50");

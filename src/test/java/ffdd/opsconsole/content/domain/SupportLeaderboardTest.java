@@ -117,8 +117,8 @@ class SupportLeaderboardTest {
         assertEquals(new BigDecimal("100"),deposit.rows().get(0).amount().value());
         assertEquals(new BigDecimal("80"),purchase.rows().get(0).amount().value());
         Snapshot usdt=snapshot(Board.firstPayment,agent(1,10,20,"100",Board.firstPayment));
-        Snapshot nex=calculate(context(Board.firstPayment,NOW,"NEX",Scope.all,Set.of(),"definition-1"),"nex-source",Coverage.COMPLETE,
-            List.of(agent(1,10,20,"400",Board.firstPayment,"NEX",MONTH,"A",null)));
+        Snapshot nex=calculate(context(Board.firstPayment,NOW,"UVT",Scope.all,Set.of(),"definition-1"),"nex-source",Coverage.COMPLETE,
+            List.of(agent(1,10,20,"400",Board.firstPayment,"UVT",MONTH,"A",null)));
         assertEquals(usdt.comparisonKey(),nex.comparisonKey()); assertEquals(usdt.rows().get(0).rank(),nex.rows().get(0).rank());
         assertNotEquals(usdt.viewVersion(),nex.viewVersion());
     }
@@ -133,7 +133,7 @@ class SupportLeaderboardTest {
         Candidate c=agent(1,0,0,"10",Board.deposit);
         code(422,() -> snapshot(Board.deposit,c,c));
         code(422,() -> snapshot(Board.purchase,c));
-        code(422,() -> snapshot(Board.deposit,agent(1,0,0,"10",Board.deposit,"NEX",MONTH,"A",null)));
+        code(422,() -> snapshot(Board.deposit,agent(1,0,0,"10",Board.deposit,"UVT",MONTH,"A",null)));
         code(422,() -> snapshot(Board.deposit,agent(1,0,0,"10",Board.deposit,"USDT",YearMonth.of(2026,9),"A",null)));
         code(422,() -> new Count(null,Coverage.COMPLETE,Reason.NONE));
         code(422,() -> new Count(0L,Coverage.UNKNOWN,Reason.HISTORY_UNKNOWN));
@@ -187,12 +187,12 @@ class SupportLeaderboardTest {
     @Test void amountBaselineCurrencyDiffersButCountReferenceCurrencyDoesNotBlockMovement() {
         Instant before=NOW.minusSeconds(86400);
         Publication usdt=published(1,Board.firstPayment,before,agent(1,1,1,null,Board.firstPayment));
-        Snapshot nex=calculate(context(Board.firstPayment,NOW,"NEX",Scope.all,Set.of(),"definition-1"),"nex",Coverage.COMPLETE,
-            List.of(agent(1,2,1,null,Board.firstPayment,"NEX",MONTH,"A",null)));
+        Snapshot nex=calculate(context(Board.firstPayment,NOW,"UVT",Scope.all,Set.of(),"definition-1"),"nex",Coverage.COMPLETE,
+            List.of(agent(1,2,1,null,Board.firstPayment,"UVT",MONTH,"A",null)));
         assertEquals(MovementKind.SAME,row(withMovement(nex,List.of(usdt)),1).movement().kind());
         Publication money=published(2,Board.deposit,before,agent(1,1,1,"10",Board.deposit));
-        Snapshot nexMoney=calculate(context(Board.deposit,NOW,"NEX",Scope.all,Set.of(),"definition-1"),"nex",Coverage.COMPLETE,
-            List.of(agent(1,2,1,"10",Board.deposit,"NEX",MONTH,"A",null)));
+        Snapshot nexMoney=calculate(context(Board.deposit,NOW,"UVT",Scope.all,Set.of(),"definition-1"),"nex",Coverage.COMPLETE,
+            List.of(agent(1,2,1,"10",Board.deposit,"UVT",MONTH,"A",null)));
         assertEquals(Reason.NO_BASELINE,row(withMovement(nexMoney,List.of(money)),1).movement().reason());
     }
     @Test void globalRegroupingKeepsMovementButGroupMembershipAndApprovedScopeChangesBlock() {

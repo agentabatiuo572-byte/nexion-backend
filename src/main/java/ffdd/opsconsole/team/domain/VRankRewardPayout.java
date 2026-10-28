@@ -10,7 +10,7 @@ import java.math.BigDecimal;
  *
  * <ul>
  *   <li>{@link #userId} — 被晋升用户(触发派发的主体)。</li>
- *   <li>{@link #sponsorUserId} — 实际接收方;培育类 NEX 为 L1 上线 sponsor_user_id,
+ *   <li>{@link #sponsorUserId} — 实际接收方;培育类 UVT 为 L1 上线 sponsor_user_id,
  *       其他类型为 null(本人接收,user_id 即接收方)。</li>
  *   <li>{@link #commissionEventId} — 关联 nx_commission_event.id;资金类(usdt/培育 nex)必填,
  *       voucher/sku/custom 为 null(不入 D4 台账)。</li>

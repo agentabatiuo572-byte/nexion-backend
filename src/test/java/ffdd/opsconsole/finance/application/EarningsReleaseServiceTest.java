@@ -30,6 +30,14 @@ import org.mockito.ArgumentCaptor;
 
 class EarningsReleaseServiceTest {
     @Test
+    void oldTokenAssetCannotCreditTheWallet() {
+        assertThatThrownBy(() -> service.creditReward(7L, "LEARNING_REWARD", "course-1", "NEX",
+                BigDecimal.ONE, "legacy-token-rejected"))
+                .hasMessage("EARNINGS_RELEASE_ENTRY_INVALID");
+    }
+
+
+    @Test
     void lockedWithdrawalReadsCurrentRiskAndProtectedRowsBeforeReservation() {
         when(mapper.lockRiskCluster(7L)).thenReturn(new RiskCluster("C1", 1, "cleared"));
         when(mapper.lockProtectedUsdtAmounts(7L)).thenReturn(List.of(new BigDecimal("450")));
@@ -80,7 +88,7 @@ class EarningsReleaseServiceTest {
 
     @Test
     void manualReleaseIsAuditedAndMovesExactlyOneProtectedEntry() {
-        ProtectedEntry entry = new ProtectedEntry("ER-2", 8L, "K1-C2", "NEX",
+        ProtectedEntry entry = new ProtectedEntry("ER-2", 8L, "K1-C2", "UVT",
                 new BigDecimal("5"), "bonus_locked");
         when(mapper.lockProtectedEntry("ER-2")).thenReturn(entry);
         when(mapper.release("ER-2", "manual")).thenReturn(1);
@@ -123,7 +131,7 @@ class EarningsReleaseServiceTest {
         when(mapper.insert(any(EarningsReleaseMapper.EntryWrite.class))).thenReturn(1);
         when(mapper.creditNex(7L, new BigDecimal("5"), "PRODUCTION", 0)).thenReturn(1);
 
-        service.creditReward(7L, "H8_REFERRAL", "REF-1:INVITER:NEX", "NEX",
+        service.creditReward(7L, "H8_REFERRAL", "REF-1:INVITER:NEX", "UVT",
                 new BigDecimal("5"), "PRODUCTION", "idem-credit-lock-order");
 
         InOrder order = inOrder(mapper);
@@ -138,7 +146,7 @@ class EarningsReleaseServiceTest {
         when(mapper.insert(any(EarningsReleaseMapper.EntryWrite.class))).thenReturn(1);
         when(mapper.creditNex(7L, new BigDecimal("5"), "PRODUCTION", 0)).thenReturn(1);
 
-        service.creditReward(7L, "H8_REFERRAL", "REF-1:INVITER:NEX", "NEX",
+        service.creditReward(7L, "H8_REFERRAL", "REF-1:INVITER:NEX", "UVT",
                 new BigDecimal("5"), "PRODUCTION", "idem-h8-production");
 
         ArgumentCaptor<EarningsReleaseMapper.EntryWrite> entry =
@@ -151,7 +159,7 @@ class EarningsReleaseServiceTest {
 
     @Test
     void sandboxCannotBeMislabelledAsProductionH8Reward() {
-        assertThatThrownBy(() -> service.creditReward(7L, "H8_REFERRAL", "REF-SBX:INVITER:NEX", "NEX",
+        assertThatThrownBy(() -> service.creditReward(7L, "H8_REFERRAL", "REF-SBX:INVITER:NEX", "UVT",
                 new BigDecimal("5"), "SANDBOX", "idem-h8-sandbox"))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("EARNINGS_RELEASE_ENTRY_INVALID");
@@ -167,7 +175,7 @@ class EarningsReleaseServiceTest {
         when(sandboxProfile.isStrictTestRuntime()).thenReturn(true);
         when(mapper.creditNex(7L, new BigDecimal("5"), "SANDBOX", 1)).thenReturn(1);
 
-        service.creditReward(7L, "MOCK_REFERRAL", "REF-SBX:INVITER:NEX", "NEX",
+        service.creditReward(7L, "MOCK_REFERRAL", "REF-SBX:INVITER:NEX", "UVT",
                 new BigDecimal("5"), "SANDBOX", "idem-h8-sandbox-mock");
 
         ArgumentCaptor<EarningsReleaseMapper.EntryWrite> entry =
@@ -185,9 +193,9 @@ class EarningsReleaseServiceTest {
         when(mapper.findBySource("MOCK_LEARNING_REWARD", "LEARN:7:h3-live:v1", 7L))
                 .thenReturn(new EarningsReleaseMapper.ExistingEntry(
                         "ER-LEARNING-EXISTING", 7L, "MOCK_LEARNING_REWARD", "LEARN:7:h3-live:v1",
-                        "NEX", new BigDecimal("5"), "ACTIVE", "LEARN:7:h3-live:v1:NEX", "SANDBOX", 0));
+                        "UVT", new BigDecimal("5"), "ACTIVE", "LEARN:7:h3-live:v1:NEX", "SANDBOX", 0));
 
-        String entryNo = service.creditReward(7L, "MOCK_LEARNING_REWARD", "LEARN:7:h3-live:v1", "NEX",
+        String entryNo = service.creditReward(7L, "MOCK_LEARNING_REWARD", "LEARN:7:h3-live:v1", "UVT",
                 new BigDecimal("5"), "SANDBOX", "LEARN:7:h3-live:v1:NEX");
 
         assertThat(entryNo).isEqualTo("ER-LEARNING-EXISTING");
@@ -202,10 +210,10 @@ class EarningsReleaseServiceTest {
         when(mapper.findBySource("MOCK_LEARNING_REWARD", "LEARN:7:h3-live:v1", 7L))
                 .thenReturn(new EarningsReleaseMapper.ExistingEntry(
                         "ER-LEARNING-CONFLICT", 7L, "MOCK_LEARNING_REWARD", "LEARN:7:h3-live:v1",
-                        "NEX", new BigDecimal("4"), "ACTIVE", "LEARN:7:h3-live:v1:NEX", "SANDBOX", 0));
+                        "UVT", new BigDecimal("4"), "ACTIVE", "LEARN:7:h3-live:v1:NEX", "SANDBOX", 0));
 
         assertThatThrownBy(() -> service.creditReward(7L, "MOCK_LEARNING_REWARD", "LEARN:7:h3-live:v1",
-                "NEX", new BigDecimal("5"), "SANDBOX", "LEARN:7:h3-live:v1:NEX"))
+                "UVT", new BigDecimal("5"), "SANDBOX", "LEARN:7:h3-live:v1:NEX"))
                 .isInstanceOfSatisfying(BizException.class, ex ->
                         assertThat(ex.getMessage()).isEqualTo("EARNINGS_RELEASE_ENTRY_CONFLICT"));
 
@@ -219,7 +227,7 @@ class EarningsReleaseServiceTest {
         when(mapper.insert(any(EarningsReleaseMapper.EntryWrite.class))).thenReturn(1);
         when(mapper.creditNex(7L, new BigDecimal("10"), "PRODUCTION", 0)).thenReturn(1);
 
-        service.creditReward(7L, "LEARNING_REWARD", "LEARN:7:h3-live:v1", "NEX",
+        service.creditReward(7L, "LEARNING_REWARD", "LEARN:7:h3-live:v1", "UVT",
                 new BigDecimal("10"), "PRODUCTION", "LEARN:7:h3-live:v1:NEX");
 
         verify(mapper).creditNex(7L, new BigDecimal("10"), "PRODUCTION", 0);
@@ -229,19 +237,19 @@ class EarningsReleaseServiceTest {
     void environmentAndActiveProfileMustMatchExactly() {
         when(sandboxProfile.isStrictProductionRuntime()).thenReturn(true);
         when(sandboxProfile.isStrictDevelopmentRuntime()).thenReturn(true);
-        assertThatThrownBy(() -> service.creditReward(7L, "MOCK_LEARNING_REWARD", "dev-sandbox", "NEX",
+        assertThatThrownBy(() -> service.creditReward(7L, "MOCK_LEARNING_REWARD", "dev-sandbox", "UVT",
                 BigDecimal.ONE, "SANDBOX", "dev-sandbox-key"))
                 .isInstanceOf(BizException.class).hasMessage("EARNINGS_RELEASE_ENVIRONMENT_INVALID");
 
         when(sandboxProfile.isStrictDevelopmentRuntime()).thenReturn(false);
         when(sandboxProfile.isStrictProductionRuntime()).thenReturn(false);
         when(sandboxProfile.isStrictTestRuntime()).thenReturn(true);
-        assertThatThrownBy(() -> service.creditReward(7L, "LEARNING_REWARD", "test-production", "NEX",
+        assertThatThrownBy(() -> service.creditReward(7L, "LEARNING_REWARD", "test-production", "UVT",
                 BigDecimal.ONE, "PRODUCTION", "test-production-key"))
                 .isInstanceOf(BizException.class).hasMessage("EARNINGS_RELEASE_ENVIRONMENT_INVALID");
 
         when(sandboxProfile.isStrictTestRuntime()).thenReturn(false);
-        assertThatThrownBy(() -> service.creditReward(7L, "LEARNING_REWARD", "unknown-profile", "NEX",
+        assertThatThrownBy(() -> service.creditReward(7L, "LEARNING_REWARD", "unknown-profile", "UVT",
                 BigDecimal.ONE, "PRODUCTION", "unknown-profile-key"))
                 .isInstanceOf(BizException.class).hasMessage("EARNINGS_RELEASE_PROFILE_INVALID");
     }

@@ -369,7 +369,7 @@ class SupportEnhancementCoreRuntimeTest {
             jdbc.update("INSERT INTO nx_hdpay_payin_order(merchant_order_id,amount_vnd,submission_status,settlement_status,settled_usdt,wallet_ledger_biz_no,settled_at,request_hash) VALUES(?,250250,'CREATED','CREDITED',10.01,?,'2026-09-01 12:00:00',REPEAT('a',64))",hd,hd);
             withdrawal(customer,run+"_out_"+i,i%2==0?"CONFIRMED":"SUCCESS","10.123456","0.123456","10",true);
         }
-        deposit(customer,run+"_nex","NEX","0.000001","DEPOSIT");
+        deposit(customer,run+"_nex","UVT","0.000001","DEPOSIT");
         String shared=run+"_shared";long sharedLedger=deposit(customer,shared,"USDT","0.25","CARD_TOPUP");
         jdbc.update("INSERT INTO nx_payment_record(payment_no,order_no,user_id,provider,provider_payment_id,amount_usdt,payment_status,wallet_ledger_id,created_at) VALUES(?,?,?,'Card',?,0.25,'CHARGEBACK',?,'2026-09-01 12:00:00')",shared,shared,customer,shared,sharedLedger);
         jdbc.update("INSERT INTO nx_deposit_order(user_id,deposit_no,chain_name,chain_tx_hash,asset,amount,status,created_at) VALUES(?,?,'TRC20',?,'USDT',7.000001,'PENDING','2026-09-01 12:00:00')",customer,run+"_pending",run+"_pending");
@@ -380,7 +380,7 @@ class SupportEnhancementCoreRuntimeTest {
         String token=token(owner),path="/api/admin/content/support-workbench/customers/"+customer;
         var refreshed=http("GET",path+"/360",token,null,null);assertThat(refreshed.path("code").asInt()).as("profile: %s",refreshed).isZero();
         var profile=refreshed.path("data").path("profile");var finance=profile.path("finance");assertThat(finance.path("status").asText()).isEqualTo("READY");
-        var totals=finance.path("data").path("byCurrency");var usdt=findCurrency(totals,"USDT");var nex=findCurrency(totals,"NEX");
+        var totals=finance.path("data").path("byCurrency");var usdt=findCurrency(totals,"USDT");var nex=findCurrency(totals,"UVT");
         assertThat(usdt.path("availableBalance").asText()).isEqualTo("12.123456");
         assertThat(usdt.path("creditedDepositTotal").asText()).isEqualTo(new java.math.BigDecimal("13.256913").multiply(new java.math.BigDecimal("31")).add(new java.math.BigDecimal("0.25")).stripTrailingZeros().toPlainString());
         assertThat(nex.path("creditedDepositTotal").asText()).isEqualTo("0.000001");assertThat(nex.path("availableBalance").asText()).isEqualTo("0");
@@ -402,7 +402,7 @@ class SupportEnhancementCoreRuntimeTest {
             if(ids.size()>=total)break;assertThat(page).isLessThan(20);
         }
         assertThat(total).isGreaterThan(150);assertThat(ids).hasSize((int)total);assertThat(chargeback).isTrue();
-        var range=http("GET",path+"/flows?currency=NEX&from=2026-09-01T04:00:00Z&to=2026-09-01T04:00:01Z",token,null,null);
+        var range=http("GET",path+"/flows?currency=UVT&from=2026-09-01T04:00:00Z&to=2026-09-01T04:00:01Z",token,null,null);
         assertThat(range.path("data").path("data").path("total").asLong()).isEqualTo(1);assertThat(range.path("data").path("data").path("records").get(0).path("createdAt").asText()).isEqualTo("2026-09-01T04:00:00Z");
         assertThat(http("GET",path+"/flows?from=bad",token,null,null).path("code").asInt()).isEqualTo(422);
         jdbc.update("UPDATE nx_payment_record SET payment_status='REFUNDED' WHERE payment_no=?",run+"_card_0");

@@ -219,7 +219,7 @@ public class AppTeamInsightsService {
 
     /**
      * Server-authoritative F2 projection.  The App receives the settlement
-     * cycle, source, layer and USDT/NEX split as stored facts; it must not
+     * cycle, source, layer and USDT/UVT split as stored facts; it must not
      * reconstruct rewards from downline volume or client-side rate tables.
      */
     public ApiResult<Map<String, Object>> unilevel(Long userId, String requestedPeriod) {

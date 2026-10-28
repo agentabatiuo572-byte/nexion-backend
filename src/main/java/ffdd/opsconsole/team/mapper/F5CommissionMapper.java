@@ -18,7 +18,7 @@ public interface F5CommissionMapper {
                    e.user_id AS userId,
                    LOWER(e.commission_type) AS kind,
                    UPPER(e.currency) AS currency,
-                   CASE WHEN UPPER(e.currency) = 'NEX' THEN e.amount_nex ELSE e.amount_usdt END AS amount,
+                   CASE WHEN UPPER(e.currency) = 'UVT' THEN e.amount_nex ELSE e.amount_usdt END AS amount,
                    e.source_user_id AS sourceUserId,
                    e.layer_no AS layer,
                    e.order_no AS orderNo,
@@ -53,7 +53,7 @@ public interface F5CommissionMapper {
                                WHERE s.beneficiary_user_id = e.user_id
                                  AND s.source_type = LOWER(e.commission_type)
                                  AND ((UPPER(e.currency) = 'USDT' AND s.usdt_event_id = e.id)
-                                   OR (UPPER(e.currency) = 'NEX' AND s.nex_event_id = e.id))
+                                   OR (UPPER(e.currency) = 'UVT' AND s.nex_event_id = e.id))
                                  AND ((l.direction = 'IN' AND l.biz_no = CONCAT(s.settlement_no, '-RELEASE'))
                                    OR (l.direction = 'OUT'
                                      AND LEFT(l.biz_no, CHAR_LENGTH(CONCAT(s.settlement_no, '-RECOVER-', UPPER(e.currency), '-')))
@@ -150,7 +150,7 @@ public interface F5CommissionMapper {
                    e.user_id AS userId,
                    LOWER(e.commission_type) AS kind,
                    UPPER(e.currency) AS currency,
-                   CASE WHEN UPPER(e.currency) = 'NEX' THEN e.amount_nex ELSE e.amount_usdt END AS amount,
+                   CASE WHEN UPPER(e.currency) = 'UVT' THEN e.amount_nex ELSE e.amount_usdt END AS amount,
                    e.source_user_id AS sourceUserId,
                    e.layer_no AS layer,
                    e.order_no AS orderNo,
@@ -269,7 +269,7 @@ public interface F5CommissionMapper {
     @Select("""
             SELECT LOWER(e.commission_type) AS kind,
                    UPPER(e.currency) AS currency,
-                   COALESCE(SUM(CASE WHEN UPPER(e.currency)='NEX' THEN e.amount_nex ELSE e.amount_usdt END), 0) AS amount,
+                   COALESCE(SUM(CASE WHEN UPPER(e.currency)='UVT' THEN e.amount_nex ELSE e.amount_usdt END), 0) AS amount,
                    COUNT(1) AS count
               FROM nx_commission_event e
              WHERE e.is_deleted=0
@@ -301,7 +301,7 @@ public interface F5CommissionMapper {
                               ELSE 'unknown'
                            END AS status,
                            UPPER(e.currency) AS currency,
-                           CASE WHEN UPPER(e.currency)='NEX' THEN e.amount_nex ELSE e.amount_usdt END AS amount
+                           CASE WHEN UPPER(e.currency)='UVT' THEN e.amount_nex ELSE e.amount_usdt END AS amount
                       FROM nx_commission_event e
                      WHERE e.is_deleted=0
                        AND LOWER(e.commission_type) IN
@@ -331,7 +331,7 @@ public interface F5CommissionMapper {
                    e.user_id AS userId,
                    LOWER(e.commission_type) AS kind,
                    UPPER(e.currency) AS currency,
-                   CASE WHEN UPPER(e.currency) = 'NEX' THEN e.amount_nex ELSE e.amount_usdt END AS amount,
+                   CASE WHEN UPPER(e.currency) = 'UVT' THEN e.amount_nex ELSE e.amount_usdt END AS amount,
                    e.source_user_id AS sourceUserId,
                    e.layer_no AS layer,
                    e.order_no AS orderNo,
@@ -545,7 +545,7 @@ public interface F5CommissionMapper {
                idempotency_key, expected_version, status, created_at)
             SELECT CONCAT('F5-AUTO-UNLOCK-', e.id), 'AUTO_UNLOCK', e.id, NULL,
                    e.user_id, LOWER(e.commission_type),
-                   CASE WHEN UPPER(e.currency)='NEX' THEN e.amount_nex ELSE e.amount_usdt END,
+                   CASE WHEN UPPER(e.currency)='UVT' THEN e.amount_nex ELSE e.amount_usdt END,
                    UPPER(e.currency), CONCAT('unlock_at:', DATE_FORMAT(e.unlock_at,'%Y-%m-%dT%H:%i:%s')),
                    'cooling period elapsed', 'system', CONCAT('F5-AUTO-UNLOCK-', e.id),
                    #{expectedVersion}, 'SUCCESS', NOW()

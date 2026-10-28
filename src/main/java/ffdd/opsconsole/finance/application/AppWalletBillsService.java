@@ -155,7 +155,7 @@ public class AppWalletBillsService {
     }
 
     private BillFilter filter(String asset, String direction, String category) {
-        String normalizedAsset = allowed(asset, Set.of("USDT", "NEX"), "WALLET_BILLS_FILTER_INVALID");
+        String normalizedAsset = allowed(asset, Set.of("USDT", "UVT"), "WALLET_BILLS_FILTER_INVALID");
         String normalizedDirection = allowed(direction, Set.of("IN", "OUT"), "WALLET_BILLS_FILTER_INVALID");
         String normalizedCategory = allowed(category, Set.of("REWARD"), "WALLET_BILLS_FILTER_INVALID");
         return new BillFilter(normalizedAsset, normalizedDirection, normalizedCategory);
@@ -287,7 +287,7 @@ public class AppWalletBillsService {
             case "TRIAL_BONUS" -> "trialBonus";
             case "QUEST_REWARD" -> "questReward";
             case "PURCHASE_REWARD" -> "purchaseReward";
-            // 课程奖励此前落进通用 bonus 码,三笔同日 +10 NEX 在奖励账本里完全同名
+            // 课程奖励此前落进通用 bonus 码,三笔同日 +10 UVT 在奖励账本里完全同名
             // 且无来源,用户与客服无法逐笔追溯(zentao #219)。给这一族自己的码位。
             case "LEARNING_REWARD" -> "learningReward";
             case "ORDER_REFUND" -> "orderRefund";

@@ -43,7 +43,7 @@ public class TrialConversionRewardReversal {
     private static final String ACTOR = "E4_ORDER_REFUND";
     private static final List<String[]> SOURCES = List.of(
             new String[] {"H2_TRIAL_REMAINDER", ":REMAINDER", "USDT"},
-            new String[] {"H2_TRIAL_BONUS", ":NEX", "NEX"});
+            new String[] {"H2_TRIAL_BONUS", ":NEX", "UVT"});
 
     private final E4OrderRefundMapper mapper;
     private final EarningsReleaseMapper earningsMapper;
@@ -118,7 +118,7 @@ public class TrialConversionRewardReversal {
         var receipt = earnings.recoverReward(new EarningsReleaseService.RewardRecoveryRequest(
                 userId, entry.entryNo(), source[0], sourceRef, source[2], "PRODUCTION", entry.amount(),
                 "Trial early-conversion reward reversed with order refund " + orderNo, ACTOR),
-                "TRIAL-REFUND-RECOVER:" + orderNo + ":" + source[2]);
+                "TRIAL-REFUND-RECOVER:" + orderNo + ":" + ("USDT".equals(source[2]) ? "USDT" : "NEX"));
         if (receipt.recovered().signum() > 0) {
             ledger.postLedgerEntry(sourceRef + ":REVERSAL", userId, "TRIAL_BONUS_REVERSAL", source[2], "OUT",
                     receipt.recovered(), "SUCCESS", "Trial reward reversed with refund " + refundLedgerBizNo);

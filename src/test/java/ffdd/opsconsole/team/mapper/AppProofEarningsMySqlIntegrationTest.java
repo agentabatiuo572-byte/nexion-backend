@@ -170,7 +170,7 @@ class AppProofEarningsMySqlIntegrationTest {
     void respectsOwnerAssetDeletionAndCreditStatus() {
         ledger(USER, "OWN", "COMPUTE_TASK_REWARD", "USDT", "IN", 2, "SUCCESS", 0);
         ledger(702, "OTHER", "TEAM_COMMISSION", "USDT", "IN", 999, "SUCCESS", 0);
-        ledger(USER, "NEX", "TEAM_COMMISSION", "NEX", "IN", 777, "SUCCESS", 0);
+        ledger(USER, "UVT", "TEAM_COMMISSION", "UVT", "IN", 777, "SUCCESS", 0);
         ledger(USER, "DELETED", "TEAM_COMMISSION", "USDT", "IN", 555, "SUCCESS", 1);
         for (String status : new String[]{"PENDING", "FAILED", "REJECTED", "CANCELLED", "REVERSED"}) {
             ledger(USER, status, "TEAM_COMMISSION", "USDT", "IN", 111, status, 0);
@@ -207,13 +207,13 @@ class AppProofEarningsMySqlIntegrationTest {
         long claimUser = invalid.equals("claim owner") ? 702 : USER;
         String ref = invalid.equals("reference") ? "OTHER-POSITION" : "POSITION";
         entry(entryUser, ref, invalid.equals("source") ? "OTHER_REWARD" : "staking_interest",
-                invalid.equals("entry asset") ? "NEX" : "USDT", 10,
+                invalid.equals("entry asset") ? "UVT" : "USDT", 10,
                 invalid.equals("entry status") ? "CANCELLED" : "ACTIVE",
                 invalid.equals("environment") ? "SANDBOX" : "PRODUCTION",
                 invalid.equals("entry deleted") ? 1 : 0, "withdrawable");
         if (!invalid.equals("missing claim")) {
             ledger(claimUser, "POSITION-CLAIM", invalid.equals("claim type") ? "STAKING_EARLY_WITHDRAW" : "STAKING_CLAIM",
-                    invalid.equals("claim asset") ? "NEX" : "USDT", invalid.equals("claim direction") ? "OUT" : "IN",
+                    invalid.equals("claim asset") ? "UVT" : "USDT", invalid.equals("claim direction") ? "OUT" : "IN",
                     110, invalid.equals("claim status") ? "PENDING" : "SUCCESS", invalid.equals("claim deleted") ? 1 : 0);
         }
         assertThat(mapper.earningsTotalUsdt(USER)).as(invalid).isEqualByComparingTo("0");
@@ -231,7 +231,7 @@ class AppProofEarningsMySqlIntegrationTest {
         String status = family.equals("TRIAL_BONUS") ? "POSTED" : "SUCCESS";
         ledger(USER, "REWARD", family, "USDT", "IN", amount, status, 0);
         ledger(702, "OTHER", family, "USDT", "IN", 999, status, 0);
-        ledger(USER, "NEX", family, "NEX", "IN", 100, status, 0);
+        ledger(USER, "UVT", family, "UVT", "IN", 100, status, 0);
         ledger(USER, "DELETED", family, "USDT", "IN", 100, status, 1);
         ledger(USER, "PENDING", family, "USDT", "IN", 100, "PENDING", 0);
         ledger(USER, "OUT", family, "USDT", "OUT", 100, status, 0);
@@ -320,7 +320,7 @@ class AppProofEarningsMySqlIntegrationTest {
         if (!invalid.equals("missing claim")) {
             ledger(invalid.equals("claim owner") ? 702 : USER, "REPURCHASE-CLAIM",
                     invalid.equals("claim type") ? "REPURCHASE_EARLY_WITHDRAW" : "REPURCHASE_CLAIM",
-                    invalid.equals("claim asset") ? "NEX" : "USDT", invalid.equals("claim direction") ? "OUT" : "IN",
+                    invalid.equals("claim asset") ? "UVT" : "USDT", invalid.equals("claim direction") ? "OUT" : "IN",
                     206, invalid.equals("claim status") ? "PENDING" : "SUCCESS", invalid.equals("claim deleted") ? 1 : 0);
         }
         assertThat(mapper.earningsTotalUsdt(USER)).as(invalid).isEqualByComparingTo("0");

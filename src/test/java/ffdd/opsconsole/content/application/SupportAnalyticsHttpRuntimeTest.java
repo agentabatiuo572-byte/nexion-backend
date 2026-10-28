@@ -62,7 +62,7 @@ class SupportAnalyticsHttpRuntimeTest extends SupportAnalyticsRuntimeFixture {
 
     @Test void realViewAndCurrencyMatrixKeepsUnknownSeparateFromZero() throws Exception {
         long own=customer(false);bind(own,agent);
-        for(long actor:List.of(agent,manager,boss))for(String currency:List.of("USDT","NEX"))
+        for(long actor:List.of(agent,manager,boss))for(String currency:List.of("USDT","UVT"))
             for(String basis:List.of("CURRENT_ASSET","CURRENT_CUSTOMER_HISTORY","PERIOD_EVENT"))
                 for(String view:List.of("OVERVIEW","AGENTS","CUSTOMERS","FINANCE","DEVICES","ACTIVITY")) {
                     if(basis.equals("CURRENT_ASSET") && view.equals("FINANCE"))continue;

@@ -99,7 +99,7 @@ SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'G' d) x ON p.menu_code='G'
 JOIN (SELECT 'G1' code,'Staking 池配置' name,'/finance-products/staking' path,1 sort UNION ALL
       SELECT 'G2','兑换风控','/finance-products/exchange',2 UNION ALL
-      SELECT 'G3','NEX 行情引擎','/finance-products/market',3 UNION ALL
+      SELECT 'G3','UVT 行情引擎','/finance-products/market',3 UNION ALL
       SELECT 'G4','Genesis 经济','/finance-products/genesis',4 UNION ALL
       SELECT 'G7','复投激励','/finance-products/repurchase',5) v
 ON 1=1
@@ -112,7 +112,7 @@ JOIN (SELECT 'H1' code,'Phase 调度器' name,'/growth/phase' path,1 sort UNION 
       SELECT 'H2','免费试用引擎','/growth/trial',2 UNION ALL
       SELECT 'H3','Quest 引擎','/growth/quest',3 UNION ALL
       SELECT 'H4','活动中心 CMS','/growth/events',4 UNION ALL
-      SELECT 'H5','签到 & NEX','/growth/daily',5 UNION ALL
+      SELECT 'H5','签到 & UVT','/growth/daily',5 UNION ALL
       SELECT 'H7','代金券','/growth/vouchers',6 UNION ALL
       SELECT 'H8','新人礼与邀请奖励','/growth/referral-rewards',7) v
 ON 1=1

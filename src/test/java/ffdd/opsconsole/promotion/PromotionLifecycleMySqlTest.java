@@ -187,7 +187,7 @@ class PromotionLifecycleMySqlTest {
     // The refund endpoint returns the order; read the locked reward state inside this transaction.
     void issueAndRefundSerializeBothTransactionOrdersForEveryAsset(List<Map<String,Object>> checks) throws Exception {
         setup();var common=h.commonPolicies();
-        for(String asset:List.of("DEVICE","USDT","NEX")){
+        for(String asset:List.of("DEVICE","USDT","UVT")){
             String activity=h.publish(h.contract(buy,runtimeReward(asset),common));
             for(boolean issueFirst:List.of(true,false)){
                 long buyer=user();var walletBefore=h.db.requiredRow("SELECT usdt_available,nex_available FROM nx_user_wallet WHERE user_id=?",buyer);
@@ -328,7 +328,7 @@ class PromotionLifecycleMySqlTest {
 
     void reservedVersionOnePaysBeforeItsDeadlineAfterVersionTwoPublicationAndPause(List<Map<String,Object>> checks) throws Exception {
         setup();var common=h.commonPolicies();
-        for(String asset:List.of("DEVICE","USDT","NEX")){
+        for(String asset:List.of("DEVICE","USDT","UVT")){
             var contract=h.contract(buy,runtimeReward(asset),common);String activity=h.publish(contract);long buyer=user();
             var quoted=quote(buyer,activity,1);String order=create(buyer,quoted,1);var projection=orders.orderProjection(buyer,order);
             var reserved=h.db.requiredRow("SELECT * FROM nx_promotion_reservation WHERE order_no=?",order);
@@ -359,7 +359,7 @@ class PromotionLifecycleMySqlTest {
 
     void versionOneQuoteCannotCreateAfterRealVersionTwoPublicationAndWritesNothing(List<Map<String,Object>> checks) throws Exception {
         setup();var common=h.commonPolicies();
-        for(String asset:List.of("DEVICE","USDT","NEX")){
+        for(String asset:List.of("DEVICE","USDT","UVT")){
             var contract=h.contract(buy,runtimeReward(asset),common);String activity=h.publish(contract);long buyer=user();var quoted=quote(buyer,activity,1);
             assertEquals(1,number(quoted.get("activityVersion")));publishVersionTwo(activity,contract);
             assertEquals("ACTIVE",h.admin.get(activity).get("state"));assertEquals(2,number(h.admin.get(activity).get("activeVersion")));
@@ -534,7 +534,7 @@ class PromotionLifecycleMySqlTest {
     @Test void realApprovalReservationsWalletsDevicesRefundsAndReplay() throws Exception {
         setup();
         Map<String,Object> common=h.commonPolicies();
-        for(String asset:List.of("USDT","NEX","DEVICE")){
+        for(String asset:List.of("USDT","UVT","DEVICE")){
             Map<String,Object> spec="DEVICE".equals(asset)
                 ?values("rewardRuleId","reward-buyer","beneficiaryRole","BUYER","type","DEVICE","giftProductNo",gift,"quantity",2,"deviceRightsProfile",h.devicePolicy(gift))
                 :values("rewardRuleId","reward-buyer","beneficiaryRole","BUYER","type",asset,"calculation","FIXED","amount","2.125001","assetPolicy",h.assetPolicy(asset));
@@ -724,7 +724,7 @@ class PromotionLifecycleMySqlTest {
         assertNull(rewards.get(buyer,id,false).get("assetReceipt"));budget(activity,asset,"committed",BigDecimal.ZERO);
         record("hold-release-unissued-refund",values("asset",asset,"order",order,"obligation",id));
     }
-    Map<String,Object> coinSpec(){return values("rewardRuleId","reward-buyer","beneficiaryRole","BUYER","type","NEX","calculation","FIXED","amount","1.000001","assetPolicy",h.assetPolicy("NEX"));}
+    Map<String,Object> coinSpec(){return values("rewardRuleId","reward-buyer","beneficiaryRole","BUYER","type","UVT","calculation","FIXED","amount","1.000001","assetPolicy",h.assetPolicy("UVT"));}
     void firstPurchaseCompetition(Map<String,Object> common) throws Exception{
         Map<String,Object> policy=copy(common);policy.put("firstPurchase",h.approvePolicy(values("kind","FIRST_PURCHASE","executorCode","PROMOTION_FIRST_PURCHASE_V1","mode","FIRST_ELIGIBLE_ORDER","restoreAfterRefund",false)));
         Map<String,Object> contract=h.contract(buy,coinSpec(),policy);contract.put("template","FIRST_PURCHASE");

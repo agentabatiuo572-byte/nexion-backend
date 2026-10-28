@@ -1501,7 +1501,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 "NUMBER", "wallet", "D5 withdrawal fee rate mirror");
         configFacade.upsertAdminValue("wallet.withdrawal.nex_fee_offset_rate",
                 configDecimal("withdrawal.nex_fee_offset_rate", new BigDecimal("0.40")).toPlainString(),
-                "NUMBER", "wallet", "D5 NEX fee offset mirror");
+                "NUMBER", "wallet", "D5 UVT fee offset mirror");
         configFacade.upsertAdminValue("wallet.withdrawal.min_usdt",
                 requiredConfigDecimal("withdrawal.min_usdt").toPlainString(),
                 "NUMBER", "wallet", "D5 minimum withdrawal USDT mirror");
@@ -2666,7 +2666,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             BigDecimal normalized = value.setScale(6, RoundingMode.HALF_UP);
             if (normalized.compareTo(BigDecimal.ZERO) <= 0
                     || normalized.compareTo(new BigDecimal("999999999999.999999")) > 0) {
-                throw new IllegalArgumentException("NEX fee offset rate must be positive and fit DECIMAL(18,6)");
+                throw new IllegalArgumentException("UVT fee offset rate must be positive and fit DECIMAL(18,6)");
             }
             return normalized.stripTrailingZeros();
         }

@@ -110,7 +110,7 @@ class SupportLeaderboardCompletePublicationIntegrationTest {
     void completeFirstPaymentAndNetContributionPublishAndSurviveServiceRecreation() throws Exception {
         MockMvc mvc = controller();
         var results = new ArrayList<Map<String, Object>>();
-        for (Board board : List.of(Board.firstPayment, Board.netContribution)) for (String currency : List.of("USDT", "NEX")) {
+        for (Board board : List.of(Board.firstPayment, Board.netContribution)) for (String currency : List.of("USDT", "UVT")) {
             boolean reverse = board == Board.netContribution && currency.equals("USDT");
             List<String> ids = reverse ? List.of("8", "7", "9") : List.of("7", "8", "9");
             JsonNode first = page(mvc, board, currency, null, 1);
@@ -186,7 +186,7 @@ class SupportLeaderboardCompletePublicationIntegrationTest {
         var proofs = new ArrayList<AttributionProof>();
         var origins = new ArrayList<ContributionOrigin>();
         var changes = new ArrayList<ContributionChange>();
-        for (String currency : List.of("USDT", "NEX")) for (long customer : List.of(1L, 2L, 3L)) {
+        for (String currency : List.of("USDT", "UVT")) for (long customer : List.of(1L, 2L, 3L)) {
             long ledger = customer + (currency.equals("USDT") ? 100 : 200);
             LocalDateTime at = LocalDateTime.parse(currency.equals("USDT") ? "2026-10-01T10:00:00" : "2026-10-02T10:00:00");
             String amount = currency.equals("USDT") ? (customer == 1 ? "100" : customer == 2 ? "30" : "200") : (customer == 1 ? "10" : customer == 2 ? "3" : "10");

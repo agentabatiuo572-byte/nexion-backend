@@ -12,15 +12,15 @@ class SupportLeaderboardQueryTest {
     private static final Set<YearMonth> MONTHS=Set.of(YearMonth.of(2026,9),YearMonth.of(2026,10));
     private SupportLeaderboardQuery.Normalized query(Map<String,String> p) {
         Map<String,List<String>> raw=new HashMap<>(); p.forEach((k,v)->raw.put(k,List.of(v)));
-        return SupportLeaderboardQuery.fromParameters(raw).normalize(NOW,MONTHS,Set.of("USDT","NEX"),"USDT",
+        return SupportLeaderboardQuery.fromParameters(raw).normalize(NOW,MONTHS,Set.of("USDT","UVT"),"USDT",
             Map.of(Scope.all,Set.of(),Scope.ownGroup,Set.of(10L),Scope.managedGroups,Set.of(10L)));
     }
     private void invalid(Map<String,String> p) {assertEquals(422,assertThrows(BizException.class,()->query(p)).getCode());}
     @Test void defaultMonthAndCurrencyComeFromServerAndShanghaiBusinessMonth() {
         var q=query(Map.of()); assertEquals("netContribution",q.board().name()); assertEquals(YearMonth.of(2026,10),q.rankMonth());
         assertEquals("USDT",q.currency()); assertEquals(Scope.all,q.scope()); assertEquals(1,q.pageNum()); assertEquals(20,q.pageSize());
-        var boundary=SupportLeaderboardQuery.fromParameters(Map.of()).normalize(Instant.parse("2026-09-30T16:00:00Z"),MONTHS,Set.of("NEX"),"NEX",Map.of(Scope.all,Set.of()));
-        assertEquals(YearMonth.of(2026,10),boundary.rankMonth()); assertEquals("NEX",boundary.currency());
+        var boundary=SupportLeaderboardQuery.fromParameters(Map.of()).normalize(Instant.parse("2026-09-30T16:00:00Z"),MONTHS,Set.of("UVT"),"UVT",Map.of(Scope.all,Set.of()));
+        assertEquals(YearMonth.of(2026,10),boundary.rankMonth()); assertEquals("UVT",boundary.currency());
     }
     @Test void legacyMoneyRequestsUseTheSingleNetContributionBoard() {
         for(String board:List.of("deposit","purchase","netContribution"))
@@ -35,12 +35,12 @@ class SupportLeaderboardQueryTest {
     @Test void threeExactBoardsMonthsAndCurrenciesRejectInvalidOrUncoveredInputs() {
         for(Board b:List.of(Board.netContribution,Board.firstPayment,Board.customers)) assertEquals(b,query(Map.of("board",b.name())).board());
         for(String m:List.of("2026-13","2026-9","2026-09-01","0000-01","2026-11","2025-01","2026-10 ")) invalid(Map.of("month",m));
-        for(String c:List.of("USD","usdt","USDT,NEX",""," USDT")) invalid(Map.of("currency",c));
+        for(String c:List.of("USD","usdt","USDT,UVT",""," USDT")) invalid(Map.of("currency",c));
         invalid(Map.of("board","FIRST_PAYMENT"));
-        assertEquals("NEX",query(Map.of("currency","NEX")).currency());
+        assertEquals("UVT",query(Map.of("currency","UVT")).currency());
     }
     @Test void customersRejectsHiddenMonthAndUsesCurrentReferenceMonth() {
-        var q=query(Map.of("board","customers","currency","NEX")); assertNull(q.rankMonth());
+        var q=query(Map.of("board","customers","currency","UVT")); assertNull(q.rankMonth());
         assertEquals(YearMonth.of(2026,10),q.referenceMonth()); invalid(Map.of("board","customers","month","2026-09"));
     }
     @Test void pageAndIdsRequireBoundedSafeIntegersAndCrossPageVersion() {
@@ -65,6 +65,6 @@ class SupportLeaderboardQueryTest {
     @Test void keywordIsOnlyBoundedSearchAndServerPolicyFailureIsNotAClientFallback() {
         assertEquals("Agent 1",query(Map.of("keyword"," Agent 1 ")).keyword());
         assertNull(query(Map.of("keyword","  ")).keyword()); invalid(Map.of("keyword","x".repeat(201))); invalid(Map.of("keyword","A\nB"));
-        assertThrows(IllegalArgumentException.class,()->SupportLeaderboardQuery.fromParameters(Map.of()).normalize(NOW,MONTHS,Set.of("NEX"),"USDT",Map.of(Scope.all,Set.of())));
+        assertThrows(IllegalArgumentException.class,()->SupportLeaderboardQuery.fromParameters(Map.of()).normalize(NOW,MONTHS,Set.of("UVT"),"USDT",Map.of(Scope.all,Set.of())));
     }
 }

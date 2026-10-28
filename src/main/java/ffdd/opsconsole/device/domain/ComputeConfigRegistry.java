@@ -34,7 +34,7 @@ public final class ComputeConfigRegistry {
     public static final List<YieldDef> YIELD_ESTIMATE = List.of(
         new YieldDef("topsBaseline", "收益估算基准算力", "28", "TOPS"),
         new YieldDef("dailyUsdtPerBaseline", "基准日产 USDT", "0.06", "USDT / 日"),
-        new YieldDef("nexPerUsdt", "NEX 折算系数", "166.67", "NEX / USDT"));
+        new YieldDef("nexPerUsdt", "UVT 折算系数", "166.67", "UVT / USDT"));
 
     public record GpuTierDef(String id, String label, String desc, String defaultModel, String defaultTops, List<String> keywords) {}
     public static final List<String> GPU_TIER_IDS = List.of();

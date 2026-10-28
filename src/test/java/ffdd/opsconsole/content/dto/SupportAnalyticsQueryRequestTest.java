@@ -13,7 +13,7 @@ class SupportAnalyticsQueryRequestTest {
     private static final Set<Sort> SORTS = EnumSet.allOf(Sort.class);
     private Normalized request(Map<String, String> values) {
         var parameters = new HashMap<String,List<String>>(); values.forEach((k,v) -> parameters.put(k,List.of(v)));
-        return fromParameters(parameters).normalize(Set.of("USDT", "NEX"), SORTS);
+        return fromParameters(parameters).normalize(Set.of("USDT", "UVT"), SORTS);
     }
     private void invalid(Map<String,String> values, int code) {
         assertThatThrownBy(() -> request(values)).isInstanceOf(BizException.class)
@@ -61,7 +61,7 @@ class SupportAnalyticsQueryRequestTest {
         assertThatThrownBy(() -> q.toStatsQuery(new ReadScope(1L,ReadMode.MANAGED,8L,null))).isInstanceOf(IllegalArgumentException.class);
     }
     @Test void netContributionSortRequiresExplicitSupportedCurrency() {
-        for(String currency:List.of("USDT","NEX")){
+        for(String currency:List.of("USDT","UVT")){
             var q=request(Map.of("sortKey","NET_CONTRIBUTION","currency",currency));
             assertThat(q.sortKey()).isEqualTo(Sort.NET_CONTRIBUTION);assertThat(q.currency()).isEqualTo(currency);
         }

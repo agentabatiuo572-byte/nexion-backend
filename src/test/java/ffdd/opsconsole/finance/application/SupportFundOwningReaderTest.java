@@ -33,7 +33,7 @@ class SupportFundOwningReaderTest {
         for(String field:List.of("id","userId","usdtAvailable","nexAvailable","pendingWithdraw","cregisRiskHeld","version","sandbox","isDeleted","createdAt")){String cap=Character.toUpperCase(field.charAt(0))+field.substring(1);birth.put("old"+cap,null);birth.put("new"+cap,cash.wallet.get(field));}
         cash.journal.add(birth);when(cash.mapper.birthCandidates(70,7)).thenReturn(List.of(Map.of("incarnation",incarnation,"revision",0L)));
         new SupportFundAuthBirthAdapter(cash.mapper,cash.fund,direct.json).record(new SupportFundAuthBirthFacade.AuthenticatedRegistrationFacts(7,at,incarnation,EVENT,33,at,1));
-        direct.credit("USDT");direct.credit("NEX");
+        direct.credit("USDT");direct.credit("UVT");
         var identity=Map.<String,Object>of("id",7L,"createdAt",at,"sandbox",false,"isDeleted",false,"status","ACTIVE");
         var event=new LinkedHashMap<String,Object>();event.put("id",33L);event.put("eventId",EVENT);event.put("aggregateType","USER_REGISTRATION");event.put("aggregateId","7");event.put("eventType","auth.register_completed");event.put("eventName","auth.register_completed");event.put("eventTs",at);event.put("serverAuthoritative",true);event.put("schemaRegistered",true);event.put("analyticsEvent",true);event.put("schemaRevision",1);event.put("isDeleted",false);
         event.put("payload",direct.json.writeValueAsString(Map.of("userId",7,"user_id",7,"event_id",EVENT,"event_name","auth.register_completed","is_server_authoritative",true,"schema_revision",1)));

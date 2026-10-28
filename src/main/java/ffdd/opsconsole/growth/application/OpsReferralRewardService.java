@@ -405,9 +405,9 @@ public class OpsReferralRewardService {
             }
             postSandboxAsset(settlementNo, row.invitedUserId(), "USDT", rewards.newcomerUsdt(),
                     runId, "[SANDBOX][MOCK_REFERRAL] newcomer referral reward");
-            postSandboxAsset(settlementNo, row.invitedUserId(), "NEX", rewards.newcomerNex(),
+            postSandboxAsset(settlementNo, row.invitedUserId(), "UVT", rewards.newcomerNex(),
                     runId, "[SANDBOX][MOCK_REFERRAL] newcomer referral reward");
-            postSandboxAsset(settlementNo, row.inviterUserId(), "NEX", rewards.inviterNex(),
+            postSandboxAsset(settlementNo, row.inviterUserId(), "UVT", rewards.inviterNex(),
                     runId, "[SANDBOX][MOCK_REFERRAL] inviter referral reward");
             sandboxAudit.recordSuccess(runId, "H8_ACCEPTANCE_SANDBOX_REFERRAL_SETTLED", settlementNo, operator, key,
                     Map.of("invitedUserId", row.invitedUserId(), "inviterUserId", row.inviterUserId(),
@@ -481,8 +481,8 @@ public class OpsReferralRewardService {
                 continue;
             }
             creditReward(row.invitedUserId(), settlementNo + ":NEWCOMER", "USDT", newcomerUsdt);
-            creditReward(row.invitedUserId(), settlementNo + ":NEWCOMER", "NEX", newcomerNex);
-            creditReward(row.inviterUserId(), settlementNo + ":INVITER", "NEX", inviterNex);
+            creditReward(row.invitedUserId(), settlementNo + ":NEWCOMER", "UVT", newcomerNex);
+            creditReward(row.inviterUserId(), settlementNo + ":INVITER", "UVT", inviterNex);
             post(settlementNo + ":NEWCOMER", row.invitedUserId(), newcomerUsdt, newcomerNex, "新用户邀请奖励");
             post(settlementNo + ":INVITER", row.inviterUserId(), BigDecimal.ZERO, inviterNex, "邀请人奖励");
             audit("REFERRAL_REWARD_SETTLED", settlementNo, operator, key,
@@ -498,7 +498,7 @@ public class OpsReferralRewardService {
             settled++;
         }
         // Recompute from the wallet state written by this transaction. If the batch
-        // itself crosses B1 or makes NEX valuation unavailable, throwing here rolls
+        // itself crosses B1 or makes UVT valuation unavailable, throwing here rolls
         // back every settlement, wallet credit, ledger entry and audit in the batch.
         requireHealthyCoverage();
         Map<String, Object> batchAudit = new LinkedHashMap<>();
@@ -523,8 +523,8 @@ public class OpsReferralRewardService {
 
     private void creditReward(Long userId, String sourceRef, String asset, BigDecimal amount) {
         if (amount == null || amount.signum() <= 0) return;
-        earningsReleaseService.creditReward(userId, "H8_REFERRAL", sourceRef + ":" + asset,
-                asset, amount, SETTLEMENT_ENVIRONMENT, "H8:" + sourceRef + ":" + asset);
+        earningsReleaseService.creditReward(userId, "H8_REFERRAL", sourceRef + ":" + ("USDT".equals(asset) ? "USDT" : "NEX"),
+                asset, amount, SETTLEMENT_ENVIRONMENT, "H8:" + sourceRef + ":" + ("USDT".equals(asset) ? "USDT" : "NEX"));
     }
 
     private EffectiveRewards effectiveRewards() {
@@ -629,7 +629,7 @@ public class OpsReferralRewardService {
             postAsset(bizNo, userId, "USDT", usdt, remark);
         }
         if (nex.signum() > 0) {
-            postAsset(bizNo, userId, "NEX", nex, remark);
+            postAsset(bizNo, userId, "UVT", nex, remark);
         }
     }
 

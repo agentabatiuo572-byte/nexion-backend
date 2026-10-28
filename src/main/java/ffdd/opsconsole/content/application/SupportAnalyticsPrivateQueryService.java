@@ -29,7 +29,7 @@ public class SupportAnalyticsPrivateQueryService {
     private final SupportAnalyticsMapper mapper;
     private final SupportFundsReadFacade funds;
     // Existing AppWalletBillsService.allowed and EarningsReleaseService.ASSETS, not a new currency catalog.
-    static final Set<String> CURRENCIES=Set.of("USDT","NEX");
+    static final Set<String> CURRENCIES=Set.of("USDT","UVT");
     static final Set<Sort> SORTS=Collections.unmodifiableSet(EnumSet.allOf(Sort.class));
     public SupportAnalyticsPrivateQueryService(SupportOwnershipService ownership,SupportAnalyticsService stats,SupportAnalyticsMapper mapper) {
         this.ownership=Objects.requireNonNull(ownership);this.stats=Objects.requireNonNull(stats);this.mapper=Objects.requireNonNull(mapper);
@@ -301,12 +301,12 @@ public class SupportAnalyticsPrivateQueryService {
         var f=s.funds();var wallets=f.wallets()==null?List.<SupportFundsReadFacade.WalletEvidence>of():f.wallets().rows().stream().filter(w->ids.contains(w.customerId())).toList();
         var withdrawals=f.withdrawals()==null?List.<SupportFundsReadFacade.WithdrawalEvidence>of():f.withdrawals().rows().stream().filter(w->ids.contains(w.customerId())).toList();
         boolean known=s.fundsRead()==SupportAnalyticsQueryVersion.ReadState.COMPLETE && f.wallets()!=null && wallets.size()==ids.size() && wallets.stream().allMatch(w->w.state()==SupportFundsReadFacade.EvidenceState.READY);
-        var balances=new ArrayList<Map<String,Object>>();for(String currency:List.of("USDT","NEX")) {
+        var balances=new ArrayList<Map<String,Object>>();for(String currency:List.of("USDT","UVT")) {
             var values=wallets.stream().map(w->"USDT".equals(currency)?w.usdtAvailable():w.nexAvailable()).filter(SupportAnalyticsPrivateQueryService::nonnegativeAmount).toList();
             BigDecimal observed=values.isEmpty()?ids.isEmpty() && s.fundsRead()==SupportAnalyticsQueryVersion.ReadState.COMPLETE?BigDecimal.ZERO:null:values.stream().reduce(BigDecimal.ZERO,BigDecimal::add);
             balances.add(map("currency",currency,"observedAmount",decimal(observed),"confirmedAmount",known?decimal(observed):null));
         }
-        var currencies=new TreeSet<String>();withdrawals.stream().map(SupportFundsReadFacade.WithdrawalEvidence::currency).filter(Objects::nonNull).filter(Set.of("USDT","NEX")::contains).forEach(currencies::add);
+        var currencies=new TreeSet<String>();withdrawals.stream().map(SupportFundsReadFacade.WithdrawalEvidence::currency).filter(Objects::nonNull).filter(Set.of("USDT","UVT")::contains).forEach(currencies::add);
         var totals=new ArrayList<Map<String,Object>>();for(String currency:currencies) {
             var successful=withdrawals.stream().filter(w->currency.equals(w.currency()) && w.state()==SupportFundsReadFacade.WithdrawalState.SUCCESS).toList();
             var processing=withdrawals.stream().filter(w->currency.equals(w.currency()) && w.state()==SupportFundsReadFacade.WithdrawalState.PROCESSING).toList();

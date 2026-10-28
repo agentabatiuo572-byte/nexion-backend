@@ -24,7 +24,7 @@ import org.springframework.mock.env.MockEnvironment;
 
 class AppExchangeRecoveryTest {
     private static final AppExchangeService.SwapRequest REQUEST =
-            new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), true);
+            new AppExchangeService.SwapRequest("USDT_TO_UVT", new BigDecimal("20"), true);
     private final AppExchangeMapper orders = mock(AppExchangeMapper.class);
     private final AdminIdempotencyRecordMapper receipts = mock(AdminIdempotencyRecordMapper.class);
     private final AdminIdempotencyExpiryTransitionExecutor expiry = mock(AdminIdempotencyExpiryTransitionExecutor.class);
@@ -54,13 +54,26 @@ class AppExchangeRecoveryTest {
     }
 
     @Test
+    void renamedTokenDirectionCanRecoverTheOriginalRetainedHash() throws Exception {
+        var saved = receipt("SUCCEEDED", "{\"code\":0,\"data\":{\"order\":{\"exchangeNo\":\"EX-original\"}}}");
+        saved.setRequestHash(hash("NormalizedSwap[fromAsset=NEX, fromAmount=20.000000, queueIfCapped=true]"));
+        var current = new AppExchangeMapper.ExchangeRow("EX-original", "UVT", "USDT", new BigDecimal("20"),
+                new BigDecimal("4"), new BigDecimal("0.2"), "CANCELLED", LocalDateTime.now());
+        when(orders.recoveryOrder(7L, "EX-original")).thenReturn(current);
+        var result = service(new MockEnvironment(), Optional.empty()).recovery(7L, "original-key",
+                new AppExchangeService.SwapRequest("UVT_TO_USDT", new BigDecimal("20"), true)).getData();
+        assertThat(result).containsEntry("status", "SUCCEEDED").containsEntry("order", current);
+        verify(orders, never()).applyWalletDelta(any(), any(), any());
+    }
+
+    @Test
     void expiredSuccessReturnsExactCurrentOrderWithoutHistoricalWalletOrAnyWrites() throws Exception {
         receipt("SUCCEEDED", "{\"code\":0,\"data\":{\"wallet\":{\"usdtAvailable\":999999},\"order\":{\"exchangeNo\":\"EX-original\",\"status\":\"QUEUED\"}}}");
-        var current = new AppExchangeMapper.ExchangeRow("EX-original", "USDT", "NEX", new BigDecimal("20"),
+        var current = new AppExchangeMapper.ExchangeRow("EX-original", "USDT", "UVT", new BigDecimal("20"),
                 new BigDecimal("100"), new BigDecimal("0.2"), "CANCELLED", LocalDateTime.now());
         when(orders.recoveryOrder(7L, "EX-original")).thenReturn(current);
         var result = service(new MockEnvironment(), Optional.empty()).recovery(7L, "original-key",
-                new AppExchangeService.SwapRequest(" usdt-to-nex ", new BigDecimal("20.0000009"), true)).getData();
+                new AppExchangeService.SwapRequest(" usdt-to-uvt ", new BigDecimal("20.0000009"), true)).getData();
         assertThat(result).containsOnlyKeys("status", "order", "sourceEnvironment", "runId")
                 .containsEntry("status", "SUCCEEDED").containsEntry("order", current)
                 .containsEntry("sourceEnvironment", "PRODUCTION").containsEntry("runId", "");
@@ -99,7 +112,7 @@ class AppExchangeRecoveryTest {
     void changedIntentDeletedMissingAndDifferentAccountCannotRecoverAnOrder() throws Exception {
         var row = receipt("SUCCEEDED", "{\"code\":0,\"data\":{\"order\":{\"exchangeNo\":\"EX-original\"}}}");
         var svc = service(new MockEnvironment(), Optional.empty());
-        assertThat(svc.recovery(7L, "original-key", new AppExchangeService.SwapRequest("USDT_TO_NEX", BigDecimal.ONE, true)).getData())
+        assertThat(svc.recovery(7L, "original-key", new AppExchangeService.SwapRequest("USDT_TO_UVT", BigDecimal.ONE, true)).getData())
                 .containsEntry("status", "MISMATCH").doesNotContainKey("order");
         row.setIsDeleted(1);
         assertThat(svc.recovery(7L, "original-key", REQUEST).getData()).containsEntry("status", "NOT_FOUND");
@@ -120,14 +133,14 @@ class AppExchangeRecoveryTest {
         when(sandboxMapper.userSandbox(7L)).thenReturn(1);
         when(sandboxMapper.exchangeRecoveryByKey("recovery-run-1", 7L, "original-key")).thenReturn(
                 new AppMarketSandboxMapper.ExchangeOrder(99L,"recovery-run-1",7L,"EX-sandbox","original-key",
-                        hash("USDT:2E+1:true"),"USDT","NEX",new BigDecimal("20"),BigDecimal.TEN,BigDecimal.ONE,
+                        hash("USDT:2E+1:true"),"USDT","UVT",new BigDecimal("20"),BigDecimal.TEN,BigDecimal.ONE,
                         "CANCELLED",LocalDateTime.now()));
         var svc = service(env, Optional.of(new AppMarketSandboxService(sandboxMapper, env, Optional.empty())));
         var result = svc.recovery(7L, "original-key", REQUEST).getData();
         assertThat(result).containsEntry("status", "SUCCEEDED").containsEntry("sourceEnvironment", "SANDBOX")
                 .containsEntry("runId", "recovery-run-1").doesNotContainKeys("wallet", "caps");
         assertThat(((Map<?,?>)result.get("order")).containsKey("idempotencyKey")).isFalse();
-        assertThat(svc.recovery(7L, "original-key", new AppExchangeService.SwapRequest("USDT_TO_NEX", BigDecimal.ONE, true)).getData())
+        assertThat(svc.recovery(7L, "original-key", new AppExchangeService.SwapRequest("USDT_TO_UVT", BigDecimal.ONE, true)).getData())
                 .containsEntry("status", "MISMATCH").doesNotContainKey("order");
         env.setProperty("NEXION_ACCEPTANCE_RUN_ID", "recovery-run-2");
         assertThat(svc.recovery(7L, "original-key", REQUEST).getData()).containsEntry("status", "NOT_FOUND");

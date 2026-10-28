@@ -76,7 +76,7 @@ class SupportFundAllocationTest {
         money("-400", changes.get(0).amount()); money("600", funds.total("USDT"));
     }
     @Test void pendingWithdrawalReconcilesTheGrossReservationUntilItsRealTerminalAction() {
-        Account nex = new Account(1, "NEX", "available");
+        Account nex = new Account(1, "UVT", "available");
         deposit("a-d", a, "1000"); deposit("b-d", b, "100"); deposit("n-d", nex, "4");
         money("0", funds.pendingWithdrawal(a));
         reserve("a-w", a, "400"); reserve("a-w2", a, "100"); reserve("b-w", b, "25"); reserve("n-w", nex, "2");
@@ -121,18 +121,18 @@ class SupportFundAllocationTest {
         reserve("w", a, "10"); confirm("wc", "w"); money("100", funds.total("USDT"));
     }
     @Test void exchangePreservesOriginalCurrencyCostBasisAndRoundingRemainder() {
-        Account nex = new Account(1, "NEX", "available");
+        Account nex = new Account(1, "UVT", "available");
         deposit("d", a, "1"); apply("fx", Action.EXCHANGE, a, nex, null, "1", "3");
-        money("1", funds.total("USDT")); money("0", funds.total("NEX"));
+        money("1", funds.total("USDT")); money("0", funds.total("UVT"));
         reserve("w1", nex, "1"); confirm("wc1", "w1"); money("0.666667", funds.total("USDT"));
         reserve("w2", nex, "1"); confirm("wc2", "w2"); money("0.333334", funds.total("USDT"));
         reserve("w3", nex, "1"); confirm("wc3", "w3"); money("0", funds.total("USDT"));
     }
     @Test void newNexConsumptionAndReversalStayInNexWithoutMixingCurrencies() {
-        Account nex = new Account(1, "NEX", "available");
+        Account nex = new Account(1, "UVT", "available");
         deposit("d", a, "100"); earning("e", nex, "12.345678"); consume("p", nex, "12.345678");
-        money("100", funds.total("USDT")); money("12.345678", funds.total("NEX"));
-        refund("r", "p", "0.000001"); money("12.345677", funds.total("NEX"));
+        money("100", funds.total("USDT")); money("12.345678", funds.total("UVT"));
+        refund("r", "p", "0.000001"); money("12.345677", funds.total("UVT"));
     }
     @Test void repeatedPartialReturnConservesExactSixDecimalOrigin() {
         deposit("d", a, "1"); consume("p", a, "1");
@@ -157,7 +157,7 @@ class SupportFundAllocationTest {
         consume("p", a, "50");
         assertThrows(IllegalArgumentException.class, () -> refund("bad-r", "p", "51")); money("50", funds.balance(a));
         assertThrows(IllegalArgumentException.class, () -> confirm("bad-w", "missing"));
-        assertThrows(IllegalArgumentException.class, () -> apply("bad-m", Action.MOVE, a, new Account(1, "NEX", "available"), null, "1", null));
+        assertThrows(IllegalArgumentException.class, () -> apply("bad-m", Action.MOVE, a, new Account(1, "UVT", "available"), null, "1", null));
         money("50", funds.balance(a)); money("100", funds.total("USDT"));
     }
     @Test void withdrawalFromLockAndMalformedPrecisionAreRejected() {
@@ -167,7 +167,7 @@ class SupportFundAllocationTest {
         money("100", funds.balance(held)); money("0", funds.balance(a));
     }
     @Test void conversionTooSmallToPreserveEverySourceCannotSilentlyLoseBasis() {
-        Account nex = new Account(1, "NEX", "available"); deposit("d1", a, "0.000001"); deposit("d2", a, "1");
+        Account nex = new Account(1, "UVT", "available"); deposit("d1", a, "0.000001"); deposit("d2", a, "1");
         assertThrows(IllegalArgumentException.class, () -> apply("fx", Action.EXCHANGE, a, nex, null, "1.000001", "0.000001"));
         money("1.000001", funds.balance(a)); money("0", funds.balance(nex)); money("1.000001", funds.total("USDT"));
     }
@@ -197,10 +197,10 @@ class SupportFundAllocationTest {
         money("100", funds.total("USDT")); reserve("w", a, "100"); confirm("wc", "w"); money("0", funds.total("USDT"));
     }
     @Test void exchangeSeparatesActualPrincipalFromNeutralFee() {
-        Account nex = new Account(1, "NEX", "available"); earning("e", a, "100");
+        Account nex = new Account(1, "UVT", "available"); earning("e", a, "100");
         funds.applyBatch(List.of(event("fee", Action.FEE, a, null, null, "10", null), event("fx", Action.EXCHANGE, a, nex, null, "90", "180")));
-        money("0", funds.total("USDT")); money("0", funds.total("NEX"));
-        consume("p", nex, "180"); money("180", funds.total("NEX"));
+        money("0", funds.total("USDT")); money("0", funds.total("UVT"));
+        consume("p", nex, "180"); money("180", funds.total("UVT"));
     }
     @Test void compoundOperationFailureRollsBackEveryEventAndReceipt() {
         deposit("d", a, "100");

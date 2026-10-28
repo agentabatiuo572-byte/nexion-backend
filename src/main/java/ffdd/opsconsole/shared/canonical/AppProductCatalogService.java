@@ -211,7 +211,7 @@ public class AppProductCatalogService {
         item.put("specDocumentUrl", validDocument ? nullableText(target.specDocumentUrl()) : null);
         item.put("warranty", DeviceSkuSpecifications.display(target.warranty()));
         item.put("phoneDailyEarn", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarn(), "USDT/day"));
-        item.put("phoneDailyEarnNEX", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarnNex(), "NEX/day"));
+        item.put("phoneDailyEarnNEX", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarnNex(), "UVT/day"));
         // Share has an E1 annual range, not a guaranteed USD/day amount.
         // Keep the legacy numeric field protocol-compatible without leaking it to clients.
         item.put("dailyEarn", share ? BigDecimal.ZERO : target.dailyUsdt());

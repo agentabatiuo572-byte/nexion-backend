@@ -533,7 +533,7 @@ public class AppGenesisService {
         if (owned > 0) qualificationCodes.add("HOLDINGS_CONFIRMED");
         else qualificationCodes.add("NO_ACTIVE_HOLDINGS");
         Map<String, Object> result = linked(
-                "reservedAllocation", null, "reservedAllocationUnit", "NEX",
+                "reservedAllocation", null, "reservedAllocationUnit", "UVT",
                 "priorityRank", null, "priorityTier", "NONE",
                 "qualificationReasonCodes", qualificationCodes,
                 "policyVersion", null, "effectiveAt", null, "asOf", now.toString(),
@@ -591,7 +591,7 @@ public class AppGenesisService {
         return config.activeValue(HOLDER_PREFIX + key).filter(StringUtils::hasText).map(String::trim).orElseThrow();
     }
 
-    /** NEX allocation is a user-facing token quantity; the public contract uses two decimals. */
+    /** UVT allocation is a user-facing token quantity; the public contract uses two decimals. */
     private BigDecimal nexQuantity(BigDecimal value) {
         return value.setScale(2, RoundingMode.HALF_UP);
     }

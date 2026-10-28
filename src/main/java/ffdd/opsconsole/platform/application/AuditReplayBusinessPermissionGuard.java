@@ -626,11 +626,11 @@ public class AuditReplayBusinessPermissionGuard {
                     || request.deviceEarning().amplifies((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning"));
             boolean v2=Integer.valueOf(2).equals(request.schemaVersion());
             var beforePurchase=Integer.valueOf(2).equals(current.get("policySchemaVersion"))?(ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase"):ffdd.opsconsole.team.domain.DirectReferralPolicy.DISABLED;
-            String beforeSummary=v2?"七层版本 "+request.expectedSevenLayerRevision()+"；L1原预算 "+service.sevenLayerReference().get("baseRatePct")+"%；统一冷却 "+service.sevenLayerReference().get("coolingDays")+" 天；"+(beforePurchase.enabled()?"购买拆分 USDT "+beforePurchase.usdtSharePct()+"%":"购买未拆分，全额USDT加旧NEX系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning")):
+            String beforeSummary=v2?"七层版本 "+request.expectedSevenLayerRevision()+"；L1原预算 "+service.sevenLayerReference().get("baseRatePct")+"%；统一冷却 "+service.sevenLayerReference().get("coolingDays")+" 天；"+(beforePurchase.enabled()?"购买拆分 USDT "+beforePurchase.usdtSharePct()+"%":"购买未拆分，全额USDT加旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning")):
                     directPolicySummary(((Number) current.get("policyVersion")).longValue(),
                             (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("purchase"),
                             (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("deviceEarning"));
-            String afterSummary=v2?"七层版本 "+request.expectedSevenLayerRevision()+"；L1原预算及冷却不变；"+(request.purchaseSplit().enabled()?"购买拆分 USDT "+request.purchaseSplit().usdtSharePct()+"%，拆分NEX替代旧额外NEX":"购买拆分关闭，恢复全额USDT和旧NEX系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary(request.deviceEarning()):directPolicySummary(request.expectedVersion()+1,request.effectivePurchase(),request.deviceEarning());
+            String afterSummary=v2?"七层版本 "+request.expectedSevenLayerRevision()+"；L1原预算及冷却不变；"+(request.purchaseSplit().enabled()?"购买拆分 USDT "+request.purchaseSplit().usdtSharePct()+"%，拆分UVT替代旧额外UVT":"购买拆分关闭，恢复全额USDT和旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary(request.deviceEarning()):directPolicySummary(request.expectedVersion()+1,request.effectivePurchase(),request.deviceEarning());
             return new DelegatedProposalDescriptor("直属双币分成政策", "current",beforeSummary,afterSummary,
                     "F2", amplifies?"fund":"param", amplifies,
                     new AuditLockTarget("F","direct_referral_policy","current"));
@@ -1046,7 +1046,7 @@ public class AuditReplayBusinessPermissionGuard {
             &&strictLong(p.get("expectedRevision"),1,Long.MAX_VALUE)!=null
             &&value(p,"snapshotHash").matches("^[0-9a-f]{64}$")
             &&Set.of("CANCEL","REVERSE").contains(value(p,"action"))
-            &&Set.of("DEVICE","USDT","NEX").contains(value(p,"asset"));
+            &&Set.of("DEVICE","USDT","UVT").contains(value(p,"asset"));
     }
 
     private String positiveIdentifier(Object value) {
@@ -1227,7 +1227,7 @@ public class AuditReplayBusinessPermissionGuard {
         return (rule.enabled() ? "启用" : "停用")
                 + "，总比例 " + rule.totalRatePct().stripTrailingZeros().toPlainString() + "%"
                 + "，USDT " + rule.usdtSharePct().stripTrailingZeros().toPlainString() + "%"
-                + " / NEX " + new java.math.BigDecimal("100").subtract(rule.usdtSharePct()).stripTrailingZeros().toPlainString() + "%"
+                + " / UVT " + new java.math.BigDecimal("100").subtract(rule.usdtSharePct()).stripTrailingZeros().toPlainString() + "%"
                 + "，等待 " + rule.coolingDays() + " 天";
     }
 

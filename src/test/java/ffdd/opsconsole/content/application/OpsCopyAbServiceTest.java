@@ -262,8 +262,8 @@ class OpsCopyAbServiceTest {
     void publishRejectsPlaceholderMismatch() {
         var request = new CopyVersionPublishRequest(
                 "v8", "Home", "全量", "50", "测试",
-                "赚取 {amount} USDT 和 {nex} NEX", "Earn {amount} USDT",
-                "Kiếm {amount} USDT và {nex} NEX", "home.hero",
+                "赚取 {amount} USDT 和 {nex} UVT", "Earn {amount} USDT",
+                "Kiếm {amount} USDT và {nex} UVT", "home.hero",
                 "Marina K.", "发布新版三语文案");
 
         var result = service.publishVersion("home.conversionBanner", "idem-i1-pub", request);
@@ -303,9 +303,9 @@ class OpsCopyAbServiceTest {
     void publishRejectsAttemptToReusePublishedVersionNumber() {
         var request = new CopyVersionPublishRequest(
                 "v7", "Home", "全量", "50", "不能覆盖发布版",
-                "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
-                "Reinvest {amount} USDT and earn {nex} NEX",
-                "Tái đầu tư {amount} USDT và nhận {nex} NEX", "home.hero",
+                "完成 {amount} USDT 复投并获得 {nex} UVT 奖励",
+                "Reinvest {amount} USDT and earn {nex} UVT",
+                "Tái đầu tư {amount} USDT và nhận {nex} UVT", "home.hero",
                 "Marina K.", "发布独立文案版本");
 
         var result = service.publishVersion("home.conversionBanner", "idem-i1-pub-current", request);
@@ -319,9 +319,9 @@ class OpsCopyAbServiceTest {
     void publishRejectsAttemptToOverwriteArchivedVersion() {
         var request = new CopyVersionPublishRequest(
                 "v6", "Home", "全量", "50", "不能覆盖历史版",
-                "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
-                "Reinvest {amount} USDT and earn {nex} NEX",
-                "Tái đầu tư {amount} USDT và nhận {nex} NEX", "home.hero",
+                "完成 {amount} USDT 复投并获得 {nex} UVT 奖励",
+                "Reinvest {amount} USDT and earn {nex} UVT",
+                "Tái đầu tư {amount} USDT và nhận {nex} UVT", "home.hero",
                 "Marina K.", "历史版本只能回滚");
 
         var result = service.publishVersion("home.conversionBanner", "idem-i1-pub-archived", request);
@@ -363,9 +363,9 @@ class OpsCopyAbServiceTest {
     void saveDraftRejectsClientAttemptToReusePublishedVersionNumber() {
         var request = new CopyDraftSaveRequest(
                 "v7", "Home", "全量", "50", "不能用大小写变体覆盖发布版",
-                "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
-                "Reinvest {amount} USDT and earn {nex} NEX",
-                "Tái đầu tư {amount} USDT và nhận {nex} NEX", "home.hero",
+                "完成 {amount} USDT 复投并获得 {nex} UVT 奖励",
+                "Reinvest {amount} USDT and earn {nex} UVT",
+                "Tái đầu tư {amount} USDT và nhận {nex} UVT", "home.hero",
                 "Marina K.", "保存独立草稿版本");
 
         var result = service.saveDraft("home.conversionBanner", "idem-i1-draft-current", request);
@@ -379,9 +379,9 @@ class OpsCopyAbServiceTest {
     void saveDraftRejectsClientAttemptToOverwriteArchivedVersion() {
         var request = new CopyDraftSaveRequest(
                 "v6", "Home", "全量", "50", "不能覆盖历史版",
-                "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
-                "Reinvest {amount} USDT and earn {nex} NEX",
-                "Tái đầu tư {amount} USDT và nhận {nex} NEX", "home.hero",
+                "完成 {amount} USDT 复投并获得 {nex} UVT 奖励",
+                "Reinvest {amount} USDT and earn {nex} UVT",
+                "Tái đầu tư {amount} USDT và nhận {nex} UVT", "home.hero",
                 "Marina K.", "历史版本只能回滚");
 
         var result = service.saveDraft("home.conversionBanner", "idem-i1-draft-archived", request);
@@ -732,9 +732,9 @@ class OpsCopyAbServiceTest {
     void saveDraftRejectsMalformedClientVersionNumbers() {
         var request = new CopyDraftSaveRequest(
                 "vér7", "Home", "全量", "50", "版本号必须规范",
-                "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
-                "Reinvest {amount} USDT and earn {nex} NEX",
-                "Tái đầu tư {amount} USDT và nhận {nex} NEX", "home.hero",
+                "完成 {amount} USDT 复投并获得 {nex} UVT 奖励",
+                "Reinvest {amount} USDT and earn {nex} UVT",
+                "Tái đầu tư {amount} USDT và nhận {nex} UVT", "home.hero",
                 "Marina K.", "拒绝重音字符绕过");
 
         var result = service.saveDraft("home.conversionBanner", "idem-i1-draft-accent", request);
@@ -897,9 +897,9 @@ class OpsCopyAbServiceTest {
                 "全量",
                 "50",
                 "复投文案换版",
-                "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
-                "Reinvest {amount} USDT and earn {nex} NEX",
-                "Tái đầu tư {amount} USDT và nhận {nex} NEX",
+                "完成 {amount} USDT 复投并获得 {nex} UVT 奖励",
+                "Reinvest {amount} USDT and earn {nex} UVT",
+                "Tái đầu tư {amount} USDT và nhận {nex} UVT",
                 "home.hero",
                 "Marina K.",
                 reason);
@@ -916,9 +916,9 @@ class OpsCopyAbServiceTest {
                 "全量",
                 "50",
                 "复投文案草稿",
-                "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
-                "Reinvest {amount} USDT and earn {nex} NEX",
-                "Tái đầu tư {amount} USDT và nhận {nex} NEX",
+                "完成 {amount} USDT 复投并获得 {nex} UVT 奖励",
+                "Reinvest {amount} USDT and earn {nex} UVT",
+                "Tái đầu tư {amount} USDT và nhận {nex} UVT",
                 "home.hero",
                 "Marina K.",
                 "保存当前文案草稿");

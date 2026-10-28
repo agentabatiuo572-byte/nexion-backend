@@ -865,10 +865,10 @@ class OpsAuditCenterServiceTest {
                 new ffdd.opsconsole.platform.domain.AuditLockTarget("F", "direct_referral_policy", "current"), null));
         assertThat(result.getCode()).isZero();
         var stored = ticketRows.get(result.getData().id());
-        assertThat(stored.getBeforeValue()).contains("版本 3", "购买：启用，总比例 10%", "USDT 60% / NEX 40%", "等待 30 天",
-                "设备收益：启用，总比例 5%", "USDT 55% / NEX 45%", "等待 7 天");
+        assertThat(stored.getBeforeValue()).contains("版本 3", "购买：启用，总比例 10%", "USDT 60% / UVT 40%", "等待 30 天",
+                "设备收益：启用，总比例 5%", "USDT 55% / UVT 45%", "等待 7 天");
         assertThat(stored.getAfterValue()).contains("版本 4", "购买：启用，总比例 8%", "等待 31 天",
-                "设备收益：启用，总比例 4%", "USDT 50% / NEX 50%", "等待 9 天");
+                "设备收益：启用，总比例 4%", "USDT 50% / UVT 50%", "等待 9 天");
         assertThat(stored.getReason()).isEqualTo(reason);
         assertThat(stored.getAmplifies()).isZero();
         assertThat(stored.getCommandJson()).contains("\"expectedVersion\":3", "\"purchase\"", "\"deviceEarning\"");
