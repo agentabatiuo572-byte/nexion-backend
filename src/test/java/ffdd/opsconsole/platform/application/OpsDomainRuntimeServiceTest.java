@@ -155,11 +155,8 @@ class OpsDomainRuntimeServiceTest {
         });
 
         ApiResult<OpsDomainRuntimeContract> risk = service.contract("risk");
-        assertThat(risk.getData().apiFamilies()).anySatisfy(api -> {
-            assertThat(api.resource()).isEqualTo("JanusApprovedTarget");
-            assertThat(api.path()).isEqualTo("/api/admin/janus/remote-targets/**");
-            assertThat(api.writePermission()).isEqualTo("risk_k6_target_manage");
-        });
+        assertThat(risk.getData().apiFamilies()).noneSatisfy(api ->
+                assertThat(api.path()).startsWith("/api/admin/janus"));
     }
 
     @Test

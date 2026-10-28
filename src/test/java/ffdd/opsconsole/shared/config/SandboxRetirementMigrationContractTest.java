@@ -137,7 +137,6 @@ class SandboxRetirementMigrationContractTest {
                 "finance/web/FundsSandboxController.java",
                 "finance/web/OpsPayoutVndSandboxController.java",
                 "growth/web/AcceptanceSandboxReferralRewardController.java",
-                "janus/web/AppJanusSandboxEnrollmentController.java",
                 "market/web/AppGenesisSandboxFixtureController.java",
                 "market/web/G2AcceptanceSandboxController.java",
                 "team/web/AppProofSandboxFixtureController.java")) {
