@@ -2743,7 +2743,7 @@ INSERT INTO nx_growth_promo_banner
   (banner_code, base_reward, multiplier, countdown_days, countdown_hours,
    target_device, target_daily, status, sort_order, created_at, updated_at, is_deleted)
 VALUES
-  ('HOME_WEEKLY_UPSELL', '800', '1.5', 4, 12, 'StellarBox Pro', '1.50',
+  ('HOME_WEEKLY_UPSELL', '800', '1.5', 4, 12, 'UVELBox Pro', '1.50',
    'paused', 10, NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE banner_code = VALUES(banner_code);
 
@@ -7035,9 +7035,9 @@ INSERT INTO nx_onboarding_yield_comparison_config
   (config_key,label,daily_usdt,daily_nex,sort_order,revision,active,is_deleted)
 VALUES
   ('phone','手机',0.060000,10.000000,1,1,1,0),
-  ('s1','NexionBox S1',1.200000,65.000000,2,1,1,0),
-  ('pro','NexionBox Pro',4.800000,260.000000,3,1,1,0),
-  ('rack','StellarRack',18.000000,980.000000,4,1,1,0)
+  ('s1','UVELBox S1',1.200000,65.000000,2,1,1,0),
+  ('pro','UVELBox Pro',4.800000,260.000000,3,1,1,0),
+  ('rack','UVELRack',18.000000,980.000000,4,1,1,0)
 ON DUPLICATE KEY UPDATE config_key=config_key;
 
 CREATE TABLE IF NOT EXISTS nx_onboarding_calibration (

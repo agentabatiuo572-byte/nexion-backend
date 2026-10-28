@@ -5,7 +5,7 @@ SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 INSERT INTO nx_admin (id, username, password_hash, nickname, email, phone, super_admin, status)
 VALUES
-  (1, 'superadmin', '$2a$10$OiCP0hEdnWNuxl/Q6PQ.juoWSzQCXFbvrLheJ.TYywnoyiZY7s19C', 'Super Admin', 'admin@nexion.ai', NULL, 1, 1)
+  (1, 'superadmin', '$2a$10$OiCP0hEdnWNuxl/Q6PQ.juoWSzQCXFbvrLheJ.TYywnoyiZY7s19C', 'Super Admin', 'staff@uvel.ai', NULL, 1, 1)
 ON DUPLICATE KEY UPDATE
   password_hash = VALUES(password_hash),
   nickname = VALUES(nickname),

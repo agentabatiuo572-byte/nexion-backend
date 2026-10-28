@@ -8,5 +8,5 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "spring.application")
 public class ApplicationNameProperties {
-    private String name = "nexion-service";
+    private String name = "uvel-service";
 }

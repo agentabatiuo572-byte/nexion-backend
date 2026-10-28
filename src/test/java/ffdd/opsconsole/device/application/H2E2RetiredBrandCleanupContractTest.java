@@ -20,8 +20,8 @@ import org.junit.jupiter.api.Test;
 class H2E2RetiredBrandCleanupContractTest {
     private static final Path MIGRATION = Path.of("scripts/migrations/20260921_h2_e2_retired_brand_cleanup.sql");
     private static final Path STARTUP = Path.of("scripts/apply_startup_schema_migrations.ps1");
-    /** 与 OpsDeviceService.TASK_REQUIREMENTS 的枚举逐字一致。 */
-    private static final List<String> CANONICAL_REQUIREMENTS = List.of("需 NexGridBox Pro", "需 NexGridRack");
+    /** 20260921 历史迁移当时的目标值；已登记迁移字节保持不变。 */
+    private static final List<String> HISTORICAL_REQUIREMENTS = List.of("需 NexGridBox Pro", "需 NexGridRack");
 
     @Test
     void cleanupCoversProductsAndTaskRequirementsWithTheRetiredBrandRegex() throws IOException {
@@ -31,7 +31,7 @@ class H2E2RetiredBrandCleanupContractTest {
         assertThat(sql).contains("UPDATE nx_admin_device_task");
         // 与 RetiredBrandGate.RETIRED_BRAND_REGEX 同一口径的整词匹配。
         assertThat(sql).contains("REGEXP '(^|[^[:alnum:]])[Nn]exion'");
-        CANONICAL_REQUIREMENTS.forEach(value -> assertThat(sql).contains("'" + value + "'"));
+        HISTORICAL_REQUIREMENTS.forEach(value -> assertThat(sql).contains("'" + value + "'"));
     }
 
     @Test
@@ -56,7 +56,7 @@ class H2E2RetiredBrandCleanupContractTest {
                 Path.of("scripts/seed-e2-tasks.mjs"))) {
             String text = Files.readString(source, StandardCharsets.UTF_8);
             assertThat(text).as(source.toString()).doesNotContain("需 NexionRack").doesNotContain("需 NexionBox Pro");
-            assertThat(text).as(source.toString()).contains("需 NexGridRack");
+            assertThat(text).as(source.toString()).contains("需 UVELRack").doesNotContain("需 NexGridRack").doesNotContain("需 NexGridBox Pro");
         }
     }
 
