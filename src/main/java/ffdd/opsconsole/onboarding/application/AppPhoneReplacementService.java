@@ -61,16 +61,23 @@ public class AppPhoneReplacementService {
                 ? context.session().getInstallationId() : null);
     }
 
+    /** Activation receipts keep the full calibration result for audit; the App never sees its range. */
+    private static Receipt appReceipt(Receipt receipt) {
+        return receipt == null ? null : new Receipt(receipt.operationId(), receipt.commandType(), receipt.status(),
+                receipt.submittedAt(), receipt.completedAt(), PhoneCalibrationPolicy.appView(receipt.originalResult()),
+                receipt.currentResource(), receipt.auditRef());
+    }
+
     @Transactional
     public Receipt operation(Authentication authentication, String operationId) {
         Context context = context(authentication, false);
-        return replacements.userOperation(context.account(), operationId);
+        return appReceipt(replacements.userOperation(context.account(), operationId));
     }
 
     @Transactional
     public Receipt operationByKey(Authentication authentication, String commandType, String key) {
         Context context = context(authentication, false);
-        return replacements.operationByKey(context.account(), new Actor("USER", context.account().userId()), commandType, key);
+        return appReceipt(replacements.operationByKey(context.account(), new Actor("USER", context.account().userId()), commandType, key));
     }
 
     @Transactional(rollbackFor = Exception.class)
