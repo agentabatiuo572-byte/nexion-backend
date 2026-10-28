@@ -18,8 +18,14 @@ public final class PhoneCalibrationConfigService {
         this.clock = clock;
     }
     public record State(long revision, PhoneCalibrationPolicy current, PhoneCalibrationPolicy scheduled) { }
+    /** A null iosModelRules (a client that predates them) keeps the latest published iPhone rules. */
     public record Proposal(long expectedRevision, long effectiveAt, List<java.math.BigDecimal> thresholds,
-                           List<PhoneCalibrationPolicy.Rule> rules) { }
+                           List<PhoneCalibrationPolicy.Rule> rules, List<PhoneCalibrationPolicy.IosModelRule> iosModelRules) {
+        public Proposal(long expectedRevision, long effectiveAt, List<java.math.BigDecimal> thresholds,
+                        List<PhoneCalibrationPolicy.Rule> rules) {
+            this(expectedRevision, effectiveAt, thresholds, rules, null);
+        }
+    }
 
     public State read() { return effective(parse(config.activeValue(KEY).orElse(null))); }
     public PhoneCalibrationPolicy activePolicy() { return read().current(); }
@@ -31,8 +37,11 @@ public final class PhoneCalibrationConfigService {
         if (proposal.effectiveAt() < 0 || proposal.effectiveAt() > clock.millis() + 366L * 86400000) {
             throw new BizException(422, "PHONE_CALIBRATION_EFFECTIVE_TIME_INVALID");
         }
+        PhoneCalibrationPolicy latest = state.scheduled() != null ? state.scheduled() : state.current();
+        var iosModelRules = proposal.iosModelRules() != null ? proposal.iosModelRules()
+                : latest == null ? List.<PhoneCalibrationPolicy.IosModelRule>of() : latest.iosModelRules();
         PhoneCalibrationPolicy policy = new PhoneCalibrationPolicy(state.revision() + 1,
-                Math.max(clock.millis(), proposal.effectiveAt()), proposal.thresholds(), proposal.rules());
+                Math.max(clock.millis(), proposal.effectiveAt()), proposal.thresholds(), proposal.rules(), iosModelRules);
         policy.validate();
         return policy;
     }

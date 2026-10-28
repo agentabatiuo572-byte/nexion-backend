@@ -57,6 +57,19 @@ class PhoneCalibrationConfigServiceTest {
                 .isInstanceOf(BizException.class).hasMessageContaining("PUBLICATION_PENDING");
         assertThat(values.get(PhoneCalibrationConfigService.KEY)).isEqualTo(before);
     }
+    @Test void iosModelRulesPublishAndSurviveAClientThatOmitsThem() {
+        var withIos = new PhoneCalibrationConfigService.Proposal(0, 0, PhoneCalibrationPolicyTest.policy(List.of()).thresholds(),
+                List.of(), List.of(IosModelRulePolicyTest.ios("ios-iphone-16-pro", "iPhone 16 Pro", "100", "120")));
+        assertThat(service(1000).publish(withIos).current().iosModelRules()).hasSize(1);
+        // An older E6 client sends no iosModelRules: the published iPhone rules stay.
+        var after = service(2000).publish(proposal(1, 0, "18.4"));
+        assertThat(after.current().iosModelRules()).extracting(PhoneCalibrationPolicy.IosModelRule::model)
+                .containsExactly("iPhone 16 Pro");
+        assertThat(after.current().rules()).hasSize(1);
+        // An explicit empty list is a deliberate removal of every iPhone rule.
+        var cleared = new PhoneCalibrationConfigService.Proposal(2, 0, after.current().thresholds(), List.of(), List.of());
+        assertThat(service(3000).publish(cleared).current().iosModelRules()).isEmpty();
+    }
     @Test void corruptStoredRulesDoNotFallbackToPermissiveDefaults() {
         values.put(PhoneCalibrationConfigService.KEY, "{}");
         assertThatThrownBy(() -> service(1000).activePolicy()).isInstanceOf(BizException.class);

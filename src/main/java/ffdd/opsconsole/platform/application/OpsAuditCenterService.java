@@ -959,11 +959,31 @@ public class OpsAuditCenterService {
         try {
             var proposal = objectMapper.convertValue(command.params(),
                     ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService.Proposal.class);
-            return objectMapper.writeValueAsString(proposal);
+            Map<String, Object> view = objectMapper.convertValue(proposal, new com.fasterxml.jackson.core.type.TypeReference<>() { });
+            // Reviewers compare against the latest published rules, read from the server, not from the proposer.
+            view.put("baseline", phoneCalibrationBaseline());
+            return objectMapper.writeValueAsString(view);
         } catch (Exception invalid) {
             // Keep the queue readable so an invalid historical proposal can be rejected.
             return null;
         }
+    }
+
+    private Map<String, Object> phoneCalibrationBaseline() {
+        var config = new ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService(
+                new PlatformConfigFacadeAdapter(configRepository), java.time.Clock.systemUTC());
+        ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService.State state;
+        try {
+            state = config.read();
+        } catch (RuntimeException unavailable) {
+            return null; // The proposal stays reviewable; the page says the comparison is unavailable.
+        }
+        var latest = state.scheduled() != null ? state.scheduled() : state.current();
+        Map<String, Object> baseline = new java.util.LinkedHashMap<>();
+        baseline.put("revision", state.revision());
+        baseline.put("rules", latest == null ? List.of() : latest.rules());
+        baseline.put("iosModelRules", latest == null ? List.of() : latest.iosModelRules());
+        return baseline;
     }
 
     private List<AuditOperationHistory> history(List<AuditOperationTicket> tickets, AuditLogQueryRequest filter) {
