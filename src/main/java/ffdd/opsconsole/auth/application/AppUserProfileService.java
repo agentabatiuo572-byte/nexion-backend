@@ -41,6 +41,8 @@ public class AppUserProfileService {
     private static final Set<String> ALLOWED_NOUNS = Set.copyOf(NOUNS);
     private static final Set<String> ALLOWED_LANGUAGES = Set.of(
             "en", "vi", "zh");
+    /** A user may change their nickname, and separately their avatar, once per interval. */
+    static final java.time.Duration CHANGE_INTERVAL = java.time.Duration.ofDays(7);
 
     private final AppUserProfileMapper mapper;
     private final AdminIdempotencyService idempotency;
@@ -54,12 +56,16 @@ public class AppUserProfileService {
         Map<String, Object> row = mapper.profile(userId);
         if (row == null) throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         String objectKey = text(row.get("avatarObjectKey"));
-        return Map.of(
-                "nickname", text(row.get("nickname")),
-                "avatarUrl", StringUtils.hasText(objectKey)
-                        ? avatarUrl(userId, objectKey) : "",
-                "avatarRevision", StringUtils.hasText(objectKey) ? hash(objectKey) : "",
-                "language", normalizedLanguage(row.get("language")));
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("nickname", text(row.get("nickname")));
+        result.put("avatarUrl", StringUtils.hasText(objectKey) ? avatarUrl(userId, objectKey) : "");
+        result.put("avatarRevision", StringUtils.hasText(objectKey) ? hash(objectKey) : "");
+        result.put("language", normalizedLanguage(row.get("language")));
+        // Epoch millis of the next allowed change; null when the user may change it now.
+        result.put("profileChangeIntervalDays", CHANGE_INTERVAL.toDays());
+        result.put("nicknameChangeAvailableAt", nextChangeAt((java.time.LocalDateTime) row.get("nicknameChangedAt")));
+        result.put("avatarChangeAvailableAt", nextChangeAt((java.time.LocalDateTime) row.get("avatarChangedAt")));
+        return result;
     }
 
     @Transactional(readOnly = true)
@@ -120,6 +126,7 @@ public class AppUserProfileService {
             return Map.of("nickname", current, "status", "UNCHANGED");
         }
         if (!current.equals(expected)) throw new BizException(409, "USER_PROFILE_VERSION_CONFLICT");
+        if (nextChangeAt(mapper.nicknameChangedAt(userId)) != null) throw new BizException(409, "USER_NICKNAME_CHANGE_TOO_SOON");
         if (mapper.updateNickname(userId, nickname, expected) != 1) {
             throw new BizException(409, "USER_PROFILE_VERSION_CONFLICT");
         }
@@ -151,6 +158,7 @@ public class AppUserProfileService {
     @Transactional(rollbackFor = Exception.class)
     Map<String, Object> uploadAvatarClaimed(Long userId, AvatarFile avatar) {
         String previous = mapper.currentAvatarForUpdate(userId);
+        if (nextChangeAt(mapper.avatarChangedAt(userId)) != null) throw new BizException(409, "USER_AVATAR_CHANGE_TOO_SOON");
         String objectKey = "users/" + userId + "/avatar/" + UUID.randomUUID().toString().replace("-", "")
                 + avatar.extension();
         String avatarUrl = avatarImages.issueUrl(userId, objectKey);
@@ -182,6 +190,14 @@ public class AppUserProfileService {
             objectStorage.removeQuietly(objectKey);
             throw exception;
         }
+    }
+
+    /** Next allowed change as epoch millis, or null when the interval has passed or the user never changed it. */
+    private static Long nextChangeAt(java.time.LocalDateTime changedAt) {
+        if (changedAt == null) return null;
+        java.time.LocalDateTime next = changedAt.plus(CHANGE_INTERVAL);
+        java.time.ZoneId storage = ffdd.opsconsole.shared.config.BusinessCalendar.STORAGE_ZONE;
+        return next.isAfter(java.time.LocalDateTime.now(storage)) ? next.atZone(storage).toInstant().toEpochMilli() : null;
     }
 
     private void requireActiveUser(Long userId) {

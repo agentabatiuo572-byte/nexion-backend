@@ -55,6 +55,57 @@ class AppUserProfileServiceTest {
         });
     }
 
+    private static java.time.LocalDateTime storageNowMinus(java.time.Duration ago) {
+        return java.time.LocalDateTime.now(ffdd.opsconsole.shared.config.BusinessCalendar.STORAGE_ZONE).minus(ago);
+    }
+
+    @Test
+    void nicknameChangedWithinSevenDaysIsRefusedWithoutAnyWrite() {
+        when(mapper.currentNicknameForUpdate(42L)).thenReturn("Nexion 0042");
+        when(mapper.nicknameChangedAt(42L)).thenReturn(storageNowMinus(java.time.Duration.ofDays(3)));
+        assertThatThrownBy(() -> service.updateNickname(42L, "too-soon",
+                new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Swift Pilot 43")))
+                .hasMessage("USER_NICKNAME_CHANGE_TOO_SOON");
+        verify(mapper, never()).updateNickname(any(), any(), any());
+        org.mockito.Mockito.verifyNoInteractions(audit, facts);
+    }
+
+    @Test
+    void nicknameMayChangeAgainOnceSevenDaysHavePassed() {
+        when(mapper.currentNicknameForUpdate(42L)).thenReturn("Nexion 0042");
+        when(mapper.nicknameChangedAt(42L)).thenReturn(storageNowMinus(java.time.Duration.ofDays(7).plusMinutes(1)));
+        when(mapper.updateNickname(42L, "Swift Pilot 43", "Nexion 0042")).thenReturn(1);
+        assertThat(service.updateNickname(42L, "after-interval",
+                new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Swift Pilot 43")))
+                .containsEntry("status", "UPDATED");
+    }
+
+    @Test
+    void avatarChangedWithinSevenDaysIsRefusedBeforeStorage() {
+        when(mapper.currentAvatarForUpdate(42L)).thenReturn("users/42/avatar/old.png");
+        when(mapper.avatarChangedAt(42L)).thenReturn(storageNowMinus(java.time.Duration.ofHours(2)));
+        byte[] png = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3};
+        assertThatThrownBy(() -> service.uploadAvatar(42L, "avatar-too-soon",
+                new MockMultipartFile("file", "avatar.png", "image/png", png)))
+                .hasMessage("USER_AVATAR_CHANGE_TOO_SOON");
+        org.mockito.Mockito.verifyNoInteractions(storage, audit);
+        verify(mapper, never()).updateAvatarObjectKey(any(), any(), any());
+    }
+
+    @Test
+    void profileReportsWhenEachFieldCanChangeNext() {
+        java.time.LocalDateTime changed = storageNowMinus(java.time.Duration.ofDays(2));
+        var row = new java.util.HashMap<String, Object>(Map.of("nickname", "Nova Rover 42", "language", "en"));
+        row.put("nicknameChangedAt", changed);
+        row.put("avatarChangedAt", storageNowMinus(java.time.Duration.ofDays(9)));
+        when(mapper.profile(42L)).thenReturn(row);
+        assertThat(service.profile(42L))
+                .containsEntry("profileChangeIntervalDays", 7L)
+                .containsEntry("nicknameChangeAvailableAt", changed.plusDays(7)
+                        .atZone(ffdd.opsconsole.shared.config.BusinessCalendar.STORAGE_ZONE).toInstant().toEpochMilli())
+                .containsEntry("avatarChangeAvailableAt", null);
+    }
+
     @Test
     void candidatesAreCuratedUniqueAndServerGenerated() {
         var candidates = service.nicknameCandidates(42L);
