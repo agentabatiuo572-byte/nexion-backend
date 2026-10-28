@@ -3,16 +3,22 @@ package ffdd.opsconsole.onboarding.web;
 import ffdd.opsconsole.onboarding.application.IosModelPresetCatalog;
 import ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService;
 import ffdd.opsconsole.onboarding.application.PhoneCalibrationPolicy;
+import ffdd.opsconsole.onboarding.application.PhoneModelRisk;
+import ffdd.opsconsole.onboarding.application.PhoneModelRiskAdminService;
+import ffdd.opsconsole.onboarding.application.PhoneModelRiskConfig;
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.time.Clock;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -24,7 +30,14 @@ public class PhoneCalibrationAdminController {
     private final PlatformConfigFacade config;
     private final OnboardingCalibrationMapper mapper;
     private final Clock clock;
-    public record Preview(PhoneCalibrationConfigService.Proposal proposal, PhoneCalibrationPolicy.Hardware hardware) { }
+    private final PhoneModelRiskAdminService risk;
+    /** {@code facts} optionally adds an iPhone's OS version and screen to show which model checks would fire. */
+    public record Preview(PhoneCalibrationConfigService.Proposal proposal, PhoneCalibrationPolicy.Hardware hardware,
+                          PhoneModelRisk.Facts facts) {
+        public Preview(PhoneCalibrationConfigService.Proposal proposal, PhoneCalibrationPolicy.Hardware hardware) {
+            this(proposal, hardware, null);
+        }
+    }
 
     @GetMapping
     @PreAuthorize("hasAnyAuthority('device_e6_read','device_e2_read')")
@@ -41,6 +54,20 @@ public class PhoneCalibrationAdminController {
     @PreAuthorize("hasAuthority('device_e6_read')")
     public ApiResult<IosModelPresetCatalog.Catalog> iosModelPresets() {
         return ApiResult.ok(IosModelPresetCatalog.load());
+    }
+
+    /** Model risk settings take effect when saved; they are not part of the A2-approved rules. */
+    @GetMapping("/risk")
+    @PreAuthorize("hasAuthority('device_e6_read')")
+    public ApiResult<Map<String,Object>> risk() {
+        return ApiResult.ok(risk.read());
+    }
+
+    @PutMapping("/risk")
+    @PreAuthorize("hasAuthority('device_e6_write')")
+    public ApiResult<Map<String,Object>> updateRisk(@RequestHeader(value = "Idempotency-Key", required = false) String key,
+                                                   @RequestBody PhoneModelRiskAdminService.Update request) {
+        return ApiResult.ok(risk.update(request, key));
     }
 
     @PostMapping("/preview")
@@ -71,6 +98,12 @@ public class PhoneCalibrationAdminController {
         Map<String,Object> data = new LinkedHashMap<>();
         data.put("match", match);
         data.put("possibleTiers", policy.possibleTiers(match));
+        // Only the per-report checks: the installation lock and account churn depend on a real account's history.
+        var rule = match.matched() && match.range() ? policy.iosRule(match.ruleId()) : null;
+        data.put("risk", request.facts() == null || rule == null ? List.of()
+                : PhoneModelRisk.evaluate(new PhoneModelRiskConfig(config, clock).read(),
+                        new PhoneModelRisk.Facts(request.hardware().platform(), request.facts().osVersion(), request.facts().pixelRatio(),
+                                request.facts().screenWidth(), request.facts().screenHeight()), rule, false, 0).findings());
         data.put("impact", Map.of("matched", matched, "changed", changed, "pending", pending,
                 "appliesTo", "NEXT_CALIBRATION", "historicalSettlementChanged", false));
         data.put("expectedRevision", request.proposal().expectedRevision());
