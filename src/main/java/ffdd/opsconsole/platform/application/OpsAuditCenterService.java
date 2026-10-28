@@ -981,7 +981,8 @@ public class OpsAuditCenterService {
         var latest = state.scheduled() != null ? state.scheduled() : state.current();
         Map<String, Object> baseline = new java.util.LinkedHashMap<>();
         baseline.put("revision", state.revision());
-        baseline.put("rules", latest == null ? List.of() : latest.rules());
+        baseline.put("androidSocRules", latest == null ? List.of() : latest.androidSocRules());
+        baseline.put("androidPresetRemovals", latest == null ? null : latest.androidPresetRemovals());
         baseline.put("iosModelRules", latest == null ? List.of() : latest.iosModelRules());
         return baseline;
     }

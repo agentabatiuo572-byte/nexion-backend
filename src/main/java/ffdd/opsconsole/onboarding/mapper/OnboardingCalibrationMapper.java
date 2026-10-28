@@ -392,40 +392,38 @@ public interface OnboardingCalibrationMapper {
     @Select("""
             SELECT derived_json FROM nx_onboarding_calibration
              WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND run_id=#{runId} AND is_deleted=0
-               AND (JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.calibrationMethod'))='IOS_MODEL_RANGE'
+               AND (JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.calibrationMethod')) IN ('IOS_MODEL_RANGE','ANDROID_SOC_RANGE')
                     OR JSON_CONTAINS_PATH(derived_json,'one','$.iosAllocations'))
              ORDER BY updated_at DESC,id DESC
             """)
     List<String> iosRangeAllocations(@Param("userId") Long userId, @Param("sourceEnvironment") String sourceEnvironment,
                                      @Param("runId") String runId);
 
+    /** Calibrations grouped by what decides a match: platform, model and the reported chip identifiers. */
     @Select("""
-            SELECT JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')) platform,
-                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')) model,
-                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.soc')) soc,
-                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.gpu')) gpu,
-                   CAST(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.memGB')) AS DECIMAL(10,3)) memoryGb,
+            SELECT NULLIF(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')),'null') platform,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')),'null') model,
+                   JSON_EXTRACT(signal_json,'$.socIds') socIds,
                    CAST(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.tier')) AS SIGNED) tier,
                    CAST(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.computeValue')) AS DECIMAL(12,3)) computeValue,
                    COUNT(*) count
               FROM nx_onboarding_calibration
              WHERE is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
-             GROUP BY platform,model,soc,gpu,memoryGb,tier,computeValue
+             GROUP BY platform,model,socIds,tier,computeValue
             """)
     List<HardwareGroup> calibrationHardwareGroups();
 
+    /** Calibrations waiting for verification by reported identifiers and reason, all identifiers of a request together. */
     @Select("""
-            SELECT JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')) platform,
-                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')) model,
-                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.soc')) soc,
-                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.gpu')) gpu,
-                   CAST(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.memGB')) AS DECIMAL(10,3)) memoryGb,
-                   JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.pendingReason')) reason,
+            SELECT NULLIF(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')),'null') platform,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')),'null') model,
+                   JSON_EXTRACT(signal_json,'$.socIds') socIds,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.pendingReason')),'null') reason,
                    COUNT(*) count
               FROM nx_onboarding_calibration
              WHERE is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
                AND JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.calibrationStatus'))='PENDING_VERIFICATION'
-             GROUP BY platform,model,soc,gpu,memoryGb,reason ORDER BY count DESC LIMIT 100
+             GROUP BY platform,model,socIds,reason ORDER BY count DESC LIMIT 100
             """)
     List<PendingHardware> pendingHardware();
 
@@ -482,7 +480,8 @@ public interface OnboardingCalibrationMapper {
                    activation_status activationStatus,
                    CAST(UNIX_TIMESTAMP(updated_at)*1000 AS UNSIGNED) updatedAt,
                    row_version rowVersion,
-                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.released')),'null') released
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.released')),'null') released,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.socKey')),'null') lockSocKey
               FROM nx_onboarding_calibration
              WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND run_id=#{runId} AND is_deleted=0
              ORDER BY updated_at DESC,id DESC LIMIT 50
@@ -502,7 +501,8 @@ public interface OnboardingCalibrationMapper {
                    activation_status activationStatus,
                    CAST(UNIX_TIMESTAMP(updated_at)*1000 AS UNSIGNED) updatedAt,
                    row_version rowVersion,
-                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.released')),'null') released
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.released')),'null') released,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.installModelLock.socKey')),'null') lockSocKey
               FROM nx_onboarding_calibration
              WHERE user_id=#{userId} AND device_id=#{deviceId} AND source_environment=#{sourceEnvironment}
                AND run_id=#{runId} AND is_deleted=0
@@ -571,16 +571,25 @@ public interface OnboardingCalibrationMapper {
     @Update("UPDATE nx_phone_binding SET execution_installation_id=#{deviceId} "
             + "WHERE user_id=#{userId} AND source_environment='PRODUCTION' AND run_id=''")
     int claimPhoneExecution(@Param("userId") Long userId, @Param("deviceId") String deviceId);
-    record HardwareGroup(String platform, String model, String soc, String gpu, BigDecimal memoryGb,
-                         Integer tier, BigDecimal computeValue, long count) { }
-    record PendingHardware(String platform, String model, String soc, String gpu, BigDecimal memoryGb,
-                           String reason, long count) { }
+    /** socIds: the reported identifiers as a JSON array, null when none were reported. */
+    record HardwareGroup(String platform, String model, String socIds, Integer tier, BigDecimal computeValue, long count) {
+        public List<String> socIdList() {
+            if (socIds == null || socIds.isBlank()) return List.of();
+            try {
+                return new com.fasterxml.jackson.databind.ObjectMapper().readValue(socIds,
+                        new com.fasterxml.jackson.core.type.TypeReference<List<String>>() { });
+            } catch (Exception unreadable) {
+                return List.of();
+            }
+        }
+    }
+    record PendingHardware(String platform, String model, String socIds, String reason, long count) { }
     record ModelReport(String platform, String model, String lockPlatform, String lockModel) { }
     record RiskCheckStat(String code, long flagged, long held, long accounts) { }
     record RiskModelStat(String code, String platform, String model, long flagged, long held) { }
     record ModelLockRow(String deviceId, String platform, String model, String lockPlatform, String lockModel,
                         String calibrationStatus, String pendingReason, String activationStatus, Long updatedAt,
-                        Long rowVersion, String released) { }
+                        Long rowVersion, String released, String lockSocKey) { }
 
     record CalibrationWrite(Long userId, String deviceId, String signalJson, String derivedJson,
                             String comparisonJson, Long configRevision, String idempotencyKey, String requestHash,
