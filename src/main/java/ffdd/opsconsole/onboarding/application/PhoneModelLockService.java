@@ -100,7 +100,9 @@ public class PhoneModelLockService implements PhoneModelLockContract {
         view.put("platform", lockPlatform);
         view.put("lockedModel", locked == null ? null : name(policy, lockPlatform, locked));
         view.put("reportedModel", name(policy, row.platform(), row.model()));
-        view.put("held", PhoneModelRisk.MODEL_CHANGED.equals(row.pendingReason()));
+        view.put("lockedChip", released(row) || policy == null || policy.socChip(row.lockSocKey()) == null ? null
+                : policy.socChip(row.lockSocKey()).name());
+        view.put("held", PhoneModelRisk.MODEL_CHANGED.equals(row.pendingReason()) || PhoneModelRisk.SOC_CHANGED.equals(row.pendingReason()));
         view.put("released", released(row));
         view.put("releasable", locked != null);
         view.put("calibrationStatus", row.calibrationStatus());

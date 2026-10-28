@@ -60,11 +60,11 @@ class PhoneModelLockServiceTest {
     private static ModelLockRow row(String lockPlatform, String lockModel, String reason, String released) {
         return new ModelLockRow("install-a", "ios", "iPhone 16 Pro", lockPlatform, lockModel,
                 reason == null ? "MATCHED" : "PENDING_VERIFICATION", reason, "CALIBRATED", 1_700_000_000_000L,
-                4L, released);
+                4L, released, null);
     }
 
     private static ModelLockRow recalibrated(ModelLockRow row) {
         return new ModelLockRow(row.deviceId(), row.platform(), row.model(), row.lockPlatform(), row.lockModel(),
-                row.calibrationStatus(), row.pendingReason(), row.activationStatus(), row.updatedAt(), row.rowVersion() + 1, row.released());
+                row.calibrationStatus(), row.pendingReason(), row.activationStatus(), row.updatedAt(), row.rowVersion() + 1, row.released(), null);
     }
 }

@@ -69,9 +69,10 @@ class OnboardingCalibrationServiceTest {
                         "FAILED", 1L, 2L, Map.of("conflictType", invocation.getArgument(2)), null, "audit-ref"));
         when(mapper.phoneBinding(9L, "PRODUCTION", "")).thenAnswer(invocation -> binding.get());
         when(configFacade.activeValue(PhoneCalibrationConfigService.KEY)).thenReturn(java.util.Optional.of(
-                "{\"revision\":1,\"current\":{\"version\":1,\"effectiveAt\":0,\"thresholds\":[19,25,35,47],\"rules\":["
-                + "{\"id\":\"fixture\",\"platform\":\"android\",\"model\":\"\",\"soc\":\"test soc\",\"gpu\":\"Mali-G715\","
-                + "\"minMemoryGb\":1,\"maxMemoryGb\":129,\"computeValue\":28.3,\"evidence\":\"Test only\"}]},\"scheduled\":null}"));
+                "{\"revision\":1,\"current\":{\"version\":1,\"effectiveAt\":0,\"thresholds\":[19,25,35,47],\"androidSocRules\":["
+                + "{\"id\":\"fixture\",\"name\":\"Fixture tier\",\"minComputeValue\":28.3,\"maxComputeValue\":28.3,"
+                + "\"enabled\":true,\"valueSource\":\"OPERATOR_PRESET\",\"chips\":[{\"socKey\":\"test-soc\","
+                + "\"name\":\"Test SoC\",\"manufacturer\":\"Test\",\"aliases\":[\"test soc\"]}]}]},\"scheduled\":null}"));
         when(mapper.savePhoneBinding(any(), any(), any(), any(), any(), any())).thenAnswer(invocation -> {
             binding.set(new OnboardingCalibrationMapper.PhoneBindingRow(invocation.getArgument(1), invocation.getArgument(2),
                     invocation.getArgument(3), 1L, 1L));
@@ -637,7 +638,9 @@ class OnboardingCalibrationServiceTest {
 
     @Test
     void unknownHardwarePersistsPendingRatherThanAnInventedTier() {
-        var command = request("unknown-phone",0L,"pending-phone-001",8,8,"Unknown","Brand","Unknown GPU",900,50,true);
+        var command = new OnboardingCalibrationService.Request("unknown-phone",0L,"pending-phone-001",
+                new OnboardingCalibrationService.Signals(8.0,8,"Unknown","Brand","Unknown GPU",900.0,42.0,50,true,true,"android","",
+                        null,null,null,null,List.of("unknown-chip")));
         var saved = new java.util.concurrent.atomic.AtomicReference<OnboardingCalibrationMapper.CalibrationWrite>();
         when(mapper.insert(any())).thenAnswer(invocation -> { saved.set(invocation.getArgument(0)); return 1; });
         when(mapper.find(9L,"unknown-phone")).thenAnswer(invocation -> {
@@ -655,7 +658,8 @@ class OnboardingCalibrationServiceTest {
                                                           int cores, String model, String brand, String gpu,
                                                           double px, int battery, boolean charging) {
         return new OnboardingCalibrationService.Request(deviceId, expected, key,
-                new OnboardingCalibrationService.Signals(mem, cores, model, brand, gpu, px, 42.0, battery, charging, true, "android", "test soc"));
+                new OnboardingCalibrationService.Signals(mem, cores, model, brand, gpu, px, 42.0, battery, charging, true, "android", "test soc",
+                        null, null, null, null, List.of("test soc")));
     }
 
     private CalibrationRow row(long userId, String deviceId, long version, String key, String hash, long revision) {
@@ -666,9 +670,10 @@ class OnboardingCalibrationServiceTest {
     private CalibrationRow actionRow(long userId, String deviceId, Long userDeviceId, long version,
                                      String status, String actionKey, String actionHash) {
         return new CalibrationRow(userId, deviceId, userDeviceId,
-                "{\"memGB\":8,\"platform\":\"android\",\"soc\":\"test soc\",\"model\":\"Pixel 8\",\"gpu\":\"Mali-G715\"}",
+                "{\"memGB\":8,\"platform\":\"android\",\"soc\":\"test soc\",\"model\":\"Pixel 8\",\"gpu\":\"Mali-G715\",\"socIds\":[\"test soc\"]}",
                 "{\"score\":28,\"tier\":3,\"tops\":28.3,\"baseRateUsdt\":0.060000,\"baseRateNex\":10,"
-                        + "\"calibrationStatus\":\"MATCHED\",\"computeValue\":28.3,\"ruleId\":\"fixture\",\"ruleVersion\":1}",
+                        + "\"calibrationStatus\":\"MATCHED\",\"computeValue\":28.3,\"ruleId\":\"fixture\",\"ruleVersion\":1,"
+                        + "\"calibrationMethod\":\"ANDROID_SOC_RANGE\",\"socKey\":\"test-soc\",\"minComputeValue\":28.3,\"maxComputeValue\":28.3}",
                 "[{\"key\":\"phone\"}]", "server", true, 7L, version, "cal-key", "cal-hash",
                 status, actionKey, actionHash, "PRODUCTION", "");
     }

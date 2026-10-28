@@ -17,12 +17,12 @@ class IosModelRulePolicyTest {
         return new PhoneCalibrationPolicy.IosModelRule(id, model, List.of(aliases), new BigDecimal(min), new BigDecimal(max),
                 true, "OPERATOR_PRESET", "APPLE_RELEASED_HISTORICAL", null);
     }
-    static PhoneCalibrationPolicy policy(List<PhoneCalibrationPolicy.Rule> rules, List<PhoneCalibrationPolicy.IosModelRule> ios) {
+    static PhoneCalibrationPolicy policy(List<PhoneCalibrationPolicy.AndroidSocRule> rules, List<PhoneCalibrationPolicy.IosModelRule> ios) {
         return new PhoneCalibrationPolicy(3, 0, List.of(new BigDecimal("19"), new BigDecimal("25"),
                 new BigDecimal("35"), new BigDecimal("110")), rules, ios);
     }
     static PhoneCalibrationPolicy.Hardware iphone(String model) {
-        return new PhoneCalibrationPolicy.Hardware("ios", model, "", "", null);
+        return new PhoneCalibrationPolicy.Hardware("ios", model, List.of());
     }
     private final PhoneCalibrationPolicy policy = policy(List.of(), List.of(
             ios("ios-iphone-16-pro", "iPhone 16 Pro", "100", "120", "iPhone17,1"),
@@ -62,15 +62,14 @@ class IosModelRulePolicyTest {
         assertThat(disabled.match(iphone("iPhone 6")).status()).isEqualTo("MODEL_DISABLED");
     }
 
-    @Test void androidHardwareStillUsesOnlyItsOwnRules() {
-        var mixed = policy(List.of(PhoneCalibrationPolicyTest.rule("android-x", "iPhone 16 Pro", "30")),
+    @Test void androidUsesOnlyChipTiersEvenWhenItReportsAnIPhoneName() {
+        var mixed = policy(List.of(PhoneCalibrationPolicyTest.tier("android-x", "30", "40", true,
+                        PhoneCalibrationPolicyTest.chip("chip-x", "Chip X", "SM8550"))),
                 List.of(ios("ios-iphone-16-pro", "iPhone 16 Pro", "100", "120")));
-        var android = mixed.match(new PhoneCalibrationPolicy.Hardware("android", "iPhone 16 Pro", "test soc", "test gpu",
-                new BigDecimal("4")));
+        var android = mixed.match(new PhoneCalibrationPolicy.Hardware("android", "iPhone 16 Pro", List.of("SM8550")));
         assertThat(android.ruleId()).isEqualTo("android-x");
-        assertThat(android.range()).isFalse();
-        assertThat(android.computeValue()).isEqualByComparingTo("30");
-        assertThat(mixed.match(new PhoneCalibrationPolicy.Hardware("android", "iPhone 16 Pro", "", "", null)).matched()).isFalse();
+        assertThat(android.method()).isEqualTo("ANDROID_SOC_RANGE");
+        assertThat(mixed.match(new PhoneCalibrationPolicy.Hardware("android", "iPhone 16 Pro", List.of())).matched()).isFalse();
     }
 
     @Test void drawsStayInsideTheClosedRangeWithTwoDecimals() {
@@ -101,7 +100,8 @@ class IosModelRulePolicyTest {
         assertThatThrownBy(() -> policy(List.of(), List.of(ios("a", "iPhone 6", "1", "2", "iPhone7,2"),
                 ios("b", "iPhone 6 Plus", "1", "2", "iphone7,2"))).validate())
                 .hasMessageContaining("PHONE_CALIBRATION_IOS_MODEL_DUPLICATE");
-        assertThatThrownBy(() -> policy(List.of(PhoneCalibrationPolicyTest.rule("same", "x", "3")),
+        assertThatThrownBy(() -> policy(List.of(PhoneCalibrationPolicyTest.tier("same", "1", "3", true,
+                PhoneCalibrationPolicyTest.chip("chip-x", "Chip X", "SM8550"))),
                 List.of(ios("same", "iPhone 6", "1", "2"))).validate()).isInstanceOf(BizException.class);
         assertThatThrownBy(() -> policy(List.of(), List.of(new PhoneCalibrationPolicy.IosModelRule("a", "iPhone 6", List.of(),
                 BigDecimal.ONE, BigDecimal.TEN, true, "MEASURED", null, null))).validate()).isInstanceOf(BizException.class);

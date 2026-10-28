@@ -90,9 +90,10 @@ class PhoneCalibrationPublicationReplayTest {
     private AuditReplayCommand command(long effectiveAt) {
         return new AuditReplayCommand("E", "e6_phone_calibration", Map.of(
                 "expectedRevision", 0, "effectiveAt", effectiveAt, "thresholds", List.of(10, 20, 30, 40),
-                "rules", List.of(Map.of("id", "TEMP_TEST_PH05_V1", "platform", "android", "model", "SM-A5760",
-                        "soc", "s5e8865", "gpu", "ANGLE ((Samsung Xclipse 550) on Vulkan 1.4.304)",
-                        "minMemoryGb", 7, "maxMemoryGb", 8, "computeValue", 15, "evidence", "Temporary fixture rule"))));
+                "androidSocRules", List.of(Map.of("id", "TEMP_TEST_PH05_V1", "name", "Fixture tier",
+                        "minComputeValue", 15, "maxComputeValue", 20, "enabled", true, "valueSource", "OPERATOR_PRESET",
+                        "chips", List.of(Map.of("socKey", "exynos-1380", "name", "Exynos 1380", "manufacturer", "Samsung",
+                                "aliases", List.of("s5e8835")))))));
     }
 
     @ParameterizedTest
@@ -110,7 +111,7 @@ class PhoneCalibrationPublicationReplayTest {
         }
         var saved = new PhoneCalibrationConfigService(config, clock).read();
         assertThat(saved.revision()).isEqualTo(1);
-        assertThat(scheduled ? saved.scheduled().rules() : saved.current().rules()).hasSize(1);
+        assertThat(scheduled ? saved.scheduled().androidSocRules() : saved.current().androidSocRules()).hasSize(1);
         var payload = ArgumentCaptor.forClass(String.class);
         verify(eventMapper).insertEvent(anyString(), eq("E6_COMPUTE_CONFIG"), eq("phone-calibration"),
                 eq("compute.config_changed"), eq("compute.config_changed"), eq("compute-config"),

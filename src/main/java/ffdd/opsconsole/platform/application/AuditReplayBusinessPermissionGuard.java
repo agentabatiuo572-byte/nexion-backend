@@ -185,7 +185,7 @@ public class AuditReplayBusinessPermissionGuard {
                     iosModelRules = latest == null ? List.of() : latest.iosModelRules();
                 }
                 new ffdd.opsconsole.onboarding.application.PhoneCalibrationPolicy(1, System.currentTimeMillis(),
-                        proposal.thresholds(), proposal.rules(), iosModelRules).validate();
+                        proposal.thresholds(), proposal.androidSocRules(), iosModelRules, proposal.androidPresetRemovals()).validate();
             } catch (RuntimeException invalid) {
                 return ApiResult.fail(422, "PHONE_CALIBRATION_PROPOSAL_INVALID");
             }

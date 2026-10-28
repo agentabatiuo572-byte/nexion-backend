@@ -255,6 +255,47 @@ class IosModelCalibrationServiceTest {
         assertThat((List<Object>) json(table.get("install-a").derivedJson()).get("riskFlags")).contains("ACCOUNT_MODEL_CHURN");
     }
 
+    @Test void androidDrawsInsideItsTierOnceAndShowsNoChipOrRule() {
+        publishAndroid();
+        var first = calibrateWith("install-x", 0, "key-soc-0001", androidSoc("Pixel 8", "SM8550")).getData();
+        BigDecimal value = new BigDecimal(first.get("computeValue").toString());
+        assertThat(value).isBetween(new BigDecimal("95"), new BigDecimal("115"));
+        assertThat(first).containsEntry("calibrationMethod", "ANDROID_SOC_RANGE")
+                .doesNotContainKeys("ruleId", "ruleVersion", "soc", "socKey", "minComputeValue", "maxComputeValue", "valueSource");
+        assertThat((Map<String, Object>) first.get("signals")).doesNotContainKeys("socIds", "soc", "gpu");
+        assertThat(json(table.get("install-x").derivedJson())).containsEntry("socKey", "sd-8g2").containsEntry("soc", "Snapdragon 8 Gen 2");
+        // Another phone with another chip of the same tier keeps the account's value.
+        var sameTier = calibrateWith("install-y", 0, "key-soc-0002", androidSoc("Galaxy S24", "SM8650")).getData();
+        assertThat(new BigDecimal(sameTier.get("computeValue").toString())).isEqualByComparingTo(value);
+    }
+
+    @Test void anInstallationReportingAnotherChipIsHeldButAnotherAliasOfItsChipIsNot() {
+        publishAndroid();
+        calibrateWith("install-x", 0, "key-soc-0001", androidSoc("Pixel 8", "SM8550"));
+        String key = service.hardwareKey(table.get("install-x"));
+        var alias = calibrateWith("install-x", table.get("install-x").rowVersion(), "key-soc-0002", androidSoc("Pixel 8", "kalama")).getData();
+        assertThat(alias).containsEntry("calibrationStatus", "MATCHED");
+        assertThat(service.hardwareKey(table.get("install-x"))).isEqualTo(key);
+        var swapped = calibrateWith("install-x", table.get("install-x").rowVersion(), "key-soc-0003", androidSoc("Pixel 8", "SM8650")).getData();
+        assertThat(swapped).containsEntry("calibrationStatus", "PENDING_VERIFICATION").containsEntry("pendingReason", "MODEL_UNVERIFIED");
+        assertThat(json(table.get("install-x").derivedJson())).containsEntry("pendingReason", "SOC_CHANGED");
+    }
+
+    private void publishAndroid() {
+        when(config.activeValue(PhoneCalibrationConfigService.KEY)).thenReturn(Optional.of(
+                "{\"revision\":1,\"current\":{\"version\":1,\"effectiveAt\":0,\"thresholds\":[19,25,35,47],\"androidSocRules\":["
+                + "{\"id\":\"tier-high\",\"name\":\"次旗舰\",\"minComputeValue\":95,\"maxComputeValue\":115,\"enabled\":true,"
+                + "\"valueSource\":\"OPERATOR_PRESET\",\"chips\":[{\"socKey\":\"sd-8g2\",\"name\":\"Snapdragon 8 Gen 2\","
+                + "\"manufacturer\":\"Qualcomm\",\"aliases\":[\"SM8550\",\"kalama\"]},{\"socKey\":\"sd-8g3\","
+                + "\"name\":\"Snapdragon 8 Gen 3\",\"manufacturer\":\"Qualcomm\",\"aliases\":[\"SM8650\"]}]}],"
+                + "\"iosModelRules\":[]},\"scheduled\":null}"));
+    }
+
+    private static OnboardingCalibrationService.Signals androidSoc(String model, String... socIds) {
+        return new OnboardingCalibrationService.Signals(8.0, 8, model, "Google", "Adreno 740", null, null, 80, false, true,
+                "android", "", null, null, null, null, List.of(socIds));
+    }
+
     private void risk(String settings) {
         when(config.activeValue(PhoneModelRiskConfig.KEY)).thenReturn(Optional.of(settings));
     }
