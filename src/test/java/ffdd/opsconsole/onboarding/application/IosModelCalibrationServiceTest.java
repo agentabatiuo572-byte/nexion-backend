@@ -73,10 +73,11 @@ class IosModelCalibrationServiceTest {
         assertThat(value).isBetween(new BigDecimal("100"), new BigDecimal("120"));
         assertThat(first).containsEntry("calibrationStatus", "MATCHED").containsEntry("calibrationMethod", "IOS_MODEL_RANGE")
                 .containsEntry("model", "iPhone 16 Pro").containsEntry("ruleId", "ios-iphone-16-pro")
-                .containsEntry("valueSource", "OPERATOR_PRESET").containsEntry("ruleVersion", 1)
-                .containsEntry("tier", 5);
-        assertThat(first.get("minComputeValue").toString()).isEqualTo("100");
-        assertThat(first.get("maxComputeValue").toString()).isEqualTo("120");
+                .containsEntry("ruleVersion", 1).containsEntry("tier", 5)
+                .doesNotContainKeys("minComputeValue", "maxComputeValue", "valueSource");
+        // The range stays on the server for activation review; only the App response omits it.
+        assertThat(table.get("install-a").derivedJson()).contains("\"minComputeValue\":100", "\"maxComputeValue\":120",
+                "\"valueSource\":\"OPERATOR_PRESET\"");
 
         for (int i = 0; i < 20; i++) {
             var retry = calibrate("install-a", (Long) table.get("install-a").rowVersion(), "key-retry-" + 10 + i, "iPhone17,1");

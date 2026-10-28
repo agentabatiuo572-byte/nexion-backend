@@ -49,6 +49,12 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     private static final java.security.SecureRandom RANDOM = new java.security.SecureRandom();
     /** Internal ledger in derived_json: normalized iPhone model to the value this row was ever allocated. */
     private static final String IOS_ALLOCATIONS = "iosAllocations";
+    /**
+     * Kept in derived_json for activation review and reuse, never sent to the App: users see their
+     * own value, not the operator range it was drawn from.
+     */
+    private static final List<String> SERVER_ONLY_KEYS =
+            List.of(IOS_ALLOCATIONS, "minComputeValue", "maxComputeValue", "valueSource");
 
     private final OnboardingCalibrationMapper mapper;
     private final WheelSandboxProfile wheelSandboxProfile;
@@ -568,7 +574,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
             boolean pending = "PENDING_VERIFICATION".equals(derived.get("calibrationStatus"));
             boolean calibrationAvailable = !derived.isEmpty() && !pending;
             output.put("calibrationAvailable", calibrationAvailable);
-            derived.remove(IOS_ALLOCATIONS);
+            derived.keySet().removeAll(SERVER_ONLY_KEYS);
             if (calibrationAvailable) {
                 output.putAll(derived);
                 output.put("signals", JSON.readValue(row.signalJson(), new TypeReference<Map<String, Object>>() { }));
