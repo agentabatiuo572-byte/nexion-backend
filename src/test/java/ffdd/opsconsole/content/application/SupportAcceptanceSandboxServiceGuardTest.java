@@ -20,12 +20,8 @@ class SupportAcceptanceSandboxServiceGuardTest {
         SupportAcceptanceSandboxService service = new SupportAcceptanceSandboxService(guard, mapper, Clock.systemUTC(), "run-1");
 
         assertThatThrownBy(service::adminConversations).isInstanceOf(RuntimeException.class);
-        assertThatThrownBy(service::adminTickets).isInstanceOf(RuntimeException.class);
-        assertThatThrownBy(() -> service.adminTicket("ATK-1")).isInstanceOf(RuntimeException.class);
         assertThatThrownBy(() -> service.adminReply("ACV-1", "key", Map.of())).isInstanceOf(RuntimeException.class);
         assertThatThrownBy(() -> service.adminTransfer("ACV-1", "key", Map.of())).isInstanceOf(RuntimeException.class);
-        assertThatThrownBy(() -> service.adminTicketReply("ATK-1", "key", Map.of())).isInstanceOf(RuntimeException.class);
-        assertThatThrownBy(() -> service.adminTicketClose("ATK-1", "key", Map.of())).isInstanceOf(RuntimeException.class);
         assertThatThrownBy(() -> service.commandResult(7L, "key")).isInstanceOf(RuntimeException.class);
 
         verifyNoInteractions(mapper);

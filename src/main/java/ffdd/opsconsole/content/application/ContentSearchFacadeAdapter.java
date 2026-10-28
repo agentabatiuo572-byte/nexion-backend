@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.common.boundary.AdminSearchHit;
 import ffdd.opsconsole.content.domain.ContentConversationView;
+import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.dto.ConversationQueryRequest;
 import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
@@ -12,25 +13,29 @@ import java.util.List;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
 public class ContentSearchFacadeAdapter implements ContentSearchFacade {
-    private final OpsSupportTicketService ticketService;
+    private final SupportTicketRepository ticketRepository;
+    private final SupportOwnershipService ownership;
     private final OpsConversationService conversationService;
 
+    /** Historical tickets stay searchable under the caller's current support scope (read-only). */
     @Override
+    @Transactional(readOnly = true)
     public List<AdminSearchHit> searchSupportTickets(String keyword, int limit) {
         if(!SupportOwnershipService.hasAuthority("service_m2_read")) return List.of();
         String q = trim(keyword);
         if (!StringUtils.hasText(q)) {
             return List.of();
         }
-        ApiResult<PageResult<SupportTicketView>> result = ticketService.tickets(
-                new SupportTicketQueryRequest("all", null, null, null, null, null, q, 1L, (long) limit));
-        PageResult<SupportTicketView> page = result == null ? null : result.getData();
-        if (result == null || result.getCode() != 0 || page == null || page.getRecords() == null) {
+        PageResult<SupportTicketView> page = ticketRepository.pageTickets(
+                new SupportTicketQueryRequest("all", null, null, null, null, null, q, 1L, (long) limit),
+                ownership.defaultQueryScope(null, null));
+        if (page == null || page.getRecords() == null) {
             return List.of();
         }
         return page.getRecords().stream()

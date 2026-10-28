@@ -29,7 +29,6 @@ import org.springframework.test.web.servlet.MockMvc;
 class AppSupportControllerSecurityTest {
     @Autowired private MockMvc mockMvc;
     @MockBean private AppSupportService service;
-    @MockBean private ffdd.opsconsole.content.application.SupportTicketCreationPolicyService creationPolicy;
     @MockBean private ProductionSupportPathGuard productionSupportPathGuard;
     @MockBean private JwtAuthenticationFilter jwtAuthenticationFilter;
     @MockBean private AdminRbacAuthorizationFilter adminRbacAuthorizationFilter;
@@ -50,11 +49,11 @@ class AppSupportControllerSecurityTest {
 
     @Test
     void anonymousRequestGets401AndNonAppSubjectGets403() throws Exception {
-        mockMvc.perform(get("/api/app/support/tickets"))
+        mockMvc.perform(get("/api/app/support/conversations"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(401));
 
-        mockMvc.perform(get("/api/app/support/tickets").with(user("1")))
+        mockMvc.perform(get("/api/app/support/conversations").with(user("1")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.message").value("USER_SUBJECT_REQUIRED"));

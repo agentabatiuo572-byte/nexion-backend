@@ -197,14 +197,6 @@ class SupportOwnershipScopeTest {
         assertThatCode(()->service.requireTargetMember(12L,null)).doesNotThrowAnyException();
     }
 
-    @Test void ticketUsesImmutableCustomerAndCurrentPersonalUnionWithoutLegacySupervisor() {
-        login();when(bindings.ticketCustomer("ticket-1")).thenReturn(20L);
-        when(bindings.readableCustomer(new ReadScope(11L,ReadMode.PERSONAL,null,null),20L)).thenReturn(1);
-        assertThatCode(()->service.readTicket("ticket-1")).doesNotThrowAnyException();
-        verify(bindings,never()).roles(11L);
-        verify(bindings,never()).currentAgent(20L);
-    }
-
     @Test void customerObjectSelectsPersonalForDualAccountsGroupOutsideCustomer() {
         login();when(bindings.readableCustomer(new ReadScope(11L,ReadMode.PERSONAL,null,null),20L)).thenReturn(1);
         assertThat(service.customerQueryScope(20L)).isEqualTo(new ReadScope(11L,ReadMode.PERSONAL,null,null));
