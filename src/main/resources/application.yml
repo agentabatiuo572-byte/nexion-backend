@@ -15,7 +15,7 @@ oauth:
 
 spring:
   application:
-    name: nexion-backend
+    name: uvel-backend
   task:
     scheduling:
       pool:
