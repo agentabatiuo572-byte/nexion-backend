@@ -24,11 +24,11 @@ CREATE TABLE IF NOT EXISTS nx_business_calendar (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO nx_business_calendar (track, zone_id, country_code, offset_minutes, effective_date, effective_storage_at, operator, reason, created_at, updated_at, is_deleted)
-SELECT 'LEGACY', 'Asia/Shanghai', 'CN', 480, '1970-01-01', '1970-01-01 00:00:00', 'migration:r1', '历史口径：北京时间', NOW(), NOW(), 0
+SELECT 'LEGACY', 'Asia/Shanghai', 'CN', 480, '1970-01-01', '1970-01-01 00:00:00', 'migration:r1', '历史数据按北京时间', NOW(), NOW(), 0
  WHERE NOT EXISTS (SELECT 1 FROM nx_business_calendar WHERE track='LEGACY' AND effective_date='1970-01-01' AND is_deleted=0);
 
 INSERT INTO nx_business_calendar (track, zone_id, country_code, offset_minutes, effective_date, effective_storage_at, operator, reason, created_at, updated_at, is_deleted)
-SELECT 'GROWTH_TEAM', 'Asia/Shanghai', 'CN', 480, '1970-01-01', '1970-01-01 00:00:00', 'migration:r1', '历史口径：北京时间', NOW(), NOW(), 0
+SELECT 'GROWTH_TEAM', 'Asia/Shanghai', 'CN', 480, '1970-01-01', '1970-01-01 00:00:00', 'migration:r1', '历史数据按北京时间', NOW(), NOW(), 0
  WHERE NOT EXISTS (SELECT 1 FROM nx_business_calendar WHERE track='GROWTH_TEAM' AND effective_date='1970-01-01' AND is_deleted=0);
 
 INSERT INTO nx_business_calendar (track, zone_id, country_code, offset_minutes, effective_date, effective_storage_at, operator, reason, created_at, updated_at, is_deleted)
