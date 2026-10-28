@@ -62,7 +62,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             finding("app/earn/task-chip", "Daily task", "earn.task.dailyChip", 40));
 
     private static final List<CourseSeed> COURSE_SEEDS = List.of(
-            course("what-is-nexion", "什么是 Nexion", "What is Nexion", "Basics", "Article", "Beginner", "6 min", "10", true, 10),
+            course("what-is-nexion", "什么是 UVEL", "What is UVEL", "Basics", "Article", "Beginner", "6 min", "10", true, 10),
             course("how-devices-earn", "设备如何产生收益", "How devices earn", "Basics", "Video", "Beginner", "8 min", "12", false, 20),
             course("wallet-basics", "钱包基础", "Wallet basics", "Basics", "Article", "Beginner", "5 min", "10", false, 30),
             course("quests-101", "任务入门", "Quests 101", "Earn", "Hands-on", "Beginner", "7 min", "15", false, 40),

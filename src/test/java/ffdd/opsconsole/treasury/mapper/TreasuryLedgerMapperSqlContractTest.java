@@ -13,18 +13,16 @@ import org.junit.jupiter.api.Test;
 
 class TreasuryLedgerMapperSqlContractTest {
     @Test
-    void d4ReadProjectionsOnlyRenameExactOwnPhoneDefaultNames() {
+    void d4ReadProjectionsReturnStoredNicknameWithoutBrandAliases() {
         for (String name : List.of("pageLedgerBills", "userLedgerRows")) {
             Method method = java.util.Arrays.stream(TreasuryLedgerMapper.class.getMethods())
                     .filter(candidate -> candidate.getName().equals(name)).findFirst().orElseThrow();
             String sql = String.join("\n", method.getAnnotation(Select.class).value());
             assertThat(sql).contains(
-                    "RIGHT(u.phone,4) REGEXP '^[0-9]{4}$'",
-                    "CAST(u.nickname AS BINARY) = CAST(CONCAT('NexGrid ',RIGHT(u.phone,4)) AS BINARY)",
-                    "THEN CONCAT('UVEL ',RIGHT(u.phone,4)) ELSE u.nickname END AS nickname",
+                    "u.nickname AS nickname",
                     "LEFT JOIN nx_user u ON u.id = l.user_id AND u.is_deleted = 0",
                     "l.amount", "l.balance_after AS balanceAfter", "l.remark");
-            assertThat(sql).doesNotContain("TRIM(u.nickname)", "LOWER(u.nickname)");
+            assertThat(sql).doesNotContain("TRIM(u.nickname)", "LOWER(u.nickname)", "NexGrid", "CONCAT('UVEL");
         }
     }
 

@@ -35,12 +35,12 @@ class AppTeamNetworkBrandMySqlTest {
             jdbc.update("INSERT INTO nx_user(id,nickname) VALUES(1,'Owner')");
             record NameCase(String raw, String phone, String expected) { }
             var names = List.of(
-                    new NameCase("NexGrid-F343FA44", null, "UVEL-F343FA44"),
+                    new NameCase("NexGrid-F343FA44", null, "NexGrid-F343FA44"),
                     new NameCase("NexGrid-f343fa44", null, "NexGrid-f343fa44"),
                     new NameCase("NexGrid-F343FA44 ", null, "NexGrid-F343FA44 "),
                     new NameCase("NexGrid-F343FA4G", null, "NexGrid-F343FA4G"),
-                    new NameCase("NexGrid 1051", "18000001051", "UVEL 1051"),
-                    new NameCase("NexGrid 1055", "18000001055", "UVEL 1055"),
+                    new NameCase("NexGrid 1051", "18000001051", "NexGrid 1051"),
+                    new NameCase("NexGrid 1055", "18000001055", "NexGrid 1055"),
                     new NameCase("NexGrid 1051", "18000009999", "NexGrid 1051"),
                     new NameCase("NexGrid 1051", null, "NexGrid 1051"),
                     new NameCase("Custom NexGrid 1051", "18000001051", "Custom NexGrid 1051"),

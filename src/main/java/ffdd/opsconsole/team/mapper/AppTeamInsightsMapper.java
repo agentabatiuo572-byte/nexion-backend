@@ -179,17 +179,7 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT ce.id,ce.commission_type commissionType,ce.source_user_id sourceUserId,
-                   CASE WHEN CHAR_LENGTH(COALESCE(CASE WHEN ce.source_user_name REGEXP '[^[:space:]]' THEN ce.source_user_name END, source.nickname)) = 16
-                             AND REGEXP_LIKE(COALESCE(CASE WHEN ce.source_user_name REGEXP '[^[:space:]]' THEN ce.source_user_name END, source.nickname), '^NexGrid-[0-9A-F]{8}$', 'c')
-                        THEN CONCAT('UVEL-',SUBSTRING(COALESCE(CASE WHEN ce.source_user_name REGEXP '[^[:space:]]' THEN ce.source_user_name END, source.nickname),9))
-                        WHEN RIGHT(source.phone,4) REGEXP '^[0-9]{4}$'
-                             AND CAST(COALESCE(CASE WHEN ce.source_user_name REGEXP '[^[:space:]]'
-                                                   THEN ce.source_user_name END, source.nickname) AS BINARY)
-                                 = CAST(CONCAT('NexGrid ',RIGHT(source.phone,4)) AS BINARY)
-                        THEN CONCAT('UVEL ',RIGHT(source.phone,4))
-                        ELSE COALESCE(CASE WHEN ce.source_user_name REGEXP '[^[:space:]]' THEN ce.source_user_name END,
-                                      source.nickname)
-                   END sourceUserName,ce.layer_no layerNo,ce.order_no orderNo,
+                   COALESCE(CASE WHEN ce.source_user_name REGEXP '[^[:space:]]' THEN ce.source_user_name END, source.nickname) sourceUserName,ce.layer_no layerNo,ce.order_no orderNo,
                    ce.order_amount_usd orderAmountUsd,ce.amount_usdt amountUsdt,ce.amount_nex amountNex,
                    ce.status,ce.created_at createdAt,ce.unlock_at unlockAt
               FROM nx_commission_event ce
