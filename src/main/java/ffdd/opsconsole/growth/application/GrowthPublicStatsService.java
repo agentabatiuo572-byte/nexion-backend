@@ -34,6 +34,16 @@ public class GrowthPublicStatsService {
     public static final String VERSION_KEY = "growth.public_stats.version";
     private static final List<String> HOME_FIELDS = List.of("homeOnlineCurrent", "homeOnlineStepMin", "homeOnlineStepMax",
             "homePaidCurrent", "homePaidStepMin", "homePaidStepMax");
+    private static final String TICK_INTERVAL = "registeredUsersTickIntervalSec";
+    private static final String TICK_STEP_MIN = "registeredUsersTickStepMin";
+    private static final String TICK_STEP_MAX = "registeredUsersTickStepMax";
+    /** Stored by the first cadence release (one fixed step); read as min = max. */
+    private static final String LEGACY_TICK_STEP = "registeredUsersTickStep";
+    private static final List<String> TICK_FIELDS = List.of(TICK_INTERVAL, TICK_STEP_MIN, TICK_STEP_MAX);
+    /** Fields the App needs to replay the member estimate locally; published only once ticking is configured. */
+    private static final List<String> MEMBER_ESTIMATE_FIELDS = List.of(
+            "registeredUsersBase", "registeredUsersAnchorAt", TICK_INTERVAL, TICK_STEP_MIN, TICK_STEP_MAX);
+    private static final long MAX_SAFE_INTEGER = 9_007_199_254_740_991L;
     private static final String DAILY_USD_KEY = "dailyUsdtPerBaseline";
     private static final BigDecimal SANDBOX_DAILY_USD = new BigDecimal("0.06");
     private static final Set<String> SANDBOX_PROFILES = Set.of("test");
@@ -111,6 +121,12 @@ public class GrowthPublicStatsService {
         // 也让「本次投影的所有数字来自同一次读取」这个不变量成立。
         projection.put("verified", verifiedAggregates(scope, result.getData().get("realUserCount")));
         projection.put("realUserCount", result.getData().get("realUserCount"));
+        Map<?, ?> values = (Map<?, ?>) result.getData().get("values");
+        if (hasMemberTick(values)) {
+            // Only the four estimate inputs leave the admin API; the App replays the same
+            // start value + interval × step formula so the number ticks between reads.
+            MEMBER_ESTIMATE_FIELDS.forEach(key -> projection.put(key, values.get(key)));
+        }
         projection.put("networkPulse", networkPulse(scope, result.getData()));
         return ApiResult.ok(projection);
     }
@@ -118,12 +134,7 @@ public class GrowthPublicStatsService {
     private Map<String, Object> networkPulse(RuntimeScope scope, Map<String, Object> overview) {
         Map<String, Object> pulse = new LinkedHashMap<>();
         Map<?, ?> values = (Map<?, ?>) overview.get("values");
-        double months = Math.max(0, (clock.millis() - longValue(values.get("registeredUsersAnchorAt")))
-                / (30d * 24 * 3_600_000));
-        double registered = longValue(values.get("registeredUsersBase")) * Math.pow(
-                1 + decimalValue(values.get("registeredUsersMonthlyGrowthPct")).doubleValue() / 100, months);
-        pulse.put("registeredUsers", Double.isFinite(registered) && registered <= 9_007_199_254_740_991d
-                ? (long) Math.floor(registered) : null);
+        pulse.put("registeredUsers", hasMemberTick(values) ? tickedMembers(values) : compoundedMembers(values));
         pulse.put("onlineDevices", null);
         if (!scope.sandbox() && homeDisplay.isPresent()) {
             try {
@@ -137,6 +148,52 @@ public class GrowthPublicStatsService {
             }
         }
         return pulse;
+    }
+
+    /** Legacy model kept for aggregates saved before ticking existed: base compounded monthly from the anchor. */
+    private Long compoundedMembers(Map<?, ?> values) {
+        double months = Math.max(0, (clock.millis() - longValue(values.get("registeredUsersAnchorAt")))
+                / (30d * 24 * 3_600_000));
+        double registered = longValue(values.get("registeredUsersBase")) * Math.pow(
+                1 + decimalValue(values.get("registeredUsersMonthlyGrowthPct")).doubleValue() / 100, months);
+        return Double.isFinite(registered) && registered <= MAX_SAFE_INTEGER ? (long) Math.floor(registered) : null;
+    }
+
+    /**
+     * Members after n ticks: start + floor(n × (min + max) / 2) + offset(n), offset(0) = 0.
+     * offset(n) is a seeded hash in [0, spread] with spread = min(floor(mid) − min, max − ceil(mid)),
+     * so every tick adds a pseudo-random amount within [min, max], the long-run average is the
+     * midpoint, and any n is O(1). The App's derivedRegisteredUsers implements the same function
+     * bit for bit (32-bit wrapping multiply, unsigned shifts), so all devices and refreshes agree.
+     */
+    static Long tickedMembers(long base, long anchorAt, long intervalSec, long stepMin, long stepMax, long nowMs) {
+        long ticks = Math.max(0L, nowMs - anchorAt) / (intervalSec * 1000L);
+        long sum = stepMin + stepMax;
+        long spread = Math.min(sum / 2 - stepMin, stepMax - (sum + 1) / 2);
+        if (sum != 0 && ticks > (MAX_SAFE_INTEGER - base - spread) / sum * 2) {
+            return null;
+        }
+        return base + ticks * sum / 2 + (ticks == 0 || spread == 0 ? 0 : tickOffset(anchorAt, ticks, spread));
+    }
+
+    static long tickOffset(long anchorAt, long tick, long spread) {
+        int h = (int) (anchorAt & 0xFFFFFFFFL) ^ ((int) tick * 0x9E3779B1);
+        h ^= h >>> 16;
+        h *= 0x7FEB352D;
+        h ^= h >>> 15;
+        h *= 0x846CA68B;
+        h ^= h >>> 16;
+        return Integer.toUnsignedLong(h) % (spread + 1);
+    }
+
+    private Long tickedMembers(Map<?, ?> values) {
+        return tickedMembers(longValue(values.get("registeredUsersBase")), longValue(values.get("registeredUsersAnchorAt")),
+                longValue(values.get(TICK_INTERVAL)), longValue(values.get(TICK_STEP_MIN)),
+                longValue(values.get(TICK_STEP_MAX)), clock.millis());
+    }
+
+    private static boolean hasMemberTick(Map<?, ?> values) {
+        return TICK_FIELDS.stream().allMatch(key -> values.get(key) != null);
     }
 
     /**
@@ -233,7 +290,12 @@ public class GrowthPublicStatsService {
         Map<String, Object> before = beforeOptional.get();
         long now = clock.millis();
         long currentBase = longValue(before.get("registeredUsersBase"));
-        long anchor = currentBase == request.registeredUsersBase()
+        // Changing the start value or the tick cadence restarts the estimate from the start value.
+        boolean memberTickChanged = request.registeredUsersTickIntervalSec() != null
+                && (!request.registeredUsersTickIntervalSec().equals(nullableInt(before.get(TICK_INTERVAL)))
+                || !request.registeredUsersTickStepMin().equals(nullableLong(before.get(TICK_STEP_MIN)))
+                || !request.registeredUsersTickStepMax().equals(nullableLong(before.get(TICK_STEP_MAX))));
+        long anchor = currentBase == request.registeredUsersBase() && !memberTickChanged
                 ? longValue(before.get("registeredUsersAnchorAt")) : now;
         Map<String, Object> nextValues = requestValues(request, anchor, now, before);
         if (!scope.sandbox()) homeDisplay.ifPresent(display -> display.configure(before, nextValues, now));
@@ -285,6 +347,14 @@ public class GrowthPublicStatsService {
         values.put("registeredUsersBase", request.registeredUsersBase());
         values.put("registeredUsersMonthlyGrowthPct", request.registeredUsersMonthlyGrowthPct());
         values.put("registeredUsersAnchorAt", anchor);
+        // Older PC clients omit the cadence; keep whatever is stored (absent stays unpublished).
+        if (request.registeredUsersTickIntervalSec() == null) {
+            if (hasMemberTick(before)) TICK_FIELDS.forEach(key -> values.put(key, before.get(key)));
+        } else {
+            values.put(TICK_INTERVAL, request.registeredUsersTickIntervalSec());
+            values.put(TICK_STEP_MIN, request.registeredUsersTickStepMin());
+            values.put(TICK_STEP_MAX, request.registeredUsersTickStepMax());
+        }
         values.put("effectiveAt", effectiveAt);
         values.put("virtualUserCount", request.virtualUserCount());
         List<Map<String, Object>> bands = new ArrayList<>();
@@ -313,6 +383,9 @@ public class GrowthPublicStatsService {
         defaults.put("onlineJitter", 24);
         defaults.put("registeredUsersBase", 1_420_000L);
         defaults.put("registeredUsersMonthlyGrowthPct", new BigDecimal("2.9"));
+        defaults.put(TICK_INTERVAL, 60);
+        defaults.put(TICK_STEP_MIN, 3L);
+        defaults.put(TICK_STEP_MAX, 10L);
         // The anchor is server-owned.  Returning the aggregate's current anchor keeps the
         // restore-default payload structurally complete; saving the default base will still
         // reset it transactionally in update().
@@ -350,6 +423,12 @@ public class GrowthPublicStatsService {
                 request.homePaidCurrent(), request.homePaidStepMin(), request.homePaidStepMax() };
         long supplied = java.util.Arrays.stream(home).filter(java.util.Objects::nonNull).count();
         if (supplied != 0 && (supplied != HOME_FIELDS.size() || !validHomeDisplay(home))) return "H9_HOME_DISPLAY_INVALID";
+        long tickSupplied = java.util.stream.Stream.of(request.registeredUsersTickIntervalSec(),
+                request.registeredUsersTickStepMin(), request.registeredUsersTickStepMax()).filter(java.util.Objects::nonNull).count();
+        if (tickSupplied != 0 && (tickSupplied != TICK_FIELDS.size() || !validMemberTick(request.registeredUsersTickIntervalSec(),
+                request.registeredUsersTickStepMin(), request.registeredUsersTickStepMax()))) {
+            return "H9_MEMBER_TICK_INVALID";
+        }
         if (!validBands(request.hashratePercentileTable())) {
             return "H9_PERCENTILE_TABLE_INVALID";
         }
@@ -369,6 +448,11 @@ public class GrowthPublicStatsService {
                 return "invalid";
             }
             if (!(values.get("homeDisplayEnabled") instanceof Boolean)) return "invalid";
+            long tickStored = TICK_FIELDS.stream().filter(key -> values.get(key) != null).count();
+            if (tickStored != 0 && (tickStored != TICK_FIELDS.size() || !validMemberTick(intValue(values.get(TICK_INTERVAL)),
+                    longValue(values.get(TICK_STEP_MIN)), longValue(values.get(TICK_STEP_MAX))))) {
+                return "invalid";
+            }
             if (!validHomeDisplay(HOME_FIELDS.stream().map(values::get).toArray())
                     || longValue(values.get("homeDisplayAnchorAt")) <= 0) return "invalid";
             Object rawBands = values.get("hashratePercentileTable");
@@ -430,6 +514,11 @@ public class GrowthPublicStatsService {
                     HOME_FIELDS.forEach(key -> stored.putIfAbsent(key, 0));
                     stored.putIfAbsent("homeDisplayAnchorAt", stored.get("effectiveAt"));
                     stored.putIfAbsent("homeDisplayEnabled", false);
+                    Object legacyStep = stored.remove(LEGACY_TICK_STEP);
+                    if (legacyStep != null) {
+                        stored.putIfAbsent(TICK_STEP_MIN, legacyStep);
+                        stored.putIfAbsent(TICK_STEP_MAX, legacyStep);
+                    }
                     return stored;
                 } catch (Exception ex) {
                     throw new IllegalArgumentException(ex);
@@ -452,6 +541,15 @@ public class GrowthPublicStatsService {
             return false;
         }
     }
+
+    /** Same legal domain as the App's publicStatsHealth: 1 s – 1 day per tick, 0 ≤ min ≤ max ≤ 100,000,000 members per tick. */
+    private boolean validMemberTick(Integer intervalSec, Long stepMin, Long stepMax) {
+        return between(intervalSec, 1, 86_400) && between(stepMin, 0L, 100_000_000L)
+                && between(stepMax, 0L, 100_000_000L) && stepMin <= stepMax;
+    }
+
+    private Integer nullableInt(Object value) { return value == null ? null : intValue(value); }
+    private Long nullableLong(Object value) { return value == null ? null : longValue(value); }
 
     private Optional<BigDecimal> decimalConfig(String key) {
         try {

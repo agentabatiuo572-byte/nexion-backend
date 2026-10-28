@@ -348,6 +348,159 @@ class GrowthPublicStatsServiceTest {
         verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
+    @Test
+    void memberEstimateStaysUnpublishedUntilTickingIsConfigured() {
+        Map<String, Object> projection = service.publicProjection().getData();
+
+        assertThat(projection).doesNotContainKeys(
+                "registeredUsersBase", "registeredUsersAnchorAt", "registeredUsersTickIntervalSec",
+                "registeredUsersTickStepMin", "registeredUsersTickStepMax");
+    }
+
+    @Test
+    void tickedMemberEstimateIsPublishedAndMatchesTheAppFormula() {
+        when(config.activeValue("growth.public_stats.values")).thenReturn(Optional.of("""
+                {"fleetDevices":12000,"onlineRatePct":80,"onlineJitter":20,
+                 "registeredUsersBase":5000,"registeredUsersMonthlyGrowthPct":5,
+                 "registeredUsersAnchorAt":%d,"effectiveAt":1786097730000,"virtualUserCount":100,
+                 "registeredUsersTickIntervalSec":10,"registeredUsersTickStepMin":3,"registeredUsersTickStepMax":3,
+                 "hashratePercentileTable":[{"tops":10,"cumPct":40},{"tops":20,"cumPct":100}]}
+                """.formatted(clock.millis() - 95_000)));
+
+        Map<String, Object> projection = service.publicProjection().getData();
+
+        assertThat(projection)
+                .containsEntry("registeredUsersBase", 5000)
+                .containsEntry("registeredUsersAnchorAt", clock.millis() - 95_000)
+                .containsEntry("registeredUsersTickIntervalSec", 10)
+                .containsEntry("registeredUsersTickStepMin", 3)
+                .containsEntry("registeredUsersTickStepMax", 3)
+                .doesNotContainKeys("values", "registeredUsersMonthlyGrowthPct", "fleetDevices");
+        // A fixed range (min = max) is the plain formula: 95 s at one tick per 10 s → 9 ticks × 3.
+        assertThat((Map<String, Object>) projection.get("networkPulse")).containsEntry("registeredUsers", 5027L);
+    }
+
+    @Test
+    void rangedTicksMatchTheSharedReferenceVectors() {
+        // Same vectors pin the App's derivedRegisteredUsers (src/lib/public-member-estimate.test.ts).
+        long anchor = 1_793_163_582_637L;
+        long[] expected = {1_420_000, 1_420_006, 1_420_014, 1_420_022, 1_420_029, 1_420_035, 1_420_040, 1_420_047};
+        for (int k = 0; k < expected.length; k++) {
+            assertThat(GrowthPublicStatsService.tickedMembers(1_420_000, anchor, 60, 3, 10, anchor + k * 60_000L + 59_999))
+                    .isEqualTo(expected[k]);
+        }
+        assertThat(GrowthPublicStatsService.tickedMembers(1_420_000, anchor, 60, 3, 10, anchor + 86_400_000L)).isEqualTo(1_429_363L);
+        long[] offsets = {0, 1, 3, 3, 3, 1, 2, 2, 2, 3, 3, 0};
+        for (int t = 1; t <= offsets.length; t++) {
+            assertThat(GrowthPublicStatsService.tickOffset(anchor, t, 3)).isEqualTo(offsets[t - 1]);
+        }
+    }
+
+    @Test
+    void everyRangedTickAddsWithinTheConfiguredBoundsAndAveragesTheMidpoint() {
+        long anchor = 1_793_163_582_637L;
+        long previous = 0;
+        long total = 0;
+        java.util.Set<Long> seen = new java.util.TreeSet<>();
+        for (int k = 1; k <= 20_000; k++) {
+            long value = GrowthPublicStatsService.tickedMembers(0, anchor, 60, 3, 10, anchor + k * 60_000L);
+            long step = value - previous;
+            assertThat(step).isBetween(3L, 10L);
+            seen.add(step);
+            previous = value;
+            total += step;
+        }
+        assertThat(seen).containsExactly(3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L);
+        assertThat(total / 20_000.0).isCloseTo(6.5, org.assertj.core.data.Offset.offset(0.01));
+    }
+
+    @Test
+    void savingTickCadenceRestartsTheEstimateFromTheStartValue() {
+        when(config.activeValueForUpdate("growth.public_stats.version")).thenReturn(Optional.of("3"));
+
+        ApiResult<Map<String, Object>> result = service.update(tickRequest(5000L, 60, 3L, 10L), "h9-tick-save");
+
+        assertThat(result.getCode()).isZero();
+        assertThat((Map<String, Object>) result.getData().get("values"))
+                .containsEntry("registeredUsersBase", 5000L)
+                .containsEntry("registeredUsersTickIntervalSec", 60)
+                .containsEntry("registeredUsersTickStepMin", 3L)
+                .containsEntry("registeredUsersTickStepMax", 10L)
+                .containsEntry("registeredUsersAnchorAt", clock.millis());
+    }
+
+    @Test
+    void olderClientsWithoutTickFieldsKeepTheStoredCadenceAndAnchor() {
+        when(config.activeValueForUpdate("growth.public_stats.version")).thenReturn(Optional.of("3"));
+        when(config.activeValue("growth.public_stats.values")).thenReturn(Optional.of("""
+                {"fleetDevices":12000,"onlineRatePct":80,"onlineJitter":20,
+                 "registeredUsersBase":5000,"registeredUsersMonthlyGrowthPct":5,
+                 "registeredUsersAnchorAt":1786097730000,"effectiveAt":1786097730000,"virtualUserCount":100,
+                 "registeredUsersTickIntervalSec":60,"registeredUsersTickStepMin":3,"registeredUsersTickStepMax":10,
+                 "hashratePercentileTable":[{"tops":10,"cumPct":40},{"tops":20,"cumPct":100}]}
+                """));
+        GrowthPublicStatsUpdateRequest legacy = new GrowthPublicStatsUpdateRequest(
+                13000, new BigDecimal("80"), 20, 5000L, new BigDecimal("5"), 100L,
+                validRequest(3L).hashratePercentileTable(), 3L, "change fleet from an older console", "superadmin");
+
+        ApiResult<Map<String, Object>> result = service.update(legacy, "h9-legacy-client");
+
+        assertThat(result.getCode()).isZero();
+        assertThat((Map<String, Object>) result.getData().get("values"))
+                .containsEntry("registeredUsersTickIntervalSec", 60)
+                .containsEntry("registeredUsersTickStepMin", 3)
+                .containsEntry("registeredUsersTickStepMax", 10)
+                .containsEntry("registeredUsersAnchorAt", 1786097730000L);
+    }
+
+    @Test
+    void aggregatesSavedWithTheSingleStepReadAsAFixedRange() {
+        when(config.activeValue("growth.public_stats.values")).thenReturn(Optional.of("""
+                {"fleetDevices":12000,"onlineRatePct":80,"onlineJitter":20,
+                 "registeredUsersBase":5000,"registeredUsersMonthlyGrowthPct":5,
+                 "registeredUsersAnchorAt":%d,"effectiveAt":1786097730000,"virtualUserCount":100,
+                 "registeredUsersTickIntervalSec":10,"registeredUsersTickStep":3,
+                 "hashratePercentileTable":[{"tops":10,"cumPct":40},{"tops":20,"cumPct":100}]}
+                """.formatted(clock.millis() - 95_000)));
+
+        Map<String, Object> projection = service.publicProjection().getData();
+
+        assertThat(projection).containsEntry("registeredUsersTickStepMin", 3).containsEntry("registeredUsersTickStepMax", 3)
+                .doesNotContainKey("registeredUsersTickStep");
+        assertThat((Map<String, Object>) projection.get("networkPulse")).containsEntry("registeredUsers", 5027L);
+    }
+
+    @Test
+    void restoreDefaultsOfferTheRequestedCadence() {
+        assertThat((Map<String, Object>) service.overview().getData().get("defaults"))
+                .containsEntry("registeredUsersTickIntervalSec", 60)
+                .containsEntry("registeredUsersTickStepMin", 3L)
+                .containsEntry("registeredUsersTickStepMax", 10L);
+    }
+
+    @Test
+    void rejectsPartialInvertedOrOutOfRangeCadenceBeforeWriting() {
+        when(config.activeValueForUpdate("growth.public_stats.version")).thenReturn(Optional.of("3"));
+        for (GrowthPublicStatsUpdateRequest request : List.of(
+                tickRequest(5000L, 0, 1L, 2L), tickRequest(5000L, 86_401, 1L, 2L),
+                tickRequest(5000L, 10, -1L, 2L), tickRequest(5000L, 10, 1L, 100_000_001L),
+                tickRequest(5000L, 10, 10L, 3L),
+                tickRequest(5000L, 10, null, 2L), tickRequest(5000L, 10, 1L, null), tickRequest(5000L, null, 1L, 2L))) {
+            ApiResult<Map<String, Object>> result = service.update(request, "h9-tick-invalid");
+            assertThat(result.getCode()).isEqualTo(422);
+            assertThat(result.getMessage()).isEqualTo("H9_MEMBER_TICK_INVALID");
+        }
+        verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    private GrowthPublicStatsUpdateRequest tickRequest(long base, Integer intervalSec, Long stepMin, Long stepMax) {
+        GrowthPublicStatsUpdateRequest valid = validRequest(3L);
+        return new GrowthPublicStatsUpdateRequest(valid.fleetDevices(), valid.onlineRatePct(), valid.onlineJitter(),
+                base, valid.registeredUsersMonthlyGrowthPct(), valid.virtualUserCount(), valid.hashratePercentileTable(),
+                3L, "configure member tick cadence", "superadmin",
+                null, null, null, null, null, null, null, intervalSec, stepMin, stepMax);
+    }
+
     private GrowthPublicStatsUpdateRequest validRequest(long version) {
         return new GrowthPublicStatsUpdateRequest(
                 12000, new BigDecimal("80"), 20, 6000L, new BigDecimal("5"), 100L,
