@@ -2,7 +2,7 @@ package ffdd.opsconsole.user.web;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.user.application.PhoneModelLockOperationsService;
-import ffdd.opsconsole.user.dto.PhoneReplacementCommands.Confirm;
+import ffdd.opsconsole.user.dto.PhoneReplacementCommands.ModelLockRelease;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -20,7 +20,7 @@ public class PhoneModelLockOperationsController {
     @PostMapping("/users/profiles/{userId}/phone-model-locks/{installationId}/release")
     @PreAuthorize("hasAuthority('user_c5_phone_replacement_exception_grant')")
     public ApiResult<?> release(@PathVariable long userId, @PathVariable String installationId,
-                                @RequestHeader("Idempotency-Key") String key, @RequestBody Confirm body) {
+                                @RequestHeader("Idempotency-Key") String key, @RequestBody ModelLockRelease body) {
         return ApiResult.ok(service.release(userId, installationId, body, key));
     }
 }

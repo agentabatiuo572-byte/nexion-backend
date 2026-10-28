@@ -185,15 +185,35 @@ class IosModelCalibrationServiceTest {
     @Test void aReleasedLockTakesTheNextReportedModel() {
         calibrate("install-a", 0, "key-first-01", "iPhone 16 Pro");
         calibrate("install-a", table.get("install-a").rowVersion(), "key-swap-001", "iPhone 15");
-        // What OnboardingCalibrationMapper.releaseModelLock does for support.
-        var row = table.get("install-a");
-        Map<String, Object> derived = json(row.derivedJson());
-        derived.remove("installModelLock");
-        table.put("install-a", row(row.deviceId(), row.signalJson(), write(derived), row.rowVersion(), row.idempotencyKey()));
+        release("install-a");
         calibrate("install-a", table.get("install-a").rowVersion(), "key-after-001", "iPhone 15");
         Map<String, Object> stored = json(table.get("install-a").derivedJson());
         assertThat(stored).containsEntry("pendingReason", "MODEL_UNKNOWN");
         assertThat((Map<String, Object>) stored.get("installModelLock")).containsEntry("model", "iPhone 15");
+    }
+
+    @Test void aLockReleasedBeforeTheNewPhoneReportsDoesNotFallBackToTheOldReport() {
+        // The customer calls support first: the installation's latest report is still the old phone.
+        calibrate("install-a", 0, "key-first-01", "iPhone 15");
+        release("install-a");
+        var next = calibrate("install-a", table.get("install-a").rowVersion(), "key-new-0001", "iPhone 16 Pro").getData();
+        assertThat(next).containsEntry("calibrationStatus", "MATCHED");
+        assertThat((Map<String, Object>) json(table.get("install-a").derivedJson()).get("installModelLock")).containsEntry("model", "iPhone 16 Pro");
+    }
+
+    @Test void withTheLockOffItFollowsTheReportSoEnablingItStartsFromTheCurrentPhone() {
+        risk("{\"revision\":1,\"installModelLock\":\"OFF\"}");
+        calibrate("install-a", 0, "key-first-01", "iPhone 15");
+        calibrate("install-a", table.get("install-a").rowVersion(), "key-swap-001", "iPhone 16 Pro");
+        assertThat((Map<String, Object>) json(table.get("install-a").derivedJson()).get("installModelLock")).containsEntry("model", "iPhone 16 Pro");
+    }
+
+    /** What OnboardingCalibrationMapper.releaseModelLock writes for support. */
+    private void release(String device) {
+        var row = table.get(device);
+        Map<String, Object> derived = json(row.derivedJson());
+        derived.put("installModelLock", Map.of("released", true));
+        table.put(device, row(row.deviceId(), row.signalJson(), write(derived), row.rowVersion(), row.idempotencyKey()));
     }
 
     @Test void iPhoneFactsAreComparedWithTheRuleBeforeAnyDraw() {
@@ -238,8 +258,8 @@ class IosModelCalibrationServiceTest {
     }
 
     private static OnboardingCalibrationService.Signals ios(String model, String os, Double scale, Integer width, Integer height) {
-        return new OnboardingCalibrationService.Signals(null, null, model, "Apple", "", scale, null, 80, false, true, "ios", "",
-                os, width, height);
+        return new OnboardingCalibrationService.Signals(null, null, model, "Apple", "", null, null, 80, false, true, "ios", "",
+                os, width, height, scale);
     }
 
     private static OnboardingCalibrationService.Signals android(String model) {

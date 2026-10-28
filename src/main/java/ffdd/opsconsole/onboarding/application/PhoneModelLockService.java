@@ -39,26 +39,41 @@ public class PhoneModelLockService implements PhoneModelLockContract {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public Map<String,Object> release(Account account, String installationId, long actor, String reason, String key) {
+    public Map<String,Object> release(Account account, String installationId, long expectedRevision, long actor, String reason, String key) {
         if (installationId == null || !installationId.matches("[A-Za-z0-9._:-]{1,128}")) throw new BizException(422, "ONBOARDING_DEVICE_INVALID");
         // The user row lock serializes this with the customer's own calibration.
         if (mapper.lockUserSandbox(account.userId()) == null) throw new BizException(404, "PHONE_INSTALLATION_NOT_FOUND");
         var row = find(account, installationId);
-        if (row.lockModel() == null || row.lockModel().isBlank()) return view(row, policy());
-        if (mapper.releaseModelLock(account.userId(), installationId, account.sourceEnvironment(), account.runId()) != 1) {
+        PhoneCalibrationPolicy policy = policy();
+        // A retried release finds the marker it wrote; nothing is released twice or audited twice.
+        if (released(row) || lockedModel(row) == null) return view(row, policy);
+        if (row.rowVersion() == null || row.rowVersion() != expectedRevision
+                || mapper.releaseModelLock(account.userId(), installationId, account.sourceEnvironment(), account.runId(), expectedRevision) != 1) {
             throw new BizException(409, "PHONE_MODEL_LOCK_RELEASE_CONFLICT");
         }
         Map<String,Object> detail = new LinkedHashMap<>();
         detail.put("userId", account.userId());
         detail.put("installationId", installationId);
-        detail.put("lockedModel", row.lockModel());
+        detail.put("revision", expectedRevision);
+        detail.put("lockedModel", lockedModel(row));
         detail.put("reportedModel", row.model());
         detail.put("pendingReason", row.pendingReason());
         detail.put("reason", reason);
         audit.recordRequired(AuditLogWriteRequest.builder().traceId(key).actorType("ADMIN").actorId(actor)
                 .action("ADMIN.PHONE_MODEL_LOCK_RELEASED").resourceType("PHONE_INSTALLATION").resourceId(installationId)
                 .result("SUCCEEDED").riskLevel("HIGH").detail(detail).build());
-        return view(find(account, installationId), policy());
+        return view(find(account, installationId), policy);
+    }
+
+    private static boolean released(OnboardingCalibrationMapper.ModelLockRow row) {
+        return "true".equals(row.released());
+    }
+
+    /** The stored lock, or for a row calibrated before locks were stored, the model it last reported. */
+    private static String lockedModel(OnboardingCalibrationMapper.ModelLockRow row) {
+        if (released(row)) return null;
+        if (row.lockModel() != null && !row.lockModel().isBlank()) return row.lockModel();
+        return row.model() == null || row.model().isBlank() ? null : row.model();
     }
 
     private OnboardingCalibrationMapper.ModelLockRow find(Account account, String installationId) {
@@ -78,13 +93,16 @@ public class PhoneModelLockService implements PhoneModelLockContract {
     private static Map<String,Object> view(OnboardingCalibrationMapper.ModelLockRow row, PhoneCalibrationPolicy policy) {
         boolean stored = row.lockModel() != null && !row.lockModel().isBlank();
         String lockPlatform = stored && row.lockPlatform() != null && !row.lockPlatform().isEmpty() ? row.lockPlatform() : row.platform();
+        String locked = lockedModel(row);
         Map<String,Object> view = new LinkedHashMap<>();
         view.put("installationId", row.deviceId());
+        view.put("revision", row.rowVersion());
         view.put("platform", lockPlatform);
-        view.put("lockedModel", stored ? name(policy, lockPlatform, row.lockModel()) : null);
+        view.put("lockedModel", locked == null ? null : name(policy, lockPlatform, locked));
         view.put("reportedModel", name(policy, row.platform(), row.model()));
         view.put("held", PhoneModelRisk.MODEL_CHANGED.equals(row.pendingReason()));
-        view.put("releasable", stored);
+        view.put("released", released(row));
+        view.put("releasable", locked != null);
         view.put("calibrationStatus", row.calibrationStatus());
         view.put("activationStatus", row.activationStatus());
         view.put("updatedAt", row.updatedAt());

@@ -111,8 +111,9 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                         risk.accountModelChurn() == PhoneModelRisk.Mode.OFF ? 0
                                 : accountModels(userId, scope, policy, reported, risk.churnWindowDays())));
         carryIosAllocations(current, derived);
-        // The first model an installation reports stays its lock until support releases it.
-        Map<String, String> nextLock = lock != null ? lock : reported;
+        // The first model an installation reports stays its lock until support releases it; with the
+        // check off, the lock simply follows the report so enabling it later starts from the current phone.
+        Map<String, String> nextLock = lock != null && risk.installModelLock() != PhoneModelRisk.Mode.OFF ? lock : reported;
         if (nextLock != null) derived.put(PhoneModelRisk.INSTALL_MODEL_LOCK, nextLock);
         long configRevision = Math.max(
                 tiers.stream().mapToLong(row -> row.revision() == null ? 0L : row.revision()).max().orElse(0L),
@@ -681,14 +682,19 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         return null;
     }
 
-    /** The installation's locked model: the stored lock, else the model its latest report carried. */
+    /**
+     * The installation's locked model: the stored lock, none when support released it, else (a row
+     * calibrated before locks were stored) the model its latest report carried.
+     */
     private static Map<String, String> installModelLock(CalibrationRow row) {
         if (row == null) return null;
         try {
             Map<String, Object> derived = JSON.readValue(row.derivedJson(), new TypeReference<>() { });
-            if (derived.get(PhoneModelRisk.INSTALL_MODEL_LOCK) instanceof Map<?, ?> lock
-                    && lock.get("model") instanceof String model && !model.isBlank()) {
-                return lockOf(lock.get("platform") instanceof String platform ? platform : "", model);
+            if (derived.get(PhoneModelRisk.INSTALL_MODEL_LOCK) instanceof Map<?, ?> lock) {
+                if (Boolean.TRUE.equals(lock.get("released"))) return null;
+                if (lock.get("model") instanceof String model && !model.isBlank()) {
+                    return lockOf(lock.get("platform") instanceof String platform ? platform : "", model);
+                }
             }
             Map<String, Object> signals = JSON.readValue(row.signalJson(), new TypeReference<>() { });
             return signals.get("model") instanceof String model && !model.isBlank()
@@ -724,7 +730,9 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         if (reported != null) models.add(policy.modelIdentity(reported.get("platform"), reported.get("model")));
         for (var row : mapper.accountModelReports(userId, scope.sourceEnvironment(), scope.runId(), days)) {
             if (row == null) continue; // MyBatis maps a row whose columns are all NULL (an empty report) to null.
-            String platform = row.platform() == null ? "" : row.platform();
+            // Reports written before platforms were sent carry none: count them under this report's platform.
+            String platform = row.platform() == null || row.platform().isEmpty()
+                    ? (reported == null ? "" : reported.get("platform")) : row.platform();
             if (row.model() != null && !row.model().isBlank()) models.add(policy.modelIdentity(platform, row.model()));
             if (row.lockModel() != null && !row.lockModel().isBlank()) {
                 models.add(policy.modelIdentity(row.lockPlatform() == null || row.lockPlatform().isEmpty() ? platform
@@ -736,7 +744,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     }
 
     private static PhoneModelRisk.Facts facts(Signals signals) {
-        return new PhoneModelRisk.Facts(signals.platform(), signals.osVersion(), signals.pxDensity(),
+        return new PhoneModelRisk.Facts(signals.platform(), signals.osVersion(), signals.pixelRatio(),
                 signals.screenWidth(), signals.screenHeight());
     }
 
@@ -852,7 +860,8 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                 && boundedText(s.model(), 128) && boundedText(s.brand(), 128) && boundedText(s.gpu(), 256)
                 && (s.platform() == null || boundedText(s.platform(), 16)) && (s.soc() == null || boundedText(s.soc(), 128))
                 && (s.osVersion() == null || boundedText(s.osVersion(), 32))
-                && integerOrNull(s.screenWidth(), 1, 10000) && integerOrNull(s.screenHeight(), 1, 10000);
+                && integerOrNull(s.screenWidth(), 1, 10000) && integerOrNull(s.screenHeight(), 1, 10000)
+                && finiteOrNull(s.pixelRatio(), 1, 10);
     }
 
     private boolean validAction(ActionRequest request) {
@@ -948,7 +957,8 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         }
     }
     /**
-     * Raw device observations. The OS version and screen facts feed the model consistency checks;
+     * Raw device observations. The OS version and screen facts (points and pixelRatio, the screen
+     * scale; pxDensity keeps its older meaning) feed the model consistency checks;
      * left out when absent, so an older App's request serializes and hashes exactly as before.
      */
     public record Signals(Double memGB, Integer cores, String model, String brand, String gpu, Double pxDensity,
@@ -956,12 +966,13 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                           String platform, String soc,
                           @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String osVersion,
                           @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Integer screenWidth,
-                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Integer screenHeight) {
+                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Integer screenHeight,
+                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Double pixelRatio) {
         public Signals(Double memGB, Integer cores, String model, String brand, String gpu, Double pxDensity,
                        Double pingMs, Integer batteryLevel, Boolean charging, Boolean networkReachable,
                        String platform, String soc) {
             this(memGB, cores, model, brand, gpu, pxDensity, pingMs, batteryLevel, charging, networkReachable, platform, soc,
-                    null, null, null);
+                    null, null, null, null);
         }
         public Signals(Double memGB, Integer cores, String model, String brand, String gpu, Double pxDensity,
                        Double pingMs, Integer batteryLevel, Boolean charging, Boolean networkReachable) {

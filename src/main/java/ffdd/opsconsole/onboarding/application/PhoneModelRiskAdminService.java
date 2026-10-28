@@ -10,13 +10,8 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.PhoneReplacementAdminAccess;
 import java.time.Clock;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
@@ -52,6 +47,10 @@ public class PhoneModelRiskAdminService {
         long actor = access.require("device_e6_write");
         if (input == null || input.expectedRevision() == null || !Boolean.TRUE.equals(input.confirmed()))
             throw new BizException(422, "PHONE_RISK_SETTINGS_CONFIRMATION_REQUIRED");
+        // Every setting is sent: a missing one would silently fall back to its default.
+        if (java.util.stream.Stream.of(input.installModelLock(), input.osVersion(), input.screenScale(), input.screenSize(),
+                input.missingSignals(), input.accountModelChurn(), input.churnWindowDays(), input.churnModelCount())
+                .anyMatch(java.util.Objects::isNull)) throw new BizException(422, "PHONE_RISK_SETTINGS_INVALID");
         if (input.reason() == null || input.reason().trim().length() < 8 || input.reason().trim().length() > 200)
             throw new BizException(422, "PHONE_RISK_SETTINGS_REASON_INVALID");
         var store = new PhoneModelRiskConfig(config, clock);
@@ -73,48 +72,12 @@ public class PhoneModelRiskAdminService {
         return data;
     }
 
-    /** Per check: calibrations flagged and held, accounts involved, and the models behind them. */
+    /** Per check: calibrations flagged and held and accounts involved, and the most flagged models. */
     private Map<String, Object> stats() {
-        Map<String, int[]> byCheck = new LinkedHashMap<>();
-        Map<String, Set<Long>> accounts = new LinkedHashMap<>();
-        Map<List<String>, int[]> byModel = new LinkedHashMap<>();
-        for (var sample : mapper.riskSamples(STATS_DAYS)) {
-            List<String> flags;
-            try {
-                flags = sample.riskFlags() == null ? List.of() : JSON.readValue(sample.riskFlags(), new TypeReference<List<String>>() { });
-            } catch (Exception unreadable) {
-                continue;
-            }
-            for (String flag : new HashSet<>(flags)) {
-                boolean held = flag.equals(sample.pendingReason());
-                int[] count = byCheck.computeIfAbsent(flag, ignored -> new int[2]);
-                count[0]++;
-                if (held) count[1]++;
-                accounts.computeIfAbsent(flag, ignored -> new HashSet<>()).add(sample.userId());
-                int[] model = byModel.computeIfAbsent(List.of(flag, String.valueOf(sample.platform()), String.valueOf(sample.model())),
-                        ignored -> new int[2]);
-                model[0]++;
-                if (held) model[1]++;
-            }
-        }
-        List<Map<String, Object>> checks = new ArrayList<>();
-        byCheck.forEach((code, count) -> checks.add(Map.of("code", code, "flagged", count[0], "held", count[1],
-                "accounts", accounts.get(code).size())));
-        List<Map<String, Object>> models = new ArrayList<>();
-        byModel.entrySet().stream().sorted(Comparator.comparingInt((Map.Entry<List<String>, int[]> e) -> -e.getValue()[0])).limit(50)
-                .forEach(entry -> {
-                    Map<String, Object> row = new LinkedHashMap<>();
-                    row.put("code", entry.getKey().get(0));
-                    row.put("platform", entry.getKey().get(1));
-                    row.put("model", entry.getKey().get(2));
-                    row.put("flagged", entry.getValue()[0]);
-                    row.put("held", entry.getValue()[1]);
-                    models.add(row);
-                });
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("days", STATS_DAYS);
-        stats.put("checks", checks);
-        stats.put("models", models);
+        stats.put("checks", mapper.riskCheckStats(STATS_DAYS));
+        stats.put("models", mapper.riskModelStats(STATS_DAYS));
         return stats;
     }
 }
