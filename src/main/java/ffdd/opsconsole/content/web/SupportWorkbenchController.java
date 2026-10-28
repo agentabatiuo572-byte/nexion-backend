@@ -41,6 +41,14 @@ public class SupportWorkbenchController {
         return ApiResult.ok(analytics.query(parameters));
     }
 
+    @GetMapping("/analytics/months")
+    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
+    public ApiResult<Map<String,Object>> analyticsMonths() {
+        productionPathGuard.requireOpsWriteAllowed();
+        return ApiResult.ok(Map.of("months",SupportWorkbenchService.analyticsMonths(
+                ffdd.opsconsole.shared.config.BusinessCalendar.legacy(),java.time.Instant.now(),24)));
+    }
+
     @GetMapping({"/overview","/customers"})
     @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
     public ApiResult<Map<String,Object>> snapshot(@RequestParam(required=false) Long agentId,
