@@ -37,6 +37,7 @@ public class PublishedHowContentService {
     private final AuditLogService audit;
     private final ObjectMapper mapper = new ObjectMapper();
     private final String defaultDocument = PublishedContentDefaults.read(DEFAULT_RESOURCE);
+    private final Map<String, Object> defaultPublication = parse(defaultDocument);
 
     public ApiResult<Map<String, Object>> publicContent(String contentKey, String requestedLocale) {
         try {
@@ -50,7 +51,7 @@ public class PublishedHowContentService {
             boolean publishedHere = "PUBLISHED".equals(stored.get("status")) && text(stored.get("version")) != null
                     && currentEnvironment.equals(publishedEnvironment) && currentRunId.equals(publishedRunId);
             // A publication for this environment always wins, even when it fails validation below.
-            Map<String, Object> document = publishedHere ? stored : parse(defaultDocument);
+            Map<String, Object> document = publishedHere ? stored : defaultPublication;
             Map<String, Object> contents = map(document.get("contents"));
             Map<String, Object> entry = map(contents == null ? null : contents.get(contentKey));
             Map<String, Object> locales = map(entry == null ? null : entry.get("locales"));
@@ -92,6 +93,7 @@ public class PublishedHowContentService {
             Map<String, Object> value = read();
             if (!hasAdminDocumentShape(value)) value = defaultAdminDocument();
             value = PublishedContentSnapshot.admin(value);
+            PublishedContentSnapshot.markDefaultPublic(value);
             value.put("source", "server");
             value.put("configKey", CONFIG_KEY);
             return ApiResult.ok(value);

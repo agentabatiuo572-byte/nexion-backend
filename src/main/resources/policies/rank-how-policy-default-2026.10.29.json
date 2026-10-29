@@ -39,7 +39,7 @@
         {
           "id": "requirement-direct",
           "title": "2. 达标好友",
-          "body": "你邀请的好友自购达到 {referralThreshold} 后，计为达标好友。",
+          "body": "你邀请的好友满足自购要求后，计为达标好友。当前要求：{referralThreshold}。",
           "order": 6
         },
         {
@@ -117,7 +117,7 @@
         {
           "id": "example-team",
           "title": "团队",
-          "body": "{toRank} 需要团队算力点达到 {teamComputePoints}；达标好友要求：{directRefs}（好友自购达到 {referralThreshold} 算作达标）。",
+          "body": "{toRank} 需要团队算力点达到 {teamComputePoints}；达标好友要求：{directRefs}（好友自购要求：{referralThreshold}）。",
           "order": 19
         },
         {
@@ -165,7 +165,7 @@
         {
           "id": "faq-members",
           "title": "为什么团队有人，我还没升级？",
-          "body": "团队人数不等于达标好友数。好友自购达到 {referralThreshold} 才计入，你也要同时满足自购和团队算力点要求。",
+          "body": "团队人数不等于达标好友数。好友满足自购要求（{referralThreshold}）才计入，你也要同时满足自购和团队算力点要求。",
           "order": 27
         },
         {
@@ -218,7 +218,7 @@
         {
           "id": "requirement-direct",
           "title": "2. Qualified friends",
-          "body": "A friend you invited counts as qualified after reaching {referralThreshold} in own purchases.",
+          "body": "A friend you invited counts as qualified once they meet the own-purchase requirement. Current requirement: {referralThreshold}.",
           "order": 6
         },
         {
@@ -296,7 +296,7 @@
         {
           "id": "example-team",
           "title": "Team",
-          "body": "{toRank} needs {teamComputePoints} in team compute points. Qualified friends required: {directRefs} (a friend qualifies at {referralThreshold} in own purchases).",
+          "body": "{toRank} needs {teamComputePoints} in team compute points. Qualified friends required: {directRefs} (friend own-purchase requirement: {referralThreshold}).",
           "order": 19
         },
         {
@@ -344,7 +344,7 @@
         {
           "id": "faq-members",
           "title": "Why haven't I ranked up when my team has members?",
-          "body": "Team size isn't the same as qualified friends. A friend counts after reaching {referralThreshold} in own purchases, and you also need to meet the own and team compute point requirements.",
+          "body": "Team size isn't the same as qualified friends. A friend counts once they meet the own-purchase requirement ({referralThreshold}), and you also need to meet the own and team compute point requirements.",
           "order": 27
         },
         {
@@ -397,7 +397,7 @@
         {
           "id": "requirement-direct",
           "title": "2. Bạn bè đạt chuẩn",
-          "body": "Bạn bè do bạn mời được tính là đạt chuẩn khi mua cá nhân đạt {referralThreshold}.",
+          "body": "Bạn bè do bạn mời được tính là đạt chuẩn khi đáp ứng yêu cầu mua cá nhân. Yêu cầu hiện tại: {referralThreshold}.",
           "order": 6
         },
         {
@@ -475,7 +475,7 @@
         {
           "id": "example-team",
           "title": "Nhóm",
-          "body": "{toRank} cần {teamComputePoints} điểm của nhóm. Số bạn bè đạt chuẩn cần có: {directRefs} (bạn bè đạt chuẩn khi mua cá nhân đạt {referralThreshold}).",
+          "body": "{toRank} cần {teamComputePoints} điểm của nhóm. Số bạn bè đạt chuẩn cần có: {directRefs} (yêu cầu mua cá nhân của bạn bè: {referralThreshold}).",
           "order": 19
         },
         {
@@ -523,7 +523,7 @@
         {
           "id": "faq-members",
           "title": "Vì sao nhóm đã có thành viên mà tôi chưa lên hạng?",
-          "body": "Số thành viên nhóm khác với số bạn bè đạt chuẩn. Bạn bè chỉ được tính khi mua cá nhân đạt {referralThreshold}, và bạn cũng cần đáp ứng yêu cầu về điểm cá nhân và điểm của nhóm.",
+          "body": "Số thành viên nhóm khác với số bạn bè đạt chuẩn. Bạn bè chỉ được tính khi đáp ứng yêu cầu mua cá nhân ({referralThreshold}), và bạn cũng cần đáp ứng yêu cầu về điểm cá nhân và điểm của nhóm.",
           "order": 27
         },
         {

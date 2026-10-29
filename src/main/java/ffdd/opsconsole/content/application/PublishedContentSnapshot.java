@@ -29,6 +29,13 @@ public final class PublishedContentSnapshot {
         document.put("published", retained);
     }
 
+    /** For content with a shipped default: a draft saved before any publication leaves the default public. */
+    public static void markDefaultPublic(Map<String, Object> view) {
+        if (Boolean.TRUE.equals(view.get("hasPublishedVersion"))) return;
+        view.put("hasPublishedVersion", true);
+        view.put("publicSource", "DEFAULT");
+    }
+
     public static Map<String, Object> admin(Map<String, Object> document) {
         Map<String, Object> view = new LinkedHashMap<>(document);
         view.put("hasPublishedVersion", "PUBLISHED".equals(published(document).get("status")));

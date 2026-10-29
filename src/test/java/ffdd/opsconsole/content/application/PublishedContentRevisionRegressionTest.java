@@ -49,6 +49,15 @@ class PublishedContentRevisionRegressionTest {
         assertThat(stored).isEmpty();
     }
 
+    @ParameterizedTest @ValueSource(strings = {"rank", "how"})
+    void aFirstDraftKeepsTheShippedDefaultPublicAndSaysSo(String kind) {
+        assertThat(write(kind, "draft-1", "DRAFT", 0, "Draft").getCode()).isZero();
+
+        assertThat(admin(kind).getData()).containsEntry("status", "DRAFT")
+                .containsEntry("hasPublishedVersion", true).containsEntry("publicSource", "DEFAULT");
+        assertThat(read(kind).getData()).containsEntry("version", "default-2026.10.29");
+    }
+
     @ParameterizedTest @ValueSource(strings = {"developer", "rank", "how"})
     void draftRetainsPublicRevisionAcrossRepeatedEditsAndRepublish(String kind) {
         assertThat(write(kind, "v1", "PUBLISHED", 0, "Original").getCode()).isZero();

@@ -74,8 +74,17 @@ public class DevelopmentRankHowPolicyInitializer implements ApplicationRunner {
     }
 
     /** The original 2026.08.22 seed or the 2026.08.31 baseline exactly as this initializer wrote it. */
+    /** Revision is ignored: an 08.31 baseline reached through the 08.22 upgrade sits at revision 2. */
     private boolean isUntouchedEarlierBaseline(Map<String, Object> candidate) {
-        return candidate.equals(originalDocument()) || candidate.equals(resource("/policies/rank-how-policy-2026.08.31.json"));
+        Map<String, Object> content = withoutRevision(candidate);
+        return content.equals(withoutRevision(originalDocument()))
+                || content.equals(withoutRevision(resource("/policies/rank-how-policy-2026.08.31.json")));
+    }
+
+    private static Map<String, Object> withoutRevision(Map<String, Object> document) {
+        Map<String, Object> content = new java.util.LinkedHashMap<>(document);
+        content.remove("revision");
+        return content;
     }
 
     private Map<String, Object> originalDocument() {

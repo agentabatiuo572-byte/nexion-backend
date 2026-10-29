@@ -138,6 +138,30 @@ class DevelopmentRankHowPolicyInitializerTest {
     }
 
     @Test
+    void upgradesAn20260831BaselineThatReachedRevisionTwoThroughTheEarlierUpgrade() throws Exception {
+        PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+        PublishedRankHowPolicyService policyService = mock(PublishedRankHowPolicyService.class);
+        when(config.insertAdminValueIfMissing(
+                org.mockito.ArgumentMatchers.eq(PublishedRankHowPolicyService.CONFIG_KEY), anyString(),
+                org.mockito.ArgumentMatchers.eq("JSON"), org.mockito.ArgumentMatchers.eq("published_content"), anyString()))
+                .thenReturn(false);
+        when(policyService.update(anyString(), anyString(), org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.eq(2L), anyString()))
+                .thenReturn(ffdd.opsconsole.shared.api.ApiResult.ok(java.util.Map.of()));
+        var baseline = (com.fasterxml.jackson.databind.node.ObjectNode) new ObjectMapper()
+                .readTree(getClass().getResourceAsStream("/policies/rank-how-policy-2026.08.31.json"));
+        baseline.put("revision", 2);
+        when(config.activeValueForUpdate(PublishedRankHowPolicyService.CONFIG_KEY)).thenReturn(java.util.Optional.of(baseline.toString()));
+
+        new DevelopmentRankHowPolicyInitializer(config, policyService).run(null);
+
+        verify(policyService).update(
+                org.mockito.ArgumentMatchers.eq("default-2026.10.29"),
+                org.mockito.ArgumentMatchers.eq("PUBLISHED"),
+                org.mockito.ArgumentMatchers.argThat(locales -> locales.size() == 3),
+                org.mockito.ArgumentMatchers.eq(2L), anyString());
+    }
+
+    @Test
     void exactCheckAndCasRunWithinTheSameTransaction() throws Exception {
         assertThat(DevelopmentRankHowPolicyInitializer.class
                 .getMethod("run", org.springframework.boot.ApplicationArguments.class)
