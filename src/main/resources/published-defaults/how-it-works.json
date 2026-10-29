@@ -18,7 +18,7 @@
               "id": "benefits",
               "kind": "list",
               "title": "持有权益",
-              "body": "持有创世节点可获得：",
+              "body": "持有创世席位可获得：",
               "items": [
                 "UVT 预留额度，上线交易后按平台公布的安排释放。",
                 "创始成员身份标识。",
@@ -51,7 +51,7 @@
               "id": "benefits",
               "kind": "list",
               "title": "Holder benefits",
-              "body": "Holding a Genesis node gives you:",
+              "body": "Holding a Genesis seat gives you:",
               "items": [
                 "A UVT allocation, released after listing under the published schedule.",
                 "A founding member badge.",
@@ -84,7 +84,7 @@
               "id": "benefits",
               "kind": "list",
               "title": "Quyền lợi người nắm giữ",
-              "body": "Khi nắm giữ nút Genesis, bạn nhận được:",
+              "body": "Khi nắm giữ suất Genesis, bạn nhận được:",
               "items": [
                 "Hạn mức UVT, phát hành sau khi niêm yết theo lịch nền tảng công bố.",
                 "Huy hiệu thành viên sáng lập.",

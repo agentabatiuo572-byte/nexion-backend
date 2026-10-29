@@ -4,197 +4,179 @@
   "revision": 0,
   "locales": {
     "zh": {
-      "hero": "我们只收集提供服务所需的信息，并说明用途。",
+      "hero": "UVEL AI LTD 尊重您的隐私。本政策说明 UVEL 面向越南及东南亚用户提供服务时如何处理个人信息，以及您如何联系我们行使相关权利。更新日期：2026年10月27日。隐私联系邮箱：staff@uvel.ai。",
       "sections": [
         {
-          "id": "scope",
-          "title": "适用范围",
-          "body": "本政策说明 UVEL App 在你使用账户、设备、钱包和客服等功能时，如何收集、使用和保护你的个人信息。使用 UVEL 即表示你已阅读本政策。",
-          "order": 1
+          "id": "controller",
+          "title": "1. 责任主体与适用范围",
+          "order": 1,
+          "body": "UVEL AI LTD 是 UVEL 服务的运营主体，负责本政策所述的个人信息处理。您可以通过 staff@uvel.ai 或 App 内的帮助与客服联系我们。本政策适用于 UVEL 账户、设备与任务、商品与订单、资产记录、团队与活动、学习及客服服务。独立第三方自行提供的服务还适用其各自的隐私说明。"
         },
         {
-          "id": "collect",
-          "title": "我们收集的信息",
-          "body": "账户：国家或地区代码、手机号、密码、短信验证码、注册时的 IP 地址；你选择第三方登录（Google、Apple、Telegram）时，对方提供的账户标识。\n资料：昵称、头像。\n设备：App 生成的安装标识，以及校准手机算力时读取的设备型号、品牌、芯片、内存、处理器核数、GPU、系统版本、屏幕、电量和网络延迟。\n资金：订单、收益、充值和提现记录；你绑定的银行卡（我们只保存卡组织、卡号后四位、有效期和持卡人姓名，完整卡号由支付服务处理）；银行收款信息（银行、账号、户名）；USDT 提现地址。\n客服：你发送给客服的消息和图片。\n使用情况：登录后浏览的页面、停留时长、点击位置、会话与语言设置。\n开发者申请：公司名称、联系邮箱和使用场景。",
-          "order": 2
+          "id": "information",
+          "title": "2. 我们处理的信息及用途",
+          "order": 2,
+          "body": "账户与安全：国家或地区代码、手机号、验证码与密码验证信息、账户标识、登录会话、访问时间、IP 地址及安全记录，用于注册登录、身份验证、账户保护和异常排查。您主动填写的显示名、邮箱、头像、简介、语言、地区和时区，用于资料展示、联系及本地化服务。\n\n设备与任务：使用设备绑定、能力校准、激活或任务功能时，我们处理安装标识、设备型号与品牌、系统或平台信息、处理器与图形能力、内存、核心数、屏幕特征，以及网络、电量、充电和任务状态，用于识别设备、评估能力、匹配服务、核实任务情况与维护运行安全。具体信息以设备可提供的内容和您使用的功能为限。\n\n订单与资产：使用购买、充值、提现、兑换或相关资产功能时，我们处理订单内容、金额、状态、必要的收付款资料、钱包地址、交易引用、交易哈希、余额及账本记录，用于执行请求、履约、对账、风险控制和处理争议。区块链交易信息可能公开可查，通常不能由平台单方面删除。\n\n团队、活动与学习：推荐关系、团队等级、奖励与活动参与记录，以及课程进度、答题和奖励状态，用于提供相应功能、核实参与条件及避免重复发放。"
         },
         {
-          "id": "use",
-          "title": "我们如何使用",
-          "body": "用于登录与账户安全、防止滥用；校准和绑定设备、分配算力作业；处理订单、充值、提现与奖励，并进行风险核查；提供客服支持；改进产品体验。",
-          "order": 3
+          "id": "support-analytics",
+          "title": "3. 客服与使用记录",
+          "order": 3,
+          "body": "我们处理您主动提交的客服消息、问题描述、图片或附件及处理记录。请勿在消息或附件中提交密码、验证码、私钥或与请求无关的他人信息。\n\n我们处理页面访问、点击、停留时长、相对点击位置、会话标识、设备类型、语言及必要的错误和性能记录，用于分析功能使用情况、改善体验、排查故障及维护服务安全。"
         },
         {
-          "id": "share",
-          "title": "共享与委托处理",
-          "body": "为完成支付、充值、提现、短信发送和你选择的第三方登录，我们会向提供相应服务的机构提供完成该服务所需的信息。法律法规要求时，我们会依法提供。",
-          "order": 4
+          "id": "basis-choices",
+          "title": "4. 处理依据与您的选择",
+          "order": 4,
+          "body": "依法需要单独同意的个人信息处理，须在取得相应同意后开展。履行您的服务请求、法定义务或其他依法允许的处理，须满足相应法律条件。阅读本政策本身不替代依法需要的单独告知或同意。\n\n您可以选择不提供可选资料、管理设备权限，或联系 staff@uvel.ai 撤回同意、反对或限制相关处理。拒绝提供某项功能必需的信息可能使该功能无法使用；撤回同意不影响撤回前依法进行的处理。"
         },
         {
-          "id": "transfer",
-          "title": "跨境处理",
-          "body": "我们的服务器和服务提供方可能位于你所在国家或地区之外，你的信息可能在境外存储和处理。",
-          "order": 5
+          "id": "permissions",
+          "title": "5. 设备权限与本地存储",
+          "order": 5,
+          "body": "相关功能可能使用设备权限；具体权限及用途以实际功能提示和系统授权界面为准。您可以在系统设置中管理权限，关闭后可能影响依赖该权限的功能。\n\nUVEL 使用本地存储保存登录状态、语言、偏好及必要的临时数据。清除本地数据可能使您退出登录；清除本地数据或卸载应用不会自动注销账户，也不会自动删除服务端记录。"
         },
         {
-          "id": "rights",
-          "title": "你的权利",
-          "body": "你可以在 App 中查看和修改资料，在「安全」中申请注销账户，或通过专属客服提出查询、更正或删除个人信息的请求。依法需要保留的财务与安全记录不会立即删除。",
-          "order": 6
+          "id": "sharing",
+          "title": "6. 服务提供者与信息共享",
+          "order": 6,
+          "body": "为提供您选择的功能，我们按相应目的向必要的云基础设施、短信、支付与数字资产、身份登录或客服服务提供者传输相关信息。使用范围取决于实际启用的功能：短信服务处理手机号和验证码消息；支付或数字资产服务处理必要的订单、金额、收付款信息和交易引用；第三方登录处理授权结果和账户关联信息。相关集成包括 ITNIO、HDPay、Cregis 及您主动选择的登录服务，只有相应功能启用且需要处理时才适用。\n\n依法需要单独同意的信息共享，须在取得相应同意后开展；收到具有合法依据的监管或司法要求时，可能按适用法律提供必要信息。您可通过 staff@uvel.ai 咨询所用功能的接收方及处理范围。"
         },
         {
-          "id": "security",
-          "title": "信息安全",
-          "body": "我们采取合理的技术和管理措施保护你的信息。请妥善保管密码和验证码，不要向任何人透露。",
-          "order": 7
+          "id": "storage",
+          "title": "7. 处理地点、保存与安全",
+          "order": 7,
+          "body": "UVEL 使用云基础设施处理服务数据。根据您访问的服务及所选功能，信息可能在新加坡及其他服务运行地点处理，包括您居住国家或地区以外的地点。涉及跨境提供个人信息时，我们按照适用法律履行告知、授权及其他必要要求。您可联系 staff@uvel.ai 查询具体功能的处理地点和接收方。\n\n信息保存期限根据处理目的、账户状态、交易与争议处理需要及适用义务确定。停止使用某项功能不意味着相关交易、安全记录或备份立即消失；不再需要且没有继续保存依据的信息，按适用规则进行删除或匿名化，备份的处理与在线数据可能存在时间差。\n\n我们使用身份验证、访问控制、传输保护和操作审计等措施保护信息。任何系统均无法保证绝对安全；发现账户异常时，请及时使用安全设置并联系我们。"
         },
         {
-          "id": "minors",
-          "title": "未成年人",
-          "body": "UVEL 仅面向年满 18 周岁的用户。",
-          "order": 8
+          "id": "rights-deletion",
+          "title": "8. 您的权利与账户注销",
+          "order": 8,
+          "body": "您可以通过个人资料与安全设置管理相关信息，并通过 staff@uvel.ai 或 App 内的帮助与客服提出知情、访问、获取副本、更正、删除、撤回同意、限制或反对处理等适用的个人信息请求。我们会进行与请求风险相称的身份核验，并按适用法律规定的期限处理；存在合法限制时说明原因。您也可依法向有管辖权的主管机关投诉。\n\n您可以在 App 安全设置中发起账户注销、查看状态，或在完成前按页面提示取消。存在未结资金、订单或其他待处理事项时，需要先处理相关事项。完成注销后账户停用、登录会话撤销，相关个人资料按注销处理流程清除或匿名化。依法或为处理未结争议仍需保留的交易、必要证据及其他记录，不因账户停用自动删除；如需进一步删除相关信息，请提出具体请求，我们会说明处理范围及依法保留的依据。"
         },
         {
-          "id": "changes",
-          "title": "政策更新",
-          "body": "本政策更新时，我们会在 App 内告知，并在本页显示新版本。",
-          "order": 9
-        },
-        {
-          "id": "contact",
-          "title": "联系我们",
-          "body": "如有隐私相关问题，请通过 App 内的专属客服联系我们。",
-          "order": 10
+          "id": "minors-updates",
+          "title": "9. 未成年人信息与政策更新",
+          "order": 9,
+          "body": "涉及未成年人的服务使用及个人信息处理，应符合适用法律、监护要求和相应功能的资格条件。监护人认为相关信息处理不适当时，可通过 staff@uvel.ai 联系我们。\n\n政策更新时，我们公布版本及更新日期。涉及处理目的、信息类别、共享范围或用户权利的重大变化时，通过适当方式告知；依法需要另行取得同意的处理，不以政策更新替代该同意。隐私联系邮箱：staff@uvel.ai。"
         }
       ]
     },
     "en": {
-      "hero": "We collect only what we need to run the service and explain how we use it.",
+      "hero": "UVEL AI LTD respects your privacy. This policy explains how UVEL handles personal information when serving users in Vietnam and Southeast Asia and how you can exercise your rights. Updated: 27 October 2026. Privacy contact: staff@uvel.ai.",
       "sections": [
         {
-          "id": "scope",
-          "title": "Scope",
-          "body": "This policy explains how the UVEL App collects, uses and protects your personal information when you use accounts, devices, the wallet, support and other features. By using UVEL, you confirm that you have read this policy.",
-          "order": 1
+          "id": "controller",
+          "title": "1. Who is responsible and what this policy covers",
+          "order": 1,
+          "body": "UVEL AI LTD operates UVEL and is responsible for the processing described in this policy. Contact us at staff@uvel.ai or through Help and Support in the App. This policy covers accounts, devices and tasks, products and orders, asset records, teams and activities, learning and support. Services independently provided by third parties are also subject to their own privacy notices."
         },
         {
-          "id": "collect",
-          "title": "Information we collect",
-          "body": "Account: country or region code, phone number, password, SMS verification codes and the IP address used at sign-up; if you choose third-party sign-in (Google, Apple, Telegram), the account identifier that service provides.\nProfile: nickname and avatar.\nDevice: an installation identifier generated by the App, and, when you calibrate a phone for compute, its model, brand, chip, memory, CPU cores, GPU, OS version, screen, battery level and network latency.\nFunds: order, earnings, deposit and withdrawal records; bank cards you add (we keep only the card brand, last four digits, expiry and cardholder name; the full card number is handled by the payment service); bank payout details (bank, account number, account name); USDT payout addresses.\nSupport: messages and images you send to support.\nUsage: pages viewed while signed in, time on page, tap positions, session and language settings.\nDeveloper applications: company name, contact email and use case.",
-          "order": 2
+          "id": "information",
+          "title": "2. Information we handle and its purposes",
+          "order": 2,
+          "body": "Accounts and security: country or region codes, phone numbers, verification and password authentication information, account identifiers, sessions, access times, IP addresses and security records support registration, sign-in, verification, account protection and troubleshooting. Optional profile details, such as display name, email, avatar, biography, language, region and time zone, support profiles, contact and localization.\n\nDevices and tasks: binding, calibration, activation and task features may process installation identifiers, device model and brand, system or platform information, processor and graphics capabilities, memory, core count, screen characteristics, and network, battery, charging and task status. These support device identification, capability assessment, service matching, task verification and operational security. The information depends on the device and features you use.\n\nOrders and assets: purchases, deposits, withdrawals, exchanges and related features process order details, amounts, status, necessary payment details, wallet addresses, transaction references and hashes, balances and ledger records to fulfil requests, reconcile records, manage risk and resolve disputes. Blockchain transaction information may be publicly visible and generally cannot be removed by the platform alone.\n\nTeams, activities and learning: referral relationships, team levels, rewards, participation, course progress, answers and reward status support these features, eligibility checks and prevention of duplicate rewards."
         },
         {
-          "id": "use",
-          "title": "How we use it",
-          "body": "To sign you in and keep your account secure and prevent abuse; to calibrate and bind devices and assign compute jobs; to process orders, deposits, withdrawals and rewards, including risk checks; to provide support; and to improve the product.",
-          "order": 3
+          "id": "support-analytics",
+          "title": "3. Support and usage records",
+          "order": 3,
+          "body": "We process support messages, issue descriptions, images or attachments you submit and related handling records. Do not include passwords, verification codes, private keys or unrelated information about others in messages or attachments.\n\nWe process page visits, clicks, time spent, relative click positions, session identifiers, device type, language, and necessary error and performance records to understand feature use, improve the experience, diagnose problems and maintain security."
         },
         {
-          "id": "share",
-          "title": "Sharing and processing",
-          "body": "To complete payments, deposits, withdrawals, SMS delivery and the third-party sign-in you choose, we share the information needed for that service with the providers that deliver it. We also disclose information where the law requires it.",
-          "order": 4
+          "id": "basis-choices",
+          "title": "4. Processing grounds and your choices",
+          "order": 4,
+          "body": "Personal information processing that requires separate consent may take place only after that consent has been obtained. Processing to fulfil your service requests, meet legal obligations or rely on another lawful ground must satisfy the applicable legal conditions. Reading this policy does not replace any separately required notice or consent.\n\nYou can decline optional information, manage device permissions, or contact staff@uvel.ai to withdraw consent, object to or restrict relevant processing. A feature may be unavailable without information it needs. Withdrawing consent does not affect earlier lawful processing."
         },
         {
-          "id": "transfer",
-          "title": "Cross-border processing",
-          "body": "Our servers and service providers may be located outside your country or region, so your information may be stored and processed abroad.",
-          "order": 5
+          "id": "permissions",
+          "title": "5. Device permissions and local storage",
+          "order": 5,
+          "body": "Features may use device permissions. The actual feature notices and system permission screens identify the requested permissions and purposes. You can manage permissions in system settings; turning one off may affect the feature that depends on it.\n\nUVEL uses local storage for sign-in state, language, preferences and necessary temporary data. Clearing local data may sign you out. Clearing local data or uninstalling the App does not automatically close your account or delete server records."
         },
         {
-          "id": "rights",
-          "title": "Your rights",
-          "body": "You can view and edit your profile in the App, request account deletion under Security, or contact your dedicated support to request access, correction or deletion of your personal information. Financial and security records that we must keep by law are not deleted immediately.",
-          "order": 6
+          "id": "sharing",
+          "title": "6. Service providers and sharing",
+          "order": 6,
+          "body": "To provide features you choose, we transmit relevant information to necessary cloud infrastructure, messaging, payment and digital asset, sign-in or support providers. This depends on the enabled features: messaging handles phone numbers and verification messages; payment or digital asset services handle necessary orders, amounts, payment information and transaction references; third-party sign-in handles authorization results and account links. Integrations include ITNIO, HDPay, Cregis and sign-in services you choose, where the corresponding feature is enabled and the processing is needed.\n\nSharing that requires separate consent may take place only after that consent has been obtained. We may provide necessary information in response to valid regulatory or judicial requirements under applicable law. Contact staff@uvel.ai for information about recipients and processing for a feature you use."
         },
         {
-          "id": "security",
-          "title": "Security",
-          "body": "We use reasonable technical and organisational measures to protect your information. Keep your password and verification codes safe and never share them.",
-          "order": 7
+          "id": "storage",
+          "title": "7. Processing locations, retention and security",
+          "order": 7,
+          "body": "UVEL uses cloud infrastructure. Depending on the service and features you access, information may be processed in Singapore and other service locations, including outside your country or region of residence. Cross-border provision of personal information is subject to applicable notice, authorization and other legal requirements. Contact staff@uvel.ai for the locations and recipients relevant to a particular feature.\n\nRetention depends on processing purposes, account status, transaction and dispute handling needs and applicable obligations. Stopping use of a feature does not mean that transaction or security records or backups immediately disappear. Information no longer needed and without a continuing retention basis is handled for deletion or anonymization under applicable rules. Backup handling may occur at a different time from online records.\n\nWe use authentication, access controls, transmission protection and operational audit measures. No system can guarantee absolute security. Use the security settings and contact us promptly if you notice unusual account activity."
         },
         {
-          "id": "minors",
-          "title": "Minors",
-          "body": "UVEL is only for users aged 18 or over.",
-          "order": 8
+          "id": "rights-deletion",
+          "title": "8. Your rights and account deletion",
+          "order": 8,
+          "body": "You can manage relevant information through profile and security settings and contact staff@uvel.ai or in-App Help and Support to request information, access, a copy, correction, deletion, withdrawal of consent, restriction or objection, as applicable. We verify identity in proportion to the risk and handle requests within applicable legal time limits, explaining any lawful restriction. You may also complain to a competent authority as provided by law.\n\nYou can request account deletion in the App security settings, view its status or cancel before completion as the interface allows. Unsettled funds, orders or other outstanding matters must first be addressed. Completion disables the account, revokes sign-in sessions and clears or anonymizes relevant profile information through the deletion workflow. Transaction records, necessary evidence and other records that must be retained by law or for unresolved disputes are not automatically deleted merely because the account is disabled. For further deletion, submit a specific request; we will explain its scope and any lawful retention grounds."
         },
         {
-          "id": "changes",
-          "title": "Changes",
-          "body": "When this policy changes, we will let you know in the App and show the new version on this page.",
-          "order": 9
-        },
-        {
-          "id": "contact",
-          "title": "Contact us",
-          "body": "For privacy questions, contact your dedicated support in the App.",
-          "order": 10
+          "id": "minors-updates",
+          "title": "9. Minors and policy updates",
+          "order": 9,
+          "body": "Use of services and processing involving minors must comply with applicable law, guardianship requirements and feature eligibility conditions. Guardians can contact staff@uvel.ai with concerns about information handling.\n\nWe publish the version and update date when this policy changes. Material changes to purposes, information categories, sharing or rights are communicated appropriately. Updating the policy does not replace a separate consent required by law. Privacy contact: staff@uvel.ai."
         }
       ]
     },
     "vi": {
-      "hero": "Chúng tôi chỉ thu thập thông tin cần thiết để vận hành dịch vụ và giải thích cách sử dụng.",
+      "hero": "UVEL AI LTD tôn trọng quyền riêng tư của bạn. Chính sách này giải thích cách UVEL xử lý thông tin cá nhân khi cung cấp dịch vụ cho người dùng tại Việt Nam và Đông Nam Á, cũng như cách thực hiện các quyền của bạn. Cập nhật: ngày 27 tháng 10 năm 2026. Liên hệ về quyền riêng tư: staff@uvel.ai.",
       "sections": [
         {
-          "id": "scope",
-          "title": "Phạm vi áp dụng",
-          "body": "Chính sách này giải thích cách ứng dụng UVEL thu thập, sử dụng và bảo vệ thông tin cá nhân của bạn khi bạn dùng tài khoản, thiết bị, ví, hỗ trợ và các tính năng khác. Khi sử dụng UVEL, bạn xác nhận đã đọc chính sách này.",
-          "order": 1
+          "id": "controller",
+          "title": "1. Đơn vị chịu trách nhiệm và phạm vi áp dụng",
+          "order": 1,
+          "body": "UVEL AI LTD vận hành UVEL và chịu trách nhiệm đối với việc xử lý được mô tả trong chính sách này. Bạn có thể liên hệ staff@uvel.ai hoặc mục Trợ giúp và Hỗ trợ trong ứng dụng. Chính sách áp dụng cho tài khoản, thiết bị và nhiệm vụ, sản phẩm và đơn hàng, hồ sơ tài sản, đội nhóm và hoạt động, học tập và hỗ trợ. Dịch vụ do bên thứ ba cung cấp độc lập còn tuân theo thông báo riêng tư của bên đó."
         },
         {
-          "id": "collect",
-          "title": "Thông tin chúng tôi thu thập",
-          "body": "Tài khoản: mã quốc gia hoặc khu vực, số điện thoại, mật khẩu, mã xác minh SMS và địa chỉ IP khi đăng ký; nếu bạn đăng nhập bằng bên thứ ba (Google, Apple, Telegram), mã định danh tài khoản do dịch vụ đó cung cấp.\nHồ sơ: biệt danh và ảnh đại diện.\nThiết bị: mã cài đặt do ứng dụng tạo ra và, khi bạn hiệu chỉnh điện thoại để đóng góp sức mạnh tính toán, dòng máy, hãng, chip, bộ nhớ, số nhân CPU, GPU, phiên bản hệ điều hành, màn hình, mức pin và độ trễ mạng.\nTài chính: lịch sử đơn hàng, thu nhập, nạp và rút tiền; thẻ ngân hàng bạn thêm (chúng tôi chỉ lưu tổ chức thẻ, bốn số cuối, ngày hết hạn và tên chủ thẻ; số thẻ đầy đủ do dịch vụ thanh toán xử lý); thông tin nhận tiền qua ngân hàng (ngân hàng, số tài khoản, tên tài khoản); địa chỉ rút USDT.\nHỗ trợ: tin nhắn và hình ảnh bạn gửi cho bộ phận hỗ trợ.\nSử dụng: các trang đã xem khi đăng nhập, thời gian xem, vị trí chạm, phiên và cài đặt ngôn ngữ.\nĐăng ký nhà phát triển: tên công ty, email liên hệ và mục đích sử dụng.",
-          "order": 2
+          "id": "information",
+          "title": "2. Thông tin được xử lý và mục đích",
+          "order": 2,
+          "body": "Tài khoản và bảo mật: mã quốc gia hoặc khu vực, số điện thoại, thông tin xác thực mã và mật khẩu, mã tài khoản, phiên đăng nhập, thời gian truy cập, địa chỉ IP và hồ sơ bảo mật phục vụ đăng ký, đăng nhập, xác minh, bảo vệ tài khoản và xử lý sự cố. Thông tin hồ sơ bạn tự cung cấp như tên hiển thị, email, ảnh đại diện, giới thiệu, ngôn ngữ, khu vực và múi giờ phục vụ hiển thị hồ sơ, liên hệ và bản địa hóa.\n\nThiết bị và nhiệm vụ: khi dùng liên kết thiết bị, hiệu chỉnh năng lực, kích hoạt hoặc nhiệm vụ, chúng tôi xử lý mã cài đặt, mẫu và nhãn hiệu thiết bị, hệ thống hoặc nền tảng, năng lực bộ xử lý và đồ họa, bộ nhớ, số lõi, đặc điểm màn hình và trạng thái mạng, pin, sạc, nhiệm vụ. Mục đích là nhận diện thiết bị, đánh giá năng lực, kết nối dịch vụ, xác minh nhiệm vụ và bảo đảm an toàn vận hành. Thông tin phụ thuộc thiết bị và chức năng bạn dùng.\n\nĐơn hàng và tài sản: khi mua hàng, nạp, rút, quy đổi hoặc dùng chức năng tài sản liên quan, chúng tôi xử lý nội dung, số tiền, trạng thái đơn hàng, thông tin thanh toán cần thiết, địa chỉ ví, tham chiếu và mã băm giao dịch, số dư và sổ cái để thực hiện yêu cầu, đối soát, quản lý rủi ro và giải quyết tranh chấp. Thông tin giao dịch trên chuỗi khối có thể công khai và thường không thể bị nền tảng đơn phương xóa.\n\nĐội nhóm, hoạt động và học tập: quan hệ giới thiệu, cấp đội nhóm, phần thưởng, việc tham gia, tiến độ khóa học, câu trả lời và trạng thái phần thưởng phục vụ các chức năng tương ứng, kiểm tra điều kiện và tránh cấp thưởng trùng."
         },
         {
-          "id": "use",
-          "title": "Cách chúng tôi sử dụng",
-          "body": "Để đăng nhập, bảo vệ tài khoản và ngăn chặn lạm dụng; hiệu chỉnh, liên kết thiết bị và phân bổ tác vụ tính toán; xử lý đơn hàng, nạp, rút tiền và phần thưởng, bao gồm kiểm tra rủi ro; hỗ trợ khách hàng; và cải thiện sản phẩm.",
-          "order": 3
+          "id": "support-analytics",
+          "title": "3. Hỗ trợ và hồ sơ sử dụng",
+          "order": 3,
+          "body": "Chúng tôi xử lý tin nhắn hỗ trợ, mô tả vấn đề, hình ảnh hoặc tệp đính kèm bạn gửi cùng hồ sơ xử lý. Không gửi mật khẩu, mã xác minh, khóa riêng tư hoặc thông tin của người khác không liên quan.\n\nChúng tôi xử lý lượt truy cập trang, thao tác nhấp, thời gian sử dụng, vị trí nhấp tương đối, mã phiên, loại thiết bị, ngôn ngữ và hồ sơ lỗi, hiệu năng cần thiết để hiểu việc dùng chức năng, cải thiện trải nghiệm, xử lý sự cố và duy trì an toàn."
         },
         {
-          "id": "share",
-          "title": "Chia sẻ và xử lý",
-          "body": "Để hoàn tất thanh toán, nạp tiền, rút tiền, gửi SMS và đăng nhập bên thứ ba mà bạn chọn, chúng tôi cung cấp thông tin cần thiết cho các đơn vị cung cấp dịch vụ đó. Chúng tôi cũng cung cấp thông tin khi pháp luật yêu cầu.",
-          "order": 4
+          "id": "basis-choices",
+          "title": "4. Căn cứ xử lý và lựa chọn của bạn",
+          "order": 4,
+          "body": "Việc xử lý thông tin cá nhân cần sự đồng ý riêng theo pháp luật chỉ được thực hiện sau khi đã có sự đồng ý đó. Việc xử lý để thực hiện yêu cầu dịch vụ, nghĩa vụ pháp lý hoặc căn cứ hợp pháp khác phải đáp ứng các điều kiện pháp luật áp dụng. Việc đọc chính sách này không thay thế thông báo hoặc sự đồng ý riêng nếu pháp luật yêu cầu.\n\nBạn có thể không cung cấp thông tin tùy chọn, quản lý quyền thiết bị hoặc liên hệ staff@uvel.ai để rút lại sự đồng ý, phản đối hay hạn chế việc xử lý liên quan. Thiếu thông tin cần thiết có thể khiến một chức năng không sử dụng được. Việc rút lại sự đồng ý không ảnh hưởng đến việc xử lý hợp pháp trước đó."
         },
         {
-          "id": "transfer",
-          "title": "Xử lý xuyên biên giới",
-          "body": "Máy chủ và các đơn vị cung cấp dịch vụ của chúng tôi có thể đặt ngoài quốc gia hoặc khu vực của bạn, vì vậy thông tin của bạn có thể được lưu trữ và xử lý ở nước ngoài.",
-          "order": 5
+          "id": "permissions",
+          "title": "5. Quyền thiết bị và lưu trữ cục bộ",
+          "order": 5,
+          "body": "Một số chức năng có thể sử dụng quyền thiết bị. Thông báo chức năng và màn hình cấp quyền của hệ thống xác định quyền được yêu cầu và mục đích. Bạn có thể quản lý quyền trong cài đặt hệ thống; tắt quyền có thể ảnh hưởng chức năng phụ thuộc vào quyền đó.\n\nUVEL dùng lưu trữ cục bộ để lưu trạng thái đăng nhập, ngôn ngữ, tùy chọn và dữ liệu tạm cần thiết. Xóa dữ liệu cục bộ có thể đăng xuất tài khoản. Xóa dữ liệu cục bộ hoặc gỡ ứng dụng không tự động đóng tài khoản hay xóa hồ sơ trên máy chủ."
         },
         {
-          "id": "rights",
-          "title": "Quyền của bạn",
-          "body": "Bạn có thể xem và chỉnh sửa hồ sơ trong ứng dụng, yêu cầu xóa tài khoản trong mục Bảo mật, hoặc liên hệ hỗ trợ riêng để yêu cầu truy cập, chỉnh sửa hoặc xóa thông tin cá nhân. Các hồ sơ tài chính và bảo mật phải lưu giữ theo pháp luật sẽ không bị xóa ngay.",
-          "order": 6
+          "id": "sharing",
+          "title": "6. Nhà cung cấp dịch vụ và chia sẻ",
+          "order": 6,
+          "body": "Để cung cấp chức năng bạn chọn, chúng tôi chuyển thông tin liên quan cho các nhà cung cấp hạ tầng đám mây, tin nhắn, thanh toán và tài sản số, đăng nhập hoặc hỗ trợ cần thiết. Phạm vi phụ thuộc chức năng đang bật: dịch vụ tin nhắn xử lý số điện thoại và nội dung mã xác minh; dịch vụ thanh toán hoặc tài sản số xử lý đơn hàng, số tiền, thông tin thanh toán và tham chiếu giao dịch cần thiết; đăng nhập bên thứ ba xử lý kết quả ủy quyền và liên kết tài khoản. Các tích hợp gồm ITNIO, HDPay, Cregis và dịch vụ đăng nhập bạn chọn, chỉ áp dụng khi chức năng tương ứng được bật và cần xử lý.\n\nViệc chia sẻ cần sự đồng ý riêng theo pháp luật chỉ được thực hiện sau khi đã có sự đồng ý đó. Khi có yêu cầu hợp pháp từ cơ quan quản lý hoặc tư pháp, thông tin cần thiết có thể được cung cấp theo pháp luật. Liên hệ staff@uvel.ai để hỏi về bên nhận và phạm vi xử lý của chức năng bạn dùng."
         },
         {
-          "id": "security",
-          "title": "Bảo mật thông tin",
-          "body": "Chúng tôi áp dụng các biện pháp kỹ thuật và quản lý hợp lý để bảo vệ thông tin của bạn. Hãy giữ kín mật khẩu và mã xác minh, không chia sẻ cho bất kỳ ai.",
-          "order": 7
+          "id": "storage",
+          "title": "7. Địa điểm xử lý, lưu giữ và an toàn",
+          "order": 7,
+          "body": "UVEL sử dụng hạ tầng đám mây. Tùy dịch vụ và chức năng bạn truy cập, thông tin có thể được xử lý tại Singapore và các địa điểm vận hành khác, kể cả ngoài quốc gia hoặc khu vực bạn cư trú. Việc cung cấp thông tin cá nhân xuyên biên giới tuân theo các yêu cầu thông báo, ủy quyền và nghĩa vụ pháp lý liên quan. Liên hệ staff@uvel.ai để hỏi về địa điểm và bên nhận của một chức năng cụ thể.\n\nThời gian lưu giữ phụ thuộc mục đích xử lý, trạng thái tài khoản, nhu cầu xử lý giao dịch và tranh chấp, cùng nghĩa vụ áp dụng. Ngừng dùng một chức năng không có nghĩa hồ sơ giao dịch, bảo mật hoặc bản sao lưu biến mất ngay. Thông tin không còn cần thiết và không có căn cứ tiếp tục lưu giữ được xử lý để xóa hoặc ẩn danh theo quy định áp dụng; thời điểm xử lý bản sao lưu có thể khác dữ liệu trực tuyến.\n\nChúng tôi áp dụng xác thực, kiểm soát truy cập, bảo vệ đường truyền và ghi nhận thao tác. Không hệ thống nào bảo đảm an toàn tuyệt đối. Nếu thấy hoạt động tài khoản bất thường, hãy dùng cài đặt bảo mật và sớm liên hệ chúng tôi."
         },
         {
-          "id": "minors",
-          "title": "Người chưa thành niên",
-          "body": "UVEL chỉ dành cho người dùng từ 18 tuổi trở lên.",
-          "order": 8
+          "id": "rights-deletion",
+          "title": "8. Quyền của bạn và xóa tài khoản",
+          "order": 8,
+          "body": "Bạn có thể quản lý thông tin qua cài đặt hồ sơ và bảo mật, đồng thời liên hệ staff@uvel.ai hoặc mục Trợ giúp và Hỗ trợ để yêu cầu được biết, truy cập, nhận bản sao, sửa, xóa, rút lại sự đồng ý, hạn chế hoặc phản đối xử lý trong phạm vi áp dụng. Chúng tôi xác minh danh tính phù hợp mức độ rủi ro và xử lý yêu cầu trong thời hạn pháp luật quy định; giải thích hạn chế hợp pháp nếu có. Bạn cũng có thể khiếu nại với cơ quan có thẩm quyền theo pháp luật.\n\nBạn có thể gửi yêu cầu xóa tài khoản trong cài đặt bảo mật, xem trạng thái hoặc hủy trước khi hoàn tất theo hướng dẫn giao diện. Cần giải quyết trước các khoản tiền, đơn hàng hoặc vấn đề còn tồn đọng. Khi hoàn tất, tài khoản bị vô hiệu hóa, phiên đăng nhập bị thu hồi và thông tin hồ sơ liên quan được xóa hoặc ẩn danh theo quy trình. Hồ sơ giao dịch, chứng cứ cần thiết và dữ liệu khác phải lưu giữ theo pháp luật hoặc để giải quyết tranh chấp không tự động bị xóa chỉ vì tài khoản bị vô hiệu hóa. Để yêu cầu xóa thêm thông tin, hãy gửi yêu cầu cụ thể; chúng tôi sẽ giải thích phạm vi xử lý và căn cứ lưu giữ hợp pháp."
         },
         {
-          "id": "changes",
-          "title": "Cập nhật chính sách",
-          "body": "Khi chính sách này thay đổi, chúng tôi sẽ thông báo trong ứng dụng và hiển thị phiên bản mới trên trang này.",
-          "order": 9
-        },
-        {
-          "id": "contact",
-          "title": "Liên hệ",
-          "body": "Nếu có câu hỏi về quyền riêng tư, vui lòng liên hệ hỗ trợ riêng trong ứng dụng.",
-          "order": 10
+          "id": "minors-updates",
+          "title": "9. Người chưa thành niên và cập nhật chính sách",
+          "order": 9,
+          "body": "Việc sử dụng dịch vụ và xử lý thông tin liên quan đến người chưa thành niên phải phù hợp pháp luật, yêu cầu giám hộ và điều kiện của chức năng tương ứng. Người giám hộ có thể liên hệ staff@uvel.ai nếu có quan ngại về việc xử lý thông tin.\n\nKhi cập nhật chính sách, chúng tôi công bố phiên bản và ngày cập nhật. Các thay đổi quan trọng về mục đích, loại thông tin, chia sẻ hoặc quyền sẽ được thông báo phù hợp. Cập nhật chính sách không thay thế sự đồng ý riêng mà pháp luật yêu cầu. Liên hệ về quyền riêng tư: staff@uvel.ai."
         }
       ]
     }

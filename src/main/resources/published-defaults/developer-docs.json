@@ -6,7 +6,7 @@
     "zh": {
       "example": {
         "request": "curl \"$UVEL_API_BASE/openapi/v1/developer/home-overview\" \\\n  -H \"Authorization: Bearer sk_live_••••\"",
-        "response": "{\n  \"code\": 0,\n  \"message\": \"success\",\n  \"data\": {\n    \"todayEarningsUsdt\": \"16.24\",\n    \"settledJobsToday\": 10,\n    \"devices\": {\n      \"online\": 2,\n      \"total\": 2\n    },\n    \"computePoints\": 3200,\n    \"updatedAt\": \"2026-10-29T06:00:00Z\"\n  }\n}"
+        "response": "{\n  \"code\": 0,\n  \"message\": \"success\",\n  \"data\": {\n    \"today\": {\n      \"earningsUsdt\": \"16.24\",\n      \"settledJobs\": 10\n    },\n    \"todayVsYesterdayPct\": \"0.0\",\n    \"week\": {\n      \"earningsUsdt\": \"98.40\"\n    },\n    \"month\": {\n      \"earningsUsdt\": \"412.75\"\n    },\n    \"all\": {\n      \"earningsUsdt\": \"1288.10\"\n    },\n    \"earnings\": {\n      \"currency\": \"USDT\"\n    },\n    \"marketBoard\": [\n      {\n        \"code\": \"IG\",\n        \"priceUsdt\": \"0.003\",\n        \"deltaPct\": \"4.2\"\n      }\n    ],\n    \"generatedAt\": \"2026-10-29T06:00:00Z\"\n  }\n}"
       },
       "endpoints": [
         {
@@ -52,7 +52,7 @@
     "en": {
       "example": {
         "request": "curl \"$UVEL_API_BASE/openapi/v1/developer/home-overview\" \\\n  -H \"Authorization: Bearer sk_live_••••\"",
-        "response": "{\n  \"code\": 0,\n  \"message\": \"success\",\n  \"data\": {\n    \"todayEarningsUsdt\": \"16.24\",\n    \"settledJobsToday\": 10,\n    \"devices\": {\n      \"online\": 2,\n      \"total\": 2\n    },\n    \"computePoints\": 3200,\n    \"updatedAt\": \"2026-10-29T06:00:00Z\"\n  }\n}"
+        "response": "{\n  \"code\": 0,\n  \"message\": \"success\",\n  \"data\": {\n    \"today\": {\n      \"earningsUsdt\": \"16.24\",\n      \"settledJobs\": 10\n    },\n    \"todayVsYesterdayPct\": \"0.0\",\n    \"week\": {\n      \"earningsUsdt\": \"98.40\"\n    },\n    \"month\": {\n      \"earningsUsdt\": \"412.75\"\n    },\n    \"all\": {\n      \"earningsUsdt\": \"1288.10\"\n    },\n    \"earnings\": {\n      \"currency\": \"USDT\"\n    },\n    \"marketBoard\": [\n      {\n        \"code\": \"IG\",\n        \"priceUsdt\": \"0.003\",\n        \"deltaPct\": \"4.2\"\n      }\n    ],\n    \"generatedAt\": \"2026-10-29T06:00:00Z\"\n  }\n}"
       },
       "endpoints": [
         {
@@ -98,7 +98,7 @@
     "vi": {
       "example": {
         "request": "curl \"$UVEL_API_BASE/openapi/v1/developer/home-overview\" \\\n  -H \"Authorization: Bearer sk_live_••••\"",
-        "response": "{\n  \"code\": 0,\n  \"message\": \"success\",\n  \"data\": {\n    \"todayEarningsUsdt\": \"16.24\",\n    \"settledJobsToday\": 10,\n    \"devices\": {\n      \"online\": 2,\n      \"total\": 2\n    },\n    \"computePoints\": 3200,\n    \"updatedAt\": \"2026-10-29T06:00:00Z\"\n  }\n}"
+        "response": "{\n  \"code\": 0,\n  \"message\": \"success\",\n  \"data\": {\n    \"today\": {\n      \"earningsUsdt\": \"16.24\",\n      \"settledJobs\": 10\n    },\n    \"todayVsYesterdayPct\": \"0.0\",\n    \"week\": {\n      \"earningsUsdt\": \"98.40\"\n    },\n    \"month\": {\n      \"earningsUsdt\": \"412.75\"\n    },\n    \"all\": {\n      \"earningsUsdt\": \"1288.10\"\n    },\n    \"earnings\": {\n      \"currency\": \"USDT\"\n    },\n    \"marketBoard\": [\n      {\n        \"code\": \"IG\",\n        \"priceUsdt\": \"0.003\",\n        \"deltaPct\": \"4.2\"\n      }\n    ],\n    \"generatedAt\": \"2026-10-29T06:00:00Z\"\n  }\n}"
       },
       "endpoints": [
         {
