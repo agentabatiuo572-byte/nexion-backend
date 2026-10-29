@@ -18,7 +18,7 @@ Environment=UVEL_CLOUD_MODEL_DIGEST=sha256:7907646426070047a77226ac3e684fbbe8410
 Environment=UVEL_CLOUD_POLL_SECONDS=60
 EnvironmentFile=-/etc/uvel-cloud-bge-worker/worker.env
 LoadCredential=cloud-worker-token:/srv/nexgrid/secrets/cloud-bge-worker.credential
-ExecStart=/usr/bin/python3 -I -B /opt/uvel-cloud-bge-worker/cloud-bge-worker.py
+ExecStart=/usr/bin/python3 -I -B /opt/uvel-cloud-bge-worker/cloud-bge-worker.py --heartbeat-only
 Restart=on-failure
 RestartPreventExitStatus=78
 RestartSec=10
