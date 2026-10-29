@@ -20,6 +20,8 @@ public class SupportBulkController {
     private final SupportBulkService service;
     private final SupportAttachmentService attachments;
 
+    @PostMapping("/candidates") @PreAuthorize("hasAuthority('service_m3_write')")
+    public ApiResult<SupportBulk.Candidates> candidates(@RequestBody SupportBulkRequest.Candidates request) {return ApiResult.ok(service.candidates(request));}
     @PostMapping("/preview") @PreAuthorize("hasAuthority('service_m3_write')")
     public ApiResult<SupportBulk.Preview> preview(@RequestBody SupportBulkRequest.Preview request) {return ApiResult.ok(service.preview(request));}
     @PostMapping @PreAuthorize("hasAuthority('service_m3_write')")

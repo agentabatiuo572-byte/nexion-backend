@@ -9,6 +9,7 @@ public final class SupportBulkRequest {
             String registeredFrom, String registeredTo, String activityFrom, String activityTo,
             String depositMin, String depositMax, String withdrawalMin, String withdrawalMax,
             String currency, Boolean includeUnknown, String keyword) {}
+    public record Candidates(Filters filters, Long pageNum, Integer pageSize) {}
     public record Preview(Filters filters,
             @JsonDeserialize(contentUsing=SupportBindingRequest.StrictId.class) List<Long> customerIds,
             @JsonDeserialize(contentUsing=SupportBindingRequest.StrictId.class) List<Long> excludedIds,
