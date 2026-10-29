@@ -288,6 +288,7 @@ class Worker:
         self.config, self.backend, self.ollama, self.journal, self.stop = config, backend, ollama, journal, stop
         self.heartbeat_stop = threading.Event()
         self.heartbeat_thread = None
+        self.heartbeat_error = None
 
     def mutate(self, operation, path, body, key, state=None, validator=None):
         call = self.journal.intent(operation, key, (state or {}).get("taskNo"), body, state)
@@ -307,25 +308,33 @@ class Worker:
         self.journal.outcome(call, "CONFIRMED")
         return data
 
-    def heartbeat(self):
+    def heartbeat(self, idle_only=False):
         verify_model(self.ollama, self.config.binding)
         def validate(data):
             require(data.get("serverCanonical") is True and type(data.get("heartbeatAt")) is int
                     and abs(int(time.time() * 1000) - data["heartbeatAt"]) <= 120000
                     and all(type(data.get(k)) is type(self.config.binding[k]) and data[k] == self.config.binding[k]
                             for k in ("ownerId", "deviceId", "instanceNo", "executorId")), "HEARTBEAT_INVALID")
+            require(not idle_only or ("activeTaskNo" in data and data["activeTaskNo"] is None),
+                    "HEARTBEAT_ONLY_ACTIVE_TASK_BLOCKED")
         return self.mutate("HEARTBEAT", "/heartbeat", {}, "BGE-HB-" + uuid.uuid4().hex, validator=validate)
 
-    def start_heartbeat(self):
+    def start_heartbeat(self, fatal=False):
         try:
-            self.heartbeat()
+            self.heartbeat(idle_only=fatal)
         except Halt:
+            if fatal:
+                raise
             print("HEARTBEAT_UNCONFIRMED", flush=True)
         def run():
             while not self.heartbeat_stop.wait(10):
                 try:
-                    self.heartbeat()
-                except Halt:
+                    self.heartbeat(idle_only=fatal)
+                except Exception as error:
+                    if fatal:
+                        self.heartbeat_error = error if isinstance(error, Halt) else Halt("HEARTBEAT_UNEXPECTED_STOP")
+                        self.stop.set()
+                        break
                     # Heartbeats do not settle funds. A fresh synchronous heartbeat gates completion.
                     print("HEARTBEAT_UNCONFIRMED", flush=True)
         self.heartbeat_thread = threading.Thread(target=run, daemon=True)
@@ -419,11 +428,25 @@ class Worker:
         print("COMPUTATION_CONFIRMED", flush=True)
         return "CONFIRMED"
 
-    def run(self, once=False):
-        recovered = self.recover()
-        if once and recovered:
-            return 0
+    def run(self, once=False, heartbeat_only=False):
+        require(not (once and heartbeat_only), "WORKER_MODE_INVALID")
+        if heartbeat_only:
+            current = self.journal.state()
+            require(current["phase"] == "IDLE" and current.get("binding") == self.config.binding,
+                    "HEARTBEAT_ONLY_CONFIRMED_IDLE_REQUIRED")
+        else:
+            recovered = self.recover()
+            if once and recovered:
+                return 0
         try:
+            if heartbeat_only:
+                if self.stop.is_set():
+                    return 0
+                self.start_heartbeat(fatal=True)
+                self.stop.wait()
+                if self.heartbeat_error:
+                    raise self.heartbeat_error
+                return 0
             current = self.journal.state()
             if current["phase"] == "IDLE" and current.get("binding") == self.config.binding:
                 self.start_heartbeat()
@@ -463,7 +486,9 @@ def open_journal(directory):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--once", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--once", action="store_true")
+    modes.add_argument("--heartbeat-only", action="store_true")
     args = parser.parse_args()
     config = Config(os.environ)
     journal, lock = open_journal(os.environ.get("STATE_DIRECTORY", "/var/lib/uvel-cloud-bge-worker"))
@@ -471,7 +496,7 @@ def main():
         token = credential(os.environ)
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_: STOP.set())
-        return Worker(config, Http(config.backend, token), Http(config.ollama), journal).run(args.once)
+        return Worker(config, Http(config.backend, token), Http(config.ollama), journal).run(args.once, args.heartbeat_only)
     finally:
         journal.db.close()
         os.close(lock)

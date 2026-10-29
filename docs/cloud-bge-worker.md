@@ -61,7 +61,9 @@ Manifest identity includes `executionKind=TEST_BGE_M3_V1`, `specVersion=UVEL_TES
 
 Receipts include the same canonical identity, taskNo/inputHash/resultHash, `found`, `status`, and receiptNo. Automatic confirmation requires every configured binding and both hashes to match the persisted intent, `found=true`, `status=COMPLETED`, and a valid receipt number. The backend remains the financial authority.
 
-## Heartbeat, finite acceptance and continuous operation
+## Safe standby, finite acceptance and separately authorized continuous operation
+
+The installed unit defaults to `--heartbeat-only`. This mode requires the existing journal to be exactly `IDLE` with the previously confirmed binding equal to current protected configuration. It checks this before any reconciliation or network request; an empty/unconfirmed binding, `CLAIMED`, `NEXT_NOT_SENT`, UNKNOWN or any other pending phase is refused. Every standby heartbeat response must explicitly contain `activeTaskNo:null`; a backend active task or missing field stops standby, while ordinary task execution may still heartbeat its active task. Standby only checks the fixed model's health and sends the existing instance heartbeat every 10 seconds. It never calls next-task, inference, complete or receipt, and it cannot hide unresolved work. A model/permission/binding failure stops the service with 78; SIGTERM stops it normally. Preserve the journal from the successful finite acceptance when changing to standby.
 
 An empty journal first obtains a canonical manifest/idle result; it does not heartbeat a legacy task before the normal next-task transition. A previously proven-unsent next request also retries its original key before heartbeat. Once the instance binding is confirmed, the worker verifies model availability and heartbeats every 10 seconds, including inference and task gaps. A fresh synchronous heartbeat gates complete after inference. Temporary heartbeat failures do not replay any economic operation; the next ordinary heartbeat can restore liveness. Persistent identity/model/credential rejection prevents a successful complete. Backend cleanup eventually marks an actually stopped worker offline.
 
@@ -76,7 +78,9 @@ ExecStart=/usr/bin/python3 -I -B /opt/uvel-cloud-bge-worker/cloud-bge-worker.py 
 Restart=no
 ```
 
-After actual task/receipt/ledger/App acceptance, remove only that owned override and reload systemd to use the template's continuous mode. Preserve the same journal and confirmed identity. Continuous mode polls at the configured interval, follows server locks/idle and performs only the scoped normal task flow. It does not authorize changes to E2 economics, unlimited accelerated TEST rewards, other instances or production.
+After actual task/receipt/ledger/App acceptance, remove only that owned override and reload systemd to use the template's safe `--heartbeat-only` standby. Preserve the same journal and confirmed identity. The first finite TEST-text acceptance does not authorize indefinitely repeating the same TEST texts and generating more ledger rewards. No real business input source is connected by this worker.
+
+The command without either mode flag retains the previous continuous TEST execution mode for a separately authorized run. Enabling it requires explicit continuous TEST authorization and an operator override; it must not be the default service command. It polls at the configured interval and follows server locks/idle, without changing E2 economics, accelerated rewards, other instances or production scope. `--once` and `--heartbeat-only` are mutually exclusive.
 
 SIGTERM prevents a new cycle. An in-flight HTTP call has a bounded deadline (10 seconds for next/heartbeat/receipt/tags; 300 seconds for inference/complete); a stop observed before complete leaves the task uncompleted. The unit's 330-second stop budget allows an already-started request to return and be reconciled. Killing the process can leave an intent requiring read-only reconciliation.
 
@@ -94,4 +98,4 @@ The script has no reset, replay, force-complete or manual-credit command. Keep o
 
 ## Verification
 
-Run `python -B -m unittest discover -s scripts -p test_cloud_bge_worker.py -v`. Offline tests exercise committed intent visibility through an independent SQLite connection, real binary vector encoding, target/model/input boundaries, connect-before-request classification, next restart ordering, complete-response loss, negative-readback refusal and crash-after-intent recovery. They do not establish real Ollama execution, Linux/systemd isolation, backend independent recomputation, TEST deployment or actual financial/App acceptance; root performs those checks and independent review.
+Run `python -B -m unittest discover -s scripts -p test_cloud_bge_worker.py -v`. Offline tests exercise committed intent visibility through an independent SQLite connection, real binary vector encoding, target/model/input boundaries, connect-before-request classification, next restart ordering, complete-response loss, negative-readback refusal and crash-after-intent recovery. Standby tests use the real heartbeat thread without fixed sleeps and prove confirmed-IDLE heartbeat with zero next/complete, rejection of unconfirmed or unresolved state before network, model/permission failure stop and clean shutdown. They do not establish real Ollama execution, Linux/systemd isolation, backend independent recomputation, TEST deployment or actual financial/App acceptance; root performs those checks and independent review.

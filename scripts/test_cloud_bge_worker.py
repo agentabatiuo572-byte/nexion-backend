@@ -75,7 +75,7 @@ class Backend:
                 raise error
             return ok({**identity(self.cfg), "idle": True, "retryAfterSeconds": 60} if self.idle else self.task)
         if path == w.PREFIX + "/heartbeat":
-            return ok({**self.cfg.binding, "serverCanonical": True, "heartbeatAt": int(time.time() * 1000)})
+            return ok({**self.cfg.binding, "serverCanonical": True, "heartbeatAt": int(time.time() * 1000), "activeTaskNo": None})
         if path.endswith("/complete"):
             self.complete_body = body
             if self.complete_error:
@@ -252,6 +252,83 @@ class WorkerTests(unittest.TestCase):
                 with self.assertRaises(w.Halt):
                     self.worker.one()
                 self.assertEqual(self.ollama.calls, [])
+
+    def standby(self):
+        self.journal.set({"phase": "IDLE", "binding": self.cfg.binding})
+        return w.Worker(self.cfg, self.backend, self.ollama, self.journal, threading.Event())
+
+    def test_heartbeat_only_confirmed_idle_has_no_next_or_complete_and_stops_cleanly(self):
+        worker = self.standby()
+        request = self.backend.request
+        def stop_after_heartbeat(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            worker.stop.set()
+            return result
+        self.backend.request = stop_after_heartbeat
+        self.assertEqual(worker.run(heartbeat_only=True), 0)
+        self.assertEqual([path for _, path, _ in self.backend.calls], [w.PREFIX + "/heartbeat"])
+        self.assertFalse(worker.heartbeat_thread.is_alive())
+        self.assertEqual(self.journal.state(), {"phase": "IDLE", "binding": self.cfg.binding})
+
+    def test_heartbeat_only_refuses_unconfirmed_binding_and_every_pending_phase_before_network(self):
+        for state in ({"phase": "IDLE"}, {"phase": "IDLE", "binding": {**self.cfg.binding, "deviceId": 93}},
+                      *({"phase": phase, "binding": self.cfg.binding} for phase in
+                        ("UNKNOWN_NEXT", "NEXT_INTENT", "NEXT_NOT_SENT", "CLAIMED", "COMPLETE_INTENT", "UNKNOWN_COMPLETE", "COMPLETE_NOT_SENT"))):
+            with self.subTest(state=state):
+                self.journal.set(state)
+                worker = w.Worker(self.cfg, self.backend, self.ollama, self.journal, threading.Event())
+                with self.assertRaisesRegex(w.Halt, "HEARTBEAT_ONLY_CONFIRMED_IDLE_REQUIRED"):
+                    worker.run(heartbeat_only=True)
+                self.assertEqual(self.backend.calls, [])
+                self.assertEqual(self.ollama.calls, [])
+                self.assertEqual(self.journal.state(), state)
+
+    def test_heartbeat_only_model_mismatch_stops_before_backend_heartbeat(self):
+        worker = self.standby()
+        self.ollama.tag_digest = "2" * 64
+        with self.assertRaisesRegex(w.Halt, "MODEL_DIGEST_CHANGED"):
+            worker.run(heartbeat_only=True)
+        self.assertEqual(self.backend.calls, [])
+        self.assertIsNone(worker.heartbeat_thread)
+
+    def test_heartbeat_only_permission_revocation_stops_background_thread(self):
+        worker = self.standby()
+        request = self.backend.request
+        def revoked_after_first(method, path, body=None, key=None):
+            if self.backend.calls:
+                self.backend.calls.append((method, path, key))
+                raise w.Rejected("BACKEND_REJECTED_401")
+            return request(method, path, body, key)
+        self.backend.request = revoked_after_first
+        with patch.object(worker.heartbeat_stop, "wait", return_value=False):
+            with self.assertRaisesRegex(w.Rejected, "BACKEND_REJECTED_401"):
+                worker.run(heartbeat_only=True)
+        self.assertEqual([path for _, path, _ in self.backend.calls], [w.PREFIX + "/heartbeat"] * 2)
+        self.assertFalse(worker.heartbeat_thread.is_alive())
+        self.assertEqual(self.journal.state()["phase"], "IDLE")
+
+    def test_heartbeat_only_already_stopped_performs_no_network(self):
+        worker = self.standby()
+        worker.stop.set()
+        self.assertEqual(worker.run(heartbeat_only=True), 0)
+        self.assertEqual(self.backend.calls, [])
+        self.assertEqual(self.ollama.calls, [])
+
+    def test_heartbeat_only_backend_active_task_blocks_standby_but_not_normal_task(self):
+        request = self.backend.request
+        def active_task(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if path == w.PREFIX + "/heartbeat":
+                result["data"]["activeTaskNo"] = self.backend.task["taskNo"]
+            return result
+        self.backend.request = active_task
+        worker = self.standby()
+        with self.assertRaisesRegex(w.Halt, "HEARTBEAT_ONLY_ACTIVE_TASK_BLOCKED"):
+            worker.run(heartbeat_only=True)
+        self.assertEqual([path for _, path, _ in self.backend.calls], [w.PREFIX + "/heartbeat"])
+        self.assertEqual(self.journal.state(), {"phase": "IDLE", "binding": self.cfg.binding})
+        self.backend.calls.clear()
+        self.assertEqual(self.worker.run(once=True), 0)
 
 
 class BoundaryTests(unittest.TestCase):
