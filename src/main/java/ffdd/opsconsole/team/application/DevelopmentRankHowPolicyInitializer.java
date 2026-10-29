@@ -17,8 +17,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Adds the first editable F1 Rank How document for a fresh development database.
- * Existing PC-authored content is never replaced.
+ * Adds the first editable F1 Rank How document for a fresh development database and moves untouched
+ * earlier baselines to the shipped default. Existing PC-authored content is never replaced.
  */
 @Component
 @Profile("dev")
@@ -45,14 +45,14 @@ public class DevelopmentRankHowPolicyInitializer implements ApplicationRunner {
         // Keep the exact-document check, revision CAS, write and required audit under one lock.
         config.activeValueForUpdate(PublishedRankHowPolicyService.CONFIG_KEY)
                 .map(this::parse)
-                .filter(this::isExactOriginalInitializerDocument)
-                .ifPresent(ignored -> {
+                .filter(this::isUntouchedEarlierBaseline)
+                .ifPresent(stored -> {
                     var result = publishedPolicyService.update(
                         text(currentBaseline.get("version")),
                         "PUBLISHED",
                         map(currentBaseline.get("locales")),
-                        1L,
-                        "F1 development Rank How baseline upgrade from original 2026.08.22 revision 1");
+                        ((Number) stored.get("revision")).longValue(),
+                        "F1 development Rank How baseline upgrade to the shipped default");
                     if (result.getCode() != 0) {
                         log.warn("event=RANK_HOW_BASELINE_UPGRADE_SKIPPED code={}", result.getCode());
                         if (result.getCode() != 409) throw new IllegalStateException("RANK_HOW_BASELINE_UPGRADE_FAILED");
@@ -61,8 +61,11 @@ public class DevelopmentRankHowPolicyInitializer implements ApplicationRunner {
     }
 
     private Map<String, Object> currentBaseline() {
-        try (InputStream stream = DevelopmentRankHowPolicyInitializer.class
-                .getResourceAsStream("/policies/rank-how-policy-2026.08.31.json")) {
+        return resource(PublishedRankHowPolicyService.DEFAULT_RESOURCE);
+    }
+
+    private Map<String, Object> resource(String path) {
+        try (InputStream stream = DevelopmentRankHowPolicyInitializer.class.getResourceAsStream(path)) {
             if (stream == null) throw new IllegalStateException("RANK_HOW_BASELINE_RESOURCE_MISSING");
             return JSON.readValue(stream, new TypeReference<>() {});
         } catch (Exception exception) {
@@ -70,8 +73,9 @@ public class DevelopmentRankHowPolicyInitializer implements ApplicationRunner {
         }
     }
 
-    private boolean isExactOriginalInitializerDocument(Map<String, Object> candidate) {
-        return candidate.equals(originalDocument());
+    /** The original 2026.08.22 seed or the 2026.08.31 baseline exactly as this initializer wrote it. */
+    private boolean isUntouchedEarlierBaseline(Map<String, Object> candidate) {
+        return candidate.equals(originalDocument()) || candidate.equals(resource("/policies/rank-how-policy-2026.08.31.json"));
     }
 
     private Map<String, Object> originalDocument() {

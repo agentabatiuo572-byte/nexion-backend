@@ -23,6 +23,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
 @RequiredArgsConstructor
 public class PublishedRankHowPolicyService {
     static final String CONFIG_KEY = "team.rank_how.published";
+    /** Shipped default guide; it is the published content until operations publish their own version. */
+    static final String DEFAULT_RESOURCE = "/policies/rank-how-policy-default-2026.10.29.json";
     private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
     private final PlatformConfigFacade config;
     private final Environment environment;
@@ -30,11 +32,12 @@ public class PublishedRankHowPolicyService {
     private final VRankPromotionEngine promotionEngine;
     private final LeadershipPoolConfigGuard leadershipPoolConfigGuard;
     private final ObjectMapper mapper = new ObjectMapper();
+    private final String defaultPolicy = ffdd.opsconsole.content.application.PublishedContentDefaults.read(DEFAULT_RESOURCE);
 
     public ApiResult<Map<String, Object>> publicPolicy(String requestedLocale) {
         try {
-            Map<String, Object> document = PublishedContentSnapshot.published(read());
-            if (!"PUBLISHED".equals(document.get("status"))) return unavailable();
+            Map<String, Object> stored = PublishedContentSnapshot.published(read());
+            Map<String, Object> document = "PUBLISHED".equals(stored.get("status")) ? stored : parse(defaultPolicy);
             String version = text(document.get("version"));
             Map<String, Object> locales = map(document.get("locales"));
             String locale = resolveLocale(locales, requestedLocale);
@@ -67,14 +70,15 @@ public class PublishedRankHowPolicyService {
     public ApiResult<Map<String, Object>> adminView() {
         try {
             Map<String, Object> value = read();
-            if (value.isEmpty()) value = new LinkedHashMap<>(Map.of(
-                    "status", "UNPUBLISHED", "version", "", "revision", 0, "locales", Map.of()));
+            if (value.isEmpty()) value = defaultAdminDocument();
             value = PublishedContentSnapshot.admin(value);
             value.put("source", "server");
             value.put("configKey", CONFIG_KEY);
             return ApiResult.ok(value);
         } catch (Exception ex) {
-            return ApiResult.ok(Map.of("status", "UNPUBLISHED", "version", "", "locales", Map.of(), "configKey", CONFIG_KEY));
+            Map<String, Object> value = defaultAdminDocument();
+            value.put("configKey", CONFIG_KEY);
+            return ApiResult.ok(value);
         }
     }
 
@@ -132,6 +136,20 @@ public class PublishedRankHowPolicyService {
         return true;
     }
 
+    /** Operations edit from the shipped default; revision 0 lets the first publish pass the CAS check. */
+    private Map<String, Object> defaultAdminDocument() {
+        Map<String, Object> document = parse(defaultPolicy);
+        document.put("revision", 0);
+        document.put("defaultContent", true);
+        return document;
+    }
+    private Map<String, Object> parse(String raw) {
+        try {
+            return mapper.readValue(raw, new TypeReference<>() {});
+        } catch (Exception ex) {
+            throw new IllegalStateException("RANK_HOW_DEFAULT_INVALID", ex);
+        }
+    }
     private Map<String, Object> read() throws Exception { return read(false); }
     private Map<String,Object> read(boolean lock)throws Exception{return mapper.readValue((lock?config.activeValueForUpdate(CONFIG_KEY):config.activeValue(CONFIG_KEY)).orElse("{}"),new TypeReference<>(){});}
     private long revision(Map<String,Object> document){Object raw=document.get("revision");if(raw==null)return 0;if(!(raw instanceof Number number)||number.longValue()<0||number.doubleValue()!=number.longValue())throw new IllegalArgumentException("RANK_HOW_REVISION_INVALID");return number.longValue();}

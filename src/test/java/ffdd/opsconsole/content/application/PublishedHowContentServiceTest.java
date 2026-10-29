@@ -50,12 +50,40 @@ class PublishedHowContentServiceTest {
     }
 
     @Test
-    void missingDraftOrMalformedCanonicalReferenceFailsClosed() {
+    void withoutAPublicationForThisEnvironmentTheShippedDefaultIsServed() {
         PlatformConfigFacade config = mock(PlatformConfigFacade.class);
-        when(config.activeValue("how-it-works.published")).thenReturn(Optional.of("{\"version\":\"v1\",\"status\":\"DRAFT\",\"contents\":{}}"));
-        var service = new PublishedHowContentService(config, new MockEnvironment(), mock(AuditLogService.class));
-        assertThat(service.publicContent("genesis-how", "en").getCode()).isEqualTo(503);
-        when(config.activeValue("how-it-works.published")).thenReturn(Optional.of("{\"version\":\"v1\",\"status\":\"PUBLISHED\",\"contents\":{\"genesis-how\":{\"locales\":{\"en\":{\"blocks\":[{\"id\":\"bad\",\"kind\":\"ruleRef\",\"title\":\"x\",\"body\":\"x\"}]}}}}}"));
+        var service = new PublishedHowContentService(config, productionEnvironment(), mock(AuditLogService.class));
+        for (String stored : java.util.List.of("{}", "{\"version\":\"v1\",\"status\":\"DRAFT\",\"contents\":{}}",
+                DOC.replace("\"sourceEnvironment\":\"PRODUCTION\"", "\"sourceEnvironment\":\"SANDBOX\""))) {
+            when(config.activeValue("how-it-works.published")).thenReturn(Optional.of(stored));
+            var result = service.publicContent("team-binary-how", "vi");
+            assertThat(result.getCode()).isZero();
+            assertThat(result.getData()).containsEntry("version", "default-2026.10.29").containsEntry("versionSource", "ENTRY")
+                    .containsEntry("locale", "vi").containsEntry("sourceEnvironment", "PRODUCTION");
+            assertThat(result.getData().get("blocks")).asList().hasSize(4);
+        }
+    }
+
+    @Test
+    void defaultTeamGuidesCarryTheTemplatesTheAppRequires() {
+        PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+        when(config.activeValue("how-it-works.published")).thenReturn(Optional.of("{}"));
+        var service = new PublishedHowContentService(config, productionEnvironment(), mock(AuditLogService.class));
+        var unilevel = service.publicContent("team-unilevel-how", "zh").getData();
+        assertThat(unilevel).containsEntry("schemaVersion", 2).containsEntry("templateId", "unilevel-v2");
+        assertThat(unilevel.get("blocks").toString()).contains("direct-referral-scope", "seven-layer-scope");
+        var commissions = service.publicContent("team-commissions-how", "en").getData();
+        assertThat(commissions).containsEntry("templateId", "commissions-v2");
+        assertThat(commissions.get("blocks")).asList().hasSize(28);
+    }
+
+    @Test
+    void anOperationsPublicationForThisEnvironmentWinsAndAMalformedOneFailsClosed() {
+        PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+        var service = new PublishedHowContentService(config, productionEnvironment(), mock(AuditLogService.class));
+        when(config.activeValue("how-it-works.published")).thenReturn(Optional.of(DOC));
+        assertThat(service.publicContent("genesis-how", "en").getData()).containsEntry("version", "2026.08.17.1");
+        when(config.activeValue("how-it-works.published")).thenReturn(Optional.of("{\"version\":\"v1\",\"status\":\"PUBLISHED\",\"sourceEnvironment\":\"PRODUCTION\",\"runId\":\"\",\"contents\":{\"genesis-how\":{\"locales\":{\"en\":{\"blocks\":[{\"id\":\"bad\",\"kind\":\"ruleRef\",\"title\":\"x\",\"body\":\"x\"}]}}}}}"));
         assertThat(service.publicContent("genesis-how", "en").getMessage()).isEqualTo("HOW_CONTENT_UNAVAILABLE");
     }
 
@@ -78,16 +106,17 @@ class PublishedHowContentServiceTest {
     }
 
     @Test
-    void emptyAdminConfigBootstrapsACompleteEditableDocument() {
+    void emptyAdminConfigShowsTheShippedDefaultAsTheEditableDocument() {
         PlatformConfigFacade config = mock(PlatformConfigFacade.class);
         when(config.activeValue("how-it-works.published")).thenReturn(Optional.of("{}"));
 
         var result = new PublishedHowContentService(config, new MockEnvironment(), mock(AuditLogService.class)).adminView();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("status", "UNPUBLISHED")
-                .containsEntry("version", "")
+        assertThat(result.getData()).containsEntry("status", "PUBLISHED")
+                .containsEntry("version", "default-2026.10.29")
                 .containsEntry("revision", 0)
+                .containsEntry("defaultContent", true)
                 .containsEntry("source", "server")
                 .containsEntry("configKey", "how-it-works.published");
         assertThat(result.getData().get("contents")).isInstanceOf(Map.class);

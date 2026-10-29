@@ -71,7 +71,7 @@ class DevelopmentRankHowPolicyInitializerTest {
     }
 
     @Test
-    void upgradesOnlyTheExactOriginalPublishedInitializerDocumentThroughAuditedCasUpdate() {
+    void upgradesTheExactOriginalPublishedInitializerDocumentToTheShippedDefaultThroughAuditedCasUpdate() {
         PlatformConfigFacade config = mock(PlatformConfigFacade.class);
         PublishedRankHowPolicyService policyService = mock(PublishedRankHowPolicyService.class);
         when(config.insertAdminValueIfMissing(
@@ -87,7 +87,7 @@ class DevelopmentRankHowPolicyInitializerTest {
         new DevelopmentRankHowPolicyInitializer(config, policyService).run(null);
 
         verify(policyService).update(
-                org.mockito.ArgumentMatchers.eq("2026.08.31"),
+                org.mockito.ArgumentMatchers.eq("default-2026.10.29"),
                 org.mockito.ArgumentMatchers.eq("PUBLISHED"),
                 org.mockito.ArgumentMatchers.argThat(locales -> locales.size() == 3),
                 org.mockito.ArgumentMatchers.eq(1L), anyString());
@@ -110,6 +110,31 @@ class DevelopmentRankHowPolicyInitializerTest {
 
         verifyNoInteractions(policyService);
         verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void upgradesAnUntouched20260831BaselineToTheShippedDefault() throws Exception {
+        PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+        PublishedRankHowPolicyService policyService = mock(PublishedRankHowPolicyService.class);
+        when(config.insertAdminValueIfMissing(
+                org.mockito.ArgumentMatchers.eq(PublishedRankHowPolicyService.CONFIG_KEY), anyString(),
+                org.mockito.ArgumentMatchers.eq("JSON"), org.mockito.ArgumentMatchers.eq("published_content"), anyString()))
+                .thenReturn(false);
+        when(policyService.update(anyString(), anyString(), org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.eq(1L), anyString()))
+                .thenReturn(ffdd.opsconsole.shared.api.ApiResult.ok(java.util.Map.of()));
+        String baseline;
+        try (var stream = getClass().getResourceAsStream("/policies/rank-how-policy-2026.08.31.json")) {
+            baseline = new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        when(config.activeValueForUpdate(PublishedRankHowPolicyService.CONFIG_KEY)).thenReturn(java.util.Optional.of(baseline));
+
+        new DevelopmentRankHowPolicyInitializer(config, policyService).run(null);
+
+        verify(policyService).update(
+                org.mockito.ArgumentMatchers.eq("default-2026.10.29"),
+                org.mockito.ArgumentMatchers.eq("PUBLISHED"),
+                org.mockito.ArgumentMatchers.argThat(locales -> locales.size() == 3),
+                org.mockito.ArgumentMatchers.eq(1L), anyString());
     }
 
     @Test

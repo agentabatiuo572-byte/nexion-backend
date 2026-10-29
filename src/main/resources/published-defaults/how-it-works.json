@@ -1,0 +1,1063 @@
+{
+  "version": "default-2026.10.29",
+  "status": "PUBLISHED",
+  "revision": 0,
+  "contents": {
+    "genesis-how": {
+      "version": "default-2026.10.29",
+      "locales": {
+        "zh": {
+          "blocks": [
+            {
+              "id": "intro",
+              "kind": "text",
+              "title": "创世节点",
+              "body": "创世节点是限量发行的平台权益，持有人可按规则获得 UVT 释放份额和专属权益。"
+            },
+            {
+              "id": "benefits",
+              "kind": "list",
+              "title": "持有权益",
+              "body": "持有创世节点可获得：",
+              "items": [
+                "按平台公布的释放安排获得 UVT。",
+                "创始成员身份标识。",
+                "可在转让市场转让给其他用户。"
+              ]
+            },
+            {
+              "id": "how-to-get",
+              "kind": "text",
+              "title": "怎么获得",
+              "body": "开放认购时可直接认购，价格分档，以认购页为准；认购结束后，可在转让市场向其他持有人购买。"
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "需要了解",
+              "body": "UVT 释放数量和时间以平台公布的规则为准。UVT 价格可能波动，平台不承诺收益或价格。"
+            }
+          ]
+        },
+        "en": {
+          "blocks": [
+            {
+              "id": "intro",
+              "kind": "text",
+              "title": "Genesis nodes",
+              "body": "Genesis nodes are a limited issue of platform benefits. Holders receive a share of UVT releases and exclusive benefits under the published rules."
+            },
+            {
+              "id": "benefits",
+              "kind": "list",
+              "title": "Holder benefits",
+              "body": "Holding a Genesis node gives you:",
+              "items": [
+                "UVT under the published release schedule.",
+                "A founding member badge.",
+                "The option to transfer it to other users on the resale market."
+              ]
+            },
+            {
+              "id": "how-to-get",
+              "kind": "text",
+              "title": "How to get one",
+              "body": "Subscribe directly while subscriptions are open; prices are tiered as shown on the subscription page. After that, you can buy from other holders on the resale market."
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "Good to know",
+              "body": "UVT release amounts and timing follow the published rules. The UVT price can go up or down, and we don’t promise returns or a price."
+            }
+          ]
+        },
+        "vi": {
+          "blocks": [
+            {
+              "id": "intro",
+              "kind": "text",
+              "title": "Nút Genesis",
+              "body": "Nút Genesis là quyền lợi nền tảng phát hành có giới hạn. Người nắm giữ nhận phần UVT được phát hành và các quyền lợi riêng theo quy tắc đã công bố."
+            },
+            {
+              "id": "benefits",
+              "kind": "list",
+              "title": "Quyền lợi người nắm giữ",
+              "body": "Khi nắm giữ nút Genesis, bạn nhận được:",
+              "items": [
+                "UVT theo lịch phát hành do nền tảng công bố.",
+                "Huy hiệu thành viên sáng lập.",
+                "Có thể chuyển nhượng cho người dùng khác trên chợ chuyển nhượng."
+              ]
+            },
+            {
+              "id": "how-to-get",
+              "kind": "text",
+              "title": "Cách sở hữu",
+              "body": "Bạn có thể đăng ký mua trực tiếp khi mở bán; giá theo từng mức hiển thị trên trang đăng ký. Sau đó, bạn có thể mua lại từ người nắm giữ khác trên chợ chuyển nhượng."
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "Lưu ý",
+              "body": "Số lượng và thời điểm phát hành UVT theo quy tắc nền tảng công bố. Giá UVT có thể biến động và nền tảng không cam kết lợi nhuận hay giá."
+            }
+          ]
+        }
+      }
+    },
+    "wallet-exchange-how": {
+      "version": "default-2026.10.29",
+      "locales": {
+        "zh": {
+          "blocks": [
+            {
+              "id": "intro",
+              "kind": "text",
+              "title": "UVT 与 USDT 兑换",
+              "body": "在钱包里把 UVT 兑换成 USDT，或把 USDT 兑换成 UVT，按确认时的报价完成。"
+            },
+            {
+              "id": "steps",
+              "kind": "list",
+              "title": "怎么兑换",
+              "body": "三步完成兑换：",
+              "items": [
+                "选择方向，输入金额。",
+                "确认到账金额和费用。",
+                "提交后在「最近兑换」查看结果。"
+              ]
+            },
+            {
+              "id": "daily-limit",
+              "kind": "text",
+              "title": "每日额度",
+              "body": "每个账户每天有兑换额度。当天额度用完，可以排队到第二天处理；处理前可以取消。"
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "需要了解",
+              "body": "报价随市场变化，以确认时为准。UVT 价格可能波动，平台不承诺价格。"
+            }
+          ]
+        },
+        "en": {
+          "blocks": [
+            {
+              "id": "intro",
+              "kind": "text",
+              "title": "UVT and USDT exchange",
+              "body": "Exchange UVT for USDT, or USDT for UVT, right in your wallet at the quote shown when you confirm."
+            },
+            {
+              "id": "steps",
+              "kind": "list",
+              "title": "How to exchange",
+              "body": "Three steps to exchange:",
+              "items": [
+                "Choose a direction and enter an amount.",
+                "Check the amount you’ll receive and any fees.",
+                "After submitting, see the result under Recent exchanges."
+              ]
+            },
+            {
+              "id": "daily-limit",
+              "kind": "text",
+              "title": "Daily limit",
+              "body": "Each account has a daily exchange limit. Once it’s used up, you can queue an exchange for the next day and cancel it before it’s processed."
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "Good to know",
+              "body": "Quotes change with the market; the quote at confirmation applies. The UVT price can go up or down, and we don’t promise a price."
+            }
+          ]
+        },
+        "vi": {
+          "blocks": [
+            {
+              "id": "intro",
+              "kind": "text",
+              "title": "Quy đổi UVT và USDT",
+              "body": "Quy đổi UVT sang USDT, hoặc USDT sang UVT, ngay trong ví theo báo giá tại thời điểm bạn xác nhận."
+            },
+            {
+              "id": "steps",
+              "kind": "list",
+              "title": "Cách quy đổi",
+              "body": "Ba bước để quy đổi:",
+              "items": [
+                "Chọn chiều quy đổi và nhập số tiền.",
+                "Kiểm tra số tiền nhận được và phí.",
+                "Sau khi gửi, xem kết quả trong mục Quy đổi gần đây."
+              ]
+            },
+            {
+              "id": "daily-limit",
+              "kind": "text",
+              "title": "Hạn mức mỗi ngày",
+              "body": "Mỗi tài khoản có hạn mức quy đổi mỗi ngày. Khi đã dùng hết, bạn có thể xếp hàng sang ngày hôm sau và hủy trước khi giao dịch được xử lý."
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "Lưu ý",
+              "body": "Báo giá thay đổi theo thị trường; áp dụng báo giá tại thời điểm xác nhận. Giá UVT có thể biến động và nền tảng không cam kết về giá."
+            }
+          ]
+        }
+      }
+    },
+    "wallet-repurchase-how": {
+      "version": "default-2026.10.29",
+      "locales": {
+        "zh": {
+          "blocks": [
+            {
+              "id": "intro",
+              "kind": "text",
+              "title": "锁定计划",
+              "body": "把 USDT 锁定一段时间，到期可领取锁定奖励和额外权益。"
+            },
+            {
+              "id": "steps",
+              "kind": "list",
+              "title": "怎么参与",
+              "body": "三步完成：",
+              "items": [
+                "选择锁定金额。",
+                "确认锁定期限、预计奖励和提前解锁的扣费。",
+                "到期后领取。"
+              ]
+            },
+            {
+              "id": "early-unlock",
+              "kind": "text",
+              "title": "提前解锁",
+              "body": "锁定期内可以提前解锁，但会按确认页显示的比例扣费，并放弃尚未到期的奖励。"
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "需要了解",
+              "body": "预计奖励按当前参考奖励率计算，以实际到账为准。规则如有调整，以平台最新公布为准。"
+            }
+          ]
+        },
+        "en": {
+          "blocks": [
+            {
+              "id": "intro",
+              "kind": "text",
+              "title": "Lock Plan",
+              "body": "Lock USDT for a set period and collect your lock reward and extra benefits at maturity."
+            },
+            {
+              "id": "steps",
+              "kind": "list",
+              "title": "How it works",
+              "body": "Three steps:",
+              "items": [
+                "Choose how much to lock.",
+                "Check the lock period, estimated reward and the early-unlock charge.",
+                "Claim at maturity."
+              ]
+            },
+            {
+              "id": "early-unlock",
+              "kind": "text",
+              "title": "Unlocking early",
+              "body": "You can unlock before maturity, but a charge shown on the confirmation page applies and unmatured rewards are forfeited."
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "Good to know",
+              "body": "Estimated rewards use the current reference rate; actual payouts may differ. If the rules change, the latest published rules apply."
+            }
+          ]
+        },
+        "vi": {
+          "blocks": [
+            {
+              "id": "intro",
+              "kind": "text",
+              "title": "Gói khóa USDT",
+              "body": "Khóa USDT trong một khoảng thời gian và nhận thưởng khóa cùng các quyền lợi bổ sung khi đáo hạn."
+            },
+            {
+              "id": "steps",
+              "kind": "list",
+              "title": "Cách tham gia",
+              "body": "Ba bước:",
+              "items": [
+                "Chọn số tiền muốn khóa.",
+                "Kiểm tra thời hạn khóa, phần thưởng dự kiến và khoản khấu trừ khi mở khóa sớm.",
+                "Nhận khi đáo hạn."
+              ]
+            },
+            {
+              "id": "early-unlock",
+              "kind": "text",
+              "title": "Mở khóa sớm",
+              "body": "Bạn có thể mở khóa trước hạn, nhưng sẽ bị khấu trừ theo tỷ lệ hiển thị ở trang xác nhận và mất các phần thưởng chưa đến hạn."
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "Lưu ý",
+              "body": "Phần thưởng dự kiến tính theo tỷ lệ tham khảo hiện tại; số thực nhận có thể khác. Nếu quy tắc thay đổi, quy tắc mới nhất do nền tảng công bố sẽ được áp dụng."
+            }
+          ]
+        }
+      }
+    },
+    "team-binary-how": {
+      "version": "default-2026.10.29",
+      "locales": {
+        "zh": {
+          "blocks": [
+            {
+              "id": "hero",
+              "kind": "text",
+              "title": "团队平衡奖励",
+              "body": "你的团队成员分在 A、B 两组。两组都有订单时，按较小一组的订单额发放奖励——两组越均衡，奖励越多。"
+            },
+            {
+              "id": "how-to-earn",
+              "kind": "list",
+              "title": "怎么拿到奖励",
+              "body": "三步拿到奖励：",
+              "items": [
+                "邀请好友加入，他们和他们邀请的人会分到 A 组或 B 组。",
+                "两组订单额都达到发放条件后开始计算。",
+                "比例和发放周期以奖励页显示为准。"
+              ]
+            },
+            {
+              "id": "earn-more",
+              "kind": "text",
+              "title": "怎样拿更多",
+              "body": "让两组一起成长。较小一组决定奖励，它的订单额增加，奖励随之增加。"
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "需要了解",
+              "body": "页面显示的是预计金额，实际以发放记录为准。规则如有调整，以平台最新公布为准。"
+            }
+          ]
+        },
+        "en": {
+          "blocks": [
+            {
+              "id": "hero",
+              "kind": "text",
+              "title": "Team Balance Reward",
+              "body": "Your team is split into Group A and Group B. When both groups have orders, you earn a reward based on the smaller group’s order volume. The more balanced the groups, the more you earn."
+            },
+            {
+              "id": "how-to-earn",
+              "kind": "list",
+              "title": "How to earn",
+              "body": "Three steps to earn:",
+              "items": [
+                "Invite friends. They and the people they invite are placed in Group A or Group B.",
+                "Rewards start once both groups reach the required order volume.",
+                "The current rate and payout schedule are shown on the reward page."
+              ]
+            },
+            {
+              "id": "earn-more",
+              "kind": "text",
+              "title": "Earn more",
+              "body": "Keep both groups growing. The smaller group sets your reward, so as its volume grows, so does your reward."
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "Good to know",
+              "body": "Amounts shown are estimates; actual rewards follow your payout records. If the rules change, the latest published rules apply."
+            }
+          ]
+        },
+        "vi": {
+          "blocks": [
+            {
+              "id": "hero",
+              "kind": "text",
+              "title": "Thưởng cân bằng nhóm",
+              "body": "Thành viên trong nhóm của bạn được chia thành nhóm A và nhóm B. Khi cả hai nhóm đều có đơn hàng, bạn nhận thưởng tính theo doanh số của nhóm nhỏ hơn. Hai nhóm càng cân bằng, thưởng càng nhiều."
+            },
+            {
+              "id": "how-to-earn",
+              "kind": "list",
+              "title": "Cách nhận thưởng",
+              "body": "Ba bước để nhận thưởng:",
+              "items": [
+                "Mời bạn bè tham gia. Bạn bè và những người họ mời sẽ được xếp vào nhóm A hoặc nhóm B.",
+                "Thưởng bắt đầu được tính khi doanh số của cả hai nhóm đạt mức yêu cầu.",
+                "Tỷ lệ và kỳ chi trả hiện hành được hiển thị trên trang thưởng."
+              ]
+            },
+            {
+              "id": "earn-more",
+              "kind": "text",
+              "title": "Cách tăng thưởng",
+              "body": "Hãy duy trì đà tăng trưởng của cả hai nhóm. Nhóm nhỏ hơn quyết định mức thưởng, vì vậy khi doanh số nhóm này tăng, thưởng của bạn cũng tăng theo."
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "Lưu ý",
+              "body": "Số tiền hiển thị là ước tính; thưởng thực nhận theo bản ghi chi trả. Nếu quy tắc thay đổi, quy tắc mới nhất do nền tảng công bố sẽ được áp dụng."
+            }
+          ]
+        }
+      }
+    },
+    "team-commissions-how": {
+      "version": "default-2026.10.29",
+      "locales": {
+        "zh": {
+          "schemaVersion": 2,
+          "templateId": "commissions-v2",
+          "blocks": [
+            {
+              "id": "hero",
+              "kind": "text",
+              "title": "奖励明细说明",
+              "body": "这里记录你的全部奖励，按来源和状态分别显示。"
+            },
+            {
+              "id": "overview",
+              "kind": "text",
+              "title": "奖励从哪来",
+              "body": "好友购买、团队购买、好友设备收益、团队平衡奖励、同级奖励、好友升级奖励和团队激励池。"
+            },
+            {
+              "id": "channels",
+              "kind": "text",
+              "title": "分别查看",
+              "body": "不同来源的奖励分开记录，金额以每条记录为准。"
+            },
+            {
+              "id": "network",
+              "kind": "text",
+              "title": "好友和团队购买",
+              "body": "好友购买：{directPurchaseRules}。团队购买：{networkPurchaseRules}。好友设备收益：{directDeviceRules}。"
+            },
+            {
+              "id": "binary",
+              "kind": "text",
+              "title": "团队平衡奖励",
+              "body": "按较小一组的订单额发放。"
+            },
+            {
+              "id": "peer",
+              "kind": "text",
+              "title": "同级奖励",
+              "body": "以实际发放为准。"
+            },
+            {
+              "id": "cultivation",
+              "kind": "text",
+              "title": "好友升级奖励",
+              "body": "好友升级时发放。"
+            },
+            {
+              "id": "leadership",
+              "kind": "text",
+              "title": "团队激励池",
+              "body": "按票数每周发放。"
+            },
+            {
+              "id": "genesis",
+              "kind": "text",
+              "title": "创世节点奖励",
+              "body": "{genesisStatus}"
+            },
+            {
+              "id": "lifecycle",
+              "kind": "text",
+              "title": "状态怎么看",
+              "body": "每条奖励都会标出状态，金额以记录为准。"
+            },
+            {
+              "id": "cooling",
+              "kind": "text",
+              "title": "待到账",
+              "body": "等待期结束后可提现，不同来源的等待期可能不同。"
+            },
+            {
+              "id": "unlocked",
+              "kind": "text",
+              "title": "已到账",
+              "body": "可以提现。"
+            },
+            {
+              "id": "withdrawn",
+              "kind": "text",
+              "title": "已提现",
+              "body": "已转入提现，到账情况见提现记录。"
+            },
+            {
+              "id": "cooling-note",
+              "kind": "text",
+              "title": "已撤销",
+              "body": "订单退款等情况下，对应奖励会撤销。"
+            },
+            {
+              "id": "example",
+              "kind": "text",
+              "title": "算例",
+              "body": "以下以 {exampleBase} 的订单为例，仅作说明，不代表个人到账。"
+            },
+            {
+              "id": "example-day",
+              "kind": "text",
+              "title": "假设订单",
+              "body": "{exampleBase}"
+            },
+            {
+              "id": "example-network",
+              "kind": "text",
+              "title": "好友和团队购买奖励",
+              "body": "以实际发放为准。"
+            },
+            {
+              "id": "example-cultivation",
+              "kind": "text",
+              "title": "好友升级奖励",
+              "body": "{exampleRank}"
+            },
+            {
+              "id": "example-peer",
+              "kind": "text",
+              "title": "同级奖励",
+              "body": "{peerStatus}"
+            },
+            {
+              "id": "example-leadership",
+              "kind": "text",
+              "title": "团队激励池",
+              "body": "以实际发放为准。"
+            },
+            {
+              "id": "example-total",
+              "kind": "text",
+              "title": "合计",
+              "body": "不同币种和状态不直接相加。"
+            },
+            {
+              "id": "example-note",
+              "kind": "text",
+              "title": "说明",
+              "body": "算例仅作说明，实际以奖励记录为准。"
+            },
+            {
+              "id": "faq",
+              "kind": "text",
+              "title": "常见问题",
+              "body": "关于奖励到账的常见疑问。"
+            },
+            {
+              "id": "faq-order",
+              "kind": "text",
+              "title": "为什么没看到奖励？",
+              "body": "奖励在订单确认后生成，可能还在待到账期，可在奖励明细中查看对应记录。"
+            },
+            {
+              "id": "faq-withdraw",
+              "kind": "text",
+              "title": "什么时候可以提现？",
+              "body": "奖励到账后即可提现，待到账的奖励暂不可提现。"
+            },
+            {
+              "id": "faq-reversal",
+              "kind": "text",
+              "title": "退款后奖励会怎样？",
+              "body": "订单退款后，对应的奖励会撤销。"
+            },
+            {
+              "id": "faq-cultivation",
+              "kind": "text",
+              "title": "好友升级奖励发给谁？",
+              "body": "发给邀请这位好友的人。"
+            },
+            {
+              "id": "footer",
+              "kind": "text",
+              "title": "返回奖励明细",
+              "body": "金额以奖励记录为准；规则如有调整，以平台最新公布为准。"
+            }
+          ]
+        },
+        "en": {
+          "schemaVersion": 2,
+          "templateId": "commissions-v2",
+          "blocks": [
+            {
+              "id": "hero",
+              "kind": "text",
+              "title": "About your reward history",
+              "body": "All your rewards are recorded here, shown by source and status."
+            },
+            {
+              "id": "overview",
+              "kind": "text",
+              "title": "Where rewards come from",
+              "body": "Friend purchases, team purchases, friends’ device earnings, the Team Balance Reward, same-rank rewards, friend rank-up rewards and the team incentive pool."
+            },
+            {
+              "id": "channels",
+              "kind": "text",
+              "title": "Shown separately",
+              "body": "Rewards from each source are recorded separately; each record shows the amount."
+            },
+            {
+              "id": "network",
+              "kind": "text",
+              "title": "Friend and team purchases",
+              "body": "Friend purchases: {directPurchaseRules}. Team purchases: {networkPurchaseRules}. Friends’ device earnings: {directDeviceRules}."
+            },
+            {
+              "id": "binary",
+              "kind": "text",
+              "title": "Team Balance Reward",
+              "body": "Paid on the smaller group’s order volume."
+            },
+            {
+              "id": "peer",
+              "kind": "text",
+              "title": "Same-rank reward",
+              "body": "Subject to actual payout."
+            },
+            {
+              "id": "cultivation",
+              "kind": "text",
+              "title": "Friend rank-up reward",
+              "body": "Paid when a friend ranks up."
+            },
+            {
+              "id": "leadership",
+              "kind": "text",
+              "title": "Team incentive pool",
+              "body": "Paid weekly by votes."
+            },
+            {
+              "id": "genesis",
+              "kind": "text",
+              "title": "Genesis rewards",
+              "body": "{genesisStatus}"
+            },
+            {
+              "id": "lifecycle",
+              "kind": "text",
+              "title": "Record status",
+              "body": "Each reward shows its status; the amount follows the record."
+            },
+            {
+              "id": "cooling",
+              "kind": "text",
+              "title": "Pending",
+              "body": "Withdrawable after the waiting period, which can differ by source."
+            },
+            {
+              "id": "unlocked",
+              "kind": "text",
+              "title": "Credited",
+              "body": "Ready to withdraw."
+            },
+            {
+              "id": "withdrawn",
+              "kind": "text",
+              "title": "Withdrawn",
+              "body": "Moved into a withdrawal; see your withdrawal records for its status."
+            },
+            {
+              "id": "cooling-note",
+              "kind": "text",
+              "title": "Reversed",
+              "body": "A reward is reversed if, for example, its order is refunded."
+            },
+            {
+              "id": "example",
+              "kind": "text",
+              "title": "Example",
+              "body": "The example below uses a {exampleBase} order for illustration only; it isn’t a personal payout."
+            },
+            {
+              "id": "example-day",
+              "kind": "text",
+              "title": "Example order",
+              "body": "{exampleBase}"
+            },
+            {
+              "id": "example-network",
+              "kind": "text",
+              "title": "Friend and team purchase rewards",
+              "body": "Subject to actual payout."
+            },
+            {
+              "id": "example-cultivation",
+              "kind": "text",
+              "title": "Friend rank-up reward",
+              "body": "{exampleRank}"
+            },
+            {
+              "id": "example-peer",
+              "kind": "text",
+              "title": "Same-rank reward",
+              "body": "{peerStatus}"
+            },
+            {
+              "id": "example-leadership",
+              "kind": "text",
+              "title": "Team incentive pool",
+              "body": "Subject to actual payout."
+            },
+            {
+              "id": "example-total",
+              "kind": "text",
+              "title": "Total",
+              "body": "Different currencies and statuses aren’t added together."
+            },
+            {
+              "id": "example-note",
+              "kind": "text",
+              "title": "Note",
+              "body": "The example is for illustration only; actual amounts follow your reward records."
+            },
+            {
+              "id": "faq",
+              "kind": "text",
+              "title": "Common questions",
+              "body": "Questions about receiving rewards."
+            },
+            {
+              "id": "faq-order",
+              "kind": "text",
+              "title": "Why don’t I see a reward?",
+              "body": "Rewards are created after an order is confirmed and may still be pending. Check the record in your reward history."
+            },
+            {
+              "id": "faq-withdraw",
+              "kind": "text",
+              "title": "When can I withdraw?",
+              "body": "Once a reward is credited, you can withdraw it. Pending rewards can’t be withdrawn yet."
+            },
+            {
+              "id": "faq-reversal",
+              "kind": "text",
+              "title": "What happens after a refund?",
+              "body": "If an order is refunded, its reward is reversed."
+            },
+            {
+              "id": "faq-cultivation",
+              "kind": "text",
+              "title": "Who gets the friend rank-up reward?",
+              "body": "The person who invited that friend."
+            },
+            {
+              "id": "footer",
+              "kind": "text",
+              "title": "Back to reward history",
+              "body": "Amounts follow your reward records. If the rules change, the latest published rules apply."
+            }
+          ]
+        },
+        "vi": {
+          "schemaVersion": 2,
+          "templateId": "commissions-v2",
+          "blocks": [
+            {
+              "id": "hero",
+              "kind": "text",
+              "title": "Giới thiệu lịch sử thưởng",
+              "body": "Tất cả khoản thưởng của bạn được ghi nhận tại đây, hiển thị theo nguồn và trạng thái."
+            },
+            {
+              "id": "overview",
+              "kind": "text",
+              "title": "Thưởng đến từ đâu",
+              "body": "Bạn bè mua hàng, nhóm mua hàng, thu nhập thiết bị của bạn bè, thưởng cân bằng nhóm, thưởng đồng cấp, thưởng khi bạn bè lên hạng và quỹ thưởng nhóm."
+            },
+            {
+              "id": "channels",
+              "kind": "text",
+              "title": "Hiển thị riêng",
+              "body": "Thưởng từ mỗi nguồn được ghi nhận riêng; số tiền theo từng bản ghi."
+            },
+            {
+              "id": "network",
+              "kind": "text",
+              "title": "Bạn bè và nhóm mua hàng",
+              "body": "Bạn bè mua hàng: {directPurchaseRules}. Nhóm mua hàng: {networkPurchaseRules}. Thu nhập thiết bị của bạn bè: {directDeviceRules}."
+            },
+            {
+              "id": "binary",
+              "kind": "text",
+              "title": "Thưởng cân bằng nhóm",
+              "body": "Chi trả theo doanh số của nhóm nhỏ hơn."
+            },
+            {
+              "id": "peer",
+              "kind": "text",
+              "title": "Thưởng đồng cấp",
+              "body": "Theo kết quả chi trả thực tế."
+            },
+            {
+              "id": "cultivation",
+              "kind": "text",
+              "title": "Thưởng khi bạn bè lên hạng",
+              "body": "Chi trả khi bạn bè lên hạng."
+            },
+            {
+              "id": "leadership",
+              "kind": "text",
+              "title": "Quỹ thưởng nhóm",
+              "body": "Chi trả hằng tuần theo số phiếu."
+            },
+            {
+              "id": "genesis",
+              "kind": "text",
+              "title": "Thưởng Genesis",
+              "body": "{genesisStatus}"
+            },
+            {
+              "id": "lifecycle",
+              "kind": "text",
+              "title": "Trạng thái bản ghi",
+              "body": "Mỗi khoản thưởng đều hiển thị trạng thái; số tiền theo bản ghi."
+            },
+            {
+              "id": "cooling",
+              "kind": "text",
+              "title": "Chờ ghi nhận",
+              "body": "Có thể rút sau thời gian chờ; thời gian chờ có thể khác nhau tùy nguồn."
+            },
+            {
+              "id": "unlocked",
+              "kind": "text",
+              "title": "Đã ghi nhận",
+              "body": "Có thể rút."
+            },
+            {
+              "id": "withdrawn",
+              "kind": "text",
+              "title": "Đã rút",
+              "body": "Đã chuyển vào lệnh rút; xem trạng thái trong lịch sử rút tiền."
+            },
+            {
+              "id": "cooling-note",
+              "kind": "text",
+              "title": "Đã hủy",
+              "body": "Khoản thưởng sẽ bị hủy nếu, chẳng hạn, đơn hàng được hoàn tiền."
+            },
+            {
+              "id": "example",
+              "kind": "text",
+              "title": "Ví dụ",
+              "body": "Ví dụ dưới đây dùng đơn hàng {exampleBase} chỉ để minh họa, không phải khoản bạn nhận."
+            },
+            {
+              "id": "example-day",
+              "kind": "text",
+              "title": "Đơn hàng ví dụ",
+              "body": "{exampleBase}"
+            },
+            {
+              "id": "example-network",
+              "kind": "text",
+              "title": "Thưởng bạn bè và nhóm mua hàng",
+              "body": "Theo kết quả chi trả thực tế."
+            },
+            {
+              "id": "example-cultivation",
+              "kind": "text",
+              "title": "Thưởng khi bạn bè lên hạng",
+              "body": "{exampleRank}"
+            },
+            {
+              "id": "example-peer",
+              "kind": "text",
+              "title": "Thưởng đồng cấp",
+              "body": "{peerStatus}"
+            },
+            {
+              "id": "example-leadership",
+              "kind": "text",
+              "title": "Quỹ thưởng nhóm",
+              "body": "Theo kết quả chi trả thực tế."
+            },
+            {
+              "id": "example-total",
+              "kind": "text",
+              "title": "Tổng cộng",
+              "body": "Không cộng chung các loại tiền và trạng thái khác nhau."
+            },
+            {
+              "id": "example-note",
+              "kind": "text",
+              "title": "Lưu ý",
+              "body": "Ví dụ chỉ để minh họa; số tiền thực tế theo lịch sử thưởng."
+            },
+            {
+              "id": "faq",
+              "kind": "text",
+              "title": "Câu hỏi thường gặp",
+              "body": "Các thắc mắc thường gặp về việc nhận thưởng."
+            },
+            {
+              "id": "faq-order",
+              "kind": "text",
+              "title": "Vì sao chưa thấy thưởng?",
+              "body": "Thưởng được tạo sau khi đơn hàng được xác nhận và có thể vẫn đang chờ ghi nhận. Vui lòng xem bản ghi trong lịch sử thưởng."
+            },
+            {
+              "id": "faq-withdraw",
+              "kind": "text",
+              "title": "Khi nào có thể rút?",
+              "body": "Thưởng đã ghi nhận có thể rút ngay; thưởng đang chờ chưa thể rút."
+            },
+            {
+              "id": "faq-reversal",
+              "kind": "text",
+              "title": "Điều gì xảy ra khi hoàn tiền?",
+              "body": "Khi đơn hàng được hoàn tiền, khoản thưởng tương ứng sẽ bị hủy."
+            },
+            {
+              "id": "faq-cultivation",
+              "kind": "text",
+              "title": "Ai nhận thưởng khi bạn bè lên hạng?",
+              "body": "Người đã mời người bạn đó."
+            },
+            {
+              "id": "footer",
+              "kind": "text",
+              "title": "Về lịch sử thưởng",
+              "body": "Số tiền theo lịch sử thưởng. Nếu quy tắc thay đổi, quy tắc mới nhất do nền tảng công bố sẽ được áp dụng."
+            }
+          ]
+        }
+      }
+    },
+    "team-unilevel-how": {
+      "version": "default-2026.10.29",
+      "locales": {
+        "zh": {
+          "schemaVersion": 2,
+          "templateId": "unilevel-v2",
+          "blocks": [
+            {
+              "id": "hero",
+              "kind": "text",
+              "title": "团队奖励",
+              "body": "好友和团队成员购买设备，你都能获得奖励；好友的设备产生收益时，你还能额外获得奖励。"
+            },
+            {
+              "id": "seven-layer-scope",
+              "kind": "text",
+              "title": "购买奖励",
+              "body": "你邀请的好友购买设备，你获得好友购买奖励；团队其他成员购买，你获得团队购买奖励。等级越高，可获得奖励的范围越大，具体比例见等级页。"
+            },
+            {
+              "id": "direct-referral-scope",
+              "kind": "text",
+              "title": "好友设备收益奖励",
+              "body": "你邀请的好友设备产生收益时，平台额外发给你一份奖励，不影响好友自己的收益。"
+            },
+            {
+              "id": "payout",
+              "kind": "text",
+              "title": "到账",
+              "body": "奖励以 USDT 和 UVT 发放，待到账期结束后可以提现。"
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "需要了解",
+              "body": "金额以奖励明细为准；规则如有调整，以平台最新公布为准。"
+            }
+          ]
+        },
+        "en": {
+          "schemaVersion": 2,
+          "templateId": "unilevel-v2",
+          "blocks": [
+            {
+              "id": "hero",
+              "kind": "text",
+              "title": "Team rewards",
+              "body": "You earn when friends and team members buy devices, and you earn extra when your friends’ devices produce earnings."
+            },
+            {
+              "id": "seven-layer-scope",
+              "kind": "text",
+              "title": "Purchase rewards",
+              "body": "When a friend you invited buys a device, you earn a friend purchase reward. When other team members buy, you earn a team purchase reward. Higher ranks widen your reward reach; see the rank page for current rates."
+            },
+            {
+              "id": "direct-referral-scope",
+              "kind": "text",
+              "title": "Friend device earnings reward",
+              "body": "When your friends’ devices produce earnings, the platform pays you an extra reward without reducing their earnings."
+            },
+            {
+              "id": "payout",
+              "kind": "text",
+              "title": "Payouts",
+              "body": "Rewards are paid in USDT and UVT and can be withdrawn after the pending period."
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "Good to know",
+              "body": "Amounts follow your reward history. If the rules change, the latest published rules apply."
+            }
+          ]
+        },
+        "vi": {
+          "schemaVersion": 2,
+          "templateId": "unilevel-v2",
+          "blocks": [
+            {
+              "id": "hero",
+              "kind": "text",
+              "title": "Thưởng nhóm",
+              "body": "Bạn nhận thưởng khi bạn bè và thành viên nhóm mua thiết bị, và nhận thêm thưởng khi thiết bị của bạn bè tạo thu nhập."
+            },
+            {
+              "id": "seven-layer-scope",
+              "kind": "text",
+              "title": "Thưởng mua hàng",
+              "body": "Khi bạn bè bạn mời mua thiết bị, bạn nhận thưởng bạn bè mua hàng. Khi các thành viên khác trong nhóm mua, bạn nhận thưởng nhóm mua hàng. Hạng càng cao, phạm vi nhận thưởng càng rộng; xem tỷ lệ hiện hành tại trang hạng."
+            },
+            {
+              "id": "direct-referral-scope",
+              "kind": "text",
+              "title": "Thưởng thu nhập thiết bị của bạn bè",
+              "body": "Khi thiết bị của bạn bè tạo thu nhập, nền tảng chi trả thêm cho bạn một khoản thưởng mà không làm giảm thu nhập của họ."
+            },
+            {
+              "id": "payout",
+              "kind": "text",
+              "title": "Chi trả",
+              "body": "Thưởng được chi trả bằng USDT và UVT, có thể rút sau thời gian chờ."
+            },
+            {
+              "id": "note",
+              "kind": "callout",
+              "title": "Lưu ý",
+              "body": "Số tiền theo lịch sử thưởng của bạn. Nếu quy tắc thay đổi, quy tắc mới nhất do nền tảng công bố sẽ được áp dụng."
+            }
+          ]
+        }
+      }
+    }
+  }
+}
