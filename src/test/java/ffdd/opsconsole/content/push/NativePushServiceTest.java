@@ -23,9 +23,9 @@ class NativePushServiceTest {
         var s = new UserSessionEntity(); s.setUserId(user); s.setSessionChainId(chain); s.setInstallationId(ID); return s;
     }
     Installation binding(long user, String chain) {
-        return new Installation(ID,"cid-123456",NativePushService.hashToken(TOKEN),user,chain,"android","granted","1",3,true);
+        return new Installation(ID,"fcm:"+"x".repeat(150),"FCM",NativePushService.hashToken(TOKEN),user,chain,"android","granted","1",3,true);
     }
-    NativePushService.Registration request() { return new NativePushService.Registration("cid-123456","android","granted","1"); }
+    NativePushService.Registration request() { return new NativePushService.Registration("fcm:"+"x".repeat(150),"FCM","android","granted","1"); }
 
     @Test void createsBindingFromAuthenticatedAppSessionAndHashesClientProof() {
         doReturn(session(7,"chain")).when(sessions).requireCurrent(auth,ID,false);
@@ -49,8 +49,8 @@ class NativePushServiceTest {
     }
     @Test void cidCannotBeStolenByNewInstallationEvenWithOwnValidSession() {
         when(sessions.requireCurrent(auth,ID,false)).thenReturn(session(8,"chain"));
-        when(mapper.cidOwner("cid-123456")).thenReturn("another-installation");
-        assertThatThrownBy(() -> service.register(auth,ID,TOKEN,request())).hasMessage("PUSH_CID_ALREADY_BOUND");
+        when(mapper.tokenOwner("FCM","fcm:"+"x".repeat(150))).thenReturn("another-installation");
+        assertThatThrownBy(() -> service.register(auth,ID,TOKEN,request())).hasMessage("PUSH_TOKEN_ALREADY_BOUND");
         verify(mapper,never()).insert(any());
     }
     @Test void mismatchedSessionIsRejectedBeforeMutationAndOldAccountCannotUnbindNewAccount() {
@@ -61,6 +61,37 @@ class NativePushServiceTest {
         when(mapper.lockInstallation(ID)).thenReturn(binding(8,"new"));
         assertThatThrownBy(() -> service.remove(auth,ID,TOKEN)).hasMessage("PUSH_BINDING_NOT_OWNED");
         verify(mapper,never()).deactivate(any());
+    }
+    @Test void providerPlatformAndTokenFormatRejectLegacyOrMalformedValues() {
+        for (var request:java.util.List.of(
+                new NativePushService.Registration("cid-123456",null,"android","granted","1"),
+                new NativePushService.Registration("cid-123456","FCM","android","granted","1"),
+                new NativePushService.Registration("a".repeat(64),"APNS","android","granted","1"),
+                new NativePushService.Registration("a".repeat(63),"APNS","ios","granted","1"),
+                new NativePushService.Registration("fcm:"+"x".repeat(4093),"FCM","android","granted","1")))
+            assertThatThrownBy(() -> service.register(auth,ID,TOKEN,request)).hasMessage("INVALID_PUSH_REGISTRATION");
+        verifyNoInteractions(mapper,sessions);
+    }
+    @Test void explicitProviderReplacementRequiresProofAdvancesEpochAndCanonicalizesApns() {
+        when(sessions.requireCurrent(auth,ID,false)).thenReturn(session(7,"chain"));
+        when(mapper.lockInstallation(ID)).thenReturn(binding(7,"chain"));
+        service.register(auth,ID,TOKEN,new NativePushService.Registration("AB".repeat(32),"APNS","ios","granted","2"));
+        verify(mapper).update(argThat(i -> i.provider().equals("APNS") && i.clientId().equals("ab".repeat(32))),eq(1));
+        verify(mapper).cancelPending(ID);
+    }
+    @Test void apnsAcceptsVariableNativeByteLengthAndRejectsMalformedTokens() {
+        assertThat(NativePushService.validNativeToken("APNS","ios","ab".repeat(16))).isTrue();
+        assertThat(NativePushService.validNativeToken("APNS","ios","AB".repeat(64))).isTrue();
+        for (String token:java.util.List.of("","a".repeat(63),"ag".repeat(32),"a".repeat(4097)))
+            assertThat(NativePushService.validNativeToken("APNS","ios",token)).isFalse();
+    }
+    @Test void uppercaseApnsAliasCannotTakeOverAnotherInstallationToken() {
+        when(sessions.requireCurrent(auth,ID,false)).thenReturn(session(8,"other-chain"));
+        when(mapper.tokenOwner("APNS","ab".repeat(16))).thenReturn("existing-installation");
+        assertThatThrownBy(() -> service.register(auth,ID,TOKEN,
+                new NativePushService.Registration("AB".repeat(16),"APNS","ios","granted","1")))
+                .hasMessage("PUSH_TOKEN_ALREADY_BOUND");
+        verify(mapper,never()).insert(any()); verify(mapper,never()).update(any(),anyInt());
     }
     @Test void notificationLookupChecksCurrentUserAndTargetOwnership() {
         when(sessions.requireSession(auth)).thenReturn(session(7,"chain"));

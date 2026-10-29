@@ -42,7 +42,7 @@ class NativePushMySqlTest {
                 assertThat(scalar(c,"SELECT COUNT(*) FROM nx_native_push_delivery")).isEqualTo(3);
                 assertThat(m.ownedNotification(2,8)).isNull();
                 assertThat(m.ownedNotification(2,7).type()).isEqualTo("FUNDS_RESULT");
-                m.cancelPending(INSTALL); m.update(new Installation(INSTALL,"cid12345678","hash",8L,"other","ios","granted","1",1,true),1);
+                m.cancelPending(INSTALL); m.update(new Installation(INSTALL,"fcm:"+"x".repeat(150),"FCM","hash",8L,"other","android","granted","1",1,true),1);
                 assertThat(scalar(c,"SELECT COUNT(*) FROM nx_native_push_delivery WHERE status='CANCELLED'")).isEqualTo(3);
                 assertThat(m.lockInstallation(INSTALL).bindingEpoch()).isEqualTo(2);
                 // Existing queued old-user notifications cannot be recreated for a new binding.
@@ -67,7 +67,10 @@ class NativePushMySqlTest {
                 }
                 s.commit();
                 sql(c,"UPDATE nx_native_push_delivery SET lease_until=DATE_SUB("+NOW+",INTERVAL 1 SECOND)"); c.commit();
-                s.clearCache(); assertThat(m.lockNext().id()).isEqualTo(d.id()); m.claim(d.id(),"second"); s.commit();
+                s.clearCache(); assertThat(m.expireAmbiguousClaims()).isEqualTo(1); assertThat(m.lockNext()).isNull();
+                assertThat(scalar(c,"SELECT COUNT(*) FROM nx_native_push_delivery WHERE status='UNKNOWN'")).isEqualTo(1);
+                // An explicit operator-reviewed retry can establish a new fenced claim.
+                sql(c,"UPDATE nx_native_push_delivery SET status='RETRY'"); m.claim(d.id(),"second"); s.commit();
                 assertThat(m.finish(d.id(),"first","ACCEPTED",null,"bad-task",0)).isZero();
                 assertThat(m.finish(d.id(),"second","ACCEPTED",null,"task",0)).isEqualTo(1);
                 assertThat(m.opened(2,installation(8,"other",1))).isZero();
@@ -114,7 +117,7 @@ class NativePushMySqlTest {
                 assertThat(scalar(c,"SELECT COUNT(*) FROM nx_native_push_delivery WHERE notification_id=2")).isEqualTo(1);
                 assertThat(scalar(c,"SELECT COUNT(*) FROM nx_native_push_delivery WHERE notification_id IN (3,4)")).isZero();
                 assertThat(m.activeSession(current,0,30)).isEqualTo(1);
-                var removed=new Installation("old-installation","oldcid123","hash",7L,"removed-chain","android","granted","1",1,true);
+                var removed=new Installation("old-installation","fcm:"+"old".repeat(50),"FCM","hash",7L,"removed-chain","android","granted","1",1,true);
                 assertThat(m.activeSession(removed,0,30)).isZero();
                 s.commit();
             }
@@ -139,8 +142,36 @@ class NativePushMySqlTest {
         });
     }
 
+    @Test void longTokensDigestUniquenessProviderReplacementAndLegacyMigrationAreRealSql() throws Exception {
+        inSchema(c -> {
+            sql(c,"INSERT INTO nx_native_push_installation(installation_id,client_id,provider,token_digest,binding_token_hash,user_id,session_chain_id,platform,permission,app_version,binding_epoch,active,bound_at,updated_at) VALUES"
+                    +"('legacy-install','oldcid','UNIPUSH',SHA2(CONCAT('UNIPUSH',CHAR(0),'oldcid'),256),'proof',7,'chain','android','granted','1',1,1,"+NOW+","+NOW+")");
+            applyDirectMigration(c); applyDirectMigration(c);
+            try (var s=mapperSession(c)) {
+                var m=s.getMapper(NativePushMapper.class);
+                assertThat(m.lockInstallation("legacy-install").active()).isFalse();
+                assertThat(m.lockInstallation("legacy-install").bindingEpoch()).isEqualTo(2);
+                String token="fcm:"+"x".repeat(4092);
+                var current=new Installation(INSTALL,token,"FCM","proof",7L,"chain","android","granted","1",1,true);
+                m.insert(current); s.commit();
+                assertThat(m.lockInstallation(INSTALL).clientId()).hasSize(4096);
+                assertThat(m.tokenOwner("FCM",token)).isEqualTo(INSTALL);
+                assertThat(m.tokenOwner("APNS",token)).isNull();
+                assertThatThrownBy(() -> m.insert(new Installation("another-install",token,"FCM","proof",8L,"other","android","granted","1",1,true)))
+                        .hasRootCauseInstanceOf(java.sql.SQLIntegrityConstraintViolationException.class);
+                s.rollback();
+                m.update(new Installation(INSTALL,"a".repeat(64),"APNS","proof",7L,"chain","ios","granted","1",1,true),1);
+                s.commit(); s.clearCache(); assertThat(m.lockInstallation(INSTALL).bindingEpoch()).isEqualTo(2);
+                sql(c,"INSERT INTO nx_notification(biz_no,user_id,type,cta_href,created_at,is_deleted,priority,push_status) VALUES ('NATIVE1:legacy-check',7,'ACCOUNT_SECURITY','/pages/me/security',"+NOW+",0,'critical','DELIVERED')");
+                assertThat(m.discover(m.lockCursor(),Long.MAX_VALUE,0)).isEqualTo(1);
+                assertThat(scalar(c,"SELECT COUNT(*) FROM nx_native_push_delivery WHERE installation_id='legacy-install'")).isZero();
+                s.commit();
+            }
+        });
+    }
+
     private Installation installation(long user,String chain,long epoch) {
-        return new Installation(INSTALL,"cid12345678","hash",user,chain,"android","granted","1",epoch,true);
+        return new Installation(INSTALL,"fcm:"+"x".repeat(150),"FCM","hash",user,chain,"android","granted","1",epoch,true);
     }
     private SqlSession mapperSession(Connection c) {
         Configuration config=new Configuration(); config.setMapUnderscoreToCamelCase(true); config.addMapper(NativePushMapper.class);
@@ -167,9 +198,17 @@ class NativePushMySqlTest {
                 sql(c,"CREATE TABLE nx_user_session(id BIGINT PRIMARY KEY,user_id BIGINT,session_chain_id VARCHAR(128),session_group VARCHAR(16),installation_id VARCHAR(128),app_session_version BIGINT,execution_supported INT,is_deleted INT,revoked_at DATETIME,session_ended_reason VARCHAR(64),expires_at DATETIME,last_active_at DATETIME,created_at DATETIME)");
                 String migration=Files.readString(Path.of("scripts/migrations/20261029_native_push_transport.sql"));
                 for(String statement:migration.split(";")) if(!statement.isBlank()) sql(c,statement);
+                sql(c,"INSERT INTO nx_native_push_installation(installation_id,client_id,binding_token_hash,user_id,session_chain_id,platform,permission,app_version,binding_epoch,active,bound_at,updated_at) VALUES"
+                        +"('pre-migration-install','originalcid','proof',7,'chain','android','granted','1',1,1,"+NOW+","+NOW+")");
+                for (int run=0;run<2;run++) applyDirectMigration(c);
+                assertThat(scalar(c,"SELECT COUNT(*) FROM nx_native_push_installation WHERE installation_id='pre-migration-install' AND provider='UNIPUSH' AND active=0 AND binding_epoch=2 AND token_digest=SHA2(CONCAT('UNIPUSH',CHAR(0),'originalcid'),256)")).isEqualTo(1);
                 work.run(c);
             } finally { sql(owner,"DROP DATABASE "+schema); }
         }
+    }
+    private static void applyDirectMigration(Connection c) throws Exception {
+        for (String statement:Files.readString(Path.of("scripts/migrations/20261030_native_push_direct_providers.sql")).split(";"))
+            if (!statement.isBlank()) sql(c,statement);
     }
     private static void sql(Connection c,String query) throws SQLException { try(var statement=c.createStatement()) { statement.execute(query); } }
     private static long scalar(Connection c,String query) throws SQLException { try(var statement=c.createStatement();var rows=statement.executeQuery(query)) { rows.next(); return rows.getLong(1); } }

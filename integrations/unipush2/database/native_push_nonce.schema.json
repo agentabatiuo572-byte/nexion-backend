@@ -1,9 +1,0 @@
-{
-  "bsonType": "object",
-  "required": ["expiresAt"],
-  "permission": { "read": false, "create": false, "update": false, "delete": false },
-  "properties": {
-    "_id": { "bsonType": "string" },
-    "expiresAt": { "bsonType": "timestamp" }
-  }
-}

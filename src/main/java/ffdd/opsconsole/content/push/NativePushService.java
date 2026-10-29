@@ -24,13 +24,13 @@ public class NativePushService {
         this.sessions = sessions;
     }
 
-    public record Registration(String clientId, String platform, String permission, String appVersion) { }
+    public record Registration(String clientId, String provider, String platform, String permission, String appVersion) { }
     public record Route(String notificationId, String route) { }
 
     @Transactional
     public void register(Authentication auth, String id, String token, Registration request) {
         checkId(id);
-        if (request == null || request.clientId() == null || !request.clientId().matches("[A-Za-z0-9_-]{8,128}")
+        if (request == null || !validNativeToken(request.provider(), request.platform(), request.clientId())
                 || !("android".equals(request.platform()) || "ios".equals(request.platform()))
                 || !("granted".equals(request.permission()) || "denied".equals(request.permission()) || "unknown".equals(request.permission()))
                 || request.appVersion() == null || request.appVersion().length() > 64)
@@ -39,16 +39,16 @@ public class NativePushService {
         var session = sessions.requireCurrent(auth, id, false);
         Installation old = mapper.lockInstallation(id);
         if (old != null) requireToken(old, hash);
-        String cidOwner = mapper.cidOwner(request.clientId());
-        if (cidOwner != null && !id.equals(cidOwner)) throw new BizException(409, "PUSH_CID_ALREADY_BOUND");
-        Installation next = new Installation(id, request.clientId(), hash, session.getUserId(), session.getSessionChainId(),
+        String cidOwner = mapper.tokenOwner(request.provider(), canonicalToken(request));
+        if (cidOwner != null && !id.equals(cidOwner)) throw new BizException(409, "PUSH_TOKEN_ALREADY_BOUND");
+        Installation next = new Installation(id, canonicalToken(request), request.provider(), hash, session.getUserId(), session.getSessionChainId(),
                 request.platform(), request.permission(), request.appVersion(), old == null ? 1 : old.bindingEpoch(), true);
         try {
             if (old == null) mapper.insert(next);
             else {
                 boolean changed = !old.active() || !Objects.equals(old.userId(), next.userId())
                         || !Objects.equals(old.sessionChainId(), next.sessionChainId())
-                        || !old.clientId().equals(next.clientId()) || !old.permission().equals(next.permission())
+                        || !old.provider().equals(next.provider()) || !old.clientId().equals(next.clientId()) || !old.permission().equals(next.permission())
                         || !old.platform().equals(next.platform());
                 if (changed) mapper.cancelPending(id);
                 mapper.update(next, changed ? 1 : 0);
@@ -113,6 +113,18 @@ public class NativePushService {
                 && mapper.ownedConversation(path.substring(path.indexOf('=') + 1), user) == 0)
             throw new BizException(404, "PUSH_TARGET_NOT_FOUND");
         return target;
+    }
+
+    static boolean validNativeToken(String provider, String platform, String token) {
+        if (token == null || token.length() > 4096) return false;
+        if ("APNS".equals(provider) && "ios".equals(platform)) return token.length() % 2 == 0 && token.matches("[a-fA-F0-9]+");
+        // Native FCM registration tokens contain the installation prefix and colon; old UniPush CIDs cannot pass.
+        return "FCM".equals(provider) && "android".equals(platform)
+                && token.length() >= 100 && token.matches("[A-Za-z0-9_-]+:[A-Za-z0-9_:-]+");
+    }
+
+    private static String canonicalToken(Registration request) {
+        return "APNS".equals(request.provider()) ? request.clientId().toLowerCase(java.util.Locale.ROOT) : request.clientId();
     }
 
     private static void checkId(String id) {

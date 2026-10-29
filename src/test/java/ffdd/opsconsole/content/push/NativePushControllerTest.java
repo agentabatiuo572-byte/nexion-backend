@@ -26,7 +26,7 @@ class NativePushControllerTest {
         when(sessions.requireCurrent(auth,"install-701",false)).thenReturn(session());
         mvc.perform(put("/api/me/push-installations/install-701").principal(auth)
                 .header("X-Push-Binding-Token","a".repeat(64)).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"clientId\":\"cid12345678\",\"platform\":\"android\",\"permission\":\"granted\",\"appVersion\":\"1\",\"userId\":999}"))
+                .content("{\"clientId\":\"fcm:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"provider\":\"FCM\",\"platform\":\"android\",\"permission\":\"granted\",\"appVersion\":\"1\",\"userId\":999}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(0));
         verify(mapper).insert(argThat(i -> i.userId()==701L && i.installationId().equals("install-701")));
     }

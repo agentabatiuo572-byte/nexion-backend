@@ -1,6 +1,6 @@
 # First-batch business notifications
 
-Apply `scripts/migrations/20261029_business_notifications.sql` once before enabling `nexion.business-notifications.enabled=true` (default disabled). Restart retains the cutover and receipts; rerunning migration does not reset them. Apply the native transport migration separately. UniPush provider acceptance, device receipt and notification opening are distinct; legacy `nx_notification.push_status` never proves OS delivery.
+Apply `scripts/migrations/20261029_business_notifications.sql` once before enabling `nexion.business-notifications.enabled=true` (default disabled). Restart retains the cutover and receipts; rerunning migration does not reset them. Apply the native transport migration separately. Direct FCM/APNs provider acceptance, device receipt and notification opening are distinct; legacy `nx_notification.push_status` never proves OS delivery.
 
 | Category | Authoritative source | Trigger / target |
 |---|---|---|
