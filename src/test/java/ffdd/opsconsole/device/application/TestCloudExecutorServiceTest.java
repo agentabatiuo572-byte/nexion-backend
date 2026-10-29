@@ -70,7 +70,7 @@ class TestCloudExecutorServiceTest {
     @Test void authoritativeForeignOrUnpaidOrPendingDeviceIsRejectedBeforeClaim() {
         when(mapper.eligibleBinding(7,11,"NEX-UNIT-CLOUD")).thenReturn(0);
         assertThatThrownBy(()->service.next(identity,"cloud-next-unit")).hasMessage("TEST_CLOUD_BINDING_INVALID");
-        verifyNoInteractions(settlement); verify(mapper,never()).insert(any());
+        verifyNoInteractions(settlement); verify(mapper,never()).insert(any(Execution.class));
     }
     @Test void undeclaredUnmanifestedOldTaskIsNeverCancelledOrRebound() {
         when(assignments.lockActiveAssignment(7L,11L,"PRODUCTION")).thenReturn(task("RUNNING"));
