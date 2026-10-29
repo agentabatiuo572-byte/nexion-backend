@@ -28,6 +28,7 @@ import ffdd.opsconsole.device.domain.DeviceOrderDetailView;
 import ffdd.opsconsole.device.domain.DeviceOrderFacts;
 import ffdd.opsconsole.device.domain.DeviceOrderFundingView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
+import ffdd.opsconsole.device.domain.OrderCloseReason;
 import ffdd.opsconsole.device.domain.OrderRefundReason;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
@@ -1565,8 +1566,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(command.getCode(), command.getMessage());
         }
         String actor = operator(request.operator());
+        ApiResult<String> closeReason = closeReasonCode("cancelled", request.closeReasonCode());
+        if (closeReason.getCode() != 0) return ApiResult.fail(closeReason.getCode(), closeReason.getMessage());
         DeviceOrderActionRequest trusted = new DeviceOrderActionRequest(
-                request.terminalState(), request.refundChannel(), request.reason().trim(), actor);
+                request.terminalState(), request.refundChannel(), request.reason().trim(), actor, null, closeReason.getData());
         return deviceIdempotent("E4_ORDER_CANCEL", idempotencyKey, normalizeId(orderNo), trusted,
                 () -> transitionOrder(orderNo, idempotencyKey, trusted, "cancelled", "E4_ORDER_CANCELLED"));
     }
@@ -1586,10 +1589,27 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ORDER_TERMINAL_STATE_INVALID");
         }
         String actor = operator(request.operator());
+        ApiResult<String> closeReason = closeReasonCode(terminal, request.closeReasonCode());
+        if (closeReason.getCode() != 0) return ApiResult.fail(closeReason.getCode(), closeReason.getMessage());
         DeviceOrderActionRequest trusted = new DeviceOrderActionRequest(
-                request.terminalState(), request.refundChannel(), request.reason().trim(), actor);
+                request.terminalState(), request.refundChannel(), request.reason().trim(), actor, null, closeReason.getData());
         return deviceIdempotent("E4_ORDER_TERMINAL", idempotencyKey, normalizeId(orderNo), trusted,
                 () -> transitionOrder(orderNo, idempotencyKey, trusted, terminal, "E4_ORDER_TERMINALIZED"));
+    }
+
+    /**
+     * Optional for A2 tickets proposed before reasons existed; a supplied code must fit the target state.
+     * A state with a single possible reason (expired, chargeback) records it without one being supplied.
+     */
+    private static ApiResult<String> closeReasonCode(String state, String supplied) {
+        if (!StringUtils.hasText(supplied)) {
+            return ApiResult.ok(OrderCloseReason.implied(state).map(Enum::name).orElse(null));
+        }
+        OrderCloseReason reason = OrderCloseReason.parse(supplied).orElse(null);
+        if (reason == null || !OrderCloseReason.operatorMayChoose(state, reason)) {
+            return ApiResult.fail(422, "E4_CLOSE_REASON_INVALID");
+        }
+        return ApiResult.ok(reason.name());
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -3460,6 +3480,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 throw new BizException(409, "SKU_STOCK_RESTORE_CONFLICT");
             }
         }
+        if (StringUtils.hasText(request.closeReasonCode())) {
+            catalogRepository.recordOrderCloseReason(normalizedOrderNo, request.closeReasonCode());
+        }
         catalogRepository.recordOrderHistory(normalizedOrderNo, fromState, toState, request.reason().trim(),
                 request.operator(), idempotencyKey.trim(), now);
         auditRequired(auditAction, "DEVICE_ORDER", normalizedOrderNo, request.operator(), detail(
@@ -3474,6 +3497,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "cumulativeDepositAfter", settlement == null ? null : settlement.cumulativeDepositAfter(),
                 "reason", request.reason().trim(),
                 "refundReasonCode", settlement == null ? null : request.refundReasonCode(),
+                "closeReasonCode", request.closeReasonCode(),
                 "idempotencyKey", idempotencyKey.trim()));
         if (settlement != null) {
             if (promotions != null) promotions.confirmE4Refund(normalizedOrderNo, settlement.ledgerBizNo());
@@ -5141,11 +5165,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             case "e4_order_cancel" -> {
                 // cancelOrder 复用 DeviceOrderActionRequest(忽略 terminalState,内部硬编码 "cancelled")
-                DeviceOrderActionRequest req = new DeviceOrderActionRequest(str(p, "terminalState"), reason, operator);
+                DeviceOrderActionRequest req = new DeviceOrderActionRequest(
+                        str(p, "terminalState"), null, reason, operator, null, str(p, "closeReasonCode"));
                 return cancelOrder(str(p, "orderNo"), idem, req);
             }
             case "e4_order_terminal" -> {
-                DeviceOrderActionRequest req = new DeviceOrderActionRequest(str(p, "terminalState"), reason, operator);
+                DeviceOrderActionRequest req = new DeviceOrderActionRequest(
+                        str(p, "terminalState"), null, reason, operator, null, str(p, "closeReasonCode"));
                 return terminalOrder(str(p, "orderNo"), idem, req);
             }
             case "e4_order_state" -> {
