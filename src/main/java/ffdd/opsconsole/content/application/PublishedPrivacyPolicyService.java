@@ -39,9 +39,9 @@ public class PublishedPrivacyPolicyService {
     public ApiResult<Map<String, Object>> publicPolicy(String requestedLocale) {
         try {
             Map<String, Object> document = read(false);
-            // The shipped default stands in only while nothing has been stored; an explicit revoke
-            // or a malformed publication keeps failing closed.
-            Map<String, Object> published = document.isEmpty() ? defaultPublication : map(document.get("published"));
+            // The shipped default stays public until a policy is published or explicitly revoked
+            // ("published": null); a revoked or malformed publication keeps failing closed.
+            Map<String, Object> published = document.containsKey("published") ? map(document.get("published")) : defaultPublication;
             if (published != defaultPublication && (published == null || !"PUBLISHED".equals(published.get("status"))
                     || !sourceEnvironment().equals(published.get("sourceEnvironment"))
                     || !runId().equals(published.get("runId")))) return unavailable();
@@ -70,10 +70,12 @@ public class PublishedPrivacyPolicyService {
 
     public ApiResult<Map<String, Object>> adminView() {
         Map<String, Object> document = read(false);
+        // Mirrors publicPolicy: without a "published" entry the shipped default is what users see.
+        boolean servingDefault = !document.containsKey("published");
         if (document.isEmpty()) document = defaultAdminDocument();
         // The editor does not need the old published body, only whether it remains visible.
         document.put("hasPublishedVersion", document.get("published") instanceof Map<?, ?>);
-        PublishedContentSnapshot.markDefaultPublic(document);
+        if (servingDefault) PublishedContentSnapshot.markDefaultPublic(document);
         document.remove("published");
         document.put("source", "server");
         document.put("configKey", CONFIG_KEY);
@@ -108,8 +110,12 @@ public class PublishedPrivacyPolicyService {
             if (previous != null && version.trim().equals(previous.get("version")))
                 return ApiResult.fail(409, "PRIVACY_POLICY_NEW_VERSION_REQUIRED");
             document.put("published", new LinkedHashMap<>(document));
-        } else if ("DRAFT".equals(status) && before.get("published") instanceof Map<?, ?>) {
+        } else if ("DRAFT".equals(status) && before.containsKey("published")) {
+            // Keeps the public policy, or the explicit revoke, while the draft is edited.
             document.put("published", before.get("published"));
+        } else if (!"DRAFT".equals(status)) {
+            // An explicit revoke also takes the shipped default offline.
+            document.put("published", null);
         }
         try {
             String serialized = json.writeValueAsString(document);
