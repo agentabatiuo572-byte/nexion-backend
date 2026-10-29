@@ -388,6 +388,34 @@ class AppTradeinServiceTest {
     }
 
     @Test
+    void zeroUnknownAndInvalidActualPaymentCannotBecomeTradeinCredit() {
+        when(mapper.userLevel(7L)).thenReturn("L1");
+        when(mapper.listTradeinConfig()).thenReturn(validConfig().stream()
+                .map(row -> "eligibility".equals(row.configKey()) ? row("eligibility", "全部用户") : row).toList());
+        for (BigDecimal paid : new BigDecimal[] {BigDecimal.ZERO, null, BigDecimal.ONE.negate()}) {
+            var unpaid = new AppTradeinMapper.SourceDevice(11L, 7L, "DEV-11", 5L, "SKU-OLD", "Old", "S1", "ACTIVE", paid);
+            when(mapper.listTradeinSourceCandidates(7L)).thenReturn(List.of(unpaid));
+            when(mapper.findSourceDevice(7L, 11L)).thenReturn(unpaid);
+            when(mapper.lockSourceDevice(7L, 11L)).thenReturn(unpaid);
+
+            var eligibility = service.eligibility(7L, new AppTradeinEligibilityRequest("stellarbox-pro-v2")).getData();
+            assertThat(eligibility.eligible()).isFalse();
+            assertThat(eligibility.sources().get(0).reasonCode()).isEqualTo("SOURCE_PAID_PRICE_UNAVAILABLE");
+            assertThatThrownBy(() -> service.quote(7L, new AppTradeinQuoteRequest(11L, 22L)))
+                    .hasMessage("TRADEIN_SOURCE_PAID_PRICE_UNAVAILABLE");
+            assertThatThrownBy(() -> service.submit(7L, "reject-unpaid", new AppTradeinSubmitRequest(11L, 22L)))
+                    .hasMessage("TRADEIN_SOURCE_PAID_PRICE_UNAVAILABLE");
+        }
+        verify(mapper, never()).debitWalletUsdt(any(), any());
+        verify(mapper, never()).decrementTargetStock(any());
+        verify(mapper, never()).insertPaidOrder(any());
+        verify(mapper, never()).recycleTradeinSourceDevice(any(), any(), anyString(), any());
+        verify(capture, never()).beforeCash(any());
+        verify(capture, never()).insertLedger(any(), any(), any(), anyString());
+        org.mockito.Mockito.verifyNoInteractions(deviceLifecycle);
+    }
+
+    @Test
     void tradeinQuoteAndSubmitRejectAMissingOrStaleSourceVersionBeforeMutation() {
         assertThatThrownBy(() -> service.submit(7L, "no-version",
                 new AppTradeinSubmitRequest(11L, 22L, null, null, null, null)))
