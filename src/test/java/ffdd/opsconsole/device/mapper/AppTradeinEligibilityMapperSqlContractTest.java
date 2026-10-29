@@ -78,25 +78,25 @@ class AppTradeinEligibilityMapperSqlContractTest {
     }
 
     @Test
-    void capacityKeepPersistsAPaidOrderAndAnInactiveOwnedDevice() throws Exception {
+    void capacityKeepPersistsACompletedOrderAndAnActivatedOwnedDevice() throws Exception {
         Method order = AppTradeinMapper.class.getMethod(
                 "insertCapacityKeepOrder", AppTradeinMapper.PaidOrderWrite.class);
         String orderSql = String.join(" ", order.getAnnotation(Insert.class).value());
         assertThat(orderSql)
                 .contains("'CAPACITY_KEEP'")
-                .contains("'PAID','PAID','WAITING_PROVISIONING'");
+                .contains("'PAID','COMPLETED','ACTIVATED'");
 
         Method device = AppTradeinMapper.class.getMethod(
-                "insertInventoryTargetDevice", AppTradeinMapper.DeliveredDeviceWrite.class);
+                "insertCapacityKeepTargetDevice", AppTradeinMapper.DeliveredDeviceWrite.class);
         String deviceSql = String.join(" ", device.getAnnotation(Insert.class).value());
         assertThat(deviceSql)
-                .contains("'OWNED','ORDER','INACTIVE'")
-                .contains("NOW(),NULL,NULL");
+                .contains("'OWNED','ORDER','ACTIVE'")
+                .contains("NOW(),NOW(),NOW()");
     }
 
     @Test
     void bothTradeinTargetDeviceInsertBranchesRequireAValidSkuPowerAndDatacenter() throws Exception {
-        for (String methodName : List.of("insertTargetDevice", "insertInventoryTargetDevice")) {
+        for (String methodName : List.of("insertTargetDevice", "insertCapacityKeepTargetDevice")) {
             Method method = AppTradeinMapper.class.getMethod(methodName, AppTradeinMapper.DeliveredDeviceWrite.class);
             String sql = String.join(" ", method.getAnnotation(Insert.class).value());
 

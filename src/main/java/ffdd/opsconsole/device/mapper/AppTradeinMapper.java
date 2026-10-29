@@ -495,7 +495,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                #{row.discountUsdt},#{row.walletDebitUsdt},
                GREATEST((SELECT compute_points FROM nx_product WHERE id=#{row.productId})
                  - COALESCE((SELECT compute_points FROM nx_product WHERE id=#{row.sourceProductId}),0),0),
-               'PAID','PAID','WAITING_PROVISIONING',NOW(6),NOW(),NOW(),0)
+               'PAID','COMPLETED','ACTIVATED',NOW(6),NOW(),NOW(),0)
             """)
     int insertCapacityKeepOrder(@Param("row") PaidOrderWrite row);
 
@@ -536,14 +536,14 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
             SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},
                #{row.instanceNo},#{row.productName},#{row.deviceType},#{row.generation},#{row.gpuModel},
                #{row.vramTotalGb},CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
-               s.datacenter,#{row.targetPriceUsdt},'OWNED','ORDER','INACTIVE',#{row.hashrate},
-               #{row.dailyUsdt},#{row.dailyNex},NOW(),NULL,NULL,0,NOW(),NOW(),0
+               s.datacenter,#{row.targetPriceUsdt},'OWNED','ORDER','ACTIVE',#{row.hashrate},
+               #{row.dailyUsdt},#{row.dailyNex},NOW(),NOW(),NOW(),0,NOW(),NOW(),0
               FROM nx_admin_device_sku s
              WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0 AND TRIM(s.datacenter) <> ''
                AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计)[)]))?)?\\\\z'
                AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0
             """)
-    int insertInventoryTargetDevice(@Param("row") DeliveredDeviceWrite row);
+    int insertCapacityKeepTargetDevice(@Param("row") DeliveredDeviceWrite row);
 
     @Select("SELECT id FROM nx_user_device WHERE instance_no=#{instanceNo} AND is_deleted=0 LIMIT 1")
     Long findDeviceIdByInstanceNo(@Param("instanceNo") String instanceNo);

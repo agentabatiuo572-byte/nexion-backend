@@ -23,5 +23,7 @@ public record AppTaskAssignmentView(
         String source,
         String sourceEnvironment,
         String runId,
-        boolean serverCanonical) {
+        boolean serverCanonical,
+        LocalDateTime pausedAt,
+        long pausedSeconds) {
 }
