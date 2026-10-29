@@ -45,7 +45,7 @@
               "id": "intro",
               "kind": "text",
               "title": "Genesis nodes",
-              "body": "Genesis nodes are a limited issue of platform benefits. Holders receive a share of UVT releases and exclusive benefits under the published rules."
+              "body": "Genesis nodes are a limited-edition platform benefit. Holders receive a share of UVT releases and exclusive benefits under the published rules."
             },
             {
               "id": "benefits",
@@ -78,7 +78,7 @@
               "id": "intro",
               "kind": "text",
               "title": "Nút Genesis",
-              "body": "Nút Genesis là quyền lợi nền tảng phát hành có giới hạn. Người nắm giữ nhận phần UVT được phát hành và các quyền lợi riêng theo quy tắc đã công bố."
+              "body": "Nút Genesis là quyền lợi của nền tảng, phát hành với số lượng giới hạn. Người nắm giữ nhận phần UVT được phát hành và các quyền lợi riêng theo quy tắc đã công bố."
             },
             {
               "id": "benefits",
@@ -133,7 +133,7 @@
               "id": "daily-limit",
               "kind": "text",
               "title": "每日额度",
-              "body": "每个账户每天有兑换额度。当天额度用完，可以排队到第二天处理；处理前可以取消。"
+              "body": "每天的兑换额度有限。额度用完时，可选择排到次日处理，处理前可以取消。"
             },
             {
               "id": "note",
@@ -166,7 +166,7 @@
               "id": "daily-limit",
               "kind": "text",
               "title": "Daily limit",
-              "body": "Each account has a daily exchange limit. Once it’s used up, you can queue an exchange for the next day and cancel it before it’s processed."
+              "body": "Daily exchange limits apply. When the limit is reached, you may be able to queue the exchange for the next day and cancel it before it’s processed."
             },
             {
               "id": "note",
@@ -199,7 +199,7 @@
               "id": "daily-limit",
               "kind": "text",
               "title": "Hạn mức mỗi ngày",
-              "body": "Mỗi tài khoản có hạn mức quy đổi mỗi ngày. Khi đã dùng hết, bạn có thể xếp hàng sang ngày hôm sau và hủy trước khi giao dịch được xử lý."
+              "body": "Hạn mức quy đổi mỗi ngày có giới hạn. Khi đã hết hạn mức, bạn có thể chọn xếp hàng sang ngày hôm sau và hủy trước khi giao dịch được xử lý."
             },
             {
               "id": "note",
@@ -220,7 +220,7 @@
               "id": "intro",
               "kind": "text",
               "title": "锁定计划",
-              "body": "把 USDT 锁定一段时间，到期可领取锁定奖励和额外权益。"
+              "body": "把 USDT 锁定一段时间，到期领回锁定金额和锁定奖励；参与时还可获得额外权益。"
             },
             {
               "id": "steps",
@@ -237,7 +237,7 @@
               "id": "early-unlock",
               "kind": "text",
               "title": "提前解锁",
-              "body": "锁定期内可以提前解锁，但会按确认页显示的比例扣费，并放弃尚未到期的奖励。"
+              "body": "可以提前解锁，但会按确认页显示的比例从锁定金额中扣费，并放弃锁定奖励和本单的额外权益。"
             },
             {
               "id": "note",
@@ -253,7 +253,7 @@
               "id": "intro",
               "kind": "text",
               "title": "Lock Plan",
-              "body": "Lock USDT for a set period and collect your lock reward and extra benefits at maturity."
+              "body": "Lock USDT for a set period and get back your locked amount plus a lock reward at maturity. Joining also gives you extra benefits."
             },
             {
               "id": "steps",
@@ -270,7 +270,7 @@
               "id": "early-unlock",
               "kind": "text",
               "title": "Unlocking early",
-              "body": "You can unlock before maturity, but a charge shown on the confirmation page applies and unmatured rewards are forfeited."
+              "body": "You can unlock early, but the charge shown on the confirmation page is deducted from your locked amount, and you give up the lock reward and this order’s extra benefits."
             },
             {
               "id": "note",
@@ -286,7 +286,7 @@
               "id": "intro",
               "kind": "text",
               "title": "Gói khóa USDT",
-              "body": "Khóa USDT trong một khoảng thời gian và nhận thưởng khóa cùng các quyền lợi bổ sung khi đáo hạn."
+              "body": "Khóa USDT trong một khoảng thời gian, khi đáo hạn bạn nhận lại số tiền khóa cùng thưởng khóa. Khi tham gia, bạn còn nhận thêm các quyền lợi bổ sung."
             },
             {
               "id": "steps",
@@ -303,7 +303,7 @@
               "id": "early-unlock",
               "kind": "text",
               "title": "Mở khóa sớm",
-              "body": "Bạn có thể mở khóa trước hạn, nhưng sẽ bị khấu trừ theo tỷ lệ hiển thị ở trang xác nhận và mất các phần thưởng chưa đến hạn."
+              "body": "Bạn có thể mở khóa trước hạn, nhưng sẽ bị khấu trừ trên số tiền khóa theo tỷ lệ ở trang xác nhận và mất thưởng khóa cùng các quyền lợi bổ sung của gói này."
             },
             {
               "id": "note",
@@ -324,7 +324,7 @@
               "id": "hero",
               "kind": "text",
               "title": "团队平衡奖励",
-              "body": "你的团队成员分在 A、B 两组。两组都有订单时，按较小一组的订单额发放奖励——两组越均衡，奖励越多。"
+              "body": "你的团队成员分在 A、B 两组。两组都有订单时，按较小一组的订单额发放奖励。"
             },
             {
               "id": "how-to-earn",
@@ -341,7 +341,7 @@
               "id": "earn-more",
               "kind": "text",
               "title": "怎样拿更多",
-              "body": "让两组一起成长。较小一组决定奖励，它的订单额增加，奖励随之增加。"
+              "body": "较小一组的订单额决定奖励，让两组一起成长。"
             },
             {
               "id": "note",
@@ -357,7 +357,7 @@
               "id": "hero",
               "kind": "text",
               "title": "Team Balance Reward",
-              "body": "Your team is split into Group A and Group B. When both groups have orders, you earn a reward based on the smaller group’s order volume. The more balanced the groups, the more you earn."
+              "body": "Your team is split into Group A and Group B. When both groups have orders, you earn a reward based on the smaller group’s order volume."
             },
             {
               "id": "how-to-earn",
@@ -374,7 +374,7 @@
               "id": "earn-more",
               "kind": "text",
               "title": "Earn more",
-              "body": "Keep both groups growing. The smaller group sets your reward, so as its volume grows, so does your reward."
+              "body": "The smaller group’s order volume sets your reward, so keep both groups growing."
             },
             {
               "id": "note",
@@ -390,7 +390,7 @@
               "id": "hero",
               "kind": "text",
               "title": "Thưởng cân bằng nhóm",
-              "body": "Thành viên trong nhóm của bạn được chia thành nhóm A và nhóm B. Khi cả hai nhóm đều có đơn hàng, bạn nhận thưởng tính theo doanh số của nhóm nhỏ hơn. Hai nhóm càng cân bằng, thưởng càng nhiều."
+              "body": "Thành viên trong nhóm của bạn được chia thành nhóm A và nhóm B. Khi cả hai nhóm đều có đơn hàng, bạn nhận thưởng tính theo doanh số của nhóm nhỏ hơn."
             },
             {
               "id": "how-to-earn",
@@ -407,7 +407,7 @@
               "id": "earn-more",
               "kind": "text",
               "title": "Cách tăng thưởng",
-              "body": "Hãy duy trì đà tăng trưởng của cả hai nhóm. Nhóm nhỏ hơn quyết định mức thưởng, vì vậy khi doanh số nhóm này tăng, thưởng của bạn cũng tăng theo."
+              "body": "Doanh số của nhóm nhỏ hơn quyết định mức thưởng, vì vậy hãy giúp cả hai nhóm cùng phát triển."
             },
             {
               "id": "note",
@@ -568,7 +568,7 @@
               "id": "faq-order",
               "kind": "text",
               "title": "为什么没看到奖励？",
-              "body": "奖励在订单确认后生成，可能还在待到账期，可在奖励明细中查看对应记录。"
+              "body": "奖励在订单确认后生成，可能还在待到账状态，可在奖励明细中查看。"
             },
             {
               "id": "faq-withdraw",
@@ -975,7 +975,7 @@
               "id": "payout",
               "kind": "text",
               "title": "到账",
-              "body": "奖励以 USDT 和 UVT 发放，待到账期结束后可以提现。"
+              "body": "奖励以 USDT 和 UVT 发放，到账后即可提现。"
             },
             {
               "id": "note",
@@ -1011,7 +1011,7 @@
               "id": "payout",
               "kind": "text",
               "title": "Payouts",
-              "body": "Rewards are paid in USDT and UVT and can be withdrawn after the pending period."
+              "body": "Rewards are paid in USDT and UVT and can be withdrawn once credited."
             },
             {
               "id": "note",
@@ -1047,7 +1047,7 @@
               "id": "payout",
               "kind": "text",
               "title": "Chi trả",
-              "body": "Thưởng được chi trả bằng USDT và UVT, có thể rút sau thời gian chờ."
+              "body": "Thưởng được chi trả bằng USDT và UVT, có thể rút sau khi được ghi nhận."
             },
             {
               "id": "note",

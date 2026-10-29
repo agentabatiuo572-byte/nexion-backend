@@ -33,11 +33,12 @@ public class PublishedRankHowPolicyService {
     private final LeadershipPoolConfigGuard leadershipPoolConfigGuard;
     private final ObjectMapper mapper = new ObjectMapper();
     private final String defaultPolicy = ffdd.opsconsole.content.application.PublishedContentDefaults.read(DEFAULT_RESOURCE);
+    private final Map<String, Object> defaultPublication = parse(defaultPolicy);
 
     public ApiResult<Map<String, Object>> publicPolicy(String requestedLocale) {
         try {
             Map<String, Object> stored = PublishedContentSnapshot.published(read());
-            Map<String, Object> document = "PUBLISHED".equals(stored.get("status")) ? stored : parse(defaultPolicy);
+            Map<String, Object> document = "PUBLISHED".equals(stored.get("status")) ? stored : defaultPublication;
             String version = text(document.get("version"));
             Map<String, Object> locales = map(document.get("locales"));
             String locale = resolveLocale(locales, requestedLocale);
@@ -72,6 +73,7 @@ public class PublishedRankHowPolicyService {
             Map<String, Object> value = read();
             if (value.isEmpty()) value = defaultAdminDocument();
             value = PublishedContentSnapshot.admin(value);
+            PublishedContentSnapshot.markDefaultPublic(value);
             value.put("source", "server");
             value.put("configKey", CONFIG_KEY);
             return ApiResult.ok(value);
