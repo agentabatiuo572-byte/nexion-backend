@@ -8,6 +8,7 @@ import ffdd.opsconsole.content.domain.SupportLeaderboard.*;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.time.*;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -26,7 +27,7 @@ public class SupportLeaderboardCache {
     private final StringRedisTemplate redis;
     private final ObjectMapper json=new ObjectMapper().registerModule(new JavaTimeModule())
         .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
-    private volatile Decoded decoded;
+    private final AtomicReference<Decoded> decoded=new AtomicReference<>();
     private record Decoded(String payload,Generation generation) { }
     public record Entry(Publication publication,boolean refreshFailed) { }
     public record Generation(Map<String,Entry> entries) {
@@ -45,7 +46,7 @@ public class SupportLeaderboardCache {
         final String payload;
         try {payload=redis.opsForValue().get(KEY);}catch(DataAccessException ex){throw unavailable();}
         if(payload==null)throw new BizException(503,"SUPPORT_LEADERBOARD_CACHE_NOT_READY");
-        Decoded previous=decoded;if(previous!=null && previous.payload().equals(payload))return previous.generation();
+        Decoded previous=decoded.get();if(previous!=null && previous.payload().equals(payload))return previous.generation();
         try {
             Generation generation=json.readValue(payload,Generation.class);
             for(var entry:generation.entries().entrySet()) {
@@ -54,7 +55,7 @@ public class SupportLeaderboardCache {
                     || !SupportLeaderboardPolicy.DEFINITION.equals(s.context().definitionVersion())
                     || !SupportLeaderboard.validCachedSnapshot(s))throw new IllegalArgumentException("Invalid cached publication");
             }
-            decoded=new Decoded(payload,generation);return generation;
+            decoded.set(new Decoded(payload,generation));return generation;
         }catch(java.io.IOException | IllegalArgumentException | NullPointerException ex){throw new BizException(503,"SUPPORT_LEADERBOARD_CACHE_INVALID");}
     }
     public String tryLock() {
@@ -66,7 +67,7 @@ public class SupportLeaderboardCache {
         try {
             String payload=json.writeValueAsString(generation);
             boolean published=Long.valueOf(1).equals(redis.execute(PUBLISH,List.of(LOCK,KEY),token,payload));
-            if(published)decoded=new Decoded(payload,generation);return published;
+            if(published)decoded.set(new Decoded(payload,generation));return published;
         }catch(java.io.IOException ex){throw new IllegalArgumentException("Invalid cache generation",ex);}
         catch(DataAccessException ex){throw unavailable();}
     }
