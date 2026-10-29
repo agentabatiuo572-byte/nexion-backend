@@ -5,30 +5,30 @@ import org.apache.ibatis.annotations.*;
 // Multi-table transport projections; no single mutable CRUD aggregate is exposed by this mapper.
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface NativePushMapper {
-    record Installation(String installationId, String clientId, String bindingTokenHash, Long userId,
+    record Installation(String installationId, String clientId, String provider, String bindingTokenHash, Long userId,
                         String sessionChainId, String platform, String permission, String appVersion,
                         long bindingEpoch, boolean active) { }
     record Delivery(long id, long notificationId, String installationId, long userId, long bindingEpoch,
                     int attempts, String leaseToken) { }
     record Notification(long id, String type, String ctaHref, String language) { }
 
-    @Select("SELECT installation_id,client_id,binding_token_hash,user_id,session_chain_id,platform,permission,app_version,binding_epoch,active FROM nx_native_push_installation WHERE installation_id=#{id} FOR UPDATE")
+    @Select("SELECT installation_id,client_id,provider,binding_token_hash,user_id,session_chain_id,platform,permission,app_version,binding_epoch,active FROM nx_native_push_installation WHERE installation_id=#{id} FOR UPDATE")
     Installation lockInstallation(String id);
 
-    @Select("SELECT installation_id FROM nx_native_push_installation WHERE client_id=#{cid}")
-    String cidOwner(String cid);
+    @Select("SELECT installation_id FROM nx_native_push_installation WHERE token_digest=SHA2(CONCAT(#{provider},CHAR(0),#{token}),256)")
+    String tokenOwner(@Param("provider") String provider, @Param("token") String token);
 
     @Insert("""
         INSERT INTO nx_native_push_installation
-        (installation_id,client_id,binding_token_hash,user_id,session_chain_id,platform,permission,app_version,
+        (installation_id,client_id,provider,token_digest,binding_token_hash,user_id,session_chain_id,platform,permission,app_version,
          binding_epoch,active,bound_at,updated_at)
-        VALUES(#{installationId},#{clientId},#{bindingTokenHash},#{userId},#{sessionChainId},#{platform},
+        VALUES(#{installationId},#{clientId},#{provider},SHA2(CONCAT(#{provider},CHAR(0),#{clientId}),256),#{bindingTokenHash},#{userId},#{sessionChainId},#{platform},
          #{permission},#{appVersion},1,1,DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR),DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR))
         """)
     int insert(Installation installation);
 
     @Update("""
-        UPDATE nx_native_push_installation SET client_id=#{i.clientId},user_id=#{i.userId},session_chain_id=#{i.sessionChainId},
+        UPDATE nx_native_push_installation SET client_id=#{i.clientId},provider=#{i.provider},token_digest=SHA2(CONCAT(#{i.provider},CHAR(0),#{i.clientId}),256),user_id=#{i.userId},session_chain_id=#{i.sessionChainId},
           platform=#{i.platform},permission=#{i.permission},app_version=#{i.appVersion},active=1,
           binding_epoch=binding_epoch+#{changed},
           bound_at=IF(#{changed}=1,DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR),bound_at),
@@ -57,7 +57,7 @@ public interface NativePushMapper {
         (notification_id,installation_id,user_id,binding_epoch,status,attempts,next_attempt_at,created_at,updated_at)
         SELECT n.id,i.installation_id,n.user_id,i.binding_epoch,'QUEUED',0,
           DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR),DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR),DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR)
-        FROM nx_notification n JOIN nx_native_push_installation i ON i.user_id=n.user_id AND i.active=1 AND i.permission='granted'
+        FROM nx_notification n JOIN nx_native_push_installation i ON i.user_id=n.user_id AND i.active=1 AND i.permission='granted' AND ((i.provider='FCM' AND i.platform='android') OR (i.provider='APNS' AND i.platform='ios'))
         JOIN nx_user u ON u.id=n.user_id AND u.is_deleted=0 AND u.status='ACTIVE' AND u.sandbox=#{sandbox}
         LEFT JOIN nx_user_preference p ON p.user_id=n.user_id AND p.is_deleted=0
         WHERE n.id>#{low} AND n.id<=#{high} AND n.is_deleted=0
@@ -72,11 +72,18 @@ public interface NativePushMapper {
     @Select("""
         SELECT id,notification_id,installation_id,user_id,binding_epoch,attempts,lease_token
         FROM nx_native_push_delivery WHERE
-          ((status IN ('QUEUED','RETRY','BLOCKED') AND next_attempt_at<=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR))
-            OR (status='SENDING' AND lease_until<DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR)))
+          status IN ('QUEUED','RETRY','BLOCKED') AND next_attempt_at<=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR)
         ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
         """)
     Delivery lockNext();
+
+    // Direct providers have no request-id deduplication contract. A lost worker may already have sent.
+    @Update("""
+        UPDATE nx_native_push_delivery SET status='UNKNOWN',last_error='WORKER_OUTCOME_UNKNOWN',
+          lease_token=NULL,lease_until=NULL,updated_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR)
+        WHERE status='SENDING' AND lease_until<DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR)
+        """)
+    int expireAmbiguousClaims();
 
     @Update("""
         UPDATE nx_native_push_delivery SET status='SENDING',attempts=attempts+1,lease_token=#{token},

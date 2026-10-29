@@ -18,12 +18,12 @@ public class NativePushDispatcher {
     private final AuthSessionMapper sessions;
     private final UserAccountBlocklistVerifier blocklist;
     private final PlatformConfigFacade config;
-    private final UniPushBridgeClient provider;
+    private final DirectPushClient provider;
     private final Environment env;
     private final TransactionTemplate transaction;
 
     public NativePushDispatcher(NativePushMapper mapper, AuthSessionMapper sessions, UserAccountBlocklistVerifier blocklist,
-            PlatformConfigFacade config, UniPushBridgeClient provider, Environment env, PlatformTransactionManager transactions) {
+            PlatformConfigFacade config, DirectPushClient provider, Environment env, PlatformTransactionManager transactions) {
         this.mapper = mapper; this.sessions = sessions; this.blocklist = blocklist;
         this.config = config; this.provider = provider; this.env = env; this.transaction = new TransactionTemplate(transactions);
     }
@@ -38,6 +38,7 @@ public class NativePushDispatcher {
             // Keep the migration cutover fixed. An advancing MAX(id) cursor would skip lower IDs committed out of order.
             // The 24-hour window and unique notification/installation key bound recovery and prevent replay.
             mapper.discover(low, Long.MAX_VALUE, sandbox);
+            mapper.expireAmbiguousClaims();
         });
         for (int count = 0; count < 20; count++) {
             Delivery delivery = transaction.execute(tx -> {
@@ -61,6 +62,7 @@ public class NativePushDispatcher {
             if (mapper.lockClaim(delivery.id(), delivery.leaseToken()) == null) return;
             if (!account || installation == null || !installation.active()
                     || installation.userId().longValue() != delivery.userId() || installation.bindingEpoch() != delivery.bindingEpoch()
+                    || !NativePushService.validNativeToken(installation.provider(), installation.platform(), installation.clientId())
                     || !"granted".equals(installation.permission()) || blocklist.isBlocked(delivery.userId())
                     || mapper.activeSession(installation, sandbox, idleDays()) == 0
                     || mapper.stillEligible(delivery.notificationId(), delivery.userId()) == 0) {
@@ -70,16 +72,16 @@ public class NativePushDispatcher {
             var notification = mapper.ownedNotification(delivery.notificationId(), delivery.userId());
             if (notification == null) { finish(delivery, "CANCELLED", "NOTIFICATION_REMOVED", null, 0); return; }
             if (delivery.attempts() > 5) { finish(delivery, "FAILED", "ATTEMPTS_EXHAUSTED", null, 0); return; }
-            var result = provider.send(delivery.id(), delivery.notificationId(), installation.clientId(), notification.language());
+            var result = provider.send(delivery.id(), delivery.notificationId(), installation.provider(), installation.clientId(), notification.language());
             String status = result.status();
-            if ("INVALID_CID".equals(status)) {
+            if ("INVALID_TOKEN".equals(status)) {
                 mapper.deactivate(installation.installationId());
-                // Mark this claim first; cancellation retires other deliveries of the same invalid CID.
-                finish(delivery, "INVALID_CID", result.code(), result.taskId(), 0);
+                // Mark this claim first; cancellation retires other deliveries of the same invalid token.
+                finish(delivery, "INVALID_TOKEN", result.code(), result.taskId(), 0);
                 mapper.cancelPending(installation.installationId());
             } else {
                 if ("RETRY".equals(status) && delivery.attempts() >= 5) status = "FAILED";
-                finish(delivery, status, result.code(), result.taskId(), "BLOCKED".equals(status) ? 300 : Math.min(3600, 30 << Math.min(delivery.attempts(), 6)));
+                finish(delivery, status, result.code(), result.taskId(), "BLOCKED".equals(status) ? 300 : Math.max(result.retryAfterSeconds(), Math.min(3600, 30 << Math.min(delivery.attempts(), 6))));
             }
         });
     }
