@@ -500,11 +500,22 @@ class OpsConsoleArchitectureTest {
                         .filter(path -> !path.getFileName().toString().endsWith(".class"))
                         .toList()) {
                     // Only reviewed manifest-bound binaries leave the text scan; JSON/source records remain.
-                    if(!reviewedAvatarBinary(resource))files.add(resource);
+                    if(!reviewedAvatarBinary(resource)&&!pinnedTrustDocument(resource))files.add(resource);
                 }
             }
         }
         return files;
+    }
+
+    /** Shipped trust-centre PDFs are pinned by SHA-256 in trust-documents/defaults.json. */
+    private static boolean pinnedTrustDocument(Path path) throws Exception {
+        Path directory=MAIN_RESOURCES_ROOT.resolve("trust-documents");
+        if(!path.getParent().equals(directory) || !path.getFileName().toString().endsWith(".pdf"))return false;
+        var documents=new com.fasterxml.jackson.databind.ObjectMapper().readTree(Files.readString(directory.resolve("defaults.json"))).path("documents");
+        for(var document:documents)if(path.getFileName().toString().equals(document.path("resource").asText())
+                && document.path("sha256").asText().equals(java.util.HexFormat.of().formatHex(
+                        java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)))))return true;
+        return false;
     }
 
     private static boolean reviewedAvatarBinary(Path path) throws Exception {
