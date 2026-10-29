@@ -1,0 +1,8 @@
+{
+  "name": "native-push-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "extensions": { "uni-cloud-push": {} },
+  "scripts": { "test": "node --test bridge.test.js" }
+}

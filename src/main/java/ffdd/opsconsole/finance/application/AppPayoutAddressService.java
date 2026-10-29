@@ -162,7 +162,7 @@ public class AppPayoutAddressService {
                 .resourceType("PAYOUT_ADDRESS").resourceId(userId + ":" + network)
                 .userId(userId).actorId(userId).actorType("USER").actorUsername("user:" + userId)
                 .riskLevel("HIGH").result("SUCCESS")
-                .detail(linked("network", network, "addressMasked", mask(address),
+                .detail(linked("network", network, "addressMasked", mask(address),"sourceEnvironment",scope.sourceEnvironment(),
                         "effectiveAt", saved.effectiveAt(), "nextChangeAllowedAt", saved.nextChangeAllowedAt()))
                 .build());
         return ApiResult.ok(view(saved, scope));

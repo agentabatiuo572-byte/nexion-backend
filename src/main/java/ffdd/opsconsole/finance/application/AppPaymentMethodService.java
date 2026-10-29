@@ -30,6 +30,7 @@ public class AppPaymentMethodService {
     private final PaymentMethodSandboxProfileGuard profileGuard;
     private final OpsUserPaymentMethodService userPaymentMethods;
     private final H3DayOneBusinessFactService dayOneFacts;
+    private final ffdd.opsconsole.shared.audit.AuditLogService audit;
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> list(Long userId) {
@@ -130,6 +131,7 @@ public class AppPaymentMethodService {
         }
         CardRow saved = mapper.findActiveByIdScoped(userId, methodId, env, scope.runId());
         if (saved == null) throw new BizException(409, "PAYMENT_METHOD_DEFAULT_RECEIPT_MISSING");
+        securityFact(userId,methodId,"USER_PAYMENT_METHOD_DEFAULT_CHANGED",scope);
         return ApiResult.ok(linked("serverCanonical", true, "receipt", "CARD_DEFAULT_SET", "card", view(saved)));
     }
 
@@ -151,6 +153,7 @@ public class AppPaymentMethodService {
             }
             CardRow reactivated = mapper.findActiveByTokenScoped(userId, token, sourceEnvironment, runId);
             if (reactivated == null) throw new BizException(409, "PAYMENT_METHOD_BIND_RECEIPT_MISSING");
+            securityFact(userId,reactivated.id(),"USER_PAYMENT_METHOD_BOUND",scope);
             return bindReceipt(userId, reactivated, scope);
         }
         Long tokenOwner = mapper.tokenOwnerIncludingDeletedScoped(token, sourceEnvironment, runId);
@@ -166,7 +169,16 @@ public class AppPaymentMethodService {
         }
         CardRow saved = mapper.findActiveByTokenScoped(userId, token, sourceEnvironment, runId);
         if (saved == null || saved.id() == null) throw new BizException(409, "PAYMENT_METHOD_BIND_RECEIPT_MISSING");
+        securityFact(userId,saved.id(),"USER_PAYMENT_METHOD_BOUND",scope);
         return bindReceipt(userId, saved, scope);
+    }
+
+    private void securityFact(Long userId,Long methodId,String action,Scope scope) {
+        if(scope.sandbox()) return;
+        audit.recordRequired(ffdd.opsconsole.shared.audit.AuditLogWriteRequest.builder()
+            .action(action).resourceType("USER_PAYMENT_METHOD").resourceId(String.valueOf(methodId))
+            .userId(userId).actorId(userId).actorType("USER").result("SUCCESS").riskLevel("HIGH")
+            .detail(Map.of("sourceEnvironment",scope.sourceEnvironment())).build());
     }
 
     private void requireVerifiedTokenBoundary(String token, String source) {
