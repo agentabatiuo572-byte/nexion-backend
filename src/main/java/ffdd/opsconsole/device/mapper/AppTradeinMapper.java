@@ -132,8 +132,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                    COALESCE(NULLIF(d.name,''),p.name) AS productName,
                    COALESCE(NULLIF(d.product_tier,''),p.tier) AS productTier,
                    d.status,
-                   COALESCE(NULLIF(CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity END,0),
-                            NULLIF(d.price_usdt_snapshot,0),p.price_usdt,0) AS actualPaidUsdt,
+                   CASE WHEN o.order_no IS NOT NULL
+                        THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
+                        ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
                    (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
               FROM nx_user_device d
@@ -160,8 +161,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                    COALESCE(NULLIF(d.name,''),p.name) AS productName,
                    COALESCE(NULLIF(d.product_tier,''),p.tier) AS productTier,
                    d.status,
-                   COALESCE(NULLIF(CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity END,0),
-                            NULLIF(d.price_usdt_snapshot,0),p.price_usdt,0) AS actualPaidUsdt,
+                   CASE WHEN o.order_no IS NOT NULL
+                        THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
+                        ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
                    (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
               FROM nx_user_device d
@@ -188,8 +190,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                    COALESCE(NULLIF(d.name,''),p.name) AS productName,
                    COALESCE(NULLIF(d.product_tier,''),p.tier) AS productTier,
                    d.status,
-                   COALESCE(NULLIF(CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity END,0),
-                            NULLIF(d.price_usdt_snapshot,0),p.price_usdt,0) AS actualPaidUsdt,
+                   CASE WHEN o.order_no IS NOT NULL
+                        THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
+                        ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
                    (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
               FROM nx_user_device d
@@ -216,8 +219,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                    COALESCE(NULLIF(d.name,''),p.name) AS productName,
                    COALESCE(NULLIF(d.product_tier,''),p.tier) AS productTier,
                    d.status,
-                   COALESCE(NULLIF(CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity END,0),
-                            NULLIF(d.price_usdt_snapshot,0),p.price_usdt,0) AS actualPaidUsdt,
+                   CASE WHEN o.order_no IS NOT NULL
+                        THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
+                        ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
                    (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
               FROM nx_user_device d
@@ -247,8 +251,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                    COALESCE(NULLIF(d.name,''),p.name) AS productName,
                    COALESCE(NULLIF(d.product_tier,''),p.tier) AS productTier,
                    d.status,
-                   COALESCE(NULLIF(CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity END,0),
-                            NULLIF(d.price_usdt_snapshot,0),p.price_usdt,0) AS actualPaidUsdt,
+                   CASE WHEN o.order_no IS NOT NULL
+                        THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
+                        ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
                    (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
               FROM nx_user_device d

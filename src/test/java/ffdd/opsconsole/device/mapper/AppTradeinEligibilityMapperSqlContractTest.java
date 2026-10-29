@@ -10,6 +10,20 @@ import org.junit.jupiter.api.Test;
 
 class AppTradeinEligibilityMapperSqlContractTest {
     @Test
+    void allSourceReadsPreserveZeroActualPaymentAndNeverReplaceItWithCurrentProductPrice() throws Exception {
+        String expected = "CASE WHEN o.order_no IS NOT NULL THEN CASE WHEN o.quantity>0 "
+                + "THEN o.amount_usdt/o.quantity ELSE NULL END ELSE d.price_usdt_snapshot END AS actualPaidUsdt";
+        for (String methodName : List.of("findSourceDevice", "lockSourceDevice", "listTradeinSourceCandidates",
+                "findCapacityReplacementSource", "lockCapacityReplacementSource")) {
+            Method method = AppTradeinMapper.class.getMethod(methodName,
+                    methodName.contains("SourceDevice") ? new Class<?>[] {Long.class, Long.class} : new Class<?>[] {Long.class});
+            String sql = String.join(" ", method.getAnnotation(Select.class).value()).replaceAll("\\s+", " ");
+            assertThat(sql).as(methodName).contains(expected)
+                    .doesNotContain("NULLIF(d.price_usdt_snapshot,0)", "p.price_usdt", "NULLIF(CASE WHEN o.quantity");
+        }
+    }
+
+    @Test
     void tradeinReadsUseRuntimeEnvironmentButWriteLockRemainsProductionOnly() throws Exception {
         Method environment = AppTradeinMapper.class.getMethod("activeUserEnvironment", Long.class);
         String environmentSql = String.join(" ", environment.getAnnotation(Select.class).value());
