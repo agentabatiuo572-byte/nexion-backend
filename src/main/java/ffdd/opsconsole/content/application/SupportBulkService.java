@@ -50,6 +50,45 @@ public class SupportBulkService {
     @Value("${nexion.support.bulk.preview-ttl-seconds:300}") private final long previewTtlSeconds;
 
     @Transactional(isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public SupportBulk.Candidates candidates(SupportBulkRequest.Candidates request) {
+        production.requireOpsWriteAllowed();
+        if(request==null) throw invalid("SUPPORT_BULK_SELECTION_INVALID");
+        long page=request.pageNum()==null?1:request.pageNum();int size=request.pageSize()==null?10:request.pageSize();
+        SupportWorkbenchService.validatePage(page,size);
+        if(size!=10) throw invalid("SUPPORT_PAGE_INVALID");
+        var filters=request.filters();validateFilters(filters);
+        Long actor=authenticatedActor();ownership.requireSendingActor(actor);
+        var coverage=activity.checkpoint();var rules=bindings.rules();
+        if(rules==null || coverage==null) throw new BizException(503,"SUPPORT_BULK_SOURCE_UNAVAILABLE");
+        var query=SupportWorkbenchService.query(ownership.queryScope(ReadMode.PERSONAL,null,null),null,rules,coverage);
+        query.put("keyword",keyword(filters));
+        long total=0,selectable=0,offset=(page-1)*size;
+        var records=new ArrayList<SupportBulk.Candidate>();
+        // ponytail: authoritative per-customer evaluation before server pagination; batch financial/tag reads if volume requires it.
+        for(var row:mapper.candidates(query)) {
+            if(!keywordMatches(row,filters)) continue;
+            String reason=filterExclusion(row,filters);
+            if("FILTER_MISMATCH".equals(reason)) continue;
+            String eligibility=eligibilityExclusion(row);
+            if(eligibility!=null) reason=eligibility;
+            if(reason==null) {
+                var current=mapper.conversation(number(row,"customerId"));
+                reason=current==null?null:conversationExclusion(current);
+            }
+            if(reason==null) selectable++;
+            if(total>=offset && records.size()<size) {
+                Long customer=number(row,"customerId");
+                records.add(new SupportBulk.Candidate(customer,number(row,"assignmentId"),text(row,"nickname"),
+                    "U"+String.format(Locale.ROOT,"%08d",customer),reason));
+            }
+            total++;
+        }
+        ownership.requireSendingActor(actor);
+        return new SupportBulk.Candidates(actor,page,size,total,selectable,List.copyOf(records),
+            coverage.observedThroughAt().toInstant(ZoneOffset.UTC).toString());
+    }
+
+    @Transactional(isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public SupportBulk.Preview preview(SupportBulkRequest.Preview request) {
         production.requireOpsWriteAllowed();
         Long actor=authenticatedActor();
@@ -64,18 +103,17 @@ public class SupportBulkService {
         if(rules==null || coverage==null) throw new BizException(503,"SUPPORT_BULK_SOURCE_UNAVAILABLE");
         var query=SupportWorkbenchService.query(ownership.queryScope(ReadMode.PERSONAL,null,null),null,rules,coverage);
         query.put("ids",all?null:List.copyOf(ids));
+        query.put("keyword",keyword(filters));
         var candidates=mapper.candidates(query);
         var accepted=new ArrayList<SupportBulk.Customer>();var excluded=new ArrayList<SupportBulk.Excluded>();
         var found=new HashSet<Long>();
         // ponytail: per-customer authoritative reads, batch financial/tag projection if measured volumes need it.
         for(var row:candidates) {
             Long customer=number(row,"customerId");found.add(customer);
-            String reason=excludedIds.contains(customer)?"EXPLICITLY_EXCLUDED":exclusion(row,filters);
-            if(reason==null) {
-                var current=mapper.conversation(customer);
-                reason=current==null?null:conversationExclusion(current);
-            }
-            if(reason==null) accepted.add(new SupportBulk.Customer(customer,number(row,"assignmentId")));
+            if(all && !keywordMatches(row,filters)) continue;
+            String reason=excludedIds.contains(customer)?"EXPLICITLY_EXCLUDED":candidateExclusion(row,filters);
+            if(reason==null) accepted.add(new SupportBulk.Customer(customer,number(row,"assignmentId"),text(row,"nickname"),
+                "U"+String.format(Locale.ROOT,"%08d",customer)));
             else excluded.add(new SupportBulk.Excluded(customer,reason));
         }
         for(Long customer:ids) if(!found.contains(customer)) excluded.add(new SupportBulk.Excluded(customer,"NOT_CURRENT_CUSTOMER"));
@@ -416,13 +454,31 @@ public class SupportBulkService {
         result.put("retryable",truth(row.get("retryable")));return SupportWorkbenchService.wire(result);
     }
 
+    private String candidateExclusion(Map<String,Object> row,SupportBulkRequest.Filters filters) {
+        String reason=exclusion(row,filters);
+        if(reason!=null) return reason;
+        var current=mapper.conversation(number(row,"customerId"));
+        return current==null?null:conversationExclusion(current);
+    }
+    private static String keyword(SupportBulkRequest.Filters f) {
+        return f==null || f.keyword()==null || f.keyword().isBlank()?null:f.keyword().trim();
+    }
+    private static boolean keywordMatches(Map<String,Object> row,SupportBulkRequest.Filters f) {
+        return keyword(f)==null || truth(row.get("keywordMatched"));
+    }
     private String exclusion(Map<String,Object> row,SupportBulkRequest.Filters f) {
+        String reason=eligibilityExclusion(row);
+        return reason==null?filterExclusion(row,f):reason;
+    }
+    private String eligibilityExclusion(Map<String,Object> row) {
         if(bindings.canonicalCustomer(number(row,"customerId"))!=1) return "ISOLATED_CUSTOMER";
         if(!truth(row.get("enabled"))) return "MAINTENANCE_STOPPED";
+        return null;
+    }
+    private String filterExclusion(Map<String,Object> row,SupportBulkRequest.Filters f) {
         if(f==null) return null;
         boolean unknown=Boolean.TRUE.equals(f.includeUnknown());
-        if(f.keyword()!=null && !Objects.toString(row.get("nickname"),"").contains(f.keyword())
-                && !Objects.toString(row.get("customerId"),"").equals(f.keyword())) return "FILTER_MISMATCH";
+        if(!keywordMatches(row,f)) return "FILTER_MISMATCH";
         if("UNKNOWN".equals(row.get("accountState")) && f.accountState()!=null && !"UNKNOWN".equals(f.accountState())) {
             if(!unknown)return "ACTIVITY_UNKNOWN";
         } else if(!match(text(row,"accountState"),f.accountState(),unknown)) return row.get("accountState")==null?"ACTIVITY_UNKNOWN":"FILTER_MISMATCH";
