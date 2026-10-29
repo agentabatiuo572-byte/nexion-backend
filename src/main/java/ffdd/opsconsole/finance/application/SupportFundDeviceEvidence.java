@@ -52,7 +52,9 @@ public class SupportFundDeviceEvidence {
         for(var t:input.sources().tasks())if(component.contains(number(t.get("customerId")))&&"COMPLETED".equals(t.get("status")))require(taskNos.contains(text(t.get("taskNo"))));
         for(var l:input.sources().ledgers())if(component.contains(number(l.get("customerId"))))require(ledgerIds.contains(number(l.get("id"))));
         for(var e:input.sources().earningEvents())if(component.contains(number(e.get("customerId"))))require(earningIds.contains(number(e.get("id"))));
-        var opKeys=new HashSet<String>();for(var op:input.operations())if("SUPPORT_DEVICE_EARNING".equals(op.get("businessType"))){long id=number(op.get("id"));if(input.parties().stream().anyMatch(p->number(p.get("operationId"))==id&&component.contains(number(p.get("customerId")))))require(opKeys.add(text(op.get("sourceKey")))&&receipts.contains(text(op.get("sourceKey")))&&"CREDIT".equals(op.get("phase")));}
+        var componentOperations=new HashSet<Long>();
+        for(var party:input.parties())if(component.contains(number(party.get("customerId"))))componentOperations.add(number(party.get("operationId")));
+        var opKeys=new HashSet<String>();for(var op:input.operations())if("SUPPORT_DEVICE_EARNING".equals(op.get("businessType"))){long id=number(op.get("id"));if(componentOperations.contains(id))require(opKeys.add(text(op.get("sourceKey")))&&receipts.contains(text(op.get("sourceKey")))&&"CREDIT".equals(op.get("phase")));}
         require(expected.equals(covered));
     }
     private record Original(Map<String,Object> receipt,Map<String,Object> task,List<Map<String,Object>> ledgers,List<Map<String,Object>> earnings,List<Event> events){}

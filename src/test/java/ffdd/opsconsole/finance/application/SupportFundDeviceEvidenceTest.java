@@ -73,4 +73,27 @@ class SupportFundDeviceEvidenceTest {
     }
     @ParameterizedTest @ValueSource(strings={"missingCoverage","extraCoverage","orphanLedger","orphanEarning","orphanReceipt","extraOperation","orphanCompletedTask"}) void reverseCoverageRequiresAllRealSourcesAndRejectsInventedOnes(String kind){var f=fixture(true);Set<String> covered=Set.of(NO+":CREDIT");switch(kind){case "missingCoverage"->covered=Set.of();case "extraCoverage"->covered=Set.of(NO+":CREDIT","foreign:CREDIT");case "orphanLedger"->{var l=new HashMap<>(f.ledgers.get(0));l.put("id",55L);l.put("bizNo","orphan");f.ledgers.add(l);}case "orphanEarning"->{var e=new HashMap<>(f.earnings.get(0));e.put("id",55L);e.put("receiptNo","orphan");f.earnings.add(e);}case "orphanReceipt"->{var r=new HashMap<>(f.receipt);r.put("receiptNo","orphan");f.receipts.add(r);}case "extraOperation"->{var op=new HashMap<>(f.operation);op.put("id",99L);op.put("sourceKey","orphan");f.ops.add(op);f.parties.add(row("operationId",99L,"customerId",7L));}case "orphanCompletedTask"->{var t=new HashMap<>(f.task);t.put("taskNo","orphan");f.tasks.add(t);}}var actual=covered;assertThatThrownBy(()->f.coverage(actual)).isInstanceOf(IllegalArgumentException.class);}
     @Test void trulyEmptyOwningSourcesAreEmptyButFailureIsNotAnEmptySource(){var f=fixture(false);f.receipts.clear();f.tasks.clear();f.ledgers.clear();f.earnings.clear();f.ops.clear();f.parties.clear();f.legs.clear();f.raw.clear();f.coverage(Set.of());assertThatThrownBy(()->new FundEarnings(null,List.of(),List.of(),List.of())).isInstanceOf(RuntimeException.class);}
+    @Test void peerOperationsDoNotRescanEveryPartyForEachCoverageCheck(){
+        var ops=new ArrayList<Map<String,Object>>();var rows=new ArrayList<Map<String,Object>>();
+        for(long id=1;id<=2000;id++){
+            ops.add(row("id",id,"businessType","SUPPORT_DEVICE_EARNING","sourceKey","peer-"+id,"phase","CREDIT"));
+            rows.add(row("operationId",id,"customerId",8L));
+        }
+        int[] reads={0};
+        var parties=new AbstractList<Map<String,Object>>(){
+            @Override public Map<String,Object> get(int index){
+                if(++reads[0]>rows.size()*4)throw new AssertionError("Coverage repeatedly scanned the complete peer-party history");
+                return rows.get(index);
+            }
+            @Override public int size(){return rows.size();}
+        };
+        var input=new SupportFundDeviceEvidence.Inputs(new FundEarnings(List.of(),List.of(),List.of(),List.of()),
+            List.of(),ops,parties,List.of(),Map.of());
+        helper.verifyCoverage(Set.of(7L),input,Set.of());
+        helper.verifyCoverage(Set.of(7L),input,Set.of());
+        assertThat(reads[0]).isLessThanOrEqualTo(rows.size()*4);
+        rows.set(rows.size()-1,row("operationId",2000L,"customerId",7L));
+        assertThatThrownBy(()->helper.verifyCoverage(Set.of(7L),input,Set.of()))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
 }
