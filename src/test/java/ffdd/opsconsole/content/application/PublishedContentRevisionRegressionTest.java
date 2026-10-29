@@ -31,15 +31,7 @@ class PublishedContentRevisionRegressionTest {
                 .when(config).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
-    @ParameterizedTest @ValueSource(strings = {"developer"})
-    void firstDocumentIsEditableWithoutPublishingAnything(String kind) {
-        assertThat(admin(kind).getData()).containsEntry("status", "UNPUBLISHED").containsEntry("version", "")
-                .containsKey("revision").containsKey("locales");
-        assertThat(read(kind).getCode()).isEqualTo(503);
-        assertThat(stored).isEmpty();
-    }
-
-    @ParameterizedTest @ValueSource(strings = {"rank", "how"})
+    @ParameterizedTest @ValueSource(strings = {"developer", "rank", "how"})
     void withoutAPublicationTheShippedDefaultIsServedAndEditableWithoutWritingAnything(String kind) {
         Map<String, Object> admin = admin(kind).getData();
         assertThat(admin).containsEntry("defaultContent", true).containsEntry("version", "default-2026.10.29");
@@ -49,7 +41,7 @@ class PublishedContentRevisionRegressionTest {
         assertThat(stored).isEmpty();
     }
 
-    @ParameterizedTest @ValueSource(strings = {"rank", "how"})
+    @ParameterizedTest @ValueSource(strings = {"developer", "rank", "how"})
     void aFirstDraftKeepsTheShippedDefaultPublicAndSaysSo(String kind) {
         assertThat(write(kind, "draft-1", "DRAFT", 0, "Draft").getCode()).isZero();
 
