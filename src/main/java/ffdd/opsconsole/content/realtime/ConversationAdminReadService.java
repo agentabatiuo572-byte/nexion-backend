@@ -34,7 +34,7 @@ public class ConversationAdminReadService {
         if(c==null) return ApiResult.fail(404,"CONVERSATION_NOT_FOUND");
         if(!Objects.equals(c.version(),request.expectedVersion()) || !c.status().equalsIgnoreCase(String.valueOf(request.expectedStatus())))
             return ApiResult.fail(409,"CONVERSATION_STATE_CONFLICT");
-        if(conversations.messages(no).stream().noneMatch(m -> request.lastSeenMessageId().equals(m.id()) && "user".equalsIgnoreCase(m.senderType())))
+        if(!conversations.containsCustomerMessage(no,request.lastSeenMessageId()))
             return ApiResult.fail(404,"CONVERSATION_USER_MESSAGE_NOT_FOUND");
         var now=LocalDateTime.now(clock);
         if(conversations.markUserMessagesReadThrough(c,request.lastSeenMessageId(),"admin:"+actor,now)) {
