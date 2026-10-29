@@ -37,6 +37,16 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
             "/api/test/compute-workers/v2/(?:next-task|tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/(?:complete|release))");
     private static final Pattern CONTINUOUS_GET_PATH = Pattern.compile(
             "/api/test/compute-workers/v2/tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/receipt");
+    private static final Pattern CLOUD_POST_PATH = Pattern.compile(
+            "/api/test/cloud-executors/v1/(?:next-task|heartbeat|tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/(?:complete|heartbeat))");
+    private static final Pattern CLOUD_GET_PATH = Pattern.compile(
+            "/api/test/cloud-executors/v1/tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/receipt");
+
+    public static boolean isTestCloudRoute(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        return path != null && (("POST".equals(request.getMethod()) && CLOUD_POST_PATH.matcher(path).matches())
+                || ("GET".equals(request.getMethod()) && CLOUD_GET_PATH.matcher(path).matches()));
+    }
 
     public static boolean isContinuousWorkerRoute(HttpServletRequest request) {
         String path = request.getRequestURI();
@@ -61,7 +71,7 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        if (isContinuousWorkerRoute(request)) return false; // Always enforce the direct local channel, even when Geo is off.
+        if (isContinuousWorkerRoute(request) || isTestCloudRoute(request)) return false; // Enforce the raw local peer before forwarded headers can be removed.
         // These exact machine POSTs use the dedicated TEST-only, default-disabled
         // worker chain below this filter. It enforces credentials and task binding.
         if ("POST".equals(request.getMethod()) && path != null
@@ -98,7 +108,7 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
             HttpServletRequest request,
             HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
-        if (isContinuousWorkerRoute(request)) {
+        if (isContinuousWorkerRoute(request) || isTestCloudRoute(request)) {
             if (!isDirectLoopback(request)) reject(response, 403, "TEST_COMPUTE_WORKER_LOCAL_ONLY");
             else filterChain.doFilter(request, response);
             return;

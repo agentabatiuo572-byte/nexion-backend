@@ -94,6 +94,36 @@ class AppTaskAssignmentServiceTest {
         verify(audit).recordRequired(any());
     }
 
+    @Test void managedCloudInstanceCannotBeClaimedByUserOrAutomaticScheduler() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(environment.getProperty(TestCloudExecutorService.PREFIX+"deployment-scope")).thenReturn("TEST");
+        when(environment.getProperty(TestCloudExecutorService.PREFIX+"owner-id")).thenReturn("7");
+        when(environment.getProperty(TestCloudExecutorService.PREFIX+"device-id")).thenReturn("11");
+        assertThatThrownBy(()->service.claim(7L,"claim-cloud-unit",new AppTaskClaimRequest(11L))).hasMessage("TEST_CLOUD_EXECUTOR_REQUIRED");
+        assertThatThrownBy(()->service.assignAutomatically(7L,11L)).hasMessage("TEST_CLOUD_EXECUTOR_REQUIRED");
+        verify(mapper,never()).insertAssignment(anyString(),any(),any(),any(),any(),any(),any(),anyString(),any(),anyString(),any(),any());
+        verify(mapper,never()).bindRuntimeTask(any(),anyString(),any(),any());
+    }
+
+    @Test void testCloudTaskCannotBypassArtifactValidationThroughOrdinaryProductionCompleteEvenAfterConfigRemoval() {
+        var row=new AppTaskAssignmentMapper.AssignmentRow("CTA-CLOUD",11L,"TASK-IG",TestCloudExecutorService.TASK_NAME,"EM",
+                TestCloudExecutorService.KIND,TestCloudExecutorService.CLIENT,"RUNNING",new BigDecimal("0.1"),5,0,
+                NOW.minusMinutes(1),NOW.plusHours(24),null,null,"a".repeat(64),NOW.plusHours(24));
+        when(mapper.lockAssignment(7L,"CTA-CLOUD","PRODUCTION")).thenReturn(row);
+        assertThatThrownBy(()->service.complete(7L,"CTA-CLOUD","complete-cloud-unit",validProof())).hasMessage("TEST_CLOUD_EXECUTOR_REQUIRED");
+        verify(proofVerifier,never()).verify(anyLong(),anyString(),anyLong(),anyString(),anyString(),any(),any());
+        verify(mapper,never()).insertReceipt(any(),any(),any(),anyString(),anyString(),any(),anyString(),anyString(),any());
+    }
+
+    @Test void knownCloudKindUsesPublicLabelsWhileRawExecutionIdentityIsRetained() {
+        var row=new AppTaskAssignmentMapper.AssignmentRow("CTA-CLOUD",11L,"TASK-IG",TestCloudExecutorService.TASK_NAME,"EM",
+                TestCloudExecutorService.KIND,TestCloudExecutorService.CLIENT,"RUNNING",new BigDecimal("0.1"),5,0,
+                NOW.minusMinutes(1),NOW.plusHours(24),null,null,"a".repeat(64),NOW.plusHours(24));
+        ffdd.opsconsole.device.dto.AppTaskAssignmentView view=org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"view",row);
+        assertThat(view.model()).isEqualTo("BGE-M3"); assertThat(view.client()).isEqualTo("UVEL Compute");
+        assertThat(view.taskName()).isEqualTo("BGE-M3 Embedding"); assertThat(row.modelName()).isEqualTo("TEST_BGE_M3_V1");
+    }
+
     @Test void actualUsdtWriterMustBindItsRealFundReceipt(){completionCreditsReceiptLedgerAndLockExactlyOnceAcrossDifferentKeys();verify(deviceFunds).begin(7L);verify(deviceFunds).afterUsdt(any());verify(deviceFunds).recorded(any(),eq("CTR-CTA-1"));}
     @Test void actualDailyNexWriterMustRemainInTheSameReceiptAsUsdt(){paidCloudShareCreditsPurchasedDailyNexSnapshotOnlyOnFirstProofVerifiedReceiptOfUtcDay();verify(deviceFunds,times(2)).begin(7L);verify(deviceFunds,times(2)).afterUsdt(any());verify(deviceFunds).recorded(any(),eq("CTR-CTA-1"));verify(deviceFunds).recorded(any(),eq("CTR-CTA-2"));}
     @Test void legalZeroUsdtStillWritesOriginalCashVersionLedgerAndEarningBeforeBinding(){

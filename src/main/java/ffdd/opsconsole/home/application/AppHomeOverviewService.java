@@ -486,6 +486,9 @@ public class AppHomeOverviewService {
         String normalized = text(value);
         if (normalized == null) return null;
         return switch (normalized) {
+            case ffdd.opsconsole.device.application.TestCloudExecutorService.KIND -> "BGE-M3";
+            case ffdd.opsconsole.device.application.TestCloudExecutorService.CLIENT -> "UVEL Compute";
+            case ffdd.opsconsole.device.application.TestCloudExecutorService.TASK_NAME -> "BGE-M3 Embedding";
             case TestComputeWorkerService.KIND -> "Vector statistics";
             case TestComputeWorkerService.CLIENT -> "UVEL Compute";
             case TestComputeWorkerService.TASK_NAME -> "Vector statistics v1";
