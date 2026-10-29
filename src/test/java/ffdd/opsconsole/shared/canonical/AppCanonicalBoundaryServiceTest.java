@@ -1325,11 +1325,54 @@ class AppCanonicalBoundaryServiceTest {
                 .containsExactly("ONLINE", "OFFLINE", "UNKNOWN");
         assertThat(devices).allSatisfy(device -> assertThat(device)
                 .containsEntry("status", "ACTIVE")
+                .containsEntry("businessStatus", "ONLINE")
                 .containsEntry("dailyUsdt", new BigDecimal("0.000000"))
                 .containsEntry("activatedAt", activatedAt.atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli()));
         assertThat(result.getData()).containsEntry("dailyUsdt", new BigDecimal("0.000000"))
                 .containsEntry("realizedTodayUsdt", new BigDecimal("1.250000"));
         assertThat(devices.get(0)).containsEntry("todayEarningsUsdt", new BigDecimal("1.250000"));
+    }
+
+    @Test
+    void businessOnlineRequiresActivationAndIgnoresRuntimeAndPendingDeactivation() {
+        LocalDateTime activatedAt = LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusDays(2);
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        record Case(String status, LocalDateTime activation, LocalDateTime deactivation,
+                    boolean pending, String expected) {}
+        List<Case> cases = List.of(
+                new Case("ACTIVE", activatedAt, null, false, "ONLINE"),
+                new Case("ONLINE", activatedAt, null, false, "ONLINE"),
+                new Case("OFFLINE", activatedAt, null, false, "ONLINE"),
+                new Case("BUSY", activatedAt, null, true, "ONLINE"),
+                new Case("RUNNING", activatedAt, null, true, "ONLINE"),
+                new Case("ACTIVE", null, null, false, "OFFLINE"),
+                new Case("ACTIVE", activatedAt, activatedAt, false, "OFFLINE"),
+                new Case("DEACTIVATED", null, activatedAt, false, "OFFLINE"),
+                new Case("INACTIVE", null, null, false, "OFFLINE"),
+                new Case("INVENTORY", activatedAt, null, false, "OFFLINE"),
+                new Case("RECYCLED", activatedAt, null, false, "OFFLINE"),
+                new Case("RETIRED", activatedAt, null, false, "OFFLINE"));
+        for (Case sample : cases) {
+            when(mapper.ownedDevices(42L)).thenReturn(List.of(new CanonicalStateMapper.OwnedDevice(
+                    8L, "DEV-8", "Cloud Share", "SHARE", "CLOUD-SHARE", sample.status(), "ONLINE", 6L,
+                    sample.pending(), sample.activation(), sample.deactivation(), activatedAt,
+                    BigDecimal.ZERO, BigDecimal.ZERO, "Hosted GPU", 0, BigDecimal.ZERO, "Singapore",
+                    new BigDecimal("99"), BigDecimal.ZERO)));
+
+            var result = service.deviceEarnings(42L, false, false, null);
+
+            assertThat(result.getCode()).as(sample.toString()).isZero();
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> devices = (List<Map<String, Object>>) result.getData().get("devices");
+            assertThat(devices.get(0)).as(sample.toString())
+                    .containsEntry("businessStatus", sample.expected())
+                    .containsEntry("status", sample.status())
+                    .containsEntry("pendingDeactivate", sample.pending())
+                    .containsEntry("runtimeStatus", "ONLINE")
+                    .containsEntry("todayEarningsUsdt", new BigDecimal("0.000000"));
+        }
+        verify(mapper, never()).activateOwnedDeviceCas(anyLong(), anyLong(), anyLong(), anyInt());
+        verify(mapper, never()).deactivateOwnedDeviceCas(anyLong(), anyLong(), anyLong());
     }
 
     @Test
