@@ -426,6 +426,8 @@ class PhoneActivationCapacityMySqlTest {
                 BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.ONE, null);
         assertThat(tradeinMapper.insertCapacityKeepOrder(row)).isEqualTo(1);
         assertThat(tradeinMapper.insertPaidOrderItem(row)).isEqualTo(1);
+        // Preserve historical paid-but-unactivated deliveries when testing legacy reservation compatibility.
+        jdbc.update("UPDATE nx_order SET order_status='PAID',activation_status='WAITING_PROVISIONING' WHERE order_no=?", "ORDER-" + user);
     }
 
     private long deliverCapacityKeep(long user) {
@@ -433,7 +435,8 @@ class PhoneActivationCapacityMySqlTest {
         var row = new AppTradeinMapper.DeliveredDeviceWrite(user, "ORDER-" + user, 1L, "capacity-box", "S1",
                 instance, "Synthetic box", "BOX", 1, "fixture GPU", 8,
                 BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE);
-        assertThat(tradeinMapper.insertInventoryTargetDevice(row)).isEqualTo(1);
+        assertThat(tradeinMapper.insertCapacityKeepTargetDevice(row)).isEqualTo(1);
+        jdbc.update("UPDATE nx_user_device SET status='INACTIVE',activated_at=NULL,last_seen_at=NULL WHERE instance_no=?", instance);
         return tradeinMapper.findDeviceIdByInstanceNo(instance);
     }
 

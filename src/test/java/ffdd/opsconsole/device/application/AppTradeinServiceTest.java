@@ -625,6 +625,7 @@ class AppTradeinServiceTest {
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"submit,false", "submit,true", "replace,false", "replace,true", "keep,false", "keep,true"})
     void everySettlementRejectsF4bBeforeWalletStockOrdersAndDevices(String path, boolean exhausted) {
+        if ("keep".equals(path)) when(mapper.lockActiveDeviceCount(7L)).thenReturn(5);
         when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000"));
         when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000"));
         when(mapper.lockHardwarePurchaseTiers("SKU-NEW")).thenReturn(List.of(
@@ -649,7 +650,7 @@ class AppTradeinServiceTest {
         verify(mapper, never()).insertPaidOrder(any());
         verify(mapper, never()).insertCapacityKeepOrder(any());
         verify(mapper, never()).insertTargetDevice(any());
-        verify(mapper, never()).insertInventoryTargetDevice(any());
+        verify(mapper, never()).insertCapacityKeepTargetDevice(any());
         verify(mapper, never()).recycleSourceDevice(any(), any());
         verify(mapper, never()).moveSourceDeviceToInventory(any(), any());
         verify(mapper, never()).recordHardwarePurchase(any(), any(), any(), any());
@@ -679,7 +680,8 @@ class AppTradeinServiceTest {
 
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
-    void capacityKeepPurchasePaysAtomicallyAndDeliversAnInactiveInventoryDevice(boolean failCapture) {
+    void capacityKeepPurchasePaysAtomicallyAndActivatesDeliveredDevice(boolean failCapture) {
+        when(mapper.lockActiveDeviceCount(7L)).thenReturn(5);
         configuredHardwareQuotaHasCapacity();
         when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
         when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
@@ -688,7 +690,7 @@ class AppTradeinServiceTest {
         when(mapper.decrementTargetStock(22L)).thenReturn(1);
         when(mapper.insertCapacityKeepOrder(any())).thenReturn(1);
         when(mapper.insertPaidOrderItem(any())).thenReturn(1);
-        when(mapper.insertInventoryTargetDevice(any())).thenReturn(1);
+        when(mapper.insertCapacityKeepTargetDevice(any())).thenReturn(1);
         when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(44L);
 
         if (failCapture) {
@@ -705,12 +707,12 @@ class AppTradeinServiceTest {
                 new AppCapacityKeepSubmitRequest("stellarbox-pro-v2", new BigDecimal("1500.000000")));
         verify(mapper).recordHardwarePurchase(any(), eq(7L), org.mockito.ArgumentMatchers.startsWith("CKO-"), any());
 
-        assertThat(result.getData().orderStatus()).isEqualTo("PAID");
-        assertThat(result.getData().deviceStatus()).isEqualTo("INACTIVE");
+        assertThat(result.getData().orderStatus()).isEqualTo("COMPLETED");
+        assertThat(result.getData().deviceStatus()).isEqualTo("ACTIVE");
         assertThat(result.getData().targetDeviceId()).isEqualTo(44L);
         assertThat(result.getData().walletDebitUsdt()).isEqualByComparingTo("1500.000000");
         verify(mapper).insertCapacityKeepOrder(any());
-        verify(mapper).insertInventoryTargetDevice(any());
+        verify(mapper).insertCapacityKeepTargetDevice(any());
         verify(mapper, never()).moveSourceDeviceToInventory(any(), any());
         verify(mapper, never()).recycleSourceDevice(any(), any());
         verify(mapper, never()).insertTradeinApplication(any());
@@ -730,6 +732,26 @@ class AppTradeinServiceTest {
         captureOrder.verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class),any(),any(),anyString());
         captureOrder.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
         org.mockito.Mockito.verify(capture).record(org.mockito.ArgumentMatchers.any(Prepared.class));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"6,0,0", "5,1,0", "5,0,1", "0,6,0"})
+    void capacityKeepRejectsFullSlotsIncludingOrderAndTrialReservationsBeforePayment(int active, int orders, int trials) {
+        when(mapper.lockActiveDeviceCount(7L)).thenReturn(active);
+        when(mapper.lockReservedDeviceOrderCount(7L)).thenReturn(orders);
+        when(mapper.lockReservedTrialSlotCount(7L)).thenReturn(trials);
+        when(mapper.lockCapacityReplacementSource(7L)).thenReturn(null);
+
+        assertThatThrownBy(() -> service.capacityKeep(7L, "keep-full",
+                new AppCapacityKeepSubmitRequest("stellarbox-pro-v2", new BigDecimal("1500.000000"))))
+                .hasMessage("DEVICE_SLOT_CAP_EXCEEDED");
+
+        verify(mapper, never()).debitWalletUsdt(any(), any());
+        verify(mapper, never()).decrementTargetStock(any());
+        verify(mapper, never()).insertCapacityKeepOrder(any());
+        verify(mapper, never()).insertCapacityKeepTargetDevice(any());
+        verify(capture, never()).beforeCash(any());
+        verify(capture, never()).insertLedger(any(), any(), any(), anyString());
     }
 
     @Test
@@ -778,7 +800,7 @@ class AppTradeinServiceTest {
             switch(path) {
                 case "TRADE" -> submitAtomicallyDebitsWalletPostsD4LedgerRecyclesAndDelivers(false);
                 case "REPLACE" -> capacityReplacementCreatesARealOrderAndRefreshableSourceLinkWithoutTradeinCredit(false);
-                case "KEEP" -> capacityKeepPurchasePaysAtomicallyAndDeliversAnInactiveInventoryDevice(false);
+                case "KEEP" -> capacityKeepPurchasePaysAtomicallyAndActivatesDeliveredDevice(false);
                 default -> throw new AssertionError(path);
             }
         }).hasMessage(thrown?"LEDGER_INSERT_FAILED":switch(path) {

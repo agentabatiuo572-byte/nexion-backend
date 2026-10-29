@@ -453,8 +453,8 @@ public class AppTradeinService {
         String instanceNo = "DEV-CPK-" + nonce;
         var prepared = paymentAttribution.prepare(userId, Source.CAPACITY_KEEP, orderNo);
         AppCapacityReplaceQuoteResponse quote = evaluateCapacity(userId, request.targetProductNo(), true);
-        if ("NO_ACTIVE_DEVICE".equals(quote.decision())) {
-            throw new BizException(409, "CAPACITY_KEEP_STATE_INCONSISTENT");
+        if (!"CAPACITY_AVAILABLE".equals(quote.decision())) {
+            throw new BizException(409, "DEVICE_SLOT_CAP_EXCEEDED");
         }
         if (money(request.expectedPayableUsdt()).compareTo(quote.payableUsdt()) != 0) {
             throw new BizException(409, "CAPACITY_KEEP_QUOTE_CHANGED");
@@ -503,7 +503,7 @@ public class AppTradeinService {
                 userId, orderNo, target.id(), target.productNo(), target.tier(), instanceNo, target.name(),
                 target.deviceType(), target.generation(), target.gpuModel(), target.vramTotalGb(),
                 nz(target.hashrate()), nz(target.dailyUsdt()), nz(target.dailyNex()), quote.targetPriceUsdt());
-        if (mapper.insertInventoryTargetDevice(delivered) != 1) {
+        if (mapper.insertCapacityKeepTargetDevice(delivered) != 1) {
             throw new BizException(409, "CAPACITY_KEEP_TARGET_DELIVERY_CONFLICT");
         }
         Long targetDeviceId = mapper.findDeviceIdByInstanceNo(instanceNo);
@@ -514,7 +514,7 @@ public class AppTradeinService {
         Map<String, Object> event = linked(
                 "operationNo", operationNo, "orderNo", orderNo, "targetDeviceId", targetDeviceId,
                 "targetProductNo", target.productNo(), "walletDebitUsdt", quote.payableUsdt(),
-                "deviceStatus", "INACTIVE");
+                "deviceStatus", "ACTIVE");
         outboxService.publishUserEvent(
                 "ORDER", orderNo, "checkout.completed", userId, normalizePhase(attribution.phase()),
                 attribution.accountAgeMonths(), attribution.cohort(), linked(
@@ -532,7 +532,7 @@ public class AppTradeinService {
                 .build());
         if (quote.payableUsdt().signum() > 0) paymentAttribution.record(prepared);
         return ApiResult.ok(new AppCapacityKeepSubmitResponse(
-                operationNo, orderNo, targetDeviceId, "INACTIVE", "PAID",
+                operationNo, orderNo, targetDeviceId, "ACTIVE", "COMPLETED",
                 quote.payableUsdt(), balanceAfter));
     }
 

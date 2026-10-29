@@ -276,7 +276,7 @@ public class AppTaskAssignmentService {
             AppTaskAssignmentView current = rows.stream()
                     .filter(row -> device.id().equals(row.deviceId()) && active(row.status())
                             && (row.leaseExpiresAt() == null || !row.leaseExpiresAt().isBefore(now)))
-                    .findFirst().map(row -> view(row, phonePaused(userId, device, now))).orElse(null);
+                    .findFirst().map(row -> viewForDevice(row, userId, device, now)).orElse(null);
             List<AppTaskAssignmentView> recent = rows.stream()
                     .filter(row -> device.id().equals(row.deviceId()) && completed(row.status()))
                     .limit(10).map(this::view).toList();
@@ -448,12 +448,7 @@ public class AppTaskAssignmentService {
         long pausedSeconds = task == null || task.pausedSeconds() == null ? 0 : task.pausedSeconds();
         if (task != null && active(task.status())) {
             if (pausedAt == null && !phoneReady(previous, now)) {
-                LocalDateTime startedAt = task.startedAt() == null ? now : task.startedAt();
-                LocalDateTime boundary = previous == null || previous.heartbeatAt() == null
-                        || !phoneSignalsReady(previous) ? startedAt
-                        : previous.heartbeatAt().plusSeconds(PHONE_HEARTBEAT_SECONDS);
-                pausedAt = boundary.isBefore(startedAt) ? startedAt : boundary;
-                if (pausedAt.isAfter(now)) pausedAt = now;
+                pausedAt = phonePauseBoundary(task, previous, now);
             }
             if (request.networkReachable() && request.batteryLevel() >= 20) {
                 if (pausedAt != null) {
@@ -474,7 +469,7 @@ public class AppTaskAssignmentService {
                 request.networkReachable(), request.networkReachable() ? "ONLINE" : "OFFLINE",
                 pauseReason, now);
         if (task == null || !active(task.status())) return ApiResult.ok(null);
-        return ApiResult.ok(view(task, pausedAt != null || pauseReason != null, pausedSeconds));
+        return ApiResult.ok(view(task, pausedAt, pausedSeconds));
     }
 
     /**
@@ -648,7 +643,7 @@ public class AppTaskAssignmentService {
         }
         if (existing != null) {
             if (grant != null) testWorker.requireTask(grant, existing, LocalDateTime.now(clock));
-            return ApiResult.ok(view(existing, phonePaused(userId, device, now)));
+            return ApiResult.ok(viewForDevice(existing, userId, device, now));
         }
         if (phone(device)) requirePhoneReady(mapper.phoneRuntime(userId, deviceId), now);
 
@@ -699,7 +694,7 @@ public class AppTaskAssignmentService {
         AppTaskAssignmentView result = new AppTaskAssignmentView(taskNo, deviceId, task.taskId(), task.name(),
                 task.taskClass(), task.modelName(), "UVEL App", "RUNNING", reward, requiredSeconds,
                 now, now.plusSeconds(requiredSeconds), null, null, completionNonce, leaseExpiresAt,
-                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true);
+                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true, null, 0L);
         Map<String, Object> claimDetail = linked("deviceId", deviceId, "taskId", task.taskId(), "rewardUsdt", reward,
                 "requiredSeconds", requiredSeconds, "taskLockMinutes", taskLockMinutes);
         if (grant != null) claimDetail.putAll(testWorker.bindings(grant));
@@ -913,7 +908,8 @@ public class AppTaskAssignmentService {
         AppTaskAssignmentView completion = new AppTaskAssignmentView(task.taskNo(), task.deviceId(), task.taskId(),
                 task.taskName(), task.taskClass(), task.modelName(), task.clientName(), "COMPLETED",
                 task.rewardUsdt(), task.requiredSeconds(), task.startedAt(), completableAt, now, receiptNo,
-                null, null, PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true);
+                null, null, PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true,
+                null, task.pausedSeconds() == null ? 0L : task.pausedSeconds());
         if (grant == null) return typedResult(completion);
         testWorker.requireTask(grant, task, LocalDateTime.now(clock));
         Map<String, Object> result = testWorker.bindings(grant);
@@ -1009,16 +1005,22 @@ public class AppTaskAssignmentService {
     }
 
     private AppTaskAssignmentView view(AssignmentRow row) {
-        return view(row, false);
+        return view(row, row.pausedAt(), row.pausedSeconds() == null ? 0 : row.pausedSeconds());
     }
 
-    private AppTaskAssignmentView view(AssignmentRow row, boolean phonePaused) {
-        return view(row, phonePaused || row.pausedAt() != null,
-                row.pausedSeconds() == null ? 0 : row.pausedSeconds());
+    private AppTaskAssignmentView viewForDevice(AssignmentRow row, Long userId, DeviceRow device, LocalDateTime now) {
+        if (phone(device) && row.pausedAt() == null) {
+            PhoneRuntimeRow runtime = mapper.phoneRuntime(userId, device.id());
+            if (!phoneReady(runtime, now)) {
+                return view(row, phonePauseBoundary(row, runtime, now),
+                        row.pausedSeconds() == null ? 0 : row.pausedSeconds());
+            }
+        }
+        return view(row);
     }
 
-    private AppTaskAssignmentView view(AssignmentRow row, boolean phonePaused, long pausedSeconds) {
-        boolean paused = active(row.status()) && phonePaused;
+    private AppTaskAssignmentView view(AssignmentRow row, LocalDateTime pausedAt, long pausedSeconds) {
+        boolean paused = active(row.status()) && pausedAt != null;
         LocalDateTime completableAt = paused || row.startedAt() == null || row.requiredSeconds() == null
                 ? null : row.startedAt().plusSeconds(row.requiredSeconds() + pausedSeconds);
         return new AppTaskAssignmentView(row.taskNo(), row.deviceId(),
@@ -1028,7 +1030,8 @@ public class AppTaskAssignmentService {
                 row.requiredSeconds(), row.startedAt(), completableAt, row.completedAt(), row.receiptNo(),
                 active(row.status()) ? row.completionNonce() : null,
                 active(row.status()) ? row.proofExpiresAt() : null,
-                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true);
+                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true,
+                paused ? pausedAt : null, pausedSeconds);
     }
 
     private AppComputeReceiptView receiptView(ReceiptRow row) {
@@ -1102,8 +1105,12 @@ public class AppTaskAssignmentService {
                 && !runtime.heartbeatAt().isAfter(now)
                 && !runtime.heartbeatAt().isBefore(now.minusSeconds(PHONE_HEARTBEAT_SECONDS));
     }
-    private boolean phonePaused(Long userId, DeviceRow device, LocalDateTime now) {
-        return phone(device) && !phoneReady(mapper.phoneRuntime(userId, device.id()), now);
+    private LocalDateTime phonePauseBoundary(AssignmentRow row, PhoneRuntimeRow runtime, LocalDateTime now) {
+        LocalDateTime startedAt = row.startedAt() == null ? now : row.startedAt();
+        LocalDateTime boundary = runtime == null || runtime.heartbeatAt() == null || !phoneSignalsReady(runtime)
+                ? startedAt : runtime.heartbeatAt().plusSeconds(PHONE_HEARTBEAT_SECONDS);
+        if (boundary.isBefore(startedAt)) boundary = startedAt;
+        return boundary.isAfter(now) ? now : boundary;
     }
     private void requirePhoneReady(PhoneRuntimeRow runtime, LocalDateTime now) {
         if (runtime == null || runtime.heartbeatAt() == null || runtime.heartbeatAt().isAfter(now)

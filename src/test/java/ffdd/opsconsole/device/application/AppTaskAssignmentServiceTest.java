@@ -50,10 +50,14 @@ class AppTaskAssignmentServiceTest {
     private final ComputeTaskProofVerifier proofVerifier = mock(ComputeTaskProofVerifier.class);
     private final Environment environment = mock(Environment.class);
     private final SupportDeviceFundAdapter deviceFunds = mock(SupportDeviceFundAdapter.class);
-    private final AppTaskAssignmentService service = new AppTaskAssignmentService(
+    private final AppTaskAssignmentService service = serviceAt(NOW);
+
+    private AppTaskAssignmentService serviceAt(LocalDateTime time) {
+        return new AppTaskAssignmentService(
             mapper, idempotency, outbox, audit, proofVerifier,
             environment,
-            Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), mock(TestComputeWorkerService.class), deviceFunds, org.mockito.Mockito.mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class));
+            Clock.fixed(time.toInstant(ZoneOffset.UTC), ZoneOffset.UTC), mock(TestComputeWorkerService.class), deviceFunds, org.mockito.Mockito.mock(ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract.class));
+    }
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -248,6 +252,8 @@ class AppTaskAssignmentServiceTest {
         var resumed = service.phoneRuntime(7L, new AppPhoneRuntimeRequest("phone-a", 80, true, false));
 
         assertThat(resumed.getData().status()).isEqualTo("RUNNING");
+        assertThat(resumed.getData().pausedAt()).isNull();
+        assertThat(resumed.getData().pausedSeconds()).isEqualTo(30);
         assertThat(resumed.getData().completableAt()).isEqualTo(NOW.plusSeconds(10));
         verify(mapper).updatePhoneTaskPause(7L, 11L, "CTA-PHONE", null, 30L, NOW);
         verify(mapper).upsertPhoneRuntime(7L, 11L, 80, false, true, "ONLINE", null, NOW);
@@ -268,6 +274,8 @@ class AppTaskAssignmentServiceTest {
 
         assertThat(paused.getData().taskNo()).isEqualTo("CTA-PHONE");
         assertThat(paused.getData().status()).isEqualTo("PAUSED");
+        assertThat(paused.getData().pausedAt()).isEqualTo(NOW);
+        assertThat(paused.getData().pausedSeconds()).isZero();
         assertThat(paused.getData().completableAt()).isNull();
         verify(mapper).upsertPhoneRuntime(7L, 11L, 19, null, true, "ONLINE", "PHONE_LOW_BATTERY", NOW);
         verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
@@ -927,6 +935,48 @@ class AppTaskAssignmentServiceTest {
         assertThat(task.taskNo()).isEqualTo("CTA-PHONE");
         assertThat(task.status()).isEqualTo("PAUSED");
         assertThat(task.completableAt()).isNull();
+    }
+
+    @Test
+    void pauseReadbacksFreezeAtTheSameBoundaryAndResumeRetainsElapsedWork() {
+        var phone = device("PHONE", "PHONE", "Your phone", 8);
+        LocalDateTime started = NOW.minusSeconds(200);
+        LocalDateTime pauseBoundary = NOW.minusSeconds(30);
+        var running = new AppTaskAssignmentMapper.AssignmentRow("CTA-PHONE", 11L, "TASK-IG", "Phone task", "IG",
+                "model", "UVEL App", "RUNNING", new BigDecimal("0.30"), 300, 0,
+                started, NOW.plusHours(1), null, null, "nonce", NOW.plusHours(1), null, 10L);
+        when(mapper.ownedDevices(7L)).thenReturn(List.of(phone));
+        when(mapper.assignmentsForDevices(7L, "PRODUCTION", List.of(11L))).thenReturn(List.of(running));
+        when(mapper.phoneRuntime(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(80, true, NOW.minusSeconds(150)));
+
+        var first = service.assignments(7L).getData().devices().get(0).currentTask();
+        var laterService = serviceAt(NOW.plusSeconds(60));
+        var later = laterService.assignments(7L).getData().devices().get(0).currentTask();
+        assertThat(first.status()).isEqualTo("PAUSED");
+        assertThat(first.pausedAt()).isEqualTo(pauseBoundary);
+        assertThat(first.pausedSeconds()).isEqualTo(10);
+        assertThat(later.pausedAt()).isEqualTo(first.pausedAt());
+        assertThat(later.pausedSeconds()).isEqualTo(first.pausedSeconds());
+        assertThat(later.completableAt()).isNull();
+
+        var paused = new AppTaskAssignmentMapper.AssignmentRow("CTA-PHONE", 11L, "TASK-IG", "Phone task", "IG",
+                "model", "UVEL App", "RUNNING", new BigDecimal("0.30"), 300, 0,
+                started, NOW.plusHours(1), null, null, "nonce", NOW.plusHours(1), pauseBoundary, 10L);
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(phone);
+        when(mapper.lockActiveAssignment(7L, 11L, "PRODUCTION")).thenReturn(paused);
+        when(mapper.updatePhoneTaskPause(7L, 11L, "CTA-PHONE", null, 100L, NOW.plusSeconds(60))).thenReturn(1);
+        var resumed = laterService.phoneRuntime(7L, new AppPhoneRuntimeRequest("phone-a", 80, true, false)).getData();
+
+        assertThat(resumed.status()).isEqualTo("RUNNING");
+        assertThat(resumed.pausedAt()).isNull();
+        assertThat(resumed.pausedSeconds()).isEqualTo(100);
+        assertThat(resumed.completableAt()).isEqualTo(started.plusSeconds(400));
+        long before = java.time.Duration.between(started, first.pausedAt()).getSeconds() - first.pausedSeconds();
+        long after = java.time.Duration.between(started, NOW.plusSeconds(60)).getSeconds() - resumed.pausedSeconds();
+        assertThat(before).isEqualTo(160).isEqualTo(after);
+        verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
+        verify(mapper, never()).completeAssignment(any(), anyString(), anyString(), anyString(), any());
     }
 
     @Test
