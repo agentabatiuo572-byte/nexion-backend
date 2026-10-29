@@ -21,16 +21,18 @@ import static org.mockito.ArgumentMatchers.any;
 class SupportCustomerProfileNetTest {
     private final SupportOwnershipService ownership=mock(SupportOwnershipService.class);
     private final FinanceSupportReadService finance=mock(FinanceSupportReadService.class);
+    private final OpsDeviceService deviceService=mock(OpsDeviceService.class);
     private final SupportFundsReadFacade funds=mock(SupportFundsReadFacade.class);
+    private final ffdd.opsconsole.device.facade.SupportDeviceReadFacade currentDevices=mock(ffdd.opsconsole.device.facade.SupportDeviceReadFacade.class);
     private SupportCustomerProfileService service() throws Exception {
         return service(null);
     }
     private SupportCustomerProfileService service(SupportAnalyticsService analytics) throws Exception {
         Object[] legacy={ownership,mock(SupportBindingMapper.class),mock(SupportCustomerProfileMapper.class),mock(OpsUserService.class),finance,
-            mock(OpsDeviceService.class),mock(OpsRiskService.class),mock(CustomerProfileRepository.class),mock(SupportMaintenanceService.class),mock(SupportWorkbenchMapper.class),mock(ObjectStorageService.class)};
+            deviceService,mock(OpsRiskService.class),mock(CustomerProfileRepository.class),mock(SupportMaintenanceService.class),mock(SupportWorkbenchMapper.class),mock(ObjectStorageService.class)};
         when(ownership.customerQueryScope(1L)).thenReturn(new ReadScope(7L,ReadMode.PERSONAL,null,null));
         when(finance.totals(1L)).thenReturn(Map.of("byCurrency",List.of(Map.of("currency","USDT","balance","77","creditedDepositTotal","11","fieldStatuses",Map.of("balance","READY","creditedDepositTotal","READY")))));
-        for(var ctor:SupportCustomerProfileService.class.getConstructors())if(ctor.getParameterCount()==14){var args=Arrays.copyOf(legacy,14);args[11]=funds;args[12]=mock(ffdd.opsconsole.device.facade.SupportDeviceReadFacade.class);args[13]=analytics;return (SupportCustomerProfileService)ctor.newInstance(args);}
+        for(var ctor:SupportCustomerProfileService.class.getConstructors())if(ctor.getParameterCount()==14){var args=Arrays.copyOf(legacy,14);args[11]=funds;args[12]=currentDevices;args[13]=analytics;return (SupportCustomerProfileService)ctor.newInstance(args);}
         return (SupportCustomerProfileService)SupportCustomerProfileService.class.getConstructors()[0].newInstance(legacy);
     }
     @Test void profileUsesAuthorizedScopeForStatisticsAndPreservesSectionTimestamp() throws Exception {
@@ -51,6 +53,36 @@ class SupportCustomerProfileNetTest {
         assertThat(((Map<?,?>)usdt.get("fieldStatuses")).get("netContributionTotal")).isEqualTo("READY");
         assertThat(rows.stream().filter(r->"UVT".equals(r.get("currency"))).findFirst().orElseThrow()).containsEntry("netContributionTotal","0");
         verify(funds).readNetContributions(List.of(1L));
+    }
+    @Test void productionProfileReadsCachedNetWithoutReplayingFundHistory() throws Exception {
+        var analytics=mock(SupportAnalyticsService.class);var service=service(analytics);
+        when(deviceService.devices(any())).thenReturn(ffdd.opsconsole.shared.api.ApiResult.ok(
+            new ffdd.opsconsole.shared.api.PageResult<ffdd.opsconsole.device.domain.DeviceOpsView>(0,1,20,List.of())));
+        when(analytics.cachedNetForCustomer(1L)).thenReturn(new NetSnapshot(List.of(new NetCustomer(1L,
+            EvidenceState.READY,List.of(),new BigDecimal("-12.000001"),BigDecimal.ZERO)),List.of(),List.of()));
+        when(analytics.cachedDevicesForCustomer(1L)).thenReturn(new ffdd.opsconsole.device.facade.SupportDeviceReadFacade.Snapshot(
+            List.of(),List.of(),java.time.LocalDateTime.now()));
+        var usdt=currencies(service.profile(1L)).stream().filter(r->"USDT".equals(r.get("currency"))).findFirst().orElseThrow();
+        assertThat(usdt).containsEntry("netContributionTotal","-12.000001");
+        verify(analytics).cachedNetForCustomer(1L);verifyNoInteractions(funds);
+        verify(analytics).cachedDevicesForCustomer(1L);verifyNoInteractions(currentDevices);
+    }
+    @Test void unavailableCachedNetDoesNotFallBackToRequestTimeFundReplay() throws Exception {
+        var analytics=mock(SupportAnalyticsService.class);var service=service(analytics);
+        when(analytics.cachedNetForCustomer(1L)).thenThrow(new BizException(503,"SUPPORT_ANALYTICS_SOURCE_UNAVAILABLE"));
+        var usdt=currencies(service.profile(1L)).stream().filter(r->"USDT".equals(r.get("currency"))).findFirst().orElseThrow();
+        assertThat(usdt).containsEntry("netContributionTotal",null).containsEntry("balance","77");
+        verifyNoInteractions(funds);
+    }
+    @Test void unavailableCachedDeviceCountsKeepHistoryWithoutInventingAZeroHolding() throws Exception {
+        var analytics=mock(SupportAnalyticsService.class);var service=service(analytics);
+        when(deviceService.devices(any())).thenReturn(ffdd.opsconsole.shared.api.ApiResult.ok(
+            new ffdd.opsconsole.shared.api.PageResult<ffdd.opsconsole.device.domain.DeviceOpsView>(0,1,20,List.of())));
+        when(analytics.cachedDevicesForCustomer(1L)).thenThrow(new BizException(503,"SUPPORT_ANALYTICS_CACHE_NOT_READY"));
+        var section=(Map<?,?>)service.profile(1L).get("devices");assertThat(section.get("status")).isEqualTo("READY");
+        var data=(Map<?,?>)section.get("data");assertThat(data.get("records")).isEqualTo(List.of());
+        assertThat(data.get("heldCount")).isNull();assertThat(((Map<?,?>)data.get("fieldStatuses")).get("heldCount")).isEqualTo("ERROR");
+        verifyNoInteractions(currentDevices);
     }
     @Test void unknownNetHasIndependentNullStatusWhileOldBalancesStayAvailable() throws Exception {
         var service=service();when(funds.readNetContributions(any())).thenReturn(new NetSnapshot(List.of(new NetCustomer(1L,EvidenceState.UNKNOWN,List.of("SOURCE"),null,null)),List.of(),List.of()));

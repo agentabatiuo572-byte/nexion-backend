@@ -5,6 +5,11 @@ import ffdd.opsconsole.content.mapper.SupportAnalyticsMapper.AttributionRow;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.SelectProvider;
+import org.apache.ibatis.annotations.Param;
+import java.util.Collection;
+import java.util.Map;
+import ffdd.opsconsole.content.domain.SupportRules;
 
 /** Internal fact sampler only. Private HTTP reads must independently apply their current authorized scope. */
 @SuppressWarnings("MybatisPlusBaseMapper")
@@ -36,4 +41,25 @@ public interface SupportAnalyticsFactMapper {
         WHERE u.sandbox=0 ORDER BY e.fact_id
         """)
     List<AttributionProof> attributionProofs();
+
+    @SelectProvider(type=SourceSql.class,method="sql") List<SupportAnalyticsMapper.CurrentCustomer> currentCustomers();
+    @SelectProvider(type=SourceSql.class,method="sql") SupportAnalyticsMapper.ActivityCoverage activityCoverage();
+    @SelectProvider(type=SourceSql.class,method="sql") SupportAnalyticsMapper.ActivityRules activityRules();
+    @SelectProvider(type=SourceSql.class,method="sql") List<SupportAnalyticsMapper.ActivityRow> activityEvents(@Param("customerIds") Collection<Long> ids,@Param("observedThroughAt") LocalDateTime through);
+    @SelectProvider(type=SourceSql.class,method="sql") List<SupportAnalyticsMapper.RootDisplayRow> rootDisplayRows(@Param("ids") Collection<Long> ids);
+    @SelectProvider(type=SourceSql.class,method="sql") List<SupportAnalyticsMapper.CustomerTagRow> customerTagRows(@Param("ids") Collection<Long> ids);
+    @SelectProvider(type=SourceSql.class,method="sql") SupportRules queryRules();
+    @SelectProvider(type=SourceSql.class,method="sql") List<SupportAnalyticsMapper.ActivityIdentityRow> activityIdentityRows(@Param("ids") Collection<Long> ids,@Param("observedThroughAt") LocalDateTime through);
+    @SelectProvider(type=SourceSql.class,method="sql") List<SupportAnalyticsMapper.TaskRow> taskRows(Map<String,Object> parameters);
+    @SelectProvider(type=SourceSql.class,method="sql") List<SupportAnalyticsMapper.PendingReplyRow> pendingReplyRows(@Param("ids") Collection<Long> ids);
+
+    /** Fixed internal all-production source projections. No HTTP input can choose a statement or remove a guard. */
+    final class SourceSql {
+        public static String sql(org.apache.ibatis.builder.annotation.ProviderContext context) {
+            String name=context.getMapperMethod().getName();
+            var method=java.util.Arrays.stream(SupportAnalyticsMapper.class.getMethods()).filter(m->m.getName().equals(name)).findFirst().orElseThrow();
+            String sql=String.join(" ",method.getAnnotation(Select.class).value());
+            return sql.replace(SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE,"").replace(SupportAnalyticsMapper.READ_SCOPE,"1=1");
+        }
+    }
 }

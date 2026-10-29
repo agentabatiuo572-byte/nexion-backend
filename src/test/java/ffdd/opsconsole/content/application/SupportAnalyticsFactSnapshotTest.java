@@ -55,14 +55,18 @@ class SupportAnalyticsFactSnapshotTest {
             assertThat(c.state()).isEqualTo(EvidenceState.UNKNOWN);assertThat(c.usdt()).isNull();
         });
     }
-    @Test void freshnessIsMeasuredFromCaptureStartIncludingComputeAndResponseTime() {
-        var snapshot=sample();snapshot.requireFresh(AT.plusMillis(4500));
-        assertThatThrownBy(()->snapshot.requireFresh(AT.plusMillis(4500).plusNanos(1))).hasMessageContaining("EXPIRED");
-        assertThatThrownBy(()->snapshot.requireFresh(AT.minusNanos(1))).hasMessageContaining("EXPIRED");
+    @Test void completedGenerationRemainsReadableDuringCalculationAndDelayedRecovery() {
+        var snapshot=sample();
+        assertThatCode(()->snapshot.requireFresh(AT.plusSeconds(64))).doesNotThrowAnyException();
+        assertThatCode(()->snapshot.requireFresh(AT.plusSeconds(600))).doesNotThrowAnyException();
+        assertThat(snapshot.asOf()).isEqualTo(AT);
+        assertThat(snapshot.payments(List.of(1L)).evaluatedAt()).isEqualTo(AT);
     }
-    @Test void monotonicAgeCannotBeExtendedByAClockCorrection() {
+    @Test void restoredGenerationDoesNotTreatAnotherJvmNanoClockAsSourceAge() {
         var base=sample();var snapshot=new SupportAnalyticsFactSnapshot(AT,base.subjects(),base.payments(),base.contributions(),base.attributions(),base.proofs(),100L);
-        snapshot.requireFresh(AT,4_500_000_100L);
-        assertThatThrownBy(()->snapshot.requireFresh(AT,4_500_000_101L)).hasMessageContaining("EXPIRED");
+        assertThatCode(()->snapshot.requireFresh(AT.plusSeconds(60),-1L)).doesNotThrowAnyException();
+        assertThat(snapshot.asOf()).isEqualTo(AT);
+        assertThat(snapshot.contributions(List.of(1L)).customers()).singleElement()
+            .satisfies(c->assertThat(c.usdt()).isEqualByComparingTo("-3.123456"));
     }
 }

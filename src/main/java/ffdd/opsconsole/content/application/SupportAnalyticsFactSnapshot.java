@@ -11,10 +11,14 @@ import java.util.*;
 
 /** Detached, immutable financial facts only. No authenticated scope or private HTTP response is retained. */
 public record SupportAnalyticsFactSnapshot(Instant asOf,List<Long> subjects,SupportPaymentFacts.Snapshot payments,
-        NetSnapshot contributions,List<AttributionRow> attributions,List<AttributionProof> proofs,long capturedAtNanos) {
+        NetSnapshot contributions,List<AttributionRow> attributions,List<AttributionProof> proofs,long capturedAtNanos,SupportAnalyticsCompiledFacts compiled) {
+    public SupportAnalyticsFactSnapshot(Instant asOf,List<Long> subjects,SupportPaymentFacts.Snapshot payments,
+            NetSnapshot contributions,List<AttributionRow> attributions,List<AttributionProof> proofs,long capturedAtNanos) {
+        this(asOf,subjects,payments,contributions,attributions,proofs,capturedAtNanos,null);
+    }
     public SupportAnalyticsFactSnapshot(Instant asOf,List<Long> subjects,SupportPaymentFacts.Snapshot payments,
             NetSnapshot contributions,List<AttributionRow> attributions,List<AttributionProof> proofs) {
-        this(asOf,subjects,payments,contributions,attributions,proofs,System.nanoTime());
+        this(asOf,subjects,payments,contributions,attributions,proofs,0L,null);
     }
     public SupportAnalyticsFactSnapshot {
         Objects.requireNonNull(asOf);Objects.requireNonNull(payments);Objects.requireNonNull(contributions);
@@ -34,13 +38,10 @@ public record SupportAnalyticsFactSnapshot(Instant asOf,List<Long> subjects,Supp
             throw new IllegalArgumentException("SOURCE_SNAPSHOT_EXCLUSIONS_NOT_DISAGGREGATED");
     }
     public void requireFresh(Instant now) {
-        requireFresh(now,System.nanoTime());
+        // Completed minute snapshots remain usable while the next generation is calculated.
     }
     void requireFresh(Instant now,long nowNanos) {
-        // Reserve 500ms of the five-second product limit for serialization, proxying and transport.
-        long elapsed=nowNanos-capturedAtNanos;
-        if(elapsed<0 || elapsed>4_500_000_000L || now.isBefore(asOf) || Duration.between(asOf,now).compareTo(Duration.ofMillis(4500))>0)
-            throw new BizException(503,"SUPPORT_ANALYTICS_SOURCE_SNAPSHOT_EXPIRED");
+        requireFresh(now);
     }
     SupportPaymentFacts.Snapshot payments(Collection<Long> ids) {return SupportPaymentSnapshotProjection.subset(payments,ids,asOf);}
     NetSnapshot contributions(Collection<Long> requested) {
