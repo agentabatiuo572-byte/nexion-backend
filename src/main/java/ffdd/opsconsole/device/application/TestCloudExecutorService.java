@@ -7,6 +7,7 @@ import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.AssignmentRow;
 import ffdd.opsconsole.device.mapper.TestCloudExecutorMapper;
 import ffdd.opsconsole.device.mapper.TestCloudExecutorMapper.Execution;
+import ffdd.opsconsole.device.mapper.TestCloudExecutorMapper.Binding;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -75,6 +76,10 @@ public class TestCloudExecutorService {
     }
 
     public Identity authenticate(String authorization) {
+        return authenticate(authorization,null);
+    }
+
+    public Identity authenticate(String authorization,String executorId) {
         requireEnabled();
         try {
             if (authorization == null || !authorization.matches("Bearer ct1_[A-Za-z0-9_-]{43}")) throw new IllegalArgumentException();
@@ -84,7 +89,26 @@ public class TestCloudExecutorService {
             if (bytes.length != 32 || !Base64.getUrlEncoder().withoutPadding().encodeToString(bytes).equals(encoded)
                     || !expected.matches("[a-f0-9]{64}")
                     || !MessageDigest.isEqual(digest(bytes),HexFormat.of().parseHex(expected))) throw new IllegalArgumentException();
-            Identity identity = configured(); requireCurrent(identity); return identity;
+            Identity identity;
+            if(executorId==null || executorId.isBlank() || configured().executorId().equals(executorId)) identity=configured();
+            else {
+                if(!fleetEnabled()) throw new IllegalArgumentException();
+                if("fleet".equals(executorId)) identity=fleetIdentity();
+                else {
+                    safe(executorId,32);
+                    Binding registered=mapper.binding(executorId);
+                    if(registered!=null) identity=identity(registered);
+                    else {
+                        if(!executorId.matches("fleet-[1-9][0-9]{0,18}")) throw new IllegalArgumentException();
+                        long deviceId=Long.parseLong(executorId.substring(6));
+                        var candidate=mapper.fleetCandidate(fleetCutoff(),deviceId,configured().deviceId());
+                        if(candidate==null) throw new IllegalArgumentException();
+                        identity=new Identity(executorId,candidate.ownerId(),deviceId,candidate.instanceNo(),
+                                configured().taskConfigId(),configured().model(),configured().modelDigest());
+                    }
+                }
+            }
+            requireCurrent(identity); return identity;
         } catch (IllegalArgumentException invalid) { throw error(401,"TEST_CLOUD_AUTH_INVALID"); }
     }
 
@@ -102,13 +126,60 @@ public class TestCloudExecutorService {
     public void requireCurrent(Identity identity) {
         requireEnabled();
         try {
-            if (!configured().equals(identity) || !property("credential-sha256").matches("[a-f0-9]{64}")) throw new IllegalArgumentException();
+            if(!property("credential-sha256").matches("[a-f0-9]{64}")) throw new IllegalArgumentException();
+            if(configured().equals(identity)) return;
+            if(!fleetEnabled()) throw new IllegalArgumentException();
+            if(fleetIdentity().equals(identity)) return;
+            Binding binding=mapper.binding(identity.executorId());
+            if(binding!=null) {
+                if(!identity(binding).equals(identity)) throw new IllegalArgumentException();
+            } else {
+                if(!identity.executorId().equals("fleet-"+identity.deviceId())) throw new IllegalArgumentException();
+                var candidate=mapper.fleetCandidate(fleetCutoff(),identity.deviceId(),configured().deviceId());
+                if(candidate==null || candidate.ownerId()!=identity.ownerId() || !candidate.instanceNo().equals(identity.instanceNo())
+                        || !configured().taskConfigId().equals(identity.taskConfigId())
+                        || !configured().model().equals(identity.model()) || !configured().modelDigest().equals(identity.modelDigest())) throw new IllegalArgumentException();
+            }
         } catch (IllegalArgumentException invalid) { throw error(401,"TEST_CLOUD_AUTH_INVALID"); }
+    }
+
+    private boolean fleetEnabled() { return "true".equals(property("fleet-enabled")); }
+    private LocalDateTime fleetCutoff() {
+        try { return LocalDateTime.parse(property("fleet-started-at")); }
+        catch(RuntimeException invalid) { throw new IllegalArgumentException("TEST_CLOUD_FLEET_CUTOFF_INVALID"); }
+    }
+    private Identity fleetIdentity() { return new Identity("fleet",0,0,"fleet",configured().taskConfigId(),configured().model(),configured().modelDigest()); }
+    private Identity identity(Binding b) { return new Identity(b.executorId(),b.ownerId(),b.deviceId(),b.instanceNo(),b.taskConfigId(),b.model(),b.modelDigest()); }
+    private Binding binding(Identity i) { return new Binding(i.executorId(),i.ownerId(),i.deviceId(),i.instanceNo(),i.taskConfigId(),i.model(),i.modelDigest()); }
+    private boolean fleet(Identity i) { return i.executorId().startsWith("fleet-"); }
+
+    @Transactional(readOnly=true)
+    public ApiResult<Map<String,Object>> instances(Identity i,long afterDeviceId,int requestedLimit) {
+        requireCurrent(i);
+        if(!fleetIdentity().equals(i) || !fleetEnabled() || afterDeviceId<0) throw error(403,"TEST_CLOUD_FLEET_REQUIRED");
+        int limit=Math.max(1,Math.min(100,requestedLimit));
+        var candidates=mapper.fleetCandidates(fleetCutoff(),afterDeviceId,configured().deviceId(),limit+1);
+        List<Map<String,Object>> items=new ArrayList<>();
+        for(var c:candidates.stream().limit(limit).toList()) {
+            Binding registered=mapper.binding("fleet-"+c.deviceId());
+            Identity target=registered==null?new Identity("fleet-"+c.deviceId(),c.ownerId(),c.deviceId(),c.instanceNo(),
+                    configured().taskConfigId(),configured().model(),configured().modelDigest()):identity(registered);
+            // A changed owner or instance must never silently inherit an old executor identity.
+            if(target.ownerId()!=c.ownerId() || !target.instanceNo().equals(c.instanceNo())) continue;
+            items.add(bindings(target));
+        }
+        Map<String,Object> result=bindings(i); result.put("instances",items); result.put("hasMore",candidates.size()>limit);
+        result.put("nextAfterDeviceId",candidates.isEmpty()?afterDeviceId:candidates.get(Math.min(limit,candidates.size())-1).deviceId());
+        return ApiResult.ok(result);
     }
 
     @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> next(Identity identity,String key) {
         requireCurrent(identity); key(key); lockBinding(identity);
+        if(fleet(identity)) {
+            mapper.register(binding(identity),now());
+            if(!binding(identity).equals(mapper.binding(identity.executorId()))) throw error(409,"TEST_CLOUD_BINDING_CONFLICT");
+        }
         Execution replay = mapper.byNextKey(identity.executorId(),sha256(key));
         if (replay != null) { requireManifest(identity,replay); return ApiResult.ok(claimView(identity,replay,task(identity,replay.taskNo()))); }
         AssignmentRow active = assignments.lockActiveAssignment(identity.ownerId(),identity.deviceId(),"PRODUCTION");
@@ -213,6 +284,20 @@ public class TestCloudExecutorService {
     @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> receipt(Identity identity,String taskNo) {
         requireCurrent(identity);
+        if(fleet(identity)) {
+            Execution e=mapper.lock(safe(taskNo,96)); requireManifest(identity,e);
+            var receipt=mapper.historicalReceipt(taskNo,identity.ownerId(),identity.deviceId());
+            boolean found=receipt!=null && "COMPLETED".equals(receipt.status()) && receipt.receiptNo()!=null
+                    && identity.taskConfigId().equals(receipt.taskConfigId()) && KIND.equals(receipt.modelName())
+                    && CLIENT.equals(receipt.clientName()) && e.resultArtifact()!=null && e.resultHash()!=null
+                    && sha256(e.resultArtifact()).equals(e.resultHash())
+                    && domainProof(identity,e,e.resultHash()).equals(receipt.proofHash())
+                    && Set.of("CREDITED","SETTLED","SUCCESS").contains(Objects.toString(receipt.earningStatus(),""));
+            Map<String,Object> result=bindings(identity); result.put("found",found); result.put("taskNo",taskNo);
+            result.put("inputHash",e.inputHash()); result.put("resultHash",e.resultHash());
+            result.put("receiptNo",found?receipt.receiptNo():null); result.put("status",receipt==null?null:receipt.status());
+            return ApiResult.ok(result);
+        }
         // Owner/device/task order is retained even for reconciliation; no claim or financial mutation occurs.
         lockBinding(identity,false); AssignmentRow task=task(identity,safe(taskNo,96));
         Execution e=mapper.lock(taskNo); requireManifest(identity,e);
@@ -231,10 +316,16 @@ public class TestCloudExecutorService {
         requireCurrent(i);
         if(!Long.valueOf(i.ownerId()).equals(assignments.lockProductionUser(i.ownerId()))) throw error(403,"TEST_CLOUD_BINDING_INVALID");
         var device=assignments.lockOwnedDevice(i.ownerId(),i.deviceId());
-        if(device==null || !i.instanceNo().equals(device.instanceNo()) || !"cloud-share".equals(device.productCode())
-                || !Set.of("SHARE","CLOUD_SHARE").contains(Objects.toString(device.deviceType(),"").toUpperCase(Locale.ROOT))) throw error(403,"TEST_CLOUD_BINDING_INVALID");
+        if(device==null || i.deviceId()<=0 || !i.instanceNo().equals(device.instanceNo())
+                || (!fleet(i) && (!"cloud-share".equals(device.productCode())
+                || !Set.of("SHARE","CLOUD_SHARE").contains(Objects.toString(device.deviceType(),"").toUpperCase(Locale.ROOT))))) throw error(403,"TEST_CLOUD_BINDING_INVALID");
         // Reconciliation is read-only in effect and remains possible after a successful deferred deactivation.
         if(!live) return;
+        if(fleet(i)) {
+            if(!Integer.valueOf(1).equals(mapper.liveFleetBinding(fleetCutoff(),i.ownerId(),i.deviceId(),i.instanceNo(),completingExistingTask)))
+                throw error(403,"TEST_CLOUD_BINDING_INVALID");
+            return;
+        }
         if(device.activatedAt()==null || !Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(Objects.toString(device.status(),"").toUpperCase(Locale.ROOT))
                 || Boolean.TRUE.equals(device.dispatchPaused()) || (device.pausedReason()!=null && !device.pausedReason().isBlank())
                 || (!completingExistingTask && mapper.eligibleBinding(i.ownerId(),i.deviceId(),i.instanceNo())!=1)
@@ -377,7 +468,13 @@ public class TestCloudExecutorService {
     public void expireHeartbeat() {
         // Keep the non-secret binding after revocation so only this executor's stale marker is retired.
         if(!"TEST".equals(property("deployment-scope")) || !Set.of(environment.getActiveProfiles()).equals(Set.of("dev"))) return;
-        try { Identity i=configured(); mapper.expireHeartbeat(i.ownerId(),i.deviceId(),i.instanceNo(),marker(i),now(),now().minusSeconds(120)); }
+        try {
+            Identity i=configured(); mapper.expireHeartbeat(i.ownerId(),i.deviceId(),i.instanceNo(),marker(i),now(),now().minusSeconds(120));
+            for(Binding b:mapper.bindings()) {
+                Identity target=identity(b);
+                mapper.expireHeartbeat(target.ownerId(),target.deviceId(),target.instanceNo(),marker(target),now(),now().minusSeconds(120));
+            }
+        }
         catch(IllegalArgumentException invalidConfig) { /* Disabled/unconfigured deployment has nothing to clean. */ }
     }
 

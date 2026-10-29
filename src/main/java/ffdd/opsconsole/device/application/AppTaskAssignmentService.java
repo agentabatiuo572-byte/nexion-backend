@@ -592,10 +592,17 @@ public class AppTaskAssignmentService {
     }
 
     private boolean managedTestCloud(Long userId, Long deviceId) {
-        return "TEST".equals(environment.getProperty(TestCloudExecutorService.PREFIX + "deployment-scope"))
-                && Set.of(environment.getActiveProfiles()).equals(Set.of("dev"))
-                && String.valueOf(userId).equals(environment.getProperty(TestCloudExecutorService.PREFIX + "owner-id"))
-                && String.valueOf(deviceId).equals(environment.getProperty(TestCloudExecutorService.PREFIX + "device-id"));
+        if (!"TEST".equals(environment.getProperty(TestCloudExecutorService.PREFIX + "deployment-scope"))
+                || !Set.of(environment.getActiveProfiles()).equals(Set.of("dev"))) return false;
+        if (String.valueOf(userId).equals(environment.getProperty(TestCloudExecutorService.PREFIX + "owner-id"))
+                && String.valueOf(deviceId).equals(environment.getProperty(TestCloudExecutorService.PREFIX + "device-id"))) return true;
+        if(mapper.registeredFleet(userId,deviceId)>0) return true;
+        if (!"true".equals(environment.getProperty(TestCloudExecutorService.PREFIX + "fleet-enabled"))) return false;
+        try {
+            return mapper.managedFleet(userId,deviceId,
+                    LocalDateTime.parse(environment.getProperty(TestCloudExecutorService.PREFIX + "fleet-started-at","")),
+                    Long.parseLong(environment.getProperty(TestCloudExecutorService.PREFIX + "device-id","0")))>0;
+        } catch (IllegalArgumentException invalid) { throw new BizException(503,"TEST_CLOUD_FLEET_CONFIG_INVALID"); }
     }
 
     private ApiResult<AppTaskAssignmentView> claimInternal(Long userId, Long deviceId, String sourceEnvironment, Grant grant, boolean cloud) {
@@ -646,7 +653,16 @@ public class AppTaskAssignmentService {
         if (phone(device)) requirePhoneReady(mapper.phoneRuntime(userId, deviceId), now);
 
         int routingVram = effectiveRoutingVram(device);
-        TaskConfigRow task = chooseTask(mapper.eligibleTasks(routingVram), routingVram);
+        List<TaskConfigRow> availableTasks=mapper.eligibleTasks(routingVram);
+        if(cloud) {
+            // Validate the whole active E2 configuration before intersecting with the installed runtime.
+            if(safe(availableTasks).stream().anyMatch(row->row==null || row.minVram()==null))
+                throw new BizException(503,"E2_TASK_CONFIG_INVALID");
+            String configuredTask=environment.getProperty(TestCloudExecutorService.PREFIX+"task-config-id","");
+            availableTasks=safe(availableTasks).stream().filter(row->"EM".equalsIgnoreCase(row.taskClass())
+                    && "BGE-M3".equals(row.modelName()) && configuredTask.equals(row.taskId())).toList();
+        }
+        TaskConfigRow task = chooseTask(availableTasks, routingVram);
         List<ConfigRow> capacityRows = safe(mapper.e3CapacityConfig());
         Map<String, String> capacityConfig = capacityConfig(capacityRows);
         if (!E3DeviceCapacityPolicy.validConfig(capacityConfig)) {
@@ -690,7 +706,10 @@ public class AppTaskAssignmentService {
         AuditLogWriteRequest claimAudit = AuditLogWriteRequest.builder()
                 .action("TASK_ASSIGNMENT_CLAIMED").resourceType("COMPUTE_TASK").resourceId(taskNo)
                 .bizNo(taskNo).userId(userId).actorType(cloud ? "TEST_CLOUD_EXECUTOR" : grant == null ? "USER" : "TEST_COMPUTE_WORKER")
-                .actorId(grant == null && !cloud ? userId : null).actorUsername(cloud ? "test-cloud:" + environment.getProperty(TestCloudExecutorService.PREFIX + "executor-id") : grant == null ? null : grant.getName())
+                .actorId(grant == null && !cloud ? userId : null).actorUsername(cloud ? "test-cloud:" +
+                        (String.valueOf(deviceId).equals(environment.getProperty(TestCloudExecutorService.PREFIX+"device-id"))
+                                ? environment.getProperty(TestCloudExecutorService.PREFIX+"executor-id") : "fleet-"+deviceId)
+                        : grant == null ? null : grant.getName())
                 .result("SUCCESS").riskLevel("MEDIUM")
                 .detail(claimDetail)
                 .build();

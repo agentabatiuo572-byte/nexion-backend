@@ -3,6 +3,7 @@ import base64
 from contextlib import closing
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sqlite3
 import struct
@@ -75,7 +76,9 @@ class Backend:
                 raise error
             return ok({**identity(self.cfg), "idle": True, "retryAfterSeconds": 60} if self.idle else self.task)
         if path == w.PREFIX + "/heartbeat":
-            return ok({**self.cfg.binding, "serverCanonical": True, "heartbeatAt": int(time.time() * 1000), "activeTaskNo": None})
+            phase = self.journal.state()["phase"]
+            active = self.task["taskNo"] if phase in ("CLAIMED", "COMPLETE_INTENT", "UNKNOWN_COMPLETE") else None
+            return ok({**self.cfg.binding, "serverCanonical": True, "heartbeatAt": int(time.time() * 1000), "activeTaskNo": active})
         if path.endswith("/complete"):
             self.complete_body = body
             if self.complete_error:
@@ -329,6 +332,288 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.journal.state(), {"phase": "IDLE", "binding": self.cfg.binding})
         self.backend.calls.clear()
         self.assertEqual(self.worker.run(once=True), 0)
+
+
+class FleetTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.env = {"UVEL_CLOUD_WORKER_ENABLED": "true", "UVEL_CLOUD_WORKER_SCOPE": "TEST",
+                    "UVEL_CLOUD_FLEET_ENABLED": "true", "UVEL_CLOUD_MODEL": "bge-m3:567m",
+                    "UVEL_CLOUD_MODEL_DIGEST": "sha256:" + "1" * 64}
+        self.backend = unittest.mock.Mock(token="protected-test-placeholder")
+        self.fleet = w.Fleet(self.env, self.backend, Ollama(config()), Path(self.tmp.name) / "instances",
+                             threading.Event(), self.open_journal)
+        self.fleet.directory.mkdir(mode=0o700)
+
+    def tearDown(self):
+        for entry in self.fleet.snapshot():
+            entry.worker.journal.db.close()
+            os.close(entry.file_lock)
+        self.tmp.cleanup()
+
+    def open_journal(self, path):
+        return w.Journal(path / "journal.sqlite3"), os.open(path / "worker.lock", os.O_CREAT | os.O_RDWR, 0o600)
+
+    def row(self, device=92):
+        cfg = config()
+        cfg.binding = {**cfg.binding, "deviceId": device, "executorId": "fleet-" + str(device),
+                       "instanceNo": "NEX-ORD-" + str(device)}
+        return identity(cfg)
+
+    def page(self, rows, more=False, cursor=None):
+        return ok({"executionKind": w.KIND, "specVersion": w.SPEC, "deploymentScope": "TEST", "serverCanonical": True,
+                   "instances": rows, "hasMore": more, "nextAfterDeviceId": cursor if cursor is not None else rows[-1]["deviceId"] if rows else 0})
+
+    def discover(self, rows):
+        self.backend.request.return_value = self.page(rows)
+        self.fleet.refresh()
+        return self.fleet.snapshot()
+
+    def wire(self, entry):
+        worker = entry.worker
+        backend = Backend(worker.config, worker.journal, Path(worker.journal.db.execute("PRAGMA database_list").fetchone()[2]))
+        worker.backend = backend
+        return backend
+
+    def test_discovery_paginates_and_scopes_independent_journals_without_initial_heartbeat(self):
+        self.backend.request.side_effect = [self.page([self.row()], True), self.page([self.row(93)])]
+        self.fleet.refresh()
+        entries = self.fleet.snapshot()
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(self.backend.request.call_args_list[1].args[1], w.PREFIX + "/instances?afterDeviceId=92&limit=100")
+        self.assertEqual([entry.worker.backend.executor for entry in entries], ["fleet-92", "fleet-93"])
+        self.assertNotEqual(entries[0].worker.journal.db, entries[1].worker.journal.db)
+        self.fleet.health()
+        self.assertEqual(self.fleet.ollama.calls, [])
+
+    def test_scan_cursor_can_skip_filtered_rows_and_empty_pages_but_cannot_move_backwards(self):
+        self.backend.request.side_effect = [self.page([self.row()], True, 95), self.page([], True, 97), self.page([self.row(98)])]
+        self.fleet.refresh()
+        self.assertEqual([entry.worker.config.binding["deviceId"] for entry in self.fleet.snapshot()], [92, 98])
+        self.assertEqual(self.backend.request.call_args_list[2].args[1], w.PREFIX + "/instances?afterDeviceId=97&limit=100")
+        self.backend.request.side_effect = [self.page([self.row()], True), self.page([], True, 91)]
+        with self.assertRaisesRegex(w.Halt, "FLEET_DISCOVERY_CURSOR_INVALID"):
+            self.fleet.refresh()
+
+    def test_unknown_instance_stops_heartbeat_and_does_not_block_other_real_computation(self):
+        first, second = self.discover([self.row(), self.row(93)])
+        first_backend, second_backend = self.wire(first), self.wire(second)
+        first_backend.next_error = w.Halt("HTTP_OUTCOME_UNKNOWN")
+        self.fleet.tick(first)
+        self.assertTrue(first.blocked)
+        self.assertEqual(first.worker.journal.state()["phase"], "UNKNOWN_NEXT")
+        self.fleet.tick(second)
+        self.assertEqual(second.worker.journal.state()["phase"], "IDLE")
+        self.assertEqual(len(second_backend.complete_body["resultArtifactBase64"]), 10924)
+        first_calls = list(first_backend.calls)
+        self.fleet.health()
+        self.fleet.tick(first)
+        self.assertEqual(first_backend.calls, first_calls)
+        self.assertTrue(any(path.endswith("/heartbeat") for _, path, _ in second_backend.calls))
+
+    def test_proven_unsent_next_retries_original_key_without_health_before_confirmation(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        backend.next_error, backend.idle = w.NotSent("CONNECT_NOT_SENT"), True
+        self.fleet.tick(entry)
+        self.assertFalse(entry.blocked)
+        self.assertEqual(entry.worker.journal.state()["phase"], "NEXT_NOT_SENT")
+        self.fleet.health()
+        self.assertEqual(len(backend.calls), 1)
+        entry.due = 0
+        self.fleet.tick(entry)
+        self.assertEqual(backend.calls[0][2], backend.calls[1][2])
+
+    def test_revocation_interrupts_wait_and_removed_instance_receipt_is_read_only(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        pending = {"phase": "UNKNOWN_COMPLETE", "binding": entry.worker.config.binding,
+                   "taskNo": backend.task["taskNo"], "inputHash": backend.task["inputHash"], "resultHash": "c" * 64}
+        entry.worker.journal.set(pending)
+        self.backend.request.return_value = self.page([])
+        self.fleet.refresh()
+        self.assertFalse(entry.present)
+        self.assertTrue(entry.worker.stop.is_set())
+        self.fleet.tick(entry)
+        self.assertEqual(entry.worker.journal.state()["phase"], "IDLE")
+        self.assertEqual([method for method, _, _ in backend.calls], ["GET"])
+        self.fleet.health()
+        self.assertEqual(len(backend.calls), 1)
+
+    def test_lost_complete_negative_receipt_remains_isolated_and_never_resubmits(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        backend.complete_error, backend.found = w.Halt("HTTP_OUTCOME_UNKNOWN"), False
+        self.fleet.tick(entry)
+        self.assertEqual(entry.worker.journal.state()["phase"], "UNKNOWN_COMPLETE")
+        entry.due = 0
+        self.fleet.tick(entry)
+        self.fleet.health()
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in backend.calls), 1)
+        self.assertTrue(entry.blocked)
+
+    def test_discovery_excludes_legacy_and_rejects_duplicate_wrong_scope_and_cursor(self):
+        self.assertEqual(self.discover([self.row(1152), self.row(1202)]), [])
+        for result in (self.page([self.row(), self.row()]),
+                       self.page([self.row()], True, 0),
+                       ok({**self.page([self.row()])["data"], "deploymentScope": "PRODUCTION"})):
+            self.backend.request.return_value = result
+            with self.assertRaises(w.Halt):
+                self.fleet.refresh()
+        self.assertEqual(self.fleet.snapshot(), [])
+
+    def test_restart_restores_unknown_complete_even_after_discovery_revocation(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        entry.worker.journal.set({"phase": "UNKNOWN_COMPLETE", "binding": entry.worker.config.binding,
+                                  "taskNo": backend.task["taskNo"], "inputHash": backend.task["inputHash"], "resultHash": "d" * 64})
+        entry.worker.journal.db.close()
+        os.close(entry.file_lock)
+        self.fleet.entries.clear()
+        self.fleet.restore()
+        restored, = self.fleet.snapshot()
+        self.assertTrue(restored.blocked)
+        self.assertFalse(restored.present)
+        backend = self.wire(restored)
+        self.fleet.tick(restored)
+        self.assertEqual(restored.worker.journal.state()["phase"], "IDLE")
+        self.assertEqual([method for method, _, _ in backend.calls], ["GET"])
+
+    def test_identity_change_preserves_original_journal(self):
+        entry, = self.discover([self.row()])
+        changed = self.row()
+        changed["ownerId"] += 1
+        self.backend.request.return_value = self.page([changed])
+        with self.assertRaisesRegex(w.Halt, "FLEET_BINDING_CHANGED"):
+            self.fleet.refresh()
+        self.assertEqual(entry.worker.config.binding["ownerId"], 91)
+
+    def test_background_health_during_original_completion_wait_and_sigterm_prevents_complete(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        backend.task["completableAt"] = int(time.time() * 1000) + 100000
+        inferred, heartbeat = threading.Event(), threading.Event()
+        infer = self.fleet.ollama.request
+        def model(method, path, body=None, key=None):
+            result = infer(method, path, body, key)
+            if path == "/api/embed":
+                inferred.set()
+            return result
+        self.fleet.ollama.request = model
+        request = backend.request
+        def backend_request(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if path.endswith("/heartbeat"):
+                heartbeat.set()
+                self.fleet.stop.set()
+            return result
+        backend.request = backend_request
+        self.fleet.restore, self.fleet.refresh = lambda: None, lambda: None
+        # Wake the real health thread when inference has entered the original task wait.
+        def wake(_):
+            inferred.wait(2)
+            return self.fleet.stop.is_set()
+        with patch.object(self.fleet.stop, "wait", side_effect=wake):
+            self.assertEqual(self.fleet.run(), 0)
+        self.assertTrue(heartbeat.is_set())
+        self.assertTrue(entry.worker.stop.is_set())
+        self.assertFalse(any(path.endswith("/complete") for _, path, _ in backend.calls))
+        # run() owns and closes these handles.
+        self.fleet.entries.clear()
+
+    def test_global_stop_inside_synchronous_heartbeat_prevents_new_complete_without_propagation(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        request = backend.request
+        def stop_at_gate(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if path.endswith("/heartbeat"):
+                self.fleet.stop.set()
+            return result
+        backend.request = stop_at_gate
+        self.fleet.tick(entry)
+        self.assertFalse(any(path.endswith("/complete") for _, path, _ in backend.calls))
+        self.assertEqual(entry.worker.journal.state()["phase"], "CLAIMED")
+
+    def test_idle_server_task_and_wrong_active_task_quarantine_without_next_or_complete(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        entry.worker.journal.set({"phase": "IDLE", "binding": entry.worker.config.binding})
+        request = backend.request
+        def wrong_task(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if path.endswith("/heartbeat"):
+                result["data"]["activeTaskNo"] = "CTA-" + "F" * 32
+            return result
+        backend.request = wrong_task
+        self.fleet.health()
+        self.assertTrue(entry.blocked)
+        self.fleet.tick(entry)
+        self.assertFalse(any(path.endswith(("/next-task", "/complete")) for _, path, _ in backend.calls))
+        entry.blocked, entry.running = False, True
+        entry.worker.stop.clear()
+        entry.worker.journal.set({"phase": "CLAIMED", "binding": entry.worker.config.binding, "taskNo": backend.task["taskNo"]})
+        self.fleet.health()
+        self.assertTrue(entry.blocked)
+        self.assertTrue(entry.worker.stop.is_set())
+
+    def test_idle_preflight_rejects_server_active_task_before_new_next_without_background_health(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        entry.worker.journal.set({"phase": "IDLE", "binding": entry.worker.config.binding})
+        request = backend.request
+        def unexpected_task(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            result["data"]["activeTaskNo"] = backend.task["taskNo"]
+            return result
+        backend.request = unexpected_task
+        self.fleet.tick(entry)
+        self.assertTrue(entry.blocked)
+        self.assertEqual([path for _, path, _ in backend.calls], [w.PREFIX + "/heartbeat"])
+
+    def test_late_active_heartbeat_after_positive_confirmation_does_not_quarantine_instance(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        state = {"phase": "CLAIMED", "binding": entry.worker.config.binding, "taskNo": backend.task["taskNo"],
+                 "inputHash": backend.task["inputHash"], "resultHash": "e" * 64}
+        entry.worker.journal.set(state)
+        entry.running = True
+        request = backend.request
+        def completed_while_heartbeat_in_flight(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if path.endswith("/heartbeat"):
+                entry.worker.journal.set({**state, "phase": "COMPLETE_INTENT"})
+                entry.worker.journal.confirm(state, {"receiptNo": "CTR-" + "A" * 32})
+                result["data"]["activeTaskNo"] = None
+            return result
+        backend.request = completed_while_heartbeat_in_flight
+        self.fleet.health()
+        self.assertFalse(entry.blocked)
+        self.assertFalse(entry.worker.stop.is_set())
+        self.assertEqual(entry.worker.journal.state()["phase"], "IDLE")
+
+    def test_confirmed_idle_recovers_after_temporary_pause_but_unknown_does_not(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        entry.worker.journal.set({"phase": "IDLE", "binding": entry.worker.config.binding})
+        request = backend.request
+        backend.request = unittest.mock.Mock(side_effect=w.Rejected("BACKEND_REJECTED_403"))
+        self.fleet.health()
+        self.assertTrue(entry.blocked)
+        backend.request, backend.idle = request, True
+        self.fleet.refresh()
+        self.assertFalse(entry.blocked)
+        self.assertFalse(entry.worker.stop.is_set())
+        self.fleet.tick(entry)
+        self.assertTrue(any(path.endswith("/next-task") for _, path, _ in backend.calls))
+        entry.blocked = True
+        entry.worker.stop.set()
+        entry.worker.journal.set({"phase": "UNKNOWN_NEXT", "binding": entry.worker.config.binding, "nextKey": "BGE-NEXT-" + "a" * 32})
+        calls = list(backend.calls)
+        self.fleet.refresh()
+        self.assertTrue(entry.blocked)
+        self.assertTrue(entry.worker.stop.is_set())
+        self.assertEqual(backend.calls, calls)
 
 
 class BoundaryTests(unittest.TestCase):

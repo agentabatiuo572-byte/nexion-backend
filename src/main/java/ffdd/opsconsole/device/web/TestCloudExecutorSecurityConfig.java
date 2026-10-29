@@ -33,7 +33,7 @@ public class TestCloudExecutorSecurityConfig {
                 .authorizeHttpRequests(auth->auth.requestMatchers(HttpMethod.POST,"/api/test/cloud-executors/v1/next-task",
                         "/api/test/cloud-executors/v1/heartbeat","/api/test/cloud-executors/v1/tasks/*/heartbeat",
                         "/api/test/cloud-executors/v1/tasks/*/complete").hasRole("TEST_CLOUD_EXECUTOR")
-                        .requestMatchers(HttpMethod.GET,"/api/test/cloud-executors/v1/tasks/*/receipt").hasRole("TEST_CLOUD_EXECUTOR")
+                        .requestMatchers(HttpMethod.GET,"/api/test/cloud-executors/v1/tasks/*/receipt","/api/test/cloud-executors/v1/instances").hasRole("TEST_CLOUD_EXECUTOR")
                         .anyRequest().denyAll())
                 .addFilterBefore(new CloudAuthenticationFilter(service),UsernamePasswordAuthenticationFilter.class).build();
     }
@@ -45,7 +45,9 @@ public class TestCloudExecutorSecurityConfig {
             try {
                 service.requireEnabled();
                 if(!GeoBlockEnforcementFilter.isDirectLoopback(request)) throw new BizException(403,"TEST_CLOUD_LOCAL_ONLY");
-                var identity=service.authenticate(request.getHeader("Authorization"));
+                String executorId=request.getHeader("X-UVEL-Executor-Id");
+                if(request.getRequestURI().equals("/api/test/cloud-executors/v1/instances") && executorId==null) executorId="fleet";
+                var identity=service.authenticate(request.getHeader("Authorization"),executorId);
                 SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(identity,null,
                         List.of(new SimpleGrantedAuthority("ROLE_TEST_CLOUD_EXECUTOR"))));
                 chain.doFilter(request,response);

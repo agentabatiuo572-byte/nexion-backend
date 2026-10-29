@@ -24,5 +24,14 @@ class TestCloudExecutorMapperTest {
                 .contains("user_id=?", "instance_no=?", "source_environment='PRODUCTION'", "run_id=''");
         // There is no aggregate primary key for inherited by-ID CRUD statements.
         assertThat(configuration.hasStatement(namespace + "selectById")).isFalse();
+        String fleet=configuration.getMappedStatement(namespace+"fleetCandidates").getBoundSql(Map.of()).getSql();
+        assertThat(fleet).contains("o.payment_status='PAID'","o.subtotal_usdt>0","o.amount_usdt>=0","d.activated_at>=?",
+                "NOT IN ('PHONE','MOBILE')","d.pending_deactivate=0","ORDER BY d.id LIMIT ?",
+                "r.agent_version<>CONCAT('test-cloud:fleet-',d.id)","nx_test_cloud_execution");
+        String live=configuration.getMappedStatement(namespace+"liveFleetBinding").getBoundSql(Map.of()).getSql();
+        assertThat(live).contains("FOR UPDATE OF o,d","d.user_id=?","d.instance_no=?");
+        assertThat(configuration.getMappedStatement(namespace+"register").getSqlCommandType()).isEqualTo(SqlCommandType.INSERT);
+        assertThat(configuration.getMappedStatement(namespace+"historicalReceipt").getBoundSql(Map.of()).getSql())
+                .contains("t.user_id=?","t.user_device_id=?").doesNotContain("u.status","ownership_status");
     }
 }

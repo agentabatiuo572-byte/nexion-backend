@@ -369,6 +369,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261029_business_notifications.sql")
   (Join-Path $root "scripts\migrations\20261029_native_push_transport.sql")
   (Join-Path $root "scripts\migrations\20261030_test_cloud_bge_execution.sql")
+  (Join-Path $root "scripts\migrations\20261030_test_cloud_fleet_binding.sql")
   (Join-Path $root "scripts\migrations\20261030_native_push_direct_providers.sql")
 )
 

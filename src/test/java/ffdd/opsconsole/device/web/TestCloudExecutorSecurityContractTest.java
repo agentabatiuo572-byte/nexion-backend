@@ -92,5 +92,22 @@ class TestCloudExecutorSecurityContractTest {
         assertThat(GeoBlockEnforcementFilter.isDirectLoopback(request)).isTrue();
         request.addHeader("Forwarded","for=127.0.0.1"); assertThat(GeoBlockEnforcementFilter.isDirectLoopback(request)).isFalse();
         request.setRequestURI(BASE+"/next-task/"); assertThat(GeoBlockEnforcementFilter.isTestCloudRoute(request)).isFalse();
+        request.setMethod("GET"); request.setRequestURI(BASE+"/instances");
+        assertThat(GeoBlockEnforcementFilter.isTestCloudRoute(request)).isTrue();
+        request.setRequestURI(BASE+"/instances/"); assertThat(GeoBlockEnforcementFilter.isTestCloudRoute(request)).isFalse();
+    }
+    @Test void fleetDiscoveryHasItsOwnScopeAndRetainsTheDedicatedLoopbackCredentialBoundary() throws Exception {
+        context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("fleet",Map.of(
+                TestCloudExecutorService.PREFIX+"fleet-enabled","true",
+                TestCloudExecutorService.PREFIX+"fleet-started-at","2026-10-30T00:00:00")));
+        doReturn(ApiResult.ok(Map.of("instances",List.of(),"hasMore",false,"nextAfterDeviceId",0L)))
+                .when(service).instances(any(),eq(0L),eq(100));
+        assertThat(mvc.perform(get(BASE+"/instances").header("Authorization","Bearer "+TOKEN))
+                .andReturn().getResponse().getStatus()).isEqualTo(200);
+        assertThat(mvc.perform(get(BASE+"/instances").header("Authorization","Bearer "+TOKEN)
+                .header("X-UVEL-Executor-Id","fleet-999")).andReturn().getResponse().getStatus()).isEqualTo(401);
+        assertThat(mvc.perform(get(BASE+"/instances").header("Authorization","Bearer "+TOKEN)
+                .header("Forwarded","for=127.0.0.1")).andReturn().getResponse().getStatus()).isEqualTo(403);
+        verify(service,times(1)).instances(any(),eq(0L),eq(100));
     }
 }

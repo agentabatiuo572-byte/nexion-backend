@@ -104,6 +104,49 @@ class AppTaskAssignmentServiceTest {
         verify(mapper,never()).insertAssignment(anyString(),any(),any(),any(),any(),any(),any(),anyString(),any(),anyString(),any(),any());
         verify(mapper,never()).bindRuntimeTask(any(),anyString(),any(),any());
     }
+    private void enableFleet() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(environment.getProperty(TestCloudExecutorService.PREFIX+"deployment-scope")).thenReturn("TEST");
+        when(environment.getProperty(TestCloudExecutorService.PREFIX+"enabled")).thenReturn("true");
+        when(environment.getProperty(TestCloudExecutorService.PREFIX+"fleet-enabled")).thenReturn("true");
+        when(environment.getProperty(TestCloudExecutorService.PREFIX+"fleet-started-at","")).thenReturn(NOW.minusDays(1).toString());
+        when(environment.getProperty(TestCloudExecutorService.PREFIX+"device-id","0")).thenReturn("1202");
+        when(environment.getProperty(TestCloudExecutorService.PREFIX+"task-config-id","")).thenReturn("TASK-EM");
+        when(mapper.managedFleet(7,11,NOW.minusDays(1),1202)).thenReturn(1);
+    }
+    @Test void newlyActivatedPaidFleetInstanceIsReservedBeforeItsFirstDiscoveryOrRegistration() {
+        enableFleet();
+        assertThatThrownBy(()->service.assignAutomatically(7L,11L)).hasMessage("TEST_CLOUD_EXECUTOR_REQUIRED");
+        verify(mapper,never()).insertAssignment(anyString(),any(),any(),any(),any(),any(),any(),anyString(),any(),anyString(),any(),any());
+    }
+    @Test void disabledFleetCannotHandAnAlreadyRegisteredInstanceBackToUnmanifestedGenericDispatch() {
+        enableFleet(); when(environment.getProperty(TestCloudExecutorService.PREFIX+"fleet-enabled")).thenReturn("false");
+        when(mapper.registeredFleet(7,11)).thenReturn(1);
+        assertThatThrownBy(()->service.assignAutomatically(7L,11L)).hasMessage("TEST_CLOUD_EXECUTOR_REQUIRED");
+        verify(mapper,never()).insertAssignment(anyString(),any(),any(),any(),any(),any(),any(),anyString(),any(),anyString(),any(),any());
+    }
+    @Test void highVramFleetChoosesOnlyRealInstalledBgeAndKeepsItsOwnE2RewardAndE3Lock() {
+        enableFleet();
+        var bge=new AppTaskAssignmentMapper.TaskConfigRow("TASK-EM","BGE embedding","EM","BGE-M3",
+                new BigDecimal("0.00001"),new BigDecimal("0.09"),8,"active","pending");
+        when(mapper.eligibleTasks(96)).thenReturn(List.of(task("HIGH-VG","VG",48,"pending"),bge));
+        var result=service.claimForTestCloud(7L,11L).getData();
+        assertThat(result.taskId()).isEqualTo("TASK-EM"); assertThat(result.model()).isEqualTo("BGE-M3");
+        assertThat(result.rewardUsdt()).isEqualByComparingTo("0.045005");
+        verify(mapper).insertAssignment(anyString(),eq(7L),eq(11L),eq(bge),eq(new BigDecimal("0.045005")),
+                eq(5),eq(30),anyString(),any(),eq("PRODUCTION"),eq(NOW),any());
+    }
+    @Test void fleetDoesNotHideInvalidE2RowsOrRaiseLowDeviceVramToFitBge() {
+        enableFleet();
+        var invalid=new AppTaskAssignmentMapper.TaskConfigRow("BAD","Bad","VG","Other",BigDecimal.ONE,BigDecimal.TEN,null,"active","pending");
+        when(mapper.eligibleTasks(96)).thenReturn(List.of(invalid));
+        assertThatThrownBy(()->service.claimForTestCloud(7L,11L)).hasMessage("E2_TASK_CONFIG_INVALID");
+        when(mapper.lockOwnedDevice(7L,11L)).thenReturn(device("stellarbox-s1","S1","S1",4));
+        var bge=new AppTaskAssignmentMapper.TaskConfigRow("TASK-EM","BGE","EM","BGE-M3",BigDecimal.ONE,BigDecimal.ONE,8,"active","pending");
+        when(mapper.eligibleTasks(4)).thenReturn(List.of(bge));
+        assertThatThrownBy(()->service.claimForTestCloud(7L,11L)).hasMessage("TASK_ASSIGNMENT_NO_ELIGIBLE_TASK");
+        verify(mapper,never()).insertAssignment(anyString(),any(),any(),any(),any(),any(),any(),anyString(),any(),anyString(),any(),any());
+    }
 
     @Test void testCloudTaskCannotBypassArtifactValidationThroughOrdinaryProductionCompleteEvenAfterConfigRemoval() {
         var row=new AppTaskAssignmentMapper.AssignmentRow("CTA-CLOUD",11L,"TASK-IG",TestCloudExecutorService.TASK_NAME,"EM",
