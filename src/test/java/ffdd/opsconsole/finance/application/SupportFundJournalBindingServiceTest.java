@@ -546,6 +546,65 @@ class SupportFundJournalBindingServiceTest {
         assertThatThrownBy(() -> service.bind(token, input("[]"))).hasMessage("FUND_OPERATION_LEG_INSERT_FAILED");
     }
 
+    @Test void exactReadReceiptReuseStillRejectsEveryChangedEvidenceInput() {
+        service.bind(service.begin(List.of(7L)),input("[]"));
+        var counting=new CountingMapper();
+        var reader=new SupportFundJournalBindingService(mapper,dataSource,counting);
+        var row=new HashMap<>(mapper.operation);
+        var decoded=reader.decodeReceipt(row,List.of(7L),List.of());
+        int reads=counting.reads.get();
+        assertThat(reader.decodeReceipt(new HashMap<>(row),List.of(7L),List.of())).isSameAs(decoded);
+        assertThat(counting.reads.get()).isEqualTo(reads);
+        assertThatThrownBy(()->decoded.add(null)).isInstanceOf(UnsupportedOperationException.class);
+        for(var change:Map.<String,Object>ofEntries(
+                Map.entry("operationKey","other-operation"),Map.entry("businessType","OTHER"),Map.entry("phase","OTHER"),
+                Map.entry("sourceTable","other_source"),Map.entry("sourceKey","other-key"),
+                Map.entry("sourceEnvironment","TEST"),Map.entry("orderedEventsJson","[{}]"),
+                Map.entry("sourceSnapshotJson","{\"a\":2,\"b\":2}"),Map.entry("sourceProofJson","{\"source\":\"changed\"}"),
+                Map.entry("receiptSha256","f".repeat(64)),Map.entry("protocolVersion","UNKNOWN"),
+                Map.entry("id",0L),Map.entry("recordedDbUtc","invalid-time")).entrySet()) {
+            var changed=new HashMap<>(row);changed.put(change.getKey(),change.getValue());
+            assertThatThrownBy(()->reader.decodeReceipt(changed,List.of(7L),List.of())).as(change.getKey()).isInstanceOf(RuntimeException.class);
+        }
+        assertThatThrownBy(()->reader.decodeReceipt(row,List.of(8L),List.of())).isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(()->reader.decodeReceipt(row,List.of(7L),List.of(Map.of("incarnation",INC,"revision",1L))))
+            .isInstanceOf(RuntimeException.class);
+        var duplicate=new HashMap<>(row);duplicate.put("sourceSnapshotJson","{\"a\":1,\"a\":2}");
+        assertThatThrownBy(()->reader.decodeReceipt(duplicate,List.of(7L),List.of())).isInstanceOf(IllegalArgumentException.class);
+        assertThat(reader.decodeReceipt(row,List.of(7L),List.of())).isSameAs(decoded);
+    }
+
+    @Test void oversizedReceiptRemainsReadableWithoutRetainingItInTheDecodeCache() {
+        var base=input("[]");
+        var large=new ReceiptInput(base.operationKey(),base.businessType(),base.phase(),base.sourceTable(),base.sourceKey(),
+            base.sourceEnvironment(),base.orderedEventsJson(),"{\"detail\":\""+"x".repeat(70_000)+"\"}",base.sourceProofJson());
+        service.bind(service.begin(List.of(7L)),large);
+        var counting=new CountingMapper();var reader=new SupportFundJournalBindingService(mapper,dataSource,counting);
+        assertThat(reader.decodeReceipt(mapper.operation,List.of(7L),List.of())).isEmpty();int before=counting.reads.get();
+        assertThat(reader.decodeReceipt(mapper.operation,List.of(7L),List.of())).isEmpty();
+        assertThat(counting.reads.get()).isGreaterThan(before);
+    }
+
+    @Test void concurrentExactReceiptReadsKeepAnImmutableValidatedResult() throws Exception {
+        service.bind(service.begin(List.of(7L)),input("[]"));
+        var row=Map.copyOf(mapper.operation);
+        var executor=java.util.concurrent.Executors.newFixedThreadPool(4);
+        try {
+            var tasks=java.util.stream.IntStream.range(0,64).<java.util.concurrent.Callable<List<ffdd.opsconsole.finance.domain.SupportFundAllocation.Event>>>mapToObj(
+                n->()->service.decodeReceipt(row,List.of(7L),List.of())).toList();
+            for(var future:executor.invokeAll(tasks))assertThat(future.get()).isEmpty();
+            assertThatThrownBy(()->service.decodeReceipt(row,List.of(7L),List.of()).add(null)).isInstanceOf(UnsupportedOperationException.class);
+        } finally {executor.shutdownNow();}
+    }
+
+    private static final class CountingMapper extends ObjectMapper {
+        final java.util.concurrent.atomic.AtomicInteger reads=new java.util.concurrent.atomic.AtomicInteger();
+        @Override public ObjectMapper copy(){return this;}
+        @Override public com.fasterxml.jackson.databind.JsonNode readTree(String value) throws com.fasterxml.jackson.core.JsonProcessingException {
+            reads.incrementAndGet();return super.readTree(value);
+        }
+    }
+
     private static ReceiptInput input(String events) {
         return new ReceiptInput("op-1", "WITHDRAW", "SUCCESS", "nx_withdraw_order", "w-1", "PRODUCTION", events,
             "{\"a\":1.0,\"b\":2}", "{\"source\":\"w-1\"}");

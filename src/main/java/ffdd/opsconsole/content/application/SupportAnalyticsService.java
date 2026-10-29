@@ -35,12 +35,16 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 /** Internal statistics only. Authorization is current; event attribution never comes from current membership. */
 @ApplicationService
 public class SupportAnalyticsService {
+    private static final com.fasterxml.jackson.databind.ObjectReader NET_PROOF_READER=new ObjectMapper().reader()
+        .with(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+        .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS,DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
     private final SupportOwnershipService ownership;
     private final FinanceSupportPaymentFactsFacade finance;
     private final SupportAnalyticsMapper mapper;
     private final SupportInvitationReadFacade invitations;
     private final SupportDeviceReadFacade devices;
     private final SupportFundsReadFacade funds;
+    private final SupportAnalyticsFactSampler factSampler;
 
     /** Legacy callers do not gain newly requested metrics from absent dependencies. */
     public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper) {
@@ -48,17 +52,21 @@ public class SupportAnalyticsService {
     }
     public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper,SupportFundsReadFacade funds) {
         this.ownership=Objects.requireNonNull(ownership);this.finance=Objects.requireNonNull(finance);this.mapper=Objects.requireNonNull(mapper);
-        this.invitations=null;this.devices=null;this.funds=funds;
+        this.invitations=null;this.devices=null;this.funds=funds;this.factSampler=null;
     }
     public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper,
             SupportInvitationReadFacade invitations,SupportDeviceReadFacade devices) {
         this(ownership,finance,mapper,invitations,devices,null);
     }
-    @Autowired
     public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper,
             SupportInvitationReadFacade invitations,SupportDeviceReadFacade devices,SupportFundsReadFacade funds) {
+        this(ownership,finance,mapper,invitations,devices,funds,null);
+    }
+    @Autowired
+    public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper,
+            SupportInvitationReadFacade invitations,SupportDeviceReadFacade devices,SupportFundsReadFacade funds,SupportAnalyticsFactSampler factSampler) {
         this.ownership=Objects.requireNonNull(ownership);this.finance=Objects.requireNonNull(finance);this.mapper=Objects.requireNonNull(mapper);
-        this.invitations=Objects.requireNonNull(invitations);this.devices=Objects.requireNonNull(devices);this.funds=funds;
+        this.invitations=Objects.requireNonNull(invitations);this.devices=Objects.requireNonNull(devices);this.funds=funds;this.factSampler=factSampler;
     }
 
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
@@ -85,8 +93,15 @@ public class SupportAnalyticsService {
         if(query==null || authorizedScope==null || query.mode()!=authorizedScope.mode() || !Objects.equals(query.groupId(),authorizedScope.requestedGroupId())
                 || !Objects.equals(query.agentId(),authorizedScope.requestedAgentId()))throw invalid("SUPPORT_ANALYTICS_SCOPE_INVALID");
         var capture=new QueryCapture();capture.supervisorDirectory=supervisorDirectory;
+        if(factSampler!=null) {
+            capture.sampledFacts=factSampler.current();
+            capture.sampledGroups=Set.copyOf(mapper.currentGrantedGroupIds(authorizedScope));
+        }
         var result=evaluate(query,authorizedScope,capture);
         return new QueryEvaluation(withNet(result,capture),capture);
+    }
+    public void requireFresh(QueryEvaluation evaluation) {
+        if(evaluation.evidence().sampledFacts!=null)factSampler.requireFresh(evaluation.evidence().sampledFacts);
     }
 
     /** Profile owns the RR transaction and has already authorized this exact current root. */
@@ -106,6 +121,8 @@ public class SupportAnalyticsService {
     public record QueryEvaluation(Result result,QueryCapture evidence) { }
     /** Internal data, never HTTP serialized; filled only by the actual evaluation paths below. */
     public static final class QueryCapture {
+        SupportAnalyticsFactSnapshot sampledFacts;
+        Set<Long> sampledGroups=Set.of();
         public ReadScope scope;
         public Map<Long,SupportAnalyticsMapper.CurrentCustomer> current=Map.of();
         public Map<String,Long> eventIds=Map.of();
@@ -144,12 +161,12 @@ public class SupportAnalyticsService {
         Query q=base.query();
         if(funds==null || q.basis()==Basis.CURRENT_ASSET)return base;
         try {
-            c.net=funds.readNetContributions(new TreeSet<>(c.financialIds).stream().toList());
+            c.net=c.sampledFacts==null?funds.readNetContributions(new TreeSet<>(c.financialIds).stream().toList()):c.sampledFacts.contributions(c.financialIds);
             if(c.net!=null && !c.net.origins().isEmpty()) {
                 var ids=c.net.origins().stream().filter(Objects::nonNull).map(ContributionOrigin::paymentFactId)
                     .filter(Objects::nonNull).filter(c.facts::containsKey).distinct().sorted().toList();
                 if(!ids.isEmpty()) {
-                    var proofs=mapper.attributionProofs(c.scope,ids);
+                    var proofs=c.sampledFacts==null?mapper.attributionProofs(c.scope,ids):c.sampledFacts.proofs(ids,c.scope,c.sampledGroups,c.current.keySet());
                     if(proofs==null || proofs.stream().anyMatch(Objects::isNull))throw invalid("SUPPORT_ANALYTICS_NET_PROOF_INVALID");
                     c.netAttributionProofs=List.copyOf(proofs);
                 }
@@ -275,9 +292,7 @@ public class SupportAnalyticsService {
     static boolean netProof(AttributionProof proof,AttributionRow attribution,Fact fact) {
         if(proof==null || proof.captureDbUtc()==null || proof.sourceFactJson()==null || proof.attributionEvidenceJson()==null)return false;
         try {
-            var reader=new ObjectMapper().reader().with(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
-                .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS,DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
-            JsonNode source=reader.readTree(proof.sourceFactJson()),evidence=reader.readTree(proof.attributionEvidenceJson());
+            JsonNode source=NET_PROOF_READER.readTree(proof.sourceFactJson()),evidence=NET_PROOF_READER.readTree(proof.attributionEvidenceJson());
             return source.isObject() && evidence.isObject() && netText(source,"factId",fact.factId()) && netId(source,"customerId",fact.customerId())
                 && netId(source,"ledgerId",fact.ledgerId()) && netText(source,"kind",fact.kind().name()) && netText(source,"source",fact.source().name())
                 && netText(source,"currency",fact.currency()) && source.path("amount").isNumber() && source.path("amount").decimalValue().compareTo(fact.amount())==0
@@ -329,7 +344,7 @@ public class SupportAnalyticsService {
         boolean eventFailed=false;
         if(query.basis()==Basis.PERIOD_EVENT) {
             try {
-                var rows=mapper.eventCandidates(scope);
+                var rows=capture==null || capture.sampledFacts==null?mapper.eventCandidates(scope):capture.sampledFacts.eventCandidates(scope,capture.sampledGroups);
                 if(rows==null)throw invalid("SUPPORT_ANALYTICS_EVENT_INVALID");
                 for(var row:rows) {
                     if(row==null || row.factId()==null || row.factId().isBlank() || row.customerId()==null || row.customerId()<=0)
@@ -348,7 +363,7 @@ public class SupportAnalyticsService {
         if(capture!=null){capture.eventIds=Map.copyOf(eventIds);capture.financialIds=Set.copyOf(ids);capture.legacyIds=Set.copyOf(legacyIds);capture.eventFailed=eventFailed;}
         // The finance façade owns source eligibility, logical-payment dedup and refund lineage/caps.
         // Unexpected façade exceptions propagate; catching a transactional proxy could conceal rollback-only.
-        Snapshot snapshot=ids.isEmpty()?null:finance.readHistory(List.copyOf(ids));
+        Snapshot snapshot=ids.isEmpty()?null:readPaymentHistory(ids,capture);
         if(!ids.isEmpty() && snapshot==null)throw invalid("SUPPORT_ANALYTICS_FINANCIAL_RESPONSE_MISSING");
         var facts=new TreeMap<String,Fact>();
         var first=new TreeMap<Long,Fact>();
@@ -380,14 +395,15 @@ public class SupportAnalyticsService {
             var customers=current.values().stream().map(row->customer(row,new FirstSelection(null,Status.UNKNOWN,List.of("HISTORY_NOT_REQUESTED")))).toList();
             var extra=enrich(query,scope,current,customers,snapshot,facts,ids,currentFailed,List.of(),List.of(),List.of(),Map.of(),Map.of(),false,null);
             return new Result(query,currentScope,extra.customers(),unavailableFinancial(),restricted(0,0,Status.UNAVAILABLE),List.of(),
-                snapshot==null?Instant.now():snapshot.evaluatedAt(),List.copyOf(reasons),extra.current(),extra.personnel(),extra.groups());
+                evaluatedAt(capture,snapshot),List.copyOf(reasons),extra.current(),extra.personnel(),extra.groups());
         }
         var attribution=new HashMap<String,Attribution>();
         var validAttribution=new HashMap<String,AttributionRow>();
         boolean attributionFailed=false;
         if(!facts.isEmpty()) {
             try {
-                var rows=mapper.attributions(scope,List.copyOf(facts.keySet()));
+                var rows=capture==null || capture.sampledFacts==null?mapper.attributions(scope,List.copyOf(facts.keySet()))
+                    :capture.sampledFacts.attributions(facts.keySet(),scope,capture.sampledGroups,current.keySet());
                 if(rows==null)throw invalid("SUPPORT_ANALYTICS_ATTRIBUTION_INVALID");
                 if(capture!=null)capture.rawAttributions=List.copyOf(rows);
                 var seen=new HashSet<String>();
@@ -411,7 +427,7 @@ public class SupportAnalyticsService {
             var currentCustomers=current.values().stream().map(row->customer(row,new FirstSelection(null,Status.UNKNOWN,List.of("HISTORY_NOT_REQUESTED")))).toList();
             var extra=enrich(query,scope,current,currentCustomers,snapshot,facts,ids,currentFailed,List.of(),List.of(),List.of(),validAttribution,attribution,false,capture);
             return new Result(query,currentScope,extra.customers(),unavailableFinancial(),restricted(0,0,Status.UNAVAILABLE),List.of(),
-                snapshot==null?Instant.now():snapshot.evaluatedAt(),List.copyOf(reasons),extra.current(),extra.personnel(),extra.groups());
+                evaluatedAt(capture,snapshot),List.copyOf(reasons),extra.current(),extra.personnel(),extra.groups());
         }
         var customers=new ArrayList<Customer>();
         for(var row:current.values()) {
@@ -482,12 +498,12 @@ public class SupportAnalyticsService {
         var restricted=new RestrictedSummary(new Count(financialStatus==Status.FAILED?null:restrictedCustomers,null,financialStatus),
             new Count(firstFailed?null:restrictedFirst,firstFailed || !hasConfirmedHistory?null:restrictedConfirmedFirst,firstStatus));
         if(invitations==null)return new Result(query,currentScope,customers,summary,restricted,
-            coverage,snapshot==null?Instant.now():snapshot.evaluatedAt(),List.copyOf(reasons));
+            coverage,evaluatedAt(capture,snapshot),List.copyOf(reasons));
         if(capture!=null)capture.selected=List.copyOf(selected);
         var extra=enrich(query,scope,current,customers,snapshot,facts,ids,currentFailed,selected,selectedFirst,confirmedSelectedFirst,
             validAttribution,attribution,periodGap,capture);
         return new Result(query,currentScope,extra.customers(),summary,restricted,coverage,
-            snapshot==null?Instant.now():snapshot.evaluatedAt(),List.copyOf(reasons),extra.current(),extra.personnel(),extra.groups());
+            evaluatedAt(capture,snapshot),List.copyOf(reasons),extra.current(),extra.personnel(),extra.groups());
     }
 
     private record Enrichment(List<Customer> customers,CurrentMetrics current,PersonnelSummary personnel,List<GroupAggregate> groups) { }
@@ -523,7 +539,7 @@ public class SupportAnalyticsService {
         extraIds.removeAll(financialIds);
         Snapshot teamSnapshot=null;
         if(query.basis()!=Basis.CURRENT_ASSET && !extraIds.isEmpty()) {
-            try {teamSnapshot=finance.readHistory(List.copyOf(extraIds));}
+            try {teamSnapshot=readPaymentHistory(extraIds,capture);}
             catch(DataAccessException ex) {throw new IllegalStateException("SUPPORT_ANALYTICS_DESCENDANT_SOURCE_READ_FAILED",ex);}
             if(teamSnapshot==null)throw invalid("SUPPORT_ANALYTICS_FINANCIAL_RESPONSE_MISSING");
             validateSnapshotBoundary(teamSnapshot,extraIds);
@@ -575,6 +591,13 @@ public class SupportAnalyticsService {
                 personnel(roster,group.id(),scope)));
         }
         return new Enrichment(customers,aggregate,personnel(roster,scope.requestedGroupId(),scope),groups);
+    }
+
+    private Snapshot readPaymentHistory(Collection<Long> ids,QueryCapture capture) {
+        return capture==null || capture.sampledFacts==null?finance.readHistory(List.copyOf(ids)):capture.sampledFacts.payments(ids);
+    }
+    private static Instant evaluatedAt(QueryCapture capture,Snapshot snapshot) {
+        return capture!=null && capture.sampledFacts!=null?capture.sampledFacts.asOf():snapshot==null?Instant.now():snapshot.evaluatedAt();
     }
 
     private static void validateCurrentOwner(SupportAnalyticsMapper.CurrentCustomer row,ReadScope scope) {

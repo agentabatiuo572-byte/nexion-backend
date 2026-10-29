@@ -63,6 +63,7 @@ public class SupportPaymentFactService {
         var rows = new ArrayList<Map<String,Object>>();
         var issues = new ArrayList<Issue>(captured.issues());
         var excluded = new EnumMap<Source,Long>(Source.class);
+        var excludedRows=new HashMap<Long,EnumMap<Source,Long>>();
         var excludedCustomers=new HashSet<String>();
         var unmatchedKinds=new HashMap<String,String>();
         load(rows, issues, () -> mapper.deposits(ids), Source.DEPOSIT_ORDER);
@@ -111,7 +112,8 @@ public class SupportPaymentFactService {
                         && (decimal(row,"ledgerAmount") == null || decimal(row,"ledgerAmount").signum() == 0))) {
                 if(source!=Source.FREE_TRIAL && number(row,"excludedEnvironment")==1)
                     excludedCustomers.add(customer+":"+source);
-                excluded.merge(source,1L,Long::sum); continue;
+                excluded.merge(source,1L,Long::sum);
+                excludedRows.computeIfAbsent(customer,ignored->new EnumMap<>(Source.class)).merge(source,1L,Long::sum); continue;
             }
             Kind kind;
             try { kind=Kind.valueOf(text(row,"kind")); }
@@ -226,7 +228,8 @@ public class SupportPaymentFactService {
                 List.copyOf(reasons),excluded.getOrDefault(source,0L),ADAPTER_VERSION));
         }
         return new Snapshot(sorted,issues,coverage,DateTimeFormatConfig.BUSINESS_ZONE.getId(),Instant.now(),
-            firstHistory(ids,captured,index,issues),customerCoverage);
+            firstHistory(ids,captured,index,issues),customerCoverage,excludedRows.entrySet().stream()
+                .flatMap(e->e.getValue().entrySet().stream().map(x->new ExcludedRows(e.getKey(),x.getKey(),x.getValue()))).toList());
     }
 
     private static final Set<Source> PAYMENT_SOURCES=EnumSet.of(Source.DEPOSIT_ORDER,Source.CARD_TOPUP,Source.VIETQR,

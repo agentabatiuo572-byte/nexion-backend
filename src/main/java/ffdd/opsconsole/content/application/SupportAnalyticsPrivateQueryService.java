@@ -87,6 +87,7 @@ public class SupportAnalyticsPrivateQueryService {
         // asOf is display-only; no request clock enters the version.
         payload.put("asOf",evaluation.result().asOf().toString());
         if(q.view()==View.AGENTS && evaluation.result().personnel().status()!=SupportAnalyticsStats.Status.AVAILABLE)payload.put("total",null);
+        stats.requireFresh(evaluation);
         return payload;
     }
     private void reauthorize(Normalized q,ReadScope scope,List<PermissionStamp> grants,List<Long> groups) {
@@ -224,7 +225,10 @@ public class SupportAnalyticsPrivateQueryService {
         };
     }
 
-    record Row(long id,String secondary,Object sort,Map<String,Object> body) { }
+    record Row(long id,String secondary,Object sort,java.util.function.Supplier<Map<String,Object>> projection) {
+        Row(long id,String secondary,Object sort,Map<String,Object> body) {this(id,secondary,sort,()->body);}
+        Map<String,Object> body() {return projection.get();}
+    }
     static Comparator<Row> rowOrder(Direction direction) {
         return (a,b)->{int n=compare(a.sort(),b.sort(),direction);if(n!=0)return n;n=Long.compare(a.id(),b.id());return n!=0?n:a.secondary().compareTo(b.secondary());};
     }
@@ -233,7 +237,7 @@ public class SupportAnalyticsPrivateQueryService {
     private List<Row> rows(Normalized q,SupportAnalyticsService.QueryEvaluation e,Sources s,List<SupportAnalyticsStats.Customer> selected) {
         List<Row> out=new ArrayList<>();Map<Long,SupportAnalyticsStats.Customer> roots=new HashMap<>();for(var c:selected)roots.put(c.customerId(),c);
         switch(q.view()) {
-            case OVERVIEW,CUSTOMERS,ACTIVITY -> {for(var c:selected)out.add(new Row(c.customerId(),"",customerSort(q,c,s),customer(c,s)));}
+            case OVERVIEW,CUSTOMERS,ACTIVITY -> {for(var c:selected)out.add(new Row(c.customerId(),"",customerSort(q,c,s),()->customer(c,s)));}
             case FINANCE -> {for(var f:e.evidence().selected)if(roots.containsKey(f.customerId())){var c=roots.get(f.customerId());Object sort=q.sortKey()==Sort.AMOUNT?f.amount():f.succeededAt();
                 out.add(new Row(f.customerId(),f.factId(),sort,map("customerId",Long.toString(f.customerId()),"customerNo",s.display().get(f.customerId()).customerNo(),"nickname",s.display().get(f.customerId()).nickname(),"kind",f.kind().name(),"currency",f.currency(),"amount",decimal(f.amount()),"succeededAt",time(f.succeededAt()),"orderNo",f.orderNo(),"historyStatus",e.evidence().firstHistory.get(f.customerId())==null?"UNKNOWN":e.evidence().firstHistory.get(f.customerId()).status().name())));}}
             case DEVICES -> {if(e.evidence().stock!=null){for(var d:e.evidence().stock.devices())if(roots.containsKey(d.customerId()) && SupportAnalyticsService.productionDevice(d)>=0)out.add(deviceRow(q,d,roots.get(d.customerId()),s,e.evidence(),SupportAnalyticsService.productionDevice(d)==0));for(var d:e.evidence().stock.unknownHoldingDevices())if(roots.containsKey(d.customerId()) && SupportAnalyticsService.productionDevice(d)>=0)out.add(deviceRow(q,d,roots.get(d.customerId()),s,e.evidence(),true));}}

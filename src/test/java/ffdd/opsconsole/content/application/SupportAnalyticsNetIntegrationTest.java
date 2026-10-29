@@ -108,6 +108,21 @@ class SupportAnalyticsNetIntegrationTest {
             assertThat(proof.getParameterMappings()).extracting(p->p.getProperty()).containsExactlyElementsOf(tuple.getParameterMappings().stream().map(p->p.getProperty()).toList());
         }
     }
+    @Test void sharedProofReaderRetainsStrictJsonChecksAndRecoversAcrossConcurrentReads() throws Exception {
+        paidOrigin(7L);
+        var scope=new ReadScope(7L,ReadMode.PERSONAL,null,null);
+        var proof=mapper.attributionProofs(scope,List.of("DEPOSIT:11")).get(0);
+        var attribution=mapper.attributions(scope,List.of("DEPOSIT:11")).get(0);
+        var fact=finance.readHistory(List.of(1L)).facts().get(0);
+        for(var invalid:List.of(
+            new SupportAnalyticsMapper.AttributionProof(proof.factId(),proof.sourcePartition(),proof.captureDbUtc(),proof.sourceFactJson()+" {}",proof.attributionEvidenceJson()),
+            new SupportAnalyticsMapper.AttributionProof(proof.factId(),proof.sourcePartition(),proof.captureDbUtc(),"{\"customerId\":1,"+proof.sourceFactJson().substring(1),proof.attributionEvidenceJson()),
+            new SupportAnalyticsMapper.AttributionProof(proof.factId(),proof.sourcePartition(),proof.captureDbUtc(),proof.sourceFactJson(),proof.attributionEvidenceJson()+" {}"))) {
+            assertThat(SupportAnalyticsService.netProof(invalid,attribution,fact)).isFalse();
+        }
+        assertThat(java.util.stream.IntStream.range(0,64).parallel()
+            .allMatch(i->SupportAnalyticsService.netProof(proof,attribution,fact))).isTrue();
+    }
     private void paidOrigin(long originalAgent) throws Exception {paidOrigin(originalAgent,false);}
     private void paidOrigin(long originalAgent,boolean general) throws Exception {
         var at=java.time.LocalDateTime.of(2026,9,28,12,0);var changeAt=java.time.LocalDateTime.of(2026,10,9,12,0);

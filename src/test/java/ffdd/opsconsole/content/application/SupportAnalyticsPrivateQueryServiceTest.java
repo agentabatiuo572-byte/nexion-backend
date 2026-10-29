@@ -26,6 +26,20 @@ import static org.mockito.ArgumentMatchers.*;
 
 /** Pure/mock contract tests only. RR isolation, locking grants and SQL are an independent MySQL acceptance gate. */
 class SupportAnalyticsPrivateQueryServiceTest {
+    @Test void customerBodiesAreProjectedOnlyAfterSortingAndPaging() {
+        var projected=new ArrayList<Long>();
+        var rows=new ArrayList<SupportAnalyticsPrivateQueryService.Row>();
+        for(long id:List.of(3L,1L,2L)) {
+            rows.add(new SupportAnalyticsPrivateQueryService.Row(id,"",id,()->{
+                projected.add(id);return Map.of("customerId",Long.toString(id));
+            }));
+        }
+        rows.sort(SupportAnalyticsPrivateQueryService.rowOrder(Direction.ASC));
+        assertThat(projected).isEmpty();
+        assertThat(rows.subList(1,2).stream().map(SupportAnalyticsPrivateQueryService.Row::body).toList())
+            .containsExactly(Map.of("customerId","2"));
+        assertThat(projected).containsExactly(2L);
+    }
     static final LocalDateTime T=LocalDateTime.of(2026,10,1,8,0);
     static void authenticate(String... codes) {
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken("1","unused",

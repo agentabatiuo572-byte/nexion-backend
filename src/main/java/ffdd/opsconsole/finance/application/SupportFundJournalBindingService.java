@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import javax.sql.DataSource;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.datasource.ConnectionHolder;
@@ -46,6 +47,11 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
     private final SupportFundJournalMapper mapper;
     private final DataSource dataSource;
     private final ObjectMapper json;
+    // Exact immutable receipt inputs only: never cache authorization, source reads or transaction tokens.
+    private static final long RECEIPT_CACHE_BYTES = 64L * 1024 * 1024;
+    private static final long RECEIPT_CACHE_ENTRY_BYTES = 256L * 1024;
+    private final LinkedHashMap<ReceiptCacheKey, ReceiptCacheEntry> receiptReads = new LinkedHashMap<>(128, 0.75f, true);
+    private final AtomicLong receiptReadBytes = new AtomicLong();
 
     public SupportFundJournalBindingService(SupportFundJournalMapper mapper, DataSource dataSource, ObjectMapper json) {
         this.mapper = mapper;
@@ -392,11 +398,18 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
         var input = new ReceiptInput(string(row,"operationKey"),string(row,"businessType"),string(row,"phase"),
             string(row,"sourceTable"),string(row,"sourceKey"),string(row,"sourceEnvironment"),
             string(row,"orderedEventsJson"),string(row,"sourceSnapshotJson"),string(row,"sourceProofJson"));
-        Map<String,Object> expected = receipt(input, parties);
+        // These two fields are validated on every read, including a pure decode cache hit.
+        positive(row,"id");time(row,"recordedDbUtc");
         if (!PROTOCOL.equals(string(row,"protocolVersion"))) throw failure("UNSUPPORTED_FUND_PROTOCOL");
         var legs = storedLegs.stream().map(leg -> new Leg(string(leg,"incarnation"),number(leg,"revision"))).toList();
         var sorted = legs.stream().sorted(java.util.Comparator.comparing(Leg::incarnation).thenComparingLong(Leg::revision)).toList();
         if (!legs.equals(sorted) || new HashSet<>(legs).size()!=legs.size()) throw failure("FUND_OPERATION_LEG_MISMATCH");
+        var cacheKey = new ReceiptCacheKey(input,string(row,"receiptSha256"),List.copyOf(parties),List.copyOf(legs));
+        synchronized(receiptReads) {
+            var cached=receiptReads.get(cacheKey);
+            if(cached!=null)return cached.events();
+        }
+        Map<String,Object> expected = receipt(input, parties);
         ObjectNode digest = json.valueToTree(expected);
         digest.set("customerIds",json.valueToTree(parties)); digest.set("legs",json.valueToTree(legs));
         expected.put("receiptSha256",sha(canonical(digest).toString()));
@@ -406,8 +419,25 @@ public class SupportFundJournalBindingService implements SupportFundJournalFacad
             try { result.add(decodeEvent(node)); }
             catch(com.fasterxml.jackson.core.JsonProcessingException ex) { throw new IllegalArgumentException("Invalid formal event record",ex); }
         }
-        return List.copyOf(result);
+        var decoded=List.copyOf(result);
+        long bytes=512L+4L*(input.operationKey().length()+input.businessType().length()+input.phase().length()
+            +input.sourceTable().length()+input.sourceKey().length()+input.sourceEnvironment().length()
+            +input.orderedEventsJson().length()+input.sourceSnapshotJson().length()+input.sourceProofJson().length()
+            +cacheKey.receiptSha256().length())+32L*parties.size()+512L*decoded.size()
+            +legs.stream().mapToLong(leg->64L+4L*leg.incarnation().length()).sum();
+        if(bytes<=RECEIPT_CACHE_ENTRY_BYTES) synchronized(receiptReads) {
+            if(!receiptReads.containsKey(cacheKey)) {
+                receiptReads.put(cacheKey,new ReceiptCacheEntry(decoded,bytes));receiptReadBytes.addAndGet(bytes);
+                while(receiptReads.size()>8192 || receiptReadBytes.get()>RECEIPT_CACHE_BYTES) {
+                    var oldest=receiptReads.entrySet().iterator();var entry=oldest.next();
+                    receiptReadBytes.addAndGet(-entry.getValue().bytes());oldest.remove();
+                }
+            }
+        }
+        return decoded;
     }
+    private record ReceiptCacheKey(ReceiptInput input,String receiptSha256,List<Long> parties,List<Leg> legs) { }
+    private record ReceiptCacheEntry(List<Event> events,long bytes) { }
     private record Physical(ConnectionHolder holder, Connection connection) {}
     private sealed interface InternalToken extends Before permits Token {}
     private static final class Token implements InternalToken {
