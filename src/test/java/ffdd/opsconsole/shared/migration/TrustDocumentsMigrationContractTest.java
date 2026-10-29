@@ -45,7 +45,9 @@ class TrustDocumentsMigrationContractTest {
     @Test
     void appTrustPagesAreTrackedInTheRouteCatalog() throws Exception {
         String sql = Files.readString(Path.of("scripts/migrations", "20261029_l6_trust_document_routes.sql"), StandardCharsets.UTF_8);
-        assertThat(sql).contains("('/pages/trust/whitepaper',", "('/pages/trust/document',", "ON DUPLICATE KEY UPDATE tracked=1,is_deleted=0;");
+        assertThat(sql).contains("('/pages/trust/whitepaper','白皮书',2,'/pages/trust/trust',",
+                "('/pages/trust/document','资料原件',2,'/pages/trust/trust',",
+                "ON DUPLICATE KEY UPDATE tracked=1,is_deleted=0,page_level=VALUES(page_level),parent_l1=VALUES(parent_l1)");
     }
 
     @Test

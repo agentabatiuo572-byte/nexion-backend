@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -26,20 +27,21 @@ import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.time.Clock;
-import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.function.Supplier;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class TrustDocumentServiceTest {
     private static final byte[] PDF = pdf(2);
@@ -59,10 +61,16 @@ class TrustDocumentServiceTest {
     @SuppressWarnings("unchecked")
     void setUp() {
         when(a2.reasonMinChars()).thenReturn(3);
+        doCallRealMethod().when(a2).validateReason(anyString());
+        signIn("content_i4_publish_standard", "content_i4_trust_section_manage");
         when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(call -> ((Supplier<Object>) call.getArgument(4)).get());
-        service = new TrustDocumentService(mapper, storage, audit, idempotency, a2,
-                Clock.fixed(Instant.parse("2026-10-29T10:00:00Z"), ZoneOffset.UTC), new ObjectMapper());
+        service = new TrustDocumentService(mapper, storage, audit, idempotency, a2, new ObjectMapper());
+    }
+
+    @AfterEach
+    void signOut() {
+        SecurityContextHolder.clearContext();
     }
 
     @Test
@@ -123,24 +131,55 @@ class TrustDocumentServiceTest {
     @Test
     void uploadStoresThePdfReplacesTheSlotAndRecordsAHighRiskAudit() {
         String current = service.published().documents().get(0).sha256();
-        when(mapper.find("whitepaper")).thenReturn(row("whitepaper", sha256(PDF)));
+        // Pre-check and transaction both see the default; the reply reads the new row.
+        when(mapper.find("whitepaper")).thenReturn(null, null, row("whitepaper", sha256(PDF)));
+        when(mapper.insert(any())).thenReturn(1);
 
         TrustDocumentsView.Document result = service.upload("whitepaper", pdf("UVEL Whitepaper v1.4.pdf"),
                 new TrustDocumentUploadRequest(" v1.4 ", "English", null, null, "publish v1.4", current), "key-1", "ops-admin");
 
         ArgumentCaptor<TrustDocumentRow> saved = ArgumentCaptor.forClass(TrustDocumentRow.class);
-        verify(mapper).upsert(saved.capture());
+        verify(mapper).insert(saved.capture());
         assertThat(saved.getValue().version()).isEqualTo("v1.4");
         assertThat(saved.getValue().fileName()).isEqualTo("UVEL-Whitepaper-v1.4.pdf");
         assertThat(saved.getValue().sha256()).isEqualTo(sha256(PDF));
         assertThat(saved.getValue().pageCount()).isEqualTo(2);
-        assertThat(saved.getValue().objectKey()).startsWith("admin/content/trust-documents/whitepaper/20261029/").endsWith(".pdf");
+        assertThat(saved.getValue().objectKey()).isEqualTo("admin/content/trust-documents/whitepaper/" + sha256(PDF) + ".pdf");
         verify(storage).put(eq(saved.getValue().objectKey()), eq("application/pdf"), any(ByteArrayInputStream.class), eq((long) PDF.length));
         ArgumentCaptor<AuditLogWriteRequest> audited = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(audit).recordRequired(audited.capture());
         assertThat(audited.getValue().getAction()).isEqualTo("I4_TRUST_DOCUMENT_UPLOADED");
         assertThat(audited.getValue().getRiskLevel()).isEqualTo("HIGH");
         assertThat(result.source()).isEqualTo("UPLOADED");
+    }
+
+    @Test
+    void aConcurrentWriteToTheSameSlotIsReportedAsStaleInsteadOfOverwritten() {
+        String defaultSha = service.published().documents().get(3).sha256();
+        when(mapper.find("ein")).thenReturn(null);
+        when(mapper.insert(any())).thenThrow(new DuplicateKeyException("slot"));
+        assertCode(() -> service.upload("ein", pdf("ein.pdf"), request(null, "43-2288822", null, defaultSha), "k1", "a"),
+                "TRUST_DOCUMENT_STALE");
+
+        when(mapper.find("msb")).thenReturn(row("msb", "f".repeat(64)));
+        when(mapper.replace(any(), eq("f".repeat(64)))).thenReturn(0);
+        assertCode(() -> service.upload("msb", pdf("msb.pdf"), request(null, "31000342955895", null, "f".repeat(64)), "k2", "a"),
+                "TRUST_DOCUMENT_STALE");
+    }
+
+    @Test
+    void registrationsNeedTheTrustSectionAuthorityWhileTheWhitePaperTakesStandardPublishing() {
+        signIn("content_i4_publish_standard");
+        String msb = service.published().documents().get(2).sha256();
+        assertCode(() -> service.upload("msb", pdf("msb.pdf"), request(null, "31000342955895", null, msb), "k", "a"),
+                "TRUST_DOCUMENT_FORBIDDEN");
+        assertCode(() -> service.restoreDefault("ein", new TrustDocumentRestoreRequest("back to default", "x"), "k", "a"),
+                "TRUST_DOCUMENT_FORBIDDEN");
+
+        String whitepaper = service.published().documents().get(0).sha256();
+        when(mapper.insert(any())).thenReturn(1);
+        service.upload("whitepaper", pdf("wp.pdf"), request("v2", null, null, whitepaper), "k", "a");
+        verify(mapper).insert(any());
     }
 
     @Test
@@ -156,30 +195,36 @@ class TrustDocumentServiceTest {
         assertCode(() -> service.upload("msb", pdf("a.pdf"), request(null, null, null, msb), "k", "a"), "TRUST_DOCUMENT_REFERENCE_REQUIRED");
         assertCode(() -> service.upload("msb", pdf("a.pdf"), request(null, "31000342955895", "http://www.fincen.gov", msb), "k", "a"),
                 "TRUST_DOCUMENT_VERIFY_URL_INVALID");
-        assertCode(() -> service.upload("msb", pdf("a.pdf"), new TrustDocumentUploadRequest(null, null, "1", null, "x", msb), "k", "a"),
-                "REASON_REQUIRED");
+        assertCode(() -> service.upload("msb", pdf("a.pdf"), new TrustDocumentUploadRequest(null, null, "1", null, "x \u200b y", msb), "k", "a"),
+                "REASON_TOO_SHORT_MIN_3");
         assertCode(() -> service.upload("msb", pdf("a.pdf"), request(null, "1", null, msb), " ", "a"), "IDEMPOTENCY_KEY_REQUIRED");
         assertCode(() -> service.upload("passport", pdf("a.pdf"), request("v1", null, null, msb), "k", "a"), "TRUST_DOCUMENT_NOT_FOUND");
         assertCode(() -> service.upload("msb", pdf("a.pdf"), request(null, "1", null, whitepaper), "k", "a"), "TRUST_DOCUMENT_STALE");
         verify(storage, never()).put(anyString(), anyString(), any(), anyLong());
-        verify(mapper, never()).upsert(any());
+        verify(mapper, never()).insert(any());
+        verify(mapper, never()).replace(any(), anyString());
     }
 
     @Test
     void restoreDefaultRemovesTheUploadOnlyWhenTheOperatorSawTheCurrentFile() {
-        when(mapper.lock("ein")).thenReturn(row("ein", "f".repeat(64)));
+        when(mapper.find("ein")).thenReturn(row("ein", "f".repeat(64)));
+        when(mapper.deleteIfCurrent("ein", "f".repeat(64))).thenReturn(1);
 
         assertCode(() -> service.restoreDefault("ein", new TrustDocumentRestoreRequest("back to default", "0".repeat(64)), "k", "a"),
                 "TRUST_DOCUMENT_STALE");
         TrustDocumentsView.Document restored = service.restoreDefault("ein",
                 new TrustDocumentRestoreRequest("back to default", "f".repeat(64)), "k2", "ops-admin");
 
-        verify(mapper).delete("ein");
+        verify(mapper).deleteIfCurrent("ein", "f".repeat(64));
         assertThat(restored.source()).isEqualTo("DEFAULT");
         assertThat(restored.referenceNo()).isEqualTo("43-2288822");
-        when(mapper.lock("msb")).thenReturn(null);
+        when(mapper.find("msb")).thenReturn(null);
         assertCode(() -> service.restoreDefault("msb", new TrustDocumentRestoreRequest("back to default", "x"), "k3", "a"),
                 "TRUST_DOCUMENT_ALREADY_DEFAULT");
+    }
+
+    private static void signIn(String... authorities) {
+        SecurityContextHolder.getContext().setAuthentication(new TestingAuthenticationToken("ops-admin", null, authorities));
     }
 
     private static TrustDocumentUploadRequest request(String version, String referenceNo, String verifyUrl, String expectedSha256) {
