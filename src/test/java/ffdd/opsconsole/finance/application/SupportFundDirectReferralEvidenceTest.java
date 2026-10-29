@@ -100,6 +100,33 @@ class SupportFundDirectReferralEvidenceTest {
         void recover(){service.recoverOrderReissues("ORDER-refund");projected.put("status",event.get("status"));projected.put("version",event.get("version"));}
         void verify(){var in=input();var token=evidence.validate(Set.of(7L),in);assertFalse(token.allows(entries.get(0),codec,json));for(var op:cash.operations.values())if("SUPPORT_DIRECT_REFERRAL".equals(op.get("businessType")))evidence.verify(op,codec.read((String)op.get("sourceSnapshotJson")),codec.read((String)op.get("sourceProofJson")),codec.decodeReceipt(op,List.of(7L),cash.legs.getOrDefault(((Number)op.get("id")).longValue(),List.of())),in);}
     }
+    @Test void coverageDoesNotRescanAllPartiesForEachPeerOperationOrHideLaterOwnedOrphan() {
+        var ops=new ArrayList<Map<String,Object>>();var rows=new ArrayList<Map<String,Object>>();
+        for(long id=1;id<=2000;id++){
+            ops.add(Map.of("id",id,"businessType","SUPPORT_DIRECT_REFERRAL","operationKey","PEER:"+id,"sourceKey","S:"+id));
+            rows.add(Map.of("operationId",id,"customerId",9L));
+        }
+        int[] reads={0};var observed=new AbstractList<Map<String,Object>>(){
+            @Override public Map<String,Object> get(int index){
+                if(++reads[0]>rows.size()*8)throw new AssertionError("Direct coverage repeatedly scanned the complete party history");
+                return rows.get(index);
+            }
+            @Override public int size(){return rows.size();}
+        };
+        var in=new SupportFundDirectReferralEvidence.Inputs(List.of(),ops,observed,List.of(),List.of(),Map.of());
+        evidence.verifyCoverage(Set.of(7L),in,Set.of());evidence.verifyCoverage(Set.of(7L),in,Set.of());
+        rows.add(Map.of("operationId",1L,"customerId",7L));
+        assertThrows(IllegalArgumentException.class,()->evidence.verifyCoverage(Set.of(7L),in,Set.of()));
+    }
+    @Test void indexedCoveragePreservesEmptyAndUnmatchedPartyInterpretation() {
+        var empty=new SupportFundDirectReferralEvidence.Inputs(List.of(),List.of(Map.of("businessType","SUPPORT_DIRECT_REFERRAL")),List.of(),List.of(),List.of(),Map.of());
+        assertDoesNotThrow(()->evidence.verifyCoverage(Set.of(7L),empty,Set.of()));
+        var op=Map.<String,Object>of("id",1L,"businessType","SUPPORT_DIRECT_REFERRAL");
+        var unmatched=new SupportFundDirectReferralEvidence.Inputs(List.of(),List.of(op),List.of(Map.of("operationId",2L,"customerId","uninterpreted")),List.of(),List.of(),Map.of());
+        assertDoesNotThrow(()->evidence.verifyCoverage(Set.of(7L),unmatched,Set.of()));
+        var malformed=new SupportFundDirectReferralEvidence.Inputs(List.of(),List.of(op),List.of(Map.of("operationId",n("1.5"),"customerId",9L)),List.of(),List.of(),Map.of());
+        assertThrows(IllegalArgumentException.class,()->evidence.verifyCoverage(Set.of(7L),malformed,Set.of()));
+    }
     SupportFundDirectReferralEvidence.Inputs input(){return new SupportFundDirectReferralEvidence.Inputs(sources.readByCustomers(List.of(7L)),new ArrayList<>(cash.operations.values()),cash.parties.values().stream().flatMap(Collection::stream).toList(),cash.legs.values().stream().flatMap(Collection::stream).toList(),cash.journal,Map.of("nx_direct_referral_settlement.updated_at",3,"nx_unilevel_event_recovery.updated_at",3,"nx_earnings_release_entry.created_at",0));}
     Map<String,Object> last(){return cash.operations.values().stream().filter(o->"SUPPORT_DIRECT_REFERRAL".equals(o.get("businessType"))).reduce((a,b)->b).orElseThrow();}
     void verifyAll(){var input=input();var token=evidence.validate(Set.of(7L),input);var covered=new HashSet<String>();for(var op:cash.operations.values())if("SUPPORT_DIRECT_REFERRAL".equals(op.get("businessType"))){var result=evidence.verify(op,codec.read((String)op.get("sourceSnapshotJson")),codec.read((String)op.get("sourceProofJson")),codec.decodeReceipt(op,List.of(7L),cash.legs.getOrDefault(((Number)op.get("id")).longValue(),List.of())),input);covered.add(result.coveredPhase());}evidence.verifyCoverage(Set.of(7L),input,covered);assertTrue(token.allows(entries.get(0),codec,json));}

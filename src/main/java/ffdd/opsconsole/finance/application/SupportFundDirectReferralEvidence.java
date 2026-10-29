@@ -42,6 +42,9 @@ public class SupportFundDirectReferralEvidence {
         }
     }
     public ValidatedReversals validate(Set<Long> component,Inputs input) {
+        return validate(component,input,indexParties(input));
+    }
+    private ValidatedReversals validate(Set<Long> component,Inputs input,Map<Long,List<Map<String,Object>>> partyIndex) {
         var fingerprints=new HashMap<String,String>();var sourceKeys=new HashSet<String>();
         for(Source current:input.sources())if(component.contains(SupportDirectReferralReadFacade.customer(current))) {
             require(sourceKeys.add(current.key()));validateCurrent(current);
@@ -63,7 +66,7 @@ public class SupportFundDirectReferralEvidence {
             }
         }
         for(var op:input.operations())if("SUPPORT_DIRECT_REFERRAL".equals(op.get("businessType"))) {
-            var parties=parties(op,input);if(parties.stream().anyMatch(component::contains))require(parties.size()==1&&component.containsAll(parties)&&sourceKeys.contains(text(op.get("sourceKey"))));
+            var parties=parties(op,partyIndex);if(parties.stream().anyMatch(component::contains))require(parties.size()==1&&component.containsAll(parties)&&sourceKeys.contains(text(op.get("sourceKey"))));
         }
         return new ValidatedReversals(fingerprints);
     }
@@ -74,8 +77,8 @@ public class SupportFundDirectReferralEvidence {
         return verified(operation,source,proof,events,input,before,after,new HashSet<>());
     }
     public void verifyCoverage(Set<Long> component,Inputs input,Set<String> coveredPhases) {
-        validate(component,input);
-        for(var op:input.operations())if("SUPPORT_DIRECT_REFERRAL".equals(op.get("businessType"))&&parties(op,input).stream().anyMatch(component::contains))require(coveredPhases.contains(text(op.get("operationKey"))));
+        var partyIndex=indexParties(input);validate(component,input,partyIndex);
+        for(var op:input.operations())if("SUPPORT_DIRECT_REFERRAL".equals(op.get("businessType"))&&parties(op,partyIndex).stream().anyMatch(component::contains))require(coveredPhases.contains(text(op.get("operationKey"))));
     }
     private Verified verified(Map<String,Object> op,JsonNode source,JsonNode proof,List<Event> events,Inputs input,Source before,Source after,Set<Long> coveredLedgers) {
         keys(source,Set.of("schemaVersion","before","after","phaseAt"));keys(proof,Set.of("schemaVersion","cashBefore","cashAfter","cashTrace","previousOperationId"));
@@ -241,6 +244,16 @@ public class SupportFundDirectReferralEvidence {
     private Cash cash(JsonNode wallet) {return new Cash(amount(wallet.path("usdtAvailable")),amount(wallet.path("nexAvailable")),amount(wallet.path("pendingWithdraw")),amount(wallet.path("cregisRiskHeld")));}
     private List<Event> decode(Map<String,Object> op,Inputs input) {var stored=input.legs().stream().filter(l->number(l.get("operationId"))==number(op.get("id"))).sorted(Comparator.comparing((Map<String,Object> l)->text(l.get("incarnation"))).thenComparingLong(l->number(l.get("revision")))).toList();return codec.decodeReceipt(op,parties(op,input),stored);}
     private List<Long> parties(Map<String,Object> op,Inputs input) {return input.parties().stream().filter(p->number(p.get("operationId"))==number(op.get("id"))).map(p->number(p.get("customerId"))).sorted().toList();}
+    private Map<Long,List<Map<String,Object>>> indexParties(Inputs input) {
+        if(input.operations().stream().noneMatch(op->"SUPPORT_DIRECT_REFERRAL".equals(op.get("businessType"))))return Map.of();
+        var index=new HashMap<Long,List<Map<String,Object>>>();
+        for(var row:input.parties())index.computeIfAbsent(number(row.get("operationId")),id->new ArrayList<>()).add(row);
+        return index;
+    }
+    private List<Long> parties(Map<String,Object> op,Map<Long,List<Map<String,Object>>> index) {
+        if(index.isEmpty())return List.of();
+        return index.getOrDefault(number(op.get("id")),List.of()).stream().map(p->number(p.get("customerId"))).sorted().toList();
+    }
     private Source source(JsonNode node) {keys(node,Set.of("key","subject","events","entries","recovery","ledgers"));return new Source(text(node.path("key")),map(node.path("subject")),maps(node.path("events")),maps(node.path("entries")),node.path("recovery").isNull()?null:map(node.path("recovery")),maps(node.path("ledgers")));}
     private Map<String,Object> map(JsonNode n) {require(n.isObject());return json.copy().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).convertValue(n,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});}
     private List<Map<String,Object>> maps(JsonNode n) {require(n.isArray());var r=new ArrayList<Map<String,Object>>();n.forEach(v->r.add(map(v)));return r;}
