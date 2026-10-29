@@ -38,7 +38,11 @@
 
 `full-profile` 在聚合及查看审计之前重新校验当前客户范围；普通客服读本人合法绑定，主管读当前负责组，总管理员仍须通过客服对象授权。原归属拒绝保持 `404 SUPPORT_CUSTOMER_NOT_FOUND`，非法编号为 `422 SUPPORT_ID_INVALID`。客服提现明细及对应全景聚合仅返回合法业务字段，不含风控决策、规则、阈值、审计详情、IP 或上级身份；金额、实际费用、到账金额、状态和时间保留。合法查看沿用全景服务的事务、outbox 和强制查看审计，失败原样传播；C1 原入口权限保持。
 
-M3 历史消息读取复用 GET `/content/conversations/{conversationNo}`，可传 `includeCustomerProfile=false` 省去完整客户画像聚合，响应中 `customerProfile=null`；不传默认 `true`，原当前会话及 M1 消费者保持全量行为。两种读取均先校验当前会话客户权限/归属，再读取同一完整消息来源；作者、回执、时间与消息顺序保持，不截断、不按内容去重，也不缓存授权消息。消息读取失败保持真实失败，不降为空历史；客户画像可由原独立资料入口继续读取。
+M3 消息区使用 GET `/content/conversations/{conversationNo}/messages`，首次只取同客户所有合法会话段合并后的最新10条，回包按旧→新排列并定位最新消息；上翻才传 `beforeMessageId` 读取更早10条。SQL按 `(created_at,id)` 倒序取11条判断 `hasMore`，实际只回10条；`nextBeforeMessageId` 为本页最旧消息ID，服务端重新定位原始微秒时间，不能由前端毫秒时间重建游标。每页重核当前会话客户权限/归属，其他客户、已删除或不合法的游标404；不缓存授权消息，不按正文去重，不预读全部历史。原作者、附件/商品/链接来源、回执、时间及各消息 `conversationNo` 保留。
+
+分页响应为 `conversation/messages/hasMore/nextBeforeMessageId/customerIdentity/replyContext/readContexts`。轻量身份仅含真实客户ID、原格式用户编号、昵称及掩码手机号，完整360仍独立读取。待回复元数据按本人当前合法维护客户的各段未处理用户消息最大ID聚合，含所选段及旧段，不下载旧正文；来源失败时 `replyContext.ready=false`，禁用依赖完整目标的发送，不能把未知当无待回复。发送仍沿原 SERVICE/MAINTENANCE 目标选择、真实绑定/同客户/peer/版本校验，不以页面10条代替完整目标集。`readContexts` 只为本页实际展示的用户消息返回其真实来源会话状态、版本及最大已见ID；按源段调用原已读命令，不以当前会话头给旧段消息发已读，也不通过完整详情预检。
+
+旧 GET `/content/conversations/{conversationNo}` 保留兼容，`includeCustomerProfile=false` 仅省去画像，不传默认true；M1原消费者保持原行为，M3消息区不再用它下载全历史。分页或消息读取失败保持真实失败，不降为空历史；客户画像失败不阻塞历史阅读。
 
 ### 分组目录读取
 

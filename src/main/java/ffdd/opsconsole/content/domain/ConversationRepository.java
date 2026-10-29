@@ -51,6 +51,11 @@ public interface ConversationRepository {
 
     List<ContentConversationMessageView> messages(String conversationNo);
 
+    /** Exact receipt target lookup; never loads the conversation's message bodies. */
+    default boolean containsCustomerMessage(String conversationNo,Long messageId) {
+        throw new UnsupportedOperationException("EXACT_CUSTOMER_MESSAGE_LOOKUP_REQUIRED");
+    }
+
     /** Public App projection: transfer reasons and other SYSTEM traces remain ops-only. */
     default List<ContentConversationMessageView> userVisibleMessages(String conversationNo) {
         return messages(conversationNo).stream()

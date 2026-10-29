@@ -22,6 +22,10 @@ public class MybatisConversationRepository implements ConversationRepository {
     private final ConversationMessageMapper messageMapper;
     private final ffdd.opsconsole.content.application.SupportOwnershipService ownership;
 
+    @Override public boolean containsCustomerMessage(String conversationNo,Long messageId) {
+        return messageMapper.containsCustomerMessage(conversationNo,messageId);
+    }
+
     @Override public Map<String,Object> counters(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
         java.util.Objects.requireNonNull(scope,"Current scope required");
         var counts=new LinkedHashMap<String,Object>();

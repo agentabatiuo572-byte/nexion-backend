@@ -10,6 +10,8 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Insert;
 
 public interface ConversationMessageMapper extends BaseMapper<ConversationMessageEntity> {
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_conversation_message WHERE id=#{id} AND conversation_no=#{no} AND sender_type='user' AND is_deleted=0)")
+    boolean containsCustomerMessage(@Param("no") String no,@Param("id") Long id);
     // Legacy task actor references and bare login names resolve to the advisor's display name (M-38);
     // any other historical display name stays unchanged.
     String ADMIN_DISPLAY_NAME = "COALESCE(NULLIF(TRIM(display_admin.nickname),''),NULLIF(TRIM(display_admin.username),''))";
