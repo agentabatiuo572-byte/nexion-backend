@@ -1,6 +1,7 @@
 package ffdd.opsconsole.home.application;
 
 import ffdd.opsconsole.device.application.ComputeTaskProofVerifier;
+import ffdd.opsconsole.device.application.TestComputeWorkerService;
 import ffdd.opsconsole.growth.application.GrowthPublicStatsService;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.EarningsLedgerRow;
@@ -240,7 +241,7 @@ public class AppHomeOverviewService {
                 String code = taskCode(row.taskClass());
                 if (code == null || !workloadCodes.add(code)) continue;
                 PriceHistoryProjection projection = priceHistory(historyByTask.get(row.taskId()), now);
-                workloads.add(linked("code", code, "name", text(row.name()), "unit", text(row.unit()),
+                workloads.add(linked("code", code, "name", workloadDisplayName(row.name()), "unit", text(row.unit()),
                         "price", nonNegative(row.price()),
                         "deltaPct", projection.deltaPct(),
                         "sparkline", projection.sparkline(),
@@ -369,8 +370,8 @@ public class AppHomeOverviewService {
 
     private List<Map<String, Object>> earningsLedger(List<EarningsLedgerRow> rows) {
         if (rows == null) return List.of();
-        return rows.stream().map(row -> linked("id", text(row.id()), "client", text(row.client()),
-                "model", text(row.model()), "rewardUsdt", nonNegative(row.rewardUsdt()),
+        return rows.stream().map(row -> linked("id", text(row.id()), "client", workloadDisplayName(row.client()),
+                "model", workloadDisplayName(row.model()), "rewardUsdt", nonNegative(row.rewardUsdt()),
                 "synthetic", false,
                 "completedAt", row.completedAt() == null ? null
                         : row.completedAt().atZone(SERVER_ZONE).toInstant().toString())).toList();
@@ -390,7 +391,7 @@ public class AppHomeOverviewService {
                     : nonNegative(task.price());
             if (reward == null) continue;
             rows.add(linked("id", "SB-" + code + "-" + Math.abs(runId.hashCode()) + "-" + index,
-                    "client", text(task.name()), "model", firstModel(task.modelName()), "rewardUsdt", reward,
+                    "client", workloadDisplayName(task.name()), "model", firstModel(task.modelName()), "rewardUsdt", reward,
                     "synthetic", true,
                     "completedAt", now.minusSeconds(7L + index * 17L).atZone(SERVER_ZONE).toInstant().toString()));
             if (++index == 5) break;
@@ -412,7 +413,7 @@ public class AppHomeOverviewService {
         List<Map<String, Object>> clients = new ArrayList<>();
         for (int i = 0; i < eligible.size(); i++) {
             MarketTaskRow row = eligible.get(i);
-            clients.add(linked("id", taskCode(row.taskClass()), "name", text(row.name()),
+            clients.add(linked("id", taskCode(row.taskClass()), "name", workloadDisplayName(row.name()),
                     "model", firstModel(row.modelName()), "city", "Sandbox",
                     "gpus", base + (i < remainder ? 1 : 0)));
         }
@@ -451,7 +452,7 @@ public class AppHomeOverviewService {
 
     private List<Map<String, Object>> clients(List<OnGridClientRow> rows) {
         if (rows == null) return List.of();
-        return rows.stream().map(row -> linked("id", text(row.id()), "name", text(row.name()), "model", text(row.model()),
+        return rows.stream().map(row -> linked("id", text(row.id()), "name", workloadDisplayName(row.name()), "model", workloadDisplayName(row.model()),
                 "city", text(row.city()), "gpus", nonNegativeLong(row.gpus()))).toList();
     }
 
@@ -480,7 +481,19 @@ public class AppHomeOverviewService {
     private BigDecimal nonNegative(BigDecimal value) { return value == null || value.signum() < 0 ? null : value; }
     private Long nonNegativeLong(Long value) { return value == null || value < 0 ? null : value; }
     private String text(String value) { return value == null || value.isBlank() ? null : value.trim(); }
-    private String firstModel(String value) { String normalized = text(value); return normalized == null ? null : normalized.split(",", 2)[0].trim(); }
+    // Presentation only: executor identity and proof/audit records retain their original values.
+    private String workloadDisplayName(String value) {
+        String normalized = text(value);
+        if (normalized == null) return null;
+        return switch (normalized) {
+            case TestComputeWorkerService.KIND -> "Vector statistics";
+            case TestComputeWorkerService.CLIENT -> "UVEL Compute";
+            case TestComputeWorkerService.TASK_NAME -> "Vector statistics v1";
+            default -> normalized;
+        };
+    }
+
+    private String firstModel(String value) { String normalized = text(value); return normalized == null ? null : workloadDisplayName(normalized.split(",", 2)[0].trim()); }
 
     private String acceptanceRunId() {
         return runtimeEnvironment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();

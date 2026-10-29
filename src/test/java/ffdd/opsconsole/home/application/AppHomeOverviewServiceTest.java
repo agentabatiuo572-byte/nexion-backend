@@ -10,6 +10,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.device.application.ComputeTaskProofVerifier;
+import ffdd.opsconsole.device.application.TestComputeWorkerService;
 import ffdd.opsconsole.growth.application.GrowthPublicStatsService;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -35,6 +36,68 @@ class AppHomeOverviewServiceTest {
     private final MockEnvironment environment = new MockEnvironment();
     private final AppHomeOverviewService service =
             new AppHomeOverviewService(mapper, verifier, publicStats, purchaseEligibility, clock, environment);
+
+    @Test
+    void homeProjectsKnownInternalWorkloadNamesWithoutChangingSettledFactsOrOtherNames() {
+        environment.setActiveProfiles("dev");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
+        var completedAt = LocalDateTime.parse("2026-10-21T18:17:00");
+        var internal = new AppHomeOverviewMapper.EarningsLedgerRow("CTA-original", TestComputeWorkerService.CLIENT,
+                TestComputeWorkerService.KIND, new BigDecimal("0.045"), completedAt);
+        var ordinary = new AppHomeOverviewMapper.EarningsLedgerRow("CTA-other", "Latest TEST customer",
+                "TEST_DETERMINISTIC_V1 custom", new BigDecimal("0.009"), completedAt.minusMinutes(1));
+        when(mapper.earningsLedger(42L, "PRODUCTION")).thenReturn(List.of(internal, ordinary));
+        when(mapper.onGridClients(false)).thenReturn(List.of(
+                new AppHomeOverviewMapper.OnGridClientRow("client-original", TestComputeWorkerService.CLIENT,
+                        "RTX 4090", "Singapore", 3L)));
+        when(mapper.marketTasks()).thenReturn(List.of(
+                new AppHomeOverviewMapper.MarketTaskRow("TK-EM", "EM", TestComputeWorkerService.TASK_NAME, "/job",
+                        new BigDecimal("0.045"), TestComputeWorkerService.KIND, null, null)));
+
+        var result = service.overview(42L);
+
+        assertEquals(0, result.getCode());
+        var ledger = (List<?>) result.getData().get("earningsLedger");
+        assertEquals(List.of(
+                Map.of("id", "CTA-original", "client", "UVEL Compute", "model", "Vector statistics",
+                        "rewardUsdt", new BigDecimal("0.045"), "synthetic", false, "completedAt", "2026-10-21T10:17:00Z"),
+                Map.of("id", "CTA-other", "client", ordinary.client(), "model", ordinary.model(),
+                        "rewardUsdt", new BigDecimal("0.009"), "synthetic", false, "completedAt", "2026-10-21T10:16:00Z")), ledger);
+        var clients = (List<?>) ((Map<?, ?>) result.getData().get("onGrid")).get("clients");
+        assertEquals(List.of(Map.of("id", "client-original", "name", "UVEL Compute", "model", "RTX 4090",
+                "city", "Singapore", "gpus", 3L)), clients);
+        var workloads = (List<?>) ((Map<?, ?>) result.getData().get("marketBoard")).get("workloads");
+        assertEquals("Vector statistics v1", ((Map<?, ?>) workloads.get(0)).get("name"));
+        assertEquals(TestComputeWorkerService.CLIENT, internal.client());
+        assertEquals(TestComputeWorkerService.KIND, internal.model());
+        verify(mapper).earningsLedger(42L, "PRODUCTION");
+    }
+
+    @Test
+    void isolatedHomeUsesTheSameKnownWorkloadDisplayNamesAndRetainsSyntheticProvenance() {
+        environment.setActiveProfiles("test");
+        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "home-labels-20261029");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(true));
+        when(publicStats.overview()).thenReturn(ApiResult.ok(Map.of(
+                "values", Map.of("fleetDevices", 10, "onlineRatePct", new BigDecimal("100")),
+                "publishedDailyUsdPerDevice", new BigDecimal("0.06"))));
+        when(mapper.marketTasks()).thenReturn(List.of(
+                new AppHomeOverviewMapper.MarketTaskRow("TK-EM", "EM", TestComputeWorkerService.TASK_NAME, "/job",
+                        new BigDecimal("0.045"), TestComputeWorkerService.KIND + ",other", null, null)));
+
+        var result = service.overview(42L);
+
+        assertEquals(0, result.getCode());
+        var ledger = (Map<?, ?>) ((List<?>) result.getData().get("earningsLedger")).get(0);
+        assertEquals("Vector statistics v1", ledger.get("client"));
+        assertEquals("Vector statistics", ledger.get("model"));
+        assertEquals(true, ledger.get("synthetic"));
+        assertEquals("SANDBOX", result.getData().get("sourceEnvironment"));
+        assertEquals("SANDBOX_QUOTE_EXAMPLES", result.getData().get("earningsLedgerMode"));
+        var clients = (List<?>) ((Map<?, ?>) result.getData().get("onGrid")).get("clients");
+        assertEquals(List.of(Map.of("id", "EM", "name", "Vector statistics v1", "model", "Vector statistics",
+                "city", "Sandbox", "gpus", 10L)), clients);
+    }
 
     @Test
     void sandboxReturnsCurrentRunProjectionWithoutReadingProductionFacts() {
