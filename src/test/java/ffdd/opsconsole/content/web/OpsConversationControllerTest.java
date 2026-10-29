@@ -55,6 +55,21 @@ class OpsConversationControllerTest {
         verify(conversationService).overview();
     }
 
+    @Test void detailProfileOptionDefaultsToTrueAndBindsTheHistoryFalseOption() throws Exception {
+        when(conversationService.detail("CV-1",true)).thenReturn(ApiResult.ok(null));
+        when(conversationService.detail("CV-1",false)).thenReturn(ApiResult.ok(null));
+        var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        var url="/api/admin/content/conversations/CV-1";
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(url))
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(url).param("includeCustomerProfile","false"))
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk());
+        verify(conversationService).detail("CV-1",true);verify(conversationService).detail("CV-1",false);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(url).param("includeCustomerProfile","invalid"))
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest());
+        org.mockito.Mockito.verifyNoMoreInteractions(conversationService);
+    }
+
     @Test
     void transferDelegatesWithIdempotencyHeader() {
         ConversationTransferRequest request =

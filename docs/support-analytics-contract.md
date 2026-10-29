@@ -38,6 +38,8 @@
 
 `full-profile` 在聚合及查看审计之前重新校验当前客户范围；普通客服读本人合法绑定，主管读当前负责组，总管理员仍须通过客服对象授权。原归属拒绝保持 `404 SUPPORT_CUSTOMER_NOT_FOUND`，非法编号为 `422 SUPPORT_ID_INVALID`。客服提现明细及对应全景聚合仅返回合法业务字段，不含风控决策、规则、阈值、审计详情、IP 或上级身份；金额、实际费用、到账金额、状态和时间保留。合法查看沿用全景服务的事务、outbox 和强制查看审计，失败原样传播；C1 原入口权限保持。
 
+M3 历史消息读取复用 GET `/content/conversations/{conversationNo}`，可传 `includeCustomerProfile=false` 省去完整客户画像聚合，响应中 `customerProfile=null`；不传默认 `true`，原当前会话及 M1 消费者保持全量行为。两种读取均先校验当前会话客户权限/归属，再读取同一完整消息来源；作者、回执、时间与消息顺序保持，不截断、不按内容去重，也不缓存授权消息。消息读取失败保持真实失败，不降为空历史；客户画像可由原独立资料入口继续读取。
+
 ### 分组目录读取
 
 GET `/support-agents/groups` 返回独立 `GroupDirectory[]`：`id/name/supervisorAdminId/status/version/supervisorName/memberCount/boundCustomers/pendingCustomers`。负责人只投影显示名；缺名字或不能确认的计数为 `null`，确证空集合为0。成员计入停用待交接账号；绑定与待分配客户完全复用 analytics 当前客户投影，按 `currentGroupId` 和 `BOUND/PENDING` 分区聚合，排除 sandbox 客户。`pendingCustomers` 是当前客户分区人数，不是操作分配池数量，也不等于详情中用于退出阻止的 `routedCustomers`。目录使用同次获准范围批量读取，个人范围拒绝，主管只读本人负责组；失败不降为零。组详情和写操作的五字段 `Group` 回包保持原契约。

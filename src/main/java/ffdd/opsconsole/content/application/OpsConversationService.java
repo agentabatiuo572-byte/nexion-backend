@@ -132,6 +132,11 @@ public class OpsConversationService {
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public ApiResult<ContentConversationDetail> detail(String conversationNo) {
+        return detail(conversationNo,true);
+    }
+
+    @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public ApiResult<ContentConversationDetail> detail(String conversationNo,boolean includeCustomerProfile) {
         ownership.readConversation(conversationNo);
         productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
@@ -144,7 +149,7 @@ public class OpsConversationService {
         }
         List<ContentConversationMessageView> messages = conversationRepository.messages(conversation.conversationNo());
         // 跨域聚合客户档案(只读辅助);内部对每个子域 try/catch 降级,绝不抛异常中断会话详情。
-        ConversationCustomerProfile customerProfile = buildCustomerProfile(conversation);
+        ConversationCustomerProfile customerProfile = includeCustomerProfile?buildCustomerProfile(conversation):null;
         return ApiResult.ok(new ContentConversationDetail(conversation, messages, customerProfile));
     }
 

@@ -139,8 +139,9 @@ public class OpsConversationController {
     // 会话详情/客户档案 — M3 即时会话台 读
     @PreAuthorize("hasAuthority('service_m3_read')")
     @GetMapping("/{conversationNo}")
-    public ApiResult<ContentConversationDetail> detail(@PathVariable String conversationNo) {
-        return conversationService.detail(conversationNo);
+    public ApiResult<ContentConversationDetail> detail(@PathVariable String conversationNo,
+            @RequestParam(defaultValue="true") boolean includeCustomerProfile) {
+        return conversationService.detail(conversationNo,includeCustomerProfile);
     }
 
     @PreAuthorize("hasAuthority('service_m3_write')")

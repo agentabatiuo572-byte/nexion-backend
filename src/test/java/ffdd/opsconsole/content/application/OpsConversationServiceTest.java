@@ -58,6 +58,7 @@ class OpsConversationServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final CustomerProfileRepository customerProfileRepository = mock(CustomerProfileRepository.class);
+    private final SupportCustomerProfileService customerProfiles=mock(SupportCustomerProfileService.class);
     private final SupportOwnershipService ownership = ffdd.opsconsole.content.SupportTestDependencies.ownership();
     private final SupportHumanMessageService humanMessages = ffdd.opsconsole.content.SupportTestDependencies.humanMessages();
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
@@ -85,7 +86,7 @@ class OpsConversationServiceTest {
                 mock(ffdd.opsconsole.device.application.OpsDeviceService.class),
                 mock(ffdd.opsconsole.risk.application.OpsRiskService.class),
                 customerProfileRepository,
-                mock(ProductionSupportPathGuard.class), ownership, humanMessages, org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class), mock(SupportCustomerProfileService.class));
+                mock(ProductionSupportPathGuard.class), ownership, humanMessages, org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class), customerProfiles);
     }
 
     @Test
@@ -547,6 +548,33 @@ class OpsConversationServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().conversation().conversationNo()).isEqualTo("CV-1");
         assertThat(result.getData().messages()).hasSize(1);
+        verify(customerProfiles).conversationProfile(1001L);
+    }
+
+    @Test void lightDetailKeepsTheCompleteOrderedMessagesAndSkipsCustomerProfile() {
+        conversationRepository.conversation=conversation("CV-1","CLOSED");
+        var time=LocalDateTime.of(2026,10,29,0,0);
+        conversationRepository.history=java.util.stream.LongStream.rangeClosed(1,2500).mapToObj(id->new ContentConversationMessageView(
+            id,1L,"CV-1",id%2==0?1001L:1L,id%2==0?"user":"agent",id%2==0?"Customer":"Agent One","same content","read",time)).toList();
+        var result=service.detail("CV-1",false).getData();
+        assertThat(result.conversation().conversationNo()).isEqualTo("CV-1");
+        assertThat(result.messages()).containsExactlyElementsOf(conversationRepository.history);
+        assertThat(result.messages()).hasSize(2500);
+        assertThat(result.messages().get(0).senderName()).isEqualTo("Agent One");
+        assertThat(result.customerProfile()).isNull();assertThat(result.historyTruncated()).isFalse();assertThat(result.nextCursor()).isNull();
+        verify(ownership).readConversation("CV-1");verifyNoInteractions(customerProfiles);
+    }
+
+    @Test void lightDetailStillRejectsCurrentAuthorizationBeforeReadingMessagesOrProfile() {
+        doThrow(new ffdd.opsconsole.shared.exception.BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND")).when(ownership).readConversation("CV-1");
+        assertThatThrownBy(()->service.detail("CV-1",false)).hasMessage("SUPPORT_CUSTOMER_NOT_FOUND");
+        verifyNoInteractions(customerProfiles);assertThat(conversationRepository.messageReads).isZero();
+    }
+
+    @Test void lightDetailSourceFailurePropagatesWithoutAnEmptyHistoryFallback() {
+        conversationRepository.conversation=conversation("CV-1","CLOSED");conversationRepository.messageFailure=true;
+        assertThatThrownBy(()->service.detail("CV-1",false)).hasMessage("MESSAGE_READ_FAILED");
+        verifyNoInteractions(customerProfiles);
     }
 
     @Test
@@ -872,6 +900,9 @@ class OpsConversationServiceTest {
         private int failStateClaimOnAttempt = Integer.MAX_VALUE;
         private int stateWriteAttempts;
         private int messageWrites;
+        private int messageReads;
+        private boolean messageFailure;
+        private List<ContentConversationMessageView> history;
         private long nextMessageId = 100L;
         private Long lastSenderId;
         private String lastSenderName;
@@ -923,6 +954,9 @@ class OpsConversationServiceTest {
 
         @Override
         public List<ContentConversationMessageView> messages(String conversationNo) {
+            messageReads++;
+            if(messageFailure)throw new IllegalStateException("MESSAGE_READ_FAILED");
+            if(history!=null)return history;
             return List.of(new ContentConversationMessageView(
                     1L,
                     conversation == null ? 1L : conversation.id(),
