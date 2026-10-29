@@ -131,7 +131,7 @@ public class SupportCustomerProfileService {
     @SuppressWarnings("unchecked") private void addNet(Map<String,Object> data,long customer,String legacyStatus) {
         SupportFundsReadFacade.NetCustomer net=null;
         if(funds!=null)try {
-            var snapshot=funds.readNetContributions(List.of(customer));
+            var snapshot=analytics==null?funds.readNetContributions(List.of(customer)):analytics.cachedNetForCustomer(customer);
             if(snapshot!=null && snapshot.customers().size()==1 && snapshot.customers().get(0).customerId()==customer
                 && snapshot.origins().stream().allMatch(o->o.customerId()==customer) && snapshot.changes().stream().allMatch(c->c.originCustomerId()==customer)) {
                 var row=snapshot.customers().get(0);
@@ -139,6 +139,9 @@ public class SupportCustomerProfileService {
             }
         }catch(org.springframework.dao.DataAccessException | IllegalArgumentException | IllegalStateException ex) {
             org.slf4j.LoggerFactory.getLogger(SupportCustomerProfileService.class).warn("Customer net contribution unavailable: {}",ex.getClass().getSimpleName());
+        }catch(BizException ex) {
+            if(ex.getCode()!=503)throw ex;
+            org.slf4j.LoggerFactory.getLogger(SupportCustomerProfileService.class).warn("Customer cached net contribution unavailable");
         }
         if(!(data.get("byCurrency") instanceof List<?> raw))throw new IllegalStateException("SUPPORT_FINANCE_CURRENCIES_UNAVAILABLE");
         var currencies=new LinkedHashMap<String,Map<String,Object>>();
@@ -187,7 +190,7 @@ public class SupportCustomerProfileService {
         data.put("onlineCount",null);data.put("observedOnlineCount",null);data.put("telemetryUnknownCount",null);statuses.put("onlineCount","UNKNOWN");
         if(currentDevices==null)return;
         try {
-            var snapshot=currentDevices.readCurrent(List.of(customer));
+            var snapshot=analytics==null?currentDevices.readCurrent(List.of(customer)):analytics.cachedDevicesForCustomer(customer);
             if(snapshot==null || snapshot.evaluatedDbAt()==null)throw new IllegalStateException("SUPPORT_DEVICE_HOLDING_UNAVAILABLE");
             var seen=new HashSet<Long>();long held=0,unknown=0,online=0,telemetryUnknown=0;
             for(var device:snapshot.devices()) {
@@ -214,6 +217,10 @@ public class SupportCustomerProfileService {
         }catch(org.springframework.dao.DataAccessException | IllegalArgumentException | IllegalStateException ex) {
             statuses.put("heldCount","ERROR");statuses.put("onlineCount","ERROR");
             org.slf4j.LoggerFactory.getLogger(SupportCustomerProfileService.class).warn("Customer current devices unavailable: {}",ex.getClass().getSimpleName());
+        }catch(BizException ex) {
+            if(ex.getCode()!=503)throw ex;
+            statuses.put("heldCount","ERROR");statuses.put("onlineCount","ERROR");
+            org.slf4j.LoggerFactory.getLogger(SupportCustomerProfileService.class).warn("Customer cached devices unavailable");
         }
     }
 

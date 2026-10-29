@@ -130,6 +130,7 @@ public class SupportAnalyticsPrivateQueryService {
         SupportAnalyticsQueryVersion.ReadState activityRead,SupportAnalyticsQueryVersion.ReadState taskRead,
         List<CustomerTagRow> tags,SupportFundsReadFacade.Snapshot funds,SupportAnalyticsQueryVersion.ReadState fundsRead) { }
     private Sources readSources(ReadScope scope,SupportAnalyticsService.QueryCapture c,List<PermissionStamp> grants,List<Long> groups) {
+        var compiled=c.sampledFacts==null?null:c.sampledFacts.compiled();
         var roots=new TreeSet<>(c.current.keySet());var groupIds=new TreeSet<>(groups);var peopleIds=new TreeSet<Long>();peopleIds.add(scope.actorId());
         for(var root:c.current.values()){if(root.ownerAgentId()!=null)peopleIds.add(root.ownerAgentId());if(root.currentGroupId()!=null)groupIds.add(root.currentGroupId());}
         for(var a:c.accounts)peopleIds.add(a.accountId());
@@ -142,32 +143,56 @@ public class SupportAnalyticsPrivateQueryService {
         var relations=new ArrayList<RelationshipStamp>();relations.addAll(checked(mapper.assignmentStamps(scope,roots)));
         relations.addAll(checked(mapper.routeStamps(scope,roots)));relations.addAll(checked(mapper.memberStamps(scope,peopleIds)));
         relations.addAll(checked(mapper.ownerStamps(scope,groupIds)));
-        var display=index(checked(mapper.rootDisplayRows(scope,roots)),RootDisplayRow::customerId);
+        var display=compiled==null?index(checked(mapper.rootDisplayRows(scope,roots)),RootDisplayRow::customerId)
+            :index(compiled.profiles().stream().filter(p->roots.contains(p.customerId())).toList(),RootDisplayRow::customerId);
+        if(compiled!=null&&!roots.equals(display.keySet())){
+            var missing=new TreeSet<>(roots);missing.removeAll(display.keySet());display.putAll(index(checked(mapper.rootDisplayRows(scope,missing)),RootDisplayRow::customerId));
+        }
         if(!roots.equals(display.keySet()))throw unavailable();
-        var tags=checked(mapper.customerTagRows(scope,roots));var tagIds=new HashSet<Long>();
+        var tags=compiled==null?checked(mapper.customerTagRows(scope,roots)):compiled.tags().stream().filter(t->roots.contains(t.customerId())).toList();var tagIds=new HashSet<Long>();
         if(tags.stream().anyMatch(t->t.id()==null || t.id()<=0 || !roots.contains(t.customerId()) || !tagIds.add(t.id()) || t.tag()==null || t.createdAt()==null || t.updatedAt()==null))throw unavailable();
-        var fundSnapshot=funds==null?null:funds.readCurrent(List.copyOf(roots));
+        var fundSnapshot=funds==null?null:compiled==null?funds.readCurrent(List.copyOf(roots)):cachedFunds(compiled.funds(),roots);
         var fundsRead=funds==null?SupportAnalyticsQueryVersion.ReadState.NOT_REQUESTED:SupportAnalyticsQueryVersion.fundsObservation(fundSnapshot,roots);
         var rules=mapper.queryRules(scope);if(rules==null)throw unavailable();
         Map<Long,ActivityIdentityRow> activity=Map.of();Map<Long,TaskRow> tasks=Map.of();List<PendingReplyRow> pending=List.of();
         var activityRead=c.activityWindow!=null && c.activityWindow.status()==SupportAnalyticsStats.Status.FAILED?SupportAnalyticsQueryVersion.ReadState.FAILED:SupportAnalyticsQueryVersion.ReadState.UNKNOWN;var taskRead=SupportAnalyticsQueryVersion.ReadState.UNKNOWN;
-        if(c.activityCoverage!=null && c.activityCoverage.coverageStartAt()!=null && c.activityCoverage.observedThroughAt()!=null && c.activityCoverage.evaluatedDbAt()!=null
-                && !c.activityCoverage.coverageStartAt().isAfter(c.activityCoverage.observedThroughAt()) && !c.activityCoverage.observedThroughAt().isAfter(c.activityCoverage.evaluatedDbAt())) {
+        if(validTaskCoverage(c.activityCoverage) && c.activityWindow!=null && c.activityWindow.fromInclusive()!=null) {
             try {
-                var w=c.activityCoverage.observedThroughAt();
-                if(c.activityWindow!=null && c.activityWindow.fromInclusive()!=null) {
-                    activity=index(checked(mapper.activityIdentityRows(scope,roots,w)),ActivityIdentityRow::customerId);
-                    activityRead=SupportAnalyticsQueryVersion.ReadState.COMPLETE;
-                }
+                activity=index(compiled==null?checked(mapper.activityIdentityRows(scope,roots,c.activityCoverage.observedThroughAt())):compiled.identities().stream().filter(a->roots.contains(a.customerId())).toList(),ActivityIdentityRow::customerId);
+                activityRead=SupportAnalyticsQueryVersion.ReadState.COMPLETE;
+            } catch(DataAccessException ex){activityRead=SupportAnalyticsQueryVersion.ReadState.FAILED;}
+        }
+        try {
+            var taskCoverage=compiled==null?c.activityCoverage:mapper.activityCoverage(scope);
+            if(validTaskCoverage(taskCoverage)) {
+                var w=taskCoverage.observedThroughAt();
                 var bound=new TreeSet<>(c.current.values().stream().filter(row->"BOUND".equals(row.category())).map(CurrentCustomer::customerId).toList());
                 // Task facts use the activity watermark; a missing window only leaves windowStatus unknown.
-                tasks=index(checked(mapper.taskRows(scope,bound,w,c.activityCoverage.coverageStartAt(),
-                    rules.dormantDays()==null?null:w.minusDays(rules.dormantDays()),c.activityWindow==null?null:c.activityWindow.fromInclusive(),rules.maintenanceDays(),null,c.activityCoverage.evaluatedDbAt())),TaskRow::customerId);
+                tasks=index(checked(mapper.taskRows(scope,bound,w,taskCoverage.coverageStartAt(),
+                    rules.dormantDays()==null?null:w.minusDays(rules.dormantDays()),c.activityWindow==null?null:c.activityWindow.fromInclusive(),rules.maintenanceDays(),null,taskCoverage.evaluatedDbAt())),TaskRow::customerId);
                 pending=checked(mapper.pendingReplyRows(scope,bound));
                 taskRead=bound.equals(tasks.keySet())?SupportAnalyticsQueryVersion.ReadState.COMPLETE:SupportAnalyticsQueryVersion.ReadState.UNKNOWN;
-            } catch(DataAccessException ex){activityRead=SupportAnalyticsQueryVersion.ReadState.FAILED;taskRead=SupportAnalyticsQueryVersion.ReadState.FAILED;}
-        }
+            }
+        } catch(DataAccessException ex){taskRead=SupportAnalyticsQueryVersion.ReadState.FAILED;}
         return new Sources(groups,grants,people,roles,quals,groupRows,relations,display,rules,activity,tasks,pending,activityRead,taskRead,tags,fundSnapshot,fundsRead);
+    }
+    private static boolean validTaskCoverage(ActivityCoverage coverage){return coverage!=null && coverage.coverageStartAt()!=null && coverage.observedThroughAt()!=null && coverage.evaluatedDbAt()!=null
+        && !coverage.coverageStartAt().isAfter(coverage.observedThroughAt()) && !coverage.observedThroughAt().isAfter(coverage.evaluatedDbAt());}
+    static SupportFundsReadFacade.Snapshot cachedFunds(SupportFundsReadFacade.Snapshot all,Set<Long> roots){
+        var rows=new ArrayList<>(all.wallets().rows().stream().filter(w->roots.contains(w.customerId())).toList());
+        for(long id:roots)if(rows.stream().noneMatch(w->w.customerId()==id))rows.add(new SupportFundsReadFacade.WalletEvidence(id,null,null,null,null,null,SupportFundsReadFacade.EvidenceState.UNKNOWN,List.of(SupportFundsReadFacade.Reason.SOURCE_OBSERVATION_UNVERIFIED)));
+        var walletReasons=new TreeSet<SupportFundsReadFacade.Reason>();rows.forEach(w->walletReasons.addAll(w.reasons()));
+        boolean walletFailed=all.wallets().state()==SupportFundsReadFacade.ReadState.FAILED;
+        if(walletFailed)walletReasons.add(SupportFundsReadFacade.Reason.WALLET_READ_FAILED);
+        long known=rows.stream().filter(w->w.state()==SupportFundsReadFacade.EvidenceState.READY).count();
+        var wallets=new SupportFundsReadFacade.WalletRead(rows,walletFailed?SupportFundsReadFacade.ReadState.FAILED:known==rows.size()?SupportFundsReadFacade.ReadState.READY:known==0?SupportFundsReadFacade.ReadState.UNKNOWN:SupportFundsReadFacade.ReadState.PARTIAL,List.copyOf(walletReasons),all.wallets().evaluatedDbAt());
+        var withdrawalRows=all.withdrawals().rows().stream().filter(w->roots.contains(w.customerId())).toList();
+        var withdrawalReasons=new TreeSet<SupportFundsReadFacade.Reason>();withdrawalRows.forEach(w->withdrawalReasons.addAll(w.reasons()));
+        boolean withdrawalFailed=all.withdrawals().state()==SupportFundsReadFacade.ReadState.FAILED;
+        if(withdrawalFailed)withdrawalReasons.add(SupportFundsReadFacade.Reason.WITHDRAWAL_READ_FAILED);
+        long knownWithdrawals=withdrawalRows.stream().filter(w->w.state()!=SupportFundsReadFacade.WithdrawalState.UNKNOWN).count();
+        var withdrawals=new SupportFundsReadFacade.WithdrawalRead(withdrawalRows,withdrawalFailed?SupportFundsReadFacade.ReadState.FAILED:knownWithdrawals==withdrawalRows.size()?SupportFundsReadFacade.ReadState.READY:knownWithdrawals==0?SupportFundsReadFacade.ReadState.UNKNOWN:SupportFundsReadFacade.ReadState.PARTIAL,List.copyOf(withdrawalReasons),all.withdrawals().evaluatedDbAt(),all.withdrawals().historicalEnvironmentStatus(),all.withdrawals().eventOwnershipStatus());
+        return new SupportFundsReadFacade.Snapshot(List.copyOf(roots),wallets,withdrawals,all.businessZone());
     }
     private static <T> Map<Long,T> index(List<T> rows,java.util.function.Function<T,Long> id) {
         var out=new TreeMap<Long,T>();for(var row:rows){Long key=id.apply(row);if(key==null || key<=0 || out.putIfAbsent(key,row)!=null)throw unavailable();}return out;
@@ -194,7 +219,7 @@ public class SupportAnalyticsPrivateQueryService {
         var tasks=s.tasks().values().stream().map(t->new SupportAnalyticsQueryVersion.Task(t.customerId(),nullableBool(t.enabled()),t.preferenceVersion(),t.openCycleId(),t.openCycleId()==null?null:"OPEN",t.executionId(),null,t.lastExecutionAt(),t.lastSucceededAt(),t.nextDueAt(),nullableBool(t.firstContact()),t.contactFactId(),t.pendingConversationNo(),t.pendingThroughMessageId(),null,t.waitingSinceAt(),t.stoppedReason(),nullableBool(t.due()),nullableBool(t.waitingReply()),nullableBool(t.preferencePresent()),t.pendingReplyCount(),t.activityStatus(),t.windowStatus(),s.pending().stream().filter(p->p.customerId().equals(t.customerId())).map(p->new SupportAnalyticsQueryVersion.PendingReply(p.messageId(),p.conversationNo(),p.throughMessageId(),p.createdAt())).toList(),t.preferenceUpdatedAt())).toList();
         var window=c.activityWindow;var coverage=c.activityCoverage;
         var ac=coverage==null?null:new SupportAnalyticsQueryVersion.ActivityCoverage(coverage.coverageStartAt(),coverage.observedThroughAt(),window.fromInclusive(),window.throughInclusive());
-        return new SupportAnalyticsQueryVersion.Evidence(new SupportAnalyticsQueryVersion.Reads(c.rosterStatus==SupportAnalyticsStats.Status.FAILED?SupportAnalyticsQueryVersion.ReadState.FAILED:v,v,c.snapshot==null?SupportAnalyticsQueryVersion.ReadState.NOT_REQUESTED:v,c.attributionFailed?SupportAnalyticsQueryVersion.ReadState.FAILED:v,v,c.deviceFailed?SupportAnalyticsQueryVersion.ReadState.FAILED:v,s.activityRead(),s.taskRead()),authority,List.copyOf(c.financialIds),customers,
+        return new SupportAnalyticsQueryVersion.Evidence(new SupportAnalyticsQueryVersion.Reads(c.rosterStatus==SupportAnalyticsStats.Status.FAILED?SupportAnalyticsQueryVersion.ReadState.FAILED:v,v,c.snapshot==null?SupportAnalyticsQueryVersion.ReadState.NOT_REQUESTED:v,c.attributionFailed?SupportAnalyticsQueryVersion.ReadState.FAILED:v,v,c.deviceFailed?SupportAnalyticsQueryVersion.ReadState.FAILED:c.unobservedSubjects?SupportAnalyticsQueryVersion.ReadState.UNKNOWN:v,s.activityRead(),s.taskRead()),authority,List.copyOf(c.financialIds),customers,
             c.eventIds.entrySet().stream().map(r->new SupportAnalyticsQueryVersion.EventCandidate(r.getKey(),r.getValue())).toList(),s.rules(),c.snapshot,attributions,first,List.copyOf(c.trees.values()),
             c.stock==null?List.of():c.stock.devices().stream().map(d->deviceProof(d,c)).toList(),c.stock==null?List.of():c.stock.unknownHoldingDevices().stream().map(d->deviceProof(d,c)).toList(),ac,activities,tasks,List.copyOf(c.legacyIds),c.teamSnapshot,c.teamSnapshot==null?SupportAnalyticsQueryVersion.ReadState.NOT_REQUESTED:v,
             s.display().values().stream().map(d->new SupportAnalyticsQueryVersion.Profile(d.customerId(),d.sourceUpdatedAt(),d.avatarObjectKey(),d.vRank(),d.userLevel(),

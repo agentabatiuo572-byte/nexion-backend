@@ -9,12 +9,13 @@ import java.time.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.*;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** Prewarms before web-server lifecycle start; never impersonates an authenticated operator. */
+/** Computes one complete generation each minute. HTTP reads the last committed Redis generation. */
 @Service
 public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(SupportAnalyticsFactSampler.class);
@@ -23,60 +24,57 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     private final SupportFundsReadFacade funds;
     private final ProductionSupportPathGuard guard;
     private final TransactionTemplate reads;
-    private final Clock clock;
-    private final java.util.function.LongSupplier ticks;
-    private final AtomicReference<SupportAnalyticsFactSnapshot> latest=new AtomicReference<>();
+    private final SupportAnalyticsRedisStore store;
+    private final ObjectProvider<SupportAnalyticsService> compiler;
+    private final SupportAnalyticsCacheCodec codec=new SupportAnalyticsCacheCodec();
+    private final AtomicReference<Decoded> decoded=new AtomicReference<>();
     private final java.util.concurrent.atomic.AtomicBoolean started=new java.util.concurrent.atomic.AtomicBoolean();
-    @org.springframework.beans.factory.annotation.Autowired
+    private record Decoded(String json,SupportAnalyticsFactSnapshot snapshot) { }
     public SupportAnalyticsFactSampler(SupportAnalyticsFactMapper mapper,FinanceSupportPaymentFactsFacade payments,
-            SupportFundsReadFacade funds,ProductionSupportPathGuard guard,PlatformTransactionManager transactions) {
-        this(mapper,payments,funds,guard,transactions,Clock.systemUTC());
-    }
-    SupportAnalyticsFactSampler(SupportAnalyticsFactMapper mapper,FinanceSupportPaymentFactsFacade payments,
-            SupportFundsReadFacade funds,ProductionSupportPathGuard guard,PlatformTransactionManager transactions,Clock clock) {
-        this(mapper,payments,funds,guard,transactions,clock,System::nanoTime);
-    }
-    SupportAnalyticsFactSampler(SupportAnalyticsFactMapper mapper,FinanceSupportPaymentFactsFacade payments,
-            SupportFundsReadFacade funds,ProductionSupportPathGuard guard,PlatformTransactionManager transactions,Clock clock,java.util.function.LongSupplier ticks) {
-        this.mapper=mapper;this.payments=payments;this.funds=funds;this.guard=guard;this.clock=clock;
-        this.ticks=ticks;
+            SupportFundsReadFacade funds,ProductionSupportPathGuard guard,PlatformTransactionManager transactions,
+            SupportAnalyticsRedisStore store,ObjectProvider<SupportAnalyticsService> compiler) {
+        this.mapper=mapper;this.payments=payments;this.funds=funds;this.guard=guard;this.store=store;this.compiler=compiler;
         reads=new TransactionTemplate(transactions);reads.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         reads.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);reads.setReadOnly(true);
     }
     @Override public void afterSingletonsInstantiated() {
         if(!guard.productionSupportAutomationAllowed())return;
-        try {refresh();}
-        catch(BizException failure) {
-            if(!"SUPPORT_ANALYTICS_SOURCE_SNAPSHOT_EXPIRED".equals(failure.getMessage()))throw failure;
-            // A validated cold frame may warm pure receipt decoding without being published.
-            // Capture again with a new RR start; HTTP is still not listening. Never retry a source failure.
-            refresh();
-        }
-        started.set(true);
+        try {
+            boolean ready=false;
+            try {current();ready=true;}
+            catch(BizException failure){if(!Set.of("SUPPORT_ANALYTICS_CACHE_NOT_READY","SUPPORT_ANALYTICS_CACHE_INVALID").contains(failure.getMessage()))throw failure;}
+            if(!ready)refresh();
+        } catch(RuntimeException failure) {
+            LOG.warn("Support analytics startup generation unavailable type={}; minute retry enabled",failure.getClass().getSimpleName());
+        } finally {started.set(true);}
     }
-    @Scheduled(fixedDelay=100,scheduler="supportAnalyticsFactTaskScheduler")
+    @Scheduled(initialDelay=60000,fixedRate=60000,scheduler="supportAnalyticsFactTaskScheduler")
     public void poll() {
         if(!started.get() || !guard.productionSupportAutomationAllowed())return;
         try {refresh();}
-        catch(RuntimeException failure){LOG.warn("Support analytics fact refresh failed type={}",failure.getClass().getSimpleName());}
+        catch(RuntimeException failure){LOG.warn("Support analytics minute computation failed type={}; previous generation retained",failure.getClass().getSimpleName());}
     }
-    synchronized void refresh() {
-        long startedAt=ticks.getAsLong();
-        SupportAnalyticsFactSnapshot next=reads.execute(status->{
-            Instant asOf=Objects.requireNonNull(mapper.nowUtc()).toInstant(ZoneOffset.UTC);
-            var ids=List.copyOf(mapper.productionCustomers());
-            var payment=ids.isEmpty()?new SupportPaymentFacts.Snapshot(List.of(),List.of(),List.of(),"Asia/Shanghai",asOf):payments.readHistory(ids);
-            return new SupportAnalyticsFactSnapshot(asOf,ids,payment,funds.readNetContributions(ids),mapper.attributions(),mapper.attributionProofs(),startedAt);
-        });
-        Objects.requireNonNull(next);
-        long elapsedMs=(ticks.getAsLong()-startedAt)/1_000_000;
-        if(!started.get() || elapsedMs>2000)LOG.info("Support analytics fact capture subjects={} durationMs={} asOf={}",next.subjects().size(),elapsedMs,next.asOf());
-        next.requireFresh(clock.instant(),ticks.getAsLong());latest.set(next);
+    void refresh() {
+        String token=store.tryLock();if(token==null)return;
+        long startedAt=System.nanoTime();
+        try {
+            SupportAnalyticsFactSnapshot next=reads.execute(status->{
+                Instant asOf=Objects.requireNonNull(mapper.nowUtc()).toInstant(ZoneOffset.UTC);
+                var ids=List.copyOf(mapper.productionCustomers());
+                var payment=ids.isEmpty()?new SupportPaymentFacts.Snapshot(List.of(),List.of(),List.of(),"Asia/Shanghai",asOf):payments.readHistory(ids);
+                var raw=new SupportAnalyticsFactSnapshot(asOf,ids,payment,funds.readNetContributions(ids),mapper.attributions(),mapper.attributionProofs());
+                return compiler.getObject().compileForCache(raw);
+            });
+            String json=codec.encode(Objects.requireNonNull(next));
+            boolean published=store.publish(token,json);
+            LOG.info("Support analytics minute generation published={} subjects={} durationMs={} asOf={}",published,next.subjects().size(),(System.nanoTime()-startedAt)/1_000_000,next.asOf());
+        } finally {store.release(token);}
     }
     public SupportAnalyticsFactSnapshot current() {
-        var snapshot=latest.get();
-        if(snapshot==null)throw new BizException(503,"SUPPORT_ANALYTICS_SOURCE_SNAPSHOT_NOT_READY");
-        snapshot.requireFresh(clock.instant(),ticks.getAsLong());return snapshot;
+        String json=store.read();
+        if(json==null)throw new BizException(503,"SUPPORT_ANALYTICS_CACHE_NOT_READY");
+        var previous=decoded.get();if(previous!=null&&previous.json().equals(json))return previous.snapshot();
+        var snapshot=codec.decode(json);decoded.set(new Decoded(json,snapshot));return snapshot;
     }
-    public void requireFresh(SupportAnalyticsFactSnapshot snapshot) {snapshot.requireFresh(clock.instant(),ticks.getAsLong());}
+    public void requireFresh(SupportAnalyticsFactSnapshot snapshot) { /* Stale completed data keeps its true asOf. */ }
 }

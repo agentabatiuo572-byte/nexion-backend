@@ -45,6 +45,7 @@ public class SupportAnalyticsService {
     private final SupportDeviceReadFacade devices;
     private final SupportFundsReadFacade funds;
     private final SupportAnalyticsFactSampler factSampler;
+    private final ffdd.opsconsole.content.mapper.SupportAnalyticsFactMapper factMapper;
 
     /** Legacy callers do not gain newly requested metrics from absent dependencies. */
     public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper) {
@@ -52,7 +53,7 @@ public class SupportAnalyticsService {
     }
     public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper,SupportFundsReadFacade funds) {
         this.ownership=Objects.requireNonNull(ownership);this.finance=Objects.requireNonNull(finance);this.mapper=Objects.requireNonNull(mapper);
-        this.invitations=null;this.devices=null;this.funds=funds;this.factSampler=null;
+        this.invitations=null;this.devices=null;this.funds=funds;this.factSampler=null;this.factMapper=null;
     }
     public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper,
             SupportInvitationReadFacade invitations,SupportDeviceReadFacade devices) {
@@ -62,11 +63,16 @@ public class SupportAnalyticsService {
             SupportInvitationReadFacade invitations,SupportDeviceReadFacade devices,SupportFundsReadFacade funds) {
         this(ownership,finance,mapper,invitations,devices,funds,null);
     }
-    @Autowired
     public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper,
             SupportInvitationReadFacade invitations,SupportDeviceReadFacade devices,SupportFundsReadFacade funds,SupportAnalyticsFactSampler factSampler) {
+        this(ownership,finance,mapper,invitations,devices,funds,factSampler,null);
+    }
+    @Autowired
+    public SupportAnalyticsService(SupportOwnershipService ownership,FinanceSupportPaymentFactsFacade finance,SupportAnalyticsMapper mapper,
+            SupportInvitationReadFacade invitations,SupportDeviceReadFacade devices,SupportFundsReadFacade funds,SupportAnalyticsFactSampler factSampler,
+            ffdd.opsconsole.content.mapper.SupportAnalyticsFactMapper factMapper) {
         this.ownership=Objects.requireNonNull(ownership);this.finance=Objects.requireNonNull(finance);this.mapper=Objects.requireNonNull(mapper);
-        this.invitations=Objects.requireNonNull(invitations);this.devices=Objects.requireNonNull(devices);this.funds=funds;this.factSampler=factSampler;
+        this.invitations=Objects.requireNonNull(invitations);this.devices=Objects.requireNonNull(devices);this.funds=funds;this.factSampler=factSampler;this.factMapper=factMapper;
     }
 
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
@@ -112,10 +118,17 @@ public class SupportAnalyticsService {
         var query=new Query(authorizedScope.mode(),authorizedScope.requestedGroupId(),authorizedScope.requestedAgentId(),
             Basis.CURRENT_CUSTOMER_HISTORY,null,null,SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId(),null);
         var capture=new QueryCapture();capture.singleCustomer=true;
+        if(factSampler!=null){capture.sampledFacts=factSampler.current();capture.sampledGroups=Set.copyOf(mapper.currentGrantedGroupIds(authorizedScope));}
         var result=withNet(evaluate(query,authorizedScope,capture,customerId),capture);
         if(result.currentCustomers().size()!=1 || result.currentCustomers().get(0).customerId()!=customerId)
             throw invalid("SUPPORT_ANALYTICS_CURRENT_INVALID");
         return SupportAnalyticsPrivateQueryService.customerStatistics(result.currentCustomers().get(0));
+    }
+    NetSnapshot cachedNetForCustomer(long customerId){return factSampler.current().contributions(List.of(customerId));}
+    SupportDeviceReadFacade.Snapshot cachedDevicesForCustomer(long customerId){
+        var compiled=factSampler.current().compiled();
+        if(compiled.customers().getOrDefault("HISTORY:*",List.of()).stream().noneMatch(c->c.customerId()==customerId))throw new ffdd.opsconsole.shared.exception.BizException(503,"SUPPORT_ANALYTICS_CACHE_SUBJECT_NOT_READY");
+        return cachedDevices(compiled,Set.of(customerId));
     }
 
     public record QueryEvaluation(Result result,QueryCapture evidence) { }
@@ -123,6 +136,8 @@ public class SupportAnalyticsService {
     public static final class QueryCapture {
         SupportAnalyticsFactSnapshot sampledFacts;
         Set<Long> sampledGroups=Set.of();
+        boolean internalSampling;
+        boolean unobservedSubjects;
         public ReadScope scope;
         public Map<Long,SupportAnalyticsMapper.CurrentCustomer> current=Map.of();
         public Map<String,Long> eventIds=Map.of();
@@ -171,7 +186,7 @@ public class SupportAnalyticsService {
                     c.netAttributionProofs=List.copyOf(proofs);
                 }
             }
-            c.netRead=NetRead.observe(c,base.asOf());
+            c.netRead=c.sampledFacts!=null&&c.sampledFacts.compiled()!=null?mergeCompiledNet(c):NetRead.observe(c,base.asOf());
             if(c.currentFailed || c.attributionFailed || q.basis()==Basis.PERIOD_EVENT && c.eventFailed)c.netRead=NetRead.unknown(c.financialIds);
         }catch(DataAccessException | IllegalArgumentException | IllegalStateException ex) {
             c.netRead=NetRead.unknown(c.financialIds);
@@ -216,7 +231,7 @@ public class SupportAnalyticsService {
             byCurrency.put(currency,new CurrencyTotals(currency,x==null?absent:x.deposits(),x==null?absent:x.purchases(),x==null?absent:x.purchaseRefunds(),amount));}
         return new FinancialSummary(old.status(),List.copyOf(byCurrency.values()),old.firstCandidates(),old.attribution(),old.reasons(),old.firstSources());
     }
-    private record NetRead(NetSnapshot snapshot,Map<Long,NetCustomer> customers,Map<String,ContributionOrigin> origins,
+    public record NetRead(NetSnapshot snapshot,Map<Long,NetCustomer> customers,Map<String,ContributionOrigin> origins,
                            Map<String,AttributionRow> attributions,Set<Long> gaps,boolean structureGap) {
         static NetRead unknown(Set<Long> roots){return new NetRead(null,Map.of(),Map.of(),Map.of(),Set.copyOf(roots),true);}
         boolean complete(Set<Long> roots){return !structureGap && customers.keySet().containsAll(roots) && roots.stream().noneMatch(gaps::contains);}
@@ -315,7 +330,7 @@ public class SupportAnalyticsService {
         var current=new TreeMap<Long,SupportAnalyticsMapper.CurrentCustomer>();
         boolean currentFailed=false;
         try {
-            var rows=customerId==null?mapper.currentCustomers(scope):mapper.currentCustomer(scope,customerId);
+            var rows=capture!=null&&capture.internalSampling?factMapper.currentCustomers():customerId==null?mapper.currentCustomers(scope):mapper.currentCustomer(scope,customerId);
             if(rows==null)throw invalid("SUPPORT_ANALYTICS_CURRENT_INVALID");
             if(customerId!=null && (rows.size()!=1 || rows.get(0)==null || !customerId.equals(rows.get(0).customerId())))
                 throw invalid("SUPPORT_ANALYTICS_SCOPE_INVALID");
@@ -353,7 +368,7 @@ public class SupportAnalyticsService {
                     if(prior!=null && !prior.equals(row.customerId()))throw invalid("SUPPORT_ANALYTICS_EVENT_CONFLICT");
                 }
                 if(global(scope)) {
-                    var ids=mapper.legacyProductionCustomers(scope);
+                    var ids=capture!=null&&capture.internalSampling?capture.sampledFacts.subjects():mapper.legacyProductionCustomers(scope);
                     if(ids==null || ids.stream().anyMatch(id -> id==null || id<=0))throw invalid("SUPPORT_ANALYTICS_LEGACY_SCOPE_INVALID");
                     legacyIds.addAll(ids);
                 }
@@ -516,7 +531,8 @@ public class SupportAnalyticsService {
         var roots=new TreeSet<>(current.keySet());
         var trees=new TreeMap<Long,SupportInvitationReadFacade.Invitation>();
         if(!roots.isEmpty()) {
-            var rows=invitations.readInvitations(List.copyOf(roots));
+            var rows=capture!=null&&capture.sampledFacts!=null&&capture.sampledFacts.compiled()!=null
+                ?capture.sampledFacts.compiled().invitations().values().stream().filter(t->roots.contains(t.rootCustomerId())).toList():invitations.readInvitations(List.copyOf(roots));
             if(rows==null)throw invalid("SUPPORT_ANALYTICS_INVITATION_INVALID");
             for(var row:rows) {
                 if(row==null || !roots.contains(row.rootCustomerId()))throw invalid("SUPPORT_ANALYTICS_INVITATION_SCOPE_INVALID");
@@ -550,11 +566,18 @@ public class SupportAnalyticsService {
             }
         }
         SupportDeviceReadFacade.Snapshot stock=null;boolean deviceFailed=false;
-        try {stock=roots.isEmpty()?new SupportDeviceReadFacade.Snapshot(List.of(),List.of(),null):devices.readCurrent(List.copyOf(roots));}
+        try {stock=roots.isEmpty()?new SupportDeviceReadFacade.Snapshot(List.of(),List.of(),null)
+            :capture!=null&&capture.sampledFacts!=null&&capture.sampledFacts.compiled()!=null?cachedDevices(capture.sampledFacts.compiled(),roots):devices.readCurrent(List.copyOf(roots));}
         catch(DataAccessException ex) {deviceFailed=true;}
         if(!deviceFailed) {
             if(stock==null)throw invalid("SUPPORT_ANALYTICS_DEVICE_RESPONSE_MISSING");
-            validateDevices(stock,roots);
+            var observedRoots=new TreeSet<>(roots);
+            if(capture!=null&&capture.sampledFacts!=null&&capture.sampledFacts.compiled()!=null) {
+                var known=capture.sampledFacts.compiled().customers().get("HISTORY:*").stream().map(Customer::customerId).collect(java.util.stream.Collectors.toSet());
+                observedRoots.retainAll(known);
+                capture.unobservedSubjects=!observedRoots.equals(roots);
+            }
+            validateDevices(stock,observedRoots);
         }
         var activity=readActivity(scope,roots,currentFailed,capture);
         var roster=capture!=null && capture.singleCustomer?new RosterRead(List.of(),List.of(),Status.UNAVAILABLE,false):readRoster(scope,capture);
@@ -567,6 +590,17 @@ public class SupportAnalyticsService {
         var customers=new ArrayList<Customer>();
         for(var old:base) {
             long root=old.customerId();var row=current.get(root);var tree=trees.get(root);
+            if(capture!=null&&capture.sampledFacts!=null&&capture.sampledFacts.compiled()!=null) {
+                String view=(query.basis()==Basis.CURRENT_ASSET?"ASSET:":"HISTORY:")+(query.currency()==null?"*":query.currency());
+                var cached=capture.sampledFacts.compiled().customers().getOrDefault(view,List.of()).stream().filter(c->c.customerId()==root).findFirst();
+                if(cached.isPresent()){
+                    customers.add(new Customer(root,old.category(),old.placement(),old.handoverRequired(),old.first(),new CurrentOwner(row.ownerAgentId(),row.currentGroupId()),cached.get().metrics()));
+                    continue;
+                }
+                capture.unobservedSubjects=true;
+                customers.add(new Customer(root,old.category(),old.placement(),old.handoverRequired(),old.first(),new CurrentOwner(row.ownerAgentId(),row.currentGroupId()),unavailableCustomerMetrics()));
+                continue;
+            }
             var money=lifetime(ownFacts.values(),Set.of(root),query.currency(),snapshot,currentFailed,query.basis()==Basis.CURRENT_ASSET);
             Status lifetimeStatus=query.basis()==Basis.CURRENT_ASSET?Status.UNAVAILABLE:money.stream().anyMatch(c->c.deposits().status()==Status.FAILED || c.purchases().status()==Status.FAILED)?Status.FAILED:
                 !money.isEmpty() && money.stream().allMatch(c->c.deposits().status()==Status.AVAILABLE && c.purchases().status()==Status.AVAILABLE)?Status.AVAILABLE:
@@ -595,6 +629,78 @@ public class SupportAnalyticsService {
 
     private Snapshot readPaymentHistory(Collection<Long> ids,QueryCapture capture) {
         return capture==null || capture.sampledFacts==null?finance.readHistory(List.copyOf(ids)):capture.sampledFacts.payments(ids);
+    }
+    private static SupportDeviceReadFacade.Snapshot cachedDevices(SupportAnalyticsCompiledFacts compiled,Set<Long> ids) {
+        var all=compiled.devices();
+        return new SupportDeviceReadFacade.Snapshot(all.devices().stream().filter(d->ids.contains(d.customerId())).toList(),
+            all.unknownHoldingDevices().stream().filter(d->ids.contains(d.customerId())).toList(),all.evaluatedDbAt());
+    }
+    private static NetRead mergeCompiledNet(QueryCapture c) {
+        var customers=new HashMap<Long,NetCustomer>();var origins=new HashMap<String,ContributionOrigin>();var attributions=new HashMap<String,AttributionRow>();var gaps=new HashSet<Long>();boolean structureGap=false;
+        for(long id:c.financialIds) {
+            var read=c.sampledFacts.compiled().verifiedNet().getOrDefault(id,NetRead.unknown(Set.of(id)));
+            customers.putAll(read.customers());gaps.addAll(read.gaps());structureGap|=read.structureGap();attributions.putAll(read.attributions());
+            for(var origin:read.origins().entrySet())if(origins.putIfAbsent(origin.getKey(),origin.getValue())!=null)return NetRead.unknown(c.financialIds);
+        }
+        return new NetRead(c.net,Map.copyOf(customers),Map.copyOf(origins),Map.copyOf(attributions),Set.copyOf(gaps),structureGap);
+    }
+
+    /** The sampler owns the RR transaction. This system-only source path never installs an Authentication. */
+    SupportAnalyticsFactSnapshot compileForCache(SupportAnalyticsFactSnapshot raw) {
+        // Type-only identity for pure projection: internalSampling routes every source read to FactMapper.
+        // No Authentication is installed, and this identity is never serialized into a generation or HTTP version.
+        var scope=new ReadScope(9_007_199_254_740_991L,ReadMode.ALL,null,null);
+        var query=new Query(ReadMode.ALL,null,null,Basis.PERIOD_EVENT,LocalDateTime.of(1000,1,1,0,0),LocalDateTime.of(9999,1,1,0,0),"Asia/Shanghai",null);
+        var c=new QueryCapture();c.internalSampling=true;c.singleCustomer=true;c.sampledFacts=raw;
+        var result=withNet(evaluate(query,scope,c),c);
+        if(c.currentFailed || c.eventFailed || c.attributionFailed || c.deviceFailed || c.activityWindow.status()==Status.FAILED
+            || raw.payments().issues().stream().anyMatch(i->i.reason().contains("READ_FAILED"))
+            || raw.contributions().customers().stream().anyMatch(r->r.reasons().contains("READ_FAILED")))
+            throw new ffdd.opsconsole.shared.exception.BizException(503,"SUPPORT_ANALYTICS_COMPUTATION_FAILED");
+        var perRootNet=new TreeMap<Long,NetRead>();
+        for(long id:raw.subjects()) {
+            var proof=new QueryCapture();proof.financialIds=Set.of(id);proof.snapshot=raw.payments(Set.of(id));
+            proof.facts=raw.payments().facts().stream().filter(f->f.customerId()==id).collect(java.util.stream.Collectors.toMap(Fact::factId,f->f));
+            proof.net=raw.contributions(Set.of(id));proof.validAttributions=c.validAttributions.entrySet().stream().filter(e->e.getValue().customerId()==id).collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,Map.Entry::getValue));
+            proof.netAttributionProofs=raw.proofs(proof.facts.keySet(),scope,Set.of(),Set.of(id));
+            perRootNet.put(id,NetRead.observe(proof,raw.asOf()));
+        }
+        var views=new TreeMap<String,List<Customer>>();
+        for(String currency:List.of("*","USDT","UVT"))for(boolean asset:List.of(false,true)) {
+            var q=new Query(ReadMode.ALL,null,null,asset?Basis.CURRENT_ASSET:Basis.CURRENT_CUSTOMER_HISTORY,null,null,"Asia/Shanghai",currency.equals("*")?null:currency);
+            views.put((asset?"ASSET:":"HISTORY:")+currency,result.currentCustomers().stream().map(old->compileCustomer(old,q,c,perRootNet.get(old.customerId()))).toList());
+        }
+        var roots=c.current.keySet();var rules=Objects.requireNonNull(factMapper.queryRules());
+        var profiles=factMapper.rootDisplayRows(roots);var tags=factMapper.customerTagRows(roots);
+        var wallet=funds.readCurrent(roots);
+        if(wallet.wallets().state()==ReadState.FAILED || wallet.withdrawals().state()==ReadState.FAILED)
+            throw new ffdd.opsconsole.shared.exception.BizException(503,"SUPPORT_ANALYTICS_COMPUTATION_FAILED");
+        List<SupportAnalyticsMapper.ActivityIdentityRow> identities=List.of();List<SupportAnalyticsMapper.TaskRow> tasks=List.of();List<SupportAnalyticsMapper.PendingReplyRow> pending=List.of();
+        if(c.activityCoverage!=null && c.activityCoverage.observedThroughAt()!=null && c.activityCoverage.coverageStartAt()!=null) {
+            var w=c.activityCoverage.observedThroughAt();
+            if(c.activityWindow.fromInclusive()!=null)identities=factMapper.activityIdentityRows(roots,w);
+            var parameters=new HashMap<String,Object>();
+            parameters.put("ids",c.current.values().stream().filter(r->"BOUND".equals(r.category())).map(SupportAnalyticsMapper.CurrentCustomer::customerId).toList());
+            parameters.put("evaluatedAt",w);parameters.put("coverageStartAt",c.activityCoverage.coverageStartAt());
+            parameters.put("dormantCutoff",rules.dormantDays()==null?null:w.minusDays(rules.dormantDays()));
+            parameters.put("windowCutoff",c.activityWindow.fromInclusive());parameters.put("maintenanceDays",rules.maintenanceDays());
+            parameters.put("customerId",null);parameters.put("evaluatedDbAt",c.activityCoverage.evaluatedDbAt());
+            tasks=factMapper.taskRows(parameters);pending=factMapper.pendingReplyRows((Collection<Long>)parameters.get("ids"));
+        }
+        var compiled=new SupportAnalyticsCompiledFacts(views,c.stock,c.trees,c.activityWindow,c.activityCoverage,c.activities,perRootNet,
+            profiles,tags,wallet,rules,identities,tasks,pending);
+        return new SupportAnalyticsFactSnapshot(raw.asOf(),raw.subjects(),raw.payments(),raw.contributions(),raw.attributions(),raw.proofs(),0L,compiled);
+    }
+    private static Customer compileCustomer(Customer old,Query q,QueryCapture c,NetRead net) {
+        boolean asset=q.basis()==Basis.CURRENT_ASSET;
+        var money=lifetime(c.facts.values(),Set.of(old.customerId()),q.currency(),c.snapshot,false,asset);
+        Status state=asset?Status.UNAVAILABLE:money.stream().anyMatch(x->x.deposits().status()==Status.FAILED||x.purchases().status()==Status.FAILED)?Status.FAILED:
+            !money.isEmpty()&&money.stream().allMatch(x->x.deposits().status()==Status.AVAILABLE&&x.purchases().status()==Status.AVAILABLE)?Status.AVAILABLE:
+            money.stream().anyMatch(x->Set.of(Status.AVAILABLE,Status.PARTIAL).contains(x.deposits().status())||Set.of(Status.AVAILABLE,Status.PARTIAL).contains(x.purchases().status()))?Status.PARTIAL:Status.UNKNOWN;
+        if(!asset)money=withNet(money,Set.of(old.customerId()),q,net);
+        var metrics=new CustomerMetrics(Basis.CURRENT_CUSTOMER_HISTORY,state,money,
+            invitationSummary(c.trees.get(old.customerId()),q,c.teamFacts.values(),c.snapshot,c.teamSnapshot,c.financialIds),old.metrics().devices(),old.metrics().activity());
+        return new Customer(old.customerId(),old.category(),old.placement(),old.handoverRequired(),asset?new FirstSelection(null,Status.UNKNOWN,List.of("HISTORY_NOT_REQUESTED")):old.first(),old.owner(),metrics);
     }
     private static Instant evaluatedAt(QueryCapture capture,Snapshot snapshot) {
         return capture!=null && capture.sampledFacts!=null?capture.sampledFacts.asOf():snapshot==null?Instant.now():snapshot.evaluatedAt();
@@ -727,9 +833,15 @@ public class SupportAnalyticsService {
             stock.evaluatedDbAt(),state,held.size()>paid?List.of("ACQUISITION_NOT_PROVEN"):List.of());
     }
     private ActivityRead readActivity(ReadScope scope,Set<Long> roots,boolean currentFailed,QueryCapture capture) {
+        if(capture!=null&&capture.sampledFacts!=null&&capture.sampledFacts.compiled()!=null){
+            var compiled=capture.sampledFacts.compiled();capture.activityCoverage=compiled.activityCoverage();
+            var rows=new TreeMap<Long,CustomerActivity>();for(long root:roots)rows.put(root,compiled.activities().getOrDefault(root,new CustomerActivity(null,WindowState.UNKNOWN,Status.UNKNOWN,List.of("SOURCE_SNAPSHOT_SUBJECT_NOT_OBSERVED"))));
+            return new ActivityRead(compiled.activityWindow(),rows);
+        }
         ActivityWindow window=unavailableWindow();Status state=Status.UNKNOWN;var latest=new HashMap<Long,LocalDateTime>();
         try {
-            var coverage=mapper.activityCoverage(scope);var rules=mapper.activityRules(scope);
+            var coverage=capture!=null&&capture.internalSampling?factMapper.activityCoverage():mapper.activityCoverage(scope);
+            var rules=capture!=null&&capture.internalSampling?factMapper.activityRules():mapper.activityRules(scope);
             if(capture!=null)capture.activityCoverage=coverage;
             if(coverage!=null && rules!=null && rules.version()!=null && rules.version()>0 && rules.activityWindowDays()!=null && rules.activityWindowDays()>0
                     && coverage.coverageStartAt()!=null && coverage.observedThroughAt()!=null && coverage.evaluatedDbAt()!=null
@@ -738,7 +850,7 @@ public class SupportAnalyticsService {
                 window=new ActivityWindow(rules.activityWindowDays(),from,coverage.observedThroughAt(),coverage.coverageStartAt(),rules.version(),"INTERACTIVE_LOGIN",
                     coverage.coverageStartAt().isAfter(from)?Status.PARTIAL:Status.AVAILABLE);state=window.status();
                 if(!roots.isEmpty()) {
-                    var rows=mapper.activityEvents(scope,List.copyOf(roots),coverage.observedThroughAt());
+                    var rows=capture!=null&&capture.internalSampling?factMapper.activityEvents(List.copyOf(roots),coverage.observedThroughAt()):mapper.activityEvents(scope,List.copyOf(roots),coverage.observedThroughAt());
                     if(rows==null)throw invalid("SUPPORT_ANALYTICS_ACTIVITY_INVALID");
                     for(var row:rows) {
                         if(row==null || !roots.contains(row.customerId()))throw invalid("SUPPORT_ANALYTICS_ACTIVITY_SCOPE_INVALID");
@@ -788,6 +900,8 @@ public class SupportAnalyticsService {
         Count none=asset?unavailableCount():failed?new Count(null,null,Status.FAILED):exact(customers.stream().filter(c->c.first().state()==FirstState.NONE).count());
         Count unknown=asset?unavailableCount():failed?new Count(null,null,Status.FAILED):exact(customers.stream().filter(c->c.first().state()==FirstState.UNKNOWN).count());
         var stockSummary=deviceSummary(stock,roots,facts,snapshot,failed);var activitySummary=activitySummary(customers,activity.window(),failed);
+        if(customers.stream().anyMatch(c->c.metrics().devices().status()==Status.UNAVAILABLE))
+            stockSummary=new DeviceSummary(new Count(stockSummary.held().observedValue(),null,Status.UNKNOWN),new Count(null,null,Status.UNKNOWN),List.of(),stockSummary.evaluatedDbAt(),Status.UNKNOWN,List.of("SOURCE_SNAPSHOT_SUBJECT_NOT_OBSERVED"));
         return new CurrentMetrics(Basis.CURRENT_CUSTOMER_HISTORY,failed?Status.FAILED:asset && stockSummary.status()==Status.AVAILABLE && activitySummary.status()==Status.AVAILABLE?Status.AVAILABLE:Status.PARTIAL,
             lifetime(facts,roots,query.currency(),snapshot,failed,asset),confirmed,none,unknown,stockSummary,activitySummary);
     }

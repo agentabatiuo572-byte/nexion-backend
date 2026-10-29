@@ -40,6 +40,7 @@ class SupportAnalyticsFactWiringTest {
             context.registerBean(SupportDeviceReadFacade.class,()->mock(SupportDeviceReadFacade.class));
             context.registerBean(PlatformTransactionManager.class,()->mock(PlatformTransactionManager.class));
             context.registerBean(ProductionSupportPathGuard.class,()->mock(ProductionSupportPathGuard.class));
+            context.registerBean(SupportAnalyticsRedisStore.class,()->mock(SupportAnalyticsRedisStore.class));
             context.registerBean(SupportAnalyticsFactSampler.class);
             context.registerBean(SupportAnalyticsService.class);
             context.registerBean(SupportAnalyticsPrivateQueryService.class);
