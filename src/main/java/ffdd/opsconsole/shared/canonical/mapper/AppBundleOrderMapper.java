@@ -78,7 +78,7 @@ public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReser
 
     @Select("""
             SELECT COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
-              WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1),3)
+              WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1),6)
             """)
     int deviceSlotCap();
 

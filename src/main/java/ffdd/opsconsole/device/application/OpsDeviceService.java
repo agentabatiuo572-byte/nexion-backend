@@ -284,7 +284,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private int e5MaxDevicesPerUser() {
         String raw = configFacade.activeValue("device.max_active_slots").orElse(null);
-        if (!StringUtils.hasText(raw)) return 3;
+        if (!StringUtils.hasText(raw)) return 6;
         try {
             int value = Integer.parseInt(raw.trim());
             return value >= 1 && value <= 100 ? value : 1;

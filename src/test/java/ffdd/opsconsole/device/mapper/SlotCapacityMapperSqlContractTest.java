@@ -3,11 +3,27 @@ package ffdd.opsconsole.device.mapper;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ffdd.opsconsole.shared.canonical.mapper.AppBundleOrderMapper;
+import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import java.lang.reflect.Method;
 import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 
 class SlotCapacityMapperSqlContractTest {
+
+    @Test
+    void everyCapacityReaderDefaultsToTheSixSlotProductPolicy() throws Exception {
+        for (Class<?> mapper : new Class<?>[]{CanonicalStateMapper.class, AppTradeinMapper.class, AppBundleOrderMapper.class}) {
+            assertThat(String.join(" ", mapper.getMethod("deviceSlotCap").getAnnotation(Select.class).value())
+                    .replaceAll("\\s+", "")).endsWith(",6)");
+        }
+        for (Class<?> mapper : new Class<?>[]{CanonicalStateMapper.class, AppTradeinMapper.class}) {
+            assertThat(String.join(" ", mapper.getMethod("lockDeviceSlotCap").getAnnotation(Select.class).value())
+                    .replaceAll("\\s+", "")).endsWith(",6)");
+        }
+        PromotionMapper promotion = org.mockito.Mockito.mock(PromotionMapper.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+        assertThat(promotion.deviceSlotCap()).isEqualTo(6);
+    }
 
     @Test
     void tradeinCapacityCountsEveryOccupiedPhysicalLifecycleState() throws Exception {

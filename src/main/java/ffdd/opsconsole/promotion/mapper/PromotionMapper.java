@@ -105,7 +105,7 @@ public interface PromotionMapper extends BaseMapper<Object>, ffdd.opsconsole.sha
     }
     default long deviceSlotCap(){
         Map<String,Object> config=one("SELECT config_value FROM nx_config_item WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1");
-        return config==null?3:Long.parseLong(text(config.get("config_value")));
+        return config==null?6:Long.parseLong(text(config.get("config_value")));
     }
     class StatementProvider {
         public static String statement(Map<String,Object> parameters) {return (String)parameters.get("sql");}
