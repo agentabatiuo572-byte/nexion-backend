@@ -67,6 +67,50 @@ class TestCloudExecutorServiceTest {
         env.setProperty(PREFIX+"model-digest","sha256:"+"1".repeat(64));
         assertThatThrownBy(()->service.authenticate("Bearer "+TOKEN)).hasMessage("TEST_CLOUD_AUTH_INVALID");
     }
+    private Identity fleetIdentity() {
+        env.setProperty(PREFIX+"fleet-enabled","true"); env.setProperty(PREFIX+"fleet-started-at",NOW.minusDays(1).toString());
+        var b=new TestCloudExecutorMapper.Binding("fleet-12",7,12,"NEX-FLEET-12","EM-UNIT","bge-m3:567m",DIGEST);
+        when(mapper.binding("fleet-12")).thenReturn(b);
+        return service.authenticate("Bearer "+TOKEN,"fleet-12");
+    }
+    @Test void fleetDiscoveryIsBoundedReadOnlyAndDoesNotTrustClientOwnership() {
+        fleetIdentity();
+        when(mapper.fleetCandidates(NOW.minusDays(1),0,11,2)).thenReturn(List.of(
+                new TestCloudExecutorMapper.FleetCandidate(7,12,"NEX-FLEET-12"),
+                new TestCloudExecutorMapper.FleetCandidate(8,13,"NEX-FLEET-13")));
+        var fleet=service.authenticate("Bearer "+TOKEN,"fleet");
+        var data=service.instances(fleet,0,1).getData();
+        assertThat(data.get("hasMore")).isEqualTo(true); assertThat(data.get("nextAfterDeviceId")).isEqualTo(12L);
+        assertThat((List<?>)data.get("instances")).hasSize(1);
+        verify(mapper,never()).register(any(),any()); verifyNoInteractions(settlement);
+        assertThatThrownBy(()->service.authenticate("Bearer "+TOKEN,"fleet-13")).hasMessage("TEST_CLOUD_AUTH_INVALID");
+    }
+    @Test void paidFleetLifecycleIsCheckedUnderTheExistingDeviceLockBeforeClaim() {
+        Identity target=fleetIdentity();
+        when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
+                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+        when(mapper.liveFleetBinding(NOW.minusDays(1),7,12,"NEX-FLEET-12",false)).thenReturn(null);
+        assertThatThrownBy(()->service.next(target,"fleet-next-unit")).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        verifyNoInteractions(settlement); verify(mapper,never()).register(any(),any());
+    }
+    @Test void fleetReceiptReconciliationSurvivesRevokedOwnershipAndNeverClaimsOrCredits() {
+        Identity target=fleetIdentity();
+        var original=execution(null,null,null);
+        var execution=new Execution(TASK,"fleet-12",7,12,"NEX-FLEET-12","EM-UNIT",original.nextKeyHash(),CLAIM,
+                original.inputJson(),original.inputHash(),original.modelTag(),original.modelDigest(),NONCE,null,null,null,null,NOW);
+        when(mapper.lock(TASK)).thenReturn(execution);
+        when(mapper.historicalReceipt(TASK,7,12)).thenReturn(new TestCloudExecutorMapper.HistoricalReceipt(
+                "RUNNING","EM-UNIT",KIND,CLIENT,null,null,null));
+        var data=service.receipt(target,TASK).getData(); assertThat(data.get("found")).isEqualTo(false);
+        verify(assignments,never()).lockOwnedDevice(7L,12L); verifyNoInteractions(settlement);
+    }
+    @Test void disabledFleetStillExpiresOnlyItsPreciselyRegisteredStaleRuntimeMarkers() {
+        fleetIdentity(); env.setProperty(PREFIX+"fleet-enabled","false");
+        when(mapper.bindings()).thenReturn(List.of(new TestCloudExecutorMapper.Binding("fleet-12",7,12,"NEX-FLEET-12","EM-UNIT","bge-m3:567m",DIGEST)));
+        service.expireHeartbeat();
+        verify(mapper).expireHeartbeat(7,12,"NEX-FLEET-12","test-cloud:fleet-12",NOW,NOW.minusSeconds(120));
+        verifyNoInteractions(settlement);
+    }
     @Test void authoritativeForeignOrUnpaidOrPendingDeviceIsRejectedBeforeClaim() {
         when(mapper.eligibleBinding(7,11,"NEX-UNIT-CLOUD")).thenReturn(0);
         assertThatThrownBy(()->service.next(identity,"cloud-next-unit")).hasMessage("TEST_CLOUD_BINDING_INVALID");

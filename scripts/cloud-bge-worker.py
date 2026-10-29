@@ -91,12 +91,16 @@ def loopback_url(value):
 
 
 class Config:
-    def __init__(self, env):
+    def __init__(self, env, fleet=False):
         require(env.get("UVEL_CLOUD_WORKER_ENABLED") == "true"
                 and env.get("UVEL_CLOUD_WORKER_SCOPE") == "TEST", "WORKER_DISABLED")
         self.backend = loopback_url(env.get("UVEL_CLOUD_BACKEND_URL", "http://127.0.0.1:8110"))
         self.ollama = loopback_url(env.get("UVEL_CLOUD_OLLAMA_URL", "http://127.0.0.1:11435"))
         self.binding = {}
+        if fleet:
+            self.interval = int(env.get("UVEL_CLOUD_POLL_SECONDS", "60"))
+            require(60 <= self.interval <= 3600, "POLL_INTERVAL_INVALID")
+            return
         for key, name in (("ownerId", "OWNER_ID"), ("deviceId", "DEVICE_ID"), ("instanceNo", "INSTANCE_NO"),
                           ("taskConfigId", "TASK_CONFIG_ID"), ("executorId", "EXECUTOR_ID"),
                           ("model", "MODEL"), ("modelDigest", "MODEL_DIGEST")):
@@ -128,8 +132,8 @@ def credential(env):
 
 
 class Http:
-    def __init__(self, address, token=None, timeout=300):
-        self.address, self.token, self.timeout = address, token, timeout
+    def __init__(self, address, token=None, timeout=300, executor=None):
+        self.address, self.token, self.timeout, self.executor = address, token, timeout, executor
 
     def request(self, method, path, body=None, key=None):
         timeout = self.timeout if path.endswith("/complete") or path == "/api/embed" else 10
@@ -153,6 +157,8 @@ class Http:
             headers = {"Accept": "application/json", "Content-Type": "application/json"}
             if self.token:
                 headers["Authorization"] = "Bearer " + self.token
+            if self.executor:
+                headers["X-UVEL-Executor-Id"] = self.executor
             if key:
                 headers["Idempotency-Key"] = key
             connection.request(method, path, None if body is None else json_bytes(body), headers)
@@ -284,13 +290,16 @@ def infer(ollama, task):
 
 
 class Worker:
-    def __init__(self, config, backend, ollama, journal, stop=STOP):
+    def __init__(self, config, backend, ollama, journal, stop=STOP, parent_stop=None):
         self.config, self.backend, self.ollama, self.journal, self.stop = config, backend, ollama, journal, stop
+        self.parent_stop = parent_stop
         self.heartbeat_stop = threading.Event()
         self.heartbeat_thread = None
         self.heartbeat_error = None
 
     def mutate(self, operation, path, body, key, state=None, validator=None):
+        if operation in ("NEXT", "COMPLETE"):
+            require(not self.stopping(), "STOP_BEFORE_ECONOMIC_REQUEST")
         call = self.journal.intent(operation, key, (state or {}).get("taskNo"), body, state)
         try:
             data = envelope(self.backend.request("POST", PREFIX + path, body, key))
@@ -308,7 +317,10 @@ class Worker:
         self.journal.outcome(call, "CONFIRMED")
         return data
 
-    def heartbeat(self, idle_only=False):
+    def stopping(self):
+        return self.stop.is_set() or (self.parent_stop is not None and self.parent_stop.is_set())
+
+    def heartbeat(self, idle_only=False, expected_task=None):
         verify_model(self.ollama, self.config.binding)
         def validate(data):
             require(data.get("serverCanonical") is True and type(data.get("heartbeatAt")) is int
@@ -317,6 +329,8 @@ class Worker:
                             for k in ("ownerId", "deviceId", "instanceNo", "executorId")), "HEARTBEAT_INVALID")
             require(not idle_only or ("activeTaskNo" in data and data["activeTaskNo"] is None),
                     "HEARTBEAT_ONLY_ACTIVE_TASK_BLOCKED")
+            require(expected_task is None or data.get("activeTaskNo") == expected_task,
+                    "HEARTBEAT_TASK_INVALID")
         return self.mutate("HEARTBEAT", "/heartbeat", {}, "BGE-HB-" + uuid.uuid4().hex, validator=validate)
 
     def start_heartbeat(self, fatal=False):
@@ -404,7 +418,8 @@ class Worker:
         self.journal.set(state)
         remaining = max(0, (task["completableAt"] - int(time.time() * 1000)) / 1000)
         require(not self.stop.wait(remaining), "STOP_BEFORE_COMPLETE")
-        self.heartbeat()  # Recheck active instance and credential after model execution.
+        self.heartbeat(expected_task=task["taskNo"])  # Recheck identity and active task after model execution.
+        require(not self.stopping(), "STOP_BEFORE_COMPLETE")
         require(int(time.time() * 1000) < min(task["proofExpiresAt"], task["leaseExpiresAt"]), "LEASE_EXPIRED_BEFORE_COMPLETE")
         body = {"specVersion": SPEC, "inputHash": task["inputHash"], "modelDigest": task["modelDigest"],
                 "resultArtifactBase64": base64.b64encode(raw).decode("ascii"), "resultHash": state["resultHash"],
@@ -484,12 +499,249 @@ def open_journal(directory):
     return Journal(db_path), lock
 
 
+class FleetEntry:
+    def __init__(self, worker, lock):
+        self.worker, self.file_lock = worker, lock
+        self.gate = threading.RLock()
+        self.present, self.blocked, self.running = False, False, False
+        self.due = 0
+        # Fleet owns one health thread; task execution still uses the existing Worker.
+        worker.start_heartbeat = lambda: None
+
+
+class Fleet:
+    """One serial computation queue; durable ambiguity is isolated per instance."""
+    def __init__(self, env, backend, ollama, directory, stop=STOP, journal_opener=open_journal):
+        self.env, self.config = dict(env), Config(env, fleet=True)
+        require(env.get("UVEL_CLOUD_FLEET_ENABLED") == "true", "FLEET_DISABLED")
+        self.backend, self.ollama, self.stop = backend, ollama, stop
+        self.directory, self.journal_opener = Path(directory), journal_opener
+        self.entries, self.guard = {}, threading.RLock()
+        excluded = env.get("UVEL_CLOUD_FLEET_EXCLUDE_DEVICE_IDS", "1152,1202").split(",")
+        require(all(re.fullmatch(r"[1-9][0-9]*", value) for value in excluded), "FLEET_EXCLUSION_INVALID")
+        self.excluded = {int(value) for value in excluded}
+
+    def instance_config(self, data):
+        require(isinstance(data, dict), "FLEET_BINDING_INVALID")
+        env = dict(self.env)
+        for key, name in zip(IDENTITY, ("OWNER_ID", "DEVICE_ID", "INSTANCE_NO", "TASK_CONFIG_ID", "EXECUTOR_ID", "MODEL", "MODEL_DIGEST")):
+            require(key in data, "FLEET_BINDING_INVALID")
+            env["UVEL_CLOUD_" + name] = str(data[key])
+        config = Config(env)
+        require(all(type(data[key]) is type(value) and data[key] == value for key, value in config.binding.items()),
+                "FLEET_BINDING_INVALID")
+        require(config.binding["model"] == self.env.get("UVEL_CLOUD_MODEL")
+                and config.binding["modelDigest"] == self.env.get("UVEL_CLOUD_MODEL_DIGEST"), "FLEET_MODEL_INVALID")
+        return config
+
+    def add(self, config):
+        executor = config.binding["executorId"]
+        with self.guard:
+            entry = self.entries.get(executor)
+            if entry:
+                require(entry.worker.config.binding == config.binding, "FLEET_BINDING_CHANGED")
+                return entry
+            path = self.directory / sha256(executor.encode("ascii"))
+            path.mkdir(mode=0o700, parents=False, exist_ok=True)
+            require(not path.is_symlink(), "FLEET_STATE_DIRECTORY_UNSAFE")
+            journal, lock = self.journal_opener(path)
+            worker = Worker(config, Http(self.config.backend, self.backend.token, executor=executor),
+                            self.ollama, journal, threading.Event(), self.stop)
+            entry = FleetEntry(worker, lock)
+            self.entries[executor] = entry
+            return entry
+
+    def restore(self):
+        # Only this fleet's hashed children are read; legacy service journals are never imported.
+        self.directory.mkdir(mode=0o700, exist_ok=True)
+        require(not self.directory.is_symlink(), "FLEET_STATE_DIRECTORY_UNSAFE")
+        for path in sorted(self.directory.iterdir()):
+            if not re.fullmatch(r"[a-f0-9]{64}", path.name) or not path.is_dir() or path.is_symlink():
+                continue
+            journal, lock = self.journal_opener(path)
+            try:
+                state = journal.state()
+                if "binding" not in state:
+                    continue
+                config = self.instance_config(state["binding"])
+                require(path.name == sha256(config.binding["executorId"].encode("ascii")), "FLEET_STATE_BINDING_INVALID")
+                require(config.binding["deviceId"] not in self.excluded, "FLEET_EXCLUDED_STATE")
+                executor = config.binding["executorId"]
+                worker = Worker(config, Http(self.config.backend, self.backend.token, executor=executor),
+                                self.ollama, journal, threading.Event(), self.stop)
+                entry = FleetEntry(worker, lock)
+                entry.blocked = state["phase"] not in ("IDLE", "NEXT_NOT_SENT")
+                with self.guard:
+                    self.entries[executor] = entry
+                journal, lock = None, None
+            finally:
+                if journal is not None:
+                    journal.db.close()
+                    os.close(lock)
+
+    def snapshot(self):
+        with self.guard:
+            return list(self.entries.values())
+
+    def refresh(self):
+        configs, seen, cursor = [], set(), 0
+        while not self.stop.is_set():
+            data = envelope(self.backend.request("GET", PREFIX + "/instances?afterDeviceId=" + str(cursor) + "&limit=100"))
+            require(data.get("executionKind") == KIND and data.get("specVersion") == SPEC
+                    and data.get("deploymentScope") == "TEST" and data.get("serverCanonical") is True,
+                    "FLEET_DISCOVERY_SCOPE_INVALID")
+            rows = data.get("instances")
+            require(isinstance(rows, list) and len(rows) <= 100 and type(data.get("hasMore")) is bool
+                    and type(data.get("nextAfterDeviceId")) is int, "FLEET_DISCOVERY_INVALID")
+            previous = cursor
+            for row in rows:
+                config = self.instance_config(row)
+                binding(row, config)
+                executor, device = config.binding["executorId"], config.binding["deviceId"]
+                require(executor not in seen and device > previous, "FLEET_DISCOVERY_ORDER_INVALID")
+                seen.add(executor)
+                previous = device
+                if device not in self.excluded:
+                    configs.append(config)
+            require(data["nextAfterDeviceId"] >= previous, "FLEET_DISCOVERY_CURSOR_INVALID")
+            if not data["hasMore"]:
+                break
+            require(data["nextAfterDeviceId"] > cursor, "FLEET_DISCOVERY_CURSOR_INVALID")
+            cursor = data["nextAfterDeviceId"]
+        if self.stop.is_set():
+            return
+        accepted = set()
+        for config in configs:
+            entry = self.add(config)
+            with entry.gate:
+                entry.present = True
+                state = entry.worker.journal.state()
+                if entry.blocked and not entry.running and state["phase"] == "IDLE" and state.get("binding") == config.binding:
+                    try:
+                        entry.worker.heartbeat(idle_only=True)
+                        entry.blocked = False
+                    except Halt:
+                        print("FLEET_IDLE_HEALTH_STILL_BLOCKED", flush=True)
+                if not entry.blocked and not entry.running:
+                    entry.worker.stop.clear()
+            accepted.add(config.binding["executorId"])
+        for entry in self.snapshot():
+            with entry.gate:
+                if entry.worker.config.binding["executorId"] not in accepted:
+                    entry.present = False
+                    entry.worker.stop.set()
+
+    def health(self):
+        for entry in self.snapshot():
+            with entry.gate:
+                state = entry.worker.journal.state()
+                confirmed = state.get("binding") == entry.worker.config.binding
+                healthy_phase = (state["phase"] == "IDLE" and not entry.running) or (entry.running and state["phase"] == "CLAIMED")
+                if not entry.present or entry.blocked or not confirmed or not healthy_phase or self.stop.is_set():
+                    continue
+                try:
+                    entry.worker.heartbeat(idle_only=state["phase"] == "IDLE",
+                                           expected_task=state.get("taskNo") if state["phase"] == "CLAIMED" else None)
+                except Halt as error:
+                    current = entry.worker.journal.state()
+                    if state["phase"] == "CLAIMED" and (current["phase"] != "CLAIMED" or current.get("taskNo") != state.get("taskNo")):
+                        # Completion may clear server activeTaskNo while this older health request is in flight.
+                        continue
+                    if isinstance(error, (NotSent,)) or str(error) == "HTTP_OUTCOME_UNKNOWN":
+                        print("FLEET_HEARTBEAT_UNCONFIRMED", flush=True)
+                    else:
+                        entry.blocked = True
+                        entry.worker.stop.set()
+                        print("FLEET_INSTANCE_HEALTH_BLOCKED", flush=True)
+
+    def tick(self, entry):
+        with entry.gate:
+            phase = entry.worker.journal.state()["phase"]
+            reconcile = phase in ("COMPLETE_INTENT", "UNKNOWN_COMPLETE")
+            if entry.running or (not reconcile and (not entry.present or entry.blocked)) or time.monotonic() < entry.due:
+                return
+            entry.running = True
+        try:
+            if reconcile:
+                entry.worker.recover()
+                with entry.gate:
+                    entry.blocked = False
+                    if entry.present:
+                        entry.worker.stop.clear()
+            else:
+                entry.worker.recover()
+                current = entry.worker.journal.state()
+                if current["phase"] == "IDLE" and current.get("binding") == entry.worker.config.binding:
+                    try:
+                        entry.worker.heartbeat(idle_only=True)
+                    except Halt as error:
+                        if isinstance(error, NotSent) or str(error) == "HTTP_OUTCOME_UNKNOWN":
+                            print("FLEET_HEARTBEAT_UNCONFIRMED", flush=True)
+                            return
+                        raise
+                entry.worker.one()
+        except Exception:
+            with entry.gate:
+                entry.blocked = True
+                entry.worker.stop.set()
+            print("FLEET_INSTANCE_PENDING_RECONCILIATION", flush=True)
+        finally:
+            with entry.gate:
+                entry.running = False
+                entry.due = time.monotonic() + self.config.interval
+
+    def run(self):
+        self.restore()
+        def maintain():
+            next_refresh = 0
+            try:
+                while not self.stop.is_set():
+                    try:
+                        if time.monotonic() >= next_refresh:
+                            self.refresh()
+                            next_refresh = time.monotonic() + self.config.interval
+                        self.health()
+                    except Exception:
+                        print("FLEET_DISCOVERY_OR_HEALTH_UNCONFIRMED", flush=True)
+                    self.stop.wait(10)
+            finally:
+                for entry in self.snapshot():
+                    entry.worker.stop.set()
+        thread = threading.Thread(target=maintain, daemon=True)
+        thread.start()
+        try:
+            # ponytail: one inference at a time; add concurrency only when measured queue latency requires it.
+            while not self.stop.is_set():
+                for entry in self.snapshot():
+                    if self.stop.is_set():
+                        break
+                    self.tick(entry)
+                self.stop.wait(1)
+            return 0
+        finally:
+            for entry in self.snapshot():
+                entry.worker.stop.set()
+            thread.join(12)
+            require(not thread.is_alive(), "FLEET_HEALTH_STOP_PENDING")
+            for entry in self.snapshot():
+                entry.worker.journal.db.close()
+                os.close(entry.file_lock)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--once", action="store_true")
     modes.add_argument("--heartbeat-only", action="store_true")
+    modes.add_argument("--fleet", action="store_true")
     args = parser.parse_args()
+    if args.fleet:
+        config = Config(os.environ, fleet=True)
+        token = credential(os.environ)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda *_: STOP.set())
+        return Fleet(os.environ, Http(config.backend, token), Http(config.ollama),
+                     Path(os.environ.get("STATE_DIRECTORY", "/var/lib/uvel-cloud-bge-fleet")) / "instances").run()
     config = Config(os.environ)
     journal, lock = open_journal(os.environ.get("STATE_DIRECTORY", "/var/lib/uvel-cloud-bge-worker"))
     try:

@@ -2,6 +2,8 @@
 
 This channel executes three declared TEST texts through the real pinned BGE-M3 model. It is not customer workload, commercial execution attestation, GPU attestation, or permission to release production. Its manifests, stored task model/client, proof and audit retain `TEST_BGE_M3_V1`. Public App task/receipt and Home presentation maps that known kind to BGE-M3 / UVEL Compute / BGE-M3 Embedding. It does not relabel the old vector-statistics worker as BGE.
 
+The optional [paid-device fleet contract](test-cloud-fleet-protocol.md) adds bounded read-only `GET instances`, stable `X-UVEL-Executor-Id` routing, and immutable binding registration inside next-task. It covers newly purchased and activated paid hardware of all supported product types, including SERVER/DEVICE/SHARE. The legacy configured single instance is preserved and excluded from fleet discovery; free calibrated phones and old unknown tasks retain their original routes. Fleet selection intersects E2 eligibility with the actual installed BGE runtime and preserves the selected BGE price/E3 rules without changing physical VRAM.
+
 ## Deployment and authorization
 
 The API is disabled unless all loaded guards hold: `nexion.compute-task.test-cloud.enabled=true`, `deployment-scope=TEST`, the sole Spring profile is `dev`, and `server.forward-headers-strategy=none`. A separate SecurityFilterChain rejects ordinary USER/ADMIN JWTs and old `tw1_`/`tc1_` credentials. Every exact route must arrive from a literal loopback peer with no Forwarded, X-Forwarded-* or X-Real-IP header; the early Geo filter checks before header rewriting. This does not exempt ordinary App or similar URL paths from their existing gates.
@@ -22,10 +24,14 @@ The protected configuration prefix is `nexion.compute-task.test-cloud.`:
 | model-timeout-ms | Default 180000, bounded to 100–180000; total async deadline cancels even a response that stalls after headers. Each tags request has a 10000ms total deadline. Model body is capped at 262144 bytes |
 | cancel-unexecuted-task-no | Optional one exact old task, default no cancellation. Existing unmanifested tasks block otherwise |
 | cleanup-ms | Default 30000, own runtime heartbeat older than 120 seconds becomes OFFLINE, without changing task/financial facts |
+| fleet-enabled | Default off; enables new paid-hardware discovery and fleet mutations. Existing persisted fleet bindings remain reserved from ordinary dispatch while off |
+| fleet-started-at | Fixed ISO local DATETIME in the target database's purchase/activation storage clock. Both purchased_at and activated_at must meet the cutoff. Read target DB NOW(6) before the new purchases; App business clock may differ, so do not substitute App UTC+8 or change DB timezone/history |
 
 Credential wire format is `ct1_` plus canonical unpadded base64url encoding of 32 random bytes. Neither token nor its hash goes in commands, logs, documents or evidence. Root deploys an independent protected configuration and worker credential; it does not change the old 1152 worker identity, service, token or UNKNOWN journal.
 
 Apply `scripts/migrations/20261030_test_cloud_bge_execution.sql` through the normal migration route. The startup migration list and fresh schema include this create-only table. It does not edit historical business rows or create rewards. Deploy backend plus worker/config together, verify actual loaded revision and guards, then enable only the authorized binding. No production deployment follows from this document.
+
+Fleet mode additionally requires `scripts/migrations/20261030_test_cloud_fleet_binding.sql`, also in the normal startup manifest and fresh schema. Keep the existing single-instance executor-id/owner-id/device-id/instance-no/task-config-id/model/model-digest configuration valid even in fleet mode: it remains the compatibility identity and provides the fixed supported BGE task configuration. Changing those fixed values is not an automatic migration of registered or in-flight fleet bindings. Unchanged registered bindings retain their original config/model for reconciliation.
 
 Once a TEST binding is registered (scope/profile plus exact owner/device), ordinary USER claim and automatic dispatch reject that binding, including while its executor is disabled. Only the dedicated next-task transaction can claim its normal eligible E2 task; activation, ownership, purchased snapshot, price and wallet are unchanged. Removing the registration does not let an already marked TEST_BGE_M3_V1 task use the generic production completion API.
 
@@ -37,6 +43,7 @@ Common response bindings: `executionKind=TEST_BGE_M3_V1`, `specVersion=UVEL_TEST
 
 | Route | Body and effect |
 |---|---|
+| GET instances?afterDeviceId=0&limit=100 | Fleet identity (`X-UVEL-Executor-Id: fleet`, or omitted on this route), pure read-only bounded discovery; data adds instances/nextAfterDeviceId/hasMore. Follow the fleet contract for paging and per-instance header routing. No client owner/instance is trusted |
 | POST next-task | `{}` + fixed Idempotency-Key. Under user→device→task locks, returns the existing own manifest task or normally creates a new E2 task, freezes input/model/nonce/instance, records actual executor acknowledgment and heartbeat. Data adds taskNo/status/inputTexts/inputHash/proofNonce/claimToken/outputDimensions=1024/proofExpiresAt/leaseExpiresAt/completableAt. Same key always addresses its original manifest; a completed old key returns status COMPLETED and is reconciled through receipt rather than recomputed. A normal device task lock returns common bindings plus `idle:true,retryAfterSeconds:60`, no task |
 | POST heartbeat | `{}`. Refreshes only this live configured instance and its current validated manifest task (or idle state). Data adds heartbeatAt and activeTaskNo. It cannot overwrite another marker or abnormal/paused reason |
 | POST tasks/{taskNo}/heartbeat | Exactly `{claimToken}`. Requires exact own live task/manifest/token; returns common bindings plus taskNo/heartbeatAt/activeTaskNo |

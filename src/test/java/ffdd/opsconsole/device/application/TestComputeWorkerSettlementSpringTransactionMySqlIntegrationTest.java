@@ -10,6 +10,7 @@ import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.application.TestComputeWorkerService.*;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
+import ffdd.opsconsole.device.mapper.TestCloudExecutorMapper;
 import ffdd.opsconsole.shared.audit.*;
 import ffdd.opsconsole.shared.audit.mapper.AuditLogMapper;
 import ffdd.opsconsole.shared.idempotency.*;
@@ -92,6 +93,49 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
     private AppSingleSessionService appSessions;
     private TransactionTemplate authTransaction;
     private static final byte[] PHONE_PROOF_KEY="isolated-phone-executor-key-32-bytes".getBytes(StandardCharsets.UTF_8);
+
+    @Test void realFleetMapperFindsOnlyNewPaidActivatedHardwareAndLocksTheCurrentOrder() throws Exception {
+        var config=new MybatisConfiguration(); config.setMapUnderscoreToCamelCase(true);
+        config.setEnvironment(new Environment("fleet-isolated",new SpringManagedTransactionFactory(),source));
+        config.addMapper(TestCloudExecutorMapper.class);
+        var fleetSession=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));
+        var fleet=fleetSession.getMapper(TestCloudExecutorMapper.class);
+        jdbc.update("INSERT INTO nx_product(id,product_no,name,product_type,status) VALUES(2,'stellarbox-s1','TEST S1','SERVER','ACTIVE')");
+        jdbc.update("INSERT INTO nx_order(user_id,order_no,product_id,quantity,subtotal_usdt,amount_usdt,payment_status,order_status,activation_status) VALUES(7,'ORDER-FLEET',2,1,200,200,'PAID','COMPLETED','ACTIVATED')");
+        jdbc.update("INSERT INTO nx_user_device(id,user_id,source_order_no,product_id,product_code,instance_no,name,device_type,status,vram_total_gb,dc_location,purchased_at,activated_at) VALUES(12,7,'ORDER-FLEET',2,'stellarbox-s1','NEX-FLEET-12','TEST S1','SERVER','ACTIVE',96,'LOCAL',?,?)",NOW,NOW);
+        var cutoff=NOW.minusHours(1);
+        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).extracting(TestCloudExecutorMapper.FleetCandidate::deviceId).containsExactly(12L);
+        assertThat(mapper.managedFleet(7,12,cutoff,1202)).isEqualTo(1);
+        jdbc.update("UPDATE nx_order SET amount_usdt=0 WHERE order_no='ORDER-FLEET'");
+        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).extracting(TestCloudExecutorMapper.FleetCandidate::deviceId).containsExactly(12L);
+        jdbc.update("UPDATE nx_order SET payment_status='UNPAID' WHERE order_no='ORDER-FLEET'");
+        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).isEmpty();
+        jdbc.update("UPDATE nx_order SET payment_status='PAID' WHERE order_no='ORDER-FLEET'");
+        var transaction=new TransactionTemplate(new DataSourceTransactionManager(source));
+        transaction.execute(status->{
+            assertThat(fleet.liveFleetBinding(cutoff,7,12,"NEX-FLEET-12",false)).isEqualTo(1);
+            assertThat(fleet.register(new TestCloudExecutorMapper.Binding("fleet-12",7,12,"NEX-FLEET-12","TASK-EM","bge-m3:567m",TestCloudExecutorServiceTest.DIGEST),NOW)).isEqualTo(1);
+            return null;
+        });
+        assertThat(mapper.registeredFleet(7,12)).isEqualTo(1);
+        jdbc.update("UPDATE nx_user_device SET pending_deactivate=1 WHERE id=12");
+        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).isEmpty();
+        assertThat(fleet.liveFleetBinding(cutoff,7,12,"NEX-FLEET-12",false)).isNull();
+        assertThat(fleet.liveFleetBinding(cutoff,7,12,"NEX-FLEET-12",true)).isEqualTo(1);
+        jdbc.update("INSERT INTO nx_compute_task(task_no,user_id,user_device_id,task_type,task_config_id,task_name,model_name,reward_usdt,required_seconds,completion_nonce,proof_expires_at,client_name,status,started_at,lease_expires_at) VALUES('CTA-FLEET',7,12,'EM','TASK-EM','TEST BGE','TEST_BGE_M3_V1',0.25,5,?,?,'UVEL TEST BGE-M3','RUNNING',?,?)",TestComputeWorkerServiceTest.NONCE,NOW.plusHours(24),NOW.minusSeconds(10),NOW.plusHours(24));
+        assertThat(fleet.insert(new TestCloudExecutorMapper.Execution("CTA-FLEET","fleet-12",7,12,"NEX-FLEET-12","TASK-EM",
+                "a".repeat(64),"b".repeat(64),"[]","c".repeat(64),"bge-m3:567m",TestCloudExecutorServiceTest.DIGEST,
+                "d".repeat(64),null,null,null,null,NOW))).isEqualTo(1);
+        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).extracting(TestCloudExecutorMapper.FleetCandidate::deviceId).containsExactly(12L);
+        jdbc.update("UPDATE nx_user_device SET pending_deactivate=0 WHERE id=12");
+        jdbc.update("UPDATE nx_order SET payment_status='REFUNDED' WHERE order_no='ORDER-FLEET'");
+        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).isEmpty();
+        assertThat(fleet.liveFleetBinding(cutoff,7,12,"NEX-FLEET-12",false)).isNull();
+        assertThat(fleet.binding("fleet-12").instanceNo()).isEqualTo("NEX-FLEET-12");
+        jdbc.update("UPDATE nx_order SET payment_status='PAID' WHERE order_no='ORDER-FLEET'");
+        jdbc.update("UPDATE nx_user_device SET purchased_at=? WHERE id=12",cutoff.minusSeconds(1));
+        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).isEmpty();
+    }
 
     @BeforeEach void fixture() throws Exception {
         String serverUrl=System.getenv("NEXION_TEST_DB_SERVER_URL");
@@ -776,7 +820,8 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         for(String table:List.of("nx_user","nx_product","nx_order","nx_order_item","nx_user_device","nx_user_device_runtime",
                 "nx_compute_dc_ops_state","nx_compute_e3_config","nx_compute_task","nx_compute_receipt","nx_compute_device_task_lock",
                 "nx_user_wallet","nx_wallet_ledger","nx_earning_event","nx_config_item","nx_onboarding_calibration",
-                "nx_admin_idempotency_record","nx_audit_log","nx_event_outbox","nx_event_schema_registry","nx_event_schema_property")) {
+                "nx_admin_idempotency_record","nx_audit_log","nx_event_outbox","nx_event_schema_registry","nx_event_schema_property",
+                "nx_test_cloud_execution","nx_test_cloud_binding")) {
             var matcher=Pattern.compile("CREATE TABLE IF NOT EXISTS "+table+" \\(.*?\\) ENGINE=.*?;",Pattern.DOTALL).matcher(sql);
             assertThat(matcher.find()).as("formal schema DDL "+table).isTrue();
             String definition=matcher.group();

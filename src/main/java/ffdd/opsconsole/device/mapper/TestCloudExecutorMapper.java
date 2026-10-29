@@ -2,11 +2,98 @@ package ffdd.opsconsole.device.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.apache.ibatis.annotations.*;
 
 /** Narrow TEST-only persistence. Every mutation is called under the existing user/device/task locks. */
 @Mapper
 public interface TestCloudExecutorMapper extends BaseMapper<Object> {
+    // Shared by dispatch exclusion and the executor: paid ownership is authoritative, not a client assertion.
+    String PAID_FLEET_FROM = """
+          FROM nx_user_device d
+          JOIN nx_user u ON u.id=d.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=0
+          JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
+          JOIN nx_product p ON p.id=d.product_id AND p.product_no=d.product_code
+         WHERE d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id=''
+           AND d.source_channel='ORDER' AND UPPER(d.ownership_status)='OWNED'
+           AND UPPER(d.device_type) NOT IN ('PHONE','MOBILE')
+           AND d.purchased_at>=#{cutoff} AND d.activated_at>=#{cutoff} AND d.deactivated_at IS NULL
+           AND o.is_deleted=0 AND o.payment_status='PAID' AND o.order_status='COMPLETED'
+           AND o.activation_status='ACTIVATED' AND o.subtotal_usdt>0 AND o.amount_usdt>=0
+           AND (o.product_id=d.product_id OR EXISTS(SELECT 1 FROM nx_order_item oi
+                 WHERE oi.order_no=o.order_no AND oi.product_id=d.product_id AND oi.is_deleted=0))
+           AND (SELECT COUNT(*) FROM nx_user_device owned WHERE owned.source_order_no=o.order_no
+                 AND owned.user_id=d.user_id AND owned.product_id=d.product_id AND owned.is_deleted=0
+                 AND owned.source_channel='ORDER' AND owned.source_environment='PRODUCTION'
+                 AND UPPER(owned.ownership_status)='OWNED')
+               <= CASE WHEN o.order_type='BUNDLE' THEN (SELECT COALESCE(SUM(oi.quantity),0)
+                    FROM nx_order_item oi WHERE oi.order_no=o.order_no AND oi.product_id=d.product_id AND oi.is_deleted=0)
+                  ELSE o.quantity END
+        """;
+    String FLEET_LIVE = """
+           AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+           AND NOT EXISTS(SELECT 1 FROM nx_compute_dc_ops_state dc WHERE dc.dc_location=d.dc_location
+                    AND dc.is_deleted=0 AND dc.dispatch_paused=1)
+           AND NOT EXISTS(SELECT 1 FROM nx_user_device_runtime r WHERE r.user_device_id=d.id AND r.is_deleted=0
+                    AND (COALESCE(r.paused_reason,'')<>'' OR (COALESCE(r.agent_version,'')<>''
+                          AND r.agent_version<>CONCAT('test-cloud:fleet-',d.id))))
+           AND NOT EXISTS(SELECT 1 FROM nx_compute_task t WHERE t.user_device_id=d.id AND t.user_id=d.user_id
+                    AND t.is_deleted=0 AND t.source_environment='PRODUCTION' AND t.status IN ('CLAIMED','RUNNING')
+                    AND NOT EXISTS(SELECT 1 FROM nx_test_cloud_execution e WHERE e.task_no=t.task_no))
+        """;
+    String BINDING_COLUMNS = "executor_id executorId,owner_id ownerId,device_id deviceId,instance_no instanceNo,"
+            + "task_config_id taskConfigId,model_tag model,model_digest modelDigest";
+
+    @Select("SELECT " + BINDING_COLUMNS + " FROM nx_test_cloud_binding WHERE executor_id=#{executorId}")
+    Binding binding(@Param("executorId") String executorId);
+
+    @Select("SELECT d.user_id ownerId,d.id deviceId,d.instance_no instanceNo " + PAID_FLEET_FROM
+            + FLEET_LIVE + """
+             AND (d.pending_deactivate=0 OR EXISTS(SELECT 1 FROM nx_compute_task t
+                   JOIN nx_test_cloud_execution e ON e.task_no=t.task_no AND e.executor_id=CONCAT('fleet-',d.id)
+                  WHERE t.user_device_id=d.id AND t.user_id=d.user_id AND t.source_environment='PRODUCTION'
+                    AND t.is_deleted=0 AND t.status IN ('CLAIMED','RUNNING')))
+             AND NOT EXISTS(SELECT 1 FROM nx_test_cloud_binding b WHERE b.device_id=d.id
+                   AND (b.owner_id<>d.user_id OR b.instance_no<>d.instance_no OR b.executor_id<>CONCAT('fleet-',d.id)))
+             AND d.id>#{afterDeviceId} AND d.id<>#{legacyDeviceId} ORDER BY d.id LIMIT #{limit}
+            """)
+    List<FleetCandidate> fleetCandidates(@Param("cutoff") LocalDateTime cutoff,@Param("afterDeviceId") long afterDeviceId,
+                                        @Param("legacyDeviceId") long legacyDeviceId,@Param("limit") int limit);
+
+    @Select("SELECT d.user_id ownerId,d.id deviceId,d.instance_no instanceNo " + PAID_FLEET_FROM
+            + " AND d.id=#{deviceId} AND d.id<>#{legacyDeviceId}")
+    FleetCandidate fleetCandidate(@Param("cutoff") LocalDateTime cutoff,@Param("deviceId") long deviceId,
+                                  @Param("legacyDeviceId") long legacyDeviceId);
+
+    @Select("SELECT 1 " + PAID_FLEET_FROM + FLEET_LIVE
+            + " AND (#{completing} OR d.pending_deactivate=0) AND d.id=#{deviceId} AND d.user_id=#{ownerId} AND d.instance_no=#{instanceNo} FOR UPDATE OF o,d")
+    Integer liveFleetBinding(@Param("cutoff") LocalDateTime cutoff,@Param("ownerId") long ownerId,
+                         @Param("deviceId") long deviceId,@Param("instanceNo") String instanceNo,@Param("completing") boolean completing);
+
+    @Insert("""
+        INSERT IGNORE INTO nx_test_cloud_binding(executor_id,owner_id,device_id,instance_no,task_config_id,model_tag,model_digest,created_at)
+        VALUES(#{b.executorId},#{b.ownerId},#{b.deviceId},#{b.instanceNo},#{b.taskConfigId},#{b.model},#{b.modelDigest},#{now})
+        """)
+    int register(@Param("b") Binding binding,@Param("now") LocalDateTime now);
+
+    @Select("SELECT " + BINDING_COLUMNS + " FROM nx_test_cloud_binding ORDER BY device_id")
+    List<Binding> bindings();
+
+    record FleetCandidate(long ownerId,long deviceId,String instanceNo) { }
+    record Binding(String executorId,long ownerId,long deviceId,String instanceNo,String taskConfigId,String model,String modelDigest) { }
+
+    @Select("""
+        SELECT t.status,t.task_config_id taskConfigId,t.model_name modelName,t.client_name clientName,
+               r.receipt_no receiptNo,r.proof_hash proofHash,r.earning_status earningStatus
+          FROM nx_compute_task t
+          LEFT JOIN nx_compute_receipt r ON r.task_no=t.task_no AND r.user_id=t.user_id
+             AND r.user_device_id=t.user_device_id AND r.source_environment='PRODUCTION' AND r.is_deleted=0
+             AND r.completed_at=t.completed_at AND r.task_type=t.task_type
+         WHERE t.task_no=#{taskNo} AND t.user_id=#{ownerId} AND t.user_device_id=#{deviceId}
+           AND t.source_environment='PRODUCTION' AND t.is_deleted=0
+        """)
+    HistoricalReceipt historicalReceipt(@Param("taskNo") String taskNo,@Param("ownerId") long ownerId,@Param("deviceId") long deviceId);
+    record HistoricalReceipt(String status,String taskConfigId,String modelName,String clientName,String receiptNo,String proofHash,String earningStatus) { }
     String COLUMNS = "task_no taskNo,executor_id executorId,owner_id ownerId,device_id deviceId,instance_no instanceNo,"
             + "task_config_id taskConfigId,next_key_hash nextKeyHash,claim_token claimToken,input_json inputJson,"
             + "input_hash inputHash,model_tag modelTag,model_digest modelDigest,proof_nonce proofNonce,"

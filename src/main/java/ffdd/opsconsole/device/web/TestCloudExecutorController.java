@@ -21,6 +21,12 @@ public class TestCloudExecutorController {
     private final TestCloudExecutorService service;
     private final ObjectMapper json;
 
+    @GetMapping("/instances")
+    public Object instances(Authentication auth,@RequestParam(defaultValue="0") long afterDeviceId,
+                            @RequestParam(defaultValue="100") int limit) {
+        return service.instances(identity(auth),afterDeviceId,limit);
+    }
+
     @PostMapping("/next-task")
     public Object next(Authentication auth,@RequestHeader(value="Idempotency-Key",required=false) String key,HttpServletRequest request) {
         Identity identity=identity(auth); requireKeys(body(request),Set.of()); return service.next(identity,key);
