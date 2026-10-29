@@ -340,7 +340,9 @@ public class AppUserAuthService {
         }
         loginGuardMapper.clear(loginKey);
         userMapper.clearLoginFailure(user.getId());
-        revocations.revokeAll(user.getId());
+        int revokedSessionCount=revocations.revokeAll(user.getId());
+        outboxService.publish("USER_SECURITY",String.valueOf(user.getId()),"auth.password_reset_completed",
+                Map.of("userId",user.getId(),"revokedSessionCount",revokedSessionCount));
         return issueSession(user, countryCode, phone, clientAddress, context, true);
     }
 
