@@ -15,13 +15,14 @@ class AppProfileChangeIntervalMigrationContractTest {
     private static final String MIGRATION = "20261029_app_profile_change_interval.sql";
 
     @Test
-    void migrationIsTheLastStartupMigrationAndRunsOnFreshDatabases() throws Exception {
+    void migrationRunsInTheStartupChainAfterComputePointsAndOnFreshDatabases() throws Exception {
         String installer = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"), StandardCharsets.UTF_8);
         var matcher = Pattern.compile("\"scripts\\\\migrations\\\\([^\"]+\\.sql)\"").matcher(installer);
         List<String> migrations = new ArrayList<>();
         while (matcher.find()) migrations.add(matcher.group(1));
         assertThat(migrations).containsOnlyOnce(MIGRATION);
-        assertThat(migrations).last().isEqualTo(MIGRATION);
+        assertThat(migrations.indexOf(MIGRATION))
+                .isGreaterThan(migrations.indexOf("20261028_compute_points.sql"));
 
         List<String> post = Files.readAllLines(Path.of("scripts/fresh_db/post.txt"), StandardCharsets.UTF_8).stream()
                 .map(String::trim).filter(line -> !line.isEmpty() && !line.startsWith("#")).toList();
