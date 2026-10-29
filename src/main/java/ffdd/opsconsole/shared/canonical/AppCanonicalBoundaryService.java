@@ -550,6 +550,8 @@ public class AppCanonicalBoundaryService {
                 "pendingDeactivate", device.pendingDeactivate(),
                 "instanceNo", device.instanceNo(), "name", device.name(),
                 "deviceType", device.deviceType(), "productCode", device.productCode(), "status", device.status(),
+                "businessStatus", device.activatedAt() != null && device.deactivatedAt() == null
+                        && isSlotOccupyingActiveState(device.status()) ? "ONLINE" : "OFFLINE",
                 "runtimeStatus", canonicalRuntimeStatus(device.runtimeStatus()),
                 "activatedAt", epochMillis(device.activatedAt()), "deactivatedAt", epochMillis(device.deactivatedAt()),
                 "purchasedAt", epochMillis(device.purchasedAt()),
