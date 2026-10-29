@@ -235,6 +235,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_order SET payment_status='CANCELLED',order_status='CANCELLED',activation_status='WAITING_PAYMENT',
+                   close_reason_code='USER_CANCELLED',
                    updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE order_no=#{orderNo} AND user_id=#{userId} AND is_deleted=0
                AND UPPER(order_status)='PENDING_PAYMENT' AND UPPER(payment_status)='PENDING'
@@ -270,7 +271,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_order SET payment_status='EXPIRED',order_status='EXPIRED',
-                   activation_status='WAITING_PAYMENT',
+                   activation_status='WAITING_PAYMENT',close_reason_code='PAYMENT_TIMEOUT',
                    updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE order_no=#{orderNo} AND user_id=#{userId} AND is_deleted=0
                AND UPPER(order_status)='PENDING_PAYMENT' AND UPPER(payment_status)='PENDING'

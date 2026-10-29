@@ -385,6 +385,11 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
+    public void recordOrderCloseReason(String orderNo, String closeReasonCode) {
+        mapper.updateOrderCloseReason(orderNo, closeReasonCode);
+    }
+
+    @Override
     public void recordOrderHistory(
             String orderNo,
             String fromState,

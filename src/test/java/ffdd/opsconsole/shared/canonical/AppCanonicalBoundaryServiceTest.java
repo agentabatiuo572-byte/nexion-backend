@@ -780,6 +780,26 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void closedOrdersExposeTheUserVisibleCloseReason() {
+        when(mapper.userOrders(42L)).thenReturn(List.of(new CanonicalStateMapper.UserOrder(
+                "ORD-C", 4L, "stellarbox-s1", "StellarBox S1", 1,
+                new BigDecimal("1299"), BigDecimal.ZERO, new BigDecimal("1299"),
+                "USDT_WALLET", "CANCELLED", "CANCELLED", "WAITING_PAYMENT", "SINGLE",
+                LocalDateTime.of(2026, 10, 29, 9, 0), null, null,
+                null, null, null, null, null, 1, new BigDecimal("1299"),
+                null, null, null, null, null, "USER_CANCELLED")));
+
+        var result = service.orders(42L);
+
+        @SuppressWarnings("unchecked")
+        var orders = (List<Map<String, Object>>) result.getData().get("orders");
+        assertThat(orders.get(0))
+                .containsEntry("canonicalStatus", "cancelled")
+                .containsEntry("closeReasonCode", "USER_CANCELLED")
+                .containsEntry("refundReasonCode", null);
+    }
+
+    @Test
     void refundedOrdersExposeTheUserVisibleRefundReason() {
         when(mapper.userOrders(42L)).thenReturn(List.of(new CanonicalStateMapper.UserOrder(
                 "ORD-R", 4L, "stellarbox-s1", "StellarBox S1", 1,

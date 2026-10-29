@@ -115,6 +115,14 @@ class PromotionOrderServiceTest {
         assertThrows(BizException.class,()->service.clearA2Refund("A2-1","O1"));
         verify(db,never()).write(contains("refund_hold"),any(Object[].class));
     }
+    @Test void e4PaymentFailureReleasesUnpaidReservations(){
+        // E4 terminal writes order_status=PAYMENT_FAILED for payment_failed.
+        var reservation=values("reservation_id","R1","activity_id","A1","beneficiary_id",17L,"beneficiary_role","BUYER","rule_id","RULE1","asset","DISCOUNT_USDT","product_no","","amount",new BigDecimal("500"),"status","RESERVED");
+        when(db.order("O1",false)).thenReturn(values("paid_at",null,"order_status","PAYMENT_FAILED"));when(db.reservations("O1",true)).thenReturn(List.of(reservation));
+        when(db.write(startsWith("UPDATE nx_promotion_reservation SET status='RELEASED'"),any(Object[].class))).thenAnswer(i->{reservation.put("status","RELEASED");return 1;});
+        service.releaseUnpaid("O1","FAILED");
+        verify(db,times(1)).write(startsWith("UPDATE nx_promotion_budget SET reserved=reserved-?,revision"),any(Object[].class));
+    }
     @Test void paidOrderCannotReleaseBudgetThroughCancelPath(){
         when(db.order("O1",false)).thenReturn(values("paid_at",Instant.now(),"order_status","CANCELLED"));
         assertThrows(BizException.class,()->service.releaseUnpaid("O1","cancel"));verifyNoInteractions(outbox);
