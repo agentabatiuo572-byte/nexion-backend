@@ -1107,7 +1107,8 @@ public class AppTaskAssignmentService {
     }
     private LocalDateTime phonePauseBoundary(AssignmentRow row, PhoneRuntimeRow runtime, LocalDateTime now) {
         LocalDateTime startedAt = row.startedAt() == null ? now : row.startedAt();
-        LocalDateTime boundary = runtime == null || runtime.heartbeatAt() == null || !phoneSignalsReady(runtime)
+        LocalDateTime boundary = runtime == null || runtime.heartbeatAt() == null
+                || runtime.heartbeatAt().isAfter(now) || !phoneSignalsReady(runtime)
                 ? startedAt : runtime.heartbeatAt().plusSeconds(PHONE_HEARTBEAT_SECONDS);
         if (boundary.isBefore(startedAt)) boundary = startedAt;
         return boundary.isAfter(now) ? now : boundary;

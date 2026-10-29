@@ -938,6 +938,34 @@ class AppTaskAssignmentServiceTest {
     }
 
     @Test
+    void futurePhoneHeartbeatFreezesPauseAtTaskStartAndCannotAuthorizeExecution() {
+        var phone = device("PHONE", "PHONE", "Your phone", 8);
+        LocalDateTime started = NOW.minusSeconds(30);
+        var current = assignmentRow("CTA-PHONE", 11L, "RUNNING", started, null);
+        when(mapper.ownedDevices(7L)).thenReturn(List.of(phone));
+        when(mapper.assignmentsForDevices(7L, "PRODUCTION", List.of(11L))).thenReturn(List.of(current));
+        when(mapper.phoneRuntime(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(80, true, NOW.plusMinutes(5)));
+
+        var first = service.assignments(7L).getData().devices().get(0).currentTask();
+        var later = serviceAt(NOW.plusMinutes(1)).assignments(7L).getData().devices().get(0).currentTask();
+
+        assertThat(first.status()).isEqualTo("PAUSED");
+        assertThat(later.status()).isEqualTo("PAUSED");
+        assertThat(first.pausedAt()).isEqualTo(started);
+        assertThat(later.pausedAt()).isEqualTo(first.pausedAt());
+        assertThat(later.pausedSeconds()).isEqualTo(first.pausedSeconds());
+        assertThat(first.completableAt()).isNull();
+        assertThat(later.completableAt()).isNull();
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(phone);
+        assertThatThrownBy(() -> service.assignAutomatically(7L, 11L))
+                .hasMessage("TASK_ASSIGNMENT_PHONE_TELEMETRY_STALE");
+        verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
+        verify(mapper, never()).insertAssignment(anyString(), any(), any(), any(), any(), any(), any(),
+                anyString(), any(), anyString(), any(), any());
+    }
+
+    @Test
     void pauseReadbacksFreezeAtTheSameBoundaryAndResumeRetainsElapsedWork() {
         var phone = device("PHONE", "PHONE", "Your phone", 8);
         LocalDateTime started = NOW.minusSeconds(200);
