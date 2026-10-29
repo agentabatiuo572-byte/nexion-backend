@@ -1,3 +1,0 @@
-# Keep authored task files portable; preserve reviewed input snapshots byte-for-byte.
-* text eol=lf
-inputs/** -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
