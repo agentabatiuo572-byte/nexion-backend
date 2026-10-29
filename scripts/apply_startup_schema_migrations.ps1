@@ -361,6 +361,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261028_compute_points.sql")
   (Join-Path $root "scripts\migrations\20261029_app_profile_change_interval.sql")
   (Join-Path $root "scripts\migrations\20261029_h4_retire_legacy_events.sql")
+  (Join-Path $root "scripts\migrations\20261029_trust_documents.sql")
+  (Join-Path $root "scripts\migrations\20261029_l6_trust_document_routes.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

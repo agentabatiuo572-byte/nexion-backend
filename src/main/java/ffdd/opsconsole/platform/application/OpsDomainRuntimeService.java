@@ -265,6 +265,8 @@ public class OpsDomainRuntimeService {
                 api("TrustSectionDraft", "/api/admin/content/trust-disclosure/trust-sections/{sectionKey}/versions/{version}", "content_i4_read", "content_i4_write", false),
                 api("TrustSectionStandardPublish", "/api/admin/content/trust-disclosure/trust-sections/{sectionKey}/{action}", "content_i4_read", "content_i4_publish_standard", false),
                 api("TrustSectionSensitivePublish", "/api/admin/content/trust-disclosure/trust-sections/{sectionKey}/{action}", "content_i4_read", "content_i4_trust_section_manage", false),
+                api("TrustDocuments", "/api/admin/content/trust-documents", "content_i4_read", "content_i4_publish_standard", false),
+                api("TrustDocumentAction", "/api/admin/content/trust-documents/{slot}/{action}", "content_i4_read", "content_i4_publish_standard", false),
                 api("DisclosureJurisdiction", "/api/admin/content/trust-disclosure/disclosures/{jurisdiction}/{action}", "content_i5_read", "content_i5_disclosure_publish", false),
                 api("DisclosureGateAction", "/api/admin/content/trust-disclosure/disclosures/gated-actions", "content_i5_read", "content_i5_gate_adjust", false),
                 api("LegalTerms", "/api/admin/content/legal-terms", "content_legal_terms_read", "content_legal_terms_write", false),
