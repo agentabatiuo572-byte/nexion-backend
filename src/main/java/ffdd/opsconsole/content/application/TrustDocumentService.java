@@ -22,14 +22,11 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Clock;
-import java.time.LocalDate;
+import java.util.Collections;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -42,6 +39,9 @@ import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
@@ -57,7 +57,9 @@ public class TrustDocumentService {
     private static final long MAX_BYTES = 20L * 1024 * 1024;
     private static final int MAX_PAGES = 80;
     private static final float PAGE_DPI = 144f;
-    private static final int PAGE_CACHE_LIMIT = 256;
+    /** Every page of every slot fits, so the current files never evict each other. */
+    private static final int PAGE_CACHE_LIMIT = 4 * MAX_PAGES;
+    private static final String SENSITIVE_AUTHORITY = "content_i4_trust_section_manage";
     private static final String IDEMPOTENCY_SCOPE = "I4_TRUST_DOCUMENT";
     private static final Pattern VERSION = Pattern.compile("[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}");
     private static final Pattern LANGUAGE = Pattern.compile("[\\p{L}][\\p{L} ()/-]{0,31}");
@@ -68,11 +70,15 @@ public class TrustDocumentService {
     private final AuditLogService audit;
     private final AdminIdempotencyService idempotency;
     private final A2RuntimePolicy a2;
-    private final Clock clock;
     private final TrustDocumentsView.Profile profile;
     private final Map<String, DefaultDocument> defaults;
-    /** Rendered pages keyed by file hash and page number; a replaced file gets new keys. */
-    private final Map<String, byte[]> pageImages = new ConcurrentHashMap<>();
+    /** Rendered pages keyed by file hash and page number, least recently used first out; a replaced file gets new keys. */
+    private final Map<String, byte[]> pageImages = Collections.synchronizedMap(new LinkedHashMap<>(64, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
+            return size() > PAGE_CACHE_LIMIT;
+        }
+    });
 
     private record DefaultEntry(String slot, String resource, String sha256, String version, String language, String referenceNo, String verifyUrl) {}
     private record Defaults(TrustDocumentsView.Profile profile, List<DefaultEntry> documents) {}
@@ -80,13 +86,12 @@ public class TrustDocumentService {
     public record Content(String fileName, byte[] bytes) {}
 
     public TrustDocumentService(TrustDocumentMapper mapper, ObjectStorageService storage, AuditLogService audit,
-            AdminIdempotencyService idempotency, A2RuntimePolicy a2, Clock clock, ObjectMapper json) {
+            AdminIdempotencyService idempotency, A2RuntimePolicy a2, ObjectMapper json) {
         this.mapper = mapper;
         this.storage = storage;
         this.audit = audit;
         this.idempotency = idempotency;
         this.a2 = a2;
-        this.clock = clock;
         Defaults loaded;
         try {
             loaded = json.readValue(PublishedContentDefaults.read("/trust-documents/defaults.json"), Defaults.class);
@@ -118,11 +123,7 @@ public class TrustDocumentService {
             DefaultDocument fallback = defaults.get(slot);
             return new Content(fallback.entry().resource(), fallback.bytes());
         }
-        try (InputStream stream = storage.get(row.objectKey())) {
-            return new Content(row.fileName(), stream.readAllBytes());
-        } catch (IOException ex) {
-            throw new BizException(503, "TRUST_DOCUMENT_UNAVAILABLE");
-        }
+        return stored(row);
     }
 
     /** The PDF behind the public file URL; the white paper is only shown as page images. */
@@ -139,12 +140,11 @@ public class TrustDocumentService {
         DefaultDocument fallback = defaults.get(slot);
         int pages = row == null ? fallback.pageCount() : row.pageCount();
         if (page < 1 || page > pages) throw new BizException(404, "TRUST_DOCUMENT_PAGE_NOT_FOUND");
-        String sha = row == null ? fallback.sha256() : row.sha256();
-        String key = sha + ":" + page;
+        String key = (row == null ? fallback.sha256() : row.sha256()) + ":" + page;
         byte[] cached = pageImages.get(key);
         if (cached != null) return cached;
-        byte[] rendered = render(row == null ? fallback.bytes() : file(slot).bytes(), page - 1);
-        if (pageImages.size() >= PAGE_CACHE_LIMIT) pageImages.clear();
+        // The bytes come from the same row that set the page range and the cache key.
+        byte[] rendered = render(row == null ? fallback.bytes() : stored(row).bytes(), page - 1);
         pageImages.put(key, rendered);
         return rendered;
     }
@@ -152,6 +152,7 @@ public class TrustDocumentService {
     public TrustDocumentsView.Document upload(String slot, MultipartFile file, TrustDocumentUploadRequest request,
             String idempotencyKey, String actor) {
         requireSlot(slot);
+        requireSlotAuthority(slot);
         String key = requireIdempotencyKey(idempotencyKey);
         String reason = requireReason(request.reason());
         byte[] bytes = pdfBytes(file);
@@ -166,15 +167,19 @@ public class TrustDocumentService {
         String sha256 = sha256(bytes);
         String requestHash = sha256(String.join("\u0000", slot, sha256, text(version), text(language), text(referenceNo),
                 text(verifyUrl), fileName, reason, text(request.expectedSha256()), text(actor)).getBytes(StandardCharsets.UTF_8));
+        requireCurrent(slot, mapper.find(slot), request.expectedSha256());
+        // Stored before the transaction so a slow transfer holds no connection or row. The key is the content hash,
+        // so a retry reuses the object; replaced files stay in storage as the audit trail's history.
+        String objectKey = "admin/content/trust-documents/%s/%s.pdf".formatted(slot, sha256);
+        storage.put(objectKey, "application/pdf", new ByteArrayInputStream(bytes), bytes.length);
         return idempotency.execute(IDEMPOTENCY_SCOPE, key, requestHash, TrustDocumentsView.Document.class, () -> {
-            TrustDocumentRow current = mapper.lock(slot);
+            TrustDocumentRow current = mapper.find(slot);
             String previous = requireCurrent(slot, current, request.expectedSha256());
-            LocalDate today = LocalDate.now(clock);
-            String objectKey = "admin/content/trust-documents/%s/%04d%02d%02d/%s.pdf".formatted(
-                    slot, today.getYear(), today.getMonthValue(), today.getDayOfMonth(), UUID.randomUUID());
-            storage.put(objectKey, "application/pdf", new ByteArrayInputStream(bytes), bytes.length);
-            mapper.upsert(new TrustDocumentRow(slot, version, language, referenceNo, verifyUrl, objectKey, fileName,
-                    (long) bytes.length, pageCount, sha256, actor, null));
+            TrustDocumentRow next = new TrustDocumentRow(slot, version, language, referenceNo, verifyUrl, objectKey, fileName,
+                    (long) bytes.length, pageCount, sha256, actor, null);
+            if (!(current == null ? inserted(next) : mapper.replace(next, previous) == 1)) {
+                throw new BizException(409, "TRUST_DOCUMENT_STALE");
+            }
             Map<String, Object> detail = new LinkedHashMap<>();
             detail.put("reason", reason);
             detail.put("fileName", fileName);
@@ -196,15 +201,16 @@ public class TrustDocumentService {
     public TrustDocumentsView.Document restoreDefault(String slot, TrustDocumentRestoreRequest request,
             String idempotencyKey, String actor) {
         requireSlot(slot);
+        requireSlotAuthority(slot);
         String key = requireIdempotencyKey(idempotencyKey);
         String reason = requireReason(request.reason());
         String requestHash = sha256(String.join("\u0000", slot, reason, text(request.expectedSha256()), text(actor))
                 .getBytes(StandardCharsets.UTF_8));
         return idempotency.execute(IDEMPOTENCY_SCOPE, key, requestHash, TrustDocumentsView.Document.class, () -> {
-            TrustDocumentRow current = mapper.lock(slot);
+            TrustDocumentRow current = mapper.find(slot);
             if (current == null) throw new BizException(409, "TRUST_DOCUMENT_ALREADY_DEFAULT");
             String previous = requireCurrent(slot, current, request.expectedSha256());
-            mapper.delete(slot);
+            if (mapper.deleteIfCurrent(slot, previous) != 1) throw new BizException(409, "TRUST_DOCUMENT_STALE");
             Map<String, Object> detail = new LinkedHashMap<>();
             detail.put("reason", reason);
             detail.put("previousSha256", previous);
@@ -232,6 +238,31 @@ public class TrustDocumentService {
         return new TrustDocumentsView.Document(slot, "UPLOADED", row.version(), row.language(), row.referenceNo(),
                 row.verifyUrl(), row.fileName(), row.sizeBytes(), row.pageCount(), row.sha256(), fileUrl(slot, row.sha256()),
                 console ? row.updatedBy() : null, console ? row.updatedAt() : null);
+    }
+
+    private boolean inserted(TrustDocumentRow row) {
+        try {
+            return mapper.insert(row) == 1;
+        } catch (DuplicateKeyException ex) {
+            return false;
+        }
+    }
+
+    private Content stored(TrustDocumentRow row) {
+        try (InputStream stream = storage.get(row.objectKey())) {
+            return new Content(row.fileName(), stream.readAllBytes());
+        } catch (IOException ex) {
+            throw new BizException(503, "TRUST_DOCUMENT_UNAVAILABLE");
+        }
+    }
+
+    /** Company registrations are compliance content: like the sensitive trust sections, they need the trust-section authority. */
+    private static void requireSlotAuthority(String slot) {
+        if (WHITEPAPER.equals(slot)) return;
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        boolean allowed = authentication != null && authentication.isAuthenticated()
+                && authentication.getAuthorities().stream().anyMatch(item -> SENSITIVE_AUTHORITY.equals(item.getAuthority()));
+        if (!allowed) throw new BizException(OpsErrorCode.FORBIDDEN.httpStatus(), "TRUST_DOCUMENT_FORBIDDEN");
     }
 
     private String requireCurrent(String slot, TrustDocumentRow current, String expectedSha256) {
@@ -264,9 +295,7 @@ public class TrustDocumentService {
 
     private String requireReason(String reason) {
         String value = text(reason);
-        if (value.length() < a2.reasonMinChars() || value.length() > 200) {
-            throw new BizException(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
-        }
+        a2.validateReason(value);
         return value;
     }
 
