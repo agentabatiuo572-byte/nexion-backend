@@ -64,7 +64,11 @@ public interface SupportWorkbenchMapper extends BaseMapper<SupportAgentAssignmen
         """;
     String FILTER = """
         WHERE 1=1
-        <if test='keyword != null'>AND (nickname LIKE CONCAT('%',#{keyword},'%') OR customerNo=#{keyword})</if>
+        <if test='keyword != null'>AND (nickname LIKE CONCAT('%',#{keyword},'%')
+          OR customerNo LIKE CONCAT('%',#{keyword},'%')
+          OR CONCAT('U',LPAD(customerNo,GREATEST(8,LENGTH(customerNo)),'0')) LIKE CONCAT('%',#{keyword},'%')
+          OR EXISTS (SELECT 1 FROM nx_user keyword_user WHERE keyword_user.id=customers.customerId
+            AND keyword_user.phone LIKE CONCAT('%',#{keyword},'%')))</if>
         <choose>
           <when test='filter == "WINDOW_ACTIVE"'>AND windowStatus='ACTIVE'</when>
           <when test='filter == "ACTIVE"'>AND activityStatus='ACTIVE'</when>

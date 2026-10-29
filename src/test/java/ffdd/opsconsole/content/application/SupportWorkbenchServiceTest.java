@@ -177,6 +177,59 @@ class SupportWorkbenchServiceTest {
         assertThat(map(service.detail(20L).get("scope"))).containsEntry("mode","PERSONAL");
     }
 
+    @Test void contactSearchUsesTenRowPageAndSameTrimmedKeywordForCountAndRows() {
+        setup(new SupportRules(1L,30,7,7,"UNCONFIGURED",null),0);
+        var personal=new ReadScope(7L,ReadMode.PERSONAL,null,null);
+        when(ownership.queryScope(ReadMode.PERSONAL,null,null)).thenReturn(personal);
+        var result=service.snapshot(ReadMode.PERSONAL,null,null,"ALL","  U00000020  ",2,10,null,null);
+        @SuppressWarnings("rawtypes") var queries=ArgumentCaptor.forClass(Map.class);
+        verify(mapper).count(queries.capture());verify(mapper).customers(queries.capture());
+        assertThat(queries.getAllValues()).allSatisfy(q->assertThat(q)
+                .containsEntry("scope",personal).containsEntry("keyword","U00000020")
+                .containsEntry("limit",10).containsEntry("offset",10L));
+        assertThat(queries.getAllValues().get(0)).isSameAs(queries.getAllValues().get(1));
+        var page=map(result.get("customers"));
+        assertThat(page).containsEntry("pageNum",2L).containsEntry("pageSize",10).containsEntry("total",1L);
+        assertThat(map(((List<?>)page.get("records")).get(0))).doesNotContainKeys("phone","phoneMasked");
+        var order=inOrder(ownership,activity,mapper);
+        order.verify(ownership).queryScope(ReadMode.PERSONAL,null,null);
+        order.verify(activity).checkpoint();
+        order.verify(ownership).queryScope(ReadMode.PERSONAL,null,null);
+        order.verify(mapper).overview(any());order.verify(mapper).count(any());order.verify(mapper).customers(any());
+    }
+
+    @Test void blankContactSearchRestoresUnfilteredFirstPage() {
+        setup(new SupportRules(1L,30,7,7,"UNCONFIGURED",null),0);
+        service.snapshot(null,"ALL","  ",1,10,null,null);
+        @SuppressWarnings("rawtypes") var query=ArgumentCaptor.forClass(Map.class);
+        verify(mapper).customers(query.capture());
+        assertThat(query.getValue()).containsEntry("keyword",null).containsEntry("offset",0L).containsEntry("limit",10);
+    }
+
+    @Test void contactSearchBindsAllFourPartialMatchesAfterScopeWithoutProjectingPhone() throws Exception {
+        for(String keyword:List.of("Alice","0817","0020","U00000020","U123456789")) {
+            var query=new HashMap<String,Object>();
+            query.put("scope",new ReadScope(7L,ReadMode.PERSONAL,null,null));query.put("filter","ALL");
+            query.put("keyword",keyword);query.put("limit",10);query.put("offset",10L);
+            var count=boundSql("count",query);var rows=boundSql("customers",query);
+            String countSql=count.getSql().replaceAll("\\s+"," ");
+            String rowsSql=rows.getSql().replaceAll("\\s+"," ");
+            String filter=countSql.substring(countSql.indexOf("FROM customers WHERE 1=1"));
+            assertThat(rowsSql).contains(filter+" ORDER BY waitingReply DESC,nextDueAt IS NOT NULL,nextDueAt,customerId LIMIT ? OFFSET ?");
+            assertThat(filter).contains("nickname LIKE CONCAT('%',?,'%')","customerNo LIKE CONCAT('%',?,'%')",
+                    "CONCAT('U',LPAD(customerNo,GREATEST(8,LENGTH(customerNo)),'0')) LIKE CONCAT('%',?,'%')",
+                    "EXISTS (SELECT 1 FROM nx_user keyword_user WHERE keyword_user.id=customers.customerId AND keyword_user.phone LIKE CONCAT('%',?,'%'))");
+            assertThat(rowsSql.indexOf("scope_binding.agent_admin_id=?")).isLessThan(rowsSql.indexOf(filter));
+            assertThat(rowsSql.substring(0,rowsSql.indexOf("SELECT * FROM customers"))).doesNotContain("phone");
+            assertThat(rowsSql).doesNotContain(keyword);
+            for(var bound:List.of(count,rows)) {
+                assertThat(bound.getParameterMappings().stream().filter(p->p.getProperty().equals("keyword"))).hasSize(4);
+                assertThat(((Map<?,?>)bound.getParameterObject()).get("keyword")).isEqualTo(keyword);
+            }
+            assertThat(rows.getParameterMappings()).extracting(p->p.getProperty()).endsWith("limit","offset");
+        }
+    }
+
     @Test void customerDetailEntersReadOnlyRepeatableReadAfterActivityCheckpoint() {
         setup(new SupportRules(1L,30,7,7,"UNCONFIGURED",null),0);
         when(ownership.customerQueryScope(20L)).thenReturn(new ReadScope(7L,ReadMode.PERSONAL,null,null));
@@ -233,9 +286,13 @@ class SupportWorkbenchServiceTest {
     }
 
     private static String sql(String method,String filter) throws Exception {
-        String source=String.join("\n",SupportWorkbenchMapper.class.getMethod(method,Map.class).getAnnotation(Select.class).value());
         var query=new HashMap<String,Object>(); query.put("scope",new ReadScope(7L,ReadMode.PERSONAL,null,null)); query.put("filter",filter);
-        return new XMLLanguageDriver().createSqlSource(new Configuration(),source,Map.class).getBoundSql(query).getSql();
+        return boundSql(method,query).getSql();
+    }
+
+    private static org.apache.ibatis.mapping.BoundSql boundSql(String method,Map<String,Object> query) throws Exception {
+        String source=String.join("\n",SupportWorkbenchMapper.class.getMethod(method,Map.class).getAnnotation(Select.class).value());
+        return new XMLLanguageDriver().createSqlSource(new Configuration(),source,Map.class).getBoundSql(query);
     }
 
     @SuppressWarnings("unchecked")
