@@ -95,8 +95,13 @@ public final class SupportPaymentFacts {
         Status refundStatus, Status historicalEnvironmentStatus, LocalDateTime supportedFrom, List<String> reasons) {
         public CustomerCoverage { reasons = List.copyOf(reasons); }
     }
+    /** Internal disaggregation permits an exact authorized subset of a sampled source read. */
+    public record ExcludedRows(long customerId,Source source,long rows) { }
     public record Snapshot(List<Fact> facts, List<Issue> issues, List<Coverage> coverage,
-        String businessZone, Instant evaluatedAt, List<FirstHistory> firstHistory, List<CustomerCoverage> customerCoverage) {
+        String businessZone, Instant evaluatedAt, List<FirstHistory> firstHistory, List<CustomerCoverage> customerCoverage,List<ExcludedRows> excludedRows) {
+        public Snapshot(List<Fact> facts,List<Issue> issues,List<Coverage> coverage,String businessZone,Instant evaluatedAt,List<FirstHistory> firstHistory,List<CustomerCoverage> customerCoverage) {
+            this(facts,issues,coverage,businessZone,evaluatedAt,firstHistory,customerCoverage,List.of());
+        }
         public Snapshot(List<Fact> facts, List<Issue> issues, List<Coverage> coverage,
                 String businessZone, Instant evaluatedAt) {
             this(facts, issues, coverage, businessZone, evaluatedAt, List.of(), List.of());
@@ -109,6 +114,7 @@ public final class SupportPaymentFacts {
             facts = List.copyOf(facts); issues = List.copyOf(issues); coverage = List.copyOf(coverage);
             firstHistory = List.copyOf(firstHistory);
             customerCoverage = List.copyOf(customerCoverage);
+            excludedRows = excludedRows==null?List.of():List.copyOf(excludedRows);
         }
     }
 }

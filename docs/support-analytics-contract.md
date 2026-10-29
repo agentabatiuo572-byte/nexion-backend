@@ -50,6 +50,8 @@ GET `/support-agents/groups` 返回独立 `GroupDirectory[]`：`id/name/supervis
 
 当前 analytics 顶层字段为 `view/basis/businessZone/asOf/pageNum/pageSize/total/observedTotal/records/versionState/queryVersion/canContinue/recordsStatus/selectedCustomerCount/selectedCurrent/scopeSummary/funds`。`queryVersion` 绑定查询、权限与事实证据，不另返回完整标准化查询、`sourceVersion/definitionVersion` 或 `rules`；具体口径由产品合同及各字段投影解释。通用计数为 `observed/confirmed/status`，金额另含观察/确认事件数及观察客户数，金额值为 decimal 字符串；未知按对应状态及可空确认值表达，不统一为 `null + reason`。资金读取另有各自状态/原因字段，部分源失败不伪造0或完整值。
 
+2026-10-29 性能口径：付款历史、净贡献及其历史归属证据允许使用内部不可变事实采样，统计延迟从采集 RR 开始至返回前不得超过5秒，`asOf`显示真实采集时间。身份、当前授权、负责组、资格、客户绑定/路由仍由当前请求读取，采样不保存私有 HTTP 回包或操作者范围，不扩大任何对象权限。付款子集按逐客户来源覆盖和排除计数重建，未知和真实零保持分开；当前钱包、设备及服务任务仍沿原读取合同。查询版本继续绑定当前权限/范围及所用事实，后页发生变化仍拒绝。应用就绪前预热；刷新失败不更新旧时间，过龄/未就绪返回真实不可用，不伪造空壳或在请求中回放全部历史。客户正文在全量筛选排序后仅投影所选页，累计与版本证据仍覆盖完整获准选集。接口≤300ms、页面≤1秒须以部署实测独立验收，代码实现或预热完成不代表达标。
+
 ### leaderboard 查询与发布
 
 只接受 `board,month,currency,scope,groupId,keyword,pageNum,pageSize,expectedVersion` 单值参数。正式榜键 `netContribution/firstPayment/customers`，默认净贡献；旧 `deposit/purchase` 输入兼容规范化为 `netContribution`，不计算或发布旧金额榜。范围 `all/ownGroup/managedGroups` 来自服务端获准集合。客户规模榜不接受月份，月榜仅接受真实覆盖月；金额币种由服务端集合限定，金额旁列统一 `NET_CONTRIBUTION`，精确十进制字符串可负，人数及追赶差距不可负。响应保留 `viewVersion/queryVersion/sourceVersion/definitionVersion`、真实 `asOf/publishedAt`、候选及指标覆盖、状态、本人摘要、公开行、可比日末基线及原因。`podium` 从同版授权整榜的确定名次1–3生成，`rows`最多四人，`total`包含全部并列；不随搜索或页码变化，非完整榜返回空摘要。沿用公开行白名单、头像读取及明细权限，不扩大私有范围。
