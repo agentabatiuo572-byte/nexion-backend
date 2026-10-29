@@ -24,6 +24,21 @@ class PublishedPrivacyPolicyServiceTest {
     }
 
     @Test
+    void withoutAnyStoredPolicyTheShippedDefaultIsServedAndEditable() {
+        InMemoryConfig config = new InMemoryConfig();
+        PublishedPrivacyPolicyService service = service(config, productionEnvironment());
+
+        var result = service.publicPolicy("vi");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("version", "default-2026.10.29").containsEntry("locale", "vi")
+                .containsEntry("sourceEnvironment", "PRODUCTION");
+        var admin = service.adminView().getData();
+        assertThat(admin).containsEntry("defaultContent", true).containsEntry("hasPublishedVersion", true);
+        assertThat(((Number) admin.get("revision")).longValue()).isZero();
+        assertThat(config.values).isEmpty();
+    }
+
+    @Test
     void draftPreservesThePreviouslyPublishedSnapshotUntilAnExplicitRevoke() {
         InMemoryConfig config = new InMemoryConfig();
         PublishedPrivacyPolicyService service = service(config, productionEnvironment());

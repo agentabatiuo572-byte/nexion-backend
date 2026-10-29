@@ -25,19 +25,26 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class PublishedPrivacyPolicyService {
     static final String CONFIG_KEY = "legal.privacy-policy.published";
+    /** Shipped default policy; it is the published policy until operations publish their own version. */
+    static final String DEFAULT_RESOURCE = "/published-defaults/privacy-policy.json";
     // nx_config_item.config_value is MySQL TEXT; count UTF-8 bytes including the retained snapshot.
     private static final int MAX_STORED_BYTES = 65_535;
     private final PlatformConfigFacade config;
     private final Environment environment;
     private final AuditLogService audit;
     private final ObjectMapper json = new ObjectMapper();
+    private final String defaultDocument = PublishedContentDefaults.read(DEFAULT_RESOURCE);
+    private final Map<String, Object> defaultPublication = parse(defaultDocument);
 
     public ApiResult<Map<String, Object>> publicPolicy(String requestedLocale) {
         try {
-            Map<String, Object> published = map(read(false).get("published"));
-            if (published == null || !"PUBLISHED".equals(published.get("status"))
+            Map<String, Object> document = read(false);
+            // The shipped default stands in only while nothing has been stored; an explicit revoke
+            // or a malformed publication keeps failing closed.
+            Map<String, Object> published = document.isEmpty() ? defaultPublication : map(document.get("published"));
+            if (published != defaultPublication && (published == null || !"PUBLISHED".equals(published.get("status"))
                     || !sourceEnvironment().equals(published.get("sourceEnvironment"))
-                    || !runId().equals(published.get("runId"))) return unavailable();
+                    || !runId().equals(published.get("runId")))) return unavailable();
             Map<String, Object> locales = map(published.get("locales"));
             String wanted = requestedLocale == null ? "en" : requestedLocale.trim().replace('_', '-').toLowerCase(Locale.ROOT);
             String locale = locales.containsKey(wanted) ? wanted : locales.containsKey(wanted.split("-")[0])
@@ -63,10 +70,10 @@ public class PublishedPrivacyPolicyService {
 
     public ApiResult<Map<String, Object>> adminView() {
         Map<String, Object> document = read(false);
-        if (document.isEmpty()) document = new LinkedHashMap<>(Map.of(
-                "status", "UNPUBLISHED", "version", "", "revision", 0, "locales", Map.of()));
+        if (document.isEmpty()) document = defaultAdminDocument();
         // The editor does not need the old published body, only whether it remains visible.
         document.put("hasPublishedVersion", document.get("published") instanceof Map<?, ?>);
+        PublishedContentSnapshot.markDefaultPublic(document);
         document.remove("published");
         document.put("source", "server");
         document.put("configKey", CONFIG_KEY);
@@ -155,4 +162,20 @@ public class PublishedPrivacyPolicyService {
         return run;
     }
     private ApiResult<Map<String, Object>> unavailable() { return ApiResult.fail(503, "PRIVACY_POLICY_UNAVAILABLE"); }
+
+    /** Operations edit from the shipped default; revision 0 lets the first publish pass the CAS check. */
+    private Map<String, Object> defaultAdminDocument() {
+        Map<String, Object> document = parse(defaultDocument);
+        document.put("revision", 0);
+        document.put("defaultContent", true);
+        return document;
+    }
+
+    private Map<String, Object> parse(String raw) {
+        try {
+            return json.readValue(raw, new TypeReference<>() { });
+        } catch (Exception ex) {
+            throw new IllegalStateException("PRIVACY_POLICY_DEFAULT_INVALID", ex);
+        }
+    }
 }
