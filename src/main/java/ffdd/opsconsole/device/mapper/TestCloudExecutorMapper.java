@@ -1,11 +1,12 @@
 package ffdd.opsconsole.device.mapper;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.time.LocalDateTime;
 import org.apache.ibatis.annotations.*;
 
 /** Narrow TEST-only persistence. Every mutation is called under the existing user/device/task locks. */
 @Mapper
-public interface TestCloudExecutorMapper {
+public interface TestCloudExecutorMapper extends BaseMapper<Object> {
     String COLUMNS = "task_no taskNo,executor_id executorId,owner_id ownerId,device_id deviceId,instance_no instanceNo,"
             + "task_config_id taskConfigId,next_key_hash nextKeyHash,claim_token claimToken,input_json inputJson,"
             + "input_hash inputHash,model_tag modelTag,model_digest modelDigest,proof_nonce proofNonce,"
