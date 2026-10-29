@@ -11,16 +11,16 @@
             {
               "id": "intro",
               "kind": "text",
-              "title": "创世节点",
-              "body": "创世节点是限量发行的平台权益，持有人可按规则获得 UVT 释放份额和专属权益。"
+              "title": "创世席位",
+              "body": "创世席位是限量发行的平台权益，持有人可按平台公布的安排获得 UVT 预留额度和专属权益。"
             },
             {
               "id": "benefits",
               "kind": "list",
               "title": "持有权益",
-              "body": "持有创世节点可获得：",
+              "body": "持有创世席位可获得：",
               "items": [
-                "按平台公布的释放安排获得 UVT。",
+                "UVT 预留额度，上线交易后按平台公布的安排释放。",
                 "创始成员身份标识。",
                 "可在转让市场转让给其他用户。"
               ]
@@ -35,7 +35,7 @@
               "id": "note",
               "kind": "callout",
               "title": "需要了解",
-              "body": "UVT 释放数量和时间以平台公布的规则为准。UVT 价格可能波动，平台不承诺收益或价格。"
+              "body": "UVT 释放数量和时间以平台公布的规则为准。UVT 价格可能波动，席位转让价由买卖双方决定，平台不承诺收益或价格。"
             }
           ]
         },
@@ -44,16 +44,16 @@
             {
               "id": "intro",
               "kind": "text",
-              "title": "Genesis nodes",
-              "body": "Genesis nodes are a limited-edition platform benefit. Holders receive a share of UVT releases and exclusive benefits under the published rules."
+              "title": "Genesis seats",
+              "body": "Genesis seats are a limited-edition platform benefit. Holders receive a UVT allocation and exclusive benefits under the published rules."
             },
             {
               "id": "benefits",
               "kind": "list",
               "title": "Holder benefits",
-              "body": "Holding a Genesis node gives you:",
+              "body": "Holding a Genesis seat gives you:",
               "items": [
-                "UVT under the published release schedule.",
+                "A UVT allocation, released after listing under the published schedule.",
                 "A founding member badge.",
                 "The option to transfer it to other users on the resale market."
               ]
@@ -68,7 +68,7 @@
               "id": "note",
               "kind": "callout",
               "title": "Good to know",
-              "body": "UVT release amounts and timing follow the published rules. The UVT price can go up or down, and we don’t promise returns or a price."
+              "body": "UVT release amounts and timing follow the published rules. The UVT price can go up or down, resale prices are set by buyers and sellers, and we don’t promise returns or prices."
             }
           ]
         },
@@ -77,16 +77,16 @@
             {
               "id": "intro",
               "kind": "text",
-              "title": "Nút Genesis",
-              "body": "Nút Genesis là quyền lợi của nền tảng, phát hành với số lượng giới hạn. Người nắm giữ nhận phần UVT được phát hành và các quyền lợi riêng theo quy tắc đã công bố."
+              "title": "Suất Genesis",
+              "body": "Suất Genesis là quyền lợi của nền tảng, phát hành với số lượng giới hạn. Người nắm giữ nhận hạn mức UVT và các quyền lợi riêng theo quy tắc nền tảng công bố."
             },
             {
               "id": "benefits",
               "kind": "list",
               "title": "Quyền lợi người nắm giữ",
-              "body": "Khi nắm giữ nút Genesis, bạn nhận được:",
+              "body": "Khi nắm giữ suất Genesis, bạn nhận được:",
               "items": [
-                "UVT theo lịch phát hành do nền tảng công bố.",
+                "Hạn mức UVT, phát hành sau khi niêm yết theo lịch nền tảng công bố.",
                 "Huy hiệu thành viên sáng lập.",
                 "Có thể chuyển nhượng cho người dùng khác trên chợ chuyển nhượng."
               ]
@@ -101,7 +101,7 @@
               "id": "note",
               "kind": "callout",
               "title": "Lưu ý",
-              "body": "Số lượng và thời điểm phát hành UVT theo quy tắc nền tảng công bố. Giá UVT có thể biến động và nền tảng không cam kết lợi nhuận hay giá."
+              "body": "Số lượng và thời điểm phát hành UVT theo quy tắc nền tảng công bố. Giá UVT có thể biến động, giá chuyển nhượng do người mua và người bán quyết định, nền tảng không cam kết lợi nhuận hay giá."
             }
           ]
         }

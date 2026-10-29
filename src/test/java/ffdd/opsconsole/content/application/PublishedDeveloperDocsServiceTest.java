@@ -45,7 +45,7 @@ class PublishedDeveloperDocsServiceTest {
     }
 
     @Test
-    void missingOrDraftContentFailsClosedWithUnavailable() {
+    void withoutAResolvableRuntimeEnvironmentTheDocsFailClosed() {
         PlatformConfigFacade config = mock(PlatformConfigFacade.class);
         when(config.activeValue("developer.docs.published")).thenReturn(Optional.of("{\"version\":\"draft\",\"status\":\"DRAFT\",\"locales\":{}}"));
         var result = new PublishedDeveloperDocsService(config, new MockEnvironment(), mock(AuditLogService.class)).publicDocument("en");
