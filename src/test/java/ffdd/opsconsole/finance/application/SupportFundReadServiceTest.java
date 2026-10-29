@@ -142,6 +142,46 @@ class SupportFundReadServiceTest {
     private void readOnly() throws Exception {TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);TransactionSynchronizationManager.setCurrentTransactionIsolationLevel(Connection.TRANSACTION_REPEATABLE_READ);when(connection.isReadOnly()).thenReturn(true);}
     private void writable() throws Exception {TransactionSynchronizationManager.setCurrentTransactionReadOnly(false);when(connection.isReadOnly()).thenReturn(false);}
     private SupportFundsReadFacade.NetSnapshot read(){return reader.read(List.of(1L));}
+    @Test void completeLegHistoryIsNotRescannedForEveryReceiptAndUnknownStaysUnknown() {
+        for(long id=2;id<=2000;id++){
+            var op=new LinkedHashMap<>(operations.get(0));
+            op.put("id",id);op.put("operationKey","UNREPRESENTED:"+id);op.put("businessType","UNREPRESENTED_SOURCE");
+            operations.add(op);parties.add(Map.of("operationId",id,"customerId",1L));
+            legs.add(Map.of("operationId",id,"incarnation",INC,"revision",id));
+        }
+        operations.forEach(this::resign);
+        int[] reads={0};
+        var observedLegs=new AbstractList<Map<String,Object>>(){
+            @Override public Map<String,Object> get(int index){
+                if(++reads[0]>legs.size()*8)throw new AssertionError("Reader repeatedly scanned the complete operation-leg history");
+                return legs.get(index);
+            }
+            @Override public int size(){return legs.size();}
+        };
+        when(mapper.legs(anyList())).thenReturn(observedLegs);
+        var first=read();var second=read();
+        assertEquals(first,second);
+        assertEquals(SupportFundsReadFacade.EvidenceState.UNKNOWN,first.customers().get(0).state());
+        assertNull(first.customers().get(0).usdt());assertNull(first.customers().get(0).nex());
+        assertTrue(first.customers().get(0).reasons().contains("RAW_BINDING"));
+        assertTrue(reads[0]<=legs.size()*8);
+    }
+    @ParameterizedTest @ValueSource(strings={"missing","duplicate","reversed","foreign","fractional"})
+    void indexedLegLookupKeepsMissingDuplicateOrderAndOwnershipFailures(String corruption) throws Exception {
+        deviceEarning(true,false);ready();
+        switch(corruption){
+            case "missing" -> legs.remove(legs.size()-1);
+            case "duplicate" -> legs.add(new HashMap<>(legs.get(legs.size()-1)));
+            case "reversed" -> Collections.reverse(legs);
+            case "foreign" -> {var leg=new HashMap<>(legs.get(legs.size()-1));leg.put("operationId",999999L);legs.set(legs.size()-1,leg);}
+            case "fractional" -> {var leg=new HashMap<>(legs.get(legs.size()-1));leg.put("operationId",new BigDecimal("1.5"));legs.set(legs.size()-1,leg);}
+            default -> throw new AssertionError(corruption);
+        }
+        when(mapper.legs(anyList())).thenAnswer(inv->legs);
+        var result=read().customers().get(0);
+        assertEquals(SupportFundsReadFacade.EvidenceState.UNKNOWN,result.state());
+        assertNull(result.usdt());assertNull(result.nex());assertFalse(result.reasons().isEmpty());
+    }
     @Test void readSnapshotCannotUseAnotherDataSourceOrMissingSynchronization() {
         assertThrows(IllegalStateException.class,()->binder.readSnapshot(mock(DataSource.class)));
         TransactionSynchronizationManager.clearSynchronization();

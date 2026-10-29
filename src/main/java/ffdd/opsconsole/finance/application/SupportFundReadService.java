@@ -104,7 +104,12 @@ public class SupportFundReadService {
             final var partyIndex=indexParties(partyRows);
             var legs=opIds.isEmpty()?List.<Map<String,Object>>of():mapper.legs(opIds);
             require(ops.stream().map(row->number(row,"id")).toList().equals(opIds),Gap.RECEIPT);
-            for(var leg:legs)require(opIds.contains(number(leg,"operationId")),Gap.RAW_BINDING);
+            var legIndex=new HashMap<Long,List<Map<String,Object>>>();
+            for(var leg:legs){
+                long operationId=number(leg,"operationId");require(opIds.contains(operationId),Gap.RAW_BINDING);
+                legIndex.computeIfAbsent(operationId,id->new ArrayList<>()).add(leg);
+            }
+            legIndex.replaceAll((id,rows)->List.copyOf(rows));
             var wallets=mapper.wallets(ids);var walletIds=wallets.stream().map(row->number(row,"id")).toList();
             for(var wallet:wallets)require(scope.contains(number(wallet,"userId")),Gap.WALLET);
             var raw=mapper.raw(ids,walletIds.isEmpty()?List.of(-1L):walletIds);
@@ -155,7 +160,7 @@ public class SupportFundReadService {
                     var componentOps=ops.stream().filter(row->parties(number(row,"id"),partyIndex).stream().anyMatch(component::contains)).toList();
                     var componentRaw=raw.stream().filter(row->component.contains(number(row,"newUserId"))
                         ||row.get("oldUserId")!=null && component.contains(number(row,"oldUserId"))).toList();
-                    validateRaw(component,wallets,componentRaw,componentOps,partyIndex,legs,birth,tail);
+                    validateRaw(component,wallets,componentRaw,componentOps,partyIndex,legIndex,birth,tail);
                     SupportFundDirectReferralEvidence.ValidatedReversals directReversals;
                     try {directReversals=directEvidence.validate(component,directInput);}
                     catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
@@ -166,7 +171,7 @@ public class SupportFundReadService {
                     var devicePhases=new HashSet<String>();var stakingPhases=new HashSet<String>();var linkedEarnings=new HashSet<String>();
                     var commissionPhases=new HashSet<String>();var directPhases=new HashSet<String>();
                     for(var row:componentOps) {
-                        long id=number(row,"id");var parties=parties(id,partyIndex);var opLegs=legs(id,legs);
+                        long id=number(row,"id");var parties=parties(id,partyIndex);var opLegs=legs(id,legIndex);
                         var events=codec.decodeReceipt(row,parties,opLegs);var source=codec.read(text(row,"sourceSnapshotJson"));
                         var proof=codec.read(text(row,"sourceProofJson"));
                         if("AUTH_FUND_BIRTH".equals(row.get("businessType"))) {
@@ -309,13 +314,14 @@ public class SupportFundReadService {
         return Map.copyOf(precisions);
     }
     private void validateRaw(Set<Long> component,List<Map<String,Object>> wallets,List<Map<String,Object>> raw,
-            List<Map<String,Object>> ops,Map<Long,List<Long>> partyIndex,List<Map<String,Object>> allLegs,
+            List<Map<String,Object>> ops,Map<Long,List<Long>> partyIndex,Map<Long,List<Map<String,Object>>> legIndex,
             SupportFundBirthReadFacade.Evidence births,Map<Long,Cash> tails) {
         var covered=new HashSet<String>();
         for(var op:ops) {
             var parties=parties(number(op,"id"),partyIndex);require(component.containsAll(parties),Gap.RAW_BINDING);
-            codec.decodeReceipt(op,parties,legs(number(op,"id"),allLegs));
-            for(var leg:legs(number(op,"id"),allLegs))require(covered.add(legKey(leg)),Gap.RAW_BINDING);
+            var opLegs=legs(number(op,"id"),legIndex);
+            codec.decodeReceipt(op,parties,opLegs);
+            for(var leg:opLegs)require(covered.add(legKey(leg)),Gap.RAW_BINDING);
         }
         for(long customer:component) {
             var current=wallets.stream().filter(row->number(row,"userId")==customer).toList();require(current.size()==1,Gap.WALLET);
@@ -337,7 +343,7 @@ public class SupportFundReadService {
                     require("NEW_ZERO".equals(row.get("observation")) && next.version()==0 && zero(next),Gap.AUTH_BIRTH);
                     for(String field:List.of("Id","UserId","UsdtAvailable","NexAvailable","PendingWithdraw","CregisRiskHeld","Version","Sandbox","IsDeleted","CreatedAt"))
                         require(row.get("old"+field)==null,Gap.AUTH_BIRTH);
-                    authBirth(customer,incarnation,row,ops,partyIndex,allLegs,births);
+                    authBirth(customer,incarnation,row,ops,partyIndex,legIndex,births);
                 }else require("CHANGE".equals(row.get("observation")) && previous.equals(SupportFundJournalBindingService.tuple(row,"old"))
                     && !previous.equals(next),Gap.RAW_HISTORY);
                 previous=next;
@@ -347,7 +353,7 @@ public class SupportFundReadService {
         require(covered.isEmpty(),Gap.RAW_BINDING);
     }
     private void authBirth(long customer,String incarnation,Map<String,Object> raw,List<Map<String,Object>> ops,
-            Map<Long,List<Long>> partyIndex,List<Map<String,Object>> allLegs,SupportFundBirthReadFacade.Evidence births) {
+            Map<Long,List<Long>> partyIndex,Map<Long,List<Map<String,Object>>> legIndex,SupportFundBirthReadFacade.Evidence births) {
         var candidates=ops.stream().filter(op->"AUTH_FUND_BIRTH".equals(op.get("businessType"))
             &&parties(number(op,"id"),partyIndex).contains(customer)).toList();require(candidates.size()==1,Gap.AUTH_BIRTH);
         var op=candidates.get(0);var source=codec.read(text(op,"sourceSnapshotJson"));var proof=codec.read(text(op,"sourceProofJson"));
@@ -369,7 +375,7 @@ public class SupportFundReadService {
         }
         require(incarnation.equals(source.path("wallet").path("incarnation").asText())
             &&number(source.path("wallet").path("revision"),Gap.AUTH_BIRTH)==0,Gap.AUTH_BIRTH);
-        var legs=legs(number(op,"id"),allLegs);require(legs.size()==1 && incarnation.equals(legs.get(0).get("incarnation")) && number(legs.get(0),"revision")==0,Gap.AUTH_BIRTH);
+        var legs=legs(number(op,"id"),legIndex);require(legs.size()==1 && incarnation.equals(legs.get(0).get("incarnation")) && number(legs.get(0),"revision")==0,Gap.AUTH_BIRTH);
         var identities=births.customers().stream().filter(row->number(row,"id")==customer).toList();require(identities.size()==1,Gap.AUTH_BIRTH);
         var identity=identities.get(0);
         require(flag(identity.get("sandbox"))==0 && flag(identity.get("isDeleted"))==0 && "ACTIVE".equals(identity.get("status"))
@@ -656,7 +662,7 @@ public class SupportFundReadService {
         index.replaceAll((id,parties)->List.copyOf(parties));return Map.copyOf(index);
     }
     private static List<Long> parties(long id,Map<Long,List<Long>> index) {return index.getOrDefault(id,List.of());}
-    private static List<Map<String,Object>> legs(long id,List<Map<String,Object>> rows) {return rows.stream().filter(row->number(row,"operationId")==id).toList();}
+    private static List<Map<String,Object>> legs(long id,Map<Long,List<Map<String,Object>>> index) {return index.getOrDefault(id,List.of());}
     private static String legKey(Map<String,Object> row) {return text(row,"incarnation")+":"+number(row,"revision");}
     private static Cash cash(SupportFundJournalBindingService.Tuple t) {return new Cash(t.usdt(),t.nex(),t.pending(),t.risk());}
     private static boolean zero(SupportFundJournalBindingService.Tuple t) {return t.usdt().signum()==0 &&t.nex().signum()==0 &&t.pending().signum()==0 &&t.risk().signum()==0;}
