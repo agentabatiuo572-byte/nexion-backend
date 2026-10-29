@@ -24,6 +24,22 @@ class TrustDocumentsMigrationContractTest {
         assertThat(migrations.indexOf(MIGRATION))
                 .isGreaterThan(migrations.indexOf("20261029_h4_retire_legacy_events.sql"));
         assertThat(migrations).containsOnlyOnce("20261029_l6_trust_document_routes.sql");
+        assertThat(migrations).containsOnlyOnce("20261029_i4_trust_centre_initial_copy.sql");
+    }
+
+    @Test
+    void initialCopyOnlyUpgradesUntouchedMigrationSnapshots() throws Exception {
+        String sql = Files.readString(Path.of("scripts/migrations", "20261029_i4_trust_centre_initial_copy.sql"), StandardCharsets.UTF_8);
+        assertThat(sql).contains(
+                "AND section_row.last_operator = 'migration'",
+                "AND version_row.last_operator = 'migration'",
+                "\"value\":\"Jordan Nicholas Parkhurst\"",
+                "JSON_MERGE_PRESERVE(version_row.fields_json, CAST(@narrative_additions AS JSON))");
+        for (String family : List.of("leader1Role", "hostingContent", "warrantyContent", "securityContent")) {
+            for (String locale : List.of("zh", "vi", "en")) assertThat(sql).contains("\"key\":\"" + family + "." + locale + "\"");
+        }
+        // Published non-link fields must carry text, and no prior roles are claimed for the executive.
+        assertThat(sql).doesNotContain("\"value\":\"\"").doesNotContain("leader1Previous");
     }
 
     @Test

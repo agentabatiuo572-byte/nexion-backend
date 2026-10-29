@@ -363,6 +363,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261029_h4_retire_legacy_events.sql")
   (Join-Path $root "scripts\migrations\20261029_trust_documents.sql")
   (Join-Path $root "scripts\migrations\20261029_l6_trust_document_routes.sql")
+  (Join-Path $root "scripts\migrations\20261029_i4_trust_centre_initial_copy.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
