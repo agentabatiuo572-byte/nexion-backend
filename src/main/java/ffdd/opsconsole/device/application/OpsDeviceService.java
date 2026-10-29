@@ -149,14 +149,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             "payment_failed", "expired", "provisioning_failed", "chargeback");
     private static final Set<String> ORDER_STOCK_RELEASE_STATES = Set.of("payment_failed", "expired", "cancelled");
     private static final Set<String> ORDER_REFUNDABLE_STATES = Set.of(
-            "paid", "provisioning", "provisioning_failed", "activated");
+            "paid", "provisioning", "provisioning_failed", "activated", "inventory");
     private static final Set<String> ORDER_MAIN_STATES = Set.of("placed", "paid", "provisioning", "activated");
     private static final Map<String, Set<String>> ORDER_TRANSITIONS = Map.of(
             "placed", Set.of("paid", "payment_failed", "expired", "cancelled"),
             "paid", Set.of("provisioning", "refunded", "chargeback"),
             "provisioning", Set.of("activated", "provisioning_failed", "refunded"),
             "provisioning_failed", Set.of("refunded"),
-            "activated", Set.of("refunded"));
+            "activated", Set.of("refunded"),
+            "inventory", Set.of("refunded"));
     private static final Set<String> TRADEIN_OPERATIONS = Set.of("recycle", "replace", "deactivate");
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
     /** Server-side release configuration; the E6 operator API cannot change this allow-list. */

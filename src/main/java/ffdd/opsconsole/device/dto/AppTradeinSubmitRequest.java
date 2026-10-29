@@ -7,7 +7,12 @@ public record AppTradeinSubmitRequest(
         Long targetProductId,
         String targetProductNo,
         BigDecimal expectedPayableUsdt,
-        BigDecimal expectedDiscountUsdt) {
+        BigDecimal expectedDiscountUsdt,
+        Long expectedSourceVersion) {
+    public AppTradeinSubmitRequest(Long sourceDeviceId, Long targetProductId, String targetProductNo,
+                                   BigDecimal expectedPayableUsdt, BigDecimal expectedDiscountUsdt) {
+        this(sourceDeviceId, targetProductId, targetProductNo, expectedPayableUsdt, expectedDiscountUsdt, 0L);
+    }
     public AppTradeinSubmitRequest(Long sourceDeviceId, Long targetProductId) {
         this(sourceDeviceId, targetProductId, null, null, null);
     }

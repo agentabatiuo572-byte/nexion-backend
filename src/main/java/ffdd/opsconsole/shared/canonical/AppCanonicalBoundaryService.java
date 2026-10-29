@@ -892,6 +892,8 @@ public class AppCanonicalBoundaryService {
         if (orderStatus.contains("PAYMENT_FAILED") || paymentStatus.contains("FAIL")) return "payment_failed";
         if (orderStatus.contains("EXPIRE") || paymentStatus.contains("EXPIRE")) return "expired";
         if (orderStatus.contains("CANCEL") || paymentStatus.contains("CANCEL")) return "cancelled";
+        if ("PAID".equals(paymentStatus) && "COMPLETED".equals(orderStatus)
+                && "INVENTORY".equals(activationStatus)) return "inventory";
         if ("COMPLETED".equals(orderStatus) || "ACTIVATED".equals(activationStatus)) return "activated";
         if ("PAID".equals(paymentStatus) && "WAITING_PROVISIONING".equals(activationStatus)) return "paid";
         if (activationStatus.contains("PROVISION") || orderStatus.contains("PROVISION")) return "provisioning";

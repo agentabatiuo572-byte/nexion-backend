@@ -3231,6 +3231,21 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void inventoryOrderIsRefundableAndCannotBeProvisionedAgain() {
+        catalogRepository.order = order("OD-1", "inventory");
+        assertThat(service.order("OD-1").getData().refundAllowed()).isTrue();
+        var reprovision = service.updateOrderState("OD-1", "inventory-no-reprovision",
+                new DeviceOrderStateRequest("provisioning", "already delivered to inventory", "superadmin"));
+        assertThat(reprovision.getCode()).isNotZero();
+        var refunded = service.replay(
+                new AuditReplayCommand("E", "e4_order_refund", Map.of("orderNo", "OD-1")),
+                new AuditReplayContext("superadmin", "refund inventory purchase", "inventory-refund"));
+        assertThat(refunded.getCode()).isZero();
+        assertThat(catalogRepository.order.state()).isEqualTo("refunded");
+        assertThat(refundSettlementFacade.entries).hasSize(1);
+    }
+
+    @Test
     void e4OrderDetailOnlyAdvertisesExecutableRefundChannel() {
         catalogRepository.order = order("OD-1", "paid");
 

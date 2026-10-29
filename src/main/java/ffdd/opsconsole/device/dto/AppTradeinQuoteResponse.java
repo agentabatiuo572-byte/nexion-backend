@@ -19,5 +19,7 @@ public record AppTradeinQuoteResponse(
         BigDecimal walletShortfallUsdt,
         boolean sufficientFunds,
         boolean discountToWallet,
-        String pricingSource) {
+        String pricingSource,
+        Long sourceRowVersion,
+        String targetDeviceStatus) {
 }

@@ -117,7 +117,8 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
                 StandardCharsets.UTF_8);
 
         assertThat(mapper).contains(
-                "COALESCE(ud.activated_at, ta.completed_at) AS activatedAt",
+                "CASE WHEN o.activation_status='INVENTORY' THEN NULL",
+                "ELSE COALESCE(ud.activated_at, ta.completed_at) END AS activatedAt",
                 "ud.id = COALESCE(ta.target_device_id",
                 "ordinary_device.source_order_no = o.order_no",
                 "ordinary_device.user_id = o.user_id",
