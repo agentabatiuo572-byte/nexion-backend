@@ -142,6 +142,22 @@ class SupportFundReadServiceTest {
     private void readOnly() throws Exception {TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);TransactionSynchronizationManager.setCurrentTransactionIsolationLevel(Connection.TRANSACTION_REPEATABLE_READ);when(connection.isReadOnly()).thenReturn(true);}
     private void writable() throws Exception {TransactionSynchronizationManager.setCurrentTransactionReadOnly(false);when(connection.isReadOnly()).thenReturn(false);}
     private SupportFundsReadFacade.NetSnapshot read(){return reader.read(List.of(1L));}
+    @Test void oneReadReusesItsValidatedReceiptButNextReadValidatesAgain() throws Exception {
+        ready();var expected=read();var observed=spy(binder);
+        var instrumented=new SupportFundReadService(mapper,auth,payments,observed,ds,
+            earningsEvidence,genesis,exchanges,new SupportFundGenesisEvidence(json,binder),new SupportFundExchangeEvidence(binder,json,exchanges),
+            devices,staking,new SupportFundDeviceEvidence(binder,json),new SupportFundStakingEvidence(binder,json,earningsEvidence),
+            commissions,direct,new SupportFundCommissionEvidence(binder,json),new SupportFundDirectReferralEvidence(binder,json));
+        assertEquals(expected,instrumented.read(List.of(1L)));
+        verify(observed,times(1)).decodeReceipt(anyMap(),anyList(),anyList());
+        assertEquals(expected,instrumented.read(List.of(1L)));
+        verify(observed,times(2)).decodeReceipt(anyMap(),anyList(),anyList());
+        operations.get(0).put("receiptSha256","invalid");
+        var changed=instrumented.read(List.of(1L)).customers().get(0);
+        assertEquals(SupportFundsReadFacade.EvidenceState.UNKNOWN,changed.state());
+        assertNull(changed.usdt());assertNull(changed.nex());
+        verify(observed,times(3)).decodeReceipt(anyMap(),anyList(),anyList());
+    }
     @Test void completeLegHistoryIsNotRescannedForEveryReceiptAndUnknownStaysUnknown() {
         for(long id=2;id<=2000;id++){
             var op=new LinkedHashMap<>(operations.get(0));

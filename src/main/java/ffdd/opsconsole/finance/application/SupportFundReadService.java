@@ -160,7 +160,7 @@ public class SupportFundReadService {
                     var componentOps=ops.stream().filter(row->parties(number(row,"id"),partyIndex).stream().anyMatch(component::contains)).toList();
                     var componentRaw=raw.stream().filter(row->component.contains(number(row,"newUserId"))
                         ||row.get("oldUserId")!=null && component.contains(number(row,"oldUserId"))).toList();
-                    validateRaw(component,wallets,componentRaw,componentOps,partyIndex,legIndex,birth,tail);
+                    var decodedReceipts=validateRaw(component,wallets,componentRaw,componentOps,partyIndex,legIndex,birth,tail);
                     SupportFundDirectReferralEvidence.ValidatedReversals directReversals;
                     try {directReversals=directEvidence.validate(component,directInput);}
                     catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
@@ -172,7 +172,7 @@ public class SupportFundReadService {
                     var commissionPhases=new HashSet<String>();var directPhases=new HashSet<String>();
                     for(var row:componentOps) {
                         long id=number(row,"id");var parties=parties(id,partyIndex);var opLegs=legs(id,legIndex);
-                        var events=codec.decodeReceipt(row,parties,opLegs);var source=codec.read(text(row,"sourceSnapshotJson"));
+                        var events=decodedReceipts.get(row);var source=codec.read(text(row,"sourceSnapshotJson"));
                         var proof=codec.read(text(row,"sourceProofJson"));
                         if("AUTH_FUND_BIRTH".equals(row.get("businessType"))) {
                             require(events.isEmpty(),Gap.AUTH_BIRTH);continue;
@@ -313,14 +313,15 @@ public class SupportFundReadService {
         }
         return Map.copyOf(precisions);
     }
-    private void validateRaw(Set<Long> component,List<Map<String,Object>> wallets,List<Map<String,Object>> raw,
+    private Map<Map<String,Object>,List<Event>> validateRaw(Set<Long> component,List<Map<String,Object>> wallets,List<Map<String,Object>> raw,
             List<Map<String,Object>> ops,Map<Long,List<Long>> partyIndex,Map<Long,List<Map<String,Object>>> legIndex,
             SupportFundBirthReadFacade.Evidence births,Map<Long,Cash> tails) {
         var covered=new HashSet<String>();
+        var decoded=new IdentityHashMap<Map<String,Object>,List<Event>>();
         for(var op:ops) {
             var parties=parties(number(op,"id"),partyIndex);require(component.containsAll(parties),Gap.RAW_BINDING);
             var opLegs=legs(number(op,"id"),legIndex);
-            codec.decodeReceipt(op,parties,opLegs);
+            decoded.put(op,codec.decodeReceipt(op,parties,opLegs));
             for(var leg:opLegs)require(covered.add(legKey(leg)),Gap.RAW_BINDING);
         }
         for(long customer:component) {
@@ -351,6 +352,7 @@ public class SupportFundReadService {
             require(tuple.equals(previous),Gap.RAW_HISTORY);tails.put(customer,cash(tuple));
         }
         require(covered.isEmpty(),Gap.RAW_BINDING);
+        return decoded;
     }
     private void authBirth(long customer,String incarnation,Map<String,Object> raw,List<Map<String,Object>> ops,
             Map<Long,List<Long>> partyIndex,Map<Long,List<Map<String,Object>>> legIndex,SupportFundBirthReadFacade.Evidence births) {
