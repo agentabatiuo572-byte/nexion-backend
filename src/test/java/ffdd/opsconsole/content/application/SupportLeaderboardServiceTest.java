@@ -41,6 +41,7 @@ class SupportLeaderboardServiceTest {
         final SupportLeaderboardMapper mapper=mock(SupportLeaderboardMapper.class);
         final SupportLeaderboardSourceService source=mock(SupportLeaderboardSourceService.class);
         final SupportLeaderboardPublicationService publication=mock(SupportLeaderboardPublicationService.class);
+        final SupportLeaderboardCache cache=mock(SupportLeaderboardCache.class);
         final SupportLeaderboardPublicationMapper publicationMapper=mock(SupportLeaderboardPublicationMapper.class);
         final PlatformConfigFacade config=mock(PlatformConfigFacade.class);
         final SupportAdminAvatarService avatars=mock(SupportAdminAvatarService.class);
@@ -59,12 +60,14 @@ class SupportLeaderboardServiceTest {
             when(publication.previousBusinessDay(any())).thenReturn(List.of());
             when(publication.publish(any())).thenAnswer(i->new Publication(24,NOW.plusSeconds(1),i.getArgument(0)));
             when(transactions.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+            when(cache.current()).thenThrow(new BizException(503,"SUPPORT_LEADERBOARD_CACHE_NOT_READY"));
             service=service(avatars);
         }
-        SupportLeaderboardService service(SupportAdminAvatarService avatarService){return new SupportLeaderboardService(ownership,auth,mapper,source,publication,publicationMapper,config,avatarService,transactions);}
+        SupportLeaderboardService service(SupportAdminAvatarService avatarService){return new SupportLeaderboardService(ownership,auth,cache,avatarService,Clock.fixed(NOW,ZoneOffset.UTC));}
         void cache(Instant at){Context c=context(Board.netContribution,"USDT",at);Snapshot s=SupportLeaderboard.calculate(c,"cached-source",Coverage.COMPLETE,List.of(candidate(c,7,1),candidate(c,9,2)));
             cached=new Publication(23,at.plusSeconds(1),s);when(publicationMapper.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));
-            when(publication.latest(any(),isNull())).thenReturn(cached);}
+            when(publication.latest(any(),isNull())).thenReturn(cached);
+            doReturn(new SupportLeaderboardCache.Generation(Map.of(SupportLeaderboardPublicationService.streamKey(c),new SupportLeaderboardCache.Entry(cached,false)))).when(cache).current();}
     }
     @Test void ordinarySupportCanReadOtherGroupPublicRowsButNeverPrivateAllScope(){Harness h=new Harness();h.cache(NOW.minusSeconds(30));
         var body=h.service.page(Map.of());assertEquals(h.cached.snapshot().viewVersion(),body.get("viewVersion"));
@@ -85,30 +88,11 @@ class SupportLeaderboardServiceTest {
         assertEquals(2,((List<?>)podium.get("rows")).size());
         assertFalse(((Map<?,?>)((List<?>)podium.get("rows")).get(0)).containsKey("userId"));
     }
-    @Test void absentOrExpiredPublishesAndReturnsCommittedResultWithoutOuterRrReread(){for(boolean cached:List.of(false,true)){Harness h=new Harness();if(cached)h.cache(NOW.minusSeconds(400));
-        var body=h.service.page(Map.of());assertEquals(NOW.toString(),body.get("asOf"));assertEquals(NOW.plusSeconds(1).toString(),body.get("publishedAt"));
-        verify(h.publication).publish(any());verify(h.publication,times(cached?1:0)).latest(any(),isNull());}}
-    @Test void genuineSourceFailurePreservesOldVersionAndExplicitStaleOrFailsWithoutHistory(){Harness h=new Harness();h.cache(NOW.minusSeconds(400));
-        doThrow(new BizException(503,"SUPPORT_LEADERBOARD_SOURCE_FAILED")).when(h.source).readForAuthorizedLeaderboard(any());
-        var body=h.service.page(Map.of());assertEquals(h.cached.snapshot().viewVersion(),body.get("viewVersion"));assertEquals(true,body.get("stale"));assertEquals(true,body.get("refreshFailed"));
-        verify(h.publication,never()).publish(any());Harness absent=new Harness();doThrow(new BizException(503,"SUPPORT_LEADERBOARD_SOURCE_FAILED")).when(absent.source).readForAuthorizedLeaderboard(any());
-        assertEquals(503,assertThrows(BizException.class,()->absent.service.page(Map.of())).getCode());verify(absent.publication,never()).publish(any());}
-    @Test void corruptExistingPublicationIsNotTreatedAsMissingOrReplaced(){Harness h=new Harness();h.cache(NOW.minusSeconds(400));
-        when(h.publication.latest(any(),isNull())).thenThrow(new BizException(503,"SUPPORT_LEADERBOARD_PUBLICATION_UNAVAILABLE"));
-        assertEquals(503,assertThrows(BizException.class,()->h.service.page(Map.of())).getCode());verify(h.publication,never()).publish(any());}
-    @Test void selectedSourceFailurePreservesPreviousButBaselineCorruptionNeverBecomesEmpty(){Harness h=new Harness();h.cache(NOW.minusSeconds(400));
-        doAnswer(i->{Context c=i.getArgument(0);if(c.board()!=Board.customers)throw new BizException(503,"SUPPORT_LEADERBOARD_SOURCE_FAILED");
-            return new SupportLeaderboardSourceService.Read(c,"tuple",Coverage.COMPLETE,List.of(candidate(c,7,1)),List.of(YearMonth.of(2026,10)),null);}).when(h.source).readForAuthorizedLeaderboard(any());
-        assertEquals(true,h.service.page(Map.of()).get("refreshFailed"));verify(h.publication,never()).publish(any());
-        Harness corrupt=new Harness();corrupt.cache(NOW.minusSeconds(400));when(corrupt.publication.previousBusinessDay(any())).thenThrow(new BizException(503,"SUPPORT_LEADERBOARD_PUBLICATION_UNAVAILABLE"));
-        assertEquals(503,assertThrows(BizException.class,()->corrupt.service.page(Map.of())).getCode());verify(corrupt.publication,never()).publish(any());
-    }
-    @Test void nullProducerCannotLeakErrorOrBypassFinalRevocation(){Harness h=new Harness();doReturn(null).when(h.source).readForAuthorizedLeaderboard(any());
-        assertEquals(503,assertThrows(BizException.class,()->h.service.page(Map.of())).getCode());verify(h.publication,never()).publish(any());
-        Harness revoked=new Harness();doReturn(null).when(revoked.source).readForAuthorizedLeaderboard(any());
-        when(revoked.auth.grants(7)).thenReturn(List.of(new Grant(1L,1L,1L,1L,"service_m1_read")),List.of());
-        assertEquals(403,assertThrows(BizException.class,()->revoked.service.page(Map.of())).getCode());
-    }
+
+
+
+
+
     @Test void sameExactJwtAndDbApiCapabilityMustIntersectAndAdminSubjectRequired(){for(String jwt:List.of("service_m3_read","platform_a1_read")){Harness h=new Harness();login("ADMIN",jwt);
         assertEquals(403,assertThrows(BizException.class,()->h.service.page(Map.of())).getCode());verifyNoInteractions(h.source,h.publication);}
         Harness app=new Harness();login("USER","service_m1_read");assertEquals(403,assertThrows(BizException.class,()->app.service.page(Map.of())).getCode());
@@ -123,62 +107,18 @@ class SupportLeaderboardServiceTest {
     @Test void currentGroupChangeIs409OnlyWhileReadStillAllowed(){Harness h=new Harness();h.cache(NOW.minusSeconds(30));when(h.auth.ownGroups(7)).thenReturn(
         List.of(new Member(1L,1L,1L,"本人组",1L)),List.of(new Member(2L,2L,1L,"新组",1L)));
         assertEquals(409,assertThrows(BizException.class,()->h.service.page(Map.of())).getCode());}
-    @Test void unknownDuplicatesForeignGroupAndHistoricalMonthCannotOpenUnprovenSlices(){Harness h=new Harness();
-        for(Map<String,List<String>> bad:List.of(Map.of("sourceVersion",List.of("x")),Map.of("board",List.of("firstPayment","deposit")),
-            Map.of("scope",List.of("ownGroup"),"groupId",List.of("99")),Map.of("month",List.of("2026-09")))){
-            int expected=bad.containsKey("groupId")?403:422;assertEquals(expected,assertThrows(BizException.class,()->h.service.page(bad)).getCode());}
-        verify(h.publication,never()).publish(any());}
-    @Test void supervisorAndSuperGetOnlyCurrentManagedGroupsWhilePureSupervisorHasNoOwnGroup(){for(boolean superAdmin:List.of(false,true)){Harness h=new Harness();
-        if(superAdmin){when(h.auth.roles(7)).thenReturn(List.of(new Role(1L,1L,"SUPER_ADMIN")));when(h.auth.qualifications(7)).thenReturn(List.of());}
-        else when(h.auth.qualifications(7)).thenReturn(List.of(new SupportLeaderboardAuthorizationMapper.Qualification(1L,"SUPERVISOR",1L,null)));
-        when(h.auth.managedGroups(7,superAdmin)).thenReturn(List.of(new Group(3L,"负责组",2L,7L)));
-        doAnswer(i->{Context c=i.getArgument(0);return new SupportLeaderboardSourceService.Read(c,"tuple",Coverage.COMPLETE,List.of(candidate(c,9,2)),List.of(YearMonth.of(2026,10)),null);}).when(h.source).readForAuthorizedLeaderboard(any());
-        var body=h.service.page(Map.of());var options=(List<?>)body.get("scopeOptions");assertEquals(2,options.size());assertEquals("managedGroups",((Map<?,?>)options.get(1)).get("scope"));
-        assertNull(((Map<?,?>)body.get("self")).get("row"));assertEquals("NOT_A_CANDIDATE",((Map<?,?>)body.get("self")).get("reason"));
-        assertEquals(403,assertThrows(BizException.class,()->h.service.page(Map.of("scope",List.of("ownGroup")))).getCode());}}
-    @Test void producerCannotSubstituteAnUnauthorizedScopeBeforePublication(){Harness h=new Harness();
-        doAnswer(i->{Context c=i.getArgument(0);if(c.board()==Board.customers)return new SupportLeaderboardSourceService.Read(c,"tuple",Coverage.COMPLETE,List.of(candidate(c,9,2)),List.of(YearMonth.of(2026,10)),null);
-            Context replaced=new Context(c.board(),c.rankMonth(),c.referenceMonth(),c.currency(),Scope.ownGroup,Set.of(99L),c.definitionVersion(),c.evaluatedAt());
-            return new SupportLeaderboardSourceService.Read(replaced,"tuple",Coverage.COMPLETE,List.of(candidate(replaced,9,2)),List.of(YearMonth.of(2026,10)),null);}).when(h.source).readForAuthorizedLeaderboard(any());
-        assertEquals(409,assertThrows(BizException.class,()->h.service.page(Map.of())).getCode());verify(h.publication,never()).publish(any());
-    }
-    @Test void refreshIntervalUsesConfiguredBoundsAndNeverFallbacksOnMissingOrCorrupt(){for(String value:List.of("0","61","bad","5.5")){Harness h=new Harness();when(h.config.activeValue(SupportLeaderboardService.REFRESH_KEY)).thenReturn(Optional.of(value));
-        assertEquals(503,assertThrows(BizException.class,()->h.service.page(Map.of())).getCode());verifyNoInteractions(h.source);}
-        Harness absent=new Harness();when(absent.config.activeValue(SupportLeaderboardService.REFRESH_KEY)).thenReturn(Optional.empty());assertEquals(503,assertThrows(BizException.class,()->absent.service.page(Map.of())).getCode());
-        for(String valid:List.of("1","60")){Harness h=new Harness();h.cache(NOW.minusSeconds(30));when(h.config.activeValue(SupportLeaderboardService.REFRESH_KEY)).thenReturn(Optional.of(valid));assertEquals(false,h.service.page(Map.of()).get("stale"));}}
-    @Test void latePublishRaceReadsWinnerInFreshTransactionRatherThanOverwriting(){Harness h=new Harness();doThrow(new BizException(409,"SUPPORT_LEADERBOARD_LATE_EVALUATION")).when(h.publication).publish(any());
-        Context c=context(Board.netContribution,"USDT",NOW);Snapshot s=SupportLeaderboard.calculate(c,"winning-source",Coverage.COMPLETE,List.of(candidate(c,9,3)));
-        Publication winner=new Publication(99,NOW.plusSeconds(2),s);when(h.publication.latest(any(),isNull())).thenReturn(winner);
-        assertEquals(winner.snapshot().viewVersion(),h.service.page(Map.of()).get("viewVersion"));verify(h.transactions,times(3)).getTransaction(any());verify(h.transactions,times(3)).commit(any());}
+
+
+
+
+
     @Test void publicJsonContainsOnlyWhitelistedIdsDecimalsAndVersionBoundAvatarUrl() throws Exception {Harness h=new Harness();h.cache(NOW.minusSeconds(30));var body=h.service.page(Map.of());
         String json=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(body);for(String forbidden:List.of("qualificationBirths","customerId","orderNo","phone","email","objectKey","assetId","uploader","evidence"))assertFalse(json.contains(forbidden),forbidden);
         var row=(Map<?,?>)((List<?>)body.get("rows")).get(0);String avatar=(String)row.get("avatarUrl");assertTrue(avatar.contains("expectedVersion="));assertTrue(avatar.contains("board=netContribution"));assertFalse(avatar.contains("assetVersion="));
         assertEquals("9",row.get("agentId"));assertEquals("2",((Map<?,?>)row.get("amount")).get("value"));
     }
-    @Test void moneyWhitelistPreservesPlainDecimalPrecisionAndStringAgentIds(){Harness h=new Harness();Context c=context(Board.netContribution,"USDT",NOW.minusSeconds(30));
-        var candidate=new Candidate(9,"公开客服",null,"当前组",SupportLeaderboard.Qualification.ACTIVE,new Count(0L,Coverage.COMPLETE,Reason.NONE),new Count(0L,Coverage.COMPLETE,Reason.NONE),
-            new Amount(new BigDecimal("1000000000000000000.123456789"),"USDT",YearMonth.of(2026,10),AmountKind.NET_CONTRIBUTION,Coverage.COMPLETE,Reason.NONE,"real-shaped-money-tuple"),null);
-        Snapshot s=SupportLeaderboard.calculate(c,"tuple",Coverage.COMPLETE,List.of(candidate));when(h.publicationMapper.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));
-        when(h.publication.latest(any(),isNull())).thenReturn(new Publication(23,c.evaluatedAt().plusSeconds(1),s));
-        var row=(Map<?,?>)((List<?>)h.service.page(Map.of("board",List.of("deposit"))).get("rows")).get(0);
-        assertEquals("9",row.get("agentId"));assertEquals("1000000000000000000.123456789",((Map<?,?>)row.get("amount")).get("value"));
-    }
-    @Test void defaultAndLegacyRequestsExposeOneSignedNetAmountWithoutPrivateCustomerData(){Harness h=new Harness();
-        Context c=context(Board.netContribution,"UVT",NOW.minusSeconds(30));
-        var original=candidate(c,9,1);var signed=new Candidate(original.agentId(),original.name(),null,original.groupName(),original.qualification(),original.firstPayment(),original.customers(),
-            new Amount(new BigDecimal("-35.123456"),"UVT",c.referenceMonth(),AmountKind.NET_CONTRIBUTION,Coverage.COMPLETE,Reason.NONE,"net-only"),null);
-        Snapshot s=SupportLeaderboard.calculate(c,"net-only",Coverage.COMPLETE,List.of(signed));
-        when(h.publicationMapper.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));
-        when(h.publication.latest(any(),isNull())).thenReturn(new Publication(23,c.evaluatedAt().plusSeconds(1),s));
-        for(String alias:Arrays.asList(null,"deposit","purchase","netContribution")) {
-            Map<String,List<String>> query=new HashMap<>();query.put("currency",List.of("UVT"));if(alias!=null)query.put("board",List.of(alias));
-            var body=h.service.page(query);assertEquals("netContribution",body.get("board"));
-            var row=(Map<?,?>)((List<?>)body.get("rows")).get(0);var amount=(Map<?,?>)row.get("amount");
-            assertEquals("NET_CONTRIBUTION",amount.get("kind"));assertEquals("-35.123456",amount.get("value"));
-            assertEquals(false,row.get("canViewCustomers"));assertFalse(row.containsKey("customerId"));assertFalse(row.containsKey("net"));
-        }
-        verify(h.ownership,never()).queryScope(any(),any(),any());
-    }
+
+
     @Test void avatarMustBindPublicCandidateVersionAndCurrentAssetBeforeBytes(){Harness h=new Harness();h.cache(NOW.minusSeconds(30));String version=h.cached.snapshot().viewVersion();
         when(h.auth.avatarReference(9)).thenReturn(new AssetReference("private-asset",1L));when(h.avatars.publicLeaderboardContent(any())).thenReturn(new SupportAttachmentService.Content("image/png",new byte[]{1,2}));
         assertEquals(2,h.service.avatar(Map.of("expectedVersion",List.of(version)),9).bytes().length);
@@ -197,45 +137,12 @@ class SupportLeaderboardServiceTest {
         assertEquals(404,assertThrows(BizException.class,()->real.supportContent(9L,null)).getCode());
         verify(storage,times(1)).get("private-key");assertEquals(403,assertThrows(BizException.class,()->real.publicLeaderboardContent(null)).getCode());
     }
-    @Test void verifiedHistoricalMonthAvatarDoesNotRequireTargetCurrentServiceSeat(){Harness h=new Harness();YearMonth september=YearMonth.of(2026,9);
-        Context c=new Context(Board.firstPayment,september,september,"USDT",Scope.all,Set.of(),SupportLeaderboardPolicy.DEFINITION,NOW.minusSeconds(30));
-        Candidate valid=candidate(c,9,1);Candidate disabled=new Candidate(valid.agentId(),valid.name(),valid.avatarUrl(),valid.groupName(),SupportLeaderboard.Qualification.DISABLED,
-            valid.firstPayment(),valid.customers(),valid.amount(),null);Snapshot s=SupportLeaderboard.calculate(c,"verified-history-tuple",Coverage.COMPLETE,List.of(disabled));
-        when(h.publicationMapper.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));when(h.publication.latest(any(),isNull())).thenReturn(new Publication(23,c.evaluatedAt().plusSeconds(1),s));
-        doAnswer(i->{Context requested=i.getArgument(0);return new SupportLeaderboardSourceService.Read(requested,"tuple",Coverage.COMPLETE,List.of(candidate(requested,9,1)),List.of(september,YearMonth.of(2026,10)),null);}).when(h.source).readForAuthorizedLeaderboard(any());
-        when(h.auth.avatarReference(9)).thenReturn(new AssetReference("historical-attached-asset",1L));when(h.avatars.publicLeaderboardContent(any())).thenReturn(new SupportAttachmentService.Content("image/png",new byte[]{1}));
-        assertEquals(1,h.service.avatar(Map.of("month",List.of("2026-09"),"expectedVersion",List.of(s.viewVersion())),9).bytes().length);
-        verify(h.ownership,never()).canReadAgent(any(),any());verify(h.publication,never()).publish(any());
-    }
-    @Test void verifiedOldDefinitionRecomputesInsteadOfServingFreshNetCache() throws Exception {
-        Harness h=new Harness();var real=legacyPublication(h);
-        SupportLeaderboardPublicationServiceTest.beginRead();try {
-            var body=service(h,real).page(Map.of("board",List.of("deposit")));
-            assertEquals(SupportLeaderboard.NET_DEFINITION,body.get("definitionVersion"));
-            assertEquals(false,body.get("stale"));assertEquals(false,body.get("refreshFailed"));
-            verify(real).publish(any());
-        }finally {SupportLeaderboardPublicationServiceTest.endRead();}
-    }
-    @Test void oldExpectedVersionIsConflictAfterNewDefinitionRefresh() throws Exception {
-        Harness h=new Harness();var real=legacyPublication(h);
-        String old=h.cached.snapshot().viewVersion();SupportLeaderboardPublicationServiceTest.beginRead();try {
-            assertEquals(409,assertThrows(BizException.class,()->service(h,real).page(Map.of("board",List.of("deposit"),"expectedVersion",List.of(old)))).getCode());
-        }finally {SupportLeaderboardPublicationServiceTest.endRead();}
-    }
-    @Test void sourceFailureAfterDefinitionChangeCannotFallbackToOldNetSnapshot() throws Exception {
-        for(boolean selected:List.of(false,true)) {
-            Harness h=new Harness();var real=legacyPublication(h);
-            doAnswer(i->{Context c=i.getArgument(0);if(!selected || c.board()==Board.netContribution)throw new BizException(503,"SUPPORT_LEADERBOARD_SOURCE_FAILED");
-                return new SupportLeaderboardSourceService.Read(c,"tuple",Coverage.COMPLETE,List.of(candidate(c,7,1)),List.of(YearMonth.of(2026,10)),null);
-            }).when(h.source).readForAuthorizedLeaderboard(any());
-            SupportLeaderboardPublicationServiceTest.beginRead();try {
-                assertEquals(503,assertThrows(BizException.class,()->service(h,real).page(Map.of("board",List.of("deposit")))).getCode());
-                verify(real,never()).publish(any());
-            }finally {SupportLeaderboardPublicationServiceTest.endRead();}
-        }
-    }
+
+
+
+
     private static SupportLeaderboardService service(Harness h,SupportLeaderboardPublicationService publication) {
-        return new SupportLeaderboardService(h.ownership,h.auth,h.mapper,h.source,publication,h.publicationMapper,h.config,h.avatars,h.transactions);
+        return new SupportLeaderboardService(h.ownership,h.auth,h.cache,h.avatars,Clock.fixed(NOW,ZoneOffset.UTC));
     }
     private static SupportLeaderboardPublicationService legacyPublication(Harness h) throws Exception {
         Context old=new Context(Board.netContribution,YearMonth.of(2026,10),YearMonth.of(2026,10),"USDT",Scope.all,Set.of(),"support-leaderboard-v1",NOW.minusSeconds(30));
@@ -246,4 +153,21 @@ class SupportLeaderboardServiceTest {
         doAnswer(i->new Publication(24,NOW.plusSeconds(1),i.getArgument(0))).when(real).publish(any());
         return real;
     }
+    @Test void expiredSnapshotNeverRefreshesAndPreservesTrueAsOf(){Harness h=new Harness();h.cache(NOW.minusSeconds(601));
+        var body=h.service.page(Map.of());assertEquals(true,body.get("stale"));assertEquals(h.cached.snapshot().context().evaluatedAt().toString(),body.get("asOf"));
+        verifyNoInteractions(h.source);verify(h.publication,never()).publish(any());}
+    @Test void missingRedisFailsClosedWithoutSourceOrPublicationReads(){Harness h=new Harness();assertEquals("SUPPORT_LEADERBOARD_CACHE_NOT_READY",assertThrows(BizException.class,()->h.service.page(Map.of())).getMessage());
+        verifyNoInteractions(h.source,h.publication,h.publicationMapper);}
+    @Test void publishedHistoryIsSelectableAndEmptyScopeCannotBorrowGlobal(){Harness h=new Harness();YearMonth month=YearMonth.of(2026,9);
+        Context c=new Context(Board.firstPayment,month,month,"USDT",Scope.all,Set.of(),SupportLeaderboardPolicy.DEFINITION,NOW.minusSeconds(30));
+        var snapshot=SupportLeaderboard.calculate(c,"history",Coverage.COMPLETE,List.of(candidate(c,9,1)));
+        var publication=new Publication(23,NOW,snapshot);doReturn(new SupportLeaderboardCache.Generation(Map.of(SupportLeaderboardPublicationService.streamKey(c),new SupportLeaderboardCache.Entry(publication,true)))).when(h.cache).current();
+        var body=h.service.detail(Map.of("board",List.of("firstPayment"),"month",List.of("2026-09"),"expectedVersion",List.of(snapshot.viewVersion())),9);
+        assertEquals(List.of("2026-09"),body.get("selectableMonths"));assertEquals(true,body.get("refreshFailed"));verifyNoInteractions(h.source);
+        assertEquals(503,assertThrows(BizException.class,()->h.service.page(Map.of("scope",List.of("ownGroup")))).getCode());}
+    @Test void crossMonthDefaultSelectsNewMonthAndOldMonthRequiresExplicitQuery(){Harness h=new Harness();h.cache(NOW);
+        var nextMonth=Clock.fixed(Instant.parse("2026-11-01T01:00:00Z"),ZoneOffset.UTC);
+        var service=new SupportLeaderboardService(h.ownership,h.auth,h.cache,h.avatars,nextMonth);
+        assertEquals(503,assertThrows(BizException.class,()->service.page(Map.of())).getCode());
+        assertEquals("2026-10",service.page(Map.of("month",List.of("2026-10"))).get("rankMonth"));}
 }

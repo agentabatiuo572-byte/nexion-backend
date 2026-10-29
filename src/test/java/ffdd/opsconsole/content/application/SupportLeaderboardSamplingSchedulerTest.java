@@ -12,7 +12,7 @@ import static org.mockito.Mockito.*;
 class SupportLeaderboardSamplingSchedulerTest {
     @Test void schedulerIsDedicatedBoundedAndDoesNotReplaceSharedTaskScheduler() throws Exception {
         Scheduled schedule=SupportLeaderboardSamplingScheduler.class.getMethod("poll").getAnnotation(Scheduled.class);
-        assertEquals("supportLeaderboardTaskScheduler",schedule.scheduler());assertEquals(30_000,schedule.fixedDelay());assertEquals(30_000,schedule.initialDelay());
+        assertEquals("supportLeaderboardTaskScheduler",schedule.scheduler());assertEquals(30_000,schedule.fixedDelay());assertEquals(0,schedule.initialDelay());
         var configuration=new SupportLeaderboardSamplingSchedulerConfiguration();var scheduler=configuration.supportLeaderboardTaskScheduler();
         assertEquals(1,scheduler.getPoolSize());assertEquals("support-leaderboard-",scheduler.getThreadNamePrefix());
         Bean bean=configuration.getClass().getDeclaredMethod("supportLeaderboardTaskScheduler").getAnnotation(Bean.class);

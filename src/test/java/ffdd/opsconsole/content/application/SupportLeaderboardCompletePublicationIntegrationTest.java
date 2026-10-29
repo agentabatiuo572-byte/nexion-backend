@@ -239,7 +239,20 @@ class SupportLeaderboardCompletePublicationIntegrationTest {
     private MockMvc controller() {
         var source = transactional(new SupportLeaderboardSourceService(inputs, finance, funds));
         var publisher = transactional(new SupportLeaderboardPublicationService(publications));
-        var service = transactional(new SupportLeaderboardService(ownership, authorization, inputs, source, publisher, publications, config, mock(SupportAdminAvatarService.class), transactions));
+        var cache=mock(SupportLeaderboardCache.class);
+        var entries=new HashMap<String,SupportLeaderboardCache.Entry>();
+        var rr=new org.springframework.transaction.support.TransactionTemplate(transactions);
+        rr.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        YearMonth month=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(NOW.toInstant(ZoneOffset.UTC));
+        for(Board board:List.of(Board.netContribution,Board.firstPayment))for(String currency:List.of("USDT","UVT")) {
+            Context context=new Context(board,board==Board.customers?null:month,month,currency,Scope.all,Set.of(),SupportLeaderboardPolicy.DEFINITION,NOW.toInstant(ZoneOffset.UTC));
+            var read=rr.execute(status->source.readForAuthorizedLeaderboard(context));
+            var snapshot=SupportLeaderboard.calculate(read.context(),read.sourceVersion(),read.candidateCoverage(),read.candidates());
+            Publication publication=publisher.publish(snapshot);
+            entries.put(SupportLeaderboardPublicationService.streamKey(context),new SupportLeaderboardCache.Entry(publication,false));
+        }
+        when(cache.current()).thenReturn(new SupportLeaderboardCache.Generation(entries));
+        var service = transactional(new SupportLeaderboardService(ownership, authorization, cache, mock(SupportAdminAvatarService.class), Clock.fixed(NOW.toInstant(ZoneOffset.UTC),ZoneOffset.UTC)));
         var environment = new MockEnvironment();
         environment.setActiveProfiles("dev");
         var guard = new ProductionSupportPathGuard(environment, mock(ffdd.opsconsole.content.mapper.SupportAcceptanceSandboxMapper.class));

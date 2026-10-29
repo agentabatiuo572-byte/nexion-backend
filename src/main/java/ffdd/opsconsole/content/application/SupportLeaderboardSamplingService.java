@@ -6,7 +6,6 @@ import ffdd.opsconsole.content.mapper.SupportLeaderboardMapper;
 import ffdd.opsconsole.content.mapper.SupportLeaderboardPublicationMapper;
 import ffdd.opsconsole.content.mapper.SupportLeaderboardSamplingMapper;
 import ffdd.opsconsole.content.mapper.SupportLeaderboardSamplingMapper.*;
-import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.time.*;
 import java.util.*;
@@ -28,17 +27,17 @@ public class SupportLeaderboardSamplingService {
     private final SupportLeaderboardSourceService source;
     private final SupportLeaderboardPublicationService publications;
     private final SupportLeaderboardPublicationMapper publicationMapper;
-    private final PlatformConfigFacade config;
+    private final SupportLeaderboardCache cache;
     private final ProductionSupportPathGuard production;
     private final TransactionTemplate reads;
     private final AtomicReference<String> afterKey=new AtomicReference<>("");
 
     public SupportLeaderboardSamplingService(SupportLeaderboardSamplingMapper catalogue,SupportLeaderboardMapper clock,
         SupportLeaderboardSourceService source,SupportLeaderboardPublicationService publications,
-        SupportLeaderboardPublicationMapper publicationMapper,PlatformConfigFacade config,
-        ProductionSupportPathGuard production,PlatformTransactionManager transactions) {
+        SupportLeaderboardPublicationMapper publicationMapper,
+        ProductionSupportPathGuard production,PlatformTransactionManager transactions,SupportLeaderboardCache cache) {
         this.catalogue=catalogue;this.clock=clock;this.source=source;this.publications=publications;
-        this.publicationMapper=publicationMapper;this.config=config;this.production=production;
+        this.publicationMapper=publicationMapper;this.production=production;this.cache=cache;
         reads=new TransactionTemplate(transactions);reads.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         reads.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);reads.setReadOnly(true);
     }
@@ -49,9 +48,23 @@ public class SupportLeaderboardSamplingService {
 
     /** A bounded cursor advances on failures too, so one bad stream cannot starve the rest. */
     public synchronized Result sample() {
-        if(!production.productionSupportAutomationAllowed()) return empty("PROFILE_BLOCKED");
+        if(!production.productionSupportAutomationAllowed())return empty("PROFILE_BLOCKED");
+        String token;
+        try {token=cache.tryLock();}catch(RuntimeException failure){warn("CACHE_FAILED",null,failure);return empty("CACHE_FAILED");}
+        if(token==null)return empty("LOCKED");
+        try {
+            Map<String,SupportLeaderboardCache.Entry> entries=new HashMap<>();
+            try {entries.putAll(cache.current().entries());}
+            catch(BizException failure){if(!Set.of("SUPPORT_LEADERBOARD_CACHE_NOT_READY","SUPPORT_LEADERBOARD_CACHE_INVALID").contains(failure.getMessage()))throw failure;}
+            Result result=sampleLocked(entries);
+            if(!entries.isEmpty() && !cache.publish(token,new SupportLeaderboardCache.Generation(entries)))return empty("LEASE_LOST");
+            return result;
+        }catch(RuntimeException failure){warn("CACHE_FAILED",null,failure);return empty("CACHE_FAILED");}
+        finally {try {cache.release(token);}catch(RuntimeException failure){warn("RELEASE_FAILED",null,failure);}}
+    }
+    private Result sampleLocked(Map<String,SupportLeaderboardCache.Entry> entries) {
         final Plan plan;
-        try {plan=reads.execute(status->{int interval=SupportLeaderboardPolicy.refreshMinutes(config);
+        try {plan=reads.execute(status->{int interval=SupportLeaderboardPolicy.REFRESH_MINUTES;
             Instant now=now();return new Plan(now,interval,contexts(now));});}
         catch(RuntimeException failure){warn("PLAN_FAILED",null,failure);return empty("PLAN_FAILED");}
         Objects.requireNonNull(plan);
@@ -62,13 +75,8 @@ public class SupportLeaderboardSamplingService {
         for(String key:window) {
             Context context=plan.contexts().get(key);
             try {
-                // Decode before trusting freshness: corrupt latest is never an absent stream or a safe hint.
-                Boolean expired=reads.execute(status->{
-                    if(publicationMapper.latest(key)==null)return true;
-                    Publication previous=publications.latest(context,null);
-                    return previous==null || !plan.now().isBefore(previous.snapshot().context().evaluatedAt().plusSeconds(plan.interval()*60L));
-                });
-                if(Boolean.TRUE.equals(expired))due.add(context);
+                var previous=entries.get(key);
+                if(previous==null || !plan.now().isBefore(previous.publication().snapshot().context().evaluatedAt().plusSeconds(plan.interval()*60L)))due.add(context);
             }catch(RuntimeException failure){failed++;warn("LATEST_FAILED",key,failure);}
         }
         if(due.isEmpty())return new Result("IDLE",plan.contexts().size(),window.size(),0,0,0,failed,deferred,0);
@@ -88,6 +96,7 @@ public class SupportLeaderboardSamplingService {
                 return new Prepared(List.copyOf(snapshots),retired);
             });
         }catch(RuntimeException failure){warn("SOURCE_BATCH_FAILED",null,failure);
+            for(Context context:due)markFailed(entries,SupportLeaderboardPublicationService.streamKey(context));
             return new Result("SOURCE_FAILED",plan.contexts().size(),window.size(),due.size(),0,0,failed+due.size(),deferred,0);}
         Objects.requireNonNull(prepared);
         int committed=0,superseded=0;
@@ -96,19 +105,34 @@ public class SupportLeaderboardSamplingService {
             try {
                 List<Publication> baseline=reads.execute(status->publications.previousBusinessDay(snapshot.context()));
                 Snapshot enriched=SupportLeaderboard.withMovement(snapshot,Objects.requireNonNull(baseline));
-                publications.publish(enriched); // This injected bean returns after its own REQUIRES_NEW commit.
+                Publication committedPublication=publications.publish(enriched); // Returns after its REQUIRES_NEW commit.
+                entries.put(key,new SupportLeaderboardCache.Entry(committedPublication,false));
                 committed++;
             }catch(BizException failure){
                 if(failure.getCode()==409 && "SUPPORT_LEADERBOARD_LATE_EVALUATION".equals(failure.getMessage()))superseded++;
-                else {failed++;warn("PUBLICATION_FAILED",key,failure);}
-            }catch(RuntimeException failure){failed++;warn("PUBLICATION_FAILED",key,failure);}
+                else {failed++;markFailed(entries,key);warn("PUBLICATION_FAILED",key,failure);}
+            }catch(RuntimeException failure){failed++;markFailed(entries,key);warn("PUBLICATION_FAILED",key,failure);}
         }
         return new Result("SAMPLED",plan.contexts().size(),window.size(),due.size(),committed,superseded,failed,deferred,prepared.retired());
     }
 
+    private static void markFailed(Map<String,SupportLeaderboardCache.Entry> entries,String key){
+        entries.computeIfPresent(key,(k,old)->new SupportLeaderboardCache.Entry(old.publication(),true));
+    }
     private Instant now(){LocalDateTime value=clock.nowUtc();if(value==null)throw SupportLeaderboardPolicy.unavailable();return value.toInstant(ZoneOffset.UTC);}
     private NavigableMap<String,Context> contexts(Instant at){LocalDateTime cutoff=LocalDateTime.ofInstant(at,ZoneOffset.UTC);
-        return catalogue(at,checked(catalogue.viewers(cutoff)),checked(catalogue.groups(cutoff)),checked(catalogue.members(cutoff)));}
+        NavigableMap<String,Context> current=catalogue(at,checked(catalogue.viewers(cutoff)),checked(catalogue.groups(cutoff)),checked(catalogue.members(cutoff)));
+        NavigableMap<String,Context> result=new TreeMap<>(current);
+        YearMonth nowMonth=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(at);
+        for(String saved:checked(publicationMapper.publishedMonths(SupportLeaderboardPolicy.DEFINITION))) {
+            YearMonth month=YearMonth.parse(saved);if(!month.isBefore(nowMonth))continue;
+            for(Context c:current.values())if(c.board()!=Board.customers) {
+                Context historical=new Context(c.board(),month,month,c.currency(),c.scope(),c.approvedGroupIds(),c.definitionVersion(),at);
+                result.put(SupportLeaderboardPublicationService.streamKey(historical),historical);
+            }
+        }
+        return Collections.unmodifiableNavigableMap(result);
+    }
     private static <T> List<T> checked(List<T> values){if(values==null || values.stream().anyMatch(Objects::isNull))throw SupportLeaderboardPolicy.unavailable();return values;}
 
     static NavigableMap<String,Context> catalogue(Instant at,List<Viewer> viewers,List<SamplingGroup> groups,List<SamplingMember> members) {
