@@ -31,13 +31,31 @@ class PublishedContentRevisionRegressionTest {
                 .when(config).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
-    @ParameterizedTest @ValueSource(strings = {"developer", "rank"})
+    @ParameterizedTest @ValueSource(strings = {"developer"})
     void firstDocumentIsEditableWithoutPublishingAnything(String kind) {
-        var view = kind.equals("developer") ? developer.adminView() : rank.adminView();
-        assertThat(view.getData()).containsEntry("status", "UNPUBLISHED").containsEntry("version", "")
+        assertThat(admin(kind).getData()).containsEntry("status", "UNPUBLISHED").containsEntry("version", "")
                 .containsKey("revision").containsKey("locales");
         assertThat(read(kind).getCode()).isEqualTo(503);
         assertThat(stored).isEmpty();
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"rank", "how"})
+    void withoutAPublicationTheShippedDefaultIsServedAndEditableWithoutWritingAnything(String kind) {
+        Map<String, Object> admin = admin(kind).getData();
+        assertThat(admin).containsEntry("defaultContent", true).containsEntry("version", "default-2026.10.29");
+        assertThat(((Number) admin.get("revision")).longValue()).isZero();
+        assertThat(read(kind).getCode()).isZero();
+        assertThat(read(kind).getData()).containsEntry("version", "default-2026.10.29");
+        assertThat(stored).isEmpty();
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"rank", "how"})
+    void aFirstDraftKeepsTheShippedDefaultPublicAndSaysSo(String kind) {
+        assertThat(write(kind, "draft-1", "DRAFT", 0, "Draft").getCode()).isZero();
+
+        assertThat(admin(kind).getData()).containsEntry("status", "DRAFT")
+                .containsEntry("hasPublishedVersion", true).containsEntry("publicSource", "DEFAULT");
+        assertThat(read(kind).getData()).containsEntry("version", "default-2026.10.29");
     }
 
     @ParameterizedTest @ValueSource(strings = {"developer", "rank", "how"})

@@ -63,12 +63,15 @@ class PublishedRankHowPolicyServiceTest {
     }
 
     @Test
-    void missingPolicyFailsClosedInsteadOfFallingBackToLocalNarrative() {
+    void missingPolicyServesTheShippedDefaultUntilOperationsPublish() {
         PlatformConfigFacade config = mock(PlatformConfigFacade.class);
         when(config.activeValue("team.rank_how.published")).thenReturn(Optional.empty());
-        var result = service(config, new MockEnvironment()).publicPolicy("en");
-        assertThat(result.getCode()).isEqualTo(503);
-        assertThat(result.getMessage()).isEqualTo("RANK_HOW_POLICY_UNAVAILABLE");
+        var result = service(config, new MockEnvironment()).publicPolicy("vi");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("version", "default-2026.10.29").containsEntry("locale", "vi");
+        assertThat(result.getData().get("sections")).asList().hasSize(29);
+        var admin = service(config, new MockEnvironment()).adminView().getData();
+        assertThat(admin).containsEntry("status", "PUBLISHED").containsEntry("revision", 0).containsEntry("defaultContent", true);
     }
 
     @Test
