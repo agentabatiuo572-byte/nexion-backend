@@ -242,6 +242,23 @@ public final class SupportLeaderboard {
             && snapshot.viewVersion().equals(viewVersion(snapshot.context(),snapshot.sourceVersion(),
                 snapshot.candidateCoverage(),snapshot.rows(),snapshot.qualificationBirths()));
     }
+    /** Lightweight cache integrity: derived flags excluded from the legacy digest are checked explicitly. */
+    public static boolean validCachedSnapshot(Snapshot snapshot) {
+        if(snapshot==null || snapshot.state()==null || snapshot.candidateCoverage()==null
+            || snapshot.candidateCoverage()==Coverage.FAILED || snapshot.comparisonKey()==null
+            || !snapshot.comparisonKey().matches("[0-9a-f]{64}"))return false;
+        Set<Long> ids=new HashSet<>();boolean complete=snapshot.candidateCoverage()==Coverage.COMPLETE;
+        for(Row row:snapshot.rows()) {
+            if(row==null || !ids.add(row.agentId()) || row.qualification()==null || row.movement()==null
+                || row.movement().kind()==null || row.movement().reason()==null)return false;
+            Coverage metric=snapshot.context().board()==Board.firstPayment?row.firstPayment().coverage():
+                snapshot.context().board()==Board.customers?row.customers().coverage():row.amount().coverage();
+            if(row.rankMetricCoverage()!=metric)return false;
+            complete &= metric==Coverage.COMPLETE;
+        }
+        return snapshot.state()==(complete?State.COMPLETE:State.PROVISIONAL)
+            && snapshot.comparisonKey().equals(hash(comparisonParts(snapshot.context(),ids))) && matchesSnapshotVersion(snapshot);
+    }
     private static void requireExpected(Snapshot snapshot, String expectedVersion, boolean required) {
         if (required && expectedVersion == null) throw new BizException(422, "SUPPORT_LEADERBOARD_VERSION_REQUIRED");
         if (expectedVersion != null && !validVersion(expectedVersion)) throw invalid();

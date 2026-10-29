@@ -57,6 +57,11 @@ public interface SupportLeaderboardPublicationMapper {
     @Options(useCache = false)
     List<Stored> previousDay(Map<String,Object> identity);
 
+    /** Only months with auditable committed publications are admitted to historical sampling. */
+    @Select("SELECT DISTINCT p.rank_month FROM nx_support_leaderboard_latest l JOIN nx_support_leaderboard_publication p ON p.id=l.publication_id WHERE p.definition_version=#{definition} AND p.rank_month IS NOT NULL ORDER BY p.rank_month")
+    @Options(useCache = false)
+    List<String> publishedMonths(@Param("definition") String definition);
+
     record Stored(long id, String streamKey, String board, String rankMonth, String referenceMonth,
                   String currency, String rankCurrency, String scope, String groupsKey, String definitionVersion,
                   String sourceVersion, String viewVersion, String comparisonKey, LocalDateTime evaluatedAt,

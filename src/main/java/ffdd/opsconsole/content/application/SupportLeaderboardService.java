@@ -7,9 +7,6 @@ import ffdd.opsconsole.content.dto.SupportLeaderboardQuery.Normalized;
 import ffdd.opsconsole.content.mapper.SupportLeaderboardAuthorizationMapper;
 import ffdd.opsconsole.content.mapper.SupportLeaderboardAuthorizationMapper.*;
 import ffdd.opsconsole.content.mapper.SupportLeaderboardAuthorizationMapper.Qualification;
-import ffdd.opsconsole.content.mapper.SupportLeaderboardMapper;
-import ffdd.opsconsole.content.mapper.SupportLeaderboardPublicationMapper;
-import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -18,10 +15,7 @@ import java.util.*;
 import org.springframework.dao.DataAccessException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.*;
-import org.springframework.transaction.support.TransactionTemplate;
 
 /** Public aggregate projection, separate from all existing private object scopes. */
 @Service
@@ -30,22 +24,13 @@ public class SupportLeaderboardService {
     private static final String DEFINITION=SupportLeaderboardPolicy.DEFINITION;
     private final SupportOwnershipService ownership;
     private final SupportLeaderboardAuthorizationMapper authorization;
-    private final SupportLeaderboardMapper sourceMapper;
-    private final SupportLeaderboardSourceService source;
-    private final SupportLeaderboardPublicationService publications;
-    private final SupportLeaderboardPublicationMapper publicationMapper;
-    private final PlatformConfigFacade config;
+    private final SupportLeaderboardCache cache;
     private final SupportAdminAvatarService avatars;
-    private final TransactionTemplate freshRead;
+    private final Clock clock;
 
     public SupportLeaderboardService(SupportOwnershipService ownership,SupportLeaderboardAuthorizationMapper authorization,
-        SupportLeaderboardMapper sourceMapper,SupportLeaderboardSourceService source,SupportLeaderboardPublicationService publications,
-        SupportLeaderboardPublicationMapper publicationMapper,PlatformConfigFacade config,SupportAdminAvatarService avatars,
-        PlatformTransactionManager transactions) {
-        this.ownership=ownership;this.authorization=authorization;this.sourceMapper=sourceMapper;this.source=source;
-        this.publications=publications;this.publicationMapper=publicationMapper;this.config=config;this.avatars=avatars;
-        freshRead=new TransactionTemplate(transactions);freshRead.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        freshRead.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);freshRead.setReadOnly(true);
+        SupportLeaderboardCache cache,SupportAdminAvatarService avatars,Clock clock) {
+        this.ownership=ownership;this.authorization=authorization;this.cache=cache;this.avatars=avatars;this.clock=clock;
     }
     @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> page(Map<String,List<String>> raw) { return execute(raw,null); }
@@ -105,53 +90,29 @@ public class SupportLeaderboardService {
     private record Resolved(Normalized query,Publication publication,List<YearMonth> months,Instant now,int interval,boolean refreshFailed) { }
     private Resolved resolve(Map<String,List<String>> raw,Authorization access) {
         SupportLeaderboardQuery query=SupportLeaderboardQuery.fromParameters(raw);
-        LocalDateTime databaseNow=sourceMapper.nowUtc();if(databaseNow==null)throw unavailable();
-        Instant now=databaseNow.toInstant(ZoneOffset.UTC);int interval=refreshMinutes();
-        // Structural validation before source access. Actual selectable-month policy is checked below.
+        Instant now=clock.instant();
         YearMonth proposed=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(now);
-        if(query.month()!=null) try {proposed=YearMonth.parse(query.month());}catch(DateTimeException ex){throw new BizException(422,"SUPPORT_LEADERBOARD_QUERY_INVALID");}
+        if(query.month()!=null)try {proposed=YearMonth.parse(query.month());}
+        catch(DateTimeException ex){throw new BizException(422,"SUPPORT_LEADERBOARD_QUERY_INVALID");}
         Normalized preliminary=query.normalize(now,Set.of(proposed),SupportAnalyticsPrivateQueryService.CURRENCIES,"USDT",access.scopes());
-        Context requested=context(preliminary,access,now);
-        Publication previous=null;
-        if(publicationMapper.latest(SupportLeaderboardPublicationService.streamKey(requested))!=null)
-            previous=publications.latest(requested,null); // Corruption is 503, never treated as an absent version.
-        final SupportLeaderboardSourceService.Read preflight;
-        // A caught source failure must not mark the response transaction rollback-only.
-        try {preflight=freshRead.execute(status->source.readForAuthorizedLeaderboard(new Context(Board.customers,null,
-            ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(now),"USDT",Scope.all,Set.of(),DEFINITION,now)));}
-        catch(BizException ex) {
-            if(ex.getCode()!=503 || previous==null)throw ex;
-            return new Resolved(preliminary,previous,previous.snapshot().context().rankMonth()==null?List.of():List.of(previous.snapshot().context().rankMonth()),now,interval,true);
+        Context selected=context(preliminary,access,now);
+        SupportLeaderboardCache.Generation generation=cache.current();
+        List<YearMonth> months=generation.months(selected);
+        // Only a published month is selectable. A missing current stream is warming, never an invented empty board.
+        if(preliminary.rankMonth()!=null && !months.contains(preliminary.rankMonth())) {
+            if(!preliminary.rankMonth().equals(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(now)))
+                throw new BizException(422,"SUPPORT_LEADERBOARD_MONTH_UNAVAILABLE");
+            throw new BizException(503,"SUPPORT_LEADERBOARD_CACHE_NOT_READY");
         }
-        Normalized normalized=query.normalize(now,new HashSet<>(preflight.selectableMonths()),SupportAnalyticsPrivateQueryService.CURRENCIES,"USDT",access.scopes());
-        Context selected=context(normalized,access,now);
-        if(previous!=null && !expired(previous,now,interval))return new Resolved(normalized,previous,preflight.selectableMonths(),now,interval,false);
-        try {
-            SupportLeaderboardSourceService.Read read=freshRead.execute(status->source.readForAuthorizedLeaderboard(selected));
-            if(!SupportLeaderboardPublicationService.streamKey(selected).equals(SupportLeaderboardPublicationService.streamKey(read.context()))
-                || !selected.definitionVersion().equals(read.context().definitionVersion()))throw new BizException(409,"SUPPORT_LEADERBOARD_SCOPE_CHANGED");
-            Snapshot calculated=SupportLeaderboard.calculate(read.context(),read.sourceVersion(),read.candidateCoverage(),read.candidates());
-            Snapshot enriched=SupportLeaderboard.withMovement(calculated,publications.previousBusinessDay(read.context()));
-            reauthorize(access);
-            Publication committed=publications.publish(enriched);
-            // REQUIRES_NEW has committed before returning; an existing outer RR view cannot reread it.
-            return new Resolved(normalized,committed,read.selectableMonths(),now,interval,false);
-        } catch(BizException ex) {
-            if(ex.getCode()==409 && "SUPPORT_LEADERBOARD_LATE_EVALUATION".equals(ex.getMessage())) {
-                Publication winner=freshRead.execute(status->publications.latest(selected,null));
-                if(winner==null)throw unavailable(); return new Resolved(normalized,winner,preflight.selectableMonths(),now,interval,false);
-            }
-            if(ex.getCode()==503 && "SUPPORT_LEADERBOARD_SOURCE_FAILED".equals(ex.getMessage()) && previous!=null)
-                return new Resolved(normalized,previous,preflight.selectableMonths(),now,interval,true);
-            throw ex;
-        }
+        var entry=generation.entries().get(SupportLeaderboardPublicationService.streamKey(selected));
+        if(entry==null)throw new BizException(503,"SUPPORT_LEADERBOARD_CACHE_NOT_READY");
+        Publication publication=entry.publication();
+        if(!DEFINITION.equals(publication.snapshot().context().definitionVersion()))throw unavailable();
+        return new Resolved(preliminary,publication,months,now,SupportLeaderboardPolicy.REFRESH_MINUTES,entry.refreshFailed());
     }
     private static Context context(Normalized q,Authorization a,Instant now) {
         Set<Long> groups=q.groupId()==null?a.scopes().get(q.scope()):Set.of(q.groupId());
         return new Context(q.board(),q.rankMonth(),q.referenceMonth(),q.currency(),q.scope(),groups,DEFINITION,now);
-    }
-    private int refreshMinutes() {
-        return SupportLeaderboardPolicy.refreshMinutes(config);
     }
     private static boolean expired(Publication p,Instant now,int interval){return !now.isBefore(p.snapshot().context().evaluatedAt().plusSeconds(interval*60L));}
     private record Authorization(long actor,Account account,List<Role> roles,List<Grant> grants,List<Qualification> qualifications,

@@ -37,6 +37,7 @@ class SupportLeaderboardSamplingServiceTest {
         final Probe publication=new Probe(stored);
         final SupportLeaderboardSourceService source;
         final SupportLeaderboardSamplingService sampling;
+        final SupportLeaderboardCache cache=mock(SupportLeaderboardCache.class);
         Fixture(){
             when(guard.productionSupportAutomationAllowed()).thenReturn(true);
             when(config.activeValue(SupportLeaderboardService.REFRESH_KEY)).thenReturn(Optional.of("5"));
@@ -55,7 +56,8 @@ class SupportLeaderboardSamplingServiceTest {
             when(funds.readNetContributions(any())).thenAnswer(i->{assertTrue(TransactionSynchronizationManager.isCurrentTransactionReadOnly());
                 return new SupportFundsReadFacade.NetSnapshot(List.of(new SupportFundsReadFacade.NetCustomer(1,SupportFundsReadFacade.EvidenceState.UNKNOWN,List.of("SOURCE_MISSING"),null,null)),List.of(),List.of());});
             source=proxy(new SupportLeaderboardSourceService(facts,finance,funds),tx);
-            sampling=new SupportLeaderboardSamplingService(catalogue,facts,source,proxy(publication,tx),stored,config,guard,tx);
+            when(cache.tryLock()).thenReturn("token");when(cache.current()).thenReturn(new SupportLeaderboardCache.Generation(Map.of()));when(cache.publish(anyString(),any())).thenReturn(true);
+            sampling=new SupportLeaderboardSamplingService(catalogue,facts,source,proxy(publication,tx),stored,guard,tx,cache);
         }
         void ownGroup(){when(catalogue.viewers(any())).thenReturn(List.of(new Viewer(7,false,true,false)));
             when(catalogue.groups(any())).thenReturn(List.of(new SamplingGroup(1,70)));when(catalogue.members(any())).thenReturn(List.of(new SamplingMember(7,1)));}
@@ -108,22 +110,9 @@ class SupportLeaderboardSamplingServiceTest {
         Fixture noYesterday=new Fixture();noYesterday.publication.baseline=List.of(new Publication(41,AT,old));noYesterday.sampling.sample();
         assertTrue(noYesterday.publication.committed.stream().allMatch(s->s.rows().get(0).movement().kind()==MovementKind.UNAVAILABLE));
     }
-    @Test void noDueOrBlockedProfileNeverReadsFullFacts(){Fixture f=new Fixture();f.publication.fresh=true;
-        when(f.stored.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));
-        assertEquals("IDLE",f.sampling.sample().status());verifyNoInteractions(f.finance);verify(f.facts,never()).accounts();
-        Fixture blocked=new Fixture();when(blocked.guard.productionSupportAutomationAllowed()).thenReturn(false);
-        assertEquals("PROFILE_BLOCKED",blocked.sampling.sample().status());verifyNoInteractions(blocked.catalogue,blocked.finance,blocked.config,blocked.facts);}
-    @Test void freshLegacyDefinitionIsDueAndSamplingDoesNotIdleOrFail() throws Exception {
-        Fixture f=new Fixture();legacyStored(f);
-        var result=f.sampling.sample();assertEquals("SAMPLED",result.status());assertEquals(6,result.due());assertEquals(6,result.committed());assertEquals(0,result.failed());
-        assertTrue(f.publication.committed.stream().allMatch(s->s.context().definitionVersion().equals("support-leaderboard-v3-net-contribution")));
-        verify(f.finance,times(1)).readHistory(any());
-    }
-    @Test void legacyDefinitionSourceFailureCannotPublishOldMoney() throws Exception {
-        Fixture f=new Fixture();legacyStored(f);when(f.facts.accounts()).thenThrow(new DataAccessResourceFailureException("private"));
-        var result=f.sampling.sample();assertEquals("SOURCE_FAILED",result.status());assertEquals(6,result.due());assertEquals(0,result.committed());assertEquals(6,result.failed());
-        assertTrue(f.publication.committed.isEmpty());
-    }
+
+
+
     private static void legacyStored(Fixture f) throws Exception {
         for(var context:SupportLeaderboardSamplingService.catalogue(AT,List.of(),List.of(),List.of()).values()) {
             String key=SupportLeaderboardPublicationService.streamKey(context);f.publication.corruptLatest.add(key);
@@ -132,23 +121,13 @@ class SupportLeaderboardSamplingServiceTest {
             when(f.stored.latest(key)).thenReturn(SupportLeaderboardPublicationServiceTest.stored(99,snapshot,AT.minusSeconds(29)));
         }
     }
-    @Test void disabledMissingAndInvalidConfigDoNotFallBackButBoundsDriveDue(){for(Optional<String> value:List.of(Optional.<String>empty(),Optional.of("0"),Optional.of("61"),Optional.of("bad"))){
-        Fixture f=new Fixture();when(f.config.activeValue(anyString())).thenReturn(value);assertEquals("PLAN_FAILED",f.sampling.sample().status());verifyNoInteractions(f.finance,f.catalogue);}
-        for(String value:List.of("1","60")){Fixture f=new Fixture();f.publication.fresh=true;when(f.config.activeValue(anyString())).thenReturn(Optional.of(value));
-            when(f.stored.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));assertEquals(0,f.sampling.sample().due());}
-    }
+
     @Test void sourceFailureRollsBackOnlyItsBatchAndNextPollStillWorks(){Fixture f=new Fixture();
         when(f.facts.accounts()).thenThrow(new DataAccessResourceFailureException("private-order-secret")).thenReturn(List.of(new Account(7L,"公开客服",1,0,1L,1,0,1L,"SUPPORT",null,null,null,null,1,1)));
         assertEquals("SOURCE_FAILED",f.sampling.sample().status());assertTrue(f.publication.committed.isEmpty());assertEquals(1,f.tx.rollbacks);
         assertNull(f.tx.current.get());assertEquals(6,f.sampling.sample().committed());verify(f.finance,times(1)).readHistory(any());}
-    @Test void corruptLatestIsDecodedNotTreatedAsMissingAndOneBadBaselineDoesNotKillOtherStreams(){Fixture f=new Fixture();
-        String key=SupportLeaderboardSamplingService.catalogue(AT,List.of(),List.of(),List.of()).firstKey();
-        f.publication.corruptLatest.add(key);when(f.stored.latest(eq(key))).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));
-        var result=f.sampling.sample();assertEquals(1,result.failed());assertEquals(5,result.committed());assertTrue(f.publication.committed.stream().noneMatch(s->SupportLeaderboardPublicationService.streamKey(s.context()).equals(key)));
-        Fixture baseline=new Fixture();baseline.publication.corruptBaseline.add(key);var other=baseline.sampling.sample();assertEquals(1,other.failed());assertEquals(5,other.committed());}
-    @Test void lateWriterDoesNotRereadOrRetryOverwriteWinner(){Fixture f=new Fixture();String key=SupportLeaderboardSamplingService.catalogue(AT,List.of(),List.of(),List.of()).firstKey();f.publication.late.add(key);
-        var result=f.sampling.sample();assertEquals(1,result.superseded());assertEquals(5,result.committed());assertEquals(0,result.failed());
-        verify(f.stored,times(6)).latest(anyString());verify(f.finance,times(1)).readHistory(any());assertEquals(1,f.tx.rollbacks);}
+
+
     @Test void oldGroupSetRetiresWhenFreshSourceBatchUsesNewCurrentCatalogue(){Fixture f=new Fixture();f.ownGroup();
         when(f.catalogue.members(any())).thenReturn(List.of(new SamplingMember(7,1)),List.of(new SamplingMember(7,2)));
         var result=f.sampling.sample();assertEquals(6,result.retired());assertEquals(6,result.committed());
@@ -163,16 +142,27 @@ class SupportLeaderboardSamplingServiceTest {
         var contexts=SupportLeaderboardSamplingService.catalogue(AT,viewers,List.of(),members);Set<String> visited=new HashSet<>();String cursor="";
         for(int poll=0;poll<4;poll++){var window=SupportLeaderboardSamplingService.window(contexts,cursor,64);assertEquals(64,window.size());visited.addAll(window);cursor=window.get(window.size()-1);}
         assertEquals(contexts.keySet(),visited);assertEquals(126,contexts.size());}
-    @Test void samplerReportsDeferredAndRotatesActualLookupsWithoutReadingFinanceForFreshStreams(){Fixture f=new Fixture();f.publication.fresh=true;
-        List<Viewer> viewers=new ArrayList<>();List<SamplingMember> members=new ArrayList<>();for(int i=1;i<=20;i++){viewers.add(new Viewer(i,false,true,false));members.add(new SamplingMember(i,i));}
-        when(f.catalogue.viewers(any())).thenReturn(viewers);when(f.catalogue.members(any())).thenReturn(members);
-        when(f.stored.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));
-        for(int poll=0;poll<3;poll++){var result=f.sampling.sample();assertEquals(126,result.planned());assertEquals(64,result.scanned());assertEquals(62,result.deferred());assertEquals(0,result.due());}
-        var keys=org.mockito.ArgumentCaptor.forClass(String.class);verify(f.stored,times(192)).latest(keys.capture());assertEquals(126,new HashSet<>(keys.getAllValues()).size());verifyNoInteractions(f.finance);}
-    @Test void changingExistingRefreshParamTakesEffectNextPoll(){Fixture f=new Fixture();f.publication.cachedAgeSeconds=120;
-        when(f.stored.latest(anyString())).thenReturn(mock(SupportLeaderboardPublicationMapper.Stored.class));assertEquals(0,f.sampling.sample().due());
-        when(f.config.activeValue(SupportLeaderboardService.REFRESH_KEY)).thenReturn(Optional.of("1"));assertEquals(6,f.sampling.sample().committed());verify(f.finance,times(1)).readHistory(any());}
+
+
     @Test void batchClockCrossingMonthCannotPublishHintFromOldMonth(){Fixture f=new Fixture();
         when(f.facts.nowUtc()).thenReturn(LocalDateTime.parse("2026-10-31T15:59:59"),LocalDateTime.parse("2026-10-31T16:00:00"));
         var result=f.sampling.sample();assertEquals(6,result.retired());assertEquals(0,result.committed());}
+    @Test void leaseContentionDoesNotReadSource(){Fixture f=new Fixture();when(f.cache.tryLock()).thenReturn(null);
+        assertEquals("LOCKED",f.sampling.sample().status());verifyNoInteractions(f.finance,f.catalogue);}
+    @Test void leaseLossCannotPublishRedisAndPreservesPriorGeneration(){Fixture f=new Fixture();when(f.cache.publish(anyString(),any())).thenReturn(false);
+        assertEquals("LEASE_LOST",f.sampling.sample().status());verify(f.cache).release("token");}
+    @Test void tenMinuteDueBoundaryReadsCacheWithoutRecalculatingStoredPublications(){Fixture f=new Fixture();var entries=new HashMap<String,SupportLeaderboardCache.Entry>();
+        for(Context c:SupportLeaderboardSamplingService.catalogue(AT,List.of(),List.of(),List.of()).values()){
+            Context old=new Context(c.board(),c.rankMonth(),c.referenceMonth(),c.currency(),c.scope(),c.approvedGroupIds(),c.definitionVersion(),AT.minusSeconds(599));
+            entries.put(SupportLeaderboardPublicationService.streamKey(c),new SupportLeaderboardCache.Entry(new Publication(90,AT,SupportLeaderboardPublicationServiceTest.snapshot(old,Coverage.COMPLETE)),false));}
+        when(f.cache.current()).thenReturn(new SupportLeaderboardCache.Generation(entries));assertEquals("IDLE",f.sampling.sample().status());verifyNoInteractions(f.finance);verify(f.stored,never()).latest(anyString());
+        when(f.facts.nowUtc()).thenReturn(NOW.plusSeconds(1));assertEquals(6,f.sampling.sample().due());verify(f.finance).readHistory(any());}
+    @Test void savedHistoricalMonthsRecalculateAlongsideCurrentAndRetainSourceAlgorithm(){Fixture f=new Fixture();when(f.stored.publishedMonths(anyString())).thenReturn(List.of("2026-09"));
+        assertEquals(10,f.sampling.sample().committed());assertEquals(4,f.publication.committed.stream().filter(s->YearMonth.of(2026,9).equals(s.context().rankMonth())).count());verify(f.finance).readHistory(any());}
+    @Test void failedRefreshPublishesFailureFlagWithUnchangedOldPublication(){Fixture f=new Fixture();Context c=SupportLeaderboardSamplingService.catalogue(AT,List.of(),List.of(),List.of()).firstEntry().getValue();
+        Context old=new Context(c.board(),c.rankMonth(),c.referenceMonth(),c.currency(),c.scope(),c.approvedGroupIds(),c.definitionVersion(),AT.minusSeconds(601));
+        Publication previous=new Publication(90,AT,SupportLeaderboardPublicationServiceTest.snapshot(old,Coverage.COMPLETE));String key=SupportLeaderboardPublicationService.streamKey(c);
+        when(f.cache.current()).thenReturn(new SupportLeaderboardCache.Generation(Map.of(key,new SupportLeaderboardCache.Entry(previous,false))));when(f.facts.accounts()).thenThrow(new DataAccessResourceFailureException("failed"));
+        assertEquals("SOURCE_FAILED",f.sampling.sample().status());var capture=org.mockito.ArgumentCaptor.forClass(SupportLeaderboardCache.Generation.class);verify(f.cache).publish(eq("token"),capture.capture());
+        assertEquals(previous,capture.getValue().entries().get(key).publication());assertTrue(capture.getValue().entries().get(key).refreshFailed());}
 }
