@@ -377,7 +377,7 @@ class OpsDeviceServiceTest {
         ApiResult<Map<String, Object>> result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("maxDevicesPerUser", 3);
+        assertThat(result.getData()).containsEntry("maxDevicesPerUser", 6);
         assertThat((List<?>) result.getData().get("sources"))
                 .anyMatch(source -> "nx_config_item:device.max_active_slots".equals(source));
 

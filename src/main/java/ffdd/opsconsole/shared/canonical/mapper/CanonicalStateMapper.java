@@ -324,10 +324,10 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
              LIMIT 1
             """;
 
-    @Select("SELECT COALESCE((" + DEVICE_SLOT_CAP + "),3)")
+    @Select("SELECT COALESCE((" + DEVICE_SLOT_CAP + "),6)")
     int deviceSlotCap();
 
-    @Select("SELECT COALESCE((" + DEVICE_SLOT_CAP + " FOR SHARE),3)")
+    @Select("SELECT COALESCE((" + DEVICE_SLOT_CAP + " FOR SHARE),6)")
     int lockDeviceSlotCap();
 
     @Update("""

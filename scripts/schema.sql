@@ -4623,6 +4623,11 @@ CREATE TABLE IF NOT EXISTS nx_config_item (
 INSERT IGNORE INTO nx_config_item
   (config_key,config_value,value_type,config_group,visibility,remark,status,is_deleted)
 VALUES
+  ('device.max_active_slots','6','INTEGER','device','ADMIN','Six physical activation slots per account',1,0);
+
+INSERT IGNORE INTO nx_config_item
+  (config_key,config_value,value_type,config_group,visibility,remark,status,is_deleted)
+VALUES
   ('admin.a2.reason_min_chars','8 字','STRING','admin_a2','ADMIN','A2 authoritative reason minimum',1,0),
   ('admin.a2.retention_months','13 个月','STRING','admin_a2','ADMIN','A2 audit retention policy',1,0),
   ('admin.a2.schema_version','v3','STRING','admin_a2','ADMIN','A2 audit schema version',1,0),

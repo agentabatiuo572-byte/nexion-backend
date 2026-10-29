@@ -58,11 +58,11 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
 
     @Select("""
             SELECT COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
-                              WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1),3)
+                              WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1),6)
             """)
     int deviceSlotCap();
 
-    @Select("SELECT COALESCE((" + CanonicalStateMapper.DEVICE_SLOT_CAP + " FOR SHARE),3)")
+    @Select("SELECT COALESCE((" + CanonicalStateMapper.DEVICE_SLOT_CAP + " FOR SHARE),6)")
     int lockDeviceSlotCap();
 
     @Select("SELECT user_level FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0")
