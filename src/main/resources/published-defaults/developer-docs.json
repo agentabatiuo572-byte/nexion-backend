@@ -1,0 +1,145 @@
+{
+  "version": "default-2026.10.29",
+  "status": "PUBLISHED",
+  "revision": 0,
+  "locales": {
+    "zh": {
+      "example": {
+        "request": "curl \"$UVEL_API_BASE/openapi/v1/developer/home-overview\" \\\n  -H \"Authorization: Bearer sk_live_••••\"",
+        "response": "{\n  \"code\": 0,\n  \"message\": \"success\",\n  \"data\": {\n    \"today\": {\n      \"earningsUsdt\": \"16.24\",\n      \"settledJobs\": 10\n    },\n    \"todayVsYesterdayPct\": \"0.0\",\n    \"week\": {\n      \"earningsUsdt\": \"98.40\"\n    },\n    \"month\": {\n      \"earningsUsdt\": \"412.75\"\n    },\n    \"all\": {\n      \"earningsUsdt\": \"1288.10\"\n    },\n    \"earnings\": {\n      \"currency\": \"USDT\"\n    },\n    \"marketBoard\": [\n      {\n        \"code\": \"IG\",\n        \"priceUsdt\": \"0.003\",\n        \"deltaPct\": \"4.2\"\n      }\n    ],\n    \"generatedAt\": \"2026-10-29T06:00:00Z\"\n  }\n}"
+      },
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/openapi/v1/developer/home-overview",
+          "description": "今日收益、在线设备与已完成作业概览"
+        },
+        {
+          "method": "GET",
+          "path": "/openapi/v1/devices",
+          "description": "设备列表与运行状态"
+        },
+        {
+          "method": "GET",
+          "path": "/openapi/v1/devices/{deviceId}/metrics",
+          "description": "设备实时指标：GPU 使用率、温度、功耗"
+        },
+        {
+          "method": "GET",
+          "path": "/openapi/v1/earnings",
+          "description": "收益明细，支持按日期筛选"
+        },
+        {
+          "method": "GET",
+          "path": "/openapi/v1/market/workloads",
+          "description": "作业类型价格与 24 小时变化"
+        },
+        {
+          "method": "POST",
+          "path": "/openapi/v1/webhooks/{webhookId}/test",
+          "description": "发送一条测试事件"
+        }
+      ],
+      "events": [
+        "order.updated",
+        "order.completed",
+        "compute.job.completed",
+        "compute.job.failed",
+        "earnings.updated",
+        "market.updated"
+      ]
+    },
+    "en": {
+      "example": {
+        "request": "curl \"$UVEL_API_BASE/openapi/v1/developer/home-overview\" \\\n  -H \"Authorization: Bearer sk_live_••••\"",
+        "response": "{\n  \"code\": 0,\n  \"message\": \"success\",\n  \"data\": {\n    \"today\": {\n      \"earningsUsdt\": \"16.24\",\n      \"settledJobs\": 10\n    },\n    \"todayVsYesterdayPct\": \"0.0\",\n    \"week\": {\n      \"earningsUsdt\": \"98.40\"\n    },\n    \"month\": {\n      \"earningsUsdt\": \"412.75\"\n    },\n    \"all\": {\n      \"earningsUsdt\": \"1288.10\"\n    },\n    \"earnings\": {\n      \"currency\": \"USDT\"\n    },\n    \"marketBoard\": [\n      {\n        \"code\": \"IG\",\n        \"priceUsdt\": \"0.003\",\n        \"deltaPct\": \"4.2\"\n      }\n    ],\n    \"generatedAt\": \"2026-10-29T06:00:00Z\"\n  }\n}"
+      },
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/openapi/v1/developer/home-overview",
+          "description": "Today's earnings, online devices and completed jobs"
+        },
+        {
+          "method": "GET",
+          "path": "/openapi/v1/devices",
+          "description": "Devices and their status"
+        },
+        {
+          "method": "GET",
+          "path": "/openapi/v1/devices/{deviceId}/metrics",
+          "description": "Live device metrics: GPU usage, temperature, power"
+        },
+        {
+          "method": "GET",
+          "path": "/openapi/v1/earnings",
+          "description": "Earnings history, filterable by date"
+        },
+        {
+          "method": "GET",
+          "path": "/openapi/v1/market/workloads",
+          "description": "Job-type prices and 24h change"
+        },
+        {
+          "method": "POST",
+          "path": "/openapi/v1/webhooks/{webhookId}/test",
+          "description": "Send a test event"
+        }
+      ],
+      "events": [
+        "order.updated",
+        "order.completed",
+        "compute.job.completed",
+        "compute.job.failed",
+        "earnings.updated",
+        "market.updated"
+      ]
+    },
+    "vi": {
+      "example": {
+        "request": "curl \"$UVEL_API_BASE/openapi/v1/developer/home-overview\" \\\n  -H \"Authorization: Bearer sk_live_••••\"",
+        "response": "{\n  \"code\": 0,\n  \"message\": \"success\",\n  \"data\": {\n    \"today\": {\n      \"earningsUsdt\": \"16.24\",\n      \"settledJobs\": 10\n    },\n    \"todayVsYesterdayPct\": \"0.0\",\n    \"week\": {\n      \"earningsUsdt\": \"98.40\"\n    },\n    \"month\": {\n      \"earningsUsdt\": \"412.75\"\n    },\n    \"all\": {\n      \"earningsUsdt\": \"1288.10\"\n    },\n    \"earnings\": {\n      \"currency\": \"USDT\"\n    },\n    \"marketBoard\": [\n      {\n        \"code\": \"IG\",\n        \"priceUsdt\": \"0.003\",\n        \"deltaPct\": \"4.2\"\n      }\n    ],\n    \"generatedAt\": \"2026-10-29T06:00:00Z\"\n  }\n}"
+      },
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/openapi/v1/developer/home-overview",
+          "description": "Thu nhập hôm nay, thiết bị trực tuyến và tác vụ đã hoàn thành"
+        },
+        {
+          "method": "GET",
+          "path": "/openapi/v1/devices",
+          "description": "Danh sách thiết bị và trạng thái"
+        },
+        {
+          "method": "GET",
+          "path": "/openapi/v1/devices/{deviceId}/metrics",
+          "description": "Chỉ số thiết bị: mức dùng GPU, nhiệt độ, công suất"
+        },
+        {
+          "method": "GET",
+          "path": "/openapi/v1/earnings",
+          "description": "Lịch sử thu nhập, lọc theo ngày"
+        },
+        {
+          "method": "GET",
+          "path": "/openapi/v1/market/workloads",
+          "description": "Giá theo loại tác vụ và biến động 24 giờ"
+        },
+        {
+          "method": "POST",
+          "path": "/openapi/v1/webhooks/{webhookId}/test",
+          "description": "Gửi một sự kiện thử"
+        }
+      ],
+      "events": [
+        "order.updated",
+        "order.completed",
+        "compute.job.completed",
+        "compute.job.failed",
+        "earnings.updated",
+        "market.updated"
+      ]
+    }
+  }
+}

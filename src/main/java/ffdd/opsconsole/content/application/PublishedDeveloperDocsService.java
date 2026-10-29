@@ -22,15 +22,19 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class PublishedDeveloperDocsService {
     static final String CONFIG_KEY = "developer.docs.published";
+    /** Shipped default docs; they are the published content until operations publish their own version. */
+    static final String DEFAULT_RESOURCE = "/published-defaults/developer-docs.json";
     private final PlatformConfigFacade config;
     private final Environment environment;
     private final AuditLogService audit;
     private final ObjectMapper mapper = new ObjectMapper();
+    private final String defaultDocument = PublishedContentDefaults.read(DEFAULT_RESOURCE);
+    private final Map<String, Object> defaultPublication = parse(defaultDocument);
 
     public ApiResult<Map<String, Object>> publicDocument(String requestedLocale) {
         try {
-            Map<String, Object> document = PublishedContentSnapshot.published(read());
-            if (!"PUBLISHED".equals(document.get("status"))) return unavailable();
+            Map<String, Object> stored = PublishedContentSnapshot.published(read());
+            Map<String, Object> document = "PUBLISHED".equals(stored.get("status")) ? stored : defaultPublication;
             String version = text(document.get("version"));
             Map<String, Object> locales = map(document.get("locales"));
             Map<String, Object> copy = locale(locales, requestedLocale);
@@ -52,9 +56,9 @@ public class PublishedDeveloperDocsService {
     public ApiResult<Map<String, Object>> adminView() {
         try {
             Map<String, Object> value = read();
-            if (value.isEmpty()) value = new LinkedHashMap<>(Map.of(
-                    "status", "UNPUBLISHED", "version", "", "revision", 0, "locales", Map.of()));
+            if (value.isEmpty()) value = defaultAdminDocument();
             value = PublishedContentSnapshot.admin(value);
+            PublishedContentSnapshot.markDefaultPublic(value);
             value.put("source", "server");
             value.put("configKey", CONFIG_KEY);
             return ApiResult.ok(value);
@@ -175,5 +179,21 @@ public class PublishedDeveloperDocsService {
         return UserAuthEnvironment.resolve(environment)
                 .map(value -> value == UserAuthEnvironment.SANDBOX ? "SANDBOX" : "PRODUCTION")
                 .orElseThrow(() -> new IllegalStateException("DEVELOPER_DOCS_ENVIRONMENT_UNAVAILABLE"));
+    }
+
+    /** Operations edit from the shipped default; revision 0 lets the first publish pass the CAS check. */
+    private Map<String, Object> defaultAdminDocument() {
+        Map<String, Object> document = parse(defaultDocument);
+        document.put("revision", 0);
+        document.put("defaultContent", true);
+        return document;
+    }
+
+    private Map<String, Object> parse(String raw) {
+        try {
+            return mapper.readValue(raw, new TypeReference<>() { });
+        } catch (Exception ex) {
+            throw new IllegalStateException("DEVELOPER_DOCS_DEFAULT_INVALID", ex);
+        }
     }
 }

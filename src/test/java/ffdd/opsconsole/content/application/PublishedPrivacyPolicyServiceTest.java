@@ -24,6 +24,43 @@ class PublishedPrivacyPolicyServiceTest {
     }
 
     @Test
+    void withoutAnyStoredPolicyTheShippedDefaultIsServedAndEditable() {
+        InMemoryConfig config = new InMemoryConfig();
+        PublishedPrivacyPolicyService service = service(config, productionEnvironment());
+
+        var result = service.publicPolicy("vi");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("version", "default-2026.10.29").containsEntry("locale", "vi")
+                .containsEntry("sourceEnvironment", "PRODUCTION");
+        var admin = service.adminView().getData();
+        assertThat(admin).containsEntry("defaultContent", true).containsEntry("hasPublishedVersion", true);
+        assertThat(((Number) admin.get("revision")).longValue()).isZero();
+        assertThat(config.values).isEmpty();
+    }
+
+    @Test
+    void aFirstDraftKeepsTheDefaultPublicButARevokeTakesItOffline() {
+        InMemoryConfig config = new InMemoryConfig();
+        PublishedPrivacyPolicyService service = service(config, productionEnvironment());
+
+        assertThat(service.update("draft-1", "DRAFT", locales("Draft body"), 0L,
+                "Save first privacy policy draft").getCode()).isZero();
+        assertThat(service.publicPolicy("en").getData()).containsEntry("version", "default-2026.10.29");
+        assertThat(service.adminView().getData()).containsEntry("status", "DRAFT")
+                .containsEntry("hasPublishedVersion", true).containsEntry("publicSource", "DEFAULT");
+
+        assertThat(service.update("draft-1", "UNPUBLISHED", locales("Draft body"), 1L,
+                "Revoke the privacy policy").getCode()).isZero();
+        assertThat(service.publicPolicy("en").getCode()).isEqualTo(503);
+        assertThat(service.adminView().getData()).containsEntry("hasPublishedVersion", false)
+                .doesNotContainKey("publicSource");
+
+        assertThat(service.update("draft-2", "DRAFT", locales("Next draft"), 2L,
+                "Save a draft after the revoke").getCode()).isZero();
+        assertThat(service.publicPolicy("en").getCode()).isEqualTo(503);
+    }
+
+    @Test
     void draftPreservesThePreviouslyPublishedSnapshotUntilAnExplicitRevoke() {
         InMemoryConfig config = new InMemoryConfig();
         PublishedPrivacyPolicyService service = service(config, productionEnvironment());
@@ -63,8 +100,8 @@ class PublishedPrivacyPolicyServiceTest {
         assertThat(fallback.getData()).containsEntry("locale", "zh");
 
         config.values.put("legal.privacy-policy.published", """
-                {"version":"v1","status":"PUBLISHED","sourceEnvironment":"PRODUCTION","runId":"",
-                 "locales":{"en":{"hero":"Valid hero","sections":[{"id":"one","title":"Title","body":"","order":0}]}}}
+                {"version":"v1","status":"PUBLISHED","published":{"version":"v1","status":"PUBLISHED","sourceEnvironment":"PRODUCTION","runId":"",
+                 "locales":{"en":{"hero":"Valid hero","sections":[{"id":"one","title":"Title","body":"","order":0}]}}}}
                 """);
         assertThat(service.publicPolicy("en").getCode()).isEqualTo(503);
     }
