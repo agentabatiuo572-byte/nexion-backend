@@ -139,6 +139,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               WHEN UPPER(COALESCE(o.order_status,'')) IN ('CANCELLED','CANCELED') THEN 'cancelled'
               WHEN """ + TrialConversionReadSql.LEGACY_FULFILLED + """
                 THEN 'activated'
+              WHEN UPPER(COALESCE(o.payment_status,'')) = 'PAID'
+                AND UPPER(COALESCE(o.order_status,'')) = 'COMPLETED'
+                AND UPPER(COALESCE(o.activation_status,'')) = 'INVENTORY' THEN 'inventory'
               WHEN UPPER(COALESCE(o.order_status,'')) = 'COMPLETED'
                 OR UPPER(COALESCE(o.activation_status,'')) = 'ACTIVATED' THEN 'activated'
               WHEN UPPER(COALESCE(o.order_status,'')) IN ('PROVISIONING','ALLOCATING')

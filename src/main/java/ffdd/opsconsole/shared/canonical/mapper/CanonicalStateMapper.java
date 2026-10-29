@@ -932,7 +932,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                    o.order_type AS orderType,
                    o.created_at AS placedAt,
                    o.paid_at AS paidAt,
-                   COALESCE(ud.activated_at, ta.completed_at) AS activatedAt,
+                   CASE WHEN o.activation_status='INVENTORY' THEN NULL
+                        ELSE COALESCE(ud.activated_at, ta.completed_at) END AS activatedAt,
                    ud.dc_location AS dataCenter,
                    ta.tradein_no AS tradeinNo,
                    ta.source_device_id AS sourceDeviceId,

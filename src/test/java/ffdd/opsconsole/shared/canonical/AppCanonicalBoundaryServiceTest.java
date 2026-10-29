@@ -780,6 +780,23 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void completedInventoryTradeinIsFulfilledWithoutInventingActivation() {
+        LocalDateTime paidAt = LocalDateTime.of(2026, 7, 21, 5, 29);
+        when(mapper.userOrders(42L)).thenReturn(List.of(new CanonicalStateMapper.UserOrder(
+                "TIO-INVENTORY", 5L, "stellarbox-pro-v2", "Pro v2", 1,
+                new BigDecimal("2639"), new BigDecimal("974.25"), new BigDecimal("1664.75"),
+                "USDT_WALLET", "PAID", "COMPLETED", "INVENTORY", "TRADE_IN",
+                paidAt, paidAt, null, "Singapore", "TIN-INVENTORY", 29L, 30L, "DEV-30")));
+        var result = service.orders(42L);
+        @SuppressWarnings("unchecked")
+        var orders = (List<Map<String, Object>>) result.getData().get("orders");
+        assertThat(orders.get(0)).containsEntry("canonicalStatus", "inventory")
+                .containsEntry("paymentStatus", "PAID").containsEntry("orderStatus", "COMPLETED")
+                .containsEntry("activationStatus", "INVENTORY").containsEntry("activatedAt", null)
+                .containsEntry("sourceDeviceId", 29L).containsEntry("targetDeviceId", 30L);
+    }
+
+    @Test
     void closedOrdersExposeTheUserVisibleCloseReason() {
         when(mapper.userOrders(42L)).thenReturn(List.of(new CanonicalStateMapper.UserOrder(
                 "ORD-C", 4L, "stellarbox-s1", "StellarBox S1", 1,

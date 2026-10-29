@@ -48,8 +48,10 @@ class AppTradeinServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final StorefrontProductReleasePolicy releasePolicy = mock(StorefrontProductReleasePolicy.class);
     private final FundsSandboxProfileGuard sandboxGuard = mock(FundsSandboxProfileGuard.class);
+    private final ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper deviceLifecycle =
+            mock(ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.class);
     private final AppTradeinService service = new AppTradeinService(capture,
-            mapper, idempotency, outbox, audit, releasePolicy, sandboxGuard);
+            mapper, idempotency, outbox, audit, releasePolicy, sandboxGuard, deviceLifecycle);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -74,6 +76,7 @@ class AppTradeinServiceTest {
         when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("1000.00"));
         when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("1000.00"));
         when(mapper.lockActiveUser(7L)).thenReturn(7L);
+        when(deviceLifecycle.deactivateOwnedDeviceCas(7L, 11L, 0L)).thenReturn(1);
         when(mapper.userEventAttribution(7L)).thenReturn(
                 new AppTradeinMapper.UserEventAttribution("P3", 8, "2026-W30"));
         when(mapper.countActiveDevices(7L)).thenReturn(6);
@@ -338,7 +341,7 @@ class AppTradeinServiceTest {
         when(mapper.debitWalletUsdt(7L, new BigDecimal("900.000000"))).thenReturn(1);
 
         when(mapper.decrementTargetStock(22L)).thenReturn(1);
-        when(mapper.recycleSourceDevice(7L, 11L)).thenReturn(1);
+        when(mapper.recycleTradeinSourceDevice(7L, 11L, "DEV-11", 1L)).thenReturn(1);
         when(mapper.insertTargetDevice(any())).thenReturn(1);
         when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(33L);
         when(mapper.insertTradeinApplication(any())).thenReturn(1);
@@ -361,7 +364,7 @@ class AppTradeinServiceTest {
         assertThat(result.getCode()).isZero();
         verify(mapper).debitWalletUsdt(7L, new BigDecimal("900.000000"));
         verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), any(), any(), eq("E3 trade-in upgrade wallet payment"));
-        verify(mapper).recycleSourceDevice(7L, 11L);
+        verify(mapper).recycleTradeinSourceDevice(7L, 11L, "DEV-11", 1L);
         verify(mapper).insertTargetDevice(any());
         verify(mapper).insertTradeinApplication(any());
         verify(mapper).insertPaidOrder(any());
@@ -385,6 +388,71 @@ class AppTradeinServiceTest {
     }
 
     @Test
+    void tradeinQuoteAndSubmitRejectAMissingOrStaleSourceVersionBeforeMutation() {
+        assertThatThrownBy(() -> service.submit(7L, "no-version",
+                new AppTradeinSubmitRequest(11L, 22L, null, null, null, null)))
+                .hasMessage("TRADEIN_SOURCE_VERSION_REQUIRED");
+        assertThatThrownBy(() -> service.submit(7L, "stale-version",
+                new AppTradeinSubmitRequest(11L, 22L, null, null, null, 99L)))
+                .hasMessage("TRADEIN_SOURCE_VERSION_CONFLICT");
+        org.mockito.Mockito.verifyNoInteractions(deviceLifecycle);
+        verify(mapper, never()).debitWalletUsdt(any(), any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"true,false", "false,false", "true,true", "false,true"})
+    void tradeinInheritsTheSpecifiedSourcePositionWithoutCheckingCapacity(boolean activated, boolean failDelivery) {
+        var source = new AppTradeinMapper.SourceDevice(11L, 7L, "DEV-11", 5L, "SKU-OLD", "Old", "S1",
+                activated ? "BUSY" : "INACTIVE", new BigDecimal("1000"), 7L, activated);
+        when(mapper.findSourceDevice(7L, 11L)).thenReturn(source);
+        when(mapper.lockSourceDevice(7L, 11L)).thenReturn(source);
+        configuredHardwareQuotaHasCapacity();
+        when(deviceLifecycle.deactivateOwnedDeviceCas(7L, 11L, 7L)).thenReturn(1);
+        when(mapper.recycleTradeinSourceDevice(7L, 11L, "DEV-11", activated ? 8L : 7L)).thenReturn(1);
+        when(mapper.debitWalletUsdt(7L, new BigDecimal("900.000000"))).thenReturn(1);
+        when(mapper.decrementTargetStock(22L)).thenReturn(1);
+        when(mapper.insertPaidOrder(any())).thenReturn(1);
+        when(mapper.insertPaidOrderItem(any())).thenReturn(1);
+        when(mapper.insertTargetDevice(any())).thenReturn(failDelivery ? 0 : 1);
+        when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(33L);
+        when(mapper.insertTradeinApplication(any())).thenReturn(1);
+        when(mapper.insertTradeinCompatibilityOrder(any())).thenReturn(1);
+        var quote = service.quote(7L, new AppTradeinQuoteRequest(11L, 22L)).getData();
+        assertThat(quote.sourceRowVersion()).isEqualTo(7);
+        assertThat(quote.targetDeviceStatus()).isEqualTo(activated ? "ACTIVE" : "INACTIVE");
+        var request = new AppTradeinSubmitRequest(11L, 22L, null, quote.payableUsdt(), quote.discountUsdt(), 7L);
+        if (failDelivery) {
+            assertThatThrownBy(() -> service.submit(7L, "inherit-failed", request))
+                    .hasMessage("TRADEIN_TARGET_DELIVERY_CONFLICT");
+            verify(capture, never()).record(any());
+        } else {
+            var result = service.submit(7L, "inherit", request).getData();
+            assertThat(result.targetDeviceStatus()).isEqualTo(quote.targetDeviceStatus());
+            assertThat(result.orderStatus()).isEqualTo("COMPLETED");
+        }
+        var order = org.mockito.ArgumentCaptor.forClass(AppTradeinMapper.PaidOrderWrite.class);
+        var delivered = org.mockito.ArgumentCaptor.forClass(AppTradeinMapper.DeliveredDeviceWrite.class);
+        verify(mapper).insertPaidOrder(order.capture());
+        verify(mapper).insertTargetDevice(delivered.capture());
+        assertThat(order.getValue().activateTarget()).isEqualTo(activated);
+        assertThat(delivered.getValue().activated()).isEqualTo(activated);
+        var sequence = inOrder(deviceLifecycle, mapper, capture);
+        if (activated) {
+            sequence.verify(deviceLifecycle).deactivateOwnedDeviceCas(7L, 11L, 7L);
+            sequence.verify(deviceLifecycle).cancelActiveDeviceTasks(7L, 11L);
+            sequence.verify(deviceLifecycle).markDeviceRuntimeDeactivated(11L);
+        } else {
+            org.mockito.Mockito.verifyNoInteractions(deviceLifecycle);
+        }
+        sequence.verify(mapper).recycleTradeinSourceDevice(7L, 11L, "DEV-11", activated ? 8L : 7L);
+        sequence.verify(capture).beforeCash(any());
+        verify(mapper, never()).countActiveDevices(any());
+        verify(mapper, never()).lockActiveDeviceCount(any());
+        verify(mapper, never()).lockReservedDeviceOrderCount(any());
+        verify(mapper, never()).lockDeviceSlotCap();
+    }
+
+    @Test
     void zeroPayableTradeinStillPostsAZeroAmountD4TraceWithoutDebitingWallet() {
         when(mapper.listTradeinConfig()).thenReturn(List.of(
                 row("tradeinEnabled", "true"), row("eligibility", "L2+ 持有者"),
@@ -402,7 +470,7 @@ class AppTradeinServiceTest {
         when(mapper.lockTargetProduct(22L, null)).thenReturn(samePriceTarget);
         when(mapper.insertWalletLedger(anyString(), any(), any(), any())).thenReturn(1);
         when(mapper.decrementTargetStock(22L)).thenReturn(1);
-        when(mapper.recycleSourceDevice(7L, 11L)).thenReturn(1);
+        when(mapper.recycleTradeinSourceDevice(7L, 11L, "DEV-11", 1L)).thenReturn(1);
         when(mapper.insertTargetDevice(any())).thenReturn(1);
         when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(33L);
         when(mapper.insertTradeinApplication(any())).thenReturn(1);

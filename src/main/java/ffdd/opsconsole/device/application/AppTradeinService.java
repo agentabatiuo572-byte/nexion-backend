@@ -67,6 +67,7 @@ public class AppTradeinService {
     private final AuditLogService auditLogService;
     private final StorefrontProductReleasePolicy productReleasePolicy;
     private final FundsSandboxProfileGuard fundsSandboxProfileGuard;
+    private final ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper deviceLifecycle;
     private final StorefrontPurchaseGatePolicy purchaseGatePolicy = new StorefrontPurchaseGatePolicy();
 
     @Transactional(readOnly = true)
@@ -195,6 +196,9 @@ public class AppTradeinService {
         requireProductionTradeinUser(userId);
         requireRequest(request == null ? null : request.sourceDeviceId(),
                 request == null ? null : request.targetProductId(), request == null ? null : request.targetProductNo());
+        if (request.expectedSourceVersion() == null || request.expectedSourceVersion() < 0) {
+            throw new BizException(422, "TRADEIN_SOURCE_VERSION_REQUIRED");
+        }
         if (mapper.lockActiveUser(userId) == null) {
             throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
         }
@@ -210,6 +214,10 @@ public class AppTradeinService {
         String instanceNo = "DEV-TI-" + nonce;
         var prepared = paymentAttribution.prepare(userId, Source.TRADE_IN, orderNo);
         Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(), request.targetProductNo(), true);
+        if (evaluation.source().rowVersion() == null
+                || !request.expectedSourceVersion().equals(evaluation.source().rowVersion())) {
+            throw new BizException(409, "TRADEIN_SOURCE_VERSION_CONFLICT");
+        }
         AppTradeinQuoteResponse quote = evaluation.response();
         if ((request.expectedPayableUsdt() != null
                 && money(request.expectedPayableUsdt()).compareTo(quote.payableUsdt()) != 0)
@@ -227,6 +235,8 @@ public class AppTradeinService {
         reservePurchaseQuotaAtSettlement(userId, evaluation.target().productNo());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, evaluation.target().productNo(),
                 java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+
+        retireTradeinSource(userId, evaluation.source());
 
         BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(quote.payableUsdt()).setScale(6, RoundingMode.HALF_UP);
 
@@ -249,21 +259,18 @@ public class AppTradeinService {
         AppTradeinMapper.PaidOrderWrite order = new AppTradeinMapper.PaidOrderWrite(
                 userId, orderNo, evaluation.target().id(), evaluation.target().productNo(),
                 evaluation.target().name(), quote.targetPriceUsdt(), quote.discountUsdt(), quote.payableUsdt(),
-                evaluation.source().productId());
+                evaluation.source().productId(), evaluation.source().activated());
         if (mapper.insertPaidOrder(order) != 1 || mapper.insertPaidOrderItem(order) != 1) {
             throw new BizException(409, "TRADEIN_ORDER_CREATE_CONFLICT");
         }
         HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
-        if (mapper.recycleSourceDevice(userId, evaluation.source().id()) != 1) {
-            throw new BizException(409, "TRADEIN_SOURCE_STATE_CONFLICT");
-        }
 
         AppTradeinMapper.DeliveredDeviceWrite delivered = new AppTradeinMapper.DeliveredDeviceWrite(
                 userId, orderNo, evaluation.target().id(), evaluation.target().productNo(),
                 evaluation.target().tier(), instanceNo, evaluation.target().name(), evaluation.target().deviceType(),
                 evaluation.target().generation(), evaluation.target().gpuModel(), evaluation.target().vramTotalGb(),
                 nz(evaluation.target().hashrate()), nz(evaluation.target().dailyUsdt()), nz(evaluation.target().dailyNex()),
-                quote.targetPriceUsdt());
+                quote.targetPriceUsdt(), evaluation.source().activated());
         if (mapper.insertTargetDevice(delivered) != 1) {
             throw new BizException(409, "TRADEIN_TARGET_DELIVERY_CONFLICT");
         }
@@ -323,7 +330,7 @@ public class AppTradeinService {
                 .detail(linked(
                         "idempotencyKey", idempotencyKey.trim(),
                         "before", linked("sourceDeviceId", evaluation.source().id(), "status", evaluation.source().status()),
-                        "after", linked("targetDeviceId", targetDeviceId, "status", "ACTIVE"),
+                        "after", linked("targetDeviceId", targetDeviceId, "status", quote.targetDeviceStatus()),
                         "pricing", event,
                         "discountCreditedToWallet", false))
                 .build());
@@ -331,7 +338,23 @@ public class AppTradeinService {
         if (quote.payableUsdt().signum() > 0) paymentAttribution.record(prepared);
         return ApiResult.ok(new AppTradeinSubmitResponse(
                 tradeinNo, orderNo, evaluation.source().id(), targetDeviceId,
-                "COMPLETED", "COMPLETED", quote.discountUsdt(), quote.payableUsdt(), balanceAfter));
+                "COMPLETED", "COMPLETED", quote.discountUsdt(), quote.payableUsdt(), balanceAfter,
+                quote.targetDeviceStatus()));
+    }
+
+    private void retireTradeinSource(Long userId, AppTradeinMapper.SourceDevice source) {
+        long version = source.rowVersion();
+        if (source.activated()) {
+            if (deviceLifecycle.deactivateOwnedDeviceCas(userId, source.id(), version) != 1) {
+                throw new BizException(409, "TRADEIN_SOURCE_VERSION_CONFLICT");
+            }
+            deviceLifecycle.cancelActiveDeviceTasks(userId, source.id());
+            deviceLifecycle.markDeviceRuntimeDeactivated(source.id());
+            version++;
+        }
+        if (mapper.recycleTradeinSourceDevice(userId, source.id(), source.instanceNo(), version) != 1) {
+            throw new BizException(409, "TRADEIN_SOURCE_STATE_CONFLICT");
+        }
     }
 
     private ApiResult<AppTradeinSubmitResponse> capacityReplaceInternal(
@@ -615,7 +638,8 @@ public class AppTradeinService {
         AppTradeinQuoteResponse response = new AppTradeinQuoteResponse(
                 source.id(), source.productName(), target.id(), target.productNo(), target.name(), sourcePaid, output, ratio,
                 creditRate, discount, targetPrice, payable, wallet, shortfall,
-                shortfall.signum() == 0, false, "nx_compute_receipt + source paid price + nx_compute_e3_config");
+                shortfall.signum() == 0, false, "nx_compute_receipt + source paid price + nx_compute_e3_config",
+                source.rowVersion(), source.activated() ? "ACTIVE" : "INACTIVE");
         return new Evaluation(source, target, response);
     }
 
