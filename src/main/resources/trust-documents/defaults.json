@@ -1,0 +1,48 @@
+{
+  "profile": {
+    "legalName": "UVEL AI LTD.",
+    "jurisdiction": "New York, USA",
+    "registeredAddress": "New York, NY 10065",
+    "nyDosId": "8040896",
+    "nyFilingNumber": "261008000079",
+    "authorizedCapitalUsd": "50000000"
+  },
+  "documents": [
+    {
+      "slot": "whitepaper",
+      "resource": "uvel-whitepaper-v1.3-en.pdf",
+      "version": "v1.3",
+      "language": "English",
+      "referenceNo": null,
+      "verifyUrl": null,
+      "sha256": "4640565490b7f057fc8a6b0ff3ed77e72b4e9f0289a4eada0b85d461d9905d20"
+    },
+    {
+      "slot": "incorporation",
+      "resource": "uvel-ai-ltd-certificate-of-incorporation.pdf",
+      "version": null,
+      "language": "English",
+      "referenceNo": "8040896",
+      "verifyUrl": "https://apps.dos.ny.gov/publicInquiry/",
+      "sha256": "e10c9338ccf13c56a19ace427b2fcec4aa4033bafc20d312b48d772d3cb83932"
+    },
+    {
+      "slot": "msb",
+      "resource": "uvel-ai-ltd-fincen-msb-registration.pdf",
+      "version": null,
+      "language": "English",
+      "referenceNo": "31000342955895",
+      "verifyUrl": "https://www.fincen.gov/msb-state-selector",
+      "sha256": "ab505be01d126b6bd526e32f78f2defba53a3996300da91c5f5d0c8fd7f29482"
+    },
+    {
+      "slot": "ein",
+      "resource": "uvel-ai-ltd-irs-ein-notice.pdf",
+      "version": null,
+      "language": "English",
+      "referenceNo": "43-2288822",
+      "verifyUrl": null,
+      "sha256": "8a629967dcf8333faefa21f3935bdbdd388acc4923bdd826435fa4d1d978f5b7"
+    }
+  ]
+}
