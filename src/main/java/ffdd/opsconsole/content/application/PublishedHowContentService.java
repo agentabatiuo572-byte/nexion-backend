@@ -28,24 +28,29 @@ public class PublishedHowContentService {
     static final Set<String> CONTENT_KEYS = Set.of(
             "genesis-how", "wallet-exchange-how", "wallet-repurchase-how",
             "team-binary-how", "team-commissions-how", "team-unilevel-how");
+    /** Shipped default copy; it is the published content until operations publish their own version. */
+    static final String DEFAULT_RESOURCE = "/published-defaults/how-it-works.json";
     private final PlatformConfigFacade config;
     private final Environment environment;
     private final ffdd.opsconsole.team.application.DirectReferralPolicyService directPolicies;
     public PublishedHowContentService(PlatformConfigFacade config,Environment environment,AuditLogService audit){this(config,environment,null,audit);}
     private final AuditLogService audit;
     private final ObjectMapper mapper = new ObjectMapper();
+    private final String defaultDocument = PublishedContentDefaults.read(DEFAULT_RESOURCE);
 
     public ApiResult<Map<String, Object>> publicContent(String contentKey, String requestedLocale) {
         try {
             if (!CONTENT_KEYS.contains(contentKey)) return unavailable();
-            Map<String, Object> document = PublishedContentSnapshot.published(read());
-            if (!"PUBLISHED".equals(document.get("status")) || text(document.get("version")) == null) return unavailable();
+            Map<String, Object> stored = PublishedContentSnapshot.published(read());
             String currentEnvironment = sourceEnvironment();
-            String publishedEnvironment = text(document.get("sourceEnvironment"));
-            String publishedRunId = document.get("runId") == null ? "" : String.valueOf(document.get("runId")).trim();
+            String publishedEnvironment = text(stored.get("sourceEnvironment"));
+            String publishedRunId = stored.get("runId") == null ? "" : String.valueOf(stored.get("runId")).trim();
             String currentRunId = "SANDBOX".equals(currentEnvironment)
                     ? environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim() : "";
-            if (!currentEnvironment.equals(publishedEnvironment) || !currentRunId.equals(publishedRunId)) return unavailable();
+            boolean publishedHere = "PUBLISHED".equals(stored.get("status")) && text(stored.get("version")) != null
+                    && currentEnvironment.equals(publishedEnvironment) && currentRunId.equals(publishedRunId);
+            // A publication for this environment always wins, even when it fails validation below.
+            Map<String, Object> document = publishedHere ? stored : parse(defaultDocument);
             Map<String, Object> contents = map(document.get("contents"));
             Map<String, Object> entry = map(contents == null ? null : contents.get(contentKey));
             Map<String, Object> locales = map(entry == null ? null : entry.get("locales"));
@@ -85,13 +90,13 @@ public class PublishedHowContentService {
     public ApiResult<Map<String, Object>> adminView() {
         try {
             Map<String, Object> value = read();
-            if (!hasAdminDocumentShape(value)) value = emptyAdminDocument();
+            if (!hasAdminDocumentShape(value)) value = defaultAdminDocument();
             value = PublishedContentSnapshot.admin(value);
             value.put("source", "server");
             value.put("configKey", CONFIG_KEY);
             return ApiResult.ok(value);
         } catch (Exception ex) {
-            Map<String, Object> value = emptyAdminDocument();
+            Map<String, Object> value = defaultAdminDocument();
             value.put("source", "server");
             value.put("configKey", CONFIG_KEY);
             return ApiResult.ok(value);
@@ -190,18 +195,19 @@ public class PublishedHowContentService {
             return false;
         }
     }
-    private Map<String, Object> emptyAdminDocument() {
-        Map<String, Object> contents = new LinkedHashMap<>();
-        for (String key : CONTENT_KEYS) {
-            Map<String, Object> block = new LinkedHashMap<>();
-            block.put("id", "intro");
-            block.put("kind", "text");
-            block.put("title", key);
-            block.put("body", "本页说明由运营后台维护，请补充经审核的教育内容后再发布。");
-            contents.put(key, Map.of("locales", Map.of("en", Map.of("blocks", List.of(block)))));
+    /** Operations edit from the shipped default; revision 0 lets the first publish pass the CAS check. */
+    private Map<String, Object> defaultAdminDocument() {
+        Map<String, Object> document = parse(defaultDocument);
+        document.put("revision", 0);
+        document.put("defaultContent", true);
+        return document;
+    }
+    private Map<String, Object> parse(String raw) {
+        try {
+            return mapper.readValue(raw, new TypeReference<>() { });
+        } catch (Exception ex) {
+            throw new IllegalStateException("HOW_CONTENT_DEFAULT_INVALID", ex);
         }
-        return new LinkedHashMap<>(Map.of("status", "UNPUBLISHED", "version", "", "revision", 0,
-                "contents", contents));
     }
     private boolean validLocale(Map<String, Object> locale) {
         Object rawBlocks = locale == null ? null : locale.get("blocks");
