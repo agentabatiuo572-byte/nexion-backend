@@ -1,0 +1,544 @@
+{
+  "version": "default-2026.10.29",
+  "status": "PUBLISHED",
+  "revision": 1,
+  "locales": {
+    "zh": {
+      "hero": "等级越高，可获得的奖励越多。",
+      "sections": [
+        {
+          "id": "overview",
+          "title": "什么是等级",
+          "body": "等级由你的自购算力点、达标好友和团队算力点共同决定，当前开放 {firstRank} 至 {lastRank}。",
+          "order": 1
+        },
+        {
+          "id": "overview-detail",
+          "title": "等级与奖励",
+          "body": "每升一级，可解锁更多奖励，具体以等级页显示为准。",
+          "order": 2
+        },
+        {
+          "id": "ladder",
+          "title": "{rankCount} 个等级",
+          "body": "每个等级都有自己的条件和权益，点击页面底部按钮可查看你的等级进度。",
+          "order": 3
+        },
+        {
+          "id": "promotion",
+          "title": "怎么升级",
+          "body": "同时满足目标等级的各项条件后，即可升级。",
+          "order": 4
+        },
+        {
+          "id": "requirement-self",
+          "title": "1. 自购算力点",
+          "body": "购买设备后，设备的算力点计入你的自购算力点，以已确认的订单为准。",
+          "order": 5
+        },
+        {
+          "id": "requirement-direct",
+          "title": "2. 达标好友",
+          "body": "你邀请的好友满足自购要求后，计为达标好友。当前要求：{referralThreshold}。",
+          "order": 6
+        },
+        {
+          "id": "requirement-team",
+          "title": "3. 团队算力点",
+          "body": "团队成员购买设备的算力点计入团队算力点，以已确认的订单为准。",
+          "order": 7
+        },
+        {
+          "id": "requirement-legs",
+          "title": "4. 好友等级",
+          "body": "部分等级还要求若干位好友达到指定等级。",
+          "order": 8
+        },
+        {
+          "id": "stepwise",
+          "title": "逐级晋升",
+          "body": "满足条件后自动晋升，每次升一级。",
+          "order": 9
+        },
+        {
+          "id": "protection",
+          "title": "等级保护",
+          "body": "{protection}",
+          "order": 10
+        },
+        {
+          "id": "rewards",
+          "title": "每级解锁什么",
+          "body": "更高的好友购买奖励比例、团队奖励范围、团队激励池票数和好友升级奖励，具体以等级页为准。",
+          "order": 11
+        },
+        {
+          "id": "unlock-network",
+          "title": "团队奖励",
+          "body": "团队成员购买设备时，你可获得团队购买奖励，范围随等级提升而扩大。",
+          "order": 12
+        },
+        {
+          "id": "unlock-peer",
+          "title": "同级奖励",
+          "body": "以实际发放为准。",
+          "order": 13
+        },
+        {
+          "id": "unlock-leadership",
+          "title": "团队激励池",
+          "body": "达到参与等级后，按票数每周发放。{leadershipStatus}",
+          "order": 14
+        },
+        {
+          "id": "unlock-cultivation",
+          "title": "好友升级奖励",
+          "body": "你邀请的好友升级时，你可获得奖励。",
+          "order": 15
+        },
+        {
+          "id": "example",
+          "title": "示例：{fromRank} 升 {toRank}",
+          "body": "以下仅作说明，数值以当前规则为准。",
+          "order": 16
+        },
+        {
+          "id": "example-start",
+          "title": "起点",
+          "body": "假设你当前是 {fromRank}，目标是 {toRank}。",
+          "order": 17
+        },
+        {
+          "id": "example-self",
+          "title": "自购",
+          "body": "{toRank} 需要自购算力点达到 {selfComputePoints}。",
+          "order": 18
+        },
+        {
+          "id": "example-team",
+          "title": "团队",
+          "body": "{toRank} 需要团队算力点达到 {teamComputePoints}；达标好友要求：{directRefs}（好友自购要求：{referralThreshold}）。",
+          "order": 19
+        },
+        {
+          "id": "example-legs",
+          "title": "好友等级",
+          "body": "{toRank} 的好友等级要求：{rankLegs}。",
+          "order": 20
+        },
+        {
+          "id": "example-trigger",
+          "title": "完成升级",
+          "body": "以上条件都满足后，你会自动从 {fromRank} 升到 {toRank}。",
+          "order": 21
+        },
+        {
+          "id": "example-results",
+          "title": "{toRank} 解锁的权益",
+          "body": "以下为当前规则下的权益，不代表已发放。",
+          "order": 22
+        },
+        {
+          "id": "result-network",
+          "title": "好友购买奖励",
+          "body": "好友购买奖励比例 {directRate}，以实际发放为准。",
+          "order": 23
+        },
+        {
+          "id": "result-peer",
+          "title": "同级奖励",
+          "body": "{toRank} 同级奖励比例 {peerRate}，以实际发放为准。",
+          "order": 24
+        },
+        {
+          "id": "result-leadership",
+          "title": "团队激励池",
+          "body": "{toRank} 有 {votes} 票。{leadershipStatus}",
+          "order": 25
+        },
+        {
+          "id": "result-cultivation",
+          "title": "好友升级奖励",
+          "body": "该等级的好友升级奖励合计 {cultivation}，以实际发放为准。",
+          "order": 26
+        },
+        {
+          "id": "faq-members",
+          "title": "为什么团队有人，我还没升级？",
+          "body": "团队人数不等于达标好友数。好友满足自购要求（{referralThreshold}）才计入，你也要同时满足自购和团队算力点要求。",
+          "order": 27
+        },
+        {
+          "id": "faq-rank",
+          "title": "团队算力点减少后会怎样？",
+          "body": "{protection}",
+          "order": 28
+        },
+        {
+          "id": "faq-rewards",
+          "title": "在哪里看进度和奖励？",
+          "body": "等级页可查看当前进度和差距，奖励到账情况见奖励明细。",
+          "order": 29
+        }
+      ]
+    },
+    "en": {
+      "hero": "The higher your rank, the more rewards you can earn.",
+      "sections": [
+        {
+          "id": "overview",
+          "title": "What ranks are",
+          "body": "Your rank depends on your own compute points, qualified friends and team compute points. Ranks {firstRank} to {lastRank} are open now.",
+          "order": 1
+        },
+        {
+          "id": "overview-detail",
+          "title": "Ranks and rewards",
+          "body": "Each rank unlocks more rewards. See the rank page for details.",
+          "order": 2
+        },
+        {
+          "id": "ladder",
+          "title": "{rankCount} ranks",
+          "body": "Each rank has its own requirements and benefits. Tap the button below to see your progress.",
+          "order": 3
+        },
+        {
+          "id": "promotion",
+          "title": "How to move up",
+          "body": "Meet all requirements of the next rank to move up.",
+          "order": 4
+        },
+        {
+          "id": "requirement-self",
+          "title": "1. Own compute points",
+          "body": "Devices you buy add their compute points to your own total, based on confirmed orders.",
+          "order": 5
+        },
+        {
+          "id": "requirement-direct",
+          "title": "2. Qualified friends",
+          "body": "A friend you invited counts as qualified once they meet the own-purchase requirement. Current requirement: {referralThreshold}.",
+          "order": 6
+        },
+        {
+          "id": "requirement-team",
+          "title": "3. Team compute points",
+          "body": "Devices bought by your team add to your team compute points, based on confirmed orders.",
+          "order": 7
+        },
+        {
+          "id": "requirement-legs",
+          "title": "4. Friends' ranks",
+          "body": "Some ranks also require a number of friends to reach a given rank.",
+          "order": 8
+        },
+        {
+          "id": "stepwise",
+          "title": "One rank at a time",
+          "body": "You move up automatically, one rank at a time.",
+          "order": 9
+        },
+        {
+          "id": "protection",
+          "title": "Rank protection",
+          "body": "{protection}",
+          "order": 10
+        },
+        {
+          "id": "rewards",
+          "title": "What each rank unlocks",
+          "body": "Higher friend purchase reward rates, wider team rewards, more team incentive pool votes and friend rank-up rewards. See the rank page for details.",
+          "order": 11
+        },
+        {
+          "id": "unlock-network",
+          "title": "Team rewards",
+          "body": "Earn team purchase rewards when team members buy devices; your reach grows as you rank up.",
+          "order": 12
+        },
+        {
+          "id": "unlock-peer",
+          "title": "Same-rank reward",
+          "body": "Subject to actual payout.",
+          "order": 13
+        },
+        {
+          "id": "unlock-leadership",
+          "title": "Team incentive pool",
+          "body": "Once you reach the eligible rank, payouts are made weekly by votes. {leadershipStatus}",
+          "order": 14
+        },
+        {
+          "id": "unlock-cultivation",
+          "title": "Friend rank-up reward",
+          "body": "Earn a reward when a friend you invited ranks up.",
+          "order": 15
+        },
+        {
+          "id": "example",
+          "title": "Example: {fromRank} to {toRank}",
+          "body": "For illustration only; figures follow the current rules.",
+          "order": 16
+        },
+        {
+          "id": "example-start",
+          "title": "Starting point",
+          "body": "Say you're {fromRank} and aiming for {toRank}.",
+          "order": 17
+        },
+        {
+          "id": "example-self",
+          "title": "Own purchases",
+          "body": "{toRank} needs {selfComputePoints} in own compute points.",
+          "order": 18
+        },
+        {
+          "id": "example-team",
+          "title": "Team",
+          "body": "{toRank} needs {teamComputePoints} in team compute points. Qualified friends required: {directRefs} (friend own-purchase requirement: {referralThreshold}).",
+          "order": 19
+        },
+        {
+          "id": "example-legs",
+          "title": "Friends' ranks",
+          "body": "{toRank} friend-rank requirement: {rankLegs}.",
+          "order": 20
+        },
+        {
+          "id": "example-trigger",
+          "title": "Moving up",
+          "body": "Once all of the above are met, you move from {fromRank} to {toRank} automatically.",
+          "order": 21
+        },
+        {
+          "id": "example-results",
+          "title": "What {toRank} unlocks",
+          "body": "Benefits under the current rules; not a payout.",
+          "order": 22
+        },
+        {
+          "id": "result-network",
+          "title": "Friend purchase reward",
+          "body": "Friend purchase reward rate: {directRate}, subject to actual payout.",
+          "order": 23
+        },
+        {
+          "id": "result-peer",
+          "title": "Same-rank reward",
+          "body": "{toRank} same-rank reward rate: {peerRate}, subject to actual payout.",
+          "order": 24
+        },
+        {
+          "id": "result-leadership",
+          "title": "Team incentive pool",
+          "body": "{toRank} has {votes} votes. {leadershipStatus}",
+          "order": 25
+        },
+        {
+          "id": "result-cultivation",
+          "title": "Friend rank-up reward",
+          "body": "Friend rank-up rewards for this rank total {cultivation}, subject to actual payout.",
+          "order": 26
+        },
+        {
+          "id": "faq-members",
+          "title": "Why haven't I ranked up when my team has members?",
+          "body": "Team size isn't the same as qualified friends. A friend counts once they meet the own-purchase requirement ({referralThreshold}), and you also need to meet the own and team compute point requirements.",
+          "order": 27
+        },
+        {
+          "id": "faq-rank",
+          "title": "What if my team compute points go down?",
+          "body": "{protection}",
+          "order": 28
+        },
+        {
+          "id": "faq-rewards",
+          "title": "Where can I see progress and rewards?",
+          "body": "The rank page shows your progress and gaps; see your reward history for payouts.",
+          "order": 29
+        }
+      ]
+    },
+    "vi": {
+      "hero": "Hạng càng cao, phần thưởng bạn có thể nhận càng nhiều.",
+      "sections": [
+        {
+          "id": "overview",
+          "title": "Hạng là gì",
+          "body": "Hạng của bạn phụ thuộc vào điểm tính toán cá nhân, số bạn bè đạt chuẩn và điểm tính toán của nhóm. Hiện mở từ {firstRank} đến {lastRank}.",
+          "order": 1
+        },
+        {
+          "id": "overview-detail",
+          "title": "Hạng và phần thưởng",
+          "body": "Mỗi lần lên hạng, bạn mở khóa thêm phần thưởng. Xem chi tiết tại trang hạng.",
+          "order": 2
+        },
+        {
+          "id": "ladder",
+          "title": "{rankCount} hạng",
+          "body": "Mỗi hạng có điều kiện và quyền lợi riêng. Nhấn nút bên dưới để xem tiến độ của bạn.",
+          "order": 3
+        },
+        {
+          "id": "promotion",
+          "title": "Cách lên hạng",
+          "body": "Đáp ứng đủ các điều kiện của hạng tiếp theo để lên hạng.",
+          "order": 4
+        },
+        {
+          "id": "requirement-self",
+          "title": "1. Điểm tính toán cá nhân",
+          "body": "Thiết bị bạn mua sẽ cộng điểm tính toán vào tổng của bạn, theo đơn hàng đã xác nhận.",
+          "order": 5
+        },
+        {
+          "id": "requirement-direct",
+          "title": "2. Bạn bè đạt chuẩn",
+          "body": "Bạn bè do bạn mời được tính là đạt chuẩn khi đáp ứng yêu cầu mua cá nhân. Yêu cầu hiện tại: {referralThreshold}.",
+          "order": 6
+        },
+        {
+          "id": "requirement-team",
+          "title": "3. Điểm tính toán của nhóm",
+          "body": "Thiết bị do thành viên nhóm mua được cộng vào điểm của nhóm, theo đơn hàng đã xác nhận.",
+          "order": 7
+        },
+        {
+          "id": "requirement-legs",
+          "title": "4. Hạng của bạn bè",
+          "body": "Một số hạng còn yêu cầu một số bạn bè đạt hạng nhất định.",
+          "order": 8
+        },
+        {
+          "id": "stepwise",
+          "title": "Lên từng hạng",
+          "body": "Bạn được lên hạng tự động, mỗi lần một hạng.",
+          "order": 9
+        },
+        {
+          "id": "protection",
+          "title": "Bảo vệ hạng",
+          "body": "{protection}",
+          "order": 10
+        },
+        {
+          "id": "rewards",
+          "title": "Mỗi hạng mở khóa gì",
+          "body": "Tỷ lệ thưởng bạn bè mua hàng cao hơn, phạm vi thưởng nhóm rộng hơn, nhiều phiếu hơn trong quỹ thưởng nhóm và thưởng khi bạn bè lên hạng. Xem chi tiết tại trang hạng.",
+          "order": 11
+        },
+        {
+          "id": "unlock-network",
+          "title": "Thưởng nhóm",
+          "body": "Nhận thưởng nhóm mua hàng khi thành viên nhóm mua thiết bị; phạm vi mở rộng khi bạn lên hạng.",
+          "order": 12
+        },
+        {
+          "id": "unlock-peer",
+          "title": "Thưởng đồng cấp",
+          "body": "Theo kết quả chi trả thực tế.",
+          "order": 13
+        },
+        {
+          "id": "unlock-leadership",
+          "title": "Quỹ thưởng nhóm",
+          "body": "Khi đạt hạng tham gia, thưởng được chi trả hằng tuần theo số phiếu. {leadershipStatus}",
+          "order": 14
+        },
+        {
+          "id": "unlock-cultivation",
+          "title": "Thưởng khi bạn bè lên hạng",
+          "body": "Nhận thưởng khi bạn bè do bạn mời lên hạng.",
+          "order": 15
+        },
+        {
+          "id": "example",
+          "title": "Ví dụ: {fromRank} lên {toRank}",
+          "body": "Chỉ để minh họa; số liệu theo quy tắc hiện hành.",
+          "order": 16
+        },
+        {
+          "id": "example-start",
+          "title": "Điểm bắt đầu",
+          "body": "Giả sử bạn đang ở {fromRank} và muốn lên {toRank}.",
+          "order": 17
+        },
+        {
+          "id": "example-self",
+          "title": "Mua cá nhân",
+          "body": "{toRank} cần {selfComputePoints} điểm cá nhân.",
+          "order": 18
+        },
+        {
+          "id": "example-team",
+          "title": "Nhóm",
+          "body": "{toRank} cần {teamComputePoints} điểm của nhóm. Số bạn bè đạt chuẩn cần có: {directRefs} (yêu cầu mua cá nhân của bạn bè: {referralThreshold}).",
+          "order": 19
+        },
+        {
+          "id": "example-legs",
+          "title": "Hạng của bạn bè",
+          "body": "Yêu cầu về hạng bạn bè của {toRank}: {rankLegs}.",
+          "order": 20
+        },
+        {
+          "id": "example-trigger",
+          "title": "Lên hạng",
+          "body": "Khi đáp ứng đủ các điều kiện trên, bạn sẽ tự động được nâng từ {fromRank} lên {toRank}.",
+          "order": 21
+        },
+        {
+          "id": "example-results",
+          "title": "Quyền lợi của {toRank}",
+          "body": "Quyền lợi theo quy tắc hiện hành, không phải khoản đã chi trả.",
+          "order": 22
+        },
+        {
+          "id": "result-network",
+          "title": "Thưởng bạn bè mua hàng",
+          "body": "Tỷ lệ thưởng bạn bè mua hàng: {directRate}, theo kết quả chi trả thực tế.",
+          "order": 23
+        },
+        {
+          "id": "result-peer",
+          "title": "Thưởng đồng cấp",
+          "body": "Tỷ lệ thưởng đồng cấp của {toRank}: {peerRate}, theo kết quả chi trả thực tế.",
+          "order": 24
+        },
+        {
+          "id": "result-leadership",
+          "title": "Quỹ thưởng nhóm",
+          "body": "{toRank} có {votes} phiếu. {leadershipStatus}",
+          "order": 25
+        },
+        {
+          "id": "result-cultivation",
+          "title": "Thưởng khi bạn bè lên hạng",
+          "body": "Tổng thưởng khi bạn bè lên hạng ở hạng này là {cultivation}, theo kết quả chi trả thực tế.",
+          "order": 26
+        },
+        {
+          "id": "faq-members",
+          "title": "Vì sao nhóm đã có thành viên mà tôi chưa lên hạng?",
+          "body": "Số thành viên nhóm khác với số bạn bè đạt chuẩn. Bạn bè chỉ được tính khi đáp ứng yêu cầu mua cá nhân ({referralThreshold}), và bạn cũng cần đáp ứng yêu cầu về điểm cá nhân và điểm của nhóm.",
+          "order": 27
+        },
+        {
+          "id": "faq-rank",
+          "title": "Nếu điểm của nhóm giảm thì sao?",
+          "body": "{protection}",
+          "order": 28
+        },
+        {
+          "id": "faq-rewards",
+          "title": "Xem tiến độ và phần thưởng ở đâu?",
+          "body": "Trang hạng hiển thị tiến độ và phần còn thiếu; xem khoản thưởng đã nhận trong lịch sử thưởng.",
+          "order": 29
+        }
+      ]
+    }
+  }
+}
