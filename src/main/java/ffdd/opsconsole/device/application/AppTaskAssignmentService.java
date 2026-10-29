@@ -578,10 +578,32 @@ public class AppTaskAssignmentService {
     }
 
     private ApiResult<AppTaskAssignmentView> claimInternal(Long userId, Long deviceId, String sourceEnvironment, Grant grant) {
+        return claimInternal(userId, deviceId, sourceEnvironment, grant, false);
+    }
+
+    /** Dedicated TEST process has already authenticated and locked its exact paid instance. */
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<AppTaskAssignmentView> claimForTestCloud(Long userId, Long deviceId) {
+        requireProductionRuntime(userId);
+        if (!managedTestCloud(userId, deviceId) || !"true".equals(environment.getProperty(TestCloudExecutorService.PREFIX + "enabled"))) {
+            throw new BizException(403, "TEST_CLOUD_BINDING_INVALID");
+        }
+        return claimInternal(userId, deviceId, "PRODUCTION", null, true);
+    }
+
+    private boolean managedTestCloud(Long userId, Long deviceId) {
+        return "TEST".equals(environment.getProperty(TestCloudExecutorService.PREFIX + "deployment-scope"))
+                && Set.of(environment.getActiveProfiles()).equals(Set.of("dev"))
+                && String.valueOf(userId).equals(environment.getProperty(TestCloudExecutorService.PREFIX + "owner-id"))
+                && String.valueOf(deviceId).equals(environment.getProperty(TestCloudExecutorService.PREFIX + "device-id"));
+    }
+
+    private ApiResult<AppTaskAssignmentView> claimInternal(Long userId, Long deviceId, String sourceEnvironment, Grant grant, boolean cloud) {
         LocalDateTime now = now();
         lockProductionUser(userId);
-        if (grant == null) phoneSessions.requireExecutionOwner(userId, deviceId);
+        if (grant == null && !cloud) phoneSessions.requireExecutionOwner(userId, deviceId);
         DeviceRow device = mapper.lockOwnedDevice(userId, deviceId);
+        if (!cloud && managedTestCloud(userId, deviceId)) throw new BizException(409, "TEST_CLOUD_EXECUTOR_REQUIRED");
         if (grant != null) {
             testWorker.requireDevice(grant, device);
             AssignmentRow target = mapper.lockAssignment(userId, grant.taskNo(), sourceEnvironment);
@@ -667,12 +689,12 @@ public class AppTaskAssignmentService {
         if (grant != null) claimDetail.putAll(testWorker.bindings(grant));
         AuditLogWriteRequest claimAudit = AuditLogWriteRequest.builder()
                 .action("TASK_ASSIGNMENT_CLAIMED").resourceType("COMPUTE_TASK").resourceId(taskNo)
-                .bizNo(taskNo).userId(userId).actorType(grant == null ? "USER" : "TEST_COMPUTE_WORKER")
-                .actorId(grant == null ? userId : null).actorUsername(grant == null ? null : grant.getName())
+                .bizNo(taskNo).userId(userId).actorType(cloud ? "TEST_CLOUD_EXECUTOR" : grant == null ? "USER" : "TEST_COMPUTE_WORKER")
+                .actorId(grant == null && !cloud ? userId : null).actorUsername(cloud ? "test-cloud:" + environment.getProperty(TestCloudExecutorService.PREFIX + "executor-id") : grant == null ? null : grant.getName())
                 .result("SUCCESS").riskLevel("MEDIUM")
                 .detail(claimDetail)
                 .build();
-        if (grant == null) auditLogService.recordRequired(claimAudit);
+        if (grant == null && !cloud) auditLogService.recordRequired(claimAudit);
         else auditLogService.recordRequiredForTrustedActor(claimAudit);
         if ("PRODUCTION".equals(sourceEnvironment)) {
             outboxService.publish("COMPUTE_TASK", taskNo, "TASK_ASSIGNMENT_CLAIMED",
@@ -690,6 +712,22 @@ public class AppTaskAssignmentService {
 
     private <T> ApiResult<T> completeInternal(Long userId, String taskNo, AppTaskCompleteRequest request,
             String sourceEnvironment, Grant grant, CompleteRequest testRequest) {
+        return completeInternal(userId, taskNo, request, sourceEnvironment, grant, testRequest, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<AppTaskAssignmentView> completeForTestCloud(String taskNo, AppTaskCompleteRequest request,
+            TestCloudExecutorService.CloudProof cloudProof) {
+        if (cloudProof == null || !managedTestCloud(cloudProof.ownerId(), cloudProof.deviceId())
+                || !"true".equals(environment.getProperty(TestCloudExecutorService.PREFIX + "enabled"))) {
+            throw new BizException(403, "TEST_CLOUD_BINDING_INVALID");
+        }
+        requireProductionRuntime(cloudProof.ownerId());
+        return completeInternal(cloudProof.ownerId(), taskNo, request, "PRODUCTION", null, null, cloudProof);
+    }
+
+    private <T> ApiResult<T> completeInternal(Long userId, String taskNo, AppTaskCompleteRequest request,
+            String sourceEnvironment, Grant grant, CompleteRequest testRequest, TestCloudExecutorService.CloudProof cloudProof) {
         if (grant != null) testWorker.requireCurrent(grant);
         Instant completedAt = clock.instant();
         LocalDateTime now = LocalDateTime.ofInstant(completedAt, clock.getZone()).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
@@ -699,10 +737,13 @@ public class AppTaskAssignmentService {
         lockProductionUser(userId);
         Long deviceId = mapper.assignmentDeviceId(userId, taskNo, sourceEnvironment);
         if (deviceId == null) throw new BizException(404, "TASK_ASSIGNMENT_NOT_FOUND");
-        if (grant == null) phoneSessions.requireExecutionOwner(userId, deviceId);
+        if (grant == null && cloudProof == null) phoneSessions.requireExecutionOwner(userId, deviceId);
         DeviceRow activeBinding = mapper.lockOwnedDevice(userId, deviceId);
         AssignmentRow task = mapper.lockAssignment(userId, taskNo, sourceEnvironment);
         if (task == null) throw new BizException(404, "TASK_ASSIGNMENT_NOT_FOUND");
+        if (cloudProof == null && (managedTestCloud(userId, deviceId) || TestCloudExecutorService.KIND.equals(task.modelName()))) {
+            throw new BizException(403, "TEST_CLOUD_EXECUTOR_REQUIRED");
+        }
         if (!deviceId.equals(task.deviceId())) throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_BINDING_CHANGED");
         if (completed(task.status())) throw new BizException(409, "TASK_ASSIGNMENT_PROOF_REPLAYED");
         if (!active(task.status())) throw new BizException(409, "TASK_ASSIGNMENT_STATE_INVALID");
@@ -730,7 +771,16 @@ public class AppTaskAssignmentService {
         if (!StringUtils.hasText(deviceInstanceNo)) throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_BINDING_MISSING");
         TestComputeWorkerService.Verified verified = null;
         ComputeTaskProofVerifier.Verification proof;
-        if (grant == null) {
+        if (cloudProof != null) {
+            if (cloudProof.ownerId() != userId || cloudProof.deviceId() != task.deviceId()
+                    || !taskNo.equals(cloudProof.taskNo()) || !deviceInstanceNo.equals(cloudProof.instanceNo())
+                    || !task.completionNonce().equals(cloudProof.nonce()) || request == null
+                    || !cloudProof.nonce().equals(request.proofNonce()) || !cloudProof.resultHash().equals(request.resultHash())
+                    || !TestCloudExecutorService.KIND.equals(task.modelName()) || !TestCloudExecutorService.CLIENT.equals(task.clientName())) {
+                throw new BizException(403, "TEST_CLOUD_PROOF_INVALID");
+            }
+            proof = new ComputeTaskProofVerifier.Verification(false, cloudProof.proofHash());
+        } else if (grant == null) {
             proof = proofVerifier.verify(userId, taskNo, task.deviceId(), deviceInstanceNo,
                     task.completionNonce(), task.proofExpiresAt(), request);
         } else {
@@ -800,15 +850,18 @@ public class AppTaskAssignmentService {
         mapper.upsertDeviceTaskLock(userId, task.deviceId(), sourceEnvironment, lockUntil, taskNo, now);
         Map<String, Object> completionDetail = linked("deviceId", task.deviceId(), "receiptNo", receiptNo,
                 "rewardUsdt", task.rewardUsdt(), "rewardNex", rewardNex, "lockUntil", lockUntil,
-                "proofHash", proof.proofHash(), "proofMode", grant == null ? (proof.sandbox() ? "SANDBOX" : "PRODUCTION") : TestComputeWorkerService.KIND);
+                "proofHash", proof.proofHash(), "proofMode", cloudProof != null ? TestCloudExecutorService.KIND : grant == null ? (proof.sandbox() ? "SANDBOX" : "PRODUCTION") : TestComputeWorkerService.KIND);
+        if (cloudProof != null) completionDetail.putAll(linked("inputHash", cloudProof.inputHash(),
+                "resultHash", cloudProof.resultHash(), "modelDigest", cloudProof.modelDigest(), "executorId", cloudProof.executorId()));
         if (grant != null) completionDetail.putAll(testWorker.proofDetail(grant, verified));
         AuditLogWriteRequest completionAudit = AuditLogWriteRequest.builder()
                 .action("TASK_ASSIGNMENT_COMPLETED").resourceType("COMPUTE_TASK").resourceId(taskNo)
-                .bizNo(receiptNo).userId(userId).actorType(grant == null ? "USER" : "TEST_COMPUTE_WORKER")
-                .actorId(grant == null ? userId : null).actorUsername(grant == null ? null : grant.getName())
+                .bizNo(receiptNo).userId(userId).actorType(cloudProof != null ? "TEST_CLOUD_EXECUTOR" : grant == null ? "USER" : "TEST_COMPUTE_WORKER")
+                .actorId(grant == null && cloudProof == null ? userId : null)
+                .actorUsername(cloudProof != null ? "test-cloud:" + cloudProof.executorId() : grant == null ? null : grant.getName())
                 .result("SUCCESS").riskLevel("HIGH")
                 .detail(completionDetail).build();
-        if (grant == null) auditLogService.recordRequired(completionAudit);
+        if (grant == null && cloudProof == null) auditLogService.recordRequired(completionAudit);
         else auditLogService.recordRequiredForTrustedActor(completionAudit);
         if (!proof.sandbox()) {
             AppTaskAssignmentMapper.UserEventAttribution attribution = mapper.userEventAttribution(userId);
@@ -950,8 +1003,8 @@ public class AppTaskAssignmentService {
         LocalDateTime completableAt = paused || row.startedAt() == null || row.requiredSeconds() == null
                 ? null : row.startedAt().plusSeconds(row.requiredSeconds() + pausedSeconds);
         return new AppTaskAssignmentView(row.taskNo(), row.deviceId(),
-                StringUtils.hasText(row.taskId()) ? row.taskId() : row.taskNo(), row.taskName(),
-                canonicalTaskClass(row.taskClass()), row.modelName(), row.clientName(),
+                StringUtils.hasText(row.taskId()) ? row.taskId() : row.taskNo(), TestCloudExecutorService.publicTaskName(row.modelName(), row.taskName()),
+                canonicalTaskClass(row.taskClass()), TestCloudExecutorService.publicModel(row.modelName()), TestCloudExecutorService.publicClient(row.modelName(), row.clientName()),
                 paused ? "PAUSED" : row.status(), row.rewardUsdt(),
                 row.requiredSeconds(), row.startedAt(), completableAt, row.completedAt(), row.receiptNo(),
                 active(row.status()) ? row.completionNonce() : null,
@@ -975,8 +1028,8 @@ public class AppTaskAssignmentService {
         return new AppComputeReceiptView(
                 row.receiptNo(), row.taskNo(), row.deviceId(), row.deviceInstanceNo(), row.deviceName(),
                 row.deviceType(), value(row.deviceGpu()), row.vramTotalGb(),
-                StringUtils.hasText(row.taskId()) ? row.taskId() : row.taskNo(), row.taskName(),
-                canonicalTaskClass(row.taskClass()), value(row.modelName()), row.clientName(),
+                StringUtils.hasText(row.taskId()) ? row.taskId() : row.taskNo(), TestCloudExecutorService.publicTaskName(row.modelName(), row.taskName()),
+                canonicalTaskClass(row.taskClass()), TestCloudExecutorService.publicModel(value(row.modelName())), TestCloudExecutorService.publicClient(row.modelName(), row.clientName()),
                 row.rewardUsdt(), row.rewardNex(), row.earningStatus(), proofHash,
                 row.startedAt(), row.completedAt(), row.durationSec(),
                 PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true);

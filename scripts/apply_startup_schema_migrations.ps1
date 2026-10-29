@@ -367,6 +367,7 @@ $migrations = @(
   # First-batch business facts and native push receipts remain separate from inbox delivery.
   (Join-Path $root "scripts\migrations\20261029_business_notifications.sql")
   (Join-Path $root "scripts\migrations\20261029_native_push_transport.sql")
+  (Join-Path $root "scripts\migrations\20261030_test_cloud_bge_execution.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
