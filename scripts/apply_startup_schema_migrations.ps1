@@ -356,6 +356,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261028_zz_console_copy_seed_forward.sql")
   (Join-Path $root "scripts\migrations\20261028_h9_member_tick_default.sql")
   (Join-Path $root "scripts\migrations\20261028_e4_order_refund_reason.sql"),
+  (Join-Path $root "scripts\migrations\20261029_e4_order_close_reason.sql"),
   (Join-Path $root "scripts\migrations\20261028_support_ticket_rbac_retirement.sql")
   (Join-Path $root "scripts\migrations\20261028_f5_commission_key_split.sql")
   (Join-Path $root "scripts\migrations\20261028_compute_points.sql")

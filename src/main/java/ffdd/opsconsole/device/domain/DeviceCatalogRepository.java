@@ -109,6 +109,8 @@ public interface DeviceCatalogRepository {
 
     void recordOrderRefundReason(String orderNo, String refundReasonCode);
 
+    void recordOrderCloseReason(String orderNo, String closeReasonCode);
+
     void recordOrderHistory(
             String orderNo,
             String fromState,

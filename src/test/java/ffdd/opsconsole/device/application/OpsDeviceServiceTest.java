@@ -2775,6 +2775,68 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void cancelOrderStoresOperatorCloseReasonAndAuditsIt() {
+        catalogRepository.order = order("OD-1", "placed");
+
+        ApiResult<DeviceOrderView> result = service.cancelOrder("OD-1", "idem-order-cancel-reason",
+                new DeviceOrderActionRequest(null, null, "stock mismatch", "superadmin", null, " delivery_unavailable "));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(catalogRepository.closeReasons).containsEntry("OD-1", "DELIVERY_UNAVAILABLE");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("closeReasonCode", "DELIVERY_UNAVAILABLE")
+                .containsEntry("reason", "stock mismatch");
+    }
+
+    @Test
+    void closeReasonMustFitTheTargetStateBeforeAnyChange() {
+        for (var attempt : List.of(
+                List.of("placed", "payment_failed", "DELIVERY_UNAVAILABLE"),
+                List.of("placed", "cancelled", "USER_CANCELLED"),
+                List.of("provisioning", "provisioning_failed", "OPS_INTERNAL_NOTE"))) {
+            catalogRepository.order = order("OD-1", attempt.get(0));
+            DeviceOrderActionRequest request = new DeviceOrderActionRequest(
+                    attempt.get(1), null, "closing the order", "superadmin", null, attempt.get(2));
+
+            ApiResult<DeviceOrderView> result = "cancelled".equals(attempt.get(1))
+                    ? service.cancelOrder("OD-1", "idem-close-bad-" + attempt.get(2), request)
+                    : service.terminalOrder("OD-1", "idem-close-bad-" + attempt.get(2), request);
+
+            assertThat(result.getCode()).isEqualTo(422);
+            assertThat(result.getMessage()).isEqualTo("E4_CLOSE_REASON_INVALID");
+            assertThat(catalogRepository.order.state()).isEqualTo(attempt.get(0));
+        }
+        assertThat(catalogRepository.closeReasons).isEmpty();
+    }
+
+    @Test
+    void singleReasonStatesRecordTheirReasonWithoutAChoice() {
+        for (var terminal : List.of(List.of("placed", "expired", "PAYMENT_TIMEOUT"), List.of("paid", "chargeback", "PAYMENT_DISPUTED"))) {
+            catalogRepository.order = order("OD-1", terminal.get(0));
+            catalogRepository.closeReasons.clear();
+
+            ApiResult<DeviceOrderView> result = service.terminalOrder("OD-1", "idem-close-implied-" + terminal.get(1),
+                    new DeviceOrderActionRequest(terminal.get(1), "closing the order", "superadmin"));
+
+            assertThat(result.getCode()).isZero();
+            assertThat(catalogRepository.closeReasons).containsEntry("OD-1", terminal.get(2));
+        }
+    }
+
+    @Test
+    void closeWithoutReasonKeepsLegacyTicketsWorking() {
+        catalogRepository.order = order("OD-1", "placed");
+
+        ApiResult<DeviceOrderView> result = service.terminalOrder("OD-1", "idem-close-legacy",
+                new DeviceOrderActionRequest("payment_failed", "gateway declined", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(catalogRepository.closeReasons).isEmpty();
+    }
+
+    @Test
     void terminalOrderWritesAudit() {
         catalogRepository.order = order("OD-1", "provisioning");
 
@@ -3113,6 +3175,24 @@ class OpsDeviceServiceTest {
                 .containsEntry("fromStatus", "on")
                 .containsEntry("toStatus", "off")
                 .containsEntry("idempotencyKey", "idem-replay-e1-sku-status");
+    }
+
+    @Test
+    void replayE4OrderCloseCarriesUserVisibleReason() {
+        catalogRepository.order = order("OD-1", "placed");
+        ApiResult<?> cancelled = service.replay(
+                new AuditReplayCommand("E", "e4_order_cancel", Map.of("orderNo", "OD-1", "closeReasonCode", "ORDER_EXCEPTION")),
+                new AuditReplayContext("superadmin", "duplicate order", "idem-replay-e4-cancel-reason"));
+        assertThat(cancelled.getCode()).isZero();
+        assertThat(catalogRepository.closeReasons).containsEntry("OD-1", "ORDER_EXCEPTION");
+
+        catalogRepository.order = order("OD-2", "placed");
+        ApiResult<?> failed = service.replay(
+                new AuditReplayCommand("E", "e4_order_terminal",
+                        Map.of("orderNo", "OD-2", "terminalState", "payment_failed", "closeReasonCode", "PAYMENT_NOT_RECEIVED")),
+                new AuditReplayContext("superadmin", "no transfer arrived", "idem-replay-e4-terminal-reason"));
+        assertThat(failed.getCode()).isZero();
+        assertThat(catalogRepository.closeReasons).containsEntry("OD-2", "PAYMENT_NOT_RECEIVED");
     }
 
     @Test
@@ -4129,6 +4209,7 @@ class OpsDeviceServiceTest {
         private List<DeviceOrderFundingView> orderFunding = List.of();
         private int rollbackOrderAssetsCalls;
         private final Map<String, String> refundReasons = new java.util.HashMap<>();
+        private final Map<String, String> closeReasons = new java.util.HashMap<>();
         private DeviceSkuUpsertRequest lastSkuRequest;
         private final Map<String, DevicePhaseView> phases = new LinkedHashMap<>();
         private final Map<String, DeviceGenerationGateView> generationGates = new LinkedHashMap<>();
@@ -4840,6 +4921,11 @@ class OpsDeviceServiceTest {
         @Override
         public void recordOrderRefundReason(String orderNo, String refundReasonCode) {
             refundReasons.put(orderNo, refundReasonCode);
+        }
+
+        @Override
+        public void recordOrderCloseReason(String orderNo, String closeReasonCode) {
+            closeReasons.put(orderNo, closeReasonCode);
         }
 
         @Override

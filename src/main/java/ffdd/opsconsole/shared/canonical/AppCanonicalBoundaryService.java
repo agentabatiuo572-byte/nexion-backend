@@ -868,7 +868,8 @@ public class AppCanonicalBoundaryService {
                 "refundAmountUsdt", order.refundAmountUsdt() == null ? null : zero(order.refundAmountUsdt()),
                 "refundChannel", order.refundChannel(),
                 "refundBillNo", order.refundBillNo(),
-                "refundReasonCode", order.refundReasonCode());
+                "refundReasonCode", order.refundReasonCode(),
+                "closeReasonCode", order.closeReasonCode());
         if ("BUNDLE".equalsIgnoreCase(order.orderType())) {
             List<CanonicalStateMapper.UserOrderLineItem> lines = mapper.userOrderLineItems(order.orderNo());
             if (lines == null || lines.isEmpty()) throw new BizException(503, "BUNDLE_ORDER_LINES_UNAVAILABLE");
