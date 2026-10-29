@@ -227,7 +227,7 @@ public class PromotionOrderService {
     }
     @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)
     public void releaseUnpaid(String orderNo,String terminalReason){
-        Map<String,Object> order=db.order(orderNo,false);require(order.get("paid_at")==null&&Set.of("CANCELLED","EXPIRED","FAILED").contains(text(order.get("order_status"))),"PROMOTION_ORDER_NOT_TERMINAL_UNPAID");
+        Map<String,Object> order=db.order(orderNo,false);require(order.get("paid_at")==null&&Set.of("CANCELLED","EXPIRED","FAILED","PAYMENT_FAILED").contains(text(order.get("order_status"))),"PROMOTION_ORDER_NOT_TERMINAL_UNPAID");
         List<Map<String,Object>> rows=db.reservations(orderNo,true);Set<String> activities=new TreeSet<>(),orderUses=new HashSet<>();
         for(Map<String,Object> r:rows)if("RESERVED".equals(r.get("status"))){
             activities.add(text(r.get("activity_id")));changed(db.write("UPDATE nx_promotion_budget SET reserved=reserved-?,revision=revision+1 WHERE activity_id=? AND asset=? AND product_no=? AND reserved>=?",r.get("amount"),r.get("activity_id"),r.get("asset"),r.get("product_no"),r.get("amount")));
