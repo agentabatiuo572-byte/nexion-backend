@@ -379,10 +379,10 @@ class OpsDeviceServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("maxDevicesPerUser", 6);
         assertThat((List<?>) result.getData().get("sources"))
-                .anyMatch(source -> "nx_config_item:device.max_active_slots".equals(source));
+                .anyMatch(source -> "product-policy:MAX_DEVICES=6".equals(source));
 
         configFacade.values.put("device.max_active_slots", "8");
-        assertThat(service.overview().getData()).containsEntry("maxDevicesPerUser", 8);
+        assertThat(service.overview().getData()).containsEntry("maxDevicesPerUser", 6);
     }
 
     @Test
@@ -446,17 +446,17 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void e5CloudShareActivationBypassesPhysicalDeviceCap() {
+    void e5CloudShareActivationCannotBypassTheDeviceCap() {
         deviceRepository.device = device("INVENTORY", 0, null);
         deviceRepository.activeDevicesByUser = 6;
-        deviceRepository.targetOccupiesPhysicalSlot = false;
 
         ApiResult<DeviceOpsView> result = service.activateE5Device(
                 1L, false, "idem-e5-share-activate",
                 new DeviceE5ActionRequest("activate cloud share service", "superadmin"));
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().status()).isEqualTo("OFFLINE");
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("MAX_DEVICES_PER_USER_EXCEEDED");
+        assertThat(deviceRepository.device.status()).isEqualTo("INVENTORY");
     }
 
     @Test
@@ -3991,7 +3991,6 @@ class OpsDeviceServiceTest {
         private long activeDevicesByUser;
         private long trialReservedSlots;
         private long orderReservedSlots;
-        private boolean targetOccupiesPhysicalSlot = true;
         private boolean activationLockHeld = true;
         private final List<Long> cancelledActiveTaskDeviceIds = new ArrayList<>();
         private Long pausedUserId;
@@ -4075,11 +4074,6 @@ class OpsDeviceServiceTest {
         @Override
         public long countOccupiedSlotsForE5Activation(Long userId) {
             return activeDevicesByUser + trialReservedSlots + orderReservedSlots;
-        }
-
-        @Override
-        public boolean occupiesPhysicalSlot(Long deviceId) {
-            return targetOccupiesPhysicalSlot;
         }
 
         @Override

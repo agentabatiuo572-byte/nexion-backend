@@ -15,24 +15,24 @@ class SlotCapacityMapperSqlContractTest {
     void everyCapacityReaderDefaultsToTheSixSlotProductPolicy() throws Exception {
         for (Class<?> mapper : new Class<?>[]{CanonicalStateMapper.class, AppTradeinMapper.class, AppBundleOrderMapper.class}) {
             assertThat(String.join(" ", mapper.getMethod("deviceSlotCap").getAnnotation(Select.class).value())
-                    .replaceAll("\\s+", "")).endsWith(",6)");
+                    .replaceAll("\\s+", "")).isEqualTo("SELECT6");
         }
         for (Class<?> mapper : new Class<?>[]{CanonicalStateMapper.class, AppTradeinMapper.class}) {
             assertThat(String.join(" ", mapper.getMethod("lockDeviceSlotCap").getAnnotation(Select.class).value())
-                    .replaceAll("\\s+", "")).endsWith(",6)");
+                    .replaceAll("\\s+", "")).isEqualTo("SELECT6");
         }
         PromotionMapper promotion = org.mockito.Mockito.mock(PromotionMapper.class, org.mockito.Mockito.CALLS_REAL_METHODS);
         assertThat(promotion.deviceSlotCap()).isEqualTo(6);
     }
 
     @Test
-    void tradeinCapacityCountsEveryOccupiedPhysicalLifecycleState() throws Exception {
-        assertPhysicalOccupiedSlotPredicate(select(AppTradeinMapper.class, "countActiveDevices"));
+    void tradeinCapacityCountsEveryOccupiedLifecycleState() throws Exception {
+        assertOccupiedSlotPredicate(select(AppTradeinMapper.class, "countActiveDevices"));
     }
 
     @Test
-    void bundlePreflightCountsEveryOccupiedPhysicalLifecycleState() throws Exception {
-        assertPhysicalOccupiedSlotPredicate(select(AppBundleOrderMapper.class, "activeDeviceCount"));
+    void bundlePreflightCountsEveryOccupiedLifecycleState() throws Exception {
+        assertOccupiedSlotPredicate(select(AppBundleOrderMapper.class, "activeDeviceCount"));
     }
 
     private static String select(Class<?> mapper, String methodName) throws Exception {
@@ -40,12 +40,12 @@ class SlotCapacityMapperSqlContractTest {
         return String.join(" ", method.getAnnotation(Select.class).value());
     }
 
-    private static void assertPhysicalOccupiedSlotPredicate(String sql) {
+    private static void assertOccupiedSlotPredicate(String sql) {
         String normalized = sql.replaceAll("\\s+", "");
         assertThat(normalized)
                 .contains("UPPER(ownership_status)='OWNED'")
                 .contains("UPPER(status)IN('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')")
-                .contains("UPPER(COALESCE(NULLIF(device_type,''),'DEVICE'))<>'SHARE'")
+                .doesNotContain("SHARE", "device_type")
                 .contains("activated_atISNOTNULL")
                 .contains("deactivated_atISNULL")
                 .contains("pending_deactivate=0");

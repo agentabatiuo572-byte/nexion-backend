@@ -28,15 +28,10 @@ public interface DeviceOpsRepository {
         return 0;
     }
 
-    /** Physical devices plus order, promotion and trial reservations; called with the owner lock held. */
+    /** Every activated device plus order, promotion and trial reservations; called with the owner lock held. */
     long countOccupiedSlotsForE5Activation(Long userId);
 
-    /** True only when activating this target consumes one of the six physical-device slots. */
-    default boolean occupiesPhysicalSlot(Long deviceId) {
-        return true;
-    }
-
-    /** Serializes E5 physical-device activations for one owner before capacity is read. */
+    /** Serializes E5 activations for one owner before capacity is read. */
     default boolean lockUserForE5Activation(Long userId) {
         return false;
     }

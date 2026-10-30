@@ -65,6 +65,23 @@ class TestCloudExecutorSecurityContractTest {
         verify(service,times(1)).next(any(),eq("next-cloud-unit"));
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
     }
+    @Test void singleEligibilityRetainsTheExactDedicatedLoopbackGetBoundary() throws Exception {
+        String path=BASE+"/eligibility";
+        doReturn(ApiResult.ok(Map.of("eligible",false))).when(service).eligibility(any());
+        assertThat(mvc.perform(get(path).header("Authorization","Bearer "+TOKEN)).andReturn().getResponse().getStatus()).isEqualTo(200);
+        for(String token:List.of("user-jwt","admin-jwt"))
+            assertThat(mvc.perform(get(path).header("Authorization","Bearer "+token)).andReturn().getResponse().getStatus()).isEqualTo(401);
+        assertThat(mvc.perform(get(path).header("Authorization","Bearer "+TOKEN).header("Forwarded","for=127.0.0.1"))
+                .andReturn().getResponse().getStatus()).isEqualTo(403);
+        assertThat(mvc.perform(get(path).header("Authorization","Bearer "+TOKEN).with(req->{req.setRemoteAddr("203.0.113.5");return req;}))
+                .andReturn().getResponse().getStatus()).isEqualTo(403);
+        assertThat(mvc.perform(post(path).header("Authorization","Bearer "+TOKEN)).andReturn().getResponse().getStatus()).isEqualTo(403);
+        assertThat(mvc.perform(get(path+"/").header("Authorization","Bearer "+TOKEN)).andReturn().getResponse().getStatus()).isEqualTo(403);
+        verify(service,times(1)).eligibility(any());
+        var raw=new org.springframework.mock.web.MockHttpServletRequest("GET",path);
+        assertThat(GeoBlockEnforcementFilter.isTestCloudRoute(raw)).isTrue();
+        raw.setMethod("POST"); assertThat(GeoBlockEnforcementFilter.isTestCloudRoute(raw)).isFalse();
+    }
     @Test void forwardedSpoofRemotePeerAndEnabledProfileAreRejectedBeforeBusinessMethod() throws Exception {
         for(String header:List.of("Forwarded","X-Forwarded-For","X-Forwarded-Host","X-Real-IP")) {
             assertThat(mvc.perform(post(BASE+"/next-task").header("Authorization","Bearer "+TOKEN).header(header,"127.0.0.1")

@@ -302,14 +302,11 @@ public class AppBundleOrderService {
                 return ApiResult.fail(409, "PURCHASE_GATE_BLOCKED");
             }
         }
-        long physicalItemCount = products.stream()
-                .filter(row -> !"SHARE".equalsIgnoreCase(row.productType()))
-                .mapToLong(row -> quantities.get(row.productNo())).sum();
         int cap = Math.max(1, mapper.deviceSlotCap());
-        int active = Math.max(0, mapper.activeDeviceCount(userId));
-        int reserved = Math.max(0, mapper.reservedDeviceOrderCount(userId));
+        int active = Math.max(0, mapper.lockActiveDeviceCount(userId));
+        int reserved = Math.max(0, mapper.lockReservedDeviceOrderCount(userId));
         int trial = mapper.lockReservedTrialSlotCount(userId);
-        if ((long) active + reserved + trial + physicalItemCount > cap) {
+        if ((long) active + reserved + trial + quantity > cap) {
             return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
         }
         AppBundleOrderMapper.Attribution attribution = mapper.attribution(userId);

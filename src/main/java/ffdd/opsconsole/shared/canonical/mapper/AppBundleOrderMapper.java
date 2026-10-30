@@ -41,7 +41,6 @@ public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReser
             SELECT COUNT(1) FROM nx_user_device
              WHERE user_id=#{userId} AND is_deleted=0 AND UPPER(ownership_status)='OWNED'
                AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
-               AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'
                AND activated_at IS NOT NULL
                AND deactivated_at IS NULL AND pending_deactivate=0
             """)
@@ -53,16 +52,13 @@ public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReser
                               SELECT 1 FROM nx_order_item present_item
                                WHERE present_item.order_no=o.order_no AND present_item.is_deleted=0
                             ) THEN COALESCE((
-                              SELECT SUM(CASE
-                                  WHEN UPPER(COALESCE(NULLIF(item_product.product_type,''),'DEVICE'))='SHARE'
-                                  THEN 0 ELSE order_item.quantity END)
+                              SELECT SUM(order_item.quantity)
                                 FROM nx_order_item order_item
                                 LEFT JOIN nx_product item_product
                                   ON item_product.id=order_item.product_id AND item_product.is_deleted=0
                                WHERE order_item.order_no=o.order_no AND order_item.is_deleted=0
                             ),0)
-                          WHEN UPPER(COALESCE(NULLIF(header_product.product_type,''),'DEVICE'))='SHARE'
-                          THEN 0 ELSE o.quantity END
+                          ELSE o.quantity END
                    ),0) +
             """ + CanonicalStateMapper.PROMOTION_RESERVED_SLOTS + """
               FROM nx_order o
@@ -76,11 +72,14 @@ public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReser
             + CanonicalStateMapper.EXCLUDE_FULFILLED_CAPACITY_KEEP)
     int reservedDeviceOrderCount(@Param("userId") Long userId);
 
-    @Select("""
-            SELECT COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
-              WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1),6)
-            """)
+    @Select("SELECT 6")
     int deviceSlotCap();
+
+    @Select(CanonicalStateMapper.ACTIVE_DEVICE_COUNT + " AND COALESCE(u.sandbox,0)=0 FOR SHARE")
+    int lockActiveDeviceCount(@Param("userId") Long userId);
+
+    @Select(CanonicalStateMapper.LOCK_RESERVED_DEVICE_ORDERS + " AND COALESCE(u.sandbox,0)=0 FOR SHARE")
+    int lockReservedDeviceOrderCount(@Param("userId") Long userId);
 
     @Select("""
             SELECT COALESCE((SELECT config_value FROM nx_config_item

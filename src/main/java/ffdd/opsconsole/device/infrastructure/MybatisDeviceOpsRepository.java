@@ -171,11 +171,6 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     }
 
     @Override
-    public boolean occupiesPhysicalSlot(Long deviceId) {
-        return Boolean.TRUE.equals(mapper.occupiesPhysicalSlot(deviceId));
-    }
-
-    @Override
     public boolean lockUserForE5Activation(Long userId) {
         return mapper.lockUserForE5Activation(userId) != null;
     }

@@ -190,26 +190,25 @@ public class AppCanonicalBoundaryService {
             return ApiResult.fail(409, "PHONE_CALIBRATION_ACTIVATION_REQUIRED");
         }
         String status = normalizeState(device.status(), "");
-        boolean occupiesPhysicalSlot = !"SHARE".equals(normalizeState(device.deviceType(), "DEVICE"));
         // A lifecycle label alone is insufficient: old/incomplete rows must not acquire an activation
-        // fact or a physical slot through an idempotent response.
+        // fact or a slot through an idempotent response.
         if (isSlotOccupyingActiveState(status)
                 && (device.activatedAt() == null || device.deactivatedAt() != null)) {
             return ApiResult.fail(409, "DEVICE_STATE_CONFLICT");
         }
-        // Runtime OFFLINE is still an activated asset: it occupies its physical slot and must not be
+        // Runtime OFFLINE is still an activated asset: it occupies its slot and must not be
         // reactivated or bypass the deferred-deactivation path merely because telemetry is disconnected.
         if (isSlotOccupyingActiveState(status)) return ApiResult.ok(linked(
                 "deviceId", device.id(), "instanceNo", device.instanceNo(), "status", status,
-                "activeCount", Math.max(0, mapper.activeDeviceCount(userId)),
+                "activeCount", Math.max(0, mapper.lockActiveDeviceCount(userId, false)),
                 "slotCap", Math.max(1, mapper.deviceSlotCap()), "rowVersion", device.rowVersion(),
                 "alreadyActive", true));
         int cap = Math.max(1, mapper.deviceSlotCap());
-        int active = Math.max(0, mapper.activeDeviceCount(userId));
+        int active = Math.max(0, mapper.lockActiveDeviceCount(userId, false));
         int trial = mapper.lockReservedTrialSlotCount(userId);
-        int reservedOrders = Math.max(0, mapper.reservedDeviceOrderCount(userId));
+        int reservedOrders = Math.max(0, mapper.lockReservedDeviceOrderCount(userId, false));
         if ((clientMaxDevices != null && clientMaxDevices > cap)
-                || (occupiesPhysicalSlot && (long) active + reservedOrders + trial >= cap)) {
+                || (long) active + reservedOrders + trial >= cap) {
             return reject(userId, "device_slot_cap",
                     "客户端设备槽位上限高于服务器配置或账户已达上限，服务器拒绝激活",
                     "/api/devices/activate", "DEVICE_SLOT_CAP_EXCEEDED");
@@ -227,7 +226,7 @@ public class AppCanonicalBoundaryService {
         long nextVersion = expectedVersion + 1;
         Map<String, Object> state = linked(
                 "deviceId", device.id(), "instanceNo", device.instanceNo(), "status", "ACTIVE",
-                "activeCount", active + (occupiesPhysicalSlot ? 1 : 0),
+                "activeCount", active + 1,
                 "slotCap", cap, "rowVersion", nextVersion, "alreadyActive", false);
         outboxService.publishUserEvent(
                 "USER_DEVICE", device.instanceNo(), "device.activated", userId,
@@ -1398,13 +1397,9 @@ public class AppCanonicalBoundaryService {
         // side effects, so it must reject a full account even when a client skips
         // or races the quote endpoint.  Capacity replacement uses its own locked
         // transaction which removes one active device before adding the target.
-        if (!"SHARE".equalsIgnoreCase(product.productType())) {
-            int activeDevices = Math.max(0, developmentRuntime
-                    ? mapper.developmentActiveDeviceCount(userId)
-                    : mapper.activeDeviceCount(userId));
-            int reservedDevices = Math.max(0, developmentRuntime
-                    ? mapper.developmentReservedDeviceOrderCount(userId)
-                    : mapper.reservedDeviceOrderCount(userId));
+        {
+            int activeDevices = Math.max(0, mapper.lockActiveDeviceCount(userId, developmentRuntime));
+            int reservedDevices = Math.max(0, mapper.lockReservedDeviceOrderCount(userId, developmentRuntime));
             int slotCap = Math.max(1, mapper.deviceSlotCap());
             int trial = developmentRuntime ? 0 : mapper.lockReservedTrialSlotCount(userId);
             if ((long) activeDevices + reservedDevices + trial + qty > slotCap) {

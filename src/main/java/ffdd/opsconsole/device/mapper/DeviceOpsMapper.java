@@ -21,10 +21,6 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             AND d.pending_deactivate = 0
             AND UPPER(d.ownership_status) = 'OWNED'
             """;
-    // Runtime views include Cloud Share; only capacity and user slot positions exclude it.
-    String E5_PHYSICAL_SLOT = E5_ACTIVATED_OWNED + """
-            AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
-            """;
     // Effective read states use database time; a persisted ONLINE flag alone is not live proof.
     String E5_HEARTBEAT_FRESH = " (r.heartbeat_at BETWEEN DATE_SUB(NOW(6), INTERVAL 10 MINUTE) AND NOW(6))";
     String E5_HEARTBEAT_STALE = " (r.heartbeat_at IS NULL OR NOT" + E5_HEARTBEAT_FRESH + ")";
@@ -88,10 +84,8 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               WHERE a.user_id=d.user_id AND a.is_deleted=0
                 AND a.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')
                 AND a.ownership_status = 'OWNED' AND a.pending_deactivate = 0
-                AND UPPER(COALESCE(NULLIF(a.device_type,''),'DEVICE')) != 'SHARE'
                 AND a.activated_at IS NOT NULL AND a.deactivated_at IS NULL) AS activeDevicesForUser,
             CASE
-              WHEN UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) = 'SHARE' THEN NULL
               WHEN d.status NOT IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE') OR d.activated_at IS NULL
                 OR d.deactivated_at IS NOT NULL OR d.pending_deactivate = 1 OR d.ownership_status != 'OWNED' THEN NULL
               ELSE (
@@ -102,7 +96,6 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                    AND s.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')
                    AND s.ownership_status = 'OWNED' AND s.pending_deactivate = 0
                    AND s.activated_at IS NOT NULL AND s.deactivated_at IS NULL
-                   AND UPPER(COALESCE(NULLIF(s.device_type,''),'DEVICE')) != 'SHARE'
                    AND NOT s.id > d.id
               )
             END AS userDeviceSlotNo,
@@ -350,20 +343,9 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     @Select("""
             SELECT COUNT(*) FROM nx_user_device d
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
-               AND """ + E5_PHYSICAL_SLOT + """
+               AND """ + E5_ACTIVATED_OWNED + """
             """)
     long countActiveDevicesByUser(@Param("userId") Long userId);
-
-    @Select("""
-            SELECT CASE
-                     WHEN UPPER(COALESCE(NULLIF(device_type,''),'DEVICE'))='SHARE' THEN 0
-                     ELSE 1
-                   END
-              FROM nx_user_device
-             WHERE id=#{deviceId} AND is_deleted=0
-             LIMIT 1
-            """)
-    Boolean occupiesPhysicalSlot(@Param("deviceId") Long deviceId);
 
     @Select("""
             SELECT id FROM nx_user

@@ -18,7 +18,7 @@ public class PhoneActivationCapacityService implements PhoneActivationCapacityCo
     public void requireCapacity(Long userId, Long currentBoundPhoneDeviceId) {
         var user = mapper.lockUser(userId);
         if (user == null) throw new BizException(403, "USER_AUTH_REQUIRED");
-        // Only a currently occupied slot can be reused; a past binding is not a reservation.
+        // Reusing the same occupied phone does not add a device, including on an old over-cap account.
         if (currentBoundPhoneDeviceId != null
                 && mapper.lockOccupiedOnboardingPhone(userId, currentBoundPhoneDeviceId) != null) return;
         int active = mapper.lockActiveDeviceCount(userId, user.sandbox());

@@ -848,9 +848,9 @@ public class AppTrialLifecycleService {
 
     /** Start reserves one slot; conversion replaces that same trial reservation with one device. */
     private boolean withinPhysicalSlotCapacity(Long userId, AppTrialLifecycleMapper.ConversionProduct product) {
-        if (product == null || "SHARE".equalsIgnoreCase(product.productType())) return true;
-        int active = Math.max(0, canonicalStateMapper.activeDeviceCount(userId));
-        int reserved = Math.max(0, canonicalStateMapper.reservedDeviceOrderCount(userId));
+        if (product == null) return true;
+        int active = Math.max(0, canonicalStateMapper.lockActiveDeviceCount(userId, false));
+        int reserved = Math.max(0, canonicalStateMapper.lockReservedDeviceOrderCount(userId, false));
         int cap = Math.max(1, canonicalStateMapper.deviceSlotCap());
         return (long) active + reserved + 1 <= cap;
     }

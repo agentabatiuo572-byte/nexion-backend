@@ -278,7 +278,7 @@ class AppBundleOrderServiceTest {
     }
 
     @Test
-    void bundlePreflightRejectsWhenTheAuthoritativeOccupiedSlotCountLeavesNoPhysicalCapacity() {
+    void mixedCloudShareBundleCountsBothItemsAgainstTheSharedCapacity() {
         AppBundleOrderMapper mapper = mock(AppBundleOrderMapper.class);
         AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
         FundsSandboxProfileGuard guard = mock(FundsSandboxProfileGuard.class);
@@ -289,15 +289,15 @@ class AppBundleOrderServiceTest {
         when(mapper.lockProducts(any())).thenReturn(List.of(
                 new AppBundleOrderMapper.ProductRow(1L, "stellarbox-s1", "S1", new BigDecimal("100"), 2,
                         null, null, "DEVICE", "FINITE", "configured", 1, "500W", "DC-HCM"),
-                new AppBundleOrderMapper.ProductRow(2L, "stellarbox-pro", "Pro", new BigDecimal("200"), 2,
-                        null, null, "DEVICE", "FINITE", "configured", 1, "600W", "DC-HCM")));
+                new AppBundleOrderMapper.ProductRow(2L, "cloud-share", "Share", new BigDecimal("200"), 0,
+                        null, null, "SHARE", "UNLIMITED", null, null, null, null)));
         when(mapper.deviceSlotCap()).thenReturn(6);
-        when(mapper.activeDeviceCount(7L)).thenReturn(4);
+        when(mapper.lockActiveDeviceCount(7L)).thenReturn(4);
         when(mapper.lockReservedTrialSlotCount(7L)).thenReturn(1);
 
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
-                .create(7L, List.of("stellarbox-s1", "stellarbox-pro"), 1L, new BigDecimal("285"), "bundle-capacity-key");
+                .create(7L, List.of("stellarbox-s1", "cloud-share"), 1L, new BigDecimal("285"), "bundle-capacity-key");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("CAPACITY_REPLACEMENT_REQUIRED");

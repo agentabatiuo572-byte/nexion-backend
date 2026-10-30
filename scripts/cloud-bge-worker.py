@@ -120,7 +120,7 @@ class Config:
         if fleet:
             self.interval = int(env.get("UVEL_CLOUD_POLL_SECONDS", "60"))
             require(60 <= self.interval <= 3600, "POLL_INTERVAL_INVALID")
-            parallel = env.get("UVEL_CLOUD_FLEET_PARALLELISM", "2")
+            parallel = env.get("UVEL_CLOUD_FLEET_PARALLELISM", "6")
             require(isinstance(parallel, str) and re.fullmatch(r"[1-8]", parallel) is not None,
                     "FLEET_PARALLELISM_INVALID")
             self.parallelism = int(parallel)
@@ -463,9 +463,9 @@ def infer(ollama, task):
 
 
 class Worker:
-    def __init__(self, config, backend, ollama, journal, stop=STOP, parent_stop=None):
+    def __init__(self, config, backend, ollama, journal, stop=STOP, parent_stop=None, claim_capacity=None):
         self.config, self.backend, self.ollama, self.journal, self.stop = config, backend, ollama, journal, stop
-        self.parent_stop = parent_stop
+        self.parent_stop, self.claim_capacity = parent_stop, claim_capacity
         self.heartbeat_stop = threading.Event()
         self.heartbeat_thread = None
         self.heartbeat_error = None
@@ -473,10 +473,14 @@ class Worker:
     def mutate(self, operation, path, body, key, state=None, validator=None):
         if operation in ("NEXT", "COMPLETE"):
             require(not self.stopping(), "STOP_BEFORE_ECONOMIC_REQUEST")
+        if operation == "NEXT" and self.claim_capacity is not None and not self.claim_capacity.is_set():
+            raise NotSent("FLEET_ACTIVE_CAPACITY_EXCEEDED")
         call = self.journal.intent(operation, key, (state or {}).get("taskNo"), body, state)
         try:
             if operation in ("NEXT", "COMPLETE") and self.stopping():
                 raise NotSent("STOP_BEFORE_ECONOMIC_SEND")
+            if operation == "NEXT" and self.claim_capacity is not None and not self.claim_capacity.is_set():
+                raise NotSent("FLEET_ACTIVE_CAPACITY_EXCEEDED")
             data = envelope(self.backend.request("POST", PREFIX + path, body, key))
             if validator:
                 validator(data)
@@ -494,6 +498,15 @@ class Worker:
 
     def stopping(self):
         return self.stop.is_set() or (self.parent_stop is not None and self.parent_stop.is_set())
+
+    def eligible(self):
+        data = envelope(self.backend.request("GET", PREFIX + "/eligibility"))
+        binding(data, self.config)
+        require(type(data.get("eligible")) is bool and "activeTaskNo" in data
+                and (data["activeTaskNo"] is None or (isinstance(data["activeTaskNo"], str)
+                     and re.fullmatch(r"[A-Za-z0-9._:-]{1,96}", data["activeTaskNo"]) is not None)), "ELIGIBILITY_INVALID")
+        require(not data["eligible"] or data["activeTaskNo"] is None, "ELIGIBILITY_ACTIVE_TASK_BLOCKED")
+        return data["eligible"]
 
     def heartbeat(self, idle_only=False, expected_task=None):
         verify_model(self.ollama, self.config.binding)
@@ -518,6 +531,8 @@ class Worker:
         def run():
             while not self.heartbeat_stop.wait(10):
                 try:
+                    if not fatal and self.journal.state()["phase"] in ("IDLE", "NEXT_NOT_SENT") and not self.eligible():
+                        continue
                     self.heartbeat(idle_only=fatal)
                 except Exception as error:
                     if fatal:
@@ -706,10 +721,22 @@ class Worker:
                 if self.heartbeat_error:
                     raise self.heartbeat_error
                 return 0
-            current = self.journal.state()
-            if current["phase"] == "IDLE" and current.get("binding") == self.config.binding:
-                self.start_heartbeat()
             while not self.stop.is_set():
+                try:
+                    eligible = self.eligible()
+                except Halt as error:
+                    if not isinstance(error, NotSent) and str(error) != "HTTP_OUTCOME_UNKNOWN":
+                        raise
+                    print("SINGLE_ELIGIBILITY_UNCONFIRMED", flush=True)
+                    eligible = False
+                if not eligible:
+                    if once:
+                        return 2
+                    self.stop.wait(self.config.interval)
+                    continue
+                current = self.journal.state()
+                if self.heartbeat_thread is None and current["phase"] == "IDLE" and current.get("binding") == self.config.binding:
+                    self.start_heartbeat()
                 outcome = self.one()
                 if self.heartbeat_thread is None and outcome == "IDLE":
                     self.start_heartbeat()
@@ -766,6 +793,7 @@ class Fleet:
         self.ollama = OllamaPool(self.config.ollama_endpoints) if self.config.ollama_endpoints else ollama
         self.directory, self.journal_opener = Path(directory), journal_opener
         self.entries, self.guard = {}, threading.RLock()
+        self.claim_capacity = threading.Event()
         excluded = env.get("UVEL_CLOUD_FLEET_EXCLUDE_DEVICE_IDS", "1152,1202").split(",")
         require(all(re.fullmatch(r"[1-9][0-9]*", value) for value in excluded), "FLEET_EXCLUSION_INVALID")
         self.excluded = {int(value) for value in excluded}
@@ -795,7 +823,7 @@ class Fleet:
             require(not path.is_symlink(), "FLEET_STATE_DIRECTORY_UNSAFE")
             journal, lock = self.journal_opener(path)
             worker = Worker(config, Http(self.config.backend, self.backend.token, executor=executor),
-                            self.ollama, journal, threading.Event(), self.stop)
+                            self.ollama, journal, threading.Event(), self.stop, self.claim_capacity)
             entry = FleetEntry(worker, lock)
             self.entries[executor] = entry
             return entry
@@ -817,7 +845,7 @@ class Fleet:
                 require(config.binding["deviceId"] not in self.excluded, "FLEET_EXCLUDED_STATE")
                 executor = config.binding["executorId"]
                 worker = Worker(config, Http(self.config.backend, self.backend.token, executor=executor),
-                                self.ollama, journal, threading.Event(), self.stop)
+                                self.ollama, journal, threading.Event(), self.stop, self.claim_capacity)
                 entry = FleetEntry(worker, lock)
                 entry.blocked = state["phase"] not in ("IDLE", "NEXT_NOT_SENT")
                 with self.guard:
@@ -859,6 +887,9 @@ class Fleet:
             cursor = data["nextAfterDeviceId"]
         if self.stop.is_set():
             return
+        capacity_available = len(configs) <= self.config.parallelism
+        if not capacity_available:
+            self.claim_capacity.clear()
         accepted = set()
         for config in configs:
             entry = self.add(config)
@@ -874,6 +905,8 @@ class Fleet:
                         entry.generation += 1
                     entry.present = False
                     entry.worker.stop.set()
+        require(capacity_available, "FLEET_ACTIVE_CAPACITY_EXCEEDED")
+        self.claim_capacity.set()
 
     def health(self, entry=None):
         if entry is None:
@@ -921,7 +954,8 @@ class Fleet:
             phase = entry.worker.journal.state()["phase"]
             reconcile = phase in ("COMPLETE_INTENT", "UNKNOWN_COMPLETE", "CLAIMED", "REJECTED_COMPLETE", "REJECTED_RETRY_INTENT", "ROLLBACK_RETRY_INTENT")
             return (not self.stop.is_set() and not entry.running and not entry.health_running
-                    and (reconcile or (entry.present and not entry.blocked)) and time.monotonic() >= entry.due)
+                    and (reconcile or (entry.present and not entry.blocked and self.claim_capacity.is_set()))
+                    and time.monotonic() >= entry.due)
 
     def tick(self, entry):
         with entry.gate:
@@ -974,6 +1008,9 @@ class Fleet:
             while not self.stop.is_set():
                 try:
                     self.refresh()
+                except Halt as error:
+                    print("FLEET_ACTIVE_CAPACITY_EXCEEDED" if str(error) == "FLEET_ACTIVE_CAPACITY_EXCEEDED"
+                          else "FLEET_DISCOVERY_UNCONFIRMED", flush=True)
                 except Exception:
                     print("FLEET_DISCOVERY_UNCONFIRMED", flush=True)
                 self.stop.wait(self.config.interval)

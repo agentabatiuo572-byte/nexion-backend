@@ -22,6 +22,11 @@ public class TestCloudExecutorController {
     private final TestCloudExecutorService service;
     private final ObjectMapper json;
 
+    @GetMapping("/eligibility")
+    public Object eligibility(Authentication auth) {
+        return service.eligibility(identity(auth));
+    }
+
     @GetMapping("/instances")
     public Object instances(Authentication auth,@RequestParam(defaultValue="0") long afterDeviceId,
                             @RequestParam(defaultValue="100") int limit) {
