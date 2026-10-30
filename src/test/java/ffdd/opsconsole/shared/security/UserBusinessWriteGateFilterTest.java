@@ -199,6 +199,50 @@ class UserBusinessWriteGateFilterTest {
     }
 
     @ParameterizedTest
+    @CsvSource({"PUT,/api/me/push-installations/install-test-42", "DELETE,/api/me/push-installations/install-test-42",
+            "POST,/api/me/push-notifications/123/opened"})
+    void nativePushInfrastructureRemainsAvailableBeforeOnboarding(String method,String path) throws Exception {
+        authenticateUser(42L);
+        when(users.isOnboardingComplete(42L)).thenReturn(false);
+        MockHttpServletRequest request=new MockHttpServletRequest(method,path);
+        MockHttpServletResponse response=new MockHttpServletResponse();
+        MockFilterChain chain=new MockFilterChain();
+
+        filter.doFilter(request,response,chain);
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(chain.getRequest()).isSameAs(request);
+        verify(users,never()).isOnboardingComplete(42L);
+    }
+
+    @Test
+    void nativePushInstallationIdsUseExistingServiceBounds() throws Exception {
+        authenticateUser(42L);
+        when(users.isOnboardingComplete(42L)).thenReturn(false);
+        for(String method:List.of("PUT","DELETE")) {
+            for(String id:List.of("a".repeat(8),"a".repeat(128)))
+                assertThat(invoke(method,"/api/me/push-installations/"+id).getStatus()).isEqualTo(200);
+            for(String id:List.of("a".repeat(7),"a".repeat(129)))
+                assertThat(invoke(method,"/api/me/push-installations/"+id).getStatus()).isEqualTo(428);
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"POST,/api/me/push-installations/install-42", "PATCH,/api/me/push-installations/install-42",
+            "PUT,/api/me/push-installations", "DELETE,/api/me/push-installations/install-42/extra",
+            "PUT,/api/me/push-installations/install-42/", "PUT,/api/me/push-installations/install.42",
+            "PUT,/api/me/push-installations/invalid%2Fid", "POST,/api/me/push-notifications/message42/opened",
+            "POST,/api/me/push-notifications/-1/opened", "POST,/api/me/push-notifications/1.5/opened",
+            "PUT,/api/me/push-notifications/42/opened", "DELETE,/api/me/push-notifications/42/opened",
+            "POST,/api/me/push-notifications/42/opened/extra", "POST,/api/me/push-notifications/42/actions",
+            "POST,/api/orders", "POST,/api/app/deposits/vietqr/intents"})
+    void nativePushExceptionDoesNotOpenSimilarRoutesWrongMethodsOrBusinessCommands(String method,String path) throws Exception {
+        authenticateUser(42L);
+        when(users.isOnboardingComplete(42L)).thenReturn(false);
+        assertThat(invoke(method,path).getStatus()).isEqualTo(428);
+    }
+
+    @ParameterizedTest
     @CsvSource({"POST,/api/orders", "POST,/api/app/deposits/vietqr/intents",
             "POST,/api/app/support/tickets", "POST,/api/app/support/conversations/CV-42/ticket",
             "POST,/api/app/support/conversations/CV-42/replies/extra", "POST,/api/app/support/other",
