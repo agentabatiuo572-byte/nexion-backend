@@ -17,7 +17,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
             + " AND d.id=#{deviceId} AND d.user_id=#{userId} AND d.id<>#{legacyDeviceId}")
     int managedFleet(@Param("userId") long userId,@Param("deviceId") long deviceId,
                      @Param("cutoff") java.time.LocalDateTime cutoff,@Param("tradeinCutoff") java.time.LocalDateTime tradeinCutoff,
-                     @Param("legacyDeviceId") long legacyDeviceId);
+                     @Param("legacyDeviceId") long legacyDeviceId,@Param("legacyEnabled") boolean legacyEnabled);
 
     @Select("SELECT COUNT(*) FROM nx_test_cloud_binding WHERE owner_id=#{userId} AND device_id=#{deviceId}")
     int registeredFleet(@Param("userId") long userId,@Param("deviceId") long deviceId);

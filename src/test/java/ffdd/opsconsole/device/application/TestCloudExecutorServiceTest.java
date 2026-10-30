@@ -7,7 +7,10 @@ import static ffdd.opsconsole.device.application.TestCloudExecutorService.*;
 import ffdd.opsconsole.device.mapper.*;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.*;
 import ffdd.opsconsole.device.mapper.TestCloudExecutorMapper.Execution;
+import ffdd.opsconsole.device.mapper.TestCloudExecutorMapper.LegacyAdmission;
+import ffdd.opsconsole.device.dto.AppTaskAssignmentView;
 import ffdd.opsconsole.device.application.TestCloudExecutorService.*;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import java.math.BigDecimal;
 import java.time.*;
@@ -75,7 +78,7 @@ class TestCloudExecutorServiceTest {
     }
     @Test void fleetDiscoveryIsBoundedReadOnlyAndDoesNotTrustClientOwnership() {
         fleetIdentity();
-        when(mapper.fleetCandidates(NOW.minusDays(1),null,0,11,2)).thenReturn(List.of(
+        when(mapper.fleetCandidates(NOW.minusDays(1),null,0,11,2,false)).thenReturn(List.of(
                 new TestCloudExecutorMapper.FleetCandidate(7,12,"NEX-FLEET-12"),
                 new TestCloudExecutorMapper.FleetCandidate(8,13,"NEX-FLEET-13")));
         var fleet=service.authenticate("Bearer "+TOKEN,"fleet");
@@ -89,7 +92,7 @@ class TestCloudExecutorServiceTest {
         Identity target=fleetIdentity();
         when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
                 "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
-        when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false)).thenReturn(null);
+        when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false,false)).thenReturn(null);
         assertThatThrownBy(()->service.next(target,"fleet-next-unit")).hasMessage("TEST_CLOUD_BINDING_INVALID");
         verifyNoInteractions(settlement); verify(mapper,never()).register(any(),any());
     }
@@ -100,7 +103,7 @@ class TestCloudExecutorServiceTest {
         assertThatThrownBy(()->service.authenticate("Bearer "+TOKEN,"fleet-13")).hasMessage("TEST_CLOUD_AUTH_INVALID");
         var tradeinCutoff=NOW.minusHours(1);
         env.setProperty(PREFIX+"fleet-tradein-started-at",tradeinCutoff.toString());
-        when(mapper.fleetCandidate(NOW.minusDays(1),tradeinCutoff,13,11))
+        when(mapper.fleetCandidate(NOW.minusDays(1),tradeinCutoff,13,11,false))
                 .thenReturn(new TestCloudExecutorMapper.FleetCandidate(7,13,"DEV-TI-UNIT"));
         assertThat(service.authenticate("Bearer "+TOKEN,"fleet-13").deviceId()).isEqualTo(13);
         env.setProperty(PREFIX+"fleet-tradein-enabled","false");
@@ -122,8 +125,8 @@ class TestCloudExecutorServiceTest {
         assertThatThrownBy(()->service.next(target,"fleet-next-unit")).hasMessage("TEST_CLOUD_BINDING_INVALID");
         assertThatThrownBy(()->service.heartbeat(target,null,null)).hasMessage("TEST_CLOUD_BINDING_INVALID");
         assertThatThrownBy(()->service.complete(target,TASK,"fleet-complete-unit",null)).hasMessage("TEST_CLOUD_BINDING_INVALID");
-        verify(mapper,times(2)).liveFleetBinding(NOW.minusDays(1),tradeinCutoff,7,12,"NEX-FLEET-12",false);
-        verify(mapper).liveFleetBinding(NOW.minusDays(1),tradeinCutoff,7,12,"NEX-FLEET-12",true);
+        verify(mapper,times(2)).liveFleetBinding(NOW.minusDays(1),tradeinCutoff,7,12,"NEX-FLEET-12",false,false);
+        verify(mapper).liveFleetBinding(NOW.minusDays(1),tradeinCutoff,7,12,"NEX-FLEET-12",true,false);
         verify(mapper,never()).heartbeat(anyLong(),any(),any(),any()); verifyNoInteractions(settlement);
     }
     @Test void fleetReceiptReconciliationSurvivesRevokedOwnershipAndNeverClaimsOrCredits() {
@@ -154,6 +157,180 @@ class TestCloudExecutorServiceTest {
         when(mapper.lock(TASK)).thenReturn(null);
         assertThatThrownBy(()->service.next(identity,"cloud-next-unit")).hasMessage("TEST_CLOUD_UNMANIFESTED_TASK_BLOCKED");
         verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any()); verifyNoInteractions(settlement);
+    }
+    private static final String OLD_TASK="CTA-LEGACY-UNEXECUTED";
+    private static final String LEGACY_REASON="Verified old App task has no execution or settlement evidence";
+    private static final String EVIDENCE="e".repeat(64);
+    private Identity legacyFleet(boolean enabled) {
+        Identity target=fleetIdentity();
+        if(enabled) env.setProperty(PREFIX+"fleet-legacy-enabled","true");
+        when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
+                "ACTIVE","stellarbox-s1",NOW.minusDays(2),NOW.minusDays(2),96,"unit","ONLINE",null,false));
+        when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false,enabled)).thenReturn(1);
+        return target;
+    }
+    private AssignmentRow fleetTask(String taskNo,String model,String client) {
+        return new AssignmentRow(taskNo,12L,"EM-UNIT",TASK_NAME,"EM",model,client,"RUNNING",new BigDecimal("0.045005"),
+                5,0,NOW.minusSeconds(10),NOW.plusHours(24),null,null,NONCE,NOW.plusHours(24));
+    }
+    private void unmanifestedFleetTask() {
+        when(assignments.lockActiveAssignment(7L,12L,"PRODUCTION")).thenReturn(fleetTask(OLD_TASK,"BGE-M3","UVEL App"));
+        when(mapper.countActive(7,12)).thenReturn(1);
+    }
+    private void admitLegacyFleetTask() {
+        when(mapper.legacyAdmission(eq(7L),eq(12L),eq("NEX-FLEET-12"),nullable(String.class),eq("EM-UNIT")))
+                .thenReturn(new LegacyAdmission(OLD_TASK,LEGACY_REASON,EVIDENCE));
+    }
+    private Execution fleetExecution() {
+        var original=execution(null,null,null);
+        return new Execution(TASK,"fleet-12",7,12,"NEX-FLEET-12","EM-UNIT",original.nextKeyHash(),CLAIM,
+                original.inputJson(),original.inputHash(),original.modelTag(),original.modelDigest(),NONCE,null,null,null,null,NOW);
+    }
+    @Test void legacyFleetIsOffByDefaultAndCannotUseTheSingleExecutorCancellationOverride() {
+        Identity target=legacyFleet(false); unmanifestedFleetTask();
+        env.setProperty(PREFIX+"cancel-unexecuted-task-no",OLD_TASK);
+        assertThatThrownBy(()->service.next(target,"fleet-next-legacy")).hasMessage("TEST_CLOUD_UNMANIFESTED_TASK_BLOCKED");
+        verify(mapper,never()).legacyAdmission(7,12,"NEX-FLEET-12",OLD_TASK,"EM-UNIT");
+        verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any());
+        verify(assignments,never()).clearRuntimeTask(anyLong(),anyLong(),anyString(),any()); verifyNoInteractions(settlement);
+    }
+    @Test void enabledLegacyFleetDiscoveryAndAuthenticationPassTheExplicitGateToTheMapper() {
+        fleetIdentity(); env.setProperty(PREFIX+"fleet-legacy-enabled","true");
+        var candidate=new TestCloudExecutorMapper.FleetCandidate(7,13,"NEX-LEGACY-13");
+        when(mapper.fleetCandidates(NOW.minusDays(1),null,0,11,2,true)).thenReturn(List.of(candidate));
+        when(mapper.fleetCandidate(NOW.minusDays(1),null,13,11,true)).thenReturn(candidate);
+        var fleet=service.authenticate("Bearer "+TOKEN,"fleet");
+        assertThat((List<?>)service.instances(fleet,0,1).getData().get("instances")).hasSize(1);
+        assertThat(service.authenticate("Bearer "+TOKEN,"fleet-13").instanceNo()).isEqualTo("NEX-LEGACY-13");
+        verifyNoInteractions(settlement); verify(mapper,never()).register(any(),any());
+    }
+    @Test void enabledLegacyFleetStillRequiresItsExactLockedAdmission() {
+        Identity target=legacyFleet(true); unmanifestedFleetTask();
+        assertThatThrownBy(()->service.next(target,"fleet-next-legacy")).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        verify(mapper).legacyAdmission(7,12,"NEX-FLEET-12",null,"EM-UNIT");
+        verify(mapper).liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false,false);
+        verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any());
+        verify(assignments,never()).clearRuntimeTask(anyLong(),anyLong(),anyString(),any()); verifyNoInteractions(settlement);
+    }
+    @Test void aHistoricalAdmissionForAnotherConfigCannotRestoreDateExceptionsAfterItsOldTaskEnds() {
+        Identity target=legacyFleet(true);
+        when(assignments.lockActiveAssignment(7L,12L,"PRODUCTION")).thenReturn(null);
+        when(mapper.countActive(7,12)).thenReturn(0);
+        when(mapper.legacyAdmission(7,12,"NEX-FLEET-12",null,"EM-OLD"))
+                .thenReturn(new LegacyAdmission(OLD_TASK,LEGACY_REASON,EVIDENCE));
+        assertThatThrownBy(()->service.next(target,"fleet-next-config-drift")).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        verify(mapper).legacyAdmission(7,12,"NEX-FLEET-12",null,"EM-UNIT");
+        verify(mapper).liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false,false);
+        verify(mapper,never()).register(any(),any()); verify(mapper,never()).insert(any(Execution.class));
+        verify(mapper,never()).heartbeat(anyLong(),any(),any(),any()); verifyNoInteractions(settlement);
+    }
+    @Test void aLockedCurrentConfigAdmissionStillCannotCancelADifferentOldTask() {
+        Identity target=legacyFleet(true); unmanifestedFleetTask();
+        when(mapper.legacyAdmission(7,12,"NEX-FLEET-12",null,"EM-UNIT"))
+                .thenReturn(new LegacyAdmission("CTA-ANOTHER-OLD-TASK",LEGACY_REASON,EVIDENCE));
+        assertThatThrownBy(()->service.next(target,"fleet-next-wrong-old-task")).hasMessage("TEST_CLOUD_UNMANIFESTED_TASK_BLOCKED");
+        verify(mapper).legacyAdmission(7,12,"NEX-FLEET-12",OLD_TASK,"EM-UNIT");
+        verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any());
+        verify(assignments,never()).clearRuntimeTask(anyLong(),anyLong(),anyString(),any()); verifyNoInteractions(settlement);
+    }
+    @Test void legacyReplacementRejectsConflictingActiveTaskCountsBeforeAnyCancellationOrClaim() {
+        Identity target=legacyFleet(true); unmanifestedFleetTask(); admitLegacyFleetTask();
+        for(int activeCount:List.of(0,2)) {
+            when(mapper.countActive(7,12)).thenReturn(activeCount);
+            assertThatThrownBy(()->service.next(target,"fleet-next-legacy"))
+                    .as("authoritative active count %s",activeCount).hasMessage("TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+        }
+        verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any());
+        verify(assignments,never()).clearRuntimeTask(anyLong(),anyLong(),anyString(),any()); verifyNoInteractions(settlement);
+    }
+    @Test void failedCancellationCasDoesNotClearTheRuntimeOrCreateAReplacement() {
+        Identity target=legacyFleet(true); unmanifestedFleetTask(); admitLegacyFleetTask();
+        assertThatThrownBy(()->service.next(target,"fleet-next-legacy")).hasMessage("TEST_CLOUD_UNMANIFESTED_TASK_BLOCKED");
+        verify(mapper).cancelUnexecuted(7,12,OLD_TASK,"EM-UNIT",NOW);
+        verify(assignments,never()).clearRuntimeTask(anyLong(),anyLong(),anyString(),any());
+        verify(mapper,never()).insert(any(Execution.class)); verifyNoInteractions(settlement);
+    }
+    @Test void admittedUnexecutedLegacyTaskIsCancelledBeforeNormalClaimAndManifestWithoutDirectSettlement() {
+        Identity target=legacyFleet(true); unmanifestedFleetTask(); admitLegacyFleetTask();
+        when(mapper.cancelUnexecuted(7,12,OLD_TASK,"EM-UNIT",NOW)).thenReturn(1);
+        when(mapper.heartbeat(eq(12L),nullable(String.class),eq("test-cloud:fleet-12"),eq(NOW))).thenReturn(1);
+        var claimed=mock(AppTaskAssignmentView.class);
+        when(claimed.taskNo()).thenReturn(TASK); when(claimed.taskId()).thenReturn("EM-UNIT"); when(claimed.model()).thenReturn("BGE-M3");
+        when(settlement.claimForTestCloud(7L,12L)).thenReturn(ApiResult.ok(claimed));
+        when(assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(fleetTask(TASK,KIND,CLIENT));
+        when(mapper.insert(any(Execution.class))).thenReturn(1);
+        when(mapper.acknowledge(7,12,TASK,"EM-UNIT",NOW)).thenReturn(1);
+        var data=service.next(target,"fleet-next-legacy").getData();
+        assertThat(data.get("taskNo")).isEqualTo(TASK); assertThat(data.get("proofNonce")).isEqualTo(NONCE);
+        var order=inOrder(assignments,mapper,settlement);
+        order.verify(mapper).cancelUnexecuted(7,12,OLD_TASK,"EM-UNIT",NOW);
+        order.verify(assignments).clearRuntimeTask(7L,12L,OLD_TASK,NOW);
+        order.verify(settlement).claimForTestCloud(7L,12L);
+        var manifest=org.mockito.ArgumentCaptor.forClass(Execution.class);
+        order.verify(mapper).insert(manifest.capture());
+        assertThat(manifest.getValue().taskNo()).isEqualTo(TASK).isNotEqualTo(OLD_TASK);
+        assertThat(manifest.getValue().executorId()).isEqualTo("fleet-12");
+        assertThat(manifest.getValue().ownerId()).isEqualTo(7); assertThat(manifest.getValue().deviceId()).isEqualTo(12);
+        assertThat(manifest.getValue().instanceNo()).isEqualTo("NEX-FLEET-12");
+        assertThat(manifest.getValue().inputJson()).isEqualTo(inputJson());
+        assertThat(manifest.getValue().inputHash()).isEqualTo(TestCloudExecutorService.sha256(inputJson()));
+        assertThat(manifest.getValue().modelDigest()).isEqualTo(DIGEST); assertThat(manifest.getValue().resultHash()).isNull();
+        verify(audit).recordRequiredForTrustedActor(argThat(request->"TEST_CLOUD_UNEXECUTED_TASK_CANCELLED".equals(request.getAction())
+                && request.getDetail() instanceof Map<?,?> detail && OLD_TASK.equals(detail.get("oldTaskNo"))
+                && LEGACY_REASON.equals(detail.get("reason")) && EVIDENCE.equals(detail.get("evidenceSha256"))));
+        verify(settlement,never()).completeForTestCloud(anyString(),any(),any()); verify(service,never()).infer(any());
+    }
+    @Test void anExistingManifestIsResumedWithoutLegacyCancellationOrAnotherClaim() {
+        Identity target=legacyFleet(true); admitLegacyFleetTask();
+        when(mapper.countActive(7,12)).thenReturn(1);
+        var active=fleetTask(TASK,KIND,CLIENT);
+        when(assignments.lockActiveAssignment(7L,12L,"PRODUCTION")).thenReturn(active);
+        when(mapper.lock(TASK)).thenReturn(fleetExecution());
+        assertThat(service.next(target,"fleet-next-existing").getData().get("taskNo")).isEqualTo(TASK);
+        verify(mapper,never()).legacyAdmission(7,12,"NEX-FLEET-12",TASK,"EM-UNIT");
+        verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any()); verifyNoInteractions(settlement);
+    }
+    @Test void anExistingManifestCannotBypassASecondActiveTaskAtAnyWriteEntryPoint() {
+        Identity target=legacyFleet(true);
+        var active=fleetTask(TASK,KIND,CLIENT);
+        when(assignments.lockActiveAssignment(7L,12L,"PRODUCTION")).thenReturn(active);
+        when(assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(active);
+        when(mapper.lock(TASK)).thenReturn(fleetExecution()); when(mapper.countActive(7,12)).thenReturn(2);
+        assertThatThrownBy(()->service.next(target,"fleet-next-existing")).hasMessage("TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+        assertThatThrownBy(()->service.heartbeat(target,TASK,CLAIM)).hasMessage("TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+        assertThatThrownBy(()->service.complete(target,TASK,"fleet-complete-unit",null)).hasMessage("TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+        verify(mapper,never()).heartbeat(anyLong(),any(),any(),any());
+        verify(mapper,never()).saveResult(anyString(),anyString(),any(),anyString(),anyString());
+        verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any()); verifyNoInteractions(settlement);
+    }
+    @Test void aRegisteredLegacyExecutorCanReconcileButCannotWriteAfterItsLegacyGateIsRevoked() {
+        Identity target=legacyFleet(true); env.setProperty(PREFIX+"fleet-legacy-enabled","false");
+        when(mapper.countActive(7,12)).thenReturn(1);
+        var active=fleetTask(TASK,KIND,CLIENT);
+        when(assignments.lockActiveAssignment(7L,12L,"PRODUCTION")).thenReturn(active);
+        when(assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(active);
+        when(mapper.lock(TASK)).thenReturn(fleetExecution());
+        when(mapper.historicalReceipt(TASK,7,12)).thenReturn(new TestCloudExecutorMapper.HistoricalReceipt(
+                "RUNNING","EM-UNIT",KIND,CLIENT,null,null,null));
+        assertThat(service.receipt(target,TASK).getData().get("found")).isEqualTo(false);
+        assertThatThrownBy(()->service.next(target,"fleet-next-revoked")).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        assertThatThrownBy(()->service.heartbeat(target,TASK,CLAIM)).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        assertThatThrownBy(()->service.complete(target,TASK,"fleet-complete-unit",null)).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        verify(mapper,never()).heartbeat(anyLong(),any(),any(),any());
+        verify(mapper,never()).saveResult(anyString(),anyString(),any(),anyString(),anyString());
+        verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any()); verifyNoInteractions(settlement);
+    }
+    @Test void theExplicitSingleExecutorCancellationAuthorizationStillUsesItsOriginalPath() {
+        env.setProperty(PREFIX+"cancel-unexecuted-task-no",TASK);
+        when(assignments.lockActiveAssignment(7L,11L,"PRODUCTION")).thenReturn(task("RUNNING"));
+        when(mapper.lock(TASK)).thenReturn(null);
+        when(mapper.countActive(7,11)).thenReturn(1);
+        when(mapper.cancelUnexecuted(7,11,TASK,"EM-UNIT",NOW)).thenReturn(1);
+        when(assignments.lockDeviceTaskLock(7L,11L,"PRODUCTION")).thenReturn(new DeviceLockRow(NOW.plusMinutes(1),TASK));
+        assertThat(service.next(identity,"cloud-next-single").getData().get("idle")).isEqualTo(true);
+        verify(assignments).clearRuntimeTask(7L,11L,TASK,NOW);
+        verify(mapper,never()).legacyAdmission(anyLong(),anyLong(),anyString(),nullable(String.class),anyString());
+        verifyNoInteractions(settlement);
     }
     @Test void correctHashWithWrongSemanticOutputCannotReachSettlement() throws Exception {
         doReturn(TestCloudBgeArtifactTest.expected(0.25)).when(service).infer(identity);
