@@ -352,6 +352,7 @@ public class AppCanonicalBoundaryService {
                 .contains(normalizeState(status, ""));
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> deviceEarnings(
             Long userId, boolean seedLegacyDevice, boolean fastForwardAll, BigDecimal bumpedEarningsTotal) {
         boolean developmentRuntime = false;
@@ -451,6 +452,11 @@ public class AppCanonicalBoundaryService {
                 .filter(device -> "ACTIVE".equalsIgnoreCase(String.valueOf(device.get("status"))))
                 .map(device -> (BigDecimal) device.get("dailyNex"))
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
+        int reservedSlots = sandboxRuntime ? 0 : Math.max(0, mapper.lockReservedDeviceOrderCount(userId, false));
+        int trialSlots = sandboxRuntime ? 0 : mapper.lockReservedTrialSlotCount(userId);
+        long activeSlots = sandboxRuntime ? devices.stream()
+                .filter(device -> isSlotOccupyingActiveState(String.valueOf(device.get("status")))).count()
+                : Math.max(0, mapper.lockActiveDeviceCount(userId, false));
         return ApiResult.ok(linked(
                 "dailyUsdt", usdt,
                 "dailyNex", nex,
@@ -462,6 +468,9 @@ public class AppCanonicalBoundaryService {
                 "serverNow", capacityNow.atZone(SERVER_ZONE).toInstant().toEpochMilli(),
                 "timezone", SERVER_ZONE.getId(),
                 "slotCap", Math.max(1, mapper.deviceSlotCap()),
+                "slotsUsed", activeSlots + reservedSlots + trialSlots,
+                "reservedSlotCount", reservedSlots,
+                "trialSlotCount", trialSlots,
                 "devices", devices,
                 "capacitySchedule", capacityConfig,
                 "source", "nx_user_device + nx_compute_receipt + nx_compute_e3_config",

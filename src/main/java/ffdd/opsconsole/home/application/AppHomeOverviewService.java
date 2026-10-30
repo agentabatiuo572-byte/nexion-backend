@@ -135,8 +135,11 @@ public class AppHomeOverviewService {
             result.put("weeklyPromo", promo());
             AppHomeOverviewMapper.PaidSummary paid = mapper.cumulativePaid(userId, accountSandbox);
             Long activeDevices = mapper.activeDevices(userId, accountSandbox);
+            int reservedSlots = Math.max(0, mapper.reservedDeviceOrderCount(userId));
+            int trialSlots = mapper.reservedTrialSlotCount(userId);
             result.put("onboarding", linked("cumulativePaidUsdt", fact(paid == null ? null : paid.amountUsdt(), paid == null ? null : paid.orderCount()),
-                    "activeDevices", activeDevices));
+                    "activeDevices", activeDevices, "slotsUsed", (long) Math.max(0, mapper.activeSlotCount(userId)) + reservedSlots + trialSlots,
+                    "slotCap", Math.max(1, mapper.deviceSlotCap()), "reservedSlotCount", reservedSlots, "trialSlotCount", trialSlots));
             AppHomeOverviewMapper.OnGridSummary grid = mapper.onGrid(sourceEnvironment, accountSandbox);
             result.put("onGrid", linked("clients", clients(mapper.onGridClients(accountSandbox)),
                     "activeDevices", mapper.globalActiveDevices(accountSandbox),

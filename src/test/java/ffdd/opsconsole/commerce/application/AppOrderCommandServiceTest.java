@@ -30,6 +30,32 @@ class AppOrderCommandServiceTest {
     private final SupportPaymentAttributionFacade capture = paymentAttribution();
 
     @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"7,1", "8,2", "9,3"})
+    void paymentRechecksTotalSlotsBeforeAnyWalletOrAssetSideEffect(long occupied, int quantity) {
+        var mapper=commandMapper();var guard=mock(FundsSandboxProfileGuard.class);
+        var idempotency=mock(AdminIdempotencyService.class);var audit=mock(AuditLogService.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.findDevelopmentPayOrderOwner("ORD-SLOTS")).thenReturn(7L);
+        when(mapper.lockDevelopmentPayOrder("ORD-SLOTS")).thenReturn(new AppOrderCommandMapper.DevelopmentPayOrder(
+                "ORD-SLOTS",7L,18L,quantity,BigDecimal.TEN,null,"PENDING","PENDING_PAYMENT","WAITING_PAYMENT"));
+        when(mapper.deviceSlotCap()).thenReturn(6);
+        when(mapper.lockOccupiedDeviceSlotCount(7L)).thenReturn(occupied);
+        doAnswer(call -> ((Supplier<?>) call.getArgument(4)).get())
+                .when(idempotency).execute(anyString(),anyString(),anyString(),any(),any());
+        assertThatThrownBy(() -> new AppOrderCommandService(mapper,idempotency,audit,guard,null,null,null,capture)
+                .pay(7L,"ORD-SLOTS","capacity-payment"))
+                .isInstanceOf(BizException.class).hasMessage("CAPACITY_REPLACEMENT_REQUIRED");
+        verify(mapper,never()).lockDevelopmentWallet(any());
+        verify(mapper,never()).debitDevelopmentWallet(any(),any(),any());
+        verify(mapper,never()).markDevelopmentOrderActivated(any(),any(),any());
+        verify(mapper,never()).insertDevelopmentPayment(any(),any(),any(),any());
+        verify(mapper,never()).insertDevelopmentDevice(any(),any(),any(),any());
+        verify(mapper,never()).insertWalletDevice(any(),any(),any(),any(),any());
+        verify(capture,never()).beforeCash(any());verify(capture,never()).record(any());
+        verifyNoInteractions(audit);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({
             "2026-10-31T16:59:59,2026-10-01T00:00:00,2026-10-31T17:00:00",
             "2026-10-31T17:00:00,2026-10-31T17:00:00,2026-11-30T17:00:00"})
@@ -37,7 +63,7 @@ class AppOrderCommandServiceTest {
         var now = java.time.LocalDateTime.parse(event);
         var from = java.time.LocalDateTime.parse(start);
         var until = java.time.LocalDateTime.parse(end);
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var guard = mock(FundsSandboxProfileGuard.class);
         var idempotency = mock(AdminIdempotencyService.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
@@ -64,7 +90,7 @@ class AppOrderCommandServiceTest {
     }
     @Test
     void monthlyQuotaExhaustionNeverDebitsWalletOrCreatesDevices() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var guard = mock(FundsSandboxProfileGuard.class);
         var idempotency = mock(AdminIdempotencyService.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
@@ -87,7 +113,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void f4bAllRequirementsRejectBeforeCapacityWalletOrFulfillmentSideEffects() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var guard = mock(FundsSandboxProfileGuard.class);
         var idempotency = mock(AdminIdempotencyService.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
@@ -117,7 +143,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void f4bEitherAllowsOneSatisfiedRequirementThenStillEnforcesTheLockedMonthlyCap() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var guard = mock(FundsSandboxProfileGuard.class);
         var idempotency = mock(AdminIdempotencyService.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
@@ -145,7 +171,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void f4bAllAcceptsCurrentMonthVolumeBeforeItStillLocksTheMonthlyCap() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var guard = mock(FundsSandboxProfileGuard.class);
         var idempotency = mock(AdminIdempotencyService.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
@@ -187,7 +213,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void expiryReturnsStockQuotaAndVoucherBeforeMarkingTheOrderExpired() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var guard = mock(FundsSandboxProfileGuard.class);
         var audit = mock(AuditLogService.class);
         when(mapper.lockOrder("ORD-EXPIRED-1")).thenReturn(new AppOrderCommandMapper.OrderRow(
@@ -220,7 +246,7 @@ class AppOrderCommandServiceTest {
     @Test
     void schedulerRechecksDeadlineAndUnknownPaymentBeforeReleasingReservations() {
         for (boolean unknownPayment : List.of(false, true)) {
-            var mapper = mock(AppOrderCommandMapper.class);
+            var mapper = commandMapper();
             when(mapper.lockOrder("ORD-RACE")).thenReturn(new AppOrderCommandMapper.OrderRow(
                     "ORD-RACE", 7L, 1L, 1, "SINGLE", 1, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
             when(mapper.countNonCancellableHdPaySessions("ORD-RACE")).thenReturn(unknownPayment ? 1L : 0L);
@@ -235,7 +261,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void fullyDiscountedOrderActivatesWithoutDebitingOrWritingAnOutflowLedger() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var audit = mock(AuditLogService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
@@ -285,7 +311,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void zeroAmountOrderWithoutExactlyOneConsumedVoucherIsRejectedBeforeSettlement() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
@@ -310,7 +336,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void pendingPaymentIsRejectedWithoutDebitWhenE1HasUnlistedTheCurrentProduct() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
@@ -341,7 +367,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void expiredPendingPaymentIsRejectedBeforeAnyWalletDebit() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
@@ -368,7 +394,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void pendingPaymentIsRejectedWithoutDebitWhenGlobalMaintenanceStopIsActive() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
@@ -395,7 +421,8 @@ class AppOrderCommandServiceTest {
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
     void developmentPaymentUsesCanonicalBusinessTablesAndImmediateLocalFulfillment(boolean failCapture) {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
+        when(mapper.lockOccupiedDeviceSlotCount(7L)).thenReturn(6L);
         var idempotency = mock(AdminIdempotencyService.class);
         var audit = mock(AuditLogService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
@@ -482,7 +509,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void developmentPaymentRejectsInsufficientWalletBeforeAnyOrderOrDeviceMutation() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isStrictDevelopmentRuntime()).thenReturn(true);
@@ -512,7 +539,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void walletCasLossDoesNotActivateOrRecordASecondConcurrentPayment() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
@@ -541,7 +568,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void pendingOrderWithLegacyHdPaySessionIsQuarantinedBeforeWalletDebit() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
@@ -570,7 +597,8 @@ class AppOrderCommandServiceTest {
 
     @Test
     void paidDevelopmentOrderReplayReturnsCurrentWalletWithoutDoubleDebit() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
+        when(mapper.lockOccupiedDeviceSlotCount(7L)).thenReturn(8L);
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isStrictDevelopmentRuntime()).thenReturn(true);
@@ -601,13 +629,14 @@ class AppOrderCommandServiceTest {
         verify(mapper, never()).insertDevelopmentDevice(anyString(), anyLong(), anyString(), anyInt());
         verify(mapper, never()).countNonCancellableHdPaySessions("ORD-DEV-PAID");
         verify(mapper, never()).lockOrderMonthlyQuotas(anyString());
+        verify(mapper, never()).lockOccupiedDeviceSlotCount(any());
         verify(mapper, never()).consumeMonthlyQuota(any(), any(), any(), any());
         org.mockito.Mockito.verify(capture, org.mockito.Mockito.never()).record(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
     void cancelsOnlyPendingOwnedProductionOrderAndReturnsBundleStockAtomically() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var audit = mock(AuditLogService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
@@ -645,10 +674,37 @@ class AppOrderCommandServiceTest {
         verify(audit).recordRequired(any());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans={false,true})
+    void cancellationAndUnknownResultRecoveryReturnTheFrozenCheckoutProjection(boolean alreadyCancelled) {
+        var mapper=commandMapper();var idempotency=mock(AdminIdempotencyService.class);
+        var guard=mock(FundsSandboxProfileGuard.class);var promotions=mock(PromotionOrderService.class);
+        var frozen=Map.<String,Object>of("promotionQuoteId","PQ-FROZEN","items",List.of(Map.of("lineId","101","productNo","cloud-share","quantity",1)),
+                "rewards",List.of(),"payBy","2026-10-30T15:00:00Z","itemCount",1,"quantity",1,"amountUsdt","19.900000");
+        when(promotions.orderProjection(7L,"ORD-CANCEL")).thenReturn(frozen);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L,false));
+        when(mapper.lockOrder("ORD-CANCEL")).thenReturn(new AppOrderCommandMapper.OrderRow("ORD-CANCEL",7L,1L,1,"SINGLE",1,
+                alreadyCancelled?"CANCELLED":"PENDING",alreadyCancelled?"CANCELLED":"PENDING_PAYMENT","WAITING_PAYMENT"));
+        when(mapper.lockItems("ORD-CANCEL")).thenReturn(List.of(new AppOrderCommandMapper.ItemRow("ORD-CANCEL",1L,"cloud-share",1)));
+        when(mapper.lockProduct(1L)).thenReturn(new AppOrderCommandMapper.ProductRow(1L,0,1));
+        when(mapper.returnStock(1L,1)).thenReturn(1);when(mapper.cancelOrder("ORD-CANCEL",7L)).thenReturn(1);
+        doAnswer(call -> ((Supplier<?>) call.getArgument(4)).get()).when(idempotency)
+                .executeRetained(anyString(),anyString(),anyString(),any(),any());
+        var result=new AppOrderCommandService(mapper,idempotency,mock(AuditLogService.class),guard,null,null,null,null,30,promotions,capture)
+                .cancel(7L,"ORD-CANCEL","cancel-recovery");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsAllEntriesOf(frozen).containsEntry("orderNo","ORD-CANCEL")
+                .containsEntry("canonicalStatus","cancelled").containsEntry("idempotent",alreadyCancelled);
+        if(alreadyCancelled)verify(mapper,never()).cancelOrder(any(),any());
+        else verify(promotions).releaseUnpaid("ORD-CANCEL","CANCELLED");
+        verify(promotions,never()).prepareCreate(any(),any(),any(),any(),any());
+    }
+
     @Test
     void cancelAndExpiryReturnEachBundleQuantityWithoutRequiringOneUnitPerRow() {
         for (boolean expired : List.of(false, true)) {
-            var mapper = mock(AppOrderCommandMapper.class);
+            var mapper = commandMapper();
             var idempotency = mock(AdminIdempotencyService.class);
             var promotions = mock(PromotionOrderService.class);
             when(promotions.orderProjection(7L, "BND-MULTI")).thenReturn(Map.of("promotionQuoteId", "PQ-MULTI"));
@@ -690,7 +746,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void cancellingAnUnpaidOrderRestoresItsConsumedVoucherInTheSameTransaction() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
@@ -720,7 +776,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void activeCommercePaymentIntentMakesOrderNonCancellableBeforeProviderRowExists() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
@@ -746,7 +802,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void cancelsReservedOrderAfterOperatorResetsQuotaWithoutDecrementingTheNewQuota() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
@@ -775,7 +831,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void cancelsReservedOrderAfterOperatorDeletesQuotaConfigurationWithoutRollback() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
@@ -803,7 +859,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void idempotentProductionCancelStillCarriesCanonicalProvenance() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
@@ -825,7 +881,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void rejectsOtherOwnerAndPaidOrderWithoutMutatingInventory() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
@@ -842,7 +898,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void rejectsBundleWhenItemCountOrProductSetDoesNotMatchBeforeReturningStock() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
@@ -866,7 +922,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void nonProductionRuntimeWithoutSandboxRailRejectsCancelBeforeCanonicalReadsOrWrites() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var audit = mock(AuditLogService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
@@ -898,7 +954,7 @@ class AppOrderCommandServiceTest {
         when(sandboxService.applyCallback(anyString(), anyString(), eq("USER_CANCELLED"), eq(0L), anyString(), anyString()))
                 .thenAnswer(invocation -> new CommerceAcceptanceSandboxService.CallbackResult(
                         invocation.getArgument(0), "USER_CANCELLED", "cancelled", 1L, "mock", "SANDBOX", BigDecimal.ZERO));
-        var service = new AppOrderCommandService(mock(AppOrderCommandMapper.class), mock(AdminIdempotencyService.class),
+        var service = new AppOrderCommandService(commandMapper(), mock(AdminIdempotencyService.class),
                 mock(AuditLogService.class), guard, mapper, sandboxService, run, capture);
 
         var first = service.cancel(7L, "ORD-A", "same-key");
@@ -937,7 +993,7 @@ class AppOrderCommandServiceTest {
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
-        var result = new AppOrderCommandService(mock(AppOrderCommandMapper.class), idempotency,
+        var result = new AppOrderCommandService(commandMapper(), idempotency,
                 mock(AuditLogService.class), guard, mapper, mock(CommerceAcceptanceSandboxService.class), run, capture)
                 .cancel(7L, "ORD-CANCELLED", "cancel-key-idempotent");
 
@@ -952,7 +1008,7 @@ class AppOrderCommandServiceTest {
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(true);
         when(mapper.isSandboxUser(7L)).thenReturn(true);
-        var service = new AppOrderCommandService(mock(AppOrderCommandMapper.class), mock(AdminIdempotencyService.class),
+        var service = new AppOrderCommandService(commandMapper(), mock(AdminIdempotencyService.class),
                 mock(AuditLogService.class), guard, mapper, mock(CommerceAcceptanceSandboxService.class), mock(CommerceAcceptanceRun.class), capture);
 
         assertThat(service.cancel(7L, "ORD-A", "x".repeat(129)).getMessage())
@@ -980,7 +1036,7 @@ class AppOrderCommandServiceTest {
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
-        var service = new AppOrderCommandService(mock(AppOrderCommandMapper.class), idempotency,
+        var service = new AppOrderCommandService(commandMapper(), idempotency,
                 mock(AuditLogService.class), guard, mapper, sandboxService, run, capture);
         var first = service.pay(7L, "CSO-1", "pay-key");
         var second = service.pay(7L, "CSO-1", "pay-key");
@@ -1017,7 +1073,7 @@ class AppOrderCommandServiceTest {
             return ((Supplier<?>) invocation.getArgument(4)).get();
         }).when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
-        var service = new AppOrderCommandService(mock(AppOrderCommandMapper.class), idempotency,
+        var service = new AppOrderCommandService(commandMapper(), idempotency,
                 mock(AuditLogService.class), guard, mapper, sandboxService, run, capture);
         var first = service.pay(7L, "CSO-RUN", "same-payment-key");
         var second = service.pay(7L, "CSO-RUN", "same-payment-key");
@@ -1042,7 +1098,7 @@ class AppOrderCommandServiceTest {
         when(run.requireRunId()).thenThrow(new ffdd.opsconsole.shared.exception.BizException(
                 503, "COMMERCE_SANDBOX_RUN_ID_REQUIRED"));
 
-        var service = new AppOrderCommandService(mock(AppOrderCommandMapper.class), idempotency,
+        var service = new AppOrderCommandService(commandMapper(), idempotency,
                 mock(AuditLogService.class), guard, mapper, sandboxService, run, capture);
 
         assertThatThrownBy(() -> service.pay(7L, "CSO-RUN", "payment-key"))
@@ -1066,7 +1122,7 @@ class AppOrderCommandServiceTest {
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
-        var result = new AppOrderCommandService(mock(AppOrderCommandMapper.class), idempotency,
+        var result = new AppOrderCommandService(commandMapper(), idempotency,
                 mock(AuditLogService.class), guard, mapper, sandboxService, run, capture)
                 .pay(7L, "CSO-LEGACY", "pay-legacy");
 
@@ -1077,7 +1133,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void productionPaymentDebitsTheNexGridWalletAndActivatesTheOrder() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var audit = mock(AuditLogService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
@@ -1152,7 +1208,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void promotionEligibilityFailurePreventsWalletDebitAndOrderFulfillment() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var guard = mock(FundsSandboxProfileGuard.class);
         var idempotency = mock(AdminIdempotencyService.class);
         var promotions = mock(PromotionOrderService.class);
@@ -1180,7 +1236,7 @@ class AppOrderCommandServiceTest {
 
     @Test
     void bundleWalletPaymentActivatesEachCanonicalOrderItemExactlyOnce() {
-        var mapper = mock(AppOrderCommandMapper.class);
+        var mapper = commandMapper();
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);
@@ -1233,7 +1289,7 @@ class AppOrderCommandServiceTest {
     @org.junit.jupiter.params.provider.NullSource
     @org.junit.jupiter.params.provider.ValueSource(longs = {8L})
     void walletPaymentMissingOrForeignOwnerReturns403BeforeCaptureOrWriteLocks(Long owner) {
-        var mapper=mock(AppOrderCommandMapper.class);var guard=mock(FundsSandboxProfileGuard.class);
+        var mapper=commandMapper();var guard=mock(FundsSandboxProfileGuard.class);
         var idempotency=mock(AdminIdempotencyService.class);var audit=mock(AuditLogService.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);when(mapper.activeUserEnvironment(7L)).thenReturn(0);
         when(mapper.findDevelopmentPayOrderOwner("ORD-FORBIDDEN")).thenReturn(owner);
@@ -1252,7 +1308,7 @@ class AppOrderCommandServiceTest {
     @org.junit.jupiter.params.provider.NullSource
     @org.junit.jupiter.params.provider.ValueSource(longs = {8L})
     void walletPaymentRechecksOwnershipUnderTheWriteLockAfterCapture(Long lockedOwner) {
-        var mapper=mock(AppOrderCommandMapper.class);var guard=mock(FundsSandboxProfileGuard.class);
+        var mapper=commandMapper();var guard=mock(FundsSandboxProfileGuard.class);
         var idempotency=mock(AdminIdempotencyService.class);var audit=mock(AuditLogService.class);
         when(guard.isStrictProductionRuntime()).thenReturn(true);when(mapper.activeUserEnvironment(7L)).thenReturn(0);
         when(mapper.findDevelopmentPayOrderOwner("ORD-CHANGED")).thenReturn(7L);
@@ -1295,6 +1351,12 @@ class AppOrderCommandServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> developmentPaymentUsesCanonicalBusinessTablesAndImmediateLocalFulfillment(false))
                 .hasMessage(thrown?"LEDGER_INSERT_FAILED":"ORDER_WALLET_LEDGER_CONFLICT");
         org.mockito.Mockito.verify(capture,org.mockito.Mockito.never()).record(org.mockito.ArgumentMatchers.any());
+    }
+
+    private static AppOrderCommandMapper commandMapper() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        when(mapper.deviceSlotCap()).thenReturn(6);
+        return mapper;
     }
 
     private static SupportPaymentAttributionFacade paymentAttribution() {

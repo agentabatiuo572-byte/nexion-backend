@@ -52,6 +52,23 @@ class PromotionOrderServiceTest {
         when(db.reservations("O1",true)).thenReturn(List.of());
         assertDoesNotThrow(()->service.beforePay(17L,"O1"));
     }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(longs={6,7})
+    void giftBeneficiaryCapacityIsRecheckedBeforeBuyerPayment(long occupied){
+        when(db.one("SELECT pay_by FROM nx_promotion_order_receipt WHERE order_no=? FOR UPDATE","O1")).thenReturn(null);
+        var row=values("beneficiary_id",3L,"asset","DEVICE","status","RESERVED","pay_by",Instant.now().plusSeconds(300),
+                "activity_id","A1","snapshot_json",json(values("contract",Map.of(),"policies",Map.of(),"awards",List.of())));
+        when(db.order("O1",false)).thenReturn(values("user_id",17L));
+        when(db.reservations("O1",true)).thenReturn(List.of(row));
+        when(db.reservations("O1",false)).thenReturn(List.of(row));
+        when(db.user(anyLong(),eq(true))).thenReturn(values("status","ACTIVE"));
+        when(db.deviceSlotCap()).thenReturn(6L);when(db.occupiedDeviceSlots(3L)).thenReturn(occupied);
+        when(evaluator.firstPurchaseStillValid(anyMap(),anyMap(),eq(17L),anyList(),eq("O1"))).thenReturn(true);
+        if(occupied==6)assertDoesNotThrow(()->service.beforePay(17L,"O1"));
+        else assertEquals("PROMOTION_DEVICE_CAPACITY_UNAVAILABLE",assertThrows(BizException.class,()->service.beforePay(17L,"O1")).getMessage());
+        verify(db).occupiedDeviceSlots(3L);
+        verify(db,never()).write(anyString(),any(Object[].class));
+    }
     @Test void wrongOwnerCannotLockAnotherOrdersReceipt(){
         when(db.order("O1",false)).thenReturn(values("user_id",17L));
         assertEquals("PROMOTION_ORDER_OWNER_MISMATCH",assertThrows(BizException.class,()->service.beforePay(18L,"O1")).getMessage());

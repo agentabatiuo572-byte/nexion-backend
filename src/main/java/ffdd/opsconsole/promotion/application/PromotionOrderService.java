@@ -191,6 +191,10 @@ public class PromotionOrderService {
         Map<String,Object> snapshot=parse(rows.get(0).get("snapshot_json")),contract=map(snapshot.get("contract"));
         String activity=text(rows.get(0).get("activity_id"));db.activity(activity,true);lockCapacity(activity,participantsForOrder(orderNo));
         for(Long participant:participantsForOrder(orderNo))require("ACTIVE".equals(db.user(participant,true).get("status")),"PROMOTION_ACCOUNT_FROZEN");
+        // Old promises may predate the Share slot rule. Their own reservations are already included.
+        for(Long beneficiary:rows.stream().filter(r->"DEVICE".equals(r.get("asset")))
+                .map(r->number(r.get("beneficiary_id"))).collect(java.util.stream.Collectors.toCollection(TreeSet::new)))
+            require(db.occupiedDeviceSlots(beneficiary)<=db.deviceSlotCap(),"PROMOTION_DEVICE_CAPACITY_UNAVAILABLE");
         require(evaluator.firstPurchaseStillValid(contract,map(snapshot.get("policies")),buyerId,maps(snapshot.get("awards")),orderNo),"PROMOTION_PAYMENT_ELIGIBILITY_LOST");
     }
     @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)

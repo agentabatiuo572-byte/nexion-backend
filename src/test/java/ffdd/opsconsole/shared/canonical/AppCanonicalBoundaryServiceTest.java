@@ -95,6 +95,20 @@ class AppCanonicalBoundaryServiceTest {
                 new BigDecimal("500"), new BigDecimal("80"), LocalDateTime.of(2026, 1, 1, 0, 0)));
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"5,1,0,6", "4,1,1,6", "6,1,1,8"})
+    void fleetProjectsAuthoritativeSlotsIncludingOrdersAndTrialsWithoutClampingHistory(int active, int reserved, int trial, long used) {
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.deviceSlotCap()).thenReturn(6);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(active);
+        when(mapper.lockReservedDeviceOrderCount(42L, false)).thenReturn(reserved);
+        when(mapper.lockReservedTrialSlotCount(42L)).thenReturn(trial);
+        var result=service.deviceEarnings(42L,false,false,null);
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("slotsUsed",used).containsEntry("slotCap",6)
+                .containsEntry("reservedSlotCount",reserved).containsEntry("trialSlotCount",trial);
+    }
+
     @Test
     void sandboxUnknownAndMixedRuntimeRejectCanonicalDeviceCommandsBeforeAnyUserLockOrIdempotency() {
         when(environment.getActiveProfiles()).thenReturn(

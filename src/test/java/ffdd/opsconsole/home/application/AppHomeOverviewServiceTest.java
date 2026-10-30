@@ -37,6 +37,22 @@ class AppHomeOverviewServiceTest {
     private final AppHomeOverviewService service =
             new AppHomeOverviewService(mapper, verifier, publicStats, purchaseEligibility, clock, environment);
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"5,1,0,6", "4,1,1,6", "6,1,1,8"})
+    void onboardingProjectsAllAuthoritativeSlotsAndPreservesExistingOverCapacity(int active, int reserved, int trial, long used) {
+        environment.setActiveProfiles("dev");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
+        when(mapper.activeSlotCount(42L)).thenReturn(active);
+        when(mapper.reservedDeviceOrderCount(42L)).thenReturn(reserved);
+        when(mapper.reservedTrialSlotCount(42L)).thenReturn(trial);
+        when(mapper.deviceSlotCap()).thenReturn(6);
+        var result=service.overview(42L);
+        assertEquals(0,result.getCode());
+        var onboarding=(Map<?,?>)result.getData().get("onboarding");
+        assertEquals(used,onboarding.get("slotsUsed"));assertEquals(6,onboarding.get("slotCap"));
+        assertEquals(reserved,onboarding.get("reservedSlotCount"));assertEquals(trial,onboarding.get("trialSlotCount"));
+    }
+
     @Test
     void homeProjectsKnownInternalWorkloadNamesWithoutChangingSettledFactsOrOtherNames() {
         environment.setActiveProfiles("dev");
