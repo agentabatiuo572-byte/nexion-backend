@@ -125,6 +125,21 @@ class WorkerTests(unittest.TestCase):
         self.backend.calls.clear()
         return state
 
+    def test_stop_while_durable_intent_commits_never_sends_next_or_complete(self):
+        original = self.journal.intent
+        def stop_at_intent(*args, **kwargs):
+            call = original(*args, **kwargs)
+            self.worker.stop.set()
+            return call
+        with patch.object(self.journal, "intent", side_effect=stop_at_intent):
+            for operation, path in (("NEXT", "/next-task"), ("COMPLETE", "/tasks/CTA-" + "A" * 32 + "/complete")):
+                self.worker.stop.clear()
+                with self.subTest(operation=operation), self.assertRaises(w.NotSent):
+                    self.worker.mutate(operation, path, {}, "test-" + operation)
+        self.assertEqual(self.backend.calls, [])
+        self.assertEqual(self.journal.db.execute("SELECT operation,outcome FROM calls ORDER BY id").fetchall(),
+                         [("NEXT", "NOT_SENT"), ("COMPLETE", "NOT_SENT")])
+
     def test_claimed_resume_reads_original_manifest_and_recomputes_before_first_complete(self):
         state = self.interrupted_claim()
         self.assertEqual(self.worker.run(once=True), 0)
@@ -683,6 +698,223 @@ class FleetTests(unittest.TestCase):
         worker.backend = backend
         return backend
 
+    def test_parallelism_is_small_bounded_and_single_worker_config_is_unchanged(self):
+        self.assertEqual(self.fleet.config.parallelism, 2)
+        for value in ("0", "9", "-1", "2.0", "", "unlimited"):
+            with self.subTest(value=value), self.assertRaisesRegex(w.Halt, "FLEET_PARALLELISM_INVALID"):
+                w.Config({**self.env, "UVEL_CLOUD_FLEET_PARALLELISM": value}, fleet=True)
+        self.assertFalse(hasattr(config(), "parallelism"))
+
+    def test_model_endpoint_pool_requires_distinct_loopback_runners_at_parallel_capacity(self):
+        urls = "http://127.0.0.1:11436,http://127.0.0.1:11437"
+        cfg = w.Config({**self.env, "UVEL_CLOUD_FLEET_OLLAMA_URLS": urls}, fleet=True)
+        self.assertEqual(cfg.ollama_endpoints, [("127.0.0.1", 11436), ("127.0.0.1", 11437)])
+        fleet = w.Fleet({**self.env, "UVEL_CLOUD_FLEET_OLLAMA_URLS": urls}, self.backend, self.fleet.ollama,
+                        self.fleet.directory, threading.Event(), self.open_journal)
+        self.assertIsInstance(fleet.ollama, w.OllamaPool)
+        self.assertEqual([client.address for client in fleet.ollama.clients], cfg.ollama_endpoints)
+        for invalid in ("", "http://127.0.0.1:11436", "http://127.0.0.1:11436,http://127.0.0.1:11436/",
+                        "http://[::1]:11436,http://[0:0:0:0:0:0:0:1]:11436",
+                        "http://127.0.0.1:11436,http://example.com:11437"):
+            with self.subTest(urls=invalid), self.assertRaises(w.Halt):
+                w.Config({**self.env, "UVEL_CLOUD_FLEET_OLLAMA_URLS": invalid}, fleet=True)
+        self.assertEqual(self.fleet.config.ollama_endpoints, [])
+        self.assertIsInstance(self.fleet.ollama, Ollama)  # An unconfigured fleet retains its original client.
+        single = w.Http(("127.0.0.1", 11435))
+        with self.assertRaisesRegex(w.Halt, "FLEET_MODEL_ENDPOINTS_REQUIRED"):
+            w.Fleet(self.env, self.backend, single, self.fleet.directory)
+        serial = w.Fleet({**self.env, "UVEL_CLOUD_FLEET_PARALLELISM": "1"}, self.backend, single, self.fleet.directory)
+        self.assertIs(serial.ollama, single)
+
+    def test_scheduler_overlaps_two_inferences_bounds_capacity_and_advances_past_slow_instance(self):
+        entries = self.discover([self.row(), self.row(93), self.row(94)])
+        backends = [self.wire(entry) for entry in entries]
+        for index, backend in enumerate(backends):
+            backend.task["inputTexts"][0] = str(index)
+            backend.task["inputHash"] = w.sha256(w.json_bytes(backend.task["inputTexts"]))
+        barrier, release, third = threading.Barrier(2), threading.Event(), threading.Event()
+        release_discovery, discovery_started = threading.Event(), threading.Event()
+        active, maximum = 0, 0
+        guard = threading.Lock()
+        infer = self.fleet.ollama.request
+        def model(method, path, body=None, key=None):
+            nonlocal active, maximum
+            if path != "/api/embed":
+                return infer(method, path, body, key)
+            index = int(body["input"][0])
+            with guard:
+                active += 1
+                maximum = max(maximum, active)
+            try:
+                if index < 2:
+                    barrier.wait(4)  # A serial implementation cannot pass this barrier.
+                if index == 0:
+                    self.assertTrue(release.wait(6))
+                if index == 2:
+                    third.set()
+                return infer(method, path, body, key)
+            finally:
+                with guard:
+                    active -= 1
+        def slow_discovery():
+            discovery_started.set()
+            release_discovery.wait(6)
+        self.fleet.ollama.request = model
+        self.fleet.restore, self.fleet.refresh = lambda: None, slow_discovery
+        result = []
+        thread = threading.Thread(target=lambda: result.append(self.fleet.run()))
+        thread.start()
+        try:
+            self.assertTrue(discovery_started.wait(2))
+            self.assertTrue(third.wait(4))  # Instance 3 progresses while instance 1 and discovery remain blocked.
+            self.assertEqual(maximum, 2)
+            self.assertFalse(release.is_set())
+            self.assertEqual(sum(path.endswith("/complete") for _, path, _ in backends[1].calls), 1)
+            self.fleet.stop.set()
+            self.assertTrue(thread.is_alive())
+            # Shutdown retains the live journal and process file lock while inference is in flight.
+            self.assertEqual(entries[0].worker.journal.state()["phase"], "CLAIMED")
+            os.fstat(entries[0].file_lock)
+        finally:
+            self.fleet.stop.set()
+            release.set()
+            release_discovery.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result, [0])
+        self.assertFalse(any(path.endswith("/complete") for _, path, _ in backends[0].calls))
+        with self.assertRaises(sqlite3.ProgrammingError):
+            entries[0].worker.journal.state()
+        with self.assertRaises(OSError):
+            os.fstat(entries[0].file_lock)
+        self.fleet.entries.clear()  # run() owns and has closed these resources.
+
+    def test_same_instance_repeated_tick_never_runs_a_second_workflow(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        entered, release = threading.Event(), threading.Event()
+        infer = self.fleet.ollama.request
+        def model(method, path, body=None, key=None):
+            if path == "/api/embed":
+                entered.set()
+                self.assertTrue(release.wait(3))
+            return infer(method, path, body, key)
+        self.fleet.ollama.request = model
+        thread = threading.Thread(target=self.fleet.tick, args=(entry,))
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            for _ in range(3):
+                self.fleet.tick(entry)
+            self.assertEqual(sum(path.endswith("/next-task") for _, path, _ in backend.calls), 1)
+            self.assertTrue(entry.running)
+        finally:
+            release.set()
+            thread.join(3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in backend.calls), 1)
+        self.assertEqual(entry.worker.journal.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
+
+    def test_unexpected_workflow_future_error_is_quarantined_without_stopping_other_instances(self):
+        first, second = self.discover([self.row(), self.row(93)])
+        first_backend, second_backend = self.wire(first), self.wire(second)
+        quarantined = threading.Event()
+        tick, stop = self.fleet.tick, first.worker.stop.set
+        def fail_one(entry):
+            if entry is first:
+                with entry.gate:
+                    entry.running = True
+                raise RuntimeError("offline injected workflow failure")
+            return tick(entry)
+        def mark_quarantine():
+            stop()
+            quarantined.set()
+        infer = self.fleet.ollama.request
+        def model(method, path, body=None, key=None):
+            if path == "/api/embed":
+                self.assertTrue(quarantined.wait(3))
+            return infer(method, path, body, key)
+        request = second_backend.request
+        def stop_after_receipt(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if method == "GET" and path.endswith("/receipt"):
+                self.fleet.stop.set()
+            return result
+        first.worker.stop.set = mark_quarantine
+        second_backend.request = stop_after_receipt
+        self.fleet.tick, self.fleet.ollama.request = fail_one, model
+        self.fleet.restore, self.fleet.refresh = lambda: None, lambda: None
+        self.assertEqual(self.fleet.run(), 0)
+        self.assertTrue(first.blocked)
+        self.assertFalse(first.running)
+        self.assertEqual(first_backend.calls, [])
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in second_backend.calls), 1)
+        self.fleet.entries.clear()
+
+    def test_cancelled_inference_does_not_cancel_another_instances_workflow(self):
+        first, second = self.discover([self.row(), self.row(93)])
+        first_backend, second_backend = self.wire(first), self.wire(second)
+        barrier = threading.Barrier(2)
+        infer = self.fleet.ollama.request
+        def model(method, path, body=None, key=None):
+            if path == "/api/embed":
+                barrier.wait(3)
+            return infer(method, path, body, key)
+        self.fleet.ollama.request = model
+        request = first_backend.request
+        # The first instance's post-inference heartbeat revokes only its own generation.
+        def revoke_at_gate(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if path.endswith("/heartbeat"):
+                with first.gate:
+                    first.generation += 1
+                    first.worker.stop.set()
+            return result
+        first_backend.request = revoke_at_gate
+        with w.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(self.fleet.tick, entry) for entry in (first, second)]
+            for future in futures:
+                future.result(4)
+        self.assertEqual(first.worker.journal.state()["phase"], "CLAIMED")
+        self.assertFalse(any(path.endswith("/complete") for _, path, _ in first_backend.calls))
+        self.assertEqual(second.worker.journal.state()["phase"], "IDLE")
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in second_backend.calls), 1)
+
+    def test_inflight_idle_health_blocks_duplicate_tick_but_not_revocation_or_other_instance(self):
+        first, second = self.discover([self.row(), self.row(93)])
+        first_backend, second_backend = self.wire(first), self.wire(second)
+        first.worker.journal.set({"phase": "IDLE", "binding": first.worker.config.binding})
+        entered, release = threading.Event(), threading.Event()
+        request = first_backend.request
+        def slow_health(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if path.endswith("/heartbeat"):
+                entered.set()
+                self.assertTrue(release.wait(4))
+            return result
+        first_backend.request = slow_health
+        thread = threading.Thread(target=self.fleet.health, args=(first,))
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            self.fleet.tick(first)
+            self.fleet.health(first)
+            self.assertEqual(len(first_backend.calls), 1)
+            self.backend.request.return_value = self.page([self.row(93)])
+            self.fleet.refresh()  # Would deadlock here if health held entry.gate during HTTP.
+            self.assertFalse(first.present)
+            self.assertTrue(first.worker.stop.is_set())
+            self.fleet.tick(second)
+            self.assertEqual(second.worker.journal.state()["phase"], "IDLE")
+            self.assertEqual(sum(path.endswith("/complete") for _, path, _ in second_backend.calls), 1)
+        finally:
+            release.set()
+            thread.join(3)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(first.present)
+        self.assertTrue(first.worker.stop.is_set())  # An older successful health response cannot undo revocation.
+        self.assertFalse(any(path.endswith("/next-task") for _, path, _ in first_backend.calls))
+
     def test_discovery_paginates_and_scopes_independent_journals_without_initial_heartbeat(self):
         self.backend.request.side_effect = [self.page([self.row()], True), self.page([self.row(93)])]
         self.fleet.refresh()
@@ -817,12 +1049,24 @@ class FleetTests(unittest.TestCase):
             return result
         backend.request = backend_request
         self.fleet.restore, self.fleet.refresh = lambda: None, lambda: None
-        # Wake the real health thread when inference has entered the original task wait.
-        def wake(_):
-            inferred.wait(2)
-            return self.fleet.stop.is_set()
-        with patch.object(self.fleet.stop, "wait", side_effect=wake):
-            self.assertEqual(self.fleet.run(), 0)
+        # Keep health within the scheduler-owned pool so shutdown also waits for this in-flight request.
+        health = self.fleet.health
+        def health_after_inference(item=None):
+            inferred.wait(3)
+            return health(item)
+        self.fleet.health = health_after_inference
+        result = []
+        thread = threading.Thread(target=lambda: result.append(self.fleet.run()))
+        thread.start()
+        try:
+            self.assertTrue(inferred.wait(3))
+            self.assertTrue(heartbeat.wait(3))
+        finally:
+            self.fleet.stop.set()
+            entry.worker.stop.set()
+            thread.join(4)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result, [0])
         self.assertTrue(heartbeat.is_set())
         self.assertTrue(entry.worker.stop.is_set())
         self.assertFalse(any(path.endswith("/complete") for _, path, _ in backend.calls))
@@ -910,6 +1154,8 @@ class FleetTests(unittest.TestCase):
         self.assertTrue(entry.blocked)
         backend.request, backend.idle = request, True
         self.fleet.refresh()
+        self.assertTrue(entry.blocked)  # Discovery itself never waits for instance health HTTP.
+        self.fleet.health()
         self.assertFalse(entry.blocked)
         self.assertFalse(entry.worker.stop.is_set())
         self.fleet.tick(entry)
@@ -1030,6 +1276,100 @@ class FleetTests(unittest.TestCase):
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_pool_leases_distinct_runners_for_both_digest_checks_and_concurrent_embed_requests(self):
+        cfg, barrier = config(), threading.Barrier(2)
+        class Runner(w.Http):
+            def __init__(self, address):
+                super().__init__(address)
+                self.fake = Ollama(cfg)
+            def request(self, method, path, body=None, key=None):
+                with pool.available.mutex:
+                    self_test.assertNotIn(self, pool.available.queue)
+                if path == "/api/embed":
+                    barrier.wait(3)
+                return self.fake.request(method, path, body, key)
+        self_test = self
+        with patch.object(w, "Http", Runner), patch("builtins.print") as log:
+            pool = w.OllamaPool([("127.0.0.1", 11436), ("127.0.0.1", 11437)])
+            manifests = [task(cfg), {**task(cfg), "deviceId": 93, "instanceNo": "NEX-ORD-93", "taskNo": "CTA-" + "B" * 32}]
+            with w.ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(w.infer, pool, manifest) for manifest in manifests]
+                for future in futures:
+                    self.assertEqual(len(future.result(4)), 8192)
+        self.assertEqual(pool.available.qsize(), 2)
+        for runner in pool.clients:
+            self.assertEqual([path for _, path, _ in runner.fake.calls], ["/api/tags", "/api/embed", "/api/tags"])
+        records = [json.loads(call.args[0]) for call in log.call_args_list]
+        starts = [record for record in records if record["event"] == "INFERENCE_STARTED"]
+        finishes = [record for record in records if record["event"] == "INFERENCE_FINISHED"]
+        self.assertEqual({record["modelPort"] for record in starts}, {11436, 11437})
+        self.assertEqual({record["deviceId"] for record in starts}, {92, 93})
+        # Windows can return equal clock ticks for these tiny fake responses; the barrier proves overlap.
+        self.assertLessEqual(max(record["monotonicNs"] for record in starts), min(record["monotonicNs"] for record in finishes))
+
+    def test_nondefault_pool_runner_http_failure_or_digest_change_returns_the_complete_lease(self):
+        cfg = config()
+        class Runner(w.Http):
+            def __init__(self, address):
+                super().__init__(address)
+                self.fake = Ollama(cfg)
+                self.failure = None
+            def request(self, method, path, body=None, key=None):
+                if path == "/api/embed" and self.failure == "http":
+                    raise w.Halt("HTTP_OUTCOME_UNKNOWN")
+                result = self.fake.request(method, path, body, key)
+                if path == "/api/embed" and self.failure == "digest":
+                    self.fake.tag_digest = "2" * 64
+                return result
+        with patch.object(w, "Http", Runner), patch("builtins.print"):
+            pool = w.OllamaPool([("127.0.0.1", 11436), ("127.0.0.1", 11437)])
+            with pool.lease() as held:
+                self.assertEqual(held.address[1], 11436)
+                runner = pool.clients[1]
+                for failure, code in (("http", "HTTP_OUTCOME_UNKNOWN"), ("digest", "MODEL_DIGEST_CHANGED")):
+                    runner.failure = failure
+                    runner.fake.tag_digest = cfg.binding["modelDigest"][7:]
+                    with self.subTest(failure=failure), self.assertRaisesRegex(w.Halt, code):
+                        w.infer(pool, task(cfg))
+                    self.assertEqual(pool.available.qsize(), 1)
+                runner.failure = None
+                runner.fake.tag_digest = cfg.binding["modelDigest"][7:]
+                self.assertEqual(len(w.infer(pool, task(cfg))), 8192)
+            self.assertEqual(pool.available.qsize(), 2)
+            self.assertEqual(held.fake.calls, [])  # Health/default runner cannot mask a bad leased runner.
+
+    def test_embed_http_observation_logs_exact_interval_identifiers_and_failure_without_inputs(self):
+        cfg = config()
+        manifest = task(cfg)
+        for failure in (None, w.Halt("HTTP_OUTCOME_UNKNOWN")):
+            ollama = Ollama(cfg)
+            request = ollama.request
+            def observed_request(method, path, body=None, key=None):
+                if path == "/api/embed":
+                    self.assertEqual(log.call_count, 1)
+                    if failure:
+                        raise failure
+                return request(method, path, body, key)
+            ollama.request = observed_request
+            with self.subTest(failure=bool(failure)), patch("builtins.print") as log:
+                if failure:
+                    with self.assertRaises(w.Halt):
+                        w.infer(ollama, manifest)
+                else:
+                    w.infer(ollama, manifest)
+            records = [json.loads(call.args[0]) for call in log.call_args_list]
+            self.assertEqual([record["event"] for record in records], ["INFERENCE_STARTED", "INFERENCE_FINISHED"])
+            identifiers = {key: manifest[key] for key in ("deviceId", "instanceNo", "taskNo", "model")}
+            for record in records:
+                self.assertEqual({key: record[key] for key in identifiers}, identifiers)
+                self.assertRegex(record["atUtc"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
+            start, finish = records
+            self.assertEqual(set(start), set(identifiers) | {"event", "atUtc", "monotonicNs"})
+            self.assertEqual(set(finish), set(start) | {"elapsedMicros", "success"})
+            self.assertGreaterEqual(finish["monotonicNs"], start["monotonicNs"])
+            self.assertEqual(finish["elapsedMicros"], (finish["monotonicNs"] - start["monotonicNs"]) // 1000)
+            self.assertIs(finish["success"], failure is None)
+
     def test_rejection_keeps_only_strictly_whitelisted_http_and_error_code_metadata(self):
         for message, expected in (("TEST_CLOUD_HEARTBEAT_STALE", "TEST_CLOUD_HEARTBEAT_STALE"),
                                   ("TEST_CLOUD_BAD token=secret", None), ("private response body", None)):

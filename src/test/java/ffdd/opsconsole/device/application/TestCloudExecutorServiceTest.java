@@ -158,6 +158,13 @@ class TestCloudExecutorServiceTest {
         assertThatThrownBy(()->service.next(identity,"cloud-next-unit")).hasMessage("TEST_CLOUD_UNMANIFESTED_TASK_BLOCKED");
         verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any()); verifyNoInteractions(settlement);
     }
+    @Test void unreviewedExistingDeviceLockStillStopsCloudClaimWithoutHeartbeatOrSettlement() {
+        when(assignments.lockDeviceTaskLock(7L,11L,"PRODUCTION"))
+                .thenReturn(new DeviceLockRow(NOW.plusMinutes(1),"UNREVIEWED-SOURCE"));
+        assertThat(service.next(identity,"cloud-next-locked").getData().get("idle")).isEqualTo(true);
+        verify(mapper,never()).heartbeat(anyLong(),any(),any(),any());
+        verify(mapper,never()).insert(any(Execution.class)); verifyNoInteractions(settlement);
+    }
     private static final String OLD_TASK="CTA-LEGACY-UNEXECUTED";
     private static final String LEGACY_REASON="Verified old App task has no execution or settlement evidence";
     private static final String EVIDENCE="e".repeat(64);

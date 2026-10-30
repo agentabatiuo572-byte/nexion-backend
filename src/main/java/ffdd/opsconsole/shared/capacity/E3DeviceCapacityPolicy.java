@@ -43,14 +43,15 @@ public final class E3DeviceCapacityPolicy {
             int mid = integer(config, "stageMidEnd");
             int cycle = integer(config, "cycleMonths");
             int subsidyDays = integer(config, "capacitySubsidyDays");
-            List<Integer> taskLocks = List.of(
-                    integer(config, "taskLockS1"),
-                    integer(config, "taskLockPro"),
-                    integer(config, "taskLockRack"));
+            List<BigDecimal> taskLockUsdtThresholds = List.of(
+                    decimal(config, "taskLockS1"),
+                    decimal(config, "taskLockPro"),
+                    decimal(config, "taskLockRack"));
             BigDecimal floor = decimal(config, "capacityFloorPct");
             if (early <= 0 || mid <= early || cycle <= mid || subsidyDays < 0 || floor.signum() < 0
                     || floor.compareTo(BigDecimal.valueOf(100)) > 0) return false;
-            if (taskLocks.stream().anyMatch(value -> value < 0 || value > 10080)) return false;
+            if (taskLockUsdtThresholds.stream().anyMatch(value -> value.signum() < 0
+                    || value.stripTrailingZeros().scale() > 0)) return false;
             return REQUIRED_KEYS.stream().filter(key -> key.startsWith("capacityApplyTo"))
                     .allMatch(key -> "true".equalsIgnoreCase(config.get(key))
                             || "false".equalsIgnoreCase(config.get(key)));

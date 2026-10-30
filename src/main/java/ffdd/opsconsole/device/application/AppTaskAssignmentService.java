@@ -679,10 +679,9 @@ public class AppTaskAssignmentService {
         if (grant != null && (!grant.taskConfigId().equals(task.taskId()) || requiredSeconds > 60)) {
             throw new BizException(409, "TEST_COMPUTE_WORKER_TASK_CONFIG_INVALID");
         }
-        int taskLockMinutes = taskLockMinutes(device, capacityRows.stream()
-                .filter(row -> row != null && Set.of("taskLockS1", "taskLockPro", "taskLockRack")
-                        .contains(row.configKey()))
-                .toList());
+        // E3 taskLockS1/Pro/Rack are USDT hint thresholds, never a completion cooldown.
+        // Keep the legacy column inert for new rows without rewriting historical snapshots.
+        int taskLockMinutes = 0;
         String taskNo = grant == null ? "CTA-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT) : grant.taskNo();
         String completionNonce = UUID.randomUUID().toString().replace("-", "").toLowerCase(Locale.ROOT)
                 + UUID.randomUUID().toString().replace("-", "").toLowerCase(Locale.ROOT);
@@ -862,10 +861,11 @@ public class AppTaskAssignmentService {
                 deferredDeviceDeactivated = true;
             }
         }
-        LocalDateTime lockUntil = now.plusMinutes(Math.max(0, task.taskLockMinutes()));
-        mapper.upsertDeviceTaskLock(userId, task.deviceId(), sourceEnvironment, lockUntil, taskNo, now);
+        // Older tasks can still contain the incorrectly copied USDT threshold. Do not
+        // turn that snapshot into time, or overwrite a separately reviewed device lock.
         Map<String, Object> completionDetail = linked("deviceId", task.deviceId(), "receiptNo", receiptNo,
-                "rewardUsdt", task.rewardUsdt(), "rewardNex", rewardNex, "lockUntil", lockUntil,
+                "rewardUsdt", task.rewardUsdt(), "rewardNex", rewardNex,
+                "legacyTaskLockMinutesIgnored", task.taskLockMinutes(),
                 "proofHash", proof.proofHash(), "proofMode", cloudProof != null ? TestCloudExecutorService.KIND : grant == null ? (proof.sandbox() ? "SANDBOX" : "PRODUCTION") : TestComputeWorkerService.KIND);
         if (cloudProof != null) completionDetail.putAll(linked("inputHash", cloudProof.inputHash(),
                 "resultHash", cloudProof.resultHash(), "modelDigest", cloudProof.modelDigest(), "executorId", cloudProof.executorId()));
@@ -971,28 +971,6 @@ public class AppTaskAssignmentService {
             return 8;
         }
         return device.vramTotalGb();
-    }
-
-    public static int taskLockMinutes(DeviceRow device, List<ConfigRow> rows) {
-        Map<String, Integer> config = new LinkedHashMap<>();
-        for (ConfigRow row : safe(rows)) {
-            try {
-                int value = Integer.parseInt(row.configValue());
-                if (value < 0 || value > 10080) throw new NumberFormatException();
-                config.put(row.configKey(), value);
-            } catch (RuntimeException ex) {
-                throw new BizException(503, "E3_TASK_LOCK_CONFIG_INVALID:" + row.configKey());
-            }
-        }
-        String model = String.join(" ", value(device.deviceType()), value(device.productTier()), value(device.name()))
-                .toUpperCase(Locale.ROOT);
-        String key = model.contains("RACK") || model.matches(".*\\bP[12]\\b.*") ? "taskLockRack"
-                : model.contains("PRO") ? "taskLockPro"
-                : model.contains("S1") ? "taskLockS1" : null;
-        if (key == null) return 0;
-        Integer minutes = config.get(key);
-        if (minutes == null) throw new BizException(503, "E3_TASK_LOCK_CONFIG_MISSING:" + key);
-        return minutes;
     }
 
     private Map<String, String> capacityConfig(List<ConfigRow> rows) {
