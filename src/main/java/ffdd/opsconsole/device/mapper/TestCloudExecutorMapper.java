@@ -184,6 +184,15 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
     @Select("SELECT " + COLUMNS + " FROM nx_test_cloud_execution WHERE executor_id=#{executor} AND next_key_hash=#{keyHash} FOR UPDATE")
     Execution byNextKey(@Param("executor") String executor, @Param("keyHash") String keyHash);
 
+    @Select("""
+        SELECT (EXISTS(SELECT 1 FROM nx_compute_receipt r WHERE r.task_no=#{taskNo})
+          OR EXISTS(SELECT 1 FROM nx_wallet_ledger l WHERE l.biz_no=#{taskNo}
+                    OR l.biz_no=CONCAT('CTR-',RIGHT(#{taskNo},32)))
+          OR EXISTS(SELECT 1 FROM nx_earning_event e WHERE e.event_no=CONCAT('EARN-',#{taskNo})
+                    OR e.receipt_no=CONCAT('CTR-',RIGHT(#{taskNo},32))))
+        """)
+    int settlementEvidence(@Param("taskNo") String taskNo);
+
     @Insert("""
         INSERT INTO nx_test_cloud_execution(task_no,executor_id,owner_id,device_id,instance_no,task_config_id,
           next_key_hash,claim_token,input_json,input_hash,model_tag,model_digest,proof_nonce,created_at)

@@ -380,6 +380,99 @@ class TestCloudExecutorServiceTest {
         verifyNoInteractions(settlement); verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any());
         verify(mapper,never()).heartbeat(anyLong(),any(),any(),any());
     }
+    static final String RESUME_KEY="BGE-NEXT-"+"d".repeat(32);
+    private Execution resumableExecution(String result,String completeKey,String completeBody) {
+        var e=execution(result,completeKey,completeBody);
+        return new Execution(e.taskNo(),e.executorId(),e.ownerId(),e.deviceId(),e.instanceNo(),e.taskConfigId(),sha256(RESUME_KEY),
+                e.claimToken(),e.inputJson(),e.inputHash(),e.modelTag(),e.modelDigest(),e.proofNonce(),e.resultHash(),e.resultArtifact(),
+                e.completeKeyHash(),e.completeBodyHash(),e.createdAt());
+    }
+    private void resumableTask() {
+        when(mapper.lock(TASK)).thenReturn(resumableExecution(null,null,null));
+        when(assignments.lockActiveAssignment(7L,11L,"PRODUCTION")).thenReturn(task("RUNNING"));
+        when(mapper.countActive(7,11)).thenReturn(1);
+    }
+    @Test void originalManifestReadAuthorizesOnlyTheSameLiveUnsubmittedTaskAndHasNoWrites() {
+        resumableTask();
+        var data=service.manifest(identity,TASK,RESUME_KEY).getData();
+        assertThat(data).containsEntry("resumeAllowed",true).containsEntry("nextKeyHash",sha256(RESUME_KEY))
+                .containsEntry("taskNo",TASK).containsEntry("inputHash",sha256(inputJson()))
+                .containsEntry("claimToken",CLAIM).containsEntry("proofNonce",NONCE).containsEntry("modelDigest",DIGEST)
+                .containsEntry("leaseExpiresAt",NOW.plusHours(24).toInstant(ZoneOffset.UTC).toEpochMilli());
+        verify(mapper,never()).register(any(),any()); verify(mapper,never()).insert(any(Execution.class));
+        verify(mapper,never()).heartbeat(anyLong(),any(),any(),any());
+        verify(mapper,never()).saveResult(anyString(),anyString(),any(),anyString(),anyString());
+        verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any());
+        verify(service,never()).infer(any()); verifyNoInteractions(settlement,audit);
+    }
+    @Test void manifestRequiresTheOriginalNonNullNextKeyAndExactExecutionIdentity() {
+        resumableTask();
+        for(String key:new String[]{null,"","bad"})
+            assertThatThrownBy(()->service.manifest(identity,TASK,key)).hasMessage("TEST_CLOUD_IDEMPOTENCY_INVALID");
+        assertThatThrownBy(()->service.manifest(identity,TASK,"BGE-NEXT-"+"e".repeat(32))).hasMessage("TEST_CLOUD_NEXT_KEY_INVALID");
+        var e=resumableExecution(null,null,null);
+        when(mapper.lock(TASK)).thenReturn(new Execution(TASK,"other-executor",e.ownerId(),e.deviceId(),e.instanceNo(),e.taskConfigId(),
+                e.nextKeyHash(),e.claimToken(),e.inputJson(),e.inputHash(),e.modelTag(),e.modelDigest(),e.proofNonce(),null,null,null,null,e.createdAt()));
+        assertThatThrownBy(()->service.manifest(identity,TASK,RESUME_KEY)).hasMessage("TEST_CLOUD_MANIFEST_INVALID");
+        verifyNoInteractions(settlement,audit);
+    }
+    @Test void manifestRefusesAnyExistingResultCompleteIntentOrFinancialEvidence() {
+        resumableTask();
+        for(Execution execution:List.of(resumableExecution("e".repeat(64),null,null),resumableExecution(null,"e".repeat(64),null),
+                resumableExecution(null,null,"e".repeat(64)))) {
+            when(mapper.lock(TASK)).thenReturn(execution);
+            assertThatThrownBy(()->service.manifest(identity,TASK,RESUME_KEY)).hasMessage("TEST_CLOUD_RESUME_REQUIRES_RECONCILIATION");
+        }
+        when(mapper.lock(TASK)).thenReturn(resumableExecution(null,null,null));
+        when(mapper.settlementEvidence(TASK)).thenReturn(1);
+        assertThatThrownBy(()->service.manifest(identity,TASK,RESUME_KEY)).hasMessage("TEST_CLOUD_RESUME_REQUIRES_RECONCILIATION");
+        verifyNoInteractions(settlement,audit); verify(service,never()).infer(any());
+    }
+    @Test void manifestRequiresExactlyOneActiveTaskAndCannotRenewExpiredLeaseOrProof() {
+        resumableTask();
+        when(mapper.countActive(7,11)).thenReturn(2);
+        assertThatThrownBy(()->service.manifest(identity,TASK,RESUME_KEY)).hasMessage("TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+        when(mapper.countActive(7,11)).thenReturn(1);
+        when(assignments.lockActiveAssignment(7L,11L,"PRODUCTION")).thenReturn(null);
+        assertThatThrownBy(()->service.manifest(identity,TASK,RESUME_KEY)).hasMessage("TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+        when(assignments.lockActiveAssignment(7L,11L,"PRODUCTION")).thenReturn(task("RUNNING"));
+        for(boolean expiredLease:new boolean[]{true,false}) {
+            when(assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(new AssignmentRow(TASK,11L,"EM-UNIT",TASK_NAME,"EM",KIND,CLIENT,
+                    "RUNNING",BigDecimal.ONE,5,0,NOW.minusMinutes(5),expiredLease?NOW.minusSeconds(1):NOW.plusHours(1),null,null,NONCE,
+                    expiredLease?NOW.plusHours(1):NOW.minusSeconds(1)));
+            assertThatThrownBy(()->service.manifest(identity,TASK,RESUME_KEY)).hasMessage("TEST_CLOUD_TASK_INVALID");
+        }
+        verify(mapper,never()).saveResult(anyString(),anyString(),any(),anyString(),anyString()); verifyNoInteractions(settlement,audit);
+    }
+    @Test void manifestRechecksDeactivationOrPausedOwnershipBeforeReturningSensitiveClaimFields() {
+        resumableTask();
+        when(assignments.lockPaidCloudShareDailyNex(7L,11L)).thenReturn(null);
+        assertThatThrownBy(()->service.manifest(identity,TASK,RESUME_KEY)).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        when(assignments.lockPaidCloudShareDailyNex(7L,11L)).thenReturn(new BigDecimal("3"));
+        when(assignments.lockOwnedDevice(7L,11L)).thenReturn(new DeviceRow(11L,"NEX-UNIT-CLOUD","SHARE","SHARE","Cloud","INACTIVE",
+                "cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","OFFLINE",null,false));
+        assertThatThrownBy(()->service.manifest(identity,TASK,RESUME_KEY)).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        verifyNoInteractions(settlement,audit);
+    }
+    @Test void manifestResumesTheExistingPendingDeactivationTaskButStillRejectsActualRevocation() {
+        Identity target=fleetIdentity();
+        when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1","ACTIVE",
+                "stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+        var e=resumableExecution(null,null,null);
+        when(mapper.lock(TASK)).thenReturn(new Execution(TASK,"fleet-12",7,12,"NEX-FLEET-12","EM-UNIT",e.nextKeyHash(),CLAIM,
+                e.inputJson(),e.inputHash(),e.modelTag(),e.modelDigest(),NONCE,null,null,null,null,NOW));
+        when(assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(fleetTask(TASK,KIND,CLIENT));
+        when(assignments.lockActiveAssignment(7L,12L,"PRODUCTION")).thenReturn(fleetTask(TASK,KIND,CLIENT));
+        when(mapper.countActive(7,12)).thenReturn(1);
+        // A pending stop rejects fresh dispatch but permits finishing this already manifested task.
+        when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false,false)).thenReturn(null);
+        when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",true,false)).thenReturn(1);
+        assertThat(service.manifest(target,TASK,RESUME_KEY).getData()).containsEntry("resumeAllowed",true);
+        verify(mapper,never()).liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false,false);
+        when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",true,false)).thenReturn(null);
+        assertThatThrownBy(()->service.manifest(target,TASK,RESUME_KEY)).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        verifyNoInteractions(settlement,audit);
+    }
     @Test void modelResponseSlowBodyHasATotalDeadlineAndCannotHoldTheTransactionIndefinitely() throws Exception {
         var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
         var release=new java.util.concurrent.CountDownLatch(1);

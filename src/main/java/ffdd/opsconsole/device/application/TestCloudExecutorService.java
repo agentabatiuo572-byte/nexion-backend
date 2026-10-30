@@ -234,6 +234,25 @@ public class TestCloudExecutorService {
     }
 
     @Transactional(rollbackFor=Exception.class)
+    public ApiResult<Map<String,Object>> manifest(Identity identity,String taskNo,String nextKey) {
+        requireCurrent(identity); key(nextKey); lockBinding(identity,false);
+        AssignmentRow task=task(identity,safe(taskNo,96));
+        Execution e=mapper.lock(taskNo); requireManifest(identity,e);
+        if(!sha256(nextKey).equals(e.nextKeyHash())) throw error(403,"TEST_CLOUD_NEXT_KEY_INVALID");
+        AssignmentRow active=assignments.lockActiveAssignment(identity.ownerId(),identity.deviceId(),"PRODUCTION");
+        if(active==null || !taskNo.equals(active.taskNo()) || mapper.countActive(identity.ownerId(),identity.deviceId())!=1)
+            throw error(409,"TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+        requireLiveTask(identity,e,task);
+        lockBinding(identity,true,true);
+        if(e.resultHash()!=null || e.resultArtifact()!=null || e.completeKeyHash()!=null || e.completeBodyHash()!=null
+                || mapper.settlementEvidence(taskNo)!=0) throw error(409,"TEST_CLOUD_RESUME_REQUIRES_RECONCILIATION");
+        // This GET only reads the original locked task. It never claims, cancels, heartbeats or renews a lease.
+        Map<String,Object> result=claimView(identity,e,task);
+        result.put("resumeAllowed",true); result.put("nextKeyHash",e.nextKeyHash());
+        return ApiResult.ok(result);
+    }
+
+    @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> heartbeat(Identity identity,String taskNo,String claimToken) {
         requireCurrent(identity); lockBinding(identity,false);
         AssignmentRow active=assignments.lockActiveAssignment(identity.ownerId(),identity.deviceId(),"PRODUCTION");

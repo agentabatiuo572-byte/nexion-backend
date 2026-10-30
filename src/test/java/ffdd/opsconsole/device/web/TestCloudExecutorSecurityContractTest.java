@@ -95,6 +95,26 @@ class TestCloudExecutorSecurityContractTest {
         request.setMethod("GET"); request.setRequestURI(BASE+"/instances");
         assertThat(GeoBlockEnforcementFilter.isTestCloudRoute(request)).isTrue();
         request.setRequestURI(BASE+"/instances/"); assertThat(GeoBlockEnforcementFilter.isTestCloudRoute(request)).isFalse();
+        request.setRequestURI(BASE+"/tasks/CTA-ONE/manifest"); assertThat(GeoBlockEnforcementFilter.isTestCloudRoute(request)).isTrue();
+        request.setRequestURI(BASE+"/tasks/CTA-ONE/manifest/"); assertThat(GeoBlockEnforcementFilter.isTestCloudRoute(request)).isFalse();
+    }
+    @Test void originalManifestIsAnExactLocalDedicatedReadAndRequiresItsOriginalKey() throws Exception {
+        String path=BASE+"/tasks/CTA-ONE/manifest",key="BGE-NEXT-"+"d".repeat(32);
+        doReturn(ApiResult.ok(Map.of("resumeAllowed",true))).when(service).manifest(any(),eq("CTA-ONE"),eq(key));
+        assertThat(mvc.perform(get(path).header("Authorization","Bearer "+TOKEN).header("Idempotency-Key",key))
+                .andReturn().getResponse().getStatus()).isEqualTo(200);
+        assertThat(mvc.perform(get(path).header("Authorization","Bearer "+TOKEN))
+                .andReturn().getResponse().getStatus()).isEqualTo(422);
+        for(String token:List.of("user-jwt","admin-jwt"))
+            assertThat(mvc.perform(get(path).header("Authorization","Bearer "+token).header("Idempotency-Key",key))
+                    .andReturn().getResponse().getStatus()).isEqualTo(401);
+        assertThat(mvc.perform(get(path).header("Authorization","Bearer "+TOKEN).header("Idempotency-Key",key)
+                .with(req->{req.setRemoteAddr("203.0.113.5");return req;})).andReturn().getResponse().getStatus()).isEqualTo(403);
+        assertThat(mvc.perform(get(path).header("Authorization","Bearer "+TOKEN).header("Idempotency-Key",key)
+                .header("Forwarded","for=127.0.0.1")).andReturn().getResponse().getStatus()).isEqualTo(403);
+        assertThat(mvc.perform(post(path).header("Authorization","Bearer "+TOKEN).header("Idempotency-Key",key))
+                .andReturn().getResponse().getStatus()).isEqualTo(403);
+        verify(service,times(1)).manifest(any(),eq("CTA-ONE"),eq(key));
     }
     @Test void fleetDiscoveryHasItsOwnScopeAndRetainsTheDedicatedLoopbackCredentialBoundary() throws Exception {
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("fleet",Map.of(

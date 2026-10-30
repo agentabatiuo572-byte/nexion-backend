@@ -53,6 +53,12 @@ public class TestCloudExecutorController {
     @GetMapping("/tasks/{taskNo}/receipt")
     public Object receipt(Authentication auth,@PathVariable String taskNo) { return service.receipt(identity(auth),taskNo); }
 
+    @GetMapping("/tasks/{taskNo}/manifest")
+    public Object manifest(Authentication auth,@PathVariable String taskNo,
+            @RequestHeader(value="Idempotency-Key",required=false) String nextKey) {
+        return service.manifest(identity(auth),taskNo,nextKey);
+    }
+
     private Identity identity(Authentication auth) {
         if(auth==null || !(auth.getPrincipal() instanceof Identity identity)) throw new BizException(401,"TEST_CLOUD_AUTH_INVALID");
         service.requireCurrent(identity); return identity;
