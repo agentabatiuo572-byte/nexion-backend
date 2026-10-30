@@ -77,7 +77,7 @@ class Backend:
             return ok({**identity(self.cfg), "idle": True, "retryAfterSeconds": 60} if self.idle else self.task)
         if path == w.PREFIX + "/heartbeat":
             phase = self.journal.state()["phase"]
-            active = self.task["taskNo"] if phase in ("CLAIMED", "COMPLETE_INTENT", "UNKNOWN_COMPLETE", "REJECTED_RETRY_INTENT") else None
+            active = self.task["taskNo"] if phase in ("CLAIMED", "COMPLETE_INTENT", "UNKNOWN_COMPLETE", "REJECTED_RETRY_INTENT", "ROLLBACK_RETRY_INTENT") else None
             return ok({**self.cfg.binding, "serverCanonical": True, "heartbeatAt": int(time.time() * 1000), "activeTaskNo": active})
         if path.endswith("/complete"):
             self.complete_body = body
@@ -434,6 +434,171 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.ollama.calls, [])
         self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM calls WHERE operation='REJECTED_RETRY'").fetchone()[0], 0)
 
+    def rollback_claim(self):
+        task_no = "CTA-FDDE9396AE554345A116E4026D5590A4"
+        original = w.ROLLBACK_REVIEW_TASKS[task_no]
+        self.cfg.binding.update(deviceId=original["deviceId"], instanceNo=original["instanceNo"])
+        self.backend.task = {**task(self.cfg), "taskNo": task_no}
+        origin = self.interrupted_claim()
+        origin["phase"] = "UNKNOWN_COMPLETE"
+        self.journal.set(origin)
+        key = "BGE-COMPLETE-" + w.sha256(task_no.encode())
+        body = {"offlineOriginalAttempt": True}
+        expected = {**original, "inputHash": origin["inputHash"], "resultHash": origin["resultHash"],
+                    "originalRequestHash": w.sha256(w.json_bytes(body))}
+        patcher = patch.dict(w.ROLLBACK_REVIEW_TASKS, {task_no: expected})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        call = self.journal.intent("COMPLETE", key, task_no, body)
+        self.journal.outcome(call, "UNKNOWN")
+        self.review_response = {**identity(self.cfg), "taskNo": task_no, "inputHash": origin["inputHash"],
+                                "resultHash": origin["resultHash"], "originalRequestHash": expected["originalRequestHash"],
+                                "completeKeyHash": w.sha256(key.encode()), "nextKeyHash": w.sha256(origin["nextKey"].encode()),
+                                "reviewId": 8421, "evidenceSha256": "d" * 64, "maxAttempts": 1, "rollbackConfirmed": True}
+        receipt = self.backend.receipt
+        self.backend.receipt = lambda: {**receipt(), "receiptNo": "CTR-" + task_no[-32:] if self.backend.found else None}
+        request = self.backend.request
+        def reviewed(method, path, body=None, key=None, original_next_key=None):
+            if "/rollback-review?" in path:
+                self.backend.calls.append((method, path, key))
+                self.assertEqual(method, "GET")
+                self.assertEqual(key, "BGE-COMPLETE-" + w.sha256(task_no.encode()))
+                self.assertEqual(original_next_key, origin["nextKey"])
+                self.assertEqual(self.journal.state(), origin)
+                if self.review_response is None:
+                    raise w.Rejected("BACKEND_REJECTED_409", 409, "TEST_CLOUD_ROLLBACK_REVIEW_REQUIRED")
+                return ok(dict(self.review_response))
+            if path.endswith("/manifest"):
+                self.assertEqual(self.journal.state()["phase"], "ROLLBACK_RETRY_INTENT")
+                self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM rollback_retries").fetchone()[0], 1)
+            return request(method, path, body, key)
+        self.backend.request = reviewed
+        self.backend.calls.clear()
+        return origin
+
+    def test_audited_rollback_retry_preserves_unknown_and_spends_separate_budget_before_manifest(self):
+        origin = self.rollback_claim()
+        review = dict(self.review_response)
+        self.assertTrue(self.worker.recover())
+        calls = self.journal.db.execute("SELECT request_key,request_hash,outcome FROM calls WHERE operation='COMPLETE' ORDER BY id").fetchall()
+        self.assertEqual([row[2] for row in calls], ["UNKNOWN", "CONFIRMED"])
+        self.assertEqual(calls[0][0], calls[1][0])
+        self.assertEqual(calls[0][1], review["originalRequestHash"])
+        self.assertEqual(self.backend.complete_body["resultHash"], origin["resultHash"])
+        self.assertFalse(any(path.endswith("/next-task") for _, path, _ in self.backend.calls))
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM rejected_retries").fetchone()[0], 0)
+        saved, saved_hash, evidence, evidence_hash = self.journal.db.execute("SELECT original_state_json,original_state_hash,review_json,review_hash FROM rollback_retries").fetchone()
+        self.assertEqual(json.loads(saved), origin)
+        self.assertEqual(saved_hash, w.sha256(w.json_bytes(origin)))
+        self.assertEqual(json.loads(evidence), review)
+        self.assertEqual(evidence_hash, w.sha256(w.json_bytes(review)))
+        self.assertEqual(self.journal.state()["phase"], "IDLE")
+
+    def test_rollback_without_audit_or_with_tampered_review_cannot_spend_or_compute(self):
+        origin = self.rollback_claim()
+        review = dict(self.review_response)
+        changes = [None, {"deploymentScope": "PRODUCTION"}, {"serverCanonical": False}, {"deviceId": 1206},
+                   {"instanceNo": "other"}, {"taskNo": "CTA-" + "B" * 32}, {"inputHash": "a" * 64},
+                   {"resultHash": "a" * 64}, {"originalRequestHash": "a" * 64}, {"completeKeyHash": "a" * 64},
+                   {"nextKeyHash": "a" * 64}, {"rollbackConfirmed": False}, {"maxAttempts": 2},
+                   {"maxAttempts": True}, {"reviewId": 0}, {"reviewId": True}, {"evidenceSha256": "invalid"}]
+        for change in changes:
+            with self.subTest(change=change):
+                self.review_response = None if change is None else {**review, **change}
+                self.backend.calls.clear()
+                with self.assertRaises(w.Halt):
+                    self.worker.recover()
+                self.assertEqual(self.journal.state(), origin)
+                self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM rollback_retries").fetchone()[0], 0)
+                self.assertFalse(any(path.endswith(("/manifest", "/complete")) for _, path, _ in self.backend.calls))
+                self.assertEqual(self.ollama.calls, [])
+
+    def test_rollback_budget_and_origin_review_are_atomic_and_crash_can_only_read_receipt(self):
+        origin = self.rollback_claim()
+        self.journal.db.execute("CREATE TRIGGER fail_rollback BEFORE UPDATE ON state WHEN NEW.value LIKE '%ROLLBACK_RETRY_INTENT%' BEGIN SELECT RAISE(ABORT,'SIMULATED_STATE_WRITE_FAILURE'); END")
+        self.journal.db.commit()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.worker.recover()
+        self.assertEqual(self.journal.state(), origin)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM rollback_retries").fetchone()[0], 0)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM calls WHERE operation='ROLLBACK_RETRY'").fetchone()[0], 0)
+        self.journal.db.execute("DROP TRIGGER fail_rollback")
+        self.journal.db.commit()
+        with patch.object(self.worker, "execute", side_effect=w.Halt("SIMULATED_CRASH")):
+            with self.assertRaisesRegex(w.Halt, "SIMULATED_CRASH"):
+                self.worker.recover()
+        self.assertEqual(self.journal.state()["phase"], "ROLLBACK_RETRY_INTENT")
+        self.journal.db.close()
+        self.journal = w.Journal(self.path)
+        self.worker.journal = self.backend.journal = self.journal
+        self.backend.calls.clear()
+        with self.assertRaisesRegex(w.Halt, "STOP_PENDING_RECONCILIATION"):
+            self.worker.recover()
+        self.assertEqual([method for method, _, _ in self.backend.calls], ["GET"])
+        self.assertTrue(self.backend.calls[0][1].endswith("/receipt"))
+        self.journal.set(origin)
+        self.backend.calls.clear()
+        with self.assertRaisesRegex(w.Halt, "ROLLBACK_RETRY_BUDGET_USED"):
+            self.worker.recover()
+        self.assertEqual(len(self.backend.calls), 1)
+        self.assertEqual(self.ollama.calls, [])
+
+    def test_rollback_second_unknown_never_gets_another_attempt_or_rejected_budget(self):
+        origin = self.rollback_claim()
+        self.backend.complete_error = w.Halt("HTTP_OUTCOME_UNKNOWN")
+        with self.assertRaises(w.Halt):
+            self.worker.recover()
+        state = self.journal.state()
+        self.assertTrue(state["rollbackRetry"])
+        self.assertEqual(state["phase"], "UNKNOWN_COMPLETE")
+        self.backend.calls.clear()
+        self.ollama.calls.clear()
+        with self.assertRaises(w.Halt):
+            self.worker.recover()
+        self.assertEqual(len(self.backend.calls), 1)
+        self.assertTrue(self.backend.calls[0][1].endswith("/receipt"))
+        self.assertEqual(self.ollama.calls, [])
+        self.assertEqual(self.journal.db.execute("SELECT outcome FROM calls WHERE operation='COMPLETE' ORDER BY id").fetchall(), [("UNKNOWN",), ("UNKNOWN",)])
+        with self.assertRaisesRegex(w.Halt, "REJECTED_RETRY_BUDGET_USED"):
+            self.journal.require_rejected_retry(origin)
+
+    def test_rollback_recomputed_hash_mismatch_spends_budget_preserves_origin_and_sends_nothing(self):
+        origin = self.rollback_claim()
+        self.ollama.vectors[0][0] = 0.5
+        with self.assertRaisesRegex(w.Halt, "CLAIM_RESULT_HASH_CHANGED"):
+            self.worker.recover()
+        state = self.journal.state()
+        self.assertEqual(state["phase"], "ROLLBACK_RETRY_INTENT")
+        self.assertEqual(state["rollbackRecoveryOrigin"], origin)
+        self.assertEqual(state["resultHash"], origin["resultHash"])
+        self.assertFalse(any(path.endswith("/complete") for _, path, _ in self.backend.calls))
+
+    def test_rollback_scope_excludes_1152_and_nonexact_original_call_or_rejected_budget(self):
+        self.assertEqual({entry["deviceId"] for entry in w.ROLLBACK_REVIEW_TASKS.values()}, {1204, 1206})
+        origin = self.rollback_claim()
+        for change in ("device", "call", "rejected"):
+            with self.subTest(change=change):
+                self.backend.calls.clear()
+                if change == "device":
+                    self.cfg.binding["deviceId"] = 1152
+                    changed = {**origin, "binding": dict(self.cfg.binding)}
+                    self.journal.set(changed)
+                elif change == "call":
+                    self.cfg.binding["deviceId"] = 1204
+                    self.journal.set(origin)
+                    self.journal.db.execute("UPDATE calls SET request_hash=? WHERE operation='COMPLETE'", ("a" * 64,))
+                    self.journal.db.commit()
+                else:
+                    self.journal.db.execute("UPDATE calls SET request_hash=? WHERE operation='COMPLETE'", (self.review_response["originalRequestHash"],))
+                    self.journal.db.execute("INSERT INTO rejected_retries VALUES(?,?,?)", (origin["taskNo"], "{}", "a" * 64))
+                    self.journal.db.commit()
+                with self.assertRaises(w.Halt):
+                    self.worker.recover()
+                self.assertEqual(len(self.backend.calls), 1)
+                self.assertTrue(self.backend.calls[0][1].endswith("/receipt"))
+                self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM rollback_retries").fetchone()[0], 0)
+                self.assertEqual(self.ollama.calls, [])
+
     def test_real_vector_serialization_and_normal_confirmation(self):
         self.assertEqual(self.worker.run(once=True), 0)
         body = self.backend.complete_body
@@ -599,7 +764,7 @@ class WorkerTests(unittest.TestCase):
     def test_heartbeat_only_refuses_unconfirmed_binding_and_every_pending_phase_before_network(self):
         for state in ({"phase": "IDLE"}, {"phase": "IDLE", "binding": {**self.cfg.binding, "deviceId": 93}},
                       *({"phase": phase, "binding": self.cfg.binding} for phase in
-                        ("UNKNOWN_NEXT", "NEXT_INTENT", "NEXT_NOT_SENT", "CLAIMED", "COMPLETE_INTENT", "UNKNOWN_COMPLETE", "COMPLETE_NOT_SENT"))):
+                        ("UNKNOWN_NEXT", "NEXT_INTENT", "NEXT_NOT_SENT", "CLAIMED", "COMPLETE_INTENT", "UNKNOWN_COMPLETE", "COMPLETE_NOT_SENT", "ROLLBACK_RETRY_INTENT"))):
             with self.subTest(state=state):
                 self.journal.set(state)
                 worker = w.Worker(self.cfg, self.backend, self.ollama, self.journal, threading.Event())
@@ -1276,6 +1441,18 @@ class FleetTests(unittest.TestCase):
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_rollback_review_http_transmits_original_complete_and_next_keys_in_headers(self):
+        connection = unittest.mock.Mock()
+        response = connection.getresponse.return_value
+        response.status = 200
+        response.read.return_value = w.json_bytes(ok({"rollbackConfirmed": True}))
+        with patch.object(w.http.client, "HTTPConnection", return_value=connection):
+            w.Http(("127.0.0.1", 8110)).request("GET", "/rollback-review", key="BGE-COMPLETE-original",
+                                              original_next_key="BGE-NEXT-" + "a" * 32)
+        headers = connection.request.call_args.args[3]
+        self.assertEqual(headers["Idempotency-Key"], "BGE-COMPLETE-original")
+        self.assertEqual(headers["X-UVEL-Original-Next-Key"], "BGE-NEXT-" + "a" * 32)
+
     def test_pool_leases_distinct_runners_for_both_digest_checks_and_concurrent_embed_requests(self):
         cfg, barrier = config(), threading.Barrier(2)
         class Runner(w.Http):

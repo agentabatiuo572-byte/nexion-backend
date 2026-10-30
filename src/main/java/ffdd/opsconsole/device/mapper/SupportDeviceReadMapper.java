@@ -8,7 +8,7 @@ import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
-/** Ordinary snapshot reads only; ownership is classified without dropping unknown or stopped-owned rows. */
+/** Evidence snapshots; the writer's cash-stage wallet read explicitly uses a current row lock. */
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportDeviceReadMapper {
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
@@ -54,7 +54,9 @@ public interface SupportDeviceReadMapper {
     @Select("SELECT TABLE_NAME tableName,COLUMN_NAME columnName,DATETIME_PRECISION `precision` FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND ((TABLE_NAME='nx_compute_receipt' AND COLUMN_NAME='completed_at') OR (TABLE_NAME='nx_compute_task' AND COLUMN_NAME IN ('completed_at','proof_consumed_at')) OR (TABLE_NAME='nx_wallet_ledger' AND COLUMN_NAME='created_at') OR (TABLE_NAME='nx_earning_event' AND COLUMN_NAME IN ('wallet_posted_at','created_at')))")
     List<Map<String,Object>> fundTimePrecisions();
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
-    @Select("SELECT id,user_id customerId,fund_incarnation incarnation,fund_revision revision,version,usdt_available usdtAvailable,nex_available nexAvailable,cregis_risk_held cregisRiskHeld,pending_withdraw pendingWithdraw,sandbox,is_deleted deleted,created_at createdAt FROM nx_user_wallet WHERE user_id=#{customer}")
+    // A fleet request can open an RR snapshot before waiting on the owner lock.
+    // Every adapter cash stage must share the journal binder's current wallet view.
+    @Select("SELECT id,user_id customerId,fund_incarnation incarnation,fund_revision revision,version,usdt_available usdtAvailable,nex_available nexAvailable,cregis_risk_held cregisRiskHeld,pending_withdraw pendingWithdraw,sandbox,is_deleted deleted,created_at createdAt FROM nx_user_wallet WHERE user_id=#{customer} ORDER BY id FOR UPDATE")
     List<Map<String,Object>> fundWallets(@Param("customer") long customer);
     @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
     @Select("""

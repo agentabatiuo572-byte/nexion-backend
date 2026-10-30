@@ -63,6 +63,15 @@ public class TestCloudExecutorService {
     }
     public record CompleteRequest(String specVersion,String inputHash,String modelDigest,String resultArtifactBase64,
                                   String resultHash,String proofNonce,Long proofTimestamp,String claimToken) { }
+    public record RollbackReviewRequest(String originalRequestHash,String resultHash) { }
+    private record RollbackScope(long deviceId,String instanceNo,String originalRequestHash) { }
+    private static final Map<String,RollbackScope> REVIEWED_ROLLBACK_REQUESTS=Map.of(
+            "CTA-FDDE9396AE554345A116E4026D5590A4",new RollbackScope(1204,"DEV-TI-27D1233EBF21434FB85EC6B49D66507F",
+                    "3bd943a7efe51ac4e190fe6cc37c075627f615e6479d79097fc57f51c342e54d"),
+            "CTA-DECD77CE4A6A47029334B35142A3B23D",new RollbackScope(1206,"NEX-ORD-89A41D4C6261D157C6D20830",
+                    "fdbb7d70769efda6050bc09e0a45dfb1d86b4da3376010bf532b2b688725b114"));
+    private static final String ROLLBACK_INPUT="400cf267a947b6e8bf374d1ea61c6013391618505a7b934a16b099853a8fcc6a";
+    private static final String ROLLBACK_RESULT="3d47ee75a2c38bd87d4a8d340d60298eb7decf8d15f09e15aef86b62c46a6187";
     /** Only constructed after locked manifest, live binding and independent inference validation. */
     public record CloudProof(long ownerId,long deviceId,String instanceNo,String taskNo,String nonce,
                              String proofHash,String executorId,String inputHash,String resultHash,String modelDigest) { }
@@ -334,6 +343,73 @@ public class TestCloudExecutorService {
         lockBinding(identity,false); AssignmentRow task=task(identity,safe(taskNo,96));
         Execution e=mapper.lock(taskNo); requireManifest(identity,e);
         return ApiResult.ok(receiptView(identity,e,task));
+    }
+
+    /** No mutation or retry follows from a negative receipt. Only the archived, trusted
+     * exhaustive two-request adjudication can authorize the worker's durable one-use budget. */
+    @Transactional(rollbackFor=Exception.class)
+    public ApiResult<Map<String,Object>> rollbackReview(Identity identity,String taskNo,String completeKey,
+            String originalNextKey,RollbackReviewRequest request) {
+        requireCurrent(identity);
+        RollbackScope scope=REVIEWED_ROLLBACK_REQUESTS.get(taskNo);
+        if(scope==null || identity.ownerId()!=60723153007L || identity.deviceId()==1152
+                || scope.deviceId()!=identity.deviceId() || !scope.instanceNo().equals(identity.instanceNo())
+                || !("fleet-"+scope.deviceId()).equals(identity.executorId()) || request==null
+                || !scope.originalRequestHash().equals(request.originalRequestHash())
+                || !ROLLBACK_RESULT.equals(request.resultHash())
+                || !("BGE-COMPLETE-"+sha256(taskNo)).equals(completeKey)
+                || originalNextKey==null || !originalNextKey.matches("BGE-NEXT-[a-f0-9]{32}")) {
+            throw error(403,"TEST_CLOUD_ROLLBACK_REVIEW_INVALID");
+        }
+        lockBinding(identity,false);
+        AssignmentRow task=task(identity,taskNo);
+        Execution e=mapper.lock(taskNo); requireManifest(identity,e);
+        if(!ROLLBACK_INPUT.equals(e.inputHash()) || !sha256(originalNextKey).equals(e.nextKeyHash()))
+            throw error(403,"TEST_CLOUD_ROLLBACK_REVIEW_INVALID");
+        AssignmentRow active=assignments.lockActiveAssignment(identity.ownerId(),identity.deviceId(),"PRODUCTION");
+        if(active==null || !taskNo.equals(active.taskNo()) || mapper.countActive(identity.ownerId(),identity.deviceId())!=1)
+            throw error(409,"TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+        requireLiveTask(identity,e,task); lockBinding(identity,true,true);
+        if(e.resultHash()!=null || e.resultArtifact()!=null || e.completeKeyHash()!=null || e.completeBodyHash()!=null
+                || !Integer.valueOf(1).equals(mapper.rollbackUnconsumedTask(taskNo,identity.ownerId(),identity.deviceId()))
+                || !mapper.rollbackReceiptEvidence(taskNo).isEmpty() || !mapper.rollbackLedgerEvidence(taskNo).isEmpty()
+                || !mapper.rollbackEventEvidence(taskNo).isEmpty()) {
+            throw error(409,"TEST_CLOUD_ROLLBACK_REQUIRES_RECONCILIATION");
+        }
+        var reviews=mapper.rollbackReviews(taskNo,identity.ownerId());
+        if(reviews.size()!=1) throw error(409,"TEST_CLOUD_ROLLBACK_REVIEW_REQUIRED");
+        var review=reviews.get(0);
+        JsonNode detail;
+        try { detail=JSON.readTree(review.detailJson()); }
+        catch(java.io.IOException | IllegalArgumentException invalid) { throw error(409,"TEST_CLOUD_ROLLBACK_REVIEW_INVALID"); }
+        Map<String,String> expected=Map.ofEntries(
+                Map.entry("version","UVEL_TEST_CLOUD_ROLLBACK_REVIEW_V1"),Map.entry("deploymentScope","TEST"),
+                Map.entry("attributionMode","EXHAUSTIVE_TWO_REQUEST_SET"),Map.entry("ownerId",Long.toString(identity.ownerId())),
+                Map.entry("deviceId",Long.toString(identity.deviceId())),Map.entry("instanceNo",identity.instanceNo()),
+                Map.entry("taskNo",taskNo),Map.entry("executorId",identity.executorId()),Map.entry("taskConfigId",identity.taskConfigId()),
+                Map.entry("nextKeyHash",e.nextKeyHash()),Map.entry("inputHash",e.inputHash()),Map.entry("resultHash",request.resultHash()),
+                Map.entry("model",e.modelTag()),Map.entry("modelDigest",e.modelDigest()),Map.entry("proofNonceHash",sha256(e.proofNonce())),
+                Map.entry("completeKeyHash",sha256(completeKey)),Map.entry("originalRequestHash",request.originalRequestHash()));
+        if(detail==null || !detail.isObject() || review.id()<=0 || review.traceId()==null || review.traceId().isBlank()
+                || review.createdAt()==null || review.createdAt().isBefore(e.createdAt())
+                || review.createdAt().isAfter(now().plusSeconds(1))
+                || !detail.path("rollbackConfirmed").isBoolean() || !detail.path("rollbackConfirmed").booleanValue()
+                || !detail.path("maxAttempts").isIntegralNumber() || !detail.path("maxAttempts").canConvertToInt()
+                || detail.path("maxAttempts").intValue()!=1
+                || expected.entrySet().stream().anyMatch(field->!field.getValue().equals(detail.path(field.getKey()).asText()))) {
+            throw error(409,"TEST_CLOUD_ROLLBACK_REVIEW_INVALID");
+        }
+        for(String field:List.of("evidenceSha256","requestSetSha256","serverErrorSetSha256","transactionProofSha256",
+                "quiescenceSha256","lockedZeroEvidenceSha256")) {
+            if(!detail.path(field).isTextual() || !detail.path(field).textValue().matches("[a-f0-9]{64}"))
+                throw error(409,"TEST_CLOUD_ROLLBACK_REVIEW_INVALID");
+        }
+        Map<String,Object> result=bindings(identity);
+        result.putAll(Map.of("taskNo",taskNo,"inputHash",e.inputHash(),"resultHash",request.resultHash(),
+                "originalRequestHash",request.originalRequestHash(),"completeKeyHash",sha256(completeKey),
+                "nextKeyHash",e.nextKeyHash(),"reviewId",review.id(),"evidenceSha256",detail.path("evidenceSha256").textValue(),
+                "maxAttempts",1,"rollbackConfirmed",true));
+        return ApiResult.ok(result);
     }
 
     private void lockBinding(Identity i) {

@@ -34,7 +34,8 @@ public class TestCloudExecutorSecurityConfig {
                         "/api/test/cloud-executors/v1/heartbeat","/api/test/cloud-executors/v1/tasks/*/heartbeat",
                         "/api/test/cloud-executors/v1/tasks/*/complete").hasRole("TEST_CLOUD_EXECUTOR")
                         .requestMatchers(HttpMethod.GET,"/api/test/cloud-executors/v1/tasks/*/receipt",
-                                "/api/test/cloud-executors/v1/tasks/*/manifest","/api/test/cloud-executors/v1/instances").hasRole("TEST_CLOUD_EXECUTOR")
+                                "/api/test/cloud-executors/v1/tasks/*/manifest","/api/test/cloud-executors/v1/tasks/*/rollback-review",
+                                "/api/test/cloud-executors/v1/instances").hasRole("TEST_CLOUD_EXECUTOR")
                         .anyRequest().denyAll())
                 .addFilterBefore(new CloudAuthenticationFilter(service),UsernamePasswordAuthenticationFilter.class).build();
     }

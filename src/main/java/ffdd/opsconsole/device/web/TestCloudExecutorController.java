@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.application.TestCloudExecutorService;
 import ffdd.opsconsole.device.application.TestCloudExecutorService.Identity;
 import ffdd.opsconsole.device.application.TestCloudExecutorService.CompleteRequest;
+import ffdd.opsconsole.device.application.TestCloudExecutorService.RollbackReviewRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.*;
@@ -57,6 +58,15 @@ public class TestCloudExecutorController {
     public Object manifest(Authentication auth,@PathVariable String taskNo,
             @RequestHeader(value="Idempotency-Key",required=false) String nextKey) {
         return service.manifest(identity(auth),taskNo,nextKey);
+    }
+
+    @GetMapping("/tasks/{taskNo}/rollback-review")
+    public Object rollbackReview(Authentication auth,@PathVariable String taskNo,
+            @RequestHeader(value="Idempotency-Key",required=false) String completeKey,
+            @RequestHeader(value="X-UVEL-Original-Next-Key",required=false) String originalNextKey,
+            @RequestParam String originalRequestHash,@RequestParam String resultHash) {
+        return service.rollbackReview(identity(auth),taskNo,completeKey,originalNextKey,
+                new RollbackReviewRequest(originalRequestHash,resultHash));
     }
 
     private Identity identity(Authentication auth) {

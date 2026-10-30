@@ -9,6 +9,18 @@ import org.apache.ibatis.session.Configuration;
 import org.junit.jupiter.api.Test;
 
 class SupportDeviceReadMapperSqlTest {
+    @Test void settlementWalletStagesUseCurrentRowsDespiteAPreexistingRepeatableReadSnapshot() throws Exception {
+        var configuration = new Configuration();
+        configuration.addMapper(SupportDeviceReadMapper.class);
+        var sql = configuration.getMappedStatement(SupportDeviceReadMapper.class.getName() + ".fundWallets")
+            .getBoundSql(Map.of("customer", 7L)).getSql().replaceAll("\\s+", " ").trim();
+        assertThat(sql).contains("fund_revision revision", "version", "usdt_available usdtAvailable",
+                "nex_available nexAvailable", "WHERE user_id=? ORDER BY id FOR UPDATE");
+        var options = SupportDeviceReadMapper.class.getMethod("fundWallets", long.class).getAnnotation(Options.class);
+        assertThat(options.useCache()).isFalse();
+        assertThat(options.flushCache()).isEqualTo(Options.FlushCachePolicy.TRUE);
+    }
+
     @Test void currentReadUsesExactScopedOrdinaryProjectionAndPreservesHoldingEvidence() throws Exception {
         var configuration = new Configuration();
         configuration.addMapper(SupportDeviceReadMapper.class);

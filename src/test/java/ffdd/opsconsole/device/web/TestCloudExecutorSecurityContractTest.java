@@ -130,4 +130,24 @@ class TestCloudExecutorSecurityContractTest {
                 .header("Forwarded","for=127.0.0.1")).andReturn().getResponse().getStatus()).isEqualTo(403);
         verify(service,times(1)).instances(any(),eq(0L),eq(100));
     }
+
+    @Test void reviewedRollbackIsOnlyAnExactDedicatedLoopbackGet() throws Exception {
+        String path=BASE+"/tasks/CTA-ONE/rollback-review",next="BGE-NEXT-"+"d".repeat(32),complete="BGE-COMPLETE-"+"e".repeat(64);
+        doReturn(ApiResult.ok(Map.of("rollbackConfirmed",true))).when(service).rollbackReview(any(),eq("CTA-ONE"),eq(complete),eq(next),any());
+        var request=get(path).header("Authorization","Bearer "+TOKEN).header("Idempotency-Key",complete)
+                .header("X-UVEL-Original-Next-Key",next).param("originalRequestHash","a".repeat(64)).param("resultHash","b".repeat(64));
+        assertThat(mvc.perform(request).andReturn().getResponse().getStatus()).isEqualTo(200);
+        for(String token:List.of("user-jwt","admin-jwt"))
+            assertThat(mvc.perform(get(path).header("Authorization","Bearer "+token)).andReturn().getResponse().getStatus()).isEqualTo(401);
+        assertThat(mvc.perform(get(path).header("Authorization","Bearer "+TOKEN).header("Forwarded","for=127.0.0.1"))
+                .andReturn().getResponse().getStatus()).isEqualTo(403);
+        assertThat(mvc.perform(get(path).header("Authorization","Bearer "+TOKEN).with(req->{req.setRemoteAddr("203.0.113.5");return req;}))
+                .andReturn().getResponse().getStatus()).isEqualTo(403);
+        assertThat(mvc.perform(post(path).header("Authorization","Bearer "+TOKEN)).andReturn().getResponse().getStatus()).isEqualTo(403);
+        assertThat(mvc.perform(get(path+"/").header("Authorization","Bearer "+TOKEN)).andReturn().getResponse().getStatus()).isEqualTo(403);
+        verify(service,times(1)).rollbackReview(any(),any(),any(),any(),any());
+        var raw=new org.springframework.mock.web.MockHttpServletRequest("GET",path);
+        assertThat(GeoBlockEnforcementFilter.isTestCloudRoute(raw)).isTrue();
+        raw.setRequestURI(path+"/"); assertThat(GeoBlockEnforcementFilter.isTestCloudRoute(raw)).isFalse();
+    }
 }
