@@ -38,6 +38,9 @@ import java.util.Map;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.core.env.Environment;
 
@@ -71,7 +74,6 @@ class AppTaskAssignmentServiceTest {
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
         when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("stellarbox-s1", "S1", "StellarBox S1", 96));
         when(mapper.eligibleTasks(96)).thenReturn(List.of(task("TASK-IG", "IG", 24, "pending")));
-        when(mapper.taskLockConfig()).thenReturn(lockConfig());
         when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
         when(mapper.taskRuntimeGate(7L, 11L, "TASK-IG"))
                 .thenReturn(new AppTaskAssignmentMapper.TaskRuntimeGateRow("active", "pending", 24, 96));
@@ -93,7 +95,7 @@ class AppTaskAssignmentServiceTest {
         assertThat(result.getData().runId()).isEmpty();
         assertThat(result.getData().serverCanonical()).isTrue();
         verify(mapper).insertAssignment(anyString(), any(), any(), any(), any(), any(),
-                org.mockito.ArgumentMatchers.eq(30), anyString(), any(), anyString(), any(), any());
+                org.mockito.ArgumentMatchers.eq(0), anyString(), any(), anyString(), any(), any());
         verify(mapper).bindRuntimeTask(any(), anyString(), any(), any());
         verify(audit).recordRequired(any());
     }
@@ -138,7 +140,7 @@ class AppTaskAssignmentServiceTest {
         assertThatThrownBy(()->service.assignAutomatically(7L,11L)).hasMessage("TEST_CLOUD_EXECUTOR_REQUIRED");
         verify(mapper,never()).insertAssignment(anyString(),any(),any(),any(),any(),any(),any(),anyString(),any(),anyString(),any(),any());
     }
-    @Test void highVramFleetChoosesOnlyRealInstalledBgeAndKeepsItsOwnE2RewardAndE3Lock() {
+    @Test void highVramFleetChoosesOnlyRealInstalledBgeAndKeepsItsOwnE2RewardWithoutCooldown() {
         enableFleet();
         var bge=new AppTaskAssignmentMapper.TaskConfigRow("TASK-EM","BGE embedding","EM","BGE-M3",
                 new BigDecimal("0.00001"),new BigDecimal("0.09"),8,"active","pending");
@@ -147,7 +149,7 @@ class AppTaskAssignmentServiceTest {
         assertThat(result.taskId()).isEqualTo("TASK-EM"); assertThat(result.model()).isEqualTo("BGE-M3");
         assertThat(result.rewardUsdt()).isEqualByComparingTo("0.045005");
         verify(mapper).insertAssignment(anyString(),eq(7L),eq(11L),eq(bge),eq(new BigDecimal("0.045005")),
-                eq(5),eq(30),anyString(),any(),eq("PRODUCTION"),eq(NOW),any());
+                eq(5),eq(0),anyString(),any(),eq("PRODUCTION"),eq(NOW),any());
     }
     @Test void fleetDoesNotHideInvalidE2RowsOrRaiseLowDeviceVramToFitBge() {
         enableFleet();
@@ -180,7 +182,7 @@ class AppTaskAssignmentServiceTest {
         assertThat(view.taskName()).isEqualTo("BGE-M3 Embedding"); assertThat(row.modelName()).isEqualTo("TEST_BGE_M3_V1");
     }
 
-    @Test void actualUsdtWriterMustBindItsRealFundReceipt(){completionCreditsReceiptLedgerAndLockExactlyOnceAcrossDifferentKeys();verify(deviceFunds).begin(7L);verify(deviceFunds).afterUsdt(any());verify(deviceFunds).recorded(any(),eq("CTR-CTA-1"));}
+    @Test void actualUsdtWriterMustBindItsRealFundReceipt(){completionCreditsReceiptLedgerExactlyOnceWithoutCooldown();verify(deviceFunds).begin(7L);verify(deviceFunds).afterUsdt(any());verify(deviceFunds).recorded(any(),eq("CTR-CTA-1"));}
     @Test void actualDailyNexWriterMustRemainInTheSameReceiptAsUsdt(){paidCloudShareCreditsPurchasedDailyNexSnapshotOnlyOnFirstProofVerifiedReceiptOfUtcDay();verify(deviceFunds,times(2)).begin(7L);verify(deviceFunds,times(2)).afterUsdt(any());verify(deviceFunds).recorded(any(),eq("CTR-CTA-1"));verify(deviceFunds).recorded(any(),eq("CTR-CTA-2"));}
     @Test void legalZeroUsdtStillWritesOriginalCashVersionLedgerAndEarningBeforeBinding(){
         var zero=new BigDecimal("0.000000");when(mapper.lockAssignment(7L,"CTA-1","PRODUCTION")).thenReturn(assignment("RUNNING",null,null,zero));when(mapper.deviceInstanceNo(7L,11L)).thenReturn("DEV-11");when(proofVerifier.verify(anyLong(),anyString(),anyLong(),anyString(),anyString(),any(),any())).thenReturn(new ComputeTaskProofVerifier.Verification(false,"b".repeat(64)));
@@ -591,8 +593,27 @@ class AppTaskAssignmentServiceTest {
     }
 
     @Test
-    void completionCreditsReceiptLedgerAndLockExactlyOnceAcrossDifferentKeys() {
-        var running = assignment("RUNNING", null, null);
+    void completionCreditsReceiptLedgerExactlyOnceWithoutCooldown() {
+        assertCompletionWithoutCooldown(30);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 150, 480})
+    void completionIgnoresBothNewAndLegacyThresholdSnapshotsAndCanClaimAgain(int legacySnapshot) {
+        assertCompletionWithoutCooldown(legacySnapshot);
+        var next = service.claim(7L, "claim-after-completion", new AppTaskClaimRequest(11L));
+        assertThat(next.getData().status()).isEqualTo("RUNNING");
+        verify(mapper).insertAssignment(anyString(), eq(7L), eq(11L), any(), any(), eq(18), eq(0),
+                anyString(), any(), eq("PRODUCTION"), eq(NOW), any());
+    }
+
+    private void assertCompletionWithoutCooldown(int legacySnapshot) {
+        var original = assignment("RUNNING", null, null);
+        var running = new AppTaskAssignmentMapper.AssignmentRow(original.taskNo(), original.deviceId(),
+                original.taskId(), original.taskName(), original.taskClass(), original.modelName(),
+                original.clientName(), original.status(), original.rewardUsdt(), original.requiredSeconds(),
+                legacySnapshot, original.startedAt(), original.leaseExpiresAt(), null, null,
+                original.completionNonce(), original.proofExpiresAt());
         var completed = assignment("COMPLETED", NOW, "CTR-1");
         when(mapper.lockAssignment(7L, "CTA-1", "PRODUCTION")).thenReturn(running, completed);
         when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
@@ -619,7 +640,12 @@ class AppTaskAssignmentServiceTest {
         verify(mapper, times(1)).insertReceipt(any(), any(), any(), anyString(), anyString(), any(), anyString(), anyString(), any());
         verify(mapper, times(1)).creditWallet(any(), any(), any(), any());
         verify(mapper, times(1)).insertWalletLedger(any(), any(), anyString(), any(), any(), any());
-        verify(mapper, times(1)).upsertDeviceTaskLock(any(), any(), anyString(), any(), anyString(), any());
+        verify(mapper, never()).upsertDeviceTaskLock(any(), any(), anyString(), any(), anyString(), any());
+        var completionAudit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(audit).recordRequired(completionAudit.capture());
+        assertThat(asMap(completionAudit.getValue().getDetail()))
+                .containsEntry("legacyTaskLockMinutesIgnored", legacySnapshot)
+                .doesNotContainKey("lockUntil");
         verify(outbox, times(2)).publishUserEvent(anyString(), anyString(), anyString(), any(),
                 anyString(), any(), anyString(), any());
     }
@@ -1095,7 +1121,7 @@ class AppTaskAssignmentServiceTest {
 
         assertThat(claimed.getData().rewardUsdt()).isEqualByComparingTo("0.257374");
         verify(mapper).insertAssignment(anyString(), eq(7L), eq(11L), any(),
-                eq(new BigDecimal("0.257374")), eq(18), eq(150), anyString(), any(),
+                eq(new BigDecimal("0.257374")), eq(18), eq(0), anyString(), any(),
                 eq("PRODUCTION"), eq(NOW), any());
     }
 
@@ -1337,14 +1363,18 @@ class AppTaskAssignmentServiceTest {
         verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
     }
 
-    @Test
-    void lockPolicyConsumesS1ProAndRackBoundaries() {
-        assertThat(AppTaskAssignmentService.taskLockMinutes(
-                device("stellarbox-s1", "S1", "StellarBox S1", 96), lockConfig())).isEqualTo(30);
-        assertThat(AppTaskAssignmentService.taskLockMinutes(
-                device("stellarbox-pro-v2", "PRO", "StellarBox Pro V2", 192), lockConfig())).isEqualTo(150);
-        assertThat(AppTaskAssignmentService.taskLockMinutes(
-                device("stellarrack-p2", "RACK", "StellarRack P2", 640), lockConfig())).isEqualTo(480);
+    @ParameterizedTest
+    @CsvSource({"stellarbox-s1,S1,96", "stellarbox-pro-v2,PRO,192", "stellarrack-p2,RACK,640"})
+    void physicalDeviceUsdtThresholdsNeverBecomeMinutes(String type, String tier, int vram) {
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device(type, tier, tier, vram));
+        when(mapper.eligibleTasks(vram)).thenReturn(List.of(task("TASK-IG", "IG", 24, "pending")));
+
+        assertThat(service.claim(7L, "claim-amount-threshold", new AppTaskClaimRequest(11L))
+                .getData().rewardUsdt()).isEqualByComparingTo("0.300000");
+
+        verify(mapper).insertAssignment(anyString(), eq(7L), eq(11L), any(), any(), eq(18), eq(0),
+                anyString(), any(), eq("PRODUCTION"), eq(NOW), any());
+        verify(mapper, never()).taskLockConfig();
     }
 
     private AppTaskAssignmentMapper.DeviceRow device(
@@ -1413,12 +1443,6 @@ class AppTaskAssignmentServiceTest {
     private AppTaskCompleteRequest validProof() {
         return new AppTaskCompleteRequest("c".repeat(64), "PRODUCTION", "exec-1",
                 "a".repeat(64), 1786363200000L, "d".repeat(64));
-    }
-
-    private List<AppTaskAssignmentMapper.ConfigRow> lockConfig() {
-        return List.of(new AppTaskAssignmentMapper.ConfigRow("taskLockS1", "30"),
-                new AppTaskAssignmentMapper.ConfigRow("taskLockPro", "150"),
-                new AppTaskAssignmentMapper.ConfigRow("taskLockRack", "480"));
     }
 
     private List<AppTaskAssignmentMapper.ConfigRow> capacityConfig() {

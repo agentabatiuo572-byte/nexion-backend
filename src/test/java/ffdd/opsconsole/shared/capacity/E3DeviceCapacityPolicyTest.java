@@ -7,6 +7,9 @@ import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class E3DeviceCapacityPolicyTest {
 
@@ -84,6 +87,34 @@ class E3DeviceCapacityPolicyTest {
 
         assertThat(E3DeviceCapacityPolicy.validConfig(incomplete)).isFalse();
         assertThat(E3DeviceCapacityPolicy.classify("mystery", "unknown")).isNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"taskLockS1", "taskLockPro", "taskLockRack"})
+    void usdtHintThresholdHasNoMinuteCeilingAndDoesNotChangeCapacityOrReward(String key) {
+        var original = config();
+        var expected = E3DeviceCapacityPolicy.project(
+                "stellarbox-pro", "SERVER", NOW.minusMonths(4), null, NOW, original);
+        for (String amount : new String[]{"0", "10081", "999999999999999999999999999999"}) {
+            var changed = config();
+            changed.put(key, amount);
+            assertThat(E3DeviceCapacityPolicy.validConfig(changed)).isTrue();
+            var actual = E3DeviceCapacityPolicy.project(
+                    "stellarbox-pro", "SERVER", NOW.minusMonths(4), null, NOW, changed);
+            assertThat(actual).isEqualTo(expected);
+            assertThat(E3DeviceCapacityPolicy.applyCapacity(BigDecimal.ONE, actual))
+                    .isEqualByComparingTo("0.857913");
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"taskLockS1,-1", "taskLockPro,0.01", "taskLockRack,invalid",
+            "stageEarlyEnd,0", "stageMidEnd,3", "cycleMonths,8",
+            "capacityFloorPct,101", "capacityBand1DeltaPct,-101", "capacitySubsidyDays,-1"})
+    void stillRejectsInvalidAmountsAndOtherCapacityInvariants(String key, String value) {
+        var candidate = config();
+        candidate.put(key, value);
+        assertThat(E3DeviceCapacityPolicy.validConfig(candidate)).isFalse();
     }
 
     @Test
