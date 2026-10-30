@@ -607,7 +607,7 @@ class WorkerTests(unittest.TestCase):
         self.assertFalse(any(path.endswith("/complete") for _, path, _ in self.backend.calls))
 
     def test_rollback_scope_excludes_1152_and_nonexact_original_call_or_rejected_budget(self):
-        self.assertEqual({entry["deviceId"] for entry in w.ROLLBACK_REVIEW_TASKS.values()}, {1204, 1206})
+        self.assertEqual({entry["deviceId"] for entry in w.ROLLBACK_REVIEW_TASKS.values()}, {1204, 1206, 1209, 1212})
         origin = self.rollback_claim()
         for change in ("device", "call", "rejected"):
             with self.subTest(change=change):
@@ -631,6 +631,76 @@ class WorkerTests(unittest.TestCase):
                 self.assertTrue(self.backend.calls[0][1].endswith("/receipt"))
                 self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM rollback_retries").fetchone()[0], 0)
                 self.assertEqual(self.ollama.calls, [])
+
+    def fixed_incident_rollback(self, task_no, journal):
+        expected = w.ROLLBACK_REVIEW_TASKS[task_no]
+        bound = {**self.cfg.binding, "ownerId": 60723153007, "deviceId": expected["deviceId"],
+                 "instanceNo": expected["instanceNo"], "taskConfigId": "E2-20260924-EM",
+                 "executorId": "fleet-" + str(expected["deviceId"])}
+        origin = {"phase": "UNKNOWN_COMPLETE", "binding": bound, "taskNo": task_no,
+                  "nextKey": "BGE-NEXT-" + "d" * 32, "inputHash": expected["inputHash"], "resultHash": expected["resultHash"]}
+        key = "BGE-COMPLETE-" + w.sha256(task_no.encode())
+        call = journal.intent("NEXT", origin["nextKey"], None, {})
+        journal.outcome(call, "CONFIRMED")
+        # Offline fixture stores the sealed incident hash; no incident body or live journal is rewritten.
+        with journal.db:
+            journal.db.execute("INSERT INTO calls(operation,request_key,task_no,request_hash,outcome) VALUES('COMPLETE',?,?,?,'UNKNOWN')",
+                               (key, task_no, expected["originalRequestHash"]))
+        journal.set(origin)
+        review = {**bound, "executionKind": w.KIND, "specVersion": w.SPEC, "deploymentScope": "TEST", "serverCanonical": True,
+                  "taskNo": task_no, "inputHash": expected["inputHash"], "resultHash": expected["resultHash"],
+                  "originalRequestHash": expected["originalRequestHash"], "completeKeyHash": w.sha256(key.encode()),
+                  "nextKeyHash": w.sha256(origin["nextKey"].encode()), "reviewId": expected["deviceId"],
+                  "evidenceSha256": "d" * 64, "maxAttempts": 1, "rollbackConfirmed": True}
+        return origin, review
+
+    def test_fixed_rollback_allowlist_preserves_old_incident_and_adds_only_two_exact_new_requests(self):
+        expected = {
+            "CTA-FDDE9396AE554345A116E4026D5590A4": (1204, "DEV-TI-27D1233EBF21434FB85EC6B49D66507F", "3bd943a7efe51ac4e190fe6cc37c075627f615e6479d79097fc57f51c342e54d"),
+            "CTA-DECD77CE4A6A47029334B35142A3B23D": (1206, "NEX-ORD-89A41D4C6261D157C6D20830", "fdbb7d70769efda6050bc09e0a45dfb1d86b4da3376010bf532b2b688725b114"),
+            "CTA-E9CA6111BC2841C3A87A7E1B4ED478DE": (1209, "NEX-ORD-5A61BFA35341348072293238", "ad8bad588e5adfc2252c554fef896e709349684114c59b5559f830a43fdf4267"),
+            "CTA-56A3A0D522F6404C9E4AE65A6478A052": (1212, "DEV-TI-ADFCB790173045B89BC7E90F1058F275", "ac1a286bb35368bd50254db9b0d4ae6aee478654696f4bce73de635411f62d2a")}
+        self.assertEqual(set(w.ROLLBACK_REVIEW_TASKS), set(expected))
+        for task_no, fields in expected.items():
+            entry = w.ROLLBACK_REVIEW_TASKS[task_no]
+            self.assertEqual(tuple(entry[key] for key in ("deviceId", "instanceNo", "originalRequestHash")), fields)
+            self.assertEqual(entry["inputHash"], "400cf267a947b6e8bf374d1ea61c6013391618505a7b934a16b099853a8fcc6a")
+            self.assertEqual(entry["resultHash"], "3d47ee75a2c38bd87d4a8d340d60298eb7decf8d15f09e15aef86b62c46a6187")
+
+    def test_each_new_incident_request_requires_exact_scope_hash_review_and_one_durable_budget(self):
+        for task_no in ("CTA-E9CA6111BC2841C3A87A7E1B4ED478DE", "CTA-56A3A0D522F6404C9E4AE65A6478A052"):
+            with self.subTest(task=task_no), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "sealed-incident.sqlite3"
+                journal = w.Journal(path)
+                try:
+                    origin, review = self.fixed_incident_rollback(task_no, journal)
+                    for changed in ({**origin, "binding": {**origin["binding"], "deviceId": 1152}},
+                                    {**origin, "binding": {**origin["binding"], "instanceNo": "FOREIGN"}},
+                                    {**origin, "inputHash": "f" * 64}, {**origin, "resultHash": "f" * 64},
+                                    {**origin, "taskNo": "CTA-" + "F" * 32}):
+                        with self.assertRaisesRegex(w.Halt, "ROLLBACK_REVIEW_SCOPE_INVALID"):
+                            journal.require_rollback_retry(changed)
+                    with journal.db:
+                        journal.db.execute("UPDATE calls SET request_hash=? WHERE operation='COMPLETE'", ("f" * 64,))
+                    with self.assertRaisesRegex(w.Halt, "ROLLBACK_ORIGINAL_CALL_INVALID"):
+                        journal.require_rollback_retry(origin)
+                    with journal.db:
+                        journal.db.execute("UPDATE calls SET request_hash=? WHERE operation='COMPLETE'", (review["originalRequestHash"],))
+                    self.assertEqual(journal.require_rollback_retry(origin), review["originalRequestHash"])
+                    with self.assertRaisesRegex(w.Halt, "ROLLBACK_REVIEW_INVALID"):
+                        journal.reserve_rollback_retry(origin, {**review, "originalRequestHash": "f" * 64})
+                    self.assertEqual(journal.db.execute("SELECT COUNT(*) FROM rollback_retries").fetchone()[0], 0)
+                    journal.reserve_rollback_retry(origin, review)
+                    self.assertEqual(journal.db.execute("SELECT COUNT(*) FROM rollback_retries").fetchone()[0], 1)
+                    self.assertEqual(journal.db.execute("SELECT request_hash,outcome FROM calls WHERE operation='COMPLETE'").fetchall(),
+                                     [(review["originalRequestHash"], "UNKNOWN")])
+                    journal.db.close()
+                    journal = w.Journal(path)
+                    journal.set(origin)
+                    with self.assertRaisesRegex(w.Halt, "ROLLBACK_RETRY_BUDGET_USED"):
+                        journal.require_rollback_retry(origin)
+                finally:
+                    journal.db.close()
 
     def test_real_vector_serialization_and_normal_confirmation(self):
         self.assertEqual(self.worker.run(once=True), 0)

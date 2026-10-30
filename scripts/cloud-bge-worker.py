@@ -30,7 +30,7 @@ KIND, SPEC = "TEST_BGE_M3_V1", "UVEL_TEST_BGE_M3_V1"
 HALTED = 78
 IDENTITY = ("ownerId", "deviceId", "instanceNo", "taskConfigId", "executorId", "model", "modelDigest")
 STOP = threading.Event()
-# Only these two TEST requests may use a separately audited rollback adjudication.
+# Only these four fixed TEST requests, from two separately adjudicated incidents, are in scope.
 ROLLBACK_REVIEW_TASKS = {
     "CTA-FDDE9396AE554345A116E4026D5590A4": {
         "deviceId": 1204, "instanceNo": "DEV-TI-27D1233EBF21434FB85EC6B49D66507F",
@@ -40,6 +40,16 @@ ROLLBACK_REVIEW_TASKS = {
     "CTA-DECD77CE4A6A47029334B35142A3B23D": {
         "deviceId": 1206, "instanceNo": "NEX-ORD-89A41D4C6261D157C6D20830",
         "originalRequestHash": "fdbb7d70769efda6050bc09e0a45dfb1d86b4da3376010bf532b2b688725b114",
+        "inputHash": "400cf267a947b6e8bf374d1ea61c6013391618505a7b934a16b099853a8fcc6a",
+        "resultHash": "3d47ee75a2c38bd87d4a8d340d60298eb7decf8d15f09e15aef86b62c46a6187"},
+    "CTA-E9CA6111BC2841C3A87A7E1B4ED478DE": {
+        "deviceId": 1209, "instanceNo": "NEX-ORD-5A61BFA35341348072293238",
+        "originalRequestHash": "ad8bad588e5adfc2252c554fef896e709349684114c59b5559f830a43fdf4267",
+        "inputHash": "400cf267a947b6e8bf374d1ea61c6013391618505a7b934a16b099853a8fcc6a",
+        "resultHash": "3d47ee75a2c38bd87d4a8d340d60298eb7decf8d15f09e15aef86b62c46a6187"},
+    "CTA-56A3A0D522F6404C9E4AE65A6478A052": {
+        "deviceId": 1212, "instanceNo": "DEV-TI-ADFCB790173045B89BC7E90F1058F275",
+        "originalRequestHash": "ac1a286bb35368bd50254db9b0d4ae6aee478654696f4bce73de635411f62d2a",
         "inputHash": "400cf267a947b6e8bf374d1ea61c6013391618505a7b934a16b099853a8fcc6a",
         "resultHash": "3d47ee75a2c38bd87d4a8d340d60298eb7decf8d15f09e15aef86b62c46a6187"}}
 

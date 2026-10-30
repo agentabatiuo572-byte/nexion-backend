@@ -22,7 +22,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     @Select("SELECT COUNT(*) FROM nx_test_cloud_binding WHERE owner_id=#{userId} AND device_id=#{deviceId}")
     int registeredFleet(@Param("userId") long userId,@Param("deviceId") long deviceId);
 
-    @Select("""
+    String TEST_WORKER_RUNTIME = """
             SELECT r.online_status AS onlineStatus, r.active_task_no AS activeTaskNo,
                    r.client_name AS clientName, r.agent_version AS agentVersion,
                    r.heartbeat_at AS heartbeatAt, r.paused_reason AS pausedReason
@@ -30,8 +30,12 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
               JOIN nx_user_device d ON d.id=r.user_device_id
              WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.instance_no=#{instanceNo}
                AND d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id=''
-               AND r.is_deleted=0 LIMIT 1 FOR UPDATE
-            """)
+               AND r.is_deleted=0 LIMIT 1
+            """;
+    @Select(TEST_WORKER_RUNTIME)
+    TestWorkerRuntimeRow testWorkerRuntime(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                                          @Param("instanceNo") String instanceNo);
+    @Select(TEST_WORKER_RUNTIME + " FOR UPDATE")
     TestWorkerRuntimeRow lockTestWorkerRuntime(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
                                                @Param("instanceNo") String instanceNo);
 
@@ -122,7 +126,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     record TestWorkerRuntimeRow(String onlineStatus, String activeTaskNo, String clientName, String agentVersion,
                                 LocalDateTime heartbeatAt, String pausedReason) { }
 
-    @Select("""
+    String OWNED_DEVICE = """
             SELECT d.id, d.instance_no AS instanceNo, d.device_type AS deviceType,
                    d.product_tier AS productTier, d.name, d.status,
                    d.product_code AS productCode, d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
@@ -138,8 +142,11 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
              WHERE d.id = #{deviceId} AND d.user_id = #{userId}
                AND d.is_deleted = 0 AND d.source_environment='PRODUCTION' AND d.run_id=''
                AND UPPER(d.ownership_status) = 'OWNED'
-             LIMIT 1 FOR UPDATE
-            """)
+             LIMIT 1
+            """;
+    @Select(OWNED_DEVICE)
+    DeviceRow ownedDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+    @Select(OWNED_DEVICE + " FOR UPDATE")
     DeviceRow lockOwnedDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
     @Select("""
@@ -617,7 +624,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
             @Param("userId") Long userId,
             @Param("deviceId") Long deviceId);
 
-    @Select("""
+    String ASSIGNMENT = """
             SELECT t.task_no AS taskNo, t.user_device_id AS deviceId, t.task_config_id AS taskId,
                    t.task_name AS taskName, t.task_type AS taskClass, t.model_name AS modelName,
                    t.client_name AS clientName, t.status, t.reward_usdt AS rewardUsdt,
@@ -633,8 +640,12 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
              WHERE t.task_no = #{taskNo} AND t.user_id = #{userId}
                AND t.source_environment = 'PRODUCTION' AND t.source_environment = #{sourceEnvironment}
                AND t.is_deleted = 0
-             LIMIT 1 FOR UPDATE
-            """)
+             LIMIT 1
+            """;
+    @Select(ASSIGNMENT)
+    AssignmentRow assignment(@Param("userId") Long userId, @Param("taskNo") String taskNo,
+                             @Param("sourceEnvironment") String sourceEnvironment);
+    @Select(ASSIGNMENT + " FOR UPDATE")
     AssignmentRow lockAssignment(@Param("userId") Long userId, @Param("taskNo") String taskNo,
                                  @Param("sourceEnvironment") String sourceEnvironment);
 
@@ -866,7 +877,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                                 @Param("now") LocalDateTime now);
 
     // Lock the paid order and purchased snapshot; later product config changes do not alter this unit.
-    @Select("""
+    String PAID_CLOUD_SHARE_DAILY_NEX = """
             SELECT d.daily_nex
               FROM nx_user_device d
               JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
@@ -895,8 +906,11 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                        (SELECT COALESCE(SUM(oi.quantity),0) FROM nx_order_item oi
                          WHERE oi.order_no=o.order_no AND oi.product_id=d.product_id AND oi.is_deleted=0)
                        ELSE o.quantity END
-             LIMIT 1 FOR UPDATE OF o,d
-            """)
+             LIMIT 1
+            """;
+    @Select(PAID_CLOUD_SHARE_DAILY_NEX)
+    BigDecimal paidCloudShareDailyNex(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+    @Select(PAID_CLOUD_SHARE_DAILY_NEX + " FOR UPDATE OF o,d")
     BigDecimal lockPaidCloudShareDailyNex(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
     @Select("""

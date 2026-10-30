@@ -126,6 +126,9 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
     @Select("SELECT " + BINDING_COLUMNS + " FROM nx_test_cloud_binding WHERE executor_id=#{executorId}")
     Binding binding(@Param("executorId") String executorId);
 
+    @Select("SELECT " + BINDING_COLUMNS + " FROM nx_test_cloud_binding WHERE executor_id=#{executorId} FOR UPDATE")
+    Binding lockBinding(@Param("executorId") String executorId);
+
     @Select("SELECT d.user_id ownerId,d.id deviceId,d.instance_no instanceNo " + PAID_FLEET_FROM
             + FLEET_LIVE + """
              AND (d.pending_deactivate=0 OR EXISTS(SELECT 1 FROM nx_compute_task t
@@ -144,8 +147,12 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
     FleetCandidate fleetCandidate(@Param("cutoff") LocalDateTime cutoff,@Param("tradeinCutoff") LocalDateTime tradeinCutoff,@Param("deviceId") long deviceId,
                                   @Param("legacyDeviceId") long legacyDeviceId,@Param("legacyEnabled") boolean legacyEnabled);
 
-    @Select("SELECT 1 " + PAID_FLEET_FROM + FLEET_LIVE
-            + " AND (#{completing} OR d.pending_deactivate=0) AND d.id=#{deviceId} AND d.user_id=#{ownerId} AND d.instance_no=#{instanceNo} FOR UPDATE OF o,d")
+    String LIVE_FLEET_BINDING = "SELECT 1 " + PAID_FLEET_FROM + FLEET_LIVE
+            + " AND (#{completing} OR d.pending_deactivate=0) AND d.id=#{deviceId} AND d.user_id=#{ownerId} AND d.instance_no=#{instanceNo}";
+    @Select(LIVE_FLEET_BINDING)
+    Integer fleetBinding(@Param("cutoff") LocalDateTime cutoff,@Param("tradeinCutoff") LocalDateTime tradeinCutoff,@Param("ownerId") long ownerId,
+                         @Param("deviceId") long deviceId,@Param("instanceNo") String instanceNo,@Param("completing") boolean completing,@Param("legacyEnabled") boolean legacyEnabled);
+    @Select(LIVE_FLEET_BINDING + " FOR UPDATE OF o,d")
     Integer liveFleetBinding(@Param("cutoff") LocalDateTime cutoff,@Param("tradeinCutoff") LocalDateTime tradeinCutoff,@Param("ownerId") long ownerId,
                          @Param("deviceId") long deviceId,@Param("instanceNo") String instanceNo,@Param("completing") boolean completing,@Param("legacyEnabled") boolean legacyEnabled);
 
@@ -216,6 +223,8 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
 
     @Select("SELECT " + COLUMNS + " FROM nx_test_cloud_execution WHERE task_no=#{taskNo} FOR UPDATE")
     Execution lock(@Param("taskNo") String taskNo);
+    @Select("SELECT " + COLUMNS + " FROM nx_test_cloud_execution WHERE task_no=#{taskNo}")
+    Execution execution(@Param("taskNo") String taskNo);
     @Select("SELECT " + COLUMNS + " FROM nx_test_cloud_execution WHERE executor_id=#{executor} AND next_key_hash=#{keyHash} FOR UPDATE")
     Execution byNextKey(@Param("executor") String executor, @Param("keyHash") String keyHash);
 
@@ -260,22 +269,29 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
     int cancelUnexecuted(@Param("ownerId") long ownerId,@Param("deviceId") long deviceId,@Param("taskNo") String taskNo,
                          @Param("config") String config,@Param("now") LocalDateTime now);
 
-    @Select("""
+    String ACTIVE_TASK_NOS = """
         SELECT task_no FROM nx_compute_task WHERE user_id=#{ownerId} AND user_device_id=#{deviceId}
-          AND source_environment='PRODUCTION' AND is_deleted=0 AND status IN ('CLAIMED','RUNNING') ORDER BY id FOR UPDATE
-        """)
+          AND source_environment='PRODUCTION' AND is_deleted=0 AND status IN ('CLAIMED','RUNNING') ORDER BY id
+        """;
+    @Select(ACTIVE_TASK_NOS)
+    List<String> activeTaskNos(@Param("ownerId") long ownerId,@Param("deviceId") long deviceId);
+    @Select(ACTIVE_TASK_NOS + " FOR UPDATE")
     List<String> lockActiveTaskNos(@Param("ownerId") long ownerId,@Param("deviceId") long deviceId);
     default int countActive(long ownerId,long deviceId) { return lockActiveTaskNos(ownerId,deviceId).size(); }
 
-    @Select("""
+    String LEGACY_ADMISSION_SELECT = """
         SELECT la.old_task_no oldTaskNo,la.reason,la.evidence_sha256 evidenceSha256
           FROM nx_test_cloud_legacy_admission la JOIN nx_user_device d ON d.id=la.device_id
            AND d.user_id=la.owner_id AND d.instance_no=la.instance_no
            AND d.source_order_no=la.source_order_no AND d.source_channel=la.source_channel
          WHERE la.owner_id=#{ownerId} AND la.device_id=#{deviceId} AND la.instance_no=#{instanceNo}
            AND (#{taskNo} IS NULL OR la.old_task_no=#{taskNo}) AND la.task_config_id=#{config}
-           AND la.deployment_scope='TEST' AND la.enabled=1 FOR UPDATE
-        """)
+           AND la.deployment_scope='TEST' AND la.enabled=1
+        """;
+    @Select(LEGACY_ADMISSION_SELECT)
+    LegacyAdmission admission(@Param("ownerId") long ownerId,@Param("deviceId") long deviceId,
+                              @Param("instanceNo") String instanceNo,@Param("taskNo") String taskNo,@Param("config") String config);
+    @Select(LEGACY_ADMISSION_SELECT + " FOR UPDATE")
     LegacyAdmission legacyAdmission(@Param("ownerId") long ownerId,@Param("deviceId") long deviceId,
                                     @Param("instanceNo") String instanceNo,@Param("taskNo") String taskNo,@Param("config") String config);
     record LegacyAdmission(String oldTaskNo,String reason,String evidenceSha256) { }

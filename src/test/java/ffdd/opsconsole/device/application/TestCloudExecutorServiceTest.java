@@ -52,6 +52,11 @@ class TestCloudExecutorServiceTest {
         when(assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(task("RUNNING"));
         when(mapper.lock(TASK)).thenReturn(execution(null,null,null));
         when(assignments.lockTestWorkerRuntime(7L,11L,"NEX-UNIT-CLOUD")).thenReturn(new TestWorkerRuntimeRow("ONLINE",TASK,CLIENT,"test-cloud:cloud-unit",NOW,null));
+        when(assignments.ownedDevice(7L,11L)).thenReturn(device());
+        when(assignments.paidCloudShareDailyNex(7L,11L)).thenReturn(new BigDecimal("3"));
+        when(assignments.assignment(7L,TASK,"PRODUCTION")).thenReturn(task("RUNNING"));
+        when(mapper.execution(TASK)).thenReturn(execution(null,null,null));
+        when(assignments.testWorkerRuntime(7L,11L,"NEX-UNIT-CLOUD")).thenReturn(new TestWorkerRuntimeRow("ONLINE",TASK,CLIENT,"test-cloud:cloud-unit",NOW,null));
     }
     CompleteRequest request(float value) throws Exception {
         byte[] bytes=TestCloudBgeArtifactTest.artifact(value);
@@ -95,6 +100,11 @@ class TestCloudExecutorServiceTest {
         env.setProperty(PREFIX+"fleet-enabled","true"); env.setProperty(PREFIX+"fleet-started-at",NOW.minusDays(1).toString());
         var b=new TestCloudExecutorMapper.Binding("fleet-12",7,12,"NEX-FLEET-12","EM-UNIT","bge-m3:567m",DIGEST);
         when(mapper.binding("fleet-12")).thenReturn(b);
+        when(mapper.lockBinding("fleet-12")).thenReturn(b);
+        when(assignments.ownedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
+                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+        when(assignments.assignment(7L,TASK,"PRODUCTION")).thenReturn(fleetTask(TASK,KIND,CLIENT));
+        when(mapper.execution(TASK)).thenReturn(fleetExecution());
         return service.authenticate("Bearer "+TOKEN,"fleet-12");
     }
     @Test void fleetDiscoveryIsBoundedReadOnlyAndDoesNotTrustClientOwnership() {
@@ -147,7 +157,7 @@ class TestCloudExecutorServiceTest {
         assertThatThrownBy(()->service.heartbeat(target,null,null)).hasMessage("TEST_CLOUD_BINDING_INVALID");
         assertThatThrownBy(()->service.complete(target,TASK,"fleet-complete-unit",null)).hasMessage("TEST_CLOUD_BINDING_INVALID");
         verify(mapper,times(2)).liveFleetBinding(NOW.minusDays(1),tradeinCutoff,7,12,"NEX-FLEET-12",false,false);
-        verify(mapper).liveFleetBinding(NOW.minusDays(1),tradeinCutoff,7,12,"NEX-FLEET-12",true,false);
+        verify(mapper).fleetBinding(NOW.minusDays(1),tradeinCutoff,7,12,"NEX-FLEET-12",true,false);
         verify(mapper,never()).heartbeat(anyLong(),any(),any(),any()); verifyNoInteractions(settlement);
     }
     @Test void fleetReceiptReconciliationSurvivesRevokedOwnershipAndNeverClaimsOrCredits() {
@@ -324,6 +334,7 @@ class TestCloudExecutorServiceTest {
         when(assignments.lockActiveAssignment(7L,12L,"PRODUCTION")).thenReturn(active);
         when(assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(active);
         when(mapper.lock(TASK)).thenReturn(fleetExecution()); when(mapper.countActive(7,12)).thenReturn(2);
+        when(mapper.activeTaskNos(7,12)).thenReturn(List.of(TASK,"CTA-OTHER"));
         assertThatThrownBy(()->service.next(target,"fleet-next-existing")).hasMessage("TEST_CLOUD_ACTIVE_TASK_CONFLICT");
         assertThatThrownBy(()->service.heartbeat(target,TASK,CLAIM)).hasMessage("TEST_CLOUD_ACTIVE_TASK_CONFLICT");
         assertThatThrownBy(()->service.complete(target,TASK,"fleet-complete-unit",null)).hasMessage("TEST_CLOUD_ACTIVE_TASK_CONFLICT");
@@ -388,19 +399,159 @@ class TestCloudExecutorServiceTest {
         assertThat(proof.getValue().inputHash()).isEqualTo(TestCloudExecutorService.sha256(inputJson()));
         assertThat(proof.getValue().proofHash()).hasSize(64).isNotEqualTo(proof.getValue().resultHash());
     }
+    @Test void slowValidationHoldsNoOwnerDeviceTaskOrRuntimeLockAndAllowsHeartbeat() throws Exception {
+        var entered=new java.util.concurrent.CountDownLatch(1);
+        var release=new java.util.concurrent.CountDownLatch(1);
+        var worker=java.util.concurrent.Executors.newSingleThreadExecutor();
+        doAnswer(call->{ entered.countDown(); assertThat(release.await(10,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            return TestCloudBgeArtifactTest.expected(0.25); }).when(service).infer(identity);
+        when(mapper.saveResult(eq(TASK),anyString(),any(),anyString(),anyString())).thenReturn(1);
+        CompleteRequest request=request(0.25f);
+        var completion=worker.submit(()->service.complete(identity,TASK,"cloud-complete-unit",request));
+        try {
+            assertThat(entered.await(10,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            verify(assignments,never()).lockProductionUser(anyLong());
+            verify(assignments,never()).lockOwnedDevice(anyLong(),anyLong());
+            verify(assignments,never()).lockAssignment(anyLong(),anyString(),anyString());
+            verify(assignments,never()).lockTestWorkerRuntime(anyLong(),anyLong(),anyString());
+            verify(assignments,never()).lockPaidCloudShareDailyNex(anyLong(),anyLong());
+            verify(mapper,never()).lock(anyString()); verify(mapper,never()).lockBinding(anyString());
+            verify(mapper,never()).liveFleetBinding(any(),any(),anyLong(),anyLong(),anyString(),anyBoolean(),anyBoolean());
+            when(mapper.heartbeat(11,null,"test-cloud:cloud-unit",NOW)).thenReturn(1);
+            assertThat(service.heartbeat(identity,null,null).getData()).containsEntry("activeTaskNo",null);
+            assertThat(completion.isDone()).isFalse();
+            release.countDown(); completion.get(10,java.util.concurrent.TimeUnit.SECONDS);
+            verify(settlement).completeForTestCloud(eq(TASK),any(),any());
+        } finally { release.countDown(); worker.shutdownNow(); }
+    }
+    @Test void finalCurrentReadsRejectDeactivationPauseNonceLeaseAndRuntimeChangesDuringInference() throws Exception {
+        Map<String,java.util.function.Consumer<TestCloudExecutorServiceTest>> revocations=new LinkedHashMap<>();
+        revocations.put("TEST_CLOUD_BINDING_INVALID",fixture->when(fixture.assignments.lockOwnedDevice(7L,11L)).thenReturn(
+                new DeviceRow(11L,"NEX-UNIT-CLOUD","SHARE","SHARE","Cloud","INACTIVE","cloud-share",NOW.minusDays(1),null,24,"unit","OFFLINE",null,false)));
+        revocations.put("TEST_CLOUD_BINDING_INVALID:pause",fixture->when(fixture.assignments.lockOwnedDevice(7L,11L)).thenReturn(
+                new DeviceRow(11L,"NEX-UNIT-CLOUD","SHARE","SHARE","Cloud","ACTIVE","cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","ONLINE",null,true)));
+        revocations.put("TEST_CLOUD_TASK_INVALID:nonce",fixture->when(fixture.assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(
+                new AssignmentRow(TASK,11L,"EM-UNIT",TASK_NAME,"EM",KIND,CLIENT,"RUNNING",BigDecimal.ONE,5,0,
+                        NOW.minusSeconds(10),NOW.plusHours(24),null,null,"f".repeat(64),NOW.plusHours(24))));
+        revocations.put("TEST_CLOUD_TASK_INVALID:lease",fixture->when(fixture.assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(
+                new AssignmentRow(TASK,11L,"EM-UNIT",TASK_NAME,"EM",KIND,CLIENT,"RUNNING",BigDecimal.ONE,5,0,
+                        NOW.minusSeconds(10),NOW,null,null,NONCE,NOW.plusHours(24))));
+        revocations.put("TEST_CLOUD_HEARTBEAT_STALE",fixture->when(fixture.assignments.lockTestWorkerRuntime(7L,11L,"NEX-UNIT-CLOUD")).thenReturn(
+                new TestWorkerRuntimeRow("ONLINE","CTA-OTHER",CLIENT,"test-cloud:cloud-unit",NOW,null)));
+        revocations.put("TEST_CLOUD_PROOF_INVALID:claimToken",fixture->{
+            var e=execution(null,null,null);
+            when(fixture.mapper.lock(TASK)).thenReturn(new Execution(e.taskNo(),e.executorId(),e.ownerId(),e.deviceId(),e.instanceNo(),
+                    e.taskConfigId(),e.nextKeyHash(),"f".repeat(64),e.inputJson(),e.inputHash(),e.modelTag(),e.modelDigest(),e.proofNonce(),
+                    null,null,null,null,e.createdAt()));
+        });
+        for(var revocation:revocations.entrySet()) {
+            var fixture=new TestCloudExecutorServiceTest(); fixture.setup();
+            doAnswer(call->{ revocation.getValue().accept(fixture); return TestCloudBgeArtifactTest.expected(0.25); })
+                    .when(fixture.service).infer(fixture.identity);
+            var request=fixture.request(0.25f);
+            assertThatThrownBy(()->fixture.service.complete(fixture.identity,TASK,"cloud-complete-unit",request))
+                    .as(revocation.getKey()).hasMessage(revocation.getKey().split(":")[0]);
+            verify(fixture.mapper,never()).saveResult(anyString(),anyString(),any(),anyString(),anyString());
+            verifyNoInteractions(fixture.settlement);
+        }
+    }
+    private Identity completableFleet() {
+        Identity target=fleetIdentity();
+        when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
+                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+        when(assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(fleetTask(TASK,KIND,CLIENT));
+        when(mapper.lock(TASK)).thenReturn(fleetExecution());
+        when(mapper.countActive(7,12)).thenReturn(1); when(mapper.activeTaskNos(7,12)).thenReturn(List.of(TASK));
+        when(mapper.fleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",true,false)).thenReturn(1);
+        when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",true,false)).thenReturn(1);
+        var runtime=new TestWorkerRuntimeRow("ONLINE",TASK,CLIENT,"test-cloud:fleet-12",NOW,null);
+        when(assignments.testWorkerRuntime(7L,12L,"NEX-FLEET-12")).thenReturn(runtime);
+        when(assignments.lockTestWorkerRuntime(7L,12L,"NEX-FLEET-12")).thenReturn(runtime);
+        return target;
+    }
+    @Test void deletedOrChangedRegisteredBindingDuringInferenceCannotUseCachedPrecheckAuthority() throws Exception {
+        for(boolean deleted:List.of(true,false)) {
+            var fixture=new TestCloudExecutorServiceTest(); fixture.setup(); Identity target=fixture.completableFleet();
+            doAnswer(call->{
+                when(fixture.mapper.lockBinding("fleet-12")).thenReturn(deleted?null:new TestCloudExecutorMapper.Binding(
+                        "fleet-12",8,12,"NEX-FLEET-12","EM-UNIT","bge-m3:567m",DIGEST));
+                return TestCloudBgeArtifactTest.expected(0.25);
+            }).when(fixture.service).infer(target);
+            CompleteRequest request=fixture.request(0.25f);
+            assertThatThrownBy(()->fixture.service.complete(target,TASK,"fleet-complete-unit",request)).hasMessage("TEST_CLOUD_AUTH_INVALID");
+            verify(fixture.mapper,never()).saveResult(anyString(),anyString(),any(),anyString(),anyString());
+            verifyNoInteractions(fixture.settlement);
+        }
+    }
+    private void completedResult(CompleteRequest request,String key) throws Exception {
+        String body=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(request);
+        var e=execution(request.resultHash(),sha256(key),sha256(body));
+        when(mapper.lock(TASK)).thenReturn(new Execution(e.taskNo(),e.executorId(),e.ownerId(),e.deviceId(),e.instanceNo(),
+                e.taskConfigId(),e.nextKeyHash(),e.claimToken(),e.inputJson(),e.inputHash(),e.modelTag(),e.modelDigest(),e.proofNonce(),
+                e.resultHash(),Base64.getDecoder().decode(request.resultArtifactBase64()),e.completeKeyHash(),e.completeBodyHash(),e.createdAt()));
+        when(assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(task("COMPLETED"));
+        String proof=sha256(String.join("\n",SPEC,identity.executorId(),"7","11",identity.instanceNo(),TASK,"EM-UNIT",NONCE,
+                request.inputHash(),"bge-m3:567m",DIGEST,request.resultHash()));
+        when(assignments.receipt(7L,"CTR-"+TASK)).thenReturn(new ReceiptRow("CTR-"+TASK,TASK,11L,identity.instanceNo(),
+                "Cloud","SHARE",null,24,"EM-UNIT",TASK_NAME,"EM",KIND,CLIENT,BigDecimal.ONE,BigDecimal.ONE,
+                "CREDITED",proof,NOW.minusSeconds(10),NOW,10));
+    }
+    @Test void competingSameRequestCompletionReturnsCurrentReceiptWithoutSecondWriteOrSettlement() throws Exception {
+        CompleteRequest request=request(0.25f);
+        doAnswer(call->{ completedResult(request,"cloud-complete-unit"); return TestCloudBgeArtifactTest.expected(0.25); })
+                .when(service).infer(identity);
+        assertThat(service.complete(identity,TASK,"cloud-complete-unit",request).getData())
+                .containsEntry("found",true).containsEntry("status","COMPLETED");
+        verify(mapper,never()).saveResult(anyString(),anyString(),any(),anyString(),anyString()); verifyNoInteractions(settlement);
+    }
+    @Test void competingDifferentCompletionKeyIsRejectedAfterInferenceWithoutSecondWrite() throws Exception {
+        CompleteRequest request=request(0.25f);
+        doAnswer(call->{ completedResult(request,"cloud-complete-other"); return TestCloudBgeArtifactTest.expected(0.25); })
+                .when(service).infer(identity);
+        assertThatThrownBy(()->service.complete(identity,TASK,"cloud-complete-unit",request)).hasMessage("TEST_CLOUD_COMPLETION_REPLAYED");
+        verify(mapper,never()).saveResult(anyString(),anyString(),any(),anyString(),anyString()); verifyNoInteractions(settlement);
+    }
+    @Test void splitPrecheckReplayStillReloadsTaskAndReceiptAndDoesNotInfer() throws Exception {
+        CompleteRequest request=request(0.25f); completedResult(request,"cloud-complete-unit");
+        var e=execution(request.resultHash(),sha256("cloud-complete-unit"),sha256(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(request)));
+        when(mapper.execution(TASK)).thenReturn(e);
+        assertThat(service.complete(identity,TASK,"cloud-complete-unit",request).getData())
+                .containsEntry("found",true).containsEntry("status","COMPLETED");
+        verify(service,never()).infer(any()); verifyNoInteractions(settlement);
+    }
     @Test void sameKeySameBodyReplayDoesNotExecuteOrSettleAgainAndDifferentKeyIsRejected() throws Exception {
         CompleteRequest request=request(0.25f);
         String body=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(request);
         when(mapper.lock(TASK)).thenReturn(execution(request.resultHash(),TestCloudExecutorService.sha256("cloud-complete-unit"),TestCloudExecutorService.sha256(body)));
         when(assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(task("COMPLETED"));
+        when(mapper.execution(TASK)).thenReturn(execution(request.resultHash(),TestCloudExecutorService.sha256("cloud-complete-unit"),TestCloudExecutorService.sha256(body)));
+        when(assignments.assignment(7L,TASK,"PRODUCTION")).thenReturn(task("COMPLETED"));
         service.complete(identity,TASK,"cloud-complete-unit",request);
         verify(service,never()).infer(any()); verifyNoInteractions(settlement);
         assertThatThrownBy(()->service.complete(identity,TASK,"cloud-complete-other",request)).hasMessage("TEST_CLOUD_COMPLETION_REPLAYED");
     }
     @Test void staleRuntimeAndExpiredLeaseNeverRecomputeOrCredit() throws Exception {
         when(assignments.lockTestWorkerRuntime(7L,11L,"NEX-UNIT-CLOUD")).thenReturn(new TestWorkerRuntimeRow("ONLINE",TASK,CLIENT,"test-cloud:cloud-unit",NOW.minusSeconds(121),null));
+        when(assignments.testWorkerRuntime(7L,11L,"NEX-UNIT-CLOUD")).thenReturn(new TestWorkerRuntimeRow("ONLINE",TASK,CLIENT,"test-cloud:cloud-unit",NOW.minusSeconds(121),null));
         assertThatThrownBy(()->service.complete(identity,TASK,"cloud-complete-unit",request(0.25f))).hasMessage("TEST_CLOUD_HEARTBEAT_STALE");
+        when(assignments.assignment(7L,TASK,"PRODUCTION")).thenReturn(new AssignmentRow(TASK,11L,"EM-UNIT",TASK_NAME,"EM",KIND,CLIENT,
+                "RUNNING",BigDecimal.ONE,5,0,NOW.minusSeconds(10),NOW,null,null,NONCE,NOW.plusHours(24)));
+        assertThatThrownBy(()->service.complete(identity,TASK,"cloud-complete-unit",request(0.25f))).hasMessage("TEST_CLOUD_TASK_INVALID");
         verify(service,never()).infer(any()); verifyNoInteractions(settlement);
+    }
+    @Test void proofExpiringDuringInferenceIsRejectedBeforeAnyResultOrSettlementWrite() throws Exception {
+        var current=new java.util.concurrent.atomic.AtomicReference<>(INSTANT);
+        Clock advancing=new Clock() {
+            public ZoneId getZone() { return ZoneOffset.UTC; }
+            public Clock withZone(ZoneId zone) { return this; }
+            public Instant instant() { return current.get(); }
+        };
+        var advancingService=spy(new TestCloudExecutorService(assignments,mapper,settlement,audit,advancing,env));
+        doAnswer(call->{ current.set(INSTANT.plusSeconds(121)); return TestCloudBgeArtifactTest.expected(0.25); })
+                .when(advancingService).infer(identity);
+        assertThatThrownBy(()->advancingService.complete(identity,TASK,"cloud-complete-unit",request(0.25f)))
+                .hasMessage("TEST_CLOUD_PROOF_INVALID");
+        verify(mapper,never()).saveResult(anyString(),anyString(),any(),anyString(),anyString()); verifyNoInteractions(settlement);
     }
     @Test void fractionalSecondHeartbeatIsTruncatedBeforeDatetimeStorageAndCanCompleteNormally() throws Exception {
         Instant fractional=INSTANT.plusMillis(600);
@@ -420,6 +571,8 @@ class TestCloudExecutorServiceTest {
     @Test void aRoundedFutureHeartbeatIsStillRejectedWithoutRelaxingTheFutureTimeGate() throws Exception {
         var fractionalService=spy(new TestCloudExecutorService(assignments,mapper,settlement,audit,Clock.fixed(INSTANT.plusMillis(600),ZoneOffset.UTC),env));
         when(assignments.lockTestWorkerRuntime(7L,11L,"NEX-UNIT-CLOUD"))
+                .thenReturn(new TestWorkerRuntimeRow("ONLINE",TASK,CLIENT,"test-cloud:cloud-unit",NOW.plusSeconds(1),null));
+        when(assignments.testWorkerRuntime(7L,11L,"NEX-UNIT-CLOUD"))
                 .thenReturn(new TestWorkerRuntimeRow("ONLINE",TASK,CLIENT,"test-cloud:cloud-unit",NOW.plusSeconds(1),null));
         assertThatThrownBy(()->fractionalService.complete(identity,TASK,"cloud-complete-future",request(0.25f)))
                 .hasMessage("TEST_CLOUD_HEARTBEAT_STALE");
