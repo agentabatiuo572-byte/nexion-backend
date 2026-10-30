@@ -9,6 +9,27 @@ import org.apache.ibatis.mapping.SqlCommandType;
 import org.junit.jupiter.api.Test;
 
 class TestCloudExecutorMapperTest {
+    @Test void completionPrechecksUseOrdinarySelectsAndFinalChecksRetainTheSameScopedLockingSql() {
+        var configuration=configuration();
+        configuration.addMapper(AppTaskAssignmentMapper.class);
+        for(var pair:Map.of("execution","lock","binding","lockBinding","fleetBinding","liveFleetBinding",
+                "activeTaskNos","lockActiveTaskNos","admission","legacyAdmission").entrySet()) {
+            assertReadAndLockPair(configuration,TestCloudExecutorMapper.class,pair.getKey(),pair.getValue());
+        }
+        for(var pair:Map.of("ownedDevice","lockOwnedDevice","assignment","lockAssignment",
+                "testWorkerRuntime","lockTestWorkerRuntime","paidCloudShareDailyNex","lockPaidCloudShareDailyNex").entrySet()) {
+            assertReadAndLockPair(configuration,AppTaskAssignmentMapper.class,pair.getKey(),pair.getValue());
+        }
+    }
+    private void assertReadAndLockPair(MybatisConfiguration configuration,Class<?> mapper,String read,String lock) {
+        var ordinary=configuration.getMappedStatement(mapper.getName()+"."+read);
+        var locked=configuration.getMappedStatement(mapper.getName()+"."+lock);
+        assertThat(ordinary.getSqlCommandType()).isEqualTo(SqlCommandType.SELECT);
+        String sql=ordinary.getBoundSql(Map.of()).getSql().replaceAll("\\s+"," ").trim();
+        assertThat(sql).as(read).doesNotContain("FOR UPDATE","FOR SHARE");
+        assertThat(locked.getBoundSql(Map.of()).getSql().replaceAll("\\s+"," ").trim()).as(lock)
+                .startsWith(sql+" FOR UPDATE");
+    }
     private MybatisConfiguration configuration() {
         var configuration=new MybatisConfiguration();
         configuration.addMapper(TestCloudExecutorMapper.class);

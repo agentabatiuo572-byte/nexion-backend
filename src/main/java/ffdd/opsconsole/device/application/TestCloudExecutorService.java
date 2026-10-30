@@ -28,6 +28,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 
 /** Real BGE inference on declared TEST texts. No commercial workload or production attestation is implied. */
 @Service
@@ -69,7 +70,11 @@ public class TestCloudExecutorService {
             "CTA-FDDE9396AE554345A116E4026D5590A4",new RollbackScope(1204,"DEV-TI-27D1233EBF21434FB85EC6B49D66507F",
                     "3bd943a7efe51ac4e190fe6cc37c075627f615e6479d79097fc57f51c342e54d"),
             "CTA-DECD77CE4A6A47029334B35142A3B23D",new RollbackScope(1206,"NEX-ORD-89A41D4C6261D157C6D20830",
-                    "fdbb7d70769efda6050bc09e0a45dfb1d86b4da3376010bf532b2b688725b114"));
+                    "fdbb7d70769efda6050bc09e0a45dfb1d86b4da3376010bf532b2b688725b114"),
+            "CTA-E9CA6111BC2841C3A87A7E1B4ED478DE",new RollbackScope(1209,"NEX-ORD-5A61BFA35341348072293238",
+                    "ad8bad588e5adfc2252c554fef896e709349684114c59b5559f830a43fdf4267"),
+            "CTA-56A3A0D522F6404C9E4AE65A6478A052",new RollbackScope(1212,"DEV-TI-ADFCB790173045B89BC7E90F1058F275",
+                    "ac1a286bb35368bd50254db9b0d4ae6aee478654696f4bce73de635411f62d2a"));
     private static final String ROLLBACK_INPUT="400cf267a947b6e8bf374d1ea61c6013391618505a7b934a16b099853a8fcc6a";
     private static final String ROLLBACK_RESULT="3d47ee75a2c38bd87d4a8d340d60298eb7decf8d15f09e15aef86b62c46a6187";
     /** Only constructed after locked manifest, live binding and independent inference validation. */
@@ -302,34 +307,38 @@ public class TestCloudExecutorService {
         result.put("activeTaskNo",current); return ApiResult.ok(result);
     }
 
-    @Transactional(rollbackFor=Exception.class)
+    @Transactional(rollbackFor=Exception.class,isolation=Isolation.READ_COMMITTED)
     public ApiResult<Map<String,Object>> complete(Identity identity,String taskNo,String key,CompleteRequest request) {
-        requireCurrent(identity); key(key); lockBinding(identity,false);
-        AssignmentRow task=task(identity,safe(taskNo,96));
-        Execution e=mapper.lock(taskNo); requireManifest(identity,e);
+        requireCurrent(identity); key(key); safe(taskNo,96);
+        requireBinding(identity,false,false,false);
+        AssignmentRow task=requireTask(identity,assignments.assignment(identity.ownerId(),taskNo,"PRODUCTION"));
+        Execution e=mapper.execution(taskNo); requireManifest(identity,e);
         String bodyHash=sha256(json(request));
-        if(e.resultHash()!=null) {
-            if(!Objects.equals(e.completeKeyHash(),sha256(key)) || !Objects.equals(e.completeBodyHash(),bodyHash)) {
-                throw error(409,"TEST_CLOUD_COMPLETION_REPLAYED");
-            }
-            return ApiResult.ok(receiptView(identity,e,task));
+        byte[] artifact=null;
+        if(!completionReplay(e,key,bodyHash)) {
+            requireBinding(identity,true,true,false);
+            requireLiveTask(identity,e,task);
+            requireCompletionProof(e,request);
+            requireCompletionRuntime(identity,taskNo,assignments.testWorkerRuntime(identity.ownerId(),identity.deviceId(),identity.instanceNo()));
+            TestCloudBgeArtifact.decode(request.resultArtifactBase64(),request.resultHash());
+            // Independent model HTTP must not hold owner/device/task locks shared by parallel workers and heartbeats.
+            double[][] independentlyComputed=infer(identity);
+            artifact=TestCloudBgeArtifact.verify(request.resultArtifactBase64(),request.resultHash(),independentlyComputed);
         }
+
+        // Current locking reads revalidate every mutable authority after inference, in the original lock order.
+        lockBinding(identity,false);
+        task=task(identity,taskNo); e=mapper.lock(taskNo); requireManifest(identity,e);
+        if(fleet(identity)) {
+            Binding current=mapper.lockBinding(identity.executorId());
+            if(!binding(identity).equals(current)) throw error(401,"TEST_CLOUD_AUTH_INVALID");
+        }
+        if(completionReplay(e,key,bodyHash)) return ApiResult.ok(receiptView(identity,e,task));
+        if(artifact==null) throw error(409,"TEST_CLOUD_COMPLETION_CONFLICT");
         lockBinding(identity,true,true);
         requireLiveTask(identity,e,task);
-        if(request==null || !SPEC.equals(request.specVersion()) || !e.inputHash().equals(request.inputHash())
-                || !e.modelDigest().equals(request.modelDigest()) || !e.proofNonce().equals(request.proofNonce())
-                || !e.claimToken().equals(request.claimToken()) || request.proofTimestamp()==null
-                || request.proofTimestamp()<clock.millis()-120_000 || request.proofTimestamp()>clock.millis()+120_000) throw error(403,"TEST_CLOUD_PROOF_INVALID");
-        var runtime=assignments.lockTestWorkerRuntime(identity.ownerId(),identity.deviceId(),identity.instanceNo());
-        if(runtime==null || !marker(identity).equals(runtime.agentVersion()) || !CLIENT.equals(runtime.clientName())
-                || !"ONLINE".equals(runtime.onlineStatus()) || !taskNo.equals(runtime.activeTaskNo())
-                || runtime.heartbeatAt()==null || runtime.heartbeatAt().isBefore(now().minusSeconds(120))
-                || runtime.heartbeatAt().isAfter(now())) throw error(409,"TEST_CLOUD_HEARTBEAT_STALE");
-        TestCloudBgeArtifact.decode(request.resultArtifactBase64(),request.resultHash());
-        // ponytail: three short TEST texts; bounded recomputation under the same locks avoids a proof/settlement TOCTOU.
-        double[][] independentlyComputed=infer(identity);
-        byte[] artifact=TestCloudBgeArtifact.verify(request.resultArtifactBase64(),request.resultHash(),independentlyComputed);
-        requireCurrent(identity); requireLiveTask(identity,e,task(identity,taskNo));
+        requireCompletionProof(e,request);
+        requireCompletionRuntime(identity,taskNo,assignments.lockTestWorkerRuntime(identity.ownerId(),identity.deviceId(),identity.instanceNo()));
         String proofHash=domainProof(identity,e,request.resultHash());
         CloudProof proof=new CloudProof(identity.ownerId(),identity.deviceId(),identity.instanceNo(),taskNo,e.proofNonce(),
                 proofHash,identity.executorId(),e.inputHash(),request.resultHash(),e.modelDigest());
@@ -340,6 +349,28 @@ public class TestCloudExecutorService {
         record(identity,"TEST_CLOUD_RESULT_VERIFIED",taskNo,Map.of("inputHash",e.inputHash(),"resultHash",request.resultHash(),
                 "model",e.modelTag(),"modelDigest",e.modelDigest(),"proofHash",proofHash,"artifactBytes",artifact.length));
         return ApiResult.ok(receiptView(identity,mapper.lock(taskNo),task(identity,taskNo)));
+    }
+
+    private boolean completionReplay(Execution e,String key,String bodyHash) {
+        if(e.resultHash()==null) return false;
+        if(!Objects.equals(e.completeKeyHash(),sha256(key)) || !Objects.equals(e.completeBodyHash(),bodyHash))
+            throw error(409,"TEST_CLOUD_COMPLETION_REPLAYED");
+        return true;
+    }
+
+    private void requireCompletionProof(Execution e,CompleteRequest request) {
+        if(request==null || !SPEC.equals(request.specVersion()) || !e.inputHash().equals(request.inputHash())
+                || !e.modelDigest().equals(request.modelDigest()) || !e.proofNonce().equals(request.proofNonce())
+                || !e.claimToken().equals(request.claimToken()) || request.proofTimestamp()==null
+                || request.proofTimestamp()<clock.millis()-120_000 || request.proofTimestamp()>clock.millis()+120_000)
+            throw error(403,"TEST_CLOUD_PROOF_INVALID");
+    }
+
+    private void requireCompletionRuntime(Identity identity,String taskNo,AppTaskAssignmentMapper.TestWorkerRuntimeRow runtime) {
+        if(runtime==null || !marker(identity).equals(runtime.agentVersion()) || !CLIENT.equals(runtime.clientName())
+                || !"ONLINE".equals(runtime.onlineStatus()) || !taskNo.equals(runtime.activeTaskNo())
+                || runtime.heartbeatAt()==null || runtime.heartbeatAt().isBefore(now().minusSeconds(120))
+                || runtime.heartbeatAt().isAfter(now())) throw error(409,"TEST_CLOUD_HEARTBEAT_STALE");
     }
 
     @Transactional(rollbackFor=Exception.class)
@@ -365,8 +396,8 @@ public class TestCloudExecutorService {
         return ApiResult.ok(receiptView(identity,e,task));
     }
 
-    /** No mutation or retry follows from a negative receipt. Only the archived, trusted
-     * exhaustive two-request adjudication can authorize the worker's durable one-use budget. */
+    /** No mutation or retry follows from a negative receipt. Each incident requires its own archived,
+     * trusted exhaustive two-request adjudication to authorize the worker's durable one-use budget. */
     @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> rollbackReview(Identity identity,String taskNo,String completeKey,
             String originalNextKey,RollbackReviewRequest request) {
@@ -441,26 +472,37 @@ public class TestCloudExecutorService {
     }
 
     private void lockBinding(Identity i,boolean live,boolean completingExistingTask) {
+        requireBinding(i,live,completingExistingTask,true);
+    }
+
+    private void requireBinding(Identity i,boolean live,boolean completingExistingTask,boolean lock) {
         requireCurrent(i);
-        if(!Long.valueOf(i.ownerId()).equals(assignments.lockProductionUser(i.ownerId()))) throw error(403,"TEST_CLOUD_BINDING_INVALID");
-        var device=assignments.lockOwnedDevice(i.ownerId(),i.deviceId());
+        if(lock && !Long.valueOf(i.ownerId()).equals(assignments.lockProductionUser(i.ownerId()))) throw error(403,"TEST_CLOUD_BINDING_INVALID");
+        var device=lock ? assignments.lockOwnedDevice(i.ownerId(),i.deviceId()) : assignments.ownedDevice(i.ownerId(),i.deviceId());
         if(device==null || i.deviceId()<=0 || !i.instanceNo().equals(device.instanceNo())
                 || (!fleet(i) && (!"cloud-share".equals(device.productCode())
                 || !Set.of("SHARE","CLOUD_SHARE").contains(Objects.toString(device.deviceType(),"").toUpperCase(Locale.ROOT))))) throw error(403,"TEST_CLOUD_BINDING_INVALID");
         // Reconciliation is read-only in effect and remains possible after a successful deferred deactivation.
         if(!live) return;
         if(fleet(i)) {
-            if(mapper.countActive(i.ownerId(),i.deviceId())>1) throw error(409,"TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+            if((lock ? mapper.countActive(i.ownerId(),i.deviceId()) : mapper.activeTaskNos(i.ownerId(),i.deviceId()).size())>1)
+                throw error(409,"TEST_CLOUD_ACTIVE_TASK_CONFLICT");
             // Hold the reviewed admission until commit; a revocation cannot race the proof or cancellation.
-            var admission=legacyEnabled() ? mapper.legacyAdmission(i.ownerId(),i.deviceId(),i.instanceNo(),null,i.taskConfigId()) : null;
-            if(!Integer.valueOf(1).equals(mapper.liveFleetBinding(fleetCutoff(),tradeinFleetCutoff(environment),i.ownerId(),i.deviceId(),i.instanceNo(),completingExistingTask,admission!=null)))
+            var admission=!legacyEnabled() ? null : lock
+                    ? mapper.legacyAdmission(i.ownerId(),i.deviceId(),i.instanceNo(),null,i.taskConfigId())
+                    : mapper.admission(i.ownerId(),i.deviceId(),i.instanceNo(),null,i.taskConfigId());
+            Integer eligible=lock
+                    ? mapper.liveFleetBinding(fleetCutoff(),tradeinFleetCutoff(environment),i.ownerId(),i.deviceId(),i.instanceNo(),completingExistingTask,admission!=null)
+                    : mapper.fleetBinding(fleetCutoff(),tradeinFleetCutoff(environment),i.ownerId(),i.deviceId(),i.instanceNo(),completingExistingTask,admission!=null);
+            if(!Integer.valueOf(1).equals(eligible))
                 throw error(403,"TEST_CLOUD_BINDING_INVALID");
             return;
         }
         if(device.activatedAt()==null || !Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(Objects.toString(device.status(),"").toUpperCase(Locale.ROOT))
                 || Boolean.TRUE.equals(device.dispatchPaused()) || (device.pausedReason()!=null && !device.pausedReason().isBlank())
                 || (!completingExistingTask && mapper.eligibleBinding(i.ownerId(),i.deviceId(),i.instanceNo())!=1)
-                || assignments.lockPaidCloudShareDailyNex(i.ownerId(),i.deviceId())==null) throw error(403,"TEST_CLOUD_BINDING_INVALID");
+                || (lock ? assignments.lockPaidCloudShareDailyNex(i.ownerId(),i.deviceId())
+                         : assignments.paidCloudShareDailyNex(i.ownerId(),i.deviceId()))==null) throw error(403,"TEST_CLOUD_BINDING_INVALID");
     }
 
     private void requireManifest(Identity i,Execution e) {
@@ -479,7 +521,10 @@ public class TestCloudExecutorService {
     }
 
     private AssignmentRow task(Identity i,String taskNo) {
-        var task=assignments.lockAssignment(i.ownerId(),taskNo,"PRODUCTION");
+        return requireTask(i,assignments.lockAssignment(i.ownerId(),taskNo,"PRODUCTION"));
+    }
+
+    private AssignmentRow requireTask(Identity i,AssignmentRow task) {
         if(task==null || task.deviceId()!=i.deviceId()) throw error(404,"TEST_CLOUD_TASK_NOT_FOUND");
         return task;
     }
