@@ -314,6 +314,29 @@ class OpsConversationServiceTest {
         verifyNoInteractions(auditLogService);
     }
 
+    @Test void staleSnapshotCannotClaimAnUnassignedPeer() {
+        conversationRepository.conversation = conversation("CV-UNBOUND", "OPEN");
+        conversationRepository.peerClaimSucceeds = true;
+        var result = service.reply("CV-UNBOUND", "stale-first-reply",
+                new ConversationReplyRequest("Please wait", "OPEN", 99L, "agent reply", "Marina K."));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(conversationRepository.peerClaimAttempts).isZero();
+        assertThat(conversationRepository.messageWrites).isZero();
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test void failedReplyAfterFirstClaimThrowsToRollBackPeerMutation() {
+        conversationRepository.conversation = conversation("CV-UNBOUND", "OPEN");
+        conversationRepository.peerClaimSucceeds = true;
+        conversationRepository.stateClaimSucceeds = false;
+        assertThatThrownBy(() -> service.reply("CV-UNBOUND", "racing-first-reply",
+                new ConversationReplyRequest("Please wait", "OPEN", 0L, "agent reply", "Marina K.")))
+                .hasMessage("INVALID_STATE_TRANSITION");
+        assertThat(conversationRepository.peerClaimAttempts).isEqualTo(1);
+        assertThat(conversationRepository.messageWrites).isZero();
+        verifyNoInteractions(auditLogService);
+    }
+
     @Test
     void replyRejectsAuditReasonShorterThanEightCharactersWithoutWriting() {
         conversationRepository.conversation = conversation("CV-1", "OPEN");
@@ -884,6 +907,12 @@ class OpsConversationServiceTest {
     private static final class FakeConversationRepository implements ConversationRepository {
         // These legacy service fixtures isolate ownership; real stable-peer enforcement is tested against MyBatis.
         private boolean peerChanged;
+        private boolean peerClaimSucceeds;
+        private int peerClaimAttempts;
+        @Override public boolean claimUnassignedPeerForWrite(String conversationNo, String staffId) {
+            peerClaimAttempts++;
+            return peerClaimSucceeds;
+        }
         @Override public void requirePeerForWrite(String conversationNo, String staffId) {
             if (peerChanged) throw new ffdd.opsconsole.shared.exception.BizException(409, "CONVERSATION_PEER_CHANGED");
         }

@@ -19,6 +19,22 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     @Select("SELECT owner_agent_id FROM nx_conversation WHERE conversation_no=#{conversationNo} AND is_deleted=0 FOR SHARE")
     String storedPeerAgentId(@Param("conversationNo") String conversationNo);
 
+    @Update("""
+            UPDATE nx_conversation c
+            JOIN nx_support_agent_user_assignment sa ON sa.user_id=c.user_id
+              AND sa.status='ACTIVE' AND sa.is_deleted=0
+            JOIN nx_admin a ON a.id=sa.agent_admin_id AND a.status=1 AND a.is_deleted=0
+            JOIN nx_support_agent_profile sp ON sp.admin_id=sa.agent_admin_id AND sp.enabled=1 AND sp.is_deleted=0
+            SET c.owner_agent_id=CAST(sa.agent_admin_id AS CHAR),
+                c.owner_agent_name=COALESCE(NULLIF(a.nickname,''),a.username)
+            WHERE c.conversation_no=#{conversationNo} AND c.is_deleted=0
+              AND c.conversation_type IN ('advisor','support') AND c.owner_agent_id IS NULL
+              AND CAST(sa.agent_admin_id AS CHAR)=#{staffId}
+              AND NOT EXISTS (SELECT 1 FROM nx_conversation_message m
+                WHERE m.conversation_no=c.conversation_no AND m.sender_type='agent')
+            """)
+    int claimUnassignedPeer(@Param("conversationNo") String conversationNo, @Param("staffId") String staffId);
+
     @Update("UPDATE nx_conversation SET status='OPEN',archived=0,version=version+1,updated_at=#{now} WHERE conversation_no=#{no} AND is_deleted=0 AND status IN ('OPEN','RESOLVED','CLOSED') AND version=#{version}")
     int resumeCustomerConversation(@Param("no") String no, @Param("version") Long version, @Param("now") LocalDateTime now);
     @Insert("""

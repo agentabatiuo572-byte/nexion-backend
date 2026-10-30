@@ -372,9 +372,28 @@ class AppSupportServiceTest {
                 .when(conversations).requirePeerForWrite(org.mockito.ArgumentMatchers.eq("CV-OLD-PEER"),
                         org.mockito.ArgumentMatchers.nullable(String.class));
         assertThatThrownBy(() -> service.replyConversation(42L, "CV-OLD-PEER", "new-reply-key",
-                new AppSupportService.ReplyRequest("hello", "OPEN", 0L)))
+                new AppSupportService.ReplyRequest("hello", "OPEN", row.version())))
                 .isInstanceOf(BizException.class).hasMessage("CONVERSATION_PEER_CHANGED");
         verify(conversations, never()).replyAsUser(any(), any(), any(), any());
+        verifyNoInteractions(audit, eventPublisher);
+    }
+
+    @Test void staleUserReplyCannotClaimAnUnassignedPeer() {
+        var row = conversation(42L, "CV-UNBOUND");
+        when(conversations.findByConversationNo("CV-UNBOUND")).thenReturn(Optional.of(row));
+        var result = service.replyConversation(42L, "CV-UNBOUND", "stale-unbound-reply",
+                new AppSupportService.ReplyRequest("hello", "OPEN", 99L));
+        assertThat(result.getCode()).isEqualTo(409);
+        verify(conversations, never()).claimUnassignedPeerForWrite(any(), org.mockito.ArgumentMatchers.nullable(String.class));
+    }
+
+    @Test void failedUserReplyAfterClaimThrowsToRollBackPeerMutation() {
+        var row = conversation(42L, "CV-UNBOUND");
+        when(conversations.findByConversationNo("CV-UNBOUND")).thenReturn(Optional.of(row));
+        when(supportAgents.findActiveDedicatedAdvisor(42L)).thenReturn(Optional.of(new DedicatedAdvisorBindingView(7L, "Advisor")));
+        when(conversations.claimUnassignedPeerForWrite("CV-UNBOUND", "7")).thenReturn(true);
+        assertThatThrownBy(() -> service.replyConversation(42L, "CV-UNBOUND", "racing-unbound-reply",
+                new AppSupportService.ReplyRequest("hello", "OPEN", row.version()))).hasMessage("CONVERSATION_CONFLICT");
         verifyNoInteractions(audit, eventPublisher);
     }
 

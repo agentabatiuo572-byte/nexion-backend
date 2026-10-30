@@ -122,6 +122,13 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
+    public boolean claimUnassignedPeerForWrite(String conversationNo, String staffId) {
+        return staffId != null
+                && org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()
+                && mapper.claimUnassignedPeer(conversationNo, staffId) == 1;
+    }
+
+    @Override
     public Optional<ContentConversationView> findByConversationNoForUpdate(String conversationNo) {
         if (mapper.lockConversationHeader(conversationNo) == null) {
             return Optional.empty();
