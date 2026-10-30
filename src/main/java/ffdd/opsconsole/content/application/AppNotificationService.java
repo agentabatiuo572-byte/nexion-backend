@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -26,7 +27,7 @@ public class AppNotificationService {
     private final EventOutboxService eventOutboxService;
     private final NovaSocialRuntimeRepository novaRuntimeRepository;
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<AppNotificationPage> page(Long userId, String cursor, String priority, Integer limit) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(403, "USER_AUTH_REQUIRED");
