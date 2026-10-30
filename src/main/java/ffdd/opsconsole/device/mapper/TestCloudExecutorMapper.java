@@ -8,6 +8,38 @@ import org.apache.ibatis.annotations.*;
 /** Narrow TEST-only persistence. Every mutation is called under the existing user/device/task locks. */
 @Mapper
 public interface TestCloudExecutorMapper extends BaseMapper<Object> {
+    // Exact reviewed historical identities may bypass dates only; the paid delivery contract below remains authoritative.
+    String LEGACY_ADMISSION = """
+        (#{legacyEnabled} AND EXISTS(SELECT 1 FROM nx_test_cloud_legacy_admission la
+          JOIN nx_compute_task admitted ON admitted.task_no=la.old_task_no AND admitted.user_id=la.owner_id
+            AND admitted.user_device_id=la.device_id AND admitted.task_config_id=la.task_config_id
+            AND admitted.source_environment='PRODUCTION' AND admitted.is_deleted=0
+          WHERE la.owner_id=d.user_id AND la.device_id=d.id AND la.instance_no=d.instance_no
+            AND la.source_order_no=d.source_order_no AND la.source_channel=d.source_channel
+            AND la.deployment_scope='TEST' AND la.enabled=1))
+        """;
+    String UNEXECUTED_TASK = """
+           AND t.model_name='BGE-M3' AND t.client_name='UVEL App'
+           AND t.proof_consumed_at IS NULL AND t.completed_at IS NULL AND COALESCE(t.last_error,'')=''
+           AND NOT EXISTS(SELECT 1 FROM nx_test_cloud_execution e WHERE e.task_no=t.task_no)
+           AND NOT EXISTS(SELECT 1 FROM nx_compute_receipt r WHERE r.task_no=t.task_no)
+           AND NOT EXISTS(SELECT 1 FROM nx_wallet_ledger l WHERE l.biz_no=t.task_no
+                     OR l.biz_no=CONCAT('CTR-',RIGHT(t.task_no,32)))
+           AND NOT EXISTS(SELECT 1 FROM nx_earning_event ee WHERE ee.event_no=CONCAT('EARN-',t.task_no)
+                     OR ee.receipt_no=CONCAT('CTR-',RIGHT(t.task_no,32)))
+           AND NOT EXISTS(SELECT 1 FROM nx_audit_log a WHERE a.resource_id=t.task_no
+                     AND COALESCE(a.action,'')<>'TASK_ASSIGNMENT_CLAIMED')
+           AND NOT EXISTS(SELECT 1 FROM nx_user_device_runtime r WHERE r.user_device_id=t.user_device_id
+                     AND (COALESCE(r.agent_version,'')<>'' OR COALESCE(r.client_name,'') NOT IN ('','UVEL App')
+                          OR (COALESCE(r.active_task_no,'')<>'' AND r.active_task_no<>t.task_no)))
+        """;
+    String LEGACY_UNEXECUTED_TASK = """
+        (#{legacyEnabled} AND EXISTS(SELECT 1 FROM nx_test_cloud_legacy_admission la
+          WHERE la.owner_id=d.user_id AND la.device_id=d.id AND la.instance_no=d.instance_no
+            AND la.source_order_no=d.source_order_no AND la.source_channel=d.source_channel
+            AND la.old_task_no=t.task_no AND la.task_config_id=t.task_config_id
+            AND la.deployment_scope='TEST' AND la.enabled=1)
+        """ + UNEXECUTED_TASK + ")";
     // Shared by dispatch exclusion and the executor: paid ownership is authoritative, not a client assertion.
     String PAID_FLEET_FROM = """
           FROM nx_user_device d
@@ -17,11 +49,12 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
          WHERE d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id=''
            AND UPPER(d.ownership_status)='OWNED'
            AND UPPER(d.device_type) NOT IN ('PHONE','MOBILE')
-           AND d.deactivated_at IS NULL
+           AND d.deactivated_at IS NULL AND d.activated_at IS NOT NULL AND d.purchased_at IS NOT NULL
            AND o.is_deleted=0 AND o.payment_status='PAID' AND o.order_status='COMPLETED'
            AND o.subtotal_usdt>0 AND o.amount_usdt>=0
            AND ((d.source_channel='ORDER' AND o.activation_status='ACTIVATED'
-           AND d.purchased_at>=#{cutoff} AND d.activated_at>=#{cutoff}
+           AND ((d.purchased_at>=#{cutoff} AND d.activated_at>=#{cutoff}) OR """ + LEGACY_ADMISSION + """
+           )
            AND (o.product_id=d.product_id OR EXISTS(SELECT 1 FROM nx_order_item oi
                  WHERE oi.order_no=o.order_no AND oi.product_id=d.product_id AND oi.is_deleted=0))
            AND (SELECT COUNT(*) FROM nx_user_device owned WHERE owned.source_order_no=o.order_no
@@ -32,7 +65,8 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
                     FROM nx_order_item oi WHERE oi.order_no=o.order_no AND oi.product_id=d.product_id AND oi.is_deleted=0)
                   ELSE o.quantity END)
            OR (d.source_channel='TRADE_IN' AND #{tradeinCutoff} IS NOT NULL
-           AND d.purchased_at>=#{tradeinCutoff} AND d.activated_at>=#{tradeinCutoff}
+           AND ((d.purchased_at>=#{tradeinCutoff} AND d.activated_at>=#{tradeinCutoff}) OR """ + LEGACY_ADMISSION + """
+           )
            AND o.order_type='TRADE_IN' AND o.quantity=1 AND o.item_count=1
            AND o.activation_status IN ('ACTIVATED','INVENTORY')
            AND (SELECT COUNT(*) FROM nx_user_device delivered
@@ -50,8 +84,10 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
                    AND source.instance_no=a.source_instance_no AND source.product_id=a.source_product_id
                 WHERE a.user_id=d.user_id AND a.target_device_id=d.id AND a.target_order_no=o.order_no
                   AND a.target_product_id=d.product_id AND o.product_id=d.product_id
+                  AND a.completed_at IS NOT NULL AND a.submitted_at IS NOT NULL
                   AND a.source_device_id<>d.id AND a.status='COMPLETED' AND a.is_deleted=0
-                  AND a.completed_at>=#{tradeinCutoff} AND a.submitted_at>=#{tradeinCutoff}
+                  AND ((a.completed_at>=#{tradeinCutoff} AND a.submitted_at>=#{tradeinCutoff}) OR """ + LEGACY_ADMISSION + """
+                  )
                   AND c.status='COMPLETED' AND c.is_deleted=0
                   AND source.is_deleted=0 AND source.source_environment='PRODUCTION' AND source.run_id=''
                   AND a.source_price_usdt>0 AND a.target_price_usdt=o.subtotal_usdt
@@ -71,6 +107,8 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
         """;
     String FLEET_LIVE = """
            AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+           AND (SELECT COUNT(*) FROM nx_compute_task active WHERE active.user_device_id=d.id AND active.user_id=d.user_id
+                  AND active.is_deleted=0 AND active.source_environment='PRODUCTION' AND active.status IN ('CLAIMED','RUNNING'))<=1
            AND NOT EXISTS(SELECT 1 FROM nx_compute_dc_ops_state dc WHERE dc.dc_location=d.dc_location
                     AND dc.is_deleted=0 AND dc.dispatch_paused=1)
            AND NOT EXISTS(SELECT 1 FROM nx_user_device_runtime r WHERE r.user_device_id=d.id AND r.is_deleted=0
@@ -78,7 +116,9 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
                           AND r.agent_version<>CONCAT('test-cloud:fleet-',d.id))))
            AND NOT EXISTS(SELECT 1 FROM nx_compute_task t WHERE t.user_device_id=d.id AND t.user_id=d.user_id
                     AND t.is_deleted=0 AND t.source_environment='PRODUCTION' AND t.status IN ('CLAIMED','RUNNING')
-                    AND NOT EXISTS(SELECT 1 FROM nx_test_cloud_execution e WHERE e.task_no=t.task_no))
+                    AND NOT EXISTS(SELECT 1 FROM nx_test_cloud_execution e WHERE e.task_no=t.task_no)
+                    AND NOT """ + LEGACY_UNEXECUTED_TASK + """
+                    )
         """;
     String BINDING_COLUMNS = "executor_id executorId,owner_id ownerId,device_id deviceId,instance_no instanceNo,"
             + "task_config_id taskConfigId,model_tag model,model_digest modelDigest";
@@ -97,17 +137,17 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
              AND d.id>#{afterDeviceId} AND d.id<>#{legacyDeviceId} ORDER BY d.id LIMIT #{limit}
             """)
     List<FleetCandidate> fleetCandidates(@Param("cutoff") LocalDateTime cutoff,@Param("tradeinCutoff") LocalDateTime tradeinCutoff,@Param("afterDeviceId") long afterDeviceId,
-                                        @Param("legacyDeviceId") long legacyDeviceId,@Param("limit") int limit);
+                                        @Param("legacyDeviceId") long legacyDeviceId,@Param("limit") int limit,@Param("legacyEnabled") boolean legacyEnabled);
 
     @Select("SELECT d.user_id ownerId,d.id deviceId,d.instance_no instanceNo " + PAID_FLEET_FROM
             + " AND d.id=#{deviceId} AND d.id<>#{legacyDeviceId}")
     FleetCandidate fleetCandidate(@Param("cutoff") LocalDateTime cutoff,@Param("tradeinCutoff") LocalDateTime tradeinCutoff,@Param("deviceId") long deviceId,
-                                  @Param("legacyDeviceId") long legacyDeviceId);
+                                  @Param("legacyDeviceId") long legacyDeviceId,@Param("legacyEnabled") boolean legacyEnabled);
 
     @Select("SELECT 1 " + PAID_FLEET_FROM + FLEET_LIVE
             + " AND (#{completing} OR d.pending_deactivate=0) AND d.id=#{deviceId} AND d.user_id=#{ownerId} AND d.instance_no=#{instanceNo} FOR UPDATE OF o,d")
     Integer liveFleetBinding(@Param("cutoff") LocalDateTime cutoff,@Param("tradeinCutoff") LocalDateTime tradeinCutoff,@Param("ownerId") long ownerId,
-                         @Param("deviceId") long deviceId,@Param("instanceNo") String instanceNo,@Param("completing") boolean completing);
+                         @Param("deviceId") long deviceId,@Param("instanceNo") String instanceNo,@Param("completing") boolean completing,@Param("legacyEnabled") boolean legacyEnabled);
 
     @Insert("""
         INSERT IGNORE INTO nx_test_cloud_binding(executor_id,owner_id,device_id,instance_no,task_config_id,model_tag,model_digest,created_at)
@@ -172,17 +212,29 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
          WHERE t.user_id=#{ownerId} AND t.user_device_id=#{deviceId} AND t.task_no=#{taskNo}
            AND t.task_config_id=#{config} AND t.model_name='BGE-M3' AND t.client_name='UVEL App'
            AND t.status IN ('CLAIMED','RUNNING') AND t.source_environment='PRODUCTION' AND t.is_deleted=0
-           AND t.proof_consumed_at IS NULL AND t.completed_at IS NULL AND COALESCE(t.last_error,'')=''
-           AND NOT EXISTS(SELECT 1 FROM nx_test_cloud_execution e WHERE e.task_no=t.task_no)
-           AND NOT EXISTS(SELECT 1 FROM nx_compute_receipt r WHERE r.task_no=t.task_no)
-           AND NOT EXISTS(SELECT 1 FROM nx_wallet_ledger l WHERE l.biz_no=t.task_no)
-           AND NOT EXISTS(SELECT 1 FROM nx_audit_log a WHERE a.resource_id=t.task_no
-                            AND a.action<>'TASK_ASSIGNMENT_CLAIMED')
-           AND NOT EXISTS(SELECT 1 FROM nx_user_device_runtime r WHERE r.user_device_id=t.user_device_id
-                            AND (COALESCE(r.agent_version,'')<>'' OR COALESCE(r.client_name,'') NOT IN ('','UVEL App')))
-        """)
+        """ + UNEXECUTED_TASK)
     int cancelUnexecuted(@Param("ownerId") long ownerId,@Param("deviceId") long deviceId,@Param("taskNo") String taskNo,
                          @Param("config") String config,@Param("now") LocalDateTime now);
+
+    @Select("""
+        SELECT task_no FROM nx_compute_task WHERE user_id=#{ownerId} AND user_device_id=#{deviceId}
+          AND source_environment='PRODUCTION' AND is_deleted=0 AND status IN ('CLAIMED','RUNNING') ORDER BY id FOR UPDATE
+        """)
+    List<String> lockActiveTaskNos(@Param("ownerId") long ownerId,@Param("deviceId") long deviceId);
+    default int countActive(long ownerId,long deviceId) { return lockActiveTaskNos(ownerId,deviceId).size(); }
+
+    @Select("""
+        SELECT la.old_task_no oldTaskNo,la.reason,la.evidence_sha256 evidenceSha256
+          FROM nx_test_cloud_legacy_admission la JOIN nx_user_device d ON d.id=la.device_id
+           AND d.user_id=la.owner_id AND d.instance_no=la.instance_no
+           AND d.source_order_no=la.source_order_no AND d.source_channel=la.source_channel
+         WHERE la.owner_id=#{ownerId} AND la.device_id=#{deviceId} AND la.instance_no=#{instanceNo}
+           AND (#{taskNo} IS NULL OR la.old_task_no=#{taskNo}) AND la.task_config_id=#{config}
+           AND la.deployment_scope='TEST' AND la.enabled=1 FOR UPDATE
+        """)
+    LegacyAdmission legacyAdmission(@Param("ownerId") long ownerId,@Param("deviceId") long deviceId,
+                                    @Param("instanceNo") String instanceNo,@Param("taskNo") String taskNo,@Param("config") String config);
+    record LegacyAdmission(String oldTaskNo,String reason,String evidenceSha256) { }
 
     @Insert("""
         INSERT IGNORE INTO nx_user_device_runtime(user_device_id,online_status,client_name,agent_version,heartbeat_at,

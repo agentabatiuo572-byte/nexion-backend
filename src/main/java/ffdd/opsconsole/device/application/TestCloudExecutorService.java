@@ -101,7 +101,7 @@ public class TestCloudExecutorService {
                     else {
                         if(!executorId.matches("fleet-[1-9][0-9]{0,18}")) throw new IllegalArgumentException();
                         long deviceId=Long.parseLong(executorId.substring(6));
-                        var candidate=mapper.fleetCandidate(fleetCutoff(),tradeinFleetCutoff(environment),deviceId,configured().deviceId());
+                        var candidate=mapper.fleetCandidate(fleetCutoff(),tradeinFleetCutoff(environment),deviceId,configured().deviceId(),legacyEnabled());
                         if(candidate==null) throw new IllegalArgumentException();
                         identity=new Identity(executorId,candidate.ownerId(),deviceId,candidate.instanceNo(),
                                 configured().taskConfigId(),configured().model(),configured().modelDigest());
@@ -135,7 +135,7 @@ public class TestCloudExecutorService {
                 if(!identity(binding).equals(identity)) throw new IllegalArgumentException();
             } else {
                 if(!identity.executorId().equals("fleet-"+identity.deviceId())) throw new IllegalArgumentException();
-                var candidate=mapper.fleetCandidate(fleetCutoff(),tradeinFleetCutoff(environment),identity.deviceId(),configured().deviceId());
+                var candidate=mapper.fleetCandidate(fleetCutoff(),tradeinFleetCutoff(environment),identity.deviceId(),configured().deviceId(),legacyEnabled());
                 if(candidate==null || candidate.ownerId()!=identity.ownerId() || !candidate.instanceNo().equals(identity.instanceNo())
                         || !configured().taskConfigId().equals(identity.taskConfigId())
                         || !configured().model().equals(identity.model()) || !configured().modelDigest().equals(identity.modelDigest())) throw new IllegalArgumentException();
@@ -144,6 +144,7 @@ public class TestCloudExecutorService {
     }
 
     private boolean fleetEnabled() { return "true".equals(property("fleet-enabled")); }
+    private boolean legacyEnabled() { return "true".equals(property("fleet-legacy-enabled")); }
     private LocalDateTime fleetCutoff() {
         try { return LocalDateTime.parse(property("fleet-started-at")); }
         catch(RuntimeException invalid) { throw new IllegalArgumentException("TEST_CLOUD_FLEET_CUTOFF_INVALID"); }
@@ -163,7 +164,7 @@ public class TestCloudExecutorService {
         requireCurrent(i);
         if(!fleetIdentity().equals(i) || !fleetEnabled() || afterDeviceId<0) throw error(403,"TEST_CLOUD_FLEET_REQUIRED");
         int limit=Math.max(1,Math.min(100,requestedLimit));
-        var candidates=mapper.fleetCandidates(fleetCutoff(),tradeinFleetCutoff(environment),afterDeviceId,configured().deviceId(),limit+1);
+        var candidates=mapper.fleetCandidates(fleetCutoff(),tradeinFleetCutoff(environment),afterDeviceId,configured().deviceId(),limit+1,legacyEnabled());
         List<Map<String,Object>> items=new ArrayList<>();
         for(var c:candidates.stream().limit(limit).toList()) {
             Binding registered=mapper.binding("fleet-"+c.deviceId());
@@ -194,13 +195,20 @@ public class TestCloudExecutorService {
                 requireManifest(identity,existing); requireLiveTask(identity,existing,active);
                 return ApiResult.ok(claimView(identity,existing,active));
             }
-            if (!active.taskNo().equals(property("cancel-unexecuted-task-no"))
-                    || !identity.taskConfigId().equals(active.taskId())
-                    || mapper.cancelUnexecuted(identity.ownerId(),identity.deviceId(),active.taskNo(),identity.taskConfigId(),now())!=1) {
+            var admission=fleet(identity) && legacyEnabled()
+                    ? mapper.legacyAdmission(identity.ownerId(),identity.deviceId(),identity.instanceNo(),active.taskNo(),identity.taskConfigId()) : null;
+            boolean authorized=fleet(identity) ? admission!=null : active.taskNo().equals(property("cancel-unexecuted-task-no"));
+            if (!authorized || !identity.taskConfigId().equals(active.taskId()))
                 throw error(409,"TEST_CLOUD_UNMANIFESTED_TASK_BLOCKED");
-            }
+            if (mapper.countActive(identity.ownerId(),identity.deviceId())!=1)
+                throw error(409,"TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+            if (mapper.cancelUnexecuted(identity.ownerId(),identity.deviceId(),active.taskNo(),identity.taskConfigId(),now())!=1)
+                throw error(409,"TEST_CLOUD_UNMANIFESTED_TASK_BLOCKED");
             assignments.clearRuntimeTask(identity.ownerId(),identity.deviceId(),active.taskNo(),now());
-            record(identity,"TEST_CLOUD_UNEXECUTED_TASK_CANCELLED",active.taskNo(),Map.of("reason","No input or execution evidence; replaced by explicit TEST inference"));
+            Map<String,Object> detail=new LinkedHashMap<>();
+            detail.put("reason","No input or execution evidence; replaced by explicit TEST inference");
+            if(admission!=null) { detail.put("oldTaskNo",admission.oldTaskNo()); detail.put("reason",admission.reason()); detail.put("evidenceSha256",admission.evidenceSha256()); }
+            record(identity,"TEST_CLOUD_UNEXECUTED_TASK_CANCELLED",active.taskNo(),detail);
         }
         var taskLock = assignments.lockDeviceTaskLock(identity.ownerId(),identity.deviceId(),"PRODUCTION");
         if (taskLock != null && taskLock.lockUntil()!=null && taskLock.lockUntil().isAfter(now())) {
@@ -327,7 +335,10 @@ public class TestCloudExecutorService {
         // Reconciliation is read-only in effect and remains possible after a successful deferred deactivation.
         if(!live) return;
         if(fleet(i)) {
-            if(!Integer.valueOf(1).equals(mapper.liveFleetBinding(fleetCutoff(),tradeinFleetCutoff(environment),i.ownerId(),i.deviceId(),i.instanceNo(),completingExistingTask)))
+            if(mapper.countActive(i.ownerId(),i.deviceId())>1) throw error(409,"TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+            // Hold the reviewed admission until commit; a revocation cannot race the proof or cancellation.
+            var admission=legacyEnabled() ? mapper.legacyAdmission(i.ownerId(),i.deviceId(),i.instanceNo(),null,i.taskConfigId()) : null;
+            if(!Integer.valueOf(1).equals(mapper.liveFleetBinding(fleetCutoff(),tradeinFleetCutoff(environment),i.ownerId(),i.deviceId(),i.instanceNo(),completingExistingTask,admission!=null)))
                 throw error(403,"TEST_CLOUD_BINDING_INVALID");
             return;
         }
