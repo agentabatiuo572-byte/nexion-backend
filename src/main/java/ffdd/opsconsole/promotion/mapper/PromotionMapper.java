@@ -80,7 +80,7 @@ public interface PromotionMapper extends BaseMapper<Object>, ffdd.opsconsole.sha
             SELECT id FROM nx_user_device WHERE user_id=? AND is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
               AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
               AND activated_at IS NOT NULL
-              AND deactivated_at IS NULL AND pending_deactivate=0 FOR UPDATE
+              AND deactivated_at IS NULL FOR UPDATE
             """,account).size();
         for(Map<String,Object> order:list("""
             SELECT o.order_no,o.product_id,o.quantity FROM nx_order o WHERE o.user_id=? AND o.is_deleted=0

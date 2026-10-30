@@ -67,9 +67,8 @@ class E5ActivationAndDeactivationSqlContractTest {
                         "a.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')",
                         "s.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')",
                         "a.ownership_status = 'OWNED'", "s.ownership_status = 'OWNED'",
-                        "a.pending_deactivate = 0", "s.pending_deactivate = 0",
                         "a.activated_at IS NOT NULL", "s.activated_at IS NOT NULL",
                         "a.deactivated_at IS NULL", "s.deactivated_at IS NULL", "NOT s.id > d.id")
-                .doesNotContain("device_type", "'SHARE'");
+                .doesNotContain("device_type", "'SHARE'", "a.pending_deactivate", "s.pending_deactivate", "d.pending_deactivate = 1");
     }
 }

@@ -234,7 +234,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                AND d.source_environment='PRODUCTION' AND d.run_id=''
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
-               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate=0
+               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
             """;
 
     @Select(ACTIVE_DEVICE_COUNT + " AND COALESCE(u.sandbox,0)=0")
@@ -335,7 +335,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                        AND UPPER(d.ownership_status) = 'OWNED'
                        AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
                        AND d.source_environment='PRODUCTION' AND d.run_id=''
-                       AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+                       AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
                ) active_snapshot) < LEAST(6, #{slotCap})
             """)
     int activateOwnedDeviceCas(@Param("userId") Long userId,

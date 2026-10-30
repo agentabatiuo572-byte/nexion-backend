@@ -12,12 +12,11 @@ import org.junit.jupiter.api.Test;
 
 class DeviceOpsMapperSqlTest {
     @Test
-    void e5SlotProjectionReleasesPendingDeactivationsLikeCanonicalCapacity() {
+    void e5SlotProjectionKeepsPendingDeactivationsUntilTheyActuallyStop() {
         assertThat(DeviceOpsMapper.DEVICE_COLUMNS)
-                .contains("a.pending_deactivate = 0", "s.pending_deactivate = 0", "d.pending_deactivate = 1",
-                        "a.activated_at IS NOT NULL", "s.activated_at IS NOT NULL", "d.activated_at IS NULL",
+                .contains("a.activated_at IS NOT NULL", "s.activated_at IS NOT NULL", "d.activated_at IS NULL",
                         "a.ownership_status = 'OWNED'", "s.ownership_status = 'OWNED'")
-                .doesNotContain("'SHARE'");
+                .doesNotContain("'SHARE'", "a.pending_deactivate", "s.pending_deactivate", "d.pending_deactivate = 1");
     }
 
     @Test
@@ -34,8 +33,8 @@ class DeviceOpsMapperSqlTest {
                         "UPPER(d.ownership_status) = 'OWNED'", "'OFFLINE'")
                 .doesNotContain("'SHARE'");
         assertThat(physicalCount).contains("d.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')",
-                "d.activated_at IS NOT NULL", "d.pending_deactivate = 0", "UPPER(d.ownership_status) = 'OWNED'")
-                .doesNotContain("'SHARE'");
+                "d.activated_at IS NOT NULL", "UPPER(d.ownership_status) = 'OWNED'")
+                .doesNotContain("'SHARE'", "pending_deactivate");
         assertThat(runtimeOnline).contains("d.activated_at IS NOT NULL", "UPPER(d.ownership_status) = 'OWNED'")
                 .doesNotContain("<> 'SHARE'");
     }

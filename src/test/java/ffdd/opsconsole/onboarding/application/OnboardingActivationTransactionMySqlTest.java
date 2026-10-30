@@ -100,7 +100,10 @@ class OnboardingActivationTransactionMySqlTest {
         jdbc.update("UPDATE nx_config_item SET config_value='on' WHERE config_key=?",PhoneReplacementPolicy.PREFIX+"allowReplacement");
         jdbc.update("UPDATE nx_config_item SET config_value='0' WHERE config_key=?",PhoneReplacementPolicy.PREFIX+"minReplacementIntervalDays");
         jdbc.update("INSERT INTO nx_config_item(config_key,config_value) VALUES('device.max_active_slots','6'),(?,?)",
-                PhoneCalibrationConfigService.KEY,"{\"revision\":1,\"current\":{\"version\":1,\"effectiveAt\":0,\"thresholds\":[19,25,35,47],\"rules\":[{\"id\":\"fixture\",\"platform\":\"android\",\"model\":\"\",\"soc\":\"test soc\",\"gpu\":\"Mali-G715\",\"minMemoryGb\":1,\"maxMemoryGb\":129,\"computeValue\":28.3,\"evidence\":\"Test only\"}]},\"scheduled\":null}");
+                PhoneCalibrationConfigService.KEY,"{\"revision\":1,\"current\":{\"version\":1,\"effectiveAt\":0,\"thresholds\":[19,25,35,47],\"androidSocRules\":["
+                        +"{\"id\":\"fixture\",\"name\":\"Fixture tier\",\"minComputeValue\":28.3,\"maxComputeValue\":28.3,"
+                        +"\"enabled\":true,\"valueSource\":\"OPERATOR_PRESET\",\"chips\":[{\"socKey\":\"test-soc\","
+                        +"\"name\":\"Test SoC\",\"manufacturer\":\"Test\",\"aliases\":[\"test soc\"]}]}]},\"scheduled\":null}");
         jdbc.update("INSERT INTO nx_onboarding_phone_tier_config(tier,name,tops_min,tops_max,base_rate_usdt,base_rate_nex) VALUES(1,'T1',8,18,.04,6),(2,'T2',19,24,.05,8),(3,'T3',25,34,.06,10),(4,'T4',35,46,.08,13),(5,'T5',47,58,.095,16)");
         jdbc.update("INSERT INTO nx_onboarding_yield_comparison_config(config_key,label,daily_usdt,daily_nex) VALUES('phone','Phone',.06,10)");
         jdbc.update("INSERT INTO nx_legal_terms_version(locale,jurisdiction,version_label,effective_at,status,title,summary,sections_json) VALUES('en','GLOBAL','v1','2026-01-01','PUBLISHED','Activation integration terms','Terms for the isolated test account',?)",
@@ -155,9 +158,13 @@ class OnboardingActivationTransactionMySqlTest {
         if("APP".equals(group))jdbc.update("INSERT INTO nx_app_session_state(user_id,app_session_version,session_chain_id,installation_id,execution_supported) VALUES(?,1,?,?,?) ON DUPLICATE KEY UPDATE session_chain_id=VALUES(session_chain_id),installation_id=VALUES(installation_id),execution_supported=VALUES(execution_supported)",user,id,install,execution);
         var auth=new UsernamePasswordAuthenticationToken(Long.toString(user),null,List.of());auth.setDetails(Map.of("subjectType","USER","sessionId",id));return auth;
     }
-    long calibrate(long user,String install){var signals=new OnboardingCalibrationService.Signals(8.0,8,"Synthetic phone","Synthetic","Mali-G715",3.0,42.0,80,true,true,"android","test soc");
+    long calibrate(long user,String install){var signals=new OnboardingCalibrationService.Signals(8.0,8,"Synthetic phone","Synthetic","Mali-G715",3.0,42.0,80,true,true,"android","test soc",
+                null,null,null,null,List.of("test soc"));
         var result=phone.calibrate(user,new OnboardingCalibrationService.Request(install,0,"calibrate-"+user+"-"+install,signals));
-        assertThat(result.getCode()).as(result.getMessage()).isZero();return ((Number)result.getData().get("revision")).longValue();}
+        assertThat(result.getCode()).as(result.getMessage()).isZero();
+        assertThat(result.getData()).containsEntry("calibrationAvailable",true).containsEntry("calibrationStatus","MATCHED")
+                .containsEntry("calibrationMethod",PhoneCalibrationPolicy.ANDROID_SOC_RANGE);
+        return ((Number)result.getData().get("revision")).longValue();}
     OnboardingCalibrationService.ActionRequest action(String install,long revision,Long binding,String key){return new OnboardingCalibrationService.ActionRequest(install,revision,key,false,binding,1L,null,true,true);}
     ApiResult<Map<String,Object>> first(long user){seed(user);long revision=calibrate(user,"phone-a");var result=phone.activate(user,action("phone-a",revision,null,"activate-first-"+user),session(user,"phone-a","APP",true));assertThat(result.getCode()).as(result.getMessage()).isZero();return result;}
     int count(String table,long user){return jdbc.queryForObject("SELECT COUNT(*) FROM "+table+" WHERE user_id=?",Integer.class,user);}
@@ -261,19 +268,26 @@ class OnboardingActivationTransactionMySqlTest {
             assertThat(phone.activate(user,request,auth).getCode()).isZero();assertThat(count("nx_phone_replacement_event",user)).isEqualTo(1);
         }
     }
-    @Test void realTermsAndHardPauseGateNewCommandsButDoNotInvalidateReadOnlyReceipts(){
+    @Test void registrationTermsDoNotRepeatWhileHardPauseStillGatesNewCommands(){
         long user=301;var initial=first(user);task(user);
         jdbc.update("DELETE FROM nx_legal_terms_ack WHERE user_id=?",user);
         var a=session(user,"phone-a","APP",true);
         assertThat(app.operation(a,(String)initial.getData().get("operationId")).status()).isEqualTo("SUCCEEDED");
         long revision=calibrate(user,"phone-b");var b=session(user,"phone-b","APP",true);var request=action("phone-b",revision,1L,"replace-terms-"+user);
-        var before=snapshot(user);assertThatThrownBy(()->phone.activate(user,request,b)).isInstanceOf(BizException.class).hasMessage("LEGAL_TERMS_ACK_REQUIRED");assertThat(snapshot(user)).isEqualTo(before);
-        ack(user);jdbc.update("UPDATE nx_user_device_runtime SET paused_reason='RISK_PAUSED' WHERE user_device_id=?",device(user));
+        var before=snapshot(user);assertThat(app.eligibility(b).canReplace()).isTrue();assertThat(snapshot(user)).isEqualTo(before);
+        jdbc.update("UPDATE nx_user_device_runtime SET paused_reason='RISK_PAUSED' WHERE user_device_id=?",device(user));
         var rejected=phone.activate(user,request,b);assertThat(rejected.getCode()).isEqualTo(409);assertThat(rejected.getMessage()).isEqualTo("PHONE_REPLACEMENT_RISK_PAUSED");
         assertThat(count("nx_phone_replacement_event",user)).isZero();assertThat(count("nx_user_device",user)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT installation_id FROM nx_phone_binding WHERE user_id=?",String.class,user)).isEqualTo("phone-a");
         assertThat(jdbc.queryForObject("SELECT status FROM nx_compute_task WHERE task_no=?",String.class,"task-"+user)).isEqualTo("RUNNING");
         var after=snapshot(user);assertThat(phone.activate(user,request,b).getCode()).isEqualTo(409);assertThat(snapshot(user)).isEqualTo(after);
+        jdbc.update("UPDATE nx_user_device_runtime SET paused_reason=NULL WHERE user_device_id=?",device(user));
+        var accepted=phone.activate(user,action("phone-b",revision,1L,"replace-without-repeat-terms-"+user),b);
+        assertThat(accepted.getCode()).as(accepted.getMessage()).isZero();
+        assertThat(count("nx_legal_terms_ack",user)).isZero();assertThat(count("nx_phone_replacement_event",user)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT installation_id FROM nx_phone_binding WHERE user_id=?",String.class,user)).isEqualTo("phone-b");
+        assertThat(jdbc.queryForObject("SELECT status FROM nx_compute_task WHERE task_no=?",String.class,"task-"+user)).isEqualTo("CANCELLED");
+        assertThat(app.operation(b,(String)initial.getData().get("operationId")).status()).isEqualTo("SUCCEEDED");
     }
     @Test void explicitReactivationClearsUserStopButLoginAndReceiptReplayDoNot(){
         long user=701;first(user);
@@ -285,9 +299,11 @@ class OnboardingActivationTransactionMySqlTest {
         phone.phoneLogin(user,"phone-a");
         assertThat(jdbc.queryForObject("SELECT paused_reason FROM nx_user_device_runtime WHERE user_device_id=?",String.class,device)).isEqualTo("USER_DEACTIVATED");
         long revision=jdbc.queryForObject("SELECT row_version FROM nx_onboarding_calibration WHERE user_id=?",Long.class,user);
-        var signals=new OnboardingCalibrationService.Signals(8.0,8,"Synthetic phone","Synthetic","Mali-G715",3.0,42.0,80,true,true,"android","test soc");
+        var signals=new OnboardingCalibrationService.Signals(8.0,8,"Synthetic phone","Synthetic","Mali-G715",3.0,42.0,80,true,true,"android","test soc",
+                null,null,null,null,List.of("test soc"));
         var calibrated=phone.calibrate(user,new OnboardingCalibrationService.Request("phone-a",revision,"recalibrate-user-stop-"+user,signals));
         assertThat(calibrated.getCode()).isZero();
+        assertThat(calibrated.getData()).containsEntry("calibrationAvailable",true).containsEntry("calibrationStatus","MATCHED");
         revision=((Number)calibrated.getData().get("revision")).longValue();
         assertThat(app.eligibility(auth).blockedReasons()).doesNotContain("PHONE_REPLACEMENT_RISK_PAUSED");
         var request=action("phone-a",revision,1L,"reactivate-user-stop-"+user);
@@ -336,7 +352,7 @@ class OnboardingActivationTransactionMySqlTest {
     void rejectWithoutWrites(long user,OnboardingCalibrationService.ActionRequest request,Authentication auth,String reason){
         var before=snapshot(user);assertThatThrownBy(()->phone.activate(user,request,auth)).isInstanceOf(BizException.class).hasMessage(reason);assertThat(snapshot(user)).isEqualTo(before);
     }
-    @Test void eligibilityRequiresCurrentInstallationCalibrationAndCurrentTermsWithoutWriting(){
+    @Test void eligibilityRequiresCurrentCalibrationWithoutRepeatingRegistrationTermsOrWriting(){
         long user=501;first(user);var current=session(user,"phone-b","APP",true);
         var before=snapshot(user);
         var missing=app.eligibility(current);
@@ -351,12 +367,12 @@ class OnboardingActivationTransactionMySqlTest {
         assertThat(ready.binding().installationId()).isEqualTo("phone-a");
         assertThat(snapshot(user)).isEqualTo(before);
 
-        // Existing v1 acknowledgement must not authorize newly published v2 Terms.
+        // Terms consent is registration-only; a new reading version does not block a registered user's replacement.
         jdbc.update("UPDATE nx_legal_terms_version SET version_label='v2' WHERE locale='en' AND jurisdiction='GLOBAL'");
         try {
             before=snapshot(user);var termsChanged=app.eligibility(current);
-            assertThat(termsChanged.canReplace()).isFalse();
-            assertThat(termsChanged.blockedReasons()).containsExactly("LEGAL_TERMS_ACK_REQUIRED");
+            assertThat(termsChanged.canReplace()).isTrue();
+            assertThat(termsChanged.blockedReasons()).isEmpty();
             assertThat(termsChanged.usedCount()).isZero();
             assertThat(snapshot(user)).isEqualTo(before);
         } finally {

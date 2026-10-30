@@ -134,7 +134,6 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
                AND d.activated_at IS NOT NULL
                AND d.deactivated_at IS NULL
-               AND d.pending_deactivate = 0
             """)
     Long activeDevices(@Param("userId") Long userId, @Param("sandbox") boolean sandbox);
 

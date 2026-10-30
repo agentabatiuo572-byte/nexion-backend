@@ -14,13 +14,13 @@ import org.apache.ibatis.annotations.Update;
 public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     // @Select text blocks concatenate these fragments directly after SQL keywords.
     // Keep the leading spaces so MyBatis does not emit tokens such as ANDd.
-    String E5_ACTIVATED_OWNED = " " + """
+    String E5_OCCUPIED_SLOT = " " + """
             d.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')
             AND d.activated_at IS NOT NULL
             AND d.deactivated_at IS NULL
-            AND d.pending_deactivate = 0
             AND UPPER(d.ownership_status) = 'OWNED'
             """;
+    String E5_ACTIVATED_OWNED = E5_OCCUPIED_SLOT + " AND d.pending_deactivate = 0 ";
     // Effective read states use database time; a persisted ONLINE flag alone is not live proof.
     String E5_HEARTBEAT_FRESH = " (r.heartbeat_at BETWEEN DATE_SUB(NOW(6), INTERVAL 10 MINUTE) AND NOW(6))";
     String E5_HEARTBEAT_STALE = " (r.heartbeat_at IS NULL OR NOT" + E5_HEARTBEAT_FRESH + ")";
@@ -83,18 +83,18 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             (SELECT COUNT(*) FROM nx_user_device a
               WHERE a.user_id=d.user_id AND a.is_deleted=0
                 AND a.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')
-                AND a.ownership_status = 'OWNED' AND a.pending_deactivate = 0
+                AND a.ownership_status = 'OWNED'
                 AND a.activated_at IS NOT NULL AND a.deactivated_at IS NULL) AS activeDevicesForUser,
             CASE
               WHEN d.status NOT IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE') OR d.activated_at IS NULL
-                OR d.deactivated_at IS NOT NULL OR d.pending_deactivate = 1 OR d.ownership_status != 'OWNED' THEN NULL
+                OR d.deactivated_at IS NOT NULL OR d.ownership_status != 'OWNED' THEN NULL
               ELSE (
                 SELECT COUNT(*)
                   FROM nx_user_device s
                  WHERE s.is_deleted = 0
                    AND s.user_id = d.user_id
                    AND s.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')
-                   AND s.ownership_status = 'OWNED' AND s.pending_deactivate = 0
+                   AND s.ownership_status = 'OWNED'
                    AND s.activated_at IS NOT NULL AND s.deactivated_at IS NULL
                    AND NOT s.id > d.id
               )
@@ -343,7 +343,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     @Select("""
             SELECT COUNT(*) FROM nx_user_device d
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
-               AND """ + E5_ACTIVATED_OWNED + """
+               AND """ + E5_OCCUPIED_SLOT + """
             """)
     long countActiveDevicesByUser(@Param("userId") Long userId);
 
