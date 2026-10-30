@@ -85,6 +85,72 @@ class BusinessNotificationMySqlTest {
         });
     }
 
+    @Test void firstSignInKeepsPeerClockDeletionLegacyAndLateCommitSemantics() throws Exception {
+        inSchema(c->{
+            sql(c,"INSERT INTO nx_user_session VALUES"
+                +"(1,'known-before-baseline',1,'203.0.113.1','APP',DATE_SUB(NOW(),INTERVAL 3 DAY),0,'known'),"
+                +"(2,'same-known',1,'203.0.113.1','APP',NOW(),0,'known'),"
+                +"(3,'new-app',1,'203.0.113.1','APP',NOW(),0,'new-install'),"
+                +"(4,'equal-time-peer',1,'203.0.113.1','APP',NOW(),0,'new-install'),"
+                +"(5,'other-ip',1,'203.0.113.2','APP',NOW(),0,'new-install'),"
+                +"(6,'h5-first',1,'203.0.113.1','H5',NOW(),0,'ignored-a'),"
+                +"(7,'h5-same-peer',1,'203.0.113.1','H5',NOW(),0,'ignored-b'),"
+                +"(8,'blank-install',1,'203.0.113.1','APP',NOW(),0,'   '),"
+                +"(9,'legacy-first',1,'203.0.113.3','APP',NOW(),0,NULL),"
+                +"(10,'legacy-same-peer',1,'203.0.113.3','APP',NOW(),0,''),"
+                +"(11,'deleted-peer',1,'203.0.113.4','APP',DATE_SUB(NOW(),INTERVAL 3 DAY),1,'reused-install'),"
+                +"(12,'deleted-peer-new',1,'203.0.113.4','APP',NOW(),0,'reused-install'),"
+                +"(13,'deleted-chain',1,'203.0.113.5','APP',DATE_SUB(NOW(),INTERVAL 3 DAY),1,'old-install'),"
+                +"(14,'deleted-chain',1,'203.0.113.6','APP',NOW(),0,'another-install')");
+            scan(c);
+            assertThat(count(c,"nx_business_notification_fact")).isEqualTo(5);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_business_notification_fact WHERE fact_key IN "
+                +"('SESSION:new-app','SESSION:other-ip','SESSION:h5-first','SESSION:legacy-first','SESSION:deleted-peer-new')")).isEqualTo(5);
+            sql(c,"INSERT INTO nx_user_session VALUES(100,'late-session',1,'203.0.113.7','APP',DATE_SUB(NOW(),INTERVAL 1 HOUR),0,'late-install')");
+            scan(c);scan(c);
+            assertThat(count(c,"nx_business_notification_fact")).isEqualTo(6);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_business_notification_fact WHERE fact_key='SESSION:late-session'")).isEqualTo(1);
+        });
+    }
+
+    @Test void additiveSessionIndexesReduceRealScanReadsWithoutChangingRecipients() throws Exception {
+        inSchema(c->{
+            sql(c,"CREATE INDEX idx_user_session_user ON nx_user_session(user_id)");
+            sql(c,"CREATE INDEX idx_user_session_chain ON nx_user_session(session_chain_id)");
+            StringBuilder rows=new StringBuilder("INSERT INTO nx_user_session VALUES");
+            for(int id=1;id<=3000;id++) rows.append(id==1?"":",").append("(").append(id)
+                .append(",'old-").append(id).append("',1,'203.0.113.1','APP',DATE_SUB(NOW(),INTERVAL 3 DAY),0,'historic-")
+                .append(id%50).append("')");
+            for(int id=3001;id<=3030;id++) rows.append(",(").append(id).append(",'new-").append(id)
+                .append("',1,'203.0.113.1','APP',NOW(),0,'new-install-").append(id).append("')");
+            sql(c,rows.toString());
+            Configuration cfg=new Configuration();cfg.setMapUnderscoreToCamelCase(true);cfg.addMapper(BusinessNotificationMapper.class);
+            var tx=new org.apache.ibatis.transaction.managed.ManagedTransactionFactory();
+            var properties=new java.util.Properties();properties.setProperty("closeConnection","false");tx.setProperties(properties);
+            cfg.setEnvironment(new org.apache.ibatis.mapping.Environment("session-indexes",tx,new org.apache.ibatis.datasource.unpooled.UnpooledDataSource()));
+            try(var session=new MybatisSqlSessionFactoryBuilder().build(cfg).openSession(c)) {
+                var mapper=session.getMapper(BusinessNotificationMapper.class);
+                long before=sessionReads(c);var original=mapper.facts();long unindexed=sessionReads(c)-before;
+                String migration=Files.readString(Path.of("scripts/migrations/20261030_business_notification_session_indexes.sql"));
+                for(int run=0;run<2;run++) for(String statement:migration.split(";")) if(!statement.isBlank())sql(c,statement);
+                session.clearCache();
+                long after=sessionReads(c);var indexed=mapper.facts();long indexedReads=sessionReads(c)-after;
+                assertThat(original).hasSize(30);
+                assertThat(indexed).containsExactlyElementsOf(original);
+                assertThat(indexedReads).as("index reads %s versus old-path reads %s",indexedReads,unindexed).isLessThan(unindexed);
+                assertThat(scalar(c,"SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema=DATABASE() "
+                    +"AND table_name='nx_user_session' AND index_name IN ('idx_user_session_notify_created','idx_user_session_notify_peer')")).isEqualTo(2);
+                System.out.println("business notification session scan rows: before="+unindexed+", indexed="+indexedReads);
+            }
+        });
+    }
+
+    private static long sessionReads(Connection c) throws Exception {
+        try(var statement=c.createStatement();var rows=statement.executeQuery("SHOW SESSION STATUS WHERE Variable_name IN ('Handler_read_key','Handler_read_next','Handler_read_rnd_next')")) {
+            long reads=0;while(rows.next())reads+=rows.getLong(2);return reads;
+        }
+    }
+
     @Test void deviceDebounceRecoveryAndIntentionalDeactivationUseAuthoritativeRuntime() throws Exception {
         inSchema(c->{
             sql(c,"INSERT INTO nx_user_device VALUES(1,1,'PRODUCTION','','OWNED','ACTIVE',NOW(),NULL,0,0)");

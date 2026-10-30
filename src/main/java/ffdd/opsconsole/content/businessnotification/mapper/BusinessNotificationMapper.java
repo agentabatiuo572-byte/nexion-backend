@@ -64,11 +64,14 @@ public interface BusinessNotificationMapper {
           FROM nx_user_session s JOIN nx_business_notification_control b ON b.id=1
           WHERE s.created_at>=b.baseline_at AND s.is_deleted=0 AND s.session_chain_id IS NOT NULL
             AND s.client_ip IS NOT NULL AND s.client_ip<>''
-            AND NOT EXISTS(SELECT 1 FROM nx_user_session p WHERE p.user_id=s.user_id
-              AND p.client_ip=s.client_ip AND p.session_group=s.session_group AND p.is_deleted=0
-              AND (s.session_group<>'APP' OR NULLIF(TRIM(s.installation_id),'') IS NULL
-                OR p.installation_id=s.installation_id)
-              AND (p.created_at<s.created_at OR (p.created_at=s.created_at AND p.id<s.id)))
+            AND CASE WHEN s.session_group='APP' AND NULLIF(TRIM(s.installation_id),'') IS NOT NULL THEN
+              NOT EXISTS(SELECT 1 FROM nx_user_session p WHERE p.user_id=s.user_id
+                AND p.client_ip=s.client_ip AND p.session_group=s.session_group AND p.is_deleted=0
+                AND p.installation_id=s.installation_id
+                AND (p.created_at<s.created_at OR (p.created_at=s.created_at AND p.id<s.id)))
+              ELSE NOT EXISTS(SELECT 1 FROM nx_user_session p WHERE p.user_id=s.user_id
+                AND p.client_ip=s.client_ip AND p.session_group=s.session_group AND p.is_deleted=0
+                AND (p.created_at<s.created_at OR (p.created_at=s.created_at AND p.id<s.id))) END
             AND NOT EXISTS(SELECT 1 FROM nx_user_session p WHERE p.session_chain_id=s.session_chain_id AND p.id<s.id)
           UNION ALL
           SELECT CONCAT('SUPPORT:',m.id),c.user_id,'SUPPORT_REPLY','support',
