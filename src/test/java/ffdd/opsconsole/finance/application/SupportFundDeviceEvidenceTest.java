@@ -24,6 +24,21 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.*;
 
 class SupportFundDeviceEvidenceTest {
+    @ParameterizedTest @ValueSource(strings={"otherTaskCashIncluded","revisionGap"})
+    void adapterStillRejectsCashOrRevisionFromAnotherTaskBeforeBinding(String corruption) {
+        var mapper=mock(SupportDeviceReadMapper.class);var fund=mock(SupportFundJournalFacade.class);
+        var source=mock(SupportDeviceReadFacade.class);var adapter=new SupportDeviceFundAdapter(fund,mapper,source,json);
+        var before=wallet(1,"10","20");
+        var after=wallet(corruption.equals("revisionGap")?3:2,corruption.equals("otherTaskCashIncluded")?"10.6":"10.3","20");
+        when(mapper.fundWallets(7)).thenReturn(List.of(before),List.of(after),List.of(after));
+        when(source.readFundEarnings(List.of(7L))).thenReturn(new FundEarnings(
+                List.of(row("receiptNo",NO,"taskNo",TASK,"rewardUsdt",n(".3"),"rewardNex",n("0"),"completedAt",AT)),
+                List.of(),List.of(),List.of()));
+        var token=adapter.begin(7);adapter.afterUsdt(token);
+        assertThatThrownBy(()->adapter.recorded(token,NO)).isInstanceOf(IllegalStateException.class)
+                .hasMessage("Device cash delta mismatch");
+        verify(fund,never()).bind(any(),any());
+    }
     static final String NO="CTR-DEVICE",TASK="CTA-DEVICE",INC="dab1e5ef-069b-4771-8eab-b0b0661aa1fb";
     static final LocalDateTime AT=LocalDateTime.of(2026,10,12,0,0,0,750000000),WHOLE=AT.withNano(0);
     final ObjectMapper json=new ObjectMapper();

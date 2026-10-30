@@ -173,6 +173,41 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
         """)
     HistoricalReceipt historicalReceipt(@Param("taskNo") String taskNo,@Param("ownerId") long ownerId,@Param("deviceId") long deviceId);
     record HistoricalReceipt(String status,String taskConfigId,String modelName,String clientName,String receiptNo,String proofHash,String earningStatus) { }
+
+    // Reviewed rollback is a read-only exception for two fixed TEST requests. Current reads
+    // must not inherit the older RR snapshot created by authentication/configuration reads.
+    @Select("""
+        SELECT 1 FROM nx_compute_task WHERE task_no=#{taskNo} AND user_id=#{ownerId}
+          AND user_device_id=#{deviceId} AND source_environment='PRODUCTION' AND is_deleted=0
+          AND status IN ('CLAIMED','RUNNING') AND completed_at IS NULL AND proof_consumed_at IS NULL FOR UPDATE
+        """)
+    Integer rollbackUnconsumedTask(@Param("taskNo") String taskNo,@Param("ownerId") long ownerId,@Param("deviceId") long deviceId);
+
+    @Select("SELECT id FROM nx_compute_receipt WHERE task_no=#{taskNo} FOR UPDATE")
+    List<Long> rollbackReceiptEvidence(@Param("taskNo") String taskNo);
+
+    @Select("""
+        SELECT id FROM nx_wallet_ledger WHERE biz_no=#{taskNo}
+          OR biz_no=CONCAT('CTR-',RIGHT(#{taskNo},32)) FOR UPDATE
+        """)
+    List<Long> rollbackLedgerEvidence(@Param("taskNo") String taskNo);
+
+    @Select("""
+        SELECT id FROM nx_earning_event WHERE event_no=CONCAT('EARN-',#{taskNo})
+          OR receipt_no=CONCAT('CTR-',RIGHT(#{taskNo},32)) FOR UPDATE
+        """)
+    List<Long> rollbackEventEvidence(@Param("taskNo") String taskNo);
+
+    @Select("""
+        SELECT id,trace_id traceId,detail_json detailJson,created_at createdAt FROM nx_audit_log
+         WHERE service_name='nexion-backend' AND action='TEST_CLOUD_COMPLETION_ROLLBACK_CONFIRMED'
+          AND resource_type='COMPUTE_TASK' AND resource_id=#{taskNo} AND biz_no=#{taskNo} AND user_id=#{ownerId}
+          AND actor_type='SYSTEM' AND actor_username='test:tasklock-parallel-rollback-20261030'
+          AND result='SUCCESS' AND risk_level='HIGH' AND is_deleted=0 ORDER BY id FOR UPDATE
+        """)
+    List<RollbackReviewRow> rollbackReviews(@Param("taskNo") String taskNo,@Param("ownerId") long ownerId);
+    record RollbackReviewRow(long id,String traceId,String detailJson,LocalDateTime createdAt) { }
+
     String COLUMNS = "task_no taskNo,executor_id executorId,owner_id ownerId,device_id deviceId,instance_no instanceNo,"
             + "task_config_id taskConfigId,next_key_hash nextKeyHash,claim_token claimToken,input_json inputJson,"
             + "input_hash inputHash,model_tag modelTag,model_digest modelDigest,proof_nonce proofNonce,"

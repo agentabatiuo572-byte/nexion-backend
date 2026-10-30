@@ -30,6 +30,18 @@ KIND, SPEC = "TEST_BGE_M3_V1", "UVEL_TEST_BGE_M3_V1"
 HALTED = 78
 IDENTITY = ("ownerId", "deviceId", "instanceNo", "taskConfigId", "executorId", "model", "modelDigest")
 STOP = threading.Event()
+# Only these two TEST requests may use a separately audited rollback adjudication.
+ROLLBACK_REVIEW_TASKS = {
+    "CTA-FDDE9396AE554345A116E4026D5590A4": {
+        "deviceId": 1204, "instanceNo": "DEV-TI-27D1233EBF21434FB85EC6B49D66507F",
+        "originalRequestHash": "3bd943a7efe51ac4e190fe6cc37c075627f615e6479d79097fc57f51c342e54d",
+        "inputHash": "400cf267a947b6e8bf374d1ea61c6013391618505a7b934a16b099853a8fcc6a",
+        "resultHash": "3d47ee75a2c38bd87d4a8d340d60298eb7decf8d15f09e15aef86b62c46a6187"},
+    "CTA-DECD77CE4A6A47029334B35142A3B23D": {
+        "deviceId": 1206, "instanceNo": "NEX-ORD-89A41D4C6261D157C6D20830",
+        "originalRequestHash": "fdbb7d70769efda6050bc09e0a45dfb1d86b4da3376010bf532b2b688725b114",
+        "inputHash": "400cf267a947b6e8bf374d1ea61c6013391618505a7b934a16b099853a8fcc6a",
+        "resultHash": "3d47ee75a2c38bd87d4a8d340d60298eb7decf8d15f09e15aef86b62c46a6187"}}
 
 
 class Halt(Exception):
@@ -154,7 +166,7 @@ class Http:
     def __init__(self, address, token=None, timeout=300, executor=None):
         self.address, self.token, self.timeout, self.executor = address, token, timeout, executor
 
-    def request(self, method, path, body=None, key=None):
+    def request(self, method, path, body=None, key=None, original_next_key=None):
         timeout = self.timeout if path.endswith("/complete") or path == "/api/embed" else 10
         connection = http.client.HTTPConnection(*self.address, timeout=timeout)
         timer = None
@@ -180,6 +192,8 @@ class Http:
                 headers["X-UVEL-Executor-Id"] = self.executor
             if key:
                 headers["Idempotency-Key"] = key
+            if original_next_key:
+                headers["X-UVEL-Original-Next-Key"] = original_next_key
             connection.request(method, path, None if body is None else json_bytes(body), headers)
             response = connection.getresponse()
             raw = response.read(1024 * 1024 + 1)
@@ -237,6 +251,8 @@ class Journal:
             CREATE TABLE IF NOT EXISTS jobs(task_no TEXT PRIMARY KEY, result_hash TEXT, receipt_no TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS rejected_retries(task_no TEXT PRIMARY KEY, original_state_json TEXT NOT NULL,
               original_state_hash TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS rollback_retries(task_no TEXT PRIMARY KEY, original_state_json TEXT NOT NULL,
+              original_state_hash TEXT NOT NULL, review_json TEXT NOT NULL, review_hash TEXT NOT NULL);
         """)
         self.db.commit()
 
@@ -286,7 +302,9 @@ class Journal:
             used = self.db.execute("SELECT 1 FROM calls WHERE operation='REJECTED_RETRY' AND (task_no=? OR request_key=?) LIMIT 1",
                                    (state["taskNo"], key)).fetchone()
             consumed = self.db.execute("SELECT 1 FROM rejected_retries WHERE task_no=?", (state["taskNo"],)).fetchone()
-            require(used is None and consumed is None and not state.get("rejectedRetry"), "REJECTED_RETRY_BUDGET_USED")
+            rollback = self.db.execute("SELECT 1 FROM rollback_retries WHERE task_no=?", (state["taskNo"],)).fetchone()
+            require(used is None and consumed is None and rollback is None and not state.get("rejectedRetry")
+                    and not state.get("rollbackRetry"), "REJECTED_RETRY_BUDGET_USED")
             require(len(calls) == 1 and calls[0] == (state["taskNo"], key, "REJECTED"), "STOP_PENDING_RECONCILIATION")
             self.require_next_confirmed(state)
 
@@ -299,6 +317,40 @@ class Journal:
             self.db.execute("INSERT INTO rejected_retries VALUES(?,?,?)", (state["taskNo"], original.decode(), sha256(original)))
             self.db.execute("INSERT INTO calls(operation,request_key,task_no,request_hash,outcome) VALUES('REJECTED_RETRY',?,?,?,'AUTHORIZED')",
                             ("BGE-COMPLETE-" + sha256(state["taskNo"].encode()), state["taskNo"], sha256(json_bytes(state))))
+            self.db.execute("UPDATE state SET value=? WHERE id=1", (json_bytes(resumed).decode(),))
+        return resumed
+
+    def require_rollback_retry(self, state):
+        expected = ROLLBACK_REVIEW_TASKS.get(state.get("taskNo"))
+        require(state.get("phase") == "UNKNOWN_COMPLETE" and expected is not None
+                and all(state.get("binding", {}).get(key) == expected[key] for key in ("deviceId", "instanceNo"))
+                and all(state.get(key) == expected[key] for key in ("inputHash", "resultHash")), "ROLLBACK_REVIEW_SCOPE_INVALID")
+        key = "BGE-COMPLETE-" + sha256(state["taskNo"].encode())
+        with self.guard:
+            spent = self.db.execute("SELECT 1 FROM rollback_retries WHERE task_no=? UNION ALL SELECT 1 FROM rejected_retries WHERE task_no=?",
+                                    (state["taskNo"], state["taskNo"])).fetchone()
+            used = self.db.execute("SELECT 1 FROM calls WHERE operation IN ('REJECTED_RETRY','ROLLBACK_RETRY') AND (task_no=? OR request_key=?)",
+                                   (state["taskNo"], key)).fetchone()
+            require(spent is None and used is None and not state.get("rollbackRetry") and not state.get("rejectedRetry"),
+                    "ROLLBACK_RETRY_BUDGET_USED")
+            calls = self.db.execute("SELECT task_no,request_key,request_hash,outcome FROM calls WHERE operation='COMPLETE' AND (task_no=? OR request_key=?)",
+                                    (state["taskNo"], key)).fetchall()
+            require(calls == [(state["taskNo"], key, expected["originalRequestHash"], "UNKNOWN")], "ROLLBACK_ORIGINAL_CALL_INVALID")
+            self.require_next_confirmed(state)
+        return expected["originalRequestHash"]
+
+    def reserve_rollback_retry(self, state, review):
+        with self.guard, self.db:
+            require(self.state() == state, "CLAIM_STATE_CHANGED")
+            self.require_rollback_retry(state)
+            validate_rollback_review(review, state)
+            original, evidence = json_bytes(state), json_bytes(review)
+            resumed = {**state, "phase": "ROLLBACK_RETRY_INTENT", "rollbackRetry": True,
+                       "rollbackRecoveryOrigin": state, "rollbackReviewHash": sha256(evidence)}
+            self.db.execute("INSERT INTO rollback_retries VALUES(?,?,?,?,?)",
+                            (state["taskNo"], original.decode(), sha256(original), evidence.decode(), sha256(evidence)))
+            self.db.execute("INSERT INTO calls(operation,request_key,task_no,request_hash,outcome) VALUES('ROLLBACK_RETRY',?,?,?,'AUTHORIZED')",
+                            ("BGE-COMPLETE-" + sha256(state["taskNo"].encode()), state["taskNo"], sha256(evidence)))
             self.db.execute("UPDATE state SET value=? WHERE id=1", (json_bytes(resumed).decode(),))
         return resumed
 
@@ -321,6 +373,21 @@ def binding(data, config):
             and data.get("deploymentScope") == "TEST" and data.get("serverCanonical") is True, "SCOPE_INVALID")
     require(all(type(data.get(k)) is type(v) and data[k] == v for k, v in config.binding.items()), "BINDING_INVALID")
     return {k: data[k] for k in IDENTITY}
+
+
+def validate_rollback_review(data, state):
+    require(isinstance(data, dict) and data.get("executionKind") == KIND and data.get("specVersion") == SPEC
+            and data.get("deploymentScope") == "TEST" and data.get("serverCanonical") is True
+            and all(type(data.get(key)) is type(value) and data[key] == value for key, value in state["binding"].items()),
+            "ROLLBACK_REVIEW_BINDING_INVALID")
+    expected = ROLLBACK_REVIEW_TASKS[state["taskNo"]]
+    require(all(data.get(key) == state[key] for key in ("taskNo", "inputHash", "resultHash"))
+            and data.get("originalRequestHash") == expected["originalRequestHash"]
+            and data.get("completeKeyHash") == sha256(("BGE-COMPLETE-" + sha256(state["taskNo"].encode())).encode())
+            and data.get("nextKeyHash") == sha256(state["nextKey"].encode())
+            and data.get("rollbackConfirmed") is True and type(data.get("maxAttempts")) is int and data["maxAttempts"] == 1
+            and type(data.get("reviewId")) is int and 0 < data["reviewId"] <= 9223372036854775807
+            and hash64(data.get("evidenceSha256")), "ROLLBACK_REVIEW_INVALID")
 
 
 def claim(data, config):
@@ -484,7 +551,7 @@ class Worker:
         require(hash64(state.get("resultHash")) and data["resultHash"] == state["resultHash"], "RECEIPT_RESULT_INVALID")
         return data
 
-    def recover_claimed(self, state, allow_execution, on_resume, rejected=False):
+    def recover_claimed(self, state, allow_execution, on_resume, rejected=False, rollback=False):
         require(state.get("binding") == self.config.binding, "JOURNAL_BINDING_CHANGED")
         data = self.receipt_status(state)
         if data["found"]:
@@ -496,7 +563,15 @@ class Worker:
             print("RECEIPT_RECONCILED", flush=True)
             return True
         require(allow_execution, "STOP_PENDING_RECONCILIATION")
-        if rejected:
+        if rollback:
+            original_hash = self.journal.require_rollback_retry(state)
+            key = "BGE-COMPLETE-" + sha256(state["taskNo"].encode())
+            path = PREFIX + "/tasks/" + state["taskNo"] + "/rollback-review?originalRequestHash=" + original_hash + "&resultHash=" + state["resultHash"]
+            review = envelope(self.backend.request("GET", path, key=key, original_next_key=state["nextKey"]))
+            validate_rollback_review(review, state)
+            # Spend the separate durable budget before reading/recomputing the original manifest.
+            state = self.journal.reserve_rollback_retry(state, review)
+        elif rejected:
             self.journal.require_rejected_retry(state)
         else:
             self.journal.require_unsent_claim(state)
@@ -508,7 +583,7 @@ class Worker:
         require(self.journal.state() == state, "CLAIM_STATE_CHANGED")
         if on_resume:
             on_resume()
-        if rejected:
+        if rejected and not rollback:
             state = self.journal.reserve_rejected_retry(state)
         self.execute(task, state)
         return True
@@ -517,8 +592,16 @@ class Worker:
         state = self.journal.state()
         if state["phase"] in ("IDLE", "NEXT_NOT_SENT"):
             return False
+        if state.get("rollbackRetry") or state["phase"] == "ROLLBACK_RETRY_INTENT":
+            require(state.get("binding") == self.config.binding, "JOURNAL_BINDING_CHANGED")
+            data = self.receipt(state)
+            self.journal.confirm(state, data)
+            print("RECEIPT_RECONCILED", flush=True)
+            return True
         if state["phase"] == "CLAIMED":
             return self.recover_claimed(state, claimed_execution, on_resume)
+        if state["phase"] == "UNKNOWN_COMPLETE" and state.get("taskNo") in ROLLBACK_REVIEW_TASKS:
+            return self.recover_claimed(state, claimed_execution, on_resume, rejected=True, rollback=True)
         if state["phase"] in ("REJECTED_COMPLETE", "UNKNOWN_COMPLETE"):
             return self.recover_claimed(state, claimed_execution, on_resume, rejected=True)
         require(state["phase"] in ("COMPLETE_INTENT", "REJECTED_RETRY_INTENT"), "STOP_PENDING_RECONCILIATION")
@@ -800,7 +883,7 @@ class Fleet:
         with entry.gate:
             state = entry.worker.journal.state()
             confirmed = state.get("binding") == entry.worker.config.binding
-            active_phase = state["phase"] in ("CLAIMED", "REJECTED_RETRY_INTENT")
+            active_phase = state["phase"] in ("CLAIMED", "REJECTED_RETRY_INTENT", "ROLLBACK_RETRY_INTENT")
             idle = state["phase"] == "IDLE" and not entry.running
             healthy_phase = idle or (entry.running and active_phase and not entry.blocked)
             if not entry.present or entry.health_running or not confirmed or not healthy_phase or self.stop.is_set():
@@ -836,14 +919,14 @@ class Fleet:
     def ready(self, entry):
         with entry.gate:
             phase = entry.worker.journal.state()["phase"]
-            reconcile = phase in ("COMPLETE_INTENT", "UNKNOWN_COMPLETE", "CLAIMED", "REJECTED_COMPLETE", "REJECTED_RETRY_INTENT")
+            reconcile = phase in ("COMPLETE_INTENT", "UNKNOWN_COMPLETE", "CLAIMED", "REJECTED_COMPLETE", "REJECTED_RETRY_INTENT", "ROLLBACK_RETRY_INTENT")
             return (not self.stop.is_set() and not entry.running and not entry.health_running
                     and (reconcile or (entry.present and not entry.blocked)) and time.monotonic() >= entry.due)
 
     def tick(self, entry):
         with entry.gate:
             phase = entry.worker.journal.state()["phase"]
-            reconcile = phase in ("COMPLETE_INTENT", "UNKNOWN_COMPLETE", "CLAIMED", "REJECTED_COMPLETE", "REJECTED_RETRY_INTENT")
+            reconcile = phase in ("COMPLETE_INTENT", "UNKNOWN_COMPLETE", "CLAIMED", "REJECTED_COMPLETE", "REJECTED_RETRY_INTENT", "ROLLBACK_RETRY_INTENT")
             if not self.ready(entry):
                 return
             generation = entry.generation
