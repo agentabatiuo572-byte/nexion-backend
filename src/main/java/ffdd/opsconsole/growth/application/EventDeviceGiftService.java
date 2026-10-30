@@ -53,7 +53,7 @@ public class EventDeviceGiftService {
                     INSERT INTO nx_user_device(user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
                       generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,ownership_status,source_channel,
                       source_environment,run_id,status,hashrate,daily_usdt,daily_nex,last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,is_deleted)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,'OWNED','PROMOTION_GIFT','PRODUCTION','','ACTIVE',?,?,?,NOW(6),NOW(6),NOW(6),0,0,0)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,'OWNED','PROMOTION_GIFT','PRODUCTION','','ACTIVE',?,?,?,NOW(),NOW(),NOW(),0,0,0)
                     """, userId, null, product.get("id"), productNo, product.get("tier"), instance, product.get("name"), product.get("product_type"),
                     product.get("generation"), product.get("gpu_model"), product.get("vram_total_gb"), PromotionNativeContractResolver.powerWatts(sku.get("power_text")),
                     sku.get("datacenter"), product.get("hashrate"), product.get("estimated_daily_usdt"), product.get("daily_nex")));

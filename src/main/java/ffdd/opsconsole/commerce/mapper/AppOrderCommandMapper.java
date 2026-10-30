@@ -445,7 +445,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                    CASE WHEN o.quantity > 0 THEN o.amount_usdt/o.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
-                   NOW(6),NOW(6),NOW(6),0,0,NOW(6),NOW(6),0
+                   NOW(),NOW(),NOW(),0,0,NOW(),NOW(),0
               FROM nx_order o
               JOIN nx_user u ON u.id=o.user_id AND u.sandbox=0
               JOIN nx_product p ON p.id=o.product_id AND p.is_deleted=0
@@ -478,7 +478,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                    CASE WHEN oi.quantity > 0 THEN oi.line_amount_usdt/oi.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
-                   NOW(6),NOW(6),NOW(6),0,0,NOW(6),NOW(6),0
+                   NOW(),NOW(),NOW(),0,0,NOW(),NOW(),0
               FROM nx_order o
               JOIN nx_user u ON u.id=o.user_id AND u.sandbox=0
               JOIN nx_order_item oi ON oi.order_no=o.order_no AND oi.product_id=#{productId}

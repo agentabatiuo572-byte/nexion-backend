@@ -109,8 +109,8 @@ class PhoneActivationCapacityMySqlTest {
         jdbc.execute("ALTER TABLE nx_trial_claim ADD COLUMN settled_at DATETIME(6) NULL");
         // Production delivery allocates IDs too; keep the explicit phone fixture at 11 separate.
         jdbc.execute("ALTER TABLE nx_user_device AUTO_INCREMENT=1000");
-        jdbc.execute("CREATE TABLE nx_admin_device_sku(sku_id VARCHAR(64),power_text VARCHAR(40),datacenter VARCHAR(60),is_deleted INT DEFAULT 0)");
-        jdbc.update("INSERT INTO nx_admin_device_sku VALUES('capacity-box','120 W','fixture DC',0)");
+        jdbc.execute("CREATE TABLE nx_admin_device_sku(sku_id VARCHAR(64),power_text VARCHAR(40),datacenter VARCHAR(60),is_deleted INT DEFAULT 0,gpu VARCHAR(64))");
+        jdbc.update("INSERT INTO nx_admin_device_sku(sku_id,power_text,datacenter,is_deleted) VALUES('capacity-box','120 W','fixture DC',0)");
         jdbc.execute("CREATE TABLE nx_compute_task(user_id BIGINT,user_device_id BIGINT,status VARCHAR(32),"
                 + "source_environment VARCHAR(16) DEFAULT 'PRODUCTION',is_deleted INT DEFAULT 0)");
         // Only the columns read by canonical capacity SQL; no promotion application writes run here.
@@ -373,6 +373,40 @@ class PhoneActivationCapacityMySqlTest {
         jdbc.update("INSERT INTO nx_order_item(order_no,product_id,product_name,quantity,unit_price_usdt,line_amount_usdt) "
                 + "VALUES(?,2,'Synthetic share',3,1,3)", "ORDER-" + user);
         assertCapacityKeepReservations(user, 3);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "false,1793373027.100000", "false,1793373027.500000", "false,1793373027.999999",
+            "true,1793373027.100000", "true,1793373027.500000", "true,1793373027.999999"})
+    void walletFulfillmentNeverRoundsASecondPrecisionLifecycleIntoTheFuture(boolean bundled, String clock) {
+        long user=user(false);
+        order(user,2,bundled?"BUNDLE":"SINGLE","COMPLETED","ACTIVATED");
+        if(bundled) {
+            jdbc.update("UPDATE nx_order SET quantity=2,item_count=2 WHERE order_no=?","ORDER-"+user);
+            jdbc.update("INSERT INTO nx_order_item(order_no,product_id,product_name,quantity,unit_price_usdt,line_amount_usdt) "
+                    + "VALUES(?,2,'Synthetic share',1,1,1)","ORDER-"+user);
+            orderItem(user,1);
+        }
+        transaction.executeWithoutResult(status -> {
+            jdbc.execute("SET timestamp="+clock);
+            try {
+                var now=jdbc.queryForObject("SELECT NOW(6)",java.time.LocalDateTime.class);
+                assertThat(now.getNano()).isGreaterThan(0);
+                String instance="PAID-SHARE-"+user;
+                int inserted=bundled?paymentMapper.insertWalletDevice("ORDER-"+user,user,2L,instance,0)
+                        :paymentMapper.insertDevelopmentDevice("ORDER-"+user,user,instance,0);
+                assertThat(inserted).isEqualTo(1);
+                var purchased=jdbc.queryForObject("SELECT purchased_at FROM nx_user_device WHERE instance_no=?",
+                        java.time.LocalDateTime.class,instance);
+                var activated=jdbc.queryForObject("SELECT activated_at FROM nx_user_device WHERE instance_no=?",
+                        java.time.LocalDateTime.class,instance);
+                assertThat(purchased).isBeforeOrEqualTo(now);
+                assertThat(activated).isBeforeOrEqualTo(now);
+                assertThat(purchased.getNano()).isZero();
+                System.out.println("WALLET_LIFECYCLE_PRECISION bundled="+bundled+" now="+now+" purchased="+purchased+" activated="+activated);
+            } finally { jdbc.execute("SET timestamp=0"); }
+        });
     }
 
     @org.junit.jupiter.params.ParameterizedTest
