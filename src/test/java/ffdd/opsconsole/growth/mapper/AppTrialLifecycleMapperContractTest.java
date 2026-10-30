@@ -9,6 +9,19 @@ import org.junit.jupiter.api.Test;
 class AppTrialLifecycleMapperContractTest {
 
     @Test
+    void bothClaimReadsIncludePersistedEndEvidence() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/growth/mapper/AppTrialLifecycleMapper.java"));
+        String lock = source.substring(source.indexOf("SELECT id,user_id userId,claim_no claimNo,status"),
+                source.indexOf("TrialRow lockTrial"));
+        String read = source.substring(source.indexOf("SELECT id,user_id userId,claim_no claimNo,status",
+                source.indexOf("TrialRow lockTrial")), source.indexOf("TrialRow trial"));
+
+        assertThat(lock).contains("cancel_reason cancelReason", "closed_at closedAt");
+        assertThat(read).contains("cancel_reason cancelReason", "closed_at closedAt");
+    }
+
+    @Test
     void purchasedTrialDeviceSnapshotsCompleteAuthoritativeSkuSpecifications() throws Exception {
         String source = Files.readString(Path.of(
                 "src/main/java/ffdd/opsconsole/growth/mapper/AppTrialLifecycleMapper.java"));

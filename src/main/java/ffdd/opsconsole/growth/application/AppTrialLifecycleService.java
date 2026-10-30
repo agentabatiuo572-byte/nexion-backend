@@ -600,6 +600,8 @@ public class AppTrialLifecycleService {
         result.put("sourceEnvironment", "PRODUCTION");
         result.put("runId", "");
         result.put("serverNowEpochMs", now.atZone(BUSINESS_ZONE).toInstant().toEpochMilli());
+        result.put("endReason", row == null ? null : endReason(row));
+        result.put("finishedAtEpochMs", row == null ? null : epochMillis(row.closedAt()));
         if (row == null) {
             result.put("state", "ELIGIBLE");
             boolean canStart = productAvailable && trialGateEnabled && phaseOpen && !riskBlocked && quotaAvailable && capacityAvailable;
@@ -706,6 +708,15 @@ public class AppTrialLifecycleService {
 
     private Long epochMillis(LocalDateTime value) {
         return value == null ? null : value.atZone(BUSINESS_ZONE).toInstant().toEpochMilli();
+    }
+
+    private String endReason(TrialRow row) {
+        String state = normalize(row.status());
+        if (!List.of("CANCELLED", "FAILED").contains(state)) return null;
+        if ("auto_end".equals(row.cancelReason()) || "auto_settlement_window_expired".equals(row.cancelReason())) {
+            return "expired";
+        }
+        return "CANCELLED".equals(state) ? "cancelled" : null;
     }
 
     private String eligibilityReason(

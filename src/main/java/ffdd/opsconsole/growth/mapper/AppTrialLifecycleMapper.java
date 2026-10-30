@@ -66,7 +66,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
                    shadow_accrued_usdt shadowAccruedUsdt,shadow_accrued_nex shadowAccruedNex,
                    remainder_usdt remainderUsdt,discount_usdt discountUsdt,
                    settlement_amount_usdt settlementAmountUsdt,cooldown_until cooldownUntil,
-                   version
+                   version,cancel_reason cancelReason,closed_at closedAt
               FROM nx_trial_claim
              WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1 FOR UPDATE
             """)
@@ -80,7 +80,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
                    shadow_accrued_usdt shadowAccruedUsdt,shadow_accrued_nex shadowAccruedNex,
                    remainder_usdt remainderUsdt,discount_usdt discountUsdt,
                    settlement_amount_usdt settlementAmountUsdt,cooldown_until cooldownUntil,
-                   version
+                   version,cancel_reason cancelReason,closed_at closedAt
               FROM nx_trial_claim
              WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1
             """)
@@ -466,7 +466,23 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             BigDecimal offsetCapUsdt, BigDecimal priceUsdt, String quotaSnapshot,
             LocalDateTime claimedAt, LocalDateTime expiresAt,
             BigDecimal shadowAccruedUsdt, BigDecimal shadowAccruedNex, BigDecimal remainderUsdt,
-            BigDecimal discountUsdt, BigDecimal settlementAmountUsdt, LocalDateTime cooldownUntil, Long version) {
+            BigDecimal discountUsdt, BigDecimal settlementAmountUsdt, LocalDateTime cooldownUntil, Long version,
+            String cancelReason, LocalDateTime closedAt) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public TrialRow {}
+
+        public TrialRow(
+                Long id, Long userId, String claimNo, String status, Long userDeviceId, Long paymentMethodId,
+                String deviceName, Integer durationDays, BigDecimal dailyUsdt, BigDecimal dailyNex,
+                BigDecimal offsetCapUsdt, BigDecimal priceUsdt, String quotaSnapshot,
+                LocalDateTime claimedAt, LocalDateTime expiresAt,
+                BigDecimal shadowAccruedUsdt, BigDecimal shadowAccruedNex, BigDecimal remainderUsdt,
+                BigDecimal discountUsdt, BigDecimal settlementAmountUsdt, LocalDateTime cooldownUntil, Long version) {
+            this(id, userId, claimNo, status, userDeviceId, paymentMethodId, deviceName, durationDays,
+                    dailyUsdt, dailyNex, offsetCapUsdt, priceUsdt, quotaSnapshot, claimedAt, expiresAt,
+                    shadowAccruedUsdt, shadowAccruedNex, remainderUsdt, discountUsdt, settlementAmountUsdt,
+                    cooldownUntil, version, null, null);
+        }
     }
 
     record ConversionProduct(Long id, String productNo, String name, String tier, BigDecimal priceUsdt,
