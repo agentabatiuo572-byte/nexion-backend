@@ -158,9 +158,11 @@ class E5ReadEndpointsMySqlIntegrationTest {
                 assertThat(mapper.findDevice(4L).runtimeStatus()).isEqualTo("OFFLINE");
                 assertThat(mapper.findDevice(2L).status()).isEqualTo("BUSY");
                 assertThat(mapper.findDevice(2L).activeTaskNo()).isEqualTo("task-2");
-                assertThat(mapper.countActiveDevicesByUser(7L)).isEqualTo(9);
-                assertThat(mapper.findDevice(2L).activeDevicesForUser()).isEqualTo(9);
+                assertThat(mapper.countActiveDevicesByUser(7L)).isEqualTo(11);
+                assertThat(mapper.findDevice(2L).activeDevicesForUser()).isEqualTo(11);
                 assertThat(mapper.findDevice(2L).userDeviceSlotNo()).isEqualTo(2);
+                assertThat(mapper.findDevice(9L).userDeviceSlotNo()).isEqualTo(9);
+                assertThat(mapper.findDevice(10L).userDeviceSlotNo()).isEqualTo(10);
                 assertThat(mapper.listUserDevices(7L, 100L).stream().filter(d -> d.id() == 2L).findFirst().orElseThrow()
                         .runtimeStatus()).isEqualTo("OFFLINE");
                 AppNetworkRegionMapper globe = regionMapper(connection);
@@ -176,7 +178,7 @@ class E5ReadEndpointsMySqlIntegrationTest {
                 assertThat(mapper.e5FleetObservabilityMetrics().persistentOffline1h()).isEqualTo(1);
                 assertThat(mapper.datacenterSummaries().get(0).onlineDevices()).isEqualTo(5);
                 assertThat(globe.regions(7L).get(0).activeNodes()).isEqualTo(4);
-                assertThat(mapper.countActiveDevicesByUser(7L)).isEqualTo(9);
+                assertThat(mapper.countActiveDevicesByUser(7L)).isEqualTo(11);
                 assertThat(mapper.findDevice(2L).status()).isEqualTo("BUSY");
                 assertThat(mapper.findDevice(2L).activeTaskNo()).isEqualTo("task-2");
             } finally {

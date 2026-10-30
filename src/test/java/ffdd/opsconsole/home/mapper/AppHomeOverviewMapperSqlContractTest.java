@@ -64,8 +64,19 @@ class AppHomeOverviewMapperSqlContractTest {
             assertTrue(sql.contains("d.activated_at IS NOT NULL"));
             assertTrue(sql.contains("UPPER(d.ownership_status) = 'OWNED'"));
             assertTrue(sql.contains("d.deactivated_at IS NULL"));
-            assertTrue(sql.contains("d.pending_deactivate = 0"));
+            assertTrue("activeDevices".equals(method)
+                    ? !sql.contains("pending_deactivate") : sql.contains("d.pending_deactivate = 0"));
         }
+    }
+
+    @Test
+    void canonicalSlotsIncludeCloudAndPendingWithFixedSixCap() throws Exception {
+        String slots = select("activeSlotCount");
+        assertTrue(slots.contains("d.activated_at IS NOT NULL"));
+        assertTrue(slots.contains("d.deactivated_at IS NULL"));
+        assertTrue(!slots.contains("pending_deactivate"));
+        assertTrue(!slots.contains("device_type"));
+        assertTrue(select("deviceSlotCap").equals("SELECT 6"));
     }
 
     @Test

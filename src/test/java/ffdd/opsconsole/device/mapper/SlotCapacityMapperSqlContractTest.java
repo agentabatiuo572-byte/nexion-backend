@@ -48,6 +48,6 @@ class SlotCapacityMapperSqlContractTest {
                 .doesNotContain("SHARE", "device_type")
                 .contains("activated_atISNOTNULL")
                 .contains("deactivated_atISNULL")
-                .contains("pending_deactivate=0");
+                .doesNotContain("pending_deactivate");
     }
 }

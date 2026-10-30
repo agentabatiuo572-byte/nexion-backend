@@ -7,6 +7,7 @@ import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
 import ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper;
+import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
 import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
 import ffdd.opsconsole.device.infrastructure.MybatisDeviceOpsRepository;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -65,6 +66,7 @@ class PhoneActivationCapacityMySqlTest {
     private DeviceOpsMapper opsMapper;
     private AppOrderCommandMapper paymentMapper;
     private AppHomeOverviewMapper homeMapper;
+    private AppTaskAssignmentMapper taskMapper;
     private AppCanonicalBoundaryService canonicalService;
     private MybatisDeviceOpsRepository deviceRepository;
     private PhoneActivationCapacityContract service;
@@ -135,6 +137,7 @@ class PhoneActivationCapacityMySqlTest {
         config.addMapper(AppTradeinMapper.class);
         config.addMapper(AppOrderCommandMapper.class);
         config.addMapper(AppHomeOverviewMapper.class);
+        config.addMapper(AppTaskAssignmentMapper.class);
         var session = new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));
         mapper = session.getMapper(CanonicalStateMapper.class);
         bundle = session.getMapper(AppBundleOrderMapper.class);
@@ -143,6 +146,7 @@ class PhoneActivationCapacityMySqlTest {
         opsMapper = session.getMapper(DeviceOpsMapper.class);
         paymentMapper = session.getMapper(AppOrderCommandMapper.class);
         homeMapper = session.getMapper(AppHomeOverviewMapper.class);
+        taskMapper = session.getMapper(AppTaskAssignmentMapper.class);
         var platform = mock(PlatformConfigFacade.class);
         var idempotency = mock(AdminIdempotencyService.class);
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
@@ -315,6 +319,50 @@ class PhoneActivationCapacityMySqlTest {
         jdbc.update("UPDATE nx_user_device SET status='DEACTIVATED',deactivated_at=NOW() WHERE id=?", cloud);
         assertThat(mapper.activeDeviceCount(user)).isEqualTo(5);
         transaction.executeWithoutResult(status -> service.requireCapacity(user, null));
+    }
+
+    @Test void pendingDeactivationKeepsTheSixthSlotUntilTheOriginalTaskActuallyStops() {
+        long user = user(false);
+        for (int i=0; i<5; i++) device(user);
+        long pending = device(user);
+        jdbc.update("UPDATE nx_user_device SET device_type='SHARE',product_code='cloud-share' WHERE id=?", pending);
+        long inventory = device(user);
+        jdbc.update("UPDATE nx_user_device SET status='INACTIVE',activated_at=NULL WHERE id=?", inventory);
+        jdbc.update("INSERT INTO nx_compute_task(user_id,user_device_id,status) VALUES(?,?,'RUNNING')", user, pending);
+        transaction.executeWithoutResult(status -> {
+            var deferred = canonicalService.deactivateAfterTask(user, pending, 0L, "pending-sixth-" + user);
+            assertThat(deferred.getCode()).as(deferred.getMessage()).isZero();
+            assertThat(deferred.getData()).containsEntry("status", "PENDING_DEACTIVATE");
+            assertThat(jdbc.queryForObject("SELECT status FROM nx_user_device WHERE id=?", String.class, pending)).isEqualTo("ACTIVE");
+            assertThat(jdbc.queryForObject("SELECT pending_deactivate FROM nx_user_device WHERE id=?", Integer.class, pending)).isEqualTo(1);
+            assertThat(mapper.lockActiveDeviceCount(user, false)).isEqualTo(6);
+            assertThat(bundle.lockActiveDeviceCount(user)).isEqualTo(6);
+            assertThat(tradeinMapper.lockActiveDeviceCount(user)).isEqualTo(6);
+            assertThat(opsMapper.countActiveDevicesByUser(user)).isEqualTo(6);
+            assertThat(promotionMapper.occupiedDeviceSlots(user)).isEqualTo(6);
+            assertThat(deviceRepository.countOccupiedSlotsForE5Activation(user)).isEqualTo(6);
+            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+            assertThat(homeMapper.activeSlotCount(user)).isEqualTo(6);
+            assertThat(homeMapper.activeDevices(user, false)).isEqualTo(6);
+            assertFull(user);
+            var seventh = canonicalService.activateDevice(user, inventory, 0L, 6, "seventh-pending-" + user);
+            assertThat(seventh.getCode()).isEqualTo(409);
+            assertThat(seventh.getMessage()).isEqualTo("DEVICE_SLOT_CAP_EXCEEDED");
+            assertThat(mapper.activateOwnedDeviceCas(user, inventory, 0L, 6)).isZero();
+            assertThat(jdbc.queryForObject("SELECT status FROM nx_compute_task WHERE user_id=? AND user_device_id=?",
+                    String.class, user, pending)).isEqualTo("RUNNING");
+        });
+        // Synthetic completion observation; run the same lifecycle SQL used after a real task settles.
+        jdbc.update("UPDATE nx_compute_task SET status='COMPLETED' WHERE user_id=? AND user_device_id=?", user, pending);
+        transaction.executeWithoutResult(status -> {
+            assertThat(mapper.lockUser(user)).isNotNull();
+            assertThat(mapper.hasActiveTask(user, pending)).isFalse();
+            assertThat(taskMapper.deactivatePendingDevice(user, pending, java.time.LocalDateTime.now())).isEqualTo(1);
+            assertThat(mapper.lockActiveDeviceCount(user, false)).isEqualTo(5);
+            var sixth = canonicalService.activateDevice(user, inventory, 0L, 6, "sixth-after-completion-" + user);
+            assertThat(sixth.getCode()).as(sixth.getMessage()).isZero();
+            assertThat(sixth.getData()).containsEntry("activeCount", 6);
+        });
     }
 
     @Test void cloudShareOrdersReserveEveryHeaderOrItemUnit() {

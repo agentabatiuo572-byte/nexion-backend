@@ -42,7 +42,7 @@ public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReser
              WHERE user_id=#{userId} AND is_deleted=0 AND UPPER(ownership_status)='OWNED'
                AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
                AND activated_at IS NOT NULL
-               AND deactivated_at IS NULL AND pending_deactivate=0
+               AND deactivated_at IS NULL
             """)
     int activeDeviceCount(@Param("userId") Long userId);
 

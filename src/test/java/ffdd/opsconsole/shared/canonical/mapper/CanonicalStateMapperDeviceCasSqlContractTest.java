@@ -37,7 +37,7 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
         assertThat(mapper).contains(
                 "UPPER(ownership_status) = 'OWNED'",
                 "UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')",
-                "d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate = 0",
+                "d.activated_at IS NOT NULL AND d.deactivated_at IS NULL",
                 "int reservedDeviceOrderCount",
                 "nx_order_item",
                 "product_type",
@@ -70,8 +70,8 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
             assertThat(sql).as(methodName).contains(
                     "UPPER(d.ownership_status)", "'OWNED'",
                     "UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')",
-                    "d.activated_at IS NOT NULL", "d.deactivated_at IS NULL", "d.pending_deactivate")
-                    .doesNotContain("device_type");
+                    "d.activated_at IS NOT NULL", "d.deactivated_at IS NULL")
+                    .doesNotContain("device_type", "pending_deactivate");
         }
 
         var activation = CanonicalStateMapper.class.getMethod(
@@ -80,8 +80,8 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
                 .replaceAll("\\s+", " ");
         assertThat(activationSql).contains(
                 "UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')",
-                "d.activated_at IS NOT NULL", "d.deactivated_at IS NULL", "d.pending_deactivate = 0")
-                .doesNotContain("device_type");
+                "d.activated_at IS NOT NULL", "d.deactivated_at IS NULL")
+                .doesNotContain("device_type", "pending_deactivate");
     }
 
     @Test
