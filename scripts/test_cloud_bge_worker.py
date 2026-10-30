@@ -83,7 +83,10 @@ class Backend:
             self.complete_body = body
             if self.complete_error:
                 raise self.complete_error
+            self.found = True
             return ok(self.receipt())
+        if path.endswith("/manifest"):
+            return ok({**self.task, "resumeAllowed": True, "nextKeyHash": w.sha256(key.encode())})
         if path.endswith("/receipt"):
             return ok(self.receipt())
         raise AssertionError(path)
@@ -92,7 +95,7 @@ class Backend:
         state = self.journal.state()
         return {**identity(self.cfg), "taskNo": self.task["taskNo"], "inputHash": self.task["inputHash"],
                 "found": self.found, "status": "COMPLETED" if self.found else "RUNNING",
-                "resultHash": state.get("resultHash"), "receiptNo": "CTR-" + "A" * 32 if self.found else None}
+                "resultHash": state.get("resultHash") if self.found else None, "receiptNo": "CTR-" + "A" * 32 if self.found else None}
 
 
 class WorkerTests(unittest.TestCase):
@@ -110,6 +113,147 @@ class WorkerTests(unittest.TestCase):
     def tearDown(self):
         self.journal.db.close()
         self.tmp.cleanup()
+
+    def interrupted_claim(self, with_hash=True):
+        state = {"phase": "NEXT_INTENT", "nextKey": "BGE-NEXT-" + "d" * 32, "binding": self.cfg.binding}
+        data = self.worker.mutate("NEXT", "/next-task", {}, state["nextKey"], state)
+        state.update(phase="CLAIMED", taskNo=data["taskNo"], inputHash=data["inputHash"])
+        if with_hash:
+            state["resultHash"] = w.sha256(w.artifact(self.ollama.vectors, len(data["inputTexts"])))
+        self.journal.set(state)
+        self.backend.found = False
+        self.backend.calls.clear()
+        return state
+
+    def test_claimed_resume_reads_original_manifest_and_recomputes_before_first_complete(self):
+        state = self.interrupted_claim()
+        self.assertEqual(self.worker.run(once=True), 0)
+        paths = [path for _, path, _ in self.backend.calls]
+        self.assertEqual(paths[:2], [w.PREFIX + "/tasks/" + state["taskNo"] + "/receipt",
+                                   w.PREFIX + "/tasks/" + state["taskNo"] + "/manifest"])
+        self.assertFalse(any(path.endswith("/next-task") for path in paths))
+        self.assertEqual(sum(path.endswith("/complete") for path in paths), 1)
+        self.assertEqual(self.backend.complete_body["resultHash"], state["resultHash"])
+        self.assertEqual(self.journal.state()["phase"], "IDLE")
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
+
+    def test_claimed_without_prior_hash_performs_real_inference_and_first_completion(self):
+        self.interrupted_claim(with_hash=False)
+        self.assertTrue(self.worker.recover())
+        self.assertTrue(any(path == "/api/embed" for _, path, _ in self.ollama.calls))
+        self.assertTrue(w.hash64(self.backend.complete_body["resultHash"]))
+
+    def test_claimed_positive_receipt_confirms_without_manifest_inference_or_complete(self):
+        state = self.interrupted_claim()
+        self.backend.found = True
+        self.assertTrue(self.worker.recover())
+        self.assertEqual([method for method, _, _ in self.backend.calls], ["GET"])
+        self.assertEqual(self.ollama.calls, [])
+        self.assertEqual(self.journal.state()["phase"], "IDLE")
+        self.assertEqual(self.journal.db.execute("SELECT result_hash FROM jobs").fetchone()[0], state["resultHash"])
+
+    def test_claimed_positive_receipt_without_local_hash_requires_complete_canonical_receipt(self):
+        self.interrupted_claim(with_hash=False)
+        receipt = self.backend.receipt
+        self.backend.receipt = lambda: {**receipt(), "found": True, "status": "COMPLETED", "resultHash": "e" * 64,
+                                       "receiptNo": "CTR-" + "A" * 32}
+        self.assertTrue(self.worker.recover())
+        self.assertEqual(self.journal.db.execute("SELECT result_hash FROM jobs").fetchone()[0], "e" * 64)
+        self.assertEqual(self.ollama.calls, [])
+        self.assertEqual(len(self.backend.calls), 1)
+
+    def test_claimed_positive_receipt_cannot_replace_a_different_persisted_result_hash(self):
+        state = self.interrupted_claim()
+        receipt = self.backend.receipt
+        self.backend.receipt = lambda: {**receipt(), "found": True, "status": "COMPLETED", "resultHash": "f" * 64,
+                                       "receiptNo": "CTR-" + "A" * 32}
+        with self.assertRaisesRegex(w.Halt, "RECEIPT_RESULT_INVALID"):
+            self.worker.recover()
+        self.assertEqual(self.journal.state(), state)
+        self.assertEqual(self.ollama.calls, [])
+        self.assertEqual(len(self.backend.calls), 1)
+
+    def test_claimed_any_complete_intent_blocks_resume_even_when_receipt_is_negative(self):
+        for outcome in ("INTENT", "NOT_SENT", "REJECTED", "UNKNOWN", "CONFIRMED"):
+            with self.subTest(outcome=outcome):
+                self.journal.db.execute("DELETE FROM calls")
+                self.journal.db.commit()
+                state = self.interrupted_claim()
+                call = self.journal.intent("COMPLETE", "BGE-COMPLETE-" + w.sha256(state["taskNo"].encode()), state["taskNo"], {})
+                self.journal.outcome(call, outcome)
+                with self.assertRaisesRegex(w.Halt, "CLAIM_COMPLETE_ALREADY_ATTEMPTED"):
+                    self.worker.recover()
+                self.assertEqual(len(self.backend.calls), 1)
+                self.assertTrue(self.backend.calls[0][1].endswith("/receipt"))
+                self.assertEqual(self.journal.state(), state)
+                self.assertEqual(self.ollama.calls, [])
+
+    def test_claimed_missing_or_unconfirmed_next_cannot_resume_from_negative_receipt(self):
+        state = self.interrupted_claim()
+        self.journal.db.execute("UPDATE calls SET outcome='UNKNOWN' WHERE operation='NEXT'")
+        self.journal.db.commit()
+        with self.assertRaisesRegex(w.Halt, "CLAIM_NEXT_NOT_CONFIRMED"):
+            self.worker.recover()
+        self.assertEqual(len(self.backend.calls), 1)
+        self.assertEqual(self.journal.state(), state)
+
+    def test_claimed_wrong_binding_key_input_or_expired_manifest_never_infers_or_completes(self):
+        state = self.interrupted_claim()
+        request = self.backend.request
+        for changes in ({"deviceId": 93}, {"nextKeyHash": "f" * 64}, {"inputHash": "f" * 64},
+                        {"modelDigest": "sha256:" + "f" * 64}, {"leaseExpiresAt": 1}, {"proofExpiresAt": 1},
+                        {"resumeAllowed": False}):
+            with self.subTest(changes=changes):
+                def changed(method, path, body=None, key=None):
+                    response = request(method, path, body, key)
+                    if path.endswith("/manifest"):
+                        response["data"].update(changes)
+                    return response
+                self.backend.request = changed
+                self.backend.calls.clear()
+                with self.assertRaises(w.Halt):
+                    self.worker.recover()
+                self.assertEqual(self.journal.state(), state)
+                self.assertEqual(self.ollama.calls, [])
+                self.assertFalse(any(method == "POST" for method, _, _ in self.backend.calls))
+
+    def test_claimed_recomputed_hash_mismatch_preserves_old_hash_and_never_completes(self):
+        state = self.interrupted_claim()
+        self.ollama.vectors[0][0] = 0.5
+        with self.assertRaisesRegex(w.Halt, "CLAIM_RESULT_HASH_CHANGED"):
+            self.worker.recover()
+        self.assertEqual(self.journal.state(), state)
+        self.assertFalse(any(path.endswith("/complete") for _, path, _ in self.backend.calls))
+
+    def test_failed_claimed_recovery_stops_its_real_single_mode_heartbeat_thread(self):
+        self.interrupted_claim()
+        self.ollama.vectors[0][0] = 0.5
+        worker = w.Worker(self.cfg, self.backend, self.ollama, self.journal, threading.Event())
+        with self.assertRaisesRegex(w.Halt, "CLAIM_RESULT_HASH_CHANGED"):
+            worker.run(once=True)
+        self.assertIsNotNone(worker.heartbeat_thread)
+        self.assertFalse(worker.heartbeat_thread.is_alive())
+
+    def test_claimed_revoked_manifest_only_reads_and_cannot_resume(self):
+        state = self.interrupted_claim()
+        request = self.backend.request
+        def revoked(method, path, body=None, key=None):
+            if path.endswith("/manifest"):
+                raise w.Rejected("BACKEND_REJECTED_403")
+            return request(method, path, body, key)
+        self.backend.request = revoked
+        with self.assertRaises(w.Rejected):
+            self.worker.recover()
+        self.assertEqual(self.journal.state(), state)
+        self.assertEqual(self.ollama.calls, [])
+        self.assertFalse(any(method == "POST" for method, _, _ in self.backend.calls))
+
+    def test_claimed_removed_instance_only_reads_receipt_and_does_not_request_manifest(self):
+        self.interrupted_claim()
+        with self.assertRaisesRegex(w.Halt, "STOP_PENDING_RECONCILIATION"):
+            self.worker.recover(claimed_execution=False)
+        self.assertEqual(len(self.backend.calls), 1)
+        self.assertEqual(self.ollama.calls, [])
 
     def test_real_vector_serialization_and_normal_confirmation(self):
         self.assertEqual(self.worker.run(once=True), 0)
@@ -614,6 +758,80 @@ class FleetTests(unittest.TestCase):
         self.assertTrue(entry.blocked)
         self.assertTrue(entry.worker.stop.is_set())
         self.assertEqual(backend.calls, calls)
+
+    def test_fleet_restored_claimed_quarantine_lifts_only_after_original_manifest_authorization(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        state = {"phase": "NEXT_INTENT", "nextKey": "BGE-NEXT-" + "d" * 32, "binding": entry.worker.config.binding}
+        data = entry.worker.mutate("NEXT", "/next-task", {}, state["nextKey"], state)
+        state.update(phase="CLAIMED", taskNo=data["taskNo"], inputHash=data["inputHash"],
+                     resultHash=w.sha256(w.artifact(self.fleet.ollama.vectors, len(data["inputTexts"]))))
+        entry.worker.journal.set(state)
+        entry.blocked = True
+        entry.worker.stop.set()
+        backend.calls.clear()
+        backend.found = False
+        request = backend.request
+        def observe_authorization(method, path, body=None, key=None):
+            if path.endswith("/manifest"):
+                self.assertTrue(entry.blocked)
+                self.assertTrue(entry.worker.stop.is_set())
+            if method == "POST":
+                self.assertFalse(entry.blocked)
+                self.assertFalse(entry.worker.stop.is_set())
+            return request(method, path, body, key)
+        backend.request = observe_authorization
+        self.fleet.tick(entry)
+        self.assertFalse(entry.blocked)
+        self.assertEqual(entry.worker.journal.state()["phase"], "IDLE")
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in backend.calls), 1)
+        self.assertFalse(any(path.endswith("/next-task") for _, path, _ in backend.calls))
+
+    def test_claim_resume_cannot_clear_new_health_quarantine_while_manifest_is_in_flight(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        state = {"phase": "NEXT_INTENT", "nextKey": "BGE-NEXT-" + "d" * 32, "binding": entry.worker.config.binding}
+        data = entry.worker.mutate("NEXT", "/next-task", {}, state["nextKey"], state)
+        state.update(phase="CLAIMED", taskNo=data["taskNo"], inputHash=data["inputHash"])
+        entry.worker.journal.set(state)
+        backend.found = False
+        backend.calls.clear()
+        request = backend.request
+        def raced(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if path.endswith("/manifest"):
+                self.fleet.health()
+            if path.endswith("/heartbeat"):
+                result["data"]["activeTaskNo"] = "CTA-" + "F" * 32
+            return result
+        backend.request = raced
+        self.fleet.tick(entry)
+        self.assertTrue(entry.blocked)
+        self.assertTrue(entry.worker.stop.is_set())
+        self.assertEqual(entry.worker.journal.state(), state)
+        self.assertFalse(any(path == "/api/embed" for _, path, _ in self.fleet.ollama.calls))
+        self.assertFalse(any(path.endswith("/complete") for _, path, _ in backend.calls))
+
+    def test_positive_receipt_cleanup_preserves_new_in_flight_health_quarantine(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        state = {"phase": "CLAIMED", "binding": entry.worker.config.binding, "taskNo": backend.task["taskNo"],
+                 "inputHash": backend.task["inputHash"], "resultHash": "e" * 64}
+        entry.worker.journal.set(state)
+        request = backend.request
+        def raced(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if path.endswith("/receipt"):
+                self.fleet.health()
+            if path.endswith("/heartbeat"):
+                result["data"]["activeTaskNo"] = "CTA-" + "F" * 32
+            return result
+        backend.request = raced
+        self.fleet.tick(entry)
+        self.assertEqual(entry.worker.journal.state()["phase"], "IDLE")
+        self.assertTrue(entry.blocked)
+        self.assertTrue(entry.worker.stop.is_set())
+        self.assertFalse(any(path.endswith("/complete") for _, path, _ in backend.calls))
 
 
 class BoundaryTests(unittest.TestCase):

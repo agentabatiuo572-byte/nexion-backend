@@ -214,6 +214,19 @@ class Journal:
         with self.guard, self.db:
             self.db.execute("UPDATE calls SET outcome=? WHERE id=?", (outcome, call))
 
+    def require_unsent_claim(self, state):
+        key = state.get("nextKey", "")
+        require(re.fullmatch(r"BGE-NEXT-[a-f0-9]{32}", key) is not None, "CLAIM_NEXT_KEY_INVALID")
+        complete_key = "BGE-COMPLETE-" + sha256(state["taskNo"].encode())
+        with self.guard:
+            attempted = self.db.execute("SELECT 1 FROM calls WHERE operation='COMPLETE' AND (task_no=? OR request_key=?) LIMIT 1",
+                                        (state["taskNo"], complete_key)).fetchone()
+            require(attempted is None, "CLAIM_COMPLETE_ALREADY_ATTEMPTED")
+            calls = self.db.execute("SELECT request_hash,outcome FROM calls WHERE operation='NEXT' AND request_key=? ORDER BY id", (key,)).fetchall()
+            require(calls and calls[-1] == (sha256(json_bytes({})), "CONFIRMED")
+                    and all(row[0] == sha256(json_bytes({})) and row[1] in ("NOT_SENT", "CONFIRMED") for row in calls),
+                    "CLAIM_NEXT_NOT_CONFIRMED")
+
     def confirm(self, state, receipt):
         with self.guard, self.db:
             self.db.execute("INSERT OR IGNORE INTO jobs VALUES(?,?,?)", (state["taskNo"], state["resultHash"], receipt["receiptNo"]))
@@ -354,10 +367,18 @@ class Worker:
         self.heartbeat_thread = threading.Thread(target=run, daemon=True)
         self.heartbeat_thread.start()
 
-    def read_receipt(self, state):
+    def receipt_status(self, state):
         data = envelope(self.backend.request("GET", PREFIX + "/tasks/" + state["taskNo"] + "/receipt"))
         binding(data, self.config)
         require(data.get("taskNo") == state["taskNo"] and data.get("inputHash") == state["inputHash"], "RECEIPT_BINDING_INVALID")
+        require(type(data.get("found")) is bool, "RECEIPT_STATUS_INVALID")
+        return data
+
+    def read_receipt(self, state):
+        data = self.receipt_status(state)
+        return self.positive_receipt(data)
+
+    def positive_receipt(self, data):
         require(data.get("found") is True and data.get("status") == "COMPLETED" and hash64(data.get("resultHash"))
                 and isinstance(data.get("receiptNo"), str) and re.fullmatch(r"CTR-[A-Fa-f0-9]{32}", data["receiptNo"]),
                 "STOP_PENDING_RECONCILIATION")
@@ -368,10 +389,35 @@ class Worker:
         require(hash64(state.get("resultHash")) and data["resultHash"] == state["resultHash"], "RECEIPT_RESULT_INVALID")
         return data
 
-    def recover(self):
+    def recover_claimed(self, state, allow_execution, on_resume):
+        require(state.get("binding") == self.config.binding, "JOURNAL_BINDING_CHANGED")
+        data = self.receipt_status(state)
+        if data["found"]:
+            self.positive_receipt(data)
+            require(data["receiptNo"] == "CTR-" + state["taskNo"][-32:], "RECEIPT_NUMBER_INVALID")
+            require("resultHash" not in state or state["resultHash"] == data["resultHash"], "RECEIPT_RESULT_INVALID")
+            self.journal.confirm({**state, "resultHash": data["resultHash"]}, data)
+            print("RECEIPT_RECONCILED", flush=True)
+            return True
+        require(allow_execution, "STOP_PENDING_RECONCILIATION")
+        self.journal.require_unsent_claim(state)
+        require(data.get("status") in ("CLAIMED", "RUNNING") and data.get("resultHash") is None
+                and data.get("receiptNo") is None, "CLAIM_REMOTE_RESULT_UNCONFIRMED")
+        task = claim(envelope(self.backend.request("GET", PREFIX + "/tasks/" + state["taskNo"] + "/manifest", key=state["nextKey"])), self.config)
+        require(task.get("resumeAllowed") is True and task.get("nextKeyHash") == sha256(state["nextKey"].encode())
+                and task["taskNo"] == state["taskNo"] and task["inputHash"] == state["inputHash"], "CLAIM_RESUME_MANIFEST_INVALID")
+        require(self.journal.state() == state, "CLAIM_STATE_CHANGED")
+        if on_resume:
+            on_resume()
+        self.execute(task, state)
+        return True
+
+    def recover(self, claimed_execution=True, on_resume=None):
         state = self.journal.state()
         if state["phase"] in ("IDLE", "NEXT_NOT_SENT"):
             return False
+        if state["phase"] == "CLAIMED":
+            return self.recover_claimed(state, claimed_execution, on_resume)
         require(state["phase"] in ("COMPLETE_INTENT", "UNKNOWN_COMPLETE"), "STOP_PENDING_RECONCILIATION")
         require(state.get("binding") == self.config.binding, "JOURNAL_BINDING_CHANGED")
         data = self.receipt(state)  # A negative read never authorizes a second complete or next.
@@ -411,9 +457,14 @@ class Worker:
         task = claim(data, self.config)
         state.update(phase="CLAIMED", taskNo=task["taskNo"], inputHash=task["inputHash"])
         self.journal.set(state)
+        return self.execute(task, state)
+
+    def execute(self, task, state):
+        require(not self.stopping(), "STOP_BEFORE_INFERENCE")
         if self.heartbeat_thread is None:
             self.start_heartbeat()
         raw = infer(self.ollama, task)
+        require("resultHash" not in state or state["resultHash"] == sha256(raw), "CLAIM_RESULT_HASH_CHANGED")
         state["resultHash"] = sha256(raw)
         self.journal.set(state)
         remaining = max(0, (task["completableAt"] - int(time.time() * 1000)) / 1000)
@@ -449,11 +500,11 @@ class Worker:
             current = self.journal.state()
             require(current["phase"] == "IDLE" and current.get("binding") == self.config.binding,
                     "HEARTBEAT_ONLY_CONFIRMED_IDLE_REQUIRED")
-        else:
-            recovered = self.recover()
-            if once and recovered:
-                return 0
         try:
+            if not heartbeat_only:
+                recovered = self.recover()
+                if once and recovered:
+                    return 0
             if heartbeat_only:
                 if self.stop.is_set():
                     return 0
@@ -504,6 +555,7 @@ class FleetEntry:
         self.worker, self.file_lock = worker, lock
         self.gate = threading.RLock()
         self.present, self.blocked, self.running = False, False, False
+        self.generation = 0
         self.due = 0
         # Fleet owns one health thread; task execution still uses the existing Worker.
         worker.start_heartbeat = lambda: None
@@ -628,6 +680,8 @@ class Fleet:
         for entry in self.snapshot():
             with entry.gate:
                 if entry.worker.config.binding["executorId"] not in accepted:
+                    if entry.present:
+                        entry.generation += 1
                     entry.present = False
                     entry.worker.stop.set()
 
@@ -650,6 +704,7 @@ class Fleet:
                     if isinstance(error, (NotSent,)) or str(error) == "HTTP_OUTCOME_UNKNOWN":
                         print("FLEET_HEARTBEAT_UNCONFIRMED", flush=True)
                     else:
+                        entry.generation += 1
                         entry.blocked = True
                         entry.worker.stop.set()
                         print("FLEET_INSTANCE_HEALTH_BLOCKED", flush=True)
@@ -657,17 +712,25 @@ class Fleet:
     def tick(self, entry):
         with entry.gate:
             phase = entry.worker.journal.state()["phase"]
-            reconcile = phase in ("COMPLETE_INTENT", "UNKNOWN_COMPLETE")
+            reconcile = phase in ("COMPLETE_INTENT", "UNKNOWN_COMPLETE", "CLAIMED")
             if entry.running or (not reconcile and (not entry.present or entry.blocked)) or time.monotonic() < entry.due:
                 return
+            generation = entry.generation
             entry.running = True
         try:
             if reconcile:
-                entry.worker.recover()
-                with entry.gate:
-                    entry.blocked = False
-                    if entry.present:
+                def authorize_resume():
+                    with entry.gate:
+                        require(entry.present and not self.stop.is_set(), "STOP_BEFORE_CLAIM_RESUME")
+                        require(entry.generation == generation, "CLAIM_RESUME_CANCELLED")
+                        entry.blocked = False
                         entry.worker.stop.clear()
+                entry.worker.recover(claimed_execution=entry.present, on_resume=authorize_resume)
+                with entry.gate:
+                    if entry.generation == generation:
+                        entry.blocked = False
+                        if entry.present and not self.stop.is_set():
+                            entry.worker.stop.clear()
             else:
                 entry.worker.recover()
                 current = entry.worker.journal.state()
@@ -682,6 +745,7 @@ class Fleet:
                 entry.worker.one()
         except Exception:
             with entry.gate:
+                entry.generation += 1
                 entry.blocked = True
                 entry.worker.stop.set()
             print("FLEET_INSTANCE_PENDING_RECONCILIATION", flush=True)

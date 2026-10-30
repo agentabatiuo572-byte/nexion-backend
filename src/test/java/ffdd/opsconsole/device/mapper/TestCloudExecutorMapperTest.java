@@ -47,6 +47,14 @@ class TestCloudExecutorMapperTest {
         assertThat(configuration.getMappedStatement(namespace+"historicalReceipt").getBoundSql(Map.of()).getSql())
                 .contains("t.user_id=?","t.user_device_id=?").doesNotContain("u.status","ownership_status");
     }
+    @Test void claimedRecoveryFinancialReadDetectsReceiptLedgerAndEarningEvidenceWithoutWriting() {
+        var statement=configuration().getMappedStatement(TestCloudExecutorMapper.class.getName()+".settlementEvidence");
+        assertThat(statement.getSqlCommandType()).isEqualTo(SqlCommandType.SELECT);
+        assertThat(statement.getBoundSql(Map.of()).getSql()).contains("nx_compute_receipt r WHERE r.task_no=?",
+                "nx_wallet_ledger l WHERE l.biz_no=?", "CONCAT('CTR-',RIGHT(?,32))",
+                "nx_earning_event e WHERE e.event_no=CONCAT('EARN-',?)", "e.receipt_no=")
+                .doesNotContain("INSERT", "UPDATE", "DELETE");
+    }
     @Test void legacyDateExceptionsRequireTheSameReviewedIdentityWithoutRelaxingPaidDeliveryRelationships() {
         var configuration=configuration();
         String namespace=TestCloudExecutorMapper.class.getName()+".";
