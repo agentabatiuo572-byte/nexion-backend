@@ -15,6 +15,17 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface AppOrderCommandMapper extends BaseMapper<Object> {
+    /** The pending order is already included once; do not add its quantity again at payment. */
+    @Select("SELECT (" + CanonicalStateMapper.ACTIVE_DEVICE_COUNT
+            + " AND COALESCE(u.sandbox,0)=0 FOR SHARE) + ("
+            + CanonicalStateMapper.LOCK_RESERVED_DEVICE_ORDERS
+            + " AND COALESCE(u.sandbox,0)=0 FOR SHARE) + EXISTS("
+            + ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper.RESERVED_TRIAL + " FOR SHARE)")
+    long lockOccupiedDeviceSlotCount(@Param("userId") Long userId);
+
+    @Select("SELECT 6")
+    int deviceSlotCap();
+
     @Select("""
             SELECT t.id, t.quota_code quotaCode, t.product_no productNo,
                    t.monthly_quota monthlyQuota, t.direct_refs directRefs,

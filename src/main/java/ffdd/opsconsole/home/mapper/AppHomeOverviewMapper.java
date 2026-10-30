@@ -2,6 +2,8 @@ package ffdd.opsconsole.home.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
+import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -12,7 +14,16 @@ import org.apache.ibatis.annotations.Select;
 
 /** Read-only, account- and environment-scoped facts for the App Home/Earn projection. */
 @Mapper
-public interface AppHomeOverviewMapper extends BaseMapper<Object> {
+public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotReservationMapper {
+
+    @Select(CanonicalStateMapper.ACTIVE_DEVICE_COUNT + " AND COALESCE(u.sandbox,0)=0")
+    int activeSlotCount(@Param("userId") Long userId);
+
+    @Select(CanonicalStateMapper.RESERVED_DEVICE_ORDERS + " AND COALESCE(u.sandbox,0)=0")
+    int reservedDeviceOrderCount(@Param("userId") Long userId);
+
+    @Select("SELECT 6")
+    int deviceSlotCap();
 
     @Select("""
             SELECT sandbox

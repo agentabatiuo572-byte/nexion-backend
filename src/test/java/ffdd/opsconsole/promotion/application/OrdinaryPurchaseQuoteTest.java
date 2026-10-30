@@ -50,7 +50,7 @@ class OrdinaryPurchaseQuoteTest {
             "clientCapabilities",List.of("PROMOTION_QUOTE_V1","ORDER_ITEM_QUANTITIES_V1","PROMOTION_REWARDS_V1"));
     }
 
-    @ParameterizedTest @CsvSource({"cloud-share,1,19.900000","cloud-share,2,39.800000","cloud-share,100,1990.000000","stellarbox-s1,2,39.800000"})
+    @ParameterizedTest @CsvSource({"cloud-share,1,19.900000","cloud-share,2,39.800000","cloud-share,6,119.400000","stellarbox-s1,2,39.800000"})
     void ordinaryCanonicalPurchaseDoesNotRequirePromotionOrVoucher(String sku,int quantity,String amount) {
         var result=quotes.quote(29L,request(sku,quantity));
         assertEquals("ELIGIBLE",result.get("eligibility"));
@@ -65,6 +65,24 @@ class OrdinaryPurchaseQuoteTest {
         verify(db,never()).write(contains("nx_order"),any(Object[].class));
         verify(db,never()).write(contains("nx_promotion_reservation"),any(Object[].class));
         verifyNoInteractions(vouchers);
+    }
+
+    @ParameterizedTest @CsvSource({"5,2", "6,1", "7,1", "0,7"})
+    void quoteRejectsInsufficientSlotsBeforeVoucherOrPersistence(long occupied, int quantity) {
+        when(db.occupiedDeviceSlots(29L)).thenReturn(occupied);
+        var input=request("cloud-share",quantity);input.put("voucherId","valid");
+        assertEquals("CAPACITY_REPLACEMENT_REQUIRED",assertThrows(BizException.class,()->quotes.quote(29L,input)).getMessage());
+        verify(db).user(29L,true);
+        verify(db,never()).write(anyString(),any(Object[].class));
+        verifyNoInteractions(vouchers);
+    }
+
+    @Test void mixedQuoteCountsEveryShareUnitTogetherWithHardware() {
+        when(db.occupiedDeviceSlots(29L)).thenReturn(4L);
+        var input=request("cloud-share",2);
+        input.put("items",List.of(values("productNo","cloud-share","quantity",2),values("productNo","stellarbox-s1","quantity",1)));
+        assertEquals("CAPACITY_REPLACEMENT_REQUIRED",assertThrows(BizException.class,()->quotes.quote(29L,input)).getMessage());
+        verify(db,never()).write(anyString(),any(Object[].class));
     }
 
     @Test void ordinaryMultiSkuQuoteKeepsServerBundlePricingWithoutInventingRewards() {

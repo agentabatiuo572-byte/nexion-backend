@@ -5,6 +5,8 @@ import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.shared.canonical.mapper.AppBundleOrderMapper;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
+import ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper;
+import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper;
 import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
 import ffdd.opsconsole.device.infrastructure.MybatisDeviceOpsRepository;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -61,6 +63,8 @@ class PhoneActivationCapacityMySqlTest {
     private PromotionMapper promotionMapper;
     private AppTradeinMapper tradeinMapper;
     private DeviceOpsMapper opsMapper;
+    private AppOrderCommandMapper paymentMapper;
+    private AppHomeOverviewMapper homeMapper;
     private AppCanonicalBoundaryService canonicalService;
     private MybatisDeviceOpsRepository deviceRepository;
     private PhoneActivationCapacityContract service;
@@ -129,12 +133,16 @@ class PhoneActivationCapacityMySqlTest {
         config.addMapper(AppBundleOrderMapper.class);
         config.addMapper(PromotionMapper.class);
         config.addMapper(AppTradeinMapper.class);
+        config.addMapper(AppOrderCommandMapper.class);
+        config.addMapper(AppHomeOverviewMapper.class);
         var session = new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));
         mapper = session.getMapper(CanonicalStateMapper.class);
         bundle = session.getMapper(AppBundleOrderMapper.class);
         promotionMapper = session.getMapper(PromotionMapper.class);
         tradeinMapper = session.getMapper(AppTradeinMapper.class);
         opsMapper = session.getMapper(DeviceOpsMapper.class);
+        paymentMapper = session.getMapper(AppOrderCommandMapper.class);
+        homeMapper = session.getMapper(AppHomeOverviewMapper.class);
         var platform = mock(PlatformConfigFacade.class);
         var idempotency = mock(AdminIdempotencyService.class);
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
@@ -301,6 +309,8 @@ class PhoneActivationCapacityMySqlTest {
         assertThat(tradeinMapper.lockActiveDeviceCount(user)).isEqualTo(6);
         assertThat(opsMapper.countActiveDevicesByUser(user)).isEqualTo(6);
         assertThat(promotionMapper.occupiedDeviceSlots(user)).isEqualTo(6);
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+        assertThat(homeMapper.activeSlotCount(user)).isEqualTo(6);
         transaction.executeWithoutResult(status -> assertFull(user));
         jdbc.update("UPDATE nx_user_device SET status='DEACTIVATED',deactivated_at=NOW() WHERE id=?", cloud);
         assertThat(mapper.activeDeviceCount(user)).isEqualTo(5);
@@ -315,6 +325,64 @@ class PhoneActivationCapacityMySqlTest {
         jdbc.update("INSERT INTO nx_order_item(order_no,product_id,product_name,quantity,unit_price_usdt,line_amount_usdt) "
                 + "VALUES(?,2,'Synthetic share',3,1,3)", "ORDER-" + user);
         assertCapacityKeepReservations(user, 3);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"PENDING_PAYMENT,WAITING_PAYMENT", "PAID,WAITING_PROVISIONING", "PROCESSING,PROVISIONING"})
+    void paymentCountsItsOwnReservationOnceAndSeesTrialAndTerminalRelease(String orderState, String activationState) {
+        long user=user(false);
+        for(int i=0;i<5;i++)device(user);
+        order(user,2,"SINGLE",orderState,activationState);
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+        assertThat(homeMapper.reservedDeviceOrderCount(user)).isEqualTo(1);
+        trial(user,"ACTIVE");
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(7);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device WHERE user_id=?",Integer.class,user)).isEqualTo(5);
+        jdbc.update("UPDATE nx_order SET order_status='CANCELLED',activation_status='CANCELLED' WHERE order_no=?","ORDER-"+user);
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+        jdbc.update("UPDATE nx_trial_claim SET status='CANCELLED' WHERE user_id=?",user);
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(5);
+    }
+
+    @Test void committedCapacityChangesRefreshPaymentSqlEvenAfterItsOldSnapshot() {
+        long user=user(false);
+        for(int i=0;i<5;i++)device(user);
+        afterOlderSnapshot(user, ignored -> {
+            order(user,2,"SINGLE","PENDING_PAYMENT","WAITING_PAYMENT");
+            orderItem(user,2);
+            trial(user,"ACTIVE");
+        }, ignored -> assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(8));
+    }
+
+    @Test void trialAndShareCommandsCannotBothReserveTheLastSlot() throws Exception {
+        long user=user(false);
+        for(int i=0;i<5;i++)device(user);
+        var ready=new java.util.concurrent.CountDownLatch(2);
+        var start=new java.util.concurrent.CountDownLatch(1);
+        var pool=java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var trialCommand=pool.submit(() -> {
+                ready.countDown();start.await();
+                return transaction.execute(status -> {
+                    mapper.lockUser(user);
+                    if(mapper.lockOccupiedDeviceSlotCount(user,false)>=6)return false;
+                    trial(user,"ACTIVE");return true;
+                });
+            });
+            var shareCommand=pool.submit(() -> {
+                ready.countDown();start.await();
+                return transaction.execute(status -> {
+                    mapper.lockUser(user);
+                    if(mapper.lockOccupiedDeviceSlotCount(user,false)>=6)return false;
+                    order(user,2,"SINGLE","PENDING_PAYMENT","WAITING_PAYMENT");return true;
+                });
+            });
+            ready.await();start.countDown();
+            int successful=(trialCommand.get(20,java.util.concurrent.TimeUnit.SECONDS)?1:0)
+                    +(shareCommand.get(20,java.util.concurrent.TimeUnit.SECONDS)?1:0);
+            assertThat(successful).isEqualTo(1);
+            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+        } finally { pool.shutdownNow(); }
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -450,6 +518,9 @@ class PhoneActivationCapacityMySqlTest {
         assertThat(tradeinMapper.lockReservedDeviceOrderCount(user)).isEqualTo(expected);
         assertThat(promotionMapper.occupiedDeviceSlots(user))
                 .isEqualTo((long) mapper.activeDeviceCount(user) + expected + mapper.lockReservedTrialSlotCount(user));
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user))
+                .isEqualTo((long) mapper.activeDeviceCount(user) + expected + mapper.lockReservedTrialSlotCount(user));
+        assertThat(homeMapper.reservedDeviceOrderCount(user)).isEqualTo(expected);
     }
 
     private void capacityKeepOrder(long user) {

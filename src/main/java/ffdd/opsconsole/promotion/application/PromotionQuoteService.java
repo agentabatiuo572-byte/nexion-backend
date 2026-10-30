@@ -32,10 +32,12 @@ public class PromotionQuoteService {
     public Map<String,Object> quote(Long userId,Map<String,Object> request) {
         validator.validate("QuoteInput",request);
         require(userId!=null,"PROMOTION_AUTHENTICATION_REQUIRED");
-        db.user(userId,false);
+        db.user(userId,true);
         List<PromotionRules.Selection> items=selections(request);
         require(items.size()<=8,"BUNDLE_PRODUCT_COUNT_INVALID");
         requirePurchaseEligibility(userId,items);
+        require(db.occupiedDeviceSlots(userId)+items.stream().mapToLong(PromotionRules.Selection::quantity).sum()
+                <=db.deviceSlotCap(),"CAPACITY_REPLACEMENT_REQUIRED");
         Map<String,Object> price=prices(userId,items,text(request.get("voucherId")));
         Instant now=Instant.now();
         List<Map<String,Object>> candidates=db.list("""

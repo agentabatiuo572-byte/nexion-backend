@@ -244,6 +244,13 @@ public class AppOrderCommandService {
         } else if (!"SINGLE".equals(orderType) || order.productId() == null || order.productId() < 1) {
             return ApiResult.fail(409, "ORDER_PAYMENT_FACT_INVALID");
         }
+        // prepare() holds the same account row lock as trial/order/activation commands.
+        // This total already includes this payable order's reservation exactly once.
+        // Replays above remain valid for historical assets, even if the account is now over cap.
+        if (mapper.lockOccupiedDeviceSlotCount(userId) > Math.max(1, mapper.deviceSlotCap())) {
+            // Releasing another reservation is recoverable with the same payment intent.
+            throw new BizException(409, "CAPACITY_REPLACEMENT_REQUIRED");
+        }
         // F4 monthly capacity is distinct from E1 stock/lifetime quota. Serialize
         // checkout against the tier row and use current locking reads, not an
         // earlier repeatable-read snapshot. Pending/cancelled orders consume none.
@@ -479,9 +486,7 @@ public class AppOrderCommandService {
         AppOrderCommandMapper.OrderRow order = mapper.lockOrder(orderNo);
         if (order == null || !userId.equals(order.userId())) return ApiResult.fail(403, "ORDER_FORBIDDEN");
         if ("CANCELLED".equalsIgnoreCase(order.orderStatus()) && "CANCELLED".equalsIgnoreCase(order.paymentStatus())) {
-            return ApiResult.ok(Map.of("orderNo", orderNo, "orderStatus", "CANCELLED", "paymentStatus", "CANCELLED",
-                    "idempotent", true, "serverCanonical", true, "source", "server",
-                    "sourceEnvironment", "PRODUCTION", "runId", ""));
+            return cancellationReceipt(userId, orderNo, true);
         }
         if (!"PENDING_PAYMENT".equalsIgnoreCase(order.orderStatus()) || !"PENDING".equalsIgnoreCase(order.paymentStatus())) {
             return ApiResult.fail(409, "ORDER_NOT_CANCELLABLE");
@@ -494,9 +499,17 @@ public class AppOrderCommandService {
                 .resourceId(orderNo).bizNo(orderNo).userId(userId).actorId(userId).actorType("USER")
                 .method("POST").path("/api/orders/" + orderNo + "/cancel").result("SUCCESS").riskLevel("LOW")
                 .detail(Map.of("orderType", order.orderType(), "environment", "PRODUCTION")).build());
-        return ApiResult.ok(Map.of("orderNo", orderNo, "orderStatus", "CANCELLED", "paymentStatus", "CANCELLED",
-                "idempotent", false, "serverCanonical", true, "source", "server",
+        return cancellationReceipt(userId, orderNo, false);
+    }
+
+    private ApiResult<Map<String, Object>> cancellationReceipt(Long userId, String orderNo, boolean replay) {
+        Map<String, Object> data = new LinkedHashMap<>(Map.of("orderNo", orderNo, "orderStatus", "CANCELLED",
+                "paymentStatus", "CANCELLED", "idempotent", replay, "serverCanonical", true, "source", "server",
                 "sourceEnvironment", "PRODUCTION", "runId", ""));
+        data.put("activationStatus", "CANCELLED");
+        data.put("canonicalStatus", "cancelled");
+        if (promotions != null) data.putAll(promotions.orderProjection(userId, orderNo));
+        return ApiResult.ok(data);
     }
 
     /** Scheduler entrypoint. Each invocation owns a transaction and rechecks all payment/state fences. */

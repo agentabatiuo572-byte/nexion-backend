@@ -65,6 +65,7 @@ class PromotionOrderDiscountTest {
     }
     @Test void realQuoteRequiresEligibilityAndBudgetAndFreezesDiscountSnapshot() throws Exception {
         var db=mock(PromotionMapper.class);var resolver=mock(PromotionPolicyResolver.class);var evaluator=mock(PromotionEvaluationService.class);
+        when(db.deviceSlotCap()).thenReturn(6L);
         var canonical=mock(AppCanonicalBoundaryService.class);
         @SuppressWarnings("unchecked") ObjectProvider<AppCanonicalBoundaryService> provider=mock(ObjectProvider.class);
         when(provider.getObject()).thenReturn(canonical);
