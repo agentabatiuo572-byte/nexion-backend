@@ -41,8 +41,19 @@ public class UserBusinessWriteGateFilter extends OncePerRequestFilter implements
                 || path.startsWith("/api/app/security/")
                 // Customers need support while completing initial setup.
                 || isSupportCommunication(request)
+                // Native push setup and open receipts remain available during initial setup.
+                || isNativePushInfrastructure(request)
                 // Reading and opening a welcome notification is not a business command.
                 || path.matches("/api/notifications/(?:[0-9]+/(?:actions|read)|read-all|read)");
+    }
+
+    private boolean isNativePushInfrastructure(HttpServletRequest request) {
+        String path=request.getRequestURI();
+        return switch(request.getMethod()) {
+            case "PUT","DELETE" -> path.matches("/api/me/push-installations/[A-Za-z0-9_-]{8,128}");
+            case "POST" -> path.matches("/api/me/push-notifications/[0-9]+/opened");
+            default -> false;
+        };
     }
 
     private boolean isSupportCommunication(HttpServletRequest request) {
