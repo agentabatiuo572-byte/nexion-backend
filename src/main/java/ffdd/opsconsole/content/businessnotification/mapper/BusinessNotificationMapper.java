@@ -8,6 +8,8 @@ import org.apache.ibatis.annotations.*;
 @Mapper
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface BusinessNotificationMapper {
+    record AlertDevice(Long deviceId,Long userId) {}
+
     @Select("SELECT id FROM nx_business_notification_control WHERE id=1 FOR UPDATE")
     Integer lockControl();
 
@@ -89,17 +91,24 @@ public interface BusinessNotificationMapper {
         + "SELECT d.id,d.user_id FROM nx_user_device d WHERE " + ELIGIBLE)
     int seedDevices();
 
-    @Update("UPDATE nx_business_device_alert_state s LEFT JOIN nx_user_device d ON d.id=s.device_id "
+    @Select("SELECT s.device_id FROM nx_business_device_alert_state s LEFT JOIN nx_user_device d ON d.id=s.device_id "
         + "LEFT JOIN nx_user_device_runtime r ON r.user_device_id=d.id AND r.is_deleted=0 "
-        + "SET s.abnormal_since=NULL,s.alerted=0 WHERE s.abnormal_since IS NOT NULL AND NOT COALESCE(("
-        + ELIGIBLE + " AND s.user_id=d.user_id AND " + DeviceOpsMapper.E5_RUNTIME_ABNORMAL + "),0)")
-    int resetRecoveredDevices();
+        + "WHERE s.abnormal_since IS NOT NULL AND NOT COALESCE(("
+        + ELIGIBLE + " AND s.user_id=d.user_id AND " + DeviceOpsMapper.E5_RUNTIME_ABNORMAL + "),0) ORDER BY s.device_id")
+    List<Long> recoveredDeviceIds();
 
-    @Update("UPDATE nx_business_device_alert_state s JOIN nx_user_device d ON d.id=s.device_id "
+    @Update("UPDATE nx_business_device_alert_state SET abnormal_since=NULL,alerted=0 WHERE device_id=#{id} AND abnormal_since IS NOT NULL")
+    int resetRecoveredDevice(@Param("id") Long id);
+
+    @Select("SELECT s.device_id deviceId,d.user_id userId FROM nx_business_device_alert_state s JOIN nx_user_device d ON d.id=s.device_id "
         + "LEFT JOIN nx_user_device_runtime r ON r.user_device_id=d.id AND r.is_deleted=0 "
-        + "SET s.abnormal_since=NOW(6),s.user_id=d.user_id,s.cycle=s.cycle+1,s.alerted=0 "
-        + "WHERE s.abnormal_since IS NULL AND " + ELIGIBLE + " AND " + DeviceOpsMapper.E5_RUNTIME_ABNORMAL)
-    int startAbnormalDevices();
+        + "WHERE s.abnormal_since IS NULL AND " + ELIGIBLE + " AND " + DeviceOpsMapper.E5_RUNTIME_ABNORMAL
+        + " ORDER BY s.device_id")
+    List<AlertDevice> abnormalDevices();
+
+    @Update("UPDATE nx_business_device_alert_state SET abnormal_since=NOW(6),user_id=#{user},cycle=cycle+1,alerted=0 "
+        + "WHERE device_id=#{id} AND abnormal_since IS NULL")
+    int startAbnormalDevice(@Param("id") Long id,@Param("user") Long user);
 
     @Select("""
         SELECT CONCAT('DEVICE:',s.device_id,':',s.cycle) factKey,s.user_id userId,

@@ -11,6 +11,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 
 @Service
 public class NativePushDispatcher {
@@ -21,18 +22,21 @@ public class NativePushDispatcher {
     private final DirectPushClient provider;
     private final Environment env;
     private final TransactionTemplate transaction;
+    private final TransactionTemplate discoveryTransaction;
 
     public NativePushDispatcher(NativePushMapper mapper, AuthSessionMapper sessions, UserAccountBlocklistVerifier blocklist,
             PlatformConfigFacade config, DirectPushClient provider, Environment env, PlatformTransactionManager transactions) {
         this.mapper = mapper; this.sessions = sessions; this.blocklist = blocklist;
         this.config = config; this.provider = provider; this.env = env; this.transaction = new TransactionTemplate(transactions);
+        this.discoveryTransaction = new TransactionTemplate(transactions);
+        this.discoveryTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     }
 
     public void tick() {
         UserAuthEnvironment audience = UserAuthEnvironment.resolve(env).orElse(null);
         if (audience == null) return;
         int sandbox = audience == UserAuthEnvironment.SANDBOX ? 1 : 0;
-        transaction.executeWithoutResult(tx -> {
+        discoveryTransaction.executeWithoutResult(tx -> {
             Long low = mapper.lockCursor();
             if (low == null) throw new IllegalStateException("Native push migration/cutover missing");
             // Keep the migration cutover fixed. An advancing MAX(id) cursor would skip lower IDs committed out of order.

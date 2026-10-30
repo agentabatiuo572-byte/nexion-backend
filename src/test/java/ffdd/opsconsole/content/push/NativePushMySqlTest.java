@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.push;
 
 import static org.assertj.core.api.Assertions.*;
+import static org.mockito.Mockito.*;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper.Installation;
@@ -173,6 +174,62 @@ class NativePushMySqlTest {
     private Installation installation(long user,String chain,long epoch) {
         return new Installation(INSTALL,"fcm:"+"x".repeat(150),"FCM","hash",user,chain,"android","granted","1",epoch,true);
     }
+
+    @Test void discoveryDoesNotHoldSourceAccountLockUntilItCommits() throws Exception {
+        sourceWriteWhileDiscoveryIsOpen("UPDATE nx_user SET language=language WHERE id=7");
+    }
+
+    @Test void discoveryDoesNotHoldSourceInstallationLockUntilItCommits() throws Exception {
+        sourceWriteWhileDiscoveryIsOpen("UPDATE nx_native_push_installation SET binding_epoch=binding_epoch WHERE installation_id='"+INSTALL+"'");
+    }
+
+    private void sourceWriteWhileDiscoveryIsOpen(String sourceUpdate) throws Exception {
+        inSchema(c->{
+            try(var setupConnection=connect()) {
+                setupConnection.setCatalog(c.getCatalog());
+                try(var setup=mapperSession(setupConnection)){setup.getMapper(NativePushMapper.class).insert(installation(7,"chain",1));setup.commit();}
+            }
+            sql(c,"INSERT INTO nx_notification(biz_no,user_id,type,cta_href,created_at,is_deleted,priority,push_status) VALUES "
+                +"('NATIVE1:discovery-lock-probe',7,'SUPPORT_REPLY','/pages/support/chat?cid=probe',"+NOW+",0,'high','QUEUED')");
+            var discoveryConnection=connect();discoveryConnection.setCatalog(c.getCatalog());
+            var ds=new org.springframework.jdbc.datasource.SingleConnectionDataSource(discoveryConnection,true);
+            Configuration cfg=new Configuration();cfg.setMapUnderscoreToCamelCase(true);cfg.addMapper(NativePushMapper.class);
+            cfg.setEnvironment(new org.apache.ibatis.mapping.Environment("discovery-locks",new org.mybatis.spring.transaction.SpringManagedTransactionFactory(),ds));
+            var template=new org.mybatis.spring.SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(cfg));
+            var delegate=template.getMapper(NativePushMapper.class);
+            var discovered=new java.util.concurrent.CountDownLatch(1);
+            var resume=new java.util.concurrent.CountDownLatch(1);
+            var pausing=(NativePushMapper)java.lang.reflect.Proxy.newProxyInstance(
+                NativePushMapper.class.getClassLoader(),new Class<?>[]{NativePushMapper.class},(proxy,method,args)->{
+                    Object value;
+                    try {value=method.invoke(delegate,args);}
+                    catch(java.lang.reflect.InvocationTargetException failure){throw failure.getCause();}
+                    if(method.getName().equals("discover")) {
+                        discovered.countDown();
+                        if(!resume.await(10,java.util.concurrent.TimeUnit.SECONDS))throw new IllegalStateException("DISCOVERY_TEST_NOT_RELEASED");
+                    }
+                    return value;
+                });
+            var provider=mock(DirectPushClient.class);
+            var env=new org.springframework.mock.env.MockEnvironment();env.setActiveProfiles("prod");
+            var dispatcher=new NativePushDispatcher(pausing,mock(ffdd.opsconsole.shared.security.mapper.AuthSessionMapper.class),
+                mock(ffdd.opsconsole.shared.security.UserAccountBlocklistVerifier.class),mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class),
+                provider,env,new org.springframework.jdbc.datasource.DataSourceTransactionManager(ds));
+            var executor=java.util.concurrent.Executors.newSingleThreadExecutor();
+            var running=executor.submit(dispatcher::tick);
+            try {
+                assertThat(discovered.await(10,java.util.concurrent.TimeUnit.SECONDS)).as("discovery reached before source write").isTrue();
+                sql(c,"SET SESSION innodb_lock_wait_timeout=1");
+                try(var writer=c.createStatement()){assertThat(writer.executeUpdate(sourceUpdate)).isEqualTo(1);}
+            } finally {
+                resume.countDown();
+                try {running.get(10,java.util.concurrent.TimeUnit.SECONDS);}finally{executor.shutdownNow();ds.destroy();}
+            }
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_native_push_delivery")).isEqualTo(1);
+            verifyNoInteractions(provider);
+        });
+    }
+
     private SqlSession mapperSession(Connection c) {
         Configuration config=new Configuration(); config.setMapUnderscoreToCamelCase(true); config.addMapper(NativePushMapper.class);
         return new MybatisSqlSessionFactoryBuilder().build(config).openSession(c);

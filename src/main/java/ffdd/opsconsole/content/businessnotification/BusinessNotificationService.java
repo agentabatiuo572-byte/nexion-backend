@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 /** Projects committed facts only. Notification retries never touch financial or device state. */
@@ -20,12 +21,15 @@ public class BusinessNotificationService {
     private final BusinessNotificationMapper mapper;
 
     @Scheduled(fixedDelayString="${nexion.business-notifications.delay-ms:30000}")
-    @Transactional(rollbackFor=Exception.class)
+    // INSERT ... SELECT must read business sources without retaining shared locks until the scan commits.
+    @Transactional(rollbackFor=Exception.class,isolation=Isolation.READ_COMMITTED)
     public void scan() {
         if (mapper.lockControl()==null) throw new IllegalStateException("BUSINESS_NOTIFICATION_MIGRATION_REQUIRED");
         mapper.seedDevices();
-        mapper.resetRecoveredDevices();
-        mapper.startAbnormalDevices();
+        // UPDATE JOIN would still retain source device/runtime locks at READ_COMMITTED.
+        // The control row serializes state-only writes; alert reads recheck current business facts.
+        mapper.recoveredDeviceIds().forEach(mapper::resetRecoveredDevice);
+        mapper.abnormalDevices().forEach(device->mapper.startAbnormalDevice(device.deviceId(),device.userId()));
         mapper.facts().forEach(this::emit);
         mapper.trialDeadlines().forEach(this::emit);
         for (var fact : mapper.deviceAlerts()) {
