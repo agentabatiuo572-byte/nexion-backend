@@ -389,8 +389,10 @@ public class TestCloudExecutorService {
     }
 
     private void heartbeatLocked(Identity i,String taskNo) {
-        mapper.ensureRuntime(i.deviceId(),marker(i),now());
-        if(mapper.heartbeat(i.deviceId(),taskNo,marker(i),now())!=1) throw error(409,"TEST_CLOUD_RUNTIME_CONFLICT");
+        // heartbeat_at is DATETIME(0): truncate before MySQL can round a fractional value into the future.
+        LocalDateTime heartbeatAt=now().withNano(0);
+        mapper.ensureRuntime(i.deviceId(),marker(i),heartbeatAt);
+        if(mapper.heartbeat(i.deviceId(),taskNo,marker(i),heartbeatAt)!=1) throw error(409,"TEST_CLOUD_RUNTIME_CONFLICT");
     }
 
     private Map<String,Object> claimView(Identity i,Execution e,AssignmentRow task) {
