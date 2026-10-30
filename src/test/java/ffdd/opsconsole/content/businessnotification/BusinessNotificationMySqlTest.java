@@ -145,6 +145,89 @@ class BusinessNotificationMySqlTest {
         });
     }
 
+    @Test void scanningDoesNotKeepSourceAccountLockedUntilProjectionCommit() throws Exception {
+        sourceWriteWhileProjectionIsOpen("nx_user", "UPDATE nx_user SET language=language WHERE id=1",false);
+    }
+
+    @Test void scanningDoesNotKeepSourceDeviceLockedAfterAlertStateUpdates() throws Exception {
+        sourceWriteWhileProjectionIsOpen("nx_user_device", "UPDATE nx_user_device SET status=status WHERE id=1",false);
+    }
+
+    @Test void scanningDoesNotKeepSourceDeviceLockedAfterRecovery() throws Exception {
+        sourceWriteWhileProjectionIsOpen("nx_user_device", "UPDATE nx_user_device SET status=status WHERE id=1",true);
+    }
+
+    @Test void scanningDoesNotKeepRuntimeHeartbeatLockedUntilProjectionCommit() throws Exception {
+        sourceWriteWhileProjectionIsOpen("nx_user_device_runtime", "UPDATE nx_user_device_runtime SET heartbeat_at=NOW() WHERE user_device_id=1",false);
+    }
+
+    @Test void recoveryResetsEveryDeviceBeforeAHighIdDeviceStartsAnotherAbnormalCycle() throws Exception {
+        inSchema(c->{
+            for(int id=1;id<=101;id++) {
+                sql(c,"INSERT INTO nx_user_device VALUES("+id+",1,'PRODUCTION','','OWNED','ACTIVE',NOW(),NULL,0,0)");
+                sql(c,"INSERT INTO nx_user_device_runtime VALUES("+id+",'ONLINE',NOW(),0)");
+            }
+            sql(c,"INSERT INTO nx_business_device_alert_state(device_id,user_id,abnormal_since,cycle,alerted) "
+                +"SELECT id,user_id,DATE_SUB(NOW(),INTERVAL 16 MINUTE),1,0 FROM nx_user_device");
+            scan(c);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_business_device_alert_state WHERE abnormal_since IS NULL")).isEqualTo(101);
+            sql(c,"UPDATE nx_user_device_runtime SET online_status='OFFLINE' WHERE user_device_id=101");
+            scan(c);
+            assertThat(count(c,"nx_notification")).isZero();
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_business_device_alert_state WHERE device_id=101 AND cycle=2 "
+                +"AND abnormal_since>DATE_SUB(NOW(),INTERVAL 1 MINUTE)")).isEqualTo(1);
+        });
+    }
+
+    private static void sourceWriteWhileProjectionIsOpen(String sourceTable,String sourceUpdate,boolean recovering) throws Exception {
+        inSchema(c->{
+            sql(c,"INSERT INTO nx_user_device VALUES(1,1,'PRODUCTION','','OWNED','ACTIVE',NOW(),NULL,0,0)");
+            sql(c,"INSERT INTO nx_user_device_runtime VALUES(1,'OFFLINE',NOW(),0)");
+            if(recovering) {
+                sql(c,"INSERT INTO nx_business_device_alert_state(device_id,user_id,abnormal_since,cycle,alerted) VALUES(1,1,DATE_SUB(NOW(),INTERVAL 16 MINUTE),1,0)");
+                sql(c,"UPDATE nx_user_device_runtime SET online_status='ONLINE'");
+            }
+            sql(c,"INSERT INTO nx_event_outbox VALUES(1,'event','topup1','wallet.topup_confirmed','{\"user_id\":1}',NOW(),0)");
+            var ds=new org.apache.ibatis.datasource.unpooled.UnpooledDataSource("com.mysql.cj.jdbc.Driver",
+                c.getMetaData().getURL(),"root",System.getenv().getOrDefault("NEXION_ISOLATED_MYSQL_PASSWORD",""));
+            Configuration cfg=new Configuration();cfg.setMapUnderscoreToCamelCase(true);cfg.addMapper(BusinessNotificationMapper.class);
+            cfg.setEnvironment(new org.apache.ibatis.mapping.Environment("locks",new org.mybatis.spring.transaction.SpringManagedTransactionFactory(),ds));
+            var template=new org.mybatis.spring.SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(cfg));
+            var delegate=template.getMapper(BusinessNotificationMapper.class);
+            var projected=new java.util.concurrent.CountDownLatch(1);
+            var resume=new java.util.concurrent.CountDownLatch(1);
+            var pausing=(BusinessNotificationMapper)java.lang.reflect.Proxy.newProxyInstance(
+                BusinessNotificationMapper.class.getClassLoader(),new Class<?>[]{BusinessNotificationMapper.class},(proxy,method,args)->{
+                    Object value;
+                    try {value=method.invoke(delegate,args);}
+                    catch(java.lang.reflect.InvocationTargetException failure){throw failure.getCause();}
+                    if(method.getName().equals("notify")) {
+                        projected.countDown();
+                        if(!resume.await(10,java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("PROJECTION_TEST_NOT_RELEASED");
+                    }
+                    return value;
+                });
+            var proxy=new org.springframework.aop.framework.ProxyFactory(new BusinessNotificationService(pausing));
+            proxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(
+                new org.springframework.jdbc.datasource.DataSourceTransactionManager(ds),
+                new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
+            var service=(BusinessNotificationService)proxy.getProxy();
+            var executor=java.util.concurrent.Executors.newSingleThreadExecutor();
+            var running=executor.submit(service::scan);
+            try {
+                assertThat(projected.await(10,java.util.concurrent.TimeUnit.SECONDS)).as("projection reached before source write").isTrue();
+                sql(c,"SET SESSION innodb_lock_wait_timeout=1");
+                try(var writer=c.createStatement()) {
+                    assertThat(writer.executeUpdate(sourceUpdate)).as("concurrent writer of %s",sourceTable).isEqualTo(1);
+                }
+            } finally {
+                resume.countDown();
+                try {running.get(10,java.util.concurrent.TimeUnit.SECONDS);}finally{executor.shutdownNow();}
+            }
+            assertThat(count(c,"nx_notification")).isEqualTo(1);
+        });
+    }
+
     private static void scan(Connection c) {
         Configuration cfg=new Configuration(); cfg.setMapUnderscoreToCamelCase(true);cfg.addMapper(BusinessNotificationMapper.class);
         var transactionFactory=new org.apache.ibatis.transaction.managed.ManagedTransactionFactory();
