@@ -202,16 +202,19 @@ public class AppSupportService {
                     request.clientMessageId(),request.kind(),"SERVICE",request.attachmentId(),request.expectedAssignmentId());
             if(prepared.previousMessageId()!=null) return replayConversation(userId,conversationNo);
             var advisor = supportAgentRepository.findActiveDedicatedAdvisor(userId).orElse(null);
-            conversationRepository.requirePeerForWrite(conversation.conversationNo(), advisor == null ? null : String.valueOf(advisor.adminId()));
             if (!matches(conversation.status(), conversation.version(), request.expectedStatus(), request.expectedVersion())) return conversationConflict();
             if (!Set.of("OPEN", "RESOLVED", "CLOSED").contains(normalizeUpper(conversation.status()))) return invalidConversationState();
+            String peer = advisor == null ? null : String.valueOf(advisor.adminId());
+            boolean claimed = conversationRepository.claimUnassignedPeerForWrite(conversation.conversationNo(), peer);
+            conversationRepository.requirePeerForWrite(conversation.conversationNo(), peer);
             if (!conversationRepository.replyAsUser(conversation, userId, SupportHumanMessageService.text(request.body()), LocalDateTime.now(clock))) {
+                if (claimed) throw new BizException(409, "CONVERSATION_CONFLICT");
                 return conversationConflict();
             }
             humanMessages.committed(prepared,humanMessages.latest(conversationNo),idempotencyKey);
             unboundReceipt.sendIfUnbound(userId, conversation.conversationNo());
             audit("APP_CONVERSATION_REPLIED", "CONVERSATION", conversation.conversationNo(), userId,
-                    Map.of("bodyLength", SupportHumanMessageService.text(request.body()).length(), "idempotencyKey", idempotencyKey.trim()));
+                    Map.of("bodyLength", SupportHumanMessageService.text(request.body()).length(), "claimedUnassignedPeer", claimed, "idempotencyKey", idempotencyKey.trim()));
             ApiResult<ContentConversationDetail> result = conversation(userId, conversation.conversationNo());
             publish(result.getData(), ConversationMessageEvent.EventType.MESSAGE, SupportHumanMessageService.text(request.body()));
             return result;

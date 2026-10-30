@@ -49,6 +49,9 @@ public interface ConversationRepository {
         throw new UnsupportedOperationException("STABLE_CONVERSATION_PEER_REQUIRED");
     }
 
+    /** After snapshot validation, first reply may claim a never-answered, unassigned peer. */
+    default boolean claimUnassignedPeerForWrite(String conversationNo, String staffId) { return false; }
+
     List<ContentConversationMessageView> messages(String conversationNo);
 
     /** Exact receipt target lookup; never loads the conversation's message bodies. */

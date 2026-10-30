@@ -32,6 +32,38 @@ class MybatisConversationRepositoryTest {
         verifyNoInteractions(messageMapper);
     }
 
+    @Test void firstAssignedStaffCanClaimOnlyAnUnassignedPeerInTheSendTransaction() {
+        when(mapper.claimUnassignedPeer("CV-UNBOUND", "7")).thenReturn(1);
+        assertThat(repository.claimUnassignedPeerForWrite("CV-UNBOUND", "7")).isFalse();
+        org.mockito.Mockito.verify(mapper, org.mockito.Mockito.never()).claimUnassignedPeer(any(), any());
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            assertThat(repository.claimUnassignedPeerForWrite("CV-UNBOUND", "7")).isTrue();
+            org.mockito.Mockito.verify(mapper).claimUnassignedPeer("CV-UNBOUND", "7");
+            assertThat(repository.claimUnassignedPeerForWrite("CV-NOT-ELIGIBLE", "8")).isFalse();
+            when(mapper.storedPeerAgentId("CV-OLD-STAFF")).thenReturn("6");
+            assertThatThrownBy(() -> repository.requirePeerForWrite("CV-OLD-STAFF", "7"))
+                    .hasMessage("CONVERSATION_PEER_CHANGED");
+            org.mockito.Mockito.verify(mapper, org.mockito.Mockito.never()).claimUnassignedPeer("CV-OLD-STAFF", "7");
+        } finally {
+            org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    @Test void unassignedClaimSqlRechecksTheCurrentCustomerAssignmentAndExcludesStaffHistory() {
+        var configuration = new org.apache.ibatis.session.Configuration();
+        configuration.addMapper(ConversationMapper.class);
+        String sql = configuration.getMappedStatement(ConversationMapper.class.getName()+".claimUnassignedPeer")
+                .getBoundSql(java.util.Map.of("conversationNo", "CV-UNBOUND", "staffId", "7"))
+                .getSql().replaceAll("\\s+", " ");
+        assertThat(sql).contains("sa.user_id=c.user_id", "sa.status='ACTIVE'", "sa.is_deleted=0",
+                "a.id=sa.agent_admin_id AND a.status=1 AND a.is_deleted=0", "c.conversation_no=?",
+                "sp.admin_id=sa.agent_admin_id AND sp.enabled=1 AND sp.is_deleted=0",
+                "c.owner_agent_id IS NULL", "CAST(sa.agent_admin_id AS CHAR)=?", "NOT EXISTS",
+                "m.conversation_no=c.conversation_no", "m.sender_type='agent'");
+        assertThat(sql).doesNotContain("version=", "DELETE", "nx_app_conversation_user_clear", "m.is_deleted");
+    }
+
     @Test void collectionCountAndRowsUseTheSameExplicitScope() {
         var scope=new ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope(7L,
                 ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED,9L,null);

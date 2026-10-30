@@ -285,18 +285,20 @@ public class OpsConversationService {
                 "REPLY:"+conversationNo,request,request.clientMessageId(),request.kind(),request.intent(),
                 request.attachmentId(),request.expectedAssignmentId());
         if(prepared.previousMessageId()!=null) return new MessageCommandResult(ApiResult.ok(conversation),prepared.previousMessageId());
-        conversationRepository.requirePeerForWrite(conversationNo.trim(), String.valueOf(
-                persistedActor == null ? ownership.actorId() : persistedActor));
         if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
                 || "TRANSFERRED".equalsIgnoreCase(conversation.status())) {
             return new MessageCommandResult(invalidState(), null);
         }
+        String peer = String.valueOf(persistedActor == null ? ownership.actorId() : persistedActor);
+        boolean claimed = conversationRepository.claimUnassignedPeerForWrite(conversationNo.trim(), peer);
+        conversationRepository.requirePeerForWrite(conversationNo.trim(), peer);
         String body = prepared.content(request.body());
         String actor = persistedActor==null ? operator(request.operator()) : "admin:"+persistedActor;
         LocalDateTime now = LocalDateTime.now(clock);
         Long messageId = persistedActor==null ? conversationRepository.replyAndReturnMessageId(conversation,body,actor,now)
             : conversationRepository.replyAndReturnMessageId(conversation,body,persistedActor,actor,now);
         if (messageId == null) {
+            if (claimed) throw new ffdd.opsconsole.shared.exception.BizException(409, "INVALID_STATE_TRANSITION");
             return new MessageCommandResult(invalidState(), null);
         }
         if(persistedActor==null) humanMessages.committed(prepared,messageId,idempotencyKey);
@@ -305,6 +307,7 @@ public class OpsConversationService {
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         Map<String,Object> detail=Map.of(
                 "bodyLength", body.length(),
+                "claimedUnassignedPeer", claimed,
                 "reason", reasonOrDefault(request.reason(), "agent reply"),
                 "idempotencyKey", idempotencyKey.trim());
         if(persistedActor==null) audit("I9_CONVERSATION_REPLIED",conversation.conversationNo(),actor,detail);
