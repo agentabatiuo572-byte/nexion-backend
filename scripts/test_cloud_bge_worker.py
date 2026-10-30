@@ -77,7 +77,7 @@ class Backend:
             return ok({**identity(self.cfg), "idle": True, "retryAfterSeconds": 60} if self.idle else self.task)
         if path == w.PREFIX + "/heartbeat":
             phase = self.journal.state()["phase"]
-            active = self.task["taskNo"] if phase in ("CLAIMED", "COMPLETE_INTENT", "UNKNOWN_COMPLETE") else None
+            active = self.task["taskNo"] if phase in ("CLAIMED", "COMPLETE_INTENT", "UNKNOWN_COMPLETE", "REJECTED_RETRY_INTENT") else None
             return ok({**self.cfg.binding, "serverCanonical": True, "heartbeatAt": int(time.time() * 1000), "activeTaskNo": active})
         if path.endswith("/complete"):
             self.complete_body = body
@@ -254,6 +254,170 @@ class WorkerTests(unittest.TestCase):
             self.worker.recover(claimed_execution=False)
         self.assertEqual(len(self.backend.calls), 1)
         self.assertEqual(self.ollama.calls, [])
+
+    def rejected_claim(self, legacy=False):
+        state = self.interrupted_claim()
+        self.backend.complete_error = w.Rejected("BACKEND_REJECTED_409", 409, "TEST_CLOUD_HEARTBEAT_STALE")
+        with self.assertRaises(w.Halt):
+            self.worker.execute(self.backend.task, state)
+        state = self.journal.state()
+        self.assertEqual(state["phase"], "REJECTED_COMPLETE")
+        self.assertEqual(state["rejection"], {"httpStatus": 409, "errorCode": "TEST_CLOUD_HEARTBEAT_STALE"})
+        if legacy:
+            state["phase"] = "UNKNOWN_COMPLETE"
+            state.pop("rejection")
+            self.journal.set(state)
+        self.backend.complete_error = None
+        self.backend.calls.clear()
+        self.ollama.calls.clear()
+        return state
+
+    def test_explicit_rejection_can_retry_original_task_once_with_a_new_proof_timestamp(self):
+        origin = self.rejected_claim()
+        first_timestamp = self.backend.complete_body["proofTimestamp"]
+        with patch.object(w.time, "time", return_value=first_timestamp / 1000 + 1):
+            self.assertTrue(self.worker.recover())
+        rows = self.journal.db.execute("SELECT request_key,outcome FROM calls WHERE operation='COMPLETE'").fetchall()
+        self.assertEqual([outcome for _, outcome in rows], ["REJECTED", "CONFIRMED"])
+        self.assertEqual(rows[0][0], rows[1][0])
+        self.assertGreater(self.backend.complete_body["proofTimestamp"], first_timestamp)
+        self.assertEqual(self.backend.complete_body["resultHash"], origin["resultHash"])
+        self.assertFalse(any(path.endswith("/next-task") for _, path, _ in self.backend.calls))
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM calls WHERE operation='REJECTED_RETRY'").fetchone()[0], 1)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
+        saved, saved_hash = self.journal.db.execute("SELECT original_state_json,original_state_hash FROM rejected_retries").fetchone()
+        self.assertEqual(json.loads(saved), origin)
+        self.assertEqual(saved_hash, w.sha256(w.json_bytes(origin)))
+
+    def test_historical_unknown_with_only_canonical_rejected_call_is_classified_by_actual_call_evidence(self):
+        self.rejected_claim(legacy=True)
+        self.assertTrue(self.worker.recover())
+        self.assertEqual(self.journal.state()["phase"], "IDLE")
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in self.backend.calls), 1)
+
+    def test_rejected_recovery_positive_receipt_is_prior_to_any_retry_authorization(self):
+        self.rejected_claim(legacy=True)
+        self.journal.db.execute("UPDATE calls SET outcome='UNKNOWN' WHERE operation='COMPLETE'")
+        self.journal.db.commit()
+        self.backend.found = True
+        self.assertTrue(self.worker.recover())
+        self.assertEqual(len(self.backend.calls), 1)
+        self.assertTrue(self.backend.calls[0][1].endswith("/receipt"))
+        self.assertEqual(self.ollama.calls, [])
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM calls WHERE operation='REJECTED_RETRY'").fetchone()[0], 0)
+
+    def test_any_non_rejected_or_foreign_key_complete_evidence_forbids_a_negative_receipt_retry(self):
+        state = self.rejected_claim(legacy=True)
+        key = "BGE-COMPLETE-" + w.sha256(state["taskNo"].encode())
+        for outcome, request_key in [(outcome, key) for outcome in ("UNKNOWN", "INTENT", "CONFIRMED", "NOT_SENT")] + [("REJECTED", "BGE-COMPLETE-FOREIGN")]:
+            with self.subTest(outcome=outcome, key=request_key):
+                call = self.journal.intent("COMPLETE", request_key, state["taskNo"], {})
+                self.journal.outcome(call, outcome)
+                self.backend.calls.clear()
+                with self.assertRaisesRegex(w.Halt, "STOP_PENDING_RECONCILIATION"):
+                    self.worker.recover()
+                self.assertEqual(len(self.backend.calls), 1)
+                self.assertEqual(self.journal.state(), state)
+                self.assertEqual(self.ollama.calls, [])
+                self.journal.db.execute("DELETE FROM calls WHERE id=?", (call,))
+                self.journal.db.commit()
+
+    def test_second_explicit_rejection_preserves_the_spent_budget_across_restart(self):
+        origin = self.rejected_claim()
+        self.backend.complete_error = w.Rejected("BACKEND_REJECTED_409", 409, "TEST_CLOUD_HEARTBEAT_STALE")
+        with self.assertRaises(w.Halt):
+            self.worker.recover()
+        spent = self.journal.state()
+        self.assertEqual(spent["phase"], "REJECTED_COMPLETE")
+        self.assertTrue(spent["rejectedRetry"])
+        self.assertEqual(spent["rejectionRecoveryOrigin"], origin)
+        self.journal.db.close()
+        self.journal = w.Journal(self.path)
+        self.worker.journal = self.backend.journal = self.journal
+        self.backend.calls.clear()
+        self.ollama.calls.clear()
+        with self.assertRaisesRegex(w.Halt, "REJECTED_RETRY_BUDGET_USED"):
+            self.worker.recover()
+        self.assertEqual(len(self.backend.calls), 1)
+        self.assertEqual(self.ollama.calls, [])
+        self.assertEqual(self.journal.state(), spent)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM calls WHERE operation='COMPLETE'").fetchone()[0], 2)
+
+    def test_two_historical_rejected_calls_without_a_budget_do_not_authorize_recovery(self):
+        state = self.rejected_claim(legacy=True)
+        key = "BGE-COMPLETE-" + w.sha256(state["taskNo"].encode())
+        call = self.journal.intent("COMPLETE", key, state["taskNo"], {})
+        self.journal.outcome(call, "REJECTED")
+        with self.assertRaisesRegex(w.Halt, "STOP_PENDING_RECONCILIATION"):
+            self.worker.recover()
+        self.assertEqual(len(self.backend.calls), 1)
+        self.assertTrue(self.backend.calls[0][1].endswith("/receipt"))
+        self.assertEqual(self.ollama.calls, [])
+        self.assertEqual(self.journal.state(), state)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM rejected_retries").fetchone()[0], 0)
+
+    def test_crash_after_atomic_retry_reservation_can_only_read_receipt_after_restart(self):
+        origin = self.rejected_claim()
+        with patch.object(self.worker, "execute", side_effect=w.Halt("SIMULATED_CRASH")):
+            with self.assertRaisesRegex(w.Halt, "SIMULATED_CRASH"):
+                self.worker.recover()
+        with closing(sqlite3.connect(self.path)) as other:
+            state = json.loads(other.execute("SELECT value FROM state WHERE id=1").fetchone()[0])
+            self.assertEqual(state["phase"], "REJECTED_RETRY_INTENT")
+            self.assertEqual(state["rejectionRecoveryOrigin"], origin)
+            self.assertEqual(other.execute("SELECT COUNT(*) FROM calls WHERE operation='REJECTED_RETRY' AND outcome='AUTHORIZED'").fetchone()[0], 1)
+        self.journal.db.close()
+        self.journal = w.Journal(self.path)
+        self.worker.journal = self.backend.journal = self.journal
+        self.backend.calls.clear()
+        with self.assertRaisesRegex(w.Halt, "STOP_PENDING_RECONCILIATION"):
+            self.worker.recover()
+        self.assertEqual(len(self.backend.calls), 1)
+        self.assertEqual(self.ollama.calls, [])
+        # Even a stale caller overwriting the mutable JSON cannot recreate the consumed durable budget.
+        self.journal.set(origin)
+        self.backend.calls.clear()
+        with self.assertRaisesRegex(w.Halt, "REJECTED_RETRY_BUDGET_USED"):
+            self.worker.recover()
+        self.assertEqual(len(self.backend.calls), 1)
+        self.assertEqual(self.ollama.calls, [])
+
+    def test_retry_budget_origin_and_state_are_one_atomic_transaction(self):
+        origin = self.rejected_claim()
+        self.journal.db.execute("CREATE TRIGGER fail_retry BEFORE UPDATE ON state WHEN NEW.value LIKE '%REJECTED_RETRY_INTENT%' BEGIN SELECT RAISE(ABORT,'SIMULATED_STATE_WRITE_FAILURE'); END")
+        self.journal.db.commit()
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.worker.recover()
+        self.assertEqual(self.journal.state(), origin)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM rejected_retries").fetchone()[0], 0)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM calls WHERE operation='REJECTED_RETRY'").fetchone()[0], 0)
+        self.assertFalse(any(path.endswith("/complete") for _, path, _ in self.backend.calls))
+
+    def test_rejected_retry_hash_mismatch_keeps_original_evidence_and_consumes_the_only_attempt(self):
+        origin = self.rejected_claim()
+        self.ollama.vectors[0][0] = 0.5
+        with self.assertRaisesRegex(w.Halt, "CLAIM_RESULT_HASH_CHANGED"):
+            self.worker.recover()
+        state = self.journal.state()
+        self.assertEqual(state["resultHash"], origin["resultHash"])
+        self.assertEqual(state["rejectionRecoveryOrigin"], origin)
+        self.assertEqual(state["phase"], "REJECTED_RETRY_INTENT")
+        self.assertFalse(any(path.endswith("/complete") for _, path, _ in self.backend.calls))
+
+    def test_rejected_retry_does_not_consume_budget_when_original_manifest_is_expired_or_revoked(self):
+        origin = self.rejected_claim()
+        request = self.backend.request
+        def expired(method, path, body=None, key=None):
+            response = request(method, path, body, key)
+            if path.endswith("/manifest"):
+                response["data"]["leaseExpiresAt"] = 1
+            return response
+        self.backend.request = expired
+        with self.assertRaisesRegex(w.Halt, "LEASE_INVALID"):
+            self.worker.recover()
+        self.assertEqual(self.journal.state(), origin)
+        self.assertEqual(self.ollama.calls, [])
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM calls WHERE operation='REJECTED_RETRY'").fetchone()[0], 0)
 
     def test_real_vector_serialization_and_normal_confirmation(self):
         self.assertEqual(self.worker.run(once=True), 0)
@@ -833,8 +997,53 @@ class FleetTests(unittest.TestCase):
         self.assertTrue(entry.worker.stop.is_set())
         self.assertFalse(any(path.endswith("/complete") for _, path, _ in backend.calls))
 
+    def test_rejected_retry_cannot_override_a_discovery_removal_during_manifest_read(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        state = {"phase": "NEXT_INTENT", "nextKey": "BGE-NEXT-" + "d" * 32, "binding": entry.worker.config.binding}
+        data = entry.worker.mutate("NEXT", "/next-task", {}, state["nextKey"], state)
+        state.update(phase="UNKNOWN_COMPLETE", taskNo=data["taskNo"], inputHash=data["inputHash"],
+                     resultHash=w.sha256(w.artifact(self.fleet.ollama.vectors, len(data["inputTexts"]))))
+        entry.worker.journal.set(state)
+        call = entry.worker.journal.intent("COMPLETE", "BGE-COMPLETE-" + w.sha256(state["taskNo"].encode()), state["taskNo"], {})
+        entry.worker.journal.outcome(call, "REJECTED")
+        entry.blocked = True
+        entry.worker.stop.set()
+        backend.found = False
+        backend.calls.clear()
+        request = backend.request
+        def revoked_in_flight(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if path.endswith("/manifest"):
+                self.backend.request.return_value = self.page([])
+                self.fleet.refresh()
+            return result
+        backend.request = revoked_in_flight
+        self.fleet.tick(entry)
+        self.assertFalse(entry.present)
+        self.assertTrue(entry.blocked)
+        self.assertTrue(entry.worker.stop.is_set())
+        self.assertEqual(entry.worker.journal.state(), state)
+        self.assertEqual(entry.worker.journal.db.execute("SELECT COUNT(*) FROM rejected_retries").fetchone()[0], 0)
+        self.assertFalse(any(path == "/api/embed" for _, path, _ in self.fleet.ollama.calls))
+        self.assertFalse(any(path.endswith("/complete") for _, path, _ in backend.calls))
+
 
 class BoundaryTests(unittest.TestCase):
+    def test_rejection_keeps_only_strictly_whitelisted_http_and_error_code_metadata(self):
+        for message, expected in (("TEST_CLOUD_HEARTBEAT_STALE", "TEST_CLOUD_HEARTBEAT_STALE"),
+                                  ("TEST_CLOUD_BAD token=secret", None), ("private response body", None)):
+            connection = unittest.mock.Mock()
+            response = connection.getresponse.return_value
+            response.status = 409
+            response.read.return_value = w.json_bytes({"code": 409, "message": message, "data": None})
+            with patch.object(w.http.client, "HTTPConnection", return_value=connection):
+                with self.assertRaises(w.Rejected) as caught:
+                    w.Http(("127.0.0.1", 8110)).request("POST", "/complete", {})
+            self.assertEqual(caught.exception.http_status, 409)
+            self.assertEqual(caught.exception.error_code, expected)
+            self.assertEqual(str(caught.exception), "BACKEND_REJECTED_409")
+
     def test_loopback_only_origins(self):
         self.assertEqual(w.loopback_url("http://127.0.0.1:11435"), ("127.0.0.1", 11435))
         for value in ("http://example.com:80", "http://localhost:11435", "https://127.0.0.1:11435", "http://127.0.0.1:80/x",

@@ -374,6 +374,29 @@ class TestCloudExecutorServiceTest {
         assertThatThrownBy(()->service.complete(identity,TASK,"cloud-complete-unit",request(0.25f))).hasMessage("TEST_CLOUD_HEARTBEAT_STALE");
         verify(service,never()).infer(any()); verifyNoInteractions(settlement);
     }
+    @Test void fractionalSecondHeartbeatIsTruncatedBeforeDatetimeStorageAndCanCompleteNormally() throws Exception {
+        Instant fractional=INSTANT.plusMillis(600);
+        var fractionalService=spy(new TestCloudExecutorService(assignments,mapper,settlement,audit,Clock.fixed(fractional,ZoneOffset.UTC),env));
+        when(mapper.heartbeat(11,null,"test-cloud:cloud-unit",NOW)).thenReturn(1);
+        fractionalService.heartbeat(identity,null,null);
+        verify(mapper).ensureRuntime(11,"test-cloud:cloud-unit",NOW);
+        verify(mapper).heartbeat(11,null,"test-cloud:cloud-unit",NOW);
+        assertThat(NOW.plusSeconds(1)).isAfter(LocalDateTime.ofInstant(fractional,ZoneOffset.UTC));
+        when(assignments.lockTestWorkerRuntime(7L,11L,"NEX-UNIT-CLOUD"))
+                .thenReturn(new TestWorkerRuntimeRow("ONLINE",TASK,CLIENT,"test-cloud:cloud-unit",NOW,null));
+        doReturn(TestCloudBgeArtifactTest.expected(0.25)).when(fractionalService).infer(identity);
+        when(mapper.saveResult(eq(TASK),anyString(),any(),anyString(),anyString())).thenReturn(1);
+        fractionalService.complete(identity,TASK,"cloud-complete-fractional",request(0.25f));
+        verify(settlement).completeForTestCloud(eq(TASK),any(),any());
+    }
+    @Test void aRoundedFutureHeartbeatIsStillRejectedWithoutRelaxingTheFutureTimeGate() throws Exception {
+        var fractionalService=spy(new TestCloudExecutorService(assignments,mapper,settlement,audit,Clock.fixed(INSTANT.plusMillis(600),ZoneOffset.UTC),env));
+        when(assignments.lockTestWorkerRuntime(7L,11L,"NEX-UNIT-CLOUD"))
+                .thenReturn(new TestWorkerRuntimeRow("ONLINE",TASK,CLIENT,"test-cloud:cloud-unit",NOW.plusSeconds(1),null));
+        assertThatThrownBy(()->fractionalService.complete(identity,TASK,"cloud-complete-future",request(0.25f)))
+                .hasMessage("TEST_CLOUD_HEARTBEAT_STALE");
+        verify(fractionalService,never()).infer(any()); verifyNoInteractions(settlement);
+    }
     @Test void receiptReconciliationDoesNotClaimCancelOrComplete() {
         var result=service.receipt(identity,TASK).getData(); assertThat(result.get("found")).isEqualTo(false);
         assertThat(result.get("modelDigest")).isEqualTo(DIGEST); assertThat(result.get("inputHash")).isEqualTo(TestCloudExecutorService.sha256(inputJson()));

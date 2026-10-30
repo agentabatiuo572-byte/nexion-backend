@@ -38,6 +38,10 @@ class NotSent(Halt):
 
 class Rejected(Halt):
     """A fully received canonical rejection, never a computation confirmation."""
+    def __init__(self, code, http_status=None, error_code=None):
+        super().__init__(code)
+        self.http_status = http_status if type(http_status) is int and 400 <= http_status < 500 else None
+        self.error_code = error_code if isinstance(error_code, str) and re.fullmatch(r"TEST_CLOUD_[A-Z0-9_]{1,80}", error_code) else None
 
 
 def require(condition, code):
@@ -168,7 +172,7 @@ class Http:
             data = strict_json(raw)
             if not 200 <= response.status < 300:
                 if 400 <= response.status < 500 and isinstance(data, dict) and type(data.get("code")) is int and data["code"] != 0:
-                    raise Rejected("BACKEND_REJECTED_" + str(response.status))
+                    raise Rejected("BACKEND_REJECTED_" + str(response.status), response.status, data.get("message"))
                 raise Halt("HTTP_OUTCOME_UNKNOWN")
             return data
         except (OSError, TimeoutError, http.client.HTTPException):
@@ -191,6 +195,8 @@ class Journal:
             CREATE TABLE IF NOT EXISTS calls(id INTEGER PRIMARY KEY, operation TEXT NOT NULL,
               request_key TEXT NOT NULL, task_no TEXT, request_hash TEXT NOT NULL, outcome TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS jobs(task_no TEXT PRIMARY KEY, result_hash TEXT, receipt_no TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS rejected_retries(task_no TEXT PRIMARY KEY, original_state_json TEXT NOT NULL,
+              original_state_hash TEXT NOT NULL);
         """)
         self.db.commit()
 
@@ -215,17 +221,46 @@ class Journal:
             self.db.execute("UPDATE calls SET outcome=? WHERE id=?", (outcome, call))
 
     def require_unsent_claim(self, state):
-        key = state.get("nextKey", "")
-        require(re.fullmatch(r"BGE-NEXT-[a-f0-9]{32}", key) is not None, "CLAIM_NEXT_KEY_INVALID")
         complete_key = "BGE-COMPLETE-" + sha256(state["taskNo"].encode())
         with self.guard:
             attempted = self.db.execute("SELECT 1 FROM calls WHERE operation='COMPLETE' AND (task_no=? OR request_key=?) LIMIT 1",
                                         (state["taskNo"], complete_key)).fetchone()
             require(attempted is None, "CLAIM_COMPLETE_ALREADY_ATTEMPTED")
+            self.require_next_confirmed(state)
+
+    def require_next_confirmed(self, state):
+        key = state.get("nextKey", "")
+        require(re.fullmatch(r"BGE-NEXT-[a-f0-9]{32}", key) is not None, "CLAIM_NEXT_KEY_INVALID")
+        with self.guard:
             calls = self.db.execute("SELECT request_hash,outcome FROM calls WHERE operation='NEXT' AND request_key=? ORDER BY id", (key,)).fetchall()
             require(calls and calls[-1] == (sha256(json_bytes({})), "CONFIRMED")
                     and all(row[0] == sha256(json_bytes({})) and row[1] in ("NOT_SENT", "CONFIRMED") for row in calls),
                     "CLAIM_NEXT_NOT_CONFIRMED")
+
+    def require_rejected_retry(self, state):
+        require(hash64(state.get("resultHash")), "REJECTED_RESULT_HASH_REQUIRED")
+        key = "BGE-COMPLETE-" + sha256(state["taskNo"].encode())
+        with self.guard:
+            calls = self.db.execute("SELECT task_no,request_key,outcome FROM calls WHERE operation='COMPLETE' AND (task_no=? OR request_key=?)",
+                                    (state["taskNo"], key)).fetchall()
+            used = self.db.execute("SELECT 1 FROM calls WHERE operation='REJECTED_RETRY' AND (task_no=? OR request_key=?) LIMIT 1",
+                                   (state["taskNo"], key)).fetchone()
+            consumed = self.db.execute("SELECT 1 FROM rejected_retries WHERE task_no=?", (state["taskNo"],)).fetchone()
+            require(used is None and consumed is None and not state.get("rejectedRetry"), "REJECTED_RETRY_BUDGET_USED")
+            require(len(calls) == 1 and calls[0] == (state["taskNo"], key, "REJECTED"), "STOP_PENDING_RECONCILIATION")
+            self.require_next_confirmed(state)
+
+    def reserve_rejected_retry(self, state):
+        with self.guard, self.db:
+            require(self.state() == state, "CLAIM_STATE_CHANGED")
+            self.require_rejected_retry(state)
+            resumed = {**state, "phase": "REJECTED_RETRY_INTENT", "rejectedRetry": True, "rejectionRecoveryOrigin": state}
+            original = json_bytes(state)
+            self.db.execute("INSERT INTO rejected_retries VALUES(?,?,?)", (state["taskNo"], original.decode(), sha256(original)))
+            self.db.execute("INSERT INTO calls(operation,request_key,task_no,request_hash,outcome) VALUES('REJECTED_RETRY',?,?,?,'AUTHORIZED')",
+                            ("BGE-COMPLETE-" + sha256(state["taskNo"].encode()), state["taskNo"], sha256(json_bytes(state))))
+            self.db.execute("UPDATE state SET value=? WHERE id=1", (json_bytes(resumed).decode(),))
+        return resumed
 
     def confirm(self, state, receipt):
         with self.guard, self.db:
@@ -389,18 +424,22 @@ class Worker:
         require(hash64(state.get("resultHash")) and data["resultHash"] == state["resultHash"], "RECEIPT_RESULT_INVALID")
         return data
 
-    def recover_claimed(self, state, allow_execution, on_resume):
+    def recover_claimed(self, state, allow_execution, on_resume, rejected=False):
         require(state.get("binding") == self.config.binding, "JOURNAL_BINDING_CHANGED")
         data = self.receipt_status(state)
         if data["found"]:
             self.positive_receipt(data)
             require(data["receiptNo"] == "CTR-" + state["taskNo"][-32:], "RECEIPT_NUMBER_INVALID")
+            require(not rejected or hash64(state.get("resultHash")), "RECEIPT_RESULT_INVALID")
             require("resultHash" not in state or state["resultHash"] == data["resultHash"], "RECEIPT_RESULT_INVALID")
             self.journal.confirm({**state, "resultHash": data["resultHash"]}, data)
             print("RECEIPT_RECONCILED", flush=True)
             return True
         require(allow_execution, "STOP_PENDING_RECONCILIATION")
-        self.journal.require_unsent_claim(state)
+        if rejected:
+            self.journal.require_rejected_retry(state)
+        else:
+            self.journal.require_unsent_claim(state)
         require(data.get("status") in ("CLAIMED", "RUNNING") and data.get("resultHash") is None
                 and data.get("receiptNo") is None, "CLAIM_REMOTE_RESULT_UNCONFIRMED")
         task = claim(envelope(self.backend.request("GET", PREFIX + "/tasks/" + state["taskNo"] + "/manifest", key=state["nextKey"])), self.config)
@@ -409,6 +448,8 @@ class Worker:
         require(self.journal.state() == state, "CLAIM_STATE_CHANGED")
         if on_resume:
             on_resume()
+        if rejected:
+            state = self.journal.reserve_rejected_retry(state)
         self.execute(task, state)
         return True
 
@@ -418,7 +459,9 @@ class Worker:
             return False
         if state["phase"] == "CLAIMED":
             return self.recover_claimed(state, claimed_execution, on_resume)
-        require(state["phase"] in ("COMPLETE_INTENT", "UNKNOWN_COMPLETE"), "STOP_PENDING_RECONCILIATION")
+        if state["phase"] in ("REJECTED_COMPLETE", "UNKNOWN_COMPLETE"):
+            return self.recover_claimed(state, claimed_execution, on_resume, rejected=True)
+        require(state["phase"] in ("COMPLETE_INTENT", "REJECTED_RETRY_INTENT"), "STOP_PENDING_RECONCILIATION")
         require(state.get("binding") == self.config.binding, "JOURNAL_BINDING_CHANGED")
         data = self.receipt(state)  # A negative read never authorizes a second complete or next.
         self.journal.confirm(state, data)
@@ -482,6 +525,13 @@ class Worker:
         except NotSent:
             self.journal.set({**state, "phase": "COMPLETE_NOT_SENT"})
             raise Halt("STOP_COMPLETE_NOT_SENT") from None
+        except Rejected as error:
+            state.update(phase="REJECTED_COMPLETE", rejection={"httpStatus": error.http_status, "errorCode": error.error_code})
+            self.journal.set(state)
+            data = self.receipt(state)
+            self.journal.confirm(state, data)
+            print("RECEIPT_RECONCILED", flush=True)
+            return "CONFIRMED"
         except Halt:
             self.journal.set({**state, "phase": "UNKNOWN_COMPLETE"})
             # May positively confirm a lost response; never submit complete again.
@@ -690,15 +740,16 @@ class Fleet:
             with entry.gate:
                 state = entry.worker.journal.state()
                 confirmed = state.get("binding") == entry.worker.config.binding
-                healthy_phase = (state["phase"] == "IDLE" and not entry.running) or (entry.running and state["phase"] == "CLAIMED")
+                active_phase = state["phase"] in ("CLAIMED", "REJECTED_RETRY_INTENT")
+                healthy_phase = (state["phase"] == "IDLE" and not entry.running) or (entry.running and active_phase)
                 if not entry.present or entry.blocked or not confirmed or not healthy_phase or self.stop.is_set():
                     continue
                 try:
                     entry.worker.heartbeat(idle_only=state["phase"] == "IDLE",
-                                           expected_task=state.get("taskNo") if state["phase"] == "CLAIMED" else None)
+                                           expected_task=state.get("taskNo") if active_phase else None)
                 except Halt as error:
                     current = entry.worker.journal.state()
-                    if state["phase"] == "CLAIMED" and (current["phase"] != "CLAIMED" or current.get("taskNo") != state.get("taskNo")):
+                    if active_phase and (current["phase"] != state["phase"] or current.get("taskNo") != state.get("taskNo")):
                         # Completion may clear server activeTaskNo while this older health request is in flight.
                         continue
                     if isinstance(error, (NotSent,)) or str(error) == "HTTP_OUTCOME_UNKNOWN":
@@ -712,7 +763,7 @@ class Fleet:
     def tick(self, entry):
         with entry.gate:
             phase = entry.worker.journal.state()["phase"]
-            reconcile = phase in ("COMPLETE_INTENT", "UNKNOWN_COMPLETE", "CLAIMED")
+            reconcile = phase in ("COMPLETE_INTENT", "UNKNOWN_COMPLETE", "CLAIMED", "REJECTED_COMPLETE", "REJECTED_RETRY_INTENT")
             if entry.running or (not reconcile and (not entry.present or entry.blocked)) or time.monotonic() < entry.due:
                 return
             generation = entry.generation
