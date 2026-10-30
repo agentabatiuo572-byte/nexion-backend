@@ -197,6 +197,66 @@ class AppTrialLifecycleServiceTest {
         assertThat(config).containsEntry("trialDays", "3").containsEntry("trialOffsetCapUSD", "50");
     }
 
+    @Test
+    void historicalFailureDoesNotInventExpiryEvidenceFromCurrentPolicy() {
+        when(mapper.trial(7L)).thenReturn(trialWithStatus("FAILED", null, 9L));
+        when(mapper.policies()).thenReturn(List.of(new PolicyRow("graceDays", "1")));
+
+        assertThat(service.state(7L).getData())
+                .containsEntry("state", "FAILED")
+                .containsEntry("endReason", null)
+                .containsEntry("finishedAtEpochMs", null);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(value = {
+            "CANCELLED|auto_end|expired",
+            "CANCELLED|auto_settlement_window_expired|expired",
+            "FAILED|auto_end|expired",
+            "FAILED|auto_settlement_window_expired|expired",
+            "CANCELLED|explicit|cancelled",
+            "CANCELLED|unbind|cancelled",
+            "CANCELLED|admin|cancelled",
+            "CANCELLED||cancelled",
+            "FAILED||",
+            "FAILED|payment_failed|",
+            "ACTIVE|auto_end|",
+            "GRACE|auto_end|",
+            "EXTENDED|auto_end|",
+            "REDEEMED|auto_end|"
+    }, delimiter = '|')
+    void onlyPersistedExpiryCausesOnEndedClaimsProjectExpired(
+            String status, String cause, String expectedReason) {
+        LocalDateTime closedAt = LocalDateTime.of(2026, 10, 18, 8, 0);
+        when(mapper.trial(7L)).thenReturn(expiryEvidenceTrial(status, cause, closedAt));
+
+        assertThat(service.state(7L).getData())
+                .containsEntry("endReason", expectedReason)
+                .containsEntry("finishedAtEpochMs", epochMillis(closedAt));
+        verify(mapper, never()).cancelTrial(anyLong(), anyLong(), anyString(), any(), any());
+        verify(mapper, never()).settleWallet(any(), any(), any(), any());
+        verify(audit, never()).record(any());
+    }
+
+    @Test
+    void anUnclaimedStateHasNoExpiryEvidence() {
+        assertThat(service.state(7L).getData())
+                .containsEntry("endReason", null)
+                .containsEntry("finishedAtEpochMs", null);
+    }
+
+    private TrialRow expiryEvidenceTrial(String status, String cause, LocalDateTime closedAt) {
+        return new TrialRow(1L, 7L, "TRIAL-EVIDENCE", status, null, null, "Trial",
+                3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"), new BigDecimal("1299"),
+                "productCode=stellarbox-s1", LocalDateTime.of(2026, 10, 7, 8, 0), LocalDateTime.of(2026, 10, 10, 8, 0),
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                null, 8L, cause, closedAt);
+    }
+
+    private long epochMillis(LocalDateTime value) {
+        return value.atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli();
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"5,0,true", "6,0,false", "5,1,false"})
     void claimUsesPhysicalDevicesAndExistingOrderReservations(int active, int reserved, boolean allowed) {
