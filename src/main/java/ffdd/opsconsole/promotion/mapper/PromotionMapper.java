@@ -79,7 +79,7 @@ public interface PromotionMapper extends BaseMapper<Object>, ffdd.opsconsole.sha
         long used=list("""
             SELECT id FROM nx_user_device WHERE user_id=? AND is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
               AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
-              AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE'))<>'SHARE' AND activated_at IS NOT NULL
+              AND activated_at IS NOT NULL
               AND deactivated_at IS NULL AND pending_deactivate=0 FOR UPDATE
             """,account).size();
         for(Map<String,Object> order:list("""
@@ -91,8 +91,7 @@ public interface PromotionMapper extends BaseMapper<Object>, ffdd.opsconsole.sha
             List<Map<String,Object>> lines=list("SELECT product_id,quantity FROM nx_order_item WHERE order_no=? AND is_deleted=0 ORDER BY id FOR UPDATE",order.get("order_no"));
             if(lines.isEmpty())lines=List.of(order);
             for(Map<String,Object> line:lines){
-                Map<String,Object> p=one("SELECT product_type FROM nx_product WHERE id=? AND is_deleted=0",line.get("product_id"));
-                if(p==null||!"SHARE".equalsIgnoreCase(text(p.get("product_type"))))used+=number(line.get("quantity"));
+                used+=number(line.get("quantity"));
             }
         }
         // This is the same reservation/receipt fact used by CanonicalStateMapper.PROMOTION_RESERVED_SLOTS.
@@ -104,8 +103,7 @@ public interface PromotionMapper extends BaseMapper<Object>, ffdd.opsconsole.sha
         return used + lockReservedTrialSlotCount(account);
     }
     default long deviceSlotCap(){
-        Map<String,Object> config=one("SELECT config_value FROM nx_config_item WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1");
-        return config==null?6:Long.parseLong(text(config.get("config_value")));
+        return 6;
     }
     class StatementProvider {
         public static String statement(Map<String,Object> parameters) {return (String)parameters.get("sql");}

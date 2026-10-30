@@ -118,7 +118,7 @@ class PhoneActivationCapacityMySqlTest {
                 + "status VARCHAR(32),user_device_id BIGINT,device_instance_no VARCHAR(80),expires_at DATETIME(6),"
                 + "claimed_at DATETIME,created_at DATETIME,updated_at DATETIME,"
                 + "row_version BIGINT DEFAULT 0,is_deleted INT DEFAULT 0) ENGINE=InnoDB");
-        jdbc.update("INSERT INTO nx_config_item(config_key,config_value) VALUES('device.max_active_slots','3')");
+        jdbc.update("INSERT INTO nx_config_item(config_key,config_value) VALUES('device.max_active_slots','6')");
         jdbc.update("INSERT INTO nx_product(id,product_no,name,product_type,status) "
                 + "VALUES(1,'capacity-box','Synthetic box','DEVICE','ACTIVE'),"
                 + "(2,'capacity-share','Synthetic share','SHARE','ACTIVE'),"
@@ -162,7 +162,7 @@ class PhoneActivationCapacityMySqlTest {
     }
 
     @BeforeEach void resetCap() {
-        jdbc.update("UPDATE nx_config_item SET config_value='3' WHERE config_key='device.max_active_slots'");
+        jdbc.update("UPDATE nx_config_item SET config_value='6' WHERE config_key='device.max_active_slots'");
     }
 
     @Test void onlyTheOwnedActiveCanonicalPhoneProvidesAReusableSlot() {
@@ -188,10 +188,10 @@ class PhoneActivationCapacityMySqlTest {
     @Test void committedActiveSlotCannotHideBehindAnOlderSnapshotForEitherAccountEnvironment() {
         for (boolean sandbox : new boolean[] {false, true}) {
             long user = user(sandbox);
-            device(user); device(user);
+            for (int i=0; i<5; i++) device(user);
             afterOlderSnapshot(user, ignored -> device(user), ignored -> {
-                assertThat(sandbox ? mapper.developmentActiveDeviceCount(user) : mapper.activeDeviceCount(user)).isEqualTo(2);
-                assertThat(mapper.lockActiveDeviceCount(user, sandbox)).isEqualTo(3);
+                assertThat(sandbox ? mapper.developmentActiveDeviceCount(user) : mapper.activeDeviceCount(user)).isEqualTo(5);
+                assertThat(mapper.lockActiveDeviceCount(user, sandbox)).isEqualTo(6);
                 assertFull(user);
             });
         }
@@ -199,8 +199,8 @@ class PhoneActivationCapacityMySqlTest {
 
     @Test void committedOrderAndNewItemsAreReadAtEveryNestedLevel() {
         long user = user(false);
-        device(user); device(user);
-        // SHARE header deliberately makes an old/missing item snapshot return zero.
+        for (int i=0; i<5; i++) device(user);
+        // The old snapshot must not see the newly committed Cloud header or its item.
         afterOlderSnapshot(user, ignored -> {
             order(user, 2, "SINGLE", "PENDING_PAYMENT", "WAITING_PAYMENT");
             orderItem(user, 1);
@@ -213,7 +213,7 @@ class PhoneActivationCapacityMySqlTest {
 
     @Test void changedExistingOrderItemQuantityUsesCurrentRead() {
         long user = user(false);
-        device(user);
+        for (int i=0; i<4; i++) device(user);
         order(user, 2, "SINGLE", "PENDING_PAYMENT", "WAITING_PAYMENT");
         orderItem(user, 1);
         afterOlderSnapshot(user, ignored -> jdbc.update("UPDATE nx_order_item SET quantity=2 WHERE order_no=?", "ORDER-" + user), ignored -> {
@@ -226,7 +226,7 @@ class PhoneActivationCapacityMySqlTest {
     @Test void committedPromotionReservationCannotHideBehindAnOlderSnapshot() {
         for (boolean sandbox : new boolean[] {false, true}) {
             long user = user(sandbox);
-            device(user); device(user);
+            for (int i=0; i<5; i++) device(user);
             afterOlderSnapshot(user, ignored -> promotion(user), ignored -> {
                 assertThat(sandbox ? mapper.developmentReservedDeviceOrderCount(user) : mapper.reservedDeviceOrderCount(user)).isZero();
                 assertThat(mapper.lockReservedDeviceOrderCount(user, sandbox)).isEqualTo(1);
@@ -237,7 +237,7 @@ class PhoneActivationCapacityMySqlTest {
 
     @Test void committedTrialReservationCannotHideBehindAnOlderSnapshot() {
         long user = user(false);
-        device(user); device(user);
+        for (int i=0; i<5; i++) device(user);
         afterOlderSnapshot(user, ignored -> jdbc.update(
                 "INSERT INTO nx_trial_claim(user_id,claim_no,status,device_name,claimed_at,expires_at) "
                         + "VALUES(?,?,'ACTIVE','Synthetic trial',NOW(),DATE_ADD(NOW(),INTERVAL 3 DAY))",
@@ -250,7 +250,7 @@ class PhoneActivationCapacityMySqlTest {
 
     @Test void fulfilledPromotionNestedExclusionUsesCurrentRead() {
         long user = user(false);
-        device(user); device(user); promotion(user);
+        for (int i=0; i<5; i++) device(user); promotion(user);
         jdbc.update("INSERT INTO nx_promotion_reward VALUES(?,?,'ISSUED')", "REWARD-" + user, "PROMO-" + user);
         afterOlderSnapshot(user, ignored -> jdbc.update("INSERT INTO nx_promotion_device_receipt VALUES(?,?)", "REWARD-" + user, user), ignored -> {
             assertThat(mapper.reservedDeviceOrderCount(user)).isEqualTo(1);
@@ -261,7 +261,7 @@ class PhoneActivationCapacityMySqlTest {
 
     @Test void fulfilledLegacyTrialNestedExclusionUsesCurrentRead() {
         long user = user(false);
-        device(user); device(user);
+        for (int i=0; i<5; i++) device(user);
         order(user, 1, "TRIAL_CONVERT", "PAID", "ACTIVE");
         afterOlderSnapshot(user, ignored -> {
             long trialDevice = device(user);
@@ -276,14 +276,45 @@ class PhoneActivationCapacityMySqlTest {
         });
     }
 
-    @Test void changedCapacityConfigurationUsesCurrentRead() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"2", "12"})
+    void legacyCapacityConfigurationCannotChangeTheFixedSixSlots(String configured) {
         long user = user(false);
-        device(user); device(user);
-        afterOlderSnapshot(user, ignored -> jdbc.update("UPDATE nx_config_item SET config_value='2' WHERE config_key='device.max_active_slots'"), ignored -> {
-            assertThat(mapper.deviceSlotCap()).isEqualTo(3);
-            assertThat(mapper.lockDeviceSlotCap()).isEqualTo(2);
+        for (int i=0; i<6; i++) device(user);
+        afterOlderSnapshot(user, ignored -> jdbc.update("UPDATE nx_config_item SET config_value=? WHERE config_key='device.max_active_slots'", configured), ignored -> {
+            assertThat(mapper.deviceSlotCap()).isEqualTo(6);
+            assertThat(mapper.lockDeviceSlotCap()).isEqualTo(6);
             assertFull(user);
         });
+    }
+
+    @Test void cloudShareOccupiesTheSixthSlotAcrossEveryCapacityReader() {
+        long user = user(false);
+        for (int i=0; i<5; i++) device(user);
+        long cloud = device(user);
+        jdbc.update("UPDATE nx_user_device SET device_type='SHARE',product_code='cloud-share' WHERE id=?", cloud);
+        assertThat(mapper.activeDeviceCount(user)).isEqualTo(6);
+        assertThat(mapper.lockActiveDeviceCount(user, false)).isEqualTo(6);
+        assertThat(bundle.activeDeviceCount(user)).isEqualTo(6);
+        assertThat(bundle.lockActiveDeviceCount(user)).isEqualTo(6);
+        assertThat(tradeinMapper.countActiveDevices(user)).isEqualTo(6);
+        assertThat(tradeinMapper.lockActiveDeviceCount(user)).isEqualTo(6);
+        assertThat(opsMapper.countActiveDevicesByUser(user)).isEqualTo(6);
+        assertThat(promotionMapper.occupiedDeviceSlots(user)).isEqualTo(6);
+        transaction.executeWithoutResult(status -> assertFull(user));
+        jdbc.update("UPDATE nx_user_device SET status='DEACTIVATED',deactivated_at=NOW() WHERE id=?", cloud);
+        assertThat(mapper.activeDeviceCount(user)).isEqualTo(5);
+        transaction.executeWithoutResult(status -> service.requireCapacity(user, null));
+    }
+
+    @Test void cloudShareOrdersReserveEveryHeaderOrItemUnit() {
+        long user = user(false);
+        order(user, 2, "SINGLE", "PENDING_PAYMENT", "WAITING_PAYMENT");
+        jdbc.update("UPDATE nx_order SET quantity=2 WHERE order_no=?", "ORDER-" + user);
+        assertCapacityKeepReservations(user, 2);
+        jdbc.update("INSERT INTO nx_order_item(order_no,product_id,product_name,quantity,unit_price_usdt,line_amount_usdt) "
+                + "VALUES(?,2,'Synthetic share',3,1,3)", "ORDER-" + user);
+        assertCapacityKeepReservations(user, 3);
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -322,7 +353,6 @@ class PhoneActivationCapacityMySqlTest {
                 "UPDATE nx_user_device SET is_deleted=1 WHERE source_order_no=?",
                 "UPDATE nx_user_device SET source_environment='SANDBOX',run_id='inventory-test-run' WHERE source_order_no=?",
                 "UPDATE nx_user_device SET source_channel='TRIAL' WHERE source_order_no=?",
-                "UPDATE nx_user_device SET device_type='SHARE' WHERE source_order_no=?",
                 "UPDATE nx_user_device SET purchased_at=NULL WHERE source_order_no=?",
                 "UPDATE nx_order_item SET is_deleted=1 WHERE order_no=?",
                 "UPDATE nx_order_item SET product_id=3 WHERE order_no=?",
@@ -401,12 +431,13 @@ class PhoneActivationCapacityMySqlTest {
 
     @Test void aNewExtraCapacityKeepItemCannotHideBehindAnOlderSnapshot() {
         long user = user(false);
-        device(user); capacityKeepOrder(user); deliverCapacityKeep(user);
+        for (int i=0; i<4; i++) device(user);
+        capacityKeepOrder(user); deliverCapacityKeep(user);
         afterOlderSnapshot(user, ignored -> orderItem(user, 1), ignored -> {
             assertThat(mapper.reservedDeviceOrderCount(user)).isZero();
             assertThat(mapper.lockReservedDeviceOrderCount(user, false)).isEqualTo(2);
             assertThat(tradeinMapper.lockReservedDeviceOrderCount(user)).isEqualTo(2);
-            assertThat(promotionMapper.occupiedDeviceSlots(user)).isEqualTo(3);
+            assertThat(promotionMapper.occupiedDeviceSlots(user)).isEqualTo(6);
             assertFull(user);
         });
     }
@@ -442,7 +473,7 @@ class PhoneActivationCapacityMySqlTest {
 
     @Test void capacityRejectionAllowsTheOuterTransactionToPersistItsRejectionReceipt() {
         long user = user(false);
-        device(user); device(user); device(user);
+        for (int i=0; i<6; i++) device(user);
         String receipt = "capacity.test.rejection." + user;
         transaction.executeWithoutResult(status -> {
             assertFull(user);

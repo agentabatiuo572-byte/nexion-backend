@@ -70,6 +70,27 @@ class TestCloudExecutorServiceTest {
         env.setProperty(PREFIX+"model-digest","sha256:"+"1".repeat(64));
         assertThatThrownBy(()->service.authenticate("Bearer "+TOKEN)).hasMessage("TEST_CLOUD_AUTH_INVALID");
     }
+    @Test void singleEligibilityReportsLifecycleWithoutHeartbeatClaimOrSettlement() {
+        when(mapper.lockActiveTaskNos(7,11)).thenReturn(List.of());
+        assertThat(service.eligibility(identity).getData()).containsEntry("eligible",true).containsEntry("activeTaskNo",null);
+        when(assignments.lockOwnedDevice(7L,11L)).thenReturn(new DeviceRow(11L,"NEX-UNIT-CLOUD","SHARE","SHARE","Cloud",
+                "DEACTIVATED","cloud-share",NOW.minusDays(1),NOW.minusHours(1),24,"unit","OFFLINE","USER_DEACTIVATED",false));
+        assertThat(service.eligibility(identity).getData()).containsEntry("eligible",false).containsEntry("activeTaskNo",null);
+        when(assignments.lockOwnedDevice(7L,11L)).thenReturn(device());
+        when(mapper.lockActiveTaskNos(7,11)).thenReturn(List.of(TASK));
+        assertThat(service.eligibility(identity).getData()).containsEntry("eligible",true).containsEntry("activeTaskNo",TASK);
+        verify(mapper,never()).heartbeat(anyLong(),any(),any(),any());
+        verify(mapper,never()).register(any(),any()); verify(mapper,never()).insert(any(Execution.class));
+        verify(mapper,never()).cancelUnexecuted(anyLong(),anyLong(),anyString(),anyString(),any());
+        verifyNoInteractions(settlement,audit);
+    }
+    @Test void singleEligibilityNeverAcceptsForeignIdentityOrMultipleLiveTasks() {
+        when(mapper.lockActiveTaskNos(7,11)).thenReturn(List.of(TASK,"CTA-OTHER"));
+        assertThatThrownBy(()->service.eligibility(identity)).hasMessage("TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+        when(assignments.lockOwnedDevice(7L,11L)).thenReturn(null);
+        assertThatThrownBy(()->service.eligibility(identity)).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        verifyNoInteractions(settlement,audit);
+    }
     private Identity fleetIdentity() {
         env.setProperty(PREFIX+"fleet-enabled","true"); env.setProperty(PREFIX+"fleet-started-at",NOW.minusDays(1).toString());
         var b=new TestCloudExecutorMapper.Binding("fleet-12",7,12,"NEX-FLEET-12","EM-UNIT","bge-m3:567m",DIGEST);

@@ -130,7 +130,7 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.findTrialState(42L)).thenReturn("CLAIMED");
         when(mapper.twoFactorEnabled(42L)).thenReturn(true);
-        when(mapper.activeDeviceCount(42L)).thenReturn(3);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(3);
         when(mapper.deviceSlotCap()).thenReturn(3);
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "INACTIVE", "OWNED", 0L));
@@ -163,7 +163,7 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.findTrialState(42L)).thenReturn(null);
         when(mapper.twoFactorEnabled(42L)).thenReturn(false);
-        when(mapper.activeDeviceCount(42L)).thenReturn(1);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(1);
         when(mapper.deviceSlotCap()).thenReturn(3);
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "INACTIVE", "OWNED", 0L));
@@ -234,7 +234,7 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockProduct(8L, null)).thenReturn(
                 new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4, null));
-        when(mapper.activeDeviceCount(42L)).thenReturn(6);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(6);
 
         var result = service.createOrder(42L, null, 8L, 1, "capacity-bypass-key");
 
@@ -250,8 +250,8 @@ class AppCanonicalBoundaryServiceTest {
     void reservedOrderAndTrialTogetherBlockAnAdditionalOwnedDeviceActivation() {
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.deviceSlotCap()).thenReturn(6);
-        when(mapper.activeDeviceCount(42L)).thenReturn(4);
-        when(mapper.reservedDeviceOrderCount(42L)).thenReturn(1);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(4);
+        when(mapper.lockReservedDeviceOrderCount(42L, false)).thenReturn(1);
         when(mapper.lockReservedTrialSlotCount(42L)).thenReturn(1);
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "INACTIVE", "OWNED", 0L));
@@ -264,7 +264,7 @@ class AppCanonicalBoundaryServiceTest {
     void trialReservationBlocksOrdinaryActivationAndAnotherPhysicalOrderAtTheCap() {
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.deviceSlotCap()).thenReturn(6);
-        when(mapper.activeDeviceCount(42L)).thenReturn(5);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(5);
         when(mapper.lockReservedTrialSlotCount(42L)).thenReturn(1);
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "INACTIVE", "OWNED", 0L));
@@ -335,8 +335,8 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockProduct(8L, null)).thenReturn(
                 new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4, null));
-        when(mapper.activeDeviceCount(42L)).thenReturn(4);
-        when(mapper.reservedDeviceOrderCount(42L)).thenReturn(1);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(4);
+        when(mapper.lockReservedDeviceOrderCount(42L, false)).thenReturn(1);
 
         var result = service.createOrder(42L, null, 8L, 2, "capacity-reservation-key");
 
@@ -349,8 +349,8 @@ class AppCanonicalBoundaryServiceTest {
         serialization.verify(idempotency).execute(anyString(), anyString(), anyString(),
                 eq(ffdd.opsconsole.shared.api.ApiResult.class),
                 org.mockito.ArgumentMatchers.<java.util.function.Supplier<ffdd.opsconsole.shared.api.ApiResult>>any());
-        serialization.verify(mapper).activeDeviceCount(42L);
-        serialization.verify(mapper).reservedDeviceOrderCount(42L);
+        serialization.verify(mapper).lockActiveDeviceCount(42L, false);
+        serialization.verify(mapper).lockReservedDeviceOrderCount(42L, false);
     }
 
     @Test
@@ -721,8 +721,8 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.purchaseGateJson("BOX-8"))
                 .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":2,\"quotaSold\":0}");
         when(mapper.purchaseFacts(42L)).thenReturn(new CanonicalStateMapper.PurchaseFacts(0, 0, BigDecimal.ZERO));
-        when(mapper.activeDeviceCount(42L)).thenReturn(0);
-        when(mapper.reservedDeviceOrderCount(42L)).thenReturn(0);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(0);
+        when(mapper.lockReservedDeviceOrderCount(42L, false)).thenReturn(0);
         when(mapper.userEventAttribution(42L)).thenReturn(
                 new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
         when(mapper.consumePurchaseQuota("BOX-8", 1)).thenReturn(1);
@@ -1180,7 +1180,8 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
-    void unlimitedShareOrderDoesNotRequirePhysicalStockOrDeviceCapacity() {
+    void unlimitedShareOrderStillChecksDeviceCapacityWithoutRequiringPhysicalStock() {
+        when(mapper.deviceSlotCap()).thenReturn(6);
         when(mapper.lockProduct(88L, null)).thenReturn(new CanonicalStateMapper.ProductStock(
                 88L, "cloud-share", new BigDecimal("199"), 0, null, null, "SHARE", "UNLIMITED"));
         when(mapper.decrementProductStock(88L, 2)).thenReturn(1);
@@ -1194,8 +1195,8 @@ class AppCanonicalBoundaryServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("subtotalUsdt", new BigDecimal("398.000000"));
         verify(mapper).decrementProductStock(88L, 2);
-        verify(mapper, never()).activeDeviceCount(42L);
-        verify(mapper, never()).reservedDeviceOrderCount(42L);
+        verify(mapper).lockActiveDeviceCount(42L, false);
+        verify(mapper).lockReservedDeviceOrderCount(42L, false);
     }
 
     @Test
@@ -1207,8 +1208,8 @@ class AppCanonicalBoundaryServiceTest {
                 new CanonicalStateMapper.ProductStock(18L, "stellarbox-pro", new BigDecimal("1199"), 3,
                         "P1", "{\"mode\":\"all\",\"enforce\":true}"));
         when(mapper.purchaseFacts(42L)).thenReturn(new CanonicalStateMapper.PurchaseFacts(0, 0, BigDecimal.ZERO));
-        when(mapper.activeDeviceCount(42L)).thenReturn(0);
-        when(mapper.reservedDeviceOrderCount(42L)).thenReturn(0);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(0);
+        when(mapper.lockReservedDeviceOrderCount(42L, false)).thenReturn(0);
         when(mapper.userEventAttribution(42L)).thenReturn(
                 new CanonicalStateMapper.UserEventAttribution("P1", 0, "2026-W34"));
         when(mapper.decrementProductStock(18L, 1)).thenReturn(1);
@@ -1670,7 +1671,7 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 1L));
         when(mapper.deviceSlotCap()).thenReturn(3);
-        when(mapper.activeDeviceCount(42L)).thenReturn(0);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(0);
         when(mapper.activateOwnedDeviceCas(42L, 9L, 1L, 3)).thenReturn(1);
         when(mapper.userEventAttribution(42L)).thenReturn(
                 new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
@@ -1690,7 +1691,7 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 1L));
         when(mapper.deviceSlotCap()).thenReturn(3);
-        when(mapper.activeDeviceCount(42L)).thenReturn(0);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(0);
         when(mapper.activateOwnedDeviceCas(42L, 9L, 1L, 3)).thenReturn(1);
         when(mapper.userEventAttribution(42L)).thenReturn(
                 new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
@@ -1796,13 +1797,13 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
-    void cloudShareActivationDoesNotConsumeOrRequireAPhysicalSlot() {
+    void cloudShareActivationConsumesTheSixthSlot() {
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(
                         9L, 42L, "DEV-SHARE-9", "DEACTIVATED", "OWNED", 1L, false, "SHARE"));
         when(mapper.deviceSlotCap()).thenReturn(6);
-        when(mapper.activeDeviceCount(42L)).thenReturn(6);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(5);
         when(mapper.activateOwnedDeviceCas(42L, 9L, 1L, 6)).thenReturn(1);
         when(mapper.userEventAttribution(42L)).thenReturn(
                 new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
@@ -1812,6 +1813,33 @@ class AppCanonicalBoundaryServiceTest {
         assertThat(activated.getCode()).isZero();
         assertThat(activated.getData()).containsEntry("activeCount", 6).containsEntry("slotCap", 6);
         verify(mapper).activateOwnedDeviceCas(42L, 9L, 1L, 6);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {6, 10})
+    void cloudShareActivationIsRejectedAtOrAboveTheSharedCap(int active) {
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(
+                        9L, 42L, "DEV-SHARE-9", "DEACTIVATED", "OWNED", 1L, false, "SHARE"));
+        when(mapper.deviceSlotCap()).thenReturn(6);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(active);
+
+        assertRejected(service.activateDevice(42L, 9L, 1L, null, "full-cloud-share"), "DEVICE_SLOT_CAP_EXCEEDED");
+        verify(mapper, never()).activateOwnedDeviceCas(anyLong(), anyLong(), anyLong(), anyInt());
+        verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(), anyLong(), anyString(), anyInt(), anyString(), any());
+    }
+
+    @Test
+    void cloudShareOrderQuantityCannotExceedRemainingSharedSlots() {
+        when(mapper.lockProduct(88L, null)).thenReturn(new CanonicalStateMapper.ProductStock(
+                88L, "cloud-share", new BigDecimal("199"), 0, null, null, "SHARE", "UNLIMITED"));
+        when(mapper.deviceSlotCap()).thenReturn(6);
+        when(mapper.lockActiveDeviceCount(42L, false)).thenReturn(4);
+        when(mapper.lockReservedDeviceOrderCount(42L, false)).thenReturn(1);
+
+        assertRejected(service.createOrder(42L, null, 88L, 2, "cloud-share-over-quantity"), "CAPACITY_REPLACEMENT_REQUIRED");
+        verify(mapper, never()).decrementProductStock(anyLong(), anyInt());
+        verify(growthLifecyclePublisher, never()).prepareVoucher(any(), any(), any(), any());
     }
 
     @Test

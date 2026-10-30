@@ -61,6 +61,7 @@ class Backend:
         self.cfg, self.journal, self.db_path = cfg, journal, db_path
         self.task, self.calls, self.complete_body = task(cfg), [], None
         self.next_error, self.complete_error, self.found = None, None, True
+        self.eligible = True
         self.idle = False
 
     def request(self, method, path, body=None, key=None):
@@ -75,6 +76,8 @@ class Backend:
                 error, self.next_error = self.next_error, None
                 raise error
             return ok({**identity(self.cfg), "idle": True, "retryAfterSeconds": 60} if self.idle else self.task)
+        if path == w.PREFIX + "/eligibility":
+            return ok({**identity(self.cfg), "eligible": self.eligible, "activeTaskNo": None})
         if path == w.PREFIX + "/heartbeat":
             phase = self.journal.state()["phase"]
             active = self.task["taskNo"] if phase in ("CLAIMED", "COMPLETE_INTENT", "UNKNOWN_COMPLETE", "REJECTED_RETRY_INTENT", "ROLLBACK_RETRY_INTENT") else None
@@ -124,6 +127,36 @@ class WorkerTests(unittest.TestCase):
         self.backend.found = False
         self.backend.calls.clear()
         return state
+
+    def test_fleet_capacity_gates_next_before_and_after_intent_but_preserves_claimed_completion(self):
+        capacity = self.worker.claim_capacity = threading.Event()
+        self.assertEqual(self.worker.one(), "NOT_SENT")
+        original_key = self.journal.state()["nextKey"]
+        self.assertEqual(self.backend.calls, [])
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM calls").fetchone()[0], 0)
+        capacity.set()
+        intent = self.journal.intent
+        def lose_capacity_after_intent(*args, **kwargs):
+            call = intent(*args, **kwargs)
+            if args[0] == "NEXT":
+                capacity.clear()
+            return call
+        with patch.object(self.journal, "intent", side_effect=lose_capacity_after_intent):
+            self.assertEqual(self.worker.one(), "NOT_SENT")
+        self.assertEqual(self.backend.calls, [])
+        self.assertEqual(self.journal.state()["nextKey"], original_key)
+        self.assertEqual(self.journal.db.execute("SELECT operation,outcome FROM calls").fetchall(), [("NEXT", "NOT_SENT")])
+        capacity.set()
+        request = self.ollama.request
+        def lose_capacity_during_inference(method, path, body=None, key=None):
+            if path == "/api/embed":
+                capacity.clear()
+            return request(method, path, body, key)
+        self.ollama.request = lose_capacity_during_inference
+        self.assertEqual(self.worker.one(), "CONFIRMED")
+        self.assertFalse(capacity.is_set())
+        self.assertEqual([key for _, path, key in self.backend.calls if path.endswith("/next-task")], [original_key])
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in self.backend.calls), 1)
 
     def test_stop_while_durable_intent_commits_never_sends_next_or_complete(self):
         original = self.journal.intent
@@ -631,12 +664,90 @@ class WorkerTests(unittest.TestCase):
         before = len(self.backend.calls)
         self.assertEqual(self.worker.run(once=True), 0)
         resumed = self.backend.calls[before:]
-        self.assertEqual(resumed[0], ("POST", w.PREFIX + "/next-task", original_key))
-        self.assertTrue(any(path == w.PREFIX + "/heartbeat" for _, path, _ in resumed[1:]))
+        self.assertEqual(resumed[0], ("GET", w.PREFIX + "/eligibility", None))
+        self.assertEqual(resumed[1], ("POST", w.PREFIX + "/next-task", original_key))
+        self.assertTrue(any(path == w.PREFIX + "/heartbeat" for _, path, _ in resumed[2:]))
 
     def test_initial_run_claims_before_any_heartbeat(self):
         self.assertEqual(self.worker.run(once=True), 0)
-        self.assertEqual(self.backend.calls[0][1], w.PREFIX + "/next-task")
+        self.assertEqual([path for _, path, _ in self.backend.calls[:2]], [w.PREFIX + "/eligibility", w.PREFIX + "/next-task"])
+
+    def test_single_deactivated_poll_is_read_only_then_same_identity_and_journal_resume_after_reactivation(self):
+        original = {"phase": "IDLE", "binding": dict(self.cfg.binding)}
+        self.journal.set(original)
+        self.backend.eligible = False
+        waits = []
+        def reactivate_after_wait(timeout):
+            if timeout == self.cfg.interval:
+                waits.append(timeout)
+                if len(waits) == 1:
+                    self.assertEqual(self.backend.calls, [("GET", w.PREFIX + "/eligibility", None)])
+                    self.assertEqual(self.journal.state(), original)
+                    self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM calls").fetchone()[0], 0)
+                    self.backend.eligible = True
+                else:
+                    self.worker.stop.set()
+            return self.worker.stop.is_set()
+        self.worker.stop.wait = reactivate_after_wait
+        self.assertEqual(self.worker.run(), 0)
+        self.assertEqual(waits, [60, 60])
+        self.assertEqual(self.cfg.binding, original["binding"])
+        self.assertEqual(self.journal.state(), original)
+        self.assertEqual(sum(path.endswith("/next-task") for _, path, _ in self.backend.calls), 1)
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in self.backend.calls), 1)
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
+
+    def test_single_inactive_or_unknown_eligibility_preserves_proven_unsent_key_and_sends_no_mutation(self):
+        original = {"phase": "NEXT_NOT_SENT", "binding": self.cfg.binding, "nextKey": "BGE-NEXT-" + "e" * 32}
+        self.journal.set(original)
+        self.backend.eligible = False
+        self.assertEqual(self.worker.run(once=True), 2)
+        self.assertEqual(self.journal.state(), original)
+        self.assertEqual([method for method, _, _ in self.backend.calls], ["GET"])
+        request = self.backend.request
+        def unavailable(method, path, body=None, key=None):
+            if path.endswith("/eligibility"):
+                raise w.Halt("HTTP_OUTCOME_UNKNOWN")
+            return request(method, path, body, key)
+        with patch.object(self.backend, "request", side_effect=unavailable):
+            self.assertEqual(self.worker.run(once=True), 2)
+        self.assertEqual(self.journal.state(), original)
+        self.backend.eligible = True
+        self.assertEqual(self.worker.run(once=True), 0)
+        self.assertEqual([key for _, path, key in self.backend.calls if path.endswith("/next-task")], [original["nextKey"]])
+
+    def test_single_eligibility_wrong_binding_nonboolean_or_unjournaled_active_task_never_claims(self):
+        request = self.backend.request
+        for changed in ({"deviceId": 93}, {"eligible": 1}, {"eligible": "true"}, {"activeTaskNo": self.backend.task["taskNo"]},
+                        {"activeTaskNo": ""}):
+            original = {"phase": "IDLE", "binding": self.cfg.binding}
+            self.journal.set(original)
+            self.backend.calls.clear()
+            def tampered(method, path, body=None, key=None):
+                response = request(method, path, body, key)
+                if path.endswith("/eligibility"):
+                    response["data"].update(changed)
+                return response
+            with self.subTest(changed=changed), patch.object(self.backend, "request", side_effect=tampered), self.assertRaises(w.Halt):
+                self.worker.run(once=True)
+            self.assertEqual(self.journal.state(), original)
+            self.assertEqual([method for method, _, _ in self.backend.calls], ["GET"])
+
+    def test_single_idle_background_health_checks_eligibility_before_mutation_after_deactivation(self):
+        self.journal.set({"phase": "IDLE", "binding": self.cfg.binding})
+        worker = w.Worker(self.cfg, self.backend, self.ollama, self.journal, threading.Event())
+        request = self.backend.request
+        def deactivate_after_initial_health(method, path, body=None, key=None):
+            response = request(method, path, body, key)
+            if path.endswith("/heartbeat"):
+                self.backend.eligible = False
+            return response
+        self.backend.request = deactivate_after_initial_health
+        with patch.object(worker.heartbeat_stop, "wait", side_effect=[False, True]):
+            worker.start_heartbeat()
+            worker.heartbeat_thread.join(2)
+        self.assertFalse(worker.heartbeat_thread.is_alive())
+        self.assertEqual([path for _, path, _ in self.backend.calls], [w.PREFIX + "/heartbeat", w.PREFIX + "/eligibility"])
 
     def test_sent_unknown_next_blocks_restart_before_network(self):
         self.backend.next_error = w.Halt("HTTP_OUTCOME_UNKNOWN")
@@ -730,7 +841,7 @@ class WorkerTests(unittest.TestCase):
         self.backend.receipt = lambda: {**original(), "resultHash": "e" * 64}
         self.assertEqual(self.worker.run(once=True), 2)
         self.assertEqual([path for _, path, _ in self.backend.calls],
-                         [w.PREFIX + "/next-task", w.PREFIX + "/tasks/" + self.backend.task["taskNo"] + "/receipt"])
+                         [w.PREFIX + "/eligibility", w.PREFIX + "/next-task", w.PREFIX + "/tasks/" + self.backend.task["taskNo"] + "/receipt"])
         self.assertEqual(self.ollama.calls, [])
         self.assertIsNone(self.backend.complete_body)
 
@@ -864,7 +975,7 @@ class FleetTests(unittest.TestCase):
         return backend
 
     def test_parallelism_is_small_bounded_and_single_worker_config_is_unchanged(self):
-        self.assertEqual(self.fleet.config.parallelism, 2)
+        self.assertEqual(self.fleet.config.parallelism, 6)
         for value in ("0", "9", "-1", "2.0", "", "unlimited"):
             with self.subTest(value=value), self.assertRaisesRegex(w.Halt, "FLEET_PARALLELISM_INVALID"):
                 w.Config({**self.env, "UVEL_CLOUD_FLEET_PARALLELISM": value}, fleet=True)
@@ -872,9 +983,10 @@ class FleetTests(unittest.TestCase):
 
     def test_model_endpoint_pool_requires_distinct_loopback_runners_at_parallel_capacity(self):
         urls = "http://127.0.0.1:11436,http://127.0.0.1:11437"
-        cfg = w.Config({**self.env, "UVEL_CLOUD_FLEET_OLLAMA_URLS": urls}, fleet=True)
+        env = {**self.env, "UVEL_CLOUD_FLEET_PARALLELISM": "2"}
+        cfg = w.Config({**env, "UVEL_CLOUD_FLEET_OLLAMA_URLS": urls}, fleet=True)
         self.assertEqual(cfg.ollama_endpoints, [("127.0.0.1", 11436), ("127.0.0.1", 11437)])
-        fleet = w.Fleet({**self.env, "UVEL_CLOUD_FLEET_OLLAMA_URLS": urls}, self.backend, self.fleet.ollama,
+        fleet = w.Fleet({**env, "UVEL_CLOUD_FLEET_OLLAMA_URLS": urls}, self.backend, self.fleet.ollama,
                         self.fleet.directory, threading.Event(), self.open_journal)
         self.assertIsInstance(fleet.ollama, w.OllamaPool)
         self.assertEqual([client.address for client in fleet.ollama.clients], cfg.ollama_endpoints)
@@ -882,7 +994,7 @@ class FleetTests(unittest.TestCase):
                         "http://[::1]:11436,http://[0:0:0:0:0:0:0:1]:11436",
                         "http://127.0.0.1:11436,http://example.com:11437"):
             with self.subTest(urls=invalid), self.assertRaises(w.Halt):
-                w.Config({**self.env, "UVEL_CLOUD_FLEET_OLLAMA_URLS": invalid}, fleet=True)
+                w.Config({**env, "UVEL_CLOUD_FLEET_OLLAMA_URLS": invalid}, fleet=True)
         self.assertEqual(self.fleet.config.ollama_endpoints, [])
         self.assertIsInstance(self.fleet.ollama, Ollama)  # An unconfigured fleet retains its original client.
         single = w.Http(("127.0.0.1", 11435))
@@ -891,13 +1003,13 @@ class FleetTests(unittest.TestCase):
         serial = w.Fleet({**self.env, "UVEL_CLOUD_FLEET_PARALLELISM": "1"}, self.backend, single, self.fleet.directory)
         self.assertIs(serial.ollama, single)
 
-    def test_scheduler_overlaps_two_inferences_bounds_capacity_and_advances_past_slow_instance(self):
-        entries = self.discover([self.row(), self.row(93), self.row(94)])
+    def test_scheduler_overlaps_six_inferences_and_advances_while_one_instance_and_discovery_are_slow(self):
+        entries = self.discover([self.row(device) for device in range(92, 98)])
         backends = [self.wire(entry) for entry in entries]
         for index, backend in enumerate(backends):
             backend.task["inputTexts"][0] = str(index)
             backend.task["inputHash"] = w.sha256(w.json_bytes(backend.task["inputTexts"]))
-        barrier, release, third = threading.Barrier(2), threading.Event(), threading.Event()
+        barrier, release, sixth = threading.Barrier(6), threading.Event(), threading.Event()
         release_discovery, discovery_started = threading.Event(), threading.Event()
         active, maximum = 0, 0
         guard = threading.Lock()
@@ -911,12 +1023,9 @@ class FleetTests(unittest.TestCase):
                 active += 1
                 maximum = max(maximum, active)
             try:
-                if index < 2:
-                    barrier.wait(4)  # A serial implementation cannot pass this barrier.
+                barrier.wait(4)  # Fewer than six concurrent workflows cannot pass this barrier.
                 if index == 0:
                     self.assertTrue(release.wait(6))
-                if index == 2:
-                    third.set()
                 return infer(method, path, body, key)
             finally:
                 with guard:
@@ -924,6 +1033,13 @@ class FleetTests(unittest.TestCase):
         def slow_discovery():
             discovery_started.set()
             release_discovery.wait(6)
+        request = backends[5].request
+        def sixth_receipt(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if path.endswith("/receipt"):
+                sixth.set()
+            return result
+        backends[5].request = sixth_receipt
         self.fleet.ollama.request = model
         self.fleet.restore, self.fleet.refresh = lambda: None, slow_discovery
         result = []
@@ -931,10 +1047,10 @@ class FleetTests(unittest.TestCase):
         thread.start()
         try:
             self.assertTrue(discovery_started.wait(2))
-            self.assertTrue(third.wait(4))  # Instance 3 progresses while instance 1 and discovery remain blocked.
-            self.assertEqual(maximum, 2)
+            self.assertTrue(sixth.wait(4))  # Instance 6 progresses while instance 1 and discovery remain blocked.
+            self.assertEqual(maximum, 6)
             self.assertFalse(release.is_set())
-            self.assertEqual(sum(path.endswith("/complete") for _, path, _ in backends[1].calls), 1)
+            self.assertEqual(sum(path.endswith("/complete") for _, path, _ in backends[5].calls), 1)
             self.fleet.stop.set()
             self.assertTrue(thread.is_alive())
             # Shutdown retains the live journal and process file lock while inference is in flight.
@@ -953,6 +1069,85 @@ class FleetTests(unittest.TestCase):
         with self.assertRaises(OSError):
             os.fstat(entries[0].file_lock)
         self.fleet.entries.clear()  # run() owns and has closed these resources.
+
+    def test_dynamic_six_to_five_to_six_preserves_removed_claim_and_resumes_only_its_original_task(self):
+        rows = [self.row(device) for device in range(92, 98)]
+        entries = self.discover(rows)
+        backends = [self.wire(entry) for entry in entries]
+        for backend in backends:
+            backend.found = False
+        entered, release = threading.Event(), threading.Event()
+        barrier = threading.Barrier(6, action=entered.set)
+        infer = self.fleet.ollama.request
+        def model(method, path, body=None, key=None):
+            if path == "/api/embed":
+                barrier.wait(4)
+                self.assertTrue(release.wait(4))
+            return infer(method, path, body, key)
+        self.fleet.ollama.request = model
+        with w.ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(self.fleet.tick, entry) for entry in entries]
+            try:
+                self.assertTrue(entered.wait(3))
+                self.backend.request.return_value = self.page(rows[:-1])
+                self.fleet.refresh()
+                self.assertEqual(sum(entry.present for entry in entries), 5)
+                self.assertTrue(entries[-1].worker.stop.is_set())
+                self.assertTrue(self.fleet.claim_capacity.is_set())
+            finally:
+                release.set()
+            for future in futures:
+                future.result(4)
+        self.assertEqual([sum(path.endswith("/complete") for _, path, _ in backend.calls) for backend in backends], [1] * 5 + [0])
+        removed = entries[-1]
+        original = removed.worker.journal.state()
+        self.assertEqual(original["phase"], "CLAIMED")
+        self.fleet.ollama.request = infer
+        removed.due = 0
+        self.fleet.tick(removed)  # Removal permits receipt reads, never new execution.
+        self.assertEqual(removed.worker.journal.state(), original)
+        self.assertFalse(any(path.endswith("/manifest") or path.endswith("/complete") for _, path, _ in backends[-1].calls))
+        self.backend.request.return_value = self.page(rows)
+        self.fleet.refresh()
+        removed.due = 0
+        self.fleet.tick(removed)
+        self.assertEqual(sum(entry.present for entry in entries), 6)
+        self.assertEqual(removed.worker.journal.state()["phase"], "IDLE")
+        self.assertEqual(sum(path.endswith("/next-task") for _, path, _ in backends[-1].calls), 1)
+        self.assertEqual(sum(path.endswith("/manifest") for _, path, _ in backends[-1].calls), 1)
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in backends[-1].calls), 1)
+
+    def test_cross_owner_capacity_overflow_blocks_new_claims_without_revoking_existing_entries(self):
+        rows = [{**self.row(device), "ownerId": 91 if device < 95 else 192} for device in range(92, 98)]
+        entries = self.discover(rows)
+        backend = self.wire(entries[0])
+        state = {"phase": "NEXT_INTENT", "nextKey": "BGE-NEXT-" + "d" * 32, "binding": entries[0].worker.config.binding}
+        data = entries[0].worker.mutate("NEXT", "/next-task", {}, state["nextKey"], state)
+        state.update(phase="CLAIMED", taskNo=data["taskNo"], inputHash=data["inputHash"])
+        entries[0].worker.journal.set(state)
+        backend.found = False
+        generations = [entry.generation for entry in entries]
+        # Each owner is below six; the shared fleet must still cover their sum.
+        extra = {**self.row(98), "ownerId": 192}
+        self.backend.request.return_value = self.page(rows + [extra])
+        with self.assertRaisesRegex(w.Halt, "FLEET_ACTIVE_CAPACITY_EXCEEDED"):
+            self.fleet.refresh()
+        self.assertFalse(self.fleet.claim_capacity.is_set())
+        self.assertEqual([entry.generation for entry in entries], generations)
+        self.assertTrue(all(entry.present and not entry.worker.stop.is_set() for entry in entries))
+        self.assertFalse(self.fleet.ready(entries[1]))
+        idle_backend = self.wire(entries[1])
+        self.fleet.tick(entries[1])
+        self.assertEqual(idle_backend.calls, [])
+        self.fleet.tick(entries[0])  # Original manifest/receipt recovery remains legal while claims are gated.
+        self.assertEqual(entries[0].worker.journal.state()["phase"], "IDLE")
+        self.assertEqual(sum(path.endswith("/next-task") for _, path, _ in backend.calls), 1)
+        self.assertEqual(sum(path.endswith("/complete") for _, path, _ in backend.calls), 1)
+        self.backend.request.return_value = self.page(rows)
+        self.fleet.refresh()
+        self.assertTrue(self.fleet.claim_capacity.is_set())
+        self.fleet.tick(entries[1])
+        self.assertEqual(sum(path.endswith("/next-task") for _, path, _ in idle_backend.calls), 1)
 
     def test_same_instance_repeated_tick_never_runs_a_second_workflow(self):
         entry, = self.discover([self.row()])
@@ -1453,8 +1648,8 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(headers["Idempotency-Key"], "BGE-COMPLETE-original")
         self.assertEqual(headers["X-UVEL-Original-Next-Key"], "BGE-NEXT-" + "a" * 32)
 
-    def test_pool_leases_distinct_runners_for_both_digest_checks_and_concurrent_embed_requests(self):
-        cfg, barrier = config(), threading.Barrier(2)
+    def test_pool_leases_six_distinct_runners_for_both_digest_checks_and_concurrent_embed_requests(self):
+        cfg, barrier = config(), threading.Barrier(6)
         class Runner(w.Http):
             def __init__(self, address):
                 super().__init__(address)
@@ -1467,20 +1662,21 @@ class BoundaryTests(unittest.TestCase):
                 return self.fake.request(method, path, body, key)
         self_test = self
         with patch.object(w, "Http", Runner), patch("builtins.print") as log:
-            pool = w.OllamaPool([("127.0.0.1", 11436), ("127.0.0.1", 11437)])
-            manifests = [task(cfg), {**task(cfg), "deviceId": 93, "instanceNo": "NEX-ORD-93", "taskNo": "CTA-" + "B" * 32}]
-            with w.ThreadPoolExecutor(max_workers=2) as executor:
+            pool = w.OllamaPool([("127.0.0.1", port) for port in range(11436, 11442)])
+            manifests = [{**task(cfg), "deviceId": device, "instanceNo": "NEX-ORD-" + str(device),
+                          "taskNo": "CTA-" + format(device, "032X")} for device in range(92, 98)]
+            with w.ThreadPoolExecutor(max_workers=6) as executor:
                 futures = [executor.submit(w.infer, pool, manifest) for manifest in manifests]
                 for future in futures:
                     self.assertEqual(len(future.result(4)), 8192)
-        self.assertEqual(pool.available.qsize(), 2)
+        self.assertEqual(pool.available.qsize(), 6)
         for runner in pool.clients:
             self.assertEqual([path for _, path, _ in runner.fake.calls], ["/api/tags", "/api/embed", "/api/tags"])
         records = [json.loads(call.args[0]) for call in log.call_args_list]
         starts = [record for record in records if record["event"] == "INFERENCE_STARTED"]
         finishes = [record for record in records if record["event"] == "INFERENCE_FINISHED"]
-        self.assertEqual({record["modelPort"] for record in starts}, {11436, 11437})
-        self.assertEqual({record["deviceId"] for record in starts}, {92, 93})
+        self.assertEqual({record["modelPort"] for record in starts}, set(range(11436, 11442)))
+        self.assertEqual({record["deviceId"] for record in starts}, set(range(92, 98)))
         # Windows can return equal clock ticks for these tiny fake responses; the barrier proves overlap.
         self.assertLessEqual(max(record["monotonicNs"] for record in starts), min(record["monotonicNs"] for record in finishes))
 

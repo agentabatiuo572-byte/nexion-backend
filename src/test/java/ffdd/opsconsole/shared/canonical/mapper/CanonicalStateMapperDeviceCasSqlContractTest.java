@@ -29,7 +29,7 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
     }
 
     @Test
-    void capacityGuardsCountEverySlotOccupyingRuntimeStateButExcludeCloudShare() throws Exception {
+    void capacityGuardsCountEverySlotOccupyingRuntimeStateIncludingCloudShare() throws Exception {
         String mapper = Files.readString(
                 Path.of("src/main/java/ffdd/opsconsole/shared/canonical/mapper/CanonicalStateMapper.java"),
                 StandardCharsets.UTF_8);
@@ -38,7 +38,6 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
                 "UPPER(ownership_status) = 'OWNED'",
                 "UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')",
                 "d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate = 0",
-                "UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'",
                 "int reservedDeviceOrderCount",
                 "nx_order_item",
                 "product_type",
@@ -64,15 +63,15 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
     }
 
     @Test
-    void productionAndDevelopmentCapacityUseTheSameActivatedPhysicalAssetDefinition() throws Exception {
+    void productionAndDevelopmentCapacityUseTheSameActivatedAssetDefinition() throws Exception {
         for (String methodName : List.of("activeDeviceCount", "developmentActiveDeviceCount")) {
             var method = CanonicalStateMapper.class.getMethod(methodName, Long.class);
             String sql = String.join(" ", method.getAnnotation(Select.class).value()).replaceAll("\\s+", " ");
             assertThat(sql).as(methodName).contains(
                     "UPPER(d.ownership_status)", "'OWNED'",
                     "UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')",
-                    "d.activated_at IS NOT NULL", "d.deactivated_at IS NULL", "d.pending_deactivate",
-                    "UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'");
+                    "d.activated_at IS NOT NULL", "d.deactivated_at IS NULL", "d.pending_deactivate")
+                    .doesNotContain("device_type");
         }
 
         var activation = CanonicalStateMapper.class.getMethod(
@@ -81,22 +80,20 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
                 .replaceAll("\\s+", " ");
         assertThat(activationSql).contains(
                 "UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')",
-                "d.activated_at IS NOT NULL", "d.deactivated_at IS NULL", "d.pending_deactivate = 0",
-                "UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'");
+                "d.activated_at IS NOT NULL", "d.deactivated_at IS NULL", "d.pending_deactivate = 0")
+                .doesNotContain("device_type");
     }
 
     @Test
-    void cloudShareActivationBypassesThePhysicalSlotCapWhilePhysicalActivationStillUsesCas() throws Exception {
+    void cloudShareActivationUsesTheSameSixSlotCasAsEveryOtherDevice() throws Exception {
         String mapper = Files.readString(
                 Path.of("src/main/java/ffdd/opsconsole/shared/canonical/mapper/CanonicalStateMapper.java"),
                 StandardCharsets.UTF_8);
         int activation = mapper.indexOf("int activateOwnedDeviceCas");
         String sql = mapper.substring(Math.max(0, mapper.lastIndexOf("@Update", activation)), activation);
 
-        assertThat(sql).contains(
-                "UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) = 'SHARE'",
-                "UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'",
-                "active_snapshot) < #{slotCap}");
+        assertThat(sql).contains("active_snapshot) < LEAST(6, #{slotCap})")
+                .doesNotContain("device_type", "SHARE");
     }
 
     @Test

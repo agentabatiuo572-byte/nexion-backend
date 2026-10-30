@@ -276,7 +276,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "nx_user_device_runtime",
                 "nx_compute_datacenter",
                 "nx_compute_dc_ops_state",
-                "nx_config_item:device.max_active_slots"));
+                "product-policy:MAX_DEVICES=6"));
         return ApiResult.ok(response);
     }
 
@@ -285,14 +285,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private int e5MaxDevicesPerUser() {
-        String raw = configFacade.activeValue("device.max_active_slots").orElse(null);
-        if (!StringUtils.hasText(raw)) return 6;
-        try {
-            int value = Integer.parseInt(raw.trim());
-            return value >= 1 && value <= 100 ? value : 1;
-        } catch (NumberFormatException ignored) {
-            return 1;
-        }
+        return 6;
     }
 
     public ApiResult<List<DeviceDatacenterView>> datacenters() {
@@ -2914,16 +2907,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DEVICE_USER_REQUIRED");
             }
             int slotCap = e5MaxDevicesPerUser();
-            boolean occupiesPhysicalSlot = deviceRepository.occupiesPhysicalSlot(deviceId);
-            if (occupiesPhysicalSlot) {
-                // The count is meaningful only while this owner's activation gate is locked:
-                // two E5 requests for different inventory rows must not both see the last slot.
-                if (!deviceRepository.lockUserForE5Activation(before.userId())) {
-                    return ApiResult.fail(409, "DEVICE_ACTIVATION_LOCK_UNAVAILABLE");
-                }
-                if (deviceRepository.countOccupiedSlotsForE5Activation(before.userId()) >= slotCap) {
-                    return ApiResult.fail(409, "MAX_DEVICES_PER_USER_EXCEEDED");
-                }
+            // The count is meaningful only while this owner's activation gate is locked:
+            // two E5 requests for different inventory rows must not both see the last slot.
+            if (!deviceRepository.lockUserForE5Activation(before.userId())) {
+                return ApiResult.fail(409, "DEVICE_ACTIVATION_LOCK_UNAVAILABLE");
+            }
+            if (deviceRepository.countOccupiedSlotsForE5Activation(before.userId()) >= slotCap) {
+                return ApiResult.fail(409, "MAX_DEVICES_PER_USER_EXCEEDED");
             }
             DeviceOpsView updated = deviceRepository.activateDevice(deviceId, LocalDateTime.now(clock)).orElse(null);
             if (updated == null) {

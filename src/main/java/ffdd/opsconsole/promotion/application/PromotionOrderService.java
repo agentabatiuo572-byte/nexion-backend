@@ -80,7 +80,7 @@ public class PromotionOrderService {
             require(text(currentPrice.get(key)).equals(text(pub.get(key))),"PROMOTION_QUOTE_PRICE_CHANGED");
         if(!activity.isEmpty())require(quotes.currentlyAvailable(activity,contract,maps(stored.get("awards"))),"PROMOTION_CAPACITY_UNAVAILABLE");
         Map<Long,Long> addedSlots=new HashMap<>();
-        for(Selection item:items)if(!"SHARE".equalsIgnoreCase(text(map(map(productSnapshots.get(item.productNo())).get("product")).get("product_type"))))
+        for(Selection item:items)
             addedSlots.merge(buyerId,(long)item.quantity(),Long::sum);
         for(Map<String,Object> award:maps(stored.get("awards"))){Map<String,Object> r=map(award.get("reward"));
             if("DEVICE".equals(r.get("type")))addedSlots.merge(number(award.get("beneficiaryId")),number(r.get("quantity")),Long::sum);}

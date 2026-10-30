@@ -48,7 +48,6 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                   AND delivered.product_id=o.product_id AND delivered.is_deleted=0
                   AND delivered.source_channel='ORDER' AND delivered.source_environment='PRODUCTION'
                   AND delivered.run_id='' AND delivered.purchased_at IS NOT NULL
-                  AND UPPER(COALESCE(NULLIF(delivered.device_type,''),'DEVICE')) <> 'SHARE'
             """;
     String CAPACITY_KEEP_OTHER_ITEMS = """
                 SELECT 1 FROM nx_order_item other_item
@@ -235,7 +234,6 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                AND d.source_environment='PRODUCTION' AND d.run_id=''
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
-               AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate=0
             """;
 
@@ -265,9 +263,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
              WHERE present_item.order_no=o.order_no AND present_item.is_deleted=0
             """;
     String RESERVED_ORDER_ITEM_QUANTITY = """
-            SELECT SUM(CASE
-                WHEN UPPER(COALESCE(NULLIF(item_product.product_type,''),'DEVICE'))='SHARE'
-                THEN 0 ELSE order_item.quantity END)
+            SELECT SUM(order_item.quantity)
               FROM nx_order_item order_item
               LEFT JOIN nx_product item_product
                 ON item_product.id=order_item.product_id AND item_product.is_deleted=0
@@ -275,8 +271,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             """;
     String RESERVED_ORDER_HEADER_QUANTITY = """
             ),0)
-              WHEN UPPER(COALESCE(NULLIF(header_product.product_type,''),'DEVICE'))='SHARE'
-              THEN 0 ELSE o.quantity END),0) +
+              ELSE o.quantity END),0) +
             """;
     String RESERVED_ORDER_SOURCE = """
               FROM nx_order o
@@ -317,17 +312,10 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                 + (sandbox ? 0 : lockReservedTrialSlotCount(userId));
     }
 
-    String DEVICE_SLOT_CAP = """
-            SELECT CAST(config_value AS UNSIGNED)
-              FROM nx_config_item
-             WHERE config_key = 'device.max_active_slots' AND status = 1 AND is_deleted = 0
-             LIMIT 1
-            """;
-
-    @Select("SELECT COALESCE((" + DEVICE_SLOT_CAP + "),6)")
+    @Select("SELECT 6")
     int deviceSlotCap();
 
-    @Select("SELECT COALESCE((" + DEVICE_SLOT_CAP + " FOR SHARE),6)")
+    @Select("SELECT 6")
     int lockDeviceSlotCap();
 
     @Update("""
@@ -339,17 +327,16 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                AND row_version = #{expectedVersion}
                AND EXISTS (SELECT 1 FROM nx_user u
                             WHERE u.id = #{userId} AND COALESCE(u.sandbox,0)=0)
-               AND (UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) = 'SHARE'
-                    OR (SELECT active_count FROM (
+               AND (SELECT active_count FROM (
                     SELECT COUNT(1) AS active_count
                       FROM nx_user_device d
                       JOIN nx_user u ON u.id = d.user_id AND COALESCE(u.sandbox,0)=0
                      WHERE d.user_id = #{userId} AND d.is_deleted = 0
                        AND UPPER(d.ownership_status) = 'OWNED'
                        AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
-                       AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
+                       AND d.source_environment='PRODUCTION' AND d.run_id=''
                        AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
-               ) active_snapshot) < #{slotCap})
+               ) active_snapshot) < LEAST(6, #{slotCap})
             """)
     int activateOwnedDeviceCas(@Param("userId") Long userId,
                                @Param("deviceId") Long deviceId,

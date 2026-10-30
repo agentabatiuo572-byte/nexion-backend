@@ -5,6 +5,7 @@ import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -261,8 +262,8 @@ class AppTrialLifecycleServiceTest {
     @org.junit.jupiter.params.provider.CsvSource({"5,0,true", "6,0,false", "5,1,false"})
     void claimUsesPhysicalDevicesAndExistingOrderReservations(int active, int reserved, boolean allowed) {
         when(canonicalStateMapper.deviceSlotCap()).thenReturn(6);
-        when(canonicalStateMapper.activeDeviceCount(7L)).thenReturn(active);
-        when(canonicalStateMapper.reservedDeviceOrderCount(7L)).thenReturn(reserved);
+        when(canonicalStateMapper.lockActiveDeviceCount(7L, false)).thenReturn(active);
+        when(canonicalStateMapper.lockReservedDeviceOrderCount(7L, false)).thenReturn(reserved);
         when(mapper.insertTrial(any(), anyString(), anyString(), any(), anyString(),
                 anyInt(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
 
@@ -399,8 +400,8 @@ class AppTrialLifecycleServiceTest {
     @Test
     void retiredEarlyRedeemRejectsBeforeCapacityWalletInventoryOrderOrDeviceChecks() {
         when(mapper.lockTrial(7L)).thenReturn(activeTrial());
-        when(canonicalStateMapper.activeDeviceCount(7L)).thenReturn(5);
-        when(canonicalStateMapper.reservedDeviceOrderCount(7L)).thenReturn(1);
+        when(canonicalStateMapper.lockActiveDeviceCount(7L, false)).thenReturn(5);
+        when(canonicalStateMapper.lockReservedDeviceOrderCount(7L, false)).thenReturn(1);
         when(canonicalStateMapper.deviceSlotCap()).thenReturn(6);
 
         ApiResult<Map<String, Object>> result = service.redeemEarly(7L, "h2-capacity-full");
@@ -414,15 +415,15 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
                 anyString(), anyString(), anyString(), any());
         verify(mapper, never()).lockTrial(anyLong());
-        verify(canonicalStateMapper, never()).activeDeviceCount(anyLong());
-        verify(canonicalStateMapper, never()).reservedDeviceOrderCount(anyLong());
+        verify(canonicalStateMapper, never()).lockActiveDeviceCount(anyLong(), anyBoolean());
+        verify(canonicalStateMapper, never()).lockReservedDeviceOrderCount(anyLong(), anyBoolean());
     }
 
     @Test
     void fullPhysicalCapacityAlsoBlocksExplicitConversionBeforeWalletInventoryOrderOrDeviceMutation() {
         when(mapper.lockTrial(7L)).thenReturn(activeTrial());
-        when(canonicalStateMapper.activeDeviceCount(7L)).thenReturn(5);
-        when(canonicalStateMapper.reservedDeviceOrderCount(7L)).thenReturn(1);
+        when(canonicalStateMapper.lockActiveDeviceCount(7L, false)).thenReturn(5);
+        when(canonicalStateMapper.lockReservedDeviceOrderCount(7L, false)).thenReturn(1);
         when(canonicalStateMapper.deviceSlotCap()).thenReturn(6);
 
         ApiResult<Map<String, Object>> result = service.convert(
@@ -450,8 +451,8 @@ class AppTrialLifecycleServiceTest {
         assertThat(result.getMessage()).isEqualTo("TRIAL_EXPLICIT_PURCHASE_REQUIRED");
         verify(mapper, never()).lockTrial(anyLong());
         verify(mapper, never()).lockConversionProduct(anyString());
-        verify(canonicalStateMapper, never()).activeDeviceCount(anyLong());
-        verify(canonicalStateMapper, never()).reservedDeviceOrderCount(anyLong());
+        verify(canonicalStateMapper, never()).lockActiveDeviceCount(anyLong(), anyBoolean());
+        verify(canonicalStateMapper, never()).lockReservedDeviceOrderCount(anyLong(), anyBoolean());
     }
 
     @Test

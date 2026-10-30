@@ -41,7 +41,6 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
              WHERE user_id=#{userId} AND is_deleted=0
                AND UPPER(ownership_status)='OWNED'
                AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
-               AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'
                AND activated_at IS NOT NULL
                AND deactivated_at IS NULL AND pending_deactivate=0
             """)
@@ -56,13 +55,10 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
     @Select(CanonicalStateMapper.LOCK_RESERVED_DEVICE_ORDERS + " AND COALESCE(u.sandbox,0)=0 FOR SHARE")
     int lockReservedDeviceOrderCount(@Param("userId") Long userId);
 
-    @Select("""
-            SELECT COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
-                              WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1),6)
-            """)
+    @Select("SELECT 6")
     int deviceSlotCap();
 
-    @Select("SELECT COALESCE((" + CanonicalStateMapper.DEVICE_SLOT_CAP + " FOR SHARE),6)")
+    @Select("SELECT 6")
     int lockDeviceSlotCap();
 
     @Select("SELECT user_level FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0")

@@ -168,6 +168,26 @@ public class TestCloudExecutorService {
     private Binding binding(Identity i) { return new Binding(i.executorId(),i.ownerId(),i.deviceId(),i.instanceNo(),i.taskConfigId(),i.model(),i.modelDigest()); }
     private boolean fleet(Identity i) { return i.executorId().startsWith("fleet-"); }
 
+    /** Observation only: an inactive single executor waits without renewing runtime or claiming work. */
+    @Transactional
+    public ApiResult<Map<String,Object>> eligibility(Identity i) {
+        requireCurrent(i);
+        if(!configured().equals(i)) throw error(403,"TEST_CLOUD_SINGLE_REQUIRED");
+        lockBinding(i,false);
+        var device=assignments.lockOwnedDevice(i.ownerId(),i.deviceId());
+        var active=mapper.lockActiveTaskNos(i.ownerId(),i.deviceId());
+        if(active.size()>1) throw error(409,"TEST_CLOUD_ACTIVE_TASK_CONFLICT");
+        boolean eligible=device.activatedAt()!=null
+                && Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(Objects.toString(device.status(),"").toUpperCase(Locale.ROOT))
+                && !Boolean.TRUE.equals(device.dispatchPaused())
+                && (device.pausedReason()==null || device.pausedReason().isBlank())
+                && mapper.eligibleBinding(i.ownerId(),i.deviceId(),i.instanceNo())==1
+                && assignments.lockPaidCloudShareDailyNex(i.ownerId(),i.deviceId())!=null;
+        Map<String,Object> result=bindings(i);
+        result.put("eligible",eligible); result.put("activeTaskNo",active.isEmpty()?null:active.get(0));
+        return ApiResult.ok(result);
+    }
+
     @Transactional(readOnly=true)
     public ApiResult<Map<String,Object>> instances(Identity i,long afterDeviceId,int requestedLimit) {
         requireCurrent(i);

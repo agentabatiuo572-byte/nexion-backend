@@ -16,12 +16,12 @@ class DeviceOpsMapperSqlTest {
         assertThat(DeviceOpsMapper.DEVICE_COLUMNS)
                 .contains("a.pending_deactivate = 0", "s.pending_deactivate = 0", "d.pending_deactivate = 1",
                         "a.activated_at IS NOT NULL", "s.activated_at IS NOT NULL", "d.activated_at IS NULL",
-                        "a.ownership_status = 'OWNED'", "s.ownership_status = 'OWNED'",
-                        "a.device_type,''),'DEVICE')) != 'SHARE'", "s.device_type,''),'DEVICE')) != 'SHARE'");
+                        "a.ownership_status = 'OWNED'", "s.ownership_status = 'OWNED'")
+                .doesNotContain("'SHARE'");
     }
 
     @Test
-    void e5RuntimeEligibilityKeepsCloudShareWhilePhysicalSlotCountsExcludeIt() throws Exception {
+    void e5RuntimeAndSlotCountsIncludeCloudShare() throws Exception {
         String physicalCount = String.join(" ", DeviceOpsMapper.class
                 .getDeclaredMethod("countActiveDevicesByUser", Long.class)
                 .getAnnotation(org.apache.ibatis.annotations.Select.class).value());
@@ -33,9 +33,9 @@ class DeviceOpsMapperSqlTest {
                 .contains("d.activated_at IS NOT NULL", "d.deactivated_at IS NULL", "d.pending_deactivate = 0",
                         "UPPER(d.ownership_status) = 'OWNED'", "'OFFLINE'")
                 .doesNotContain("'SHARE'");
-        assertThat(DeviceOpsMapper.E5_PHYSICAL_SLOT).contains("<> 'SHARE'");
         assertThat(physicalCount).contains("d.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')",
-                "d.activated_at IS NOT NULL", "d.pending_deactivate = 0", "UPPER(d.ownership_status) = 'OWNED'", "<> 'SHARE'");
+                "d.activated_at IS NOT NULL", "d.pending_deactivate = 0", "UPPER(d.ownership_status) = 'OWNED'")
+                .doesNotContain("'SHARE'");
         assertThat(runtimeOnline).contains("d.activated_at IS NOT NULL", "UPPER(d.ownership_status) = 'OWNED'")
                 .doesNotContain("<> 'SHARE'");
     }

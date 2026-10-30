@@ -34,6 +34,7 @@ class OrdinaryPurchaseQuoteTest {
     final PromotionQuoteService quotes=new PromotionQuoteService(db,new PromotionContractValidator(new ObjectMapper()),resolver,evaluator,config,vouchers,provider);
 
     OrdinaryPurchaseQuoteTest() {
+        when(db.deviceSlotCap()).thenReturn(6L);
         when(provider.getObject()).thenReturn(canonical);
         when(canonical.purchaseEligibilityBatch(eq(29L),anyList())).thenAnswer(call->{
             Map<String,PurchaseEligibilityDecision> decisions=new LinkedHashMap<>();
@@ -132,6 +133,9 @@ class OrdinaryPurchaseQuoteTest {
         var selected=List.of(new PromotionOrderService.Selection("cloud-share",2));
         String quoteId=text(result.get("quoteId"));
         assertEquals(new BigDecimal("39.800000"),orders.prepareCreate(29L,quoteId,selected,null,new BigDecimal("39.80")).price("amountUsdt"));
+        when(db.occupiedDeviceSlots(29L)).thenReturn(5L);
+        assertEquals("PROMOTION_DEVICE_CAPACITY_UNAVAILABLE",assertThrows(BizException.class,()->orders.prepareCreate(29L,quoteId,selected,null,new BigDecimal("39.80"))).getMessage());
+        when(db.occupiedDeviceSlots(29L)).thenReturn(0L);
         assertEquals("PROMOTION_QUOTE_OWNER_MISMATCH",assertThrows(BizException.class,()->orders.prepareCreate(30L,quoteId,selected,null,null)).getMessage());
         assertEquals("PROMOTION_QUOTE_INPUT_CHANGED",assertThrows(BizException.class,()->orders.prepareCreate(29L,quoteId,List.of(new PromotionOrderService.Selection("cloud-share",1)),null,null)).getMessage());
         assertEquals("PROMOTION_QUOTE_AMOUNT_CHANGED",assertThrows(BizException.class,()->orders.prepareCreate(29L,quoteId,selected,null,BigDecimal.ONE)).getMessage());

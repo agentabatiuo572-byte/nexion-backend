@@ -99,7 +99,7 @@ class OnboardingActivationTransactionMySqlTest {
         migrate("20261019_app_single_session.sql");migrate("20261019_phone_replacement_domain.sql");
         jdbc.update("UPDATE nx_config_item SET config_value='on' WHERE config_key=?",PhoneReplacementPolicy.PREFIX+"allowReplacement");
         jdbc.update("UPDATE nx_config_item SET config_value='0' WHERE config_key=?",PhoneReplacementPolicy.PREFIX+"minReplacementIntervalDays");
-        jdbc.update("INSERT INTO nx_config_item(config_key,config_value) VALUES('device.max_active_slots','3'),(?,?)",
+        jdbc.update("INSERT INTO nx_config_item(config_key,config_value) VALUES('device.max_active_slots','6'),(?,?)",
                 PhoneCalibrationConfigService.KEY,"{\"revision\":1,\"current\":{\"version\":1,\"effectiveAt\":0,\"thresholds\":[19,25,35,47],\"rules\":[{\"id\":\"fixture\",\"platform\":\"android\",\"model\":\"\",\"soc\":\"test soc\",\"gpu\":\"Mali-G715\",\"minMemoryGb\":1,\"maxMemoryGb\":129,\"computeValue\":28.3,\"evidence\":\"Test only\"}]},\"scheduled\":null}");
         jdbc.update("INSERT INTO nx_onboarding_phone_tier_config(tier,name,tops_min,tops_max,base_rate_usdt,base_rate_nex) VALUES(1,'T1',8,18,.04,6),(2,'T2',19,24,.05,8),(3,'T3',25,34,.06,10),(4,'T4',35,46,.08,13),(5,'T5',47,58,.095,16)");
         jdbc.update("INSERT INTO nx_onboarding_yield_comparison_config(config_key,label,daily_usdt,daily_nex) VALUES('phone','Phone',.06,10)");
@@ -173,13 +173,14 @@ class OnboardingActivationTransactionMySqlTest {
     @Test void firstBindingReplacementReplayAndOriginalReceiptRemainDistinctFromCurrentBinding(){
         long user=101;var first=first(user);assertThat(count("nx_phone_replacement_event",user)).isZero();
         long old=device(user);task(user);
-        jdbc.update("INSERT INTO nx_user_device(user_id,instance_no,name,device_type,status,source_channel,activated_at) VALUES(?,?,'Box','BOX','OFFLINE','STORE',NOW()),(?,?,'Box','BOX','OFFLINE','STORE',NOW())",user,"box-1-"+user,user,"box-2-"+user);
+        for(int i=0;i<5;i++)jdbc.update("INSERT INTO nx_user_device(user_id,instance_no,name,device_type,status,source_channel,activated_at) VALUES(?,?,'Synthetic device',?,'OFFLINE','STORE',NOW())",
+                user,"device-"+i+"-"+user,i==4?"SHARE":"BOX");
         long revision=calibrate(user,"phone-b");var auth=session(user,"phone-b","APP",true);var request=action("phone-b",revision,1L,"replace-b-"+user);
         var result=phone.activate(user,request,auth);assertThat(result.getCode()).as(result.getMessage()).isZero();
         assertThat(count("nx_phone_replacement_event",user)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT activated_at IS NULL FROM nx_user_device WHERE id=?",Boolean.class,old)).isTrue();
         assertThat(jdbc.queryForObject("SELECT status FROM nx_compute_task WHERE task_no=?",String.class,"task-"+user)).isEqualTo("CANCELLED");
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device WHERE user_id=? AND activated_at IS NOT NULL",Integer.class,user)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device WHERE user_id=? AND activated_at IS NOT NULL",Integer.class,user)).isEqualTo(6);
         var before=snapshot(user);assertThat(phone.activate(user,request,auth).getData().get("operationId")).isEqualTo(result.getData().get("operationId"));assertThat(snapshot(user)).isEqualTo(before);
         long cRevision=calibrate(user,"phone-c");var current=session(user,"phone-c","APP",true);
         assertThat(phone.activate(user,action("phone-c",cRevision,2L,"replace-c-"+user),current).getCode()).isZero();
