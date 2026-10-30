@@ -596,6 +596,7 @@ public class AppTaskAssignmentService {
         try {
             return mapper.managedFleet(userId,deviceId,
                     LocalDateTime.parse(environment.getProperty(TestCloudExecutorService.PREFIX + "fleet-started-at","")),
+                    TestCloudExecutorService.tradeinFleetCutoff(environment),
                     Long.parseLong(environment.getProperty(TestCloudExecutorService.PREFIX + "device-id","0")))>0;
         } catch (IllegalArgumentException invalid) { throw new BizException(503,"TEST_CLOUD_FLEET_CONFIG_INVALID"); }
     }

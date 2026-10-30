@@ -104,37 +104,126 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         jdbc.update("INSERT INTO nx_order(user_id,order_no,product_id,quantity,subtotal_usdt,amount_usdt,payment_status,order_status,activation_status) VALUES(7,'ORDER-FLEET',2,1,200,200,'PAID','COMPLETED','ACTIVATED')");
         jdbc.update("INSERT INTO nx_user_device(id,user_id,source_order_no,product_id,product_code,instance_no,name,device_type,status,vram_total_gb,dc_location,purchased_at,activated_at) VALUES(12,7,'ORDER-FLEET',2,'stellarbox-s1','NEX-FLEET-12','TEST S1','SERVER','ACTIVE',96,'LOCAL',?,?)",NOW,NOW);
         var cutoff=NOW.minusHours(1);
-        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).extracting(TestCloudExecutorMapper.FleetCandidate::deviceId).containsExactly(12L);
-        assertThat(mapper.managedFleet(7,12,cutoff,1202)).isEqualTo(1);
+        assertThat(fleet.fleetCandidates(cutoff,null,0,1202,101)).extracting(TestCloudExecutorMapper.FleetCandidate::deviceId).containsExactly(12L);
+        assertThat(mapper.managedFleet(7,12,cutoff,null,1202)).isEqualTo(1);
         jdbc.update("UPDATE nx_order SET amount_usdt=0 WHERE order_no='ORDER-FLEET'");
-        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).extracting(TestCloudExecutorMapper.FleetCandidate::deviceId).containsExactly(12L);
+        assertThat(fleet.fleetCandidates(cutoff,null,0,1202,101)).extracting(TestCloudExecutorMapper.FleetCandidate::deviceId).containsExactly(12L);
         jdbc.update("UPDATE nx_order SET payment_status='UNPAID' WHERE order_no='ORDER-FLEET'");
-        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).isEmpty();
+        assertThat(fleet.fleetCandidates(cutoff,null,0,1202,101)).isEmpty();
         jdbc.update("UPDATE nx_order SET payment_status='PAID' WHERE order_no='ORDER-FLEET'");
         var transaction=new TransactionTemplate(new DataSourceTransactionManager(source));
         transaction.execute(status->{
-            assertThat(fleet.liveFleetBinding(cutoff,7,12,"NEX-FLEET-12",false)).isEqualTo(1);
+            assertThat(fleet.liveFleetBinding(cutoff,null,7,12,"NEX-FLEET-12",false)).isEqualTo(1);
             assertThat(fleet.register(new TestCloudExecutorMapper.Binding("fleet-12",7,12,"NEX-FLEET-12","TASK-EM","bge-m3:567m",TestCloudExecutorServiceTest.DIGEST),NOW)).isEqualTo(1);
             return null;
         });
         assertThat(mapper.registeredFleet(7,12)).isEqualTo(1);
         jdbc.update("UPDATE nx_user_device SET pending_deactivate=1 WHERE id=12");
-        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).isEmpty();
-        assertThat(fleet.liveFleetBinding(cutoff,7,12,"NEX-FLEET-12",false)).isNull();
-        assertThat(fleet.liveFleetBinding(cutoff,7,12,"NEX-FLEET-12",true)).isEqualTo(1);
+        assertThat(fleet.fleetCandidates(cutoff,null,0,1202,101)).isEmpty();
+        assertThat(fleet.liveFleetBinding(cutoff,null,7,12,"NEX-FLEET-12",false)).isNull();
+        assertThat(fleet.liveFleetBinding(cutoff,null,7,12,"NEX-FLEET-12",true)).isEqualTo(1);
         jdbc.update("INSERT INTO nx_compute_task(task_no,user_id,user_device_id,task_type,task_config_id,task_name,model_name,reward_usdt,required_seconds,completion_nonce,proof_expires_at,client_name,status,started_at,lease_expires_at) VALUES('CTA-FLEET',7,12,'EM','TASK-EM','TEST BGE','TEST_BGE_M3_V1',0.25,5,?,?,'UVEL TEST BGE-M3','RUNNING',?,?)",TestComputeWorkerServiceTest.NONCE,NOW.plusHours(24),NOW.minusSeconds(10),NOW.plusHours(24));
         assertThat(fleet.insert(new TestCloudExecutorMapper.Execution("CTA-FLEET","fleet-12",7,12,"NEX-FLEET-12","TASK-EM",
                 "a".repeat(64),"b".repeat(64),"[]","c".repeat(64),"bge-m3:567m",TestCloudExecutorServiceTest.DIGEST,
                 "d".repeat(64),null,null,null,null,NOW))).isEqualTo(1);
-        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).extracting(TestCloudExecutorMapper.FleetCandidate::deviceId).containsExactly(12L);
+        assertThat(fleet.fleetCandidates(cutoff,null,0,1202,101)).extracting(TestCloudExecutorMapper.FleetCandidate::deviceId).containsExactly(12L);
         jdbc.update("UPDATE nx_user_device SET pending_deactivate=0 WHERE id=12");
         jdbc.update("UPDATE nx_order SET payment_status='REFUNDED' WHERE order_no='ORDER-FLEET'");
-        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).isEmpty();
-        assertThat(fleet.liveFleetBinding(cutoff,7,12,"NEX-FLEET-12",false)).isNull();
+        assertThat(fleet.fleetCandidates(cutoff,null,0,1202,101)).isEmpty();
+        assertThat(fleet.liveFleetBinding(cutoff,null,7,12,"NEX-FLEET-12",false)).isNull();
         assertThat(fleet.binding("fleet-12").instanceNo()).isEqualTo("NEX-FLEET-12");
         jdbc.update("UPDATE nx_order SET payment_status='PAID' WHERE order_no='ORDER-FLEET'");
         jdbc.update("UPDATE nx_user_device SET purchased_at=? WHERE id=12",cutoff.minusSeconds(1));
-        assertThat(fleet.fleetCandidates(cutoff,0,1202,101)).isEmpty();
+        assertThat(fleet.fleetCandidates(cutoff,null,0,1202,101)).isEmpty();
+    }
+
+    @Test void realTradeinFleetRequiresTheCompletedFinancialDeliveryContractAndPreservesInventoryActivation() {
+        var config=new MybatisConfiguration(); config.setMapUnderscoreToCamelCase(true);
+        config.setEnvironment(new Environment("tradein-isolated",new SpringManagedTransactionFactory(),source));
+        config.addMapper(TestCloudExecutorMapper.class);
+        var fleet=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config)).getMapper(TestCloudExecutorMapper.class);
+        var cutoff=NOW.minusHours(1);
+        String nonce="A".repeat(32), order="TIO-"+nonce, tradein="TIN-"+nonce, instance="DEV-TI-"+nonce;
+        jdbc.update("INSERT INTO nx_product(id,product_no,name,product_type,status) VALUES(2,'stellarbox-s1','TEST S1','SERVER','ACTIVE')");
+        jdbc.update("INSERT INTO nx_user_device(id,user_id,product_id,product_code,instance_no,name,device_type,status,ownership_status,price_usdt_snapshot,deactivated_at) VALUES(12,7,1,'cloud-share','SOURCE-12','Old hardware','SERVER','RECYCLED','RECYCLED',100,?)",NOW);
+        jdbc.update("INSERT INTO nx_order(user_id,order_no,product_id,quantity,item_count,order_type,subtotal_usdt,discount_usdt,amount_usdt,payment_status,order_status,activation_status) VALUES(7,?,2,1,1,'TRADE_IN',200,75,125,'PAID','COMPLETED','ACTIVATED')",order);
+        jdbc.update("INSERT INTO nx_order_item(order_no,product_id,product_no,product_name,quantity,unit_price_usdt,line_amount_usdt) VALUES(?,2,'stellarbox-s1','TEST S1',1,200,200)",order);
+        jdbc.update("INSERT INTO nx_user_device(id,user_id,source_order_no,product_id,product_code,instance_no,name,device_type,status,source_channel,price_usdt_snapshot,vram_total_gb,dc_location,purchased_at,activated_at) VALUES(13,7,?,2,'stellarbox-s1',?,'TEST S1','SERVER','ACTIVE','TRADE_IN',200,96,'LOCAL',?,?)",order,instance,NOW,NOW);
+        jdbc.update("INSERT INTO nx_tradein_application(tradein_no,user_id,source_device_id,source_instance_no,source_product_id,source_product_name,target_product_id,target_product_name,source_price_usdt,target_price_usdt,tradein_discount_usdt,net_upgrade_cost_usdt,wallet_debit_usdt,status,submitted_at,completed_at,target_order_no,target_device_id) VALUES(?,7,12,'SOURCE-12',1,'Old hardware',2,'TEST S1',100,200,75,125,125,'COMPLETED',?,?,?,13)",tradein,NOW,NOW,order);
+        jdbc.update("INSERT INTO nx_trade_in_order(user_id,trade_in_no,source_device_id,target_product_id,valuation_usdt,status) VALUES(7,?,12,2,75,'COMPLETED')",tradein);
+        assertThat(fleet.fleetCandidates(cutoff,null,0,1202,101)).isEmpty();
+        assertTradeinAuthority(fleet,cutoff,instance,true);
+        // No hot audit dependency: retention and archiving cannot stop an already valid delivery.
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log",Integer.class)).isZero();
+        var transaction=new TransactionTemplate(new DataSourceTransactionManager(source));
+        for (String mutation:List.of(
+                "UPDATE nx_order SET payment_status='REFUNDED' WHERE product_id=2",
+                "UPDATE nx_order SET order_status='CANCELLED' WHERE product_id=2",
+                "UPDATE nx_order SET user_id=8 WHERE product_id=2",
+                "UPDATE nx_order SET quantity=2 WHERE product_id=2",
+                "UPDATE nx_order SET discount_usdt=74 WHERE product_id=2",
+                "UPDATE nx_order_item SET line_amount_usdt=199 WHERE product_id=2",
+                "UPDATE nx_tradein_application SET status='PENDING'",
+                "UPDATE nx_tradein_application SET target_device_id=11",
+                "UPDATE nx_tradein_application SET source_instance_no='FOREIGN'",
+                "UPDATE nx_tradein_application SET wallet_debit_usdt=124",
+                "UPDATE nx_tradein_application SET target_price_usdt=199",
+                "UPDATE nx_trade_in_order SET valuation_usdt=74",
+                "UPDATE nx_trade_in_order SET status='CANCELLED'",
+                "UPDATE nx_user_device SET ownership_status='OWNED',status='INVENTORY' WHERE id=12",
+                "UPDATE nx_user_device SET source_channel='UNKNOWN' WHERE id=13",
+                "UPDATE nx_user_device SET price_usdt_snapshot=199 WHERE id=13",
+                "UPDATE nx_user_device SET purchased_at='2020-01-01' WHERE id=13",
+                "UPDATE nx_user_device SET activated_at='2020-01-01' WHERE id=13",
+                "INSERT INTO nx_user_device(user_id,source_order_no,product_id,instance_no,name,device_type,status) SELECT user_id,source_order_no,product_id,'DUPLICATE-DELIVERY','Duplicate','SERVER','INACTIVE' FROM nx_user_device WHERE id=13")) {
+            transaction.execute(status->{
+                jdbc.update(mutation);
+                assertThat(fleet.fleetCandidate(cutoff,cutoff,13,1202)).as(mutation).isNull();
+                assertThat(mapper.managedFleet(7,13,cutoff,cutoff,1202)).as(mutation).isZero();
+                assertThat(fleet.liveFleetBinding(cutoff,cutoff,7,13,instance,false)).as(mutation).isNull();
+                status.setRollbackOnly(); return null;
+            });
+        }
+        transaction.execute(status->{
+            jdbc.update("UPDATE nx_user_device SET pending_deactivate=1 WHERE id=13");
+            assertThat(mapper.managedFleet(7,13,cutoff,cutoff,1202)).isEqualTo(1);
+            assertThat(fleet.fleetCandidates(cutoff,cutoff,0,1202,101)).isEmpty();
+            assertThat(fleet.liveFleetBinding(cutoff,cutoff,7,13,instance,false)).isNull();
+            assertThat(fleet.liveFleetBinding(cutoff,cutoff,7,13,instance,true)).isEqualTo(1);
+            status.setRollbackOnly(); return null;
+        });
+        // Fully discounted delivery remains paid; both recorded tender components must still add up.
+        jdbc.update("UPDATE nx_order SET amount_usdt=0,discount_usdt=200 WHERE product_id=2");
+        jdbc.update("UPDATE nx_tradein_application SET wallet_debit_usdt=0,net_upgrade_cost_usdt=0,tradein_discount_usdt=200");
+        jdbc.update("UPDATE nx_trade_in_order SET valuation_usdt=200");
+        assertTradeinAuthority(fleet,cutoff,instance,true);
+        // Warehouse trade-in is dormant until the normal activation CAS; order state remains INVENTORY.
+        jdbc.update("UPDATE nx_order SET activation_status='INVENTORY' WHERE product_id=2");
+        jdbc.update("UPDATE nx_user_device SET status='INACTIVE',activated_at=NULL WHERE id=13");
+        assertTradeinAuthority(fleet,cutoff,instance,false);
+        jdbc.update("UPDATE nx_user_device SET status='ACTIVE',activated_at=? WHERE id=13",NOW);
+        assertTradeinAuthority(fleet,cutoff,instance,true);
+        // Capacity replacement has an explicit same-nonce contract and zero credit; its old asset can be reused.
+        String capacityOrder="CPO-"+nonce, capacityTradein="CPR-"+nonce, capacityInstance="DEV-CPR-"+nonce;
+        jdbc.update("UPDATE nx_order SET order_no=?,amount_usdt=200,discount_usdt=0,activation_status='ACTIVATED' WHERE product_id=2",capacityOrder);
+        jdbc.update("UPDATE nx_order_item SET order_no=? WHERE product_id=2",capacityOrder);
+        jdbc.update("UPDATE nx_tradein_application SET tradein_no=?,target_order_no=?,wallet_debit_usdt=200,net_upgrade_cost_usdt=200,tradein_discount_usdt=0",capacityTradein,capacityOrder);
+        jdbc.update("UPDATE nx_trade_in_order SET trade_in_no=?,valuation_usdt=0",capacityTradein);
+        jdbc.update("UPDATE nx_user_device SET source_order_no=?,instance_no=? WHERE id=13",capacityOrder,capacityInstance);
+        for (String oldState:List.of("INVENTORY","ACTIVE","RECYCLED")) {
+            jdbc.update("UPDATE nx_user_device SET ownership_status=?,status=?,activated_at=? WHERE id=12",
+                    oldState.equals("RECYCLED")?"RECYCLED":"OWNED",oldState,oldState.equals("ACTIVE")?NOW:null);
+            assertTradeinAuthority(fleet,cutoff,capacityInstance,true);
+        }
+        jdbc.update("UPDATE nx_trade_in_order SET trade_in_no=?",tradein);
+        assertTradeinAuthority(fleet,cutoff,capacityInstance,false);
+    }
+
+    private void assertTradeinAuthority(TestCloudExecutorMapper fleet,LocalDateTime cutoff,String instance,boolean expected) {
+        assertThat(fleet.fleetCandidate(cutoff,cutoff,13,1202)!=null).isEqualTo(expected);
+        assertThat(mapper.managedFleet(7,13,cutoff,cutoff,1202)).isEqualTo(expected?1:0);
+        assertThat(fleet.liveFleetBinding(cutoff,cutoff,7,13,instance,false)!=null).isEqualTo(expected);
+        assertThat(fleet.fleetCandidates(cutoff,cutoff,0,1202,101)).hasSize(expected?1:0);
     }
 
     @BeforeEach void fixture() throws Exception {
@@ -821,7 +910,7 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
                 "nx_compute_dc_ops_state","nx_compute_e3_config","nx_compute_task","nx_compute_receipt","nx_compute_device_task_lock",
                 "nx_user_wallet","nx_wallet_ledger","nx_earning_event","nx_config_item","nx_onboarding_calibration",
                 "nx_admin_idempotency_record","nx_audit_log","nx_event_outbox","nx_event_schema_registry","nx_event_schema_property",
-                "nx_test_cloud_execution","nx_test_cloud_binding")) {
+                "nx_test_cloud_execution","nx_test_cloud_binding","nx_tradein_application","nx_trade_in_order")) {
             var matcher=Pattern.compile("CREATE TABLE IF NOT EXISTS "+table+" \\(.*?\\) ENGINE=.*?;",Pattern.DOTALL).matcher(sql);
             assertThat(matcher.find()).as("formal schema DDL "+table).isTrue();
             String definition=matcher.group();
@@ -832,6 +921,9 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
             }
             jdbc.execute(definition);
         }
+        // Canonical 20260721 trade-in fields needed by the delivery contract.
+        jdbc.execute("ALTER TABLE nx_tradein_application ADD wallet_debit_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,"
+                + "ADD target_order_no VARCHAR(96),ADD target_device_id BIGINT,ADD completed_at DATETIME");
         // Existing canonical migration; schema.sql predates wallet sandbox. No production schema change.
         jdbc.execute("ALTER TABLE nx_user_wallet ADD COLUMN sandbox TINYINT(1) NOT NULL DEFAULT 0");
         createFundJournalDependencies();

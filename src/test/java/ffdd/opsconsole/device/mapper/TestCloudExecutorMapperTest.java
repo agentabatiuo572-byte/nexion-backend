@@ -30,6 +30,13 @@ class TestCloudExecutorMapperTest {
                 "r.agent_version<>CONCAT('test-cloud:fleet-',d.id)","nx_test_cloud_execution");
         String live=configuration.getMappedStatement(namespace+"liveFleetBinding").getBoundSql(Map.of()).getSql();
         assertThat(live).contains("FOR UPDATE OF o,d","d.user_id=?","d.instance_no=?");
+        assertThat(fleet).contains("d.source_channel='TRADE_IN'", "nx_tradein_application", "nx_trade_in_order",
+                "a.target_device_id=d.id", "a.target_order_no=o.order_no", "source.instance_no=a.source_instance_no",
+                "a.tradein_discount_usdt+a.wallet_debit_usdt=a.target_price_usdt", "a.target_price_usdt=d.price_usdt_snapshot",
+                "o.activation_status IN ('ACTIVATED','INVENTORY')", "source.ownership_status", "'CPR-'", "'DEV-CPR-'")
+                .doesNotContain("JOIN nx_audit_log");
+        assertThat(configuration.getMappedStatement(namespace+"fleetCandidates").getBoundSql(Map.of())
+                .getParameterMappings()).anySatisfy(parameter -> assertThat(parameter.getProperty()).isEqualTo("tradeinCutoff"));
         assertThat(configuration.getMappedStatement(namespace+"register").getSqlCommandType()).isEqualTo(SqlCommandType.INSERT);
         assertThat(configuration.getMappedStatement(namespace+"historicalReceipt").getBoundSql(Map.of()).getSql())
                 .contains("t.user_id=?","t.user_device_id=?").doesNotContain("u.status","ownership_status");
