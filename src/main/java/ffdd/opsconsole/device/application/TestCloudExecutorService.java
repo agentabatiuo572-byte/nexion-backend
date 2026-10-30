@@ -101,7 +101,7 @@ public class TestCloudExecutorService {
                     else {
                         if(!executorId.matches("fleet-[1-9][0-9]{0,18}")) throw new IllegalArgumentException();
                         long deviceId=Long.parseLong(executorId.substring(6));
-                        var candidate=mapper.fleetCandidate(fleetCutoff(),deviceId,configured().deviceId());
+                        var candidate=mapper.fleetCandidate(fleetCutoff(),tradeinFleetCutoff(environment),deviceId,configured().deviceId());
                         if(candidate==null) throw new IllegalArgumentException();
                         identity=new Identity(executorId,candidate.ownerId(),deviceId,candidate.instanceNo(),
                                 configured().taskConfigId(),configured().model(),configured().modelDigest());
@@ -135,7 +135,7 @@ public class TestCloudExecutorService {
                 if(!identity(binding).equals(identity)) throw new IllegalArgumentException();
             } else {
                 if(!identity.executorId().equals("fleet-"+identity.deviceId())) throw new IllegalArgumentException();
-                var candidate=mapper.fleetCandidate(fleetCutoff(),identity.deviceId(),configured().deviceId());
+                var candidate=mapper.fleetCandidate(fleetCutoff(),tradeinFleetCutoff(environment),identity.deviceId(),configured().deviceId());
                 if(candidate==null || candidate.ownerId()!=identity.ownerId() || !candidate.instanceNo().equals(identity.instanceNo())
                         || !configured().taskConfigId().equals(identity.taskConfigId())
                         || !configured().model().equals(identity.model()) || !configured().modelDigest().equals(identity.modelDigest())) throw new IllegalArgumentException();
@@ -148,6 +148,11 @@ public class TestCloudExecutorService {
         try { return LocalDateTime.parse(property("fleet-started-at")); }
         catch(RuntimeException invalid) { throw new IllegalArgumentException("TEST_CLOUD_FLEET_CUTOFF_INVALID"); }
     }
+    static LocalDateTime tradeinFleetCutoff(Environment environment) {
+        if (!"true".equals(environment.getProperty(PREFIX+"fleet-tradein-enabled"))) return null;
+        try { return LocalDateTime.parse(environment.getProperty(PREFIX+"fleet-tradein-started-at","")); }
+        catch(RuntimeException invalid) { throw new IllegalArgumentException("TEST_CLOUD_TRADEIN_CUTOFF_INVALID"); }
+    }
     private Identity fleetIdentity() { return new Identity("fleet",0,0,"fleet",configured().taskConfigId(),configured().model(),configured().modelDigest()); }
     private Identity identity(Binding b) { return new Identity(b.executorId(),b.ownerId(),b.deviceId(),b.instanceNo(),b.taskConfigId(),b.model(),b.modelDigest()); }
     private Binding binding(Identity i) { return new Binding(i.executorId(),i.ownerId(),i.deviceId(),i.instanceNo(),i.taskConfigId(),i.model(),i.modelDigest()); }
@@ -158,7 +163,7 @@ public class TestCloudExecutorService {
         requireCurrent(i);
         if(!fleetIdentity().equals(i) || !fleetEnabled() || afterDeviceId<0) throw error(403,"TEST_CLOUD_FLEET_REQUIRED");
         int limit=Math.max(1,Math.min(100,requestedLimit));
-        var candidates=mapper.fleetCandidates(fleetCutoff(),afterDeviceId,configured().deviceId(),limit+1);
+        var candidates=mapper.fleetCandidates(fleetCutoff(),tradeinFleetCutoff(environment),afterDeviceId,configured().deviceId(),limit+1);
         List<Map<String,Object>> items=new ArrayList<>();
         for(var c:candidates.stream().limit(limit).toList()) {
             Binding registered=mapper.binding("fleet-"+c.deviceId());
@@ -322,7 +327,7 @@ public class TestCloudExecutorService {
         // Reconciliation is read-only in effect and remains possible after a successful deferred deactivation.
         if(!live) return;
         if(fleet(i)) {
-            if(!Integer.valueOf(1).equals(mapper.liveFleetBinding(fleetCutoff(),i.ownerId(),i.deviceId(),i.instanceNo(),completingExistingTask)))
+            if(!Integer.valueOf(1).equals(mapper.liveFleetBinding(fleetCutoff(),tradeinFleetCutoff(environment),i.ownerId(),i.deviceId(),i.instanceNo(),completingExistingTask)))
                 throw error(403,"TEST_CLOUD_BINDING_INVALID");
             return;
         }

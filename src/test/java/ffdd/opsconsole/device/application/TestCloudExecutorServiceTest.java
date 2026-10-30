@@ -75,7 +75,7 @@ class TestCloudExecutorServiceTest {
     }
     @Test void fleetDiscoveryIsBoundedReadOnlyAndDoesNotTrustClientOwnership() {
         fleetIdentity();
-        when(mapper.fleetCandidates(NOW.minusDays(1),0,11,2)).thenReturn(List.of(
+        when(mapper.fleetCandidates(NOW.minusDays(1),null,0,11,2)).thenReturn(List.of(
                 new TestCloudExecutorMapper.FleetCandidate(7,12,"NEX-FLEET-12"),
                 new TestCloudExecutorMapper.FleetCandidate(8,13,"NEX-FLEET-13")));
         var fleet=service.authenticate("Bearer "+TOKEN,"fleet");
@@ -89,9 +89,42 @@ class TestCloudExecutorServiceTest {
         Identity target=fleetIdentity();
         when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
                 "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
-        when(mapper.liveFleetBinding(NOW.minusDays(1),7,12,"NEX-FLEET-12",false)).thenReturn(null);
+        when(mapper.liveFleetBinding(NOW.minusDays(1),null,7,12,"NEX-FLEET-12",false)).thenReturn(null);
         assertThatThrownBy(()->service.next(target,"fleet-next-unit")).hasMessage("TEST_CLOUD_BINDING_INVALID");
         verifyNoInteractions(settlement); verify(mapper,never()).register(any(),any());
+    }
+    @Test void tradeinIsDisabledByDefaultAndUsesItsIndependentBusinessTimeCutoffWhenEnabled() {
+        fleetIdentity();
+        assertThat(tradeinFleetCutoff(env)).isNull();
+        env.setProperty(PREFIX+"fleet-tradein-enabled","true");
+        assertThatThrownBy(()->service.authenticate("Bearer "+TOKEN,"fleet-13")).hasMessage("TEST_CLOUD_AUTH_INVALID");
+        var tradeinCutoff=NOW.minusHours(1);
+        env.setProperty(PREFIX+"fleet-tradein-started-at",tradeinCutoff.toString());
+        when(mapper.fleetCandidate(NOW.minusDays(1),tradeinCutoff,13,11))
+                .thenReturn(new TestCloudExecutorMapper.FleetCandidate(7,13,"DEV-TI-UNIT"));
+        assertThat(service.authenticate("Bearer "+TOKEN,"fleet-13").deviceId()).isEqualTo(13);
+        env.setProperty(PREFIX+"fleet-tradein-enabled","false");
+        assertThatThrownBy(()->service.authenticate("Bearer "+TOKEN,"fleet-13")).hasMessage("TEST_CLOUD_AUTH_INVALID");
+    }
+    @Test void everyFleetMutationRechecksTheSameTradeinAuthorityBeforeWorkerOrSettlementWrites() {
+        Identity target=fleetIdentity();
+        env.setProperty(PREFIX+"fleet-tradein-enabled","true");
+        var tradeinCutoff=NOW.minusHours(1);
+        env.setProperty(PREFIX+"fleet-tradein-started-at",tradeinCutoff.toString());
+        when(assignments.lockOwnedDevice(7L,12L)).thenReturn(new DeviceRow(12L,"NEX-FLEET-12","DEVICE","S1","S1",
+                "ACTIVE","stellarbox-s1",NOW.minusDays(1),NOW.minusHours(1),96,"unit","ONLINE",null,false));
+        var original=execution(null,null,null);
+        when(mapper.lock(TASK)).thenReturn(new Execution(TASK,"fleet-12",7,12,"NEX-FLEET-12","EM-UNIT",
+                original.nextKeyHash(),CLAIM,original.inputJson(),original.inputHash(),original.modelTag(),original.modelDigest(),
+                NONCE,null,null,null,null,NOW));
+        when(assignments.lockAssignment(7L,TASK,"PRODUCTION")).thenReturn(new AssignmentRow(TASK,12L,"EM-UNIT",
+                TASK_NAME,"EM",KIND,CLIENT,"RUNNING",BigDecimal.ONE,5,0,NOW.minusSeconds(10),NOW.plusHours(24),null,null,NONCE,NOW.plusHours(24)));
+        assertThatThrownBy(()->service.next(target,"fleet-next-unit")).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        assertThatThrownBy(()->service.heartbeat(target,null,null)).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        assertThatThrownBy(()->service.complete(target,TASK,"fleet-complete-unit",null)).hasMessage("TEST_CLOUD_BINDING_INVALID");
+        verify(mapper,times(2)).liveFleetBinding(NOW.minusDays(1),tradeinCutoff,7,12,"NEX-FLEET-12",false);
+        verify(mapper).liveFleetBinding(NOW.minusDays(1),tradeinCutoff,7,12,"NEX-FLEET-12",true);
+        verify(mapper,never()).heartbeat(anyLong(),any(),any(),any()); verifyNoInteractions(settlement);
     }
     @Test void fleetReceiptReconciliationSurvivesRevokedOwnershipAndNeverClaimsOrCredits() {
         Identity target=fleetIdentity();

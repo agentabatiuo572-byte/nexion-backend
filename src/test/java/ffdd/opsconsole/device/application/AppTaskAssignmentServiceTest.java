@@ -116,10 +116,19 @@ class AppTaskAssignmentServiceTest {
         when(environment.getProperty(TestCloudExecutorService.PREFIX+"fleet-started-at","")).thenReturn(NOW.minusDays(1).toString());
         when(environment.getProperty(TestCloudExecutorService.PREFIX+"device-id","0")).thenReturn("1202");
         when(environment.getProperty(TestCloudExecutorService.PREFIX+"task-config-id","")).thenReturn("TASK-EM");
-        when(mapper.managedFleet(7,11,NOW.minusDays(1),1202)).thenReturn(1);
+        when(mapper.managedFleet(7,11,NOW.minusDays(1),null,1202)).thenReturn(1);
     }
     @Test void newlyActivatedPaidFleetInstanceIsReservedBeforeItsFirstDiscoveryOrRegistration() {
         enableFleet();
+        assertThatThrownBy(()->service.assignAutomatically(7L,11L)).hasMessage("TEST_CLOUD_EXECUTOR_REQUIRED");
+        verify(mapper,never()).insertAssignment(anyString(),any(),any(),any(),any(),any(),any(),anyString(),any(),anyString(),any(),any());
+    }
+    @Test void newlyActivatedTradeinUsesItsOwnCutoffForExclusionBeforeTheFirstManifest() {
+        enableFleet();
+        var tradeinCutoff=NOW.minusHours(1);
+        when(environment.getProperty(TestCloudExecutorService.PREFIX+"fleet-tradein-enabled")).thenReturn("true");
+        when(environment.getProperty(TestCloudExecutorService.PREFIX+"fleet-tradein-started-at","")).thenReturn(tradeinCutoff.toString());
+        when(mapper.managedFleet(7,11,NOW.minusDays(1),tradeinCutoff,1202)).thenReturn(1);
         assertThatThrownBy(()->service.assignAutomatically(7L,11L)).hasMessage("TEST_CLOUD_EXECUTOR_REQUIRED");
         verify(mapper,never()).insertAssignment(anyString(),any(),any(),any(),any(),any(),any(),anyString(),any(),anyString(),any(),any());
     }

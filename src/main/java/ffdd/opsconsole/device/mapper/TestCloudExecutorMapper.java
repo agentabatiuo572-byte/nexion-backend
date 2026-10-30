@@ -15,11 +15,13 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
           JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
           JOIN nx_product p ON p.id=d.product_id AND p.product_no=d.product_code
          WHERE d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id=''
-           AND d.source_channel='ORDER' AND UPPER(d.ownership_status)='OWNED'
+           AND UPPER(d.ownership_status)='OWNED'
            AND UPPER(d.device_type) NOT IN ('PHONE','MOBILE')
-           AND d.purchased_at>=#{cutoff} AND d.activated_at>=#{cutoff} AND d.deactivated_at IS NULL
+           AND d.deactivated_at IS NULL
            AND o.is_deleted=0 AND o.payment_status='PAID' AND o.order_status='COMPLETED'
-           AND o.activation_status='ACTIVATED' AND o.subtotal_usdt>0 AND o.amount_usdt>=0
+           AND o.subtotal_usdt>0 AND o.amount_usdt>=0
+           AND ((d.source_channel='ORDER' AND o.activation_status='ACTIVATED'
+           AND d.purchased_at>=#{cutoff} AND d.activated_at>=#{cutoff}
            AND (o.product_id=d.product_id OR EXISTS(SELECT 1 FROM nx_order_item oi
                  WHERE oi.order_no=o.order_no AND oi.product_id=d.product_id AND oi.is_deleted=0))
            AND (SELECT COUNT(*) FROM nx_user_device owned WHERE owned.source_order_no=o.order_no
@@ -28,7 +30,44 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
                  AND UPPER(owned.ownership_status)='OWNED')
                <= CASE WHEN o.order_type='BUNDLE' THEN (SELECT COALESCE(SUM(oi.quantity),0)
                     FROM nx_order_item oi WHERE oi.order_no=o.order_no AND oi.product_id=d.product_id AND oi.is_deleted=0)
-                  ELSE o.quantity END
+                  ELSE o.quantity END)
+           OR (d.source_channel='TRADE_IN' AND #{tradeinCutoff} IS NOT NULL
+           AND d.purchased_at>=#{tradeinCutoff} AND d.activated_at>=#{tradeinCutoff}
+           AND o.order_type='TRADE_IN' AND o.quantity=1 AND o.item_count=1
+           AND o.activation_status IN ('ACTIVATED','INVENTORY')
+           AND (SELECT COUNT(*) FROM nx_user_device delivered
+                 WHERE delivered.source_order_no=o.order_no AND delivered.is_deleted=0)=1
+           AND (SELECT COUNT(*) FROM nx_order_item oi WHERE oi.order_no=o.order_no AND oi.is_deleted=0)=1
+           AND EXISTS(SELECT 1 FROM nx_order_item oi WHERE oi.order_no=o.order_no AND oi.is_deleted=0
+                 AND oi.product_id=d.product_id AND oi.product_no=d.product_code AND oi.quantity=1
+                 AND oi.unit_price_usdt=o.subtotal_usdt AND oi.line_amount_usdt=o.subtotal_usdt)
+           AND (SELECT COUNT(*) FROM nx_tradein_application claimed WHERE claimed.is_deleted=0
+                 AND (claimed.target_order_no=o.order_no OR claimed.target_device_id=d.id))=1
+           AND EXISTS(SELECT 1 FROM nx_tradein_application a
+                 JOIN nx_trade_in_order c ON c.trade_in_no=a.tradein_no AND c.user_id=a.user_id
+                   AND c.source_device_id=a.source_device_id AND c.target_product_id=a.target_product_id
+                 JOIN nx_user_device source ON source.id=a.source_device_id AND source.user_id=a.user_id
+                   AND source.instance_no=a.source_instance_no AND source.product_id=a.source_product_id
+                WHERE a.user_id=d.user_id AND a.target_device_id=d.id AND a.target_order_no=o.order_no
+                  AND a.target_product_id=d.product_id AND o.product_id=d.product_id
+                  AND a.source_device_id<>d.id AND a.status='COMPLETED' AND a.is_deleted=0
+                  AND a.completed_at>=#{tradeinCutoff} AND a.submitted_at>=#{tradeinCutoff}
+                  AND c.status='COMPLETED' AND c.is_deleted=0
+                  AND source.is_deleted=0 AND source.source_environment='PRODUCTION' AND source.run_id=''
+                  AND a.source_price_usdt>0 AND a.target_price_usdt=o.subtotal_usdt
+                  AND a.target_price_usdt=d.price_usdt_snapshot AND a.tradein_discount_usdt>=0
+                  AND a.tradein_discount_usdt=o.discount_usdt AND c.valuation_usdt=a.tradein_discount_usdt
+                  AND a.wallet_debit_usdt=o.amount_usdt AND a.net_upgrade_cost_usdt=a.wallet_debit_usdt
+                  AND a.tradein_discount_usdt+a.wallet_debit_usdt=a.target_price_usdt
+                  AND ((o.order_no REGEXP '^TIO-[0-9A-F]{32}$'
+                    AND a.tradein_no=CONCAT('TIN-',SUBSTRING(o.order_no,5))
+                    AND d.instance_no=CONCAT('DEV-TI-',SUBSTRING(o.order_no,5))
+                    AND UPPER(source.ownership_status)='RECYCLED' AND UPPER(source.status)='RECYCLED'
+                    AND source.activated_at IS NULL AND source.deactivated_at IS NOT NULL)
+                  OR (o.order_no REGEXP '^CPO-[0-9A-F]{32}$'
+                    AND a.tradein_no=CONCAT('CPR-',SUBSTRING(o.order_no,5))
+                    AND d.instance_no=CONCAT('DEV-CPR-',SUBSTRING(o.order_no,5))
+                    AND a.tradein_discount_usdt=0)))))
         """;
     String FLEET_LIVE = """
            AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
@@ -57,17 +96,17 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
                    AND (b.owner_id<>d.user_id OR b.instance_no<>d.instance_no OR b.executor_id<>CONCAT('fleet-',d.id)))
              AND d.id>#{afterDeviceId} AND d.id<>#{legacyDeviceId} ORDER BY d.id LIMIT #{limit}
             """)
-    List<FleetCandidate> fleetCandidates(@Param("cutoff") LocalDateTime cutoff,@Param("afterDeviceId") long afterDeviceId,
+    List<FleetCandidate> fleetCandidates(@Param("cutoff") LocalDateTime cutoff,@Param("tradeinCutoff") LocalDateTime tradeinCutoff,@Param("afterDeviceId") long afterDeviceId,
                                         @Param("legacyDeviceId") long legacyDeviceId,@Param("limit") int limit);
 
     @Select("SELECT d.user_id ownerId,d.id deviceId,d.instance_no instanceNo " + PAID_FLEET_FROM
             + " AND d.id=#{deviceId} AND d.id<>#{legacyDeviceId}")
-    FleetCandidate fleetCandidate(@Param("cutoff") LocalDateTime cutoff,@Param("deviceId") long deviceId,
+    FleetCandidate fleetCandidate(@Param("cutoff") LocalDateTime cutoff,@Param("tradeinCutoff") LocalDateTime tradeinCutoff,@Param("deviceId") long deviceId,
                                   @Param("legacyDeviceId") long legacyDeviceId);
 
     @Select("SELECT 1 " + PAID_FLEET_FROM + FLEET_LIVE
             + " AND (#{completing} OR d.pending_deactivate=0) AND d.id=#{deviceId} AND d.user_id=#{ownerId} AND d.instance_no=#{instanceNo} FOR UPDATE OF o,d")
-    Integer liveFleetBinding(@Param("cutoff") LocalDateTime cutoff,@Param("ownerId") long ownerId,
+    Integer liveFleetBinding(@Param("cutoff") LocalDateTime cutoff,@Param("tradeinCutoff") LocalDateTime tradeinCutoff,@Param("ownerId") long ownerId,
                          @Param("deviceId") long deviceId,@Param("instanceNo") String instanceNo,@Param("completing") boolean completing);
 
     @Insert("""
