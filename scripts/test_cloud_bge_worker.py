@@ -742,6 +742,22 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.worker.run(once=True), 0)
         self.assertEqual([path for _, path, _ in self.backend.calls[:2]], [w.PREFIX + "/eligibility", w.PREFIX + "/next-task"])
 
+    def test_single_confirmed_task_pulls_next_without_completion_cooldown(self):
+        waits, request = [], self.backend.request
+        self.worker.start_heartbeat = lambda: None
+        self.worker.stop.wait = lambda seconds: waits.append(seconds) or self.worker.stop.is_set()
+        def next_after_confirmation(method, path, body=None, key=None):
+            if path.endswith('/next-task') and self.backend.complete_body is not None:
+                self.assertNotIn(self.cfg.interval, waits)
+                self.backend.idle = True
+                self.worker.stop.set()
+            return request(method, path, body, key)
+        self.backend.request = next_after_confirmation
+        self.assertEqual(self.worker.run(), 0)
+        self.assertEqual(sum(path.endswith('/next-task') for _, path, _ in self.backend.calls), 2)
+        self.assertEqual(sum(path.endswith('/complete') for _, path, _ in self.backend.calls), 1)
+        self.assertEqual(waits.count(self.cfg.interval), 1)  # Only the final empty queue backs off.
+
     def test_single_deactivated_poll_is_read_only_then_same_identity_and_journal_resume_after_reactivation(self):
         original = {"phase": "IDLE", "binding": dict(self.cfg.binding)}
         self.journal.set(original)
@@ -759,6 +775,13 @@ class WorkerTests(unittest.TestCase):
                     self.worker.stop.set()
             return self.worker.stop.is_set()
         self.worker.stop.wait = reactivate_after_wait
+        request = self.backend.request
+        def deactivate_after_confirmation(method, path, body=None, key=None):
+            result = request(method, path, body, key)
+            if path.endswith('/complete'):
+                self.backend.eligible = False
+            return result
+        self.backend.request = deactivate_after_confirmation
         self.assertEqual(self.worker.run(), 0)
         self.assertEqual(waits, [60, 60])
         self.assertEqual(self.cfg.binding, original["binding"])
@@ -1043,6 +1066,44 @@ class FleetTests(unittest.TestCase):
         backend = Backend(worker.config, worker.journal, Path(worker.journal.db.execute("PRAGMA database_list").fetchone()[2]))
         worker.backend = backend
         return backend
+
+    def test_confirmed_fleet_task_is_ready_for_next_scheduler_turn(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        with patch.object(w.time, 'monotonic', return_value=100):
+            self.fleet.tick(entry)
+            self.assertTrue(self.fleet.ready(entry))
+        self.assertEqual(sum(path.endswith('/complete') for _, path, _ in backend.calls), 1)
+        self.assertEqual(entry.worker.journal.db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0], 1)
+
+    def test_empty_or_proven_unsent_fleet_request_keeps_idle_retry_interval(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        for idle in (True, False):
+            with self.subTest(idle=idle):
+                entry.due = 0
+                backend.idle = idle
+                backend.next_error = None if idle else w.NotSent('CONNECT_NOT_SENT')
+                with patch.object(w.time, 'monotonic', return_value=100):
+                    self.fleet.tick(entry)
+                    self.assertFalse(self.fleet.ready(entry))
+                with patch.object(w.time, 'monotonic', return_value=159):
+                    self.assertFalse(self.fleet.ready(entry))
+                with patch.object(w.time, 'monotonic', return_value=160):
+                    self.assertTrue(self.fleet.ready(entry))
+        self.assertIsNone(backend.complete_body)
+
+    def test_positive_original_receipt_recovery_is_ready_without_new_task_in_same_tick(self):
+        entry, = self.discover([self.row()])
+        backend = self.wire(entry)
+        entry.worker.journal.set({'phase':'CLAIMED','binding':entry.worker.config.binding,
+                                 'taskNo':backend.task['taskNo'],'inputHash':backend.task['inputHash'],
+                                 'resultHash':'e' * 64})
+        with patch.object(w.time, 'monotonic', return_value=100):
+            self.fleet.tick(entry)
+            self.assertTrue(self.fleet.ready(entry))
+        self.assertFalse(any(path.endswith('/next-task') or path.endswith('/complete') for _, path, _ in backend.calls))
+        self.assertEqual(entry.worker.journal.state()['phase'], 'IDLE')
 
     def test_parallelism_is_small_bounded_and_single_worker_config_is_unchanged(self):
         self.assertEqual(self.fleet.config.parallelism, 6)

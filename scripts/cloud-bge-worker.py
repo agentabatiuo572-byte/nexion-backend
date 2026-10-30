@@ -752,7 +752,8 @@ class Worker:
                     self.start_heartbeat()
                 if once:
                     return 0 if outcome == "CONFIRMED" else 2
-                self.stop.wait(self.config.interval)
+                if outcome not in ("CONFIRMED", "ALREADY_COMPLETED"):
+                    self.stop.wait(self.config.interval)
             return 0
         finally:
             self.heartbeat_stop.set()
@@ -975,6 +976,7 @@ class Fleet:
                 return
             generation = entry.generation
             entry.running = True
+        delay = self.config.interval
         try:
             if reconcile:
                 def authorize_resume():
@@ -983,7 +985,8 @@ class Fleet:
                         require(entry.generation == generation, "CLAIM_RESUME_CANCELLED")
                         entry.blocked = False
                         entry.worker.stop.clear()
-                entry.worker.recover(claimed_execution=entry.present, on_resume=authorize_resume)
+                if entry.worker.recover(claimed_execution=entry.present, on_resume=authorize_resume):
+                    delay = 0
                 with entry.gate:
                     if entry.generation == generation:
                         entry.blocked = False
@@ -1000,7 +1003,8 @@ class Fleet:
                             print("FLEET_HEARTBEAT_UNCONFIRMED", flush=True)
                             return
                         raise
-                entry.worker.one()
+                if entry.worker.one() in ("CONFIRMED", "ALREADY_COMPLETED"):
+                    delay = 0
         except Exception:
             with entry.gate:
                 entry.generation += 1
@@ -1010,7 +1014,7 @@ class Fleet:
         finally:
             with entry.gate:
                 entry.running = False
-                entry.due = time.monotonic() + self.config.interval
+                entry.due = time.monotonic() + delay
 
     def run(self):
         self.restore()
