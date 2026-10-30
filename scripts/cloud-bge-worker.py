@@ -274,6 +274,26 @@ class Journal:
         with self.guard, self.db:
             self.db.execute("UPDATE state SET value=? WHERE id=1", (json_bytes(value).decode(),))
 
+    def classify_unsent_next(self, binding):
+        with self.guard, self.db:
+            state = self.state()
+            if (set(state) != {"phase", "binding", "nextKey"} or state["phase"] != "UNKNOWN_NEXT"
+                    or not isinstance(state["binding"], dict) or state["binding"].keys() != binding.keys()
+                    or any(type(state["binding"][key]) is not type(value) or state["binding"][key] != value
+                           for key, value in binding.items())
+                    or not isinstance(state["nextKey"], str)
+                    or re.fullmatch(r"BGE-NEXT-[a-f0-9]{32}", state["nextKey"]) is None):
+                return False
+            key = state["nextKey"]
+            if self.db.execute("SELECT 1 FROM calls WHERE request_key=? LIMIT 1", (key,)).fetchone():
+                return False
+            # Every HTTP mutation commits its intent first. No call means this NEXT was never sent.
+            self.db.execute("INSERT INTO calls(operation,request_key,task_no,request_hash,outcome) VALUES(?,?,NULL,?,?)",
+                            ("NEXT_PREINTENT_RECOVERY", key, sha256(json_bytes(state)), "NOT_SENT"))
+            self.db.execute("UPDATE state SET value=? WHERE id=1", (json_bytes({**state, "phase": "NEXT_NOT_SENT"}).decode(),))
+        print("NEXT_PREINTENT_NOT_SENT_RECOVERED", flush=True)
+        return True
+
     def intent(self, operation, key, task, body, state=None):
         with self.guard, self.db:
             cursor = self.db.execute("INSERT INTO calls(operation,request_key,task_no,request_hash,outcome) VALUES(?,?,?,?, 'INTENT')",
@@ -481,8 +501,8 @@ class Worker:
         self.heartbeat_error = None
 
     def mutate(self, operation, path, body, key, state=None, validator=None):
-        if operation in ("NEXT", "COMPLETE"):
-            require(not self.stopping(), "STOP_BEFORE_ECONOMIC_REQUEST")
+        if operation in ("NEXT", "COMPLETE") and self.stopping():
+            raise NotSent("STOP_BEFORE_ECONOMIC_REQUEST")
         if operation == "NEXT" and self.claim_capacity is not None and not self.claim_capacity.is_set():
             raise NotSent("FLEET_ACTIVE_CAPACITY_EXCEEDED")
         call = self.journal.intent(operation, key, (state or {}).get("taskNo"), body, state)
@@ -614,6 +634,7 @@ class Worker:
         return True
 
     def recover(self, claimed_execution=True, on_resume=None):
+        self.journal.classify_unsent_next(self.config.binding)
         state = self.journal.state()
         if state["phase"] in ("IDLE", "NEXT_NOT_SENT"):
             return False
@@ -854,6 +875,8 @@ class Fleet:
                 config = self.instance_config(state["binding"])
                 require(path.name == sha256(config.binding["executorId"].encode("ascii")), "FLEET_STATE_BINDING_INVALID")
                 require(config.binding["deviceId"] not in self.excluded, "FLEET_EXCLUDED_STATE")
+                journal.classify_unsent_next(config.binding)
+                state = journal.state()
                 executor = config.binding["executorId"]
                 worker = Worker(config, Http(self.config.backend, self.backend.token, executor=executor),
                                 self.ollama, journal, threading.Event(), self.stop, self.claim_capacity)

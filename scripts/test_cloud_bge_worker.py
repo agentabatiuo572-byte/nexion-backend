@@ -727,6 +727,67 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(len(keys), 2)
         self.assertEqual(keys[0], keys[1])
 
+    def test_stop_before_next_intent_is_proven_unsent_and_keeps_same_key(self):
+        self.worker.stop.set()
+        self.assertEqual(self.worker.one(), 'NOT_SENT')
+        original = self.journal.state()
+        self.assertEqual(original['phase'], 'NEXT_NOT_SENT')
+        self.assertEqual(self.worker.one(), 'NOT_SENT')
+        self.assertEqual(self.journal.state(), original)
+        self.assertEqual(self.backend.calls, [])
+        self.assertEqual(self.journal.db.execute('SELECT COUNT(*) FROM calls').fetchone()[0], 0)
+
+    def test_preintent_unknown_next_recovers_original_key_with_one_local_marker(self):
+        original = {'phase':'UNKNOWN_NEXT','binding':self.cfg.binding,'nextKey':'BGE-NEXT-' + 'f' * 32}
+        self.journal.set(original)
+        self.assertEqual(self.worker.run(once=True), 0)
+        self.assertEqual([key for _, path, key in self.backend.calls if path.endswith('/next-task')], [original['nextKey']])
+        self.assertEqual(self.journal.db.execute("SELECT request_hash,outcome FROM calls WHERE operation='NEXT_PREINTENT_RECOVERY'").fetchall(),
+                         [(w.sha256(w.json_bytes(original)), 'NOT_SENT')])
+        self.assertEqual(self.journal.db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0], 1)
+        self.assertFalse(self.journal.classify_unsent_next(self.cfg.binding))
+
+    def test_any_existing_call_keeps_unknown_next_isolated(self):
+        for index, (operation, outcome) in enumerate((op, status) for op in ('NEXT','HEARTBEAT')
+                                                   for status in ('INTENT','UNKNOWN','CONFIRMED','REJECTED','NOT_SENT')):
+            original = {'phase':'UNKNOWN_NEXT','binding':self.cfg.binding,'nextKey':'BGE-NEXT-' + format(index, '032x')}
+            call = self.journal.intent(operation, original['nextKey'], None, {}, original)
+            self.journal.outcome(call, outcome)
+            with self.subTest(operation=operation, outcome=outcome):
+                self.assertFalse(self.journal.classify_unsent_next(self.cfg.binding))
+                self.assertEqual(self.journal.state(), original)
+                with self.assertRaisesRegex(w.Halt, 'STOP_PENDING_RECONCILIATION'):
+                    self.worker.recover()
+                self.assertEqual(self.backend.calls, [])
+        self.assertEqual(self.journal.db.execute("SELECT COUNT(*) FROM calls WHERE operation='NEXT_PREINTENT_RECOVERY'").fetchone()[0], 0)
+
+    def test_preintent_classification_rejects_wrong_binding_key_or_extra_task_fields(self):
+        original = {'phase':'UNKNOWN_NEXT','binding':self.cfg.binding,'nextKey':'BGE-NEXT-' + 'f' * 32}
+        for change in ({'binding':{**self.cfg.binding,'deviceId':93}},
+                       {'binding':{**self.cfg.binding,'ownerId':float(self.cfg.binding['ownerId'])}},
+                       {'binding':{**self.cfg.binding,'deviceId':float(self.cfg.binding['deviceId'])}},
+                       {'binding':None}, {'nextKey':'BGE-NEXT-invalid'}, {'nextKey':None},
+                       {'taskNo':'CTA-' + 'A' * 32}, {'phase':'UNKNOWN_COMPLETE'}):
+            with self.subTest(change=change):
+                state = {**original, **change}
+                self.journal.set(state)
+                self.assertFalse(self.journal.classify_unsent_next(self.cfg.binding))
+                self.assertEqual(self.journal.state(), state)
+        self.assertEqual(self.journal.db.execute('SELECT COUNT(*) FROM calls').fetchone()[0], 0)
+        boolean_binding = {**self.cfg.binding, 'ownerId':True}
+        self.journal.set({**original, 'binding':boolean_binding})
+        self.assertFalse(self.journal.classify_unsent_next({**self.cfg.binding, 'ownerId':1}))
+        self.assertEqual(self.journal.state()['binding'], boolean_binding)
+
+    def test_preintent_marker_and_classification_roll_back_together(self):
+        original = {'phase':'UNKNOWN_NEXT','binding':self.cfg.binding,'nextKey':'BGE-NEXT-' + 'f' * 32}
+        self.journal.set(original)
+        self.journal.db.execute("CREATE TEMP TRIGGER reject_classification BEFORE UPDATE ON state BEGIN SELECT RAISE(ABORT,'injected-write-failure'); END")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.journal.classify_unsent_next(self.cfg.binding)
+        self.assertEqual(self.journal.state(), original)
+        self.assertEqual(self.journal.db.execute('SELECT COUNT(*) FROM calls').fetchone()[0], 0)
+
     def test_run_restarts_proven_unsent_next_before_any_heartbeat(self):
         self.backend.next_error = w.NotSent("CONNECT_NOT_SENT")
         self.assertEqual(self.worker.run(once=True), 2)
@@ -1075,6 +1136,32 @@ class FleetTests(unittest.TestCase):
             self.assertTrue(self.fleet.ready(entry))
         self.assertEqual(sum(path.endswith('/complete') for _, path, _ in backend.calls), 1)
         self.assertEqual(entry.worker.journal.db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0], 1)
+
+    def test_restore_classifies_only_no_intent_next_before_quarantine_and_keeps_original_key(self):
+        entries = self.discover([self.row(), self.row(93)])
+        for entry in entries:
+            key = 'BGE-NEXT-' + format(entry.worker.config.binding['deviceId'], '032x')
+            state = {'phase':'UNKNOWN_NEXT','binding':entry.worker.config.binding,'nextKey':key}
+            entry.worker.journal.set(state)
+            if entry.worker.config.binding['deviceId'] == 93:
+                call = entry.worker.journal.intent('NEXT', key, None, {}, state)
+                entry.worker.journal.outcome(call, 'UNKNOWN')
+            entry.worker.journal.db.close()
+            os.close(entry.file_lock)
+        self.fleet.entries.clear()
+        self.fleet.restore()
+        restored = {entry.worker.config.binding['deviceId']:entry for entry in self.fleet.snapshot()}
+        proven, unknown = restored[92], restored[93]
+        self.assertEqual(proven.worker.journal.state()['phase'], 'NEXT_NOT_SENT')
+        self.assertFalse(proven.blocked)
+        self.assertFalse(self.fleet.ready(proven))  # Discovery is still required before a new request.
+        self.assertEqual(unknown.worker.journal.state()['phase'], 'UNKNOWN_NEXT')
+        self.assertTrue(unknown.blocked)
+        self.discover([self.row(), self.row(93)])
+        backend = self.wire(proven)
+        self.fleet.tick(proven)
+        self.assertEqual([key for _, path, key in backend.calls if path.endswith('/next-task')], ['BGE-NEXT-' + format(92, '032x')])
+        self.assertFalse(self.fleet.ready(unknown))
 
     def test_empty_or_proven_unsent_fleet_request_keeps_idle_retry_interval(self):
         entry, = self.discover([self.row()])
