@@ -44,6 +44,7 @@ import java.util.concurrent.*;
 import java.util.stream.Stream;
 import javax.sql.DataSource;
 import org.apache.ibatis.mapping.Environment;
+import org.apache.ibatis.session.LocalCacheScope;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -60,7 +61,9 @@ import org.springframework.transaction.annotation.AnnotationTransactionAttribute
 import org.springframework.transaction.interceptor.TransactionInterceptor;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** Opt-in isolated MySQL; explicit test credentials, verified target and independently owned schemas. */
+/** Opt-in isolated MySQL; explicit test credentials, verified target and independently owned schemas.
+ * Fixture JDBC writes/savepoint rollbacks bypass MyBatis cache invalidation: all fixture mappers use STATEMENT reads.
+ */
 @EnabledIfEnvironmentVariable(named="UVEL_BUG355_MYSQL_IT", matches="true")
 @EnabledIfEnvironmentVariable(named="NEXION_TEST_DB_PASSWORD", matches=".+")
 class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
@@ -95,7 +98,7 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
     private static final byte[] PHONE_PROOF_KEY="isolated-phone-executor-key-32-bytes".getBytes(StandardCharsets.UTF_8);
 
     @Test void realFleetMapperFindsOnlyNewPaidActivatedHardwareAndLocksTheCurrentOrder() throws Exception {
-        var config=new MybatisConfiguration(); config.setMapUnderscoreToCamelCase(true);
+        var config=new MybatisConfiguration(); config.setMapUnderscoreToCamelCase(true); config.setLocalCacheScope(LocalCacheScope.STATEMENT);
         config.setEnvironment(new Environment("fleet-isolated",new SpringManagedTransactionFactory(),source));
         config.addMapper(TestCloudExecutorMapper.class);
         var fleetSession=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config));
@@ -138,7 +141,7 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
     }
 
     @Test void realTradeinFleetRequiresTheCompletedFinancialDeliveryContractAndPreservesInventoryActivation() {
-        var config=new MybatisConfiguration(); config.setMapUnderscoreToCamelCase(true);
+        var config=new MybatisConfiguration(); config.setMapUnderscoreToCamelCase(true); config.setLocalCacheScope(LocalCacheScope.STATEMENT);
         config.setEnvironment(new Environment("tradein-isolated",new SpringManagedTransactionFactory(),source));
         config.addMapper(TestCloudExecutorMapper.class);
         var fleet=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config)).getMapper(TestCloudExecutorMapper.class);
@@ -336,7 +339,7 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         jdbc.update("UPDATE nx_order SET subtotal_usdt=19.9 WHERE order_no='ORDER-LOCAL'");
         jdbc.update("INSERT INTO nx_test_cloud_legacy_admission(device_id,owner_id,instance_no,source_order_no,source_channel,old_task_no,task_config_id,enabled,reason,evidence_sha256,reviewed_at) VALUES(11,7,'NEX-TEST-INSTANCE','ORDER-LOCAL','ORDER','CTA-TEST-ONE','TASK-EM',1,'isolated legacy review',?,?)","a".repeat(64),NOW);
         var config=new MybatisConfiguration(new Environment("legacy-isolated",new SpringManagedTransactionFactory(),source));
-        config.setMapUnderscoreToCamelCase(true); config.addMapper(TestCloudExecutorMapper.class);
+        config.setMapUnderscoreToCamelCase(true); config.setLocalCacheScope(LocalCacheScope.STATEMENT); config.addMapper(TestCloudExecutorMapper.class);
         var fleet=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config)).getMapper(TestCloudExecutorMapper.class);
         var policy=mock(A2RuntimePolicy.class);when(policy.schemaVersion()).thenReturn("v1");
         var audit=new AuditLogService(controlled(AuditLogMapper.class,session.getMapper(AuditLogMapper.class)),new AuditLogSanitizer(json),
@@ -938,7 +941,7 @@ class TestComputeWorkerSettlementSpringTransactionMySqlIntegrationTest {
         var global=new GlobalConfig();global.setDbConfig(new GlobalConfig.DbConfig());
         global.setMetaObjectHandler(new ffdd.opsconsole.shared.config.MybatisMetaObjectHandler(businessClock));
         GlobalConfigUtils.setGlobalConfig(config,global);
-        config.setMapUnderscoreToCamelCase(true);
+        config.setMapUnderscoreToCamelCase(true); config.setLocalCacheScope(LocalCacheScope.STATEMENT);
         for(Class<?> type:List.of(AppTaskAssignmentMapper.class,AuditLogMapper.class,EventOutboxMapper.class,AdminIdempotencyRecordMapper.class,
                 ffdd.opsconsole.finance.mapper.SupportFundJournalMapper.class,
                 ffdd.opsconsole.device.mapper.SupportDeviceReadMapper.class)) config.addMapper(type);
