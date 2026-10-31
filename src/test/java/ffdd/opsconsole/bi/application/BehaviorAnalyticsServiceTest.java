@@ -555,6 +555,26 @@ class BehaviorAnalyticsServiceTest {
     }
 
     @Test
+    void retiredWalletExportKeepsChineseTitleAndOriginalLevelOutsideCurrentCatalog() {
+        var current = trackedDetail();
+        String route = "/pages/me/wallet";
+        var retired = new BehaviorAnalyticsMapper.CatalogRow(route, "钱包", 1, route, route, false);
+        when(mapper.listCatalog()).thenReturn(List.of(current));
+        when(mapper.listHistoricalCatalog()).thenReturn(List.of(retired, current));
+        when(mapper.activity(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.eq("ALL")))
+                .thenReturn(List.of(new BehaviorAnalyticsMapper.ActivityRow(route, 2, 1, 3, 1200, 0.5, 1)));
+
+        assertThat(service.pageCatalog().getData()).containsEntry("pageTree", List.of(current));
+        String csv = new String(service.exportBehavior("7d", "ALL", "ALL", "ALL", "pv"), StandardCharsets.UTF_8);
+
+        assertThat(csv).contains("\"/pages/me/wallet\",\"钱包\",1,2,1,3,1200,0.5\n")
+                .doesNotContain("\"/pages/me/wallet\",\"/pages/me/wallet\",3,");
+        verify(mapper).listHistoricalCatalog();
+    }
+
+    @Test
     void invalidQueryValuesFailClosedInsteadOfFallingBack() {
         assertThatThrownBy(() -> service.behavior("forever", "ALL", "ALL", "ALL", "pv"))
                 .isInstanceOf(BizException.class).hasMessageContaining("L6_WINDOW_INVALID");

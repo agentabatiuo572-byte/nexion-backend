@@ -53,6 +53,15 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
             """)
     List<CatalogRow> listCatalog();
 
+    @Select("""
+            SELECT route, title_zh AS titleZh, page_level AS pageLevel,
+                   parent_l1 AS parentL1, parent_l2 AS parentL2, tracked
+              FROM nx_behavior_page_catalog
+             WHERE is_deleted=0
+             ORDER BY page_level, route
+            """)
+    List<CatalogRow> listHistoricalCatalog();
+
     @Insert("""
             INSERT INTO nx_behavior_event_fact
               (event_id,client_event_id,dedupe_key,fingerprint,event_name,session_hash,actor_hash,route,page_level,parent_l1,parent_l2,
