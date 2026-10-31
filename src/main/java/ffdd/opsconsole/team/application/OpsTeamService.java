@@ -201,16 +201,8 @@ public class OpsTeamService implements AuditReplayable {
     }
     private static final List<String> VRANK_LEVELS = List.of(
             "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8");
-    private static final List<VRankSeed> VRANK_SEEDS = List.of(
-            vRank("V0"),
-            vRank("V1", "selfBuy", "directRefs"),
-            vRank("V2", "teamGv"),
-            vRank("V3", "teamGv", "legCount", "legRank"),
-            vRank("V4", "teamGv", "legCount", "legRank"),
-            vRank("V5", "teamGv", "legCount", "legRank"),
-            vRank("V6", "teamGv", "legCount", "legRank"),
-            vRank("V7", "teamGv", "legCount", "legRank"),
-            vRank("V8", "teamGv", "legCount", "legRank"));
+    private static final Set<String> VRANK_THRESHOLD_FIELDS = Set.of("selfBuy", "directRefs", "teamGv", "legCount", "legRank");
+    private static final long MAX_SAFE_COMPUTE_POINTS = 9_007_199_254_740_991L;
     private static final Set<String> VRANK_REWARD_TYPES = Set.of("usdt", "uvt", "voucher", "sku", "custom");
     private static final List<F2PolicyParamSeed> F2_POLICY_PARAM_SEEDS = List.of(
             new F2PolicyParamSeed("clampMin", "影响分下限", "F.influence.clampMin", "1.0", "", "InfluenceScore 下限;clamp 后参与版税权重计算。", false, false, ""),
@@ -625,31 +617,31 @@ public class OpsTeamService implements AuditReplayable {
 
     private ApiResult<Map<String, Object>> updateVRankThresholdInternal(
             String rank, String field, String idempotencyKey, TeamCommissionConfigUpdateRequest request) {
-        VRankSeed seed = requireVRank(rank);
+        String rankCode = requireVRank(rank).v();
         String normalizedField = requireText(field, "TEAM_VRANK_FIELD_REQUIRED");
-        if (!thresholdFields(seed).contains(normalizedField)) {
+        if (!VRANK_THRESHOLD_FIELDS.contains(normalizedField)) {
             throw new IllegalArgumentException("Unsupported F1 V-Rank threshold field");
         }
-        String value = normalizeVRankThreshold(normalizedField, request.value());
+        String value = normalizeVRankThreshold(rankCode, normalizedField, request.value());
         Object businessValue = vRankThresholdBusinessValue(normalizedField, value);
         Map<String, Object> before = vrankRows().stream()
-                .filter(row -> seed.v().equals(row.get("v")))
+                .filter(row -> rankCode.equals(row.get("v")))
                 .findFirst()
                 .orElse(Map.of());
         String oldValue = String.valueOf(before.getOrDefault(normalizedField, ""));
-        if (!commissionRepository.updateVRankThreshold(seed.v(), normalizedField, businessValue)) {
+        if (!commissionRepository.updateVRankThreshold(rankCode, normalizedField, businessValue)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_BUSINESS_TABLE_UPDATE_FAILED");
         }
-        String resourceId = "nx_v_rank_config:" + seed.v() + "." + normalizedField;
+        String resourceId = "nx_v_rank_config:" + rankCode + "." + normalizedField;
         audit("F_TEAM_VRANK_THRESHOLD_CHANGED", resourceId, actor(request.operator()), Map.of(
-                "rank", seed.v(),
+                "rank", rankCode,
                 "field", normalizedField,
                 "oldValue", oldValue,
                 "newValue", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = ranks().getData();
-        response.put("updated", Map.of("key", seed.v() + "." + normalizedField, "source", "nx_v_rank_config", "oldValue", oldValue, "newValue", value));
+        response.put("updated", Map.of("key", rankCode + "." + normalizedField, "source", "nx_v_rank_config", "oldValue", oldValue, "newValue", value));
         return ApiResult.ok(response);
     }
 
@@ -1555,18 +1547,15 @@ public class OpsTeamService implements AuditReplayable {
 
     private Map<String, Object> normalizeVRankRow(Map<String, Object> raw) {
         String level = textValue(raw, "v", "");
-        // 按 VRANK_SEEDS 字段组合输出:组合外的门槛字段 put null,前端 fieldsOf 按 != null 显示按钮,
-        // 避免非该阶字段(如非 V1 的 selfBuy)误显示导致编辑时 thresholdFields 校验报 Unsupported。
-        VRankSeed seed = VRANK_SEEDS.stream().filter(s -> s.v().equals(level)).findFirst().orElse(null);
-        Set<String> fields = seed != null ? seed.fields() : Set.of();
+        // The engine evaluates every configured dimension at every rank; expose the same editable values.
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("v", level);
         row.put("label", textValue(raw, "label", level));
-        row.put("selfBuy", fields.contains("selfBuy") ? intValue(raw.get("selfComputePoints"), 0) : null);
-        row.put("directRefs", fields.contains("directRefs") ? intValue(raw.get("directRefs"), 0) : null);
-        row.put("teamGv", fields.contains("teamGv") ? intValue(raw.get("teamComputePoints"), 0) : null);
-        row.put("legCount", fields.contains("legCount") ? intValue(raw.get("legCount"), 0) : null);
-        row.put("legRank", fields.contains("legRank") ? textValue(raw, "legRank", "") : null);
+        row.put("selfBuy", decimalValue(raw.get("selfComputePoints"), BigDecimal.ZERO).longValueExact());
+        row.put("directRefs", intValue(raw.get("directRefs"), 0));
+        row.put("teamGv", decimalValue(raw.get("teamComputePoints"), BigDecimal.ZERO).longValueExact());
+        row.put("legCount", intValue(raw.get("legCount"), 0));
+        row.put("legRank", textValue(raw, "legRank", "").isBlank() ? "NONE" : textValue(raw, "legRank", ""));
         row.put("unilevelDepth", textValue(raw, "unilevelDepth", ""));
         row.put("peerBonusRate", decimalValue(raw.get("peerBonusRate"), BigDecimal.ZERO));
         row.put("votes", intValue(raw.get("votes"), 0));
@@ -2791,36 +2780,37 @@ public class OpsTeamService implements AuditReplayable {
 
     private VRankSeed requireVRank(String rank) {
         String normalized = requireText(rank, "TEAM_VRANK_REQUIRED").toUpperCase(Locale.ROOT);
-        return VRANK_SEEDS.stream()
-                .filter(seed -> seed.v().equals(normalized) && activeVRankLevels().contains(normalized))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("Unsupported F1 V-Rank level"));
+        if (!VRANK_LEVELS.contains(normalized) || !activeVRankLevels().contains(normalized)) {
+            throw new IllegalArgumentException("Unsupported F1 V-Rank level");
+        }
+        return new VRankSeed(normalized);
     }
 
-    private Set<String> thresholdFields(VRankSeed seed) {
-        return seed.fields();
-    }
-
-    private String normalizeVRankThreshold(String field, String raw) {
+    private String normalizeVRankThreshold(String rank, String field, String raw) {
         String value = normalizeUiValue(raw);
-        if ("legRank".equals(field) && !activeVRankLevels().contains(value.toUpperCase(Locale.ROOT))) {
-            throw new IllegalArgumentException("F1 V-Rank leg rank must be active");
+        if ("legRank".equals(field)) {
+            String target = value.toUpperCase(Locale.ROOT);
+            if (!"NONE".equals(target) && (!activeVRankLevels().contains(target)
+                    || !VRANK_LEVELS.contains(target) || VRANK_LEVELS.indexOf(target) >= VRANK_LEVELS.indexOf(rank))) {
+                throw new IllegalArgumentException("F1 V-Rank leg rank must be an active lower rank or NONE");
+            }
+            return target;
         }
-        if (("directRefs".equals(field) || "legCount".equals(field)) && parseDecimal(value).compareTo(BigDecimal.ZERO) < 0) {
-            throw new IllegalArgumentException("F1 V-Rank count threshold must be non-negative");
+        BigDecimal number = parseDecimal(value);
+        boolean points = "selfBuy".equals(field) || "teamGv".equals(field);
+        long max = points ? MAX_SAFE_COMPUTE_POINTS : Integer.MAX_VALUE;
+        if (number.signum() < 0 || number.stripTrailingZeros().scale() > 0
+                || number.compareTo(BigDecimal.valueOf(max)) > 0) {
+            throw new IllegalArgumentException("F1 V-Rank threshold must be a non-negative whole number within " + max);
         }
-        if (("selfBuy".equals(field) || "teamGv".equals(field))
-                && (parseDecimal(value).signum() < 0 || parseDecimal(value).stripTrailingZeros().scale() > 0)) {
-            throw new IllegalArgumentException("F1 V-Rank compute-point threshold must be a non-negative whole number");
-        }
-        return "legRank".equals(field) ? value.toUpperCase(Locale.ROOT) : value;
+        return number.toPlainString();
     }
 
     private Object vRankThresholdBusinessValue(String field, String value) {
         return switch (field) {
             case "selfBuy", "teamGv" -> parseDecimal(value).longValueExact();
-            case "directRefs", "legCount" -> parseDecimal(value).setScale(0, RoundingMode.DOWN).intValue();
-            case "legRank" -> value;
+            case "directRefs", "legCount" -> parseDecimal(value).intValueExact();
+            case "legRank" -> "NONE".equals(value) ? null : value;
             default -> throw new IllegalArgumentException("Unsupported F1 V-Rank threshold field");
         };
     }
@@ -3735,11 +3725,7 @@ public class OpsTeamService implements AuditReplayable {
         }
     }
 
-    private static VRankSeed vRank(String v, String... fields) {
-        return new VRankSeed(v, Set.of(fields));
-    }
-
-    private record VRankSeed(String v, Set<String> fields) {
+    private record VRankSeed(String v) {
     }
 
     private record F2PolicyParamSeed(

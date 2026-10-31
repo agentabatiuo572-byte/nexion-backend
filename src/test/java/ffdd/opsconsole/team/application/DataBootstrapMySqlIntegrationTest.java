@@ -59,8 +59,13 @@ class DataBootstrapMySqlIntegrationTest {
         var dataSource=new DriverManagerDataSource("jdbc:mysql://127.0.0.1:"+port+"/"+database+"?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai","root","");
         jdbc=new JdbcTemplate(dataSource);
         transaction=new TransactionTemplate(new DataSourceTransactionManager(dataSource));
-        Configuration cfg=new Configuration(new Environment("real-mysql",new SpringManagedTransactionFactory(),dataSource));
+        var cfg=new com.baomidou.mybatisplus.core.MybatisConfiguration(new Environment("real-mysql",new SpringManagedTransactionFactory(),dataSource));
+        var global=new com.baomidou.mybatisplus.core.config.GlobalConfig();
+        global.setDbConfig(new com.baomidou.mybatisplus.core.config.GlobalConfig.DbConfig());
+        global.setMetaObjectHandler(new ffdd.opsconsole.shared.config.MybatisMetaObjectHandler(java.time.Clock.systemUTC()));
+        com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils.setGlobalConfig(cfg,global);
         cfg.setMapUnderscoreToCamelCase(true);
+        cfg.addMapper(ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper.class);
         cfg.addMapper(TeamCommissionMapper.class);cfg.addMapper(AppTeamInsightsMapper.class);
         cfg.addMapper(AppWalletBillsMapper.class);cfg.addMapper(NexMarketMapper.class);
         cfg.addMapper(ffdd.opsconsole.content.mapper.SupportLeaderboardPublicationMapper.class);
@@ -253,6 +258,99 @@ class DataBootstrapMySqlIntegrationTest {
         org.mockito.Mockito.reset(audit);
         transaction.execute(status->service.initialize(params(),new AuditReplayContext("checker","reason","key")));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_v_rank_config",Integer.class)).isEqualTo(9);
+    }
+
+    @Test @SuppressWarnings("unchecked")
+    void initializedNonV1SelfAndLargePointsSurviveF1AuthorizedIdempotentMaintenanceAndAppReadback() throws Exception {
+        var params=params();
+        var ranks=(List<Map<String,Object>>)params.get("ranks");
+        ranks.get(2).put("selfComputePoints",9_007_199_254_740_991L);
+        ranks.get(2).put("teamComputePoints",4_294_967_297L);
+        var bootstrapAudit=mock(AuditLogService.class);
+        A2ReplayContext.enterReplay("owned-f1-maintenance-bootstrap");
+        transaction.execute(status->new VRankBootstrapService(jdbc,bootstrapAudit).initialize(params,
+                new AuditReplayContext("checker","approved explicit fixture","bootstrap-maintenance")));
+        A2ReplayContext.exitReplay();
+
+        var actual=new MybatisTeamCommissionRepository(sessions.getMapper(TeamCommissionMapper.class));
+        // Ancillary F1 rewards/pool/catalog surfaces are outside this fixture; rank reads and writes use actual MyBatis.
+        var repository=mock(ffdd.opsconsole.team.domain.TeamCommissionRepository.class);
+        when(repository.vRankRows()).thenAnswer(call->actual.vRankRows());
+        when(repository.updateVRankThreshold(anyString(),anyString(),any())).thenAnswer(call->
+                actual.updateVRankThreshold(call.getArgument(0),call.getArgument(1),call.getArgument(2)));
+        var audit=mock(AuditLogService.class);
+        var mapper=sessions.getMapper(ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper.class);
+        var expiry=new ffdd.opsconsole.shared.idempotency.AdminIdempotencyExpiryTransitionExecutor(mapper);
+        var executor=new ffdd.opsconsole.shared.idempotency.AdminIdempotencyTransactionExecutor(mapper,
+                new ObjectMapper(),expiry);
+        var proxy=new org.springframework.aop.framework.ProxyFactory(executor);
+        proxy.setProxyTargetClass(true);
+        proxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(transaction.getTransactionManager(),
+                new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
+        var idempotency=new ffdd.opsconsole.shared.idempotency.AdminIdempotencyService(
+                (ffdd.opsconsole.shared.idempotency.AdminIdempotencyTransactionExecutor)proxy.getProxy(),java.time.Clock.systemUTC());
+        var coverage=mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class);
+        when(coverage.snapshot()).thenReturn(new ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot(BigDecimal.TEN,BigDecimal.ONE));
+        var service=new OpsTeamService(mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class),coverage,
+                mock(ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade.class),audit,
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                mock(ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository.class),repository,
+                mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class),mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),
+                mock(VRankPromotionEngine.class),mock(VRankRewardDispatcher.class),mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class),
+                mock(LeadershipPoolService.class),mock(F5CommissionService.class),idempotency,null,null,mock(VRankSkuFulfillmentService.class),null);
+        var before=f1Row(service,"V2");
+        assertThat(before).containsEntry("selfBuy",9_007_199_254_740_991L).containsEntry("teamGv",4_294_967_297L)
+                .containsEntry("legRank","NONE").containsEntry("legCount",0);
+        try(var context=new org.springframework.context.annotation.AnnotationConfigApplicationContext()) {
+            context.register(F1MethodSecurity.class);
+            context.registerBean(ffdd.opsconsole.team.web.OpsTeamController.class,()->
+                    new ffdd.opsconsole.team.web.OpsTeamController(service,mock(LeadershipPoolService.class)));
+            context.refresh();
+            var endpoint=context.getBean(ffdd.opsconsole.team.web.OpsTeamController.class);
+            var request=new ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest(null,"4294967298","maintain actual V2 self gate","review-admin");
+            f1Authenticate("network_f2_write");
+            assertThatThrownBy(()->endpoint.updateVRankThreshold("V2","selfBuy","owned-large-self",request))
+                    .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+            assertThat(jdbc.queryForObject("SELECT self_compute_points FROM nx_v_rank_config WHERE rank_code='V2'",Long.class)).isEqualTo(9_007_199_254_740_991L);
+            f1Authenticate("network_f1_write");
+            assertThat(endpoint.updateVRankThreshold("V2","selfBuy","",request).getCode()).isEqualTo(422);
+            assertThat(endpoint.updateVRankThreshold("V2","selfBuy","owned-large-self",request).getCode()).isZero();
+            assertThat(endpoint.updateVRankThreshold("V2","selfBuy","owned-large-self",request).getCode()).isZero();
+            assertThatThrownBy(()->endpoint.updateVRankThreshold("V2","selfBuy","owned-large-self",
+                    new ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest(null,"4294967299",request.reason(),request.operator())))
+                    .hasMessageContaining("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+            verify(audit,times(1)).record(any());
+            assertThat(f1Row(service,"V2")).containsEntry("selfBuy",4_294_967_298L).containsEntry("teamGv",4_294_967_297L);
+            for(var change:List.of(Map.entry("legCount","1"),Map.entry("legRank","V1"),Map.entry("legRank","NONE"))) {
+                endpoint.updateVRankThreshold("V2",change.getKey(),"branch-"+change.getKey()+change.getValue(),
+                        new ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest(null,change.getValue(),"maintain branch one field at a time","review-admin"));
+            }
+            assertThat(jdbc.queryForObject("SELECT required_downline_rank FROM nx_v_rank_config WHERE rank_code='V2'",String.class)).isNull();
+            assertThat(f1Row(service,"V2")).containsEntry("legCount",1).containsEntry("legRank","NONE");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_admin_idempotency_record WHERE scope='F1_VRANK_THRESHOLD_UPDATE' AND status='SUCCEEDED'",Integer.class)).isEqualTo(4);
+        } finally {org.springframework.security.core.context.SecurityContextHolder.clearContext();}
+        var app=new AppVRankController(actual,mock(ffdd.opsconsole.team.domain.VRankPerformanceRepository.class),
+                sessions.getMapper(AppTeamInsightsMapper.class),new org.springframework.mock.env.MockEnvironment(),null,null);
+        var appRows=(List<Map<String,Object>>)app.ranks().getData().get("ranks");
+        assertThat(appRows.stream().filter(r->Integer.valueOf(2).equals(r.get("v"))).findFirst().orElseThrow())
+                .containsEntry("selfComputePoints",4_294_967_298L).containsEntry("teamComputePoints",4_294_967_297L);
+        Files.writeString(evidence.resolve("f1-maintenance-real-mysql.json"),new ObjectMapper().writeValueAsString(Map.of(
+                "before",before,"after",f1Row(service,"V2"),"actualMapper",true,"actualMethodSecurity",true,
+                "durableIdempotency",true,"sameKeyConflictRejected",true,"auditOnceForReplay",true,"appReadback",appRows)));
+    }
+
+    @org.springframework.context.annotation.Configuration
+    @org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
+    static class F1MethodSecurity { }
+
+    private static void f1Authenticate(String permission) {
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("review-admin","unused",
+                        List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority(permission))));
+    }
+    @SuppressWarnings("unchecked") private static Map<String,Object> f1Row(OpsTeamService service,String rank) {
+        return ((List<Map<String,Object>>)service.ranks().getData().get("vrankRows")).stream()
+                .filter(row->rank.equals(row.get("v"))).findFirst().orElseThrow();
     }
 
     public static Map<String,Object> params() {
