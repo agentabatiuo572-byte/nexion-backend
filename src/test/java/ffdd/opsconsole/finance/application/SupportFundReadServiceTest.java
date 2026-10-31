@@ -115,6 +115,7 @@ class SupportFundReadServiceTest {
         when(exchangeMapper.timePrecisions()).thenReturn(List.of(Map.of("tableName","nx_exchange_order","columnName","updated_at","precision",0)));
         when(deviceMapper.fundWallets(1)).thenAnswer(inv->List.of(deviceWallet()));
         when(devices.readFundEarnings(anyList())).thenAnswer(inv->new SupportDeviceReadFacade.FundEarnings(deviceReceipts,deviceTasks,deviceLedgers,deviceEvents));
+        when(devices.readFundEarning(anyLong(),anyString())).thenAnswer(inv->new SupportDeviceReadFacade.FundEarnings(deviceReceipts,deviceTasks,deviceLedgers,deviceEvents));
         when(devices.timePrecisions()).thenReturn(Map.of("nx_compute_receipt.completed_at",6,"nx_compute_task.completed_at",6,"nx_compute_task.proof_consumed_at",0,
             "nx_wallet_ledger.created_at",0,"nx_earning_event.wallet_posted_at",0,"nx_earning_event.created_at",0));
         when(stakingMapper.wallets(1)).thenAnswer(inv->List.of(stakingWallet()));
