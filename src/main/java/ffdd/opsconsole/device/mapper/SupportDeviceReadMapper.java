@@ -51,6 +51,40 @@ public interface SupportDeviceReadMapper {
         """)
     List<Map<String,Object>> fundEvents(@Param("scope") List<Long> scope);
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    @Select("""
+        SELECT r.id,r.user_id customerId,r.user_device_id deviceId,r.task_no taskNo,
+        r.receipt_no receiptNo,r.task_type taskType,r.client_name clientName,r.reward_usdt rewardUsdt,
+        r.reward_nex rewardNex,r.earning_status earningStatus,r.source_environment sourceEnvironment,
+        r.proof_hash proofHash,r.completed_at completedAt,r.created_at createdAt,r.updated_at updatedAt,
+        r.is_deleted deleted,u.sandbox userSandbox,u.is_deleted userDeleted
+        FROM nx_compute_receipt r LEFT JOIN nx_user u ON u.id=r.user_id
+        WHERE r.user_id=#{customer} AND r.receipt_no=#{receiptNo} ORDER BY r.id
+        """)
+    List<Map<String,Object>> fundReceipt(@Param("customer") long customer,@Param("receiptNo") String receiptNo);
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    @Select("""
+        SELECT t.id,t.user_id customerId,t.user_device_id deviceId,t.task_no taskNo,t.task_config_id taskId,t.task_type taskType,
+        t.reward_usdt rewardUsdt,t.status,t.source_environment sourceEnvironment,t.client_name clientName,
+        t.started_at startedAt,t.completed_at completedAt,t.proof_consumed_at proofConsumedAt,t.is_deleted deleted
+        FROM nx_compute_task t WHERE t.user_id=#{customer} AND t.task_no=#{taskNo} ORDER BY t.id
+        """)
+    List<Map<String,Object>> fundReceiptTasks(@Param("customer") long customer,@Param("taskNo") String taskNo);
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    @Select("""
+        <script>SELECT l.id,l.user_id customerId,l.biz_no bizNo,l.biz_type bizType,l.asset,l.direction,
+        l.amount,l.balance_after balanceAfter,l.status,l.created_at createdAt,l.updated_at updatedAt,l.is_deleted deleted
+        FROM nx_wallet_ledger l WHERE l.user_id=#{customer} AND l.biz_no IN
+        <foreach collection='ledgerNos' item='no' open='(' separator=',' close=')'>#{no}</foreach> ORDER BY l.id</script>
+        """)
+    List<Map<String,Object>> fundReceiptLedgers(@Param("customer") long customer,@Param("ledgerNos") List<String> ledgerNos);
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    @Select("""
+        SELECT e.id,e.event_no eventNo,e.user_id customerId,e.user_device_id deviceId,e.receipt_no receiptNo,
+        e.asset,e.amount,e.status,e.wallet_posted_at walletPostedAt,e.created_at createdAt,e.updated_at updatedAt,e.is_deleted deleted
+        FROM nx_earning_event e WHERE e.user_id=#{customer} AND e.receipt_no=#{receiptNo} ORDER BY e.id
+        """)
+    List<Map<String,Object>> fundReceiptEvents(@Param("customer") long customer,@Param("receiptNo") String receiptNo);
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     @Select("SELECT TABLE_NAME tableName,COLUMN_NAME columnName,DATETIME_PRECISION `precision` FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND ((TABLE_NAME='nx_compute_receipt' AND COLUMN_NAME='completed_at') OR (TABLE_NAME='nx_compute_task' AND COLUMN_NAME IN ('completed_at','proof_consumed_at')) OR (TABLE_NAME='nx_wallet_ledger' AND COLUMN_NAME='created_at') OR (TABLE_NAME='nx_earning_event' AND COLUMN_NAME IN ('wallet_posted_at','created_at')))")
     List<Map<String,Object>> fundTimePrecisions();
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)

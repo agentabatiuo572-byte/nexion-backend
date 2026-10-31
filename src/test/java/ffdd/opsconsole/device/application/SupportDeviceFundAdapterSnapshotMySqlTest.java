@@ -76,7 +76,7 @@ class SupportDeviceFundAdapterSnapshotMySqlTest {
                                 return binding;
                             });
                             var sources = mock(SupportDeviceReadFacade.class);
-                            when(sources.readFundEarnings(List.of(7L))).thenReturn(new FundEarnings(
+                            when(sources.readFundEarning(7L,"CTR-DEVICE-B")).thenReturn(new FundEarnings(
                                     List.of(Map.of("receiptNo", "CTR-DEVICE-B", "taskNo", "CTA-DEVICE-B",
                                             "deviceId", 12L, "rewardUsdt", new BigDecimal("0.300000"),
                                             "rewardNex", BigDecimal.ZERO, "completedAt", LocalDateTime.of(2026,10,30,20,0))),

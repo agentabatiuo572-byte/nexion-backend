@@ -5,6 +5,7 @@ import static org.mockito.Mockito.*;
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import ffdd.opsconsole.device.application.SupportDeviceFundAdapter;
+import ffdd.opsconsole.device.application.SupportDeviceReadService;
 import ffdd.opsconsole.device.facade.SupportDeviceReadFacade;
 import ffdd.opsconsole.device.facade.SupportDeviceReadFacade.FundEarnings;
 import ffdd.opsconsole.device.mapper.SupportDeviceReadMapper;
@@ -31,7 +32,7 @@ class SupportFundDeviceEvidenceTest {
         var before=wallet(1,"10","20");
         var after=wallet(corruption.equals("revisionGap")?3:2,corruption.equals("otherTaskCashIncluded")?"10.6":"10.3","20");
         when(mapper.fundWallets(7)).thenReturn(List.of(before),List.of(after),List.of(after));
-        when(source.readFundEarnings(List.of(7L))).thenReturn(new FundEarnings(
+        when(source.readFundEarning(7L,NO)).thenReturn(new FundEarnings(
                 List.of(row("receiptNo",NO,"taskNo",TASK,"rewardUsdt",n(".3"),"rewardNex",n("0"),"completedAt",AT)),
                 List.of(),List.of(),List.of()));
         var token=adapter.begin(7);adapter.afterUsdt(token);
@@ -65,14 +66,16 @@ class SupportFundDeviceEvidenceTest {
         f.earnings.add(row("id",1L,"eventNo","EARN-"+TASK,"customerId",7L,"deviceId",11L,"receiptNo",NO,"asset","USDT","amount",usd,"status","POSTED","walletPostedAt",WHOLE,"createdAt",WHOLE,"updatedAt",WHOLE,"deleted",0));
         if(dual){f.ledgers.add(row("id",2L,"customerId",7L,"bizNo","CLOUD_SHARE_DAILY:11:2026-10-11","bizType","COMPUTE_TASK_REWARD","asset","UVT","direction","IN","amount",n("4.25"),"balanceAfter",n("24.25"),"status","SUCCESS","createdAt",WHOLE,"updatedAt",WHOLE,"deleted",0));f.earnings.add(row("id",2L,"eventNo","EARN-NEX-"+NO,"customerId",7L,"deviceId",11L,"receiptNo",NO,"asset","UVT","amount",n("4.25"),"status","POSTED","walletPostedAt",WHOLE,"createdAt",WHOLE,"updatedAt",WHOLE,"deleted",0));}
         var before=wallet(1,"10","20");var afterUsd=wallet(2,usdAfter,"20");var afterNex=dual?wallet(3,usdAfter,"24.25"):afterUsd;f.raw.add(raw(before,afterUsd,2));if(dual)f.raw.add(raw(afterUsd,afterNex,3));
-        var journal=mock(SupportFundJournalMapper.class);var dataSource=mock(DataSource.class);var binder=new SupportFundJournalBindingService(journal,dataSource,json);var mapper=mock(SupportDeviceReadMapper.class);var owning=mock(SupportDeviceReadFacade.class);
-        when(mapper.fundWallets(7)).thenReturn(List.of(before),List.of(afterUsd),List.of(afterNex));when(owning.readFundEarnings(List.of(7L))).thenAnswer(i->f.sources());
+        var journal=mock(SupportFundJournalMapper.class);var dataSource=mock(DataSource.class);var binder=new SupportFundJournalBindingService(journal,dataSource,json);var mapper=mock(SupportDeviceReadMapper.class);var owning=new SupportDeviceReadService(mapper);
+        when(mapper.fundWallets(7)).thenReturn(List.of(before),List.of(afterUsd),List.of(afterNex));
+        when(mapper.fundReceipt(7L,NO)).thenAnswer(i->f.receipts);when(mapper.fundReceiptTasks(7L,TASK)).thenAnswer(i->f.tasks);
+        when(mapper.fundReceiptLedgers(eq(7L),anyList())).thenAnswer(i->f.ledgers);when(mapper.fundReceiptEvents(7L,NO)).thenAnswer(i->f.earnings);
         var lockedBefore=new HashMap<>(before);lockedBefore.put("userId",7L);lockedBefore.put("isDeleted",0);var lockedAfter=new HashMap<>(afterNex);lockedAfter.put("userId",7L);lockedAfter.put("isDeleted",0);when(journal.lockWallet(7)).thenReturn(List.of(lockedBefore),List.of(lockedAfter));when(journal.journal(INC,1,dual?3:2)).thenReturn(f.raw);
         when(journal.insertOperation(anyMap())).thenAnswer(i->{f.operation=new LinkedHashMap<>(i.<Map<String,Object>>getArgument(0));f.operation.put("id",1L);f.operation.put("recordedDbUtc",AT.minusHours(8));f.ops.add(f.operation);return 1;});when(journal.operation(SupportDeviceFundAdapter.key(NO))).thenAnswer(i->f.operation);
         when(journal.insertParty(1,7)).thenAnswer(i->{f.parties.add(row("operationId",1L,"customerId",7L));return 1;});when(journal.parties(1)).thenReturn(f.parties);when(journal.insertLeg(eq(1L),eq(INC),anyLong())).thenAnswer(i->{f.legs.add(row("operationId",1L,"incarnation",INC,"revision",i.getArgument(2)));return 1;});when(journal.legs(1)).thenReturn(f.legs);
         var holder=new ConnectionHolder(mock(Connection.class));holder.setSynchronizedWithTransaction(true);TransactionSynchronizationManager.setActualTransactionActive(true);TransactionSynchronizationManager.initSynchronization();TransactionSynchronizationManager.bindResource(dataSource,holder);
         try{var adapter=new SupportDeviceFundAdapter(binder,mapper,owning,json);var token=adapter.begin(7);adapter.afterUsdt(token);adapter.recorded(token,NO);}finally{TransactionSynchronizationManager.unbindResource(dataSource);TransactionSynchronizationManager.clear();}
-        f.source=(ObjectNode)read((String)f.operation.get("sourceSnapshotJson"));f.proof=(ObjectNode)read((String)f.operation.get("sourceProofJson"));f.events=binder.decodeReceipt(f.operation,List.of(7L),f.legs);assertThat(f.operation.get("receiptSha256")).as("actual Binder immutable receipt digest").isNotNull();verify(journal,times(1)).insertOperation(anyMap());return f;
+        f.source=(ObjectNode)read((String)f.operation.get("sourceSnapshotJson"));f.proof=(ObjectNode)read((String)f.operation.get("sourceProofJson"));f.events=binder.decodeReceipt(f.operation,List.of(7L),f.legs);assertThat(f.operation.get("receiptSha256")).as("actual Binder immutable receipt digest").isNotNull();verify(journal,times(1)).insertOperation(anyMap());verify(mapper,never()).fundReceipts(anyList());verify(mapper,never()).fundTasks(anyList());verify(mapper,never()).fundLedgers(anyList());verify(mapper,never()).fundEvents(anyList());return f;
     }
     @ParameterizedTest @ValueSource(booleans={false,true}) void actualAdapterBindsOneWholeReceiptWithEachRealCurrencyRawLeg(boolean dual){var f=fixture(dual);var v=f.verify();assertThat(v.points()).hasSize(dual?2:1);assertThat(v.stamp().succeededAt()).isEqualTo(AT);assertThat(v.stamp().fractionalSecondDigits()).isEqualTo(6);assertThat(v.coveredPhase()).isEqualTo(NO+":CREDIT");assertThat(v.points().stream().flatMap(p->p.eventIds().stream()).toList()).containsExactlyElementsOf(f.events.stream().map(Event::id).toList());f.coverage(Set.of(NO+":CREDIT"));var allocation=new ffdd.opsconsole.finance.domain.SupportFundAllocation();for(var e:f.events)assertThat(allocation.apply(e)).isEmpty();assertThat(allocation.total("USDT")).isEqualByComparingTo("0");assertThat(allocation.total("UVT")).isEqualByComparingTo("0");}
     @ParameterizedTest @ValueSource(booleans={false,true}) void zeroUsdtKeepsItsRealVersionOnlyPointAndOptionalPositiveNexLeg(boolean dual){var f=fixture(dual,true);var v=f.verify();assertThat(v.points()).hasSize(dual?2:1);var zero=v.points().get(0);assertThat(zero.eventIds()).isEmpty();assertThat(zero.before()).isEqualTo(zero.after());assertThat(f.events).hasSize(dual?1:0);if(dual){assertThat(f.events.get(0).to().currency()).isEqualTo("UVT");assertThat(v.points().get(1).eventIds()).containsExactly(SupportDeviceFundAdapter.key(NO)+":NEX");}f.coverage(Set.of(NO+":CREDIT"));}
