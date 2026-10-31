@@ -21,6 +21,24 @@ class CregisErc20DepositTest {
     private static final CregisNetwork ETH=CregisNetwork.ERC20;
     private static final String ADDRESS="0x"+"b".repeat(40), TX="0x"+"a".repeat(64), BLOCK="0x"+"c".repeat(64);
 
+    @Test void configuredEthereumPoolStaysUnavailableUntilIndependentDepositApproval() {
+        var f=new Fixture(false);
+        f.config.setBscRpcUrl("https://bsc.example.test");
+        when(f.db.provisionGate()).thenReturn(Map.of("state","IDLE","assignEnabled",1,"creditEnabled",1));
+        when(f.db.poolPolicy(any(CregisNetwork.class))).thenReturn(Map.of("enabled",1,"target",1000,
+            "lowWatermark",300,"batchSize",50,"concurrency",2,"version",0L));
+        var closed=(Map<?,?>)f.service.exceptions().get("addressPools");
+        assertThat((Map<String,Object>)closed.get("ERC20")).containsEntry("configured",true)
+            .containsEntry("available",false).containsEntry("automatic",false);
+        assertThat((Map<String,Object>)closed.get("BEP20")).containsEntry("configured",true).containsEntry("available",true);
+        assertThatThrownBy(()->f.service.provisionPoolAddress(ETH)).hasMessage("CREGIS_PROVISION_NOT_CONFIGURED");
+        f.config.setErc20DepositEnabled(true);
+        var opened=(Map<?,?>)f.service.exceptions().get("addressPools");
+        assertThat((Map<String,Object>)opened.get("ERC20")).containsEntry("configured",true)
+            .containsEntry("available",true).containsEntry("automatic",true);
+        f.service.closePoolWorkers();
+    }
+
     @Test void legacyEnabledFlagsDoNotIssueEthereumAddressOrCreditWithoutIndependentApproval() throws Exception {
         var f=new Fixture(false);
         assertThat(f.service.address(ETH,42)).containsEntry("network","ERC20").containsEntry("enabled",false).doesNotContainKey("address");
