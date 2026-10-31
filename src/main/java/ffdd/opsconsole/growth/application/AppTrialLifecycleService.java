@@ -452,7 +452,8 @@ public class AppTrialLifecycleService {
             throw new BizException(409, "TRIAL_DEVICE_CREATE_CONFLICT");
         }
         Long deviceId = mapper.deviceIdByInstanceNo(instanceNo);
-        String snapshot = settlement.snapshot("convert", VerifiedPurchasePayment.method(), product.productNo())
+        String paymentRail = VerifiedPurchasePayment.active() ? VerifiedPurchasePayment.method() : "UVEL_USDT_WALLET";
+        String snapshot = settlement.snapshot("convert", paymentRail, product.productNo())
                 + ",orderNo=" + orderNo + ",promoDiscountUsdt=" + promoDiscount
                 + ",totalDiscountUsdt=" + discount + ",amountUsdt=" + amount
                 + ",trialDailyUsdt=" + row.dailyUsdt() + ",trialDailyNex=" + row.dailyNex()
@@ -467,7 +468,7 @@ public class AppTrialLifecycleService {
         Attribution attr = requireAttribution(userId);
         Map<String, Object> detail = linked("orderNo", orderNo, "productNo", product.productNo(),
                 "amountUsdt", amount, "discountUsdt", discount, "paymentStatus", "PAID",
-                "orderStatus", "PAID", "paymentRail", VerifiedPurchasePayment.method(),
+                "orderStatus", "PAID", "paymentRail", paymentRail,
                 "deviceId", deviceId, "shadowUsdt", settlement.shadowUsdt(),
                 "shadowNex", settlement.shadowNex(), "offsetUsdt", quote.offsetUsdt(),
                 "remainderUsdt", quote.remainderUsdt(), "discountApplied", promoDiscount,

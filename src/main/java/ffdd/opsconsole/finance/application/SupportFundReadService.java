@@ -51,6 +51,8 @@ public class SupportFundReadService {
     private final SupportDirectReferralReadFacade direct;
     private final SupportFundCommissionEvidence commissionEvidence;
     private final SupportFundDirectReferralEvidence directEvidence;
+    private record TrialRefundInputs(SupportPaymentFacts.Snapshot history,List<Map<String,Object>> orders,
+                                     Map<String,SupportFundEarningsEvidence.TrialRecovery> recoveries) { }
     public SupportFundReadService(SupportFundReadMapper mapper,SupportFundBirthReadFacade auth,
             FinanceSupportPaymentFactsFacade payments,SupportFundJournalBindingService codec,DataSource dataSource) {
         this(mapper,auth,payments,codec,dataSource,new SupportFundEarningsEvidence(codec,new ObjectMapper()),null,null,
@@ -127,6 +129,7 @@ public class SupportFundReadService {
                 paymentSources.put(source,mapper.paymentSources(source,ids));
             var paymentAudits=mapper.paymentAudits(ids);
             var trials=mapper.trialSources(ids);
+            var trialRefundOrders=mapper.trialRefundOrders(ids);
             var genesisInput=new SupportFundGenesisEvidence.Inputs(paymentHistory,genesis==null?List.of():genesis.readByCustomers(ids),raw,ops,partyRows,legs);
             var exchangeSources=exchanges==null?List.<SupportExchangeReadFacade.Source>of():exchanges.readByCustomers(ids);
             var exchangeInput=new SupportFundExchangeEvidence.Inputs(exchangeSources,raw,ops,partyRows,legs,
@@ -161,6 +164,7 @@ public class SupportFundReadService {
                     var componentRaw=raw.stream().filter(row->component.contains(number(row,"newUserId"))
                         ||row.get("oldUserId")!=null && component.contains(number(row,"oldUserId"))).toList();
                     var decodedReceipts=validateRaw(component,wallets,componentRaw,componentOps,partyIndex,legIndex,birth,tail);
+                    var trialRefunds=new TrialRefundInputs(paymentHistory,trialRefundOrders,new HashMap<>());
                     SupportFundDirectReferralEvidence.ValidatedReversals directReversals;
                     try {directReversals=directEvidence.validate(component,directInput);}
                     catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
@@ -183,11 +187,11 @@ public class SupportFundReadService {
                                 try {stamp=SupportFundCregisReorgEvidence.verify(codec,row,source,proof,events,mapper.cregisReorgOperations(parties));}
                                 catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
                             }
-                            case "SUPPORT_PAYMENT" -> stamp=payment(row,source,proof,events,paymentHistory,paymentLedgers,paymentSources,paymentAudits,trials,earnings,representedEarnings,originFacts,represented);
+                            case "SUPPORT_PAYMENT" -> stamp=payment(row,source,proof,events,paymentHistory,paymentLedgers,paymentSources,paymentAudits,trials,earnings,representedEarnings,originFacts,represented,trialRefunds);
                             case "SUPPORT_WITHDRAWAL" -> stamp=withdrawal(row,source,proof,events,withdrawalRows,ledgers,audits,banks,attempts,withdrawalPhases,withdrawalPrecision,componentOps);
                             case "SUPPORT_EARNINGS" -> {
                                 SupportFundEarningsEvidence.Verified earning;
-                                try {earning=earningsEvidence.verify(row,source,proof,events,componentEarnings);}
+                                try {earning=earningsEvidence.verify(row,source,proof,events,componentEarnings,trialRefunds.recoveries().get(source.path("entry").path("entryNo").asText()));}
                                 catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
                                 require(earningsPhases.add(earning.coveredPhase()) &&parties.equals(List.of(source.path("entry").path("userId").longValue())),Gap.SOURCE);
                                 stamp=earning.stamp();checkpoints=earning.checkpoints();
@@ -406,7 +410,7 @@ public class SupportFundReadService {
             List<Map<String,Object>> ledgers,
             Map<SupportPaymentFacts.Source,List<Map<String,Object>>> sources,List<Map<String,Object>> audits,
             List<Map<String,Object>> trials,List<Map<String,Object>> earnings,Set<String> representedEarnings,
-            Map<String,String> origins,Set<String> represented) {
+            Map<String,String> origins,Set<String> represented,TrialRefundInputs trialRefunds) {
         require("SETTLED".equals(op.get("phase")) && "SUPPORT_PAYMENT_FUND_V1".equals(source.path("schemaVersion").asText()),Gap.SOURCE);
         var sourceKeys=new HashSet<>(Set.of("schemaVersion","customerId","factId","source","stableBusinessKey","sourcePartition","orderNo","amount","currency","succeededAt","settledSource","freshLedger","rewards","rewardLedgers","trialSource"));
         if("ORDER_REFUND".equals(source.path("source").asText()))sourceKeys.add("originalPurchase");keys(source,sourceKeys);
@@ -414,7 +418,7 @@ public class SupportFundReadService {
         String factId=source.path("factId").asText();long customer=source.path("customerId").longValue();
         boolean trial="TRIAL_CONVERT".equals(source.path("source").asText());
         if(trial &&source.path("amount").isNumber() &&source.path("amount").decimalValue().signum()==0)
-            return zeroTrial(op,source,proof,events,sources,audits,trials,earnings,ledgers,representedEarnings,represented);
+            return zeroTrial(op,source,proof,events,sources,audits,trials,earnings,ledgers,representedEarnings,represented,trialRefunds);
         var facts=history.facts().stream().filter(f->f.customerId()==customer &&factId.equals(f.factId())).toList();require(facts.size()==1,Gap.SOURCE);
         var fact=facts.get(0);require(represented.add(factId),Gap.SOURCE);
         require(fact.source().name().equals(source.path("source").asText()) &&fact.sourceBusinessId().equals(source.path("stableBusinessKey").asText())
@@ -464,7 +468,7 @@ public class SupportFundReadService {
         }else require(proof.path("originalConsume").isNull() &&proof.path("originalFundEvidence").isNull(),Gap.SOURCE);
         if(trial) {
             var expectedEvents=new ArrayList<Event>();expectedEvents.add(expected);
-            expectedEvents.addAll(trialRewards(source,trials,earnings,ledgers,representedEarnings,proof.path("cashBefore").path("id").longValue()));
+            expectedEvents.addAll(trialRewards(source,trials,earnings,ledgers,representedEarnings,proof.path("cashBefore").path("id").longValue(),proof.path("sourceAuthority"),trialRefunds));
             require(expectedEvents.equals(events),Gap.SOURCE);
         }else require(events.size()==1,Gap.SOURCE);
         require(history.issues().stream().noneMatch(issue->issue.customerId()==null ||issue.customerId()==customer),Gap.SOURCE);
@@ -473,7 +477,7 @@ public class SupportFundReadService {
     private Stamp zeroTrial(Map<String,Object> op,JsonNode source,JsonNode proof,List<Event> events,
             Map<SupportPaymentFacts.Source,List<Map<String,Object>>> sources,List<Map<String,Object>> audits,
             List<Map<String,Object>> trials,List<Map<String,Object>> earnings,List<Map<String,Object>> ledgers,
-            Set<String> representedEarnings,Set<String> represented) {
+            Set<String> representedEarnings,Set<String> represented,TrialRefundInputs trialRefunds) {
         long customer=source.path("customerId").longValue();String factId=source.path("factId").asText();String order=source.path("orderNo").asText();
         String key=source.path("stableBusinessKey").asText(),partition=source.path("sourcePartition").isNull()?"":source.path("sourcePartition").asText();
         require(("PURCHASE:"+order).equals(factId) &&represented.add(factId) &&source.path("freshLedger").isNull()
@@ -489,15 +493,21 @@ public class SupportFundReadService {
         var authority=audits.stream().filter(row->auditIdentity(row,"customerId")==customer &&order.equals(row.get("orderNo"))
             &&number(row,"validDigest")==1 &&auditIdentity(row,"actorId")==customer &&"USER".equals(row.get("actorType"))
             &&"SUCCESS".equals(row.get("result")) &&nodeEquals(proof.path("sourceAuthority"),row)).toList();require(authority.size()==1,Gap.SOURCE);
-        require(trialRewards(source,trials,earnings,ledgers,representedEarnings,proof.path("cashBefore").path("id").longValue()).equals(events),Gap.SOURCE);
+        require(trialRewards(source,trials,earnings,ledgers,representedEarnings,proof.path("cashBefore").path("id").longValue(),proof.path("sourceAuthority"),trialRefunds).equals(events),Gap.SOURCE);
         return null;
     }
     private List<Event> trialRewards(JsonNode source,List<Map<String,Object>> trials,List<Map<String,Object>> earnings,
-            List<Map<String,Object>> ledgers,Set<String> represented,long walletId) {
+            List<Map<String,Object>> ledgers,Set<String> represented,long walletId,JsonNode authority,TrialRefundInputs refunds) {
         long customer=source.path("customerId").longValue();String key=source.path("stableBusinessKey").asText();
         require(key.endsWith(":CHARGE"),Gap.SOURCE);String claim=key.substring(0,key.length()-7);
         var candidates=trials.stream().filter(row->number(row,"customerId")==customer &&claim.equals(row.get("claimNo"))).toList();
-        require(candidates.size()==1 &&nodeEquals(source.path("trialSource"),candidates.get(0)),Gap.SOURCE);var trial=candidates.get(0);
+        require(candidates.size()==1,Gap.SOURCE);var trial=candidates.get(0);
+        SupportPaymentFacts.Fact refund=null;
+        if(!nodeEquals(source.path("trialSource"),trial)) {
+            refund=trialRefund(source,trial,refunds);
+            trial=new LinkedHashMap<>(trial);trial.put("paymentStatus","PAID");trial.put("deviceStatus","ACTIVE");trial.put("ownershipStatus","OWNED");
+        }
+        require(nodeEquals(source.path("trialSource"),trial),Gap.SOURCE);
         require("REDEEMED".equals(trial.get("claimStatus")) &&"TRIAL_CONVERT".equals(trial.get("orderType"))
             &&"PAID".equals(trial.get("paymentStatus")) &&"PRODUCTION".equals(trial.get("deviceEnvironment"))
             &&"TRIAL".equals(trial.get("sourceChannel")) &&"ACTIVE".equals(trial.get("deviceStatus"))
@@ -540,7 +550,34 @@ public class SupportFundReadService {
                 null,new Account(customer,asset,"available"),null,amount,null));
         }
         for(String asset:List.of("USDT","UVT"))require(decimal(trial.get(asset.equals("USDT")?"remainderUsdt":"shadowNex")).signum()==0?!assets.contains(asset):assets.contains(asset),Gap.SOURCE);
+        if(refund!=null &&"FULL_TERM_ON_CONVERSION".equals(codec.readCurrentProof(authority.path("detail").asText()).path("settlementPolicy").asText()))
+            for(var reward:source.path("rewards"))require(refunds.recoveries().put(reward.path("entryNo").asText(),
+                new SupportFundEarningsEvidence.TrialRecovery(source,authority,reward,refund))==null,Gap.SOURCE);
         return List.copyOf(events);
+    }
+    private SupportPaymentFacts.Fact trialRefund(JsonNode source,Map<String,Object> trial,TrialRefundInputs input) {
+        long customer=source.path("customerId").longValue();String order=source.path("orderNo").asText();var frozen=source.path("trialSource");
+        require("PAID".equals(frozen.path("paymentStatus").asText()) &&"ACTIVE".equals(frozen.path("deviceStatus").asText())
+            &&"OWNED".equals(frozen.path("ownershipStatus").asText()) &&"REFUNDED".equals(trial.get("paymentStatus"))
+            &&"DEACTIVATED".equals(trial.get("deviceStatus")) &&"REFUNDED".equals(trial.get("ownershipStatus")),Gap.SOURCE);
+        var coverage=input.history().customerCoverage().stream().filter(row->row.customerId()==customer &&row.source()==SupportPaymentFacts.Source.ORDER_REFUND).toList();
+        require(coverage.size()==1 &&coverage.get(0).historyStatus()==SupportPaymentFacts.Status.READY
+            &&coverage.get(0).refundStatus()==SupportPaymentFacts.Status.READY &&coverage.get(0).historicalEnvironmentStatus()==SupportPaymentFacts.Status.READY
+            &&coverage.get(0).supportedFrom()!=null &&coverage.get(0).reasons().isEmpty()
+            &&input.history().issues().stream().noneMatch(issue->issue.customerId()==null ||issue.customerId()==customer),Gap.SOURCE);
+        var orders=input.orders().stream().filter(row->number(row,"customerId")==customer &&order.equals(row.get("orderNo"))).toList();
+        require(orders.size()==1 &&number(orders.get(0),"orderId")==number(trial,"orderId") &&flag(orders.get(0).get("isDeleted"))==0
+            &&"TRIAL_CONVERT".equals(orders.get(0).get("orderType")) &&"REFUNDED".equals(orders.get(0).get("paymentStatus"))
+            &&"REFUNDED".equals(orders.get(0).get("orderStatus")),Gap.SOURCE);
+        var facts=input.history().facts().stream().filter(fact->fact.customerId()==customer &&fact.source()==SupportPaymentFacts.Source.ORDER_REFUND
+            &&order.equals(fact.orderNo())).toList();
+        require(facts.size()==1,Gap.SOURCE);var refund=facts.get(0);
+        require(refund.kind()==SupportPaymentFacts.Kind.DEVICE_PURCHASE_REFUND &&refund.ledgerId()>0
+            &&source.path("factId").asText().equals(refund.originalFactId()) &&"USDT".equals(refund.currency())
+            &&source.path("amount").isNumber() &&source.path("amount").decimalValue().signum()>0
+            &&source.path("amount").decimalValue().compareTo(refund.amount())==0
+            &&!refund.succeededAt().withNano(0).isBefore(parseTime(source.path("succeededAt")).withNano(0)),Gap.SOURCE);
+        return refund;
     }
     private Stamp withdrawal(Map<String,Object> op,JsonNode source,JsonNode proof,List<Event> events,List<Map<String,Object>> orders,
             List<Map<String,Object>> allLedgers,List<Map<String,Object>> audits,List<Map<String,Object>> banks,

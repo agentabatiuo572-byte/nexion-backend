@@ -62,8 +62,9 @@ public class E4OrderRefundSettlementFacadeAdapter implements E4OrderRefundSettle
 
         String ledgerBizNo = "E4-REFUND-" + orderNo;
         String billNo = "E4-BILL-" + orderNo;
-        String remark = "E4 order refund | orderNo=" + orderNo + " | operator=" + operator
-                + " | reason=" + reason + " | key=" + idempotencyKey;
+        String key = idempotencyKey.trim();
+        String remark = "E4 order refund | key_hash_v2=" + keyHash(key) + " | orderNo=" + orderNo + " | operator=" + operator
+                + " | reason=" + reason + " | key=" + key;
         if (remark.codePointCount(0, remark.length()) > 255) {
             remark = remark.substring(0, remark.offsetByCodePoints(0, 255));
         }
@@ -80,5 +81,11 @@ public class E4OrderRefundSettlementFacadeAdapter implements E4OrderRefundSettle
 
     private BigDecimal nz(BigDecimal value) {
         return value == null ? BigDecimal.ZERO.setScale(6) : value;
+    }
+
+    private static String keyHash(String key) {
+        try {return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(key.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}
+        catch(java.security.NoSuchAlgorithmException impossible) {throw new IllegalStateException("SHA-256 unavailable",impossible);}
     }
 }
