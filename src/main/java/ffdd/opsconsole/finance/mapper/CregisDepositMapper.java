@@ -124,12 +124,12 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int allocatedAddressCount(@Param("projectId") long projectId, @Param("chainId") String chainId);
     @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='UNASSIGNED' AND user_id IS NULL")
     int availableAddressCount(@Param("projectId") long projectId, @Param("chainId") String chainId);
-    @Select("SELECT p.enabled,p.target_count AS target,p.low_watermark AS lowWatermark,p.batch_size AS batchSize,p.max_concurrency AS concurrency,r.refill_active AS refillActive,UNIX_TIMESTAMP(r.retry_after)*1000 AS retryAfter,r.last_error AS lastError,p.version FROM nx_cregis_address_pool_policy p JOIN nx_cregis_address_pool_policy r ON r.id=#{network.cursorId} WHERE p.id=1")
+    @Select("SELECT p.enabled,p.target_count AS target,p.low_watermark AS lowWatermark,p.batch_size AS batchSize,p.max_concurrency AS concurrency,r.refill_active AS refillActive,UNIX_TIMESTAMP(r.retry_after)*1000 AS retryAfter,r.last_error AS lastError,p.version FROM nx_cregis_address_pool_policy p JOIN nx_cregis_address_pool_policy r ON r.id=#{network.cursorId,javaType=int} WHERE p.id=1")
     Map<String,Object> poolPolicy(@Param("network") CregisNetwork network);
     @Update("UPDATE nx_cregis_address_pool_policy SET enabled=#{enabled},target_count=#{target},low_watermark=#{low},batch_size=#{batch},max_concurrency=#{concurrency},retry_after=NULL,last_error=NULL,version=version+1 WHERE id=1 AND version=#{version}")
     int updatePoolPolicy(@Param("enabled") boolean enabled,@Param("target") int target,@Param("low") int low,
             @Param("batch") int batch,@Param("concurrency") int concurrency,@Param("version") long version);
-    @Update("UPDATE nx_cregis_address_pool_policy SET refill_active=#{active} WHERE id=#{network.cursorId}")
+    @Update("UPDATE nx_cregis_address_pool_policy SET refill_active=#{active} WHERE id=#{network.cursorId,javaType=int}")
     int setPoolRefillActive(@Param("network") CregisNetwork network,boolean active);
     @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state IN ('QUEUED','PROVISIONING','VERIFYING','UNKNOWN')")
     int outstandingAddressCount(@Param("projectId") long projectId,@Param("chainId") String chainId);
@@ -147,7 +147,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int cancelQueuedAddress(long id);
     @Update("UPDATE nx_cregis_deposit_address SET state='REJECTED' WHERE request_id=#{requestId} AND state='PROVISIONING'")
     int rejectPoolAttempt(String requestId);
-    @Update("UPDATE nx_cregis_address_pool_policy SET retry_after=DATE_ADD(NOW(),INTERVAL #{seconds} SECOND),last_error=#{code} WHERE id=#{network.cursorId}")
+    @Update("UPDATE nx_cregis_address_pool_policy SET retry_after=DATE_ADD(NOW(),INTERVAL #{seconds} SECOND),last_error=#{code} WHERE id=#{network.cursorId,javaType=int}")
     int pausePoolSubmission(@Param("network") CregisNetwork network,@Param("code") String code,@Param("seconds") int seconds);
     @Select("SELECT id,address,creation_block AS creationBlock,COALESCE(verification_block,creation_block) AS verificationBlock FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId} AND state='VERIFYING' ORDER BY id LIMIT #{limit}")
     List<Map<String,Object>> verifyingCandidates(@Param("projectId") long projectId,@Param("chainId") String chainId,@Param("limit") int limit);
@@ -247,11 +247,11 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     int assignPoolAddress(@Param("id") long id, @Param("userId") long userId,
                           @Param("block") long block, @Param("hash") String hash);
-    @Select("SELECT next_block FROM nx_cregis_chain_cursor WHERE id=#{network.cursorId} FOR UPDATE")
+    @Select("SELECT next_block FROM nx_cregis_chain_cursor WHERE id=#{network.cursorId,javaType=int} FOR UPDATE")
     Long lockCursor(@Param("network") CregisNetwork network);
     @Select("""
             SELECT COUNT(*) FROM nx_cregis_chain_observation
-             WHERE project_id=#{projectId} AND chain_id=#{network.chainId} AND address=#{address} AND block_number<=#{block}
+             WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String} AND address=#{address} AND block_number<=#{block}
             """)
     int addressObservationCount(@Param("network") CregisNetwork network,@Param("projectId") long projectId,
                                 @Param("address") String address, @Param("block") long block);
@@ -641,24 +641,24 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     Map<String,Object> allocationBounds(@Param("projectId") long projectId, @Param("chainId") String chainId);
 
-    @Insert("INSERT IGNORE INTO nx_cregis_chain_cursor(id,next_block) VALUES (#{network.cursorId},#{block})")
+    @Insert("INSERT IGNORE INTO nx_cregis_chain_cursor(id,next_block) VALUES (#{network.cursorId,javaType=int},#{block})")
     int ensureCursor(@Param("network") CregisNetwork network,@Param("block") long block);
-    @Select("SELECT next_block FROM nx_cregis_chain_cursor WHERE id=#{network.cursorId}")
+    @Select("SELECT next_block FROM nx_cregis_chain_cursor WHERE id=#{network.cursorId,javaType=int}")
     Long cursor(@Param("network") CregisNetwork network);
-    @Update("UPDATE nx_cregis_chain_cursor SET next_block=#{next} WHERE id=#{network.cursorId} AND next_block=#{expected}")
+    @Update("UPDATE nx_cregis_chain_cursor SET next_block=#{next} WHERE id=#{network.cursorId,javaType=int} AND next_block=#{expected}")
     int advanceCursor(@Param("network") CregisNetwork network,@Param("next") long next, @Param("expected") long expected);
 
     @Select("""
             SELECT id,address,raw_amount AS rawAmount,block_number AS blockNumber,status
               FROM nx_cregis_chain_observation
-             WHERE project_id=#{projectId} AND chain_id=#{network.chainId} AND txid=#{txid} AND log_index=#{logIndex}
+             WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String} AND txid=#{txid} AND log_index=#{logIndex}
             """)
     Map<String, Object> observationByLog(@Param("network") CregisNetwork network,@Param("projectId") long projectId,
                                          @Param("txid") String txid, @Param("logIndex") int logIndex);
     @Insert("""
             INSERT INTO nx_cregis_chain_observation
             (project_id,chain_id,txid,log_index,address,raw_amount,block_number,status)
-            VALUES (#{projectId},#{network.chainId},#{txid},#{logIndex},#{address},#{amount},#{blockNumber},#{status})
+            VALUES (#{projectId},#{network.chainId,javaType=java.lang.String},#{txid},#{logIndex},#{address},#{amount},#{blockNumber},#{status})
             """)
     int insertObservation(@Param("network") CregisNetwork network,@Param("projectId") long projectId, @Param("txid") String txid,
                           @Param("logIndex") int logIndex, @Param("address") String address,
@@ -698,7 +698,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             SELECT id,chain_id AS chainId,user_id AS userId,txid,log_index AS logIndex,address,
                    gross_amount AS grossAmount,net_amount AS netAmount,status,
                    block_number AS blockNumber,block_hash AS blockHash,confirmations
-              FROM nx_cregis_deposit_event WHERE project_id=#{projectId} AND chain_id=#{network.chainId} AND cid=#{cid} FOR UPDATE
+              FROM nx_cregis_deposit_event WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String} AND cid=#{cid} FOR UPDATE
             """)
     List<Map<String, Object>> lockEvent(@Param("network") CregisNetwork network,@Param("projectId") long projectId, @Param("cid") long cid);
     @Select("""
@@ -711,7 +711,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             (user_id,project_id,chain_id,cid,txid,log_index,origin_log_index,address,gross_amount,fee_amount,net_amount,
              block_number,block_hash,confirmations,canonical_until,
              last_canonical_checked_block,last_canonical_checked_hash,status)
-            VALUES (#{userId},#{projectId},#{network.chainId},#{cid},#{txid},#{logIndex},#{logIndex},#{address},#{amount},#{fee},#{net},
+            VALUES (#{userId},#{projectId},#{network.chainId,javaType=java.lang.String},#{cid},#{txid},#{logIndex},#{logIndex},#{address},#{amount},#{fee},#{net},
                     #{blockNumber},#{blockHash},#{confirmations},
                     #{blockNumber}+100,#{blockNumber},#{blockHash},#{status})
             """)
@@ -723,10 +723,10 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                     @Param("blockHash") String blockHash, @Param("confirmations") int confirmations,
                     @Param("status") String status);
 
-    @Update("UPDATE nx_cregis_deposit_event SET transfer_from_address=#{sender} WHERE project_id=#{projectId} AND chain_id=#{network.chainId} AND cid=#{cid} AND (transfer_from_address IS NULL OR transfer_from_address=#{sender})")
+    @Update("UPDATE nx_cregis_deposit_event SET transfer_from_address=#{sender} WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String} AND cid=#{cid} AND (transfer_from_address IS NULL OR transfer_from_address=#{sender})")
     int recordTransferSender(@Param("network") CregisNetwork network,@Param("projectId") long projectId,@Param("cid") long cid,@Param("sender") String sender);
 
-    @Select("SELECT id FROM nx_cregis_deposit_event WHERE project_id=#{projectId} AND chain_id=#{network.chainId} AND cid=#{cid}")
+    @Select("SELECT id FROM nx_cregis_deposit_event WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String} AND cid=#{cid}")
     Long eventId(@Param("network") CregisNetwork network,@Param("projectId") long projectId, @Param("cid") long cid);
 
     @Select("""
@@ -755,7 +755,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             INSERT INTO nx_deposit_order
             (user_id,deposit_no,chain_name,chain_tx_hash,chain_log_index,asset,amount,confirmations,status,
              ledger_id,confirmed_at,credited_at)
-            VALUES (#{userId},#{bizNo},#{network.depositChainName},#{txid},#{logIndex},'USDT',#{amount},
+            VALUES (#{userId},#{bizNo},#{network.depositChainName,javaType=java.lang.String},#{txid},#{logIndex},'USDT',#{amount},
                     #{confirmations},'CREDITED',#{ledgerId},NOW(),NOW())
             """)
     int insertDepositOrder(@Param("network") CregisNetwork network,@Param("userId") long userId, @Param("bizNo") String bizNo,
@@ -839,19 +839,19 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     Long latestIncidentId(@Param("eventId") long eventId,@Param("kind") String kind);
 
-    @Select("SELECT UNIX_TIMESTAMP(MIN(created_at)) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{network.chainId}")
+    @Select("SELECT UNIX_TIMESTAMP(MIN(created_at)) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String}")
     Long firstAddressSecond(@Param("network") CregisNetwork network,@Param("projectId") long projectId);
-    @Insert("INSERT IGNORE INTO nx_cregis_reconcile_watermark(id,complete_through) VALUES(#{network.cursorId},#{second})")
+    @Insert("INSERT IGNORE INTO nx_cregis_reconcile_watermark(id,complete_through) VALUES(#{network.cursorId,javaType=int},#{second})")
     int ensureWatermark(@Param("network") CregisNetwork network,@Param("second") long second);
-    @Select("SELECT complete_through FROM nx_cregis_reconcile_watermark WHERE id=#{network.cursorId}")
+    @Select("SELECT complete_through FROM nx_cregis_reconcile_watermark WHERE id=#{network.cursorId,javaType=int}")
     Long reconcileWatermark(@Param("network") CregisNetwork network);
     @Update("""
             UPDATE nx_cregis_reconcile_watermark
                SET active_run_id=#{runId},lease_until=DATE_ADD(NOW(), INTERVAL 30 MINUTE)
-             WHERE id=#{network.cursorId} AND (active_run_id IS NULL OR lease_until<NOW())
+             WHERE id=#{network.cursorId,javaType=int} AND (active_run_id IS NULL OR lease_until<NOW())
             """)
     int claimReconcileLease(@Param("network") CregisNetwork network,@Param("runId") String runId);
-    @Select("SELECT active_run_id FROM nx_cregis_reconcile_watermark WHERE id=#{network.cursorId}")
+    @Select("SELECT active_run_id FROM nx_cregis_reconcile_watermark WHERE id=#{network.cursorId,javaType=int}")
     String activeReconcileRun(@Param("network") CregisNetwork network);
     @Select("""
             SELECT COUNT(*) FROM nx_cregis_reconcile_watermark w
@@ -868,7 +868,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     @Select("""
             SELECT COUNT(*) FROM nx_cregis_reconcile_watermark w
               JOIN nx_cregis_reconcile_run r ON r.run_id=w.last_run_id
-             WHERE w.id=#{network.cursorId} AND r.chain_id=#{network.chainId} AND r.project_id=#{projectId} AND r.status='COMPLETE'
+             WHERE w.id=#{network.cursorId,javaType=int} AND r.chain_id=#{network.chainId,javaType=java.lang.String} AND r.project_id=#{projectId} AND r.status='COMPLETE'
                AND r.completed_at>=DATE_SUB(NOW(), INTERVAL 15 MINUTE)
                AND w.complete_through>=UNIX_TIMESTAMP(NOW())-900
                AND NOT EXISTS(SELECT 1 FROM nx_cregis_reconcile_run later
@@ -880,27 +880,27 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     @Update("""
             UPDATE nx_cregis_reconcile_run SET status='INCOMPLETE',
               failure_code='CREGIS_RECONCILE_INTERRUPTED',completed_at=NOW()
-             WHERE project_id=#{projectId} AND chain_id=#{network.chainId} AND status='RUNNING' AND run_id<>#{runId}
+             WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String} AND status='RUNNING' AND run_id<>#{runId}
             """)
     int failInterruptedReconcileRuns(@Param("network") CregisNetwork network,@Param("projectId") long projectId, @Param("runId") String runId);
     @Update("""
             UPDATE nx_cregis_reconcile_watermark SET active_run_id=NULL,lease_until=NULL
-             WHERE id=#{network.cursorId} AND active_run_id=#{runId}
+             WHERE id=#{network.cursorId,javaType=int} AND active_run_id=#{runId}
             """)
     int releaseReconcileLease(@Param("network") CregisNetwork network,@Param("runId") String runId);
-    @Select("SELECT complete_through FROM nx_cregis_reconcile_watermark WHERE id=#{network.cursorId} FOR UPDATE")
+    @Select("SELECT complete_through FROM nx_cregis_reconcile_watermark WHERE id=#{network.cursorId,javaType=int} FOR UPDATE")
     Long lockReconcileWatermark(@Param("network") CregisNetwork network);
     @Update("""
             UPDATE nx_cregis_reconcile_watermark
                SET complete_through=#{end},last_run_id=#{runId}
-             WHERE id=#{network.cursorId} AND complete_through=#{expected}
+             WHERE id=#{network.cursorId,javaType=int} AND complete_through=#{expected}
             """)
     int advanceReconcileWatermark(@Param("network") CregisNetwork network,@Param("expected") long expected,
                                   @Param("end") long end, @Param("runId") String runId);
     @Insert("""
             INSERT INTO nx_cregis_reconcile_run
               (run_id,project_id,chain_id,window_start,window_end,status)
-            VALUES(#{runId},#{projectId},#{network.chainId},#{start},#{end},'RUNNING')
+            VALUES(#{runId},#{projectId},#{network.chainId,javaType=java.lang.String},#{start},#{end},'RUNNING')
             """)
     int createReconcileRun(@Param("network") CregisNetwork network,@Param("runId") String runId, @Param("projectId") long projectId,
                            @Param("start") long start, @Param("end") long end);
