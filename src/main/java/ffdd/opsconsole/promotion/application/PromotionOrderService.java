@@ -12,6 +12,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.*;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
+import static ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.asset;
+import static ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.verifiedSnapshot;
 
 /** Joins the authoritative commerce transaction; never creates or pays an order itself. */
 @Service
@@ -124,7 +126,7 @@ public class PromotionOrderService {
             changed(db.write("UPDATE nx_promotion SET reserved_orders=reserved_orders+1,revision=revision+1,updated_at=NOW(6) WHERE activity_id=?",activity));
             Set<String> orderUses=new HashSet<>();
             for(Map<String,Object> award:awards){
-                Map<String,Object> reward=map(award.get("reward"));String asset=text(reward.get("type")),gift="DEVICE".equals(asset)?text(reward.get("giftProductNo")):"";
+                Map<String,Object> reward=map(award.get("reward"));String asset=asset(reward.get("type")),gift="DEVICE".equals(asset)?text(reward.get("giftProductNo")):"";
                 BigDecimal amount=PromotionQuoteService.rewardAmount(reward);long beneficiary=number(award.get("beneficiaryId"));
                 String role=text(award.get("beneficiaryRole")),rule=text(award.get("ruleId"));
                 changed(db.write("""
@@ -148,7 +150,7 @@ public class PromotionOrderService {
         }
         List<Map<String,Object>> expected=new ArrayList<>();
         for(Map<String,Object> reward:maps(pub.get("expectedRewards"))){
-            Map<String,Object> value=copy(reward);value.put("lineId",text(byProduct.get(text(reward.get("lineId"))).get("id")));expected.add(value);
+            Map<String,Object> value=copy(reward);if(value.get("reward") instanceof Map<?,?>)value.put("reward",ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.reward(map(value.get("reward"))));value.put("lineId",text(byProduct.get(text(reward.get("lineId"))).get("id")));expected.add(value);
         }
         Map<String,Object> projection=values("promotionQuoteId",plan.quoteId(),"items",receiptItems(lines),"itemCount",lines.size(),"quantity",actual.stream().mapToInt(PromotionRules.Selection::quantity).sum(),"amountUsdt",pub.get("amountUsdt"),"payBy",payBy.toString(),"rewards",expected);
         if(pub.containsKey("promotionDiscountUsdt")){
@@ -290,9 +292,16 @@ public class PromotionOrderService {
         Map<String,Object> receipt=db.one("SELECT projection_json,buyer_id FROM nx_promotion_order_receipt WHERE order_no=?",orderNo);
         if(receipt!=null){
             require(number(receipt.get("buyer_id"))==userId,"PROMOTION_ORDER_OWNER_MISMATCH");var projection=parse(receipt.get("projection_json"));
+            if(maps(projection.get("rewards")).stream().anyMatch(r->r.get("reward") instanceof Map<?,?> && "NEX".equals(map(r.get("reward")).get("type")))) {
+                var originals=db.reservations(orderNo,false);require(!originals.isEmpty(),"PROMOTION_POLICY_SNAPSHOT_MISSING");
+                originals.forEach(ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView::verifiedSnapshot);
+                var currentRewards=maps(projection.get("rewards"));
+                currentRewards.forEach(r->r.put("reward",ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.reward(map(r.get("reward")))));
+                projection.put("rewards",currentRewards);
+            }
             if(maps(projection.get("rewards")).stream().anyMatch(r->r.get("disclosure")==null||!map(r.get("disclosure")).containsKey("deviceName"))){
                 var frozen=db.reservations(orderNo,false);require(!frozen.isEmpty(),"PROMOTION_POLICY_SNAPSHOT_MISSING");
-                var snapshot=parse(frozen.get(0).get("snapshot_json"));
+                var snapshot=verifiedSnapshot(frozen.get(0));
                 var expected=maps(projection.get("rewards"));
                 for(var reward:expected)reward.put("disclosure",PromotionPublicService.disclosure(db,map(snapshot.get("contract")),map(snapshot.get("policies")),map(reward.get("reward"))));
                 projection.put("rewards",expected);
@@ -301,10 +310,11 @@ public class PromotionOrderService {
             projection.put("amountUsdt",money(decimal(order.get("amount_usdt"))));return projection;
         }
         List<Map<String,Object>> rows=db.reservations(orderNo,false);if(rows.isEmpty())return Map.of();
-        Map<String,Object> snapshot=parse(rows.get(0).get("snapshot_json")),pub=map(snapshot.get("public"));
+        Map<String,Object> snapshot=verifiedSnapshot(rows.get(0)),pub=map(snapshot.get("public"));
         var items=receiptItems(db.list("SELECT * FROM nx_order_item WHERE order_no=? ORDER BY sort_order,id",orderNo));
         var expected=maps(pub.get("expectedRewards"));
         for(var reward:expected){
+            reward.put("reward",ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.reward(map(reward.get("reward"))));
             var item=items.stream().filter(line->text(line.get("productNo")).equals(text(reward.get("lineId")))).findFirst();
             require(item.isPresent(),"PROMOTION_ORDER_ITEMS_MISMATCH");reward.put("lineId",item.orElseThrow().get("lineId"));
             reward.put("disclosure",PromotionPublicService.disclosure(db,map(snapshot.get("contract")),map(snapshot.get("policies")),map(reward.get("reward"))));

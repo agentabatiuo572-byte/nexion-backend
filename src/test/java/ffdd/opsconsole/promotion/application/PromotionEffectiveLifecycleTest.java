@@ -44,7 +44,7 @@ class PromotionEffectiveLifecycleTest {
     }
     private Map<String,Object> activity(String id,String state,Long draft,Instant start,Instant end,String draftState){
         var root=values("activity_id",id,"event_code",id,"revision",7,"status",state,"active_version",1,"draft_version",draft,"updated_at",NOW);
-        var published=values("version",1,"revision",7,"status","PUBLISHED","contract_json",json(contract(start,end)));
+        var published=values("version",1,"revision",7,"status","PUBLISHED","contract_json",json(contract(start,end)),"content_hash",hash(contract(start,end)));
         when(db.activity(eq(id),anyBoolean())).thenReturn(root);when(db.version(eq(id),eq(1L),anyBoolean())).thenReturn(published);
         if(draft!=null){
             var candidate=values("version",draft,"revision",7,"status",draftState,"contract_json",json(contract(NOW.minusSeconds(1),NOW.plusSeconds(86400))));
@@ -76,7 +76,7 @@ class PromotionEffectiveLifecycleTest {
         activity("expired","ACTIVE",2L,NOW.minusSeconds(10),NOW,"APPROVED");
         var detail=admin.get("expired");assertEquals("ENDED",detail.get("state"));assertEquals("APPROVED",detail.get("draftVersionState"));
         assertEquals(NOW.toString(),detail.get("endsAt"));assertEquals(NOW.toString(),detail.get("asOf"));
-        var row=values("activity_id","expired","active_version",1,"status","ACTIVE","contract_json",json(contract(NOW.minusSeconds(10),NOW)));
+        var row=values("activity_id","expired","active_version",1,"status","ACTIVE","contract_json",json(contract(NOW.minusSeconds(10),NOW)),"published_content_hash",hash(contract(NOW.minusSeconds(10),NOW)));
         when(db.requiredRow(startsWith("SELECT p.*"),any(Object[].class))).thenReturn(row);
         assertEquals(detail.get("state"),new PromotionPublicService(db,null,null,mock(PromotionBannerService.class)).get(null,"expired").get("state"));
     }

@@ -36,7 +36,7 @@ class PromotionBannerReadMySqlTest {
             // Temporary tables shadow task tables only on this connection; no persistent activity or money is changed.
             try (var statement = connection.createStatement()) {
                 statement.execute("CREATE TEMPORARY TABLE nx_promotion(activity_id VARCHAR(128) PRIMARY KEY,active_version BIGINT,status VARCHAR(32),deleted_at DATETIME(6))");
-                statement.execute("CREATE TEMPORARY TABLE nx_promotion_version(activity_id VARCHAR(128),version BIGINT,status VARCHAR(32),starts_at DATETIME(6),ends_at DATETIME(6),contract_json JSON,resolved_policies_json JSON,PRIMARY KEY(activity_id,version))");
+                statement.execute("CREATE TEMPORARY TABLE nx_promotion_version(activity_id VARCHAR(128),version BIGINT,status VARCHAR(32),starts_at DATETIME(6),ends_at DATETIME(6),contract_json JSON,resolved_policies_json JSON,content_hash VARCHAR(64),PRIMARY KEY(activity_id,version))");
             }
             var key = "admin/growth/promotion-banner/20261011/8bbef0bd-8f4e-4c89-a7be-57238a041a36.png";
             var asset = Base64.getUrlEncoder().withoutPadding().encodeToString(key.getBytes(StandardCharsets.UTF_8));
@@ -46,10 +46,10 @@ class PromotionBannerReadMySqlTest {
                 Instant to = now.plusSeconds(state.equals("EXPIRED") ? -1 : 7200);
                 var contract = values("bannerAssetId", asset, "startsAt", from.toString(), "endsAt", to.toString(), "rules", List.of(), "placement", "home.purchase-promotion");
                 try (var root = connection.prepareStatement("INSERT INTO nx_promotion(activity_id,active_version,status) VALUES(?,2,?)");
-                     var version = connection.prepareStatement("INSERT INTO nx_promotion_version VALUES(?,2,?,?,?,?,NULL)")) {
+                     var version = connection.prepareStatement("INSERT INTO nx_promotion_version VALUES(?,2,?,?,?,?,NULL,?)")) {
                     root.setString(1, state); root.setString(2, Set.of("FUTURE", "EXPIRED", "UNPUBLISHED").contains(state) ? "ACTIVE" : state); root.executeUpdate();
                     version.setString(1, state); version.setString(2, state.equals("UNPUBLISHED") ? "DRAFT" : "PUBLISHED");
-                    version.setTimestamp(3, timestamp(from)); version.setTimestamp(4, timestamp(to)); version.setString(5, json(contract)); version.executeUpdate();
+                    version.setTimestamp(3, timestamp(from)); version.setTimestamp(4, timestamp(to)); version.setString(5, json(contract)); version.setString(6,hash(contract)); version.executeUpdate();
                 }
             }
             var config = new MybatisConfiguration(new Environment("promotion-banner-read-isolated", new SpringManagedTransactionFactory(), new SingleConnectionDataSource(connection, true)));

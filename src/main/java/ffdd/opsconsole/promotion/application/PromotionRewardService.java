@@ -14,6 +14,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.*;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
+import static ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.asset;
+import static ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.verifiedSnapshot;
+import ffdd.opsconsole.common.domain.LegacyUvtProof;
 
 /** Local wallet, D4 and device receipts commit with the obligation in one database transaction. */
 @Service
@@ -76,9 +79,9 @@ public class PromotionRewardService {
         Map<String,Object> account=db.user(number(reward.get("beneficiary_id")),true);
         require("ACTIVE".equals(account.get("status"))&&number(account.get("sandbox"))==0,"PROMOTION_ACCOUNT_FROZEN");
         require(reward.get("ready_at")!=null&&!instant(reward.get("ready_at")).isAfter(Instant.now()),"PROMOTION_REWARD_NOT_MATURE");
-        Map<String,Object> reserved=reservation(reward),snapshot=parse(reward.get("snapshot_json"));
+        Map<String,Object> reserved=reservation(reward),snapshot=verifiedSnapshot(reward);
         require(hash(snapshot).equals(reward.get("snapshot_hash"))&&"COMMITTED".equals(reserved.get("status")),"PROMOTION_REWARD_SNAPSHOT_INVALID");
-        Map<String,Object> spec=map(map(snapshot.get("award")).get("reward"));String asset=text(spec.get("type"));
+        Map<String,Object> spec=map(map(snapshot.get("award")).get("reward"));String asset=asset(spec.get("type"));
         if("DEVICE".equals(asset)) testCloudAdmission.requireCapacity(Math.toIntExact(number(spec.get("quantity"))));
         String attempt=id("PA"),posting="PROMOTION-ISSUE-"+obligationId,entry=null;
         changed(db.write("INSERT INTO nx_promotion_reward_attempt(attempt_id,obligation_id,command_id,action,status,evidence_json,started_at) VALUES(?,?,?,'ISSUE','PROCESSING',JSON_OBJECT(),NOW(6))",attempt,obligationId,commandId));
@@ -153,8 +156,8 @@ public class PromotionRewardService {
     }
     @Transactional(rollbackFor=Exception.class)
     public Map<String,Object> reconcile(String id,String commandId){
-        Map<String,Object> row=lock(id),snapshot=parse(row.get("snapshot_json")),spec=map(map(snapshot.get("award")).get("reward"));
-        String asset=text(spec.get("type"));boolean issued=false,absent=false;
+        Map<String,Object> row=lock(id),snapshot=verifiedSnapshot(row),spec=map(map(snapshot.get("award")).get("reward"));
+        String asset=asset(spec.get("type"));boolean issued=false,absent=false;
         if("DEVICE".equals(asset)){
             long count=db.list("SELECT r.device_id FROM nx_promotion_device_receipt r JOIN nx_user_device d ON d.id=r.device_id WHERE r.obligation_id=? AND d.user_id=? AND d.source_channel='PROMOTION_GIFT' AND d.source_order_no=? FOR UPDATE",id,row.get("beneficiary_id"),row.get("order_no")).size();
             issued=count==number(spec.get("quantity"));absent=count==0;
@@ -195,8 +198,8 @@ public class PromotionRewardService {
         Map<String,Object> previous=db.one("SELECT * FROM nx_promotion_reversal WHERE obligation_id=? AND basis_type=? AND basis_ref=? FOR UPDATE",id,basisType,basisRef);
         if(previous!=null){orders.restoreUsageAfterRefund(text(row.get("order_no")));return view(row,false,true);}
         require(Set.of("ISSUED","REVERSAL_PENDING").contains(text(row.get("status"))),"PROMOTION_REWARD_NOT_REVERSIBLE");
-        Map<String,Object> reserved=reservation(row),snapshot=parse(row.get("snapshot_json")),spec=map(map(snapshot.get("award")).get("reward"));
-        BigDecimal amount=decimal(reserved.get("amount")),recovered=BigDecimal.ZERO;String asset=text(spec.get("type")),posting=null;
+        Map<String,Object> reserved=reservation(row),snapshot=verifiedSnapshot(row),spec=map(map(snapshot.get("award")).get("reward"));
+        BigDecimal amount=decimal(reserved.get("amount")),recovered=BigDecimal.ZERO;String asset=asset(spec.get("type")),posting=null;
         Map<String,Object> evidence=new LinkedHashMap<>();
         if("DEVICE".equals(asset)){
             List<Map<String,Object>> devices=db.list("SELECT r.*,d.user_id,d.source_channel,d.ownership_status,d.is_deleted FROM nx_promotion_device_receipt r JOIN nx_user_device d ON d.id=r.device_id WHERE r.obligation_id=? ORDER BY r.device_id FOR UPDATE",id);
@@ -249,7 +252,7 @@ public class PromotionRewardService {
         Map<String,Object> ticket=db.requiredRow("SELECT * FROM nx_audit_operation_ticket WHERE operation_id=? AND is_deleted=0 FOR UPDATE",operation);
         Map<String,Object> command=parse(ticket.get("command_json"));
         Map<String,Object> params=map(command.get("params"));
-        Map<String,Object> snapshot=parse(row.get("snapshot_json"));
+        Map<String,Object> snapshot=verifiedSnapshot(row);
         require("approved".equals(ticket.get("status"))&&ticket.get("decided_at")!=null&&"H".equals(ticket.get("source_domain"))
             &&"H".equals(command.get("domain"))&&"promotion_reward_correction".equals(command.get("op"))
             &&params.keySet().equals(Set.of("obligationId","expectedRevision","snapshotHash","action","asset"))
@@ -258,7 +261,7 @@ public class PromotionRewardService {
             &&number(basis.get("approvalRevision"))==number(params.get("expectedRevision"))
             &&hash(command).equals(basis.get("approvedPayloadHash"))
             &&row.get("snapshot_hash").equals(params.get("snapshotHash"))&&hash(snapshot).equals(row.get("snapshot_hash"))
-            &&map(map(snapshot.get("award")).get("reward")).get("type").equals(params.get("asset")),"PROMOTION_CORRECTION_NOT_APPROVED");
+            &&LegacyUvtProof.matches(text(map(map(snapshot.get("award")).get("reward")).get("type")),text(params.get("asset"))),"PROMOTION_CORRECTION_NOT_APPROVED");
         require(!db.list("SELECT id FROM nx_audit_log WHERE resource_type='PROMOTION_REWARD' AND resource_id=? AND action='PROMOTIONREWARDCORRECTIONAPPROVED' AND result='SUCCESS' AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.request.snapshotHash'))=? AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.request.action'))=? AND JSON_EXTRACT(detail_json,'$.request.expectedRevision')=? FOR UPDATE",row.get("obligation_id"),params.get("snapshotHash"),action,number(params.get("expectedRevision"))).isEmpty(),"PROMOTION_CORRECTION_APPROVAL_FACT_MISSING");
         return operation;
     }
@@ -321,7 +324,7 @@ public class PromotionRewardService {
         return view(row,admin,false);
     }
     private Map<String,Object> view(Map<String,Object> row,boolean admin,boolean currentRead){
-        String id=text(row.get("obligation_id"));Map<String,Object> snapshot=parse(row.get("snapshot_json")),spec=map(map(snapshot.get("award")).get("reward"));
+        String id=text(row.get("obligation_id"));Map<String,Object> snapshot=verifiedSnapshot(row),spec=ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.reward(map(map(snapshot.get("award")).get("reward")));
         String lock=currentRead?" FOR UPDATE":"";
         List<Map<String,Object>> devices=db.list("SELECT device_id,instance_no,created_at FROM nx_promotion_device_receipt WHERE obligation_id=? ORDER BY device_unit_seq"+lock,id);
         List<Map<String,Object>> holds=db.list("SELECT refund_request_id FROM nx_promotion_refund_hold WHERE order_no=? AND status IN ('HELD','OUTCOME_UNKNOWN','EXECUTED') ORDER BY refund_request_id"+lock,row.get("order_no"));
@@ -360,7 +363,7 @@ public class PromotionRewardService {
             var command=parse(ticket.get("command_json"));var params=map(command.get("params"));
             if(!"H".equals(command.get("domain"))||!params.keySet().equals(Set.of("obligationId","expectedRevision","snapshotHash","action","asset"))
                 ||!action.equals(params.get("action"))||number(row.get("revision"))!=number(params.get("expectedRevision"))||!row.get("snapshot_hash").equals(params.get("snapshotHash")))continue;
-            var snapshot=parse(row.get("snapshot_json"));if(!hash(snapshot).equals(row.get("snapshot_hash"))||!map(map(snapshot.get("award")).get("reward")).get("type").equals(params.get("asset")))continue;
+            var snapshot=verifiedSnapshot(row);if(!hash(snapshot).equals(row.get("snapshot_hash"))||!LegacyUvtProof.matches(text(map(map(snapshot.get("award")).get("reward")).get("type")),text(params.get("asset"))))continue;
             if(db.count("SELECT COUNT(*) FROM nx_audit_log WHERE resource_type='PROMOTION_REWARD' AND resource_id=? AND action='PROMOTIONREWARDCORRECTIONAPPROVED' AND result='SUCCESS' AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.request.snapshotHash'))=? AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.request.action'))=? AND JSON_EXTRACT(detail_json,'$.request.expectedRevision')=?",row.get("obligation_id"),params.get("snapshotHash"),action,number(params.get("expectedRevision")))==0)continue;
             options.add(values("action",action,"basis",values("type","APPROVED_CORRECTION","approvalOperationId",ticket.get("operation_id"),"approvalRevision",number(params.get("expectedRevision")),"approvedPayloadHash",hash(command)),"label",values("zh","已批准奖励调整","en","Approved reward correction","vi","Điều chỉnh phần thưởng đã được phê duyệt")));
         }

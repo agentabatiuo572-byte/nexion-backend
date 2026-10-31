@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
+import static ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.asset;
 
 @Service
 @RequiredArgsConstructor
@@ -35,6 +36,7 @@ public class PromotionAvailabilityService {
         if(root.get("deleted_at")!=null)return;
         if(!Set.of("ACTIVE","SCHEDULED").contains(text(root.get("status"))))return;
         Map<String,Object> version=db.version(activity,number(root.get("active_version")),false),contract=parse(version.get("contract_json"));
+        require(hash(contract).equals(version.get("content_hash")),"PROMOTION_VERSION_INVALID");
         if(!"ACTIVITY_PAUSE".equals(contract.get("shortagePolicy")))return;
         Map<String,Map<String,Object>> budgets=new HashMap<>();
         for(Map<String,Object> row:db.list("SELECT * FROM nx_promotion_budget WHERE activity_id=? ORDER BY asset,product_no FOR UPDATE",activity))
@@ -45,7 +47,7 @@ public class PromotionAvailabilityService {
         Map<String,Map<String,Object>> inventory=new HashMap<>();for(String product:products)inventory.put(product,db.product(product,true));
         boolean shortfall=number(root.get("reserved_orders"))+number(root.get("used_orders"))>=PromotionRules.limit(contract.get("activityLimit"));
         for(Map<String,Object> rule:maps(contract.get("rules")))for(String role:List.of("buyerReward","inviterReward")){
-            if(rule.get(role)==null)continue;Map<String,Object> reward=map(rule.get(role));String asset=text(reward.get("type")),product="DEVICE".equals(asset)?text(reward.get("giftProductNo")):"";
+            if(rule.get(role)==null)continue;Map<String,Object> reward=map(rule.get(role));String asset=asset(reward.get("type")),product="DEVICE".equals(asset)?text(reward.get("giftProductNo")):"";
             BigDecimal amount=PromotionQuoteService.rewardAmount(reward);Map<String,Object> budget=budgets.get(asset+":"+product);
             if(budget==null||decimal(budget.get("total")).subtract(decimal(budget.get("reserved"))).subtract(decimal(budget.get("committed"))).subtract(decimal(budget.get("issued"))).add(decimal(budget.get("reversed"))).compareTo(amount)<0)shortfall=true;
             if(!product.isEmpty()){Map<String,Object> p=inventory.get(product);if(!"UNLIMITED".equals(p.get("inventory_mode"))&&decimal(p.get("stock")).compareTo(amount)<0)shortfall=true;}

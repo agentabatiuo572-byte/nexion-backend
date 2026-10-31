@@ -117,7 +117,7 @@ class OrdinaryPurchaseQuoteTest {
         var contract=copy(map(example.get("draft")));
         contract.put("startsAt",Instant.now().minusSeconds(60).toString());contract.put("endsAt",Instant.now().plusSeconds(3600).toString());
         when(db.list(startsWith("SELECT p.activity_id"),any(Object[].class))).thenReturn(List.of(values("activity_id","A1","active_version",1)));
-        when(db.version("A1",1,false)).thenReturn(values("contract_json",json(contract)));
+        when(db.version("A1",1,false)).thenReturn(values("contract_json",json(contract),"content_hash",hash(contract)));
         when(resolver.resolve(anyMap(),eq(false))).thenReturn(Map.of());
         when(evaluator.evaluate(eq("A1"),anyMap(),anyMap(),eq(29L),anyList(),any(),isNull())).thenReturn(List.of());
         var input=request("cloud-share",2);input.put("activityId","A1");

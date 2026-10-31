@@ -7,6 +7,7 @@ import java.util.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
+import static ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.asset;
 
 @Service
 @RequiredArgsConstructor
@@ -46,7 +47,7 @@ public class PromotionPolicyResolver {
         var policy=view(row);require(hash(map(policy.get("content"))).equals(row.get("content_hash")),"PROMOTION_POLICY_CONTENT_CHANGED");
         nativeContracts.fixtureAllowed(row.get("fixture_run_id"));var resolved=nativeContracts.resolve(map(policy.get("content")));
         require(Objects.equals(resolved.get("resolvedDeviceRights"),policy.get("resolvedDeviceRights")),"PROMOTION_DEVICE_RIGHTS_CHANGED");
-        validator.validate("ResolvedApprovedPolicy",policy);return policy;
+        validator.validateRecorded("ResolvedApprovedPolicy",policy);return policy;
     }
     public Map<String,Object> resolve(Map<String,Object> contract,boolean lock) {
         Map<String,Map<String,Object>> requested=new TreeMap<>();
@@ -79,7 +80,7 @@ public class PromotionPolicyResolver {
             Map<String,Object> policy=resolveReference(result,map(reward.get("DEVICE".equals(type)?"deviceRightsProfile":"assetPolicy")));
             Map<String,Object> content=map(policy.get("content"));
             if("DEVICE".equals(type))require("DEVICE_RIGHTS".equals(content.get("kind"))&&reward.get("giftProductNo").equals(content.get("productNo")),"PROMOTION_DEVICE_POLICY_MISMATCH");
-            else require("ASSET".equals(content.get("kind"))&&type.equals(content.get("asset")),"PROMOTION_ASSET_POLICY_MISMATCH");
+            else require("ASSET".equals(content.get("kind"))&&asset(type).equals(asset(content.get("asset"))),"PROMOTION_ASSET_POLICY_MISMATCH");
         }
         return result;
     }
