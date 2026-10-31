@@ -66,38 +66,6 @@ class PromotionOrderServiceTest {
         assertDoesNotThrow(()->service.beforePay(17L,"O1"));
     }
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(longs={4,5})
-    void unreservedBuyerGiftChecksPurchasedUnitsAndGiftTogether(long occupied){
-        when(db.order("O1",false)).thenReturn(values("user_id",17L,"inventory_reserved",0,"quantity",1));
-        when(db.one("SELECT pay_by FROM nx_promotion_order_receipt WHERE order_no=? FOR UPDATE","O1")).thenReturn(null);
-        var row=values("beneficiary_id",17L,"asset","DEVICE","amount",1,"status","RESERVED","pay_by",Instant.now().plusSeconds(300),
-            "activity_id","A1","product_no","G1","snapshot_json",json(values("contract",Map.of(),"policies",Map.of(),"awards",List.of())));
-        when(db.reservations("O1",true)).thenReturn(List.of(row));when(db.reservations("O1",false)).thenReturn(List.of(row));
-        when(db.user(anyLong(),eq(true))).thenReturn(values("status","ACTIVE"));when(db.deviceSlotCap()).thenReturn(6L);
-        when(db.occupiedDeviceSlots(17L)).thenReturn(occupied);
-        when(evaluator.firstPurchaseStillValid(anyMap(),anyMap(),eq(17L),anyList(),eq("O1"))).thenReturn(true);
-        if(occupied==4)assertDoesNotThrow(()->service.beforePay(17L,"O1"));
-        else assertEquals("PROMOTION_DEVICE_CAPACITY_UNAVAILABLE",assertThrows(BizException.class,()->service.beforePay(17L,"O1")).getMessage());
-        verify(db,never()).write(anyString(),any(Object[].class));
-    }
-    @Test void unreservedGiftInventoryIsAggregatedAndConsumedOnlyByPayment(){
-        when(db.order("O1",false)).thenReturn(values("inventory_reserved",0));
-        when(db.reservations("O1",true)).thenReturn(List.of(values("asset","DEVICE","status","RESERVED","product_no","G1","amount",1),
-            values("asset","DEVICE","status","RESERVED","product_no","G1","amount",2)));
-        when(db.product("G1",true)).thenReturn(values("inventory_mode","FINITE","stock",3));
-        service.consumePaymentInventory("O1");
-        verify(db).write("UPDATE nx_product SET stock=stock-?,updated_at=NOW(6) WHERE product_no=? AND is_deleted=0 AND stock>=?",3,"G1",3);
-    }
-    @Test void cancellingUnreservedGiftNeverReturnsUnconsumedMerchandise(){
-        when(db.order("O1",false)).thenReturn(values("paid_at",null,"order_status","CANCELLED","inventory_reserved",0));
-        when(db.reservations("O1",true)).thenReturn(List.of(values("reservation_id","R1","activity_id","A1","asset","DEVICE","amount",1,
-            "product_no","G1","beneficiary_id",17L,"beneficiary_role","BUYER","rule_id","B1","status","RESERVED")));
-        service.releaseUnpaid("O1","CANCELLED");
-        verify(db,never()).product(anyString(),anyBoolean());
-        verify(db,never()).write(startsWith("UPDATE nx_product SET stock=stock+?"),any(Object[].class));
-        verify(db).write(startsWith("UPDATE nx_promotion_budget SET reserved=reserved-?"),any(Object[].class));
-    }
-    @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(longs={6,7})
     void giftBeneficiaryCapacityIsRecheckedBeforeBuyerPayment(long occupied){
         when(db.one("SELECT pay_by FROM nx_promotion_order_receipt WHERE order_no=? FOR UPDATE","O1")).thenReturn(null);

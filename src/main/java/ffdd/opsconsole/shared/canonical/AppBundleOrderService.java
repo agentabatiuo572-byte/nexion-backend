@@ -313,15 +313,25 @@ public class AppBundleOrderService {
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
+        Map<String, QuotaReservation> quotaReservations = new LinkedHashMap<>();
+        for (AppBundleOrderMapper.ProductRow product : products) {
+            QuotaReservation quotaReservation = reserveCanonicalPurchaseQuota(userId, product.productNo(), quantities.get(product.productNo()));
+            if (quotaReservation.reserved()) {
+                quotaReservations.put(product.productNo(), quotaReservation);
+            }
+        }
         String orderNo = "BND-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        for (var product : products) validateCanonicalPurchaseGate(userId, product.productNo());
+        for (AppBundleOrderMapper.ProductRow product : products) {
+            if (mapper.decrementStock(product.id(), quantities.get(product.productNo())) != 1) throw new BizException(409, "BUNDLE_PRODUCT_STOCK_CONFLICT");
+        }
         if (mapper.insertBundleOrder(userId, orderNo, products.get(0).id(), itemCount, quantity, subtotal, discount, amount) != 1) {
             throw new BizException(409, "BUNDLE_ORDER_CREATE_CONFLICT");
         }
         for (int index = 0; index < products.size(); index++) {
             AppBundleOrderMapper.ProductRow product = products.get(index);
+            QuotaReservation quotaReservation = quotaReservations.get(product.productNo());
             if (mapper.insertBundleItem(orderNo, product, quantities.get(product.productNo()), index,
-                    false, null) != 1) {
+                    quotaReservation != null, quotaReservation == null ? null : quotaReservation.gateGeneration()) != 1) {
                 throw new BizException(409, "BUNDLE_ORDER_ITEM_CREATE_CONFLICT");
             }
         }
@@ -356,14 +366,32 @@ public class AppBundleOrderService {
         }
     }
 
-    private void validateCanonicalPurchaseGate(Long userId, String productNo) {
+    private QuotaReservation reserveCanonicalPurchaseQuota(Long userId, String productNo, int quantity) {
         String rawGate = mapper.purchaseGateJson(productNo);
-        if (!StringUtils.hasText(rawGate)) return;
+        if (!StringUtils.hasText(rawGate)) return QuotaReservation.none();
         AppBundleOrderMapper.PurchaseFacts facts = mapper.purchaseFacts(userId);
         StorefrontPurchaseGatePolicy.Facts gateFacts = facts == null ? null : safeGateFacts(facts);
         if ((facts != null && gateFacts == null)
                 || !purchaseGatePolicy.evaluate(rawGate, gateFacts).allowed()) {
             throw new BizException(409, "PURCHASE_GATE_BLOCKED");
+        }
+        boolean quotaReserved = purchaseGatePolicy.hasQuota(rawGate);
+        if (quotaReserved) {
+            if (mapper.consumePurchaseQuota(productNo, quantity) != 1) {
+                throw new BizException(409, "PURCHASE_GATE_SOLD_OUT");
+            }
+            Long gateGeneration = mapper.lockPurchaseGateGeneration(productNo);
+            if (gateGeneration == null || gateGeneration < 1) {
+                throw new BizException(409, "PURCHASE_GATE_RESERVATION_UNAVAILABLE");
+            }
+            return new QuotaReservation(true, gateGeneration);
+        }
+        return QuotaReservation.none();
+    }
+
+    private record QuotaReservation(boolean reserved, Long gateGeneration) {
+        static QuotaReservation none() {
+            return new QuotaReservation(false, null);
         }
     }
 
