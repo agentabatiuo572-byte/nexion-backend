@@ -111,7 +111,8 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
     @Select("""
             SELECT order_no orderNo,user_id userId,product_id productId,quantity,order_type orderType,
                    item_count itemCount,
-                   payment_status paymentStatus,order_status orderStatus,activation_status activationStatus
+                   payment_status paymentStatus,order_status orderStatus,activation_status activationStatus,
+                   inventory_reserved inventoryReserved
               FROM nx_order WHERE order_no=#{orderNo} AND is_deleted=0 LIMIT 1 FOR UPDATE
             """)
     OrderRow lockOrder(@Param("orderNo") String orderNo);
@@ -133,10 +134,10 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
     @Select("""
             SELECT p.id
               FROM nx_order o
-              LEFT JOIN nx_order_item oi ON oi.order_no=o.order_no AND oi.is_deleted=0
-              JOIN nx_product p ON p.id=CASE
-                WHEN UPPER(COALESCE(o.order_type,'SINGLE'))='BUNDLE' THEN oi.product_id
-                ELSE o.product_id END
+              JOIN nx_product p ON (p.id=o.product_id OR EXISTS (
+                SELECT 1 FROM nx_order_item oi WHERE oi.order_no=o.order_no AND oi.product_id=p.id AND oi.is_deleted=0)
+                OR EXISTS (SELECT 1 FROM nx_promotion_reservation pr WHERE pr.order_no=o.order_no
+                  AND pr.asset='DEVICE' AND pr.product_no=p.product_no AND pr.status='RESERVED'))
              WHERE o.order_no=#{orderNo} AND o.is_deleted=0
              ORDER BY p.id
              FOR UPDATE
@@ -325,7 +326,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
             SELECT o.order_no orderNo,o.user_id userId,o.product_id productId,o.quantity,
                    o.order_type orderType,o.item_count itemCount,
                    o.amount_usdt amountUsdt,o.payment_no paymentNo,o.payment_status paymentStatus,
-                   o.order_status orderStatus,o.activation_status activationStatus
+                   o.order_status orderStatus,o.activation_status activationStatus,o.inventory_reserved inventoryReserved
               FROM nx_order o
               JOIN nx_user u ON u.id=o.user_id AND u.sandbox=0
              WHERE o.order_no=#{orderNo} AND o.is_deleted=0
@@ -356,6 +357,54 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
              FOR UPDATE
             """)
     List<DevelopmentPaymentItem> lockDevelopmentPaymentItems(@Param("orderNo") String orderNo);
+
+    @Select("""
+            SELECT p.id productId,p.product_no productNo,i.quantity,p.stock,p.inventory_mode inventoryMode,
+                   s.purchase_gate_json purchaseGateJson,s.purchase_gate_generation gateGeneration
+              FROM nx_order_item i JOIN nx_product p ON p.id=i.product_id AND p.is_deleted=0
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+             WHERE i.order_no=#{orderNo} AND i.is_deleted=0 ORDER BY p.id FOR UPDATE
+            """)
+    List<PaymentInventoryLine> lockPaymentInventoryLines(@Param("orderNo") String orderNo);
+
+    @Select("""
+            SELECT CAST(COALESCE(NULLIF(REPLACE(UPPER(u.v_rank),'V',''),''),'0') AS UNSIGNED) AS `rank`,
+                   (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
+                     WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
+                       AND child.status='ACTIVE' AND child.is_deleted=0) AS activeDirect,
+                   (SELECT COALESCE(SUM(o.compute_points),0) FROM nx_team_member tm JOIN nx_user member
+                     ON member.id=tm.member_user_id AND member.sandbox=u.sandbox
+                     JOIN nx_order o ON o.user_id=tm.member_user_id AND o.is_deleted=0
+                      AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
+                      AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
+                    WHERE tm.user_id=u.id AND tm.member_user_id<>u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) AS teamComputePoints
+              FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
+            """)
+    CanonicalStateMapper.PurchaseFacts paymentGateFacts(@Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_product SET stock=CASE WHEN inventory_mode='FINITE' THEN stock-#{quantity} ELSE stock END,
+                   sold_count=sold_count+#{quantity},updated_at=NOW(6)
+             WHERE id=#{productId} AND is_deleted=0 AND (inventory_mode='UNLIMITED' OR stock>=#{quantity})
+            """)
+    int consumePaymentStock(@Param("productId") Long productId,@Param("quantity") Integer quantity);
+
+    @Update("""
+            UPDATE nx_admin_device_sku SET purchase_gate_json=JSON_SET(purchase_gate_json,'$.quotaSold',
+              CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}),updated_at=NOW()
+             WHERE sku_id=#{productNo} AND is_deleted=0 AND purchase_gate_generation=#{generation}
+               AND JSON_VALID(purchase_gate_json)=1 AND JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.enforce'))='true'
+               AND (JSON_EXTRACT(purchase_gate_json,'$.quotaPeriod') IS NULL OR JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaPeriod'))='lifetime')
+               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}
+                   <=CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaCap')) AS UNSIGNED)
+            """)
+    int consumePaymentQuota(@Param("productNo") String productNo,@Param("quantity") Integer quantity,@Param("generation") Long generation);
+
+    @Update("UPDATE nx_order_item SET lifetime_quota_reserved=1,lifetime_quota_gate_generation=#{generation} WHERE order_no=#{orderNo} AND product_id=#{productId} AND is_deleted=0 AND lifetime_quota_reserved=0")
+    int recordPaymentQuota(@Param("orderNo") String orderNo,@Param("productId") Long productId,@Param("generation") Long generation);
+
+    @Update("UPDATE nx_order SET inventory_reserved=1 WHERE order_no=#{orderNo} AND inventory_reserved=0 AND payment_status='PENDING' AND order_status='PENDING_PAYMENT'")
+    int markPaymentInventoryConsumed(@Param("orderNo") String orderNo);
 
     @Select("""
             SELECT w.usdt_available usdtAvailable,w.version
@@ -528,10 +577,14 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                                       @Param("idempotencyKey") String idempotencyKey);
 
     record OrderRow(String orderNo, Long userId, Long productId, Integer quantity, String orderType, Integer itemCount,
-                    String paymentStatus, String orderStatus, String activationStatus) {
+                    String paymentStatus, String orderStatus, String activationStatus, Boolean inventoryReserved) {
+        public OrderRow(String orderNo, Long userId, Long productId, Integer quantity, String orderType, Integer itemCount,
+                        String paymentStatus, String orderStatus, String activationStatus) {
+            this(orderNo,userId,productId,quantity,orderType,itemCount,paymentStatus,orderStatus,activationStatus,true);
+        }
         public OrderRow(String orderNo, Long userId, Long productId, Integer quantity, String orderType,
                         String paymentStatus, String orderStatus, String activationStatus) {
-            this(orderNo, userId, productId, quantity, orderType, null, paymentStatus, orderStatus, activationStatus);
+            this(orderNo, userId, productId, quantity, orderType, null, paymentStatus, orderStatus, activationStatus,true);
         }
     }
     record ItemRow(String orderNo, Long productId, String productNo, Integer quantity, Boolean quotaReserved,
@@ -554,15 +607,22 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
     record DevelopmentPayOrder(String orderNo, Long userId, Long productId, Integer quantity,
                                String orderType, Integer itemCount, BigDecimal amountUsdt,
                                String paymentNo, String paymentStatus,
-                               String orderStatus, String activationStatus) {
+                               String orderStatus, String activationStatus, Boolean inventoryReserved) {
+        public DevelopmentPayOrder(String orderNo, Long userId, Long productId, Integer quantity,
+                                   String orderType,Integer itemCount,BigDecimal amountUsdt,String paymentNo,String paymentStatus,
+                                   String orderStatus,String activationStatus) {
+            this(orderNo,userId,productId,quantity,orderType,itemCount,amountUsdt,paymentNo,paymentStatus,orderStatus,activationStatus,true);
+        }
         public DevelopmentPayOrder(String orderNo, Long userId, Long productId, Integer quantity,
                                    BigDecimal amountUsdt, String paymentNo, String paymentStatus,
                                    String orderStatus, String activationStatus) {
             this(orderNo, userId, productId, quantity, "SINGLE", 1, amountUsdt, paymentNo,
-                    paymentStatus, orderStatus, activationStatus);
+                    paymentStatus, orderStatus, activationStatus,true);
         }
     }
     record DevelopmentPaymentItem(Long productId, String productNo, Integer quantity, Integer sortOrder) { }
+    record PaymentInventoryLine(Long productId,String productNo,Integer quantity,Integer stock,String inventoryMode,
+                                String purchaseGateJson,Long gateGeneration) { }
     record DevelopmentWallet(BigDecimal usdtAvailable, Long version) { }
     record DevelopmentDeviceFact(Long deviceId, String instanceNo) { }
 }

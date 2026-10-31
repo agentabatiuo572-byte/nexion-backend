@@ -1668,11 +1668,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                                           AND (oi.product_id IS NULL OR oi.quantity IS NULL OR oi.quantity<=0)
                                      THEN 1 ELSE 0 END),0) invalidItemRows,
                    COUNT(DISTINCT CASE WHEN oi.product_id IS NOT NULL AND oi.quantity>0
-                                       THEN oi.product_id END) productGroups
+                                       THEN oi.product_id END) productGroups,
+                   o.inventory_reserved inventoryReserved
               FROM nx_order o
               LEFT JOIN nx_order_item oi ON oi.order_no=o.order_no AND oi.is_deleted=0
              WHERE o.order_no=#{orderNo} AND o.is_deleted=0
-             GROUP BY o.id,o.order_type,o.quantity,o.item_count
+             GROUP BY o.id,o.order_type,o.quantity,o.item_count,o.inventory_reserved
             """)
     OrderRestockPlan orderRestockPlan(@Param("orderNo") String orderNo);
 
@@ -1682,7 +1683,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                     SELECT oi.product_id,SUM(oi.quantity) quantity
                       FROM nx_order o
                       JOIN nx_order_item oi ON oi.order_no=o.order_no AND oi.is_deleted=0
-                     WHERE o.order_no=#{orderNo} AND o.is_deleted=0
+                     WHERE o.order_no=#{orderNo} AND o.is_deleted=0 AND o.inventory_reserved=1
                        AND EXISTS (
                              SELECT 1
                                FROM nx_order complete_order
@@ -1734,7 +1735,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
        SET p.stock=CASE WHEN p.inventory_mode='FINITE' THEN p.stock+o.quantity ELSE p.stock END,
            p.sold_count=GREATEST(0,p.sold_count-o.quantity),
                    p.updated_at=GREATEST(CURRENT_TIMESTAMP(6),p.updated_at + INTERVAL 1 MICROSECOND)
-             WHERE o.quantity>0 AND p.sold_count>=o.quantity
+             WHERE o.quantity>0 AND o.inventory_reserved=1 AND p.sold_count>=o.quantity
                AND UPPER(o.order_type)='SINGLE'
                AND NOT EXISTS (SELECT 1 FROM nx_order_item oi
                                 WHERE oi.order_no=o.order_no AND oi.is_deleted=0)
@@ -1749,7 +1750,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             Long itemRows,
             Long validItemQuantity,
             Long invalidItemRows,
-            Long productGroups) {
+            Long productGroups,
+            Boolean inventoryReserved) {
+        public OrderRestockPlan(String orderType,Integer orderQuantity,Integer itemCount,Long itemRows,
+                                Long validItemQuantity,Long invalidItemRows,Long productGroups){
+            this(orderType,orderQuantity,itemCount,itemRows,validItemQuantity,invalidItemRows,productGroups,true);
+        }
     }
 
     @Select("""

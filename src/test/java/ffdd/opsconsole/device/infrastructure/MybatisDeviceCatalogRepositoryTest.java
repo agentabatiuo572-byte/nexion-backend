@@ -12,6 +12,14 @@ import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 
 class MybatisDeviceCatalogRepositoryTest {
+    @Test void unreservedUnpaidOrderClosureNeverRestocksOrTouchesAssets() {
+        when(mapper.orderRestockPlan("UNPAID-0")).thenReturn(
+                new DeviceCatalogMapper.OrderRestockPlan("SINGLE",1,1,1L,1L,0L,1L,false));
+        assertThat(repository.rollbackOrderAssets("UNPAID-0",now)).isTrue();
+        verify(mapper,never()).rollbackOrderDevices("UNPAID-0",now);
+        verify(mapper,never()).restockOrderProduct("UNPAID-0",now);
+        verify(mapper,never()).restockOrderItemProducts("UNPAID-0",now);
+    }
 
     private final DeviceCatalogMapper mapper = mock(DeviceCatalogMapper.class);
     private final MybatisDeviceCatalogRepository repository =

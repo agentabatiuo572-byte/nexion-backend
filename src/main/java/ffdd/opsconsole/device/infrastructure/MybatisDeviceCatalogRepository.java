@@ -403,11 +403,12 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
 
     @Override
     public boolean rollbackOrderAssets(String orderNo, LocalDateTime now) {
-        mapper.rollbackOrderDevices(orderNo, now);
         DeviceCatalogMapper.OrderRestockPlan plan = mapper.orderRestockPlan(orderNo);
         if (plan == null || plan.orderQuantity() == null || plan.orderQuantity() <= 0) {
             return false;
         }
+        if (Boolean.FALSE.equals(plan.inventoryReserved())) return true;
+        mapper.rollbackOrderDevices(orderNo, now);
         String orderType = plan.orderType() == null
                 ? ""
                 : plan.orderType().trim().toUpperCase(java.util.Locale.ROOT);
