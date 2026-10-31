@@ -45,9 +45,9 @@ class PromotionOrderServiceTest {
         var sequence=inOrder(db);sequence.verify(db).user(3,true);sequence.verify(db).user(17,true);
         sequence.verify(db).activity("A1",true);
         sequence.verify(db).list(eq("SELECT * FROM nx_promotion_budget WHERE activity_id=? ORDER BY asset,product_no FOR UPDATE"),eq("A1"));
-        sequence.verify(db).product("P1",true);
-        sequence.verify(db).one("SELECT * FROM nx_admin_device_sku WHERE sku_id=? AND is_deleted=0 FOR UPDATE","P1");
-        sequence.verify(db).product("P2",true);
+        sequence.verify(db).one("SELECT id FROM nx_product WHERE product_no=? FOR UPDATE","P1");
+        sequence.verify(db).one("SELECT id FROM nx_admin_device_sku WHERE sku_id=? FOR UPDATE","P1");
+        sequence.verify(db).one("SELECT id FROM nx_product WHERE product_no=? FOR UPDATE","P2");
     }
     @Test void unknownOrderCannotSkipAccountLocks(){
         when(db.order("bad",false)).thenThrow(new BizException(404,"PROMOTION_RESOURCE_NOT_FOUND"));
