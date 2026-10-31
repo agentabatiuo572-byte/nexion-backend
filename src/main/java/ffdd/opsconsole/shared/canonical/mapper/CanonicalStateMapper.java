@@ -59,11 +59,18 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
     String LOCK_EXCLUDE_FULFILLED_CAPACITY_KEEP = " AND NOT EXISTS (" + CAPACITY_KEEP_DELIVERED_UNIT
             + " AND NOT EXISTS (" + CAPACITY_KEEP_OTHER_ITEMS + " FOR SHARE) FOR SHARE) ";
 
-    String PROMOTION_RESERVED_AMOUNT = """
+    String PROMOTION_RESERVATION_ORDER = """
+            SELECT 1 FROM nx_order gift_order WHERE gift_order.order_no=r.order_no
+              AND gift_order.is_deleted=0 AND (gift_order.inventory_reserved=1
+                OR UPPER(gift_order.payment_status) IN ('PAID','CONFIRMED','SUCCESS'))
+            """;
+    String PROMOTION_RESERVED_AMOUNT_BASE = """
             SELECT SUM(r.amount) FROM nx_promotion_reservation r
                        WHERE r.beneficiary_id=#{userId} AND r.asset='DEVICE'
                          AND r.status IN ('RESERVED','COMMITTED')
             """;
+    String PROMOTION_RESERVED_AMOUNT = PROMOTION_RESERVED_AMOUNT_BASE+" AND EXISTS ("+PROMOTION_RESERVATION_ORDER+") ";
+    String LOCK_PROMOTION_RESERVED_AMOUNT = PROMOTION_RESERVED_AMOUNT_BASE+" AND EXISTS ("+PROMOTION_RESERVATION_ORDER+" FOR SHARE) ";
     String FULFILLED_PROMOTION_RESERVATION = """
                            SELECT 1 FROM nx_promotion_reward rw
                              LEFT JOIN nx_promotion_device_receipt dr ON dr.obligation_id=rw.obligation_id
@@ -280,6 +287,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                 ON header_product.id=o.product_id AND header_product.is_deleted=0
              WHERE o.user_id=#{userId} AND o.is_deleted=0
                AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
+               AND (o.inventory_reserved=1 OR UPPER(o.payment_status) IN ('PAID','CONFIRMED','SUCCESS'))
                AND UPPER(COALESCE(o.activation_status,'WAITING_PAYMENT')) NOT IN
                    ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
             """;
@@ -297,7 +305,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
     // Lock every nested query block: an outer locking SELECT does not refresh its scalar/EXISTS subqueries.
     String LOCK_RESERVED_DEVICE_ORDERS = "SELECT COALESCE(SUM(CASE WHEN EXISTS (" + PRESENT_ORDER_ITEMS + " FOR SHARE"
             + ") THEN COALESCE((" + RESERVED_ORDER_ITEM_QUANTITY + " FOR SHARE" + RESERVED_ORDER_HEADER_QUANTITY
-            + "COALESCE((" + PROMOTION_RESERVED_AMOUNT + " AND NOT EXISTS ("
+            + "COALESCE((" + LOCK_PROMOTION_RESERVED_AMOUNT + " AND NOT EXISTS ("
             + FULFILLED_PROMOTION_RESERVATION + " FOR SHARE) FOR SHARE),0) "
             + RESERVED_ORDER_SOURCE + " AND NOT EXISTS (" + FULFILLED_LEGACY_TRIAL + " FOR SHARE) "
             + LOCK_EXCLUDE_FULFILLED_CAPACITY_KEEP;

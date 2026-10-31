@@ -66,6 +66,7 @@ public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReser
                 ON header_product.id=o.product_id AND header_product.is_deleted=0
              WHERE o.user_id=#{userId} AND o.is_deleted=0
                AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
+               AND (o.inventory_reserved=1 OR UPPER(o.payment_status) IN ('PAID','CONFIRMED','SUCCESS'))
                AND UPPER(COALESCE(o.activation_status,'WAITING_PAYMENT')) NOT IN
                    ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
             """ + CanonicalStateMapper.EXCLUDE_FULFILLED_LEGACY_TRIAL

@@ -109,13 +109,13 @@ class PhoneActivationCapacityMySqlTest {
         jdbc.execute("ALTER TABLE nx_trial_claim ADD COLUMN settled_at DATETIME(6) NULL");
         // Production delivery allocates IDs too; keep the explicit phone fixture at 11 separate.
         jdbc.execute("ALTER TABLE nx_user_device AUTO_INCREMENT=1000");
-        jdbc.execute("CREATE TABLE nx_admin_device_sku(sku_id VARCHAR(64),power_text VARCHAR(40),datacenter VARCHAR(60),is_deleted INT DEFAULT 0,gpu VARCHAR(64))");
+        jdbc.execute("CREATE TABLE nx_admin_device_sku(sku_id VARCHAR(64),power_text VARCHAR(40),datacenter VARCHAR(60),is_deleted INT DEFAULT 0,gpu VARCHAR(64),purchase_gate_json JSON,purchase_gate_generation BIGINT DEFAULT 1)");
         jdbc.update("INSERT INTO nx_admin_device_sku(sku_id,power_text,datacenter,is_deleted) VALUES('capacity-box','120 W','fixture DC',0)");
         jdbc.execute("CREATE TABLE nx_compute_task(user_id BIGINT,user_device_id BIGINT,status VARCHAR(32),"
                 + "source_environment VARCHAR(16) DEFAULT 'PRODUCTION',is_deleted INT DEFAULT 0)");
         // Only the columns read by canonical capacity SQL; no promotion application writes run here.
         jdbc.execute("CREATE TABLE nx_promotion_reservation(reservation_id VARCHAR(64) PRIMARY KEY,"
-                + "beneficiary_id BIGINT,asset VARCHAR(16),status VARCHAR(16),amount DECIMAL(18,6)) ENGINE=InnoDB");
+                + "beneficiary_id BIGINT,asset VARCHAR(16),status VARCHAR(16),amount DECIMAL(18,6),order_no VARCHAR(96)) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_promotion_reward(obligation_id VARCHAR(64) PRIMARY KEY,"
                 + "reservation_id VARCHAR(64),status VARCHAR(32)) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_promotion_device_receipt(obligation_id VARCHAR(64),device_id BIGINT) ENGINE=InnoDB");
@@ -373,6 +373,125 @@ class PhoneActivationCapacityMySqlTest {
         jdbc.update("INSERT INTO nx_order_item(order_no,product_id,product_name,quantity,unit_price_usdt,line_amount_usdt) "
                 + "VALUES(?,2,'Synthetic share',3,1,3)", "ORDER-" + user);
         assertCapacityKeepReservations(user, 3);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "RESERVED,PENDING,1", "COMMITTED,PENDING,1", "COMMITTED,ISSUED,1",
+            "COMMITTED,CANCELLED,0", "COMMITTED,REVERSED,0", "RELEASED,PENDING,0"})
+    void deviceGiftPromisesReserveUntilTheirActualTerminalFact(String reservationState, String rewardState, int expected) {
+        long user = user(false);
+        for (int i=0; i<5; i++) device(user);
+        order(user,2,"SINGLE","COMPLETED","ACTIVATED");
+        jdbc.update("INSERT INTO nx_promotion_reservation VALUES(?,?,'DEVICE',?,1,?)", "PROMO-" + user, user, reservationState,"ORDER-"+user);
+        jdbc.update("INSERT INTO nx_promotion_reward VALUES(?,?,?)", "REWARD-" + user, "PROMO-" + user, rewardState);
+        transaction.executeWithoutResult(status -> {
+            assertCapacityKeepReservations(user, expected);
+            if (expected == 1) assertFull(user);
+            else service.requireCapacity(user, null);
+        });
+        if (expected == 1) {
+            // A real receipt represents fulfillment; the asset then occupies the same slot once.
+            long gift = device(user);
+            jdbc.update("INSERT INTO nx_promotion_device_receipt VALUES(?,?)", "REWARD-" + user, gift);
+            transaction.executeWithoutResult(status -> {
+                assertCapacityKeepReservations(user, 0);
+                assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+                assertFull(user);
+            });
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"CLAIMED", "ACTIVE", "GRACE", "EXTENDED"})
+    void trialClockAloneDoesNotReleaseItsReservedSlotBeforeTerminalSettlement(String trialState) {
+        long user = user(false);
+        for (int i=0; i<5; i++) device(user);
+        trial(user, trialState);
+        jdbc.update("UPDATE nx_trial_claim SET expires_at=DATE_SUB(NOW(),INTERVAL 30 DAY) WHERE user_id=?", user);
+        transaction.executeWithoutResult(status -> {
+            assertThat(mapper.lockReservedTrialSlotCount(user)).isEqualTo(1);
+            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+            assertThat(homeMapper.reservedTrialSlotCount(user)).isEqualTo(1);
+            assertFull(user);
+        });
+        jdbc.update("UPDATE nx_trial_claim SET status='CANCELLED',closed_at=NOW() WHERE user_id=?", user);
+        transaction.executeWithoutResult(status -> {
+            assertThat(mapper.lockReservedTrialSlotCount(user)).isZero();
+            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(5);
+            service.requireCapacity(user, null);
+        });
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"CANCELLED", "EXPIRED", "FAILED", "REFUNDED"})
+    void terminalOrderStateReleasesAllShareUnitsWithoutDeletingAssets(String terminal) {
+        long user = user(false);
+        for (int i=0; i<4; i++) device(user);
+        order(user, 2, "SINGLE", "PENDING_PAYMENT", "WAITING_PAYMENT");
+        jdbc.update("UPDATE nx_order SET quantity=2 WHERE order_no=?", "ORDER-" + user);
+        transaction.executeWithoutResult(status -> {
+            assertCapacityKeepReservations(user, 2);
+            assertFull(user);
+        });
+        jdbc.update("UPDATE nx_order SET order_status=? WHERE order_no=?", terminal, "ORDER-" + user);
+        transaction.executeWithoutResult(status -> {
+            assertCapacityKeepReservations(user, 0);
+            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(4);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device WHERE user_id=?", Integer.class, user)).isEqualTo(4);
+            service.requireCapacity(user, null);
+        });
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans={false,true})
+    void unreservedUnpaidOrderAndGiftOwnNoSlotsButPaidCommitmentsDo(boolean paid) {
+        long user=user(false);
+        for(int i=0;i<4;i++)device(user);
+        order(user,2,"SINGLE",paid?"PAID":"PENDING_PAYMENT",paid?"WAITING_PROVISIONING":"WAITING_PAYMENT");
+        jdbc.update("UPDATE nx_order SET payment_status=?,inventory_reserved=0 WHERE order_no=?",paid?"PAID":"PENDING","ORDER-"+user);
+        jdbc.update("INSERT INTO nx_promotion_reservation VALUES(?,?,'DEVICE','RESERVED',1,?)","PROMO-"+user,user,"ORDER-"+user);
+        transaction.executeWithoutResult(status->{
+            assertCapacityKeepReservations(user,paid?2:0);
+            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(paid?6:4);
+        });
+    }
+
+    @Test void paymentInventoryConsumptionRollsBackTogetherWithItsPersistentFlag() {
+        long user=user(false);
+        order(user,2,"SINGLE","PENDING_PAYMENT","WAITING_PAYMENT");
+        jdbc.update("UPDATE nx_order SET inventory_reserved=0,quantity=2,payment_status='PENDING' WHERE order_no=?","ORDER-"+user);
+        jdbc.update("UPDATE nx_product SET stock=2,sold_count=0,inventory_mode='FINITE' WHERE id=2");
+        assertThatThrownBy(()->transaction.executeWithoutResult(status->{
+            assertThat(paymentMapper.consumePaymentStock(2L,2)).isEqualTo(1);
+            assertThat(paymentMapper.markPaymentInventoryConsumed("ORDER-"+user)).isEqualTo(1);
+            throw new BizException(409,"SIMULATED_LATER_PAYMENT_FAILURE");
+        })).hasMessage("SIMULATED_LATER_PAYMENT_FAILURE");
+        assertThat(jdbc.queryForObject("SELECT stock FROM nx_product WHERE id=2",Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT inventory_reserved FROM nx_order WHERE order_no=?",Integer.class,"ORDER-"+user)).isZero();
+        transaction.executeWithoutResult(status->{
+            assertThat(paymentMapper.consumePaymentStock(2L,2)).isEqualTo(1);
+            assertThat(paymentMapper.markPaymentInventoryConsumed("ORDER-"+user)).isEqualTo(1);
+            assertThat(paymentMapper.markPaymentInventoryConsumed("ORDER-"+user)).isZero();
+            assertThat(paymentMapper.consumePaymentStock(2L,1)).isZero();
+        });
+        assertThat(jdbc.queryForObject("SELECT stock FROM nx_product WHERE id=2",Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT sold_count FROM nx_product WHERE id=2",Integer.class)).isEqualTo(2);
+    }
+
+    @Test void paymentLifetimeQuotaPersistsTheCurrentGenerationAndEveryUnit() {
+        long user=user(false);
+        order(user,1,"SINGLE","PENDING_PAYMENT","WAITING_PAYMENT");
+        orderItem(user,2);
+        jdbc.update("UPDATE nx_admin_device_sku SET purchase_gate_json=JSON_OBJECT('enforce',true,'quotaCap',2,'quotaSold',0),purchase_gate_generation=3 WHERE sku_id='capacity-box'");
+        transaction.executeWithoutResult(status->{
+            assertThat(paymentMapper.consumePaymentQuota("capacity-box",2,2L)).isZero();
+            assertThat(paymentMapper.consumePaymentQuota("capacity-box",2,3L)).isEqualTo(1);
+            assertThat(paymentMapper.recordPaymentQuota("ORDER-"+user,1L,3L)).isEqualTo(1);
+            assertThat(paymentMapper.consumePaymentQuota("capacity-box",1,3L)).isZero();
+        });
+        assertThat(jdbc.queryForObject("SELECT JSON_EXTRACT(purchase_gate_json,'$.quotaSold') FROM nx_admin_device_sku WHERE sku_id='capacity-box'",Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT lifetime_quota_gate_generation FROM nx_order_item WHERE order_no=?",Long.class,"ORDER-"+user)).isEqualTo(3L);
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -663,7 +782,8 @@ class PhoneActivationCapacityMySqlTest {
     }
 
     private void promotion(long user) {
-        jdbc.update("INSERT INTO nx_promotion_reservation VALUES(?,?,'DEVICE','RESERVED',1)", "PROMO-" + user, user);
+        order(user,2,"SINGLE","COMPLETED","ACTIVATED");
+        jdbc.update("INSERT INTO nx_promotion_reservation VALUES(?,?,'DEVICE','RESERVED',1,?)", "PROMO-" + user, user,"ORDER-"+user);
     }
 
     private void trial(long user, String state) {

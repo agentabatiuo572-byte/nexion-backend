@@ -27,6 +27,50 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class AppOrderCommandServiceTest {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"4,1,OK","5,1,CAPACITY_REPLACEMENT_REQUIRED","4,0,PRODUCT_OUT_OF_STOCK"})
+    void unreservedPaymentAddsEveryUnitAndConsumesStockBeforeCash(long occupied,int stockResult,String expected) {
+        var mapper=commandMapper();var guard=mock(FundsSandboxProfileGuard.class);var idempotency=mock(AdminIdempotencyService.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.findDevelopmentPayOrderOwner("NEW-0")).thenReturn(7L);
+        when(mapper.lockDevelopmentPayOrder("NEW-0")).thenReturn(new AppOrderCommandMapper.DevelopmentPayOrder(
+            "NEW-0",7L,18L,2,"SINGLE",2,BigDecimal.TEN,null,"PENDING","PENDING_PAYMENT","WAITING_PAYMENT",false));
+        when(mapper.lockOccupiedDeviceSlotCount(7L)).thenReturn(occupied);
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(new AppOrderCommandMapper.DevelopmentWallet(BigDecimal.valueOf(100),1L));
+        when(mapper.lockPaymentInventoryLines("NEW-0")).thenReturn(List.of(new AppOrderCommandMapper.PaymentInventoryLine(18L,"cloud-share",2,100,"UNLIMITED",null,null)));
+        when(mapper.consumePaymentStock(18L,2)).thenReturn(stockResult);when(mapper.markPaymentInventoryConsumed("NEW-0")).thenReturn(1);
+        when(mapper.debitDevelopmentWallet(7L,BigDecimal.TEN,1L)).thenReturn(1);
+        when(mapper.markDevelopmentOrderActivated(eq("NEW-0"),eq(7L),anyString())).thenReturn(1);
+        when(mapper.insertDevelopmentPayment(eq("NEW-0"),eq(7L),anyString(),eq(BigDecimal.TEN))).thenReturn(1);
+        when(mapper.insertDevelopmentDevice(eq("NEW-0"),eq(7L),anyString(),anyInt())).thenReturn(1);
+        when(mapper.developmentDeviceFact(anyString())).thenReturn(new AppOrderCommandMapper.DevelopmentDeviceFact(99L,"INSTANCE"));
+        when(mapper.attribution(7L)).thenReturn(Map.of("phase","P1","accountAgeMonths",1,"cohort","2026-W40"));
+        when(mapper.insertDevelopmentOrderHistory(anyString(),anyString(),anyString(),anyString())).thenReturn(1);
+        doAnswer(call->((Supplier<?>)call.getArgument(4)).get()).when(idempotency).execute(anyString(),anyString(),anyString(),any(),any());
+        var service=new AppOrderCommandService(mapper,idempotency,mock(AuditLogService.class),guard,null,null,null,capture);
+        if(!"OK".equals(expected)){
+            assertThatThrownBy(()->service.pay(7L,"NEW-0","new-0-key")).hasMessage(expected);
+            verify(mapper,never()).debitDevelopmentWallet(anyLong(),any(),anyLong());
+            verify(mapper,never()).markDevelopmentOrderActivated(anyString(),anyLong(),anyString());
+        }else{
+            assertThat(service.pay(7L,"NEW-0","new-0-key").getCode()).isZero();
+            var sequence=inOrder(mapper,capture);sequence.verify(mapper).consumePaymentStock(18L,2);
+            sequence.verify(mapper).markPaymentInventoryConsumed("NEW-0");sequence.verify(capture).beforeCash(any());
+            sequence.verify(mapper).debitDevelopmentWallet(7L,BigDecimal.TEN,1L);
+            verify(mapper,times(2)).insertDevelopmentDevice(eq("NEW-0"),eq(7L),anyString(),anyInt());
+        }
+    }
+
+    @Test void cancellingUnreservedOrderNeverReturnsStockOrQuota() {
+        var mapper=commandMapper();var guard=mock(FundsSandboxProfileGuard.class);var idempotency=mock(AdminIdempotencyService.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);when(mapper.lockUser(7L)).thenReturn(new ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.UserLock(7L,false));
+        when(mapper.lockOrder("NEW-0")).thenReturn(new AppOrderCommandMapper.OrderRow("NEW-0",7L,18L,1,"SINGLE",1,"PENDING","PENDING_PAYMENT","WAITING_PAYMENT",false));
+        when(mapper.lockItems("NEW-0")).thenReturn(List.of(new AppOrderCommandMapper.ItemRow("NEW-0",18L,"cloud-share",1,false,null)));
+        when(mapper.cancelOrder("NEW-0",7L)).thenReturn(1);
+        doAnswer(call->((Supplier<?>)call.getArgument(4)).get()).when(idempotency).execute(anyString(),anyString(),anyString(),any(),any());
+        assertThat(new AppOrderCommandService(mapper,idempotency,mock(AuditLogService.class),guard,null,null,null,capture).cancel(7L,"NEW-0","cancel-0").getCode()).isZero();
+        verify(mapper,never()).returnStock(anyLong(),anyInt());verify(mapper,never()).releaseLifetimeQuota(anyString(),anyInt(),anyLong());
+    }
     private final SupportPaymentAttributionFacade capture = paymentAttribution();
 
     @org.junit.jupiter.params.ParameterizedTest

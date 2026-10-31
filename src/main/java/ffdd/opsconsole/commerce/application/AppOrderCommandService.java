@@ -11,6 +11,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy;
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.device.domain.ProductInventoryMode;
@@ -48,6 +49,7 @@ public class AppOrderCommandService {
     private final EventOutboxService outbox;
     private final PromotionOrderService promotions;
     private final SupportPaymentAttributionFacade paymentAttribution;
+    private final StorefrontPurchaseGatePolicy purchaseGatePolicy = new StorefrontPurchaseGatePolicy();
     @SuppressWarnings("ArchitectureConfigField") // Explicit constructor parameter carries the @Value binding.
     private final int pendingOrderTtlMinutes;
 
@@ -202,8 +204,7 @@ public class AppOrderCommandService {
         if (mapper.countExpiredPayableOrder(orderNo, userId, pendingOrderTtlMinutes) > 0) {
             return ApiResult.fail(409, "ORDER_PAYMENT_EXPIRED");
         }
-        if (promotions != null) promotions.beforePay(userId, orderNo);
-        // A pending order is only a price/stock reservation, never an authority
+        // A pending order preserves its price, never an authority
         // to bypass the current E1 sale state or a platform-wide maintenance stop.
         // Re-read this immediately before the wallet CAS so an old checkout page
         // cannot settle an item that operations has just unlisted.
@@ -218,6 +219,7 @@ public class AppOrderCommandService {
         if (mapper.hasNonPayableOrderProduct(orderNo)) {
             return ApiResult.fail(409, "ORDER_PRODUCT_NOT_PAYABLE");
         }
+        if (promotions != null) promotions.beforePay(userId, orderNo);
         String orderType = StringUtils.hasText(order.orderType())
                 ? order.orderType().trim().toUpperCase(Locale.ROOT) : "SINGLE";
         List<AppOrderCommandMapper.DevelopmentPaymentItem> paymentItems = List.of();
@@ -245,9 +247,11 @@ public class AppOrderCommandService {
             return ApiResult.fail(409, "ORDER_PAYMENT_FACT_INVALID");
         }
         // prepare() holds the same account row lock as trial/order/activation commands.
-        // This total already includes this payable order's reservation exactly once.
+        // Legacy inventory reservations are counted once; a new unpaid order owns no slot.
         // Replays above remain valid for historical assets, even if the account is now over cap.
-        if (mapper.lockOccupiedDeviceSlotCount(userId) > Math.max(1, mapper.deviceSlotCap())) {
+        boolean consumeInventory = Boolean.FALSE.equals(order.inventoryReserved());
+        if (mapper.lockOccupiedDeviceSlotCount(userId) + (consumeInventory ? order.quantity() : 0L)
+                > Math.max(1, mapper.deviceSlotCap())) {
             // Releasing another reservation is recoverable with the same payment intent.
             throw new BizException(409, "CAPACITY_REPLACEMENT_REQUIRED");
         }
@@ -297,6 +301,7 @@ public class AppOrderCommandService {
             // be reclaimed safely after the wallet balance changes.
             throw new BizException(409, "ORDER_WALLET_INSUFFICIENT");
         }
+        if (consumeInventory) consumePaymentInventory(userId, orderNo, order.quantity());
         BigDecimal balanceAfter = fullyDiscounted ? null : wallet.usdtAvailable().subtract(order.amountUsdt());
         if (!fullyDiscounted) {
             paymentAttribution.beforeCash(prepared);
@@ -363,6 +368,38 @@ public class AppOrderCommandService {
                 .detail(auditDetail).build());
         if (!fullyDiscounted) paymentAttribution.record(prepared);
         return developmentPaymentReceipt(order, paymentNo, balanceAfter, paymentRail, false);
+    }
+
+    private void consumePaymentInventory(Long userId, String orderNo, int quantity) {
+        var lines = mapper.lockPaymentInventoryLines(orderNo);
+        if (lines == null || lines.isEmpty() || lines.stream().anyMatch(line -> line == null
+                || line.productId() == null || line.quantity() == null || line.quantity() < 1)
+                || lines.stream().mapToInt(AppOrderCommandMapper.PaymentInventoryLine::quantity).sum() != quantity) {
+            throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
+        }
+        CanonicalStateMapper.PurchaseFacts facts = null;
+        if (lines.stream().anyMatch(line -> StringUtils.hasText(line.purchaseGateJson()))) {
+            facts = mapper.paymentGateFacts(userId);
+        }
+        StorefrontPurchaseGatePolicy.Facts gateFacts = facts == null ? null
+                : new StorefrontPurchaseGatePolicy.Facts(facts.rank(), facts.activeDirect(), facts.teamComputePoints());
+        for (var line : lines) {
+            if (!purchaseGatePolicy.evaluate(line.purchaseGateJson(), gateFacts).allowed()) {
+                throw new BizException(409, "PURCHASE_GATE_BLOCKED");
+            }
+            if (purchaseGatePolicy.hasQuota(line.purchaseGateJson())) {
+                if (line.gateGeneration() == null || line.gateGeneration() < 1
+                        || mapper.consumePaymentQuota(line.productNo(), line.quantity(), line.gateGeneration()) != 1
+                        || mapper.recordPaymentQuota(orderNo, line.productId(), line.gateGeneration()) != 1) {
+                    throw new BizException(409, "PURCHASE_GATE_SOLD_OUT");
+                }
+            }
+            if (mapper.consumePaymentStock(line.productId(), line.quantity()) != 1) {
+                throw new BizException(409, "PRODUCT_OUT_OF_STOCK");
+            }
+        }
+        if (promotions != null) promotions.consumePaymentInventory(orderNo);
+        if (mapper.markPaymentInventoryConsumed(orderNo) != 1) throw new BizException(409, "ORDER_STATE_CONFLICT");
     }
 
     private boolean hardwareQuotaPrerequisitesMet(AppOrderCommandMapper.MonthlyQuota tier,
@@ -547,7 +584,7 @@ public class AppOrderCommandService {
         } else {
             throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
         }
-        for (AppOrderCommandMapper.ItemRow item : effective) {
+        for (AppOrderCommandMapper.ItemRow item : Boolean.FALSE.equals(order.inventoryReserved()) ? List.<AppOrderCommandMapper.ItemRow>of() : effective) {
             AppOrderCommandMapper.ProductRow product = mapper.lockProduct(item.productId());
             if (product == null || ProductInventoryMode.parse(product.inventoryMode()) == null
                     || product.soldCount() == null || product.soldCount() < item.quantity()

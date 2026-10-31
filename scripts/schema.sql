@@ -1464,6 +1464,7 @@ CREATE TABLE IF NOT EXISTS nx_order (
   payment_status VARCHAR(32) NOT NULL,
   order_status VARCHAR(32) NOT NULL,
   activation_status VARCHAR(32) NOT NULL DEFAULT 'WAITING_PAYMENT',
+  inventory_reserved TINYINT NOT NULL DEFAULT 1 COMMENT '1=stock already consumed, 0=consume atomically on payment',
   paid_at DATETIME(6) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

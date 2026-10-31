@@ -85,6 +85,7 @@ public interface PromotionMapper extends BaseMapper<Object>, ffdd.opsconsole.sha
         for(Map<String,Object> order:list("""
             SELECT o.order_no,o.product_id,o.quantity FROM nx_order o WHERE o.user_id=? AND o.is_deleted=0
               AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
+              AND (o.inventory_reserved=1 OR UPPER(o.payment_status) IN ('PAID','CONFIRMED','SUCCESS'))
               AND UPPER(COALESCE(o.activation_status,'WAITING_PAYMENT')) NOT IN ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
             """ + " AND NOT EXISTS (" + CanonicalStateMapper.FULFILLED_LEGACY_TRIAL + " FOR SHARE) "
             + CanonicalStateMapper.LOCK_EXCLUDE_FULFILLED_CAPACITY_KEEP + " ORDER BY o.id FOR UPDATE",account)) {
@@ -95,7 +96,9 @@ public interface PromotionMapper extends BaseMapper<Object>, ffdd.opsconsole.sha
             }
         }
         // This is the same reservation/receipt fact used by CanonicalStateMapper.PROMOTION_RESERVED_SLOTS.
-        for(Map<String,Object> r:list("SELECT reservation_id,amount FROM nx_promotion_reservation WHERE beneficiary_id=? AND asset='DEVICE' AND status IN ('RESERVED','COMMITTED') ORDER BY reservation_id FOR UPDATE",account)){
+        for(Map<String,Object> r:list("SELECT reservation_id,amount FROM nx_promotion_reservation r WHERE beneficiary_id=? AND asset='DEVICE' AND status IN ('RESERVED','COMMITTED') "
+            + "AND EXISTS (SELECT 1 FROM nx_order gift_order WHERE gift_order.order_no=r.order_no AND gift_order.is_deleted=0 "
+            + "AND (gift_order.inventory_reserved=1 OR UPPER(gift_order.payment_status) IN ('PAID','CONFIRMED','SUCCESS')) FOR SHARE) ORDER BY reservation_id FOR UPDATE",account)){
             Map<String,Object> reward=one("SELECT obligation_id,status FROM nx_promotion_reward WHERE reservation_id=? FOR UPDATE",r.get("reservation_id"));
             if(reward!=null&&(Set.of("CANCELLED","REVERSED").contains(text(reward.get("status")))||!list("SELECT device_id FROM nx_promotion_device_receipt WHERE obligation_id=? FOR UPDATE",reward.get("obligation_id")).isEmpty()))continue;
             used+=number(r.get("amount"));

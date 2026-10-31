@@ -191,11 +191,37 @@ public class PromotionOrderService {
         Map<String,Object> snapshot=parse(rows.get(0).get("snapshot_json")),contract=map(snapshot.get("contract"));
         String activity=text(rows.get(0).get("activity_id"));db.activity(activity,true);lockCapacity(activity,participantsForOrder(orderNo));
         for(Long participant:participantsForOrder(orderNo))require("ACTIVE".equals(db.user(participant,true).get("status")),"PROMOTION_ACCOUNT_FROZEN");
-        // Old promises may predate the Share slot rule. Their own reservations are already included.
+        boolean unreserved=order.containsKey("inventory_reserved")&&number(order.get("inventory_reserved"))==0;
         for(Long beneficiary:rows.stream().filter(r->"DEVICE".equals(r.get("asset")))
-                .map(r->number(r.get("beneficiary_id"))).collect(java.util.stream.Collectors.toCollection(TreeSet::new)))
-            require(db.occupiedDeviceSlots(beneficiary)<=db.deviceSlotCap(),"PROMOTION_DEVICE_CAPACITY_UNAVAILABLE");
+                .map(r->number(r.get("beneficiary_id"))).collect(java.util.stream.Collectors.toCollection(TreeSet::new))){
+            long additional=unreserved?rows.stream().filter(r->"DEVICE".equals(r.get("asset"))
+                &&number(r.get("beneficiary_id"))==beneficiary).mapToLong(r->number(r.get("amount"))).sum():0;
+            if(unreserved&&beneficiary.equals(buyerId))additional+=number(order.get("quantity"));
+            require(db.occupiedDeviceSlots(beneficiary)+additional<=db.deviceSlotCap(),"PROMOTION_DEVICE_CAPACITY_UNAVAILABLE");
+        }
+        if(unreserved)for(var gift:giftQuantities(rows).entrySet()){
+            var product=db.product(gift.getKey(),true);
+            require("UNLIMITED".equals(product.get("inventory_mode"))||decimal(product.get("stock")).compareTo(gift.getValue())>=0,
+                "PROMOTION_DEVICE_STOCK_UNAVAILABLE");
+        }
         require(evaluator.firstPurchaseStillValid(contract,map(snapshot.get("policies")),buyerId,maps(snapshot.get("awards")),orderNo),"PROMOTION_PAYMENT_ELIGIBILITY_LOST");
+    }
+    private Map<String,BigDecimal> giftQuantities(List<Map<String,Object>> rows){
+        Map<String,BigDecimal> gifts=new TreeMap<>();
+        for(var row:rows)if("DEVICE".equals(row.get("asset"))&&"RESERVED".equals(row.get("status")))
+            gifts.merge(text(row.get("product_no")),decimal(row.get("amount")),BigDecimal::add);
+        return gifts;
+    }
+    @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)
+    public void consumePaymentInventory(String orderNo){
+        Map<String,Object> order=db.order(orderNo,false);
+        require(number(order.get("inventory_reserved"))==0,"PROMOTION_INVENTORY_ALREADY_RESERVED");
+        for(var gift:giftQuantities(db.reservations(orderNo,true)).entrySet()){
+            var product=db.product(gift.getKey(),true);
+            if(!"UNLIMITED".equals(product.get("inventory_mode")))
+                require(db.write("UPDATE nx_product SET stock=stock-?,updated_at=NOW(6) WHERE product_no=? AND is_deleted=0 AND stock>=?",
+                    gift.getValue().intValueExact(),gift.getKey(),gift.getValue().intValueExact())==1,"PROMOTION_DEVICE_STOCK_UNAVAILABLE");
+        }
     }
     @Transactional(propagation=Propagation.MANDATORY,rollbackFor=Exception.class)
     public void afterPaid(Long buyerId,String orderNo){
@@ -235,7 +261,8 @@ public class PromotionOrderService {
         List<Map<String,Object>> rows=db.reservations(orderNo,true);Set<String> activities=new TreeSet<>(),orderUses=new HashSet<>();
         for(Map<String,Object> r:rows)if("RESERVED".equals(r.get("status"))){
             activities.add(text(r.get("activity_id")));changed(db.write("UPDATE nx_promotion_budget SET reserved=reserved-?,revision=revision+1 WHERE activity_id=? AND asset=? AND product_no=? AND reserved>=?",r.get("amount"),r.get("activity_id"),r.get("asset"),r.get("product_no"),r.get("amount")));
-            returnStock(r);moveUsage(r,true,orderUses);changed(db.write("UPDATE nx_promotion_reservation SET status='RELEASED',revision=revision+1,updated_at=NOW(6) WHERE reservation_id=? AND status='RESERVED'",r.get("reservation_id")));
+            if(!order.containsKey("inventory_reserved")||number(order.get("inventory_reserved"))==1)returnStock(r);
+            moveUsage(r,true,orderUses);changed(db.write("UPDATE nx_promotion_reservation SET status='RELEASED',revision=revision+1,updated_at=NOW(6) WHERE reservation_id=? AND status='RESERVED'",r.get("reservation_id")));
         }
         for(String activity:activities)changed(db.write("UPDATE nx_promotion SET reserved_orders=reserved_orders-1,revision=revision+1,updated_at=NOW(6) WHERE activity_id=? AND reserved_orders>0",activity));
         if(!activities.isEmpty())audit("PROMOTION_ORDER_RELEASED",orderNo,values("reason",terminalReason));
