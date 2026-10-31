@@ -131,7 +131,8 @@ public class PromotionOrderService {
                     UPDATE nx_promotion_budget SET reserved=reserved+?,revision=revision+1
                     WHERE activity_id=? AND asset=? AND product_no=? AND total-reserved-committed-issued+reversed>=?
                     """,amount,activity,asset,gift,amount));
-                if(!gift.isEmpty()&&!"UNLIMITED".equals(db.product(gift,false).get("inventory_mode")))
+                if((!order.containsKey("inventory_reserved")||number(order.get("inventory_reserved"))==1)
+                        &&!gift.isEmpty()&&!"UNLIMITED".equals(db.product(gift,false).get("inventory_mode")))
                     changed(db.write("UPDATE nx_product SET stock=stock-?,updated_at=NOW(6) WHERE product_no=? AND is_deleted=0 AND stock>=?",amount.intValueExact(),gift,amount.intValueExact()));
                 usage(activity,beneficiary,role,rule,0,1);
                 if(orderUses.add(beneficiary+":"+role))usage(activity,beneficiary,role,"",1,0);
