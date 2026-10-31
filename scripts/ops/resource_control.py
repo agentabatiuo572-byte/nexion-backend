@@ -384,7 +384,9 @@ def resume(config):
         require(service_state("nexgrid-backend.service")["ActiveState"] == "active", "BACKEND_NOT_ACTIVE")
         # poll() may return success after a verified rollback: health, not exit status, reopens claims.
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-        with opener.open("http://127.0.0.1:8110/api/config/platform", timeout=5) as response:
+        request = urllib.request.Request("http://127.0.0.1:8110/api/config/platform",
+                                         headers={"X-Nexion-Edge-Country": "VN"})
+        with opener.open(request, timeout=5) as response:
             body = response.read(1024 * 1024 + 1)
         require(len(body) <= 1024 * 1024, "BACKEND_HEALTH_INVALID")
         health = json.loads(body)
