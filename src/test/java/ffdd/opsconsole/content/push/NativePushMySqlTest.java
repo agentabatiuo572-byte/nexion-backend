@@ -19,6 +19,26 @@ class NativePushMySqlTest {
     static final String NOW = "DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 8 HOUR)";
     static final String INSTALL = "installation-test";
 
+    @Test void stationRecoveryNeverEntersNativeEvenWithFreshTimeAndPermanentBusinessReceipt() throws Exception {
+        inSchema(c->{
+            try(var s=mapperSession(c)) {
+                var m=s.getMapper(NativePushMapper.class);
+                m.insert(installation(7,"chain",1));
+                sql(c,"INSERT INTO nx_notification(biz_no,user_id,type,cta_href,created_at,is_deleted,priority,push_status) VALUES"
+                    +"('STATION1:recovered',7,'FUNDS_RESULT','/pages/me/wallet-withdraw-tracking?id=WD-ABC123',"+NOW+",0,'critical','DELIVERED'),"
+                    +"('NATIVE1:normal',7,'FUNDS_RESULT','/pages/me/wallet-bills',"+NOW+",0,'critical','DELIVERED')");
+                sql(c,"INSERT INTO nx_business_notification_fact VALUES('recovered','STATION1:recovered',7)");
+                assertThat(m.discover(m.lockCursor(),Long.MAX_VALUE,0)).isEqualTo(1);
+                assertThat(scalar(c,"SELECT COUNT(*) FROM nx_native_push_delivery WHERE notification_id=2")).isZero();
+                assertThat(m.ownedNotification(2,7)).isNull();
+                assertThat(m.stillEligible(2,7)).isZero();
+                assertThat(m.ownedNotification(3,7)).isNotNull();
+                assertThat(m.stillEligible(3,7)).isEqualTo(1);
+                s.commit();
+            }
+        });
+    }
+
     @Test void cutoverDiscoveryIsIdempotentAndPreservesInboxStatusAndPreferences() throws Exception {
         inSchema(c -> {
             try (var s = mapperSession(c)) {

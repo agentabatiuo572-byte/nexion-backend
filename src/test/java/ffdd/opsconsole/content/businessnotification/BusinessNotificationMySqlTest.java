@@ -24,7 +24,7 @@ class BusinessNotificationMySqlTest {
                 String envelope=org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"toEnvelopeJson",
                     event,event,"SYSTEM",0,"2026-W44",true,0,payload,null);
                 assertThat(json.readTree(envelope).get("user_id").isNull()).isTrue();
-                try(var p=c.prepareStatement("INSERT INTO nx_event_outbox VALUES(?,?,?,?,?,NOW(),0)")) {
+                try(var p=c.prepareStatement("INSERT INTO nx_event_outbox(id,event_id,aggregate_id,event_type,payload,created_at,is_deleted) VALUES(?,?,?,?,?,NOW(),0)")) {
                     p.setLong(1,event.endsWith("locked")?1:2);p.setString(2,event);p.setString(3,"2");p.setString(4,event);p.setString(5,envelope);p.executeUpdate();
                 }
             }
@@ -58,10 +58,10 @@ class BusinessNotificationMySqlTest {
     }
     @Test void committedResultsAreScopedTrilingualDeduplicatedAndLateFactsAreNotLost() throws Exception {
         inSchema(c->{
-            sql(c,"INSERT INTO nx_withdrawal_order VALUES('w1',2,0)");
-            sql(c,"INSERT INTO nx_event_outbox VALUES(1,'a','w1','withdraw.confirmed','{}',NOW(),0),"
+            sql(c,"INSERT INTO nx_withdrawal_order(withdrawal_no,user_id,is_deleted) VALUES('WD-W1',2,0)");
+            sql(c,"INSERT INTO nx_event_outbox(id,event_id,aggregate_id,event_type,payload,created_at,is_deleted) VALUES(1,'a','WD-W1','withdraw.confirmed','{}',NOW(),0),"
                 +"(2,'b','old','wallet.topup_confirmed','{\"user_id\":1}',DATE_SUB(NOW(),INTERVAL 3 DAY),0),"
-                +"(3,'c','w1','withdraw.confirmed','{}',NOW(),0)");
+                +"(3,'c','WD-W1','withdraw.confirmed','{}',NOW(),0)");
             sql(c,"INSERT INTO nx_audit_log VALUES(1,1,'USER_PASSWORD_CHANGED','USER_SECURITY','1','SUCCESS','{}',NOW(),0),"
                 +"(2,2,'USER_PASSWORD_CHANGED','USER_SECURITY','2','FAILED','{}',NOW(),0)");
             sql(c,"INSERT INTO nx_conversation VALUES(1,'conversation1',3,'support',0)");
@@ -76,7 +76,7 @@ class BusinessNotificationMySqlTest {
             assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE user_id=3 AND title LIKE 'Bộ phận%' ")).isEqualTo(1);
             // Insert after earlier scan with an earlier fact timestamp: no advancing MAX(id)/time cursor can lose it.
             sql(c,"INSERT INTO nx_order VALUES('refund1',1,0)");
-            sql(c,"INSERT INTO nx_event_outbox VALUES(4,'late','refund1','order.refunded','{\"userId\":1}',DATE_SUB(NOW(),INTERVAL 1 HOUR),0)");
+            sql(c,"INSERT INTO nx_event_outbox(id,event_id,aggregate_id,event_type,payload,created_at,is_deleted) VALUES(4,'late','refund1','order.refunded','{\"userId\":1}',DATE_SUB(NOW(),INTERVAL 1 HOUR),0)");
             scan(c); scan(c);
             assertThat(count(c,"nx_notification")).isEqualTo(4);
             sql(c,"UPDATE nx_notification SET is_deleted=1"); scan(c);
@@ -204,7 +204,7 @@ class BusinessNotificationMySqlTest {
     @Test void existingHdpayMessageIsAdoptedAndSecretsNeverCopied() throws Exception {
         inSchema(c->{
             sql(c,"INSERT INTO nx_notification(biz_no,user_id,type,title,body,is_deleted,read_flag) VALUES('HDPAY:topup1',1,'WALLET','old','old',0,1)");
-            sql(c,"INSERT INTO nx_event_outbox VALUES(1,'event','topup1','wallet.topup_confirmed','{\"user_id\":1,\"psp\":\"HDPAY\",\"secret\":\"do-not-copy\"}',NOW(),0)");
+            sql(c,"INSERT INTO nx_event_outbox(id,event_id,aggregate_id,event_type,payload,created_at,is_deleted) VALUES(1,'event','topup1','wallet.topup_confirmed','{\"user_id\":1,\"psp\":\"HDPAY\",\"secret\":\"do-not-copy\"}',NOW(),0)");
             scan(c); scan(c);
             assertThat(count(c,"nx_notification")).isEqualTo(1);
             assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE biz_no='HDPAY:topup1' AND read_flag=1 AND type='FUNDS_RESULT' AND body NOT LIKE '%do-not-copy%'")).isEqualTo(1);
@@ -245,7 +245,22 @@ class BusinessNotificationMySqlTest {
         });
     }
 
+    @Test void ctaRepairDoesNotKeepTheWithdrawalLockedUntilProjectionCommits() throws Exception {
+        sourceWriteWhileProjectionIsOpen("withdrawal","UPDATE nx_withdrawal_order SET updated_at=DATE_ADD(NOW(),INTERVAL 1 SECOND) WHERE withdrawal_no='WD-LOCK'",false,true);
+    }
+    @Test void ctaRepairDoesNotKeepItsOutboxSourceLockedUntilProjectionCommits() throws Exception {
+        sourceWriteWhileProjectionIsOpen("withdrawal outbox","UPDATE nx_event_outbox SET payload='{}' WHERE id=2",false,true);
+    }
+    @Test void accountScopedRecoveryDoesNotHoldTheGlobalSchedulerControlLock() throws Exception {
+        sourceWriteWhileProjectionIsOpen("scheduler control","UPDATE nx_business_notification_control SET baseline_at=baseline_at WHERE id=1",false,false,true);
+    }
     private static void sourceWriteWhileProjectionIsOpen(String sourceTable,String sourceUpdate,boolean recovering) throws Exception {
+        sourceWriteWhileProjectionIsOpen(sourceTable,sourceUpdate,recovering,false);
+    }
+    private static void sourceWriteWhileProjectionIsOpen(String sourceTable,String sourceUpdate,boolean recovering,boolean repairWithdrawal) throws Exception {
+        sourceWriteWhileProjectionIsOpen(sourceTable,sourceUpdate,recovering,repairWithdrawal,false);
+    }
+    private static void sourceWriteWhileProjectionIsOpen(String sourceTable,String sourceUpdate,boolean recovering,boolean repairWithdrawal,boolean collecting) throws Exception {
         inSchema(c->{
             sql(c,"INSERT INTO nx_user_device VALUES(1,1,'PRODUCTION','','OWNED','ACTIVE',NOW(),NULL,0,0)");
             sql(c,"INSERT INTO nx_user_device_runtime VALUES(1,'OFFLINE',NOW(),0)");
@@ -253,7 +268,14 @@ class BusinessNotificationMySqlTest {
                 sql(c,"INSERT INTO nx_business_device_alert_state(device_id,user_id,abnormal_since,cycle,alerted) VALUES(1,1,DATE_SUB(NOW(),INTERVAL 16 MINUTE),1,0)");
                 sql(c,"UPDATE nx_user_device_runtime SET online_status='ONLINE'");
             }
-            sql(c,"INSERT INTO nx_event_outbox VALUES(1,'event','topup1','wallet.topup_confirmed','{\"user_id\":1}',NOW(),0)");
+            if(repairWithdrawal) {
+                sql(c,"INSERT INTO nx_withdrawal_order(withdrawal_no,user_id,is_deleted,status) VALUES('WD-LOCK',1,0,'FAILED')");
+                sql(c,"INSERT INTO nx_event_outbox VALUES(2,'legacy-result','WD-LOCK','withdraw.refunded','{}',NOW(),0,'WITHDRAWAL')");
+                sql(c,"INSERT INTO nx_notification(biz_no,user_id,type,priority,cta_href,read_flag,push_status,created_at,is_deleted) VALUES('NATIVE1:legacy',1,'FUNDS_RESULT','critical','/pages/me/wallet-bills',1,'QUEUED',NOW(),0)");
+                sql(c,"INSERT INTO nx_business_notification_fact(fact_key,notification_biz_no,user_id) SELECT CONCAT('EVENT:withdraw.refunded:',SHA2('WD-LOCK',256)),'NATIVE1:legacy',1");
+            }
+            if(collecting) sql(c,"INSERT INTO nx_withdrawal_order(withdrawal_no,user_id,is_deleted,status,failed_at) VALUES('WD-READ',1,0,'ADDRESS_INVALID',NOW())");
+            sql(c,"INSERT INTO nx_event_outbox(id,event_id,aggregate_id,event_type,payload,created_at,is_deleted) VALUES(1,'event','topup1','wallet.topup_confirmed','{\"user_id\":1}',NOW(),0)");
             var ds=new org.apache.ibatis.datasource.unpooled.UnpooledDataSource("com.mysql.cj.jdbc.Driver",
                 c.getMetaData().getURL(),"root",System.getenv().getOrDefault("NEXION_ISOLATED_MYSQL_PASSWORD",""));
             Configuration cfg=new Configuration();cfg.setMapUnderscoreToCamelCase(true);cfg.addMapper(BusinessNotificationMapper.class);
@@ -279,7 +301,7 @@ class BusinessNotificationMySqlTest {
                 new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
             var service=(BusinessNotificationService)proxy.getProxy();
             var executor=java.util.concurrent.Executors.newSingleThreadExecutor();
-            var running=executor.submit(service::scan);
+            var running=executor.submit(()->{if(collecting)service.collectWithdrawalAttention(1L);else service.scan();});
             try {
                 assertThat(projected.await(10,java.util.concurrent.TimeUnit.SECONDS)).as("projection reached before source write").isTrue();
                 sql(c,"SET SESSION innodb_lock_wait_timeout=1");
@@ -290,25 +312,140 @@ class BusinessNotificationMySqlTest {
                 resume.countDown();
                 try {running.get(10,java.util.concurrent.TimeUnit.SECONDS);}finally{executor.shutdownNow();}
             }
-            assertThat(count(c,"nx_notification")).isEqualTo(1);
+            assertThat(count(c,"nx_notification")).isEqualTo(repairWithdrawal?2:1);
         });
     }
 
-    private static void scan(Connection c) {
+    @Test void withdrawalLifecycleUsesOriginalOwnerAndEventTimeAndEveryFreezeCycle() throws Exception {
+        inSchema(c->{
+            sql(c,"INSERT INTO nx_withdrawal_order(withdrawal_no,user_id,is_deleted) VALUES('WD-ABC123',2,0),('WD-DELETED',2,1)");
+            String[] types={"confirmed","refunded","failed","rejected","frozen","delayed","review_due"};
+            for(int i=0;i<types.length;i++) sql(c,"INSERT INTO nx_event_outbox(id,event_id,aggregate_id,event_type,payload,created_at,is_deleted) VALUES("
+                +(i+1)+",'event-"+i+"','WD-ABC123','withdraw."+types[i]+"','{\"user_id\":1}',DATE_SUB(NOW(),INTERVAL 1 HOUR),0)");
+            sql(c,"INSERT INTO nx_event_outbox VALUES(20,'unknown','WD-ABC123','withdraw.unknown','{}',NOW(),0,'WITHDRAWAL'),"
+                +"(21,'other','WD-ABC123','withdraw.failed','{}',NOW(),0,'OTHER'),"
+                +"(22,'deleted','WD-DELETED','withdraw.failed','{}',NOW(),0,'WITHDRAWAL')");
+            scan(c);scan(c);
+            assertThat(count(c,"nx_notification")).isEqualTo(7);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE user_id=2 AND priority='critical' AND push_status='DELIVERED'"
+                +" AND cta_href='/pages/me/wallet-withdraw-tracking?id=WD-ABC123' AND created_at<DATE_SUB(NOW(),INTERVAL 59 MINUTE)")).isEqualTo(7);
+            sql(c,"INSERT INTO nx_event_outbox VALUES(23,'second-freeze','WD-ABC123','withdraw.frozen','{}',NOW(),0,'WITHDRAWAL')");
+            scan(c);scan(c);
+            assertThat(count(c,"nx_notification")).isEqualTo(8);
+            assertThat(count(c,"nx_event_outbox")).isEqualTo(11);
+        });
+    }
+
+    @Test void repairsReceiptedWithdrawalRouteAndVisibilityWithoutResettingReadOrTime() throws Exception {
+        inSchema(c->{
+            sql(c,"INSERT INTO nx_withdrawal_order(withdrawal_no,user_id,is_deleted) VALUES('WD-ABC123',2,0)");
+            sql(c,"INSERT INTO nx_event_outbox VALUES(1,'result','WD-ABC123','withdraw.refunded','{}',NOW(),0,'WITHDRAWAL')");
+            scan(c);
+            sql(c,"UPDATE nx_notification SET cta_href='/pages/me/wallet-bills',push_status='QUEUED',read_flag=1,created_at='2026-10-16 16:51:13'");
+            sql(c,"INSERT INTO nx_notification_action_receipt VALUES(1,2,'cta','/pages/me/wallet-bills',0)");
+            scan(c);scan(c);
+            assertThat(count(c,"nx_notification")).isEqualTo(1);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE read_flag=1 AND created_at='2026-10-16 16:51:13'"
+                +" AND push_status='DELIVERED' AND cta_href='/pages/me/wallet-withdraw-tracking?id=WD-ABC123'")).isEqualTo(1);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification_action_receipt WHERE route='/pages/me/wallet-withdraw-tracking?id=WD-ABC123'")).isEqualTo(1);
+        });
+    }
+
+    @Test void onlyExplicitHeldSubmissionsCreateAttentionMessages() throws Exception {
+        inSchema(c->{
+            sql(c,"INSERT INTO nx_withdrawal_order(withdrawal_no,user_id,is_deleted) VALUES('WD-ABC123',2,0)");
+            String[] routes={"freeze","delay","manual","high-manual","escalated-manual","strong-review","fast-pass","pass","unknown"};
+            for(int i=0;i<routes.length;i++) sql(c,"INSERT INTO nx_event_outbox VALUES("+(i+1)+",'submitted-"+i
+                +"','WD-ABC123','withdraw.submitted','{\"risk_route\":\""+routes[i]+"\"}',NOW(),0,'WITHDRAWAL')");
+            scan(c);scan(c);
+            assertThat(count(c,"nx_notification")).isEqualTo(6);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE user_id=2 AND push_status='DELIVERED' AND priority='critical'")).isEqualTo(6);
+        });
+    }
+
+    @Test void latePublicationUsesCanonicalBusinessEventTimeInsteadOfScanOrCommitTime() throws Exception {
+        inSchema(c->{
+            sql(c,"INSERT INTO nx_withdrawal_order(withdrawal_no,user_id,is_deleted) VALUES('WD-ABC123',2,0)");
+            long occurredAt=java.time.LocalDateTime.of(2026,10,16,16,51,13)
+                .atZone(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli();
+            sql(c,"INSERT INTO nx_event_outbox VALUES(1,'late-result','WD-ABC123','withdraw.refunded','{\"ts\":"+occurredAt+"}',NOW(),0,'WITHDRAWAL')");
+            scan(c);
+            try(var statement=c.createStatement();var rows=statement.executeQuery("SELECT created_at,push_status FROM nx_notification")) {
+                assertThat(rows.next()).as("late event creates one station-visible notification").isTrue();
+                assertThat(rows.getObject("created_at",java.time.LocalDateTime.class))
+                    .as("persisted canonical event time").isEqualTo(java.time.LocalDateTime.of(2026,10,16,16,51,13));
+                assertThat(rows.getString("push_status")).isEqualTo("DELIVERED");
+                assertThat(rows.next()).isFalse();
+            }
+        });
+    }
+
+    @Test void currentUserRecoversRealHistoricalFailureAndStateReminderWithoutInventingEvents() throws Exception {
+        inSchema(c->{
+            sql(c,"INSERT INTO nx_withdrawal_order(withdrawal_no,user_id,is_deleted,status,failed_at,updated_at,created_at) VALUES"
+                +"('WD-7534DB8D9CF14CDB813092024C38AC65',2,0,'FAILED','2026-10-20 02:31:52','2026-10-20 02:31:52','2026-10-16 16:51:13'),"
+                +"('WD-ADDRESS',2,0,'ADDRESS_INVALID','2026-10-20 03:00:00','2026-10-20 03:00:00','2026-10-16 17:00:00'),"
+                +"('WD-OTHER',3,0,'FAILED',NOW(),NOW(),NOW()),('WD-UNKNOWN',2,0,'UNKNOWN',NOW(),NOW(),NOW()),"
+                +"('WD-CONFIRMED',2,0,'CONFIRMED',NULL,NOW(),NOW())");
+            sql(c,"INSERT INTO nx_event_outbox VALUES(1,'real-result','WD-7534DB8D9CF14CDB813092024C38AC65','withdraw.refunded','{\"user_id\":1}','2026-10-20 02:31:52',0,'WITHDRAWAL')");
+            collect(c,1L);assertThat(count(c,"nx_notification")).isZero();
+            collect(c,2L);collect(c,2L);
+            assertThat(count(c,"nx_notification")).isEqualTo(2);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE user_id=2 AND biz_no LIKE 'STATION1:%' AND priority='critical' AND push_status='DELIVERED'")).isEqualTo(2);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE cta_href='/pages/me/wallet-withdraw-tracking?id=WD-7534DB8D9CF14CDB813092024C38AC65' AND created_at='2026-10-20 02:31:52'")).isEqualTo(1);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE cta_href='/pages/me/wallet-withdraw-tracking?id=WD-ADDRESS' AND created_at='2026-10-20 03:00:00' AND title LIKE '%status reminder%'")).isEqualTo(1);
+            Configuration feed=new Configuration();feed.setMapUnderscoreToCamelCase(true);
+            feed.addMapper(ffdd.opsconsole.content.mapper.NotificationCampaignMapper.class);
+            var managed=new org.apache.ibatis.transaction.managed.ManagedTransactionFactory();
+            var options=new java.util.Properties();options.setProperty("closeConnection","false");managed.setProperties(options);
+            feed.setEnvironment(new org.apache.ibatis.mapping.Environment("feed",managed,new org.apache.ibatis.datasource.unpooled.UnpooledDataSource()));
+            try(var session=new MybatisSqlSessionFactoryBuilder().build(feed).openSession(c)) {
+                var inbox=session.getMapper(ffdd.opsconsole.content.mapper.NotificationCampaignMapper.class);
+                assertThat(inbox.selectUserNotifications(2L,null,null,100)).hasSize(2);
+                assertThat(inbox.selectUserNotifications(1L,null,null,100)).isEmpty();
+            }
+            sql(c,"UPDATE nx_notification SET is_deleted=1,read_flag=1");
+            collect(c,2L);scan(c);
+            assertThat(count(c,"nx_notification")).isEqualTo(2);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE is_deleted=1 AND read_flag=1")).isEqualTo(2);
+            assertThat(count(c,"nx_event_outbox")).isEqualTo(1);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_withdrawal_order WHERE withdrawal_no='WD-7534DB8D9CF14CDB813092024C38AC65' AND status='FAILED'")).isEqualTo(1);
+        });
+    }
+
+    @Test void historicalReviewAfterUnfreezeIsNotHiddenByItsEarlierFrozenEvent() throws Exception {
+        inSchema(c->{
+            sql(c,"INSERT INTO nx_withdrawal_order(withdrawal_no,user_id,is_deleted,status) VALUES('WD-REVIEW',2,0,'REVIEW_PENDING'),('WD-NOEVENT',2,0,'REVIEWING')");
+            sql(c,"INSERT INTO nx_event_outbox VALUES(1,'manual','WD-REVIEW','withdraw.submitted','{\"risk_route\":\"manual\"}','2026-10-16 16:00:00',0,'WITHDRAWAL'),"
+                +"(2,'freeze','WD-REVIEW','withdraw.frozen','{}','2026-10-16 17:00:00',0,'WITHDRAWAL'),"
+                +"(3,'unfreeze','WD-REVIEW','withdraw.unfrozen','{}','2026-10-16 18:00:00',0,'WITHDRAWAL')");
+            collect(c,2L);collect(c,2L);
+            assertThat(count(c,"nx_notification")).isEqualTo(2);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE cta_href='/pages/me/wallet-withdraw-tracking?id=WD-REVIEW' AND title LIKE '%requires review%'")).isEqualTo(1);
+            assertThat(scalar(c,"SELECT COUNT(*) FROM nx_notification WHERE cta_href='/pages/me/wallet-withdraw-tracking?id=WD-NOEVENT' AND title LIKE '%status reminder%'")).isEqualTo(1);
+        });
+    }
+
+    private static void scan(Connection c) { project(c,null); }
+    private static void collect(Connection c,Long userId) { project(c,userId); }
+    private static void project(Connection c,Long userId) {
         Configuration cfg=new Configuration(); cfg.setMapUnderscoreToCamelCase(true);cfg.addMapper(BusinessNotificationMapper.class);
         var transactionFactory=new org.apache.ibatis.transaction.managed.ManagedTransactionFactory();
         var properties=new java.util.Properties();properties.setProperty("closeConnection","false");transactionFactory.setProperties(properties);
         cfg.setEnvironment(new org.apache.ibatis.mapping.Environment("test",transactionFactory,new org.apache.ibatis.datasource.unpooled.UnpooledDataSource()));
         try(var session=new MybatisSqlSessionFactoryBuilder().build(cfg).openSession(c)) {
-            new BusinessNotificationService(session.getMapper(BusinessNotificationMapper.class)).scan();
+            var service=new BusinessNotificationService(session.getMapper(BusinessNotificationMapper.class));
+            if(userId==null) service.scan();else service.collectWithdrawalAttention(userId);
             session.commit();
         }
     }
     private static void seed(Connection c) throws Exception {
         sql(c,"CREATE TABLE nx_user(id BIGINT PRIMARY KEY,language VARCHAR(32),is_deleted INT)");
         sql(c,"INSERT INTO nx_user VALUES(1,'zh',0),(2,'en',0),(3,'vi',0)");
-        sql(c,"CREATE TABLE nx_event_outbox(id BIGINT PRIMARY KEY,event_id VARCHAR(64),aggregate_id VARCHAR(128),event_type VARCHAR(96),payload JSON,created_at DATETIME,is_deleted INT)");
-        sql(c,"CREATE TABLE nx_withdrawal_order(withdrawal_no VARCHAR(96) PRIMARY KEY,user_id BIGINT,is_deleted INT)");
+        sql(c,"CREATE TABLE nx_user_preference(user_id BIGINT PRIMARY KEY,is_deleted INT,notify_commission INT,notify_team INT,notify_staking INT,notify_market INT,notify_genesis INT,notify_system INT)");
+        sql(c,"INSERT INTO nx_user_preference VALUES(2,0,0,0,0,0,0,0)");
+        sql(c,"CREATE TABLE nx_event_outbox(id BIGINT PRIMARY KEY,event_id VARCHAR(64),aggregate_id VARCHAR(128),event_type VARCHAR(96),payload JSON,created_at DATETIME,is_deleted INT,aggregate_type VARCHAR(32) DEFAULT 'WITHDRAWAL')");
+        sql(c,"CREATE TABLE nx_withdrawal_order(withdrawal_no VARCHAR(96) PRIMARY KEY,user_id BIGINT,is_deleted INT,status VARCHAR(32) DEFAULT 'REVIEW_PENDING',failed_at DATETIME,updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,d2_k3_risk_route VARCHAR(32) DEFAULT 'pass')");
         sql(c,"CREATE TABLE nx_order(order_no VARCHAR(96) PRIMARY KEY,user_id BIGINT,is_deleted INT)");
         sql(c,"CREATE TABLE nx_deposit_order(id BIGINT PRIMARY KEY,user_id BIGINT,status VARCHAR(32),ledger_id BIGINT,credited_at DATETIME,chain_name VARCHAR(32),is_deleted INT)");
         sql(c,"CREATE TABLE nx_audit_log(id BIGINT PRIMARY KEY,user_id BIGINT,action VARCHAR(96),resource_type VARCHAR(64),resource_id VARCHAR(128),result VARCHAR(32),detail_json JSON,created_at DATETIME,is_deleted INT)");
@@ -320,7 +457,8 @@ class BusinessNotificationMySqlTest {
         sql(c,"CREATE TABLE nx_user_device_runtime(user_device_id BIGINT PRIMARY KEY,online_status VARCHAR(32),heartbeat_at DATETIME,is_deleted INT)");
         sql(c,"CREATE TABLE nx_trial_claim(id BIGINT PRIMARY KEY,user_id BIGINT,status VARCHAR(32),claimed_at DATETIME,expires_at DATETIME,extended_at DATETIME,cancel_reason VARCHAR(64),is_deleted INT,closed_at DATETIME)");
         sql(c,"CREATE TABLE nx_growth_trial_policy(policy_key VARCHAR(128),current_value VARCHAR(128),is_deleted INT)");
-        sql(c,"CREATE TABLE nx_notification(id BIGINT AUTO_INCREMENT PRIMARY KEY,biz_no VARCHAR(128),user_id BIGINT,type VARCHAR(32),priority VARCHAR(16),title VARCHAR(128),body VARCHAR(512),cta_label VARCHAR(64),cta_href VARCHAR(255),read_flag INT,push_status VARCHAR(32),push_attempts INT,next_push_at DATETIME,created_at DATETIME,updated_at DATETIME,is_deleted INT,UNIQUE KEY uk_biz_user(biz_no,user_id))");
+        sql(c,"CREATE TABLE nx_notification(id BIGINT AUTO_INCREMENT PRIMARY KEY,biz_no VARCHAR(128),user_id BIGINT,type VARCHAR(32),priority VARCHAR(16),title VARCHAR(128),body VARCHAR(512),cta_label VARCHAR(64),cta_href VARCHAR(255),read_flag INT,push_status VARCHAR(32),push_attempts INT,next_push_at DATETIME,created_at DATETIME,updated_at DATETIME,is_deleted INT,read_at DATETIME,UNIQUE KEY uk_biz_user(biz_no,user_id))");
+        sql(c,"CREATE TABLE nx_notification_action_receipt(notification_id BIGINT,user_id BIGINT,action VARCHAR(32),route VARCHAR(255),is_deleted INT)");
         for(String statement:Files.readString(Path.of("scripts/migrations/20261029_business_notifications.sql")).split(";"))
             if(!statement.isBlank()) sql(c,statement);
         sql(c,"UPDATE nx_business_notification_control SET baseline_at=DATE_SUB(NOW(),INTERVAL 2 HOUR),baseline_utc_at=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 HOUR)");

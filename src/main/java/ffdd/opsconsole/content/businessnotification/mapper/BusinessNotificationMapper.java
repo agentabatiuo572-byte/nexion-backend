@@ -13,23 +13,23 @@ public interface BusinessNotificationMapper {
     @Select("SELECT id FROM nx_business_notification_control WHERE id=1 FOR UPDATE")
     Integer lockControl();
 
+    @Select("SELECT id FROM nx_business_notification_control WHERE id=1")
+    Integer control();
+
     // ponytail: bounded anti-receipt scan retains late commits; partition by source if volume warrants it.
     @Select("""
-        SELECT f.factKey,f.userId,f.category,f.messageKey,f.route FROM (
+        SELECT f.factKey,f.userId,f.category,f.messageKey,f.route,NULL occurredAt FROM (
           SELECT CONCAT('EVENT:',e.event_type,':',SHA2(e.aggregate_id,256)) factKey,
-            CASE WHEN e.event_type IN ('withdraw.confirmed','withdraw.refunded')
-              THEN (SELECT w.user_id FROM nx_withdrawal_order w WHERE w.withdrawal_no=e.aggregate_id AND w.is_deleted=0 LIMIT 1)
-              WHEN e.event_type='order.refunded'
+            CASE WHEN e.event_type='order.refunded'
               THEN (SELECT o.user_id FROM nx_order o WHERE o.order_no=e.aggregate_id AND o.is_deleted=0 LIMIT 1)
               ELSE CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.user_id')),'null') AS UNSIGNED) END userId,
             'FUNDS_RESULT' category,
             CASE e.event_type WHEN 'wallet.topup_confirmed' THEN 'deposit'
-              WHEN 'withdraw.confirmed' THEN 'withdrawal_completed'
-              WHEN 'withdraw.refunded' THEN 'withdrawal_returned' ELSE 'refund' END messageKey,
+              ELSE 'refund' END messageKey,
             '/pages/me/wallet-bills' route
           FROM nx_event_outbox e JOIN nx_business_notification_control b ON b.id=1
           WHERE e.is_deleted=0 AND e.created_at>=b.baseline_at AND e.event_type IN
-            ('wallet.topup_confirmed','withdraw.confirmed','withdraw.refunded','order.refunded')
+            ('wallet.topup_confirmed','order.refunded')
           UNION ALL
           SELECT CONCAT('DEPOSIT:',d.id),d.user_id,'FUNDS_RESULT','deposit','/pages/me/wallet-bills'
           FROM nx_deposit_order d JOIN nx_business_notification_control b ON b.id=1
@@ -88,6 +88,99 @@ public interface BusinessNotificationMapper {
         """)
     List<BusinessNotificationFact> facts();
 
+    String WITHDRAWAL_EVENT_KEY = "CONCAT('EVENT:',e.event_type,':',SHA2(CASE WHEN e.event_type IN "
+        + "('withdraw.confirmed','withdraw.refunded') THEN e.aggregate_id ELSE CONCAT(e.aggregate_id,':',e.event_id) END,256))";
+    String WITHDRAWAL_EVENTS = "('withdraw.confirmed','withdraw.refunded','withdraw.failed','withdraw.rejected',"
+        + "'withdraw.frozen','withdraw.delayed','withdraw.review_due','withdraw.submitted')";
+    String WITHDRAWAL_ATTENTION_MATCH = "((UPPER(w.status) IN ('FAILED','TX_FAILED','TX_ORPHANED','DEAD','ADDRESS_INVALID') "
+        + "AND e.event_type IN ('withdraw.failed','withdraw.refunded')) OR "
+        + "(UPPER(w.status) IN ('REVIEW_REJECTED','REJECTED','REFUNDED') AND e.event_type IN ('withdraw.rejected','withdraw.refunded')) OR "
+        + "(UPPER(w.status)='FROZEN' AND (e.event_type='withdraw.frozen' OR (e.event_type='withdraw.submitted' "
+        + "AND JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.risk_route'))='freeze'))) OR "
+        + "(UPPER(w.status) IN ('EXTENDED_HOLD','DELAYED') AND (e.event_type='withdraw.delayed' OR (e.event_type='withdraw.submitted' "
+        + "AND JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.risk_route'))='delay'))) OR "
+        + "(UPPER(w.status) IN ('REVIEW_PENDING','REVIEWING') AND (e.event_type='withdraw.review_due' OR (e.event_type='withdraw.submitted' "
+        + "AND JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.risk_route')) IN ('manual','high-manual','escalated-manual','strong-review')))))";
+
+    @Select("""
+        SELECT
+        """ + WITHDRAWAL_EVENT_KEY + """
+          factKey,w.user_id userId,'FUNDS_RESULT' category,
+          CASE e.event_type WHEN 'withdraw.confirmed' THEN 'withdrawal_completed'
+            WHEN 'withdraw.refunded' THEN 'withdrawal_returned' WHEN 'withdraw.failed' THEN 'withdrawal_failed'
+            WHEN 'withdraw.rejected' THEN 'withdrawal_rejected' WHEN 'withdraw.frozen' THEN 'withdrawal_frozen'
+            WHEN 'withdraw.delayed' THEN 'withdrawal_delayed'
+            WHEN 'withdraw.submitted' THEN CASE JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.risk_route'))
+              WHEN 'freeze' THEN 'withdrawal_frozen' WHEN 'delay' THEN 'withdrawal_delayed'
+              ELSE 'withdrawal_review_required' END
+            ELSE 'withdrawal_review_required' END messageKey,
+          CONCAT('/pages/me/wallet-withdraw-tracking?id=',w.withdrawal_no) route,
+          COALESCE(CASE WHEN JSON_TYPE(JSON_EXTRACT(e.payload,'$.ts')) IN ('INTEGER','UNSIGNED INTEGER')
+            AND JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.ts')) REGEXP '^[0-9]{13}$'
+            THEN TIMESTAMPADD(SECOND,CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.ts')) AS UNSIGNED) DIV 1000,
+              '1970-01-01 08:00:00') END,e.created_at) occurredAt
+        FROM nx_event_outbox e JOIN nx_withdrawal_order w ON w.withdrawal_no=e.aggregate_id AND w.is_deleted=0
+        JOIN nx_user u ON u.id=w.user_id AND u.is_deleted=0
+        JOIN nx_business_notification_control b ON b.id=1
+        LEFT JOIN nx_business_notification_fact r ON r.fact_key=
+        """ + WITHDRAWAL_EVENT_KEY + """
+        WHERE r.fact_key IS NULL AND e.is_deleted=0 AND e.aggregate_type='WITHDRAWAL'
+          AND w.withdrawal_no REGEXP '^WD-[A-Z0-9]{1,93}$'
+          AND ((#{historical}=0 AND e.created_at>=b.baseline_at) OR
+            (#{historical}=1 AND w.user_id=#{userId} AND e.created_at<b.baseline_at AND
+        """ + WITHDRAWAL_ATTENTION_MATCH + """
+            AND e.id=(SELECT e.id FROM nx_event_outbox e WHERE e.aggregate_type='WITHDRAWAL'
+              AND e.aggregate_id=w.withdrawal_no AND e.is_deleted=0 AND e.created_at<b.baseline_at AND
+        """ + WITHDRAWAL_ATTENTION_MATCH + """
+              ORDER BY e.created_at DESC,e.id DESC LIMIT 1)))
+          AND (e.event_type<>'withdraw.submitted' OR JSON_UNQUOTE(JSON_EXTRACT(e.payload,'$.risk_route'))
+            IN ('freeze','delay','manual','high-manual','escalated-manual','strong-review'))
+          AND e.event_type IN
+        """ + WITHDRAWAL_EVENTS + " ORDER BY e.created_at,e.id LIMIT 100")
+    List<BusinessNotificationFact> withdrawalFacts(@Param("userId") Long userId,@Param("historical") boolean historical);
+
+    @Select("""
+        SELECT CONCAT('STATE:WITHDRAWAL:',SHA2(w.withdrawal_no,256),':',UPPER(w.status)) factKey,
+          w.user_id userId,'FUNDS_RESULT' category,'withdrawal_state' messageKey,
+          CONCAT('/pages/me/wallet-withdraw-tracking?id=',w.withdrawal_no) route,
+          COALESCE(w.failed_at,w.updated_at,w.created_at) occurredAt
+        FROM nx_withdrawal_order w JOIN nx_user u ON u.id=w.user_id AND u.is_deleted=0
+        JOIN nx_business_notification_control b ON b.id=1
+        LEFT JOIN nx_business_notification_fact r ON r.fact_key=CONCAT('STATE:WITHDRAWAL:',SHA2(w.withdrawal_no,256),':',UPPER(w.status))
+        WHERE w.user_id=#{userId} AND w.is_deleted=0 AND r.fact_key IS NULL
+          AND w.withdrawal_no REGEXP '^WD-[A-Z0-9]{1,93}$'
+          AND (UPPER(w.status) IN ('FAILED','TX_FAILED','TX_ORPHANED','DEAD','ADDRESS_INVALID','REVIEW_REJECTED','REJECTED','REFUNDED','FROZEN',
+              'REVIEW_PENDING','REVIEWING','DELAYED') OR (UPPER(w.status)='EXTENDED_HOLD' AND LOWER(w.d2_k3_risk_route)='delay'))
+          AND COALESCE(w.failed_at,w.updated_at,w.created_at) IS NOT NULL
+          AND NOT EXISTS(SELECT 1 FROM nx_event_outbox e WHERE e.aggregate_id=w.withdrawal_no
+            AND e.aggregate_type='WITHDRAWAL' AND e.is_deleted=0 AND
+        """ + WITHDRAWAL_ATTENTION_MATCH + ") ORDER BY w.created_at,w.withdrawal_no LIMIT 100")
+    List<BusinessNotificationFact> withdrawalStateFacts(@Param("userId") Long userId);
+
+    // Repair already-receipted station messages without recreating them or resetting read/event times.
+    record WithdrawalRepair(long notificationId,long userId,String route) {}
+    @Select("""
+        SELECT n.id notificationId,n.user_id userId,CONCAT('/pages/me/wallet-withdraw-tracking?id=',w.withdrawal_no) route
+        FROM nx_notification n JOIN nx_business_notification_fact f ON f.notification_biz_no=n.biz_no AND f.user_id=n.user_id
+        JOIN nx_event_outbox e ON f.fact_key=
+        """ + WITHDRAWAL_EVENT_KEY + """
+        JOIN nx_withdrawal_order w ON w.withdrawal_no=e.aggregate_id AND w.user_id=n.user_id AND w.is_deleted=0
+        WHERE n.is_deleted=0 AND e.is_deleted=0 AND e.aggregate_type='WITHDRAWAL' AND e.event_type IN
+        """ + WITHDRAWAL_EVENTS + """
+          AND w.withdrawal_no REGEXP '^WD-[A-Z0-9]{1,93}$'
+          AND (#{userId} IS NULL OR n.user_id=#{userId})
+          AND (n.cta_href='/pages/me/wallet-bills' OR n.push_status='QUEUED') ORDER BY n.id LIMIT 100
+        """)
+    List<WithdrawalRepair> withdrawalRepairs(@Param("userId") Long userId);
+
+    @Update("UPDATE nx_notification SET cta_href=#{repair.route},push_status=CASE WHEN push_status='QUEUED' THEN 'DELIVERED' ELSE push_status END "
+        + "WHERE id=#{repair.notificationId} AND user_id=#{repair.userId} AND is_deleted=0")
+    int repairWithdrawalNotification(@Param("repair") WithdrawalRepair repair);
+
+    @Update("UPDATE nx_notification_action_receipt SET route=#{repair.route} WHERE notification_id=#{repair.notificationId} "
+        + "AND user_id=#{repair.userId} AND is_deleted=0 AND route='/pages/me/wallet-bills'")
+    int repairWithdrawalActionRoute(@Param("repair") WithdrawalRepair repair);
+
     String ELIGIBLE = " d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id='' AND "
         + DeviceOpsMapper.E5_ACTIVATED_OWNED;
     @Insert("INSERT IGNORE INTO nx_business_device_alert_state(device_id,user_id) "
@@ -116,7 +209,7 @@ public interface BusinessNotificationMapper {
     @Select("""
         SELECT CONCAT('DEVICE:',s.device_id,':',s.cycle) factKey,s.user_id userId,
           'DEVICE_ALERT' category,'device_alert' messageKey,
-          CONCAT('/pages/earn/device-detail?id=',s.device_id) route
+          CONCAT('/pages/earn/device-detail?id=',s.device_id) route,NULL occurredAt
         FROM nx_business_device_alert_state s JOIN nx_user_device d ON d.id=s.device_id
         LEFT JOIN nx_user_device_runtime r ON r.user_device_id=d.id AND r.is_deleted=0
         WHERE s.alerted=0 AND s.abnormal_since<=DATE_SUB(NOW(6),INTERVAL 15 MINUTE) AND
@@ -133,7 +226,7 @@ public interface BusinessNotificationMapper {
           q.user_id userId,'DEVICE_EXPIRY' category,
           CONCAT(q.deadlineKind,'_',CASE WHEN q.dueAt<=NOW() THEN 'end'
             WHEN q.dueAt<=DATE_ADD(NOW(),INTERVAL 1 HOUR) THEN '1h' ELSE '24h' END) messageKey,
-          '/pages/me/trial' route
+          '/pages/me/trial' route,NULL occurredAt
         FROM (
           SELECT t.id,t.user_id,t.claimed_at,t.expires_at dueAt,'trial' deadlineKind
           FROM nx_trial_claim t WHERE t.is_deleted=0 AND t.status IN ('CLAIMED','ACTIVE','GRACE')
@@ -186,7 +279,8 @@ public interface BusinessNotificationMapper {
           CASE WHEN LOWER(u.language) LIKE 'zh%' THEN #{zh} WHEN LOWER(u.language) LIKE 'vi%' THEN #{vi} ELSE #{en} END,
           CASE WHEN LOWER(u.language) LIKE 'zh%' THEN #{zh} WHEN LOWER(u.language) LIKE 'vi%' THEN #{vi} ELSE #{en} END,
           CASE WHEN LOWER(u.language) LIKE 'zh%' THEN '查看详情' WHEN LOWER(u.language) LIKE 'vi%' THEN 'Xem chi tiết' ELSE 'View details' END,
-          #{fact.route},0,'QUEUED',0,NOW(),NOW(),NOW(),0
+          #{fact.route},0,CASE WHEN #{fact.messageKey} LIKE 'withdrawal_%' THEN 'DELIVERED' ELSE 'QUEUED' END,
+          0,NOW(),COALESCE(#{fact.occurredAt},NOW()),NOW(),0
         FROM nx_user u WHERE u.id=#{fact.userId} AND u.is_deleted=0
         ON DUPLICATE KEY UPDATE type=VALUES(type),priority=VALUES(priority),title=VALUES(title),body=VALUES(body),
           cta_label=VALUES(cta_label),cta_href=VALUES(cta_href)

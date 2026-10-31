@@ -6,6 +6,7 @@ import ffdd.opsconsole.content.domain.NotificationActionResult;
 import ffdd.opsconsole.content.domain.NotificationCampaignRepository;
 import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.content.domain.NovaSocialRuntimeRepository;
+import ffdd.opsconsole.content.businessnotification.BusinessNotificationService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.util.Map;
@@ -14,6 +15,7 @@ import java.util.List;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -26,6 +28,7 @@ public class AppNotificationService {
     private final NotificationCampaignRepository repository;
     private final EventOutboxService eventOutboxService;
     private final NovaSocialRuntimeRepository novaRuntimeRepository;
+    private final ObjectProvider<BusinessNotificationService> businessNotifications;
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<AppNotificationPage> page(Long userId, String cursor, String priority, Integer limit) {
@@ -41,6 +44,7 @@ public class AppNotificationService {
             return ApiResult.fail(400, "NOTIFICATION_PRIORITY_INVALID");
         }
         int normalizedLimit = Math.max(1, Math.min(limit == null ? 30 : limit, 100));
+        businessNotifications.ifAvailable(service -> service.collectWithdrawalAttention(userId));
         repository.applyRetentionForUser(userId);
         return ApiResult.ok(repository.pageUserNotifications(
                 userId, cursorId, normalizedPriority, normalizedLimit));
