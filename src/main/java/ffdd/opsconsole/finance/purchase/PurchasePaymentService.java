@@ -337,9 +337,15 @@ public class PurchasePaymentService {
         db.write("UPDATE nx_purchase_payment_intent SET reconciliation_status='QUERY_UNKNOWN',updated_at=NOW(6) WHERE intent_no=? AND confirmed_at IS NULL AND receipt_json IS NULL",row.get("intent_no"));
     }
     private void expire(Map<String,Object> snapshot){
-        tx(()->{
+        var expiration=new TransactionTemplate(transactions);
+        expiration.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
+        // Participant discovery may read before waiting for the buyer; later successor checks must be current.
+        expiration.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+        expiration.execute(status->{
             var row=db.one(SELECT+" FOR UPDATE",snapshot.get("intent_no"));
             if(row==null||row.get("confirmed_at")!=null||row.get("receipt_json")!=null||"MANUAL_REVIEW".equals(row.get("status")))return null;
+            // Match issuer/pay/cancel: every ordered participant precedes the buyer mutex.
+            if("ORDER_PAY".equals(row.get("kind")))orders.lockDirectPaymentOrderParticipants(text(parse(row.get("payload_json")).get("orderNo")));
             db.one("SELECT id FROM nx_user WHERE id=? FOR UPDATE",row.get("user_id"));
             Instant cutoff=deadline(row);
             if("ORDER_PAY".equals(row.get("kind"))){
@@ -447,15 +453,18 @@ public class PurchasePaymentService {
         var before=db.one(SELECT,no);
         if(before==null||!verifyFunds(before))return;
         boolean joined=org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive();
-        try{tx(()->{
+        var delivery=new TransactionTemplate(transactions);delivery.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
+        if("ORDER_PAY".equals(before.get("kind")))delivery.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+        try{delivery.execute(status->{
             testCloudAdmission.lock();
             if(cregis(before.get("payment_method")))cregisGate(network(before.get("payment_method")),false,true);
             var intent=db.one(SELECT+" FOR UPDATE",no);
             if(intent==null||intent.get("receipt_json")!=null||intent.get("confirmed_at")==null)return null;
             if(Set.of("PAYMENT_AMOUNT_MISMATCH","PAYMENT_LATE_REVIEW","PAYMENT_MULTIPLE_ARRIVALS","PAYMENT_BEFORE_ALLOCATION","PAYMENT_TIME_UNVERIFIED","PAYMENT_REFUNDED_REVIEW").contains(text(intent.get("reason"))))return null;
             if(!explicit&&"MANUAL_REVIEW".equals(intent.get("status")))return null;
-            long owner=number(intent.get("user_id"));user(owner,true);
-            String kind=text(intent.get("kind"));var payload=parse(intent.get("payload_json"));var quote=parse(intent.get("quote_json"));
+            long owner=number(intent.get("user_id"));String kind=text(intent.get("kind"));var payload=parse(intent.get("payload_json"));
+            if("ORDER_PAY".equals(kind))orders.lockDirectPaymentOrderParticipants(text(payload.get("orderNo")));
+            user(owner,true);var quote=parse(intent.get("quote_json"));
             if(!hash(pricing(owner,kind,payload,Instant.parse(text(quote.get("pricingAsOf"))))).equals(intent.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
             var result=VerifiedPurchasePayment.settle(owner,text(intent.get("payment_method")),no,money(quote.get("subtotalUsdt")),Instant.parse(text(quote.get("pricingAsOf"))),intent.get("paid_at")==null?instant(intent.get("confirmed_at")):instant(intent.get("paid_at")),()->fulfil(owner,kind,payload,no));
             Object receipt=require(result);
