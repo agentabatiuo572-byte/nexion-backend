@@ -103,6 +103,7 @@ class PurchasePaymentHttpMySqlTest {
     static String token(long user){return fixture.jwt.createUserToken(user,"http-synthetic-user",List.of(),"http-session-"+user,Duration.ofHours(1),UserAuthEnvironment.PRODUCTION);}
 
     @Test void authenticatedExternalPurchaseSurvivesUnavailableAndLockedPinAndSignedCallbackDeliversExactlyOnce() throws Exception {
+        int providerCreatesBefore=fixture.provider.creates.get();
         String user=token(7),other=token(8);
         var body=values("kind","ORDER_PAY","paymentMethod","HDPAY_BANK","payload",values("orderNo","HTTP-ORDER-1"));
         assertThat(request("POST","/api/app/purchase-payment-quotes",null,null,body).status()).isEqualTo(401);
@@ -156,7 +157,7 @@ class PurchasePaymentHttpMySqlTest {
         assertThat(request("GET","/api/app/purchase-payment-intents/"+intent,other,null,null).status()).isEqualTo(404);
         assertThat(request("POST",HdPayProperties.PAY_IN_CALLBACK_PATH,null,null,callbackBody).text()).isEqualTo("success");
         data(request("POST","/api/app/purchase-payment-intents",user,"http-external-original-command",values("paymentQuoteId",quote.get("paymentQuoteId"))));
-        assertThat(fixture.provider.creates.get()).isEqualTo(1);
+        assertThat(fixture.provider.creates.get()-providerCreatesBefore).isEqualTo(1);
         assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device WHERE source_order_no='HTTP-ORDER-1' AND status='ACTIVE'",Integer.class)).isEqualTo(1);
         assertThat(fixture.jdbc.queryForObject("SELECT price_usdt_snapshot FROM nx_user_device WHERE source_order_no='HTTP-ORDER-1'",BigDecimal.class)).isEqualByComparingTo("19.995000");
         assertThat(fixture.jdbc.queryForObject("SELECT stock FROM nx_product WHERE id=18",Integer.class)).isEqualTo(9);
@@ -186,6 +187,22 @@ class PurchasePaymentHttpMySqlTest {
         verifyNoInteractions(fixture.pin);
         EVIDENCE.add(values("case","actual-http-locked-pin-bsc-pool-confirmed-delivery","status","PASS","provider","synthetic provider membership/history and BSC chain proof","intentNo",bscIntent,"walletPrincipalLedgers",0,"devices",1,"schema",fixture.schema));
         Files.writeString(Path.of("D:/workspace/artifacts/pay1718-20261031/BACKEND-HTTP-RESULTS.json"),json(EVIDENCE));
+    }
+
+    @Test void bothCancellationHttpAliasesUseTheReadCommittedBusinessEntry() throws Exception {
+        for(String prefix:List.of("/api/orders/","/api/app/orders/")){
+            String no="HTTP-CANCEL-"+(prefix.contains("/app/")?"APP":"LEGACY");
+            fixture.jdbc.update("INSERT INTO nx_order(user_id,order_no,product_id,quantity,order_type,item_count,amount_usdt,payment_status,order_status,activation_status,inventory_reserved) VALUES(7,?,18,1,'SINGLE',1,19.995,'PENDING','PENDING_PAYMENT','WAITING_PAYMENT',0)",no);
+            var quote=fixture.payments.quote(7,values("kind","ORDER_PAY","paymentMethod","HDPAY_BANK","payload",values("orderNo",no)));
+            fixture.payments.create(7,"other-tab-"+no,text(quote.get("paymentQuoteId")));
+            var rejected=request("POST",prefix+no+"/cancel",token(7),"original-cancel-"+no,null);
+            assertThat(rejected.status()).as(rejected.text()).isEqualTo(409);
+            assertThat(rejected.body()).containsEntry("code",409).containsEntry("message","ORDER_EXTERNAL_PAYMENT_IN_PROGRESS");
+            fixture.jdbc.update("UPDATE nx_purchase_payment_intent SET status='EXPIRED' WHERE quote_id=?",quote.get("paymentQuoteId"));
+            var cancelled=data(request("POST",prefix+no+"/cancel",token(7),"original-cancel-"+no,null));
+            assertThat(cancelled).containsEntry("orderNo",no).containsEntry("paymentStatus","CANCELLED").containsEntry("serverCanonical",true);
+            assertThat(data(request("POST",prefix+no+"/cancel",token(7),"original-cancel-"+no,null))).containsEntry("paymentStatus","CANCELLED");
+        }
     }
 
     static final class SyntheticHdPay implements HdPayGateway {
@@ -231,6 +248,10 @@ class PurchasePaymentHttpMySqlTest {
             // Existing upgraded deployments own this historical E5 event contract; fresh_db does not restore it.
             migrate("20260721_e5_device_operations.sql");
             migrate("20260721_e4_order_state_machine.sql");
+            // Cancellation also reads the historical H7 voucher contract, absent from the fresh startup list.
+            migrate("20260722_h7_voucher_grant.sql");
+            // The network-aware service also requires its separately versioned schema contract.
+            migrate("20261031_z_cregis_erc20_network.sql");
         }
         void migrate(String file) throws Exception {sql(Files.readString(Path.of("scripts/migrations",file)),file);}
         void sql(String sql,String phase) throws Exception {
@@ -261,10 +282,11 @@ class PurchasePaymentHttpMySqlTest {
             var outbox=new EventOutboxService(mapper(EventOutboxMapper.class),json,new OutboxProperties(),new A4RuntimePolicyService(repository));
             orders=proxy(new AppOrderCommandService(mapper(AppOrderCommandMapper.class),commands,audit,new FundsSandboxProfileGuard(new FundsSandboxProperties(),env),null,null,null,outbox,30,null,attribution,pin));
             hd.setMode(HdPayProperties.Mode.PROVIDER);hd.setBaseUrl("http://127.0.0.1:18999/api/order");hd.setAllowInsecureBaseUrlForTests(true);hd.setMerchantId("123456");hd.setMd5Key("synthetic-hdpay-key-32-characters");hd.setServerIp("8.8.8.8");hd.setCallbackBaseUrl("https://callback.synthetic.invalid");hd.setCallbackHosts(List.of("callback.synthetic.invalid"));hd.setPaymentPageHosts(List.of("pay.synthetic.invalid"));
-            var cr=new CregisProperties();cr.setMode(CregisProperties.Mode.PROVIDER);cr.setDepositEnabled(true);cr.setDepositCreditEnabled(true);cr.setProjectId(99);cr.setDepositConfirmations(15);
+            var cr=new CregisProperties();cr.setMode(CregisProperties.Mode.PROVIDER);cr.setDepositEnabled(true);cr.setDepositCreditEnabled(true);cr.setProjectId(99);cr.setDepositConfirmations(15);cr.setBscRpcUrl("https://bsc.synthetic.invalid");
             var router=mock(CregisGatewayRouter.class);when(router.provider()).thenReturn(bscProvider);
+            when(bscProvider.projectCoins()).thenReturn(List.of(new CregisGateway.Coin(CregisNetwork.BEP20.currency(),"USDT-BEP20","2510",CregisNetwork.BEP20.tokenId(),true,true)));
             when(bscProvider.addressBelongs("2510",bscAddress)).thenReturn(true);when(bscProvider.zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY,bscAddress)).thenReturn(true);
-            when(bscChain.zeroUsdtBalance(bscAddress)).thenReturn(true);when(bscChain.head()).thenReturn(new BscDepositProof.Head(100,allocationHash));when(bscChain.blockHash(100)).thenReturn(allocationHash);
+            when(bscChain.zeroUsdtBalance(CregisNetwork.BEP20,bscAddress)).thenReturn(true);when(bscChain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(100,allocationHash));when(bscChain.blockHash(CregisNetwork.BEP20,100)).thenReturn(allocationHash);
             policy=new PurchasePaymentPolicyService(mapper(PurchasePaymentMapper.class),new CregisDepositPolicyService(mapper(CregisDepositPolicyMapper.class),audit,cr),commands,audit,json);
             payments=new PurchasePaymentService(mapper(PurchasePaymentMapper.class),policy,orders,mock(AppTradeinService.class),mock(AppTrialLifecycleService.class),hd,provider,cr,router,bscChain,mapper(VietnamPaymentMapper.class),tx,json,audit,commands);
             var properties=new JwtProperties();properties.setSecret("synthetic-http-jwt-signing-material-only-32-bytes");jwt=new JwtTokenProvider(properties);
@@ -298,11 +320,11 @@ class PurchasePaymentHttpMySqlTest {
         }
         void publishSyntheticBscTransfer(){
             String txid="0x"+"2".repeat(64),block="0x"+"3".repeat(64);var amount=new BigDecimal("20.00");
-            when(bscChain.head()).thenReturn(new BscDepositProof.Head(120,"0x"+"b".repeat(64)));
-            when(bscChain.scan(101,106,List.of(bscAddress))).thenReturn(List.of(new BscDepositProof.Observation(txid,1,bscAddress,amount,105)));
-            when(bscChain.verifyExact(eq(txid),eq(1),eq(bscAddress),argThat(value->value!=null&&value.compareTo(amount)==0),eq(105L)))
+            when(bscChain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(120,"0x"+"b".repeat(64)));
+            when(bscChain.scan(CregisNetwork.BEP20,101,106,List.of(bscAddress))).thenReturn(List.of(new BscDepositProof.Observation(txid,1,bscAddress,amount,105)));
+            when(bscChain.verifyExact(eq(CregisNetwork.BEP20),eq(txid),eq(1),eq(bscAddress),argThat(value->value!=null&&value.compareTo(amount)==0),eq(105L)))
                     .thenReturn(new BscDepositProof.TransferProof(1,105,block,16,"0x"+"4".repeat(40),bscAddress,amount,true));
-            when(bscProvider.depositsByTxid(txid)).thenReturn(List.of(new CregisGateway.DepositTrade(44,"2510",CregisConstants.USDT_BEP20_TOKEN_ID,bscAddress,amount,txid,1)));
+            when(bscProvider.depositsByTxid(CregisNetwork.BEP20,txid)).thenReturn(List.of(new CregisGateway.DepositTrade(44,"2510",CregisConstants.USDT_BEP20_TOKEN_ID,bscAddress,amount,txid,1)));
         }
         public void close(){if(schema.matches("purchase_http_it_[0-9a-f]{32}"))admin.execute("DROP DATABASE "+schema);}
     }

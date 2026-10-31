@@ -33,6 +33,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -118,10 +121,15 @@ public class AppOrderCommandService {
         this(mapper, idempotency, audit, sandboxGuard, sandboxMapper, sandboxService, acceptanceRun, null, paymentAttribution);
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> cancel(Long userId, String orderNo, String idempotencyKey) {
         if (userId == null || userId < 1 || !StringUtils.hasText(orderNo)) return ApiResult.fail(422, "ORDER_CANCEL_INPUT_INVALID");
         if (!StringUtils.hasText(idempotencyKey)) return ApiResult.fail(400, "IDEMPOTENCY_KEY_REQUIRED");
+        // REQUIRED can join an older snapshot: refuse that caller before taking business locks or writing.
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && !Integer.valueOf(TransactionDefinition.ISOLATION_READ_COMMITTED).equals(
+                        TransactionSynchronizationManager.getCurrentTransactionIsolationLevel()))
+            return ApiResult.fail(503, "ORDER_CANCEL_ISOLATION_UNAVAILABLE");
         String normalized = orderNo.trim();
         if (sandboxGuard.isLocalSandboxEnabled()) return cancelSandbox(userId, normalized, idempotencyKey);
         if (!sandboxGuard.isStrictProductionRuntime()) {
@@ -566,6 +574,10 @@ public class AppOrderCommandService {
         }
         if (!"PENDING_PAYMENT".equalsIgnoreCase(order.orderStatus()) || !"PENDING".equalsIgnoreCase(order.paymentStatus())) {
             return ApiResult.fail(409, "ORDER_NOT_CANCELLABLE");
+        }
+        // The shared user mutex serializes creation; RC sees its commit without reversing intent -> user locks.
+        if (mapper.countActiveDirectPaymentIntent(orderNo) > 0) {
+            throw new BizException(409, "ORDER_EXTERNAL_PAYMENT_IN_PROGRESS");
         }
         if (mapper.countNonCancellableHdPaySessions(orderNo) > 0) {
             return ApiResult.fail(409, "HDPAY_ORDER_NOT_CANCELLABLE");
