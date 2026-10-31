@@ -28,8 +28,28 @@ public class SupportDeviceReadService implements SupportDeviceReadFacade {
         if(ids==null||ids.size()>4096||ids.stream().anyMatch(id->id==null||id<=0))throw new IllegalArgumentException("INVALID_SUPPORT_DEVICE_SCOPE");
         var scope=List.copyOf(new TreeSet<>(ids));if(scope.isEmpty())return new FundEarnings(List.of(),List.of(),List.of(),List.of());
         var receipts=mapper.fundReceipts(scope);var tasks=mapper.fundTasks(scope);var ledgers=mapper.fundLedgers(scope);var events=mapper.fundEvents(scope);
-        for(var rows:java.util.Arrays.asList(receipts,tasks,ledgers,events)){if(rows==null||rows.stream().anyMatch(r->r==null||!(r.get("customerId") instanceof Number n)||!scope.contains(n.longValue())))throw new IllegalStateException("INVALID_SUPPORT_DEVICE_FUND_ROWS");}
+        for(var rows:java.util.Arrays.asList(receipts,tasks,ledgers,events))validateFundRows(scope,rows);
         return new FundEarnings(receipts,tasks,ledgers,events);
+    }
+    @Override public FundEarnings readFundEarning(long customerId,String receiptNo) {
+        if(customerId<=0||receiptNo==null||receiptNo.isEmpty())throw new IllegalArgumentException("INVALID_SUPPORT_DEVICE_SCOPE");
+        var scope=List.of(customerId);var receipts=mapper.fundReceipt(customerId,receiptNo);validateFundRows(scope,receipts);
+        // SQL uses the existing indexed collation; preserve the writer's exact Java identity matching.
+        receipts=receipts.stream().filter(r->receiptNo.equals(r.get("receiptNo"))).toList();
+        if(receipts.size()!=1)throw new IllegalStateException("Device receipt missing or ambiguous");
+        var receipt=receipts.get(0);String taskNo=(String)receipt.get("taskNo");
+        var ledgerNos=new java.util.LinkedHashSet<String>();ledgerNos.add(taskNo);
+        if(new java.math.BigDecimal(receipt.get("rewardNex").toString()).signum()>0){
+            Object value=receipt.get("completedAt");LocalDateTime completed=value instanceof java.sql.Timestamp t?t.toLocalDateTime():(LocalDateTime)value;
+            ledgerNos.add("CLOUD_SHARE_DAILY:"+receipt.get("deviceId")+":"+completed.atZone(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE).withZoneSameInstant(java.time.ZoneOffset.UTC).toLocalDate());
+        }
+        var tasks=mapper.fundReceiptTasks(customerId,taskNo);var ledgers=mapper.fundReceiptLedgers(customerId,List.copyOf(ledgerNos));var events=mapper.fundReceiptEvents(customerId,receiptNo);
+        for(var rows:java.util.Arrays.asList(tasks,ledgers,events))validateFundRows(scope,rows);
+        return new FundEarnings(receipts,tasks.stream().filter(t->java.util.Objects.equals(taskNo,t.get("taskNo"))).toList(),
+            ledgers.stream().filter(l->ledgerNos.contains(l.get("bizNo"))).toList(),events.stream().filter(e->receiptNo.equals(e.get("receiptNo"))).toList());
+    }
+    private static void validateFundRows(Collection<Long> scope,List<Map<String,Object>> rows){
+        if(rows==null||rows.stream().anyMatch(r->r==null||!(r.get("customerId") instanceof Number n)||!scope.contains(n.longValue())))throw new IllegalStateException("INVALID_SUPPORT_DEVICE_FUND_ROWS");
     }
     @Override public Map<String,Integer> timePrecisions(){
         var rows=mapper.fundTimePrecisions();if(rows==null)throw new IllegalStateException("INVALID_SUPPORT_DEVICE_PRECISION");var result=new TreeMap<String,Integer>();
