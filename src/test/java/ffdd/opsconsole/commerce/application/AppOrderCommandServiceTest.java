@@ -52,7 +52,7 @@ class AppOrderCommandServiceTest {
         when(mapper.expireOrder("LIFE",7L)).thenAnswer(call->{state.put("order_status","EXPIRED");return 1;});
         when(mapper.countExpiredPayableOrder("LIFE",7L,30)).thenReturn(1);
         when(mapper.lockDevelopmentPayOrder("LIFE")).thenReturn(new AppOrderCommandMapper.DevelopmentPayOrder("LIFE",7L,18L,1,
-            BigDecimal.TEN,"PAID-ID","PAID","COMPLETED","ACTIVATED"));
+            BigDecimal.TEN,"PAY-WALLET-04973791D31EFDD61DB4B2D3A64E7995","PAID","COMPLETED","ACTIVATED"));
         when(mapper.lockDevelopmentWallet(7L)).thenReturn(new AppOrderCommandMapper.DevelopmentWallet(BigDecimal.TEN,1L));
         doAnswer(call->((Supplier<?>)call.getArgument(4)).get()).when(idem).execute(anyString(),anyString(),anyString(),any(),any());
         var service=new AppOrderCommandService(mapper,idem,mock(AuditLogService.class),guard,null,null,null,null,30,promotions,capture);
