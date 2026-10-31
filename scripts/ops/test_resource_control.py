@@ -2,6 +2,7 @@
 import importlib.util
 from contextlib import closing, nullcontext
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
 import sqlite3
@@ -18,6 +19,89 @@ SPEC.loader.exec_module(control)
 
 
 class ResourceControlTests(unittest.TestCase):
+    def test_resume_health_requires_trusted_country_and_rejects_foreign_redirect(self):
+        original_opener = control.urllib.request.build_opener
+        for redirect in (False, True):
+            with self.subTest(redirect=redirect), tempfile.TemporaryDirectory() as directory:
+                root, observed = Path(directory), {"country": [], "foreign": 0}
+
+                class ForeignHandler(BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        observed["foreign"] += 1
+                        self.send_response(200)
+                        self.end_headers()
+                        self.wfile.write(b'{"code":0,"data":{}}')
+
+                    def log_message(self, *args):
+                        pass
+
+                foreign = HTTPServer(("127.0.0.1", 0), ForeignHandler)
+
+                class GeoHandler(BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        country = self.headers.get("X-Nexion-Edge-Country")
+                        observed["country"].append(country)
+                        if country != "VN":
+                            self.send_response(403)
+                        elif redirect:
+                            self.send_response(302)
+                            self.send_header("Location", f"http://127.0.0.1:{foreign.server_port}/foreign")
+                        else:
+                            self.send_response(200)
+                        self.end_headers()
+                        self.wfile.write(b'{"code":0,"data":{}}')
+
+                    def log_message(self, *args):
+                        pass
+
+                geo = HTTPServer(("127.0.0.1", 0), GeoHandler)
+                threads = [threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+                           for server in (geo, foreign)]
+                for thread in threads:
+                    thread.start()
+                try:
+                    def local_opener(*handlers):
+                        real = original_opener(*handlers)
+
+                        def open_local(request, timeout):
+                            url = request if isinstance(request, str) else request.full_url
+                            self.assertEqual(url, "http://127.0.0.1:8110/api/config/platform")
+                            headers = {} if isinstance(request, str) else dict(request.header_items())
+                            forwarded = control.urllib.request.Request(
+                                f"http://127.0.0.1:{geo.server_port}/api/config/platform", headers=headers)
+                            return real.open(forwarded, timeout=timeout)
+
+                        return SimpleNamespace(open=open_local)
+
+                    (root / "drain.json").write_text(json.dumps({"drainId": "geo"}))
+                    (root / "drain-receipt.json").write_text(json.dumps(
+                        {"ready": True, "drainId": "geo", "finalInventory": [], "services": {}}))
+                    with patch.object(control, "STATE", root), patch.object(control, "RELEASE_STATE", root / "state.json"), \
+                            patch.object(control, "locked", return_value=nullcontext()), \
+                            patch.object(control, "service_state", return_value={"ActiveState": "active"}), \
+                            patch.object(control, "inventory", return_value=[]), patch.object(control, "snapshot"), \
+                            patch.object(control, "atomic", side_effect=lambda path, value, mode=0o600: path.write_text(json.dumps(value))), \
+                            patch.object(control.os, "O_DIRECTORY", 0, create=True), patch.object(control.os, "open", return_value=123), \
+                            patch.object(control.os, "fsync"), patch.object(control.os, "close"), \
+                            patch.object(control.urllib.request, "build_opener", side_effect=local_opener), \
+                            patch.object(control, "run") as command:
+                        if redirect:
+                            with self.assertRaisesRegex(control.Rejected, "BACKEND_HEALTH_REDIRECT_REJECTED"):
+                                control.resume({})
+                            self.assertTrue((root / "drain.json").exists())
+                            self.assertTrue((root / "drain-receipt.json").exists())
+                        else:
+                            self.assertEqual(control.resume({})["drain"], "RESUMED")
+                            self.assertFalse((root / "drain.json").exists())
+                        command.assert_not_called()
+                    self.assertEqual(observed, {"country": ["VN"], "foreign": 0})
+                finally:
+                    for server in (geo, foreign):
+                        server.shutdown()
+                        server.server_close()
+                    for thread in threads:
+                        thread.join()
+
     def test_stopped_spare_requires_known_exact_name_and_safe_restart_policy(self):
         spare = {"type": "docker", "name": "uvel-cloud-bge-model-fleet-7"}
         config = {"commitments": [], "buildControl": {"type": "docker", "name": "ci"},
