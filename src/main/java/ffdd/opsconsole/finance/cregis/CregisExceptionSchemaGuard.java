@@ -24,7 +24,7 @@ public class CregisExceptionSchemaGuard implements ApplicationRunner {
     static void validate(List<Map<String,Object>> columns, List<Map<String,Object>> indexes) {
         Map<String,String> required = Map.ofEntries(
             Map.entry("nx_cregis_deposit_event", "transfer_from_address origin_log_index"),
-            Map.entry("nx_cregis_exception_source", "project_id txid log_index cid address gross_amount state operation_kind operation_ref alias_of_log_index version"),
+            Map.entry("nx_cregis_exception_source", "project_id chain_id txid log_index cid address gross_amount state operation_kind operation_ref alias_of_log_index version"),
             Map.entry("nx_cregis_ownership_challenge", "challenge_id project_id source_type source_id action target_user_id message evidence_hash expires_at consumed_ref consumed_signature signer consumed_at created_by"),
             Map.entry("nx_cregis_exception_claim", "id case_no project_id cid txid log_index target_user_id challenge_id evidence_hash state version maker_id checker_id"),
             Map.entry("nx_cregis_exception_refund_policy", "project_id mode fee_usdt version"),
@@ -48,8 +48,19 @@ public class CregisExceptionSchemaGuard implements ApplicationRunner {
             for (String name : names.split(" ")) if (!available.contains(table + "." + name)) fail();
         });
         Set<String> unique = new HashSet<>();
-        for (Map<String,Object> row : indexes) unique.add(row.get("tableName") + ":" + row.get("indexColumns"));
-        for (String key : List.of("nx_cregis_exception_source:project_id,txid,log_index", "nx_cregis_ownership_challenge:challenge_id",
+        boolean sourcePrimary = false;
+        for (Map<String,Object> row : indexes) {
+            unique.add(row.get("tableName") + ":" + row.get("indexColumns"));
+            if ("nx_cregis_exception_source".equals(row.get("tableName"))) {
+                if ("project_id,txid,log_index".equals(row.get("indexColumns"))) fail();
+                if ("PRIMARY".equals(row.get("indexName"))) {
+                    if (!"project_id,chain_id,txid,log_index".equals(row.get("indexColumns"))) fail();
+                    sourcePrimary = true;
+                }
+            }
+        }
+        if (!sourcePrimary) fail();
+        for (String key : List.of("nx_cregis_ownership_challenge:challenge_id",
             "nx_cregis_exception_claim:case_no", "nx_cregis_exception_claim:challenge_id", "nx_cregis_exception_refund_policy:project_id",
             "nx_cregis_exception_refund:case_no", "nx_cregis_exception_refund:business_key", "nx_cregis_exception_refund_callback:payload_hash",
             "nx_cregis_exception_refund_ledger:case_no,event_type", "nx_cregis_reorg_resolution:incident_id",

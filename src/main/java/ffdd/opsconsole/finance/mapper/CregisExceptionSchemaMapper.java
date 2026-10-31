@@ -23,7 +23,9 @@ public interface CregisExceptionSchemaMapper extends BaseMapper<CregisDepositEve
 
     @Select("""
         SELECT TABLE_NAME tableName,INDEX_NAME indexName,
-               GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') indexColumns
+               GROUP_CONCAT(CASE WHEN SUB_PART IS NULL THEN COLUMN_NAME
+                                ELSE CONCAT(COLUMN_NAME,'(',SUB_PART,')') END
+                            ORDER BY SEQ_IN_INDEX SEPARATOR ',') indexColumns
           FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND NON_UNIQUE=0
            AND TABLE_NAME IN ('nx_cregis_exception_source','nx_cregis_ownership_challenge',
              'nx_cregis_exception_claim','nx_cregis_exception_refund_policy',

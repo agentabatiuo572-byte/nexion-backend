@@ -1,0 +1,1329 @@
+{
+  "columns": [
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "user_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "project_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "cid",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "txid",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "int",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "log_index",
+      "numericScale": 0,
+      "numericPrecision": 10
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "address",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "gross_amount",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "fee_amount",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "net_amount",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "block_number",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "block_hash",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "int",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "confirmations",
+      "numericScale": 0,
+      "numericPrecision": 10
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "canonical_until",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "last_canonical_checked_block",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "last_canonical_checked_hash",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "status",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "ledger_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "created_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "credited_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "transfer_from_address",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "int",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "origin_log_index",
+      "numericScale": 0,
+      "numericPrecision": 10
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_deposit_event",
+      "columnName": "chain_id",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "case_no",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "project_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "source_type",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "source_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "cid",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "txid",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "int",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "log_index",
+      "numericScale": 0,
+      "numericPrecision": 10
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "address",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "from_address",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "gross_amount",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "target_user_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "challenge_id",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "evidence_hash",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "maker_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "checker_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "reason",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "decision_reason",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "state",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "version",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "created_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "resolved_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "policy_version",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_exception_claim",
+      "columnName": "policy_fee_usdt",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "case_no",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "project_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "source_type",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "source_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "claimant_user_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "txid",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "int",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "log_index",
+      "numericScale": 0,
+      "numericPrecision": 10
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "deposit_cid",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "return_address",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "deposit_address",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "gross_amount",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "fee_amount",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "net_amount",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "fee_policy_version",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "ownership_receipt",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "char",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "evidence_hash",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "ownership_reference",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "char",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "source_evidence_hash",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "state",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "version",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "maker_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "checker_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "reason",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "provider_cid",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "business_key",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "dispatch_intent_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "chain_txid",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "last_error",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "created_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_exception_refund",
+      "columnName": "updated_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "char",
+      "tableName": "nx_cregis_exception_refund_callback",
+      "columnName": "payload_hash",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund_callback",
+      "columnName": "case_no",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund_callback",
+      "columnName": "provider_cid",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "int",
+      "tableName": "nx_cregis_exception_refund_callback",
+      "columnName": "provider_status",
+      "numericScale": 0,
+      "numericPrecision": 10
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund_callback",
+      "columnName": "txid",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_exception_refund_callback",
+      "columnName": "created_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund_ledger",
+      "columnName": "id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund_ledger",
+      "columnName": "case_no",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund_ledger",
+      "columnName": "event_type",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund_ledger",
+      "columnName": "provider_cid",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_exception_refund_ledger",
+      "columnName": "amount_usdt",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund_ledger",
+      "columnName": "txid",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "json",
+      "tableName": "nx_cregis_exception_refund_ledger",
+      "columnName": "evidence_json",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_exception_refund_ledger",
+      "columnName": "created_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund_policy",
+      "columnName": "project_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund_policy",
+      "columnName": "mode",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_exception_refund_policy",
+      "columnName": "fee_usdt",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund_policy",
+      "columnName": "version",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_exception_refund_policy",
+      "columnName": "updated_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "columnName": "id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "columnName": "project_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "columnName": "expected_policy_version",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "columnName": "mode",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "columnName": "fee_usdt",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "columnName": "maker_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "columnName": "checker_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "columnName": "state",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "columnName": "version",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "columnName": "reason",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "columnName": "created_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "columnName": "checked_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "project_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "txid",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "int",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "log_index",
+      "numericScale": 0,
+      "numericPrecision": 10
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "cid",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "address",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "gross_amount",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "state",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "operation_kind",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "operation_ref",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "int",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "alias_of_log_index",
+      "numericScale": 0,
+      "numericPrecision": 10
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "version",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "created_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "updated_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_exception_source",
+      "columnName": "chain_id",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "challenge_id",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "project_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "source_type",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "source_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "action",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "target_user_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "text",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "message",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "evidence_hash",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "expires_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "consumed_ref",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "consumed_signature",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "signer",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "consumed_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "created_by",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_ownership_challenge",
+      "columnName": "created_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_reorg_operation",
+      "columnName": "operation_no",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_operation",
+      "columnName": "incident_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_operation",
+      "columnName": "resolution_version",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_reorg_operation",
+      "columnName": "phase",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_reorg_operation",
+      "columnName": "original_fact_id",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_reorg_operation",
+      "columnName": "attribution_effect",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "json",
+      "tableName": "nx_cregis_reorg_operation",
+      "columnName": "snapshot_json",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "json",
+      "tableName": "nx_cregis_reorg_operation",
+      "columnName": "proof_json",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "json",
+      "tableName": "nx_cregis_reorg_operation",
+      "columnName": "events_json",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_reorg_operation",
+      "columnName": "created_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "incident_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "action",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "expected_version",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "char",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "evidence_hash",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "reason",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "maker_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "checker_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "status",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "version",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "pending_incident",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "created_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_reorg_proposal",
+      "columnName": "updated_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "incident_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "event_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "project_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "cid",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "user_id",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "net_amount",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "held_amount",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "recovered_amount",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "decimal",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "outstanding_debt",
+      "numericScale": 6,
+      "numericPrecision": 18
+    },
+    {
+      "dataType": "varchar",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "status",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "bigint",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "version",
+      "numericScale": 0,
+      "numericPrecision": 19
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "created_at",
+      "numericScale": null,
+      "numericPrecision": null
+    },
+    {
+      "dataType": "datetime",
+      "tableName": "nx_cregis_reorg_resolution",
+      "columnName": "updated_at",
+      "numericScale": null,
+      "numericPrecision": null
+    }
+  ],
+  "indexes": [
+    {
+      "indexName": "PRIMARY",
+      "tableName": "nx_cregis_deposit_event",
+      "indexColumns": "id"
+    },
+    {
+      "indexName": "uk_cregis_event_cid",
+      "tableName": "nx_cregis_deposit_event",
+      "indexColumns": "project_id,cid"
+    },
+    {
+      "indexName": "uk_cregis_event_log",
+      "tableName": "nx_cregis_deposit_event",
+      "indexColumns": "project_id,chain_id,txid,log_index"
+    },
+    {
+      "indexName": "PRIMARY",
+      "tableName": "nx_cregis_exception_claim",
+      "indexColumns": "id"
+    },
+    {
+      "indexName": "uk_cregis_claim_challenge",
+      "tableName": "nx_cregis_exception_claim",
+      "indexColumns": "challenge_id"
+    },
+    {
+      "indexName": "uk_cregis_claim_no",
+      "tableName": "nx_cregis_exception_claim",
+      "indexColumns": "case_no"
+    },
+    {
+      "indexName": "PRIMARY",
+      "tableName": "nx_cregis_exception_refund",
+      "indexColumns": "id"
+    },
+    {
+      "indexName": "uk_exception_refund_key",
+      "tableName": "nx_cregis_exception_refund",
+      "indexColumns": "business_key"
+    },
+    {
+      "indexName": "uk_exception_refund_no",
+      "tableName": "nx_cregis_exception_refund",
+      "indexColumns": "case_no"
+    },
+    {
+      "indexName": "PRIMARY",
+      "tableName": "nx_cregis_exception_refund_callback",
+      "indexColumns": "payload_hash"
+    },
+    {
+      "indexName": "PRIMARY",
+      "tableName": "nx_cregis_exception_refund_ledger",
+      "indexColumns": "id"
+    },
+    {
+      "indexName": "uk_exception_refund_event",
+      "tableName": "nx_cregis_exception_refund_ledger",
+      "indexColumns": "case_no,event_type"
+    },
+    {
+      "indexName": "PRIMARY",
+      "tableName": "nx_cregis_exception_refund_policy",
+      "indexColumns": "project_id"
+    },
+    {
+      "indexName": "PRIMARY",
+      "tableName": "nx_cregis_exception_refund_policy_case",
+      "indexColumns": "id"
+    },
+    {
+      "indexName": "PRIMARY",
+      "tableName": "nx_cregis_exception_source",
+      "indexColumns": "project_id,chain_id,txid,log_index"
+    },
+    {
+      "indexName": "PRIMARY",
+      "tableName": "nx_cregis_ownership_challenge",
+      "indexColumns": "challenge_id"
+    },
+    {
+      "indexName": "PRIMARY",
+      "tableName": "nx_cregis_reorg_operation",
+      "indexColumns": "operation_no"
+    },
+    {
+      "indexName": "uk_cregis_reorg_operation",
+      "tableName": "nx_cregis_reorg_operation",
+      "indexColumns": "incident_id,resolution_version"
+    },
+    {
+      "indexName": "PRIMARY",
+      "tableName": "nx_cregis_reorg_proposal",
+      "indexColumns": "id"
+    },
+    {
+      "indexName": "uk_cregis_reorg_pending",
+      "tableName": "nx_cregis_reorg_proposal",
+      "indexColumns": "pending_incident"
+    },
+    {
+      "indexName": "PRIMARY",
+      "tableName": "nx_cregis_reorg_resolution",
+      "indexColumns": "incident_id"
+    }
+  ]
+}

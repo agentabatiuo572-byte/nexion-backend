@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import static org.assertj.core.api.Assertions.*;
 
-/** Applies the actual three migration files twice in a separately created, fixed test-only schema. */
+/** Applies the actual exception and ERC20 migrations twice in a separately created test-only schema. */
 @EnabledIfEnvironmentVariable(named="CREGIS_EXCEPTION_MYSQL_IT",matches="true")
 class CregisExceptionMigrationMySqlTest {
     static final String SCHEMA="cregis_exception_migration_test";
@@ -33,7 +33,21 @@ class CregisExceptionMigrationMySqlTest {
                 execute(connection,"INSERT INTO nx_cregis_deposit_incident(event_id,project_id,cid,user_id,kind,held_amount) VALUES(1,42,3,7,'REORG_INVESTIGATING',40)");
                 assertThatThrownBy(()->guard(connection)).hasMessage("CREGIS_EXCEPTION_SCHEMA_MIGRATION_REQUIRED");
                 for(int run=0;run<2;run++)for(String migration:List.of("20261022_01_cregis_exception_claim.sql","20261022_02_cregis_exception_refund.sql","20261022_03_cregis_reorg_resolution.sql"))apply(connection,Files.readString(Path.of("scripts/migrations",migration)));
+                assertThatThrownBy(()->guard(connection)).hasMessage("CREGIS_EXCEPTION_SCHEMA_MIGRATION_REQUIRED");
+                // Other already-migrated tables touched by the real ERC20 migration; no business data is copied.
+                execute(connection,"ALTER TABLE nx_cregis_deposit_event ADD txid VARCHAR(66),ADD UNIQUE KEY uk_cregis_event_log(project_id,txid,log_index)");
+                execute(connection,"CREATE TABLE nx_cregis_chain_observation(project_id BIGINT,txid VARCHAR(66),log_index INT,UNIQUE KEY uk_cregis_observation_log(project_id,txid,log_index))");
+                execute(connection,"CREATE TABLE nx_cregis_deposit_delivery(id BIGINT PRIMARY KEY)");
+                execute(connection,"CREATE TABLE nx_cregis_reconcile_run(run_id VARCHAR(64) PRIMARY KEY)");
+                execute(connection,"CREATE TABLE nx_deposit_order(chain_name VARCHAR(32),chain_tx_hash VARCHAR(66),asset VARCHAR(16),chain_log_index INT,UNIQUE KEY uk_deposit_chain_tx_asset_log(chain_tx_hash,asset,chain_log_index))");
+                execute(connection,"CREATE TABLE nx_purchase_payment_intent(payment_method VARCHAR(24),address VARCHAR(64),UNIQUE KEY uk_purchase_address(address))");
+                execute(connection,"CREATE TABLE nx_purchase_payment_arrival(provider_project BIGINT,txid VARCHAR(66),log_index INT,UNIQUE KEY uk_purchase_arrival(provider_project,txid,log_index))");
+                execute(connection,"CREATE TABLE nx_cregis_address_pool_policy(id TINYINT PRIMARY KEY)");
+                for(int run=0;run<2;run++)apply(connection,Files.readString(Path.of("scripts/migrations/20261031_z_cregis_erc20_network.sql")));
                 guard(connection);
+                execute(connection,"INSERT INTO nx_cregis_exception_source(project_id,chain_id,txid,log_index,cid,address,gross_amount) VALUES(42,'2510','same-hash',1,10,'same-address',10),(42,'60','same-hash',1,11,'same-address',10)");
+                assertThat(value(connection,"SELECT COUNT(*) FROM nx_cregis_exception_source WHERE txid='same-hash'")).isEqualTo("2");
+                assertThatThrownBy(()->execute(connection,"INSERT INTO nx_cregis_exception_source(project_id,chain_id,txid,log_index,cid,address,gross_amount) VALUES(42,'60','same-hash',1,12,'same-address',10)")).isInstanceOf(SQLException.class);
                 assertThat(value(connection,"SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_cregis_ownership_challenge' AND COLUMN_NAME IN ('consumed_signature','signer','consumed_at')")).isEqualTo("3");
                 assertThat(value(connection,"SELECT message FROM nx_cregis_ownership_challenge WHERE challenge_id='legacy-unused'")).isEqualTo("legacy-issued-message");
                 assertThat(value(connection,"SELECT COUNT(*) FROM nx_cregis_ownership_challenge WHERE challenge_id='legacy-unused' AND consumed_ref IS NULL AND consumed_signature IS NULL AND signer IS NULL AND consumed_at IS NULL")).isEqualTo("1");
@@ -59,7 +73,19 @@ class CregisExceptionMigrationMySqlTest {
                 execute(connection,"ALTER TABLE nx_cregis_exception_source DROP COLUMN alias_of_log_index");
                 assertThatThrownBy(()->guard(connection)).hasMessage("CREGIS_EXCEPTION_SCHEMA_MIGRATION_REQUIRED");
                 execute(connection,"ALTER TABLE nx_cregis_exception_source ADD COLUMN alias_of_log_index INT NULL");
+                execute(connection,"DELETE FROM nx_cregis_exception_source WHERE chain_id='60'");
+                execute(connection,"ALTER TABLE nx_cregis_exception_source DROP PRIMARY KEY,ADD PRIMARY KEY(project_id,txid,log_index)");
+                assertThatThrownBy(()->guard(connection)).hasMessage("CREGIS_EXCEPTION_SCHEMA_MIGRATION_REQUIRED");
+                execute(connection,"ALTER TABLE nx_cregis_exception_source DROP PRIMARY KEY,DROP COLUMN chain_id");
+                assertThatThrownBy(()->guard(connection)).hasMessage("CREGIS_EXCEPTION_SCHEMA_MIGRATION_REQUIRED");
+                execute(connection,"ALTER TABLE nx_cregis_exception_source ADD chain_id VARCHAR(16) NOT NULL DEFAULT '2510',ADD PRIMARY KEY(chain_id,project_id,txid,log_index)");
+                assertThatThrownBy(()->guard(connection)).hasMessage("CREGIS_EXCEPTION_SCHEMA_MIGRATION_REQUIRED");
                 execute(connection,"ALTER TABLE nx_cregis_exception_source DROP PRIMARY KEY");
+                execute(connection,"ALTER TABLE nx_cregis_exception_source ADD KEY source_log(project_id,chain_id,txid,log_index)");
+                assertThatThrownBy(()->guard(connection)).hasMessage("CREGIS_EXCEPTION_SCHEMA_MIGRATION_REQUIRED");
+                execute(connection,"ALTER TABLE nx_cregis_exception_source DROP KEY source_log,ADD UNIQUE KEY source_log(project_id,chain_id,txid,log_index)");
+                assertThatThrownBy(()->guard(connection)).hasMessage("CREGIS_EXCEPTION_SCHEMA_MIGRATION_REQUIRED");
+                execute(connection,"ALTER TABLE nx_cregis_exception_source DROP KEY source_log,ADD PRIMARY KEY(project_id,chain_id,txid(8),log_index)");
                 assertThatThrownBy(()->guard(connection)).hasMessage("CREGIS_EXCEPTION_SCHEMA_MIGRATION_REQUIRED");
             } finally {execute(connection,"DROP DATABASE "+SCHEMA);}
         }
