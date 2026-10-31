@@ -498,7 +498,9 @@ public class SupportLeaderboardSourceService {
         }catch(IOException | IllegalArgumentException | DateTimeException | NullPointerException ex){return false;}
     }
     private static boolean jsonText(JsonNode node,String field,String expected) {
-        JsonNode value=node.get(field);return value!=null && (expected==null?value.isNull():value.isTextual() && expected.equals(value.textValue()));
+        JsonNode value=node.get(field);return value!=null && (expected==null?value.isNull():value.isTextual()
+            && ("currency".equals(field) ? ffdd.opsconsole.common.domain.LegacyUvtProof.matches(value.textValue(),expected)
+                : expected.equals(value.textValue())));
     }
     private static boolean jsonId(JsonNode node,String field,Long expected) {
         JsonNode value=node.get(field);return value!=null && (expected==null?value.isNull():value.isIntegralNumber()

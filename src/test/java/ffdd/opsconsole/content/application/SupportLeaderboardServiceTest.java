@@ -78,6 +78,17 @@ class SupportLeaderboardServiceTest {
         assertEquals(403,assertThrows(BizException.class,()->original.queryScope(ReadMode.ALL,null,null)).getCode());
         assertFalse(original.canReadAgent(7L,9L));
     }
+    @Test void verifiedLegacySnapshotUsesCurrentUvtPublicMetadataWithoutRewritingItsVersion() {
+        Harness h=new Harness();Context old=context(Board.netContribution,"NEX",NOW.minusSeconds(30));
+        Snapshot snapshot=SupportLeaderboard.calculate(old,"legacy-public-source",Coverage.COMPLETE,List.of(candidate(old,7,2)));
+        var publication=new Publication(23,NOW.minusSeconds(29),snapshot);
+        doReturn(new SupportLeaderboardCache.Generation(Map.of(SupportLeaderboardPublicationService.currentStreamKey(old),
+                new SupportLeaderboardCache.Entry(publication,false)))).when(h.cache).current();
+        var body=h.service.page(Map.of("currency",List.of("UVT")));
+        assertEquals("UVT",body.get("currency"));assertEquals(snapshot.viewVersion(),body.get("viewVersion"));
+        var first=(Map<?,?>)((List<?>)body.get("rows")).get(0);assertEquals("UVT",((Map<?,?>)first.get("amount")).get("currency"));
+        assertEquals("NEX",snapshot.context().currency());assertTrue(SupportLeaderboard.matchesSnapshotVersion(snapshot));
+    }
     @Test void cacheKeepsVersionAcrossPageSelfAndDetailDespiteNewSourceClock(){Harness h=new Harness();h.cache(NOW.minusSeconds(30));String v=h.cached.snapshot().viewVersion();
         var first=h.service.page(Map.of("pageSize",List.of("1")));var second=h.service.page(Map.of("pageNum",List.of("2"),"pageSize",List.of("1"),"expectedVersion",List.of(v)));
         var detail=h.service.detail(Map.of("expectedVersion",List.of(v)),7);assertEquals(v,first.get("viewVersion"));assertEquals(v,second.get("viewVersion"));assertEquals(v,detail.get("viewVersion"));

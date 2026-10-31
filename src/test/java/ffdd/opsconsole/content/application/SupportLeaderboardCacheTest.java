@@ -30,6 +30,17 @@ class SupportLeaderboardCacheTest {
         String payload=json.writeValueAsString(generation());when(values.get(SupportLeaderboardCache.KEY)).thenReturn(payload);
         var first=cache.current();assertSame(first,cache.current());assertEquals(1,first.entries().size());
     }
+    @Test void validatedLegacySnapshotKeepsItsDigestAndIsIndexedForCurrentUvtWhileCorruptionStillFails() throws Exception {
+        var context=SupportLeaderboardServiceTest.context(Board.netContribution,"NEX",SupportLeaderboardServiceTest.NOW.minusSeconds(30));
+        var snapshot=SupportLeaderboard.calculate(context,"legacy-cache",Coverage.COMPLETE,List.of(SupportLeaderboardServiceTest.candidate(context,7,2)));
+        var old=new SupportLeaderboardCache.Generation(Map.of(SupportLeaderboardPublicationService.streamKey(context),new SupportLeaderboardCache.Entry(new Publication(1,SupportLeaderboardServiceTest.NOW,snapshot),false)));
+        String payload=json.writeValueAsString(old);when(values.get(anyString())).thenReturn(payload);
+        var current=SupportLeaderboardServiceTest.context(Board.netContribution,"UVT",SupportLeaderboardServiceTest.NOW);
+        var view=cache.current();assertEquals(snapshot,view.entries().get(SupportLeaderboardPublicationService.streamKey(current)).publication().snapshot());
+        assertEquals(List.of(YearMonth.of(2026,10)),view.months(current));
+        when(values.get(anyString())).thenReturn(payload.replace("legacy-cache","tampered-cache"));
+        assertEquals("SUPPORT_LEADERBOARD_CACHE_INVALID",assertThrows(BizException.class,cache::current).getMessage());
+    }
     @Test void absentAndRedisOutageFailClosed(){assertEquals("SUPPORT_LEADERBOARD_CACHE_NOT_READY",assertThrows(BizException.class,cache::current).getMessage());
         when(values.get(anyString())).thenThrow(new DataAccessResourceFailureException("down"));assertEquals("SUPPORT_LEADERBOARD_CACHE_UNAVAILABLE",assertThrows(BizException.class,cache::current).getMessage());}
     @Test void digestExcludedFlagsAndWrongStreamAreRejected() throws Exception {

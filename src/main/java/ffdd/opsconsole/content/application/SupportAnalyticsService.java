@@ -319,7 +319,8 @@ public class SupportAnalyticsService {
                 && netLayer(evidence.path("group"),attribution.groupStatus(),attribution.groupId()) && netLayer(evidence.path("owner"),attribution.ownerStatus(),attribution.ownerAdminId());
         }catch(java.io.IOException | IllegalArgumentException | java.time.DateTimeException | NullPointerException ex){return false;}
     }
-    private static boolean netText(JsonNode node,String field,String expected){var v=node.get(field);return v!=null && (expected==null?v.isNull():v.isTextual() && expected.equals(v.textValue()));}
+    private static boolean netText(JsonNode node,String field,String expected){var v=node.get(field);return v!=null && (expected==null?v.isNull():v.isTextual()
+        && ("currency".equals(field)?ffdd.opsconsole.common.domain.LegacyUvtProof.matches(v.textValue(),expected):expected.equals(v.textValue())));}
     private static boolean netId(JsonNode node,String field,Long expected){var v=node.get(field);return v!=null && (expected==null?v.isNull():v.isIntegralNumber() && v.canConvertToLong() && v.longValue()==expected);}
     private static boolean netLayer(JsonNode node,String status,Long id){return node.isObject() && netText(node,"status",status) && netId(node,"id",id);}
     private Result evaluate(Query query,ReadScope scope,QueryCapture capture) {

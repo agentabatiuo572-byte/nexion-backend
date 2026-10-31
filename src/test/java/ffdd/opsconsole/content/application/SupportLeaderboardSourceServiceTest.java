@@ -674,6 +674,16 @@ class SupportLeaderboardSourceServiceTest {
         when(f.mapper.attributions()).thenReturn(List.of());when(f.mapper.attributionProofs()).thenReturn(List.of());
         assertUnknownMoney(f.read(Board.netContribution),Reason.ATTRIBUTION_UNKNOWN);
     }
+    @Test void legacyImmutableNexAttributionMatchesMigratedUvtFactWithoutAcceptingWrongCurrencyOrAmount() {
+        var f=new Fixture();var deposit=fact(1,1,Kind.DEPOSIT,"UVT",LocalDateTime.parse("2026-10-01T10:00:00"));
+        f.events(deposit);f.financial(List.of(deposit),ready(1));f.net(deposit,change(deposit,"1.25",deposit.succeededAt()));
+        var saved=netProof(deposit,attribution(deposit));
+        String original=saved.sourceFactJson().replace("\"currency\":\"UVT\"","\"currency\":\"NEX\"");
+        when(f.mapper.attributionProofs()).thenReturn(List.of(new AttributionProof(saved.factId(),saved.sourcePartition(),saved.captureDbUtc(),original,saved.attributionEvidenceJson())));
+        assertMoney(f.read(Board.netContribution),"1.25");
+        when(f.mapper.attributionProofs()).thenReturn(List.of(new AttributionProof(saved.factId(),saved.sourcePartition(),saved.captureDbUtc(),original.replace("NEX","USDT"),saved.attributionEvidenceJson())));
+        assertUnknownMoney(f.read(Board.netContribution),Reason.ATTRIBUTION_UNKNOWN);
+    }
     @Test void unassignedOwnerIsExcludedWithoutSpreadingButUnknownIsNotZero() {
         var f=new Fixture();var deposit=fact(1,1,Kind.DEPOSIT,"UVT",LocalDateTime.parse("2026-10-01T10:00:00"));
         f.financial(List.of(deposit),ready(1));f.net(deposit,change(deposit,"1.25",deposit.succeededAt()));

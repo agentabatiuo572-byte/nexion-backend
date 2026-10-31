@@ -39,6 +39,18 @@ class SupportPaymentCapturedSourceProofTest {
         assertThat(decoded.ledgerRecordedAt()).isNotEqualTo(decoded.succeededAt());
         assertThat(decoded.sourceConfirmationAt()).isNotEqualTo(decoded.succeededAt());
     }
+    @Test void immutableNexCaptureProjectsOnlyCurrencyAndRejectsActualAmountOrOtherCurrencyMismatch() throws Exception {
+        var stored=proof();var original=saved(stored);original.put("currency","NEX");storeSaved(stored,original);
+        Fact migrated=new Fact(wallet.factId(),wallet.kind(),wallet.source(),wallet.sourceIds(),wallet.customerId(),wallet.ledgerId(),
+            wallet.sourceBusinessId(),wallet.orderNo(),wallet.orderType(),wallet.originalFactId(),"UVT",wallet.amount(),wallet.succeededAt(),
+            wallet.successTimeField(),wallet.fractionalSecondDigits(),wallet.providerPaidAt(),wallet.ledgerRecordedAt(),wallet.sourceConfirmationAt(),wallet.sourceVersion(),wallet.historicalEnvironmentStatus());
+        String raw=(String)stored.get("sourceFactJson");
+        assertThat(SupportPaymentCapturedSourceProof.matchesExpected(migrated,null,stored,json)).isTrue();
+        assertThat(decode(stored)).isEqualTo(migrated);assertThat(stored.get("sourceFactJson")).isEqualTo(raw);
+        assertThat(matches(stored)).isFalse(); // NEX is not interchangeable with USDT.
+        original.put("amount",new BigDecimal("80.123457"));storeSaved(stored,original);
+        assertThat(SupportPaymentCapturedSourceProof.matchesExpected(migrated,null,stored,json)).isFalse();
+    }
 
     @Test void extractionPreservesLegacyComparatorWithoutPretendingToDecodeMissingNewHistoryFields() throws Exception {
         var proof=proof();var saved=saved(proof);saved.remove("sourceVersion");storeSaved(proof,saved);

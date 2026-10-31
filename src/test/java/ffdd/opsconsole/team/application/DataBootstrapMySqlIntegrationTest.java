@@ -63,6 +63,7 @@ class DataBootstrapMySqlIntegrationTest {
         cfg.setMapUnderscoreToCamelCase(true);
         cfg.addMapper(TeamCommissionMapper.class);cfg.addMapper(AppTeamInsightsMapper.class);
         cfg.addMapper(AppWalletBillsMapper.class);cfg.addMapper(NexMarketMapper.class);
+        cfg.addMapper(ffdd.opsconsole.content.mapper.SupportLeaderboardPublicationMapper.class);
         sessions=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(cfg));
         mysql(Files.readString(Path.of("scripts/migrations/20261101_vrank_bootstrap.sql")),true);
         Files.writeString(evidence.resolve("database.txt"),database+" port="+port+"\n");
@@ -72,8 +73,9 @@ class DataBootstrapMySqlIntegrationTest {
 
     @AfterEach void reset() {
         A2ReplayContext.exitReplay();
+        jdbc.update("DELETE FROM nx_support_leaderboard_latest");
         for(String table:List.of("nx_earnings_source_recovery","nx_earnings_release_entry","nx_wallet_asset_adjustment","nx_support_leaderboard_publication",
-                "nx_earning_event","nx_commission_event","nx_price_index","nx_wallet_ledger","nx_v_rank_config","nx_v_rank_reward_rule")) jdbc.update("DELETE FROM "+table);
+                "nx_support_payment_attribution","nx_earning_event","nx_commission_event","nx_price_index","nx_wallet_ledger","nx_v_rank_config","nx_v_rank_reward_rule")) jdbc.update("DELETE FROM "+table);
         jdbc.execute("DROP TABLE IF EXISTS nx_uvt_legacy_price_archive");
         for(String index:jdbc.queryForList("SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_price_index' AND INDEX_NAME='test_uvt_quote'",String.class))
             jdbc.execute("ALTER TABLE nx_price_index DROP INDEX "+index);
@@ -148,6 +150,79 @@ class DataBootstrapMySqlIntegrationTest {
         migration();migration();
         expected.forEach((table,rows)->assertThat(jdbc.queryForList("SELECT * FROM "+table)).as(table).isEqualTo(rows));
         Files.writeString(evidence.resolve("legacy-original-tables.json"),new ObjectMapper().findAndRegisterModules().writeValueAsString(expected));
+    }
+
+    @Test void migratedImmutablePublicationIsReadByActualConsumerAndCorruptionStillFails() throws Exception {
+        var now=java.time.Instant.parse("2026-10-09T01:00:00.123456Z");
+        var oldContext=new ffdd.opsconsole.content.domain.SupportLeaderboard.Context(
+                ffdd.opsconsole.content.domain.SupportLeaderboard.Board.netContribution,java.time.YearMonth.of(2026,10),java.time.YearMonth.of(2026,10),
+                "NEX",ffdd.opsconsole.content.domain.SupportLeaderboard.Scope.all,Set.of(),ffdd.opsconsole.content.domain.SupportLeaderboard.NET_DEFINITION,now.minusSeconds(86400));
+        var count=new ffdd.opsconsole.content.domain.SupportLeaderboard.Count(1L,ffdd.opsconsole.content.domain.SupportLeaderboard.Coverage.COMPLETE,ffdd.opsconsole.content.domain.SupportLeaderboard.Reason.NONE);
+        var amount=new ffdd.opsconsole.content.domain.SupportLeaderboard.Amount(new BigDecimal("12.345678"),"NEX",oldContext.referenceMonth(),ffdd.opsconsole.content.domain.SupportLeaderboard.AmountKind.NET_CONTRIBUTION,
+                ffdd.opsconsole.content.domain.SupportLeaderboard.Coverage.COMPLETE,ffdd.opsconsole.content.domain.SupportLeaderboard.Reason.NONE,"legacy-money-source");
+        var snapshot=ffdd.opsconsole.content.domain.SupportLeaderboard.calculate(oldContext,"legacy-source",ffdd.opsconsole.content.domain.SupportLeaderboard.Coverage.COMPLETE,
+                List.of(new ffdd.opsconsole.content.domain.SupportLeaderboard.Candidate(7,"Legacy agent",null,"Group",ffdd.opsconsole.content.domain.SupportLeaderboard.Qualification.ACTIVE,count,count,amount,null)));
+        var json=new ObjectMapper().findAndRegisterModules();String payload=json.writeValueAsString(snapshot);
+        String hash=HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        String stream=ffdd.opsconsole.content.application.SupportLeaderboardPublicationService.streamKey(oldContext);
+        jdbc.update("""
+                INSERT INTO nx_support_leaderboard_publication(stream_key,board,rank_month,reference_month,currency,rank_currency,scope,groups_key,definition_version,source_version,view_version,comparison_key,evaluated_at,published_at,state,payload,payload_hash)
+                VALUES(?,'netContribution','2026-10','2026-10','NEX','NEX','all','',?,?,?,?,?,?,'COMPLETE',?,?)
+                """,stream,oldContext.definitionVersion(),snapshot.sourceVersion(),snapshot.viewVersion(),snapshot.comparisonKey(),
+                java.time.LocalDateTime.ofInstant(oldContext.evaluatedAt(),java.time.ZoneOffset.UTC),java.time.LocalDateTime.ofInstant(oldContext.evaluatedAt().plusSeconds(1),java.time.ZoneOffset.UTC),payload,hash);
+        long id=jdbc.queryForObject("SELECT id FROM nx_support_leaderboard_publication WHERE stream_key=?",Long.class,stream);
+        jdbc.update("INSERT INTO nx_support_leaderboard_latest(stream_key,publication_id) VALUES(?,?)",stream,id);
+        var service=new ffdd.opsconsole.content.application.SupportLeaderboardPublicationService(sessions.getMapper(ffdd.opsconsole.content.mapper.SupportLeaderboardPublicationMapper.class));
+        var current=new ffdd.opsconsole.content.domain.SupportLeaderboard.Context(oldContext.board(),oldContext.rankMonth(),oldContext.referenceMonth(),"UVT",oldContext.scope(),oldContext.approvedGroupIds(),oldContext.definitionVersion(),now);
+        var read=new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));read.setReadOnly(true);read.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        assertThat(read.execute(s->service.latest(oldContext,snapshot.viewVersion())).snapshot()).isEqualTo(snapshot);
+        assertThatThrownBy(()->read.execute(s->service.latest(current,snapshot.viewVersion()))).hasMessage("SUPPORT_LEADERBOARD_PUBLICATION_UNAVAILABLE");
+        migration();
+        assertThat(read.execute(s->service.latest(current,snapshot.viewVersion())).snapshot()).isEqualTo(snapshot);
+        var previousDay=read.execute(s->service.previousBusinessDay(current));assertThat(previousDay).hasSize(1);
+        assertThat(jdbc.queryForObject("SELECT currency FROM nx_support_leaderboard_publication WHERE id=?",String.class,id)).isEqualTo("UVT");
+        assertThat(jdbc.queryForObject("SELECT payload FROM nx_support_leaderboard_publication WHERE id=?",String.class,id)).isEqualTo(payload);
+        assertThat(jdbc.queryForObject("SELECT payload_hash FROM nx_support_leaderboard_publication WHERE id=?",String.class,id)).isEqualTo(hash);
+        jdbc.update("UPDATE nx_support_leaderboard_publication SET payload=? WHERE id=?",payload.replace("legacy-source","tampered-source"),id);
+        assertThatThrownBy(()->read.execute(s->service.latest(current,snapshot.viewVersion()))).hasMessage("SUPPORT_LEADERBOARD_PUBLICATION_UNAVAILABLE");
+        Files.writeString(evidence.resolve("immutable-publication-consumer.json"),json.writeValueAsString(Map.of("legacyVersion",snapshot.viewVersion(),"rawHash",hash,"migratedColumn","UVT","rawContext","NEX","consumerRead",true,"tamperRejected",true)));
+    }
+
+    @Test void migratedAttributionOriginalNexProofPassesBothActualConsumersButOtherCurrencyAndAmountDoNot() throws Exception {
+        var json=new ObjectMapper();var at=java.time.LocalDateTime.parse("2026-10-08T10:00:00");var captured=java.time.LocalDateTime.parse("2026-10-08T02:00:01");
+        var source=new LinkedHashMap<String,Object>();source.put("factId","DEPOSIT:501");source.put("customerId",1);source.put("ledgerId",501);
+        source.put("kind","DEPOSIT");source.put("source","VIETQR");source.put("currency","NEX");source.put("amount",new BigDecimal("12.345678"));
+        source.put("succeededAt",at.toString());source.put("businessZone","Asia/Shanghai");source.put("fractionalSecondDigits",0);
+        var layer=new LinkedHashMap<String,Object>();layer.put("status","UNASSIGNED");layer.put("id",null);
+        var evidence=new LinkedHashMap<String,Object>();evidence.put("schemaVersion","support-payment-attribution-v1");evidence.put("captureMode","NEW_SUCCESS");
+        evidence.put("captureZone","UTC");evidence.put("captureDbUtc",captured.toString());evidence.put("sourcePartition",null);
+        evidence.put("agent",layer);evidence.put("group",layer);evidence.put("owner",layer);
+        String raw=json.writeValueAsString(source),evidenceJson=json.writeValueAsString(evidence);
+        jdbc.update("""
+                INSERT INTO nx_support_payment_attribution(fact_id,customer_id,kind,source,ledger_id,source_business_id,currency,amount,succeeded_at,source_business_zone,success_time_field,fractional_second_digits,
+                  capture_db_utc,agent_status,group_status,owner_status,capture_mode,capture_schema_version,source_fact_json,attribution_evidence_json)
+                VALUES('DEPOSIT:501',1,'DEPOSIT','VIETQR',501,'business501','NEX',12.345678,?,'Asia/Shanghai','nx_wallet_ledger.created_at',0,?,'UNASSIGNED','UNASSIGNED','UNASSIGNED','NEW_SUCCESS','support-payment-attribution-v1',?,?)
+                """,at,captured,raw,evidenceJson);
+        migration();
+        var proof=jdbc.queryForObject("SELECT fact_id,source_partition,capture_db_utc,source_fact_json,attribution_evidence_json FROM nx_support_payment_attribution",(r,n)->
+                new ffdd.opsconsole.content.mapper.SupportAnalyticsMapper.AttributionProof(r.getString(1),r.getString(2),r.getObject(3,java.time.LocalDateTime.class),r.getString(4),r.getString(5)));
+        var row=new ffdd.opsconsole.content.mapper.SupportAnalyticsMapper.AttributionRow("DEPOSIT:501",1L,"DEPOSIT","VIETQR",501L,"business501",null,null,null,
+                jdbc.queryForObject("SELECT currency FROM nx_support_payment_attribution",String.class),new BigDecimal("12.345678"),at,"Asia/Shanghai","nx_wallet_ledger.created_at",0,"NEW_SUCCESS","support-payment-attribution-v1",null,null,null,"UNASSIGNED","UNASSIGNED","UNASSIGNED");
+        var fact=new ffdd.opsconsole.finance.facade.SupportPaymentFacts.Fact("DEPOSIT:501",ffdd.opsconsole.finance.facade.SupportPaymentFacts.Kind.DEPOSIT,
+                ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source.VIETQR,List.of("nx_wallet_ledger:501"),1,501,"business501",null,null,null,"UVT",new BigDecimal("12.345678"),at,"nx_wallet_ledger.created_at",0,null,at,null,null,ffdd.opsconsole.finance.facade.SupportPaymentFacts.Status.UNKNOWN);
+        for(String[] consumer:new String[][]{{"ffdd.opsconsole.content.application.SupportLeaderboardSourceService","savedProof"},{"ffdd.opsconsole.content.application.SupportAnalyticsService","netProof"}}) {
+            Class<?> proofType=consumer[1].equals("savedProof")?ffdd.opsconsole.content.mapper.SupportLeaderboardMapper.AttributionProof.class:proof.getClass();
+            var constructor=proofType.getConstructor(String.class,String.class,java.time.LocalDateTime.class,String.class,String.class);
+            Object currentProof=constructor.newInstance(proof.factId(),proof.sourcePartition(),proof.captureDbUtc(),proof.sourceFactJson(),proof.attributionEvidenceJson());
+            var method=Class.forName(consumer[0]).getDeclaredMethod(consumer[1],proofType,row.getClass(),fact.getClass());method.setAccessible(true);
+            assertThat((Boolean)method.invoke(null,currentProof,row,fact)).as(consumer[0]).isTrue();
+            for(String corrupted:List.of(proof.sourceFactJson().replace("NEX","USDT"),proof.sourceFactJson().replace("12.345678","12.345679"))) {
+                var altered=constructor.newInstance(proof.factId(),proof.sourcePartition(),proof.captureDbUtc(),corrupted,proof.attributionEvidenceJson());
+                assertThat((Boolean)method.invoke(null,altered,row,fact)).as(consumer[0]).isFalse();
+            }
+        }
+        assertThat(json.readTree(proof.sourceFactJson())).isEqualTo(json.readTree(raw));
+        Files.writeString(this.evidence.resolve("immutable-attribution-consumers.json"),json.writeValueAsString(Map.of("typedCurrency",row.currency(),"originalCurrency",json.readTree(proof.sourceFactJson()).path("currency").asText(),"bothConsumers",true,"currencyAndAmountTamperRejected",true)));
     }
 
     @Test void approvedBootstrapReturnsNineActualRanksAndExistingConfigurationCannotBeOverwritten() throws Exception {

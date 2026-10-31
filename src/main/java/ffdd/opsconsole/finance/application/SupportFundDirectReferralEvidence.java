@@ -51,7 +51,7 @@ public class SupportFundDirectReferralEvidence {
             var operations=input.operations().stream().filter(o->"SUPPORT_DIRECT_REFERRAL".equals(o.get("businessType"))&&current.key().equals(o.get("sourceKey"))).sorted(Comparator.comparingLong(o->number(o.get("id")))).toList();
             Source tail=null;var coveredLedgers=new HashSet<Long>();
             for(var op:operations) {
-                var source=codec.read(text(op.get("sourceSnapshotJson")));var proof=codec.read(text(op.get("sourceProofJson")));
+                var source=codec.readCurrentProof(text(op.get("sourceSnapshotJson")));var proof=codec.readCurrentProof(text(op.get("sourceProofJson")));
                 var before=source(source.path("before"));var after=source(source.path("after"));
                 require(current.key().equals(before.key())&&current.key().equals(after.key()));
                 if(tail==null)initial(before);else require(sourceFollows(tail,before,Set.of()));
@@ -70,10 +70,12 @@ public class SupportFundDirectReferralEvidence {
         }
         return new ValidatedReversals(fingerprints);
     }
-    public Verified verify(Map<String,Object> operation,JsonNode source,JsonNode proof,List<Event> events,Inputs input) {
+    public Verified verify(Map<String,Object> operation,JsonNode originalSource,JsonNode originalProof,List<Event> events,Inputs input) {
+        JsonNode source=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalSource);
+        JsonNode proof=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalProof);
         Source before=source(source.path("before")),after=source(source.path("after"));
         validate(Set.of(SupportDirectReferralReadFacade.customer(after)),input);
-        require(events.equals(decode(operation,input))&&equal(codec.read(text(operation.get("sourceSnapshotJson"))),source)&&equal(codec.read(text(operation.get("sourceProofJson"))),proof));
+        require(events.equals(decode(operation,input))&&equal(codec.readCurrentProof(text(operation.get("sourceSnapshotJson"))),source)&&equal(codec.readCurrentProof(text(operation.get("sourceProofJson"))),proof));
         return verified(operation,source,proof,events,input,before,after,new HashSet<>());
     }
     public void verifyCoverage(Set<Long> component,Inputs input,Set<String> coveredPhases) {
@@ -151,20 +153,20 @@ public class SupportFundDirectReferralEvidence {
     }
     private void originalCredit(Map<String,Object> entry,Inputs input) {
         require("DIRECT_REFERRAL".equals(entry.get("sourceType"))&&"PRODUCTION".equals(entry.get("sourceEnvironment"))&&flag(entry.get("isDeleted"))==0&&amount(entry.get("recoveredAmount")).signum()==0);
-        var op=one(input.operations(),"operationKey","EARNINGS:CREDIT:"+text(entry.get("entryNo")));var events=decode(op,input);var original=codec.read(text(op.get("sourceSnapshotJson"))).path("entry");
+        var op=one(input.operations(),"operationKey","EARNINGS:CREDIT:"+text(entry.get("entryNo")));var events=decode(op,input);var original=codec.readCurrentProof(text(op.get("sourceSnapshotJson"))).path("entry");
         require("SUPPORT_EARNINGS".equals(op.get("businessType"))&&"CREDIT".equals(op.get("phase"))&&"nx_earnings_release_entry".equals(op.get("sourceTable"))&&entry.get("entryNo").equals(op.get("sourceKey"))&&"PRODUCTION".equals(op.get("sourceEnvironment"))&&parties(op,input).equals(List.of(number(entry.get("userId"))))&&"ACTIVE".equals(text(original.path("status")))&&"DIRECT_REFERRAL".equals(text(original.path("sourceType"))));
         for(String key:CREDIT_IMMUTABLE)require(equal(original.path(key),entry.get(key)));
         require(events.size()==1&&events.get(0).id().equals("EARNINGS:"+entry.get("entryNo"))&&Set.of(Action.EARNINGS,Action.PROTECTED_EARNINGS).contains(events.get(0).action())&&events.get(0).to().equals(new Account(number(entry.get("userId")),text(entry.get("asset")),"available"))&&events.get(0).amount().compareTo(amount(entry.get("amount")))==0);
         // The first ACTIVE before-state is an actual historical row in this validated chain, not an ACTIVE override.
         if("ACTIVE".equals(entry.get("status"))) {
             var historical=new LinkedHashMap<>(entry);for(String field:List.of("createdAt","updatedAt","releasedAt"))if(historical.get(field)!=null)historical.put(field,time(historical.get(field)));
-            new SupportFundEarningsEvidence(codec,json).verify(op,codec.read(text(op.get("sourceSnapshotJson"))),codec.read(text(op.get("sourceProofJson"))),events,new SupportFundEarningsEvidence.Inputs(List.of(historical),List.of(),List.of(),List.of(),input.raw(),input.precisions()));
+            new SupportFundEarningsEvidence(codec,json).verify(op,codec.readCurrentProof(text(op.get("sourceSnapshotJson"))),codec.readCurrentProof(text(op.get("sourceProofJson"))),events,new SupportFundEarningsEvidence.Inputs(List.of(historical),List.of(),List.of(),List.of(),input.raw(),input.precisions()));
         }
     }
     private void originalCommission(Source source,Map<String,Object> release,Inputs input) {
         String id=source.key().substring(2);var matches=input.operations().stream().filter(o->"SUPPORT_COMMISSION".equals(o.get("businessType"))&&"RELEASE".equals(o.get("phase"))&&id.equals(o.get("sourceKey"))).toList();require(matches.size()==1);
         var events=decode(matches.get(0),input);require(events.size()==1&&("COMMISSION:"+id+":RELEASE").equals(events.get(0).id())&&Set.of(Action.EARNINGS,Action.PROTECTED_EARNINGS).contains(events.get(0).action())&&events.get(0).amount().compareTo(amount(release.get("amount")))==0&&events.get(0).to().equals(new Account(SupportDirectReferralReadFacade.customer(source),text(source.subject().get("currency")),"available")));
-        var snapshot=codec.read(text(matches.get(0).get("sourceSnapshotJson")));require(equal(snapshot.path("ledger"),release));
+        var snapshot=codec.readCurrentProof(text(matches.get(0).get("sourceSnapshotJson")));require(equal(snapshot.path("ledger"),release));
     }
     private void validateCurrent(Source source) {
         require(source.key().matches("S:[^\\s:]{1,96}|R:[1-9][0-9]{0,18}")&&SupportDirectReferralReadFacade.customer(source)>0&&flag(source.subject().get("support_user_sandbox"))==0&&flag(source.subject().get("support_user_deleted"))==0);

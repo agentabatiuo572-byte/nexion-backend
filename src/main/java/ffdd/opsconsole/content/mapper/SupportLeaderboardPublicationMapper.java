@@ -35,6 +35,16 @@ public interface SupportLeaderboardPublicationMapper {
     @Options(useCache = false)
     Stored latest(@Param("streamKey") String streamKey);
 
+    // Historical stream hashes remain immutable. This uses migrated UVT columns only,
+    // never a second asset code, when the current stream has no publication yet.
+    @Select("SELECT " + COLUMNS + " FROM nx_support_leaderboard_publication WHERE id=("
+        + "SELECT p.id FROM nx_support_leaderboard_latest l JOIN nx_support_leaderboard_publication p ON p.id=l.publication_id "
+        + "WHERE p.board=#{board} AND p.rank_month <=> #{rankMonth} AND p.reference_month=#{referenceMonth} "
+        + "AND p.currency=#{currency} AND p.rank_currency <=> #{rankCurrency} AND p.scope=#{scope} AND p.groups_key=#{groupsKey} "
+        + "ORDER BY p.evaluated_at DESC,p.id DESC LIMIT 1)")
+    @Options(useCache = false)
+    Stored latestByIdentity(Map<String,Object> identity);
+
     @Insert("""
         INSERT INTO nx_support_leaderboard_publication
         (stream_key,board,rank_month,reference_month,currency,rank_currency,scope,groups_key,

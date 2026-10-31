@@ -574,6 +574,21 @@ class SupportFundJournalBindingServiceTest {
         assertThat(reader.decodeReceipt(row,List.of(7L),List.of())).isSameAs(decoded);
     }
 
+    @Test void legacyNexReceiptAuthenticatesOriginalDigestBeforeCurrentAccountsAndNeverEnablesLegacyWrites() {
+        String events="[{\"id\":\"old-event\",\"action\":\"EARNINGS\",\"from\":null,\"to\":{\"customerId\":7,\"currency\":\"UVT\",\"slot\":\"available\"},\"reference\":null,\"amount\":1,\"targetAmount\":null}]";
+        service.bind(service.begin(List.of(7L)),input(events));
+        var historical=new HashMap<>(mapper.operation);LegacyUvtProofFixture.makeLegacy(historical,List.of(7L),List.of(),service);
+        var original=new HashMap<>(historical);
+        assertThat(service.decodeReceipt(historical,List.of(7L),List.of()).get(0).to().currency()).isEqualTo("UVT");
+        assertThat(historical).isEqualTo(original);
+        for(String replacement:List.of("USDT","VND")) {
+            var tampered=new HashMap<>(historical);tampered.put("orderedEventsJson",((String)historical.get("orderedEventsJson")).replace("NEX",replacement));
+            assertThatThrownBy(()->service.decodeReceipt(tampered,List.of(7L),List.of())).hasMessage("CONFLICTING_FUND_OPERATION_RECEIPT");
+        }
+        assertThatThrownBy(()->service.bind(service.begin(List.of(7L)),input(events.replace("UVT","NEX"))))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test void oversizedReceiptRemainsReadableWithoutRetainingItInTheDecodeCache() {
         var base=input("[]");
         var large=new ReceiptInput(base.operationKey(),base.businessType(),base.phase(),base.sourceTable(),base.sourceKey(),

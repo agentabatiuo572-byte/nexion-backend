@@ -23,7 +23,9 @@ public class SupportFundGenesisEvidence {
     public record Inputs(Snapshot history,List<SupportGenesisReadFacade.Source> sources,List<Map<String,Object>> raw,
                          List<Map<String,Object>> operations,List<Map<String,Object>> parties,List<Map<String,Object>> legs) {}
     public record Verified(Stamp stamp,List<Point> points,String factId) {public Verified {points=List.copyOf(points);}}
-    public Verified verify(Map<String,Object> operation,JsonNode source,JsonNode proof,List<Event> events,Inputs input) {
+    public Verified verify(Map<String,Object> operation,JsonNode originalSource,JsonNode originalProof,List<Event> events,Inputs input) {
+        JsonNode source=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalSource);
+        JsonNode proof=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalProof);
         require(operation!=null &&source!=null &&proof!=null &&events!=null);validInputs(input);
         keys(source,Set.of("schemaVersion","customerId","factId","source","orderNo","currency","amount","succeededAt","fractionalSecondDigits","businessZone","settlement"));
         keys(proof,Set.of("schemaVersion","beforeHolding","acquisitionSource","cashBefore","cashAfter","cashTrace"));

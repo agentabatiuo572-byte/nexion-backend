@@ -1204,7 +1204,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
             var source=fundRead(text(operation,"sourceSnapshotJson"));
             if(!FUND_PROOF.equals(source.path("schemaVersion").asText()) || !original.factId().equals(source.path("factId").asText())
                 || source.path("customerId").asLong()!=original.customerId() || !original.source().name().equals(source.path("source").asText())
-                || !original.currency().equals(source.path("currency").asText()) || source.path("amount").decimalValue().compareTo(original.amount())!=0)
+                || !ffdd.opsconsole.common.domain.LegacyUvtProof.matches(source.path("currency").asText(),original.currency()) || source.path("amount").decimalValue().compareTo(original.amount())!=0)
                 throw failure("PAYMENT_FUND_ORIGINAL_CONSUME_MISMATCH");
             int count=0;
             for(var node:fundRead(text(operation,"orderedEventsJson"))) {
@@ -1250,7 +1250,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
                 || !fact.factId().equals(source.path("factId").asText()) || source.path("customerId").asLong()!=fact.customerId()
                 || !fact.source().name().equals(source.path("source").asText()) || !fact.sourceBusinessId().equals(source.path("stableBusinessKey").asText())
                 || !Objects.equals(partition,source.path("sourcePartition").isNull()?null:source.path("sourcePartition").asText())
-                || !fact.currency().equals(source.path("currency").asText()) || !source.path("amount").isNumber()
+                || !ffdd.opsconsole.common.domain.LegacyUvtProof.matches(source.path("currency").asText(),fact.currency()) || !source.path("amount").isNumber()
                 || source.path("amount").decimalValue().compareTo(fact.amount())!=0
                 || !Objects.equals(fact.orderNo(),source.path("orderNo").isNull()?null:source.path("orderNo").asText())
                 || !Objects.equals(fact.succeededAt().toString(),source.path("succeededAt").asText())
@@ -1266,9 +1266,8 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
             digest.put("sourceProofJson",canonicalFund(proof).toString());digest.put("customerIds",List.of(fact.customerId()));
             var digestLegs=new ArrayList<Map<String,Object>>();var eventIds=new HashSet<String>();
             for(var node:events) {
-                Event event=json.treeToValue(node,Event.class);SupportFundAllocation.validate(event);
-                if(!eventIds.add(event.id()) || event.from()!=null && event.from().customerId()!=fact.customerId()
-                    || event.to()!=null && event.to().customerId()!=fact.customerId())throw failure("PAYMENT_FUND_STORED_RECEIPT_MISMATCH");
+                if(!node.path("id").isTextual() || !eventIds.add(node.path("id").textValue()))
+                    throw failure("PAYMENT_FUND_STORED_RECEIPT_MISMATCH");
             }
             long last=0;String incarnation=null;var tracedEvents=new HashSet<String>();
             for(int i=0;i<legs.size();i++) {
@@ -1287,6 +1286,13 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
             digest.put("legs",digestLegs);
             if(!hash(canonicalFund(json.valueToTree(digest)).toString()).equals(text(operation,"receiptSha256")))
                 throw failure("PAYMENT_FUND_STORED_RECEIPT_MISMATCH");
+            // Decode current accounts only after the ORIGINAL immutable receipt digest passed.
+            for(var node:events) {
+                Event event=json.treeToValue(ffdd.opsconsole.common.domain.LegacyUvtProof.current(node),Event.class);
+                SupportFundAllocation.validate(event);
+                if(event.from()!=null && event.from().customerId()!=fact.customerId()
+                    || event.to()!=null && event.to().customerId()!=fact.customerId())throw failure("PAYMENT_FUND_STORED_RECEIPT_MISMATCH");
+            }
         } catch(com.fasterxml.jackson.core.JsonProcessingException ex) {throw failure("PAYMENT_FUND_STORED_RECEIPT_MISMATCH");}
     }
 

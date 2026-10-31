@@ -148,7 +148,7 @@ public class SupportLeaderboardService {
         if(a.scopes().containsKey(Scope.ownGroup))options.add(map("scope","ownGroup","groups",a.own().stream().map(g->map("id",g.groupId().toString(),"name",g.name())).toList()));
         if(a.scopes().containsKey(Scope.managedGroups))options.add(map("scope","managedGroups","groups",a.managed().stream().map(g->map("id",g.id().toString(),"name",g.name())).toList()));
         return map("viewVersion",s.viewVersion(),"queryVersion",s.viewVersion(),"sourceVersion",s.sourceVersion(),"definitionVersion",c.definitionVersion(),
-            "board",c.board().name(),"rankMonth",c.rankMonth()==null?null:c.rankMonth().toString(),"referenceMonth",c.referenceMonth().toString(),"currency",c.currency(),
+            "board",c.board().name(),"rankMonth",c.rankMonth()==null?null:c.rankMonth().toString(),"referenceMonth",c.referenceMonth().toString(),"currency",ffdd.opsconsole.common.domain.LegacyUvtProof.currency(c.currency()),
             "scope",c.scope().name(),"businessZone",SupportLeaderboard.BUSINESS_ZONE.getId(),"asOf",c.evaluatedAt().toString(),
             "publishedAt",r.publication().publishedAt().toString(),"state",s.state().name(),"candidateCoverage",s.candidateCoverage().name(),
             "stale",expired(r.publication(),r.now(),r.interval()),"refreshFailed",r.refreshFailed(),"selectableMonths",r.months().stream().map(Object::toString).toList(),
@@ -159,7 +159,7 @@ public class SupportLeaderboardService {
         return map("agentId",Long.toString(r.agentId()),"name",r.name(),"avatarUrl",r.avatarUrl()==null?null:avatarUrl(r.agentId(),q,version),
             "groupName",r.groupName(),"qualification",r.qualification().name(),"rank",r.rank(),"isTied",r.isTied(),"rankMetricCoverage",r.rankMetricCoverage().name(),
             "firstPayment",count(r.firstPayment()),"customers",count(r.customers()),"amount",map("value",r.amount().value()==null?null:r.amount().value().toPlainString(),
-                "currency",r.amount().currency(),"month",r.amount().month().toString(),"kind",r.amount().kind().name(),"coverage",r.amount().coverage().name(),"reason",r.amount().reason().name()),
+                "currency",ffdd.opsconsole.common.domain.LegacyUvtProof.currency(r.amount().currency()),"month",r.amount().month().toString(),"kind",r.amount().kind().name(),"coverage",r.amount().coverage().name(),"reason",r.amount().reason().name()),
             "movement",map("kind",m.kind().name(),"places",m.places(),"previousRank",m.previousRank(),"baselineAt",m.baselineAt()==null?null:m.baselineAt().toString(),
                 "baselineVersion",m.baselineVersion(),"reason",m.reason().name()),"canViewCustomers",ownership.canReadAgent(actor,r.agentId()));
     }

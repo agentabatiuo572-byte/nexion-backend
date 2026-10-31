@@ -172,8 +172,8 @@ public class SupportFundReadService {
                     var commissionPhases=new HashSet<String>();var directPhases=new HashSet<String>();
                     for(var row:componentOps) {
                         long id=number(row,"id");var parties=parties(id,partyIndex);var opLegs=legs(id,legIndex);
-                        var events=decodedReceipts.get(row);var source=codec.read(text(row,"sourceSnapshotJson"));
-                        var proof=codec.read(text(row,"sourceProofJson"));
+                        var events=decodedReceipts.get(row);var source=codec.readCurrentProof(text(row,"sourceSnapshotJson"));
+                        var proof=codec.readCurrentProof(text(row,"sourceProofJson"));
                         if("AUTH_FUND_BIRTH".equals(row.get("businessType"))) {
                             require(events.isEmpty(),Gap.AUTH_BIRTH);continue;
                         }

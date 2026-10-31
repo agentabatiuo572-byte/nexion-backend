@@ -34,7 +34,9 @@ public class SupportFundExchangeEvidence {
     private static final Set<String> PROOF_KEYS=Set.of("schemaVersion","cashBefore","cashAfter","eventIds","sourceReservationPresent","eventPhase","originalHoldOperationKey","sourcePhaseAt");
     private static final Set<String> WALLET_KEYS=Set.of("id","customerId","incarnation","revision","version","usdtAvailable","nexAvailable","riskHeld","pendingWithdrawal","sandbox","deleted");
     private static final Set<String> IMMUTABLE=Set.of("id","customerId","exchangeNo","fromAsset","toAsset","fromAmount","createdAt","deleted","userSandbox","userDeleted");
-    public Verified verify(Map<String,Object> operation,JsonNode source,JsonNode proof,List<Event> events,Inputs input) {
+    public Verified verify(Map<String,Object> operation,JsonNode originalSource,JsonNode originalProof,List<Event> events,Inputs input) {
+        JsonNode source=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalSource);
+        JsonNode proof=ffdd.opsconsole.common.domain.LegacyUvtProof.current(originalProof);
         require("SUPPORT_EXCHANGE".equals(operation.get("businessType"))&&"PRODUCTION".equals(operation.get("sourceEnvironment"))&&"nx_exchange_order".equals(operation.get("sourceTable")));
         String phase=text(operation.get("phase")),no=text(operation.get("sourceKey"));
         require(Set.of("IMMEDIATE","HOLD","COMPLETE","CANCEL").contains(phase)&&key(no,phase).equals(operation.get("operationKey")));
@@ -43,7 +45,7 @@ public class SupportFundExchangeEvidence {
         var actual=oneSource(input,no);var current=actual.order();validOrder(current);
         var order=source.path("order");require(no.equals(text(order.path("exchangeNo"))));
         long customer=number(current.get("customerId"));long id=number(operation.get("id"));require(id>0);
-        require(number(oneOperation(input,key(no,phase)).get("id"))==id&&equal(codec.read(text(operation.get("sourceSnapshotJson"))),source)&&equal(codec.read(text(operation.get("sourceProofJson"))),proof));
+        require(number(oneOperation(input,key(no,phase)).get("id"))==id&&equal(codec.readCurrentProof(text(operation.get("sourceSnapshotJson"))),source)&&equal(codec.readCurrentProof(text(operation.get("sourceProofJson"))),proof));
         String status=text(current.get("status"));
         if(phase.equals("HOLD")) {
             require("QUEUED".equals(text(order.path("status")))&&Set.of("QUEUED","COMPLETED","CANCELLED").contains(status));
@@ -66,13 +68,13 @@ public class SupportFundExchangeEvidence {
         if(Set.of("COMPLETE","CANCEL").contains(phase)) {
             require(reserved&&key(no,"HOLD").equals(text(proof.path("originalHoldOperationKey"))));
             var hold=oneOperation(input,key(no,"HOLD"));require(number(hold.get("id"))<id);
-            var oldSource=codec.read(text(hold.get("sourceSnapshotJson")));var oldProof=codec.read(text(hold.get("sourceProofJson")));
+            var oldSource=codec.readCurrentProof(text(hold.get("sourceSnapshotJson")));var oldProof=codec.readCurrentProof(text(hold.get("sourceProofJson")));
             var heldEvents=exchange.events(snapshot(oldSource),"HOLD");var prior=verify(hold,oldSource,oldProof,heldEvents,input);
             require(!at.isBefore(prior.stamp().succeededAt())&&equal(source.path("orderBefore"),oldSource.path("order"))&&equal(source.path("ledgersBefore"),oldSource.path("ledgers"))&&equal(source.path("feeAllocationsBefore"),List.of()));
             if(phase.equals("CANCEL"))for(String field:List.of("rate","toAmount"))require(equal(order.path(field),source.path("orderBefore").path(field)));
         }else require(source.path("orderBefore").isNull()&&source.path("ledgersBefore").isArray()&&source.path("ledgersBefore").isEmpty()&&source.path("feeAllocationsBefore").isArray()&&source.path("feeAllocationsBefore").isEmpty()&&proof.path("originalHoldOperationKey").isNull());
         if(phase.equals("IMMEDIATE"))require(at.equals(parse(order.path("createdAt"))));
-        var expected=exchange.events(snapshot(source),phase);require(!events.isEmpty()&&expected.equals(events)&&equal(codec.read(text(operation.get("orderedEventsJson"))),json.valueToTree(events)));
+        var expected=exchange.events(snapshot(source),phase);require(!events.isEmpty()&&expected.equals(events)&&equal(codec.readCurrentProof(text(operation.get("orderedEventsJson"))),json.valueToTree(events)));
         require(equal(proof.path("eventIds"),events.stream().map(Event::id).toList()));
         Point point=cash(operation,proof,events,input,customer);
         validateLedgerCash(phase,source.path("ledgers"),proof.path("cashAfter"),text(order.path("fromAsset")),text(order.path("toAsset")),no);
@@ -84,7 +86,7 @@ public class SupportFundExchangeEvidence {
             var order=source.order();validOrder(order);String no=text(order.get("exchangeNo"));require(seen.add(no));
             boolean reserved=hasHold(source);String status=text(order.get("status"));validateLedgers(source,reserved);
             List<String> phases=switch(status){case "QUEUED" -> {require(reserved&&source.feeAllocations().isEmpty());yield List.of("HOLD");}case "COMPLETED" -> reserved?List.of("HOLD","COMPLETE"):List.of("IMMEDIATE");case "CANCELLED" -> {require(reserved&&source.feeAllocations().isEmpty());yield List.of("HOLD","CANCEL");}case "GEO_BLOCKED","USER_CAP","PLATFORM_CAP" -> {require(source.ledgers().isEmpty()&&source.feeAllocations().isEmpty()&&time(order.get("createdAt")).equals(time(order.get("updatedAt"))));yield List.of();}default -> throw failure();};
-            for(String phase:phases){String covered=no+":"+phase;require(expected.add(covered)&&coveredPhases.contains(covered));var op=oneOperation(input,key(no,phase));var snapshot=codec.read(text(op.get("sourceSnapshotJson")));verify(op,snapshot,codec.read(text(op.get("sourceProofJson"))),exchange.events(snapshot(snapshot),phase),input);}
+            for(String phase:phases){String covered=no+":"+phase;require(expected.add(covered)&&coveredPhases.contains(covered));var op=oneOperation(input,key(no,phase));var snapshot=codec.readCurrentProof(text(op.get("sourceSnapshotJson")));verify(op,snapshot,codec.readCurrentProof(text(op.get("sourceProofJson"))),exchange.events(snapshot(snapshot),phase),input);}
             var actualOps=input.operations().stream().filter(o->"SUPPORT_EXCHANGE".equals(o.get("businessType"))&&no.equals(o.get("sourceKey"))).toList();require(actualOps.size()==phases.size()&&actualOps.stream().allMatch(o->phases.contains(o.get("phase"))));
             if(status.equals("QUEUED"))holdings.add(new Holding(new Account(number(order.get("customerId")),text(order.get("fromAsset")),"held:exchange-"+no),money(order.get("fromAmount")),no));
         }
