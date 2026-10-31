@@ -249,6 +249,20 @@ class WithdrawalPayoutCallbackServiceTest {
         return value;
     }
 
+    @Test void erc20OrderRejectsValidSignedBscCallbackBeforeDurableInbox() {
+        var mapper=mock(WithdrawalPayoutMapper.class);var finalizer=mock(WithdrawalPayoutFinalizer.class);var router=mock(CregisGatewayRouter.class);
+        var old=row();
+        var erc=new WithdrawalPayoutMapper.PayoutRow(old.withdrawalNo(),old.userId(),"USDT-ERC20",old.targetAddress(),old.amount(),old.netReceive(),
+                old.nexBurned(),old.status(),old.payoutDueAt(),old.providerCid(),old.providerIdempotencyKey(),old.payoutSource(),1);
+        when(mapper.payoutByProviderKey(erc.providerIdempotencyKey())).thenReturn(erc);
+        var callback=callback();var signer=new CregisSigner();callback.put("sign",signer.sign(properties().getApiKey(),callback));
+        var result=new WithdrawalPayoutCallbackService(mapper,properties(),signer,finalizer,router,CLOCK).receive(callback,SOURCE_IP);
+        assertThat(result.getCode()).isEqualTo(401);
+        assertThat(result.getMessage()).isEqualTo("CREGIS_CALLBACK_ASSET_SCOPE_MISMATCH");
+        verify(mapper,never()).insertCallbackInbox(anyString(),anyString(),anyLong(),org.mockito.ArgumentMatchers.anyInt(),any(),anyString(),any());
+        verifyNoInteractions(finalizer,router);
+    }
+
     @Test
     void signedCallbackRecoversLostCreateResponseOnlyAfterIndependentSnapshotQuery() {
         var mapper = mock(WithdrawalPayoutMapper.class);

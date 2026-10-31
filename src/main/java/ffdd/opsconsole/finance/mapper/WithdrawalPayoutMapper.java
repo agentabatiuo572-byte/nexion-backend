@@ -13,6 +13,9 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
+    @Select("SELECT config_value FROM nx_config_item WHERE config_key=#{key} AND is_deleted=0 AND status=1 FOR SHARE")
+    String lockNetworkPayoutEnabled(@Param("key") String key);
+
     @Select("SELECT id FROM nx_user WHERE id=#{userId} FOR UPDATE")
     @org.apache.ibatis.annotations.Options(useCache=false, flushCache=org.apache.ibatis.annotations.Options.FlushCachePolicy.TRUE)
     Long lockCashCustomer(@Param("userId") Long userId);
@@ -196,7 +199,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
               FROM nx_withdrawal_order
              WHERE (status='PROCESSING' OR (status='FROZEN' AND c2_frozen_by_user_status=1
                     AND c2_previous_status='PROCESSING')) AND d5_payout_lease_until<=#{now} AND is_deleted=0
-               AND chain='USDT-BEP20' AND (d5_payout_source IS NULL OR d5_payout_source='provider')
+               AND chain IN ('USDT-BEP20','USDT-ERC20') AND (d5_payout_source IS NULL OR d5_payout_source='provider')
              ORDER BY id LIMIT #{limit}
             """)
     List<PayoutRow> expiredProviderAttempts(@Param("now") LocalDateTime now, @Param("limit") int limit);

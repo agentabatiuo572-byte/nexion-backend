@@ -53,6 +53,7 @@ public class CregisExceptionOwnershipService {
             throw fail("CREGIS_PROVIDER_DISABLED");
         Map<String,Object> row="EVENT".equals(ref.type())?db.event(config.getProjectId(),ref.id()):db.observation(config.getProjectId(),ref.id());
         if(row==null) throw fail("CREGIS_EXCEPTION_SOURCE_MISSING");
+        if(row.get("chainId")!=null && !CregisNetwork.BEP20.chainId().equals(String.valueOf(row.get("chainId")))) throw fail("CREGIS_EXCEPTION_NETWORK_UNSUPPORTED");
         String state=String.valueOf(row.get("status"));
         if("EVENT".equals(ref.type()) && !java.util.Set.of("DUST_HOLD","REVIEW_HOLD").contains(state)
                 || "OBSERVATION".equals(ref.type()) && !"UNATTRIBUTED_HOLD".equals(state)) throw fail("CREGIS_EXCEPTION_SOURCE_CHANGED");

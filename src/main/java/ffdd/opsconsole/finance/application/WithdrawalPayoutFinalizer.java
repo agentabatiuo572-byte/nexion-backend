@@ -3,6 +3,7 @@ package ffdd.opsconsole.finance.application;
 import ffdd.opsconsole.finance.mapper.WithdrawalPayoutMapper;
 import ffdd.opsconsole.finance.cregis.BscDepositProof;
 import ffdd.opsconsole.finance.cregis.CregisConstants;
+import ffdd.opsconsole.finance.cregis.CregisNetwork;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -60,19 +61,19 @@ public class WithdrawalPayoutFinalizer {
         return "provider".equals(mapper.lockPayoutSource(withdrawalNo));
     }
 
-    /** Only an independently queried canonical BSC Transfer may settle a provider payout. */
+    /** Only an independently queried canonical token Transfer may settle a provider payout. */
     @Transactional(rollbackFor = Exception.class)
     public boolean confirmProviderChain(WithdrawalPayoutMapper.PayoutRow row, String txid,
                                         BscDepositProof.Proof proof, int requiredConfirmations) {
         if (proof == null || requiredConfirmations < 15 || proof.confirmations() < requiredConfirmations
-                || !"USDT-BEP20".equals(row.chain()) || !"provider".equals(row.payoutSource())
+                || !java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(row.chain()) || !"provider".equals(row.payoutSource())
                 || row.providerCid() == null || !"SENT".equals(row.status())
                 || txid == null || !txid.matches("(?i)(?:0x)?[0-9a-f]{64}"))
             throw new BizException(409,"CREGIS_CHAIN_PROOF_REQUIRED");
         txid = "0x" + txid.replaceFirst("(?i)^0x", "").toLowerCase(java.util.Locale.ROOT);
         String hash = sha(row.withdrawalNo() + "|" + row.providerCid() + "|" + txid
                 + "|" + proof.blockHash() + "|" + proof.logIndex());
-        String eventNo = "CREGIS-BSC-" + hash.substring(0,48);
+        String eventNo = "CREGIS-" + CregisNetwork.fromNetwork(row.chain().substring(5)).policyChainId() + "-" + hash.substring(0,48);
         String existing = mapper.payoutLedgerPayloadHash(eventNo);
         if (existing != null) {
             if (!existing.equals(hash)) throw new BizException(409,"WITHDRAWAL_PAYOUT_EVENT_HASH_CONFLICT");
@@ -81,11 +82,11 @@ public class WithdrawalPayoutFinalizer {
         audit.recordRequired(AuditLogWriteRequest.builder()
                 .action("D5_WITHDRAWAL_PAYOUT_CHAIN_PROOF").resourceType("WITHDRAWAL")
                 .resourceId(row.withdrawalNo()).bizNo(row.withdrawalNo()).userId(row.userId())
-                .actorType("SYSTEM").actorUsername("bsc-payout-observer").riskLevel("CRITICAL").result("SUCCESS")
+                .actorType("SYSTEM").actorUsername("cregis-payout-observer").riskLevel("CRITICAL").result("SUCCESS")
                 .detail(Map.of("txid",txid,"blockNumber",proof.blockNumber(),"blockHash",proof.blockHash(),
                         "logIndex",proof.logIndex(),"confirmations",proof.confirmations(),
                         "requiredConfirmations",requiredConfirmations,"recipient",row.targetAddress(),
-                        "amount",row.netReceive(),"token",CregisConstants.USDT_BEP20_TOKEN_ID,
+                        "amount",row.netReceive(),"token",CregisNetwork.fromNetwork(row.chain().substring(5)).tokenId(),
                         "providerCid",row.providerCid())).build());
         return terminalChecked(row,row.providerCid(),"provider",eventNo,hash,"CONFIRMED",txid,null);
     }
@@ -134,7 +135,8 @@ public class WithdrawalPayoutFinalizer {
         mapper.lockPayoutSource(expected.withdrawalNo());
         var current = mapper.payout(expected.withdrawalNo());
         if (current == null || !java.util.Objects.equals(expected.userId(), current.userId())
-                || !"USDT-BEP20".equals(current.chain()) || !"provider".equals(current.payoutSource())
+                || !java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(current.chain()) || !"provider".equals(current.payoutSource())
+                || !java.util.Objects.equals(expected.chain(), current.chain())
                 || !java.util.Objects.equals(expected.targetAddress(), current.targetAddress())
                 || !java.util.Objects.equals(expected.netReceive(), current.netReceive())
                 || !java.util.Objects.equals(expected.amount(), current.amount())
@@ -252,7 +254,7 @@ public class WithdrawalPayoutFinalizer {
         } else {
             if ("BANK-VND".equals(row.chain()) && "hdpay".equals(source))
                 ledger.reverseLegacyBankWithdrawalReserve(row.withdrawalNo(), row.amount(), now);
-            if ("USDT-BEP20".equals(row.chain()) && "provider".equals(source))
+            if (java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(row.chain()) && "provider".equals(source))
                 ledger.reverseBep20WithdrawalReserve(row.withdrawalNo(), row.amount(), now);
             BigDecimal nexBurned = row.nexBurned() == null ? BigDecimal.ZERO : row.nexBurned();
             if (mapper.refundPending(row.userId(), row.amount(), nexBurned, now) != 1) {

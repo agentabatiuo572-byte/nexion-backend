@@ -33,8 +33,13 @@ public class CregisProperties {
     private boolean depositEnabled;
     /** Pauses new wallet credits while callback, provider query and chain observation continue. */
     private boolean depositCreditEnabled;
+    /** Separate approval for new Ethereum address issuance and wallet credit. */
+    private boolean erc20DepositEnabled;
+    public boolean depositNetworkEnabled(CregisNetwork network) { return network==CregisNetwork.BEP20 || erc20DepositEnabled; }
     /** Provider payout transport approval; the independent D1 maker/checker database switch is also required. */
     private boolean payoutEnabled;
+    /** Explicit Ethereum outbound transport approval; existing BSC approvals never enable a new network. */
+    private boolean erc20PayoutEnabled;
     /** Separate operator approval for the automatic collection/forward transport. Never enabled by a migration. */
     private boolean autoForwardEnabled;
     /** Exact Cregis callback egress IPs; empty rejects callbacks until verified with vendor. */
@@ -42,7 +47,13 @@ public class CregisProperties {
     /** Read-only BSC JSON-RPC endpoint; no keys or transaction methods are used. */
     @ToString.Exclude
     private String bscRpcUrl = "";
+    /** Independent read-only Ethereum mainnet endpoint. No BSC fallback is permitted. */
+    @ToString.Exclude
+    private String ethereumRpcUrl = "";
     private int depositConfirmations = 15;
+    public int confirmations(CregisNetwork network) { return getDepositConfirmations(); }
+    public String rpcUrl(CregisNetwork network) { return network==CregisNetwork.BEP20 ? bscRpcUrl : ethereumRpcUrl; }
+    public boolean networkConfigured(CregisNetwork network) { return rpcUrl(network)!=null && !rpcUrl(network).isBlank(); }
     /** Historical RPC batch includes the existing 100-block overlap. */
     private int chainScanBlocks = 500;
 

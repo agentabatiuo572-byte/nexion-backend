@@ -30,7 +30,7 @@ class CregisAutoForwardMySqlTest {
         new JdbcTemplate(root).execute("CREATE DATABASE "+SCHEMA);owned=true;
         data=new DriverManagerDataSource(url.replace("/?","/"+SCHEMA+"?"),System.getenv("CREGIS_AUTO_MYSQL_USER"),System.getenv("CREGIS_AUTO_MYSQL_PASSWORD"));jdbc=new JdbcTemplate(data);
         new ResourceDatabasePopulator(new FileSystemResource(Path.of("scripts/migrations/20261022_05_cregis_auto_forward.sql"))).execute(data);
-        jdbc.execute("CREATE TABLE nx_cregis_deposit_event(id BIGINT PRIMARY KEY,project_id BIGINT,user_id BIGINT,txid VARCHAR(66),log_index INT,address VARCHAR(42),gross_amount DECIMAL(18,6),net_amount DECIMAL(18,6),fee_amount DECIMAL(18,6),block_number BIGINT,status VARCHAR(30)) ENGINE=InnoDB");
+        jdbc.execute("CREATE TABLE nx_cregis_deposit_event(chain_id VARCHAR(16) NOT NULL DEFAULT '2510',id BIGINT PRIMARY KEY,project_id BIGINT,user_id BIGINT,txid VARCHAR(66),log_index INT,address VARCHAR(42),gross_amount DECIMAL(18,6),net_amount DECIMAL(18,6),fee_amount DECIMAL(18,6),block_number BIGINT,status VARCHAR(30)) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_cregis_deposit_address(project_id BIGINT,address VARCHAR(42),user_id BIGINT,chain_id VARCHAR(8),state VARCHAR(20)) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_cregis_risk_alert(project_id BIGINT,alert_key VARCHAR(100),severity VARCHAR(5),kind VARCHAR(40),evidence JSON,resolved_at DATETIME,UNIQUE KEY uk(project_id,alert_key)) ENGINE=InnoDB");
         var c=new org.apache.ibatis.session.Configuration(new org.apache.ibatis.mapping.Environment("auto-forward-isolated",new SpringManagedTransactionFactory(),data));c.addMapper(CregisAutoForwardMapper.class);c.addMapper(CregisDepositMapper.class);
@@ -38,7 +38,7 @@ class CregisAutoForwardMySqlTest {
         seed(1,a);seed(2,b);
     }
     @AfterEach void cleanup(){if(owned)new JdbcTemplate(root).execute("DROP DATABASE "+SCHEMA);}
-    void seed(long id,String address){jdbc.update("INSERT INTO nx_cregis_deposit_event VALUES(?,?,7,?,0,?,5,4,1,90,'CREDITED')",id,project,"0x"+"c".repeat(64),address);jdbc.update("INSERT INTO nx_cregis_deposit_address VALUES(?,?,7,'2510','READY')",project,address);}
+    void seed(long id,String address){jdbc.update("INSERT INTO nx_cregis_deposit_event(id,project_id,user_id,txid,log_index,address,gross_amount,net_amount,fee_amount,block_number,status) VALUES(?,?,7,?,0,?,5,4,1,90,'CREDITED')",id,project,"0x"+"c".repeat(64),address);jdbc.update("INSERT INTO nx_cregis_deposit_address VALUES(?,?,7,'2510','READY')",project,address);}
     Map<String,Object> event(long id){return db.lockEvent(project,id);}
     void enqueue(long id){db.enqueue(project,event(id),CregisFundsPreparationService.PLATFORM,CregisFundsPreparationService.COUNTERPARTY,"CA-P-"+project+"-"+id);}
     Map<String,Object> task(){return db.page(project,0,20).get(0);}

@@ -37,15 +37,15 @@ public class PurchasePaymentPolicyService {
             if(locked==null||number(locked.get("version"))!=number(request.get("expectedVersion")))
                 throw new BizException(409,"PURCHASE_PAYMENT_POLICY_VERSION_CONFLICT");
             var rows=maps(request.get("channels"));
-            if(rows.isEmpty()||rows.size()>2)throw invalid();
+            if(rows.isEmpty()||rows.size()>3)throw invalid();
             var seen=new HashSet<String>();var valid=new ArrayList<Map<String,Object>>(maps(view(locked).get("channels")));
             for(var row:rows){
                 String method=text(row.get("paymentMethod"));
-                if(!Set.of("HDPAY_BANK","CREGIS_USDT_BSC").contains(method)||!seen.add(method))throw invalid();
+                if(!Set.of("HDPAY_BANK","CREGIS_USDT_BSC","CREGIS_USDT_ERC20").contains(method)||!seen.add(method))throw invalid();
                 BigDecimal rate=fee(row.get("channelFeeRatePct")),fixed=fee(row.get("channelFeeFixed")),network=fee(row.get("networkConfirmFeeUsdt"));
                 if(rate.compareTo(new BigDecimal("100"))>0||"HDPAY_BANK".equals(method)&&network.signum()!=0)throw invalid();
                 BigDecimal min=principal(row.get("minTopupPrincipal"));
-                if("CREGIS_USDT_BSC".equals(method)&&min.compareTo(cregis.current().minDepositUsdt())!=0)
+                if(("CREGIS_USDT_BSC".equals(method)||"CREGIS_USDT_ERC20".equals(method))&&min.compareTo(cregis.current().minDepositUsdt())!=0)
                     throw new BizException(409,"CREGIS_DEPOSIT_POLICY_A2_REQUIRED");
                 valid.removeIf(channel->method.equals(channel.get("paymentMethod")));
                 valid.add(values("paymentMethod",method,"configured",true,"channelFeeRatePct",rate.toPlainString(),"channelFeeFixed",fixed.toPlainString(),
@@ -65,7 +65,9 @@ public class PurchasePaymentPolicyService {
         try{
             Object raw=row.get("policy_json");
             List<Map<String,Object>> channels=jsonMapper.readValue(raw instanceof byte[] bytes?new String(bytes,java.nio.charset.StandardCharsets.UTF_8):text(raw),new TypeReference<>(){});
-            for(var channel:channels)if("CREGIS_USDT_BSC".equals(channel.get("paymentMethod")))
+            if(channels.stream().noneMatch(channel->"CREGIS_USDT_ERC20".equals(channel.get("paymentMethod"))))
+                channels.add(values("paymentMethod","CREGIS_USDT_ERC20","configured",false,"channelFeeRatePct",null,"channelFeeFixed",null,"networkConfirmFeeUsdt",null,"minTopupPrincipal","1"));
+            for(var channel:channels)if(Set.of("CREGIS_USDT_BSC","CREGIS_USDT_ERC20").contains(channel.get("paymentMethod")))
                 channel.put("minTopupPrincipal",cregis.current().minDepositUsdt().setScale(0,RoundingMode.UNNECESSARY).toPlainString());
             for(var channel:channels){
                 boolean configured=Boolean.TRUE.equals(channel.get("configured"));channel.put("configured",configured);

@@ -74,6 +74,17 @@ class CregisCallbackVerifierTest {
         assertThat(verify(extremeAmount).reason()).isEqualTo("CALLBACK_SCHEMA_INVALID");
     }
 
+    @Test void ethereumCallbackMustMatchOriginalOrderNetworkEvenForIdenticalAddressAndAmount() {
+        var callback=callbackAt(NOW,6);callback.put("chain_id",CregisNetwork.ERC20.chainId());
+        callback.put("token_id",CregisNetwork.ERC20.tokenId());callback.put("currency",CregisNetwork.ERC20.currency());
+        callback.put("sign",signer.sign(KEY,callback));
+        var expected=new CregisCallbackVerifier.ExpectedPayout(9000000000000001L,"withdrawal-42",
+            "0x1111111111111111111111111111111111111111",new java.math.BigDecimal("1.00"),CregisNetwork.ERC20);
+        assertThat(verifier.verifyPayout(callback,expected).valid()).isTrue();
+        assertThat(verify(callback).reason()).isEqualTo("ASSET_SCOPE_MISMATCH");
+        callback.put("token_id",CregisNetwork.BEP20.tokenId());callback.put("sign",signer.sign(KEY,callback));
+        assertThat(verifier.verifyPayout(callback,expected).reason()).isEqualTo("ASSET_SCOPE_MISMATCH");
+    }
     private CregisCallbackVerifier.Verification verify(Map<String, Object> callback) {
         return verifier.verifyPayout(callback, new CregisCallbackVerifier.ExpectedPayout(
                 9000000000000001L,

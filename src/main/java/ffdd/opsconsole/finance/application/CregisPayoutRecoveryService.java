@@ -2,6 +2,7 @@ package ffdd.opsconsole.finance.application;
 
 import ffdd.opsconsole.finance.cregis.CregisConstants;
 import ffdd.opsconsole.finance.cregis.CregisGateway;
+import ffdd.opsconsole.finance.cregis.CregisNetwork;
 import ffdd.opsconsole.finance.cregis.CregisGatewayException;
 import ffdd.opsconsole.finance.cregis.CregisGatewayRouter;
 import ffdd.opsconsole.finance.mapper.WithdrawalPayoutMapper;
@@ -31,7 +32,7 @@ public class CregisPayoutRecoveryService {
     public Detail detail(String withdrawalNo) {
         requireAdmin(false);
         var row = mapper.payout(withdrawalNo);
-        if (row == null || !"USDT-BEP20".equals(row.chain())) throw new BizException(404, "WITHDRAWAL_NOT_FOUND");
+        if (row == null || !java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(row.chain())) throw new BizException(404, "WITHDRAWAL_NOT_FOUND");
         return new Detail(row.withdrawalNo(), row.payoutSource(),
                 row.providerCid() == null ? null : row.providerCid().toString(), row.status(),
                 "provider".equals(row.payoutSource()) && "TX_ORPHANED".equals(row.status())
@@ -57,7 +58,7 @@ public class CregisPayoutRecoveryService {
             throw new BizException(409, "CREGIS_PAYOUT_RECOVERY_IN_PROGRESS_OR_CONFLICT");
         var row = mapper.payout(withdrawalNo);
         if (row == null) throw new BizException(404, "WITHDRAWAL_NOT_FOUND");
-        if (!"USDT-BEP20".equals(row.chain()) || !"provider".equals(row.payoutSource())
+        if (!java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(row.chain()) || !"provider".equals(row.payoutSource())
                 || row.providerIdempotencyKey() == null || row.providerIdempotencyKey().isBlank()
                 || (row.providerCid() != null && row.providerCid() != cid)
                 || !("TX_ORPHANED".equals(row.status()) || row.providerCid() != null
@@ -67,7 +68,7 @@ public class CregisPayoutRecoveryService {
         try {
             // HttpCregisGateway also validates the configured project ID in the independent response.
             observed = router.provider().queryPayout(new CregisGateway.PayoutQuery(
-                    cid, row.providerIdempotencyKey(), row.targetAddress(), row.netReceive()));
+                    cid, row.providerIdempotencyKey(), row.targetAddress(), row.netReceive(), CregisNetwork.fromNetwork(row.chain().substring(5)).currency()));
         } catch (CregisGatewayException failure) {
             if (failure.kind() == CregisGatewayException.Kind.INVALID_RESPONSE
                     || failure.kind() == CregisGatewayException.Kind.CONFLICT)
@@ -75,9 +76,9 @@ public class CregisPayoutRecoveryService {
             throw new BizException(503, "CREGIS_PAYOUT_RECOVERY_QUERY_UNAVAILABLE");
         }
         if (observed == null || observed.cid() != cid || observed.status() == null
-                || !CregisConstants.BSC_CHAIN_ID.equals(observed.chainId())
-                || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(observed.tokenId())
-                || !CregisConstants.USDT_BEP20_CURRENCY.equalsIgnoreCase(observed.currency())
+                || !CregisNetwork.fromNetwork(row.chain().substring(5)).chainId().equals(observed.chainId())
+                || !CregisNetwork.fromNetwork(row.chain().substring(5)).tokenId().equalsIgnoreCase(observed.tokenId())
+                || !CregisNetwork.fromNetwork(row.chain().substring(5)).currency().equalsIgnoreCase(observed.currency())
                 || !row.providerIdempotencyKey().equals(observed.thirdPartyId())
                 || !row.targetAddress().equalsIgnoreCase(observed.address()) || observed.amount() == null
                 || row.netReceive() == null || row.netReceive().compareTo(observed.amount()) != 0)

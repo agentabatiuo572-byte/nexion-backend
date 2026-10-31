@@ -61,16 +61,16 @@ public final class BscDepositProof {
                              long checkedHead,String originalCanonicalHash) { }
 
     /** Exact log identity; transaction.from is deliberately never used as token ownership. */
-    public TransferProof verifyExact(String txid,int logIndex,String address,BigDecimal amount,Long expectedBlock) {
+    public TransferProof verifyExact(CregisNetwork network,String txid,int logIndex,String address,BigDecimal amount,Long expectedBlock) {
         String normalized=hash(txid);
         if(logIndex<0 || address==null || !address.matches("(?i)0x[0-9a-f]{40}")
                 || amount==null || amount.signum()<=0 || amount.stripTrailingZeros().scale()>6
                 || properties.getDepositConfirmations()<15) throw invalid();
-        JsonNode receipt=call("eth_getTransactionReceipt","[\""+normalized+"\"]");
-        return verifyReceipt(normalized,logIndex,address,amount,expectedBlock,receipt);
+        JsonNode receipt=call(network,"eth_getTransactionReceipt","[\""+normalized+"\"]");
+        return verifyReceipt(network,normalized,logIndex,address,amount,expectedBlock,receipt);
     }
 
-    private TransferProof verifyReceipt(String normalized,int logIndex,String address,BigDecimal amount,
+    private TransferProof verifyReceipt(CregisNetwork network,String normalized,int logIndex,String address,BigDecimal amount,
                                          Long expectedBlock,JsonNode receipt) {
         if(receipt.isNull()) return null;
         if(!receipt.isObject() || !"0x1".equalsIgnoreCase(receipt.path("status").asText())
@@ -78,12 +78,12 @@ public final class BscDepositProof {
         long height=hexLong(receipt.path("blockNumber").asText());
         String blockHash=hash(receipt.path("blockHash").asText());
         if(expectedBlock!=null && expectedBlock!=height) throw invalid();
-        Head head=head();
+        Head head=head(network);
         int required=Math.max(15,properties.getDepositConfirmations());
         if(head.number()<height || head.number()-height+1<required) return null;
-        if(!blockHash.equalsIgnoreCase(blockHash(height))) throw invalid();
-        if(!hexBigInteger(call("eth_call","[{\"to\":\""+CregisConstants.USDT_BEP20_TOKEN_ID
-                +"\",\"data\":\"0x313ce567\"},\"latest\"]").asText()).equals(BigInteger.valueOf(18))) throw invalid();
+        if(!blockHash.equalsIgnoreCase(blockHash(network,height))) throw invalid();
+        if(!hexBigInteger(call(network,"eth_call","[{\"to\":\""+network.tokenId()
+                +"\",\"data\":\"0x313ce567\"},\"latest\"]").asText()).equals(BigInteger.valueOf(network.decimals()))) throw invalid();
         JsonNode logs=receipt.path("logs");
         if(!logs.isArray()) throw invalid();
         JsonNode selected=null;
@@ -91,7 +91,7 @@ public final class BscDepositProof {
             if(selected!=null) throw invalid(); selected=entry;
         }
         if(selected==null || selected.path("removed").asBoolean(false)
-                || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(selected.path("address").asText())
+                || !network.tokenId().equalsIgnoreCase(selected.path("address").asText())
                 || !normalized.equalsIgnoreCase(selected.path("transactionHash").asText())
                 || height!=hexLong(selected.path("blockNumber").asText())
                 || !blockHash.equalsIgnoreCase(selected.path("blockHash").asText())) throw invalid();
@@ -103,8 +103,8 @@ public final class BscDepositProof {
         String recipient="0x"+topics.get(2).asText().substring(26).toLowerCase(Locale.ROOT);
         String raw=selected.path("data").asText();
         if(!raw.matches("(?i)0x[0-9a-f]{64}") || !recipient.equalsIgnoreCase(address)
-                || new BigDecimal(new BigInteger(raw.substring(2),16),18).compareTo(amount)!=0) throw invalid();
-        JsonNode code=call("eth_getCode","[\""+sender+"\",\""+hex(height)+"\"]");
+                || new BigDecimal(new BigInteger(raw.substring(2),16),network.decimals()).compareTo(amount)!=0) throw invalid();
+        JsonNode code=call(network,"eth_getCode","[\""+sender+"\",\""+hex(height)+"\"]");
         if(!code.isTextual() || !code.asText().matches("(?i)0x(?:[0-9a-f]{2})*")) throw invalid();
         boolean eoa="0x".equalsIgnoreCase(code.asText()) && !sender.equals("0x"+"0".repeat(40));
         return new TransferProof(logIndex,height,blockHash,
@@ -112,23 +112,23 @@ public final class BscDepositProof {
     }
 
     /** A missing receipt or unavailable RPC alone is never evidence that an existing credit disappeared. */
-    public ReorgProof inspectCanonical(String txid,int logIndex,String address,BigDecimal amount,
+    public ReorgProof inspectCanonical(CregisNetwork network,String txid,int logIndex,String address,BigDecimal amount,
                                        long originalBlock,String originalHash) {
-        return inspectCanonical(txid,logIndex,address,amount,originalBlock,originalHash,null);
+        return inspectCanonical(network,txid,logIndex,address,amount,originalBlock,originalHash,null);
     }
 
     /** A relocated index needs the original token sender and exactly one matching Transfer. */
-    public ReorgProof inspectCanonical(String txid,int logIndex,String address,BigDecimal amount,
+    public ReorgProof inspectCanonical(CregisNetwork network,String txid,int logIndex,String address,BigDecimal amount,
                                        long originalBlock,String originalHash,String expectedFrom) {
         if(originalBlock<0 || originalHash==null || logIndex<0 || address==null
                 || !address.matches("(?i)0x[0-9a-f]{40}") || amount==null || amount.signum()<=0) throw invalid();
         String normalized=hash(txid), oldHash=hash(originalHash);
-        Head head=head();
+        Head head=head(network);
         int required=Math.max(15,properties.getDepositConfirmations());
         if(properties.getDepositConfirmations()<15 || head.number()<originalBlock
                 || head.number()-originalBlock+1<required) return new ReorgProof(false,null,head.number(),null);
-        String canonicalHash=blockHash(originalBlock);
-        JsonNode first=call("eth_getTransactionReceipt","[\""+normalized+"\"]");
+        String canonicalHash=blockHash(network,originalBlock);
+        JsonNode first=call(network,"eth_getTransactionReceipt","[\""+normalized+"\"]");
         if(!first.isNull()) {
             int selectedIndex=logIndex;
             if(expectedFrom!=null) {
@@ -138,7 +138,7 @@ public final class BscDepositProof {
                 if(!entries.isArray()) throw invalid();
                 for(JsonNode entry:entries) {
                     JsonNode topics=entry.path("topics");
-                    if(!CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(entry.path("address").asText())
+                    if(!network.tokenId().equalsIgnoreCase(entry.path("address").asText())
                             || !topics.isArray() || topics.size()!=3
                             || !TRANSFER_TOPIC.equalsIgnoreCase(topics.get(0).asText())) continue;
                     String sender=topics.get(1).asText(),recipient=topics.get(2).asText(),raw=entry.path("data").asText();
@@ -146,7 +146,7 @@ public final class BscDepositProof {
                             || !raw.matches("(?i)0x[0-9a-f]{64}")) throw invalid();
                     if(!sender.substring(26).equalsIgnoreCase(expectedFrom.substring(2))
                             || address==null || !recipient.substring(26).equalsIgnoreCase(address.substring(2))
-                            || new BigDecimal(new BigInteger(raw.substring(2),16),18).compareTo(amount)!=0) continue;
+                            || new BigDecimal(new BigInteger(raw.substring(2),16),network.decimals()).compareTo(amount)!=0) continue;
                     long index=hexLong(entry.path("logIndex").asText());
                     if(match!=null || index>Integer.MAX_VALUE) throw invalid();
                     match=(int)index;
@@ -154,7 +154,7 @@ public final class BscDepositProof {
                 if(match==null) throw invalid();
                 selectedIndex=match;
             }
-            TransferProof canonical=verifyReceipt(normalized,selectedIndex,address,amount,null,first);
+            TransferProof canonical=verifyReceipt(network,normalized,selectedIndex,address,amount,null,first);
             if(canonical!=null && expectedFrom!=null && !expectedFrom.equalsIgnoreCase(canonical.fromAddress())) throw invalid();
             // Legacy rows without a persisted sender cannot authenticate a relocated source.
             if(canonical!=null && expectedFrom==null && (canonical.blockNumber()!=originalBlock
@@ -162,18 +162,19 @@ public final class BscDepositProof {
             return new ReorgProof(false,canonical,head.number(),canonicalHash);
         }
         if(oldHash.equalsIgnoreCase(canonicalHash)) return new ReorgProof(false,null,head.number(),canonicalHash);
-        JsonNode second=call("eth_getTransactionReceipt","[\""+normalized+"\"]");
-        String secondHash=blockHash(originalBlock);
-        Head latest=head();
+        JsonNode second=call(network,"eth_getTransactionReceipt","[\""+normalized+"\"]");
+        String secondHash=blockHash(network,originalBlock);
+        Head latest=head(network);
         boolean absent=second.isNull() && canonicalHash.equalsIgnoreCase(secondHash)
                 && latest.number()>=head.number();
         return new ReorgProof(absent,null,latest.number(),secondHash);
     }
 
     /** One bounded RPC batch; total user/address count is not capped. */
-    public List<Observation> scan(long from, long to, List<String> addresses) {
+    public List<Observation> scan(CregisNetwork network,long from, long to, List<String> addresses) {
         if (from < 0 || to < from || to - from >= properties.getChainScanBlocks() || addresses == null
                 || addresses.isEmpty() || addresses.size() > 60) throw invalid();
+        validateNetwork(network);
         StringBuilder recipients = new StringBuilder();
         for (String address : addresses) {
             if (address == null || !address.matches("(?i)0x[0-9a-f]{40}")) throw invalid();
@@ -182,14 +183,14 @@ public final class BscDepositProof {
                     .append(address.substring(2).toLowerCase(Locale.ROOT)).append('"');
         }
         String params = "[{\"fromBlock\":\"" + hex(from) + "\",\"toBlock\":\"" + hex(to)
-                + "\",\"address\":\"" + CregisConstants.USDT_BEP20_TOKEN_ID
+                + "\",\"address\":\"" + network.tokenId()
                 + "\",\"topics\":[\"" + TRANSFER_TOPIC + "\",null,[" + recipients + "]]}]";
-        JsonNode logs = call("eth_getLogs", params);
+        JsonNode logs = call(network,"eth_getLogs", params);
         if (!logs.isArray()) throw invalid();
         List<Observation> found = new ArrayList<>();
         for (JsonNode log : logs) {
             if (log.path("removed").asBoolean(false)
-                    || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(log.path("address").asText()))
+                    || !network.tokenId().equalsIgnoreCase(log.path("address").asText()))
                 throw invalid();
             JsonNode topics = log.path("topics");
             if (!topics.isArray() || topics.size() != 3
@@ -203,30 +204,31 @@ public final class BscDepositProof {
             if (index > Integer.MAX_VALUE || height < from || height > to) throw invalid();
             found.add(new Observation(hash(log.path("transactionHash").asText()), (int) index,
                     "0x" + recipient.substring(26).toLowerCase(Locale.ROOT),
-                    new BigDecimal(new BigInteger(data.substring(2), 16), 18).stripTrailingZeros(), height));
+                    new BigDecimal(new BigInteger(data.substring(2), 16), network.decimals()).stripTrailingZeros(), height));
         }
         return List.copyOf(found);
     }
 
-    public Head head() {
-        if (hexLong(call("eth_chainId", "[]").asText()) != 56) throw invalid();
-        long height = hexLong(call("eth_blockNumber", "[]").asText());
-        JsonNode block = call("eth_getBlockByNumber", "[\"" + hex(height) + "\",false]");
+    public Head head(CregisNetwork network) {
+        if (hexLong(call(network,"eth_chainId", "[]").asText()) != hexLong(network.rpcChainId())) throw invalid();
+        long height = hexLong(call(network,"eth_blockNumber", "[]").asText());
+        JsonNode block = call(network,"eth_getBlockByNumber", "[\"" + hex(height) + "\",false]");
         if (!block.isObject()) throw invalid();
         return new Head(height, hash(block.path("hash").asText()));
     }
 
-    public String blockHash(long number) {
+    public String blockHash(CregisNetwork network,long number) {
         if (number < 0) throw invalid();
-        JsonNode block = call("eth_getBlockByNumber", "[\"" + hex(number) + "\",false]");
+        JsonNode block = call(network,"eth_getBlockByNumber", "[\"" + hex(number) + "\",false]");
         if (!block.isObject() || hexLong(block.path("number").asText()) != number) throw invalid();
         return hash(block.path("hash").asText());
     }
 
-    public boolean zeroUsdtBalance(String address) {
+    public boolean zeroUsdtBalance(CregisNetwork network,String address) {
         if (address == null || !address.matches("(?i)0x[0-9a-f]{40}")) throw invalid();
+        validateNetwork(network);
         String data = "0x70a08231" + "0".repeat(24) + address.substring(2).toLowerCase(Locale.ROOT);
-        JsonNode result = call("eth_call", "[{\"to\":\"" + CregisConstants.USDT_BEP20_TOKEN_ID
+        JsonNode result = call(network,"eth_call", "[{\"to\":\"" + network.tokenId()
                 + "\",\"data\":\"" + data + "\"},\"latest\"]");
         return hexBigInteger(result.asText()).signum() == 0;
     }
@@ -234,60 +236,60 @@ public final class BscDepositProof {
     /** Read-only preparation facts. A positive BNB balance is not a gas estimate or a send permit. */
     public record PreparationBalance(String usdt, String bnb, long blockNumber, String blockHash) { }
 
-    public PreparationBalance preparationBalance(String address) {
+    public PreparationBalance preparationBalance(CregisNetwork network,String address) {
         if (address == null || !address.matches("(?i)0x[0-9a-f]{40}")) throw invalid();
-        Head at = head();
+        Head at = head(network);
         String tag = hex(at.number());
-        JsonNode decimals = call("eth_call", "[{\"to\":\"" + CregisConstants.USDT_BEP20_TOKEN_ID
+        JsonNode decimals = call(network,"eth_call", "[{\"to\":\"" + network.tokenId()
                 + "\",\"data\":\"0x313ce567\"},\"" + tag + "\"]");
-        if (!hexBigInteger(decimals.asText()).equals(BigInteger.valueOf(18))) throw invalid();
+        if (!hexBigInteger(decimals.asText()).equals(BigInteger.valueOf(network.decimals()))) throw invalid();
         String data = "0x70a08231" + "0".repeat(24) + address.substring(2).toLowerCase(Locale.ROOT);
-        JsonNode token = call("eth_call", "[{\"to\":\"" + CregisConstants.USDT_BEP20_TOKEN_ID
+        JsonNode token = call(network,"eth_call", "[{\"to\":\"" + network.tokenId()
                 + "\",\"data\":\"" + data + "\"},\"" + tag + "\"]");
-        JsonNode nativeCoin = call("eth_getBalance", "[\"" + address.toLowerCase(Locale.ROOT) + "\",\"" + tag + "\"]");
-        if (!at.hash().equalsIgnoreCase(blockHash(at.number()))) throw invalid();
-        return new PreparationBalance(new BigDecimal(hexBigInteger(token.asText()), 18).toPlainString(),
+        JsonNode nativeCoin = call(network,"eth_getBalance", "[\"" + address.toLowerCase(Locale.ROOT) + "\",\"" + tag + "\"]");
+        if (!at.hash().equalsIgnoreCase(blockHash(network,at.number()))) throw invalid();
+        return new PreparationBalance(new BigDecimal(hexBigInteger(token.asText()), network.decimals()).toPlainString(),
                 new BigDecimal(hexBigInteger(nativeCoin.asText()), 18).toPlainString(), at.number(), at.hash());
     }
 
-    public Optional<Proof> verify(String txid, String address, BigDecimal amount, long callbackHeight) {
-        return verifyTransfer(txid, address, amount, callbackHeight, true);
+    public Optional<Proof> verify(CregisNetwork network,String txid, String address, BigDecimal amount, long callbackHeight) {
+        return verifyTransfer(network,txid, address, amount, callbackHeight, true);
     }
 
     /** A payout height comes from the real receipt; pending canonical confirmations remain observable. */
-    public Optional<Proof> verifyPayout(String txid, String address, BigDecimal amount) {
+    public Optional<Proof> verifyPayout(CregisNetwork network,String txid, String address, BigDecimal amount) {
         String normalized = txid != null && txid.matches("(?i)[0-9a-f]{64}") ? "0x" + txid : txid;
-        return verifyTransfer(normalized, address, amount, null, false);
+        return verifyTransfer(network,normalized, address, amount, null, false);
     }
 
-    private Optional<Proof> verifyTransfer(String txid, String address, BigDecimal amount,
+    private Optional<Proof> verifyTransfer(CregisNetwork network,String txid, String address, BigDecimal amount,
                                            Long callbackHeight, boolean requireFinality) {
         if (properties.getDepositConfirmations() < 15) throw invalid();
         if (txid == null || address == null || !txid.matches("(?i)0x[0-9a-f]{64}") || !address.matches("(?i)0x[0-9a-f]{40}")
                 || amount == null || amount.signum() <= 0 || amount.scale() > 6) throw invalid();
-        JsonNode receipt = call("eth_getTransactionReceipt", "[\"" + txid + "\"]");
+        JsonNode receipt = call(network,"eth_getTransactionReceipt", "[\"" + txid + "\"]");
         if (receipt.isNull()) return Optional.empty();
         if (!receipt.isObject() || !"0x1".equalsIgnoreCase(receipt.path("status").asText())
                 || !txid.equalsIgnoreCase(receipt.path("transactionHash").asText())) throw invalid();
         long blockNumber = hexLong(receipt.path("blockNumber").asText());
         String blockHash = hash(receipt.path("blockHash").asText());
         if (callbackHeight != null && blockNumber != callbackHeight) throw invalid();
-        Head head = head();
+        Head head = head(network);
         if (head.number() < blockNumber || (requireFinality
                 && head.number() - blockNumber + 1 < properties.getDepositConfirmations()))
             return Optional.empty();
-        JsonNode block = call("eth_getBlockByNumber", "[\"" + hex(blockNumber) + "\",false]");
+        JsonNode block = call(network,"eth_getBlockByNumber", "[\"" + hex(blockNumber) + "\",false]");
         if (!block.isObject() || hexLong(block.path("number").asText()) != blockNumber
                 || !blockHash.equalsIgnoreCase(hash(block.path("hash").asText()))) throw invalid();
-        JsonNode decimals = call("eth_call", "[{\"to\":\"" + CregisConstants.USDT_BEP20_TOKEN_ID
+        JsonNode decimals = call(network,"eth_call", "[{\"to\":\"" + network.tokenId()
                 + "\",\"data\":\"0x313ce567\"},\"latest\"]");
-        if (!hexBigInteger(decimals.asText()).equals(BigInteger.valueOf(18))) throw invalid();
+        if (!hexBigInteger(decimals.asText()).equals(BigInteger.valueOf(network.decimals()))) throw invalid();
         JsonNode logs = receipt.path("logs");
         if (!logs.isArray()) throw invalid();
         Integer found = null;
         String sender = null;
         for (JsonNode log : logs) {
-            if (!CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(log.path("address").asText())) continue;
+            if (!network.tokenId().equalsIgnoreCase(log.path("address").asText())) continue;
             JsonNode topics = log.path("topics");
             if (!topics.isArray() || topics.size() != 3
                     || !TRANSFER_TOPIC.equalsIgnoreCase(topics.get(0).asText())) continue;
@@ -296,7 +298,7 @@ public final class BscDepositProof {
                     || !recipient.substring(26).equalsIgnoreCase(address.substring(2))) continue;
             String raw = log.path("data").asText();
             if (!raw.matches("(?i)0x[0-9a-f]{64}")) throw invalid();
-            BigDecimal transferred = new BigDecimal(new BigInteger(raw.substring(2), 16), 18);
+            BigDecimal transferred = new BigDecimal(new BigInteger(raw.substring(2), 16), network.decimals());
             if (transferred.compareTo(amount) != 0) continue;
             if (log.path("removed").asBoolean(false) || !blockHash.equalsIgnoreCase(log.path("blockHash").asText())
                     || !txid.equalsIgnoreCase(log.path("transactionHash").asText())
@@ -314,8 +316,8 @@ public final class BscDepositProof {
                 Math.toIntExact(Math.min(Integer.MAX_VALUE, head.number() - blockNumber + 1)),sender));
     }
 
-    private JsonNode call(String method, String params) {
-        String configured = properties.getBscRpcUrl();
+    private JsonNode call(CregisNetwork network,String method, String params) {
+        String configured = properties.rpcUrl(network);
         if (configured == null || configured.isBlank()) throw invalid();
         URI uri;
         try { uri = URI.create(configured); }
@@ -371,4 +373,20 @@ public final class BscDepositProof {
         return value.toLowerCase(Locale.ROOT);
     }
     private static IllegalStateException invalid() { return new IllegalStateException("CREGIS_BSC_PROOF_INVALID"); }
+
+    private void validateNetwork(CregisNetwork network) {
+        if (hexLong(call(network,"eth_chainId","[]").asText()) != hexLong(network.rpcChainId())
+                || !hexBigInteger(call(network,"eth_call","[{\"to\":\""+network.tokenId()+"\",\"data\":\"0x313ce567\"},\"latest\"]").asText())
+                    .equals(BigInteger.valueOf(network.decimals()))) throw invalid();
+    }
+    public TransferProof verifyExact(String txid,int index,String address,BigDecimal amount,Long block) { return verifyExact(CregisNetwork.BEP20,txid,index,address,amount,block); }
+    public ReorgProof inspectCanonical(String txid,int index,String address,BigDecimal amount,long block,String hash) { return inspectCanonical(CregisNetwork.BEP20,txid,index,address,amount,block,hash); }
+    public ReorgProof inspectCanonical(String txid,int index,String address,BigDecimal amount,long block,String hash,String from) { return inspectCanonical(CregisNetwork.BEP20,txid,index,address,amount,block,hash,from); }
+    public List<Observation> scan(long from,long to,List<String> addresses) { return scan(CregisNetwork.BEP20,from,to,addresses); }
+    public Head head() { return head(CregisNetwork.BEP20); }
+    public String blockHash(long block) { return blockHash(CregisNetwork.BEP20,block); }
+    public boolean zeroUsdtBalance(String address) { return zeroUsdtBalance(CregisNetwork.BEP20,address); }
+    public PreparationBalance preparationBalance(String address) { return preparationBalance(CregisNetwork.BEP20,address); }
+    public Optional<Proof> verify(String txid,String address,BigDecimal amount,long height) { return verify(CregisNetwork.BEP20,txid,address,amount,height); }
+    public Optional<Proof> verifyPayout(String txid,String address,BigDecimal amount) { return verifyPayout(CregisNetwork.BEP20,txid,address,amount); }
 }

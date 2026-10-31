@@ -22,51 +22,51 @@ class CregisDepositReconciliationTest {
     @Test
     void twoStableCompletePassesAndCoveredChainAdvanceWatermark() {
         Fixture f = fixture();
-        when(f.provider.depositPage(anyLong(), anyLong(), anyInt(), anyInt()))
+        when(f.provider.depositPage(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(), anyLong(), anyInt(), anyInt()))
                 .thenReturn(new CregisGateway.DepositPage(1, List.of(row(1))));
         when(f.deposits.materializeProviderRow(any())).thenReturn(true);
         when(f.db.completeReconcileRun(any(), anyLong(), anyLong(), anyLong(), any(), anyLong(), any()))
                 .thenReturn(1);
-        when(f.db.advanceReconcileWatermark(anyLong(), anyLong(), any())).thenReturn(1);
+        when(f.db.advanceReconcileWatermark(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(), anyLong(), any())).thenReturn(1);
         assertThat(f.service.runOnce()).containsEntry("status", "COMPLETE");
-        verify(f.deposits).scanTrackedAddresses(986);
+        verify(f.deposits).scanTrackedAddresses(CregisNetwork.BEP20,986);
         verify(f.db).completeReconcileRun(any(), anyLong(), anyLong(), anyLong(), any(), anyLong(), any());
-        verify(f.db).advanceReconcileWatermark(anyLong(), anyLong(), any());
+        verify(f.db).advanceReconcileWatermark(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(), anyLong(), any());
     }
 
     @Test
     void changedSecondPassLeavesWatermarkAtLastCompleteWindow() {
         Fixture f = fixture();
-        when(f.provider.depositPage(anyLong(), anyLong(), anyInt(), anyInt()))
+        when(f.provider.depositPage(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(), anyLong(), anyInt(), anyInt()))
                 .thenReturn(new CregisGateway.DepositPage(1, List.of(row(1))),
                         new CregisGateway.DepositPage(1, List.of(row(2))));
         assertThatThrownBy(f.service::runOnce).hasMessage("CREGIS_RECONCILE_PROVIDER_DRIFT");
         verify(f.db).failReconcileRun(any(), any());
-        verify(f.db, never()).advanceReconcileWatermark(anyLong(), anyLong(), any());
+        verify(f.db, never()).advanceReconcileWatermark(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(), anyLong(), any());
         verify(f.deposits, never()).materializeProviderRow(any());
     }
 
     @Test
     void incompleteChainCoverageNeverCreditsOrAdvances() {
         Fixture f = fixture();
-        when(f.provider.depositPage(anyLong(), anyLong(), anyInt(), anyInt()))
+        when(f.provider.depositPage(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(), anyLong(), anyInt(), anyInt()))
                 .thenReturn(new CregisGateway.DepositPage(1, List.of(row(1))));
-        when(f.db.cursor()).thenReturn(986L);
+        when(f.db.cursor(CregisNetwork.BEP20)).thenReturn(986L);
         assertThatThrownBy(f.service::runOnce).hasMessage("CREGIS_RECONCILE_CHAIN_CURSOR_INCOMPLETE");
-        verify(f.deposits).scanTrackedAddresses(986);
-        verify(f.db, never()).advanceReconcileWatermark(anyLong(), anyLong(), any());
+        verify(f.deposits).scanTrackedAddresses(CregisNetwork.BEP20,986);
+        verify(f.db, never()).advanceReconcileWatermark(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(), anyLong(), any());
         verify(f.deposits, never()).materializeProviderRow(any());
     }
 
     @Test
     void concurrentTriggerReturnsExistingRunWithoutCreatingOrAdvancingAnother() {
         Fixture f = fixture();
-        when(f.db.claimReconcileLease(any())).thenReturn(0);
-        when(f.db.activeReconcileRun()).thenReturn("existing-run");
+        when(f.db.claimReconcileLease(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),any())).thenReturn(0);
+        when(f.db.activeReconcileRun(CregisNetwork.BEP20)).thenReturn("existing-run");
         assertThat(f.service.runOnce()).containsEntry("status", "RUNNING")
                 .containsEntry("runId", "existing-run");
-        verify(f.db, never()).createReconcileRun(any(), anyLong(), anyLong(), anyLong());
-        verify(f.db, never()).advanceReconcileWatermark(anyLong(), anyLong(), any());
+        verify(f.db, never()).createReconcileRun(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),any(), anyLong(), anyLong(), anyLong());
+        verify(f.db, never()).advanceReconcileWatermark(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),anyLong(), anyLong(), any());
     }
 
     private static CregisGateway.DepositRow row(int status) {
@@ -88,13 +88,13 @@ class CregisDepositReconciliationTest {
         when(tx.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         when(router.provider()).thenReturn(provider);
         long now = Instant.now().getEpochSecond();
-        when(db.firstAddressSecond(88)).thenReturn(now - 7200);
-        when(db.reconcileWatermark()).thenReturn(now - 3600);
-        when(db.claimReconcileLease(any())).thenReturn(1);
-        when(db.lockReconcileWatermark()).thenReturn(now - 3600);
-        when(db.cursor()).thenReturn(1001L);
-        when(chain.head()).thenReturn(new BscDepositProof.Head(1000, "0x" + "b".repeat(64)));
-        when(chain.blockHash(986)).thenReturn("0x" + "c".repeat(64));
+        when(db.firstAddressSecond(CregisNetwork.BEP20,88)).thenReturn(now - 7200);
+        when(db.reconcileWatermark(CregisNetwork.BEP20)).thenReturn(now - 3600);
+        when(db.claimReconcileLease(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),any())).thenReturn(1);
+        when(db.lockReconcileWatermark(CregisNetwork.BEP20)).thenReturn(now - 3600);
+        when(db.cursor(CregisNetwork.BEP20)).thenReturn(1001L);
+        when(chain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(1000, "0x" + "b".repeat(64)));
+        when(chain.blockHash(CregisNetwork.BEP20,986)).thenReturn("0x" + "c".repeat(64));
         return new Fixture(new CregisDepositReconciliation(props, router, chain, db, deposits, tx),
                 db, provider, deposits);
     }

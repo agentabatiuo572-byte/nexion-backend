@@ -2,6 +2,7 @@ package ffdd.opsconsole.finance.application;
 
 import ffdd.opsconsole.finance.cregis.CregisCallbackVerifier;
 import ffdd.opsconsole.finance.cregis.CregisGateway;
+import ffdd.opsconsole.finance.cregis.CregisNetwork;
 import ffdd.opsconsole.finance.cregis.CregisGatewayRouter;
 import ffdd.opsconsole.finance.cregis.CregisProperties;
 import ffdd.opsconsole.finance.cregis.CregisSigner;
@@ -39,7 +40,7 @@ public class WithdrawalPayoutCallbackService {
         String providerKey = text(callback == null ? null : callback.get("third_party_id"));
         if (providerKey == null) return ApiResult.fail(422, "CREGIS_CALLBACK_SCHEMA_INVALID");
         WithdrawalPayoutMapper.PayoutRow row = mapper.payoutByProviderKey(providerKey);
-        if (row == null || !"USDT-BEP20".equals(row.chain())
+        if (row == null || !java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(row.chain())
                 || (row.payoutSource() != null && !"provider".equals(row.payoutSource()))) {
             return ApiResult.fail(404, "CREGIS_PAYOUT_NOT_FOUND");
         }
@@ -51,7 +52,7 @@ public class WithdrawalPayoutCallbackService {
                 signer, properties.getProjectId(), properties.getApiKey(), clock, Duration.ofMinutes(5));
         CregisCallbackVerifier.Verification verification = verifier.verifyPayout(callback,
                 new CregisCallbackVerifier.ExpectedPayout(cid, row.providerIdempotencyKey(),
-                        row.targetAddress(), row.netReceive()));
+                        row.targetAddress(), row.netReceive(), CregisNetwork.fromNetwork(row.chain().substring(5))));
         if (!verification.valid()) return ApiResult.fail(401, "CREGIS_CALLBACK_" + verification.reason());
 
         int providerStatus = ((Number) callback.get("status")).intValue();
@@ -85,7 +86,7 @@ public class WithdrawalPayoutCallbackService {
                 // A signed callback can recover a lost create response only after an independent query
                 // binds CID to the original business key, recipient and exact net amount. Never resend create.
                 router.provider().queryPayout(new CregisGateway.PayoutQuery(event.providerCid(),
-                        row.providerIdempotencyKey(),row.targetAddress(),row.netReceive()));
+                        row.providerIdempotencyKey(),row.targetAddress(),row.netReceive(), CregisNetwork.fromNetwork(row.chain().substring(5)).currency()));
                 if (!finalizer.recoverProviderSubmission(row,event.providerCid()))
                     throw new IllegalStateException("CREGIS_PAYOUT_RECOVERY_CONFLICT");
                 row = mapper.payout(event.withdrawalNo());
@@ -107,18 +108,18 @@ public class WithdrawalPayoutCallbackService {
                 result = "TX_ORPHANED";
             } else if (code == 6) {
                 CregisGateway.PayoutOrder queried = router.provider().queryPayout(new CregisGateway.PayoutQuery(
-                        event.providerCid(), row.providerIdempotencyKey(), row.targetAddress(), row.netReceive()));
+                        event.providerCid(), row.providerIdempotencyKey(), row.targetAddress(), row.netReceive(), CregisNetwork.fromNetwork(row.chain().substring(5)).currency()));
                 if (queried.status() != CregisGateway.PayoutStatus.SUCCEEDED
                         || queried.txid() == null || !queried.txid().equalsIgnoreCase(event.txid())) {
                     throw new IllegalStateException("CREGIS_SUCCESS_NOT_CONFIRMED_BY_QUERY");
                 }
-                // Provider success is not BSC finality. Until an RPC receipt/confirmation observer
+                // Provider success is not chain finality. Until an RPC receipt/confirmation observer
                 // proves the transaction canonical, keep the user's reserved balance untouched.
                 finalizer.providerProgress(row, event.providerCid(), event.eventNo(), event.payloadHash(), code, event.txid());
                 result = "CHAIN_CONFIRMATION_PENDING";
             } else {
                 CregisGateway.PayoutOrder queried = router.provider().queryPayout(new CregisGateway.PayoutQuery(
-                        event.providerCid(), row.providerIdempotencyKey(), row.targetAddress(), row.netReceive()));
+                        event.providerCid(), row.providerIdempotencyKey(), row.targetAddress(), row.netReceive(), CregisNetwork.fromNetwork(row.chain().substring(5)).currency()));
                 if (queried.status().providerCode() != code || queried.txid() != null) {
                     throw new IllegalStateException("CREGIS_FAILURE_NOT_CONFIRMED_PRE_BROADCAST");
                 }

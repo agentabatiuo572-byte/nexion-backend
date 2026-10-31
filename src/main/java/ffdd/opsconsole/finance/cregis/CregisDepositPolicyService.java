@@ -21,25 +21,29 @@ public class CregisDepositPolicyService {
         return effective(policy);
     }
     @Transactional(rollbackFor=Exception.class)
-    public CregisDepositPolicy discover(long projectId, String txid) {
+    public CregisDepositPolicy discover(CregisNetwork network,long projectId, String txid) {
         if (projectId <= 0) throw new BizException(422,"CREGIS_DEPOSIT_POLICY_IDENTITY_INVALID");
         String key=normalize(txid);
         if (db.lockPolicy() == null) throw new BizException(503,"CREGIS_DEPOSIT_POLICY_LOCK_MISSING");
         var locked=db.lockCurrent();
         if (locked == null) throw new BizException(503,"CREGIS_DEPOSIT_POLICY_MISSING");
-        db.insertSnapshot(projectId,key,locked.version(),effective(locked).confirmations());
-        var snapshot=db.lockSnapshot(projectId,key);
+        db.insertSnapshot(network,projectId,key,locked.version(),effective(locked).confirmations());
+        var snapshot=db.lockSnapshot(network,projectId,key);
         if (snapshot == null) throw new BizException(503,"CREGIS_DEPOSIT_POLICY_SNAPSHOT_MISSING");
         return effective(snapshot);
     }
-    public CregisDepositPolicy snapshot(long projectId, String txid) {
-        var snapshot=db.snapshot(projectId,normalize(txid));
+    public CregisDepositPolicy snapshot(CregisNetwork network,long projectId, String txid) {
+        var snapshot=db.snapshot(network,projectId,normalize(txid));
         if (snapshot == null) throw new BizException(503,"CREGIS_DEPOSIT_POLICY_SNAPSHOT_MISSING");
         return effective(snapshot);
     }
-    public boolean integerPrincipalRequired(long projectId,String txid) {
-        return db.integerPrincipalRequired(projectId,normalize(txid));
+    public boolean integerPrincipalRequired(CregisNetwork network,long projectId,String txid) {
+        return db.integerPrincipalRequired(network,projectId,normalize(txid));
     }
+    @Transactional(rollbackFor=Exception.class)
+    public CregisDepositPolicy discover(long projectId,String txid) { return discover(CregisNetwork.BEP20,projectId,txid); }
+    public CregisDepositPolicy snapshot(long projectId,String txid) { return snapshot(CregisNetwork.BEP20,projectId,txid); }
+    public boolean integerPrincipalRequired(long projectId,String txid) { return integerPrincipalRequired(CregisNetwork.BEP20,projectId,txid); }
     private static String normalize(String txid) {
         if (txid == null || !txid.matches("(?i)(0x)?[0-9a-f]{64}")) throw new BizException(422,"CREGIS_DEPOSIT_POLICY_IDENTITY_INVALID");
         String key=txid.toLowerCase(java.util.Locale.ROOT);

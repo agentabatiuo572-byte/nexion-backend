@@ -62,7 +62,7 @@ class CregisReorgResolutionServiceTest {
         when(db.operations(1)).thenReturn(operations);when(db.operation(any())).thenAnswer(c->{var op=new HashMap<String,Object>(c.getArgument(0));op.put("eventsJson",op.get("events"));operations.add(op);return 1;});
         when(journals.journal(any(),anyLong(),anyLong())).thenReturn(List.of(map("revision",2L)));
         when(db.proposal(5)).thenAnswer(c->new HashMap<>(proposal));when(db.lockProposal(5)).thenAnswer(c->new HashMap<>(proposal));when(db.decide(eq(5L),eq(0L),eq(8L),any())).thenReturn(1);
-        when(router.provider()).thenReturn(provider);when(provider.depositsByTxid(tx)).thenReturn(List.of(new CregisGateway.DepositTrade(3,CregisConstants.BSC_CHAIN_ID,CregisConstants.USDT_BEP20_TOKEN_ID,address,n("100"),tx,1)));
+        when(router.provider()).thenReturn(provider);when(provider.depositsByTxid(CregisNetwork.BEP20,tx)).thenReturn(List.of(new CregisGateway.DepositTrade(3,CregisConstants.BSC_CHAIN_ID,CregisConstants.USDT_BEP20_TOKEN_ID,address,n("100"),tx,1)));
         absent();
     }
     @AfterEach void clear(){SecurityContextHolder.clearContext();}
@@ -85,7 +85,7 @@ class CregisReorgResolutionServiceTest {
     }
     @Test void remintedSameTransactionUsesFreshLogAndPreservesOriginalHistory() {
         approve(Action.REVERSE);
-        when(chain.inspectCanonical(any(),anyInt(),any(),any(),anyLong(),any(),any())).thenReturn(new BscDepositProof.ReorgProof(false,new BscDepositProof.TransferProof(9,110,"new",15,"0x"+"c".repeat(40),address,n("100"),true),124,"new"));
+        when(chain.inspectCanonical(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),any(),anyInt(),any(),any(),anyLong(),any(),any())).thenReturn(new BscDepositProof.ReorgProof(false,new BscDepositProof.TransferProof(9,110,"new",15,"0x"+"c".repeat(40),address,n("100"),true),124,"new"));
         approve(Action.RESTORE);
         assertThat(row).containsEntry("logIndex",9).containsEntry("originalLogIndex",0);
         verify(sources).relocateCredited(argThat(old->old.logIndex()==0 && old.cid()==3),argThat(fresh->fresh.logIndex()==9 && fresh.cid()==3),eq("CR-REORG-1:2"));
@@ -100,12 +100,12 @@ class CregisReorgResolutionServiceTest {
     }
     @Test void falseAlarmOnlyReturnsOwnHoldWithoutNewCreditOrReserve(){
         wallet.put("cregisRiskHeld",n("70"));canonical();
-        when(provider.depositsByTxid(tx)).thenReturn(List.of(new CregisGateway.DepositTrade(3,CregisConstants.BSC_CHAIN_ID,CregisConstants.USDT_BEP20_TOKEN_ID.toUpperCase(Locale.ROOT),address,n("100"),tx,1)));
+        when(provider.depositsByTxid(CregisNetwork.BEP20,tx)).thenReturn(List.of(new CregisGateway.DepositTrade(3,CregisConstants.BSC_CHAIN_ID,CregisConstants.USDT_BEP20_TOKEN_ID.toUpperCase(Locale.ROOT),address,n("100"),tx,1)));
         approve(Action.RELEASE_HOLD);
         assertThat(amount(wallet,"usdtAvailable")).isEqualByComparingTo("40");assertThat(amount(wallet,"cregisRiskHeld")).isEqualByComparingTo("30");assertThat(amount(wallet,"cumulativeDeposit")).isEqualByComparingTo("100");
         verify(treasury,never()).recordTopupReserve(any(),any(),any());assertThat(row).containsEntry("status","RELEASED");
     }
-    @Test void rpcFailureCannotBecomeAbsenceOrWriteMoney(){when(chain.inspectCanonical(any(),anyInt(),any(),any(),anyLong(),any(),any())).thenThrow(new IllegalStateException("rpc"));assertThatThrownBy(()->service.evidence(1,Action.REVERSE)).hasMessage("CREGIS_REORG_PROOF_UNAVAILABLE");verify(db,never()).walletChange(anyLong(),anyLong(),any(),any(),any());}
+    @Test void rpcFailureCannotBecomeAbsenceOrWriteMoney(){when(chain.inspectCanonical(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),any(),anyInt(),any(),any(),anyLong(),any(),any())).thenThrow(new IllegalStateException("rpc"));assertThatThrownBy(()->service.evidence(1,Action.REVERSE)).hasMessage("CREGIS_REORG_PROOF_UNAVAILABLE");verify(db,never()).walletChange(anyLong(),anyLong(),any(),any(),any());}
     @Test void differentCheckerActiveMakerAndAdminSubjectAreMandatory(){
         var evidence=service.evidence(1,Action.REVERSE);prepare(Action.REVERSE,evidence);auth(7,"ADMIN");assertThatThrownBy(()->service.decide(5,"same",new Decision("APPROVE",0,reason))).hasMessage("CREGIS_REORG_DIFFERENT_CHECKER_REQUIRED");
         auth(8,"APP");assertThatThrownBy(()->service.evidence(1,Action.REVERSE)).hasMessage("ADMIN_FINANCE_AUTH_REQUIRED");auth(8,"ADMIN");when(admins.isActiveAdministrator(7)).thenReturn(false);assertThatThrownBy(()->service.decide(5,"inactive",new Decision("APPROVE",0,reason))).hasMessage("CREGIS_REORG_MAKER_INACTIVE");
@@ -131,12 +131,12 @@ class CregisReorgResolutionServiceTest {
         row.put("status","RELEASED");row.put("heldAmount",n("0"));canonical();when(db.openForUser(7)).thenReturn(1);assertThatThrownBy(()->approve(Action.UNFREEZE)).hasMessage("CREGIS_REORG_OPEN_INCIDENT_OR_DEBT");when(db.openForUser(7)).thenReturn(0);account.put("freezeSource","K1_MULTI_ACCOUNT");assertThatThrownBy(()->approve(Action.UNFREEZE)).hasMessage("CREGIS_REORG_OTHER_FREEZE_SOURCE");verify(db,never()).unfreeze(anyLong(),any());
     }
     @Test void evidenceHashDoesNotExpireOnUnrelatedNewHeadButDoesBindAction(){
-        canonical();String release=service.evidence(1,Action.RELEASE_HOLD).get("evidenceHash").toString();when(chain.inspectCanonical(any(),anyInt(),any(),any(),anyLong(),any(),any())).thenReturn(new BscDepositProof.ReorgProof(false,new BscDepositProof.TransferProof(0,110,"new",22,"0x"+"c".repeat(40),address,n("100"),true),131,"new"));assertThat(service.evidence(1,Action.RELEASE_HOLD)).containsEntry("evidenceHash",release);
+        canonical();String release=service.evidence(1,Action.RELEASE_HOLD).get("evidenceHash").toString();when(chain.inspectCanonical(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),any(),anyInt(),any(),any(),anyLong(),any(),any())).thenReturn(new BscDepositProof.ReorgProof(false,new BscDepositProof.TransferProof(0,110,"new",22,"0x"+"c".repeat(40),address,n("100"),true),131,"new"));assertThat(service.evidence(1,Action.RELEASE_HOLD)).containsEntry("evidenceHash",release);
     }
     void approve(Action action){var evidence=service.evidence(1,action);prepare(action,evidence);service.decide(5,"key-"+action+row.get("version"),new Decision("APPROVE",0,reason));}
     void prepare(Action action,Map<String,Object> evidence){proposal.clear();proposal.putAll(map("id",5L,"incidentId",1L,"action",action.name(),"expectedVersion",row.get("version"),"evidenceHash",evidence.get("evidenceHash"),"makerId",7L,"status","MAKER_DONE","version",0L));}
-    void absent(){when(chain.inspectCanonical(any(),anyInt(),any(),any(),anyLong(),any(),any())).thenReturn(new BscDepositProof.ReorgProof(true,null,130,"new"));}
-    void canonical(){when(chain.inspectCanonical(any(),anyInt(),any(),any(),anyLong(),any(),any())).thenReturn(new BscDepositProof.ReorgProof(false,new BscDepositProof.TransferProof(0,110,"new",15,"0x"+"c".repeat(40),address,n("100"),true),124,"new"));}
+    void absent(){when(chain.inspectCanonical(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),any(),anyInt(),any(),any(),anyLong(),any(),any())).thenReturn(new BscDepositProof.ReorgProof(true,null,130,"new"));}
+    void canonical(){when(chain.inspectCanonical(org.mockito.ArgumentMatchers.eq(CregisNetwork.BEP20),any(),anyInt(),any(),any(),anyLong(),any(),any())).thenReturn(new BscDepositProof.ReorgProof(false,new BscDepositProof.TransferProof(0,110,"new",15,"0x"+"c".repeat(40),address,n("100"),true),124,"new"));}
     static void auth(long id,String subject){var auth=new UsernamePasswordAuthenticationToken(String.valueOf(id),"",List.of(new SimpleGrantedAuthority("finance_d1_read"),new SimpleGrantedAuthority("finance_d1_channel_manage")));auth.setDetails(Map.of("subjectType",subject));SecurityContextHolder.getContext().setAuthentication(auth);}
     static BigDecimal n(String value){return new BigDecimal(value);}static BigDecimal amount(Map<String,Object> row,String key){return new BigDecimal(String.valueOf(row.get(key)));}
     static Map<String,Object> map(Object... pairs){var result=new HashMap<String,Object>();for(int i=0;i<pairs.length;i+=2)result.put((String)pairs[i],pairs[i+1]);return result;}

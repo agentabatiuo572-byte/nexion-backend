@@ -157,7 +157,7 @@ class WithdrawalPayoutExecutorTest {
         when(gateway.queryPayout(any())).thenReturn(new CregisGateway.PayoutOrder(9001L,"USDT","2510",
                 ffdd.opsconsole.finance.cregis.CregisConstants.USDT_BEP20_TOKEN_ID,sent.targetAddress(),
                 sent.netReceive(),sent.providerIdempotencyKey(),CregisGateway.PayoutStatus.SUCCEEDED,tx));
-        when(chain.verifyPayout(tx,sent.targetAddress(),sent.netReceive())).thenReturn(java.util.Optional.of(proof));
+        when(chain.verifyPayout(ffdd.opsconsole.finance.cregis.CregisNetwork.BEP20,tx,sent.targetAddress(),sent.netReceive())).thenReturn(java.util.Optional.of(proof));
         new WithdrawalPayoutExecutor(mapper,router,finalizer,chain,control,mock(WithdrawalPayoutDispatchGuard.class)).process();
         if (confirmations==15) verify(finalizer).confirmProviderChain(sent,tx,proof,15);
         else verify(finalizer,never()).confirmProviderChain(any(),any(),any(),anyInt());

@@ -15,7 +15,8 @@ public class CregisDepositSchemaInitializer implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         if (properties.getMode() == CregisProperties.Mode.PROVIDER
-                && (mapper.schemaTableCount() != 8 || mapper.controlTableCount() != 5
+                && (mapper.networkSchemaColumnCount()!=6 || mapper.networkUniqueIndexCount()!=6 || mapper.networkPoolStateCount()!=1
+                    || mapper.schemaTableCount() != 8 || mapper.controlTableCount() != 5
                     || mapper.controlColumnCount() != 5 || mapper.deliveryEvidenceColumnCount() != 4
                     || mapper.schemaUniqueIndexCount() != 4
                     || mapper.schemaPoolColumnCount() != 3 || mapper.schemaRiskColumnCount() != 4

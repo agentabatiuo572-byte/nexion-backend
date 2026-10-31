@@ -66,6 +66,7 @@ class PurchasePaymentMySqlTest {
             var resource=new org.springframework.core.io.FileSystemResource("scripts/migrations/20261031_purchase_direct_payments.sql");
             ScriptUtils.executeSqlScript(c,resource);ScriptUtils.executeSqlScript(c,resource);
         }
+        jdbc.execute("ALTER TABLE nx_purchase_payment_arrival ADD COLUMN chain_id VARCHAR(32) NOT NULL DEFAULT '2510'");
         Configuration config=new Configuration();config.setEnvironment(new Environment("direct-pay-isolated",new SpringManagedTransactionFactory(),source));
         config.setLocalCacheScope(LocalCacheScope.STATEMENT);config.addMapper(PurchasePaymentMapper.class);
         db=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config)).getMapper(PurchasePaymentMapper.class);
@@ -86,7 +87,9 @@ class PurchasePaymentMySqlTest {
                 .when(commands).executeRetained(anyString(),anyString(),anyString(),any(),any());
         policy=new PurchasePaymentPolicyService(db,cregisPolicy,commands,audit,new ObjectMapper());
         var hd=mock(HdPayProperties.class);when(hd.ready()).thenReturn(true);when(hd.getServerIp()).thenReturn("8.8.8.8");when(hd.isTrustedPaymentPage(anyString())).thenAnswer(i->i.getArgument(0,String.class).startsWith("https://pay.example/"));
-        cr=new CregisProperties();cr.setMode(CregisProperties.Mode.PROVIDER);cr.setDepositEnabled(true);cr.setDepositCreditEnabled(true);cr.setProjectId(99);cr.setDepositConfirmations(15);
+        cr=new CregisProperties();cr.setMode(CregisProperties.Mode.PROVIDER);cr.setDepositEnabled(true);cr.setDepositCreditEnabled(true);cr.setProjectId(99);cr.setDepositConfirmations(15);cr.setBscRpcUrl("https://bsc.invalid");cr.setEthereumRpcUrl("https://ethereum.invalid");
+        when(provider.projectCoins()).thenReturn(List.of(new CregisGateway.Coin(CregisNetwork.BEP20.currency(),"USDT-BEP20","2510",CregisNetwork.BEP20.tokenId(),true,true),
+                new CregisGateway.Coin(CregisNetwork.ERC20.currency(),"USDT-ERC20","60",CregisNetwork.ERC20.tokenId(),true,true)));
         var fx=mock(VietnamPaymentMapper.class);when(fx.findFxQuoteConfig()).thenReturn(Map.of("baseRateVndPerUsdt","25000","buySpreadPct","0","version",1));
         service=new PurchasePaymentService(db,policy,orders,tradeins,mock(AppTrialLifecycleService.class),hd,gateway,cr,router,chain,fx,new DataSourceTransactionManager(source),new ObjectMapper(),audit,commands);
         when(gateway.createPayOrder(any())).thenReturn(new HdPayGateway.PayPage("https://pay.example/hosted"));
@@ -221,7 +224,7 @@ class PurchasePaymentMySqlTest {
         String address="0x"+"1".repeat(40),hash="0x"+"a".repeat(64);
         jdbc.update("INSERT INTO nx_cregis_deposit_address(id,address,project_id,chain_id,state,purpose) VALUES(1,?,99,'2510','UNASSIGNED','WALLET_TOPUP')",address);
         when(provider.addressBelongs("2510",address)).thenReturn(true);when(provider.zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY,address)).thenReturn(true);
-        when(chain.zeroUsdtBalance(address)).thenReturn(true);when(chain.head()).thenReturn(new BscDepositProof.Head(100,hash));when(chain.blockHash(100)).thenReturn(hash);
+        when(chain.zeroUsdtBalance(CregisNetwork.BEP20,address)).thenReturn(true);when(chain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(100,hash));when(chain.blockHash(CregisNetwork.BEP20,100)).thenReturn(hash);
         var q=quote("CREGIS_USDT_BSC");var pending=service.create(7,"bsc-command",text(q.get("paymentQuoteId")));
         assertThat(pending).containsEntry("address",address).containsEntry("status","AWAITING_PAYMENT");
         assertThat(jdbc.queryForObject("SELECT state FROM nx_cregis_deposit_address",String.class)).isEqualTo("DIRECT_PURCHASE");
@@ -237,10 +240,10 @@ class PurchasePaymentMySqlTest {
         String address="0x"+"2".repeat(40),hash="0x"+"b".repeat(64);
         jdbc.update("INSERT INTO nx_cregis_deposit_address(id,address,project_id,chain_id,state,purpose) VALUES(1,?,99,'2510','UNASSIGNED','WALLET_TOPUP')",address);
         when(provider.addressBelongs("2510",address)).thenReturn(true);when(provider.zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY,address)).thenReturn(true);
-        when(chain.zeroUsdtBalance(address)).thenReturn(true);when(chain.head()).thenReturn(new BscDepositProof.Head(100,hash));when(chain.blockHash(100)).thenReturn(hash);
+        when(chain.zeroUsdtBalance(CregisNetwork.BEP20,address)).thenReturn(true);when(chain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(100,hash));when(chain.blockHash(CregisNetwork.BEP20,100)).thenReturn(hash);
         var q=quote("CREGIS_USDT_BSC");
         // A real topup allocator wins the candidate between provider proof and the purchase row CAS.
-        when(chain.blockHash(100)).thenAnswer(i->{jdbc.update("UPDATE nx_cregis_deposit_address SET state='READY',user_id=77 WHERE id=1");return hash;});
+        when(chain.blockHash(CregisNetwork.BEP20,100)).thenAnswer(i->{jdbc.update("UPDATE nx_cregis_deposit_address SET state='READY',user_id=77 WHERE id=1");return hash;});
         assertThatThrownBy(()->service.create(7,"pool-race-command",text(q.get("paymentQuoteId")))).hasMessage("CREGIS_DIRECT_ADDRESS_ALLOCATION_RETRY");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_purchase_payment_intent",Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT state FROM nx_cregis_deposit_address",String.class)).isEqualTo("READY");
@@ -249,8 +252,8 @@ class PurchasePaymentMySqlTest {
         String address="0x"+"5".repeat(40),hash="0x"+"a".repeat(64);
         jdbc.update("INSERT INTO nx_cregis_deposit_address(id,address,project_id,chain_id,state,purpose) VALUES(1,?,99,'2510','UNASSIGNED','WALLET_TOPUP')",address);
         when(provider.addressBelongs("2510",address)).thenReturn(true);when(provider.zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY,address)).thenReturn(true);
-        when(chain.zeroUsdtBalance(address)).thenReturn(true);when(chain.head()).thenReturn(new BscDepositProof.Head(100,hash));
-        CountDownLatch proven=new CountDownLatch(1);when(chain.blockHash(100)).thenAnswer(i->{proven.countDown();return hash;});
+        when(chain.zeroUsdtBalance(CregisNetwork.BEP20,address)).thenReturn(true);when(chain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(100,hash));
+        CountDownLatch proven=new CountDownLatch(1);when(chain.blockHash(CregisNetwork.BEP20,100)).thenAnswer(i->{proven.countDown();return hash;});
         var q=quote("CREGIS_USDT_BSC");var worker=Executors.newSingleThreadExecutor();
         try(Connection blocker=source.getConnection()){
             blocker.setAutoCommit(false);try(Statement statement=blocker.createStatement()){statement.executeQuery("SELECT id FROM nx_user WHERE id=7 FOR UPDATE").close();}
@@ -281,14 +284,14 @@ class PurchasePaymentMySqlTest {
         String address="0x"+"3".repeat(40),anchor="0x"+"c".repeat(64),block="0x"+"d".repeat(64),txid="0x"+"e".repeat(64);
         jdbc.update("INSERT INTO nx_cregis_deposit_address(id,address,project_id,chain_id,state,purpose) VALUES(1,?,99,'2510','UNASSIGNED','WALLET_TOPUP')",address);
         when(provider.addressBelongs("2510",address)).thenReturn(true);when(provider.zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY,address)).thenReturn(true);
-        when(chain.zeroUsdtBalance(address)).thenReturn(true);when(chain.head()).thenReturn(new BscDepositProof.Head(100,anchor));when(chain.blockHash(100)).thenReturn(anchor);
+        when(chain.zeroUsdtBalance(CregisNetwork.BEP20,address)).thenReturn(true);when(chain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(100,anchor));when(chain.blockHash(CregisNetwork.BEP20,100)).thenReturn(anchor);
         var q=quote("CREGIS_USDT_BSC");var pending=service.create(7,"direct-history",text(q.get("paymentQuoteId")));
         BigDecimal amount=new BigDecimal(text(q.get("totalUsdt")));
         var row=new CregisGateway.DepositRow(44,"2510",CregisConstants.USDT_BEP20_TOKEN_ID,address,amount,txid,1,105,java.time.Instant.now().getEpochSecond());
         var log=new BscDepositProof.Observation(txid,1,address,amount,105);
-        when(chain.scan(105,105,List.of(address))).thenReturn(List.of(log));
-        when(chain.verifyExact(eq(txid),eq(1),eq(address),argThat(value->value!=null&&value.compareTo(amount)==0),eq(105L))).thenReturn(new BscDepositProof.TransferProof(1,105,block,15,"0x"+"4".repeat(40),address,amount,true));
-        when(provider.depositsByTxid(txid)).thenReturn(List.of(new CregisGateway.DepositTrade(44,"2510",CregisConstants.USDT_BEP20_TOKEN_ID,address,amount,txid,1)));
+        when(chain.scan(CregisNetwork.BEP20,105,105,List.of(address))).thenReturn(List.of(log));
+        when(chain.verifyExact(eq(CregisNetwork.BEP20),eq(txid),eq(1),eq(address),argThat(value->value!=null&&value.compareTo(amount)==0),eq(105L))).thenReturn(new BscDepositProof.TransferProof(1,105,block,15,"0x"+"4".repeat(40),address,amount,true));
+        when(provider.depositsByTxid(CregisNetwork.BEP20,txid)).thenReturn(List.of(new CregisGateway.DepositTrade(44,"2510",CregisConstants.USDT_BEP20_TOKEN_ID,address,amount,txid,1)));
         var topupDb=mock(CregisDepositMapper.class);var topupPolicies=mock(CregisDepositPolicyService.class);
         @SuppressWarnings("unchecked") org.springframework.beans.factory.ObjectProvider<PurchasePaymentService> direct=mock(org.springframework.beans.factory.ObjectProvider.class);
         when(direct.getObject()).thenReturn(service);

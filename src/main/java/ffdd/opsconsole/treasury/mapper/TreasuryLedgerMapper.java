@@ -553,7 +553,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     @Insert("""
             INSERT INTO nx_treasury_reserve_ledger(reserve_no,voucher_no,direction,amount_usd,reason,operator,
               idempotency_key,status,created_at,updated_at,is_deleted)
-            VALUES(#{reserveNo},#{voucherNo},'IN',#{amount},'BEP20 reserved withdrawal returned','cregis-settlement',
+            VALUES(#{reserveNo},#{voucherNo},'IN',#{amount},'Crypto reserved withdrawal returned','cregis-settlement',
               #{evidence},'CONFIRMED',#{now},#{now},0)
             """)
     int insertBep20ReserveReversal(@Param("reserveNo") String reserveNo, @Param("voucherNo") String voucherNo,

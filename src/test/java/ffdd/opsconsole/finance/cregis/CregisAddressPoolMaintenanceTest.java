@@ -31,7 +31,7 @@ class CregisAddressPoolMaintenanceTest {
     final CregisDepositService service;
     @org.junit.jupiter.api.AfterEach void close(){service.closePoolWorkers();}
     CregisAddressPoolMaintenanceTest() {
-        config.setMode(CregisProperties.Mode.PROVIDER);config.setProjectId(88);
+        config.setMode(CregisProperties.Mode.PROVIDER);config.setBscRpcUrl("https://bsc.example.test");config.setProjectId(88);
         config.setDepositEnabled(true);config.setDepositCreditEnabled(true);
         var router=mock(CregisGatewayRouter.class);when(router.provider()).thenReturn(provider);
         when(router.depositCallbackUrl()).thenReturn("https://test.example/callback");
@@ -43,10 +43,10 @@ class CregisAddressPoolMaintenanceTest {
         when(db.provisionGate()).thenReturn(gate);when(db.lockProvisionGate()).thenReturn(gate);
         when(db.unresolvedExposure(88)).thenReturn(BigDecimal.ZERO);
         when(db.verifyingCandidate(88,CHAIN)).thenReturn(null);
-        when(chain.head()).thenReturn(new BscDepositProof.Head(200,"0x"+"b".repeat(64)));
+        when(chain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(200,"0x"+"b".repeat(64)));
         when(provider.projectCoins()).thenReturn(List.of(new CregisGateway.Coin("USDT","USDT",CHAIN,
             CregisConstants.USDT_BEP20_TOKEN_ID,false,true)));
-        when(db.poolPolicy()).thenAnswer(i->policy.get());
+        when(db.poolPolicy(CregisNetwork.BEP20)).thenAnswer(i->policy.get());
         when(db.availableAddressCount(88,CHAIN)).thenAnswer(i->available.get());
         when(db.outstandingAddressCount(88,CHAIN)).thenAnswer(i->(int)requests.stream().filter(r->java.util.Set.of("QUEUED","PROVISIONING","VERIFYING","UNKNOWN").contains(r.get("state"))).count());
         when(db.submittingAddressCount(88,CHAIN)).thenAnswer(i->(int)requests.stream().filter(r->"PROVISIONING".equals(r.get("state"))).count());
@@ -118,7 +118,7 @@ class CregisAddressPoolMaintenanceTest {
         when(provider.createAddress(any(),any(),any(),any())).thenThrow(new CregisGatewayException(CregisGatewayException.Kind.REJECTED,"CREGIS_ADDRESS_QUOTA_EXCEEDED"));
         service.maintainAddressPool();
         verify(db,atLeastOnce()).rejectPoolAttempt(anyString());
-        verify(db,atLeastOnce()).pausePoolSubmission("CREGIS_ADDRESS_QUOTA_EXCEEDED",900);
+        verify(db,atLeastOnce()).pausePoolSubmission(CregisNetwork.BEP20,"CREGIS_ADDRESS_QUOTA_EXCEEDED",900);
         verify(db,never()).blockProvisionGateAny();
     }
     @Test void processDeathAfterDurableAttemptRequiresReviewInsteadOfDuplicateCreation() {
@@ -137,30 +137,30 @@ class CregisAddressPoolMaintenanceTest {
     }
     @ParameterizedTest @ValueSource(booleans={false,true})
     void candidateUsesItsOwnHistoryDespiteGlobalCursorAlreadyPastCreation(boolean interruptedRange) {
-        when(db.cursor()).thenReturn(100000L);
+        when(db.cursor(CregisNetwork.BEP20)).thenReturn(100000L);
         when(db.verifyingCandidates(88,CHAIN,50)).thenReturn(List.of(Map.of("id",9L,"address",ADDRESS,
             "creationBlock",100L,"verificationBlock",100L)));
         available.set(1000);
         when(db.advanceCandidateVerification(9,100,187)).thenReturn(1);
         when(provider.addressBelongs(CHAIN,ADDRESS)).thenReturn(true);
         when(provider.zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY,ADDRESS)).thenReturn(true);
-        when(chain.zeroUsdtBalance(ADDRESS)).thenReturn(true);
-        if(interruptedRange) when(chain.scan(100,186,List.of(ADDRESS))).thenThrow(new IllegalStateException("RPC_FAILED"));
+        when(chain.zeroUsdtBalance(CregisNetwork.BEP20,ADDRESS)).thenReturn(true);
+        if(interruptedRange) when(chain.scan(CregisNetwork.BEP20,100,186,List.of(ADDRESS))).thenThrow(new IllegalStateException("RPC_FAILED"));
         service.maintainAddressPool();
-        verify(chain).scan(100,186,List.of(ADDRESS));
+        verify(chain).scan(CregisNetwork.BEP20,100,186,List.of(ADDRESS));
         if(interruptedRange) {
             verify(db,never()).advanceCandidateVerification(anyLong(),anyLong(),anyLong());
             verify(db,never()).readyPoolCandidate(anyLong());
         } else verify(db).readyPoolCandidate(9);
     }
     @Test void longInterruptedCandidatePersistsOneBoundedRangeAndWaitsForTheRest() {
-        when(chain.head()).thenReturn(new BscDepositProof.Head(10000,"0x"+"b".repeat(64)));
+        when(chain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(10000,"0x"+"b".repeat(64)));
         when(db.verifyingCandidates(88,CHAIN,50)).thenReturn(List.of(Map.of("id",9L,"address",ADDRESS,
             "creationBlock",100L,"verificationBlock",100L)));
         available.set(1000);
         when(db.advanceCandidateVerification(9,100,500)).thenReturn(1);
         service.maintainAddressPool();
-        verify(chain).scan(100,499,List.of(ADDRESS));
+        verify(chain).scan(CregisNetwork.BEP20,100,499,List.of(ADDRESS));
         verify(db).advanceCandidateVerification(9,100,500);
         verify(db,never()).readyPoolCandidate(anyLong());
         verifyNoInteractions(provider);

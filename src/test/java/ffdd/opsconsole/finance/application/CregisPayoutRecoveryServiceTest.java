@@ -85,6 +85,20 @@ class CregisPayoutRecoveryServiceTest {
         verify(db,never()).recoverOrphanToSent(any(),anyLong(),any(),any()); noMoney();
     }
 
+    @Test void erc20UnknownRecoveryRejectsBscEvidenceThenQueriesOnlyOriginalEthereumAsset() {
+        var old=row(null,"TX_ORPHANED","provider");
+        var erc=new WithdrawalPayoutMapper.PayoutRow(old.withdrawalNo(),old.userId(),"USDT-ERC20",old.targetAddress(),old.amount(),old.netReceive(),
+                old.nexBurned(),old.status(),null,null,old.providerIdempotencyKey(),old.payoutSource(),1);
+        when(db.payout("WD-recovery")).thenReturn(erc);
+        assertThatThrownBy(this::recover).hasMessage("CREGIS_PAYOUT_RECOVERY_EVIDENCE_CONFLICT");
+        verify(db,never()).recoverOrphanToSent(any(),anyLong(),any(),any());
+        when(gateway.queryPayout(any())).thenReturn(new CregisGateway.PayoutOrder(901,CregisNetwork.ERC20.currency(),"60",CregisNetwork.ERC20.tokenId(),
+                address(),new BigDecimal("9"),"original-business-key",CregisGateway.PayoutStatus.AWAITING_AUDIT,null));
+        assertThat(recover().state()).isEqualTo("SENT");
+        verify(gateway,times(2)).queryPayout(new CregisGateway.PayoutQuery(901,"original-business-key",address(),new BigDecimal("9"),CregisNetwork.ERC20.currency()));
+        noMoney();
+    }
+
     @Test void retainedReplayDoesNotRequeryAndMismatchedKeyIsRejected() {
         var result = new CregisPayoutRecoveryService.Result("WD-recovery","901","SENT");
         when(idempotency.recoveryResult(any(),any(),any(),eq(CregisPayoutRecoveryService.Result.class)))

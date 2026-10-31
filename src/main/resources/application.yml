@@ -104,12 +104,15 @@ nexion:
       connect-timeout-ms: ${NEXION_CREGIS_CONNECT_TIMEOUT_MS:1000}
       read-timeout-ms: ${NEXION_CREGIS_READ_TIMEOUT_MS:2000}
       deposit-enabled: ${NEXION_CREGIS_DEPOSIT_ENABLED:false}
+      erc20-deposit-enabled: ${NEXION_CREGIS_ERC20_DEPOSIT_ENABLED:false}
       deposit-credit-enabled: ${NEXION_CREGIS_DEPOSIT_CREDIT_ENABLED:false}
       payout-enabled: ${NEXION_CREGIS_PAYOUT_ENABLED:false}
+      erc20-payout-enabled: ${NEXION_CREGIS_ERC20_PAYOUT_ENABLED:false}
       auto-forward-enabled: ${NEXION_CREGIS_AUTO_FORWARD_ENABLED:false}
       auto-forward-poll-ms: ${NEXION_CREGIS_AUTO_FORWARD_POLL_MS:60000}
       callback-source-ips: ${NEXION_CREGIS_CALLBACK_SOURCE_IPS:}
       bsc-rpc-url: ${NEXION_CREGIS_BSC_RPC_URL:}
+      ethereum-rpc-url: ${NEXION_CREGIS_ETHEREUM_RPC_URL:}
       deposit-confirmations: ${NEXION_CREGIS_DEPOSIT_CONFIRMATIONS:15}
       chain-scan-blocks: ${NEXION_CREGIS_CHAIN_SCAN_BLOCKS:500}
     hdpay:

@@ -73,8 +73,11 @@ public class CregisDepositAdminController {
 
     @PostMapping("/addresses/provision")
     @PreAuthorize("hasAuthority('finance_d1_channel_manage')")
-    public ApiResult<Map<String, Object>> provisionAddress() {
-        return ApiResult.ok(deposits.provisionPoolAddress());
+    public ApiResult<Map<String, Object>> provisionAddress(@RequestParam(defaultValue="BEP20") String network) {
+        ffdd.opsconsole.finance.cregis.CregisNetwork selected;
+        try { selected=ffdd.opsconsole.finance.cregis.CregisNetwork.fromNetwork(network); }
+        catch(IllegalArgumentException unsupported) { return ApiResult.fail(422,"DEPOSIT_NETWORK_UNAVAILABLE"); }
+        return ApiResult.ok(deposits.provisionPoolAddress(selected));
     }
 
     @GetMapping("/reconciliation")
@@ -85,8 +88,11 @@ public class CregisDepositAdminController {
 
     @PostMapping("/reconciliation/run")
     @PreAuthorize("hasAuthority('finance_d1_channel_manage')")
-    public ApiResult<Map<String, Object>> reconcileNow() {
-        return ApiResult.ok(reconciliation.runOnce());
+    public ApiResult<Map<String, Object>> reconcileNow(@RequestParam(defaultValue="BEP20") String network) {
+        ffdd.opsconsole.finance.cregis.CregisNetwork selected;
+        try { selected=ffdd.opsconsole.finance.cregis.CregisNetwork.fromNetwork(network); }
+        catch(IllegalArgumentException unsupported) { return ApiResult.fail(422,"DEPOSIT_NETWORK_UNAVAILABLE"); }
+        return ApiResult.ok(reconciliation.runOnce(selected));
     }
 
     @GetMapping("/review-cases")

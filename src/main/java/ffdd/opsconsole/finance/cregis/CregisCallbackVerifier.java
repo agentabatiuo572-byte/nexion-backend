@@ -32,7 +32,7 @@ public final class CregisCallbackVerifier {
 
     public Verification verifyPayout(Map<String, Object> callback, ExpectedPayout expected) {
         if (callback == null || projectId <= 0 || apiKey == null || apiKey.isEmpty()
-                || tolerance == null || tolerance.isNegative() || tolerance.isZero() || expected == null) {
+                || tolerance == null || tolerance.isNegative() || tolerance.isZero() || expected == null || expected.network()==null) {
             return invalid("VERIFIER_NOT_CONFIGURED");
         }
         if (expected.cid() <= 0 || text(expected.thirdPartyId()) == null
@@ -65,9 +65,9 @@ public final class CregisCallbackVerifier {
             return invalid("CALLBACK_SCHEMA_INVALID");
         }
         if (status < 0 || status > 7) return invalid("STATUS_INVALID");
-        if (!CregisConstants.BSC_CHAIN_ID.equals(text(callback.get("chain_id")))
-                || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(text(callback.get("token_id")))
-                || !supportedCurrency(text(callback.get("currency")))) {
+        if (!expected.network().chainId().equals(text(callback.get("chain_id")))
+                || !expected.network().tokenId().equalsIgnoreCase(text(callback.get("token_id")))
+                || !supportedCurrency(expected.network(),text(callback.get("currency")))) {
             return invalid("ASSET_SCOPE_MISMATCH");
         }
         if (cid.longValue() != expected.cid()
@@ -86,9 +86,9 @@ public final class CregisCallbackVerifier {
         return new Verification(true, "OK");
     }
 
-    private boolean supportedCurrency(String currency) {
-        return CregisConstants.USDT_BEP20_CURRENCY.equalsIgnoreCase(currency)
-                || "USDT-BEP20".equalsIgnoreCase(currency);
+    private boolean supportedCurrency(CregisNetwork network,String currency) {
+        return network.currency().equalsIgnoreCase(currency)
+                || network.policyTokenId().equalsIgnoreCase(currency);
     }
 
     private Long integer(Object value) {
@@ -120,5 +120,7 @@ public final class CregisCallbackVerifier {
 
     public record Verification(boolean valid, String reason) { }
 
-    public record ExpectedPayout(long cid, String thirdPartyId, String address, BigDecimal amount) { }
+    public record ExpectedPayout(long cid, String thirdPartyId, String address, BigDecimal amount,CregisNetwork network) {
+        public ExpectedPayout(long cid,String thirdPartyId,String address,BigDecimal amount) { this(cid,thirdPartyId,address,amount,CregisNetwork.BEP20); }
+    }
 }

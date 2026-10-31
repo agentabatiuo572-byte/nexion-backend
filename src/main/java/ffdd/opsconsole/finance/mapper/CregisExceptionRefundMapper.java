@@ -14,7 +14,7 @@ public interface CregisExceptionRefundMapper extends BaseMapper<Object> {
             + "reason,provider_cid providerCid,business_key businessKey,dispatch_intent_at dispatchIntentAt,chain_txid chainTxid,"
             + "last_error lastError,created_at createdAt";
     String APPROVED_SOURCE = " FROM nx_cregis_exception_refund r JOIN nx_cregis_exception_source s "
-            + "ON s.project_id=r.project_id AND s.txid=r.txid AND s.log_index=r.log_index "
+            + "ON s.project_id=r.project_id AND s.chain_id='2510' AND s.txid=r.txid AND s.log_index=r.log_index "
             + "JOIN nx_cregis_ownership_challenge c ON c.challenge_id=r.ownership_receipt "
             + "WHERE r.state='APPROVED' AND r.checker_id IS NOT NULL AND r.checker_id<>r.maker_id "
             + "AND s.state='RESERVED' AND s.operation_kind='REFUND' AND s.operation_ref=r.case_no "
@@ -90,15 +90,15 @@ public interface CregisExceptionRefundMapper extends BaseMapper<Object> {
     int criticalDeposits(long project);
     @Select(APPROVED_CTE+"SELECT (SELECT COUNT(*) FROM nx_cregis_chain_observation o WHERE o.project_id=#{project} "
             + "AND o.status IN ('UNATTRIBUTED_HOLD','CHAIN_MISMATCH_HOLD','PROVIDER_MISSING') "
-            + "AND NOT(o.txid<=>#{txid} AND o.log_index<=>#{index}) "
-            + "AND NOT(o.status='UNATTRIBUTED_HOLD' AND EXISTS(SELECT 1 FROM approved_refund_sources r WHERE r.project_id=o.project_id AND r.txid=o.txid AND r.log_index=o.log_index))) "
+            + "AND NOT(o.chain_id='2510' AND o.txid<=>#{txid} AND o.log_index<=>#{index}) "
+            + "AND NOT(o.chain_id='2510' AND o.status='UNATTRIBUTED_HOLD' AND EXISTS(SELECT 1 FROM approved_refund_sources r WHERE r.project_id=o.project_id AND r.txid=o.txid AND r.log_index=o.log_index))) "
             + "+ (SELECT COUNT(*) FROM nx_cregis_deposit_address a WHERE a.project_id=#{project} "
             + "AND a.state IN ('UNKNOWN','PROVISIONING','VERIFYING','UNATTRIBUTED_HOLD','RETIRED_HOLD') "
-            + "AND NOT(a.address<=>#{address} AND a.state IN ('UNATTRIBUTED_HOLD','RETIRED_HOLD')) "
-            + "AND NOT(a.state IN ('UNATTRIBUTED_HOLD','RETIRED_HOLD') AND EXISTS(SELECT 1 FROM approved_refund_sources r WHERE r.project_id=a.project_id AND r.deposit_address=a.address))) "
+            + "AND NOT(a.chain_id='2510' AND a.address<=>#{address} AND a.state IN ('UNATTRIBUTED_HOLD','RETIRED_HOLD')) "
+            + "AND NOT(a.chain_id='2510' AND a.state IN ('UNATTRIBUTED_HOLD','RETIRED_HOLD') AND EXISTS(SELECT 1 FROM approved_refund_sources r WHERE r.project_id=a.project_id AND r.deposit_address=a.address))) "
             + "+ (SELECT COUNT(*) FROM nx_cregis_deposit_delivery d WHERE d.accepted=1 AND d.processed_at IS NULL "
-            + "AND NOT(d.cid<=>#{cid} AND d.txid<=>#{txid} AND d.address<=>#{address} AND d.gross_amount<=>#{amount}) "
-            + "AND NOT(COALESCE(d.signature_valid,0)=1 AND COALESCE(d.timestamp_valid,0)=1 AND COALESCE(d.ip_valid,0)=1 AND EXISTS(SELECT 1 FROM approved_refund_sources r "
+            + "AND NOT(d.chain_id='2510' AND d.cid<=>#{cid} AND d.txid<=>#{txid} AND d.address<=>#{address} AND d.gross_amount<=>#{amount}) "
+            + "AND NOT(d.chain_id='2510' AND COALESCE(d.signature_valid,0)=1 AND COALESCE(d.timestamp_valid,0)=1 AND COALESCE(d.ip_valid,0)=1 AND EXISTS(SELECT 1 FROM approved_refund_sources r "
             + "WHERE r.project_id=#{project} AND r.deposit_cid=d.cid AND r.txid=d.txid AND r.deposit_address=d.address AND r.gross_amount=d.gross_amount)))")
     int otherUnresolved(@Param("project") long project,@Param("cid") long cid,@Param("txid") String txid,
                         @Param("index") int index,@Param("address") String address,@Param("amount") java.math.BigDecimal amount);
@@ -116,7 +116,7 @@ public interface CregisExceptionRefundMapper extends BaseMapper<Object> {
     int successProgressCount(String caseNo);
     @Update("UPDATE nx_cregis_exception_refund SET state='UNKNOWN',version=version+1,last_error='CREGIS_LATE_PROVIDER_EVIDENCE' WHERE case_no=#{caseNo} AND state IN ('FAILED_NO_TRANSFER','REPROPOSED')")
     int lateEvidence(String caseNo);
-    @Select("SELECT state,operation_kind kind,operation_ref ownerCase FROM nx_cregis_exception_source WHERE project_id=#{project} AND txid=#{txid} AND log_index=#{index} FOR UPDATE")
+    @Select("SELECT state,operation_kind kind,operation_ref ownerCase FROM nx_cregis_exception_source WHERE project_id=#{project} AND chain_id='2510' AND txid=#{txid} AND log_index=#{index} FOR UPDATE")
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     Map<String,Object> guard(@Param("project")long project,@Param("txid")String txid,@Param("index")int index);
 }

@@ -202,22 +202,23 @@ public class CregisReorgResolutionService {
         validateFinancialState(row);
         if(!allowed(row).contains(action.name()))throw conflict("ACTION_NOT_ALLOWED");
         BscDepositProof.ReorgProof proof;
-        try { proof=chain.inspectCanonical(text(row,"txid"),(int)id(row,"logIndex"),text(row,"address"),money(row,"grossAmount"),id(row,"blockNumber"),text(row,"blockHash"),(String)row.get("transferFrom")); }
+        CregisNetwork network=networkOf(row);
+        try { proof=chain.inspectCanonical(network,text(row,"txid"),(int)id(row,"logIndex"),text(row,"address"),money(row,"grossAmount"),id(row,"blockNumber"),text(row,"blockHash"),(String)row.get("transferFrom")); }
         catch(RuntimeException unavailable) {throw new BizException(503,"CREGIS_REORG_PROOF_UNAVAILABLE");}
         if((action==Action.REVERSE || action==Action.COLLECT_DEBT) && !proof.positivelyVerifiedAbsent())throw conflict("ABSENCE_NOT_PROVEN");
         if(action==Action.RESTORE || action==Action.RELEASE_HOLD) {
             if(proof.canonical()==null || proof.canonical().confirmations()<Math.max(15,config.getDepositConfirmations()))throw conflict("CANONICAL_PROOF_REQUIRED");
-            var trades=router.provider().depositsByTxid(text(row,"txid"));
+            var trades=router.provider().depositsByTxid(network,text(row,"txid"));
             if(trades.size()!=1 || trades.get(0).cid()!=id(row,"cid") || trades.get(0).status()!=1
-                    || !CregisConstants.BSC_CHAIN_ID.equals(trades.get(0).chainId())
-                    || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(trades.get(0).tokenId())
+                    || !network.chainId().equals(trades.get(0).chainId())
+                    || !network.tokenId().equalsIgnoreCase(trades.get(0).tokenId())
                     || !text(row,"txid").equalsIgnoreCase(trades.get(0).txid())
                     || !text(row,"address").equalsIgnoreCase(trades.get(0).address())
                     || trades.get(0).amount().compareTo(money(row,"grossAmount"))!=0)throw conflict("PROVIDER_CONFLICT");
         }
         var wallet=required(db.wallet(id(row,"userId")));
         var summary=new LinkedHashMap<String,Object>();summary.put("incidentId",incident);summary.put("action",action.name());summary.put("version",id(row,"version"));
-        summary.put("financialSnapshot",fingerprint(row));summary.put("originalPosition",List.of(id(row,"logIndex"),id(row,"blockNumber"),text(row,"blockHash")));
+        summary.put("network",network.network());summary.put("financialSnapshot",fingerprint(row));summary.put("originalPosition",List.of(id(row,"logIndex"),id(row,"blockNumber"),text(row,"blockHash")));
         summary.put("originalLogIndex",row.get("originalLogIndex"));summary.put("originalSender",row.get("transferFrom"));summary.put("walletFingerprint",walletFingerprint(wallet));
         summary.put("positivelyVerifiedAbsent",proof.positivelyVerifiedAbsent());summary.put("originalCanonicalHash",proof.originalCanonicalHash());
         if(proof.canonical()!=null) {
@@ -227,10 +228,13 @@ public class CregisReorgResolutionService {
         String hash=sha(encode(summary));summary.put("canonical",proof.canonical());summary.put("checkedHead",proof.checkedHead());
         return new Evidence(row,summary,hash,proof,Instant.now());
     }
+    private static CregisNetwork networkOf(Map<String,Object> row) {
+        return row.get("chainId")==null ? CregisNetwork.BEP20 : CregisNetwork.fromChainId(String.valueOf(row.get("chainId")));
+    }
     private void changeSource(Map<String,Object> row,String state,BscDepositProof.TransferProof proof) {
         if(proof!=null) {
-            var original=new CregisExceptionSourceService.Source(id(row,"projectId"),id(row,"cid"),text(row,"txid"),(int)id(row,"logIndex"),text(row,"address"),money(row,"grossAmount"));
-            var canonical=new CregisExceptionSourceService.Source(id(row,"projectId"),id(row,"cid"),text(row,"txid"),proof.logIndex(),proof.toAddress(),proof.amount());
+            var original=new CregisExceptionSourceService.Source(id(row,"projectId"),id(row,"cid"),text(row,"txid"),(int)id(row,"logIndex"),text(row,"address"),money(row,"grossAmount"),networkOf(row));
+            var canonical=new CregisExceptionSourceService.Source(id(row,"projectId"),id(row,"cid"),text(row,"txid"),proof.logIndex(),proof.toAddress(),proof.amount(),networkOf(row));
             sources.relocateCredited(original,canonical,operationNo(id(row,"id"),id(row,"version")+1));
         }
         if(db.eventStatus(id(row,"eventId"),text(row,"eventStatus"),state,proof==null?id(row,"blockNumber"):proof.blockNumber(),
