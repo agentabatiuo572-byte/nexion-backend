@@ -130,8 +130,9 @@ class PurchasePaymentMySqlTest {
     }
     @Test void sixHundredHistoricalAttemptsCannotDelayAnActiveConfirmationAndFailedQueriesRotate(){
         var q=quote("HDPAY_BANK");String no=text(service.create(7,"active-before-history",text(q.get("paymentQuoteId"))).get("intentNo"));
+        jdbc.update("INSERT INTO nx_order(order_no,user_id,amount_usdt,payment_status,order_status) VALUES('CLOSED-HISTORY',7,0,'CANCELLED','CANCELLED')");
         var rows=new ArrayList<Object[]>();for(int i=0;i<600;i++)rows.add(new Object[]{String.format("HIST-%03d",i),"HQ-"+i,"HC-"+i,no});
-        jdbc.batchUpdate("INSERT INTO nx_purchase_payment_intent(intent_no,quote_id,user_id,kind,payment_method,command_key,payload_json,quote_json,pricing_hash,status,reason,expires_at,created_at) SELECT ?,?,user_id,kind,payment_method,?,payload_json,quote_json,pricing_hash,'EXPIRED','PAYMENT_TIMEOUT',expires_at,DATE_SUB(NOW(6),INTERVAL 1 DAY) FROM nx_purchase_payment_intent WHERE intent_no=?",rows);
+        jdbc.batchUpdate("INSERT INTO nx_purchase_payment_intent(intent_no,quote_id,user_id,kind,payment_method,command_key,payload_json,quote_json,pricing_hash,status,reason,expires_at,created_at) SELECT ?,?,user_id,kind,payment_method,?,JSON_OBJECT('orderNo','CLOSED-HISTORY'),quote_json,pricing_hash,'EXPIRED','PAYMENT_TIMEOUT',expires_at,DATE_SUB(NOW(6),INTERVAL 1 DAY) FROM nx_purchase_payment_intent WHERE intent_no=?",rows);
         when(gateway.queryPayOrder(startsWith("HIST-"))).thenThrow(new IllegalStateException("HISTORICAL_QUERY_UNAVAILABLE"));
         when(gateway.queryPayOrder(no)).thenReturn(new HdPayGateway.PayOrder(no,"LIVE-PROVIDER",3,new BigDecimal(text(q.get("amountVnd"))),"BANKQR",null));
         service.scheduled();assertThat(service.detail(no)).containsEntry("status","DELIVERED");

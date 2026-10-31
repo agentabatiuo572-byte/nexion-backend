@@ -69,7 +69,12 @@ class PurchasePaymentDeadlineMySqlTest {
         f.jdbc.update("UPDATE nx_purchase_payment_intent SET expires_at=? WHERE intent_no=?",java.sql.Timestamp.from(START.plusSeconds(900)),intent);
         f.migrate("20261101_purchase_payment_deadlines.sql");f.migrate("20261101_purchase_payment_deadlines.sql");
         assertThat(f.payments.detail(intent)).containsEntry("deadlineAt",START.plusSeconds(1800).toString());
-        time(START.plusSeconds(2100));assertThat(f.payments.get(7,intent)).containsEntry("status","EXPIRED").containsEntry("reason","PAYMENT_TIMEOUT");assertThat(status(no)).isEqualTo("EXPIRED");
+        String closed=order(false);f.jdbc.update("UPDATE nx_order SET payment_status='CANCELLED',order_status='CANCELLED' WHERE order_no=?",closed);
+        var history=new ArrayList<Object[]>();for(int i=0;i<600;i++)history.add(new Object[]{"FAILED-HISTORY-"+i,"FH-Q-"+i,"FH-C-"+i,closed,intent});
+        f.jdbc.batchUpdate("INSERT INTO nx_purchase_payment_intent(intent_no,quote_id,user_id,kind,payment_method,command_key,payload_json,quote_json,pricing_hash,status,reason,expires_at,created_at) SELECT ?,?,user_id,kind,payment_method,?,JSON_OBJECT('orderNo',?),quote_json,pricing_hash,'EXPIRED','PAYMENT_TIMEOUT',expires_at,DATE_SUB(NOW(6),INTERVAL 1 DAY) FROM nx_purchase_payment_intent WHERE intent_no=?",history);
+        time(START.plusSeconds(2100));f.payments.scheduled();
+        assertThat(f.payments.detail(intent)).containsEntry("status","EXPIRED").containsEntry("reason","PAYMENT_TIMEOUT");assertThat(status(no)).isEqualTo("EXPIRED");
+        assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_purchase_payment_intent WHERE intent_no LIKE 'FAILED-HISTORY-%' AND observed_at IS NOT NULL",Integer.class)).isEqualTo(10);
         ReflectionTestUtils.setField(target,"pendingOrderTtlMinutes",30);
     }
     @Test void verifiedBeforeDeadlineFundsDeliverDuringGraceWithoutWalletDebitAndQueueOneNotification(){

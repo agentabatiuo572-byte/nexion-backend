@@ -341,7 +341,7 @@ public class PurchasePaymentService {
     private void expire(Map<String,Object> snapshot){
         tx(()->{
             var row=db.one(SELECT+" FOR UPDATE",snapshot.get("intent_no"));
-            if(row==null||"PAYMENT_TIMEOUT".equals(row.get("reason"))||row.get("confirmed_at")!=null||row.get("receipt_json")!=null||"MANUAL_REVIEW".equals(row.get("status")))return null;
+            if(row==null||row.get("confirmed_at")!=null||row.get("receipt_json")!=null||"MANUAL_REVIEW".equals(row.get("status")))return null;
             db.one("SELECT id FROM nx_user WHERE id=? FOR UPDATE",row.get("user_id"));
             Instant cutoff=deadline(row);
             if("ORDER_PAY".equals(row.get("kind"))){
@@ -517,10 +517,11 @@ public class PurchasePaymentService {
     }
     @Scheduled(fixedDelayString="${nexion.finance.purchase-payment-observe-ms:30000}")
     public void scheduled(){
-        // Live confirmations have their own batch; historical review must not consume the grace window.
-        observeBatch(db.rows("SELECT * FROM nx_purchase_payment_intent WHERE status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED') ORDER BY COALESCE(observed_at,created_at),intent_no LIMIT 50"));
-        // Closed and delivered originals still reconcile unknown funds, late arrivals and bank refunds.
-        observeBatch(db.rows("SELECT * FROM nx_purchase_payment_intent WHERE status NOT IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED') ORDER BY COALESCE(observed_at,created_at),intent_no LIMIT 10"));
+        // A failed intent still owns a live commerce deadline until its canonical order closes.
+        String live="p.status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED') OR (p.kind='ORDER_PAY' AND p.status='EXPIRED' AND p.confirmed_at IS NULL AND p.receipt_json IS NULL AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.user_id=p.user_id AND o.payment_status='PENDING' AND o.order_status='PENDING_PAYMENT'))";
+        observeBatch(db.rows("SELECT p.* FROM nx_purchase_payment_intent p WHERE "+live+" ORDER BY COALESCE(p.observed_at,p.created_at),p.intent_no LIMIT 50"));
+        // Only finished commerce results use the separate historical financial-reconciliation quota.
+        observeBatch(db.rows("SELECT p.* FROM nx_purchase_payment_intent p WHERE NOT ("+live+") ORDER BY COALESCE(p.observed_at,p.created_at),p.intent_no LIMIT 10"));
     }
     private void observeBatch(List<Map<String,Object>> rows){
         for(var row:rows){
