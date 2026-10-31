@@ -78,7 +78,7 @@ class PromotionOrderDiscountTest {
         when(resolver.resolve(anyMap(),eq(false))).thenReturn(policies);
         when(db.product("PRO",false)).thenReturn(values("status","ACTIVE","store_visible",1,"price_usdt",new BigDecimal("1500")));
         when(db.list(startsWith("SELECT p.activity_id"),any(Object[].class))).thenReturn(List.of(values("activity_id","A1","active_version",1)));
-        when(db.version("A1",1,false)).thenReturn(values("contract_json",json(contract)));
+        when(db.version("A1",1,false)).thenReturn(values("contract_json",json(contract),"content_hash",hash(contract)));
         when(db.activity("A1",false)).thenReturn(values("reserved_orders",0,"used_orders",0));
         when(db.one(contains("nx_promotion_budget"),any(Object[].class))).thenReturn(values("total",500,"reserved",0,"committed",0,"issued",0,"reversed",0));
         when(evaluator.evaluate(eq("A1"),anyMap(),anyMap(),eq(7L),anyList(),any(),isNull())).thenReturn(List.of(new PromotionRules.Award("PRO",text(rule.get("ruleId")),"D1",7L,"BUYER",0,spec("500"))));

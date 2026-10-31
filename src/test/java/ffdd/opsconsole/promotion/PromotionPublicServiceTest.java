@@ -24,7 +24,7 @@ class PromotionPublicServiceTest {
         var audience=values("purchaseHistory","ANY","rankIds",List.of(),"markets",List.of(),"registrationAge",values(),"lastValidPurchaseAge",values());
         var contract=values("startsAt",now.minusSeconds(60).toString(),"endsAt",now.plusSeconds(60).toString(),"rules",List.of(),"template","FIRST_PURCHASE","buyerAudience",audience);
         var policies=values("$firstPurchase",values("content",values("restoreAfterRefund",true)));
-        when(mapper.requiredRow(anyString(),any())).thenReturn(values("activity_id","test","active_version",1,"status","ACTIVE","contract_json",json(contract),"resolved_policies_json",json(policies)));
+        when(mapper.requiredRow(anyString(),any())).thenReturn(values("activity_id","test","active_version",1,"status","ACTIVE","contract_json",json(contract),"published_content_hash",hash(contract),"resolved_policies_json",json(policies)));
         when(evaluator.account(17L,audience,policies,null)).thenReturn(new PromotionRules.Account(17,now.minusSeconds(3600),"V0","",null,true,1,0,null,0,consumed));
         assertEquals(expected,new PromotionPublicService(mapper,evaluator,null,mock(PromotionBannerService.class)).get(17L,"test").get("eligibility"));
     }
@@ -40,7 +40,7 @@ class PromotionPublicServiceTest {
         var contract = values("startsAt", now.plusSeconds(startOffset).toString(),
                 "endsAt", now.plusSeconds(endOffset).toString(), "rules", List.of());
         when(mapper.requiredRow(anyString(), any())).thenReturn(values("activity_id", "test",
-                "active_version", 1, "status", persisted, "contract_json", json(contract)));
+                "active_version", 1, "status", persisted, "contract_json", json(contract), "published_content_hash", hash(contract)));
         var service = new PromotionPublicService(mapper, null, null, mock(PromotionBannerService.class));
         assertEquals(expected, service.get(null, "test").get("state"));
     }

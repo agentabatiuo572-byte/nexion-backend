@@ -23,6 +23,10 @@ public class PromotionContractValidator {
         if(!schemas.has(schema))throw new IllegalArgumentException("Unknown promotion schema");
         check(json.valueToTree(value),schemas.get(schema),"$");
     }
+    /** Read compatibility only; write commands continue to call the strict current schema above. */
+    public void validateRecorded(String schema,Object original) {
+        validate(schema,ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.validationView(original));
+    }
     private void fail(String field) {throw new BizException(422,"PROMOTION_FIELD_INVALID:"+field);}
     private boolean matches(JsonNode value,JsonNode schema,String path) {
         try{check(value,schema,path);return true;}catch(BizException rejected){return false;}

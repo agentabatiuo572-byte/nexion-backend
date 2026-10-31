@@ -19,7 +19,7 @@ public class PromotionPublicService {
         require(text(placement).isEmpty()||"home.purchase-promotion".equals(placement),"PROMOTION_PLACEMENT_INVALID");
         int size=Math.min(100,Math.max(1,limit));
         List<Map<String,Object>> rows=db.list("""
-            SELECT p.*,v.contract_json,v.resolved_policies_json FROM nx_promotion p
+            SELECT p.*,v.contract_json,v.resolved_policies_json,v.content_hash AS published_content_hash FROM nx_promotion p
             JOIN nx_promotion_version v ON v.activity_id=p.activity_id AND v.version=p.active_version
             WHERE p.deleted_at IS NULL AND p.status IN ('ACTIVE','SCHEDULED') AND v.status='PUBLISHED' AND v.starts_at<=NOW(6) AND v.ends_at>NOW(6)
               AND (?='' OR p.activity_id>?) AND (?='' OR p.activity_id=?)
@@ -31,14 +31,16 @@ public class PromotionPublicService {
     }
     public Map<String,Object> get(Long user,String activity){
         Map<String,Object> row=db.requiredRow("""
-            SELECT p.*,v.contract_json,v.resolved_policies_json FROM nx_promotion p
+            SELECT p.*,v.contract_json,v.resolved_policies_json,v.content_hash AS published_content_hash FROM nx_promotion p
             JOIN nx_promotion_version v ON v.activity_id=p.activity_id AND v.version=p.active_version
             WHERE p.deleted_at IS NULL AND p.activity_id=? AND v.status='PUBLISHED' AND p.status<>'ARCHIVED'
             """,activity);
         return view(row,user);
     }
     private Map<String,Object> view(Map<String,Object> row,Long user){
-        Map<String,Object> contract=parse(row.get("contract_json"));Instant now=Instant.now();
+        Map<String,Object> contract=parse(row.get("contract_json"));
+        require(hash(contract).equals(row.get("published_content_hash")),"PROMOTION_VERSION_INVALID");
+        Instant now=Instant.now();
         String state=effectiveLifecycle(row.get("status"),contract,now);
         String eligibility=user==null?"SIGN_IN_REQUIRED":"UNKNOWN";
         if(user!=null){
@@ -59,7 +61,7 @@ public class PromotionPublicService {
             for(String key:List.of("ruleId","productNo","minBuyQty","repeatMode","maxGroups","maxGroupsPerPerson"))visible.put(key,rule.get(key));
             for(String role:List.of("buyerReward","inviterReward")){
                 if(rule.get(role)==null){visible.put(role,null);continue;}
-                Map<String,Object> spec=map(rule.get(role)),reward=copy(spec);
+                Map<String,Object> spec=map(rule.get(role)),reward=ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.reward(spec);
                 reward.put("disclosure",disclosure(db,contract,parse(row.get("resolved_policies_json")),spec));
                 reward.remove("deviceRightsProfile");reward.remove("assetPolicy");visible.put(role,reward);
             }

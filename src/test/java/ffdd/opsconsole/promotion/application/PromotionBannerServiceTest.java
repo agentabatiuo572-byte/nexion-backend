@@ -112,7 +112,7 @@ class PromotionBannerServiceTest {
         for (String state : List.of("ACTIVE", "PAUSED", "ENDED", "SCHEDULED")) {
             var c = contract();
             if (state.equals("SCHEDULED")) c.put("startsAt", Instant.now().plusSeconds(3600).toString());
-            when(db.requiredRow(anyString(), any(Object[].class))).thenReturn(values("activity_id", "PROMO-1", "active_version", 3, "status", state, "contract_json", json(c)));
+            when(db.requiredRow(anyString(), any(Object[].class))).thenReturn(values("activity_id", "PROMO-1", "active_version", 3, "status", state, "contract_json", json(c), "published_content_hash", hash(c)));
             var view = publicApi.get(null, "PROMO-1");
             assertEquals(state, view.get("state"));
             assertEquals(state.equals("ACTIVE") ? "/api/promotions/PROMO-1/banner/3" : null, view.get("bannerImageUrl"));

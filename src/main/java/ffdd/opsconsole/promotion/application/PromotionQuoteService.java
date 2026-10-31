@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.transaction.annotation.Transactional;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
+import static ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.asset;
 
 @Service
 @RequiredArgsConstructor
@@ -53,7 +54,9 @@ public class PromotionQuoteService {
             if(selected.isEmpty()&&Boolean.FALSE.equals(request.get("autoSelectPromotion")))break;
             if(!selected.isEmpty()&&!selected.equals(row.get("activity_id")))continue;
             Map<String,Object> version=db.version(text(row.get("activity_id")),number(row.get("active_version")),false);
-            Map<String,Object> c=parse(version.get("contract_json"));validator.validate("PromotionContract",c);
+            Map<String,Object> c=parse(version.get("contract_json"));
+            require(hash(c).equals(version.get("content_hash")),"PROMOTION_VERSION_INVALID");
+            validator.validateRecorded("PromotionContract",c);
             Map<String,Object> ps=resolver.resolve(c,false);
             require(((List<?>)request.get("clientCapabilities")).containsAll((List<?>)c.get("minimumClientCapabilities")),"PROMOTION_CLIENT_UPDATE_REQUIRED");
             List<Map<String,Object>> a=evaluator.evaluate(text(row.get("activity_id")),c,ps,userId,items,now,null).stream().map(PromotionEvaluationService::award).toList();
@@ -155,7 +158,7 @@ public class PromotionQuoteService {
         if(root.get("deleted_at")!=null)return false;
         if(number(root.get("reserved_orders"))+number(root.get("used_orders"))>=PromotionRules.limit(contract.get("activityLimit")))return false;
         Map<String,BigDecimal> sums=new TreeMap<>();
-        for(Map<String,Object> award:awards){Map<String,Object> r=map(award.get("reward"));String asset=text(r.get("type")),product="DEVICE".equals(asset)?text(r.get("giftProductNo")):"";
+        for(Map<String,Object> award:awards){Map<String,Object> r=map(award.get("reward"));String asset=asset(r.get("type")),product="DEVICE".equals(asset)?text(r.get("giftProductNo")):"";
             sums.merge(asset+":"+product,rewardAmount(r),BigDecimal::add);}
         for(var e:sums.entrySet()){
             String[] key=e.getKey().split(":",2);
@@ -206,7 +209,7 @@ public class PromotionQuoteService {
         Map<String,Map<String,Object>> grouped=new LinkedHashMap<>();
         for(Map<String,Object> a:awards){String key=text(a.get("productNo"))+":"+text(a.get("rewardRuleId"));
             Map<String,Object> item=grouped.computeIfAbsent(key,k->values("lineId",a.get("productNo"),"activityId",activity,"version",version,"ruleId",a.get("ruleId"),"rewardRuleId",a.get("rewardRuleId"),
-                "beneficiaryRole",a.get("beneficiaryRole"),"groups",0,"reward",a.get("reward"),"eligibility","ELIGIBLE","message",null));
+                "beneficiaryRole",a.get("beneficiaryRole"),"groups",0,"reward",ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.reward(map(a.get("reward"))),"eligibility","ELIGIBLE","message",null));
             item.put("groups",number(item.get("groups"))+1);}
         return new ArrayList<>(grouped.values());
     }
