@@ -29,8 +29,9 @@ public class AppNotificationController {
             @RequestParam(required = false) String cursor,
             @RequestParam(required = false) Integer limit,
             @RequestParam(required = false) String priority,
+            @RequestParam(required = false) String category,
             Authentication authentication) {
-        return service.page(authenticatedUserId(authentication), cursor, priority, limit);
+        return service.page(authenticatedUserId(authentication), cursor, priority, limit, category);
     }
 
     @PostMapping("/{notificationId}/read")

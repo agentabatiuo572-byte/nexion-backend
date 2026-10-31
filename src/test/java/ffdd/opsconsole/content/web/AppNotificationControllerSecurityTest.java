@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.AppNotificationService;
 import ffdd.opsconsole.content.domain.NotificationActionResult;
+import ffdd.opsconsole.content.domain.AppNotificationPage;
 import ffdd.opsconsole.content.dto.NotificationActionRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
@@ -16,6 +17,24 @@ import org.springframework.security.core.Authentication;
 class AppNotificationControllerSecurityTest {
     private final AppNotificationService service = mock(AppNotificationService.class);
     private final AppNotificationController controller = new AppNotificationController(service);
+
+    @Test
+    void categoryPageUsesOnlyTheAuthenticatedUserAndPassesTheOptionalFilter() {
+        Authentication authentication = mock(Authentication.class);
+        when(authentication.isAuthenticated()).thenReturn(true);
+        when(authentication.getPrincipal()).thenReturn("7");
+        when(authentication.getDetails()).thenReturn(Map.of("subjectType", "USER"));
+        when(service.page(7L, "42", "high", 20, "finance"))
+                .thenReturn(ApiResult.ok(new AppNotificationPage(java.util.List.of(), null, 35L)));
+
+        var page = controller.page("42", 20, "high", "finance", authentication);
+
+        assertThat(page.getCode()).isZero();
+        assertThat(page.getData().unread()).isEqualTo(35L);
+        verify(service).page(7L, "42", "high", 20, "finance");
+        controller.page(null, null, null, null, null);
+        verify(service).page(null, null, null, null, null);
+    }
 
     @Test
     void adminSessionCannotActOnAUsersNotification() {

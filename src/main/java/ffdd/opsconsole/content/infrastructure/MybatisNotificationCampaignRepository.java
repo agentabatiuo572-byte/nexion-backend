@@ -232,9 +232,9 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     @Override
-    public AppNotificationPage pageUserNotifications(Long userId, Long cursorId, String priority, int limit) {
+    public AppNotificationPage pageUserNotifications(Long userId, Long cursorId, String priority, int limit, String category) {
         List<AppNotificationView> rows = campaignMapper.selectUserNotifications(
-                userId, cursorId, priority, Math.max(1, Math.min(limit, 100)) + 1);
+                userId, cursorId, priority, Math.max(1, Math.min(limit, 100)) + 1, category);
         boolean hasMore = rows.size() > limit;
         List<AppNotificationView> items = hasMore ? rows.subList(0, limit) : rows;
         String nextCursor = hasMore && !items.isEmpty()

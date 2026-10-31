@@ -27,14 +27,14 @@ class AppNotificationServiceTest {
 
     @Test
     void pageIsServerCanonicalAndAppliesRetentionBeforeReading() {
-        when(repository.pageUserNotifications(7L, null, "high", 20))
+        when(repository.pageUserNotifications(7L, null, "high", 20, null))
                 .thenReturn(new AppNotificationPage(List.of(), null, 0));
 
         var result = service.page(7L, null, "high", 20);
 
         assertThat(result.getCode()).isZero();
         verify(repository).applyRetentionForUser(7L);
-        verify(repository).pageUserNotifications(7L, null, "high", 20);
+        verify(repository).pageUserNotifications(7L, null, "high", 20, null);
     }
 
     @Test
@@ -46,9 +46,27 @@ class AppNotificationServiceTest {
         }).when(businessNotifications).ifAvailable(org.mockito.ArgumentMatchers.any());
         service.page(null,null,null,20);
         service.page(7L,"invalid",null,20);
+        service.page(7L,null,null,20,"unknown");
         verify(collector,never()).collectWithdrawalAttention(org.mockito.ArgumentMatchers.any());
         service.page(7L,null,null,20);
         verify(collector).collectWithdrawalAttention(7L);
+    }
+
+    @Test
+    void categoryIsValidatedBeforeCollectionOrRetentionAndAllPreservesTheOldQuery() {
+        for (String category : List.of("", " ", "unknown", "funds_result")) {
+            var result = service.page(7L, null, null, 20, category);
+            assertThat(result.getCode()).isEqualTo(400);
+            assertThat(result.getMessage()).isEqualTo("NOTIFICATION_CATEGORY_INVALID");
+        }
+        org.mockito.Mockito.verifyNoInteractions(repository, businessNotifications);
+
+        for (String category : List.of("finance", "device", "team", "rewards", "system")) {
+            service.page(7L, "42", "HIGH", 20, " " + category.toUpperCase() + " ");
+            verify(repository).pageUserNotifications(7L, 42L, "high", 20, category);
+        }
+        service.page(7L, null, null, 20, "all");
+        verify(repository).pageUserNotifications(7L, null, null, 20, null);
     }
 
     @Test

@@ -50,7 +50,11 @@ public interface NotificationCampaignRepository {
 
     void applyRetentionForUser(Long userId);
 
-    AppNotificationPage pageUserNotifications(Long userId, Long cursorId, String priority, int limit);
+    default AppNotificationPage pageUserNotifications(Long userId, Long cursorId, String priority, int limit) {
+        return pageUserNotifications(userId, cursorId, priority, limit, null);
+    }
+
+    AppNotificationPage pageUserNotifications(Long userId, Long cursorId, String priority, int limit, String category);
 
     boolean markNotificationRead(Long userId, Long notificationId);
 
