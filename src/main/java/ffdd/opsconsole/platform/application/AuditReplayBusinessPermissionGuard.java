@@ -598,6 +598,16 @@ public class AuditReplayBusinessPermissionGuard {
 
     private DelegatedProposalDescriptor delegatedFDescriptor(
             String operation, Map<String, Object> params) {
+        if ("f_vrank_bootstrap".equals(operation)) {
+            var request = ffdd.opsconsole.team.dto.VRankBootstrapRequest.from(params);
+            try {
+                return new DelegatedProposalDescriptor("首次配置 V0–V8", "current", "配置表必须完全为空",
+                        new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(request),
+                        "F1", "fund", true, new AuditLockTarget("F", "vrank_bootstrap", "current"));
+            } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+                throw new ffdd.opsconsole.shared.exception.BizException(422, "VRANK_BOOTSTRAP_INVALID");
+            }
+        }
         if ("f_seven_layer_activation".equals(operation)) {
             var request=ffdd.opsconsole.team.dto.SevenLayerActivationRequest.from(params);
             var state=directPolicies.getObject().activationPreview(request);
@@ -1199,6 +1209,7 @@ public class AuditReplayBusinessPermissionGuard {
             // A1 批1a 修复3:F5 佣金事件 A2 越权守卫(原无 F 域 case → 持 platform_a2_proposal_create/approve 可任意处置佣金)。
             // 按 params.value 目标状态分流 freeze/release/reverse;OpsTeamService.updateCommissionEventStatus 二次校验兜底。
             case "F" -> switch (operation) {
+                case "f_vrank_bootstrap" -> "network_f1_write";
                 case "f_seven_layer_activation" -> "network_f2_policy_amplify";
                 case "f_direct_referral_policy" -> "network_f2_royalty_rate";
                 case "f_config", "f_ui_config", "f_unilevel_rule" ->
